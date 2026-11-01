@@ -76,6 +76,8 @@ type Model struct {
 	showOpenPorts bool
 	session       *pb.Session
 	chats         []*pb.AgentChat
+	chatRows      []chatPickerRow
+	showEarlier   bool
 	chatLabels    map[string]string
 	tableRows     chatTableRows
 	table         ui.Table
@@ -319,11 +321,7 @@ func (m Model) textEntryActive() bool {
 
 // selectedChat returns the chat at the current table cursor, or nil if empty.
 func (m Model) selectedChat() *pb.AgentChat {
-	idx := m.table.Cursor()
-	if idx < 0 || idx >= len(m.chats) {
-		return nil
-	}
-	return m.chats[idx]
+	return m.projectedChat(m.table.Cursor())
 }
 
 // Update runs update, then re-sizes the table to the footer the handlers left.

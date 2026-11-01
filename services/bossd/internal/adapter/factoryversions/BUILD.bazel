@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "factoryversions",
+    srcs = ["versions.go"],
+    importpath = "github.com/recurser/bossd/internal/adapter/factoryversions",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/contract/plugin/skillinstall",
+        "//lib/bossalib/kit/buildinfo",
+    ],
+)
+
+go_test(
+    name = "factoryversions_test",
+    srcs = ["versions_test.go"],
+    embed = [":factoryversions"],
+    deps = ["//lib/bossalib/contract/plugin/skillinstall"],
+)

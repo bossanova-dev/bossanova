@@ -57,12 +57,12 @@ type CheckVerdict struct {
 
 // EvaluateChecks classifies a check-run set without consulting external state.
 //
-// A non-completed boss/verify status or a park in any state (see IsVerifyHold) is not
+// A non-completed boss/verify status, park or cannot-assess hold (see IsVerifyHold) is not
 // ordinary CI: it is the verify stage holding a head whose CI already settled,
 // so it is skipped before counting and Total counts only the judged entries.
 // Every "is ordinary CI settled" caller (display, the state poller's
 // ChecksPassed, callback triggers, dependabot) inherits that exclusion here.
-// A completed non-park boss/verify is still an ordinary check.
+// A completed boss/verify without a hold is still an ordinary check.
 func EvaluateChecks(headSHA string, checks []CheckResult, readErr error) CheckVerdict {
 	v := CheckVerdict{
 		State:   CheckVerdictUnknown,
@@ -160,6 +160,10 @@ const verifyDefectPrefix = "defect:"
 // skills-toolbox/verify/verify-vocabulary.mjs.
 const verifyBlockedPrefix = "blocked:"
 
+// verifyCannotAssessPrefix mirrors VERIFY_DESCRIPTIONS.cannotAssess in
+// skills-toolbox/verify/verify-vocabulary.mjs.
+const verifyCannotAssessPrefix = "cannot assess:"
+
 // verifyParkedSuffix mirrors VERIFY_DESCRIPTIONS.defectParkedSuffix in
 // skills-toolbox/verify/verify-vocabulary.mjs.
 const verifyParkedSuffix = ", needs human"
@@ -177,7 +181,7 @@ const (
 	VerifyPhaseNone VerifyPhaseKind = iota
 	// VerifyPhaseVerifying means a pending boss/verify status that is not a
 	// park: a live claim ("verifying…"), an unclaimed head ("waiting: ..."),
-	// or an empty/unrecognised description.
+	// or an empty/unrecognised description; also a cannot-assess hold in any state.
 	VerifyPhaseVerifying
 	// VerifyPhaseNeedsHuman means a park in any state whose description
 	// starts "needs human".
@@ -203,10 +207,15 @@ func IsVerifyPark(c CheckResult) bool {
 	return ok
 }
 
-// IsVerifyHold reports whether c is a not-yet-completed boss/verify status
-// or a park in any state. Holds are excluded from ordinary CI.
+// IsVerifyCannotAssess reports whether c is a cannot-assess hold in any state.
+func IsVerifyCannotAssess(c CheckResult) bool {
+	return c.Name == VerifyStatusContext && strings.HasPrefix(c.Description, verifyCannotAssessPrefix)
+}
+
+// IsVerifyHold reports whether c is a not-yet-completed boss/verify status,
+// or a park or cannot-assess status in any state. Holds are excluded from ordinary CI.
 func IsVerifyHold(c CheckResult) bool {
-	return c.Name == VerifyStatusContext && (c.Status != CheckStatusCompleted || IsVerifyPark(c))
+	return c.Name == VerifyStatusContext && (c.Status != CheckStatusCompleted || IsVerifyPark(c) || IsVerifyCannotAssess(c))
 }
 
 // IsVerifyRepairing reports whether verify handed this head back to repair.
@@ -234,7 +243,7 @@ func HasVerifyRepairing(checks []CheckResult) bool {
 func VerifyPassed(checks []CheckResult) bool {
 	for _, c := range checks {
 		if c.Name == VerifyStatusContext && c.Status == CheckStatusCompleted &&
-			c.Conclusion != nil && *c.Conclusion == CheckConclusionSuccess && !IsVerifyPark(c) {
+			c.Conclusion != nil && *c.Conclusion == CheckConclusionSuccess && !IsVerifyHold(c) {
 			return true
 		}
 	}
@@ -243,7 +252,8 @@ func VerifyPassed(checks []CheckResult) bool {
 
 // ClassifyVerify derives the verify phase from a check set. A park in any
 // state is NeedsHuman with its reason and label; any other pending boss/verify
-// is Verifying. Completed non-park statuses yield VerifyPhaseNone. If several
+// or cannot-assess hold is Verifying. Completed statuses without a hold yield
+// VerifyPhaseNone. If several
 // holds are present, NeedsHuman wins.
 func ClassifyVerify(checks []CheckResult) VerifyPhase {
 	phase := VerifyPhase{Kind: VerifyPhaseNone}

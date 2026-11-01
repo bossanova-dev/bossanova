@@ -451,6 +451,10 @@ func (s *SQLiteSessionStore) ListArchived(ctx context.Context, repoID string) ([
 
 func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params UpdateSessionParams) (*domain.Session, error) {
 	arg := sqlcgen.UpdateSessionParams{ID: id, UpdatedAt: sqlutil.TimeNow(), BlockedState: int64(machine.Blocked), State: sessionInt64(params.State)}
+	if params.State != nil && *params.State == int(machine.ReadyForReview) {
+		arg.SetPrReadiedAt = true // The query stamps only when the resulting row has a PR.
+		arg.PrReadiedAt = &arg.UpdatedAt
+	}
 	arg.Title = params.Title
 	arg.IsBranchCreated = params.IsBranchCreated
 	arg.SetWorktreeCreatedAt = params.WorktreeCreatedAt != nil
@@ -756,6 +760,7 @@ func sessionFromRow(row sqlcgen.Session) *domain.Session {
 		BaseBranch:                  row.BaseBranch,
 		AgentSessionID:              row.AgentSessionID,
 		PRNumber:                    prNumber,
+		PRReadiedAt:                 optionalTextTime(row.PrReadiedAt),
 		PRURL:                       row.PrUrl,
 		TrackerID:                   row.TrackerID,
 		TrackerURL:                  row.TrackerUrl,

@@ -67,3 +67,22 @@ func TestCheckerCache(t *testing.T) {
 		t.Fatal("store error must not be cached")
 	}
 }
+
+func TestIsVerifyJob(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		job  *domain.CronJob
+		want bool
+	}{
+		{"prompt disabled", &domain.CronJob{Prompt: "/boss-verify"}, true},
+		{"gate disabled", &domain.CronJob{GateCommand: "node skills-toolbox/cron-gates/boss-verify.mjs"}, true},
+		{"other", &domain.CronJob{IsEnabled: true, Prompt: "/boss-build"}, false},
+		{"nil", nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsVerifyJob(tt.job); got != tt.want {
+				t.Fatalf("IsVerifyJob = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

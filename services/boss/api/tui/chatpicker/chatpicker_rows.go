@@ -22,15 +22,20 @@ type chatRowLabels struct {
 type chatTableRows struct {
 	labels                  []chatRowLabels
 	statusWidth, frameWidth int
+	chatCount               int
 	project                 func(table.Row) table.Row
 }
 
 func (m *Model) refreshSpinnerRows() {
-	if len(m.tableRows.labels) != len(m.chats) {
+	if m.tableRows.chatCount != len(m.chats) || len(m.tableRows.labels) != len(m.chatRows) {
 		m.buildTableRows()
 		return
 	}
-	for i, chat := range m.chats {
+	for i := range m.chatRows {
+		chat := m.projectedChat(i)
+		if chat == nil {
+			continue
+		}
 		labels := m.tableRows.labels[i]
 		if display.RelativeTime(chat.CreatedAt.AsTime()) != labels.created || display.RelativeTime(m.chatLastActive(chat)) != labels.active {
 			m.buildTableRows()
@@ -52,10 +57,17 @@ func (m *Model) refreshSpinnerRows() {
 }
 
 func (m Model) chatTableRow(i int, created, active string) table.Row {
-	chat := m.chats[i]
+	chat := m.projectedChat(i)
 	indicator := ""
 	if i == m.table.Cursor() {
 		indicator = ui.CursorChevron
+	}
+	if chat == nil {
+		row := table.Row{indicator, m.chatRows[i].label, "", "", ""}
+		if len(m.agents) > 1 {
+			row = append(row, "")
+		}
+		return row
 	}
 	row := table.Row{indicator, m.chatDisplayTitle(chat), m.chatAgentName(chat), ui.StyleSubtle.Render(created), ui.StyleSubtle.Render(active), m.chatStatusCell(chat, m.spinner, m.tableRows.statusWidth)}
 	if len(m.agents) <= 1 {

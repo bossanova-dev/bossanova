@@ -1,6 +1,10 @@
 package attention
 
-import pb "github.com/recurser/bossalib/gen/bossanova/v1"
+import (
+	"strings"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+)
 
 // Titles of the timeline steps the daemon writes for the events of a rotation
 // incident, after the incident's failure step.
@@ -67,4 +71,17 @@ func NarratesRotation(title, trigger, outcome string) bool {
 		return false
 	}
 	return title == failure || title == RotationOutcomeTitle(outcome)
+}
+
+// ParkStepTitle titles a daemon park, optionally carrying a legacy category.
+func ParkStepTitle(category string) string {
+	if category == "" {
+		return "Parked for you"
+	}
+	return "Parked for you · " + category
+}
+
+// IsParkStepTitle reports whether title names a current or legacy daemon park.
+func IsParkStepTitle(title string) bool {
+	return title == ParkStepTitle("") || strings.HasPrefix(title, ParkStepTitle("")+" · ")
 }

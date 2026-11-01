@@ -155,3 +155,16 @@ test('merging a different head never certifies the head this wait followed', asy
   assert.equal(result.outcome, 'head-moved')
   assert.equal(result.newHead, newHead)
 })
+
+for (const state of ['error', 'pending', 'success', 'failure']) {
+  test(`cannot-assess reports its head and reason (${state})`, async () => {
+    const status = { state, description: 'cannot assess: review-unreadable' }
+    const line = 'Cannot assess ab0585c: review-unreadable'
+    assert.equal(verdictLine({ ...status, head }), line)
+    assert.deepEqual(await fixture([live(), status]).run(), {
+      outcome: 'verdict',
+      ...status,
+      line,
+    })
+  })
+}

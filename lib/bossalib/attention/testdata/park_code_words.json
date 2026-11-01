@@ -7,6 +7,13 @@
       "signOff": true,
       "restates": false
     },
+    "cannot-assess": {
+      "decidingPriority": false,
+      "plain": "verify could not gather the evidence to judge the PR",
+      "category": "cannot assess",
+      "signOff": false,
+      "restates": false
+    },
     "extension-failed": {
       "decidingPriority": false,
       "plain": "a verify extension failed to run",
@@ -134,6 +141,7 @@
     "partial-build",
     "ledger-open",
     "extension-failed",
+    "cannot-assess",
     "no-session",
     "worktree-diverged",
     "worktree-unsynced",

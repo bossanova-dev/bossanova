@@ -85,3 +85,8 @@ existing tracker, label, callback-watch and terminal behavior.
 A `blocked` judge writes `{version: 1, pr, head: headSha, blockers}` to a run-temp JSON file and
 posts `post --verdict blocked --blockers <file>`. It never merges that head. The verify hand-off
 rearms on transition, so a new head is judged again. The file follows the blocker contract shipped by the published `boss-verify` core.
+
+A human judge writes its `confidence` object to a run-temp JSON file and posts with
+`post --verdict human --confidence <file>`. High passes and merges immediately; Moderate and Low
+park with their level and asks. Changed-range and size-baseline collection get three attempts;
+unavailable evidence then parks as `cannot-assess` and is re-judged on the next tick.

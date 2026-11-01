@@ -12,7 +12,7 @@ import (
 
 const createSession = `-- name: CreateSession :one
 INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, state_entered_at, agent_name, model, effective_model, effective_effort, account_id, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at, is_verify_only)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, repo_id, title, "plan", worktree_path, branch_name, base_branch, state, agent_session_id, pr_number, pr_url, last_check_state, is_automation_enabled, attempt_count, blocked_reason, archived_at, created_at, updated_at, tracker_id, tracker_url, tmux_session_name, display_label, display_intent, has_display_spinner, cron_job_id, should_defer_pr, hook_token, agent_name, last_repair_runner_error, last_repair_exit_error, last_repair_attempt_count, last_repair_head_sha, last_repair_display_status, last_observed_review_state, last_repair_review_fingerprint, model, setup_error, last_repair_blocked_reason, is_tmux_unattended, last_attempt_head_sha, rotation_attempt_count, rotation_resume_at, account_id, is_quick_chat, is_detached, last_repair_started_at, last_repair_blocked_at, last_check_state_head_sha, last_check_state_at, state_entered_at, effective_model, effective_effort, list_rank, dismissed_alert_key, dismissed_alert_at, worktree_created_at, is_branch_created, run_dropped_at, run_dropped_agent_session_id, run_blocked_reason, last_repair_base_sha, is_verify_only
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, repo_id, title, "plan", worktree_path, branch_name, base_branch, state, agent_session_id, pr_number, pr_url, last_check_state, is_automation_enabled, attempt_count, blocked_reason, archived_at, created_at, updated_at, tracker_id, tracker_url, tmux_session_name, display_label, display_intent, has_display_spinner, cron_job_id, should_defer_pr, hook_token, agent_name, last_repair_runner_error, last_repair_exit_error, last_repair_attempt_count, last_repair_head_sha, last_repair_display_status, last_observed_review_state, last_repair_review_fingerprint, model, setup_error, last_repair_blocked_reason, is_tmux_unattended, last_attempt_head_sha, rotation_attempt_count, rotation_resume_at, account_id, is_quick_chat, is_detached, last_repair_started_at, last_repair_blocked_at, last_check_state_head_sha, last_check_state_at, state_entered_at, effective_model, effective_effort, list_rank, dismissed_alert_key, dismissed_alert_at, worktree_created_at, is_branch_created, run_dropped_at, run_dropped_agent_session_id, run_blocked_reason, last_repair_base_sha, is_verify_only, pr_readied_at
 `
 
 type CreateSessionParams struct {
@@ -127,6 +127,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.RunBlockedReason,
 		&i.LastRepairBaseSha,
 		&i.IsVerifyOnly,
+		&i.PrReadiedAt,
 	)
 	return i, err
 }
@@ -207,7 +208,7 @@ func (q *Queries) DeleteSessionWorkflows(ctx context.Context, sessionID string) 
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, repo_id, title, "plan", worktree_path, branch_name, base_branch, state, agent_session_id, pr_number, pr_url, last_check_state, is_automation_enabled, attempt_count, blocked_reason, archived_at, created_at, updated_at, tracker_id, tracker_url, tmux_session_name, display_label, display_intent, has_display_spinner, cron_job_id, should_defer_pr, hook_token, agent_name, last_repair_runner_error, last_repair_exit_error, last_repair_attempt_count, last_repair_head_sha, last_repair_display_status, last_observed_review_state, last_repair_review_fingerprint, model, setup_error, last_repair_blocked_reason, is_tmux_unattended, last_attempt_head_sha, rotation_attempt_count, rotation_resume_at, account_id, is_quick_chat, is_detached, last_repair_started_at, last_repair_blocked_at, last_check_state_head_sha, last_check_state_at, state_entered_at, effective_model, effective_effort, list_rank, dismissed_alert_key, dismissed_alert_at, worktree_created_at, is_branch_created, run_dropped_at, run_dropped_agent_session_id, run_blocked_reason, last_repair_base_sha, is_verify_only FROM sessions WHERE id = ?
+SELECT id, repo_id, title, "plan", worktree_path, branch_name, base_branch, state, agent_session_id, pr_number, pr_url, last_check_state, is_automation_enabled, attempt_count, blocked_reason, archived_at, created_at, updated_at, tracker_id, tracker_url, tmux_session_name, display_label, display_intent, has_display_spinner, cron_job_id, should_defer_pr, hook_token, agent_name, last_repair_runner_error, last_repair_exit_error, last_repair_attempt_count, last_repair_head_sha, last_repair_display_status, last_observed_review_state, last_repair_review_fingerprint, model, setup_error, last_repair_blocked_reason, is_tmux_unattended, last_attempt_head_sha, rotation_attempt_count, rotation_resume_at, account_id, is_quick_chat, is_detached, last_repair_started_at, last_repair_blocked_at, last_check_state_head_sha, last_check_state_at, state_entered_at, effective_model, effective_effort, list_rank, dismissed_alert_key, dismissed_alert_at, worktree_created_at, is_branch_created, run_dropped_at, run_dropped_agent_session_id, run_blocked_reason, last_repair_base_sha, is_verify_only, pr_readied_at FROM sessions WHERE id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
@@ -276,6 +277,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 		&i.RunBlockedReason,
 		&i.LastRepairBaseSha,
 		&i.IsVerifyOnly,
+		&i.PrReadiedAt,
 	)
 	return i, err
 }
@@ -308,7 +310,7 @@ func (q *Queries) ListSessionTmuxNames(ctx context.Context) ([]*string, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only FROM sessions s WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) ORDER BY (s.list_rank IS NULL) ASC, s.list_rank ASC, s.created_at DESC, s.id ASC
+SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, s.pr_readied_at FROM sessions s WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) ORDER BY (s.list_rank IS NULL) ASC, s.list_rank ASC, s.created_at DESC, s.id ASC
 `
 
 func (q *Queries) ListSessions(ctx context.Context, repoID string) ([]Session, error) {
@@ -383,6 +385,7 @@ func (q *Queries) ListSessions(ctx context.Context, repoID string) ([]Session, e
 			&i.RunBlockedReason,
 			&i.LastRepairBaseSha,
 			&i.IsVerifyOnly,
+			&i.PrReadiedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -398,7 +401,7 @@ func (q *Queries) ListSessions(ctx context.Context, repoID string) ([]Session, e
 }
 
 const listSessionsByActive = `-- name: ListSessionsByActive :many
-SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only FROM sessions s WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) AND s.archived_at IS NULL ORDER BY (s.list_rank IS NULL) ASC, s.list_rank ASC, s.created_at DESC, s.id ASC
+SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, s.pr_readied_at FROM sessions s WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) AND s.archived_at IS NULL ORDER BY (s.list_rank IS NULL) ASC, s.list_rank ASC, s.created_at DESC, s.id ASC
 `
 
 func (q *Queries) ListSessionsByActive(ctx context.Context, repoID string) ([]Session, error) {
@@ -473,6 +476,7 @@ func (q *Queries) ListSessionsByActive(ctx context.Context, repoID string) ([]Se
 			&i.RunBlockedReason,
 			&i.LastRepairBaseSha,
 			&i.IsVerifyOnly,
+			&i.PrReadiedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -488,7 +492,7 @@ func (q *Queries) ListSessionsByActive(ctx context.Context, repoID string) ([]Se
 }
 
 const listSessionsByActiveWithRepo = `-- name: ListSessionsByActiveWithRepo :many
-SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, COALESCE(r.display_name, '') AS repo_display_name, COALESCE(r.origin_url, '') AS repo_origin_url FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) AND s.archived_at IS NULL ORDER BY (s.list_rank IS NULL) ASC, s.list_rank ASC, s.created_at DESC, s.id ASC
+SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, s.pr_readied_at, COALESCE(r.display_name, '') AS repo_display_name, COALESCE(r.origin_url, '') AS repo_origin_url FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) AND s.archived_at IS NULL ORDER BY (s.list_rank IS NULL) ASC, s.list_rank ASC, s.created_at DESC, s.id ASC
 `
 
 type ListSessionsByActiveWithRepoRow struct {
@@ -569,6 +573,7 @@ func (q *Queries) ListSessionsByActiveWithRepo(ctx context.Context, repoID strin
 			&i.Session.RunBlockedReason,
 			&i.Session.LastRepairBaseSha,
 			&i.Session.IsVerifyOnly,
+			&i.Session.PrReadiedAt,
 			&i.RepoDisplayName,
 			&i.RepoOriginUrl,
 		); err != nil {
@@ -586,7 +591,7 @@ func (q *Queries) ListSessionsByActiveWithRepo(ctx context.Context, repoID strin
 }
 
 const listSessionsByArchived = `-- name: ListSessionsByArchived :many
-SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only FROM sessions s WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) AND s.archived_at IS NOT NULL ORDER BY s.created_at DESC
+SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, s.pr_readied_at FROM sessions s WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) AND s.archived_at IS NOT NULL ORDER BY s.created_at DESC
 `
 
 func (q *Queries) ListSessionsByArchived(ctx context.Context, repoID string) ([]Session, error) {
@@ -661,6 +666,7 @@ func (q *Queries) ListSessionsByArchived(ctx context.Context, repoID string) ([]
 			&i.RunBlockedReason,
 			&i.LastRepairBaseSha,
 			&i.IsVerifyOnly,
+			&i.PrReadiedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -676,7 +682,7 @@ func (q *Queries) ListSessionsByArchived(ctx context.Context, repoID string) ([]
 }
 
 const listSessionsByRepoAndPR = `-- name: ListSessionsByRepoAndPR :many
-SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, COALESCE(r.display_name, '') AS repo_display_name, COALESCE(r.origin_url, '') AS repo_origin_url FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id WHERE s.repo_id = ? AND s.pr_number = ? AND s.archived_at IS NULL ORDER BY s.created_at DESC
+SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, s.pr_readied_at, COALESCE(r.display_name, '') AS repo_display_name, COALESCE(r.origin_url, '') AS repo_origin_url FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id WHERE s.repo_id = ? AND s.pr_number = ? AND s.archived_at IS NULL ORDER BY s.created_at DESC
 `
 
 type ListSessionsByRepoAndPRParams struct {
@@ -762,6 +768,7 @@ func (q *Queries) ListSessionsByRepoAndPR(ctx context.Context, arg ListSessionsB
 			&i.Session.RunBlockedReason,
 			&i.Session.LastRepairBaseSha,
 			&i.Session.IsVerifyOnly,
+			&i.Session.PrReadiedAt,
 			&i.RepoDisplayName,
 			&i.RepoOriginUrl,
 		); err != nil {
@@ -779,7 +786,7 @@ func (q *Queries) ListSessionsByRepoAndPR(ctx context.Context, arg ListSessionsB
 }
 
 const listSessionsByState = `-- name: ListSessionsByState :many
-SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only FROM sessions s WHERE s.state = ? ORDER BY s.updated_at DESC
+SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, s.pr_readied_at FROM sessions s WHERE s.state = ? ORDER BY s.updated_at DESC
 `
 
 func (q *Queries) ListSessionsByState(ctx context.Context, state int64) ([]Session, error) {
@@ -854,6 +861,7 @@ func (q *Queries) ListSessionsByState(ctx context.Context, state int64) ([]Sessi
 			&i.RunBlockedReason,
 			&i.LastRepairBaseSha,
 			&i.IsVerifyOnly,
+			&i.PrReadiedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -869,7 +877,7 @@ func (q *Queries) ListSessionsByState(ctx context.Context, state int64) ([]Sessi
 }
 
 const listSessionsByStates = `-- name: ListSessionsByStates :many
-SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only FROM sessions s WHERE s.state IN (/*SLICE:states*/?) ORDER BY s.updated_at DESC
+SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, s.pr_readied_at FROM sessions s WHERE s.state IN (/*SLICE:states*/?) ORDER BY s.updated_at DESC
 `
 
 func (q *Queries) ListSessionsByStates(ctx context.Context, states []int64) ([]Session, error) {
@@ -954,6 +962,7 @@ func (q *Queries) ListSessionsByStates(ctx context.Context, states []int64) ([]S
 			&i.RunBlockedReason,
 			&i.LastRepairBaseSha,
 			&i.IsVerifyOnly,
+			&i.PrReadiedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -969,7 +978,7 @@ func (q *Queries) ListSessionsByStates(ctx context.Context, states []int64) ([]S
 }
 
 const listSessionsWithRepo = `-- name: ListSessionsWithRepo :many
-SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, COALESCE(r.display_name, '') AS repo_display_name, COALESCE(r.origin_url, '') AS repo_origin_url FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) ORDER BY (s.list_rank IS NULL) ASC, s.list_rank ASC, s.created_at DESC, s.id ASC
+SELECT s.id, s.repo_id, s.title, s."plan", s.worktree_path, s.branch_name, s.base_branch, s.state, s.agent_session_id, s.pr_number, s.pr_url, s.last_check_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at, s.tracker_id, s.tracker_url, s.tmux_session_name, s.display_label, s.display_intent, s.has_display_spinner, s.cron_job_id, s.should_defer_pr, s.hook_token, s.agent_name, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count, s.last_repair_head_sha, s.last_repair_display_status, s.last_observed_review_state, s.last_repair_review_fingerprint, s.model, s.setup_error, s.last_repair_blocked_reason, s.is_tmux_unattended, s.last_attempt_head_sha, s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.is_quick_chat, s.is_detached, s.last_repair_started_at, s.last_repair_blocked_at, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at, s.effective_model, s.effective_effort, s.list_rank, s.dismissed_alert_key, s.dismissed_alert_at, s.worktree_created_at, s.is_branch_created, s.run_dropped_at, s.run_dropped_agent_session_id, s.run_blocked_reason, s.last_repair_base_sha, s.is_verify_only, s.pr_readied_at, COALESCE(r.display_name, '') AS repo_display_name, COALESCE(r.origin_url, '') AS repo_origin_url FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id WHERE (CAST(?1 AS TEXT) = '' OR s.repo_id = ?1) ORDER BY (s.list_rank IS NULL) ASC, s.list_rank ASC, s.created_at DESC, s.id ASC
 `
 
 type ListSessionsWithRepoRow struct {
@@ -1050,6 +1059,7 @@ func (q *Queries) ListSessionsWithRepo(ctx context.Context, repoID string) ([]Li
 			&i.Session.RunBlockedReason,
 			&i.Session.LastRepairBaseSha,
 			&i.Session.IsVerifyOnly,
+			&i.Session.PrReadiedAt,
 			&i.RepoDisplayName,
 			&i.RepoOriginUrl,
 		); err != nil {
@@ -1161,47 +1171,52 @@ func (q *Queries) SetTaskMappingsSessionDetached(ctx context.Context, sessionID 
 const updateSession = `-- name: UpdateSession :one
 UPDATE sessions SET
  updated_at = ?1,
- state_entered_at = CASE WHEN CAST(?2 AS INTEGER) IS NOT NULL AND state != CAST(?2 AS INTEGER) THEN ?1 ELSE state_entered_at END,
- state = COALESCE(CAST(?2 AS INTEGER), state),
- title = COALESCE(?3, title),
- is_branch_created = COALESCE(CAST(?4 AS BOOLEAN), is_branch_created),
- worktree_created_at = CASE WHEN CAST(?5 AS BOOLEAN) THEN ?6 ELSE worktree_created_at END,
- worktree_path = COALESCE(?7, worktree_path),
- branch_name = COALESCE(?8, branch_name),
- agent_session_id = CASE WHEN CAST(?9 AS BOOLEAN) THEN ?10 ELSE agent_session_id END,
- pr_number = CASE WHEN CAST(?11 AS BOOLEAN) THEN ?12 ELSE pr_number END,
- pr_url = CASE WHEN CAST(?13 AS BOOLEAN) THEN ?14 ELSE pr_url END,
- tracker_id = CASE WHEN CAST(?15 AS BOOLEAN) THEN ?16 ELSE tracker_id END,
- tracker_url = CASE WHEN CAST(?17 AS BOOLEAN) THEN ?18 ELSE tracker_url END,
- tmux_session_name = CASE WHEN CAST(?19 AS BOOLEAN) THEN ?20 ELSE tmux_session_name END,
- last_check_state = COALESCE(?21, last_check_state),
- last_check_state_head_sha = CASE WHEN CAST(?22 AS BOOLEAN) THEN ?23 ELSE last_check_state_head_sha END,
- last_check_state_at = CASE WHEN CAST(?24 AS BOOLEAN) THEN ?25 ELSE last_check_state_at END,
- last_observed_review_state = COALESCE(?26, last_observed_review_state),
- is_automation_enabled = COALESCE(CAST(?27 AS BOOLEAN), is_automation_enabled),
- attempt_count = COALESCE(?28, attempt_count),
- blocked_reason = CASE WHEN CAST(?29 AS BOOLEAN) THEN ?30 ELSE blocked_reason END,
- last_repair_attempt_count = COALESCE(?31, last_repair_attempt_count),
- run_blocked_reason = CASE WHEN CAST(?32 AS BOOLEAN) THEN ?33 ELSE run_blocked_reason END,
- last_attempt_head_sha = CASE WHEN CAST(?34 AS BOOLEAN) THEN ?35 ELSE last_attempt_head_sha END,
- rotation_attempt_count = COALESCE(?36, rotation_attempt_count),
- rotation_resume_at = CASE WHEN CAST(?37 AS BOOLEAN) THEN ?38 WHEN CAST(?2 AS INTEGER) IS NOT NULL AND CAST(?2 AS INTEGER) != CAST(?39 AS INTEGER) THEN NULL ELSE rotation_resume_at END,
- archived_at = CASE WHEN CAST(?40 AS BOOLEAN) THEN ?41 ELSE archived_at END,
- cron_job_id = CASE WHEN CAST(?42 AS BOOLEAN) THEN ?43 ELSE cron_job_id END,
- hook_token = CASE WHEN CAST(?44 AS BOOLEAN) THEN ?45 ELSE hook_token END,
- account_id = CASE WHEN CAST(?46 AS BOOLEAN) THEN ?47 ELSE account_id END,
- is_tmux_unattended = COALESCE(CAST(?48 AS BOOLEAN), is_tmux_unattended),
- is_detached = COALESCE(CAST(?49 AS BOOLEAN), is_detached),
- is_quick_chat = COALESCE(CAST(?50 AS BOOLEAN), is_quick_chat),
- display_label = COALESCE(?51, display_label),
- display_intent = COALESCE(?52, display_intent),
- has_display_spinner = COALESCE(CAST(?53 AS BOOLEAN), has_display_spinner),
- setup_error = COALESCE(?54, setup_error)
-WHERE id = ?55 RETURNING id, repo_id, title, "plan", worktree_path, branch_name, base_branch, state, agent_session_id, pr_number, pr_url, last_check_state, is_automation_enabled, attempt_count, blocked_reason, archived_at, created_at, updated_at, tracker_id, tracker_url, tmux_session_name, display_label, display_intent, has_display_spinner, cron_job_id, should_defer_pr, hook_token, agent_name, last_repair_runner_error, last_repair_exit_error, last_repair_attempt_count, last_repair_head_sha, last_repair_display_status, last_observed_review_state, last_repair_review_fingerprint, model, setup_error, last_repair_blocked_reason, is_tmux_unattended, last_attempt_head_sha, rotation_attempt_count, rotation_resume_at, account_id, is_quick_chat, is_detached, last_repair_started_at, last_repair_blocked_at, last_check_state_head_sha, last_check_state_at, state_entered_at, effective_model, effective_effort, list_rank, dismissed_alert_key, dismissed_alert_at, worktree_created_at, is_branch_created, run_dropped_at, run_dropped_agent_session_id, run_blocked_reason, last_repair_base_sha, is_verify_only
+ pr_readied_at = CASE WHEN CAST(?2 AS BOOLEAN) AND (CASE WHEN CAST(?3 AS BOOLEAN) THEN ?4 ELSE pr_number END) IS NOT NULL THEN COALESCE(pr_readied_at, ?5) ELSE pr_readied_at END,
+ state_entered_at = CASE WHEN CAST(?6 AS INTEGER) IS NOT NULL AND state != CAST(?6 AS INTEGER) THEN ?1 ELSE state_entered_at END,
+ state = COALESCE(CAST(?6 AS INTEGER), state),
+ title = COALESCE(?7, title),
+ is_branch_created = COALESCE(CAST(?8 AS BOOLEAN), is_branch_created),
+ worktree_created_at = CASE WHEN CAST(?9 AS BOOLEAN) THEN ?10 ELSE worktree_created_at END,
+ worktree_path = COALESCE(?11, worktree_path),
+ branch_name = COALESCE(?12, branch_name),
+ agent_session_id = CASE WHEN CAST(?13 AS BOOLEAN) THEN ?14 ELSE agent_session_id END,
+ pr_number = CASE WHEN CAST(?3 AS BOOLEAN) THEN ?4 ELSE pr_number END,
+ pr_url = CASE WHEN CAST(?15 AS BOOLEAN) THEN ?16 ELSE pr_url END,
+ tracker_id = CASE WHEN CAST(?17 AS BOOLEAN) THEN ?18 ELSE tracker_id END,
+ tracker_url = CASE WHEN CAST(?19 AS BOOLEAN) THEN ?20 ELSE tracker_url END,
+ tmux_session_name = CASE WHEN CAST(?21 AS BOOLEAN) THEN ?22 ELSE tmux_session_name END,
+ last_check_state = COALESCE(?23, last_check_state),
+ last_check_state_head_sha = CASE WHEN CAST(?24 AS BOOLEAN) THEN ?25 ELSE last_check_state_head_sha END,
+ last_check_state_at = CASE WHEN CAST(?26 AS BOOLEAN) THEN ?27 ELSE last_check_state_at END,
+ last_observed_review_state = COALESCE(?28, last_observed_review_state),
+ is_automation_enabled = COALESCE(CAST(?29 AS BOOLEAN), is_automation_enabled),
+ attempt_count = COALESCE(?30, attempt_count),
+ blocked_reason = CASE WHEN CAST(?31 AS BOOLEAN) THEN ?32 ELSE blocked_reason END,
+ last_repair_attempt_count = COALESCE(?33, last_repair_attempt_count),
+ run_blocked_reason = CASE WHEN CAST(?34 AS BOOLEAN) THEN ?35 ELSE run_blocked_reason END,
+ last_attempt_head_sha = CASE WHEN CAST(?36 AS BOOLEAN) THEN ?37 ELSE last_attempt_head_sha END,
+ rotation_attempt_count = COALESCE(?38, rotation_attempt_count),
+ rotation_resume_at = CASE WHEN CAST(?39 AS BOOLEAN) THEN ?40 WHEN CAST(?6 AS INTEGER) IS NOT NULL AND CAST(?6 AS INTEGER) != CAST(?41 AS INTEGER) THEN NULL ELSE rotation_resume_at END,
+ archived_at = CASE WHEN CAST(?42 AS BOOLEAN) THEN ?43 ELSE archived_at END,
+ cron_job_id = CASE WHEN CAST(?44 AS BOOLEAN) THEN ?45 ELSE cron_job_id END,
+ hook_token = CASE WHEN CAST(?46 AS BOOLEAN) THEN ?47 ELSE hook_token END,
+ account_id = CASE WHEN CAST(?48 AS BOOLEAN) THEN ?49 ELSE account_id END,
+ is_tmux_unattended = COALESCE(CAST(?50 AS BOOLEAN), is_tmux_unattended),
+ is_detached = COALESCE(CAST(?51 AS BOOLEAN), is_detached),
+ is_quick_chat = COALESCE(CAST(?52 AS BOOLEAN), is_quick_chat),
+ display_label = COALESCE(?53, display_label),
+ display_intent = COALESCE(?54, display_intent),
+ has_display_spinner = COALESCE(CAST(?55 AS BOOLEAN), has_display_spinner),
+ setup_error = COALESCE(?56, setup_error)
+WHERE id = ?57 RETURNING id, repo_id, title, "plan", worktree_path, branch_name, base_branch, state, agent_session_id, pr_number, pr_url, last_check_state, is_automation_enabled, attempt_count, blocked_reason, archived_at, created_at, updated_at, tracker_id, tracker_url, tmux_session_name, display_label, display_intent, has_display_spinner, cron_job_id, should_defer_pr, hook_token, agent_name, last_repair_runner_error, last_repair_exit_error, last_repair_attempt_count, last_repair_head_sha, last_repair_display_status, last_observed_review_state, last_repair_review_fingerprint, model, setup_error, last_repair_blocked_reason, is_tmux_unattended, last_attempt_head_sha, rotation_attempt_count, rotation_resume_at, account_id, is_quick_chat, is_detached, last_repair_started_at, last_repair_blocked_at, last_check_state_head_sha, last_check_state_at, state_entered_at, effective_model, effective_effort, list_rank, dismissed_alert_key, dismissed_alert_at, worktree_created_at, is_branch_created, run_dropped_at, run_dropped_agent_session_id, run_blocked_reason, last_repair_base_sha, is_verify_only, pr_readied_at
 `
 
 type UpdateSessionParams struct {
 	UpdatedAt                string
+	SetPrReadiedAt           bool
+	SetPrNumber              bool
+	PrNumber                 *int64
+	PrReadiedAt              *string
 	State                    *int64
 	Title                    *string
 	IsBranchCreated          *bool
@@ -1211,8 +1226,6 @@ type UpdateSessionParams struct {
 	BranchName               *string
 	SetAgentSessionID        bool
 	AgentSessionID           *string
-	SetPrNumber              bool
-	PrNumber                 *int64
 	SetPrUrl                 bool
 	PrUrl                    *string
 	SetTrackerID             bool
@@ -1261,6 +1274,10 @@ type UpdateSessionParams struct {
 func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error) {
 	row := q.db.QueryRowContext(ctx, updateSession,
 		arg.UpdatedAt,
+		arg.SetPrReadiedAt,
+		arg.SetPrNumber,
+		arg.PrNumber,
+		arg.PrReadiedAt,
 		arg.State,
 		arg.Title,
 		arg.IsBranchCreated,
@@ -1270,8 +1287,6 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 		arg.BranchName,
 		arg.SetAgentSessionID,
 		arg.AgentSessionID,
-		arg.SetPrNumber,
-		arg.PrNumber,
 		arg.SetPrUrl,
 		arg.PrUrl,
 		arg.SetTrackerID,
@@ -1380,6 +1395,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 		&i.RunBlockedReason,
 		&i.LastRepairBaseSha,
 		&i.IsVerifyOnly,
+		&i.PrReadiedAt,
 	)
 	return i, err
 }

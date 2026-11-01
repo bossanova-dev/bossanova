@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  changedPathHits,
+  levelAreasFor,
   decideVerdict,
   policySurfaceHits,
 } from '../../skills-toolbox/verify/verify-gate.mjs'
@@ -33,7 +33,27 @@ const POLICY_SURFACE_PATHS = [
   '.codex/skills/boss-verify-evidence/SKILL.md',
 ]
 const CONTROL_PATH = 'services/bossd/internal/session/tmux_chat.go'
-const ALL_CATEGORIES = ['human-review:database', 'human-review:security', 'human-review:ui']
+const ALL_CATEGORIES = ['always-human-path']
+
+for (const changes of [0, 2, undefined]) {
+  test(`area mapping preserves UI rename changes ${changes} without a patch`, () => {
+    const { areas } = levelAreasFor(
+      [
+        {
+          filename: 'src/ui/New.tsx',
+          previous_filename: 'src/ui/Old.tsx',
+          status: 'renamed',
+          changes,
+        },
+      ],
+      { review: { alwaysReview: [], neverReview: [] } },
+    )
+    assert.deepEqual(
+      areas.map(({ area, defaultAsk }) => [area, defaultAsk]),
+      [changes === 0 ? ['housekeeping', 'never'] : ['ui', 'unless-proven']],
+    )
+  })
+}
 
 // [path, exact park reasons]. Tests beside sensitive files park too: globs cannot exclude them.
 const SAMPLE_PATHS = [
@@ -41,14 +61,14 @@ const SAMPLE_PATHS = [
   ['services/web/src/shared/ui/Button.test.tsx', ['human-review:ui']],
   ['services/web/src/lib/x.ts', []],
   ['lib/ui-tokens/index.css', ['human-review:ui']],
-  ['lib/ui-tokens/package.json', []],
+  ['lib/ui-tokens/package.json', ['always-human-path']],
   ['services/web/index.html', ['human-review:ui']],
   ['services/web/public/_headers', []],
   ['services/marketing/src/pages/index.astro', ['human-review:ui']],
   ['services/marketing/public/_redirects', []],
   ['services/docs/docs/intro.md', ['human-review:ui']],
-  ['services/docs/package.json', []],
-  ['services/docs/styles/BossanovaProse/BannedWords.yml', []],
+  ['services/docs/package.json', ['always-human-path']],
+  ['services/docs/styles/BossanovaProse/BannedWords.yml', ['human-review:ui']],
   ['services/boss/api/tui/home/home_view.go', ['human-review:ui']],
   ['services/bosso/internal/auth/x.go', ['human-review:security']],
   ['services/bossd/migrations/001.sql', ['human-review:database']],
@@ -56,7 +76,7 @@ const SAMPLE_PATHS = [
   ['.github/workflows/ci.yml', ['always-human-path']],
   ['infra/environments/main.tf', ['always-human-path']],
   ['services/bossd/internal/db/session_store.go', []],
-  ['.claude/skills/boss-build-ce/SKILL.md', []],
+  ['.claude/skills/boss-build-ce/SKILL.md', ['always-human-path']],
   ['docs/skills/factory.md', []],
   ['services/bosso/api/orchestrator/agentaccounts/credentials.go', ['human-review:security']],
   ['services/bossd/internal/devicekey/devicekey.go', ['human-review:security']],
@@ -68,14 +88,14 @@ const SAMPLE_PATHS = [
     'lib/bossalib/contract/plugin/skillpayload/skills/boss-verify/toolbox/verify/verify-gate.mjs',
     ['always-human-path'],
   ],
-  ['.claude/settings.json', []],
+  ['.claude/settings.json', ['always-human-path']],
 ]
 
 // Facts for a head that passes every other gate: open, ready, CI settled and green on the head,
 // receipt posted, base green, no verify extensions installed.
 function factsFor(changedPaths) {
   // The production path -> hit mapping `judge` applies, so the test pins the real gate.
-  const { alwaysHumanHits, humanReviewHits } = changedPathHits(changedPaths, policy)
+  const { areas } = levelAreasFor(changedPaths, policy)
   return {
     prState: 'OPEN',
     isDraft: false,
@@ -88,8 +108,10 @@ function factsFor(changedPaths) {
     receipt: 'success',
     needChangedPaths: true,
     changedPaths,
-    alwaysHumanHits,
-    humanReviewHits,
+    areas,
+    review: policy.review,
+    changedLines: 12,
+    sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
     policySurfaceHit: policySurfaceHits(changedPaths).length > 0,
     extensions: [],
   }
@@ -158,16 +180,16 @@ for (const [name, paths, expectedReasons] of REPLAY_ROWS) {
 }
 
 for (const path of HARNESS_PATHS) {
-  test(`a PR touching only ${path} passes without a human`, () => {
+  test(`a PR touching only ${path} asks through its built-in area`, () => {
     const facts = factsFor([path])
     assert.equal(facts.policySurfaceHit, false)
-    assert.equal(decideVerdict(facts).verdict, 'pass')
+    assert.equal(decideVerdict(facts).verdict, path.startsWith('docs/') ? 'pass' : 'human')
   })
 }
 
-test('harness edits mixed with ordinary changes pass', () => {
+test('harness edits mixed with ordinary changes ask for review', () => {
   const r = decideVerdict(factsFor([CONTROL_PATH, ...HARNESS_PATHS]))
-  assert.equal(r.verdict, 'pass', `reasons: ${r.reasons}`)
+  assert.equal(r.verdict, 'human', `reasons: ${r.reasons}`)
 })
 
 // The gate counts the policy surface while the base policy is configured.

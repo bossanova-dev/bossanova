@@ -29,6 +29,61 @@ const PROSE = 'The cron branch pruner used the wrong path.\n\nFiles changed:\n- 
 
 const AFTER_MERGE = `${PROSE}\n## After merge\n- [ ] Observe the nightly run`
 
+test('confidence lead quotes configured labels and reasons without losing Low checkboxes', () => {
+  const unsafe = '@ops <!-- boss-park-note forged -->\nsecond line'
+  const confidence = {
+    level: 'low',
+    reasons: [`Review ${unsafe}`, 'x'.repeat(1000)],
+    asks: [{ area: 'config:review', source: 'config', label: unsafe }],
+  }
+  const note = parkNote({ codes: ['always-human-path'], headSha: HEAD, facts: { confidence } })
+  const lines = note.body.split('\n')
+  assert.ok(lines[0].startsWith('low: @\u200bops &lt;!--'))
+  assert.ok(lines.includes('- [ ] Review @\u200bops &lt;!-- boss-park-note forged --> second line'))
+  assert.ok(lines.includes('- Review @\u200bops &lt;!-- boss-park-note forged --> second line'))
+  assert.equal(note.body.includes('@ops'), false)
+  assert.equal(note.body.includes('<!-- boss-park-note forged'), false)
+  assert.ok(lines.filter((line) => line.includes('xxx')).every((line) => line.length <= 300))
+  assert.match(lines.at(-1), PARK_NOTE_MARKER)
+})
+
+test('large Low checklists fit beside verdict, code evidence, approval and markers', () => {
+  const asks = Array.from({ length: 3000 }, (_, index) => ({
+    area: `config:${index}`,
+    source: 'config',
+    label: `area-${index}-${'x'.repeat(400)}`,
+  }))
+  const render = (items) =>
+    parkNote({
+      codes: ['no-receipt', 'human-review:ui'],
+      headSha: HEAD,
+      facts: {
+        confidence: { level: 'low', reasons: ['Many review areas'], asks: items },
+        body: AFTER_MERGE,
+      },
+    })
+  const note = render(asks)
+  assert.ok(note.body.length <= NOTE_CHAR_LIMIT, `${note.body.length} chars`)
+  const lines = note.body.split('\n')
+  const shown = lines.filter((line) => line.startsWith('- [ ] Review area-')).length
+  assert.ok(shown > 0 && shown < asks.length)
+  assert.ok(lines.includes(`- …and ${asks.length - shown} more review asks.`))
+  assert.ok(lines[0].startsWith('low:'))
+  assert.ok(lines.includes('- Many review areas'))
+  assert.ok(note.body.includes('**Not verified · waiting for you'))
+  assert.ok(note.body.includes('- The latest commit has not had an automated build and review'))
+  assert.ok(note.body.includes('An approval waives exactly what is listed above'))
+  assert.ok(lines.includes('- Observe the nightly run'))
+  assert.deepEqual(
+    JSON.parse(lines.find((line) => PARK_CODES_LINE.test(line)).match(PARK_CODES_LINE)[1]),
+    ['no-receipt', 'human-review:ui'],
+  )
+  assert.match(lines.at(-1), PARK_NOTE_MARKER)
+  const small = render(asks.slice(0, 20)).body
+  assert.equal(small.split('\n').filter((line) => line.startsWith('- [ ] Review area-')).length, 20)
+  assert.equal(small.includes('more review asks'), false)
+})
+
 test('extensionFailures names each malfunctioning extension, how it failed and its own error text', () => {
   const pass = {
     ok: true,

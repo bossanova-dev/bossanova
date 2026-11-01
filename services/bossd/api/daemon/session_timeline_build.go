@@ -239,11 +239,11 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 			if kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
 				// No dated apiversion bump: the TUI prints timeline titles and
 				// details verbatim; the web does not render them and no client
-				// parses the old category title. A down-convert would only restore
+				// requires the old category title. A down-convert would only restore
 				// that misleading display text. See
 				// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 				verdict, _ := attention.ParkVerdict(parkCodes, f.ParkLabel, nil, len(f.OpenItems))
-				st := add(&tlStep{at: since, rank: rankParked, title: "Parked for you", detail: verdict.Reason})
+				st := add(&tlStep{at: since, rank: rankParked, title: attention.ParkStepTitle(""), detail: verdict.Reason})
 				candidates = append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
 			} else {
 				// Only waiting codes, or none: verify still holds the PR,
@@ -355,7 +355,7 @@ func partialParkCandidates(att *pb.SessionAttention, f timelineFacts, candidates
 	}
 	_, kind := attention.ParkCategory(att.GetParkCodes())
 	verdict, _ := attention.ParkVerdict(att.GetParkCodes(), f.ParkLabel, nil, len(f.OpenItems))
-	st := add(&tlStep{at: trailingRunStart(snaps), rank: rankParked, title: "Parked for you", detail: verdict.Reason})
+	st := add(&tlStep{at: trailingRunStart(snaps), rank: rankParked, title: attention.ParkStepTitle(""), detail: verdict.Reason})
 	candidates = slices.DeleteFunc(candidates, func(c waitCandidate) bool { return c.kind == pb.AttentionKind_ATTENTION_KIND_MERGE })
 	return append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
 }

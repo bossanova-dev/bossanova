@@ -90,3 +90,21 @@ func TestParkCodeWordsGolden(t *testing.T) {
 		t.Fatal("generating the park code words twice gave different bytes")
 	}
 }
+
+func TestParkStepTitles(t *testing.T) {
+	for code := range knownParkCodes {
+		category, _ := ParkCategory([]string{code})
+		title := ParkStepTitle(category)
+		if !IsParkStepTitle(title) {
+			t.Errorf("park category %q: title %q is not recognized", category, title)
+		}
+	}
+	if title := ParkStepTitle(""); title != "Parked for you" || !IsParkStepTitle(title) {
+		t.Errorf("current park title = %q", title)
+	}
+	for _, title := range []string{"Waiting for a fix", "", "Parked for yourself"} {
+		if IsParkStepTitle(title) {
+			t.Errorf("non-park %q recognized as a park", title)
+		}
+	}
+}

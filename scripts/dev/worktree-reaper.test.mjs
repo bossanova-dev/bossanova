@@ -8,7 +8,12 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { removeTree } from './recover-disk-space.mjs'
-import { discoverRepos, liveSessionBranches, reapWorktrees } from './worktree-reaper.mjs'
+import {
+  discoverRepos,
+  liveSessionBranches,
+  reapWorktrees,
+  salvageWorktree,
+} from './worktree-reaper.mjs'
 
 const DAY = 24 * 60 * 60 * 1000
 const NOW = Date.now()
@@ -42,6 +47,7 @@ function repoWithWorktrees(t, names) {
   git(repo, 'config', 'user.name', 'Test')
   git(repo, 'config', 'commit.gpgsign', 'false')
   fs.writeFileSync(join(repo, 'README'), 'repo\n')
+  fs.writeFileSync(join(repo, 'go.work.sum'), 'pinned\n')
   git(repo, 'add', '.')
   git(repo, 'commit', '-q', '-m', 'init')
   const worktrees = {}
@@ -73,6 +79,7 @@ function reap(fixture, options) {
     roots: [join(fixture.root, 'code')],
     outputBases: [],
     removeTree,
+    salvageDir: join(fixture.root, 'salvage'),
     now: NOW,
     minIdleMs: DAY,
     cwds: [],
@@ -214,4 +221,103 @@ test('never runs boss without a daemon socket, so it cannot start a daemon of it
   delete noSocket.BOSS_SOCKET
   assert.equal(liveSessionBranches({ env: noSocket, home: host.home, sleep: () => {} }), null)
   assert.equal(fs.existsSync(host.counter), false, 'boss was never invoked')
+})
+
+test('a loose commit whose patch already landed on main does not hold its worktree', (t) => {
+  const fixture = repoWithWorktrees(t, ['landed'])
+  const { repo, worktrees: w } = fixture
+  git(w.landed, 'checkout', '-q', '--detach')
+  fs.writeFileSync(join(w.landed, 'README'), 'shipped\n')
+  git(w.landed, 'commit', '-q', '-am', 'ship it')
+  fs.writeFileSync(join(repo, 'other.txt'), 'main moved on\n')
+  git(repo, 'add', 'other.txt')
+  git(repo, 'commit', '-q', '-m', 'main moves on')
+  git(repo, 'cherry-pick', git(w.landed, 'rev-parse', 'HEAD'))
+  git(repo, 'branch', '-q', '-D', 'landed')
+  fixture.age()
+  reap(fixture)
+  assert.equal(fs.existsSync(w.landed), false)
+})
+
+test('changes only to go.work.sum do not hold a worktree', (t) => {
+  const fixture = repoWithWorktrees(t, ['sum'])
+  fs.writeFileSync(join(fixture.worktrees.sum, 'go.work.sum'), 'drifted\n')
+  fixture.age()
+  reap(fixture)
+  assert.equal(fs.existsSync(fixture.worktrees.sum), false)
+})
+
+test('a long-idle worktree with unsaved work is salvaged, then removed', (t) => {
+  const fixture = repoWithWorktrees(t, ['draft'])
+  const { repo, root, worktrees: w } = fixture
+  git(w.draft, 'checkout', '-q', '--detach')
+  fs.writeFileSync(join(w.draft, 'README'), 'draft commit\n')
+  git(w.draft, 'commit', '-q', '-am', 'draft')
+  const draft = git(w.draft, 'rev-parse', 'HEAD')
+  git(repo, 'branch', '-q', '-D', 'draft')
+  fs.writeFileSync(join(w.draft, 'README'), 'uncommitted edit\n')
+  fs.writeFileSync(join(w.draft, 'note.txt'), 'untracked\n')
+  fixture.age()
+
+  reap(fixture, { now: NOW + 40 * DAY, salvageAfterMs: 30 * DAY })
+
+  assert.equal(fs.existsSync(w.draft), false)
+  const [saved] = fs.readdirSync(join(root, 'salvage')).map((name) => join(root, 'salvage', name))
+  assert.match(fs.readFileSync(join(saved, 'changes.patch'), 'utf8'), /\+uncommitted edit/)
+  const tarball = execFileSync('tar', ['-tzf', join(saved, 'untracked.tar.gz')], {
+    encoding: 'utf8',
+  })
+  assert.match(tarball, /note\.txt/)
+  assert.match(git(root, 'bundle', 'list-heads', join(saved, 'commits.bundle')), new RegExp(draft))
+})
+
+test('a fresh edit counts as activity, so an old checkout being edited is not salvaged', (t) => {
+  const fixture = repoWithWorktrees(t, ['editing'])
+  fixture.age()
+  fs.writeFileSync(join(fixture.worktrees.editing, 'README'), 'edited just now\n')
+  reap(fixture, { salvageAfterMs: DAY })
+  assert.equal(fs.existsSync(fixture.worktrees.editing), true)
+})
+
+test('salvage never overwrites an earlier salvage of the same worktree', (t) => {
+  const fixture = repoWithWorktrees(t, ['twice'])
+  const salvageDir = join(fixture.root, 'salvage')
+  fs.writeFileSync(join(fixture.worktrees.twice, 'README'), 'first\n')
+  const facts = { path: fixture.worktrees.twice, branch: 'twice', headOnRef: true }
+  const first = salvageWorktree(facts, salvageDir, NOW)
+  fs.writeFileSync(join(fixture.worktrees.twice, 'README'), 'second\n')
+  assert.throws(() => salvageWorktree(facts, salvageDir, NOW), { code: 'EEXIST' })
+  assert.match(fs.readFileSync(join(first, 'changes.patch'), 'utf8'), /\+first/)
+})
+
+test('a worktree whose submodule has changes is kept, because salvage cannot save them', (t) => {
+  const fixture = repoWithWorktrees(t, ['withsub'])
+  const { root, worktrees: w } = fixture
+  const source = join(root, 'subsource')
+  fs.mkdirSync(source)
+  git(source, 'init', '-q', '-b', 'main')
+  git(source, 'config', 'commit.gpgsign', 'false')
+  git(
+    source,
+    '-c',
+    'user.email=t@example.com',
+    '-c',
+    'user.name=T',
+    'commit',
+    '-q',
+    '--allow-empty',
+    '-m',
+    'sub',
+  )
+  fs.writeFileSync(join(source, 'lib.txt'), 'lib\n')
+  git(source, 'add', '.')
+  git(source, '-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-q', '-m', 'lib')
+  git(w.withsub, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', source, 'vendored')
+  git(w.withsub, 'commit', '-q', '-m', 'add submodule')
+  fs.writeFileSync(join(w.withsub, 'vendored', 'lib.txt'), 'edited inside the submodule\n')
+  fixture.age()
+
+  const lines = reap(fixture, { now: NOW + 40 * DAY, salvageAfterMs: 30 * DAY })
+  assert.equal(fs.existsSync(join(w.withsub, 'vendored', 'lib.txt')), true)
+  assert.ok(lines.some((line) => line.includes('could not salvage it')))
 })

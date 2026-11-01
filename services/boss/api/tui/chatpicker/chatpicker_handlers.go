@@ -70,7 +70,7 @@ func (m Model) handleChatsListed(msg ChatsListedMsg) (tea.Model, tea.Cmd) {
 		target = m.defaultCursor()
 	}
 	if target >= 0 {
-		m.table.SetCursor(target)
+		m.table.SetCursor(m.chatRowIndex(target))
 	}
 	// Hoisted: the return would otherwise read m in the same expression list as
 	// this pointer-receiver mutation, an order the Go spec leaves unspecified.
@@ -79,7 +79,7 @@ func (m Model) handleChatsListed(msg ChatsListedMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(m.backfillTitles(), armedFetch, timeline)
 }
 
-// defaultCursor is the row the cursor starts on when no listed chat was named.
+// defaultCursor is the full-list index of the visible chat to focus when none was named.
 // A chat waiting on the user (BOS-494) is actionable now, so it wins over a
 // newer working/idle chat; among several, the longest-waiting one (oldest
 // chatLastActive). With no question chat it is the first working, idle or
@@ -87,7 +87,12 @@ func (m Model) handleChatsListed(msg ChatsListedMsg) (tea.Model, tea.Cmd) {
 func (m Model) defaultCursor() int {
 	target, fallback := -1, -1
 	var oldestWait time.Time
-	for i, chat := range m.chats {
+	for _, row := range m.visibleChatRows() {
+		i := row.chatIndex
+		if i == earlierToggleChatIndex {
+			continue
+		}
+		chat := m.chats[i]
 		switch m.daemonStatuses[chat.AgentSessionId] {
 		case ui.StatusQuestion:
 			if wait := m.chatLastActive(chat); target == -1 || wait.Before(oldestWait) {
@@ -124,15 +129,16 @@ func (m Model) handleChatDeleted(msg chatDeletedMsg) (tea.Model, tea.Cmd) {
 		m.buildTableRows()
 		return m, nil
 	}
+	selected, toggleSelected := m.selectedChat(), m.earlierRowSelected()
 	for i, chat := range m.chats {
 		if chat.AgentSessionId == msg.agentSessionID {
 			m.chats = append(m.chats[:i], m.chats[i+1:]...)
 			break
 		}
 	}
-	m.buildTableRows()
-	if m.table.Cursor() >= len(m.chats) && len(m.chats) > 0 {
-		m.table.SetCursor(len(m.chats) - 1)
+	m.buildTableRowsWithSelection(selected, toggleSelected)
+	if m.table.Cursor() >= len(m.chatRows) && len(m.chatRows) > 0 {
+		m.table.SetCursor(len(m.chatRows) - 1)
 	}
 	return m, nil
 }

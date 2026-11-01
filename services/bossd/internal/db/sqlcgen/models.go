@@ -358,6 +358,7 @@ type Session struct {
 	RunBlockedReason            *string
 	LastRepairBaseSha           string
 	IsVerifyOnly                bool
+	PrReadiedAt                 *string
 }
 
 type SessionCheckSnapshot struct {

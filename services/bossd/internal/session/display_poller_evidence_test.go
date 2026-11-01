@@ -695,3 +695,22 @@ func TestDisplayPoller_ParksRemainActiveInEveryState_Sessions_AC147(t *testing.T
 		})
 	}
 }
+
+func TestDisplayPoller_CannotAssessRemainsActive_Sessions_AC214601(t *testing.T) {
+	success, failure := vcs.CheckConclusionSuccess, vcs.CheckConclusionFailure
+	for _, conclusion := range []vcs.CheckConclusion{failure, success} {
+		t.Run(map[vcs.CheckConclusion]string{failure: "failure", success: "success"}[conclusion], func(t *testing.T) {
+			poller, observer := newEvidencePoller(t, &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "head-1"}, []vcs.CheckResult{
+				{Name: "build", Status: vcs.CheckStatusCompleted, Conclusion: &success},
+				{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &conclusion, Description: "cannot assess: pr-unreadable"},
+			})
+			if err := poller.RefreshPR(context.Background(), "owner/repo", 2979); err != nil {
+				t.Fatal(err)
+			}
+			observations := observer.all()
+			if len(observations) != 1 || observations[0].IsVerifyConcluded || !observations[0].IsVerifyActive {
+				t.Fatalf("observations = %+v", observations)
+			}
+		})
+	}
+}

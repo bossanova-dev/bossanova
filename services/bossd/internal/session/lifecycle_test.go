@@ -171,13 +171,10 @@ type mockSessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*models.Session
 	updates  []mockSessionUpdate
-
 	// clearRepairAlertCalls records every SetRepairAlertCleared session ID, in order.
 	clearRepairAlertCalls []string
-
 	// archivedIDs records every MarkArchived session ID, in order.
-	archivedIDs []string
-
+	archivedIDs                []string
 	updateHook                 func(id string, params db.UpdateSessionParams) error
 	updateStateConditionalHook func(id string)
 
@@ -362,6 +359,10 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	}
 	if params.PRNumber != nil {
 		s.PRNumber = *params.PRNumber
+	}
+	if params.State != nil && s.State == machine.ReadyForReview && s.PRNumber != nil && s.PRReadiedAt == nil {
+		now := time.Now()
+		s.PRReadiedAt = &now
 	}
 	if params.PRURL != nil {
 		s.PRURL = *params.PRURL

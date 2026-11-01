@@ -17,6 +17,9 @@ const POLICY = '0123456789abcdef'
 const PR = 12030
 const REPO = 'o/r'
 const facts = (extra = {}) => ({
+  changedPaths: [],
+  changedLines: 12,
+  sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
   prState: 'OPEN',
   isDraft: false,
   headSha: HEAD,
@@ -92,7 +95,11 @@ function fixture(t, judged, { failPosts = false } = {}) {
 }
 
 for (const scenario of [
-  { name: 'human park', changes: { alwaysHumanHits: ['policy.json'] }, verdict: 'human' },
+  {
+    name: 'human park',
+    changes: { areas: [{ area: 'verify-policy', label: 'Verify policy', defaultAsk: 'always' }] },
+    verdict: 'human',
+  },
   {
     name: 'failed check',
     changes: {

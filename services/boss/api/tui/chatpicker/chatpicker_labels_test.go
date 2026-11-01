@@ -12,6 +12,7 @@ import (
 
 func TestChatPickerRoleLabels_ChatPicker_AC22(t *testing.T) {
 	m := chatPickerSized(&chatPickerStub{})
+	m.showEarlier = true
 	m.session = &pb.Session{Title: "Long session"}
 	now := time.Now()
 	m.chats = nil

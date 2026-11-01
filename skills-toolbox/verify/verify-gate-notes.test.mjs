@@ -210,6 +210,9 @@ test('note severities never hold judge or post and remain visible', async () => 
     const agg = aggregateExtensions(rows, extensions)
     assert.equal(agg.verdict, 'pass')
     const judged = decideVerdict({
+      changedPaths: [],
+      changedLines: 12,
+      sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
       prState: 'OPEN',
       isDraft: false,
       headSha: HEAD,

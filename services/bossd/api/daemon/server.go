@@ -70,15 +70,16 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 type Server struct {
 	credentialDevices *CredentialDeviceService
 
-	evidenceBucketOpener evidenceBucketOpener
-	validateBranchName   func(context.Context, string) error
-	repos                repoStore
-	sessions             sessionStore
-	agentChats           agentChatStore
-	taskMappings         taskMappingFailureReader
-	cronJobs             cronJobStore
-	factoryRepoChecker   *verifyjob.Checker
-	resumeAttempts       resumeAttemptReader
+	evidenceBucketOpener  evidenceBucketOpener
+	validateBranchName    func(context.Context, string) error
+	repos                 repoStore
+	sessions              sessionStore
+	agentChats            agentChatStore
+	taskMappings          taskMappingFailureReader
+	cronJobs              cronJobStore
+	factoryRepoChecker    *verifyjob.Checker
+	factoryHealthVersions func(context.Context, string) (string, string, bool, error)
+	resumeAttempts        resumeAttemptReader
 	// pendingTrackerMerges queues post-merge tracker writes that did not land,
 	// for retryPendingTrackerMerges. Nil means a failed one is only reported.
 	pendingTrackerMerges pendingTrackerMergeStore
@@ -348,14 +349,15 @@ type Config struct {
 	ValidateBranchName func(context.Context, string) error
 
 	// AgentLogsDir is the daemon-owned directory containing live agent logs.
-	AgentLogsDir       string
-	Repos              repoStore
-	Sessions           sessionStore
-	AgentChats         agentChatStore
-	TaskMappings       taskMappingFailureReader
-	CronJobs           cronJobStore
-	FactoryRepoChecker *verifyjob.Checker
-	ResumeAttempts     resumeAttemptReader
+	AgentLogsDir          string
+	Repos                 repoStore
+	Sessions              sessionStore
+	AgentChats            agentChatStore
+	TaskMappings          taskMappingFailureReader
+	CronJobs              cronJobStore
+	FactoryRepoChecker    *verifyjob.Checker
+	FactoryHealthVersions func(context.Context, string) (string, string, bool, error)
+	ResumeAttempts        resumeAttemptReader
 	// PendingTrackerMerges queues post-merge tracker writes to retry. Optional.
 	PendingTrackerMerges pendingTrackerMergeStore
 	// GithubCallbacks persists one-shot GitHub callback registrations (BOS-467).
@@ -676,19 +678,20 @@ type PRRefresher interface {
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
 	srv := &Server{
-		chatTmux:            cfg.ChatTmux,
-		protectedRootsProbe: cfg.ProtectedRootsProbe,
-		verifyVerbsFactory:  cfg.NewVerifyVerbs,
-		environmentOverlay:  cfg.EnvironmentOverlay,
-		verifyProofKeys:     cfg.VerifyProofKeys,
-		validateBranchName:  cfg.ValidateBranchName,
-		repos:               cfg.Repos,
-		sessions:            cfg.Sessions,
-		agentChats:          cfg.AgentChats,
-		taskMappings:        cfg.TaskMappings,
-		cronJobs:            cfg.CronJobs,
-		factoryRepoChecker:  cfg.FactoryRepoChecker,
-		resumeAttempts:      cfg.ResumeAttempts,
+		chatTmux:              cfg.ChatTmux,
+		protectedRootsProbe:   cfg.ProtectedRootsProbe,
+		verifyVerbsFactory:    cfg.NewVerifyVerbs,
+		environmentOverlay:    cfg.EnvironmentOverlay,
+		verifyProofKeys:       cfg.VerifyProofKeys,
+		validateBranchName:    cfg.ValidateBranchName,
+		repos:                 cfg.Repos,
+		sessions:              cfg.Sessions,
+		agentChats:            cfg.AgentChats,
+		taskMappings:          cfg.TaskMappings,
+		cronJobs:              cfg.CronJobs,
+		factoryRepoChecker:    cfg.FactoryRepoChecker,
+		factoryHealthVersions: cfg.FactoryHealthVersions,
+		resumeAttempts:        cfg.ResumeAttempts,
 
 		pendingTrackerMerges: cfg.PendingTrackerMerges,
 		githubCallbacks:      cfg.GithubCallbacks,

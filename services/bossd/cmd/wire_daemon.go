@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/recurser/bossd/internal/adapter/dotenv"
+	"github.com/recurser/bossd/internal/adapter/factoryversions"
 	"github.com/recurser/bossd/internal/adapter/verifybridge"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -53,28 +54,29 @@ func (w *daemonWiring) wireDaemon() {
 			}
 			return w.credentialSync.Publish(ctx, syncedID, localID)
 		},
-		EvidenceBucketOpener: r2upload.New(proofenvkeyring.New(log.Logger)),
-		ChatTmux:             w.tmuxClient,
-		ProtectedRootsProbe:  tccprobe.Probe,
-		NewVerifyVerbs:       func(env []string) server.VerifyVerbs { return &verifybridge.Bridge{Env: env} },
-		EnvironmentOverlay:   dotenv.OverlayWithRepo,
-		ValidateBranchName:   gitpkg.ValidateBranchName,
-		VerifyProofKeys:      proofenv.Keys(),
-		BootstrapRunner:      bootstrapRunner,
-		AgentLogsDir:         w.agentLogsDir,
-		Repos:                w.repos,
-		Sessions:             w.sessions,
-		AgentChats:           w.agentChats,
-		TaskMappings:         w.taskMappings,
-		CronJobs:             w.cronJobs,
-		FactoryRepoChecker:   w.factoryRepoChecker,
-		GithubCallbacks:      w.githubCallbacks,
-		Telemetry:            w.telemetryClient,
-		Notes:                w.notes,
-		NoteSyncStates:       w.noteSyncStates,
-		NoteSyncWorker:       noteSyncNudger(w.noteSyncWorker),
-		Broadcasts:           w.broadcasts,
-		BroadcastResolver:    w.broadcastResolver,
+		EvidenceBucketOpener:  r2upload.New(proofenvkeyring.New(log.Logger)),
+		ChatTmux:              w.tmuxClient,
+		ProtectedRootsProbe:   tccprobe.Probe,
+		NewVerifyVerbs:        func(env []string) server.VerifyVerbs { return &verifybridge.Bridge{Env: env} },
+		EnvironmentOverlay:    dotenv.OverlayWithRepo,
+		ValidateBranchName:    gitpkg.ValidateBranchName,
+		VerifyProofKeys:       proofenv.Keys(),
+		BootstrapRunner:       bootstrapRunner,
+		AgentLogsDir:          w.agentLogsDir,
+		Repos:                 w.repos,
+		Sessions:              w.sessions,
+		AgentChats:            w.agentChats,
+		TaskMappings:          w.taskMappings,
+		CronJobs:              w.cronJobs,
+		FactoryRepoChecker:    w.factoryRepoChecker,
+		FactoryHealthVersions: factoryversions.Read,
+		GithubCallbacks:       w.githubCallbacks,
+		Telemetry:             w.telemetryClient,
+		Notes:                 w.notes,
+		NoteSyncStates:        w.noteSyncStates,
+		NoteSyncWorker:        noteSyncNudger(w.noteSyncWorker),
+		Broadcasts:            w.broadcasts,
+		BroadcastResolver:     w.broadcastResolver,
 		// Cross-daemon egress (BOS-558): both are zero unless an upstream is
 		// configured, which leaves the send path purely local. DaemonID is the
 		// one persisted id resolved for the reverse stream — the same value the

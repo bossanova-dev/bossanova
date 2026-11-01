@@ -39,6 +39,7 @@ func (g *Group) skillPayloadRecord(payload selectedSkillPayload, writer libskill
 		Writer:   writer,
 	}
 	repoRoot := repoRootFromSourceRoot(payload.srcRoot)
+	record.SourceRoot = repoRoot
 	if head, err := g.skillPayloadGit(repoRoot, "rev-parse", "HEAD"); err == nil && head != "" {
 		record.Revision = head
 	}

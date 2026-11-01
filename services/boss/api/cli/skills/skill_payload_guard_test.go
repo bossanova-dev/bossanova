@@ -221,6 +221,10 @@ func TestSelfHealNoDowngradeTrustedCheckoutOverwritesAndStampsExplicit(t *testin
 	if record.Revision != second || record.Dirty {
 		t.Fatalf("record = %+v, want the clean checkout HEAD %s", record, second)
 	}
+	root, err := os.Getwd()
+	if err != nil || record.SourceRoot != root {
+		t.Fatalf("source checkout = %q, want %q (error %v)", record.SourceRoot, root, err)
+	}
 }
 
 // TestMaybeInstallSkillsNoDowngradeDoesNotOfferOlderPayload: a stale TUI must

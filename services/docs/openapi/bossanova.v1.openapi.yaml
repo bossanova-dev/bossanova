@@ -10355,6 +10355,20 @@ components:
       title: ExternalCheckEvent
       additionalProperties: false
       description: ExternalCheckEvent signals an external check result (eg. from a non-GitHub CI).
+    bossanova.v1.FactoryHealthProblem:
+      type: object
+      properties:
+        code:
+          type: string
+          title: code
+        text:
+          type: string
+          title: text
+        startedAt:
+          title: started_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: FactoryHealthProblem
+      additionalProperties: false
     bossanova.v1.FinishUnattendedRunRequest:
       type: object
       properties:
@@ -10805,6 +10819,31 @@ components:
             type: string
           title: capabilities
       title: GetDaemonCapabilitiesResponse
+      additionalProperties: false
+    bossanova.v1.GetFactoryHealthRequest:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+        workspacePath:
+          type: string
+          title: workspace_path
+      title: GetFactoryHealthRequest
+      additionalProperties: false
+      description: GetFactoryHealthRequest selects exactly one registered repository.
+    bossanova.v1.GetFactoryHealthResponse:
+      type: object
+      properties:
+        problems:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.FactoryHealthProblem'
+          title: problems
+        checkedAt:
+          title: checked_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: GetFactoryHealthResponse
       additionalProperties: false
     bossanova.v1.GetGitHubAppInstallURLRequest:
       type: object

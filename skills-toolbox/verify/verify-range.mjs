@@ -15,7 +15,7 @@ export const PR_FILES_CAP = 3000
  * Returns a deduped list in API order, or null when the read fails, is malformed, or hits the
  * file cap (a truncated list cannot prove a path unchanged).
  */
-export function readChangedPaths(read, pr, repo) {
+export function readChangedFiles(read, pr, repo) {
   const r = read(
     'gh',
     ['api', `${apiRepo(repo)}/pulls/${pr}/files?per_page=100`, '--paginate', '--slurp'],
@@ -24,13 +24,24 @@ export function readChangedPaths(read, pr, repo) {
   if (!r.ok || !Array.isArray(r.payload) || !r.payload.every(Array.isArray)) return null
   const files = r.payload.flat()
   if (files.length >= PR_FILES_CAP) return null
-  const paths = new Set()
   for (const file of files) {
     if (!plainObject(file) || !text(file.filename)) return null
+  }
+  return files
+}
+
+function changedFilePaths(files) {
+  const paths = new Set()
+  for (const file of files) {
     paths.add(file.filename)
     if (text(file.previous_filename)) paths.add(file.previous_filename)
   }
   return [...paths]
+}
+
+export function readChangedPaths(read, pr, repo) {
+  const files = readChangedFiles(read, pr, repo)
+  return files === null ? null : changedFilePaths(files)
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +201,8 @@ export function readCompareFiles(read, repo, baseSha, sha) {
   const r = read('gh', ['api', `${apiRepo(repo)}/compare/${baseSha}...${sha}`], { json: true })
   if (!r.ok || !Array.isArray(r.payload?.files)) return { files: null, why: 'compare-unreadable' }
   if (r.payload.files.length >= COMPARE_FILE_CAP) return { files: null, why: 'compare-file-cap' }
+  if (!r.payload.files.every((file) => plainObject(file) && text(file.filename)))
+    return { files: null, why: 'compare-unreadable' }
   return { files: r.payload.files }
 }
 
@@ -200,18 +213,42 @@ export function readCompareFiles(read, repo, baseSha, sha) {
  * `paths` is null when even the full diff is unreadable.
  */
 export function selectChangedRange(read, { repo, pr, baseSha, headSha, readRevocations }) {
-  const full = (anchorSha, why) => ({
-    paths: readChangedPaths(read, pr, repo),
-    range: { kind: 'full', anchorSha, why },
-  })
+  const full = (anchorSha, why) => {
+    const files = readChangedFiles(read, pr, repo)
+    return {
+      files,
+      paths: files === null ? null : changedFilePaths(files),
+      range: { kind: 'full', anchorSha, why },
+    }
+  }
   if (!isSha(baseSha)) return full(null, 'no-base-sha')
   const anchor = readApprovalAnchor(read, repo, pr, readRevocations)
   if (!anchor.sha) return full(null, anchor.why)
   const delta = { kind: 'delta', anchorSha: anchor.sha }
-  if (anchor.sha === String(headSha).toLowerCase()) return { paths: [], range: delta }
+  if (anchor.sha === String(headSha).toLowerCase()) return { paths: [], files: [], range: delta }
   const atAnchor = readCompareFiles(read, repo, baseSha, anchor.sha)
   if (!atAnchor.files) return full(anchor.sha, atAnchor.why)
   const atHead = readCompareFiles(read, repo, baseSha, headSha)
   if (!atHead.files) return full(anchor.sha, atHead.why)
-  return { paths: prLevelDelta(atAnchor.files, atHead.files), range: delta }
+  const paths = prLevelDelta(atAnchor.files, atHead.files)
+  if (paths.length === 0) return { paths, files: [], range: delta }
+  const sinceAnchor = readCompareFiles(read, repo, anchor.sha, headSha)
+  if (!sinceAnchor.files) return full(anchor.sha, sinceAnchor.why)
+  const deltaPaths = new Set(paths)
+  // Use unapproved patches, but only for the PR-level paths: the anchor compare can also
+  // contain base-branch edits imported by a rebase.
+  const files = sinceAnchor.files.filter(
+    (file) => deltaPaths.has(file.filename) || deltaPaths.has(file.previous_filename),
+  )
+  // A rewritten head can omit reverted paths from the anchor compare. Retain their earlier
+  // metadata so an incomplete compare cannot silently remove a review area.
+  const represented = new Set(changedFilePaths(files))
+  for (const file of [...atHead.files, ...atAnchor.files]) {
+    const names = changedFilePaths([file])
+    if (names.some((name) => deltaPaths.has(name) && !represented.has(name))) {
+      files.push(file)
+      for (const name of names) represented.add(name)
+    }
+  }
+  return { paths, files, range: delta }
 }

@@ -471,13 +471,22 @@ test('a ticketless park says so on its line', () => {
   ])
 })
 
-test('the sweep leaves label derivation to the human post gate', () => {
+test('the sweep passes the judge confidence file to the human post gate', () => {
+  const confidence = {
+    level: 'moderate',
+    asks: [{ area: 'ui', label: 'UI', source: 'builtin' }],
+    reasons: [],
+    loweredBy: [],
+    health: [],
+  }
   const w = world({
-    verdicts: { 1: { verdict: 'human', reason: 'human-review:ui', labels: ['web UI'] } },
+    verdicts: { 1: { verdict: 'human', reason: 'human-review:ui', confidence } },
   })
   sweep({}, w.deps())
   assert.equal(w.posts()[0].includes('--label'), false)
   assert.ok(w.posts()[0].includes('human-review:ui'))
+  const file = w.posts()[0][w.posts()[0].indexOf('--confidence') + 1]
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), confidence)
 })
 
 test('a human post carries the policy fingerprint the judge read, so the park records it', () => {

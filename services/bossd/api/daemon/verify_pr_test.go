@@ -349,3 +349,10 @@ func TestApproveSessionPR_MapsBridgeErrors(t *testing.T) {
 func (f *verifyVerbsFake) SendBack(context.Context, domain.VerifyTarget, domain.VerifySendBack) (domain.VerifySendBackResult, error) {
 	return domain.VerifySendBackResult{}, f.err
 }
+
+func (f *verifyVerbsFake) Accept(context.Context, domain.VerifyTarget, domain.VerifyAccept) (domain.VerifyAcceptResult, error) {
+	return domain.VerifyAcceptResult{}, f.err
+}
+func (f *verifyVerbsFake) Blockers(context.Context, domain.VerifyTarget, string) (domain.VerifyBlockers, error) {
+	return domain.VerifyBlockers{}, f.err
+}

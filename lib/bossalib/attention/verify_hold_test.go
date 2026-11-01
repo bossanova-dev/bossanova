@@ -54,15 +54,40 @@ func TestCompute_VerifyAdmissionLabels_Sessions_AC105(t *testing.T) {
 }
 
 func TestCompute_TicketPersonHold_Sessions_AC214401(t *testing.T) {
-	testAdmissionHold(t, "ticket-needs-person", "Ticket waits on you · answer it or label it for build", "ticket waits on a person")
+	testAdmissionHold(t, attention.Admission{Reason: "ticket-needs-person"}, "Ticket waits on you · answer it or label it for build", "ticket waits on a person")
 }
 
 func TestCompute_TicketSelectionHold_Sessions_AC214402(t *testing.T) {
-	testAdmissionHold(t, "ticket-not-selected", "Ticket not selected for verify · relabel it or merge by hand", "ticket not selected")
+	testAdmissionHold(t, attention.Admission{Reason: "ticket-not-selected", Rule: "labels"}, "Ticket not selected for verify · relabel it or merge by hand", "ticket not selected")
 }
 
-func testAdmissionHold(t *testing.T, reason, sentence, category string) {
+func TestCompute_TicketSelectionRuleHold_Sessions_AC221801(t *testing.T) {
+	for rule, sentence := range map[string]string{
+		"labels":     "Ticket not selected for verify · relabel it or merge by hand",
+		"assignees":  "Ticket's assignee is outside verify's selection · reassign it or merge by hand",
+		"creators":   "Ticket's creator is outside verify's selection · merge by hand",
+		"projects":   "Ticket's project is outside verify's selection · move it or merge by hand",
+		"unreadable": "Verify cannot read the ticket's selection fields · merge by hand",
+		"":           "Ticket not selected for verify · check verify's selection or merge by hand",
+		"future":     "Ticket not selected for verify · check verify's selection or merge by hand",
+	} {
+		t.Run(rule, func(t *testing.T) {
+			testAdmissionHold(t, attention.Admission{Reason: "ticket-not-selected", Rule: rule}, sentence, "ticket not selected")
+		})
+	}
+	// A rule recorded beside another admission reason never borrows the selection advice.
+	in := unverifiedPR()
+	in.IsFactoryRepo = true
+	in.VerifyAdmission = attention.Admission{State: attention.AdmissionPending, Reason: "ticket-needs-person", Rule: "assignees"}
+	if got := attention.Compute(in).GetSentence(); got != "Ticket waits on you · answer it or label it for build" {
+		t.Fatalf("person hold with a rule = %q", got)
+	}
+}
+
+func testAdmissionHold(t *testing.T, admission attention.Admission, sentence, category string) {
 	t.Helper()
+	reason := admission.Reason
+	admission.State = attention.AdmissionPending
 	for _, checks := range []string{"green", "red", "running"} {
 		for _, working := range []bool{false, true} {
 			for _, linked := range []bool{false, true} {
@@ -70,7 +95,7 @@ func testAdmissionHold(t *testing.T, reason, sentence, category string) {
 					in := unverifiedPR()
 					in.IsFactoryRepo = true
 					in.HasTrackerLink = linked
-					in.VerifyAdmission = attention.Admission{State: attention.AdmissionPending, Reason: reason}
+					in.VerifyAdmission = admission
 					if checks == "red" {
 						in.ChecksFailing = 1
 					}

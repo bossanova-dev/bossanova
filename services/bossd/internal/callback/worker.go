@@ -8,6 +8,7 @@ import (
 
 	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
@@ -91,6 +92,7 @@ type DeliveryWorker struct {
 	pollInterval time.Duration
 	leaseFor     time.Duration
 	telemetry    libtelemetry.Client
+	rateLimitLog vcs.RateLimitLog // logs a reconcile quota refusal once per window
 }
 
 // WorkerConfig configures a DeliveryWorker. Store and Deliverer are required;
@@ -164,7 +166,7 @@ func (w *DeliveryWorker) Run(ctx context.Context) {
 			// callbacks exist.
 			if w.reconciler != nil && ticks%reconcileEveryTicks == 0 {
 				if err := w.reconciler.ReconcileAll(ctx); err != nil && ctx.Err() == nil {
-					w.logger.Warn().Err(err).Msg("callback worker: periodic reconcile failed")
+					w.logger.WithLevel(w.rateLimitLog.Level("periodic reconcile", err)).Err(err).Msg("callback worker: periodic reconcile failed")
 				}
 			}
 		}

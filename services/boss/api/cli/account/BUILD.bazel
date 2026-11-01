@@ -32,6 +32,7 @@ go_test(
         "account_reauth_guard_test.go",
         "account_refresh_test.go",
         "account_switch_test.go",
+        "account_test_remedy_test.go",
         "command_test.go",
         "devices_test.go",
         "host_test.go",

@@ -137,7 +137,18 @@ CHAT=$(boss new --repo my-repo --prompt "/boss-build PROJ-42" --json | jq -r .se
 
 ### `boss pr`
 
-Act on a pull request by number: approve a verify park
+Act on a pull request by number: approve a verify park or accept a blocker
+
+### `boss pr accept <pr-number> <blocker-id> [flags]`
+
+Accept a review finding and record a follow-up ticket for verify
+
+**Flags:**
+
+- `--dry-run` — Show planned writes without writing anything
+- `--json` — Emit a stable JSON envelope instead of human-readable text
+- `--reason` — Why this review finding is accepted for a follow-up
+- `--repo` — Repository as owner/repo, when sessions in two repos share the PR number
 
 ### `boss pr approve <pr-number> [flags]`
 

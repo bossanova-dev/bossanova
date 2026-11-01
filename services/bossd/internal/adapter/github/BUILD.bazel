@@ -32,6 +32,7 @@ go_test(
         "provider_e2e_test.go",
         "provider_partial_test.go",
         "provider_test.go",
+        "ratelimit_headroom_test.go",
         "ratelimit_test.go",
         "readcache_test.go",
     ],

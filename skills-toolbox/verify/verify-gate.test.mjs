@@ -2239,6 +2239,31 @@ test('judge: an extension whose check exits 10 is not dispatched and a green hea
   assert.deepEqual(r.facts.extensionsNotApplicable, [GATED.name])
   assert.equal(gated.runs.length, 1)
   assert.equal(w.mutating().length, 0)
+  assert.equal('notApplicableNotes' in r, false, 'a note-less skip adds no note')
+})
+
+test('judge: a not-applicable check that prints a note exposes it beside the split', async () => {
+  const w = world()
+  const noted = { ...exited(10), output: 'probing…\n{"note":"x: not applicable"}' }
+  const gated = withApplies(w, { [GATED.applies]: noted })
+  const r = await judge(
+    { pr: 7, repo: REPO },
+    deps(w, { read: gated.read, discover: () => ({ extensions: [GATED] }) }),
+  )
+  assert.equal(r.verdict, 'pass')
+  assert.deepEqual(r.notApplicableNotes, [{ extension: GATED.name, note: 'x: not applicable' }])
+  assert.deepEqual(r.facts.extensionsNotApplicable, [GATED.name])
+  assert.deepEqual(r.facts.extensionsApplicable, [])
+  const w2 = world()
+  const applies = withApplies(w2, {
+    [GATED.applies]: { ...exited(0), output: '{"note":"ignored"}' },
+  })
+  const ran = await judge(
+    { pr: 7, repo: REPO },
+    deps(w2, { read: applies.read, discover: () => ({ extensions: [GATED] }) }),
+  )
+  assert.equal(ran.verdict, 'extensions-required')
+  assert.equal('notApplicableNotes' in ran, false, 'an applying check never records a note')
 })
 
 test('judge: every check outcome but exit 10 dispatches, and no applies always dispatches', async () => {
@@ -5231,6 +5256,10 @@ test('tickFingerprint moves with every signal a verdict rests on, and only with 
     ['a live session disappears', { sessions: [] }],
     ['the session list turns unreadable', { sessions: null }],
     ['the version salt changes', { salt: 'salt-2' }],
+    [
+      'an off-review ticket is reassigned',
+      { tickets: [fpTicket(1), fpTicket(2), { ...fpTicket(3), assigneeId: 'user-2' }] },
+    ],
   ]
   for (const [name, over] of changes) assert.notEqual(tickFingerprint(fpInput(over)), base, name)
 
@@ -9649,6 +9678,57 @@ test('candidates record pending person admission for configured off-review ticke
       },
     ])
   }
+})
+
+test('candidates match off-review tickets against the resolved selection and record the failed rule', async () => {
+  const config = candidateConfig({ assignees: { include: ['me'] } })
+  const prs = [1, 2].map((n) => ({
+    number: n,
+    url: `https://github.com/o/r/pull/${n}`,
+    body: ticketBody(`BOS-${n}`),
+    headRefOid: SHA_OF(n),
+    isDraft: false,
+  }))
+  const w = candidateWorld({ tickets: [], prs })
+  const assignee = { 'BOS-1': 'usr-me', 'BOS-2': 'usr-other' }
+  w.adapter.applyIssueWrites = async ({ issueId }) => ({
+    outcome: 'ok',
+    issue: { labels: ['agent-build'], assigneeId: assignee[issueId], creatorId: 'usr-c' },
+  })
+  const resolutions = []
+  w.adapter.resolveSelection = async (query) => {
+    resolutions.push(query.selection)
+    return { ...query.selection, assignees: { include: ['usr-me'], exclude: [] } }
+  }
+  const result = await candidates({ repo: REPO }, candDeps(w, config))
+  assert.deepEqual(
+    result.candidates.map(({ pr }) => pr),
+    [1],
+  )
+  assert.deepEqual(result.skipped, [
+    { ticket: 'BOS-2', pr: 2, reason: 'ticket-not-selected', rule: 'assignees' },
+  ])
+  assert.deepEqual(
+    result.admission.find(({ pr }) => pr === 2),
+    {
+      pr: 2,
+      head: SHA_OF(2),
+      state: 'pending',
+      reason: 'ticket-not-selected',
+      rule: 'assignees',
+    },
+  )
+  assert.equal(resolutions.length, 1)
+  assert.deepEqual(resolutions[0].assignees.include, ['me'])
+  delete w.adapter.resolveSelection
+  const unresolved = await candidates({ repo: REPO }, candDeps(w, config))
+  assert.deepEqual(
+    unresolved.skipped.map(({ pr, reason }) => [pr, reason]),
+    [
+      [1, 'unknown:selection'],
+      [2, 'unknown:selection'],
+    ],
+  )
 })
 
 test('candidates admit off-selection heads already judged by verify within this scan', async () => {

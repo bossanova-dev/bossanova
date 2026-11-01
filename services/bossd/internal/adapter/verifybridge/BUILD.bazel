@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "verifybridge",
     srcs = [
+        "accept.go",
         "send_back.go",
         "verifybridge.go",
     ],
@@ -14,6 +15,7 @@ go_library(
 go_test(
     name = "verifybridge_test",
     srcs = [
+        "accept_test.go",
         "send_back_test.go",
         "verifybridge_test.go",
     ],

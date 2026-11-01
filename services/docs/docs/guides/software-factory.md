@@ -387,6 +387,9 @@ Read the findings, then decide.
   no merge. Their details list
   what is open, such as each unticked checklist item. Open a chat in the session
   to fix it; the next push is judged afresh.
+- To ship a head with a blocking review finding, run `boss pr accept <pr> <blocker-id>
+--reason …` from your own terminal. It files a follow-up ticket and lets verify
+  re-judge that commit without the accepted finding.
 - To merge over a blocked park anyway, run `boss pr approve <pr>`. It records an
   approval bound to the PR's current commit, so verification waives exactly the
   parked reasons on that commit and judges any later push afresh. The daemon

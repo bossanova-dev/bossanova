@@ -68,6 +68,8 @@ func TestCallerGateUnixSocket_Sessions_AC221001_AC221002(t *testing.T) {
 			if connect.CodeOf(err) != connect.CodeUnauthenticated || a.resolved.Load() != 0 {
 				t.Fatalf("token must run first: %v", err)
 			}
+			_, err = client.AcceptSessionPRBlocker(context.Background(), connect.NewRequest(&pb.AcceptSessionPRBlockerRequest{Id: "s1", ExpectedHeadSha: headPin, BlockerId: "review:123456abcdef", Reason: "operator decision"}))
+			assertCallerGateResult(t, kind, err)
 			_, err = client.ApproveSessionPR(context.Background(), connect.NewRequest(&pb.ApproveSessionPRRequest{Id: "s1"}))
 			assertCallerGateResult(t, kind, err)
 			for _, approve := range []bool{true, false} {

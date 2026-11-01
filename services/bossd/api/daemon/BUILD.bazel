@@ -1,8 +1,12 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# keep: //services/bosso/api/auth:auth_test scans the credential device service for daemon-token orchestrator calls
+exports_files(["credential_devices.go"])
+
 go_library(
     name = "daemon",
     srcs = [
+        "accept_blocker.go",
         "account.go",
         "account_binding.go",
         "account_ports.go",
@@ -159,6 +163,7 @@ go_test(
     name = "daemon_test",
     size = "large",  # keep: race-instrumented server suite is the repo's slowest target under --config=race
     srcs = [
+        "accept_blocker_test.go",
         "account_binding_test.go",
         "account_env_test.go",
         "account_identity_test.go",

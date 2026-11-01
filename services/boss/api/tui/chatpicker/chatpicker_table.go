@@ -4,6 +4,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossalib/attention"
+
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
@@ -164,7 +166,13 @@ func (m Model) statusDetail(chat *pb.AgentChat) string {
 			return ""
 		}
 		cb := m.statusCallback(chat)
-		label := callbackWaitLabel(cb.GetTrigger())
+		if cb == nil {
+			return ""
+		}
+		label := attention.CallbackWaitLabel(attention.CallbackWait{Trigger: cb.GetTrigger()}, attention.ChecksUnknown)
+		if m.isOwnPRReason(callbackReason(cb)) {
+			label = attention.ChatWaitLabel(cb.GetTrigger(), m.session.GetAttention())
+		}
 		if reach := m.callbackWaitReach(cb); !reach.Reachable {
 			if m.anotherChatWorking(id) {
 				label = "awaiting repair"

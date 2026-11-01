@@ -224,7 +224,7 @@
       "lib/bossalib/kit/bossmcp:Backend": 76,
       "lib/bossalib/kit/vcs:Provider": 14,
       "plugins/bossd-plugin-repair:hostClient": 12,
-      "services/boss/api/cli/session:Client": 19,
+      "services/boss/api/cli/session:Client": 20,
       "services/boss/api/tui/chatpicker:Client": 18,
       "services/boss/api/tui:Client": 17,
       "services/boss/cmd/proof-tui-agent:daemonMutator": 12,

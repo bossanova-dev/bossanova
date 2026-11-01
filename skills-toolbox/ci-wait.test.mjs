@@ -25,6 +25,7 @@ import {
   trendOf,
 } from './ci-wait.mjs'
 import { classifyChecks } from './pr-check-state.mjs'
+import { CLAIM_STALE_AFTER_MS } from './verify/verify-vocabulary.mjs'
 
 const HELPER = fileURLToPath(new URL('./ci-wait.mjs', import.meta.url))
 const HEAD_A = 'a'.repeat(40)
@@ -893,4 +894,208 @@ test('main: run persists to the state dir and status reads it back as a latch', 
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// Verify-stage holds: a pending `boss/verify` claim or `waiting:` hold is the verify stage's work,
+// not ordinary CI, so the wait leaves it out; every terminal verify status still counts.
+
+const VERIFY = 'boss/verify'
+const FRESH = new Date(T0).toISOString()
+const verifyNode = (state) => ({ __typename: 'StatusContext', context: VERIFY, state })
+// The commit-statuses REST read, as `gh api --paginate --slurp` returns it: one array per page.
+const verifyStatus = (state, description, updatedAt = FRESH) => ({
+  ok: true,
+  payload: [[{ context: VERIFY, state, description, updated_at: updatedAt, target_url: '' }]],
+})
+function verifyHarness({ nodes, status, checks = { ok: false, error: 'not scripted' } }) {
+  return harness({
+    script: (req, i) => {
+      if (req.what === 'verify-status')
+        return typeof status === 'function' ? status(req, i) : status
+      if (req.what === 'checks') return checks
+      return view(HEAD_A, nodes)
+    },
+  })
+}
+const verifyCalls = (h) => h.calls.filter((c) => c.what === 'verify-status')
+
+test('verify hold: a live foreign claim on an otherwise green head settles and is reported', async () => {
+  const h = verifyHarness({
+    nodes: [passing('a'), passing('b'), verifyNode('PENDING')],
+    status: verifyStatus('pending', 'verifying… tok1'),
+  })
+  const store = memStore()
+  const { verdict, messages } = await run(h, store)
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.deepEqual(verdict.verifyHold, {
+    kind: 'foreign',
+    token: 'tok1',
+    description: 'verifying… tok1',
+    updatedAt: FRESH,
+  })
+  assert.deepEqual(verdict.excludedContexts, [VERIFY])
+  assert.equal(verdict.total, 2, 'the claim is not counted')
+  assert.equal(verdict.pending, 0)
+  assert.ok(verifyCalls(h).length > 0)
+  for (const call of verifyCalls(h)) assert.equal(call.headSha, HEAD_A)
+  assert.match(messages[0], /excluding live boss\/verify claim tok1/)
+  // The raw latest status is kept in the state file next to the rest of the reading's detail.
+  assert.equal(store.load(HEAD_A).lastDetail.verifyStatus.description, 'verifying… tok1')
+})
+
+test('verify hold: a stale claim and a waiting hold are excluded the same way', async () => {
+  const old = new Date(T0 - CLAIM_STALE_AFTER_MS - 60_000).toISOString()
+  for (const [status, kind] of [
+    [verifyStatus('pending', 'verifying… tok2', old), 'stale'],
+    [verifyStatus('pending', 'verifying… tok3', 'not a time'), 'stale'],
+    [verifyStatus('pending', 'waiting: base CI'), 'waiting'],
+  ]) {
+    const h = verifyHarness({ nodes: [passing('a'), verifyNode('PENDING')], status })
+    const { verdict } = await run(h, memStore())
+    assert.equal(verdict.state, WAIT_STATES.SETTLED, kind)
+    assert.equal(verdict.verifyHold.kind, kind)
+    assert.deepEqual(verdict.excludedContexts, [VERIFY])
+    assert.equal(verdict.total, 1)
+  }
+})
+
+test('verify hold: a terminal boss/verify defect still fails the wait and reads no statuses', async () => {
+  const h = verifyHarness({
+    nodes: [passing('a'), passing('b'), verifyNode('FAILURE')],
+    status: verifyStatus('failure', 'defect: tests'),
+  })
+  const { verdict } = await run(h, memStore())
+  assert.equal(verdict.state, WAIT_STATES.FAILED)
+  assert.equal(verdict.verifyHold, null)
+  assert.deepEqual(verdict.excludedContexts, [])
+  assert.equal(verifyCalls(h).length, 0)
+})
+
+test('verify hold: an unrecognised pending verify status, or ordinary pending work, keeps waiting', async () => {
+  const odd = verifyHarness({
+    nodes: [passing('a'), verifyNode('PENDING')],
+    status: verifyStatus('pending', 'something else'),
+  })
+  const kept = await run(odd, memStore(), { chunkMs: 120_000 })
+  assert.equal(kept.verdict.state, WAIT_STATES.CONTINUE)
+  assert.equal(kept.verdict.pending, 1)
+  assert.equal(kept.verdict.verifyHold, null)
+  assert.deepEqual(kept.verdict.excludedContexts, [])
+
+  const busy = verifyHarness({
+    nodes: [running('a'), passing('b'), verifyNode('PENDING')],
+    status: verifyStatus('pending', 'verifying… tok1'),
+  })
+  const waiting = await run(busy, memStore(), { chunkMs: 120_000 })
+  assert.equal(waiting.verdict.state, WAIT_STATES.CONTINUE)
+  assert.equal(waiting.verdict.pending, 1, 'only the ordinary check is pending')
+  assert.equal(waiting.verdict.total, 2)
+  assert.equal(waiting.verdict.verifyHold.kind, 'foreign')
+})
+
+test('verify hold: a failed, malformed or no-longer-pending statuses read keeps the node counted', async () => {
+  for (const [label, status] of [
+    ['read failed', { ok: false, error: 'HTTP 502' }],
+    ['malformed', { ok: true, payload: { nope: true } }],
+    ['absent', { ok: true, payload: [[]] }],
+    ['verify finished', verifyStatus('success', 'verified')],
+  ]) {
+    const h = verifyHarness({ nodes: [passing('a'), verifyNode('PENDING')], status })
+    const { verdict } = await run(h, memStore(), { chunkMs: 120_000 })
+    assert.equal(verdict.state, WAIT_STATES.CONTINUE, label)
+    assert.equal(verdict.pending, 1, label)
+    assert.equal(verdict.total, 2, label)
+    assert.equal(verdict.verifyHold, null, label)
+    assert.deepEqual(verdict.excludedContexts, [], label)
+  }
+})
+
+test('verify hold: no statuses read is issued when the time left is under the read floor', async () => {
+  // The view read eats the chunk, so the runs and statuses reads are both skipped.
+  const h = harness({
+    script: (req) =>
+      req.what === 'verify-status'
+        ? verifyStatus('pending', 'verifying… tok1')
+        : { ...view(HEAD_A, [passing('a'), verifyNode('PENDING')]), costMs: 39_500 },
+  })
+  const { verdict } = await run(h, memStore(), { chunkMs: 40_000 })
+  assert.equal(verifyCalls(h).length, 0)
+  assert.notEqual(verdict.state, WAIT_STATES.SETTLED)
+  assert.equal(verdict.verifyHold, null)
+})
+
+test('verify hold: a head with no pending boss/verify issues no statuses read', async () => {
+  for (const nodes of [[passing('a')], [passing('a'), verifyNode('SUCCESS')]]) {
+    const h = verifyHarness({ nodes, status: verifyStatus('pending', 'verifying… tok1') })
+    const { verdict } = await run(h, memStore())
+    assert.equal(verdict.state, WAIT_STATES.SETTLED)
+    assert.equal(verifyCalls(h).length, 0)
+    assert.equal(verdict.verifyHold, null)
+  }
+})
+
+test('verify hold: the excluded node is dropped from the gh pr checks payload too', async () => {
+  const h = verifyHarness({
+    nodes: [passing('a'), nullShaped('b'), verifyNode('PENDING')],
+    status: verifyStatus('pending', 'verifying… tok1'),
+    checks: {
+      ok: true,
+      payload: [
+        { name: 'b', state: 'SUCCESS', bucket: 'pass' },
+        { name: VERIFY, state: 'PENDING', bucket: 'pending' },
+      ],
+    },
+  })
+  const { verdict } = await run(h, memStore())
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.equal(verdict.total, 2)
+})
+
+test('verify hold: a prior-head boss/verify status is never a gate the new head must restore', async () => {
+  for (const prior of [
+    ['a', VERIFY],
+    {
+      checks: [
+        { name: 'a', state: 'SUCCESS', bucket: 'pass' },
+        { name: VERIFY, state: 'FAILURE', bucket: 'fail' },
+      ],
+    },
+  ]) {
+    const h = verifyHarness({ nodes: [passing('a')], status: { ok: false, error: 'unused' } })
+    const { verdict } = await run(h, memStore(), { priorContexts: prior })
+    assert.equal(verdict.state, WAIT_STATES.SETTLED)
+    assert.deepEqual(verdict.absent, [])
+  }
+  // A gate other than boss/verify that vanished still holds the wait.
+  const h = verifyHarness({ nodes: [passing('a')], status: { ok: false, error: 'unused' } })
+  const { verdict } = await run(h, memStore(), { priorContexts: ['a', 'deploy', VERIFY] })
+  assert.equal(verdict.reason, 'absent-gate')
+  assert.deepEqual(verdict.absent, ['deploy'])
+})
+
+test('ghReader: the verify-status read lists the head commit statuses and needs a head', async () => {
+  const seen = []
+  const read = ghReader({
+    spawn: (cmd, args) => {
+      seen.push(args)
+      return { status: 0, stdout: '[[]]' }
+    },
+  })
+  assert.deepEqual(await read({ what: 'verify-status', pr: 3, headSha: HEAD_A, timeoutMs: 5 }), {
+    ok: true,
+    payload: [[]],
+  })
+  assert.deepEqual(seen.pop(), [
+    'api',
+    `repos/{owner}/{repo}/commits/${HEAD_A}/statuses?per_page=100`,
+    '--paginate',
+    '--slurp',
+  ])
+  assert.equal((await read({ what: 'verify-status', pr: 3, timeoutMs: 5 })).ok, false)
+  assert.equal(
+    (await read({ what: 'verify-status', pr: 3, headSha: 'nope', timeoutMs: 5 })).ok,
+    false,
+  )
+  assert.equal(seen.length, 0, 'a missing or malformed head never reaches gh')
 })

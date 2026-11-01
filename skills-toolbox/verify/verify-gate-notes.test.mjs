@@ -91,7 +91,8 @@ function world({ comments = [], failNotes = false, failPermission = false, statu
             }),
         )
         writes.push({ method: args[2], path: args[3], ...fields })
-        if (failNotes && fields.body?.includes('boss-verify-notes')) return { ok: false, exit: 1 }
+        const failing = failNotes === true ? 'boss-verify-notes' : failNotes
+        if (failing && fields.body?.includes(failing)) return { ok: false, exit: 1 }
         return ok({ html_url: URL + '#issuecomment-99' })
       }
     }
@@ -322,4 +323,115 @@ test('cosmetic notes never require permission reads, but operator approvals stil
     })
     assert.deepEqual(readOperatorMarkers(approval.deps.read, 'o/r', 7), { readable: false })
   }
+})
+
+const skipNotes = [{ extension: 'gated', note: 'gated: nothing to check' }]
+const verdictArgs = (verdict) => {
+  const blockers = {
+    version: 1,
+    pr: 7,
+    head: HEAD,
+    blockers: buildBlockers({ reviewFindings: [{ ...finding, severity: 'P2' }] }),
+  }
+  return {
+    ...(verdict === 'blocked' ? { blockers: inputFile(blockers) } : {}),
+    ...(verdict === 'defect' ? { findings: inputFile([{ ...finding, severity: 'P2' }]) } : {}),
+    ...(verdict === 'human' ? { reason: 'partial-build' } : {}),
+  }
+}
+const skipComments = (w) => w.writes.filter((x) => x.body?.includes('boss-verify-not-applicable'))
+
+test('post --not-applicable leaves one head-bound comment after each verdict post', async () => {
+  for (const verdict of ['pass', 'blocked', 'defect', 'human']) {
+    const w = world()
+    const flags = Object.entries(verdictArgs(verdict)).flatMap(([key, value]) => [
+      `--${key}`,
+      value,
+    ])
+    const result = await main(
+      [
+        'post',
+        ...['--pr', '7', '--head', HEAD, '--repo', 'o/r', '--verdict', verdict],
+        ...['--not-applicable', inputFile(skipNotes), ...flags],
+      ],
+      w.deps,
+    )
+    const baseline = await post({ ...options, verdict, ...verdictArgs(verdict) }, world().deps)
+    assert.equal(result.posted, true, JSON.stringify(result))
+    assert.equal(result.notApplicable, 'posted', verdict)
+    assert.deepEqual(result.writes.slice(0, -1), baseline.writes, verdict)
+    assert.equal(skipComments(w).length, 1, verdict)
+    const body = w.writes.at(-1).body
+    assert.match(body, /- `gated`: gated: nothing to check/)
+    assert.match(
+      body.split('\n').at(-1),
+      new RegExp(`^<!-- boss-verify-not-applicable head=${HEAD} digest=[0-9a-f]{16} -->$`),
+    )
+  }
+})
+
+test('a repeat not-applicable post on the head is current; a changed note rewrites in place', async () => {
+  const { notApplicableComment } = await import('./verify-not-applicable.mjs')
+  const standing = (login) => ({
+    id: 5,
+    user: { login },
+    author_association: 'OWNER',
+    created_at: '2026-10-01T00:00:00Z',
+    body: notApplicableComment({ head: HEAD, notes: skipNotes }).body,
+  })
+  const repeat = world({ comments: [standing('verify')], status })
+  const same = await post(
+    { ...options, verdict: 'pass', notApplicable: inputFile(skipNotes) },
+    repeat.deps,
+  )
+  assert.equal(same.notApplicable, 'current')
+  assert.equal(repeat.writes.length, 0)
+  const changed = world({ comments: [standing('verify')], status })
+  const rewritten = await post(
+    {
+      ...options,
+      verdict: 'pass',
+      notApplicable: inputFile([{ ...skipNotes[0], note: 'gated: changed' }]),
+    },
+    changed.deps,
+  )
+  assert.equal(rewritten.notApplicable, 'updated')
+  assert.equal(changed.writes.at(-1).method, 'PATCH')
+  assert.match(changed.writes.at(-1).path, /comments\/5$/)
+  const foreign = world({ comments: [standing('someone')], status })
+  const fresh = await post(
+    { ...options, verdict: 'pass', notApplicable: inputFile(skipNotes) },
+    foreign.deps,
+  )
+  assert.equal(fresh.notApplicable, 'posted', 'another author is never rewritten')
+  assert.equal(foreign.writes.at(-1).method, 'POST')
+})
+
+test('--not-applicable is a usage error on claim, wait or an invalid file', async () => {
+  for (const verdict of ['claim', 'wait'])
+    await assert.rejects(
+      post(
+        { ...options, verdict, reason: 'waiting', notApplicable: inputFile(skipNotes) },
+        world().deps,
+      ),
+      /not-applicable/,
+    )
+  for (const bad of [{ bad: true }, [{ extension: 'gated', note: 'a\nb' }], [{ note: 'x' }]])
+    await assert.rejects(
+      post({ ...options, verdict: 'pass', notApplicable: inputFile(bad) }, world().deps),
+      /not-applicable/,
+    )
+})
+
+test('a failed not-applicable comment write leaves the verdict and status untouched', async () => {
+  const w = world({ failNotes: 'boss-verify-not-applicable' })
+  const result = await post(
+    { ...options, verdict: 'pass', notApplicable: inputFile(skipNotes) },
+    w.deps,
+  )
+  assert.equal(result.verdict, 'pass')
+  assert.equal(result.posted, true, JSON.stringify(result))
+  assert.equal(result.notApplicable, 'failed')
+  assert.equal(w.writes[0].state, 'success')
+  assert.equal(w.writes[0].description, 'verified')
 })

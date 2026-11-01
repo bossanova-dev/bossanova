@@ -73,7 +73,7 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 	if raw.needsMergeability() {
 		rest, err := p.getPRMergeability(ctx, repoPath, prID)
 		if err != nil {
-			p.logger.Warn().Err(err).Int("pr", prID).Msg("failed to fetch PR mergeability")
+			p.logger.WithLevel(p.rateLimitLog.Level("PR mergeability", err)).Err(err).Int("pr", prID).Msg("failed to fetch PR mergeability")
 		} else {
 			mergeability = rest
 		}

@@ -28,6 +28,9 @@ type entry struct {
 	Head   string `json:"head"`
 	State  string `json:"state"`
 	Reason string `json:"reason"`
+	// Rule names the selection rule a ticket-not-selected skip failed
+	// (labels, assignees, creators, projects or unreadable); absent otherwise.
+	Rule string `json:"rule,omitempty"`
 }
 
 // Read returns an empty snapshot on missing, unreadable, or unsupported files.
@@ -56,17 +59,18 @@ const (
 	StateExcluded = "excluded"
 )
 
-// Answer is the admission state and reason for a particular PR head.
-// Its zero value means the snapshot has no conclusive answer.
+// Answer is the admission state, reason and failed selection rule for a
+// particular PR head. Its zero value means the snapshot has no conclusive answer.
 type Answer struct {
 	State  string
 	Reason string
+	Rule   string
 }
 
 // Lookup combines matching scope answers: admitted wins, then pending, then
-// excluded only if every matching scope excludes the head. Tied reasons sort
-// lexically so the result is independent of scope iteration order, except that
-// an unprobed pending default loses to a decided pending reason.
+// excluded only if every matching scope excludes the head. Tied reasons, then
+// tied rules, sort lexically so the result is independent of scope iteration
+// order, except that an unprobed pending default loses to a decided pending reason.
 func (s Snapshot) Lookup(prNumber int, headSHA string) Answer {
 	if s.Version != 1 || prNumber <= 0 || headSHA == "" {
 		return Answer{}
@@ -91,12 +95,12 @@ func (s Snapshot) Lookup(prNumber int, headSHA string) Answer {
 			unknown = true
 			continue
 		}
-		prefer := e.Reason < candidate.Reason
+		prefer := e.Reason < candidate.Reason || (e.Reason == candidate.Reason && ruleBefore(e.Rule, candidate.Rule))
 		if e.State == StatePending && (e.Reason == "ticket-not-in-review") != (candidate.Reason == "ticket-not-in-review") {
 			prefer = candidate.Reason == "ticket-not-in-review"
 		}
 		if candidate.State == "" || prefer {
-			*candidate = Answer{State: e.State, Reason: e.Reason}
+			*candidate = Answer{State: e.State, Reason: e.Reason, Rule: e.Rule}
 		}
 	}
 	if admitted.State != "" {
@@ -126,4 +130,13 @@ func Path(ctx context.Context, repoPath string) (string, error) {
 		return "", fmt.Errorf("invalid git common dir %q", commonDir)
 	}
 	return filepath.Join(commonDir, "boss-verify", "verify-admission.json"), nil
+}
+
+// ruleBefore orders recorded rules lexically and ahead of an absent one, so a
+// stale rule-less scope never hides a scope that names the failed rule.
+func ruleBefore(a, b string) bool {
+	if (a == "") != (b == "") {
+		return b == ""
+	}
+	return a < b
 }

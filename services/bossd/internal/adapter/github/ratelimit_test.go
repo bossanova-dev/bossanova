@@ -61,8 +61,18 @@ const graphQLExhausted = "gh pr view 7 --repo o/r: exit status 1: GraphQL: API r
 const draftPRView = `{"state":"OPEN","isDraft":true,"title":"t","headRefName":"h","baseRefName":"main","headRefOid":"abc","mergeable":"MERGEABLE","mergeStateStatus":"DRAFT","reviewDecision":"","reviews":[]}`
 
 func rateLimitBody(clock *clocktest.Clock, graphQLRemaining int, resetIn time.Duration) string {
-	return fmt.Sprintf(`{"resources":{"core":{"remaining":4999,"reset":%d},"graphql":{"remaining":%d,"reset":%d}}}`,
-		clock.Now().Add(time.Hour).Unix(), graphQLRemaining, clock.Now().Add(resetIn).Unix())
+	return rateLimitBodyWithLimit(clock, 0, graphQLRemaining, resetIn)
+}
+
+// rateLimitBodyWithLimit is rateLimitBody with a graphql limit; 0 omits it, as
+// some responses do.
+func rateLimitBodyWithLimit(clock *clocktest.Clock, graphQLLimit, graphQLRemaining int, resetIn time.Duration) string {
+	limit := ""
+	if graphQLLimit > 0 {
+		limit = fmt.Sprintf(`"limit":%d,`, graphQLLimit)
+	}
+	return fmt.Sprintf(`{"resources":{"core":{"remaining":4999,"reset":%d},"graphql":{%s"remaining":%d,"reset":%d}}}`,
+		clock.Now().Add(time.Hour).Unix(), limit, graphQLRemaining, clock.Now().Add(resetIn).Unix())
 }
 
 // TestBreakerPausesExhaustedQuotaForEveryCaller is the core contract: once
@@ -171,7 +181,7 @@ func TestBreakerDoesNotPauseWhenQuotaAlreadyReset(t *testing.T) {
 	calls := 0
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
 		if isRateLimitProbe(args) {
-			return rateLimitBody(clock, 5000, time.Hour), nil
+			return rateLimitBodyWithLimit(clock, 5000, 5000, time.Hour), nil
 		}
 		calls++
 		if calls == 1 {

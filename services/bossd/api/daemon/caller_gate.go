@@ -19,8 +19,9 @@ type CallerAuthority interface {
 // In-process upstream commands bypass this socket gate: bosso authorizes those
 // commands before dispatching them through CommandHandlerAdapter.
 var callerCapabilities = map[string]domain.CallerCapability{
-	bossanovav1connect.DaemonServiceApproveSessionPRProcedure:     domain.CapabilityVerifyApprove,
-	bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure: domain.CapabilityOperatorMerge,
+	bossanovav1connect.DaemonServiceAcceptSessionPRBlockerProcedure: domain.CapabilityVerifyAccept,
+	bossanovav1connect.DaemonServiceApproveSessionPRProcedure:       domain.CapabilityVerifyApprove,
+	bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure:   domain.CapabilityOperatorMerge,
 }
 
 // NewCallerInterceptor enforces operator capabilities on the local socket.
@@ -59,7 +60,7 @@ func (i *callerInterceptor) check(ctx context.Context, procedure string) error {
 	case domain.CallerOperator, domain.CallerUnattested:
 		// Operators pass the capability check above; retain the fail-closed guidance.
 	}
-	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("approving or operator-merging a PR is the operator's call; %s. Run it from your own terminal or press [m] on the session in the TUI", who))
+	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("acting on a verify verdict is the operator's call; %s. Run it from your own terminal or press [m] on the session in the TUI", who))
 }
 
 func (i *callerInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {

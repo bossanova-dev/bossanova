@@ -19,20 +19,13 @@ func (b *Bridge) SendBack(ctx context.Context, t Target, pin domain.VerifySendBa
 	if !shaPattern.MatchString(pin.Head) {
 		return domain.VerifySendBackResult{}, fmt.Errorf("%w: send-back head must be a 40-hex SHA", ErrInvalidTarget)
 	}
-	note, err := os.CreateTemp("", "boss-send-back-*.txt")
-	if err != nil {
-		return domain.VerifySendBackResult{}, fmt.Errorf("create operator note: %w", err)
-	}
-	defer func() { _ = os.Remove(note.Name()) }()
-	if _, err := note.WriteString(pin.Note); err != nil {
-		_ = note.Close()
-		return domain.VerifySendBackResult{}, fmt.Errorf("write operator note: %w", err)
-	}
-	if err := note.Close(); err != nil {
-		return domain.VerifySendBackResult{}, fmt.Errorf("close operator note: %w", err)
-	}
-	args = append(args[:len(args)-1], "--head="+pin.Head, "--note-file="+note.Name(), "--json")
-	out, err := b.run(ctx, t.Dir, args)
+	var out []byte
+	err = withPrivateFile("boss-send-back-*.txt", pin.Note, func(path string) error {
+		args = append(args[:len(args)-1], "--head="+pin.Head, "--note-file="+path, "--json")
+		var runErr error
+		out, runErr = b.run(ctx, t.Dir, args)
+		return runErr
+	})
 	if err != nil {
 		return domain.VerifySendBackResult{}, err
 	}
@@ -55,4 +48,20 @@ func (b *Bridge) SendBack(ctx context.Context, t Target, pin domain.VerifySendBa
 		return domain.VerifySendBackResult{}, fmt.Errorf("%w: send-back refused without a reason", ErrShape)
 	}
 	return r, nil
+}
+
+func withPrivateFile(prefix, text string, fn func(path string) error) error {
+	file, err := os.CreateTemp("", prefix)
+	if err != nil {
+		return fmt.Errorf("create operator text file: %w", err)
+	}
+	defer func() { _ = os.Remove(file.Name()) }()
+	if _, err := file.WriteString(text); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write operator text file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close operator text file: %w", err)
+	}
+	return fn(file.Name())
 }

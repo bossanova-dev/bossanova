@@ -18,22 +18,22 @@ func TestAdmissionLookup(t *testing.T) {
 		states []string
 		want   Answer
 	}{
-		{"admitted", []string{"admitted"}, Answer{StateAdmitted, "reason"}},
-		{"pending", []string{"pending"}, Answer{StatePending, "reason"}},
-		{"excluded", []string{"excluded"}, Answer{StateExcluded, "reason"}},
-		{"all excluded", []string{"excluded", "excluded"}, Answer{StateExcluded, "reason"}},
-		{"admitted wins", []string{"excluded", "pending", "admitted"}, Answer{StateAdmitted, "reason"}},
-		{"pending wins", []string{"excluded", "pending"}, Answer{StatePending, "reason"}},
+		{"admitted", []string{"admitted"}, Answer{State: StateAdmitted, Reason: "reason"}},
+		{"pending", []string{"pending"}, Answer{State: StatePending, Reason: "reason"}},
+		{"excluded", []string{"excluded"}, Answer{State: StateExcluded, Reason: "reason"}},
+		{"all excluded", []string{"excluded", "excluded"}, Answer{State: StateExcluded, Reason: "reason"}},
+		{"admitted wins", []string{"excluded", "pending", "admitted"}, Answer{State: StateAdmitted, Reason: "reason"}},
+		{"pending wins", []string{"excluded", "pending"}, Answer{State: StatePending, Reason: "reason"}},
 		{"unknown", []string{"future"}, Answer{}},
 		{"unknown vetoes excluded", []string{"future", "excluded"}, Answer{}},
-		{"admitted beats unknown", []string{"future", "admitted"}, Answer{StateAdmitted, "reason"}},
-		{"pending beats unknown", []string{"future", "pending"}, Answer{StatePending, "reason"}},
+		{"admitted beats unknown", []string{"future", "admitted"}, Answer{State: StateAdmitted, Reason: "reason"}},
+		{"pending beats unknown", []string{"future", "pending"}, Answer{State: StatePending, Reason: "reason"}},
 		{"empty", nil, Answer{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			snapshot := Snapshot{Version: 1, Scopes: map[string]scope{}}
 			for i, state := range tc.states {
-				snapshot.Scopes[strconv.Itoa(i)] = scope{PRs: map[string]entry{"3550": {head, state, "reason"}}}
+				snapshot.Scopes[strconv.Itoa(i)] = scope{PRs: map[string]entry{"3550": {Head: head, State: state, Reason: "reason"}}}
 			}
 			if got := snapshot.Lookup(3550, strings.ToUpper(head)); got != tc.want {
 				t.Fatalf("Lookup=%+v want %+v", got, tc.want)
@@ -60,16 +60,16 @@ func TestAdmissionLookupReasonOrder(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	for _, state := range []string{StateAdmitted, StatePending, StateExcluded} {
 		snapshot := Snapshot{Version: 1, Scopes: map[string]scope{
-			"one": {PRs: map[string]entry{"3550": {head, state, "z"}}},
-			"two": {PRs: map[string]entry{"3550": {head, state, "a"}}},
-			"old": {PRs: map[string]entry{"3550": {"old", "admitted", ""}}},
+			"one": {PRs: map[string]entry{"3550": {Head: head, State: state, Reason: "z"}}},
+			"two": {PRs: map[string]entry{"3550": {Head: head, State: state, Reason: "a"}}},
+			"old": {PRs: map[string]entry{"3550": {Head: "old", State: "admitted", Reason: ""}}},
 		}}
 		for range 20 {
-			if got := snapshot.Lookup(3550, head); got != (Answer{state, "a"}) {
+			if got := snapshot.Lookup(3550, head); got != (Answer{State: state, Reason: "a"}) {
 				t.Fatalf("got %+v", got)
 			}
 		}
-		snapshot.Scopes["empty"] = scope{PRs: map[string]entry{"3550": {head, state, ""}}}
+		snapshot.Scopes["empty"] = scope{PRs: map[string]entry{"3550": {Head: head, State: state, Reason: ""}}}
 		if got := snapshot.Lookup(3550, head); got != (Answer{State: state}) {
 			t.Fatalf("empty reason: %+v", got)
 		}
@@ -81,15 +81,68 @@ func TestAdmissionLookupDecidedPendingReason(t *testing.T) {
 	for _, reason := range []string{"ticket-not-selected", "ticket-needs-person", "z"} {
 		t.Run(reason, func(t *testing.T) {
 			snapshot := Snapshot{Version: 1, Scopes: map[string]scope{
-				"unprobed": {PRs: map[string]entry{"3550": {head, StatePending, "ticket-not-in-review"}}},
-				"decided":  {PRs: map[string]entry{"3550": {head, StatePending, reason}}},
+				"unprobed": {PRs: map[string]entry{"3550": {Head: head, State: StatePending, Reason: "ticket-not-in-review"}}},
+				"decided":  {PRs: map[string]entry{"3550": {Head: head, State: StatePending, Reason: reason}}},
 			}}
 			for range 20 {
-				if got := snapshot.Lookup(3550, head); got != (Answer{StatePending, reason}) {
+				if got := snapshot.Lookup(3550, head); got != (Answer{State: StatePending, Reason: reason}) {
 					t.Fatalf("Lookup=%+v want decided pending reason %q", got, reason)
 				}
 			}
 		})
+	}
+}
+
+func TestAdmissionLookupRule(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	notSelected := func(rule string) entry {
+		return entry{Head: head, State: StatePending, Reason: "ticket-not-selected", Rule: rule}
+	}
+	snapshot := Snapshot{Version: 1, Scopes: map[string]scope{
+		"one":      {PRs: map[string]entry{"3550": notSelected("labels")}},
+		"two":      {PRs: map[string]entry{"3550": notSelected("assignees")}},
+		"unprobed": {PRs: map[string]entry{"3550": {Head: head, State: StatePending, Reason: "ticket-not-in-review"}}},
+	}}
+	want := Answer{State: StatePending, Reason: "ticket-not-selected", Rule: "assignees"}
+	for range 20 {
+		if got := snapshot.Lookup(3550, head); got != want {
+			t.Fatalf("Lookup=%+v want %+v regardless of scope order", got, want)
+		}
+	}
+}
+
+func TestAdmissionLookupPrefersRecordedRule(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	snapshot := Snapshot{Version: 1, Scopes: map[string]scope{
+		"stale": {PRs: map[string]entry{"7": {Head: head, State: StatePending, Reason: "ticket-not-selected"}}},
+		"fresh": {PRs: map[string]entry{"7": {Head: head, State: StatePending, Reason: "ticket-not-selected", Rule: "projects"}}},
+	}}
+	want := Answer{State: StatePending, Reason: "ticket-not-selected", Rule: "projects"}
+	for range 20 {
+		if got := snapshot.Lookup(7, head); got != want {
+			t.Fatalf("Lookup=%+v want %+v regardless of scope order", got, want)
+		}
+	}
+}
+
+func TestAdmissionReadDecodesRule(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	file := filepath.Join(t.TempDir(), "admission.json")
+	content := `{"version":1,"scopes":{"s":{"prs":{` +
+		`"1":{"head":"` + head + `","state":"pending","reason":"ticket-not-selected","rule":"creators"},` +
+		`"2":{"head":"` + head + `","state":"pending","reason":"ticket-not-selected"}}}}}`
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := Read(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.Lookup(1, head); got != (Answer{State: StatePending, Reason: "ticket-not-selected", Rule: "creators"}) {
+		t.Fatalf("rule entry: %+v", got)
+	}
+	if got := snapshot.Lookup(2, head); got != (Answer{State: StatePending, Reason: "ticket-not-selected"}) {
+		t.Fatalf("rule-less entry: %+v", got)
 	}
 }
 
@@ -122,10 +175,10 @@ func TestAdmissionFixture(t *testing.T) {
 		head string
 		want Answer
 	}{
-		{3550, "a", Answer{StateExcluded, "no-ticket"}},
-		{3551, "b", Answer{StateAdmitted, "ticket"}},
-		{3552, "c", Answer{StatePending, "ticket-not-in-review"}},
-		{3553, "d", Answer{StateExcluded, "no-ticket"}},
+		{3550, "a", Answer{State: StateExcluded, Reason: "no-ticket"}},
+		{3551, "b", Answer{State: StateAdmitted, Reason: "ticket"}},
+		{3552, "c", Answer{State: StatePending, Reason: "ticket-not-in-review"}},
+		{3553, "d", Answer{State: StateExcluded, Reason: "no-ticket"}},
 		{3550, "b", Answer{}}, {9999, "a", Answer{}},
 	} {
 		if got := snapshot.Lookup(tc.pr, strings.Repeat(tc.head, 40)); got != tc.want {

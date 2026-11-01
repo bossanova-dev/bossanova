@@ -876,6 +876,7 @@ type StreamClient struct {
 	// asyncCanceled records bounded, short-lived tombstones for CommandCancel
 	// frames that arrive before the async command they target is registered.
 	asyncCanceled map[string]time.Time
+	webhookLane   *webhookLane // per stream; set and cleared on the Run goroutine
 	// authStuckStreak counts consecutive suppressed (debug-level) auth
 	// failures since the last WARN. Crossing authWedgeWarnBudget re-states the
 	// wedge in the log and resets the counter.
@@ -1509,7 +1510,9 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 		close(refreshErrCh)
 	})
 
-	// 5. Command reader — runs on this goroutine. Receive is blocking
+	c.startWebhookLane(streamCtx, outbound) // 5. Webhook Dispatch, off the reader.
+
+	// 6. Command reader — runs on this goroutine. Receive is blocking
 	//    and must be owned by exactly one caller per connect semantics.
 	readErr := c.runCommandReader(streamCtx, stream, outbound)
 	readCtxErr := streamCtx.Err()
@@ -1521,25 +1524,22 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	// an event; it leaves each producer free to reach its own
 	// `case outbound <- ev` on a closed channel, which panics on sight
 	// however that select's `<-ctx.Done()` case happens to be ordered
-	// (BOS-1274). So: cancel, then join the producers that are joinable —
-	// the cancelable async command dispatchers via cancelAndWaitAsyncCommands,
-	// then the delta forwarder and the token refresher — and only then close.
+	// (BOS-1274). So: cancel, then join the joinable producers — the
+	// cancelable async commands, the webhook lane, the delta forwarder and
+	// the token refresher — and only then close.
 	//
-	// Known gap: cancelAndWaitAsyncCommands joins only what
-	// runCancelableAsyncCommand registered in asyncDone, which today is just
-	// dispatchSwitchAccount. runAsyncCommand and the dispatchAttach /
-	// dispatchCreate chunk pumps discard their safego done channels, so an
-	// async command still in flight here is NOT joined and can still reach
-	// its own `case outbound <- ev` after this close. Registering those
-	// goroutines is the remaining half of this fix.
+	// Known gap: cancelAndWaitAsyncCommands joins only dispatchSwitchAccount.
+	// runAsyncCommand and the attach/create chunk pumps discard their safego
+	// done channels, so one still in flight can reach its own
+	// `case outbound <- ev` after this close. Registering them is the
+	// remaining half of this fix.
 	//
-	// The trade this makes explicit: every producer's send sits in a select
-	// that also takes <-ctx.Done(), and cancel() runs first, so each has a
-	// ready case and the joins cannot wedge behind a stalled writer. A
-	// producer added later without that case would hang this teardown
-	// instead of panicking past it.
+	// Every producer's send selects on <-ctx.Done() too, and cancel() runs
+	// first, so the joins cannot wedge behind a stalled writer. A producer
+	// added without that case would hang this teardown instead.
 	cancel()
 	c.cancelAndWaitAsyncCommands()
+	c.joinWebhookLane()
 	<-forwarderDone
 	<-refresherDone
 

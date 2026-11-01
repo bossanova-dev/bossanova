@@ -783,6 +783,9 @@ func (g *group) runAccountTest(cmd *cobra.Command, id string) error {
 	if detail := resp.GetDetail(); detail != "" {
 		_, _ = fmt.Fprintf(out, "Detail: %s\n", detail)
 	}
+	if remedy, ok := display.RefreshFailureRemedy(acct.GetAuthCheck().GetFailureClass(), id); ok {
+		_, _ = fmt.Fprintf(out, "Remedy: %s\n", remedy)
+	}
 	return nil
 }
 

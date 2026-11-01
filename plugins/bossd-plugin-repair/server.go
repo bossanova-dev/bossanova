@@ -17,6 +17,7 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/sessionreason"
 )
 
@@ -267,6 +268,8 @@ type repairMonitor struct {
 	// (same id), and distinct from any other repair dispatcher (a /boss-repair
 	// chat or a boss-epic driver), which is refused while this lease is held.
 	dispatcherID string
+	// reviewReadLog logs a review comment read's quota refusal once per window.
+	reviewReadLog vcs.RateLimitLog
 
 	mu                      sync.Mutex
 	ctx                     context.Context        // Workflow context

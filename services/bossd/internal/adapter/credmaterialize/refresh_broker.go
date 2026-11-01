@@ -77,6 +77,10 @@ type RefreshBroker struct {
 	closed      bool
 	requests    sync.WaitGroup
 	locks       keyedMutex
+	logger      zerolog.Logger
+	now         func() time.Time
+	failuresMu  sync.Mutex
+	failures    map[string]refreshFailureRecord
 }
 
 // NewRefreshBroker starts the local endpoint. The caller must Close it at daemon shutdown.
@@ -88,7 +92,7 @@ func NewRefreshBroker(store RefreshBrokerStore, gate RefreshBrokerGate, logger z
 	// #nosec G118 -- Close owns cancellation beyond the constructor and joins active requests.
 	// owner=@recurser review-by=2027-01-25 issue=BOS-1952
 	ctx, cancel := context.WithCancel(context.Background())
-	b := &RefreshBroker{store: store, gate: gate, listener: listener, ctx: ctx, cancel: cancel, providerURL: "https://auth.openai.com/oauth/token", instanceID: rand.Text(), peerWait: 30 * time.Second, client: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	b := &RefreshBroker{store: store, gate: gate, listener: listener, ctx: ctx, cancel: cancel, logger: logger, now: time.Now, failures: map[string]refreshFailureRecord{}, providerURL: "https://auth.openai.com/oauth/token", instanceID: rand.Text(), peerWait: 30 * time.Second, client: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	b.server = &http.Server{Handler: http.HandlerFunc(b.serve), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 65 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 8192}
 	b.done = safego.Go(logger, func() { _ = b.server.Serve(listener) })
 	return b, nil
@@ -124,7 +128,7 @@ func (b *RefreshBroker) journal(ctx context.Context, id string) (refreshJournal,
 	var j refreshJournal
 	if len(raw) > 0 {
 		if json.Unmarshal(raw, &j) != nil || len(j.Seed) != 32 {
-			return j, errors.New("credential refresh journal unreadable")
+			return j, errRefreshJournalUnreadable
 		}
 		return j, nil
 	}
@@ -145,15 +149,15 @@ func (b *RefreshBroker) saveJournal(ctx context.Context, id string, j refreshJou
 func credentialDigest(blob []byte) (string, error) {
 	top, err := parseObject(codexAuthForWrite(blob))
 	if err != nil {
-		return "", errors.New("credential refresh token unavailable")
+		return "", errRefreshTokenUnavailable
 	}
 	tokens, err := parseTokenObject(top["tokens"])
 	if err != nil {
-		return "", errors.New("credential refresh token unavailable")
+		return "", errRefreshTokenUnavailable
 	}
 	known := decodeKnown(tokens)
 	if known.RefreshToken == "" || strings.HasPrefix(known.RefreshToken, brokerCapabilityPrefix) {
-		return "", errors.New("credential refresh token unavailable")
+		return "", errRefreshTokenUnavailable
 	}
 	raw, _ := json.Marshal([]string{known.AccessToken, known.RefreshToken, known.IDToken})
 	sum := sha256.Sum256(raw)
@@ -165,15 +169,15 @@ func credentialDigest(blob []byte) (string, error) {
 func refreshSecretDigest(blob []byte) (string, error) {
 	top, err := parseObject(codexAuthForWrite(blob))
 	if err != nil {
-		return "", errors.New("credential refresh token unavailable")
+		return "", errRefreshTokenUnavailable
 	}
 	tokens, err := parseTokenObject(top["tokens"])
 	if err != nil {
-		return "", err
+		return "", errRefreshTokenUnavailable
 	}
 	secret := decodeKnown(tokens).RefreshToken
 	if secret == "" {
-		return "", errors.New("credential refresh token unavailable")
+		return "", errRefreshTokenUnavailable
 	}
 	sum := sha256.Sum256([]byte(secret))
 	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
@@ -214,14 +218,12 @@ func (b *RefreshBroker) authenticate(ctx context.Context, capability string) (re
 	if err != nil || json.Unmarshal(raw, &c) != nil || validateAccountID(c.AccountID) != nil || len(c.Digest) != 43 {
 		return c, refreshJournal{}, errors.New("invalid capability")
 	}
-	// Authentication must never create state for an attacker-chosen account.
-	raw, err = b.store.LoadRefreshState(ctx, c.AccountID)
-	var j refreshJournal
-	if err != nil || json.Unmarshal(raw, &j) != nil || len(j.Seed) != 32 {
-		return c, j, errors.New("invalid capability")
-	}
 	if c.BrokerID != b.instanceID {
-		return c, j, errors.New("invalid capability")
+		return c, refreshJournal{}, errors.New("invalid capability")
+	}
+	j, err := b.storedJournal(ctx, c.AccountID)
+	if err != nil {
+		return c, j, err
 	}
 	expected := b.signedCapability(j.Seed, c.AccountID, c.Digest)
 	if !hmac.Equal([]byte(expected), []byte(capability)) {
@@ -233,7 +235,7 @@ func (b *RefreshBroker) serve(w http.ResponseWriter, r *http.Request) {
 	b.requestMu.Lock()
 	if b.closed {
 		b.requestMu.Unlock()
-		http.Error(w, "credential refresh broker stopped", http.StatusServiceUnavailable)
+		b.respondFailure(w, refreshRejection{status: http.StatusServiceUnavailable, class: RefreshFailureBrokerStopped, body: "credential refresh broker stopped"})
 		return
 	}
 	b.requests.Add(1)
@@ -241,7 +243,7 @@ func (b *RefreshBroker) serve(w http.ResponseWriter, r *http.Request) {
 	defer b.requests.Done()
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost || r.URL.Path != "/refresh" || r.URL.RawQuery != "" {
-		http.Error(w, "invalid refresh request", http.StatusBadRequest)
+		b.respondFailure(w, refreshRejection{status: http.StatusBadRequest, class: RefreshFailureRequestInvalid, body: "invalid refresh request"})
 		return
 	}
 	var q struct {
@@ -252,7 +254,7 @@ func (b *RefreshBroker) serve(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&q) != nil || decoder.Decode(new(any)) != io.EOF || q.ClientID != codexOAuthClientID || q.GrantType != "refresh_token" {
-		http.Error(w, "invalid refresh request", http.StatusBadRequest)
+		b.respondFailure(w, refreshRejection{status: http.StatusBadRequest, class: RefreshFailureRequestInvalid, claimedID: claimedAccountID(q.RefreshToken), body: "invalid refresh request"})
 		return
 	}
 	// The daemon owns completing a known result even if Codex closes its request.
@@ -260,26 +262,27 @@ func (b *RefreshBroker) serve(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	c, _, err := b.authenticate(ctx, q.RefreshToken)
 	if err != nil {
-		http.Error(w, "invalid refresh capability", http.StatusUnauthorized)
+		b.authenticationFailed(w, q.RefreshToken, err)
 		return
 	}
 	unlock := b.locks.Lock(c.AccountID)
 	defer unlock()
 	c, j, err := b.authenticate(ctx, q.RefreshToken)
 	if err != nil {
-		http.Error(w, "invalid refresh capability", http.StatusUnauthorized)
+		b.authenticationFailed(w, q.RefreshToken, err)
 		return
 	}
 	blob, err := b.refresh(ctx, c, j)
 	if err != nil {
-		http.Error(w, "credential refresh unavailable; retry after synchronization or reauthenticate", http.StatusServiceUnavailable)
+		b.refreshFailed(w, c.AccountID, err)
 		return
 	}
 	digest, err := credentialDigest(blob)
 	if err != nil {
-		http.Error(w, "credential refresh unavailable", http.StatusServiceUnavailable)
+		b.refreshFailed(w, c.AccountID, err)
 		return
 	}
+	b.clearFailure(c.AccountID)
 	top, _ := parseObject(codexAuthForWrite(blob))
 	tokens, _ := parseTokenObject(top["tokens"])
 	known := decodeKnown(tokens)
@@ -306,7 +309,7 @@ func (b *RefreshBroker) refresh(ctx context.Context, c refreshCapability, j refr
 				return nil, err
 			}
 		} else if len(j.Result) == 0 {
-			return nil, errors.New("credential refresh outcome unknown; reauthenticate")
+			return nil, errRefreshOutcomeUnknown
 		} else {
 			return b.finish(ctx, c.AccountID, j)
 		}
@@ -354,7 +357,7 @@ func (b *RefreshBroker) refresh(ctx context.Context, c refreshCapability, j refr
 		return nil, err
 	}
 	if after != digest {
-		return nil, errors.New("credential changed while acquiring refresh ownership")
+		return nil, errCredentialChangedWhileAcquiring
 	}
 	j.AttemptDigest, err = refreshSecretDigest(current)
 	if err != nil {
@@ -362,7 +365,7 @@ func (b *RefreshBroker) refresh(ctx context.Context, c refreshCapability, j refr
 	}
 	j.Result = nil
 	if slices.Contains(j.Consumed, j.AttemptDigest) {
-		return nil, errors.New("credential refresh secret already consumed; reauthenticate")
+		return nil, errRefreshSecretConsumed
 	}
 	j.Consumed = append(j.Consumed, j.AttemptDigest)
 	if err = b.saveJournal(ctx, c.AccountID, j); err != nil {
@@ -390,7 +393,7 @@ func (b *RefreshBroker) finish(ctx context.Context, id string, j refreshJournal)
 		}
 		resultSecret, _ := refreshSecretDigest(j.Result)
 		if currentSecret != j.AttemptDigest && currentSecret != resultSecret {
-			return errors.New("credential replaced while refresh was pending")
+			return errCredentialReplacedWhilePending
 		}
 		return b.store.SaveCredential(ctx, id, j.Result)
 	}
@@ -433,11 +436,11 @@ func (b *RefreshBroker) exchange(ctx context.Context, blob []byte) ([]byte, erro
 	r.Header.Set("Content-Type", "application/json")
 	out, err := b.client.Do(r)
 	if err != nil {
-		return nil, errors.New("credential exchange outcome unknown")
+		return nil, errExchangeOutcomeUnknown
 	}
 	defer func() { _ = out.Body.Close() }()
 	if out.StatusCode != http.StatusOK {
-		return nil, errors.New("credential exchange unsuccessful; reauthenticate")
+		return nil, errExchangeRejected
 	}
 	raw, err := io.ReadAll(io.LimitReader(out.Body, 65537))
 	if err != nil || len(raw) > 65536 {

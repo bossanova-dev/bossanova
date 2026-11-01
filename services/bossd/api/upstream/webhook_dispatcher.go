@@ -93,6 +93,7 @@ type WebhookDispatcher struct {
 	baseMoves      BaseMoveNotifier
 	health         *WebhookHealth
 	logger         zerolog.Logger
+	rateLimitLog   vcs.RateLimitLog // logs a callback evaluation's quota refusal once per window
 	// evalDoneHook, when set (tests only), receives the done channel of each
 	// detached callback-evaluation goroutine so a test can await completion.
 	// The production acknowledgement path never blocks on it.
@@ -306,7 +307,7 @@ func (d *WebhookDispatcher) evaluateCallbacks(ctx context.Context, repoOriginURL
 	done := safego.Go(d.logger, func() {
 		defer cancel()
 		if err := d.evaluator.EvaluatePR(evalCtx, owner, name, prNumber); err != nil {
-			d.logger.Warn().
+			d.logger.WithLevel(d.rateLimitLog.Level("callback evaluation", err)).
 				Err(err).
 				Str("repo_origin_url", repoOriginURL).
 				Int("pull_request", prNumber).

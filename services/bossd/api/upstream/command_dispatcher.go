@@ -24,8 +24,9 @@ var asyncCancelTombstoneTTL = 5 * time.Minute
 
 // dispatchCommand routes an inbound OrchestratorCommand to the matching
 // daemon handler and returns the DaemonEvent that should be sent back
-// on the stream. For stop/pause/resume/webhook the response fits in a
-// single DaemonEvent (CommandResult or WebhookAck). For attach, the
+// on the stream. For stop/pause/resume the response fits in a single
+// CommandResult. Webhooks are queued on the stream's webhook lane, which
+// sends their WebhookAck on outbound after Dispatch. For attach, the
 // dispatcher kicks off a streaming goroutine and returns an immediate
 // CommandResult{Ok:true} so the orchestrator knows the attach started
 // — subsequent chunks flow via outbound as DaemonEvent_AttachChunk
@@ -67,7 +68,7 @@ func (c *StreamClient) dispatchCommand(
 	case *pb.OrchestratorCommand_TransferCancel:
 		return c.dispatchTransferCancel(ctx, cmdID, cmd.GetTransferCancel())
 	case *pb.OrchestratorCommand_Webhook:
-		return c.dispatchWebhook(ctx, cmdID, cmd.GetWebhook())
+		return c.dispatchWebhook(cmdID, cmd.GetWebhook())
 	case *pb.OrchestratorCommand_Attach:
 		return c.dispatchAttach(ctx, cmdID, cmd.GetAttach(), outbound)
 	case *pb.OrchestratorCommand_CreateSession:
@@ -363,18 +364,22 @@ func (c *StreamClient) dispatchTransferCancel(ctx context.Context, cmdID string,
 	return commandOK(cmdID, nil)
 }
 
-// dispatchWebhook forwards the webhook payload to the in-daemon
-// dispatcher and wraps the outcome in a WebhookAck event. WebhookAck
+// dispatchWebhook queues the webhook on the stream's webhook lane and
+// returns nil: the lane's worker runs Dispatch off the command reader and
+// sends the WebhookAck on outbound once it returns (BOS-2252). WebhookAck
 // is its own DaemonEvent oneof rather than a CommandResult variant —
-// bosso correlates via command_id either way.
-func (c *StreamClient) dispatchWebhook(ctx context.Context, cmdID string, ev *pb.WebhookEvent) *pb.DaemonEvent {
-	if c.webhooks == nil {
+// bosso correlates via command_id either way. A missing lane or a full
+// queue answers at once with a not-ok ack rather than blocking the reader.
+func (c *StreamClient) dispatchWebhook(cmdID string, ev *pb.WebhookEvent) *pb.DaemonEvent {
+	switch {
+	case c.webhooks == nil:
 		return webhookAck(cmdID, false, "webhook dispatcher not wired")
+	case c.webhookLane == nil:
+		return webhookAck(cmdID, false, "webhook lane not running")
+	case !c.webhookLane.enqueue(webhookJob{cmdID: cmdID, ev: ev}):
+		return webhookAck(cmdID, false, "daemon webhook queue full")
 	}
-	if err := c.webhooks.Dispatch(ctx, ev); err != nil {
-		return webhookAck(cmdID, false, err.Error())
-	}
-	return webhookAck(cmdID, true, "")
+	return nil
 }
 
 // dispatchAttach kicks off the streaming reader and returns an

@@ -57,6 +57,8 @@ type Provider struct {
 	quotas quotaCache
 	// usage meters every call gh sends to GitHub; nil records nothing.
 	usage UsageRecorder
+	// rateLimitLog logs each best-effort read's quota refusal once per window.
+	rateLimitLog vcs.RateLimitLog
 }
 
 // UsageRecorder meters one GitHub call: label is the attribution the call's
@@ -114,6 +116,7 @@ func New(logger zerolog.Logger, opts ...ProviderOption) *Provider {
 	p.limits.now = p.nowFn
 	p.cache.now = p.nowFn
 	p.quotas.now = p.nowFn
+	p.rateLimitLog.Now = p.nowFn
 	return p
 }
 
@@ -384,7 +387,7 @@ func (p *Provider) trustedReviewNodeIDs(ctx context.Context, repoPath string, pr
 	trusted := map[string]bool{}
 	raw, err := p.listRawReviews(ctx, repoPath, prID)
 	if err != nil {
-		p.logger.Warn().Err(err).Int("pr", prID).Msg("failed to identify review authors; skipping untrusted-association reviews")
+		p.logger.WithLevel(p.rateLimitLog.Level("review authors", err)).Err(err).Int("pr", prID).Msg("failed to identify review authors; skipping untrusted-association reviews")
 		return trusted
 	}
 	for _, r := range raw {

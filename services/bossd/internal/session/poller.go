@@ -46,6 +46,8 @@ type Poller struct {
 	health         WebhookHealth  // optional; nil polls every repo every interval
 	activity       RepairActivity // optional; nil never releases a lapsed FixingChecks
 	now            func() time.Time
+	// rateLimitLog logs each read site's quota refusal once per window.
+	rateLimitLog vcs.RateLimitLog
 
 	lastPollMu sync.Mutex
 	lastPoll   map[string]time.Time // session ID -> last scheduled check
@@ -408,7 +410,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models
 	// Check PR status for merge/close/conflict.
 	prStatus, err := p.provider.GetPRStatus(ctx, repoPath, prID)
 	if err != nil {
-		p.logger.Warn().Err(err).Str("session", sess.ID).Msg("poller: get PR status")
+		p.logger.WithLevel(p.rateLimitLog.Level("poller: get PR status", err)).Err(err).Str("session", sess.ID).Msg("poller: get PR status")
 		return
 	}
 
@@ -438,7 +440,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models
 	// Check CI results.
 	checks, err := p.provider.GetCheckResults(ctx, repoPath, prID)
 	if err != nil {
-		p.logger.Warn().Err(err).Str("session", sess.ID).Msg("poller: get check results")
+		p.logger.WithLevel(p.rateLimitLog.Level("poller: get check results", err)).Err(err).Str("session", sess.ID).Msg("poller: get check results")
 		return
 	}
 
@@ -475,7 +477,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models
 		if prStatus.LatestReviewState == vcs.ReviewStateChangesRequested {
 			comments, err := p.provider.GetReviewComments(ctx, repoPath, prID)
 			if err != nil {
-				p.logger.Warn().Err(err).Str("session", sess.ID).Msg("poller: get review comments")
+				p.logger.WithLevel(p.rateLimitLog.Level("poller: get review comments", err)).Err(err).Str("session", sess.ID).Msg("poller: get review comments")
 				return
 			}
 			event.Comments = comments

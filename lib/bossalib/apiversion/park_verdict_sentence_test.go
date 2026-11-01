@@ -32,7 +32,7 @@ func TestParkVerdictSentenceFixtureCompatibility_Sessions_AC215002(t *testing.T)
 	// Admission holds keep their actionable attention copy at both version pins.
 	admission := map[string]string{
 		"ticket-needs-person": "Ticket waits on you · answer it or label it for build",
-		"ticket-not-selected": "Ticket not selected for verify · relabel it or merge by hand",
+		"ticket-not-selected": "Ticket not selected for verify · check verify's selection or merge by hand",
 	}
 	for _, r := range rows {
 		t.Run(r.Sentence, func(t *testing.T) {

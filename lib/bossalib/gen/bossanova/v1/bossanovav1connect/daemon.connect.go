@@ -117,6 +117,12 @@ const (
 	// DaemonServiceSendBackToRepairProcedure is the fully-qualified name of the DaemonService's
 	// SendBackToRepair RPC.
 	DaemonServiceSendBackToRepairProcedure = "/bossanova.v1.DaemonService/SendBackToRepair"
+	// DaemonServiceListSessionPRBlockersProcedure is the fully-qualified name of the DaemonService's
+	// ListSessionPRBlockers RPC.
+	DaemonServiceListSessionPRBlockersProcedure = "/bossanova.v1.DaemonService/ListSessionPRBlockers"
+	// DaemonServiceAcceptSessionPRBlockerProcedure is the fully-qualified name of the DaemonService's
+	// AcceptSessionPRBlocker RPC.
+	DaemonServiceAcceptSessionPRBlockerProcedure = "/bossanova.v1.DaemonService/AcceptSessionPRBlocker"
 	// DaemonServiceRemoveSessionProcedure is the fully-qualified name of the DaemonService's
 	// RemoveSession RPC.
 	DaemonServiceRemoveSessionProcedure = "/bossanova.v1.DaemonService/RemoveSession"
@@ -394,6 +400,14 @@ type DaemonServiceClient interface {
 	// Refusals answer is_sent_back=false with head-moved, proof-moved, repair-active,
 	// not-open or comments-unreadable; malformed pins or notes are InvalidArgument.
 	SendBackToRepair(context.Context, *connect.Request[v1.SendBackToRepairRequest]) (*connect.Response[v1.SendBackToRepairResponse], error)
+	// ListSessionPRBlockers reads review findings at the displayed head. Empty reasons:
+	// no-blockers, comments-unreadable, no-acceptable-blockers, head-unknown.
+	ListSessionPRBlockers(context.Context, *connect.Request[v1.ListSessionPRBlockersRequest]) (*connect.Response[v1.ListSessionPRBlockersResponse], error)
+	// AcceptSessionPRBlocker records an operator acceptance pinned to the displayed head.
+	// Refusals: head-moved, repair-active, pr-unreadable, not-open, comments-unreadable,
+	// no-blockers, blocker-not-listed, blocker-not-acceptable, sent-back,
+	// tracker-create-unavailable, tracker-create-failed, tracker-create-indeterminate, comment-failed.
+	AcceptSessionPRBlocker(context.Context, *connect.Request[v1.AcceptSessionPRBlockerRequest]) (*connect.Response[v1.AcceptSessionPRBlockerResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
@@ -849,6 +863,18 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("SendBackToRepair")),
 			connect.WithClientOptions(opts...),
 		),
+		listSessionPRBlockers: connect.NewClient[v1.ListSessionPRBlockersRequest, v1.ListSessionPRBlockersResponse](
+			httpClient,
+			baseURL+DaemonServiceListSessionPRBlockersProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListSessionPRBlockers")),
+			connect.WithClientOptions(opts...),
+		),
+		acceptSessionPRBlocker: connect.NewClient[v1.AcceptSessionPRBlockerRequest, v1.AcceptSessionPRBlockerResponse](
+			httpClient,
+			baseURL+DaemonServiceAcceptSessionPRBlockerProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("AcceptSessionPRBlocker")),
+			connect.WithClientOptions(opts...),
+		),
 		removeSession: connect.NewClient[v1.RemoveSessionRequest, v1.RemoveSessionResponse](
 			httpClient,
 			baseURL+DaemonServiceRemoveSessionProcedure,
@@ -1302,6 +1328,8 @@ type daemonServiceClient struct {
 	approveSessionPR                     *connect.Client[v1.ApproveSessionPRRequest, v1.ApproveSessionPRResponse]
 	operatorMergeSession                 *connect.Client[v1.OperatorMergeSessionRequest, v1.OperatorMergeSessionResponse]
 	sendBackToRepair                     *connect.Client[v1.SendBackToRepairRequest, v1.SendBackToRepairResponse]
+	listSessionPRBlockers                *connect.Client[v1.ListSessionPRBlockersRequest, v1.ListSessionPRBlockersResponse]
+	acceptSessionPRBlocker               *connect.Client[v1.AcceptSessionPRBlockerRequest, v1.AcceptSessionPRBlockerResponse]
 	removeSession                        *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
 	updateSession                        *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
 	linkSessionPR                        *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
@@ -1512,6 +1540,16 @@ func (c *daemonServiceClient) OperatorMergeSession(ctx context.Context, req *con
 // SendBackToRepair calls bossanova.v1.DaemonService.SendBackToRepair.
 func (c *daemonServiceClient) SendBackToRepair(ctx context.Context, req *connect.Request[v1.SendBackToRepairRequest]) (*connect.Response[v1.SendBackToRepairResponse], error) {
 	return c.sendBackToRepair.CallUnary(ctx, req)
+}
+
+// ListSessionPRBlockers calls bossanova.v1.DaemonService.ListSessionPRBlockers.
+func (c *daemonServiceClient) ListSessionPRBlockers(ctx context.Context, req *connect.Request[v1.ListSessionPRBlockersRequest]) (*connect.Response[v1.ListSessionPRBlockersResponse], error) {
+	return c.listSessionPRBlockers.CallUnary(ctx, req)
+}
+
+// AcceptSessionPRBlocker calls bossanova.v1.DaemonService.AcceptSessionPRBlocker.
+func (c *daemonServiceClient) AcceptSessionPRBlocker(ctx context.Context, req *connect.Request[v1.AcceptSessionPRBlockerRequest]) (*connect.Response[v1.AcceptSessionPRBlockerResponse], error) {
+	return c.acceptSessionPRBlocker.CallUnary(ctx, req)
 }
 
 // RemoveSession calls bossanova.v1.DaemonService.RemoveSession.
@@ -1934,6 +1972,14 @@ type DaemonServiceHandler interface {
 	// Refusals answer is_sent_back=false with head-moved, proof-moved, repair-active,
 	// not-open or comments-unreadable; malformed pins or notes are InvalidArgument.
 	SendBackToRepair(context.Context, *connect.Request[v1.SendBackToRepairRequest]) (*connect.Response[v1.SendBackToRepairResponse], error)
+	// ListSessionPRBlockers reads review findings at the displayed head. Empty reasons:
+	// no-blockers, comments-unreadable, no-acceptable-blockers, head-unknown.
+	ListSessionPRBlockers(context.Context, *connect.Request[v1.ListSessionPRBlockersRequest]) (*connect.Response[v1.ListSessionPRBlockersResponse], error)
+	// AcceptSessionPRBlocker records an operator acceptance pinned to the displayed head.
+	// Refusals: head-moved, repair-active, pr-unreadable, not-open, comments-unreadable,
+	// no-blockers, blocker-not-listed, blocker-not-acceptable, sent-back,
+	// tracker-create-unavailable, tracker-create-failed, tracker-create-indeterminate, comment-failed.
+	AcceptSessionPRBlocker(context.Context, *connect.Request[v1.AcceptSessionPRBlockerRequest]) (*connect.Response[v1.AcceptSessionPRBlockerResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
@@ -2383,6 +2429,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceSendBackToRepairProcedure,
 		svc.SendBackToRepair,
 		connect.WithSchema(daemonServiceMethods.ByName("SendBackToRepair")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListSessionPRBlockersHandler := connect.NewUnaryHandler(
+		DaemonServiceListSessionPRBlockersProcedure,
+		svc.ListSessionPRBlockers,
+		connect.WithSchema(daemonServiceMethods.ByName("ListSessionPRBlockers")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceAcceptSessionPRBlockerHandler := connect.NewUnaryHandler(
+		DaemonServiceAcceptSessionPRBlockerProcedure,
+		svc.AcceptSessionPRBlocker,
+		connect.WithSchema(daemonServiceMethods.ByName("AcceptSessionPRBlocker")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceRemoveSessionHandler := connect.NewUnaryHandler(
@@ -2863,6 +2921,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceOperatorMergeSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceSendBackToRepairProcedure:
 			daemonServiceSendBackToRepairHandler.ServeHTTP(w, r)
+		case DaemonServiceListSessionPRBlockersProcedure:
+			daemonServiceListSessionPRBlockersHandler.ServeHTTP(w, r)
+		case DaemonServiceAcceptSessionPRBlockerProcedure:
+			daemonServiceAcceptSessionPRBlockerHandler.ServeHTTP(w, r)
 		case DaemonServiceRemoveSessionProcedure:
 			daemonServiceRemoveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateSessionProcedure:
@@ -3122,6 +3184,14 @@ func (UnimplementedDaemonServiceHandler) OperatorMergeSession(context.Context, *
 
 func (UnimplementedDaemonServiceHandler) SendBackToRepair(context.Context, *connect.Request[v1.SendBackToRepairRequest]) (*connect.Response[v1.SendBackToRepairResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SendBackToRepair is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListSessionPRBlockers(context.Context, *connect.Request[v1.ListSessionPRBlockersRequest]) (*connect.Response[v1.ListSessionPRBlockersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListSessionPRBlockers is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) AcceptSessionPRBlocker(context.Context, *connect.Request[v1.AcceptSessionPRBlockerRequest]) (*connect.Response[v1.AcceptSessionPRBlockerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.AcceptSessionPRBlocker is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error) {

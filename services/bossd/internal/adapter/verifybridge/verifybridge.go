@@ -212,12 +212,17 @@ func verbArgs(verb string, t Target) ([]string, error) {
 }
 
 func (b *Bridge) run(ctx context.Context, dir string, args []string) ([]byte, error) {
+	out, _, err := b.runAllowing(ctx, dir, args)
+	return out, err
+}
+
+func (b *Bridge) runAllowing(ctx context.Context, dir string, args []string, allowed ...int) ([]byte, int, error) {
 	script := b.Script
 	if script == "" {
 		home, _ := os.UserHomeDir()
 		found, err := Locate(os.Getenv, home)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		script = found
 	}
@@ -225,7 +230,7 @@ func (b *Bridge) run(ctx context.Context, dir string, args []string) ([]byte, er
 	if nodePath == "" {
 		found, err := exec.LookPath("node")
 		if err != nil {
-			return nil, fmt.Errorf("%w: the boss-verify toolbox needs `node` on PATH: %v", ErrNodeMissing, err)
+			return nil, 0, fmt.Errorf("%w: the boss-verify toolbox needs `node` on PATH: %v", ErrNodeMissing, err)
 		}
 		nodePath = found
 	}
@@ -247,19 +252,24 @@ func (b *Bridge) run(ctx context.Context, dir string, args []string) ([]byte, er
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("%w: %s did not finish within %s: %s", ErrNodeTimeout, what, timeout, truncate(stderr.Bytes()))
+			return nil, 0, fmt.Errorf("%w: %s did not finish within %s: %s", ErrNodeTimeout, what, timeout, truncate(stderr.Bytes()))
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return nil, fmt.Errorf("%w: %s failed with exit status %d: %s", ErrNodeExit, what, exitErr.ExitCode(), truncate(stderr.Bytes()))
+			for _, code := range allowed {
+				if exitErr.ExitCode() == code && len(bytes.TrimSpace(stdout.Bytes())) > 0 {
+					return bytes.TrimSpace(stdout.Bytes()), code, nil
+				}
+			}
+			return nil, 0, fmt.Errorf("%w: %s failed with exit status %d: %s", ErrNodeExit, what, exitErr.ExitCode(), truncate(stderr.Bytes()))
 		}
-		return nil, fmt.Errorf("%w: %s could not be run: %v: %s", ErrNodeExit, what, err, truncate(stderr.Bytes()))
+		return nil, 0, fmt.Errorf("%w: %s could not be run: %v: %s", ErrNodeExit, what, err, truncate(stderr.Bytes()))
 	}
 	out := bytes.TrimSpace(stdout.Bytes())
 	if len(out) == 0 {
-		return nil, fmt.Errorf("%w: %s exited 0 but printed nothing; that is a broken bridge, not a result: %s", ErrEmptyOutput, what, truncate(stderr.Bytes()))
+		return nil, 0, fmt.Errorf("%w: %s exited 0 but printed nothing; that is a broken bridge, not a result: %s", ErrEmptyOutput, what, truncate(stderr.Bytes()))
 	}
-	return out, nil
+	return out, 0, nil
 }
 
 // decode parses exactly one JSON object.

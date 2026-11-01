@@ -215,7 +215,9 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    pending and an empty or unreadable rollup keep waiting, and every other shape — `absent-gate`
    (the verdict carries its `absentGateRemedy`), no gate ran, a delay that did not elapse
    (`delay-inert`) — is `unknown`. It settles only once every head workflow run has completed and
-   green has held for two reads; a failed workflow-runs read never settles.
+   green has held for two reads; a failed workflow-runs read never settles. A pending verify claim
+   or `waiting:` hold on the head is verify-stage work, so the wait excludes it and reports it in
+   `verifyHold`, while a terminal verify status still counts.
 
    On `CI_WAIT_STATE=timeout` the wait expired with the checks still unsettled; on
    `CI_WAIT_STATE=unknown` a read landed on a rollup this wait will not call green. **Both are

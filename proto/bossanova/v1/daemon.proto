@@ -80,6 +80,15 @@ service DaemonService {
   // Refusals answer is_sent_back=false with head-moved, proof-moved, repair-active,
   // not-open or comments-unreadable; malformed pins or notes are InvalidArgument.
   rpc SendBackToRepair(SendBackToRepairRequest) returns (SendBackToRepairResponse);
+  // ListSessionPRBlockers reads review findings at the displayed head. Empty reasons:
+  // no-blockers, comments-unreadable, no-acceptable-blockers, head-unknown.
+  rpc ListSessionPRBlockers(ListSessionPRBlockersRequest) returns (ListSessionPRBlockersResponse);
+  // AcceptSessionPRBlocker records an operator acceptance pinned to the displayed head.
+  // Refusals: head-moved, repair-active, pr-unreadable, not-open, comments-unreadable,
+  // no-blockers, blocker-not-listed, blocker-not-acceptable, sent-back,
+  // tracker-create-unavailable, tracker-create-failed, tracker-create-indeterminate, comment-failed.
+  rpc AcceptSessionPRBlocker(AcceptSessionPRBlockerRequest) returns (AcceptSessionPRBlockerResponse);
+
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
   rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
   rpc LinkSessionPR(LinkSessionPRRequest) returns (LinkSessionPRResponse);
@@ -2544,4 +2553,40 @@ message FactoryHealthProblem {
   string code = 1;
   string text = 2;
   google.protobuf.Timestamp started_at = 3;
+}
+
+message VerifyBlocker {
+  string id = 1;
+  string severity = 2;
+  string file_path = 3;
+  int32 line_number = 4;
+  string summary = 5;
+  string text = 6;
+}
+message ListSessionPRBlockersRequest { string id = 1; }
+message ListSessionPRBlockersResponse {
+  string head_sha = 1;
+  repeated VerifyBlocker blockers = 2;
+  string reason = 3;
+}
+message AcceptSessionPRBlockerRequest {
+  string id = 1;
+  string blocker_id = 2;
+  string reason = 3;
+  string expected_head_sha = 4;
+  bool is_dry_run = 5;
+}
+message AcceptSessionPRBlockerResponse {
+  bool is_accepted = 1;
+  string reason = 2;
+  string detail = 3;
+  string head_sha = 4;
+  string blocker_id = 5;
+  string ticket_identifier = 6;
+  string ticket_url = 7;
+  string comment_url = 8;
+  bool is_existing_ticket = 9;
+  bool is_already_accepted = 10;
+  bool is_dry_run = 11;
+  repeated string planned_writes = 12;
 }

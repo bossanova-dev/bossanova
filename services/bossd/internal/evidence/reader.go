@@ -206,6 +206,8 @@ type Reader struct {
 	// readTimeout bounds each comment read.
 	readTimeout time.Duration
 	onChange    func(context.Context, string)
+	// rateLimitLog logs a comment read's quota refusal once per window.
+	rateLimitLog vcs.RateLimitLog
 
 	mu       sync.Mutex
 	sessions map[string]*headState
@@ -390,7 +392,7 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 	defer cancel()
 	comments, err := r.finder.FindPRCommentsWithMarker(ctx, obs.RepoPath, obs.PRNumber, CommentMarker)
 	if err != nil {
-		r.logger.Warn().Err(err).
+		r.logger.WithLevel(r.rateLimitLog.Level("read PR comments", err)).Err(err).
 			Str("session_id", obs.SessionID).
 			Int("pr_number", obs.PRNumber).
 			Msg("evidence reader: read PR comments failed; retrying after the refresh interval")

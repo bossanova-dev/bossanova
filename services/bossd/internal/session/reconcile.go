@@ -116,6 +116,8 @@ type PRAssociationResolver struct {
 	failureTTL time.Duration
 	now        func() time.Time
 	prCache    map[string]prCacheEntry
+	// rateLimitLog logs each read site's quota refusal once per window.
+	rateLimitLog vcs.RateLimitLog
 	// cronTitleChecked records, per session, the PR and time of the last
 	// stale-cron-title read that found nothing to adopt. Guarded by mu.
 	cronTitleChecked map[string]cronTitleCheck
@@ -302,13 +304,13 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 
 		match, err := r.findPRMatchForSession(ctx, sess)
 		if err != nil {
-			// One Warn per repo per failure window: the repeats this pass are
-			// served from the negative cache and carry no new information.
-			event := r.logger.Warn()
+			// One Warn per repo per failure window, and one per quota window
+			// while GitHub refuses reads: the repeats carry no new information.
+			level := r.rateLimitLog.Level("reconcile: find PR for session", err)
 			if errors.Is(err, errCachedPRListing) {
-				event = r.logger.Debug()
+				level = zerolog.DebugLevel
 			}
-			event.Err(err).
+			r.logger.WithLevel(level).Err(err).
 				Str("session", sess.ID).
 				Str("repo_id", sess.RepoID).
 				Str("branch", sess.BranchName).
@@ -562,7 +564,7 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 		}
 		updated, cleared, err := r.clearNoCommitsPRTitle(ctx, sess, real)
 		if err != nil {
-			r.logger.Warn().Err(err).Str("session", sess.ID).Msg("reconcile: clear no-commits PR title")
+			r.logger.WithLevel(r.rateLimitLog.Level("reconcile: clear no-commits PR title", err)).Err(err).Str("session", sess.ID).Msg("reconcile: clear no-commits PR title")
 			continue
 		}
 		if cleared {

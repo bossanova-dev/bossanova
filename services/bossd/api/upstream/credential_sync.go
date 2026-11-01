@@ -12,9 +12,8 @@ import (
 
 // CredentialRemote transports only opaque ciphertext and public enrollment evidence.
 type CredentialRemote struct {
-	Client   bossanovav1connect.OrchestratorServiceClient
-	Token    func() string
-	DaemonID string
+	Client bossanovav1connect.OrchestratorServiceClient
+	Token  func() string
 }
 
 func credentialRequest[T any](r *CredentialRemote, v *T) *connect.Request[T] {
@@ -79,19 +78,15 @@ func (r *CredentialRemote) PutBlob(ctx context.Context, expected int64, b credsy
 	return credentialError(err)
 }
 func (r *CredentialRemote) ListAgentAccounts(ctx context.Context) ([]credsync.AgentAccountMetadata, error) {
-	out, err := r.Client.ListSyncedAgentAccounts(ctx, credentialRequest(r, &pb.ListSyncedAgentAccountsRequest{}))
+	// The daemon-level listing resolves scope for this daemon server-side; the
+	// user-level ListSyncedAgentAccounts refuses the daemon token (BOS-2237).
+	out, err := r.Client.ListCredentialAgentAccounts(ctx, credentialRequest(r, &pb.ListCredentialAgentAccountsRequest{}))
 	if err != nil {
 		return nil, credentialError(err)
 	}
 	var result []credsync.AgentAccountMetadata
-	for _, a := range out.Msg.Accounts {
-		scope := a.SyncScope == "all_daemons"
-		for _, m := range a.Members {
-			if m.DaemonId == r.DaemonID && m.IsSelected {
-				scope = true
-			}
-		}
-		result = append(result, credsync.AgentAccountMetadata{SyncedAgentAccountID: a.Id, Provider: a.Provider, Label: a.Label, DesiredStatus: a.DesiredStatus, Priority: int(a.Priority), IsInScope: scope})
+	for _, a := range out.Msg.GetAccounts() {
+		result = append(result, credsync.AgentAccountMetadata{SyncedAgentAccountID: a.GetSyncedAgentAccountId(), Provider: a.GetProvider(), Label: a.GetLabel(), DesiredStatus: a.GetDesiredStatus(), Priority: int(a.GetPriority()), IsInScope: a.GetIsInScope()})
 	}
 	return result, nil
 }

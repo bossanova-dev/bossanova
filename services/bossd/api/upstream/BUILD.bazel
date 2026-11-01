@@ -1,5 +1,8 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# keep: //services/bosso/api/auth:auth_test scans the credential remote for daemon-token orchestrator calls
+exports_files(["credential_sync.go"])
+
 go_library(
     name = "upstream",
     srcs = [
@@ -43,6 +46,7 @@ go_library(
         "webhook_dispatcher.go",
         "webhook_events.go",
         "webhook_health.go",
+        "webhook_lane.go",
     ],
     importpath = "github.com/recurser/bossd/api/upstream",
     visibility = ["//services/bossd:__subpackages__"],
@@ -90,6 +94,7 @@ go_test(
         "coalescer_test.go",
         "command_dispatcher_test.go",
         "credential_seal_cache_test.go",
+        "credential_sync_test.go",
         "credential_trust_test.go",
         "daemon_id_test.go",
         "daemon_key_test.go",
@@ -125,6 +130,7 @@ go_test(
         "webhook_dispatcher_test.go",
         "webhook_events_test.go",
         "webhook_health_test.go",
+        "webhook_lane_test.go",
         "wiring_test.go",
     ],
     data = glob(["testdata/**"]) + glob(

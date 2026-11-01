@@ -189,20 +189,20 @@ func TestChatPicker_ArmedStatusCellShowsTrigger(t *testing.T) {
 		want    string
 		done    bool
 	}{
-		{name: "checks_passed_ready", trigger: "checks_passed_ready", sess: prSession(ownURL, 2960), want: "awaiting green"},
-		{name: "checks_passed", trigger: "checks_passed", sess: prSession(ownURL, 2960), want: "awaiting checks"},
-		{name: "ready_for_review", trigger: "ready_for_review", sess: prSession(ownURL, 2960), want: "awaiting ready"},
-		{name: "unknown trigger", trigger: "new_event", sess: prSession(ownURL, 2960), want: "awaiting new event"},
+		{name: "checks_passed_ready", trigger: "checks_passed_ready", sess: prSession(ownURL, 2960), want: "waiting: CI"},
+		{name: "checks_passed", trigger: "checks_passed", sess: prSession(ownURL, 2960), want: "waiting: CI"},
+		{name: "ready_for_review", trigger: "ready_for_review", sess: prSession(ownURL, 2960), want: "waiting: ready"},
+		{name: "unknown trigger", trigger: "new_event", sess: prSession(ownURL, 2960), want: "waiting: new event"},
 		{name: "merged on own PR", trigger: "merged", sess: prSession(ownURL, 2960), want: "done", done: true},
 		{name: "closed on own PR", trigger: "closed", sess: prSession(ownURL, 2960), want: "done", done: true},
 		{name: "merged on own PR spelled in another case", trigger: "merged", sess: prSession("https://github.com/Acme/My-App/pull/2960", 2960), want: "done", done: true},
 		{name: "merged on own PR when the session names no repo", trigger: "merged", sess: prSession("", 2960), want: "done", done: true},
-		{name: "merged on another PR", trigger: "merged", sess: prSession("https://github.com/acme/my-app/pull/3154", 3154), want: "awaiting merge #2960"},
-		{name: "checks on another PR", trigger: "checks_passed", sess: prSession("https://github.com/acme/my-app/pull/3154", 3154), want: "awaiting checks #2960"},
-		{name: "merged on the same number in another repo", trigger: "merged", sess: prSession(otherRepoURL, 2960), want: "awaiting merge acme/my-app#2960"},
-		{name: "checks on the same number in another repo", trigger: "checks_passed", sess: prSession(otherRepoURL, 2960), want: "awaiting checks acme/my-app#2960"},
-		{name: "merged without a session PR", trigger: "merged", sess: prSession("https://github.com/acme/my-app.git", 0), want: "awaiting merge #2960"},
-		{name: "merged without a session PR in another repo", trigger: "merged", sess: prSession("git@github.com:other/repo.git", 0), want: "awaiting merge acme/my-app#2960"},
+		{name: "merged on another PR", trigger: "merged", sess: prSession("https://github.com/acme/my-app/pull/3154", 3154), want: "waiting: merge #2960"},
+		{name: "checks on another PR", trigger: "checks_passed", sess: prSession("https://github.com/acme/my-app/pull/3154", 3154), want: "waiting: CI #2960"},
+		{name: "merged on the same number in another repo", trigger: "merged", sess: prSession(otherRepoURL, 2960), want: "waiting: merge acme/my-app#2960"},
+		{name: "checks on the same number in another repo", trigger: "checks_passed", sess: prSession(otherRepoURL, 2960), want: "waiting: CI acme/my-app#2960"},
+		{name: "merged without a session PR", trigger: "merged", sess: prSession("https://github.com/acme/my-app.git", 0), want: "waiting: merge #2960"},
+		{name: "merged without a session PR in another repo", trigger: "merged", sess: prSession("git@github.com:other/repo.git", 0), want: "waiting: merge acme/my-app#2960"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := &chatPickerStub{callbacks: []*pb.GitHubCallback{armedTestCallback("cb-1", tc.trigger)}}
@@ -264,9 +264,9 @@ func TestChatPicker_ProgressCallbackOutranksADoneReason(t *testing.T) {
 		other *pb.GitHubCallback
 		want  string // "" for done
 	}{
-		{name: "newer checks_passed", other: other("checks_passed", nil), want: "awaiting checks"},
-		{name: "newer ready_for_review", other: other("ready_for_review", nil), want: "awaiting ready"},
-		{name: "merge of a child PR", other: other("merged", func(cb *pb.GitHubCallback) { cb.PrNumber = 3154 }), want: "awaiting merge #3154"},
+		{name: "newer checks_passed", other: other("checks_passed", nil), want: "waiting: CI"},
+		{name: "newer ready_for_review", other: other("ready_for_review", nil), want: "waiting: ready"},
+		{name: "merge of a child PR", other: other("merged", func(cb *pb.GitHubCallback) { cb.PrNumber = 3154 }), want: "waiting: merge #3154"},
 		{name: "standby checks_failed", other: other("checks_failed", nil)},
 		{name: "own PR closing", other: other("closed", nil)},
 		{name: "expired checks_passed", other: other("checks_passed", func(cb *pb.GitHubCallback) { cb.ExpiresAt = timestamppb.New(time.Now().Add(-time.Minute)) })},
@@ -580,7 +580,7 @@ func TestChatPicker_ArmedVerifyFixture(t *testing.T) {
 		t.Fatalf("armedLine = %q, want prefix %q", line, wantPrefix)
 	}
 	rendered := stripANSI(m.View().Content)
-	if !strings.Contains(rendered, "awaiting green") || strings.Contains(rendered, fixtures.ArmedVerifyReason) {
+	if !strings.Contains(rendered, "waiting: CI") || strings.Contains(rendered, fixtures.ArmedVerifyReason) {
 		t.Fatalf("picker should name the wait in STATUS only:\n%s", rendered)
 	}
 	if strings.Contains(rendered, fixtures.ArmedVerifyCallbackMessage) {
@@ -655,8 +655,8 @@ func TestChatPicker_StuckWakeNamesOwner_ChatPicker_AC216601(t *testing.T) {
 		want    string
 		spins   bool
 	}{
-		{"pending", pb.DisplayStatus_DISPLAY_STATUS_CHECKING, false, "awaiting green", true},
-		{"green", pb.DisplayStatus_DISPLAY_STATUS_PASSING, false, "awaiting green", true},
+		{"pending", pb.DisplayStatus_DISPLAY_STATUS_CHECKING, false, "checking 12/20", true},
+		{"green", pb.DisplayStatus_DISPLAY_STATUS_PASSING, false, "waiting: retry", true},
 		{"conflict", pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, false, "stuck: conflict", false},
 		{"repair working", pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, true, "awaiting repair", true},
 		{"draft", pb.DisplayStatus_DISPLAY_STATUS_DRAFT, false, "stuck: draft", false},
@@ -665,6 +665,9 @@ func TestChatPicker_StuckWakeNamesOwner_ChatPicker_AC216601(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
 			sess.DisplayStatus = tt.status
+			if tt.name == "pending" || tt.name == "green" {
+				sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: tt.want}
+			}
 			statuses := map[string]string{"agent-armed": ui.StatusWaiting, "repair": ui.StatusIdle}
 			if tt.working {
 				statuses["repair"] = ui.StatusWorking
@@ -710,5 +713,32 @@ func TestCallbackWaitReachDelivery(t *testing.T) {
 				t.Fatalf("callback reach = %+v, want reachable=%t", got, tt.reachable)
 			}
 		})
+	}
+}
+
+func TestChatWaitUsesServedPRFacts_ChatPicker_AC225801(t *testing.T) {
+	for _, label := range []string{"checking 12/20", "waiting: retry", "waiting: CI", "tests busy", "queued"} {
+		t.Run(label, func(t *testing.T) {
+			sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
+			sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: label}
+			chat := verifyChat("agent-armed", "verify")
+			m := armedPicker(t, &chatPickerStub{callbacks: []*pb.GitHubCallback{armedTestCallback("cb", "checks_passed_ready")}}, sess, []*pb.AgentChat{chat}, map[string]string{"agent-armed": ui.StatusWaiting}, map[string]string{"agent-armed": armedTestReason("checks_passed_ready")})
+			m.buildTableRows()
+			if got := stripANSI(statusCellsByTitle(m)["verify"]); !strings.HasSuffix(got, label) {
+				t.Fatalf("STATUS=%q want %q", got, label)
+			}
+		})
+	}
+}
+
+func TestChatWaitUnknownChecksWithOlderMergeCallback(t *testing.T) {
+	sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
+	sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "waiting: merge"}
+	chat := verifyChat("agent-armed", "verify")
+	callbacks := []*pb.GitHubCallback{armedTestCallback("older", "merged"), armedTestCallback("newer", "checks_passed")}
+	m := armedPicker(t, &chatPickerStub{callbacks: callbacks}, sess, []*pb.AgentChat{chat}, map[string]string{"agent-armed": ui.StatusWaiting}, map[string]string{"agent-armed": armedTestReason("merged")})
+	m.buildTableRows()
+	if got := stripANSI(statusCellsByTitle(m)["verify"]); !strings.HasSuffix(got, "waiting: CI") {
+		t.Fatalf("STATUS=%q, want waiting: CI while check facts are unknown", got)
 	}
 }

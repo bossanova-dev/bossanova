@@ -38,12 +38,32 @@ type fakeTicketTagProvider struct {
 	*mockVCSProvider
 	bodies  []string
 	bodyErr error
+	// prs gives a PR number its own title and body; others share nextPRStatus.
+	prs map[int]*vcs.PRStatus
+	// prStatusErrs fails GetPRStatus for one PR number after recording the read.
+	prStatusErrs map[int]error
+}
+
+func (p *fakeTicketTagProvider) status(n int) *vcs.PRStatus {
+	if status, ok := p.prs[n]; ok {
+		return status
+	}
+	return p.nextPRStatus
 }
 
 func (p *fakeTicketTagProvider) GetPRStatus(ctx context.Context, repo string, n int) (*vcs.PRStatus, error) {
 	status, err := p.mockVCSProvider.GetPRStatus(ctx, repo, n)
-	if status == nil || err != nil {
-		return status, err
+	if err == nil {
+		err = p.prStatusErrs[n]
+	}
+	if err != nil {
+		return nil, err
+	}
+	if own, ok := p.prs[n]; ok {
+		status = own
+	}
+	if status == nil {
+		return nil, nil
 	}
 	copyStatus := *status
 	return &copyStatus, nil
@@ -52,15 +72,15 @@ func (p *fakeTicketTagProvider) UpdatePRTitle(ctx context.Context, repo string, 
 	if err := p.mockVCSProvider.UpdatePRTitle(ctx, repo, n, title); err != nil {
 		return err
 	}
-	p.nextPRStatus.Title = title
+	p.status(n).Title = title
 	return nil
 }
-func (p *fakeTicketTagProvider) UpdatePRBody(_ context.Context, _ string, _ int, body string) error {
+func (p *fakeTicketTagProvider) UpdatePRBody(_ context.Context, _ string, n int, body string) error {
 	p.bodies = append(p.bodies, body)
 	if p.bodyErr != nil {
 		return p.bodyErr
 	}
-	p.nextPRStatus.Body = body
+	p.status(n).Body = body
 	return nil
 }
 func ticketTagSession(s *models.Session) {
@@ -284,6 +304,72 @@ func TestEnsureTicketTagsPersistentFailuresRotate(t *testing.T) {
 	for _, id := range []string{"a", "b", "c", "d", "e", "f", "g"} {
 		if counts[int(id[0])] < 2 {
 			t.Fatalf("session %s was starved: attempts=%v", id, counts)
+		}
+	}
+}
+
+func TestEnsureTicketTagsLeadingFailures_Sessions_AC214801(t *testing.T) {
+	h, p := ticketTagHarness(t)
+	p.prs, p.prStatusErrs = map[int]*vcs.PRStatus{}, map[int]error{}
+	var failing, later []int
+	for i, id := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		n := 100 + i
+		h.addSession(id, func(s *models.Session) { ticketTagSession(s); s.PRNumber = &n })
+		p.prs[n] = &vcs.PRStatus{State: vcs.PRStateOpen, Title: "Current title", Body: "Agent body\n"}
+		if i < maxTicketTagChecksPerPass {
+			p.prStatusErrs[n] = errors.New("persistent failure")
+			failing = append(failing, n)
+		} else {
+			later = append(later, n)
+		}
+	}
+	const passes = 4
+	reads := make([]map[int]int, passes)
+	var taggedEarly int64
+	for pass := range passes {
+		before := len(p.getPRStatusPRNumbers)
+		tagged, err := h.linker.EnsureTicketTags(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pass < 2 {
+			taggedEarly += tagged
+		}
+		pr := p.getPRStatusPRNumbers[before:]
+		if len(pr) > maxTicketTagChecksPerPass {
+			t.Fatalf("pass %d read %d PRs: %v", pass+1, len(pr), pr)
+		}
+		reads[pass] = map[int]int{}
+		for _, n := range pr {
+			reads[pass][n]++
+		}
+	}
+	if taggedEarly != int64(len(later)) {
+		t.Fatalf("tagged %d sessions in two passes, want %d: reads=%v", taggedEarly, len(later), reads)
+	}
+	for _, n := range later {
+		if got := reads[0][n] + reads[1][n]; got != 1 {
+			t.Fatalf("PR %d read %d times in two passes, want 1: reads=%v", n, got, reads)
+		}
+		for pass := 2; pass < passes; pass++ {
+			if reads[pass][n] != 0 {
+				t.Fatalf("memoised PR %d re-read on pass %d", n, pass+1)
+			}
+		}
+		if got := p.prs[n]; got.Title != "[BOS-2142] Current title" ||
+			got.Body != "Tracker issue: https://linear.app/acme/issue/BOS-2142\n\nAgent body\n" {
+			t.Fatalf("PR %d not tagged: title=%q body=%q", n, got.Title, got.Body)
+		}
+	}
+	for _, n := range failing {
+		retried := 0
+		for pass := range passes {
+			if reads[pass][n] > 0 {
+				retried++
+			}
+		}
+		if retried < 2 {
+			t.Fatalf("failing PR %d read on %d passes, want at least 2: reads=%v", n, retried, reads)
 		}
 	}
 }

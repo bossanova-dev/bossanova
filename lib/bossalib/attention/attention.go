@@ -79,10 +79,14 @@ const (
 type Admission struct {
 	State  AdmissionState
 	Reason string
+	// Rule names the selection rule a ticket-not-selected hold failed: labels,
+	// assignees, creators, projects or unreadable. Empty when none was recorded.
+	Rule string
 }
 
 // Input is everything Compute needs, as plain values.
 type Input struct {
+	Wait  CallbackWait
 	HasPR bool
 	// PRState is PRStateOpen, PRStateMerged or PRStateClosed.
 	PRState string
@@ -360,6 +364,17 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 	if info.admissionSentence != "" {
 		sentence = info.admissionSentence
 	}
+	// No dated apiversion bump for the rule-specific ticket-not-selected
+	// sentence, and why: Session.attention reaches the version-skewed boss TUI
+	// and web (through bosso), and both render the served sentence verbatim. A
+	// down-convert could only restore "relabel it", which is the wrong advice
+	// for a hold an assignee, creator or project rule caused, so none is
+	// wanted. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	if code == ParkCodeTicketNotSelected && in.VerifyAdmission.Reason == ParkCodeTicketNotSelected {
+		if ruled, ok := ticketNotSelectedSentences[in.VerifyAdmission.Rule]; ok {
+			sentence = ruled
+		}
+	}
 	actions := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB}
 	evidenceURL := ""
 	if in.Evidence != nil && in.Evidence.URL != "" {
@@ -467,7 +482,15 @@ func progressLabel(in Input, codes []string) string {
 	case pb.ChatStatus_CHAT_STATUS_STOPPED, pb.ChatStatus_CHAT_STATUS_UNSPECIFIED:
 		return "stopped"
 	case pb.ChatStatus_CHAT_STATUS_WAITING:
-		return "waiting"
+		// No dated apiversion bump: these labels all start with waiting, so
+		// version-skewed TUI and web clients retain their info-spinner styling.
+		// Down-converting to bare waiting would restore the missing-reason defect.
+		// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+		checks := ChecksUnknown
+		if in.ChecksTotal > 0 && in.ChecksDone >= in.ChecksTotal {
+			checks = ChecksSettled
+		}
+		return CallbackWaitLabel(in.Wait, checks)
 	default:
 		return "idle"
 	}

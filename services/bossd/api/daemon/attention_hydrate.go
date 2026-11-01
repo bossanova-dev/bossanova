@@ -158,7 +158,8 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		in.QuestionText, in.QuestionAt = s.attentionQuestion(ctx, row, d.chats, q.ChatID, q.At)
 	}
 	if s.chatStatus != nil {
-		served, _, _, _ := s.chatStatusAndWaitingAggregate(ctx, d.chats, true)
+		served, reason, _, _ := s.chatStatusAndWaitingAggregate(ctx, d.chats, true)
+		in.Wait = callbackWaitForSession(p, reason)
 		in.ChatStatus = served
 		in.ProgressPhase = s.phaseForChats(d.chats, served)
 	}
@@ -174,6 +175,19 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		}
 		p.Attention.Actions = actions
 	}
+}
+
+// callbackWaitForSession converts the served reason into plain attention facts.
+func callbackWaitForSession(p *pb.Session, reason string) attention.CallbackWait {
+	wait := attention.CallbackWait{Trigger: displaystatus.CallbackWaitingTrigger(reason)}
+	nwo := vcs.GitHubNWO(p.GetPrUrl())
+	if nwo == "" {
+		nwo = vcs.GitHubNWO(p.GetRepoOriginUrl())
+	}
+	if !displaystatus.IsOwnPRWaitingReason(reason, nwo, int(p.GetPrNumber())) {
+		_, _, wait.OtherPR, _ = displaystatus.CallbackWaitingTarget(reason)
+	}
+	return wait
 }
 
 // attentionFactory reports whether the repo has an enabled verify job on this
@@ -484,7 +498,7 @@ func (s *Server) attentionVerifyAdmission(repoID string, prNumber int, head stri
 	case verifyadmission.StateExcluded:
 		state = attention.AdmissionExcluded
 	}
-	return attention.Admission{State: state, Reason: answer.Reason}
+	return attention.Admission{State: state, Reason: answer.Reason, Rule: answer.Rule}
 }
 
 func (s *Server) readVerifyAdmission(ctx context.Context, repoID, path string) (string, verifyadmission.Snapshot) {

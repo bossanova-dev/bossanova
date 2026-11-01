@@ -979,3 +979,20 @@ func TestListSessions_Sessions_AC163_ConflictWithdrawsPark(t *testing.T) {
 		})
 	}
 }
+
+func TestHydrateAttentionCallbackWait_Sessions_AC225801(t *testing.T) {
+	for _, tc := range []struct{ reason, want string }{
+		{"awaiting checks_passed_ready on acme/app#3795", "waiting: CI"},
+		{"awaiting ready_for_review on acme/app#3795", "waiting: ready"},
+		{"awaiting merged on acme/app#2960", "waiting: #2960"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			s := stuckWaitServer(t, vcs.DisplayInfo{Status: vcs.DisplayStatusChecking}, "none", "")
+			park(s.chatStatus, "verify-chat", tc.reason)
+			got := listStuckAttention(t, s)
+			if got.GetProgressLabel() != tc.want {
+				t.Fatalf("attention=%v want %q", got, tc.want)
+			}
+		})
+	}
+}

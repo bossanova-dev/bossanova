@@ -4,6 +4,7 @@ go_library(
     name = "plugin",
     srcs = [
         "chat_role.go",
+        "host_github_errors.go",
         "host_service.go",
         "host_session_update.go",
         "host_watchdog.go",
@@ -42,6 +43,7 @@ go_test(
     srcs = [
         "account_env_test.go",
         "constructor_test.go",
+        "host_github_errors_test.go",
         "host_service_test.go",
         "host_watchdog_test.go",
         "intconv_test.go",

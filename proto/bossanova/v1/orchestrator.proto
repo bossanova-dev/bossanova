@@ -628,6 +628,16 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "none";
   }
+  // ListCredentialAgentAccounts distributes opaque end-to-end credential material:
+  // it lists the calling daemon owner's synced agent accounts with only the
+  // metadata credential sync consumes, scope already resolved for the calling
+  // daemon. It is the daemon-token counterpart of the user-level
+  // ListSyncedAgentAccounts, which also carries every member daemon's reports.
+  rpc ListCredentialAgentAccounts(ListCredentialAgentAccountsRequest) returns (ListCredentialAgentAccountsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
   // SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
   // authenticates the daemon session, the same principal as
   // PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
@@ -3628,6 +3638,19 @@ message AcquireAgentCredentialRefreshLeaseRequest { string synced_agent_account_
 message AcquireAgentCredentialRefreshLeaseResponse { bool is_acquired = 1; google.protobuf.Timestamp expires_at = 2; }
 message ReleaseAgentCredentialRefreshLeaseRequest { string synced_agent_account_id = 1; }
 message ReleaseAgentCredentialRefreshLeaseResponse {}
+message ListCredentialAgentAccountsRequest {}
+message ListCredentialAgentAccountsResponse { repeated CredentialAgentAccount accounts = 1; }
+// CredentialAgentAccount is one synced agent account as credential sync sees it.
+// is_in_scope is true when the account syncs to all daemons or the calling
+// daemon is a selected member.
+message CredentialAgentAccount {
+  string synced_agent_account_id = 1;
+  string provider = 2;
+  string label = 3;
+  string desired_status = 4;
+  int32 priority = 5;
+  bool is_in_scope = 6;
+}
 
 // This new RPC is additive: no deployed client observes changed behavior and
 // no response transform is needed. It intentionally carries no Session.

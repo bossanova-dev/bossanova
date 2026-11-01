@@ -40,6 +40,7 @@ func TestHomeProgressLabelSetsFitColumn(t *testing.T) {
 	h := NewModel(nil, context.Background(), nil)
 	labels := append(attention.VerifyHoldLabels(), attention.WaitLabels()...)
 	labels = append(labels, attention.VerifyUnknownLabel)
+	labels = append(labels, attention.CallbackWaitLabels()...)
 	for _, label := range labels {
 		t.Run(label, func(t *testing.T) {
 			cell := h.renderProgressStatus(label)

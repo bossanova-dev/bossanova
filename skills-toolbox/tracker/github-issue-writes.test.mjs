@@ -68,13 +68,28 @@ test('GitHub write capability conforms and probes with only an issue read', asyn
     ok: true,
     outcome: 'ok',
     applied: [],
-    issue: { id: 'GH-3', identifier: 'GH-3', labels: ['boss:in-review', 'needs-human'] },
+    issue: {
+      id: 'GH-3',
+      identifier: 'GH-3',
+      labels: ['boss:in-review', 'needs-human'],
+      assigneeId: null,
+      creatorId: 'alice',
+    },
   })
   assert.deepEqual(
     calls.map((args) => args.slice(0, 2)),
     [['issue', 'view']],
   )
   assert.deepEqual(mutations, [])
+})
+
+test('GitHub read summary carries the assignee and creator, never a project', async () => {
+  const { adapter, ticket } = harness()
+  ticket.assignees = [{ login: 'bob' }]
+  const { issue } = await adapter.applyIssueWrites({ issueId: 'GH-3' })
+  assert.equal(issue.assigneeId, 'bob')
+  assert.equal(issue.creatorId, 'alice')
+  assert.equal('projectId' in issue, false)
 })
 
 test('GitHub merge write drops human and workflow labels and closes completed', async () => {

@@ -96,6 +96,28 @@ func TestAttentionVerifyAdmission(t *testing.T) {
 	}
 }
 
+// A recorded selection rule reaches the served sentence on the board and the timeline.
+func TestAttentionVerifyAdmissionRule_Sessions_AC221801(t *testing.T) {
+	snapshot := map[string]any{"version": 1, "scopes": map[string]any{"default": map[string]any{"prs": map[string]any{
+		"1": map[string]string{"head": timelineHead, "state": "pending", "reason": "ticket-not-selected", "rule": "assignees"},
+	}}}}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, facts := boardAttentionWithAdmission(t, data, false)
+	const want = "Ticket's assignee is outside verify's selection · reassign it or merge by hand"
+	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetSentence() != want || !slices.Equal(got.GetParkCodes(), []string{"ticket-not-selected"}) {
+		t.Fatalf("attention = %v, want FIX %q", got, want)
+	}
+	if slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
+		t.Fatalf("admission hold offers merge: %v", got)
+	}
+	if facts.VerifyAdmission.Rule != "assignees" {
+		t.Fatalf("timeline admission = %+v, want rule assignees", facts.VerifyAdmission)
+	}
+}
+
 // admissionSnapshot is a version-one admission file answering PR 1 at head.
 func admissionSnapshot(t *testing.T, head, state, reason string) []byte {
 	t.Helper()

@@ -588,13 +588,14 @@ test('matchIssue agrees with the rendered filter on every fixture, in all three 
     for (const issue of ISSUES) {
       const expected = evaluate(filter, issue)
       for (const [shape, payload] of Object.entries(shapes(issue))) {
-        const { matches, reason } = matchIssue(payload, selection, rules)
+        const { matches, reason, rule } = matchIssue(payload, selection, rules)
         assert.equal(
           matches,
           expected,
           `${issue.id} ${shape} ${JSON.stringify(slots)} ${JSON.stringify(rules)}: ${reason}`,
         )
         assert.equal(reason === null, matches, 'reason is null exactly when it matches')
+        assert.equal(rule === null, matches, 'rule is null exactly when it matches')
         checked += 1
       }
     }
@@ -610,12 +611,19 @@ test('matchIssue never passes a slot whose field is absent from the fetched issu
       assert.deepEqual(result, {
         matches: false,
         reason: `${dimension}: field absent on the fetched issue`,
+        rule: 'unreadable',
       })
     }
   }
   assert.deepEqual(matchIssue({ id: 'T-9' }, sel({ labels: { exclude: ['x'] } })), {
     matches: false,
     reason: 'labels: field absent on the fetched issue',
+    rule: 'unreadable',
+  })
+  assert.deepEqual(matchIssue(null, sel()), {
+    matches: false,
+    reason: 'issue: not an object',
+    rule: 'unreadable',
   })
   // An absent field a configured slot does NOT need is irrelevant.
   assert.equal(matchIssue(bare, sel({ labels: { include: ['agent-build'] } })).matches, true)
@@ -643,6 +651,26 @@ test('matchIssue names the first failing slot', () => {
     matchIssue(issue, sel(), { requireLabels: ['agent-plan'] }).reason,
     'requireLabels: missing "agent-plan"',
   )
+})
+
+test('matchIssue names the failed dimension as its rule', () => {
+  const issue = shapes(ISSUES[1]).mcp
+  const graphql = shapes(ISSUES[0]).graphql
+  const cases = [
+    [issue, sel(), { requireLabels: ['agent-plan'] }, 'labels'],
+    [issue, sel({ labels: { include: ['nope'] } }), {}, 'labels'],
+    [issue, sel(), { excludeLabels: ['infra'] }, 'labels'],
+    [issue, sel({ labels: { exclude: ['infra'] } }), {}, 'labels'],
+    [graphql, sel({ assignees: { include: ['usr_2'] } }), {}, 'assignees'],
+    [issue, sel({ creators: { exclude: ['usr_bot'] } }), {}, 'creators'],
+    [graphql, sel({ projects: { include: ['prj_none'] } }), {}, 'projects'],
+  ]
+  for (const [subject, selection, rules, rule] of cases) {
+    const result = matchIssue(subject, selection, rules)
+    assert.equal(result.matches, false, `${JSON.stringify(selection)} should fail`)
+    assert.equal(result.rule, rule, result.reason)
+  }
+  assert.equal(matchIssue(graphql, sel()).rule, null)
 })
 
 // --- describeEmptyScan ------------------------------------------------------------------------

@@ -952,16 +952,6 @@ func TestDispatch_SendChatMessage_HandlerNotWired(t *testing.T) {
 	}
 }
 
-type fakeWebhookDispatcher struct {
-	calls atomic.Int32
-	err   error
-}
-
-func (f *fakeWebhookDispatcher) Dispatch(_ context.Context, _ *pb.WebhookEvent) error {
-	f.calls.Add(1)
-	return f.err
-}
-
 type fakeAttacher struct {
 	calls     atomic.Int32
 	chunks    []*pb.SessionAttachChunk
@@ -1578,37 +1568,6 @@ func TestDispatchCommand_TransferCancel_NoHandler_AcksOk(t *testing.T) {
 		}, make(chan *pb.DaemonEvent, 4))
 	if r := ev.GetResult(); r == nil || !r.GetOk() {
 		t.Fatalf("expected ok no-op result, got %+v", ev)
-	}
-}
-
-func TestDispatchCommand_Webhook_EmitsAck(t *testing.T) {
-	dispatcher := &fakeWebhookDispatcher{}
-	client := newDispatcherClient(nil, dispatcher, nil)
-	ev := client.dispatchCommand(context.Background(),
-		&pb.OrchestratorCommand{
-			CommandId: "c-5",
-			Cmd:       &pb.OrchestratorCommand_Webhook{Webhook: &pb.WebhookEvent{Provider: "github"}},
-		}, make(chan *pb.DaemonEvent, 4))
-	if dispatcher.calls.Load() != 1 {
-		t.Fatalf("dispatcher calls = %d, want 1", dispatcher.calls.Load())
-	}
-	ack := ev.GetAck()
-	if ack == nil || !ack.GetOk() || ack.GetCommandId() != "c-5" {
-		t.Fatalf("expected webhook ack ok=true, got %+v", ev)
-	}
-}
-
-func TestDispatchCommand_Webhook_FailureAckWithError(t *testing.T) {
-	dispatcher := &fakeWebhookDispatcher{err: errors.New("route not found")}
-	client := newDispatcherClient(nil, dispatcher, nil)
-	ev := client.dispatchCommand(context.Background(),
-		&pb.OrchestratorCommand{
-			CommandId: "c-5b",
-			Cmd:       &pb.OrchestratorCommand_Webhook{Webhook: &pb.WebhookEvent{}},
-		}, make(chan *pb.DaemonEvent, 4))
-	ack := ev.GetAck()
-	if ack == nil || ack.GetOk() || ack.GetError() == "" {
-		t.Fatalf("expected webhook ack ok=false with error, got %+v", ev)
 	}
 }
 

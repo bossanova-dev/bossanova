@@ -1,5 +1,5 @@
-// Package prverdict renders the boss-verify toolbox's approve outcomes for a
-// person, so `boss pr approve` and the TUI's [m]erge explain them the same way.
+// Package prverdict renders the boss-verify toolbox's operator decisions for a
+// person, so CLI commands and TUI actions explain them the same way.
 // The TUI records an approval as the first step of a merge, so it takes the
 // Merge* sentences, which share every detail with the Approve* ones.
 package prverdict

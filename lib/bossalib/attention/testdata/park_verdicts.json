@@ -275,9 +275,9 @@
     "openItems": 0,
     "state": "Not verified",
     "wait": "blocked",
-    "reason": "the ticket's labels keep it out of verify's selection, so verify will not take this PR until it is relabelled or merged by hand",
+    "reason": "the ticket falls outside verify's selection, so verify will not take this PR until it matches or the PR is merged by hand",
     "evidence": "",
-    "sentence": "Not verified · blocked · the ticket's labels keep it out of verify's selection, so verify will not take this PR until it is relabelled or merged by hand"
+    "sentence": "Not verified · blocked · the ticket falls outside verify's selection, so verify will not take this PR until it matches or the PR is merged by hand"
   },
   {
     "codes": [

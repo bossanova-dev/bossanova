@@ -310,6 +310,9 @@ const (
 	// OrchestratorServiceReleaseAgentCredentialRefreshLeaseProcedure is the fully-qualified name of the
 	// OrchestratorService's ReleaseAgentCredentialRefreshLease RPC.
 	OrchestratorServiceReleaseAgentCredentialRefreshLeaseProcedure = "/bossanova.v1.OrchestratorService/ReleaseAgentCredentialRefreshLease"
+	// OrchestratorServiceListCredentialAgentAccountsProcedure is the fully-qualified name of the
+	// OrchestratorService's ListCredentialAgentAccounts RPC.
+	OrchestratorServiceListCredentialAgentAccountsProcedure = "/bossanova.v1.OrchestratorService/ListCredentialAgentAccounts"
 	// OrchestratorServiceSyncDaemonNotesProcedure is the fully-qualified name of the
 	// OrchestratorService's SyncDaemonNotes RPC.
 	OrchestratorServiceSyncDaemonNotesProcedure = "/bossanova.v1.OrchestratorService/SyncDaemonNotes"
@@ -727,6 +730,12 @@ type OrchestratorServiceClient interface {
 	AcquireAgentCredentialRefreshLease(context.Context, *connect.Request[v1.AcquireAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.AcquireAgentCredentialRefreshLeaseResponse], error)
 	// ReleaseAgentCredentialRefreshLease distributes opaque end-to-end credential material.
 	ReleaseAgentCredentialRefreshLease(context.Context, *connect.Request[v1.ReleaseAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.ReleaseAgentCredentialRefreshLeaseResponse], error)
+	// ListCredentialAgentAccounts distributes opaque end-to-end credential material:
+	// it lists the calling daemon owner's synced agent accounts with only the
+	// metadata credential sync consumes, scope already resolved for the calling
+	// daemon. It is the daemon-token counterpart of the user-level
+	// ListSyncedAgentAccounts, which also carries every member daemon's reports.
+	ListCredentialAgentAccounts(context.Context, *connect.Request[v1.ListCredentialAgentAccountsRequest]) (*connect.Response[v1.ListCredentialAgentAccountsResponse], error)
 	// SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
 	// authenticates the daemon session, the same principal as
 	// PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
@@ -1544,6 +1553,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ReleaseAgentCredentialRefreshLease")),
 			connect.WithClientOptions(opts...),
 		),
+		listCredentialAgentAccounts: connect.NewClient[v1.ListCredentialAgentAccountsRequest, v1.ListCredentialAgentAccountsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListCredentialAgentAccountsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListCredentialAgentAccounts")),
+			connect.WithClientOptions(opts...),
+		),
 		syncDaemonNotes: connect.NewClient[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse](
 			httpClient,
 			baseURL+OrchestratorServiceSyncDaemonNotesProcedure,
@@ -1977,6 +1992,7 @@ type orchestratorServiceClient struct {
 	rollAgentCredentialKey                 *connect.Client[v1.RollAgentCredentialKeyRequest, v1.RollAgentCredentialKeyResponse]
 	acquireAgentCredentialRefreshLease     *connect.Client[v1.AcquireAgentCredentialRefreshLeaseRequest, v1.AcquireAgentCredentialRefreshLeaseResponse]
 	releaseAgentCredentialRefreshLease     *connect.Client[v1.ReleaseAgentCredentialRefreshLeaseRequest, v1.ReleaseAgentCredentialRefreshLeaseResponse]
+	listCredentialAgentAccounts            *connect.Client[v1.ListCredentialAgentAccountsRequest, v1.ListCredentialAgentAccountsResponse]
 	syncDaemonNotes                        *connect.Client[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse]
 	proxyStreamChats                       *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken                       *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
@@ -2500,6 +2516,11 @@ func (c *orchestratorServiceClient) AcquireAgentCredentialRefreshLease(ctx conte
 // bossanova.v1.OrchestratorService.ReleaseAgentCredentialRefreshLease.
 func (c *orchestratorServiceClient) ReleaseAgentCredentialRefreshLease(ctx context.Context, req *connect.Request[v1.ReleaseAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.ReleaseAgentCredentialRefreshLeaseResponse], error) {
 	return c.releaseAgentCredentialRefreshLease.CallUnary(ctx, req)
+}
+
+// ListCredentialAgentAccounts calls bossanova.v1.OrchestratorService.ListCredentialAgentAccounts.
+func (c *orchestratorServiceClient) ListCredentialAgentAccounts(ctx context.Context, req *connect.Request[v1.ListCredentialAgentAccountsRequest]) (*connect.Response[v1.ListCredentialAgentAccountsResponse], error) {
+	return c.listCredentialAgentAccounts.CallUnary(ctx, req)
 }
 
 // SyncDaemonNotes calls bossanova.v1.OrchestratorService.SyncDaemonNotes.
@@ -3031,6 +3052,12 @@ type OrchestratorServiceHandler interface {
 	AcquireAgentCredentialRefreshLease(context.Context, *connect.Request[v1.AcquireAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.AcquireAgentCredentialRefreshLeaseResponse], error)
 	// ReleaseAgentCredentialRefreshLease distributes opaque end-to-end credential material.
 	ReleaseAgentCredentialRefreshLease(context.Context, *connect.Request[v1.ReleaseAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.ReleaseAgentCredentialRefreshLeaseResponse], error)
+	// ListCredentialAgentAccounts distributes opaque end-to-end credential material:
+	// it lists the calling daemon owner's synced agent accounts with only the
+	// metadata credential sync consumes, scope already resolved for the calling
+	// daemon. It is the daemon-token counterpart of the user-level
+	// ListSyncedAgentAccounts, which also carries every member daemon's reports.
+	ListCredentialAgentAccounts(context.Context, *connect.Request[v1.ListCredentialAgentAccountsRequest]) (*connect.Response[v1.ListCredentialAgentAccountsResponse], error)
 	// SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
 	// authenticates the daemon session, the same principal as
 	// PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
@@ -3844,6 +3871,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ReleaseAgentCredentialRefreshLease")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceListCredentialAgentAccountsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListCredentialAgentAccountsProcedure,
+		svc.ListCredentialAgentAccounts,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListCredentialAgentAccounts")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceSyncDaemonNotesHandler := connect.NewUnaryHandler(
 		OrchestratorServiceSyncDaemonNotesProcedure,
 		svc.SyncDaemonNotes,
@@ -4366,6 +4399,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceAcquireAgentCredentialRefreshLeaseHandler.ServeHTTP(w, r)
 		case OrchestratorServiceReleaseAgentCredentialRefreshLeaseProcedure:
 			orchestratorServiceReleaseAgentCredentialRefreshLeaseHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListCredentialAgentAccountsProcedure:
+			orchestratorServiceListCredentialAgentAccountsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSyncDaemonNotesProcedure:
 			orchestratorServiceSyncDaemonNotesHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
@@ -4853,6 +4888,10 @@ func (UnimplementedOrchestratorServiceHandler) AcquireAgentCredentialRefreshLeas
 
 func (UnimplementedOrchestratorServiceHandler) ReleaseAgentCredentialRefreshLease(context.Context, *connect.Request[v1.ReleaseAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.ReleaseAgentCredentialRefreshLeaseResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ReleaseAgentCredentialRefreshLease is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListCredentialAgentAccounts(context.Context, *connect.Request[v1.ListCredentialAgentAccountsRequest]) (*connect.Response[v1.ListCredentialAgentAccountsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListCredentialAgentAccounts is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) SyncDaemonNotes(context.Context, *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error) {

@@ -7,6 +7,7 @@ go_library(
         "group.go",
         "organizations_fixture_e2e.go",  # keep: shared e2e-tagged organization fixture parsing
         "pr.go",
+        "pr_accept.go",
         "session.go",
         "session_checks.go",
         "session_finish.go",
@@ -53,6 +54,7 @@ go_test(
         "merge_head_test.go",
         "new_model_test.go",
         "new_test.go",
+        "pr_accept_test.go",
         "pr_test.go",
         "repo_resolve_test.go",
         "session_finish_test.go",

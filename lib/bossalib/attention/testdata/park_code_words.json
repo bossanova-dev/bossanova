@@ -100,7 +100,7 @@
     },
     "ticket-not-selected": {
       "decidingPriority": false,
-      "plain": "the ticket's labels keep it out of verify's selection, so verify will not take this PR until it is relabelled or merged by hand",
+      "plain": "the ticket falls outside verify's selection, so verify will not take this PR until it matches or the PR is merged by hand",
       "category": "ticket not selected",
       "signOff": false,
       "restates": false

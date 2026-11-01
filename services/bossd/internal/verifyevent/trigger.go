@@ -68,6 +68,8 @@ type Trigger struct {
 	wait     func(context.Context) bool
 	run      func(context.Context, gatecmd.Options) gatecmd.Result
 	doneHook func(<-chan struct{}) // tests await detached workers
+	// rateLimitLog logs a checks read's quota refusal once per window.
+	rateLimitLog vcs.RateLimitLog
 }
 
 // New constructs an event trigger. A nil checks reader disables checks events.
@@ -240,7 +242,8 @@ func (t *Trigger) execute(ctx context.Context, key prKey, class string, generati
 		var err error
 		head, ready, err = t.checks.ChecksPassedReady(ctx, owner, name, key.number)
 		if err != nil {
-			t.logger.Warn().Err(err).Str("repo", nwo).Int("pr", key.number).Msg("verify event: checks read failed")
+			t.logger.WithLevel(t.rateLimitLog.Level("checks read", err)).Err(err).Str("repo", nwo).Int("pr", key.number).
+				Msg("verify event: checks read failed")
 			return
 		}
 		if !ready || head == "" {

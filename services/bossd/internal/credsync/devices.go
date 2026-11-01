@@ -8,6 +8,13 @@ import (
 	"github.com/recurser/bossd/internal/devicekey"
 )
 
+// ErrBootstrapNotPinned and ErrOwnDeviceUnverified are the device-trust
+// failures a refresh gate classifies for the operator (BOS-2234).
+var (
+	ErrBootstrapNotPinned  = errors.New("credential sync: bootstrap identity is not pinned")
+	ErrOwnDeviceUnverified = errors.New("credential sync: own enrolled device or approval chain is unverified")
+)
+
 // previouslyAdmitted compares exact locally verified evidence. Server timestamps
 // cannot make a fresh signature from a revoked signer historical.
 func (e *Engine) previouslyAdmitted(d Device) bool {
@@ -24,7 +31,7 @@ func (e *Engine) previouslyAdmitted(d Device) bool {
 // verifiedDevices proves each recipient's approval chain back to the local root pin.
 func (e *Engine) verifiedDevices(devices []Device) ([]Device, error) {
 	if e.trust == nil || e.config.BootstrapDaemonID == "" {
-		return nil, errors.New("credential sync: bootstrap identity is not pinned")
+		return nil, ErrBootstrapNotPinned
 	}
 	byID := map[string]Device{}
 	for _, d := range devices {
@@ -47,7 +54,7 @@ func (e *Engine) verifiedDevices(devices []Device) ([]Device, error) {
 		}
 	}
 	if !self {
-		return nil, errors.New("credential sync: own enrolled device or approval chain is unverified")
+		return nil, ErrOwnDeviceUnverified
 	}
 	for id := range v.verified {
 		d := byID[id]

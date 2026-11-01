@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "displaystatus",
     srcs = [
+        "callback_wait.go",
         "compute.go",
         "phase.go",
         "state_ending_intent.go",
@@ -21,6 +22,7 @@ go_library(
 go_test(
     name = "displaystatus_test",
     srcs = [
+        "callback_wait_test.go",
         "compute_test.go",
         "park_split_test.go",
         "phase_test.go",

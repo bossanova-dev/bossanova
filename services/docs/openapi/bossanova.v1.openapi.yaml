@@ -1373,6 +1373,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListAgentCredentialDevicesResponse'
+  /bossanova.v1.OrchestratorService/ListCredentialAgentAccounts:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListCredentialAgentAccounts
+      description: |-
+        ListCredentialAgentAccounts distributes opaque end-to-end credential material:
+         it lists the calling daemon owner's synced agent accounts with only the
+         metadata credential sync consumes, scope already resolved for the calling
+         daemon. It is the daemon-token counterpart of the user-level
+         ListSyncedAgentAccounts, which also carries every member daemon's reports.
+      operationId: bossanova.v1.OrchestratorService.ListCredentialAgentAccounts
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListCredentialAgentAccountsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListCredentialAgentAccountsResponse'
   /bossanova.v1.OrchestratorService/ListDaemons:
     post:
       tags:
@@ -5426,6 +5467,69 @@ components:
       title: APIToken
       additionalProperties: false
       description: APIToken contains display metadata only. The verifier and owner ID are private.
+    bossanova.v1.AcceptSessionPRBlockerRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        blockerId:
+          type: string
+          title: blocker_id
+        reason:
+          type: string
+          title: reason
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+        isDryRun:
+          type: boolean
+          title: is_dry_run
+      title: AcceptSessionPRBlockerRequest
+      additionalProperties: false
+    bossanova.v1.AcceptSessionPRBlockerResponse:
+      type: object
+      properties:
+        isAccepted:
+          type: boolean
+          title: is_accepted
+        reason:
+          type: string
+          title: reason
+        detail:
+          type: string
+          title: detail
+        headSha:
+          type: string
+          title: head_sha
+        blockerId:
+          type: string
+          title: blocker_id
+        ticketIdentifier:
+          type: string
+          title: ticket_identifier
+        ticketUrl:
+          type: string
+          title: ticket_url
+        commentUrl:
+          type: string
+          title: comment_url
+        isExistingTicket:
+          type: boolean
+          title: is_existing_ticket
+        isAlreadyAccepted:
+          type: boolean
+          title: is_already_accepted
+        isDryRun:
+          type: boolean
+          title: is_dry_run
+        plannedWrites:
+          type: array
+          items:
+            type: string
+          title: planned_writes
+      title: AcceptSessionPRBlockerResponse
+      additionalProperties: false
     bossanova.v1.AcquireAgentCredentialRefreshLeaseRequest:
       type: object
       properties:
@@ -9205,6 +9309,34 @@ components:
           $ref: '#/components/schemas/bossanova.v1.WebhookConfig'
       title: CreateWebhookConfigResponse
       additionalProperties: false
+    bossanova.v1.CredentialAgentAccount:
+      type: object
+      properties:
+        syncedAgentAccountId:
+          type: string
+          title: synced_agent_account_id
+        provider:
+          type: string
+          title: provider
+        label:
+          type: string
+          title: label
+        desiredStatus:
+          type: string
+          title: desired_status
+        priority:
+          type: integer
+          title: priority
+          format: int32
+        isInScope:
+          type: boolean
+          title: is_in_scope
+      title: CredentialAgentAccount
+      additionalProperties: false
+      description: |-
+        CredentialAgentAccount is one synced agent account as credential sync sees it.
+         is_in_scope is true when the account syncs to all daemons or the calling
+         daemon is a selected member.
     bossanova.v1.CronJob:
       type: object
       properties:
@@ -12348,6 +12480,20 @@ components:
           title: prs
       title: ListClosedPRsResponse
       additionalProperties: false
+    bossanova.v1.ListCredentialAgentAccountsRequest:
+      type: object
+      title: ListCredentialAgentAccountsRequest
+      additionalProperties: false
+    bossanova.v1.ListCredentialAgentAccountsResponse:
+      type: object
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.CredentialAgentAccount'
+          title: accounts
+      title: ListCredentialAgentAccountsResponse
+      additionalProperties: false
     bossanova.v1.ListCronJobsCommand:
       type: object
       title: ListCronJobsCommand
@@ -12885,6 +13031,30 @@ components:
             $ref: '#/components/schemas/bossanova.v1.Repo'
           title: repos
       title: ListReposResponse
+      additionalProperties: false
+    bossanova.v1.ListSessionPRBlockersRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: ListSessionPRBlockersRequest
+      additionalProperties: false
+    bossanova.v1.ListSessionPRBlockersResponse:
+      type: object
+      properties:
+        headSha:
+          type: string
+          title: head_sha
+        blockers:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.VerifyBlocker'
+          title: blockers
+        reason:
+          type: string
+          title: reason
+      title: ListSessionPRBlockersResponse
       additionalProperties: false
     bossanova.v1.ListSessionWebhookDeliveriesRequest:
       type: object
@@ -24334,6 +24504,30 @@ components:
          signs off an operator merge of a head with nothing parked. tracker_writes
          reports the needs-human label removal that follows. A refusal carries
          reason, plus approval_url when a posted record waives nothing.
+    bossanova.v1.VerifyBlocker:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        severity:
+          type: string
+          title: severity
+        filePath:
+          type: string
+          title: file_path
+        lineNumber:
+          type: integer
+          title: line_number
+          format: int32
+        summary:
+          type: string
+          title: summary
+        text:
+          type: string
+          title: text
+      title: VerifyBlocker
+      additionalProperties: false
     bossanova.v1.WaitAgentRunHostRequest:
       type: object
       properties:

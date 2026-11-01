@@ -93,6 +93,9 @@ type SmokeRunner struct {
 	timeout      time.Duration
 	pollInterval time.Duration
 	logger       zerolog.Logger
+	// refreshFailures is the shared refresh broker, when one is wired, read
+	// after a failed run for the redacted class it answered Codex with.
+	refreshFailures refreshFailureSource
 }
 
 // NewSmokeRunner builds an account provider verification runner. It materializes credentials
@@ -127,7 +130,7 @@ func NewSmokeRunner(
 	if err != nil {
 		return nil, err
 	}
-	return &SmokeRunner{
+	r := &SmokeRunner{
 		clients:      clients,
 		materializer: m,
 		creds:        creds,
@@ -135,7 +138,11 @@ func NewSmokeRunner(
 		timeout:      cfg.timeout,
 		pollInterval: cfg.pollInterval,
 		logger:       logger,
-	}, nil
+	}
+	if cfg.broker != nil {
+		r.refreshFailures = cfg.broker
+	}
+	return r, nil
 }
 
 // SmokeResult reports what a verification run did besides succeed or fail.
@@ -190,6 +197,12 @@ type SmokeResult struct {
 	// whole struct remains what its doc comment above promises — a redacted
 	// report about a run, never about credential contents.
 	RefreshAssertion credmaterialize.RefreshAssertion
+
+	// RefreshFailure is the redacted class the refresh broker answered this
+	// run's Codex with, when a failed run hit a broker failure (BOS-2234). It
+	// is a closed-set token with no error text and no credential bytes, like
+	// AmbientAuth, and is empty on success and when no broker failure was seen.
+	RefreshFailure credmaterialize.RefreshFailureClass
 }
 
 // Smoke materializes accountID, starts a tiny headless run under provider, and
@@ -202,7 +215,19 @@ func (r *SmokeRunner) Smoke(ctx context.Context, accountID, provider string, blo
 
 // Verify is Smoke with the extra SmokeResult detail. Smoke remains the
 // narrow hook the account RPC surface depends on.
-func (r *SmokeRunner) Verify(ctx context.Context, accountID, provider string, _ []byte) (SmokeResult, error) {
+//
+// A failed run also reports the broker failure class recorded since it
+// started, so the auth check can name why Codex could not refresh.
+func (r *SmokeRunner) Verify(ctx context.Context, accountID, provider string, blob []byte) (SmokeResult, error) {
+	start := time.Now()
+	res, err := r.verify(ctx, accountID, provider, blob)
+	if err != nil {
+		res.RefreshFailure = r.refreshFailureSince(accountID, start)
+	}
+	return res, err
+}
+
+func (r *SmokeRunner) verify(ctx context.Context, accountID, provider string, _ []byte) (SmokeResult, error) {
 	if r == nil {
 		return SmokeResult{}, fmt.Errorf("credential verification runner not configured")
 	}

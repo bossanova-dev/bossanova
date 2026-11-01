@@ -1,7 +1,7 @@
 import * as nativeFs from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { matchIssue } from '../selection.mjs'
+import { matchIssue, selectionSlots } from '../selection.mjs'
 
 const text = (value) => typeof value === 'string' && value.trim() !== ''
 
@@ -213,10 +213,49 @@ export async function ticketlessFactoryPrs(
   return out
 }
 
+const RELATION_IDS = ['assigneeId', 'creatorId', 'projectId']
+/** The relation ids `issue` carries. An absent one stays absent, so a slot needing it is unreadable. */
+export const relationIds = (issue) =>
+  Object.fromEntries(
+    RELATION_IDS.filter((key) => issue?.[key] !== undefined).map((k) => [k, issue[k]]),
+  )
+
+/**
+ * Probes the tracker write path with a read-only call (no writes requested), which also resolves
+ * the ticket and returns its labels and the relation ids the adapter reads. Unavailable when the
+ * PR names no ticket, the adapter lacks the capability, or its credential is missing.
+ */
+export async function trackerProbe(adapter, ticket) {
+  if (!ticket) return { available: false, why: 'no-ticket-line' }
+  if (typeof adapter?.applyIssueWrites !== 'function')
+    return { available: false, why: 'no-capability' }
+  try {
+    const r = await adapter.applyIssueWrites({ issueId: ticket.id })
+    if (r?.outcome !== 'ok') return { available: false, why: r?.reason ?? 'probe-failed' }
+    return { available: true, labels: r.issue?.labels ?? null, ...relationIds(r.issue) }
+  } catch (error) {
+    return { available: false, why: error?.code ?? error?.message ?? 'probe-threw' }
+  }
+}
+
+/**
+ * The stage `query` with its selection resolved to tracker ids by `adapter.resolveSelection`, which
+ * is what matchIssue compares against a fetched issue. Null when the adapter cannot resolve.
+ */
+export async function resolvedRules(adapter, query) {
+  if (typeof adapter?.resolveSelection !== 'function') return null
+  const selection = await adapter.resolveSelection(query)
+  return selection && typeof selection === 'object' ? { ...query, selection } : null
+}
+
 /**
  * Link ticket-line PRs outside the fetched review set. Ambiguity is decided over all open PRs;
- * scope only decides which ticket groups are reported and probed. `judged(pr)` overrides a
- * selection miss after a successful probe, marking the link `judged: true`.
+ * scope only decides which ticket groups are reported and probed. A selection with a relation slot
+ * (assignees, creators, projects) is matched as `resolveRules()` resolves it, read at most once per
+ * scan; label slots alone match by name, unresolved. When that read fails (throws or returns null)
+ * the group is `unknown:selection`, never a hold. A mismatch is
+ * `ticket-not-selected` with the failed `rule` (matchIssue). `judged(pr)` overrides a selection
+ * miss or an unresolvable selection after a successful probe, marking the link `judged: true`.
  */
 export async function offReviewLinks(
   prs,
@@ -225,11 +264,22 @@ export async function offReviewLinks(
     included,
     probe,
     rules = { selection: null, requireLabels: [], excludeLabels: [] },
+    resolveRules = async () => null,
     personLabels = [],
     judged = (_pr) => false,
   },
 ) {
   const known = new Set(tickets.map((ticket) => String(ticket.identifier).toUpperCase()))
+  const matchRules = once(async () => {
+    const slots = selectionSlots(rules.selection)
+    if (!slots.some(({ dimension }) => dimension !== 'labels')) return rules
+    try {
+      const resolved = await resolveRules()
+      return resolved && typeof resolved.selection === 'object' ? resolved : null
+    } catch {
+      return null
+    }
+  })
   const groups = new Map()
   for (const pr of prs) {
     const ticket = parseTicketLine(pr.body)
@@ -241,8 +291,8 @@ export async function offReviewLinks(
     [...groups].map(async ([identifier, mine]) => {
       if (!mine.some(included)) return { linked: [], skipped: [], tickets: [] }
       const skipped = []
-      const skip = (reason) =>
-        mine.forEach((pr) => skipped.push({ ticket: identifier, pr: pr.number, reason }))
+      const skip = (reason, extra = {}) =>
+        mine.forEach((pr) => skipped.push({ ticket: identifier, pr: pr.number, reason, ...extra }))
       if (mine.length > 1) {
         skip('ambiguous-pr')
         return { linked: [], skipped, tickets: [] }
@@ -258,19 +308,25 @@ export async function offReviewLinks(
       } catch {
         result = null
       }
+      const available = result?.available === true && Array.isArray(result.labels)
       const ticket = {
         identifier,
-        labels: result?.available === true && Array.isArray(result.labels) ? result.labels : null,
+        labels: available ? result.labels : null,
+        ...(available ? relationIds(result) : {}),
       }
-      if (ticket.labels === null) skip('unknown:ticket')
-      else if (!matchIssue(ticket, rules.selection, rules).matches) {
+      if (ticket.labels === null) {
+        skip('unknown:ticket')
+        return { linked: [], skipped, tickets: [ticket] }
+      }
+      const resolved = await matchRules()
+      const match = resolved && matchIssue(ticket, resolved.selection, resolved)
+      if (!match?.matches) {
         if (judged(pr))
           return { linked: [{ ticket, pr, judged: true }], skipped, tickets: [ticket] }
-        skip(
-          ticket.labels.some((label) => personLabels.includes(label))
-            ? 'ticket-needs-person'
-            : 'ticket-not-selected',
-        )
+        if (!match) skip('unknown:selection')
+        else if (ticket.labels.some((label) => personLabels.includes(label)))
+          skip('ticket-needs-person')
+        else skip('ticket-not-selected', { rule: match.rule })
       }
       return { linked: skipped.length ? [] : [{ ticket, pr }], skipped, tickets: [ticket] }
     }),
@@ -306,10 +362,11 @@ export function classifyAdmission({
     ]),
   )
   const attached = new Set(tickets.flatMap((ticket) => [...attachedPrNumbers(ticket, repo)]))
-  const skips = new Map(ticketlessSkipped.map((skip) => [skip.pr, skip.reason]))
+  const skips = new Map(ticketlessSkipped.map((skip) => [skip.pr, skip]))
   return prs.map((pr) => {
     let state = 'excluded'
     let reason = 'no-ticket'
+    let rule = null
     const hits = admissionLabelHits(pr, policy)
     if (hits.includes('optOut')) {
       reason = 'opted-out'
@@ -319,25 +376,27 @@ export function classifyAdmission({
     } else if (pr.isDraft === true) {
       state = 'pending'
       reason = 'draft'
-    } else if (skips.get(pr.number) === 'ambiguous-pr') {
+    } else if (skips.get(pr.number)?.reason === 'ambiguous-pr') {
       state = 'pending'
       reason = 'ambiguous-pr'
     } else if (parseTicketLine(pr.body)) {
       state = 'pending'
-      reason = skips.get(pr.number) ?? 'ticket-not-in-review'
+      reason = skips.get(pr.number)?.reason ?? 'ticket-not-in-review'
+      rule = skips.get(pr.number)?.rule ?? null
     } else if (attached.has(pr.number)) {
       state = 'pending'
       reason = 'attached'
     } else if (isCronFireBranch(pr.headRefName)) {
       state = admitsTicketless ? 'pending' : 'excluded'
-      reason = admitsTicketless ? (skips.get(pr.number) ?? 'claimed') : 'selection'
+      reason = admitsTicketless ? (skips.get(pr.number)?.reason ?? 'claimed') : 'selection'
     } else if (policy) {
       const cls = prClass(pr)
       const admits = policy[cls]?.admit === true || hits.includes('optIn')
       if (admits && admitsTicketless) state = 'admitted'
       reason = admits ? (admitsTicketless ? `policy:${cls}` : 'selection') : `not-admitted:${cls}`
     }
-    return { pr: pr.number, head: String(pr.headRefOid ?? '').toLowerCase(), state, reason }
+    const head = String(pr.headRefOid ?? '').toLowerCase()
+    return { pr: pr.number, head, state, reason, ...(text(rule) ? { rule } : {}) }
   })
 }
 
@@ -416,6 +475,14 @@ export function judgeTier(pr, policy) {
   return { class: cls, admitted, review: admitted ? 'verify' : 'receipt', merge }
 }
 
+/**
+ * A skip's or admission answer's reason, naming the failed selection `rule` when it has one.
+ * @param {{reason: string, rule?: string|null}} entry
+ */
+export function skipReasonText({ reason, rule }) {
+  return text(rule) ? `${reason} (${rule})` : reason
+}
+
 export const ADMISSION_VERSION = 1
 
 export function admissionPath(commonDir) {
@@ -466,9 +533,9 @@ export function storeAdmission(
   if (!text(file)) return false
   const scopes = readScopes(fs, file)
   const prs = eventPr === null ? {} : { ...scopes[key]?.prs }
-  for (const { pr, head, state, reason } of admission) {
+  for (const { pr, head, state, reason, rule } of admission) {
     if (eventPr !== null && pr !== eventPr) continue
-    prs[pr] = { head: String(head).toLowerCase(), state, reason }
+    prs[pr] = { head: String(head).toLowerCase(), state, reason, ...(text(rule) ? { rule } : {}) }
   }
   return writeAtomicJson(fs, file, {
     version: ADMISSION_VERSION,

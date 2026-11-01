@@ -903,7 +903,7 @@ func (m *CredentialMaintainer) withdrawIfCredentialChanged(
 // (re-checking later).
 func (m *CredentialMaintainer) classify(accountID string, verifyErr error, res SmokeResult, now time.Time) domain.AuthCheck {
 	outcome, failureClass := classifyVerification(verifyErr, res, now)
-	failureClass = withSupersededClass(outcome, failureClass, res.AmbientAuth)
+	failureClass = withRefreshFailureClass(outcome, withSupersededClass(outcome, failureClass, res.AmbientAuth), res.RefreshFailure)
 	check := domain.AuthCheck{
 		CheckedAt:    &now,
 		Outcome:      outcome,

@@ -51,7 +51,7 @@ func (s *daemonCredentialSync) engine(ctx context.Context) (*credsync.Engine, er
 		}
 	}
 	if root == "" {
-		return nil, fmt.Errorf("credential bootstrap identity is not locally pinned; confirm its fingerprint with device approve")
+		return nil, errCredentialIdentityNotPinned
 	}
 	identityKey, err := upstream.LoadDaemonIdentityKey(s.daemonID)
 	if err != nil {
@@ -203,11 +203,14 @@ func (g daemonRefreshGate) synced(ctx context.Context, id string) (string, error
 		return "", err
 	}
 	if a.SyncedAgentAccountID != "" && g.w.credentialSync == nil {
-		return "", errors.New("credential synchronization unavailable")
+		return "", errCredentialSyncUnavailable
 	}
 	return a.SyncedAgentAccountID, nil
 }
 func (g daemonRefreshGate) Receive(ctx context.Context, id string) error {
+	return classifyRefreshGateError(g.receive(ctx, id))
+}
+func (g daemonRefreshGate) receive(ctx context.Context, id string) error {
 	synced, err := g.synced(ctx, id)
 	if err != nil || synced == "" {
 		return err
@@ -219,6 +222,10 @@ func (g daemonRefreshGate) Receive(ctx context.Context, id string) error {
 	return err
 }
 func (g daemonRefreshGate) Acquire(ctx context.Context, id string, fingerprint []byte, attemptID string) (bool, error) {
+	owned, err := g.acquire(ctx, id, fingerprint, attemptID)
+	return owned, classifyRefreshGateError(err)
+}
+func (g daemonRefreshGate) acquire(ctx context.Context, id string, fingerprint []byte, attemptID string) (bool, error) {
 	synced, err := g.synced(ctx, id)
 	if err != nil {
 		return false, err
@@ -319,7 +326,7 @@ func (w *daemonWiring) wireCredentialDistribution(cfg *upstream.Config, client b
 		if err := pinOwnCredentialIdentity(cfg.DaemonID, identityKey); err != nil {
 			log.Warn().Err(err).Msg("credential identity pin unavailable")
 		}
-		w.credentialSync = &daemonCredentialSync{w: w, remote: &upstream.CredentialRemote{Client: client, Token: sessionTokenHolder.Get, DaemonID: cfg.DaemonID}, daemonID: cfg.DaemonID, userID: namespace}
+		w.credentialSync = &daemonCredentialSync{w: w, remote: &upstream.CredentialRemote{Client: client, Token: sessionTokenHolder.Get}, daemonID: cfg.DaemonID, userID: namespace}
 	}
 	w.credentialEnrollment = newCredentialEnrollmentWorker(w.credentialDevices.EnsureEnrollment, func(ctx context.Context) error {
 		if w.credentialSync == nil {
@@ -332,6 +339,9 @@ func (w *daemonWiring) wireCredentialDistribution(cfg *upstream.Config, client b
 // PublishRefresh serializes with Receive and holds the credential lock in that
 // same order. A concurrent operator reauthentication wins over a stale result.
 func (g daemonRefreshGate) PublishRefresh(ctx context.Context, id string, blob []byte, consumed []byte) error {
+	return classifyRefreshGateError(g.publishRefresh(ctx, id, blob, consumed))
+}
+func (g daemonRefreshGate) publishRefresh(ctx context.Context, id string, blob []byte, consumed []byte) error {
 	synced, err := g.synced(ctx, id)
 	if err != nil || synced == "" {
 		return err

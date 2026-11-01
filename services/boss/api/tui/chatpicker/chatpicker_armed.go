@@ -45,29 +45,6 @@ func callbackReason(cb *pb.GitHubCallback) string {
 	return displaystatus.CallbackWaitingReason(cb.GetTrigger(), cb.GetRepoOwner(), cb.GetRepoName(), int(cb.GetPrNumber()))
 }
 
-// callbackWaitLabels phrase what a chat armed on each trigger is waiting for.
-// The bare trigger misleads in a STATUS cell: "merged" reads as a merged PR.
-var callbackWaitLabels = map[models.GitHubCallbackTrigger]string{
-	models.GitHubCallbackTriggerMerged:            "awaiting merge",
-	models.GitHubCallbackTriggerClosed:            "awaiting close",
-	models.GitHubCallbackTriggerChecksPassed:      "awaiting checks",
-	models.GitHubCallbackTriggerChecksFailed:      "awaiting failure",
-	models.GitHubCallbackTriggerReadyForReview:    "awaiting ready",
-	models.GitHubCallbackTriggerChecksPassedReady: "awaiting green",
-}
-
-// callbackWaitLabel is the STATUS label for a chat waiting on trigger, or ""
-// when there is no trigger. An unknown trigger still reads as a wait.
-func callbackWaitLabel(trigger string) string {
-	if trigger == "" {
-		return ""
-	}
-	if label, ok := callbackWaitLabels[models.GitHubCallbackTrigger(trigger)]; ok {
-		return label
-	}
-	return "awaiting " + strings.ReplaceAll(trigger, "_", " ")
-}
-
 // armedCallbackFor returns the callback the daemon's reason describes: live,
 // unexpired as of now, and recomposing to exactly reason. Ties go to the oldest
 // created_at, then the smallest id — callback.ActiveInterestForChat's order.
@@ -198,14 +175,12 @@ func (m Model) reasonWait(reason string) chatWait {
 // GitHub names are case-insensitive. A session that names no repo is matched
 // on its PR number alone. A session without a PR owns no PR.
 func (m Model) isOwnPRReason(reason string) bool {
-	n := int(m.session.GetPrNumber())
-	trigger := displaystatus.CallbackWaitingTrigger(reason)
 	owner, repo := m.sessionRepo()
-	if owner == "" {
-		return n > 0 && trigger != "" && strings.HasSuffix(reason, fmt.Sprintf("#%d", n))
+	nwo := ""
+	if owner != "" {
+		nwo = owner + "/" + repo
 	}
-	own := displaystatus.CallbackWaitingReason(trigger, owner, repo, n)
-	return own != "" && strings.EqualFold(reason, own)
+	return displaystatus.IsOwnPRWaitingReason(reason, nwo, int(m.session.GetPrNumber()))
 }
 
 // sessionRepo is the GitHub owner and repo of the session's PR, read from its

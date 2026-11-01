@@ -52,23 +52,24 @@ This normally runs in the PR's own session, in its verify chat (role `verify`). 
 2. **Judge.** `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" judge --pr <n> [--waive <code>]` (zero tokens, never writes). Act on
    `verdict`:
 
-| Verdict               | Action                                                                                                                                                                                                                                                                                                                                                                                               |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `wait`                | In a boss chat, `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID" --verdict <verdict> --reason <reason>`; otherwise report. The cron gate retries.                                                                                                                                                                                                  |
-| `human`               | `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" post --pr <n> --head <sha> --verdict human --reason <reason> --confidence <confidence-file> [--notes <notes-file>]`, plus `--reviewers <csv>` when the judge output carries `reviewers`. Write the judge’s `confidence` object to the confidence file. `post` labels the park with its level, leaves one park note per head and asks for review. |
-| `blocked`             | Write `{version: 1, pr, head: headSha, blockers}` from judge output to a run-temp JSON file. `post --pr <n> --head <sha> --verdict blocked --blockers <file> [--notes <notes-file>]`, then in a boss chat rearm as for `wait` and stop; a new head is judged again.                                                                                                                                  |
-| `pass`                | `post --verdict pass [--notes <notes-file>]` (with `--reason approved` when `reason` is `approved`, and `--carry-record <carryRecord>` when the judge output carries one), then `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" merge --pr <n> --head <sha>`.                                                                                                                                    |
-| `extensions-required` | Run the extensions (below).                                                                                                                                                                                                                                                                                                                                                                          |
-| `review-required`     | No `boss/build` receipt stands behind the head (a boss head that lost its receipt, or an admitted human/bot head): run the review (below).                                                                                                                                                                                                                                                           |
+| Verdict               | Action                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `wait`                | In a boss chat, `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID" --verdict <verdict> --reason <reason>`; otherwise report. The cron gate retries.                                                                                                                                                                                                                            |
+| `human`               | `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" post --pr <n> --head <sha> --verdict human --reason <reason> --confidence <confidence-file> [--notes <notes-file>] [--not-applicable <file>]`, plus `--reviewers <csv>` when the judge output carries `reviewers`. Write the judge’s `confidence` object to the confidence file. `post` labels the park with its level, leaves one park note per head and asks for review. |
+| `blocked`             | Write `{version: 1, pr, head: headSha, blockers}` from judge output to a run-temp JSON file. `post --pr <n> --head <sha> --verdict blocked --blockers <file> [--notes <notes-file>] [--not-applicable <file>]`, then in a boss chat rearm as for `wait` and stop; a new head is judged again.                                                                                                                                  |
+| `pass`                | `post --verdict pass [--notes <notes-file>] [--not-applicable <file>]` (with `--reason approved` when `reason` is `approved`, and `--carry-record <carryRecord>` when the judge output carries one), then `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" merge --pr <n> --head <sha>`.                                                                                                                                    |
+| `extensions-required` | Run the extensions (below).                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `review-required`     | No `boss/build` receipt stands behind the head (a boss head that lost its receipt, or an admitted human/bot head): run the review (below).                                                                                                                                                                                                                                                                                     |
 
 Report `owner` and `waitingOn` from `rearm` output, for example “waiting on repair: conflict”.
 
-After each judge, when `findingNotes` is non-empty, write that JSON array to a run-temp file.
+After each judge, when `findingNotes` is non-empty, write that JSON array to a run-temp file, and
+when `notApplicableNotes` is non-empty, write that JSON array to another run-temp file.
 High passes and merges immediately through the head-pinned merge. Moderate and Low park with the level, at most three asks and reasons; Low adds the full review checklist. Blocked goes to repair. Missing confidence evidence is reread twice before a `cannot-assess` park, which re-judges on the next tick. On every human post carrying a judge result, write its `confidence` object to a run-temp JSON file and pass `--confidence <confidence-file>`.
 
-Pass `--notes <notes-file>` on the resulting `post` for `pass`, `blocked`, `defect` or `human`,
-including a verdict after extensions or review. Never pass it on `claim` or `wait`. A notes-write
-failure is reported separately and never changes the verdict.
+Pass `--notes <notes-file>` and `--not-applicable <file>` on the resulting `post` for `pass`,
+`blocked`, `defect` or `human`, including a verdict after extensions or review. Never pass either
+on `claim` or `wait`. A notes-write failure is reported separately and never changes the verdict.
 
 The [blocker contract](references/blockers.md) defines the files and the standing-review supersede rule.
 
@@ -126,13 +127,13 @@ Other `won: false` reasons (`pr-unreadable`, `pr-not-open`, `status-unreadable`,
    `[{extension, optional, timedOut, crashed, result}]` into a run-temp file; an extension that
    returned nothing is `crashed: true`.
 6. **Re-judge.** `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" judge --pr <n> --extension-results <file>`,
-   then save any non-empty `findingNotes` array as above and post that verdict with your token:
-   - `pass` → `post --verdict pass [--notes <notes-file>]` (flags as in the table), then `merge`;
+   then save any non-empty `findingNotes` and `notApplicableNotes` arrays as above and post that verdict with your token:
+   - `pass` → `post --verdict pass [--notes <notes-file>] [--not-applicable <file>]` (flags as in the table), then `merge`;
    - `blocked` → write the judge's blocker envelope to a run-temp file, then
-     `post --verdict blocked --blockers <file> [--notes <notes-file>]`, rearm as for `wait`, and stop;
-   - `defect` → `post --verdict defect --findings <file> [--notes <notes-file>]` (the judge output's `findings`), then in a
+     `post --verdict blocked --blockers <file> [--notes <notes-file>] [--not-applicable <file>]`, rearm as for `wait`, and stop;
+   - `defect` → `post --verdict defect --findings <file> [--notes <notes-file>] [--not-applicable <file>]` (the judge output's `findings`), then in a
      boss chat `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID" --verdict <verdict> --reason <reason>` (a new head re-judges), then stop;
-   - `human` → `post --verdict human --reason <reason> --extension-results <file> [--notes <notes-file>]` (as in the
+   - `human` → `post --verdict human --reason <reason> --extension-results <file> [--notes <notes-file>] [--not-applicable <file>]` (as in the
      table; the same file, so the park note names a failing extension and its error), adding
      `--extension-record <extensionRecord>` when the judge output carries one (an approval of the
      park then reuses this run instead of re-running the extensions), then stop;
@@ -169,7 +170,7 @@ Report `node "$BOSS_VERIFY_TOOLBOX/stage-chain.mjs" phase verifying` (never fata
 selection flags when given, and report its lines. It routes exactly as the gate does: mechanical `post`/`merge` when no `verify`
 extension applies and no review is required, otherwise a claim plus `/boss-verify <pr> --claim <token>` sent into each
 PR's own session — its `verify` chat, a new `verify` chat, or a `boss new --pr <n>` session for a PR
-with no live session. It never waits for a dispatched verify. A non-zero exit means discovery failed:
+with no live session. Its mechanical posts carry the judge's notes and not-applicable notes themselves. It never waits for a dispatched verify. A non-zero exit means discovery failed:
 report it, never as "nothing to do".
 
 ## Rules

@@ -10,7 +10,19 @@ import {
 } from './verify-post-failures.mjs'
 import { validateBlockerFile } from './verify-blockers.mjs'
 import { writeAtomicJson } from './verify-admission.mjs'
+import { validNotApplicable } from './verify-not-applicable.mjs'
 
+// The verdicts whose post records the not-applicable comment; `post` refuses the flag on others.
+const NOTE_VERDICTS = ['pass', 'blocked', 'defect', 'human']
+
+/**
+ * The file flags `post` needs for the judge output `judged`, written under `logDir`, or null when
+ * a required file (confidence, blockers) could not be written. Cosmetic files (notes, not-applicable
+ * notes) that fail to write only drop their flag.
+ *
+ * @param {{fs: object, logDir: string, pr: number, head: string, judged: Record<string, any>}} input
+ * @returns {string[] | null}
+ */
 export function verdictFileArgs({ fs, logDir, pr, head, judged }) {
   const args = []
   if (judged.verdict === 'human' && judged.confidence) {
@@ -27,6 +39,11 @@ export function verdictFileArgs({ fs, logDir, pr, head, judged }) {
   if (Array.isArray(judged.findingNotes) && judged.findingNotes.length) {
     const file = join(logDir, `boss-verify-notes-${pr}-${head}.json`)
     if (writeAtomicJson(fs, file, judged.findingNotes)) args.push('--notes', file)
+  }
+  const skipped = judged.notApplicableNotes
+  if (NOTE_VERDICTS.includes(judged.verdict) && skipped?.length && validNotApplicable(skipped)) {
+    const file = join(logDir, `boss-verify-not-applicable-${pr}-${head}.json`)
+    if (writeAtomicJson(fs, file, skipped)) args.push('--not-applicable', file)
   }
   return args
 }

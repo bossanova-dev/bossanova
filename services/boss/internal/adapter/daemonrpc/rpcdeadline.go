@@ -144,6 +144,8 @@ var slowProcedures = map[string]struct{}{
 	bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure:      {},
 	bossanovav1connect.DaemonServiceMergeSessionProcedure:              {},
 	bossanovav1connect.DaemonServiceApproveSessionPRProcedure:          {},
+	bossanovav1connect.DaemonServiceAcceptSessionPRBlockerProcedure:    {},
+	bossanovav1connect.DaemonServiceListSessionPRBlockersProcedure:     {},
 	bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:          {},
 	bossanovav1connect.DaemonServiceGetRunCostProcedure:                {},
 	bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:         {},

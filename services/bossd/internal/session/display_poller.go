@@ -43,6 +43,7 @@ type DisplayPoller struct {
 	evidence           EvidenceObserver       // optional; nil disables evidence reads
 	interval           time.Duration
 	logger             zerolog.Logger
+	rateLimitLog       vcs.RateLimitLog // logs each read site's quota refusal once per window
 	done               chan struct{}
 
 	refreshMu sync.Mutex
@@ -511,7 +512,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	repoPath := repo.OriginURL
 	prStatus, err := p.provider.GetPRStatus(ctx, repoPath, prNumber)
 	if err != nil {
-		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get PR status")
+		p.logger.WithLevel(p.rateLimitLog.Level("display poller: get PR status", err)).Err(err).Str("session", sessionID).Msg("display poller: get PR status")
 		return false
 	}
 	p.observePR(repoPath, sessionID, prNumber, prStatus)
@@ -550,7 +551,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	if prStatus.Draft {
 		checkSet, err := vcs.ReadCheckSet(ctx, p.provider, repoPath, prNumber)
 		if err != nil {
-			p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get draft check results; preserving previous status")
+			p.logger.WithLevel(p.rateLimitLog.Level("display poller: get draft check results", err)).Err(err).Str("session", sessionID).Msg("display poller: get draft check results; preserving previous status")
 			return false
 		}
 		checks := checkSet.Checks
@@ -572,13 +573,13 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	// next poll cycle retries.
 	checkSet, err := vcs.ReadCheckSet(ctx, p.provider, repoPath, prNumber)
 	if err != nil {
-		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get check results; preserving previous status")
+		p.logger.WithLevel(p.rateLimitLog.Level("display poller: get check results", err)).Err(err).Str("session", sessionID).Msg("display poller: get check results; preserving previous status")
 		return false
 	}
 
 	reviews, err := p.provider.GetReviewComments(ctx, repoPath, prNumber)
 	if err != nil {
-		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get review comments; preserving previous status")
+		p.logger.WithLevel(p.rateLimitLog.Level("display poller: get review comments", err)).Err(err).Str("session", sessionID).Msg("display poller: get review comments; preserving previous status")
 		return false
 	}
 

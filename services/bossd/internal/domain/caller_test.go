@@ -34,3 +34,17 @@ func TestCallerCapabilities(t *testing.T) {
 		t.Fatal("grant does not scope capability")
 	}
 }
+
+func TestAcceptRequiresItsOwnOperatorCapability(t *testing.T) {
+	for _, kind := range []CallerKind{CallerOperator, CallerAgentChat, CallerDaemonChild, CallerUnattested} {
+		p := CallerPrincipal{Kind: kind, Role: AgentChatRoleVerify}
+		if p.HasCapability(CapabilityVerifyAccept, nil) != (kind == CallerOperator) {
+			t.Fatalf("accept capability for %s", kind)
+		}
+	}
+	p := CallerPrincipal{Kind: CallerAgentChat, Role: AgentChatRoleVerify}
+	grants := CallerGrants{{Kind: p.Kind, Role: p.Role}: {CapabilityVerifyApprove}}
+	if p.HasCapability(CapabilityVerifyAccept, grants) {
+		t.Fatal("approval grant also allowed acceptance")
+	}
+}

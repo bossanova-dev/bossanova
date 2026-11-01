@@ -168,8 +168,21 @@ const ParkCodeHumanMerge = "human-merge"
 // ParkCodeTicketNeedsPerson identifies a ticket waiting for a person's answer.
 const ParkCodeTicketNeedsPerson = "ticket-needs-person"
 
-// ParkCodeTicketNotSelected identifies a ticket excluded by verify's label selection.
+// ParkCodeTicketNotSelected identifies a ticket excluded by verify's selection.
 const ParkCodeTicketNotSelected = "ticket-not-selected"
+
+// ticketNotSelectedSentences is the ticket-not-selected hold's sentence for
+// each selection rule the verify gate records as failed (Admission.Rule). A
+// hold with no recorded rule, or an unknown one, reads the code's
+// admissionSentence. An admission hold cannot be waived by park approval
+// (IsAdmissionHoldCode), so the advice is to merge by hand, never to approve.
+var ticketNotSelectedSentences = map[string]string{
+	"labels":     "Ticket not selected for verify · relabel it or merge by hand",
+	"assignees":  "Ticket's assignee is outside verify's selection · reassign it or merge by hand",
+	"creators":   "Ticket's creator is outside verify's selection · merge by hand",
+	"projects":   "Ticket's project is outside verify's selection · move it or merge by hand",
+	"unreadable": "Verify cannot read the ticket's selection fields · merge by hand",
+}
 
 // IsAdmissionHoldCode reports whether code is a ticket admission hold that
 // park approval cannot waive.
@@ -209,9 +222,11 @@ var knownParkCodes = map[string]parkCodeInfo{
 		plain:             "the ticket is labelled for a person's answer, so verify will not take this PR until it is answered or labelled for build",
 	},
 	ParkCodeTicketNotSelected: {
-		admissionSentence: "Ticket not selected for verify · relabel it or merge by hand",
+		// The rule-neutral fallback replaced "relabel it" for every client
+		// version; computePark's comment justifies skipping the apiversion bump.
+		admissionSentence: "Ticket not selected for verify · check verify's selection or merge by hand",
 		category:          "ticket not selected",
-		plain:             "the ticket's labels keep it out of verify's selection, so verify will not take this PR until it is relabelled or merged by hand",
+		plain:             "the ticket falls outside verify's selection, so verify will not take this PR until it matches or the PR is merged by hand",
 	},
 	"human-review:ui": {
 		hasDecidingPriority: true,

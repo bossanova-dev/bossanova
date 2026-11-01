@@ -172,8 +172,7 @@ func (p *Provider) gh(ctx context.Context, args ...string) (string, error) {
 // quotaResetAt decides when calls to quota may resume after a refusal of a
 // call that started at callStart. It falls back to a short fixed pause when no
 // reading is available. A reading that shows headroom and was taken after the
-// call started means the reset landed between the refusal and the probe, so it
-// returns now and nothing pauses. A headroom reading older than the call has
+// call started is judged by freshHeadroomResetAt. A headroom reading older than the call has
 // been contradicted by GitHub and cannot be re-probed until it expires, so the
 // quota pauses until then.
 func (p *Provider) quotaResetAt(ctx context.Context, quota string, callStart time.Time) time.Time {
@@ -189,7 +188,7 @@ func (p *Provider) quotaResetAt(ctx context.Context, quota string, callStart tim
 	}
 	if res.Remaining > 0 || res.refused {
 		if !reading.readAt.Before(callStart) {
-			return now
+			return p.freshHeadroomResetAt(quota, res, now)
 		}
 		return reading.readAt.Add(quotaReadingTTL)
 	}
@@ -205,6 +204,33 @@ func (p *Provider) quotaResetAt(ctx context.Context, quota string, callStart tim
 	return resetAt
 }
 
+// freshHeadroomResetAt decides the pause after a refusal when the probe, taken
+// after the refused call started, still reports headroom. Half the limit or
+// more means the reset really landed in between, so nothing pauses. Less means
+// GitHub and the probe disagree; trusting the probe would let every loop re-hit
+// the refusal, so the quota pauses until its reset, at most the fallback pause.
+func (p *Provider) freshHeadroomResetAt(quota string, res quotaStatus, now time.Time) time.Time {
+	if res.refused || res.Remaining >= res.limitOrDefault()/2 {
+		return now
+	}
+	resetAt := time.Unix(res.Reset, 0)
+	p.logger.Warn().
+		Str("quota", quota).
+		Int("remaining", res.Remaining).
+		Int("limit", res.limitOrDefault()).
+		Time("reset_at", resetAt).
+		Msg("github rate limit: refused although the probe reports headroom; pausing")
+	fallback := now.Add(rateLimitFallbackPause)
+	if !resetAt.After(now) || resetAt.After(fallback) {
+		return fallback
+	}
+	return resetAt
+}
+
+// defaultQuotaLimit is GitHub's documented authenticated hourly limit, assumed
+// when a rate_limit entry omits its limit.
+const defaultQuotaLimit = 5000
+
 // quotaStatus is one quota's entry in a `gh api rate_limit` response.
 type quotaStatus struct {
 	Limit     int   `json:"limit"`
@@ -213,6 +239,15 @@ type quotaStatus struct {
 	// refused is set when a refusal zeroed a reported headroom figure, so the
 	// breaker can tell GitHub's own reading of 0 from one it inferred.
 	refused bool
+}
+
+// limitOrDefault reports the quota's limit, or defaultQuotaLimit when the
+// response gave none.
+func (s quotaStatus) limitOrDefault() int {
+	if s.Limit > 0 {
+		return s.Limit
+	}
+	return defaultQuotaLimit
 }
 
 // quotaReading is one parsed `gh api rate_limit` response: every quota's

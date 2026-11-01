@@ -1792,9 +1792,31 @@ test('applyIssueWrites with no writes is a read of the issue labels and sends no
     id: 'issue-uuid',
     identifier: 'BOS-1',
     labels: ['agent-build', 'needs-human'],
+    assigneeId: null,
+    creatorId: 'u1',
+    projectId: null,
   })
   assert.equal(calls.length, 1)
   assert.equal(mutations(calls).length, 0)
+})
+
+test('applyIssueWrites read summary carries the assignee, creator and project ids', async () => {
+  const issue = { ...writeIssue, assignee: { id: 'u2' }, project: { id: 'prj-1' } }
+  const { impl } = writeFetch([readHandler(issue)])
+  const result = await linearApplyIssueWrites({ apiKey: 'k', fetchImpl: impl, issueId: 'BOS-1' })
+  assert.equal(result.issue.assigneeId, 'u2')
+  assert.equal(result.issue.creatorId, 'u1')
+  assert.equal(result.issue.projectId, 'prj-1')
+  const empty = { ...writeIssue, assignee: null, creator: null, project: null }
+  const bare = await linearApplyIssueWrites({
+    apiKey: 'k',
+    fetchImpl: writeFetch([readHandler(empty)]).impl,
+    issueId: 'BOS-1',
+  })
+  assert.deepEqual(
+    [bare.issue.assigneeId, bare.issue.creatorId, bare.issue.projectId],
+    [null, null, null],
+  )
 })
 
 test('selectMarked paginates full marker bodies and preserves delta filtering', async () => {

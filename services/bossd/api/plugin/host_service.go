@@ -773,7 +773,7 @@ func (s *HostServiceServer) ListOpenPRs(ctx context.Context, req *bossanovav1.Li
 	// every repo every interval), so they may share the cached open-PR list.
 	prs, err := s.provider.ListOpenPRs(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl())
 	if err != nil {
-		return nil, err
+		return nil, githubReadErr(err)
 	}
 
 	pbPRs := make([]*bossanovav1.PRSummary, len(prs))
@@ -793,7 +793,7 @@ func (s *HostServiceServer) ListOpenPRs(ctx context.Context, req *bossanovav1.Li
 func (s *HostServiceServer) GetCheckResults(ctx context.Context, req *bossanovav1.GetCheckResultsRequest) (*bossanovav1.GetCheckResultsResponse, error) {
 	checks, err := s.provider.GetCheckResults(ctx, req.GetRepoOriginUrl(), int(req.GetPrNumber()))
 	if err != nil {
-		return nil, err
+		return nil, githubReadErr(err)
 	}
 
 	pbChecks := make([]*bossanovav1.CheckResult, len(checks))
@@ -816,7 +816,7 @@ func (s *HostServiceServer) GetCheckResults(ctx context.Context, req *bossanovav
 func (s *HostServiceServer) GetPRStatus(ctx context.Context, req *bossanovav1.GetPRStatusRequest) (*bossanovav1.GetPRStatusResponse, error) {
 	status, err := s.provider.GetPRStatus(ctx, req.GetRepoOriginUrl(), int(req.GetPrNumber()))
 	if err != nil {
-		return nil, err
+		return nil, githubReadErr(err)
 	}
 
 	pbStatus := &bossanovav1.PRStatus{
@@ -1014,7 +1014,7 @@ func (s *HostServiceServer) GetReviewComments(ctx context.Context, req *bossanov
 	// longer than the cache TTL.
 	comments, err := s.provider.GetReviewComments(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl(), int(req.GetPrNumber()))
 	if err != nil {
-		return nil, err
+		return nil, githubReadErr(err)
 	}
 
 	pbComments := make([]*bossanovav1.ReviewComment, len(comments))

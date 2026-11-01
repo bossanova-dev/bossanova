@@ -1,5 +1,7 @@
 package display
 
+import "strings"
+
 // AuthCheckClassSuperseded mirrors accountwiring's authFailureCredentialSuperseded
 // (services/bossd/internal/accountwiring/credcheck.go), which this module cannot
 // import across the module boundary. It is the one failure class that qualifies a
@@ -12,3 +14,34 @@ package display
 // the state is on the screen — hence BOS-1142's rule that a state no operator can
 // see is not a report.
 const AuthCheckClassSuperseded = "credential_superseded"
+
+// refreshFailureRemedies mirrors the refresh-broker failure classes a credential
+// check can record (credmaterialize.RefreshFailureClass in
+// services/bossd/internal/adapter/credmaterialize/refresh_failure.go) and the fix
+// each one needs (BOS-2234). They are duplicated by design: this module cannot
+// import across the module boundary. A class missing here prints no remedy, which
+// is safe; "{id}" stands for the account id.
+var refreshFailureRemedies = map[string]string{
+	"refresh_owned_by_peer":          "retry shortly; another daemon owns this refresh",
+	"refresh_sync_unreachable":       "retry shortly; the credential sync service was unreachable",
+	"refresh_credential_changed":     "retry shortly; the credential changed during the refresh",
+	"refresh_unclassified":           "retry shortly; bossd.log names the cause",
+	"credential_identity_not_pinned": "confirm the bootstrap fingerprint with `boss account devices approve`",
+	"credential_device_not_enrolled": "run `boss account devices approve` on an enrolled machine",
+	"refresh_sync_unavailable":       "check `boss account devices ls`",
+	"refresh_journal_unreadable":     "check `boss account devices ls`",
+	"refresh_outcome_unknown":        "run `boss account reauth {id}`",
+	"refresh_secret_consumed":        "run `boss account reauth {id}`",
+	"refresh_rejected":               "run `boss account reauth {id}`",
+	"refresh_token_unavailable":      "run `boss account reauth {id}`",
+}
+
+// RefreshFailureRemedy returns the fix for a refresh-broker failure class, and
+// false for every other class.
+func RefreshFailureRemedy(failureClass, accountID string) (string, bool) {
+	remedy, ok := refreshFailureRemedies[failureClass]
+	if !ok {
+		return "", false
+	}
+	return strings.ReplaceAll(remedy, "{id}", accountID), true
+}

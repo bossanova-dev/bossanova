@@ -21,13 +21,17 @@ import (
 
 type brokerMemory struct {
 	fakeStore
-	stateMu sync.Mutex
-	state   []byte
+	stateMu  sync.Mutex
+	state    []byte
+	stateErr error
 }
 
 func (s *brokerMemory) LoadRefreshState(context.Context, string) ([]byte, error) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
+	if s.stateErr != nil {
+		return nil, s.stateErr
+	}
 	return append([]byte(nil), s.state...), nil
 }
 func (s *brokerMemory) SaveRefreshState(_ context.Context, _ string, b []byte) error {

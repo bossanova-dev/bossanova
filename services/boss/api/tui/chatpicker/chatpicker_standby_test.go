@@ -65,8 +65,8 @@ func TestChatPicker_StandbyStatusCell(t *testing.T) {
 		sessionPR    int32
 		blockingWant string
 	}{
-		{"checks_failed", 2960, "awaiting green"},
-		{"closed", 3154, "awaiting green #2960"},
+		{"checks_failed", 2960, "waiting: CI"},
+		{"closed", 3154, "waiting: CI #2960"},
 	} {
 		trigger := tc.trigger
 		t.Run(trigger, func(t *testing.T) {
@@ -151,7 +151,7 @@ func TestChatPicker_BuildHandoffStandbyFixture(t *testing.T) {
 	if got := stripANSI(cells[fixtures.BuildHandoffBuildChatTitle]); got != displaystatus.StandbyLabel {
 		t.Fatalf("build STATUS = %q, want %q", got, displaystatus.StandbyLabel)
 	}
-	if got := stripANSI(cells["verify"]); !strings.HasSuffix(got, "awaiting green") {
+	if got := stripANSI(cells["verify"]); !strings.HasSuffix(got, "waiting: CI") {
 		t.Fatalf("verify STATUS = %q, want the blocking trigger phrased as a wait", got)
 	}
 	if line := firstArmedLine(m); !strings.HasPrefix(line, "verify · "+fixtures.BuildHandoffVerifyReason) {

@@ -46,6 +46,8 @@ type Evaluator struct {
 	logger   zerolog.Logger
 	retirer  *Retirer
 	health   webhookHealth // optional; nil reconciles every PR every pass
+	// rateLimitLog logs each read site's quota refusal once per window.
+	rateLimitLog vcs.RateLimitLog
 
 	evalMu    sync.Mutex
 	lastEvals map[prKey]time.Time
@@ -116,7 +118,7 @@ func NewEvaluator(store evaluatorStore, provider prStatusProvider, now func() ti
 	if now == nil {
 		now = time.Now
 	}
-	return &Evaluator{store: store, provider: provider, now: now, logger: logger}
+	return &Evaluator{store: store, provider: provider, now: now, logger: logger, rateLimitLog: vcs.RateLimitLog{Now: now}}
 }
 
 // repoPath is the identifier the github provider expects (name-with-owner,
@@ -146,13 +148,13 @@ func (e *Evaluator) ChecksPassedReady(ctx context.Context, owner, name string, p
 func (e *Evaluator) readPRState(ctx context.Context, rp string, prNumber int) (*vcs.PRStatus, []vcs.CheckResult, bool, error) {
 	status, err := e.provider.GetPRStatus(ctx, rp, prNumber)
 	if err != nil {
-		e.logger.Warn().Err(err).Str("repo", rp).Int("pr", prNumber).
+		e.logger.WithLevel(e.rateLimitLog.Level("get PR status", err)).Err(err).Str("repo", rp).Int("pr", prNumber).
 			Msg("callback evaluator: get PR status failed")
 		return nil, nil, false, fmt.Errorf("get PR status %s#%d: %w", rp, prNumber, err)
 	}
 	checks, err := e.provider.GetCheckResults(ctx, rp, prNumber)
 	if err != nil {
-		e.logger.Warn().Err(err).Str("repo", rp).Int("pr", prNumber).
+		e.logger.WithLevel(e.rateLimitLog.Level("get check results", err)).Err(err).Str("repo", rp).Int("pr", prNumber).
 			Msg("callback evaluator: get check results failed")
 		return nil, nil, false, fmt.Errorf("get check results %s#%d: %w", rp, prNumber, err)
 	}
@@ -321,8 +323,8 @@ func (e *Evaluator) runsSettled(ctx context.Context, rp string, prNumber int, st
 	}
 	runs, err := e.provider.ListWorkflowRuns(ctx, rp, status.HeadSHA)
 	if err != nil {
-		e.logger.Warn().Err(err).Str("repo", rp).Int("pr", prNumber).Str("head_sha", status.HeadSHA).
-			Msg("callback evaluator: list workflow runs failed; checks_passed held")
+		e.logger.WithLevel(e.rateLimitLog.Level("list workflow runs", err)).Err(err).Str("repo", rp).Int("pr", prNumber).
+			Str("head_sha", status.HeadSHA).Msg("callback evaluator: list workflow runs failed; checks_passed held")
 		return false, nil
 	}
 	var held []heldWorkflowRun

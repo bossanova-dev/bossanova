@@ -2376,6 +2376,18 @@ test('event discovery skips name the reason while cron stays quiet', () => {
   ])
 })
 
+test('event skip lines name the failed selection rule when one is recorded', () => {
+  const skip = { pr: 2, reason: 'ticket-not-selected', rule: 'assignees' }
+  const w = world({ candidates: [], skipped: [skip] })
+  assert.deepEqual(lines(sweep({ eventPrUrl: url(2) }, w.deps())), [
+    '#2 skipped: ticket-not-selected (assignees)',
+  ])
+  const absent = world({ candidates: [], admission: [{ ...skip, state: 'pending' }] })
+  const result = sweep({ eventPrUrl: url(2) }, absent.deps())
+  assert.deepEqual(lines(result), ['#2 skipped: not admitted (ticket-not-selected (assignees))'])
+  assert.equal(result.eventSettled, true, 'a recorded rule leaves the skip deliberate')
+})
+
 test('blocked sweep writes and posts a head-bound blocker file, including dry run', () => {
   for (const dryRun of [false, true]) {
     const blockers = [

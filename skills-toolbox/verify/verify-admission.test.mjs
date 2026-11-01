@@ -505,8 +505,8 @@ test('off-review links distinguish configured person labels only on selection mi
   assert.deepEqual(result.skipped, [
     { ticket: 'ABC-1', pr: 1, reason: 'ticket-needs-person' },
     { ticket: 'ABC-2', pr: 2, reason: 'ticket-needs-person' },
-    { ticket: 'ABC-3', pr: 3, reason: 'ticket-not-selected' },
-    { ticket: 'ABC-4', pr: 4, reason: 'ticket-not-selected' },
+    { ticket: 'ABC-3', pr: 3, reason: 'ticket-not-selected', rule: 'labels' },
+    { ticket: 'ABC-4', pr: 4, reason: 'ticket-not-selected', rule: 'labels' },
   ])
   assert.deepEqual(
     result.linked.map(({ pr }) => pr.number),
@@ -669,4 +669,171 @@ test('repair facts respect the session verify-only fact and older daemon fields'
     })
   }
   assert.deepEqual(admissionLabelHits(pr(1, { labels: ['BOSS-REPAIR'] }), policyOf({})), ['repair'])
+})
+
+test('off-review links match the resolved selection and name the failed rule (#7006)', async () => {
+  const { offReviewLinks } = await import('./verify-admission.mjs')
+  const rules = {
+    selection: { assignees: { include: ['me'] } },
+    requireLabels: ['agent-build'],
+    excludeLabels: [],
+  }
+  const assignee = { 'BOS-1': 'usr-me', 'BOS-2': 'usr-other' }
+  let resolutions = 0
+  const result = await offReviewLinks(
+    [1, 2].map((n) => pr(n, { body: `Tracker issue: https://linear.app/d/issue/BOS-${n}/t` })),
+    {
+      included: () => true,
+      rules,
+      resolveRules: async () => {
+        resolutions += 1
+        return { ...rules, selection: { assignees: { include: ['usr-me'], exclude: [] } } }
+      },
+      probe: async ({ id }) => ({
+        available: true,
+        labels: ['agent-build'],
+        assigneeId: assignee[id],
+      }),
+    },
+  )
+  assert.deepEqual(
+    result.linked.map(({ ticket, pr }) => [ticket.identifier, ticket.assigneeId, pr.number]),
+    [['BOS-1', 'usr-me', 1]],
+  )
+  assert.deepEqual(result.skipped, [
+    { ticket: 'BOS-2', pr: 2, reason: 'ticket-not-selected', rule: 'assignees' },
+  ])
+  assert.equal(resolutions, 1, 'the selection resolves once per scan')
+})
+
+test('off-review links skip an unresolvable selection as unknown, never a hold', async () => {
+  const { offReviewLinks } = await import('./verify-admission.mjs')
+  const prs = [1, 2].map((n) =>
+    pr(n, { body: `Tracker issue: https://linear.app/d/issue/BOS-${n}/t` }),
+  )
+  const rules = { selection: { creators: { exclude: ['bot@x.io'] } } }
+  const probe = async () => ({ available: true, labels: [], creatorId: 'usr-1' })
+  for (const resolveRules of [
+    async () => {
+      throw new Error('tracker offline')
+    },
+    async () => null,
+    undefined,
+  ]) {
+    const result = await offReviewLinks(prs, {
+      included: () => true,
+      rules,
+      resolveRules,
+      probe,
+      judged: (p) => p.number === 2,
+    })
+    assert.deepEqual(result.skipped, [{ ticket: 'BOS-1', pr: 1, reason: 'unknown:selection' }])
+    assert.deepEqual(
+      result.linked.map(({ pr, judged }) => [pr.number, judged]),
+      [[2, true]],
+    )
+  }
+})
+
+test('off-review links never resolve a selection without a relation slot', async () => {
+  const { offReviewLinks } = await import('./verify-admission.mjs')
+  const prs = [pr(1, { body: 'Tracker issue: https://linear.app/d/issue/BOS-1/t' })]
+  for (const selection of [null, { labels: { include: ['agent-build'] } }]) {
+    const result = await offReviewLinks(prs, {
+      included: () => true,
+      rules: { selection },
+      resolveRules: async () => assert.fail('resolution is not needed'),
+      probe: async () => ({ available: true, labels: ['agent-build'] }),
+    })
+    assert.deepEqual(
+      result.linked.map(({ pr }) => pr.number),
+      [1],
+    )
+  }
+})
+
+test('the admission entry carries and persists the rule only when present', () => {
+  const prs = [1, 2, 3].map((n) =>
+    pr(n, { body: `Tracker issue: https://linear.app/d/issue/BOS-${n}/t` }),
+  )
+  const entries = classifyAdmission({
+    prs,
+    ticketlessSkipped: [
+      { ticket: 'BOS-1', pr: 1, reason: 'ticket-not-selected', rule: 'assignees' },
+      { ticket: 'BOS-2', pr: 2, reason: 'ticket-needs-person' },
+    ],
+  })
+  assert.deepEqual(
+    entries.map(({ reason, rule }) => [reason, rule]),
+    [
+      ['ticket-not-selected', 'assignees'],
+      ['ticket-needs-person', undefined],
+      ['ticket-not-in-review', undefined],
+    ],
+  )
+  assert.equal('rule' in entries[1], false)
+  const file = join(tempDir('admission-rule-'), 'verify-admission.json')
+  assert.equal(storeAdmission(file, 'default', entries, at), true)
+  const stored = JSON.parse(fs.readFileSync(file, 'utf8')).scopes.default.prs
+  assert.deepEqual(stored['1'], {
+    head: head('a'),
+    state: 'pending',
+    reason: 'ticket-not-selected',
+    rule: 'assignees',
+  })
+  assert.deepEqual(stored['2'], {
+    head: head('a'),
+    state: 'pending',
+    reason: 'ticket-needs-person',
+  })
+  storeAdmission(file, 'default', [{ ...entries[2], rule: '' }], at)
+  assert.equal('rule' in JSON.parse(fs.readFileSync(file, 'utf8')).scopes.default.prs['3'], false)
+})
+
+test('trackerProbe forwards the relation ids the read carries and leaves absent ones absent', async () => {
+  const { trackerProbe } = await import('./verify-admission.mjs')
+  const adapter = (issue) => ({ applyIssueWrites: async () => ({ outcome: 'ok', issue }) })
+  const full = await trackerProbe(
+    adapter({ labels: ['a'], assigneeId: 'u1', creatorId: null, projectId: 'p1' }),
+    { id: 'BOS-1' },
+  )
+  assert.deepEqual(full, {
+    available: true,
+    labels: ['a'],
+    assigneeId: 'u1',
+    creatorId: null,
+    projectId: 'p1',
+  })
+  const github = await trackerProbe(
+    adapter({ labels: ['a'], assigneeId: undefined, creatorId: 'alice' }),
+    { id: 'GH-1' },
+  )
+  assert.deepEqual(github, { available: true, labels: ['a'], creatorId: 'alice' })
+  assert.equal('assigneeId' in github, false)
+  assert.deepEqual(await trackerProbe({}, { id: 'BOS-1' }), {
+    available: false,
+    why: 'no-capability',
+  })
+})
+
+test('resolvedRules resolves the selection through the adapter, or answers null', async () => {
+  const { resolvedRules } = await import('./verify-admission.mjs')
+  const query = { state: 'In Review', selection: { assignees: { include: ['me'] } } }
+  const adapter = { resolveSelection: async () => ({ assignees: { include: ['u1'] } }) }
+  assert.deepEqual(await resolvedRules(adapter, query), {
+    state: 'In Review',
+    selection: { assignees: { include: ['u1'] } },
+  })
+  assert.equal(await resolvedRules({}, query), null)
+  assert.equal(await resolvedRules({ resolveSelection: async () => null }, query), null)
+})
+
+test('skipReasonText names the rule only when there is one', async () => {
+  const { skipReasonText } = await import('./verify-admission.mjs')
+  assert.equal(
+    skipReasonText({ reason: 'ticket-not-selected', rule: 'assignees' }),
+    'ticket-not-selected (assignees)',
+  )
+  assert.equal(skipReasonText({ reason: 'draft' }), 'draft')
+  assert.equal(skipReasonText({ reason: 'draft', rule: '' }), 'draft')
 })

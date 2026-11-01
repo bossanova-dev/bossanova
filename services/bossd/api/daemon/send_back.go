@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -28,7 +26,7 @@ func (s *Server) SendBackToRepair(ctx context.Context, req *connect.Request[pb.S
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("expected_proof_digest must be sha256:<64 hex>"))
 	}
 	note := req.Msg.GetNote()
-	if !utf8.ValidString(note) || strings.TrimSpace(note) == "" || utf8.RuneCountInString(note) > 2000 || strings.ContainsFunc(note, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) {
+	if !validOperatorText(note) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("note must contain 1 to 2000 code points and no control characters except newline and tab"))
 	}
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), domain.VerifyVerbTimeout)
@@ -38,12 +36,7 @@ func (s *Server) SendBackToRepair(ctx context.Context, req *connect.Request[pb.S
 		return nil, err
 	}
 	response := &pb.SendBackToRepairResponse{}
-	var current string
-	if s.displayTracker != nil {
-		if entry := s.displayTracker.Get(req.Msg.GetId()); entry != nil {
-			current = entry.HeadSHA
-		}
-	}
+	current := s.displayedPRHead(req.Msg.GetId())
 	switch {
 	case !strings.EqualFold(current, pin):
 		response.Reason = "head-moved"

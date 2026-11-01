@@ -109,3 +109,44 @@ type VerifySendBackResult struct {
 
 // VerifyVerbTimeout bounds a detached operator verb.
 const VerifyVerbTimeout = 100 * time.Second
+
+// VerifyAccept pins an operator's reason to a review finding and head.
+type VerifyAccept struct {
+	Head    string
+	Blocker string
+	Reason  string
+}
+
+// VerifyAcceptResult is the accept verb's answer, including planned dry-run writes.
+type VerifyAcceptResult struct {
+	Accepted         bool
+	Already          bool
+	DryRun           bool
+	Reason           string
+	Detail           string
+	Head             string
+	Blocker          string
+	TicketIdentifier string
+	TicketURL        string
+	CommentURL       string
+	ExistingTicket   bool
+	Writes           []string
+}
+
+// VerifyBlockers is the standing blockers file for a PR head.
+type VerifyBlockers struct {
+	Outcome  string
+	Head     string
+	Blockers []VerifyBlocker
+}
+
+// VerifyBlocker is one review or verification blocker.
+type VerifyBlocker struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	Severity string `json:"severity"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Summary  string `json:"summary"`
+	Text     string `json:"text"`
+}

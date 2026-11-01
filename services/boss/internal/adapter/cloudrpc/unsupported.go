@@ -18,3 +18,13 @@ func errLocalOnly(op string) error {
 func (c *RemoteClient) GetGitHubUsage(context.Context, *pb.GetGitHubUsageRequest) (*pb.GetGitHubUsageResponse, error) {
 	return nil, errLocalOnly("GitHub usage")
 }
+
+// AcceptSessionPRBlocker requires the local daemon's verify toolbox.
+func (c *RemoteClient) AcceptSessionPRBlocker(context.Context, *pb.AcceptSessionPRBlockerRequest) (*pb.AcceptSessionPRBlockerResponse, error) {
+	return nil, errLocalOnly("AcceptSessionPRBlocker")
+}
+
+// ListSessionPRBlockers requires the local daemon's verify toolbox.
+func (c *RemoteClient) ListSessionPRBlockers(context.Context, string) (*pb.ListSessionPRBlockersResponse, error) {
+	return nil, errLocalOnly("ListSessionPRBlockers")
+}

@@ -308,7 +308,7 @@ func (m *repairMonitor) currentReviewFingerprint(ctx context.Context, info sessi
 		PrNumber:      info.PRNumber,
 	})
 	if err != nil {
-		m.logger.Warn().Err(err).
+		m.logger.WithLevel(m.reviewReadLevel(err)).Err(err).
 			Str("repo", info.RepoName).
 			Int32("pr_number", info.PRNumber).
 			Msg("failed to fetch review comments; using legacy duplicate-repair guard")

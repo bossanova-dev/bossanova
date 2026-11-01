@@ -21,6 +21,8 @@ import (
 
 // VerifyVerbs is the operator surface consumed by verification handlers.
 type VerifyVerbs interface {
+	Accept(context.Context, domain.VerifyTarget, domain.VerifyAccept) (domain.VerifyAcceptResult, error)
+	Blockers(context.Context, domain.VerifyTarget, string) (domain.VerifyBlockers, error)
 	SendBack(context.Context, domain.VerifyTarget, domain.VerifySendBack) (domain.VerifySendBackResult, error)
 	Approve(context.Context, domain.VerifyTarget, *domain.VerifyMergeApproval) (domain.VerifyApproveResult, error)
 	MarkMerged(context.Context, domain.VerifyTarget) (domain.VerifyMarkMergedResult, error)

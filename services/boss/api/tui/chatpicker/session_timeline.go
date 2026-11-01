@@ -19,9 +19,11 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
+// timelineKey is what the cached timeline was fetched for. labelInputs is
+// timelineLabelInputs: a change to it alone relabels steps the picker already
+// shows, so the refetch keeps them on screen until the new labels arrive.
 type timelineKey struct {
-	chatCount      int
-	chatTitles     string
+	labelInputs    string
 	sessionID      string
 	head           string
 	kind           pb.AttentionKind
@@ -35,12 +37,7 @@ type sessionTimelineMsg struct {
 }
 
 func (m *Model) syncTimeline() tea.Cmd {
-	key := timelineKey{chatCount: len(m.chats), sessionID: m.sessionID, head: m.session.GetPrDisplayHeadSha(), kind: m.session.GetAttention().GetKind()}
-	var titles strings.Builder
-	for _, chat := range m.chats {
-		fmt.Fprintf(&titles, "%q:%q;", chat.GetAgentSessionId(), chat.GetTitle())
-	}
-	key.chatTitles = titles.String()
+	key := timelineKey{labelInputs: timelineLabelInputs(m.chats, m.session.GetTitle()), sessionID: m.sessionID, head: m.session.GetPrDisplayHeadSha(), kind: m.session.GetAttention().GetKind()}
 	if key.kind == pb.AttentionKind_ATTENTION_KIND_QUESTION {
 		key.questionChatID = m.session.GetAttention().GetTargetChatId()
 		key.questionSince = m.session.GetAttention().GetSince().AsTime()
@@ -48,10 +45,16 @@ func (m *Model) syncTimeline() tea.Cmd {
 	if m.timelineRequested && m.timelineKey == key {
 		return nil
 	}
+	// A relabel keeps the shown steps; the stale-key check in Update still
+	// drops a late reply for the previous key.
+	relabel := m.timelineKey
+	relabel.labelInputs = key.labelInputs
+	if !m.timelineRequested || relabel != key {
+		m.timeline = nil
+		m.fullQuestion = ""
+	}
 	m.timelineRequested = true
 	m.timelineKey = key
-	m.timeline = nil
-	m.fullQuestion = ""
 	c, ctx, id, target := m.client, m.ctx, m.sessionID, m.session.GetAttention().GetTargetChatId()
 	return func() tea.Msg {
 		steps, err := c.GetSessionTimeline(ctx, id)
@@ -68,6 +71,19 @@ func (m *Model) syncTimeline() tea.Cmd {
 		}
 		return sessionTimelineMsg{key: key, steps: steps, question: question}
 	}
+}
+
+// timelineLabelInputs fingerprints what the daemon labels chat steps from:
+// the session title, which marks a chat titled like it as a system title, and
+// each chat's id and title in list order. Quoting keeps the fields apart, and
+// the ids also catch a chat added or deleted.
+func timelineLabelInputs(chats []*pb.AgentChat, sessionTitle string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%q", sessionTitle)
+	for _, chat := range chats {
+		fmt.Fprintf(&b, "%q%q", chat.GetAgentSessionId(), chat.GetTitle())
+	}
+	return b.String()
 }
 
 func (m Model) neededQuestion() string {

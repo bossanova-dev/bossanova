@@ -125,6 +125,7 @@ type Orchestrator struct {
 	autoMergeSem       chan struct{}
 	interval           time.Duration
 	logger             zerolog.Logger
+	rateLimitLog       vcs.RateLimitLog // logs a task poll's quota refusal once per window
 
 	mu            sync.Mutex
 	queues        map[string][]queuedTask // keyed by repo ID
@@ -306,9 +307,8 @@ type resolvedSource struct {
 func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, pluginName string, repo repoInfo) {
 	tasks, err := src.PollTasks(ctx, repo.originURL)
 	if err != nil {
-		o.logger.Warn().Err(err).
-			Str("repo", repo.displayName).
-			Msg("poll tasks failed")
+		o.logger.WithLevel(o.rateLimitLog.Level("poll tasks", err)).Err(err).
+			Str("repo", repo.displayName).Msg("poll tasks failed")
 		return
 	}
 

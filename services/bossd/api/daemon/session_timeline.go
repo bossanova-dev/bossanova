@@ -87,6 +87,7 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 			f.Evidence = &entry
 		}
 		f.IsSentBack = s.evidence.SentBack(sess.ID, f.HeadSHA)
+		f.OpenItems = s.evidence.OpenItems(sess.ID, f.HeadSHA)
 	}
 
 	if s.rotationEvents != nil {
@@ -168,6 +169,9 @@ func applyTimelineDisplay(f *timelineFacts, display *status.DisplayEntry) {
 	}
 	f.IsPartial = display.IsPartial
 	f.Mergeable = display.Mergeable
+	if display.Status == vcs.DisplayStatusNeedsHuman {
+		f.ParkLabel = display.VerifyLabel
+	}
 }
 
 // readTimelineSnapshots loads per-head phase starts and the current head's history.

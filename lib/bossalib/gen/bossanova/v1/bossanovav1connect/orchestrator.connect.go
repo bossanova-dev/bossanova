@@ -178,6 +178,9 @@ const (
 	// OrchestratorServiceProxyListCheckSnapshotsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListCheckSnapshots RPC.
 	OrchestratorServiceProxyListCheckSnapshotsProcedure = "/bossanova.v1.OrchestratorService/ProxyListCheckSnapshots"
+	// OrchestratorServiceProxyGetSessionTimelineProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyGetSessionTimeline RPC.
+	OrchestratorServiceProxyGetSessionTimelineProcedure = "/bossanova.v1.OrchestratorService/ProxyGetSessionTimeline"
 	// OrchestratorServiceProxyListAgentsAggregatedProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListAgentsAggregated RPC.
 	OrchestratorServiceProxyListAgentsAggregatedProcedure = "/bossanova.v1.OrchestratorService/ProxyListAgentsAggregated"
@@ -596,6 +599,9 @@ type OrchestratorServiceClient interface {
 	ProxyGetSessionStatuses(context.Context, *connect.Request[v1.ProxyGetSessionStatusesRequest]) (*connect.Response[v1.ProxyGetSessionStatusesResponse], error)
 	// ProxyListCheckSnapshots reads a session's recent CI check snapshots (routes by session_id).
 	ProxyListCheckSnapshots(context.Context, *connect.Request[v1.ProxyListCheckSnapshotsRequest]) (*connect.Response[v1.ProxyListCheckSnapshotsResponse], error)
+	// ProxyGetSessionTimeline reads a session's dated timeline (routes by session_id).
+	// Additive RPC: no existing response changes; see docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	ProxyGetSessionTimeline(context.Context, *connect.Request[v1.ProxyGetSessionTimelineRequest]) (*connect.Response[v1.ProxyGetSessionTimelineResponse], error)
 	// ProxyListAgentsAggregated aggregates installed agents across the caller's
 	// Ready daemons (session-less; distinct from the daemon-scoped ProxyListAgents).
 	ProxyListAgentsAggregated(context.Context, *connect.Request[v1.ProxyListAgentsAggregatedRequest]) (*connect.Response[v1.ProxyListAgentsAggregatedResponse], error)
@@ -1274,6 +1280,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListCheckSnapshots")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyGetSessionTimeline: connect.NewClient[v1.ProxyGetSessionTimelineRequest, v1.ProxyGetSessionTimelineResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyGetSessionTimelineProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetSessionTimeline")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyListAgentsAggregated: connect.NewClient[v1.ProxyListAgentsAggregatedRequest, v1.ProxyListAgentsAggregatedResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyListAgentsAggregatedProcedure,
@@ -1921,6 +1933,7 @@ type orchestratorServiceClient struct {
 	proxyGetChatStatuses                   *connect.Client[v1.ProxyGetChatStatusesRequest, v1.ProxyGetChatStatusesResponse]
 	proxyGetSessionStatuses                *connect.Client[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse]
 	proxyListCheckSnapshots                *connect.Client[v1.ProxyListCheckSnapshotsRequest, v1.ProxyListCheckSnapshotsResponse]
+	proxyGetSessionTimeline                *connect.Client[v1.ProxyGetSessionTimelineRequest, v1.ProxyGetSessionTimelineResponse]
 	proxyListAgentsAggregated              *connect.Client[v1.ProxyListAgentsAggregatedRequest, v1.ProxyListAgentsAggregatedResponse]
 	proxyListPlugins                       *connect.Client[v1.ProxyListPluginsRequest, v1.ProxyListPluginsResponse]
 	proxyGetCronJob                        *connect.Client[v1.ProxyGetCronJobRequest, v1.ProxyGetCronJobResponse]
@@ -2264,6 +2277,11 @@ func (c *orchestratorServiceClient) ProxyGetSessionStatuses(ctx context.Context,
 // ProxyListCheckSnapshots calls bossanova.v1.OrchestratorService.ProxyListCheckSnapshots.
 func (c *orchestratorServiceClient) ProxyListCheckSnapshots(ctx context.Context, req *connect.Request[v1.ProxyListCheckSnapshotsRequest]) (*connect.Response[v1.ProxyListCheckSnapshotsResponse], error) {
 	return c.proxyListCheckSnapshots.CallUnary(ctx, req)
+}
+
+// ProxyGetSessionTimeline calls bossanova.v1.OrchestratorService.ProxyGetSessionTimeline.
+func (c *orchestratorServiceClient) ProxyGetSessionTimeline(ctx context.Context, req *connect.Request[v1.ProxyGetSessionTimelineRequest]) (*connect.Response[v1.ProxyGetSessionTimelineResponse], error) {
+	return c.proxyGetSessionTimeline.CallUnary(ctx, req)
 }
 
 // ProxyListAgentsAggregated calls bossanova.v1.OrchestratorService.ProxyListAgentsAggregated.
@@ -2885,6 +2903,9 @@ type OrchestratorServiceHandler interface {
 	ProxyGetSessionStatuses(context.Context, *connect.Request[v1.ProxyGetSessionStatusesRequest]) (*connect.Response[v1.ProxyGetSessionStatusesResponse], error)
 	// ProxyListCheckSnapshots reads a session's recent CI check snapshots (routes by session_id).
 	ProxyListCheckSnapshots(context.Context, *connect.Request[v1.ProxyListCheckSnapshotsRequest]) (*connect.Response[v1.ProxyListCheckSnapshotsResponse], error)
+	// ProxyGetSessionTimeline reads a session's dated timeline (routes by session_id).
+	// Additive RPC: no existing response changes; see docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	ProxyGetSessionTimeline(context.Context, *connect.Request[v1.ProxyGetSessionTimelineRequest]) (*connect.Response[v1.ProxyGetSessionTimelineResponse], error)
 	// ProxyListAgentsAggregated aggregates installed agents across the caller's
 	// Ready daemons (session-less; distinct from the daemon-scoped ProxyListAgents).
 	ProxyListAgentsAggregated(context.Context, *connect.Request[v1.ProxyListAgentsAggregatedRequest]) (*connect.Response[v1.ProxyListAgentsAggregatedResponse], error)
@@ -3557,6 +3578,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceProxyListCheckSnapshotsProcedure,
 		svc.ProxyListCheckSnapshots,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListCheckSnapshots")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyGetSessionTimelineHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyGetSessionTimelineProcedure,
+		svc.ProxyGetSessionTimeline,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetSessionTimeline")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyListAgentsAggregatedHandler := connect.NewUnaryHandler(
@@ -4251,6 +4278,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyGetSessionStatusesHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListCheckSnapshotsProcedure:
 			orchestratorServiceProxyListCheckSnapshotsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyGetSessionTimelineProcedure:
+			orchestratorServiceProxyGetSessionTimelineHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListAgentsAggregatedProcedure:
 			orchestratorServiceProxyListAgentsAggregatedHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListPluginsProcedure:
@@ -4648,6 +4677,10 @@ func (UnimplementedOrchestratorServiceHandler) ProxyGetSessionStatuses(context.C
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListCheckSnapshots(context.Context, *connect.Request[v1.ProxyListCheckSnapshotsRequest]) (*connect.Response[v1.ProxyListCheckSnapshotsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListCheckSnapshots is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyGetSessionTimeline(context.Context, *connect.Request[v1.ProxyGetSessionTimelineRequest]) (*connect.Response[v1.ProxyGetSessionTimelineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyGetSessionTimeline is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListAgentsAggregated(context.Context, *connect.Request[v1.ProxyListAgentsAggregatedRequest]) (*connect.Response[v1.ProxyListAgentsAggregatedResponse], error) {

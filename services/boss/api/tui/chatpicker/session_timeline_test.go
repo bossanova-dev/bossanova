@@ -23,7 +23,6 @@ import (
 	"github.com/recurser/boss/api/tui/ui"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/recurser/bossalib/displaystatus"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -177,6 +176,12 @@ func TestChatPickerNeededQuestionAndTimeline(t *testing.T) {
 			}
 			continue
 		}
+		if kind == pb.AttentionKind_ATTENTION_KIND_REVIEW {
+			if !strings.HasPrefix(q, "Approve these on this head:") {
+				t.Fatalf("missing approval ask: %q", q)
+			}
+			continue
+		}
 		if !strings.HasSuffix(q, "?") {
 			t.Fatalf("needed text is not one question: %q", q)
 		}
@@ -274,7 +279,7 @@ func TestChatPickerAttentionDetailsContracts(t *testing.T) {
 	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_QUESTION, 40)
 	m.session.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_REVIEW
 	m.session.Attention.ParkCodes = []string{"human-review:security"}
-	if m.neededQuestion() != "Is this safe to merge?" {
+	if m.neededQuestion() != "Watch the evidence video, then approve these on head 2bbaede:\n  • security" {
 		t.Fatal("security question missing")
 	}
 	m.session.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
@@ -316,26 +321,12 @@ func TestChatPickerNeededAnswerIsEmphasised(t *testing.T) {
 // about the video only when the park has evidence to watch.
 func TestChatPickerUIReviewQuestionNamesTheVideoOnlyWithEvidence(t *testing.T) {
 	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 40)
-	if got := m.neededQuestion(); got != "Does this UI change look right in the video?" {
+	if got := m.neededQuestion(); got != "Watch the evidence video, then approve these on head 2bbaede:\n  • UI change" {
 		t.Fatalf("with evidence: %q", got)
 	}
 	m.session.Attention.EvidenceUrl = ""
-	if got := m.neededQuestion(); got != "Does this UI change look right?" {
+	if got := m.neededQuestion(); got != "Approve these on head 2bbaede:\n  • UI change" {
 		t.Fatalf("without evidence: %q", got)
-	}
-}
-
-// TestChatPickerDetailsBannerSaysReviewNotNeedsSignOff: the session-details
-// title never shows the API's "needs sign-off" label, with or without
-// attention. Its status suffix carries the TUI's "review" mapping.
-func TestChatPickerDetailsBannerSaysReviewNotNeedsSignOff(t *testing.T) {
-	sess := &pb.Session{Id: "s", Title: "Hide the line", PrNumber: new(int32(3154)), DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, DisplayLabel: displaystatus.NeedsSignOffLabel, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
-	for _, attention := range []*pb.SessionAttention{nil, {Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, ParkCodes: []string{"human-review:ui"}, Since: timestamppb.Now()}} {
-		sess.Attention = attention
-		banner := stripANSI(ui.RenderBanner(ui.ViewChatPicker, ui.BannerOpts{Session: sess, Width: 160}))
-		if !strings.Contains(banner, "Hide the line (review)") || strings.Contains(banner, displaystatus.NeedsSignOffLabel) {
-			t.Fatalf("banner with attention %v:\n%s", attention, banner)
-		}
 	}
 }
 
@@ -988,7 +979,7 @@ func TestChatPickerTimelineCapsLongHistory(t *testing.T) {
 			if got := lipgloss.Height(screen) + ui.BannerOverhead; got > height {
 				t.Fatalf("view uses %d rows, budget %d", got, height)
 			}
-			for _, text := range []string{"verify", "Run bs-build", "third chat", "fourth chat", "Needed from you:", "Does this UI change look right in the video?", "[enter] open chat", "[esc] back", "Parked for you"} {
+			for _, text := range []string{"verify", "Run bs-build", "third chat", "fourth chat", "Needed from you:", "Watch the evidence video, then approve these on head 2bbaede:", "[enter] open chat", "[esc] back", "Parked for you"} {
 				if !strings.Contains(screen, text) {
 					t.Errorf("missing %q", text)
 				}
@@ -1105,14 +1096,14 @@ func TestChatPickerTimelineDatesStepsLeftAfterFold(t *testing.T) {
 		height int
 		want   []string
 	}{
-		{"fold drops the labelled step", 21, []string{
+		{"fold drops the labelled step", 22, []string{
 			"  … 2 earlier steps",
 			"  " + day(1, 0, 0).Format("Jan _2") + " 23:50  ✓ B",
 			"         23:55  ✓ B2",
 			"  Today  00:01  ✓ C",
 			"         00:05  ● Parked for you",
 		}},
-		{"fold leaves only today", 19, []string{
+		{"fold leaves only today", 20, []string{
 			"  … 4 earlier steps",
 			"  00:01  ✓ C",
 			"  00:05  ● Parked for you",
@@ -1158,7 +1149,7 @@ func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 	}
 	for _, token := range []int{59, 60} {
 		t.Run(fmt.Sprintf("token %d", token), func(t *testing.T) {
-			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 21)
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 22)
 			m.width = 80
 			m.session.Attention.Since = timestamppb.New(day(0, 0, 9))
 			m.timeline = []*pb.TimelineStep{

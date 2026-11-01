@@ -1683,7 +1683,7 @@ func TestWarningHintStyle_BlockedVerifyParkRendersDangerTier(t *testing.T) {
 
 	signOff := verifyParkSession(displaystatus.NeedsSignOffLabel)
 	signOffHint := soleHint(t, signOff)
-	if signOffHint.Text != "review: security" || !signOffHint.signOff {
+	if signOffHint.Text != "waiting for you: security" || !signOffHint.signOff {
 		t.Fatalf("sign-off park hint = %q signOff=%v", signOffHint.Text, signOffHint.signOff)
 	}
 	if got, want := WarningHintStyle(signOff, signOffHint).Render(signOffHint.Text), StyleStatusWarning.Render(signOffHint.Text); got != want {
@@ -2216,7 +2216,7 @@ func TestDraftPRFailureHint_AuthAndTransientDoNotCollide(t *testing.T) {
 
 // TestRenderDisplayStatus_VerifyRows renders the two BOS-1382 rows from
 // fixtures whose composite comes from displaystatus.Compute: "verifying" spins
-// in the info style, and a sign-off park renders "review" static in the
+// in the info style, and a sign-off park renders "waiting for you" static in the
 // warning style with the attention "!" its AWAITING_HUMAN_INPUT overlay raises.
 func TestRenderDisplayStatus_VerifyRows(t *testing.T) {
 	sp := NewStatusSpinner()
@@ -2247,7 +2247,7 @@ func TestRenderDisplayStatus_VerifyRows(t *testing.T) {
 		},
 	})
 	gotParked := RenderDisplayStatus(parked, sp)
-	if want := StyleStatusWarning.Render("review"); gotParked != want {
+	if want := StyleStatusWarning.Render("waiting for you"); gotParked != want {
 		t.Errorf("sign-off park row = %q, want %q (warning style, no spinner)", gotParked, want)
 	}
 	if styled := styledPRStatus(parked, sp); styled != gotParked {

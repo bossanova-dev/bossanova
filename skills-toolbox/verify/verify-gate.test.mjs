@@ -107,6 +107,7 @@ import {
   AFTER_MERGE_MARKER,
   PARK_NOTE_MARKER,
   parkCategories,
+  parkVerdict,
   parkNoteMarker,
 } from './verify-park-note.mjs'
 
@@ -283,6 +284,7 @@ function world(opts = {}) {
       const fields = args[at + 1].split(',').filter((field) => field in view)
       return ok(Object.fromEntries(fields.map((field) => [field, view[field]])))
     }
+    if (command === 'gh' && args[0] === 'pr' && args[1] === 'ready') return ok({})
     if (command === 'gh' && args[0] === 'repo') return ok({ nameWithOwner: REPO })
     if (command === 'gh' && args[0] === 'api') {
       if (args[1] === 'graphql') {
@@ -543,6 +545,7 @@ test('VERIFY_DESCRIPTIONS is frozen and carries the BOS-1382 prefixes', () => {
     'worktree-diverged',
     'worktree-unsynced',
     'human-merge',
+    'verify-post-failed',
     'human-review:database',
     'human-review:security',
     'human-review:ui',
@@ -1313,7 +1316,7 @@ test('the worst-case judged set description fits the commit-status limit', () =>
   // The widest set an extension run can park: a malfunction plus every path code and category. A
   // malfunction park never carries human-merge, which joins only a state park or a settled one.
   const withExtensions = HUMAN_REASONS.filter(
-    (c) => !['no-receipt', 'partial-build', 'human-merge'].includes(c),
+    (c) => !['no-receipt', 'partial-build', 'human-merge', 'verify-post-failed'].includes(c),
   )
     .filter(
       (c) =>
@@ -2093,6 +2096,9 @@ test('post --extension-record goes with a human verdict only and must parse', as
   )
   const planned = dry.writes.filter((x) => x.kind === 'pr-comment').map((x) => x.body)
   assert.equal(planned.filter((b) => b.endsWith(extensionRecordMarker(HEAD, RECORD))).length, 1)
+  const recordComment = planned.find((b) => b.endsWith(extensionRecordMarker(HEAD, RECORD)))
+  assert.equal(recordComment.split('\n')[0], parkVerdict([SECURITY]).sentence)
+  assert.ok(recordComment.includes(`The checks on \`${HEAD.slice(0, 12)}\` passed.`))
   assert.equal(w.mutating().length, 0, 'a dry run plans the record and posts nothing')
 })
 
@@ -2930,6 +2936,11 @@ test('post defect with auto-repair on: findings comment, then failure targeting 
       deps(w, { adapter }),
     )
     assert.equal(r.verdict, 'defect')
+    assert.equal(r.draft, 'converted')
+    const comment = w.calls.find((c) => c.args[3] === 'repos/o/r/issues/7/comments')
+    assert.ok(
+      comment.args.some((a) => a.includes(`boss-verify draft ${HEAD}\nboss-verify head ${HEAD}`)),
+    )
     assert.equal(r.staleLabel, undefined)
     const order = w
       .mutating()
@@ -3027,7 +3038,7 @@ test('every human reason posts needs human, adds the label and writes exactly on
     assert.deepEqual(writes[0].addLabels, ['needs-human'])
     assert.equal(writes[0].mentionCreator, true)
     assert.equal(writes[0].marker, `boss-verify head ${HEAD}`)
-    assert.ok(writes[0].comment.includes(parkCategories([code])[0]), writes[0].comment)
+    assert.equal(writes[0].comment.split('\n')[0], parkVerdict([code]).sentence)
     assert.ok(!writes[0].comment.includes(code), `${code} shown to people: ${writes[0].comment}`)
     assert.equal(
       w.notes().length,
@@ -3061,7 +3072,7 @@ test('post --reason accepts a comma list, normalises its order and names the set
   ])
   assert.equal(
     adapter.writeCalls()[0].comment,
-    `PR #7 (${PR_URL}) is waiting for a person: protected path, UI change.`,
+    `Not verified · waiting for you · a UI change\n\nPR #7 (${PR_URL}).`,
   )
 
   await assert.rejects(
@@ -3742,6 +3753,7 @@ test('needsHumanDescription appends the label after the separator and never trun
           'worktree-diverged',
           'worktree-unsynced',
           'human-merge',
+          'verify-post-failed',
         ].includes(c),
     ),
   ).join(',')
@@ -3842,8 +3854,14 @@ test('post labels only posted codes, deduplicating labels in code order', async 
     ['human-review:security,human-review:ui', 'verify gate rules, web UI'],
   ]) {
     const w = world({ diff: ['gate/rules.mjs', 'web/a.tsx'], baseConfig: labelledPolicy() })
-    const r = await post(humanPost(reason), deps(w))
+    const r = await post(humanPost(reason, { extensionRecord: RECORD }), deps(w))
     assert.equal(r.label, label)
+    const sentence = `Not verified · waiting for you · this PR changes ${label}`
+    assert.equal(r.writes.find((x) => x.kind === 'tracker').comment.split('\n')[0], sentence)
+    const recordComment = r.writes.find(
+      (x) => x.kind === 'pr-comment' && x.body.endsWith(extensionRecordMarker(HEAD, RECORD)),
+    )
+    assert.equal(recordComment.body.split('\n')[0], sentence)
     assert.equal(w.statusPosts()[0].description, needsHumanDescription(r.reason, label))
     assert.ok(r.writes.find((x) => x.kind === 'tracker').comment.includes(label))
     if (reason === 'human-review:ui')

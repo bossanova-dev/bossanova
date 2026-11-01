@@ -161,11 +161,11 @@ func RenderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
 }
 
 // tuiStatusLabel is the text the TUI shows for a served status label. A
-// sign-off park reads "review", like the attention board's REVIEW cell. The API
+// sign-off park reads "waiting for you", like the attention board's REVIEW cell. The API
 // keeps "needs sign-off": web filters and the version transforms key on it.
 func tuiStatusLabel(label string) string {
 	if rest, ok := strings.CutPrefix(label, displaystatus.NeedsSignOffLabel); ok {
-		return "review" + rest
+		return "waiting for you" + rest
 	}
 	return label
 }

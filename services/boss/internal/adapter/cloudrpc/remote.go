@@ -1647,10 +1647,13 @@ func (c *RemoteClient) ListCheckSnapshots(ctx context.Context, sessionID string,
 	return &pb.ListCheckSnapshotsResponse{Snapshots: resp.Msg.GetSnapshots()}, nil
 }
 
-// GetSessionTimeline has no orchestrator proxy yet: the timeline is read from
-// the owning daemon's local stores.
-func (c *RemoteClient) GetSessionTimeline(_ context.Context, _ string) ([]*pb.TimelineStep, error) {
-	return nil, rpcerror.WrapError(errLocalOnly("session timeline"))
+// GetSessionTimeline reads the owning daemon's timeline through the orchestrator.
+func (c *RemoteClient) GetSessionTimeline(ctx context.Context, sessionID string) ([]*pb.TimelineStep, error) {
+	resp, err := c.rpc.ProxyGetSessionTimeline(ctx, connect.NewRequest(&pb.ProxyGetSessionTimelineRequest{SessionId: sessionID}))
+	if err != nil {
+		return nil, rpcerror.WrapError(err)
+	}
+	return resp.Msg.GetSteps(), nil
 }
 
 func (c *RemoteClient) GetRunCost(_ context.Context, _ *pb.GetRunCostRequest) (*pb.GetRunCostResponse, error) {

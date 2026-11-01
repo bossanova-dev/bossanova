@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { withDigest, LEVELS, MAX_AREAS } from './verify-proof.mjs'
+import { withDigest, LEVELS, MAX_AREAS, MAX_TEXT_CHARS } from './verify-proof.mjs'
 import {
   validatePageInput,
   proofView,
@@ -365,4 +365,45 @@ test('unknown intent view and both outputs agree on the fallback', () => {
   assert.equal(section.bullets.length, 1)
   for (const output of [renderProofHtml(input), renderProofComment(input)])
     assert.ok(output.includes(section.bullets[0]))
+})
+
+test('optional park verdict opens the page and comment, preserving confidence', () => {
+  const input = {
+    ...fixture(),
+    verdict: { codes: ['always-human-path'], label: 'the verify judge (cannot grade itself)' },
+  }
+  const sentence =
+    'Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)'
+  assert.equal(validatePageInput(input).ok, true)
+  assert.equal(proofView(input).verdict, sentence)
+  assert.ok(renderProofComment(input).startsWith(`<details>\n<summary>${sentence}</summary>`))
+  assert.ok(renderProofHtml(input).includes(`<main><h1>${sentence}</h1>`))
+  for (const output of [renderProofComment(input), renderProofHtml(input)])
+    assert.ok(output.includes('Confidence: Moderate'))
+  input.verdict.label = '<!-- forged --> @ops <script>'
+  assert.ok(!renderProofHtml(input).includes('<script>'))
+  assert.ok(!renderProofComment(input).includes('<!-- forged'))
+  assert.equal(proofView(fixture()).verdict, null)
+  assert.equal(validatePageInput({ ...fixture(), verdict: { codes: ['unknown-code'] } }).ok, true)
+})
+
+test('park verdict sidecars reject invalid codes, labels and unknown keys', () => {
+  for (const verdict of [
+    null,
+    [],
+    {},
+    { codes: [] },
+    { codes: Array(33).fill('x') },
+    { codes: [1] },
+    { codes: [''] },
+    { codes: ['x'.repeat(MAX_TEXT_CHARS + 1)] },
+    { codes: ['x'], label: '' },
+    { codes: ['x'], label: 7 },
+    { codes: ['x'], label: 'x'.repeat(MAX_TEXT_CHARS + 1) },
+    { codes: ['x'], sentence: 'caller supplied' },
+  ]) {
+    const input = { ...fixture(), verdict }
+    assert.equal(validatePageInput(input).ok, false, JSON.stringify(verdict))
+    assert.throws(() => proofView(input))
+  }
 })

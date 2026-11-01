@@ -105,11 +105,13 @@ receipt-carry. Generate a JSON findings array with:
 node "$BOSS_REPAIR_TOOLBOX/repair/repair-blockers.mjs" carry --pr "$PR_NUMBER" --out "$CARRY_FINDINGS_FILE"
 ```
 
-In blocker mode add `--outcomes "$OUTCOMES_FILE"`; in default mode omit it, keeping all standing
-findings. Optional `--repo <owner/name>` selects the repository. The helper uses verify's standing
+In every mode, carry drops findings marked fixed by writer-authored posted repair outcomes.
+In blocker mode add `--outcomes "$OUTCOMES_FILE"` to include this run's not-yet-posted outcomes too. Optional `--repo <owner/name>` selects the repository. The helper uses verify's standing
 report selection: the most recently updated writer-authored `<!-- bs-review -->` comment with a
 valid findings trailer. It drops only findings whose stable blocker ids match fixed outcomes.
-A read failure exits `1`; never replace it with an empty array.
+A fix counts only when its commit is an ancestor of `HEAD`; missing or rewritten commits keep
+the finding carried. An unreadable `HEAD` is a read failure. A read failure exits `1`; never
+replace it with an empty array.
 
 Pass `--carry-findings "$CARRY_FINDINGS_FILE"` on every receipt-carry invocation, including the
 one after delta review. On `re-review`, run the fresh report-only review of the pushed delta,

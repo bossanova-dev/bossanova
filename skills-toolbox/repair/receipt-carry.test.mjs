@@ -353,7 +353,10 @@ for (const blocked of [false, true])
       parsed.findings.map((finding) => finding.id),
       ['f1', 'old', 'note'],
     )
-    assert.deepEqual(parsed.findings.slice(1), carried)
+    assert.deepEqual(
+      parsed.findings.slice(1),
+      carried.map((f) => ({ ...f, assertionHead: head })),
+    )
     assert.equal(f.posts.length, blocked ? 0 : 1)
   })
 

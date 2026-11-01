@@ -101,7 +101,9 @@ the commit:
 
 - A pass merges the PR, pinned to that commit, and moves the ticket to Done.
 - A defect posts the findings as a PR comment and a failure status, which hands the
-  PR to repair.
+  PR to repair. An unparked defect also converts the PR to draft. After its push,
+  boss-repair marks it ready before re-verification only when verify drafted it;
+  a person's draft stays a draft.
 - A policy problem, or a verify extension that crashed or timed out, parks the PR for
   a person.
 
@@ -341,13 +343,13 @@ it among the PR's checks, next to your CI. The pipeline writes two:
 A status belongs to one commit only. After a new push, the old green status no
 longer counts and the new commit needs fresh evidence.
 
-| `boss/verify` state | Description                         | Meaning                                                             |
-| ------------------- | ----------------------------------- | ------------------------------------------------------------------- |
-| pending             | `verifying… <token>`                | A verifier is working on this commit.                               |
-| pending             | `waiting: <reason>`                 | Verification is waiting on something, such as CI.                   |
-| success             | `verified` or `verified (approved)` | This commit passed. The merge still checks CI and mergeability.     |
-| failure             | `defect: …`                         | Findings need repair. A `, needs human` suffix means repair parked. |
-| success             | `needs human: <reason>`             | A person has to decide. The PR also gets a review request.          |
+| `boss/verify` state | Description                         | Meaning                                                                                                                                                                                                                                    |
+| ------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| pending             | `verifying… <token>`                | A verifier is working on this commit.                                                                                                                                                                                                      |
+| pending             | `waiting: <reason>`                 | Verification is waiting on something, such as CI.                                                                                                                                                                                          |
+| success             | `verified` or `verified (approved)` | This commit passed. The merge still checks CI and mergeability.                                                                                                                                                                            |
+| failure             | `defect: …`                         | Findings need repair; `, needs human` means repair was parked. An unparked defect converts the PR to draft. After its push, boss-repair marks it ready before re-verification only when verify drafted it; a person’s draft stays a draft. |
+| success             | `needs human: <reason>`             | A person has to decide. The PR also gets a review request.                                                                                                                                                                                 |
 
 A chat doing pipeline work reports its phase: planning, building, reviewing,
 verifying, repairing or releasing. The session list shows the phase with a spinner

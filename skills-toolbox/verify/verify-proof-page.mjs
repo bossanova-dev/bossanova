@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { isMainModule } from '../main-module.mjs'
+import { parkVerdict } from './verify-park-note.mjs'
 import { validateProof, checkProofUrl, LEVELS, MAX_TEXT_CHARS } from './verify-proof.mjs'
 
 export const MAX_EXCERPT_LINES = 30
@@ -21,7 +22,7 @@ export const LEVEL_GUIDANCE = Object.freeze({
 })
 /**
  * @typedef {import('./verify-proof.mjs').Proof} Proof
- * @typedef {{proof: Proof, asks?: Record<string, {diff?: string, plan?: string}>, rates?: Record<string, {fixed: number, total: number}>, timeline?: {at: string, text: string}[], afterMerge?: string[], filesUrl?: string}} PageInput
+ * @typedef {{proof: Proof, asks?: Record<string, {diff?: string, plan?: string}>, rates?: Record<string, {fixed: number, total: number}>, timeline?: {at: string, text: string}[], afterMerge?: string[], filesUrl?: string, verdict?: {codes: string[], label?: string}}} PageInput
  * @typedef {{label: string, lines: string[], total: number, remaining: number}} Excerpt
  * @typedef {{label: string, items: string[], excerpts: Excerpt[], media: {kind: string, url: string, caption: string, inline: boolean, poster?: string}[]}} Ask
  * @typedef {{title: string, bullets: string[], folded?: boolean, asks?: Ask[], state?: 'known'|'unknown', source?: string}} Section
@@ -47,7 +48,28 @@ export function validatePageInput(value) {
   /** @type {string[]} */
   const errors = []
   if (!object(value)) return { ok: false, errors: ['input: expected object'], input: null }
-  keys(value, ['proof', 'asks', 'rates', 'timeline', 'afterMerge', 'filesUrl'], 'input', errors)
+  keys(
+    value,
+    ['proof', 'asks', 'rates', 'timeline', 'afterMerge', 'filesUrl', 'verdict'],
+    'input',
+    errors,
+  )
+  if (Object.hasOwn(value, 'verdict')) {
+    const verdict = value.verdict
+    if (!object(verdict)) errors.push('verdict: expected object')
+    else {
+      keys(verdict, ['codes', 'label'], 'verdict', errors)
+      if (
+        !Array.isArray(verdict.codes) ||
+        verdict.codes.length < 1 ||
+        verdict.codes.length > 32 ||
+        !verdict.codes.every(short)
+      )
+        errors.push('verdict.codes: expected 1 to 32 non-empty codes')
+      if (Object.hasOwn(verdict, 'label') && !short(verdict.label))
+        errors.push('verdict.label: invalid text')
+    }
+  }
   const proof = validateProof(value.proof)
   errors.push(...proof.errors)
   if (Object.hasOwn(value, 'filesUrl')) checkProofUrl(value.filesUrl, 'filesUrl', errors)
@@ -254,7 +276,10 @@ export function proofView(value) {
     })
   if (input.afterMerge?.length)
     sections.push({ title: 'After merge', bullets: [...input.afterMerge] })
-  return { level, headline, page: proof.page, filesUrl: input.filesUrl, sections }
+  const verdict = input.verdict
+    ? (parkVerdict(input.verdict.codes, { label: input.verdict.label })?.sentence ?? null)
+    : null
+  return { level, headline, verdict, page: proof.page, filesUrl: input.filesUrl, sections }
 }
 const STYLE = `:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:60rem;margin:2rem auto;padding:0 1rem;background:#fff;color:#222}h1{font-size:1.6rem}h2{font-size:1.25rem}pre{overflow:auto;padding:1rem;background:#f3f3f3}img,video{max-width:100%}details{margin:1rem 0}summary{cursor:pointer;font-weight:600}li{margin:.3rem 0}a{color:#1659b8}@media(prefers-color-scheme:dark){body{background:#171717;color:#eee}pre{background:#282828}a{color:#95bdff}}`
 /** @param {unknown} input */
@@ -281,7 +306,7 @@ export function renderProofHtml(input) {
     })
     .join('')
   const hash = createHash('sha256').update(STYLE).digest('base64')
-  return `<!doctype html><html lang="en"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-${hash}'; img-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proof</title><style>${STYLE}</style></head><body><main>${sections}</main></body></html>`
+  return `<!doctype html><html lang="en"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-${hash}'; img-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proof</title><style>${STYLE}</style></head><body><main>${view.verdict ? `<h1>${escapeHtml(view.verdict)}</h1>` : ''}${sections}</main></body></html>`
 }
 /** @param {unknown} input */
 export function renderProofComment(input) {
@@ -327,7 +352,7 @@ export function renderProofComment(input) {
           : `## ${markdown(section.title)}\n\n${content}`
       })
       .join('\n\n')
-    return `<details>\n<summary>${markdown(view.headline)}</summary>\n\n${view.page ? `[Full page](${destination(view.page)})\n\n` : ''}${sections}\n\n</details>`
+    return `<details>\n<summary>${markdown(view.verdict ?? view.headline)}</summary>\n\n${view.page ? `[Full page](${destination(view.page)})\n\n` : ''}${sections}\n\n</details>`
   }
   let output = render()
   for (const excerpt of [...excerpts].reverse()) {

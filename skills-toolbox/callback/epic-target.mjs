@@ -110,3 +110,13 @@ function isVerifiedCandidate(candidate, wantedRepo) {
 function hasIdentity(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
+
+/** @param {number} pr @param {string} trigger */
+export function epicWaitGroup(pr, trigger) {
+  return `epicwait-${pr}-${trigger}`
+}
+
+/** @param {unknown} groupId @param {number} pr */
+export function isEpicWaitGroup(groupId, pr) {
+  return typeof groupId === 'string' && groupId.startsWith(epicWaitGroup(pr, ''))
+}

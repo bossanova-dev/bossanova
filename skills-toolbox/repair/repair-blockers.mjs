@@ -116,20 +116,30 @@ export function outcomesComment(input) {
   )
 }
 
-export function carryFindings(findings, outcomes = null) {
-  if (!outcomes) return findings
-  const { errors } = validateOutcomeFile(outcomes)
-  if (errors.length) throw new Error(errors.join('; '))
-  const fixed = new Set(outcomes.outcomes.filter((o) => o.outcome === 'fixed').map((o) => o.id))
+export function carryFindings(
+  findings,
+  outcomes = [],
+  isAncestor = (_commit, _descendant = undefined) => false,
+  currentOutcomes = [],
+) {
+  const fixes = [...outcomes, ...currentOutcomes].filter(
+    (o) => o.outcome === 'fixed' && isAncestor(o.commit),
+  )
   return findings.filter(
     (f) =>
       !buildBlockers({ reviewFindings: [{ ...f, verified: true, fixed: false }] }).some((b) =>
-        fixed.has(b.id),
+        fixes.some(
+          (o) =>
+            o.id === b.id &&
+            (currentOutcomes.includes(o) ||
+              !f.assertionHead ||
+              (o.blockersHead && isAncestor(f.assertionHead, o.blockersHead))),
+        ),
       ),
   )
 }
 
-export async function main(argv, { read = commandReader() } = {}) {
+export async function main(argv, { read = commandReader(), git = runGit } = {}) {
   const [command, ...args] = argv
   if (!['brief', 'title', 'outcomes', 'carry'].includes(command))
     throw new TypeError('expected brief, title, outcomes or carry')
@@ -165,10 +175,38 @@ export async function main(argv, { read = commandReader() } = {}) {
     const standing = (result.markers ?? [])
       .filter((m) => m.kind === 'review-findings')
       .sort((a, b) => b.at - a.at || b.id - a.id)[0]
-    const outcomes = values.outcomes ? jsonFile(values.outcomes) : null
+    const outcomes = (result.markers ?? [])
+      .filter((m) => m.kind === 'repair-outcomes')
+      .flatMap((m) => m.outcomes.map((o) => ({ ...o, blockersHead: m.blockersHead })))
+    let local
+    if (values.outcomes) {
+      local = jsonFile(values.outcomes)
+      const { errors } = validateOutcomeFile(local)
+      if (errors.length) throw new Error(errors.join('; '))
+    }
+    const head = git(['rev-parse', 'HEAD'])
+    if (!head.ok || !line(head.output)) throw new Error('cannot read HEAD')
+    const isAncestor = (commit, descendant = head.output) =>
+      git(['merge-base', '--is-ancestor', commit, descendant]).ok
+    // Explicit outcomes describe this repair, even when an old assertion was rewritten away.
+    // Historical posted outcomes still need generation ancestry; a stale local file is no authority.
+    if (local && local.pushedHead !== head.output)
+      throw new Error('local outcomes pushedHead does not equal HEAD')
+    if (local && !isAncestor(local.blockersHead))
+      throw new Error('local outcomes blockersHead is not an ancestor of HEAD')
     writeFileSync(
       values.out,
-      JSON.stringify(carryFindings(standing?.findings ?? [], outcomes)) + '\n',
+      JSON.stringify(
+        carryFindings(
+          (standing?.findings ?? []).map((f) => ({
+            ...f,
+            assertionHead: f.assertionHead ?? standing.head,
+          })),
+          outcomes,
+          isAncestor,
+          local?.outcomes ?? [],
+        ),
+      ) + '\n',
     )
     return JSON.stringify({ out: values.out }) + '\n'
   }

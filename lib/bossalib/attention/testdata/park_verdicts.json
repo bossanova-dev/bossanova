@@ -267,6 +267,20 @@
   },
   {
     "codes": [
+      "verify-post-failed"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "verify could not record its verdict on this commit",
+    "evidence": "",
+    "sentence": "Not verified · blocked · verify could not record its verdict on this commit"
+  },
+  {
+    "codes": [
       "worktree-diverged"
     ],
     "label": "",

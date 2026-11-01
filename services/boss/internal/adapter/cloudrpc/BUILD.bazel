@@ -33,6 +33,7 @@ go_test(
         "remote_organization_notes_test.go",
         "remote_organizations_test.go",
         "remote_test.go",
+        "remote_timeline_test.go",
         "remote_triggers_test.go",
         "setup_watch_test.go",
         "verify_pr_test.go",

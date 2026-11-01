@@ -365,7 +365,7 @@ func TestGetSessionTimeline_AReopenedPRIsOpenAgain(t *testing.T) {
 	steps := h.timeline(t)
 	logSteps(t, steps)
 	last := steps[len(steps)-1]
-	if last.GetTitle() != "Parked for you · UI change" || last.GetState() != current {
+	if last.GetTitle() != "Parked for you" || last.GetState() != current {
 		t.Fatalf("last step = %q (%s), want the parked PR CURRENT again", last.GetTitle(), last.GetState())
 	}
 	for _, st := range steps {

@@ -32,6 +32,7 @@ var humanReasonsOrder = []string{
 	"worktree-diverged",
 	"worktree-unsynced",
 	ParkCodeHumanMerge,
+	"verify-post-failed",
 	"human-review:database",
 	"human-review:security",
 	"human-review:ui",
@@ -275,11 +276,16 @@ var knownParkCodes = map[string]parkCodeInfo{
 		signOff:             true,
 		plain:               "verify passed; this PR's policy leaves the merge to a person",
 	},
-	"repair-exhausted":  {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
-	"extension-failed":  {category: "verify extension failed", plain: "a verify extension failed to run"},
-	"no-session":        {category: "no session", plain: "verify found no session behind this PR"},
-	"worktree-diverged": {category: "worktree diverged", plain: "the session worktree is off the PR head and holds work the PR lacks"},
-	"worktree-unsynced": {category: "worktree unsynced", plain: "verify could not move the session worktree to the PR head"},
+	// No dated apiversion bump for verify-post-failed: the version-skewed TUI
+	// and web render an unknown code as a blocked FIX, which truthfully
+	// describes the failed post. There is no older answer to restore. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	"verify-post-failed": {category: "verify could not post", plain: "verify could not record its verdict on this commit"},
+	"repair-exhausted":   {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
+	"extension-failed":   {category: "verify extension failed", plain: "a verify extension failed to run"},
+	"no-session":         {category: "no session", plain: "verify found no session behind this PR"},
+	"worktree-diverged":  {category: "worktree diverged", plain: "the session worktree is off the PR head and holds work the PR lacks"},
+	"worktree-unsynced":  {category: "worktree unsynced", plain: "verify could not move the session worktree to the PR head"},
 }
 
 // DecidingParkCode picks the deciding operator code from raw, possibly comma-joined codes.

@@ -240,6 +240,8 @@ message OrchestratorCommand {
     AgentCredentialAvailableCommand agent_credential_available = 73;
     AgentCredentialDevicesChangedCommand agent_credential_devices_changed = 74;
     SendBackToRepairCommand send_back_to_repair = 75;
+    // bosso → daemon: read a session's timeline. Replies CommandResult{get_session_timeline}.
+    GetSessionTimelineCommand get_session_timeline = 76;
   }
 }
 
@@ -549,6 +551,8 @@ message CommandResult {
     // and carries no session.
     OperatorMergeSessionResponse operator_merge_session = 44;
     SendBackToRepairResponse send_back_to_repair = 46;
+    // The daemon's dated timeline, in its original order (reuses daemon.proto type).
+    GetSessionTimelineResponse get_session_timeline = 47;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -1700,3 +1704,6 @@ message SendBackToRepairCommand {
   string expected_proof_digest = 3;
   string note = 4;
 }
+
+// GetSessionTimelineCommand reads the session's dated timeline on its owning daemon.
+message GetSessionTimelineCommand { string session_id = 1; }

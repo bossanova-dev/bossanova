@@ -56,6 +56,10 @@ function world({ comments = [], failNotes = false, failPermission = false, statu
         baseRefName: 'main',
         statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
       })
+    if (command === 'gh' && args[0] === 'pr' && args[1] === 'ready') {
+      writes.push({ kind: 'pr-draft' })
+      return ok({})
+    }
     if (command === 'gh' && args[0] === 'api') {
       const path = args[1]
       if (path === 'graphql')

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { renderReport, parseReportFindings } from '../review-verdict.mjs'
 import {
   operatorNoteBlocker,
   buildBlockers,
@@ -162,7 +163,10 @@ test('carry removes only matched fixed findings and preserves notes', () => {
     pushedHead: head,
     outcomes: [{ id: file().blockers[0].id, outcome: 'fixed', commit: head }],
   }
-  assert.deepEqual(carryFindings([finding, other, note], outcomes), [other, note])
+  assert.deepEqual(
+    carryFindings([finding, other, note], outcomes.outcomes, () => true),
+    [other, note],
+  )
   assert.deepEqual(carryFindings([finding, other, note]), [finding, other, note])
 })
 
@@ -238,8 +242,118 @@ test('carry selects the newest valid writer report and ignores reader-authored r
         introduced: true,
         verified: true,
         fixed: false,
+        assertionHead: head,
       },
     ])
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('carry applies trusted posted fixes in HEAD ancestry and unions local outcomes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'repair-posted-'))
+  const other = { ...finding, id: 'f2', title: 'another problem' }
+  const note = { ...finding, id: 'n1', severity: 'P3' }
+  const fixCommit = 'b'.repeat(40)
+  const id = file().blockers[0].id
+  const otherId = buildBlockers({ reviewFindings: [other] })[0].id
+  const outcomeFile = (outcomes) => ({ version: 1, blockersHead: head, pushedHead: head, outcomes })
+  const report =
+    '<!-- bs-review -->\n<!-- bs-review-findings v1 base=' +
+    head +
+    ' head=' +
+    head +
+    ' ' +
+    Buffer.from(JSON.stringify([finding, other, note])).toString('base64url') +
+    ' -->'
+  const comment = (id, body, login = 'writer') => ({
+    id,
+    body,
+    user: { login },
+    author_association: 'COLLABORATOR',
+    created_at: '2026-01-01T00:00:00Z',
+  })
+  const fixed = { id, outcome: 'fixed', commit: fixCommit }
+  const cases = [
+    { name: 'posted fixed', outcomes: [fixed], expected: [other, note] },
+    {
+      name: 'non-ancestor or missing commit',
+      outcomes: [fixed],
+      ancestor: false,
+      expected: [finding, other, note],
+    },
+    {
+      name: 'not fixable',
+      outcomes: [{ id, outcome: 'not-fixable', reason: 'needs input' }],
+      expected: [finding, other, note],
+    },
+    {
+      name: 'reader-authored',
+      outcomes: [fixed],
+      login: 'reader',
+      expected: [finding, other, note],
+    },
+    {
+      name: 'later not-fixable does not undo fix',
+      outcomes: [fixed],
+      later: true,
+      expected: [other, note],
+    },
+    {
+      name: 'union with local file',
+      outcomes: [fixed],
+      local: [{ id: otherId, outcome: 'fixed', commit: head }],
+      expected: [note],
+    },
+    { name: 'invalid local file', outcomes: [fixed], local: [], invalid: true },
+    { name: 'unreadable HEAD', outcomes: [fixed], unreadable: true },
+  ]
+  try {
+    for (const c of cases) {
+      const comments = [
+        comment(1, report),
+        comment(2, outcomesComment(outcomeFile(c.outcomes)), c.login),
+      ]
+      if (c.later)
+        comments.push(
+          comment(
+            3,
+            outcomesComment(outcomeFile([{ id, outcome: 'not-fixable', reason: 'later round' }])),
+          ),
+        )
+      const read = (cmd, args) =>
+        args.some((a) => a.includes('/permission'))
+          ? {
+              ok: true,
+              payload: { permission: args.some((a) => a.includes('/writer/')) ? 'write' : 'read' },
+            }
+          : { ok: true, payload: [comments] }
+      const git = (args) =>
+        args[0] === 'rev-parse'
+          ? { ok: !c.unreadable, output: head }
+          : {
+              ok: c.ancestor !== false && [head, fixCommit].includes(args[2]) && args[3] === head,
+              output: '',
+            }
+      const out = join(dir, c.name + '.json')
+      const args = ['carry', '--pr', '1', '--repo', 'o/r', '--out', out]
+      if (c.local) {
+        const local = join(dir, 'outcomes.json')
+        writeFileSync(local, JSON.stringify(c.invalid ? {} : outcomeFile(c.local)))
+        args.push('--outcomes', local)
+      }
+      if (c.invalid || c.unreadable) {
+        await assert.rejects(main(args, { read, git }), c.unreadable ? /HEAD/ : /version|outcomes/)
+        assert.throws(() => readFileSync(out), c.name)
+      } else {
+        await main(args, { read, git })
+        assert.deepEqual(
+          JSON.parse(readFileSync(out, 'utf8')),
+          c.expected.map((f) => ({ ...f, assertionHead: head })),
+          c.name,
+        )
+      }
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
@@ -266,5 +380,117 @@ test('operator notes execute after conflicts, name the round and accept either o
     }
     assert.equal(validateOutcomes(input, results, () => ({ ok: true, output: head })).ok, true)
     assert.deepEqual(parseOutcomesTrailer(outcomesComment(results)), results)
+  }
+})
+
+test('fresh recurrence survives historical fixes while carried assertions retain their generation', () => {
+  const initial = 'a'.repeat(40)
+  const fixed = 'b'.repeat(40)
+  const recurrence = 'c'.repeat(40)
+  const republished = 'd'.repeat(40)
+  const commits = [initial, fixed, recurrence, republished]
+  const ancestor = (a, b = republished) => commits.indexOf(a) <= commits.indexOf(b)
+  const id = file().blockers[0].id
+  const outcomes = [
+    { id, outcome: 'fixed', commit: fixed, blockersHead: initial },
+    { id, outcome: 'not-fixable', reason: 'later failure', blockersHead: initial },
+  ]
+  const report = (f, head) =>
+    parseReportFindings(
+      renderReport({
+        status: 'pass',
+        verdict: { status: 'pass', base: initial, head, findings: [f] },
+      }),
+    ).findings
+  // A fresh delta review reasserts the same stable blocker after the fix.
+  const fresh = report(finding, recurrence)
+  assert.deepEqual(carryFindings(fresh, outcomes, ancestor), fresh)
+  // Editing the same standing comment to carry it again preserves the assertion.
+  const carried = report(
+    { ...fresh[0], source: 'carried', verified: true, fixed: false },
+    republished,
+  )
+  assert.equal(carried[0].assertionHead, recurrence)
+  assert.deepEqual(carryFindings(carried, outcomes, ancestor), carried)
+  // Any reachable fix wins within the original generation despite later unsuccessful rounds.
+  const original = report({ ...finding, source: 'carried', assertionHead: initial }, republished)
+  assert.deepEqual(carryFindings(original, outcomes, ancestor), [])
+  // A repair of the recurrence can discharge that generation too.
+  assert.deepEqual(
+    carryFindings(
+      carried,
+      [...outcomes, { id, outcome: 'fixed', commit: republished, blockersHead: recurrence }],
+      ancestor,
+    ),
+    [],
+  )
+})
+
+test('explicit current repair discharges orphaned assertions while historical fixes stay conservative', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'repair-orphaned-'))
+  const orphaned = 'c'.repeat(40)
+  const other = 'd'.repeat(40)
+  const carried = { ...finding, assertionHead: orphaned }
+  const report =
+    '<!-- bs-review -->\n<!-- bs-review-findings v1 base=' +
+    head +
+    ' head=' +
+    head +
+    ' ' +
+    Buffer.from(JSON.stringify([carried])).toString('base64url') +
+    ' -->'
+  const fixed = { id: file().blockers[0].id, outcome: 'fixed', commit: head }
+  const envelope = (changes = {}) => ({
+    version: 1,
+    blockersHead: head,
+    pushedHead: head,
+    outcomes: [fixed],
+    ...changes,
+  })
+  const comments = [report, outcomesComment(envelope())].map((body, i) => ({
+    id: i + 1,
+    body,
+    user: { login: 'writer' },
+    author_association: 'MEMBER',
+    created_at: '2026-01-01T00:00:00Z',
+  }))
+  const read = (_cmd, args) =>
+    args.some((a) => a.includes('/permission'))
+      ? { ok: true, payload: { permission: 'write' } }
+      : { ok: true, payload: [comments] }
+  const git = (args) =>
+    args[0] === 'rev-parse'
+      ? { ok: true, output: head }
+      : { ok: args[2] === head && args[3] === head, output: '' }
+  try {
+    for (const [name, local, error, expected] of [
+      ['historical', null, null, [carried]],
+      ['current', envelope(), null, []],
+      ['stale pushed head', envelope({ pushedHead: other }), /pushedHead/, null],
+      ['unreachable blocker head', envelope({ blockersHead: other }), /blockersHead/, null],
+      [
+        'unreachable fixed commit',
+        envelope({ outcomes: [{ ...fixed, commit: other }] }),
+        null,
+        [carried],
+      ],
+    ]) {
+      const out = join(dir, name + '.json')
+      const args = ['carry', '--pr', '1', '--repo', 'o/r', '--out', out]
+      if (local) {
+        const path = join(dir, 'local.json')
+        writeFileSync(path, JSON.stringify(local))
+        args.push('--outcomes', path)
+      }
+      if (error) {
+        await assert.rejects(main(args, { read, git }), error)
+        assert.throws(() => readFileSync(out))
+      } else {
+        await main(args, { read, git })
+        assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')), expected, name)
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
 })

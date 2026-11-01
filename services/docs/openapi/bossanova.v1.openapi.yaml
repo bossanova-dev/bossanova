@@ -2670,6 +2670,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyGetSessionStatusesResponse'
+  /bossanova.v1.OrchestratorService/ProxyGetSessionTimeline:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyGetSessionTimeline
+      description: |-
+        ProxyGetSessionTimeline reads a session's dated timeline (routes by session_id).
+         Additive RPC: no existing response changes; see docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+      operationId: bossanova.v1.OrchestratorService.ProxyGetSessionTimeline
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyGetSessionTimelineRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyGetSessionTimelineResponse'
   /bossanova.v1.OrchestratorService/ProxyLinkSessionPR:
     post:
       tags:
@@ -7707,6 +7745,15 @@ components:
                 - getSessionStatuses
             - type: object
               properties:
+                getSessionTimeline:
+                  title: get_session_timeline
+                  description: The daemon's dated timeline, in its original order (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.GetSessionTimelineResponse'
+              title: get_session_timeline
+              required:
+                - getSessionTimeline
+            - type: object
+              properties:
                 launchTriggerSession:
                   title: launch_trigger_session
                   description: |-
@@ -11089,6 +11136,15 @@ components:
           title: statuses
       title: GetSessionStatusesResponse
       additionalProperties: false
+    bossanova.v1.GetSessionTimelineCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: GetSessionTimelineCommand
+      additionalProperties: false
+      description: GetSessionTimelineCommand reads the session's dated timeline on its owning daemon.
     bossanova.v1.GetSessionTimelineRequest:
       type: object
       properties:
@@ -14023,6 +14079,15 @@ components:
                 - getSessionStatuses
             - type: object
               properties:
+                getSessionTimeline:
+                  title: get_session_timeline
+                  description: 'bosso → daemon: read a session''s timeline. Replies CommandResult{get_session_timeline}.'
+                  $ref: '#/components/schemas/bossanova.v1.GetSessionTimelineCommand'
+              title: get_session_timeline
+              required:
+                - getSessionTimeline
+            - type: object
+              properties:
                 launchTriggerSession:
                   title: launch_trigger_session
                   description: |-
@@ -16052,6 +16117,26 @@ components:
           title: statuses
       title: ProxyGetSessionStatusesResponse
       additionalProperties: false
+    bossanova.v1.ProxyGetSessionTimelineRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: ProxyGetSessionTimelineRequest
+      additionalProperties: false
+      description: ProxyGetSessionTimelineRequest routes the read to the session's owning daemon.
+    bossanova.v1.ProxyGetSessionTimelineResponse:
+      type: object
+      properties:
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.TimelineStep'
+          title: steps
+      title: ProxyGetSessionTimelineResponse
+      additionalProperties: false
+      description: Steps retain the daemon's order, as in GetSessionTimelineResponse.
     bossanova.v1.ProxyLinkSessionPRRequest:
       type: object
       properties:

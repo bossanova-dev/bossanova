@@ -169,7 +169,49 @@ test('boss missing from PATH means sessions are unknown on a host that runs boss
   const withBossd = fs.realpathSync(tempDir('worktree-reaper-home-', t))
   fs.mkdirSync(join(withBossd, '.bossanova'))
   const withoutBossd = fs.realpathSync(tempDir('worktree-reaper-home-', t))
-  const env = { BOSS_BIN: join(withoutBossd, 'no-such-boss') }
+  const env = {
+    BOSS_BIN: join(withoutBossd, 'no-such-boss'),
+    BOSS_SOCKET: join(withBossd, 'bossd.sock'),
+  }
   assert.equal(liveSessionBranches({ env, home: withBossd }), null)
   assert.deepEqual(liveSessionBranches({ env, home: withoutBossd }), new Set())
+})
+
+function flakyBoss(t, failures) {
+  const dir = fs.realpathSync(tempDir('worktree-reaper-boss-', t))
+  const counter = join(dir, 'calls')
+  const bin = join(dir, 'boss')
+  fs.writeFileSync(
+    bin,
+    `#!/bin/sh\nn=$(cat '${counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '${counter}'\n` +
+      `[ $n -le ${failures} ] && exit 1\necho '{"sessions":[{"branch":"live"}]}'\n`,
+    { mode: 0o755 },
+  )
+  return {
+    env: { ...process.env, BOSS_BIN: bin, BOSS_SOCKET: join(dir, 'bossd.sock') },
+    home: dir,
+    counter,
+  }
+}
+
+test('session lookup waits out a bossd restart before giving up', (t) => {
+  const pauses = []
+  const restarting = flakyBoss(t, 2)
+  const branches = liveSessionBranches({ ...restarting, sleep: (ms) => pauses.push(ms) })
+  assert.deepEqual(branches, new Set(['live']))
+  assert.deepEqual(pauses, [20000, 20000])
+
+  pauses.length = 0
+  const down = flakyBoss(t, 99)
+  assert.equal(liveSessionBranches({ ...down, sleep: (ms) => pauses.push(ms) }), null)
+  assert.equal(pauses.length, 3, 'no pause after the last attempt')
+})
+
+test('never runs boss without a daemon socket, so it cannot start a daemon of its own', (t) => {
+  const host = flakyBoss(t, 0)
+  fs.mkdirSync(join(host.home, '.bossanova'))
+  const noSocket = { ...host.env }
+  delete noSocket.BOSS_SOCKET
+  assert.equal(liveSessionBranches({ env: noSocket, home: host.home, sleep: () => {} }), null)
+  assert.equal(fs.existsSync(host.counter), false, 'boss was never invoked')
 })

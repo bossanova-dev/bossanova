@@ -143,10 +143,10 @@ func (h Model) sectionTitle(sessions []*pb.Session, i int) string {
 
 // renderAttentionStatus styles a row's attention cell. working says an agent
 // chat of the row's session is working now (the session's served display label).
-// An outcome the row names (fix, review, ready) keeps its words and colour, but
+// An outcome the row names (fix, ready) keeps its words and colour, but
 // the spinner takes the place of its leading glyph: the PR may be ready, but the
 // agent is still at it. A verified merge keeps its check mark, because the PR
-// is mergeable whatever the agent is doing. A question stays as it is, because
+// is mergeable whatever the agent is doing. A question or sign-off stays as it is, because
 // the agent is waiting on the operator.
 func (h Model) renderAttentionStatus(a *pb.SessionAttention, working bool) string {
 	lead := func(resting string) string {
@@ -161,7 +161,7 @@ func (h Model) renderAttentionStatus(a *pb.SessionAttention, working bool) strin
 	case pb.AttentionKind_ATTENTION_KIND_QUESTION:
 		return ui.StyleStatusWarning.Render("? question")
 	case pb.AttentionKind_ATTENTION_KIND_REVIEW:
-		return ui.StyleStatusWarning.Render(lead("") + "review")
+		return ui.StyleStatusWarning.Render("waiting for you")
 	case pb.AttentionKind_ATTENTION_KIND_MERGE:
 		if a.GetIsUnverified() {
 			return ui.StyleStatusSuccess.Render(lead("✓ ") + "ready")

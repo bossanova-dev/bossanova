@@ -82,20 +82,15 @@ func (m Model) neededQuestion() string {
 		}
 		return strings.Trim(a.GetSentence(), "“”")
 	case pb.AttentionKind_ATTENTION_KIND_REVIEW:
-		category, _ := attention.ParkCategory(a.GetParkCodes())
-		switch category {
-		case "UI change":
-			if a.GetEvidenceUrl() == "" {
-				return "Does this UI change look right?"
-			}
-			return "Does this UI change look right in the video?"
-		case "security":
-			return "Is this safe to merge?"
-		case "database migration":
-			return "Is this migration safe to run?"
-		default:
-			return "Is this ready to merge?"
+		question, items, ok := attention.ReviewAsk(a.GetParkCodes(), a.GetParkLabel(), a.GetEvidenceUrl() != "", m.session.GetPrDisplayHeadSha())
+		if !ok {
+			return a.GetSentence()
 		}
+		lines := []string{question}
+		for _, item := range items {
+			lines = append(lines, "  • "+item)
+		}
+		return strings.Join(lines, "\n")
 	case pb.AttentionKind_ATTENTION_KIND_FIX:
 		if len(a.GetParkCodes()) > 0 {
 			return blockedParkNeeded(a)
@@ -143,9 +138,7 @@ func (m Model) timelineSteps() []*pb.TimelineStep {
 	if attention.NeedsYou(a.GetKind()) {
 		title := map[pb.AttentionKind]string{pb.AttentionKind_ATTENTION_KIND_FIX: "Waiting for a fix", pb.AttentionKind_ATTENTION_KIND_QUESTION: "Waiting for your answer", pb.AttentionKind_ATTENTION_KIND_REVIEW: "Parked for you", pb.AttentionKind_ATTENTION_KIND_MERGE: "Waiting for merge"}[a.GetKind()]
 		detail := a.GetSentence()
-		if a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW {
-			detail, _ = attention.ParkCategory(a.GetParkCodes())
-		} else if a.GetKind() == pb.AttentionKind_ATTENTION_KIND_QUESTION {
+		if a.GetKind() == pb.AttentionKind_ATTENTION_KIND_QUESTION {
 			detail = plainMarkdown(detail)
 		}
 		wait := &pb.TimelineStep{At: a.GetSince(), Title: title, Detail: detail, State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT}

@@ -57,7 +57,7 @@ func TestTimelinePartialMatchesSessionAttention_ChatPicker_AC14(t *testing.T) {
 			if got := onlySession(t, resp.Msg.Sessions).GetAttention().GetKind(); tc.displayHead == tc.snapshotHead && got != kind {
 				t.Fatalf("board=%v timeline=%v", got, kind)
 			}
-			assertSteps(t, steps, []wantStep{{at(10), "CI passed, 2 checks", "", done}, {at(10), "Parked for you · partial build", "", current}})
+			assertSteps(t, steps, []wantStep{{at(10), "CI passed, 2 checks", "", done}, {at(10), "Parked for you", "only part of the ticket was finished, so the PR is held", current}})
 		})
 	}
 }
@@ -83,5 +83,65 @@ func TestTimelinePartialExistingVerifyParkIsNotDuplicated(t *testing.T) {
 	}
 	if got := attention.Compute(sessionattention.Derive(af).Input); got.GetKind() != kind {
 		t.Fatalf("attention=%v", got)
+	}
+}
+
+func TestGetSessionTimelineUsesCurrentHeadParkLabel(t *testing.T) {
+	const label = "the verify judge (cannot grade itself)"
+	for _, tc := range []struct {
+		name, head string
+		status     vcs.DisplayStatus
+		want       string
+	}{
+		{"current", timelineHead, vcs.DisplayStatusNeedsHuman, "this PR changes " + label},
+		{"case insensitive", strings.ToUpper(timelineHead), vcs.DisplayStatusNeedsHuman, "this PR changes " + label},
+		{"stale head", "older-head", vcs.DisplayStatusNeedsHuman, "touches a path that always needs a person's sign-off"},
+		{"empty head", "", vcs.DisplayStatusNeedsHuman, "touches a path that always needs a person's sign-off"},
+		{"not parked", timelineHead, vcs.DisplayStatusPassing, "touches a path that always needs a person's sign-off"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := 1
+			sqlDB := setupServerTestDB(t)
+			repos, sessions := db.NewRepoStore(sqlDB), db.NewSessionStore(sqlDB)
+			repo, err := repos.Create(t.Context(), db.CreateRepoParams{DisplayName: "r", LocalPath: "/tmp/r", OriginURL: "https://github.com/acme/r.git", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/wt"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, err := sessions.Create(t.Context(), db.CreateSessionParams{RepoID: repo.ID, Title: "s", BranchName: "feat/x", BaseBranch: "main", PRNumber: &n})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tr := status.NewDisplayTracker()
+			tr.Set(row.ID, vcs.DisplayInfo{Status: tc.status, HeadSHA: tc.head, VerifyLabel: label})
+			s := New(Config{Repos: repos, Sessions: sessions, DisplayTracker: tr})
+			s.checkSnapshots = &fakeCheckSnapshotStore{snaps: []db.CheckSnapshot{{SessionID: row.ID, HeadSHA: timelineHead, PolledAt: at(10), ComputedStatus: int(vcs.DisplayStatusNeedsHuman), RawJSON: checksJSON(t, greenCI(2, "needs human: always-human-path"))}}}
+			resp, err := s.GetSessionTimeline(t.Context(), connect.NewRequest(&pb.GetSessionTimelineRequest{SessionId: row.ID}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertSteps(t, resp.Msg.GetSteps(), []wantStep{{at(10), "CI passed, 2 checks", "", done}, {at(10), "Parked for you", tc.want, current}})
+		})
+	}
+}
+
+func TestTimelineParkReadsCurrentHeadChecklistItems(t *testing.T) {
+	for _, head := range []string{timelineHead, "older-head"} {
+		t.Run(head, func(t *testing.T) {
+			n := 1
+			row := &models.Session{ID: "s", RepoID: "r", PRNumber: &n}
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, nil, nil)
+			s.checkSnapshots = &fakeCheckSnapshotStore{snaps: []db.CheckSnapshot{{SessionID: row.ID, HeadSHA: timelineHead, PolledAt: at(10), ComputedStatus: int(vcs.DisplayStatusNeedsHuman), RawJSON: checksJSON(t, greenCI(2, "needs human: ledger-open"))}}}
+			s.evidence = openItemsEvidence{head: head, items: []string{"finish the migration", "prove the rollback"}}
+			facts, err := s.timelineFacts(t.Context(), row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "the PR checklist has open items"
+			if head == timelineHead {
+				want = "the PR checklist has 2 open items"
+			}
+			steps := buildTimeline(facts)
+			assertSteps(t, steps, []wantStep{{at(10), "CI passed, 2 checks", "", done}, {at(10), "Parked for you", want, current}})
+		})
 	}
 }

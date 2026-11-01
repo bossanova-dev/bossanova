@@ -160,7 +160,9 @@ judgement.
    head is then the receipted one (substitute step 1's `START_SHA`). Also run this for a
    blocker-mode `no-review` item when no push was needed. Before every receipt-carry invocation,
    run `repair-blockers.mjs carry --pr <n> --out <file>` and pass its file as `--carry-findings`;
-   in blocker mode also supply `--outcomes <file>` to `carry`, so only fixed findings are dropped.
+   carry drops findings marked fixed in trusted posted repair outcomes when the fix commit is in
+   `HEAD` ancestry, in every mode. In blocker mode also supply `--outcomes <file>` for this run's
+   not-yet-posted outcomes.
    A failed carry read is a residual: never substitute an empty list or publish a replacement
    report. See [the carry protocol](references/blocker-mode.md#carry-and-supersede) for both modes.
    `receipt-carry.mjs` prints a
@@ -192,11 +194,18 @@ judgement.
 
    After the final receipt decision (including any re-review re-run), when rule 5 confirmed the
    push and `HEAD` equals `origin/<branch>`, run this hand-off unless that decision is `blocked` —
-   in default mode and on every pushing Watch-mode pass. Print its line; it is never fatal and
-   never changes the pass's outcome:
+   in default mode and on every pushing Watch-mode pass. First run `verify-draft.mjs ready`
+   with this pass's `START_SHA`. It readies only a PR verify drafted; a person's draft stays a
+   draft. The helper retries transient failures with the same ownership head and retains a
+   worktree-local checkpoint for a later repair pass; every retry revalidates GitHub evidence.
+   Print its line; `unreadable` or `failed` is a `ready-failed` residual. Keep that checkpoint
+   and retry the ready command before re-verification; never arm re-verification while ready
+   remains unreadable or failed. Neither changes the pass's outcome:
 
    ```bash
-   node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" arm-reverify --pr "$(gh pr view --json number -q .number)" --head "$(git rev-parse HEAD)"
+   if node "$BOSS_REPAIR_TOOLBOX/verify/verify-draft.mjs" ready --pr "$(gh pr view --json number -q .number)" --start-sha "$START_SHA"; then
+     node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" arm-reverify --pr "$(gh pr view --json number -q .number)" --head "$(git rev-parse HEAD)"
+   fi
    ```
 
 5. **Poll once** (default mode) and report.

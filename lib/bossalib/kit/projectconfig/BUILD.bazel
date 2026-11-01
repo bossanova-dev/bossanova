@@ -58,18 +58,20 @@ go_test(
         "match_test.go",
         "plan_test.go",
         "reconcile_test.go",
+        "repository_config_test.go",
         "schema_gen_test.go",
         "validate_test.go",
     ],
     # keep: TestSchemaGenerated reads the package's .go sources for the doc comments
     # that become schema descriptions (invopop AddGoComments walks the test's cwd).
+    # TestRepositoryProjectConfigValid reads the repository's own .boss-project.json.
     data = glob(
         [
             "testdata/**",
             "*.go",
         ],
         exclude = ["*_test.go"],
-    ),
+    ) + ["//:.boss-project.json"],
     embed = [":projectconfig"],
     deps = [
         "//lib/bossalib/daemonstate",

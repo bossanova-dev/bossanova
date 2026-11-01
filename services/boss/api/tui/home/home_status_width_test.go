@@ -65,3 +65,14 @@ func assertHomeStatusFits(t *testing.T, cell string) {
 		t.Errorf("status %q is %d columns, budget %d", plain, width, homeStatusWidth)
 	}
 }
+
+func TestHomeReviewStatusFitsWithoutSpinner_Sessions_AC216001(t *testing.T) {
+	h := NewModel(nil, context.Background(), nil)
+	for _, working := range []bool{false, true} {
+		cell := h.renderAttentionStatus(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW}, working)
+		assertHomeStatusFits(t, cell)
+		if got := ansi.Strip(cell); got != "waiting for you" {
+			t.Errorf("working=%v: got %q", working, got)
+		}
+	}
+}

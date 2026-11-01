@@ -1,96 +1,119 @@
 {
   "codes": {
     "always-human-path": {
+      "decidingPriority": true,
       "plain": "touches a path that always needs a person's sign-off",
       "category": "protected path",
       "signOff": true,
       "restates": false
     },
     "extension-failed": {
+      "decidingPriority": false,
       "plain": "a verify extension failed to run",
       "category": "verify extension failed",
       "signOff": false,
       "restates": false
     },
     "human-merge": {
+      "decidingPriority": true,
       "plain": "verify passed; this PR's policy leaves the merge to a person",
       "category": "merge by a person",
       "signOff": true,
       "restates": false
     },
     "human-review:database": {
+      "decidingPriority": true,
       "plain": "a database migration for a person to review",
       "category": "database migration",
       "signOff": true,
       "restates": false
     },
     "human-review:security": {
+      "decidingPriority": true,
       "plain": "a security-sensitive change for a person to review",
       "category": "security",
       "signOff": true,
       "restates": false
     },
     "human-review:ui": {
+      "decidingPriority": true,
       "plain": "a UI change",
       "category": "UI change",
       "signOff": true,
       "restates": true
     },
     "human-review:unproven": {
+      "decidingPriority": true,
       "plain": "some checks have no evidence that they pass",
       "category": "unproven checks",
       "signOff": true,
       "restates": false
     },
     "ledger-open": {
+      "decidingPriority": true,
       "plain": "the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section",
       "category": "open checklist items",
       "signOff": false,
       "restates": false
     },
     "no-receipt": {
+      "decidingPriority": true,
       "plain": "the latest commit has not had an automated build and review, or changed after its review",
       "category": "latest commit not reviewed",
       "signOff": true,
       "restates": false
     },
     "no-session": {
+      "decidingPriority": false,
       "plain": "verify found no session behind this PR",
       "category": "no session",
       "signOff": false,
       "restates": false
     },
     "partial-build": {
+      "decidingPriority": true,
       "plain": "only part of the ticket was finished, so the PR is held",
       "category": "partial build",
       "signOff": false,
       "restates": false
     },
     "repair-exhausted": {
+      "decidingPriority": false,
       "plain": "automatic repair gave up on this PR",
       "category": "repair exhausted",
       "signOff": false,
       "restates": false
     },
     "ticket-needs-person": {
+      "decidingPriority": false,
       "plain": "the ticket is labelled for a person's answer, so verify will not take this PR until it is answered or labelled for build",
       "category": "ticket waits on a person",
       "signOff": false,
       "restates": false
     },
     "ticket-not-selected": {
+      "decidingPriority": false,
       "plain": "the ticket's labels keep it out of verify's selection, so verify will not take this PR until it is relabelled or merged by hand",
       "category": "ticket not selected",
       "signOff": false,
       "restates": false
     },
+    "verify-post-failed": {
+      "decidingPriority": false,
+      "plain": "verify could not record its verdict on this commit",
+      "category": "verify could not post",
+      "signOff": false,
+      "restates": false
+    },
     "worktree-diverged": {
+      "decidingPriority": false,
       "plain": "the session worktree is off the PR head and holds work the PR lacks",
       "category": "worktree diverged",
       "signOff": false,
       "restates": false
     },
     "worktree-unsynced": {
+      "decidingPriority": false,
       "plain": "verify could not move the session worktree to the PR head",
       "category": "worktree unsynced",
       "signOff": false,
@@ -98,6 +121,7 @@
     }
   },
   "unknown": {
+    "decidingPriority": false,
     "plain": "an issue this version of boss does not recognise",
     "category": "an issue this version of boss does not recognise",
     "signOff": false,
@@ -114,6 +138,7 @@
     "worktree-diverged",
     "worktree-unsynced",
     "human-merge",
+    "verify-post-failed",
     "human-review:database",
     "human-review:security",
     "human-review:ui",

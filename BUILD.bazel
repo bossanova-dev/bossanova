@@ -4,3 +4,6 @@ load("@gazelle//:def.bzl", "gazelle")
 # gazelle:exclude node_modules
 # gazelle:exclude tools
 gazelle(name = "gazelle")
+
+# Read by //lib/bossalib/kit/projectconfig:projectconfig_test.
+exports_files([".boss-project.json"])

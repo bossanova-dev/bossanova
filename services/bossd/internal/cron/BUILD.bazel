@@ -2,13 +2,17 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "cron",
-    srcs = ["scheduler.go"],
+    srcs = [
+        "quota_floor.go",
+        "scheduler.go",
+    ],
     importpath = "github.com/recurser/bossd/internal/cron",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/kit/cronutil",
         "//lib/bossalib/kit/gatecmd",
         "//lib/bossalib/kit/telemetry",
+        "//lib/bossalib/kit/vcs",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
         "//services/bossd/internal/adapter/proofenv",
@@ -17,6 +21,7 @@ go_library(
         "//services/bossd/internal/domain/telemetry",
         "//services/bossd/internal/session",
         "//services/bossd/internal/taskorchestrator",
+        "//services/bossd/internal/verifyjob",
         "@com_github_robfig_cron_v3//:cron",
         "@com_github_rs_zerolog//:zerolog",
     ],
@@ -25,6 +30,7 @@ go_library(
 go_test(
     name = "cron_test",
     srcs = [
+        "quota_floor_test.go",
         "scheduler_test.go",
         "tick_test.go",
     ],
@@ -32,6 +38,7 @@ go_test(
     deps = [
         "//lib/bossalib/kit/config",
         "//lib/bossalib/kit/telemetry",
+        "//lib/bossalib/kit/vcs",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
         "//services/bossd/internal/adapter/proofenv",

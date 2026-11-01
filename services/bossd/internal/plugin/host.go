@@ -549,7 +549,7 @@ func (h *Host) launchPlugin(ctx context.Context, cfg config.PluginConfig) (manag
 	client := goplugin.NewClient(&goplugin.ClientConfig{
 		SkipHostEnv:      true,
 		HandshakeConfig:  NewHandshake(h.cookieValue),
-		VersionedPlugins: NewVersionedPluginMap(h.hostService),
+		VersionedPlugins: NewVersionedPluginMap(h.hostService, cfg.Name),
 		Cmd:              cmd,
 		AllowedProtocols: []goplugin.Protocol{
 			goplugin.ProtocolGRPC,

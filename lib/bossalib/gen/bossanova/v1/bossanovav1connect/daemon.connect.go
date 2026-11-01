@@ -260,6 +260,9 @@ const (
 	// DaemonServiceGetAgentCredentialDeviceStatusProcedure is the fully-qualified name of the
 	// DaemonService's GetAgentCredentialDeviceStatus RPC.
 	DaemonServiceGetAgentCredentialDeviceStatusProcedure = "/bossanova.v1.DaemonService/GetAgentCredentialDeviceStatus"
+	// DaemonServiceRenewAgentCredentialDeviceEnrollmentProcedure is the fully-qualified name of the
+	// DaemonService's RenewAgentCredentialDeviceEnrollment RPC.
+	DaemonServiceRenewAgentCredentialDeviceEnrollmentProcedure = "/bossanova.v1.DaemonService/RenewAgentCredentialDeviceEnrollment"
 	// DaemonServiceListAgentCredentialDevicesProcedure is the fully-qualified name of the
 	// DaemonService's ListAgentCredentialDevices RPC.
 	DaemonServiceListAgentCredentialDevicesProcedure = "/bossanova.v1.DaemonService/ListAgentCredentialDevices"
@@ -302,6 +305,9 @@ const (
 	// DaemonServiceGetRunCostProcedure is the fully-qualified name of the DaemonService's GetRunCost
 	// RPC.
 	DaemonServiceGetRunCostProcedure = "/bossanova.v1.DaemonService/GetRunCost"
+	// DaemonServiceGetGitHubUsageProcedure is the fully-qualified name of the DaemonService's
+	// GetGitHubUsage RPC.
+	DaemonServiceGetGitHubUsageProcedure = "/bossanova.v1.DaemonService/GetGitHubUsage"
 	// DaemonServiceListAgentsProcedure is the fully-qualified name of the DaemonService's ListAgents
 	// RPC.
 	DaemonServiceListAgentsProcedure = "/bossanova.v1.DaemonService/ListAgents"
@@ -578,6 +584,7 @@ type DaemonServiceClient interface {
 	DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error)
 	// Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.
 	GetAgentCredentialDeviceStatus(context.Context, *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error)
+	RenewAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RenewAgentCredentialDeviceEnrollmentResponse], error)
 	// The daemon locally signs and forwards this same operation to the orchestrator.
 	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	ListAgentCredentialDevices(context.Context, *connect.Request[v1.ListAgentCredentialDevicesRequest]) (*connect.Response[v1.ListAgentCredentialDevicesResponse], error)
@@ -634,6 +641,11 @@ type DaemonServiceClient interface {
 	// or an aggregate filter set. Duration and parallelism are computed in the
 	// daemon so the CLI never creates a second timestamp semantic.
 	GetRunCost(context.Context, *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error)
+	// GetGitHubUsage reports the GitHub calls recorded in the daemon's usage
+	// ledger over a recent window, counted per attribution label (the cron,
+	// stage or daemon subsystem that made them) and quota. It counts calls, not
+	// quota points: one GraphQL call can cost more than one point.
+	GetGitHubUsage(context.Context, *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error)
 	// ListAgents returns the names + GetInfo metadata of every agent runner
 	// plugin currently loaded. Used by the boss TUI to (a) decide whether to
 	// show the onboarding wizard, (b) populate the new-session agent-select
@@ -1131,6 +1143,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("GetAgentCredentialDeviceStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		renewAgentCredentialDeviceEnrollment: connect.NewClient[v1.RenewAgentCredentialDeviceEnrollmentRequest, v1.RenewAgentCredentialDeviceEnrollmentResponse](
+			httpClient,
+			baseURL+DaemonServiceRenewAgentCredentialDeviceEnrollmentProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RenewAgentCredentialDeviceEnrollment")),
+			connect.WithClientOptions(opts...),
+		),
 		listAgentCredentialDevices: connect.NewClient[v1.ListAgentCredentialDevicesRequest, v1.ListAgentCredentialDevicesResponse](
 			httpClient,
 			baseURL+DaemonServiceListAgentCredentialDevicesProcedure,
@@ -1215,6 +1233,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("GetRunCost")),
 			connect.WithClientOptions(opts...),
 		),
+		getGitHubUsage: connect.NewClient[v1.GetGitHubUsageRequest, v1.GetGitHubUsageResponse](
+			httpClient,
+			baseURL+DaemonServiceGetGitHubUsageProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetGitHubUsage")),
+			connect.WithClientOptions(opts...),
+		),
 		listAgents: connect.NewClient[v1.ListAgentsRequest, v1.ListAgentsResponse](
 			httpClient,
 			baseURL+DaemonServiceListAgentsProcedure,
@@ -1250,102 +1274,104 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // daemonServiceClient implements DaemonServiceClient.
 type daemonServiceClient struct {
-	resolveContext                 *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
-	uploadEvidence                 *connect.Client[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse]
-	getFactoryHealth               *connect.Client[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse]
-	validateRepoPath               *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
-	registerRepo                   *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
-	cloneAndRegisterRepo           *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
-	listRepos                      *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
-	removeRepo                     *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
-	updateRepo                     *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
-	getRepoSettings                *connect.Client[v1.GetRepoSettingsRequest, v1.GetRepoSettingsResponse]
-	listRepoPRs                    *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
-	listTrackerIssues              *connect.Client[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse]
-	createSession                  *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
-	getSession                     *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
-	listSessions                   *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
-	moveSession                    *connect.Client[v1.MoveSessionRequest, v1.MoveSessionResponse]
-	dismissSessionAlert            *connect.Client[v1.DismissSessionAlertRequest, v1.DismissSessionAlertResponse]
-	attachSession                  *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
-	stopSession                    *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
-	pauseSession                   *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
-	resumeSession                  *connect.Client[v1.ResumeSessionRequest, v1.ResumeSessionResponse]
-	resumeSessionRun               *connect.Client[v1.ResumeSessionRunRequest, v1.ResumeSessionRunResponse]
-	retrySession                   *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
-	closeSession                   *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
-	mergeSession                   *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
-	approveSessionPR               *connect.Client[v1.ApproveSessionPRRequest, v1.ApproveSessionPRResponse]
-	operatorMergeSession           *connect.Client[v1.OperatorMergeSessionRequest, v1.OperatorMergeSessionResponse]
-	sendBackToRepair               *connect.Client[v1.SendBackToRepairRequest, v1.SendBackToRepairResponse]
-	removeSession                  *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
-	updateSession                  *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
-	linkSessionPR                  *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
-	setSessionTracker              *connect.Client[v1.SetSessionTrackerRequest, v1.SetSessionTrackerResponse]
-	refreshSessionPR               *connect.Client[v1.RefreshSessionPRRequest, v1.RefreshSessionPRResponse]
-	switchSessionAgentAccount      *connect.Client[v1.SwitchSessionAgentAccountRequest, v1.SwitchSessionAgentAccountResponse]
-	archiveSession                 *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
-	finishUnattendedRun            *connect.Client[v1.FinishUnattendedRunRequest, v1.FinishUnattendedRunResponse]
-	resurrectSession               *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
-	watchSessionSetup              *connect.Client[v1.WatchSessionSetupRequest, v1.WatchSessionSetupResponse]
-	emptyTrash                     *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
-	recordChat                     *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
-	listChats                      *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
-	updateChatTitle                *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
-	deleteChat                     *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
-	wakeChat                       *connect.Client[v1.WakeChatRequest, v1.WakeChatResponse]
-	describeChatLaunch             *connect.Client[v1.DescribeChatLaunchRequest, v1.DescribeChatLaunchResponse]
-	describeChatMCP                *connect.Client[v1.DescribeChatMCPRequest, v1.DescribeChatMCPResponse]
-	getChatTranscript              *connect.Client[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse]
-	sendChatMessage                *connect.Client[v1.SendChatMessageRequest, v1.SendChatMessageResponse]
-	reportChatStatus               *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
-	setChatPhase                   *connect.Client[v1.SetChatPhaseRequest, v1.SetChatPhaseResponse]
-	getChatStatuses                *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
-	getSessionStatuses             *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
-	deliverVCSEvent                *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
-	notifyAuthChange               *connect.Client[v1.NotifyAuthChangeRequest, v1.NotifyAuthChangeResponse]
-	getAuthState                   *connect.Client[v1.GetAuthStateRequest, v1.GetAuthStateResponse]
-	createCronJob                  *connect.Client[v1.CreateCronJobRequest, v1.CreateCronJobResponse]
-	listCronJobs                   *connect.Client[v1.ListCronJobsRequest, v1.ListCronJobsResponse]
-	getCronJob                     *connect.Client[v1.GetCronJobRequest, v1.GetCronJobResponse]
-	updateCronJob                  *connect.Client[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse]
-	deleteCronJob                  *connect.Client[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse]
-	runCronJobNow                  *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
-	createGitHubCallback           *connect.Client[v1.CreateGitHubCallbackRequest, v1.CreateGitHubCallbackResponse]
-	listGitHubCallbacks            *connect.Client[v1.ListGitHubCallbacksRequest, v1.ListGitHubCallbacksResponse]
-	deleteGitHubCallback           *connect.Client[v1.DeleteGitHubCallbackRequest, v1.DeleteGitHubCallbackResponse]
-	sendBroadcast                  *connect.Client[v1.SendBroadcastRequest, v1.SendBroadcastResponse]
-	listBroadcasts                 *connect.Client[v1.ListBroadcastsRequest, v1.ListBroadcastsResponse]
-	deleteBroadcast                *connect.Client[v1.DeleteBroadcastRequest, v1.DeleteBroadcastResponse]
-	createNote                     *connect.Client[v1.CreateNoteRequest, v1.CreateNoteResponse]
-	getNote                        *connect.Client[v1.GetNoteRequest, v1.GetNoteResponse]
-	listNotes                      *connect.Client[v1.ListNotesRequest, v1.ListNotesResponse]
-	updateNote                     *connect.Client[v1.UpdateNoteRequest, v1.UpdateNoteResponse]
-	deleteNote                     *connect.Client[v1.DeleteNoteRequest, v1.DeleteNoteResponse]
-	syncNotesNow                   *connect.Client[v1.SyncNotesNowRequest, v1.SyncNotesNowResponse]
-	createBroadcastSubscription    *connect.Client[v1.CreateBroadcastSubscriptionRequest, v1.CreateBroadcastSubscriptionResponse]
-	listBroadcastSubscriptions     *connect.Client[v1.ListBroadcastSubscriptionsRequest, v1.ListBroadcastSubscriptionsResponse]
-	deleteBroadcastSubscription    *connect.Client[v1.DeleteBroadcastSubscriptionRequest, v1.DeleteBroadcastSubscriptionResponse]
-	getAgentCredentialDeviceStatus *connect.Client[v1.GetAgentCredentialDeviceStatusRequest, v1.GetAgentCredentialDeviceStatusResponse]
-	listAgentCredentialDevices     *connect.Client[v1.ListAgentCredentialDevicesRequest, v1.ListAgentCredentialDevicesResponse]
-	approveAgentCredentialDevice   *connect.Client[v1.ApproveAgentCredentialDeviceRequest, v1.ApproveAgentCredentialDeviceResponse]
-	revokeAgentCredentialDevice    *connect.Client[v1.RevokeAgentCredentialDeviceRequest, v1.RevokeAgentCredentialDeviceResponse]
-	listAgentAccounts              *connect.Client[v1.ListAgentAccountsRequest, v1.ListAgentAccountsResponse]
-	addAgentAccount                *connect.Client[v1.AddAgentAccountRequest, v1.AddAgentAccountResponse]
-	refreshAgentAccount            *connect.Client[v1.RefreshAgentAccountRequest, v1.RefreshAgentAccountResponse]
-	updateAgentAccount             *connect.Client[v1.UpdateAgentAccountRequest, v1.UpdateAgentAccountResponse]
-	removeAgentAccount             *connect.Client[v1.RemoveAgentAccountRequest, v1.RemoveAgentAccountResponse]
-	testAgentAccount               *connect.Client[v1.TestAgentAccountRequest, v1.TestAgentAccountResponse]
-	repairDoctor                   *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
-	startRepairWorkflow            *connect.Client[v1.StartRepairWorkflowRequest, v1.StartRepairWorkflowResponse]
-	listCheckSnapshots             *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
-	getSessionTimeline             *connect.Client[v1.GetSessionTimelineRequest, v1.GetSessionTimelineResponse]
-	getRunCost                     *connect.Client[v1.GetRunCostRequest, v1.GetRunCostResponse]
-	listAgents                     *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
-	listPlugins                    *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
-	getDaemonCapabilities          *connect.Client[v1.GetDaemonCapabilitiesRequest, v1.GetDaemonCapabilitiesResponse]
-	getSettings                    *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
-	updateSettings                 *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
+	resolveContext                       *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
+	uploadEvidence                       *connect.Client[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse]
+	getFactoryHealth                     *connect.Client[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse]
+	validateRepoPath                     *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
+	registerRepo                         *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
+	cloneAndRegisterRepo                 *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
+	listRepos                            *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
+	removeRepo                           *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
+	updateRepo                           *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
+	getRepoSettings                      *connect.Client[v1.GetRepoSettingsRequest, v1.GetRepoSettingsResponse]
+	listRepoPRs                          *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
+	listTrackerIssues                    *connect.Client[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse]
+	createSession                        *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
+	getSession                           *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
+	listSessions                         *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
+	moveSession                          *connect.Client[v1.MoveSessionRequest, v1.MoveSessionResponse]
+	dismissSessionAlert                  *connect.Client[v1.DismissSessionAlertRequest, v1.DismissSessionAlertResponse]
+	attachSession                        *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
+	stopSession                          *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
+	pauseSession                         *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
+	resumeSession                        *connect.Client[v1.ResumeSessionRequest, v1.ResumeSessionResponse]
+	resumeSessionRun                     *connect.Client[v1.ResumeSessionRunRequest, v1.ResumeSessionRunResponse]
+	retrySession                         *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
+	closeSession                         *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
+	mergeSession                         *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
+	approveSessionPR                     *connect.Client[v1.ApproveSessionPRRequest, v1.ApproveSessionPRResponse]
+	operatorMergeSession                 *connect.Client[v1.OperatorMergeSessionRequest, v1.OperatorMergeSessionResponse]
+	sendBackToRepair                     *connect.Client[v1.SendBackToRepairRequest, v1.SendBackToRepairResponse]
+	removeSession                        *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
+	updateSession                        *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
+	linkSessionPR                        *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
+	setSessionTracker                    *connect.Client[v1.SetSessionTrackerRequest, v1.SetSessionTrackerResponse]
+	refreshSessionPR                     *connect.Client[v1.RefreshSessionPRRequest, v1.RefreshSessionPRResponse]
+	switchSessionAgentAccount            *connect.Client[v1.SwitchSessionAgentAccountRequest, v1.SwitchSessionAgentAccountResponse]
+	archiveSession                       *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
+	finishUnattendedRun                  *connect.Client[v1.FinishUnattendedRunRequest, v1.FinishUnattendedRunResponse]
+	resurrectSession                     *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
+	watchSessionSetup                    *connect.Client[v1.WatchSessionSetupRequest, v1.WatchSessionSetupResponse]
+	emptyTrash                           *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
+	recordChat                           *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
+	listChats                            *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
+	updateChatTitle                      *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
+	deleteChat                           *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
+	wakeChat                             *connect.Client[v1.WakeChatRequest, v1.WakeChatResponse]
+	describeChatLaunch                   *connect.Client[v1.DescribeChatLaunchRequest, v1.DescribeChatLaunchResponse]
+	describeChatMCP                      *connect.Client[v1.DescribeChatMCPRequest, v1.DescribeChatMCPResponse]
+	getChatTranscript                    *connect.Client[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse]
+	sendChatMessage                      *connect.Client[v1.SendChatMessageRequest, v1.SendChatMessageResponse]
+	reportChatStatus                     *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
+	setChatPhase                         *connect.Client[v1.SetChatPhaseRequest, v1.SetChatPhaseResponse]
+	getChatStatuses                      *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
+	getSessionStatuses                   *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
+	deliverVCSEvent                      *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
+	notifyAuthChange                     *connect.Client[v1.NotifyAuthChangeRequest, v1.NotifyAuthChangeResponse]
+	getAuthState                         *connect.Client[v1.GetAuthStateRequest, v1.GetAuthStateResponse]
+	createCronJob                        *connect.Client[v1.CreateCronJobRequest, v1.CreateCronJobResponse]
+	listCronJobs                         *connect.Client[v1.ListCronJobsRequest, v1.ListCronJobsResponse]
+	getCronJob                           *connect.Client[v1.GetCronJobRequest, v1.GetCronJobResponse]
+	updateCronJob                        *connect.Client[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse]
+	deleteCronJob                        *connect.Client[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse]
+	runCronJobNow                        *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
+	createGitHubCallback                 *connect.Client[v1.CreateGitHubCallbackRequest, v1.CreateGitHubCallbackResponse]
+	listGitHubCallbacks                  *connect.Client[v1.ListGitHubCallbacksRequest, v1.ListGitHubCallbacksResponse]
+	deleteGitHubCallback                 *connect.Client[v1.DeleteGitHubCallbackRequest, v1.DeleteGitHubCallbackResponse]
+	sendBroadcast                        *connect.Client[v1.SendBroadcastRequest, v1.SendBroadcastResponse]
+	listBroadcasts                       *connect.Client[v1.ListBroadcastsRequest, v1.ListBroadcastsResponse]
+	deleteBroadcast                      *connect.Client[v1.DeleteBroadcastRequest, v1.DeleteBroadcastResponse]
+	createNote                           *connect.Client[v1.CreateNoteRequest, v1.CreateNoteResponse]
+	getNote                              *connect.Client[v1.GetNoteRequest, v1.GetNoteResponse]
+	listNotes                            *connect.Client[v1.ListNotesRequest, v1.ListNotesResponse]
+	updateNote                           *connect.Client[v1.UpdateNoteRequest, v1.UpdateNoteResponse]
+	deleteNote                           *connect.Client[v1.DeleteNoteRequest, v1.DeleteNoteResponse]
+	syncNotesNow                         *connect.Client[v1.SyncNotesNowRequest, v1.SyncNotesNowResponse]
+	createBroadcastSubscription          *connect.Client[v1.CreateBroadcastSubscriptionRequest, v1.CreateBroadcastSubscriptionResponse]
+	listBroadcastSubscriptions           *connect.Client[v1.ListBroadcastSubscriptionsRequest, v1.ListBroadcastSubscriptionsResponse]
+	deleteBroadcastSubscription          *connect.Client[v1.DeleteBroadcastSubscriptionRequest, v1.DeleteBroadcastSubscriptionResponse]
+	getAgentCredentialDeviceStatus       *connect.Client[v1.GetAgentCredentialDeviceStatusRequest, v1.GetAgentCredentialDeviceStatusResponse]
+	renewAgentCredentialDeviceEnrollment *connect.Client[v1.RenewAgentCredentialDeviceEnrollmentRequest, v1.RenewAgentCredentialDeviceEnrollmentResponse]
+	listAgentCredentialDevices           *connect.Client[v1.ListAgentCredentialDevicesRequest, v1.ListAgentCredentialDevicesResponse]
+	approveAgentCredentialDevice         *connect.Client[v1.ApproveAgentCredentialDeviceRequest, v1.ApproveAgentCredentialDeviceResponse]
+	revokeAgentCredentialDevice          *connect.Client[v1.RevokeAgentCredentialDeviceRequest, v1.RevokeAgentCredentialDeviceResponse]
+	listAgentAccounts                    *connect.Client[v1.ListAgentAccountsRequest, v1.ListAgentAccountsResponse]
+	addAgentAccount                      *connect.Client[v1.AddAgentAccountRequest, v1.AddAgentAccountResponse]
+	refreshAgentAccount                  *connect.Client[v1.RefreshAgentAccountRequest, v1.RefreshAgentAccountResponse]
+	updateAgentAccount                   *connect.Client[v1.UpdateAgentAccountRequest, v1.UpdateAgentAccountResponse]
+	removeAgentAccount                   *connect.Client[v1.RemoveAgentAccountRequest, v1.RemoveAgentAccountResponse]
+	testAgentAccount                     *connect.Client[v1.TestAgentAccountRequest, v1.TestAgentAccountResponse]
+	repairDoctor                         *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
+	startRepairWorkflow                  *connect.Client[v1.StartRepairWorkflowRequest, v1.StartRepairWorkflowResponse]
+	listCheckSnapshots                   *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
+	getSessionTimeline                   *connect.Client[v1.GetSessionTimelineRequest, v1.GetSessionTimelineResponse]
+	getRunCost                           *connect.Client[v1.GetRunCostRequest, v1.GetRunCostResponse]
+	getGitHubUsage                       *connect.Client[v1.GetGitHubUsageRequest, v1.GetGitHubUsageResponse]
+	listAgents                           *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
+	listPlugins                          *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
+	getDaemonCapabilities                *connect.Client[v1.GetDaemonCapabilitiesRequest, v1.GetDaemonCapabilitiesResponse]
+	getSettings                          *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
+	updateSettings                       *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
 }
 
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
@@ -1733,6 +1759,12 @@ func (c *daemonServiceClient) GetAgentCredentialDeviceStatus(ctx context.Context
 	return c.getAgentCredentialDeviceStatus.CallUnary(ctx, req)
 }
 
+// RenewAgentCredentialDeviceEnrollment calls
+// bossanova.v1.DaemonService.RenewAgentCredentialDeviceEnrollment.
+func (c *daemonServiceClient) RenewAgentCredentialDeviceEnrollment(ctx context.Context, req *connect.Request[v1.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RenewAgentCredentialDeviceEnrollmentResponse], error) {
+	return c.renewAgentCredentialDeviceEnrollment.CallUnary(ctx, req)
+}
+
 // ListAgentCredentialDevices calls bossanova.v1.DaemonService.ListAgentCredentialDevices.
 func (c *daemonServiceClient) ListAgentCredentialDevices(ctx context.Context, req *connect.Request[v1.ListAgentCredentialDevicesRequest]) (*connect.Response[v1.ListAgentCredentialDevicesResponse], error) {
 	return c.listAgentCredentialDevices.CallUnary(ctx, req)
@@ -1801,6 +1833,11 @@ func (c *daemonServiceClient) GetSessionTimeline(ctx context.Context, req *conne
 // GetRunCost calls bossanova.v1.DaemonService.GetRunCost.
 func (c *daemonServiceClient) GetRunCost(ctx context.Context, req *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error) {
 	return c.getRunCost.CallUnary(ctx, req)
+}
+
+// GetGitHubUsage calls bossanova.v1.DaemonService.GetGitHubUsage.
+func (c *daemonServiceClient) GetGitHubUsage(ctx context.Context, req *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error) {
+	return c.getGitHubUsage.CallUnary(ctx, req)
 }
 
 // ListAgents calls bossanova.v1.DaemonService.ListAgents.
@@ -2087,6 +2124,7 @@ type DaemonServiceHandler interface {
 	DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error)
 	// Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.
 	GetAgentCredentialDeviceStatus(context.Context, *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error)
+	RenewAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RenewAgentCredentialDeviceEnrollmentResponse], error)
 	// The daemon locally signs and forwards this same operation to the orchestrator.
 	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	ListAgentCredentialDevices(context.Context, *connect.Request[v1.ListAgentCredentialDevicesRequest]) (*connect.Response[v1.ListAgentCredentialDevicesResponse], error)
@@ -2143,6 +2181,11 @@ type DaemonServiceHandler interface {
 	// or an aggregate filter set. Duration and parallelism are computed in the
 	// daemon so the CLI never creates a second timestamp semantic.
 	GetRunCost(context.Context, *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error)
+	// GetGitHubUsage reports the GitHub calls recorded in the daemon's usage
+	// ledger over a recent window, counted per attribution label (the cron,
+	// stage or daemon subsystem that made them) and quota. It counts calls, not
+	// quota points: one GraphQL call can cost more than one point.
+	GetGitHubUsage(context.Context, *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error)
 	// ListAgents returns the names + GetInfo metadata of every agent runner
 	// plugin currently loaded. Used by the boss TUI to (a) decide whether to
 	// show the onboarding wizard, (b) populate the new-session agent-select
@@ -2636,6 +2679,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("GetAgentCredentialDeviceStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceRenewAgentCredentialDeviceEnrollmentHandler := connect.NewUnaryHandler(
+		DaemonServiceRenewAgentCredentialDeviceEnrollmentProcedure,
+		svc.RenewAgentCredentialDeviceEnrollment,
+		connect.WithSchema(daemonServiceMethods.ByName("RenewAgentCredentialDeviceEnrollment")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceListAgentCredentialDevicesHandler := connect.NewUnaryHandler(
 		DaemonServiceListAgentCredentialDevicesProcedure,
 		svc.ListAgentCredentialDevices,
@@ -2718,6 +2767,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceGetRunCostProcedure,
 		svc.GetRunCost,
 		connect.WithSchema(daemonServiceMethods.ByName("GetRunCost")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceGetGitHubUsageHandler := connect.NewUnaryHandler(
+		DaemonServiceGetGitHubUsageProcedure,
+		svc.GetGitHubUsage,
+		connect.WithSchema(daemonServiceMethods.ByName("GetGitHubUsage")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceListAgentsHandler := connect.NewUnaryHandler(
@@ -2906,6 +2961,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDeleteBroadcastSubscriptionHandler.ServeHTTP(w, r)
 		case DaemonServiceGetAgentCredentialDeviceStatusProcedure:
 			daemonServiceGetAgentCredentialDeviceStatusHandler.ServeHTTP(w, r)
+		case DaemonServiceRenewAgentCredentialDeviceEnrollmentProcedure:
+			daemonServiceRenewAgentCredentialDeviceEnrollmentHandler.ServeHTTP(w, r)
 		case DaemonServiceListAgentCredentialDevicesProcedure:
 			daemonServiceListAgentCredentialDevicesHandler.ServeHTTP(w, r)
 		case DaemonServiceApproveAgentCredentialDeviceProcedure:
@@ -2934,6 +2991,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceGetSessionTimelineHandler.ServeHTTP(w, r)
 		case DaemonServiceGetRunCostProcedure:
 			daemonServiceGetRunCostHandler.ServeHTTP(w, r)
+		case DaemonServiceGetGitHubUsageProcedure:
+			daemonServiceGetGitHubUsageHandler.ServeHTTP(w, r)
 		case DaemonServiceListAgentsProcedure:
 			daemonServiceListAgentsHandler.ServeHTTP(w, r)
 		case DaemonServiceListPluginsProcedure:
@@ -3261,6 +3320,10 @@ func (UnimplementedDaemonServiceHandler) GetAgentCredentialDeviceStatus(context.
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetAgentCredentialDeviceStatus is not implemented"))
 }
 
+func (UnimplementedDaemonServiceHandler) RenewAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RenewAgentCredentialDeviceEnrollmentResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RenewAgentCredentialDeviceEnrollment is not implemented"))
+}
+
 func (UnimplementedDaemonServiceHandler) ListAgentCredentialDevices(context.Context, *connect.Request[v1.ListAgentCredentialDevicesRequest]) (*connect.Response[v1.ListAgentCredentialDevicesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListAgentCredentialDevices is not implemented"))
 }
@@ -3315,6 +3378,10 @@ func (UnimplementedDaemonServiceHandler) GetSessionTimeline(context.Context, *co
 
 func (UnimplementedDaemonServiceHandler) GetRunCost(context.Context, *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetRunCost is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetGitHubUsage(context.Context, *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetGitHubUsage is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error) {

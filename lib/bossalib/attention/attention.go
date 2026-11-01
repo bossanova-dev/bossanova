@@ -108,6 +108,9 @@ type Input struct {
 	// when verify passes it or the operator approves its park. A merge-ready
 	// PR nothing verified is still a MERGE, marked is_unverified.
 	Verified bool
+	// VerifyJudged marks a verdict (park, pass, defect or blocked) verify posted
+	// on the head the checks were read on.
+	VerifyJudged bool
 	// VerifiedSince is when the current head was first seen verified, in the
 	// newest unbroken run of polls that saw it verified; zero when unknown.
 	VerifiedSince time.Time
@@ -268,7 +271,11 @@ func parkCodesFor(in Input) []string {
 	// the IN_PROGRESS "not verifiable" row would restore the hidden-block
 	// defect. See
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
-	if in.IsFactoryRepo && in.HasPR && in.PRState == PRStateOpen && !in.PRDraft && !in.Verified &&
+	// No dated apiversion bump for judged heads superseding admission holds:
+	// version-skewed clients already render a park REVIEW. An older pin would
+	// only restore the FIX-over-sign-off defect, so no down-convert is wanted.
+	// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	if in.IsFactoryRepo && in.HasPR && in.PRState == PRStateOpen && !in.PRDraft && !in.Verified && !in.VerifyJudged &&
 		in.VerifyAdmission.State == AdmissionPending && IsAdmissionHoldCode(in.VerifyAdmission.Reason) {
 		codes = append(slices.Clone(codes), in.VerifyAdmission.Reason)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/ghusage"
 )
 
 // CompletionNotifier is called when a session reaches a terminal state
@@ -200,6 +201,7 @@ func (d *Dispatcher) notifyCompletion(ctx context.Context, sessionID string, out
 // Run consumes events from the channel and dispatches them until the
 // channel is closed or the context is cancelled.
 func (d *Dispatcher) Run(ctx context.Context, events <-chan Event) {
+	ctx = ghusage.WithLabel(ctx, ghusage.LabelRepair)
 	for {
 		select {
 		case <-ctx.Done():

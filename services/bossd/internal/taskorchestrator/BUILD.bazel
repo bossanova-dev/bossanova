@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "taskorchestrator",
     srcs = [
+        "automerge.go",
         "lifecycle.go",
         "liveness.go",
         "orchestrator.go",
@@ -24,6 +25,7 @@ go_library(
         "//services/bossd/internal/db",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/mergepolicy",
+        "//services/bossd/internal/ghusage",
         "//services/bossd/internal/plugin",
         "//services/bossd/internal/session",
         "@com_github_rs_zerolog//:zerolog",

@@ -1310,6 +1310,31 @@ test('a run reads nothing from GitHub while either quota is below MIN_QUOTA_SHAR
   assert.equal(MIN_QUOTA_SHARE, 0.25)
 })
 
+test('BOSS_GITHUB_QUOTA_FLOOR replaces the quota share only when it is a share in (0,1)', () => {
+  const healthy = { limit: 5000, remaining: 4000, reset: 1_800_000_000 }
+  const at = (remaining) => ({ core: healthy, graphql: { ...healthy, remaining } })
+  for (const [name, floor, remaining, low] of [
+    ['reserve floor, 20% left', '0.1', 1000, false],
+    ['reserve floor, 5% left', '0.1', 250, true],
+    ['missing floor, 20% left', undefined, 1000, true],
+    ['missing floor, 30% left', undefined, 1500, false],
+    ['garbage floor', 'abc', 1000, true],
+    ['empty floor', '', 1000, true],
+    ['zero floor', '0', 1000, true],
+    ['whole-quota floor', '1', 1000, true],
+    ['over-one floor', '1.5', 1000, true],
+  ]) {
+    const w = world({ rateLimit: at(remaining), candidates: [] })
+    const base = w.deps().env
+    const env = floor === undefined ? base : { ...base, BOSS_GITHUB_QUOTA_FLOOR: floor }
+    const r = sweep({}, w.deps({ env }))
+    const discovered = w.verbs().some((v) => v[0] === 'candidates')
+    assert.equal(discovered, !low, name)
+    if (low) assert.match(r.idle, /^GitHub graphql quota low/, name)
+    else assert.equal(r.idle, undefined, name)
+  }
+})
+
 test('local-sessions-only: remote PRs never eat the batch, and local ones still go first-come', () => {
   const w = world({
     candidates: [candidate(1), candidate(2), candidate(3), candidate(4)],

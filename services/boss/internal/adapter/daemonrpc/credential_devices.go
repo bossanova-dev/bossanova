@@ -30,3 +30,11 @@ func (c *LocalClient) RevokeAgentCredentialDevice(ctx context.Context, req *pb.R
 	_, err := c.rpc.RevokeAgentCredentialDevice(ctx, connect.NewRequest(req))
 	return rpcerror.WrapError(err)
 }
+
+func (c *LocalClient) RenewAgentCredentialDeviceEnrollment(ctx context.Context) (*pb.RenewAgentCredentialDeviceEnrollmentResponse, error) {
+	resp, err := c.rpc.RenewAgentCredentialDeviceEnrollment(ctx, connect.NewRequest(&pb.RenewAgentCredentialDeviceEnrollmentRequest{}))
+	if err != nil {
+		return nil, rpcerror.WrapError(err)
+	}
+	return resp.Msg, nil
+}

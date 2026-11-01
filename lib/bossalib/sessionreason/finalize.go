@@ -3,6 +3,7 @@ package sessionreason
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // FinalizeFailure formats the persisted blocked reason for a finalize
@@ -62,4 +63,21 @@ func WithoutBlockedLabel(reason string) string {
 		return reason
 	}
 	return rest
+}
+
+const finalizeQuotaWaitPrefix = "finalize failed (quota_wait): waiting for quota reset at "
+
+// FinalizeQuotaWait records a quota reset in the persisted blocked reason.
+func FinalizeQuotaWait(resetAt time.Time) string {
+	return finalizeQuotaWaitPrefix + resetAt.UTC().Format(time.RFC3339)
+}
+
+// ParseFinalizeQuotaWait reads only the dedicated quota-wait reason.
+func ParseFinalizeQuotaWait(reason string) (time.Time, bool) {
+	stamp, ok := strings.CutPrefix(reason, finalizeQuotaWaitPrefix)
+	if !ok {
+		return time.Time{}, false
+	}
+	reset, err := time.Parse(time.RFC3339, stamp)
+	return reset, err == nil && !reset.IsZero()
 }

@@ -22,3 +22,7 @@ func (*RemoteClient) ApproveAgentCredentialDevice(context.Context, *pb.ApproveAg
 func (*RemoteClient) RevokeAgentCredentialDevice(context.Context, *pb.RevokeAgentCredentialDeviceRequest) error {
 	return credentialDeviceLocalOnly()
 }
+
+func (*RemoteClient) RenewAgentCredentialDeviceEnrollment(context.Context) (*pb.RenewAgentCredentialDeviceEnrollmentResponse, error) {
+	return nil, credentialDeviceLocalOnly()
+}

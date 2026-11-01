@@ -47,6 +47,7 @@ func (w *daemonWiring) wireDaemon() {
 	bootstrapRunner := session.NewBootstrapRunner(w.pollerCtx, w.lifecycle, log.Logger)
 
 	daemonConfig := server.Config{
+		Callers:           w.callerAuthority(),
 		CredentialDevices: w.credentialDevices,
 		CredentialPublisher: func(ctx context.Context, syncedID, localID string) error {
 			if w.credentialSync == nil {
@@ -98,6 +99,7 @@ func (w *daemonWiring) wireDaemon() {
 		AccountMaterializations: w.accountMaterializations,
 		CheckSnapshots:          w.checkSnapshots,
 		AgentRuns:               w.agentRuns,
+		GitHubUsage:             w.ghUsage,
 		RotationEvents:          w.rotationEvents,
 		Evidence:                w.evidenceReader,
 		ResumeAttempts:          w.resumeAttempts,

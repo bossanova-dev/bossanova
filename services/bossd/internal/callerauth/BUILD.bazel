@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "callerauth",
+    srcs = ["authority.go"],
+    importpath = "github.com/recurser/bossd/internal/callerauth",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = ["//services/bossd/internal/domain"],
+)
+
+go_test(
+    name = "callerauth_test",
+    srcs = ["authority_test.go"],
+    embed = [":callerauth"],
+    deps = ["//services/bossd/internal/domain"],
+)

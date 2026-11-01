@@ -1,9 +1,15 @@
 package plugin
 
 import (
+	"context"
 	"testing"
 
+	goplugin "github.com/hashicorp/go-plugin"
+	"google.golang.org/grpc"
+
 	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
+
+	"github.com/recurser/bossd/internal/ghusage"
 )
 
 // TestGeneratePluginCookieUnique asserts that two consecutive calls produce
@@ -45,7 +51,7 @@ func TestNewHandshakeWiresCookie(t *testing.T) {
 // TestNewVersionedPluginMapHasAllTypes guards against the plugin set
 // accidentally dropping a type when future versions are added.
 func TestNewVersionedPluginMapHasAllTypes(t *testing.T) {
-	m := NewVersionedPluginMap(nil)
+	m := NewVersionedPluginMap(nil, "")
 	current, ok := m[sharedplugin.ProtocolVersion]
 	if !ok {
 		t.Fatalf("expected entry for ProtocolVersion=%d", sharedplugin.ProtocolVersion)
@@ -74,3 +80,40 @@ func TestNewVersionedPluginMapHasAllTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestPluginHostCallsCarryThePluginUsageLabel pins that every unary host call
+// a plugin makes runs under its plugin:<name> GitHub usage label.
+func TestPluginHostCallsCarryThePluginUsageLabel(t *testing.T) {
+	agentRunnerHost := func(m map[int]goplugin.PluginSet) sharedplugin.HostServiceRegistrar {
+		return m[sharedplugin.ProtocolVersion][sharedplugin.PluginTypeAgentRunner].(*sharedplugin.AgentRunnerPlugin).HostService
+	}
+	if agentRunnerHost(NewVersionedPluginMap(nil, "dependabot")) != nil {
+		t.Fatal("a nil host must stay nil so no callback door is served")
+	}
+	inner := &recordingRegistrar{}
+	wrapped := agentRunnerHost(NewVersionedPluginMap(inner, "dependabot"))
+	optioner, ok := wrapped.(sharedplugin.HostServerOptioner)
+	if !ok {
+		t.Fatalf("%T does not add host server options", wrapped)
+	}
+	srv := grpc.NewServer(optioner.HostServerOptions()...)
+	defer srv.Stop()
+	wrapped.Register(srv)
+	if !inner.registered {
+		t.Fatal("Register did not reach the wrapped host service")
+	}
+
+	var got string
+	_, _ = wrapped.(usageLabelledHostService).unaryLabeler()(context.Background(), nil, &grpc.UnaryServerInfo{},
+		func(ctx context.Context, _ any) (any, error) {
+			got = ghusage.LabelFrom(ctx)
+			return nil, nil
+		})
+	if got != "plugin:dependabot" {
+		t.Fatalf("host call label = %q, want plugin:dependabot", got)
+	}
+}
+
+type recordingRegistrar struct{ registered bool }
+
+func (r *recordingRegistrar) Register(*grpc.Server) { r.registered = true }

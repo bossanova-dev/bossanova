@@ -3,6 +3,7 @@ package upstream
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/google/go-github/v76/github"
 	"github.com/recurser/bossalib/kit/vcs"
@@ -28,6 +29,21 @@ func TranslateWebhook(eventType string, payload []byte) ([]vcs.Event, int, error
 	default:
 		return nil, 0, nil
 	}
+}
+
+// pushedBranch returns the branch a push event moved. ok is false for an
+// unparsable payload, a tag push or a branch deletion.
+func pushedBranch(payload []byte) (branch string, ok bool) {
+	event, err := github.ParseWebHook("push", payload)
+	if err != nil {
+		return "", false
+	}
+	push, isPush := event.(*github.PushEvent)
+	if !isPush || push.GetDeleted() {
+		return "", false
+	}
+	branch, ok = strings.CutPrefix(push.GetRef(), "refs/heads/")
+	return branch, ok && branch != ""
 }
 
 func translatePullRequest(e *github.PullRequestEvent) ([]vcs.Event, int, error) {

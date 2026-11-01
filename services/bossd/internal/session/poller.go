@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/ghusage"
 )
 
 // DefaultPollInterval is the default interval between CI check polls.
@@ -108,6 +109,7 @@ func (p *Poller) HasRepairActivity() bool { return p.activity != nil }
 // stops when the context is cancelled. The caller must consume from the
 // channel to prevent blocking.
 func (p *Poller) Run(ctx context.Context) <-chan Event {
+	ctx = ghusage.WithLabel(ctx, ghusage.LabelPoller)
 	ch := make(chan Event, 64)
 	p.sweepMu.Lock()
 	p.events = ch

@@ -31,8 +31,9 @@ a human` and `## Open Questions` only when they apply, `## Planning` (with a `- 
   locally; the stored issue description stays unchanged.
 - **Labels**: the existing set, plus content labels that genuinely apply (`bug`, `feature`,
   `improvement`, `docs` — names via `optionalLabelName(config, '<role>')`, else the literal), plus
-  exactly one of `agent-build` (the default) or `needs-human` (only when an agent genuinely could
-  not do it — size alone is never the reason; then the plan explains why), plus `agent-question`
+  exactly one of `agent-build` (the default) or `needs-human` (when an agent genuinely could
+  not do it, or the predicted verify park action is `needs-human`; size alone is never the reason,
+  and the plan explains why), plus `agent-question`
   when there are open questions (headless only). The planning-queue label (`agent-plan`) is removed.
   Pipeline label roles resolve through `labelName(config, '<role>')`, whose keys are: `agentBuild`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic`
   (it throws on an unknown role). Never create labels.
@@ -415,13 +416,6 @@ over the draft (additive, non-fatal, a no-op when none are installed) —
 
 ## Phase 4 — Gate, attach, write back
 
-**Secret gate (mandatory).** `node "${BOSS_PLAN_TOOLBOX:?}/plan-secret-scan.mjs" "$PLAN_FILE" <the
-description artifact>` — exit 1: redact the named lines and re-run; exit 2: fail closed. A clean scan
-is a floor, not a pass: then read the whole plan (especially `## Original notes`) yourself and redact
-anything credential- or PII-shaped in every persisted artifact. Credential query values in external
-image URLs become `token=REDACTED`; a signed `uploads.linear.app` URL loses its signature query and
-keeps its asset path.
-
 **Premise re-check.** Tickets the plan cites may have moved since recon
 ([premise protocol](references/headless-dispatch.md#premise-drift-is-reconciled-not-appended)):
 
@@ -439,6 +433,21 @@ PREMISE_RC=$?
 ```
 
 Non-zero ⇒ no writes. Drift is annotated (`- Premise drift: …`) and named in the report.
+
+**Predict verify parks.** Before the secret, image and contract gates, run
+`node "$BOSS_PLAN_TOOLBOX/plan/plan-park-prediction.mjs" annotate --description .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md --plan "$PLAN_FILE" --json`.
+It annotates both artifacts and prints `{predicted, codes, labels, action}`. When `predicted` is
+true and `action` is `needs-human`, use the `needsHuman` exposure label instead of `agentBuild`
+and name the predicted codes and labels in Phase 6. In `rank-last` mode keep the usual exposure
+label; the prediction marker lets boss-build rank the ticket last. All following gates see these
+final annotated bytes.
+
+**Secret gate (mandatory).** `node "${BOSS_PLAN_TOOLBOX:?}/plan-secret-scan.mjs" "$PLAN_FILE" <the
+description artifact>` — exit 1: redact the named lines and re-run; exit 2: fail closed. A clean scan
+is a floor, not a pass: then read the whole plan (especially `## Original notes`) yourself and redact
+anything credential- or PII-shaped in every persisted artifact. Credential query values in external
+image URLs become `token=REDACTED`; a signed `uploads.linear.app` URL loses its signature query and
+keeps its asset path.
 
 **Image and notes gates.** Copy the description artifact to `image-guard-new.md`, write
 `attachment-guard-orig.md` from the snapshot with only the mandatory redactions and signature
@@ -495,6 +504,7 @@ Then:
    exactly one `Implementation plan (<ISSUE-ID>)` plan record remains (the adapter exposes it as an
    attachment; duplicates ⇒ no further writes).
 2. **Labels**: read with `readLabels` and compute the merged set (see "What a planned ticket is").
+   A predicted park with action `needs-human` takes the `needsHuman` exposure label.
    Interactive runs strip a stale `agent-question` (a human answered every fork). Adopted
    `siblings` hold `needs-human` until step 6 verifies them.
 3. **Save** in one tracker write. On a tracker declaring `writePlan`, save only labels, estimate,
@@ -620,8 +630,8 @@ run directory by grepping a ticket id; use the `RUN_ID` you were handed.
 
 Issue id and title; the attachment id and title; final labels, estimate, priority; the state change;
 the write-back verdict and read route; the dependency verdict (`<verdict> compared=N edges=M`) and any
-transitive-block warning; premise drift; for an epic, the parent and child ids; for a child fan-out,
-the per-child table and the parent-flip result ([`references/child-fanout.md`](references/child-fanout.md)).
+transitive-block warning; premise drift; predicted verify park codes, labels and action; for an epic,
+the parent and child ids; for a child fan-out, the per-child table and the parent-flip result ([`references/child-fanout.md`](references/child-fanout.md)).
 
 On every terminal path, first release this run's planning claim by its retained comment id with
 `deleteComment` when the adapter declares that optional operation. Release is best-effort and never

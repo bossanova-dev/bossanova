@@ -1,0 +1,49 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 12,
+            "title": "twelve",
+            "body": "body 12",
+            "state": "OPEN",
+            "isDraft": true,
+            "headRefName": "feature-12",
+            "baseRefName": "main",
+            "headRefOid": "sha12",
+            "isCrossRepository": false,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "DRAFT",
+            "canBeRebased": true,
+            "reviewDecision": "",
+            "author": {
+              "login": "alice",
+              "__typename": "User"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": false
+              },
+              "nodes": []
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha12",
+                    "statusCheckRollup": null
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -11,11 +11,21 @@ import (
 // HostServiceRegistrar registers the callback door on a broker server.
 type HostServiceRegistrar interface{ Register(*grpc.Server) }
 
+// HostServerOptioner is an optional HostServiceRegistrar extension: the options
+// it returns are added to the broker server the callback door is registered
+// on, so a host can, for example, intercept every call one plugin makes.
+type HostServerOptioner interface {
+	HostServerOptions() []grpc.ServerOption
+}
+
 func serveHost(broker *goplugin.GRPCBroker, id uint32, host HostServiceRegistrar) {
 	if host == nil {
 		return
 	}
 	go broker.AcceptAndServe(id, func(opts []grpc.ServerOption) *grpc.Server {
+		if o, ok := host.(HostServerOptioner); ok {
+			opts = append(opts[:len(opts):len(opts)], o.HostServerOptions()...)
+		}
 		srv := grpc.NewServer(opts...)
 		host.Register(srv)
 		return srv

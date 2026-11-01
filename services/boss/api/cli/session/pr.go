@@ -76,11 +76,6 @@ func (g *Group) runPrVerb(cmd *cobra.Command, prArg string, run func(context.Con
 	asJSON, _ := cmd.Flags().GetBool(cliutil.JSONFlagName)
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	repo, _ := cmd.Flags().GetString("repo")
-	if chat := strings.TrimSpace(g.Getenv("BOSS_AGENT_SESSION_ID")); chat != "" {
-		// An agent must not approve the park it may itself be under.
-		return cliutil.EmitJSONFailure(cmd, asJSON, rpcerr.New(rpcerr.PermissionDenied,
-			fmt.Errorf("`boss pr %s` refuses to run inside agent chat %s: approving a verify park is the operator's call; run it from your own terminal or press [m] on the session in the TUI", cmd.Name(), chat)))
-	}
 	pr, err := parsePRNumber(prArg)
 	if err != nil {
 		return cliutil.EmitJSONFailure(cmd, asJSON, err)

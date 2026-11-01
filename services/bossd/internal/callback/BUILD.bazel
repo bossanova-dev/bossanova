@@ -24,6 +24,7 @@ go_library(
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/deliverydiag",
         "//services/bossd/internal/domain/telemetry",
+        "//services/bossd/internal/ghusage",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

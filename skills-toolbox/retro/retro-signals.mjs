@@ -290,7 +290,7 @@ export function collectReverts(reverts, options = {}) {
 
 const commitSelection = `commits(last:10){pageInfo{hasPreviousPage} nodes{commit{oid statusCheckRollup{contexts(first:50){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name conclusion} ... on StatusContext{context state description}}}}}}}`
 const prSelection = `number title body state updatedAt mergedAt headRefOid files(first:100){pageInfo{hasNextPage} nodes{path}} ${commitSelection} reviews(first:20){pageInfo{hasNextPage} nodes{state body submittedAt author{login __typename}}} reviewThreads(first:50){pageInfo{hasNextPage} nodes{comments(first:1){nodes{path body createdAt author{login __typename}}}}}`
-function readReason(result, tool) {
+export function readReason(result, tool) {
   if (result.error?.code === 'ENOENT')
     return tool === 'git'
       ? 'git-unavailable'
@@ -303,13 +303,13 @@ function readReason(result, tool) {
   if (/authenticat|not logged|login required/i.test(message)) return 'gh-unauthenticated'
   return tool === 'git' ? 'no-base-ref' : 'graphql-error'
 }
-function checked(run, tool, args) {
+export function checked(run, tool, args) {
   const result = run(tool, args, { timeout: 30000 })
   if (result.error || result.status !== 0)
     throw Object.assign(new Error(readReason(result, tool)), { reason: readReason(result, tool) })
   return String(result.stdout ?? '')
 }
-function graphql(run, query, fields) {
+export function graphql(run, query, fields) {
   const args = [
     'api',
     'graphql',

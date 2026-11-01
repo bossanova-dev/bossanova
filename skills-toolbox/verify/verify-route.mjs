@@ -397,21 +397,24 @@ export const discoveryLimit = (batch) => Math.max(DISCOVERY_FLOOR, batch * DISCO
 const OUTCOMES = ['merged', 'parked', 'dispatched', 'skipped', 'deferred']
 export const REMOTE_SESSION_SKIP = 'skipped: session on another machine'
 // Below this share of either GitHub quota left, a run reads nothing: the token is the user's, and
-// every other tool on the machine spends it too.
+// every other tool on the machine spends it too. bossd's scheduler names the reserve floor it
+// already admitted a verify cron above in BOSS_GITHUB_QUOTA_FLOOR, which wins when in (0,1).
 export const MIN_QUOTA_SHARE = 0.25
 
 /**
  * Why this run should leave GitHub alone, or null. `gh api rate_limit` does not count against
  * either quota; an unreadable answer is null, so a run never stalls on the courtesy check itself.
  */
-export function quotaLow(run, timeoutMs) {
+export function quotaLow(run, timeoutMs, env) {
+  const share = Number(env?.BOSS_GITHUB_QUOTA_FLOOR)
+  const floor = share > 0 && share < 1 ? share : MIN_QUOTA_SHARE
   const r = run('gh', ['api', 'rate_limit'], { json: true, timeoutMs })
   if (!r.ok) return null
   for (const name of ['core', 'graphql']) {
     const q = r.payload?.resources?.[name]
     const { limit, remaining, reset } = q ?? {}
     if (![limit, remaining].every(Number.isFinite) || limit <= 0) continue
-    if (remaining / limit >= MIN_QUOTA_SHARE) continue
+    if (remaining / limit >= floor) continue
     const at = Number.isFinite(reset) ? `, resets ${new Date(reset * 1000).toISOString()}` : ''
     return `GitHub ${name} quota low (${remaining}/${limit} left${at})`
   }
@@ -664,7 +667,7 @@ export function sweep(options = {}, deps = {}) {
     return idle('event PR has no session on this machine')
   if (localUrls?.length === 0) return idle('no session on this machine has a PR')
   const prUrls = eventPrUrl ? [eventPrUrl] : localUrls
-  const low = quotaLow(run, timeout())
+  const low = quotaLow(run, timeout(), env)
   if (low) return idle(low)
 
   const quietBefore =

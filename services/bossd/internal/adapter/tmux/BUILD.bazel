@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "attach.go",
         "intconv.go",
+        "panes.go",
         "ready_marker.go",
         "tmux.go",
         "tmux_modal.go",
@@ -28,6 +29,7 @@ go_test(
         "bracketed_paste_test.go",
         "intconv_test.go",
         "list_sessions_test.go",
+        "panes_test.go",
         "tmux_budget_test.go",
         "tmux_command_size_test.go",
         "tmux_delivery_deadline_test.go",

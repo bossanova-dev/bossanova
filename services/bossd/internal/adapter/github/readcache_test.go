@@ -148,7 +148,7 @@ func TestCachedReadsCoalesceConcurrentCallers(t *testing.T) {
 	release := make(chan struct{})
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
 		<-release
-		return `[]`, nil
+		return emptySnapshot, nil
 	}}
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())

@@ -250,6 +250,19 @@ func VerifyPassed(checks []CheckResult) bool {
 	return false
 }
 
+// VerifyJudged reports whether verify posted a verdict (park, pass, defect or
+// blocked) on the head the checks were read on. A claim or wait is not a verdict.
+func VerifyJudged(checks []CheckResult) bool {
+	for _, c := range checks {
+		if c.Name == VerifyStatusContext && (IsVerifyPark(c) ||
+			(c.Status == CheckStatusCompleted && !IsVerifyHold(c) && c.Conclusion != nil &&
+				(*c.Conclusion == CheckConclusionSuccess || *c.Conclusion == CheckConclusionFailure))) {
+			return true
+		}
+	}
+	return false
+}
+
 // ClassifyVerify derives the verify phase from a check set. A park in any
 // state is NeedsHuman with its reason and label; any other pending boss/verify
 // or cannot-assess hold is Verifying. Completed statuses without a hold yield

@@ -6,6 +6,7 @@ go_library(
         "actionable_errors.go",
         "issue.go",
         "pr_comments.go",
+        "pr_snapshot.go",
         "provider.go",
         "provider_pr_status.go",
         "ratelimit.go",
@@ -15,6 +16,7 @@ go_library(
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/kit/vcs",
+        "//services/bossd/internal/ghusage",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_x_sync//singleflight",
     ],
@@ -25,6 +27,7 @@ go_test(
     srcs = [
         "issue_test.go",
         "pr_comments_test.go",
+        "pr_snapshot_test.go",
         "provider_body_test.go",
         "provider_e2e_test.go",
         "provider_partial_test.go",
@@ -37,6 +40,7 @@ go_test(
     deps = [
         "//lib/bossalib/kit/clocktest",
         "//lib/bossalib/kit/vcs",
+        "//services/bossd/internal/ghusage",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

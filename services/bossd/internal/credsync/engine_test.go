@@ -549,12 +549,12 @@ func TestResolveRefreshVersionPreservesIndependentCredentials(t *testing.T) {
 		wantVersion int64
 	}{
 		{"matching original", `{"tokens":{"refresh_token":"distributed"}}`, 1},
-		{"independent authentication", `{"tokens":{"refresh_token":"independent"}}`, 0},
+		{"independent authentication", `{"tokens":{"refresh_token":"independent"}}`, 2},
 		{"legacy top level", `{"refresh":"distributed"}`, 1},
 		{"legacy openai", `{"openai":{"refresh_token":"distributed"}}`, 1},
 		{"openai promotion", `{"openai":{"refresh_token":"distributed"},"refresh":"independent"}`, 1},
 		{"partial tokens use top fallback", `{"tokens":{"access_token":"access"},"openai":{"refresh_token":"independent"},"refresh":"distributed"}`, 1},
-		{"nested takes precedence", `{"tokens":{"refresh_token":"independent"},"refresh":"distributed"}`, 0},
+		{"nested takes precedence", `{"tokens":{"refresh_token":"independent"},"refresh":"distributed"}`, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -568,12 +568,21 @@ func TestResolveRefreshVersionPreservesIndependentCredentials(t *testing.T) {
 			row.SyncedCredentialVersion = 0
 			f.la.rows["account"] = row
 			f.la.secrets["original"] = []byte(tc.local)
+			before := bytes.Clone(f.cloud.blobs["account"].Ciphertext)
 			guard, err := f.a.ResolveRefreshVersion(ctx, "account", "original")
-			if err != nil || guard != 1 {
+			if err != nil || guard != tc.wantVersion {
 				t.Fatalf("guard=%d err=%v", guard, err)
 			}
 			if f.la.rows["account"].SyncedCredentialVersion != tc.wantVersion {
 				t.Fatalf("version=%d", f.la.rows["account"].SyncedCredentialVersion)
+			}
+			blob := f.cloud.blobs["account"]
+			if tc.wantVersion == 1 && !bytes.Equal(before, blob.Ciphertext) {
+				t.Fatal("matching credential republished")
+			}
+			plain, decryptErr := DecryptCredential(f.a.key, blob.Ciphertext, f.a.aad(blob))
+			if decryptErr != nil || (tc.wantVersion == 2 && string(plain) != tc.local) {
+				t.Fatalf("published credential does not match: %v", decryptErr)
 			}
 			if string(f.la.secrets["original"]) != tc.local {
 				t.Fatal("independent credential modified")
@@ -596,11 +605,12 @@ func TestResolveRefreshVersionRejectsUnauthenticatedRemote(t *testing.T) {
 	blob := f.cloud.blobs["account"]
 	blob.Ciphertext[0] ^= 1
 	f.cloud.blobs["account"] = blob
-	if _, err := f.a.ResolveRefreshVersion(ctx, "account", "original"); err == nil {
+	before := bytes.Clone(blob.Ciphertext)
+	if _, err := f.a.ResolveRefreshVersion(ctx, "account", "original"); !errors.Is(err, ErrPublishedCredentialUnreadable) {
 		t.Fatal("unauthenticated credential adopted")
 	}
-	if f.la.rows["account"].SyncedCredentialVersion != 0 {
-		t.Fatal("invalid ciphertext claimed a version")
+	if f.la.rows["account"].SyncedCredentialVersion != 0 || !bytes.Equal(before, f.cloud.blobs["account"].Ciphertext) {
+		t.Fatal("invalid ciphertext claimed a version or changed the blob")
 	}
 }
 
@@ -619,5 +629,220 @@ func TestPublishRefreshRecoversCommittedResultWithoutReceiving(t *testing.T) {
 	}
 	if !bytes.Equal(f.la.secrets["original"], fresh) {
 		t.Fatal("known result changed")
+	}
+}
+
+func TestIndependentLoginsConverge_Accounts_AC223501(t *testing.T) {
+	ctx := context.Background()
+	f := newSyncFixture(t)
+	f.cloud.caller = "a"
+	if err := f.a.Publish(ctx, "account", "original"); err != nil {
+		t.Fatal(err)
+	}
+	loginA := []byte(`{"tokens":{"refresh_token":"login-a"}}`)
+	loginB := []byte(`{"tokens":{"refresh_token":"login-b"}}`)
+	f.la.rows["account"] = LocalCredential{LocalID: "original"}
+	f.lb.rows["account"] = LocalCredential{LocalID: "independent"}
+	f.la.secrets["original"], f.lb.secrets["independent"] = loginA, loginB
+	// The initial published fixture has no refresh token; replace it with a valid login.
+	initial := f.cloud.blobs["account"]
+	var err error
+	initial.Ciphertext, err = EncryptCredential(f.a.key, []byte(`{"refresh":"initial"}`), f.a.aad(initial))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.cloud.blobs["account"] = initial
+	for _, device := range []struct {
+		id, localID string
+		engine      *Engine
+		local       *syncLocal
+		want        []byte
+	}{{"a", "original", f.a, f.la, loginA}, {"b", "independent", f.b, f.lb, loginB}} {
+		f.cloud.caller = device.id
+		guard, err := device.engine.ResolveRefreshVersion(ctx, "account", device.localID)
+		if err != nil || guard != device.local.rows["account"].SyncedCredentialVersion || guard != f.cloud.blobs["account"].CredentialVersion {
+			t.Fatalf("%s guard=%d err=%v", device.id, guard, err)
+		}
+		if !bytes.Equal(device.local.secrets[device.localID], device.want) || !bytes.Equal(f.la.secrets["original"], loginA) || !bytes.Equal(f.lb.secrets["independent"], loginB) {
+			t.Fatal("independent login overwritten before catch-up receive")
+		}
+	}
+	f.cloud.caller = "a"
+	if err := f.a.Receive(ctx, "account"); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(f.la.secrets["original"], loginB) || !bytes.Equal(f.la.secrets["original"], f.lb.secrets["independent"]) || f.la.rows["account"].SyncedCredentialVersion != f.lb.rows["account"].SyncedCredentialVersion || f.la.rows["account"].SyncedCredentialVersion < 2 {
+		t.Fatal("daemons failed to converge")
+	}
+}
+
+type convergenceConflictRemote struct {
+	Remote
+	put func(context.Context, int64, Blob) error
+}
+
+func (r convergenceConflictRemote) PutBlob(ctx context.Context, expected int64, blob Blob) error {
+	return r.put(ctx, expected, blob)
+}
+
+func TestResolveRefreshVersionRetriesConflict(t *testing.T) {
+	for _, permanent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "peer advances head", true: "bounded conflicts"}[permanent], func(t *testing.T) {
+			ctx := context.Background()
+			f := newSyncFixture(t)
+			f.cloud.caller = "a"
+			f.la.secrets["original"] = []byte(`{"refresh":"local"}`)
+			attempts := 0
+			f.a.remote = convergenceConflictRemote{Remote: f.cloud, put: func(ctx context.Context, expected int64, blob Blob) error {
+				attempts++
+				if permanent {
+					return ErrConflict
+				}
+				if attempts == 1 {
+					peer := Blob{SyncedAgentAccountID: "account", CredentialVersion: 1, KeyGeneration: f.a.generation}
+					var err error
+					peer.Ciphertext, err = EncryptCredential(f.a.key, []byte(`{"refresh":"peer"}`), f.a.aad(peer))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := f.cloud.PutBlob(ctx, 0, peer); err != nil {
+						t.Fatal(err)
+					}
+					return ErrConflict
+				}
+				return f.cloud.PutBlob(ctx, expected, blob)
+			}}
+			guard, err := f.a.ResolveRefreshVersion(ctx, "account", "original")
+			if permanent {
+				if !errors.Is(err, ErrConflict) || attempts != 3 || f.la.rows["account"].SyncedCredentialVersion != 0 {
+					t.Fatalf("guard=%d err=%v attempts=%d row=%+v", guard, err, attempts, f.la.rows["account"])
+				}
+			} else if err != nil || attempts != 2 || guard != 2 || f.la.rows["account"].SyncedCredentialVersion != guard {
+				t.Fatalf("guard=%d err=%v attempts=%d", guard, err, attempts)
+			}
+			if string(f.la.secrets["original"]) != `{"refresh":"local"}` {
+				t.Fatal("CAS loss changed local login")
+			}
+		})
+	}
+}
+
+func TestResolveRefreshVersionPublishesWithoutBlob(t *testing.T) {
+	f := newSyncFixture(t)
+	f.cloud.caller = "a"
+	f.la.secrets["original"] = []byte(`{"refresh":"local"}`)
+	guard, err := f.a.ResolveRefreshVersion(context.Background(), "account", "original")
+	if err != nil || guard != 1 || f.la.rows["account"].SyncedCredentialVersion != 1 || f.cloud.blobs["account"].CredentialVersion != 1 {
+		t.Fatalf("guard=%d err=%v", guard, err)
+	}
+}
+
+func TestPublishConvergesIndependentCredential(t *testing.T) {
+	for _, matching := range []bool{true, false} {
+		t.Run(map[bool]string{true: "matching", false: "independent"}[matching], func(t *testing.T) {
+			f := newSyncFixture(t)
+			f.cloud.caller = "a"
+			f.la.secrets["original"] = []byte(`{"refresh":"published"}`)
+			if err := f.a.Publish(context.Background(), "account", "original"); err != nil {
+				t.Fatal(err)
+			}
+			before := bytes.Clone(f.cloud.blobs["account"].Ciphertext)
+			f.la.rows["account"] = LocalCredential{LocalID: "original"}
+			wantVersion := int64(1)
+			if !matching {
+				wantVersion = 2
+				f.la.secrets["original"] = []byte(`{"refresh":"independent"}`)
+			}
+			if err := f.a.Publish(context.Background(), "account", "original"); err != nil {
+				t.Fatal(err)
+			}
+			blob := f.cloud.blobs["account"]
+			plain, err := DecryptCredential(f.a.key, blob.Ciphertext, f.a.aad(blob))
+			if err != nil || !bytes.Equal(plain, f.la.secrets["original"]) || blob.CredentialVersion != wantVersion || f.la.rows["account"].SyncedCredentialVersion != wantVersion {
+				t.Fatalf("version=%d local=%+v err=%v", blob.CredentialVersion, f.la.rows["account"], err)
+			}
+			if matching && !bytes.Equal(before, blob.Ciphertext) {
+				t.Fatal("matching login was republished")
+			}
+		})
+	}
+}
+
+func TestConvergenceRefusals_Accounts_AC223501(t *testing.T) {
+	for _, refusal := range []string{"generation", "remote refresh missing", "local refresh missing"} {
+		t.Run(refusal, func(t *testing.T) {
+			f := newSyncFixture(t)
+			f.cloud.caller = "a"
+			f.la.secrets["original"] = []byte(`{"refresh":"published"}`)
+			if err := f.a.Publish(context.Background(), "account", "original"); err != nil {
+				t.Fatal(err)
+			}
+			f.la.rows["account"] = LocalCredential{LocalID: "original"}
+			blob := f.cloud.blobs["account"]
+			wantErr := ErrRollback
+			switch refusal {
+			case "generation":
+				blob.KeyGeneration++
+			case "remote refresh missing":
+				wantErr = ErrPublishedCredentialUnreadable
+				var err error
+				blob.Ciphertext, err = EncryptCredential(f.a.key, []byte(`{}`), f.a.aad(blob))
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "local refresh missing":
+				wantErr = ErrLocalCredentialUnrefreshable
+				f.la.secrets["original"] = []byte(`{}`)
+			}
+			f.cloud.blobs["account"] = blob
+			before := bytes.Clone(blob.Ciphertext)
+			if _, err := f.a.ResolveRefreshVersion(context.Background(), "account", "original"); !errors.Is(err, wantErr) {
+				t.Fatalf("error=%v want %v", err, wantErr)
+			}
+			if f.la.rows["account"].SyncedCredentialVersion != 0 || !bytes.Equal(before, f.cloud.blobs["account"].Ciphertext) || f.cloud.blobs["account"].CredentialVersion != blob.CredentialVersion {
+				t.Fatal("refusal modified published credential or recorded a version")
+			}
+		})
+	}
+}
+
+func TestInvalidIndependentCredentialCannotReplacePublishedLogin(t *testing.T) {
+	for _, operation := range []string{"publish", "resolve refresh version"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := context.Background()
+			f := newSyncFixture(t)
+			f.cloud.caller = "a"
+			published := []byte(`{"refresh":"working"}`)
+			f.la.secrets["original"] = published
+			if err := f.a.Publish(ctx, "account", "original"); err != nil {
+				t.Fatal(err)
+			}
+			before := f.cloud.blobs["account"]
+			f.la.rows["account"] = LocalCredential{LocalID: "original", IsAuthInvalid: true}
+			invalid := []byte(`{"refresh":"known-invalid"}`)
+			f.la.secrets["original"] = invalid
+			switch operation {
+			case "publish":
+				if err := f.a.Publish(ctx, "account", "original"); err != nil {
+					t.Fatal(err)
+				}
+				row := f.la.rows["account"]
+				if !bytes.Equal(f.la.secrets["original"], published) || row.IsAuthInvalid || row.SyncedCredentialVersion != before.CredentialVersion {
+					t.Fatalf("invalid local credential was not recovered: %+v", row)
+				}
+			case "resolve refresh version":
+				guard, err := f.a.ResolveRefreshVersion(ctx, "account", "original")
+				if guard != 0 || !errors.Is(err, ErrLocalCredentialUnrefreshable) {
+					t.Fatalf("guard=%d err=%v", guard, err)
+				}
+				if !bytes.Equal(f.la.secrets["original"], invalid) || f.la.rows["account"].SyncedCredentialVersion != 0 {
+					t.Fatal("rejected refresh changed local credential or claimed a version")
+				}
+			}
+			after := f.cloud.blobs["account"]
+			if after.CredentialVersion != before.CredentialVersion || !bytes.Equal(after.Ciphertext, before.Ciphertext) {
+				t.Fatal("known-invalid local login replaced published credential")
+			}
+		})
 	}
 }

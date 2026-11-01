@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/rs/zerolog"
 )
 
@@ -172,6 +173,7 @@ func (e *Evaluator) readPRState(ctx context.Context, rp string, prNumber int) (*
 // open; a lost MarkGroupTriggered race (ErrGitHubCallbackTriggerConflict) or a raced
 // delete (domain.ErrNotFound) is tolerated as non-error.
 func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, prNumber int) error {
+	ctx = ghusage.WithLabel(ctx, ghusage.LabelCallbacks)
 	if prNumber <= 0 || repoOwner == "" || repoName == "" {
 		return nil
 	}
@@ -266,7 +268,7 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 // A PR in a repo whose webhooks reach the daemon is skipped until
 // reconcileSafetyNetInterval has passed since it was last evaluated.
 func (e *Evaluator) ReconcileAll(ctx context.Context) error {
-	ctx = vcs.WithCachedReads(ctx)
+	ctx = ghusage.WithLabel(vcs.WithCachedReads(ctx), ghusage.LabelCallbacks)
 	active := models.GitHubCallbackStateActive
 	cbs, err := e.store.List(ctx, db.ListGitHubCallbacksFilter{State: &active})
 	if err != nil {

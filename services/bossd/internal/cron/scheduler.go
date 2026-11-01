@@ -40,12 +40,14 @@ import (
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	sessionpkg "github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/taskorchestrator"
+	"github.com/recurser/bossd/internal/verifyjob"
 )
 
 // GateOptions composes the repo credentials and trusted proof overlay used by
 // cron and event-driven gate runs. Callers supply output, timeout and event scope.
 // Cron runs explicitly override webhook health so inherited daemon values cannot
-// change their cadence.
+// change their cadence, and name the GitHub quota floor the scheduler admitted
+// them under (verifyjob.QuotaFloorEnv).
 func GateOptions(repo *models.Repo, job *domain.CronJob, proof GateProofEnvResolver, cronRun bool, health WebhookHealth) gatecmd.Options {
 	proofKey, unsetEnv := proofenv.GateEnvFor(proof, repo)
 	var extraEnv map[string]string
@@ -54,7 +56,10 @@ func GateOptions(repo *models.Repo, job *domain.CronJob, proof GateProofEnvResol
 		if health != nil && health.WebhookDeliveryHealthy(repo.OriginURL) {
 			healthy = "1"
 		}
-		extraEnv = map[string]string{"BOSS_WEBHOOKS_HEALTHY": healthy}
+		extraEnv = map[string]string{
+			"BOSS_WEBHOOKS_HEALTHY": healthy,
+			verifyjob.QuotaFloorEnv: verifyjob.QuotaFloorValue(job),
+		}
 	}
 	return gatecmd.Options{
 		ExtraEnv:             extraEnv,
@@ -114,7 +119,10 @@ type Config struct {
 	Canceller RunCanceller
 	// GateProofEnv resolves the proof overlay for the single credential that
 	// pre-session gates may receive. Nil means no proof injection.
-	GateProofEnv  GateProofEnvResolver
+	GateProofEnv GateProofEnvResolver
+	// Quota reads the GitHub quotas a scheduled fire must leave its floor of.
+	// Nil never reserves quota.
+	Quota         QuotaReader
 	MaxConcurrent int
 	Logger        zerolog.Logger
 
@@ -138,6 +146,7 @@ type Scheduler struct {
 	activity      ActivityChecker
 	canceller     RunCanceller
 	gateProofEnv  GateProofEnvResolver
+	quota         QuotaReader
 	webhookHealth WebhookHealth
 	logger        zerolog.Logger
 
@@ -197,6 +206,7 @@ func New(cfg Config) *Scheduler {
 		activity:     cfg.Activity,
 		canceller:    cfg.Canceller,
 		gateProofEnv: cfg.GateProofEnv,
+		quota:        cfg.Quota,
 		logger:       logger,
 		cron: cron.New(
 			cron.WithLocation(time.UTC),
@@ -335,7 +345,7 @@ func (s *Scheduler) RunNow(ctx context.Context, jobID string) (*models.Session, 
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
-	return s.fire(context.Background(), jobID)
+	return s.fireWith(context.Background(), jobID, false)
 }
 
 // Tick is a test-only deterministic clock driver. It iterates over every
@@ -464,7 +474,15 @@ const (
 // gate that could not run at all blocks it with outcome=gate_failed.
 //
 // Skip reasons (non-error skips) are the SkipReason* constants above.
-func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Session, skippedReason string, fireErr error) {
+//
+// fire is the scheduled path: it also leaves GitHub quota for higher-priority
+// crons (SkipReasonQuotaReserved). A manual run is an operator spending quota
+// on purpose, so RunNow skips that check.
+func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, string, error) {
+	return s.fireWith(ctx, jobID, true)
+}
+
+func (s *Scheduler) fireWith(ctx context.Context, jobID string, scheduled bool) (session *models.Session, skippedReason string, fireErr error) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 	zeroOutput := false
@@ -529,6 +547,10 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		return nil, "", fmt.Errorf("load repo for cron job %s: %w", job.ID, err)
 	}
 
+	if scheduled && s.skipForQuota(ctx, job, repo, logger) {
+		return nil, SkipReasonQuotaReserved, nil
+	}
+
 	// Gate command: run the configured command before firing. Anything other
 	// than exit 0 blocks the fire — the gate contract fails closed — but the
 	// two ways of blocking are recorded DIFFERENTLY (BOS-881). A gate that ran
@@ -564,16 +586,7 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 				outcome = domain.CronJobOutcomeGateFailed
 				skipReason = SkipReasonGateFailed
 			}
-			firedAt := s.nowFunc()
-			nextArg := s.nextRunArg(job.ID, firedAt)
-			if upErr := s.store.UpdateLastRun(ctx, job.ID, db.UpdateCronJobLastRunParams{
-				RanAt:     firedAt,
-				Outcome:   outcome,
-				NextRunAt: &nextArg,
-				// SessionID nil: this was not a fired run.
-			}); upErr != nil {
-				logger.Warn().Err(upErr).Str("cron_outcome", string(outcome)).Msg("fire: failed to record gate-blocked outcome")
-			}
+			s.recordBlockedFire(ctx, job, outcome, logger)
 			if gate.CouldNotRun() {
 				// WARN, not debug: this is the one line that names the real
 				// problem (e.g. "node: command not found"). Logging it at debug
@@ -664,6 +677,21 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		Str("name", job.Name).
 		Msg("fire: cron session spawned")
 	return sess, "", nil
+}
+
+// recordBlockedFire records a fire that spawned nothing and advances
+// next_run_at. A failed write is logged: the skip itself still stands.
+func (s *Scheduler) recordBlockedFire(ctx context.Context, job *domain.CronJob, outcome domain.CronJobOutcome, logger zerolog.Logger) {
+	firedAt := s.nowFunc()
+	nextArg := s.nextRunArg(job.ID, firedAt)
+	if err := s.store.UpdateLastRun(ctx, job.ID, db.UpdateCronJobLastRunParams{
+		RanAt:     firedAt,
+		Outcome:   outcome,
+		NextRunAt: &nextArg,
+		// SessionID nil: this was not a fired run.
+	}); err != nil {
+		logger.Warn().Err(err).Str("cron_outcome", string(outcome)).Msg("fire: failed to record blocked outcome")
+	}
 }
 
 // nextRunArg returns nil when the job has no registered next fire.

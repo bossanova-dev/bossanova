@@ -10862,6 +10862,37 @@ components:
           title: install_url
       title: GetGitHubAppInstallURLResponse
       additionalProperties: false
+    bossanova.v1.GetGitHubUsageRequest:
+      type: object
+      properties:
+        windowSeconds:
+          type:
+            - integer
+            - string
+          title: window_seconds
+          format: int64
+          description: |-
+            Length of the report window, ending now. Zero means 3600 (the last hour);
+             the daemon keeps two hours of ledger, so at most 7200.
+      title: GetGitHubUsageRequest
+      additionalProperties: false
+    bossanova.v1.GetGitHubUsageResponse:
+      type: object
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.GitHubUsageRow'
+          title: rows
+          description: Sorted by call_count descending, then label and quota.
+        windowStartedAt:
+          title: window_started_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        windowEndedAt:
+          title: window_ended_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: GetGitHubUsageResponse
+      additionalProperties: false
     bossanova.v1.GetNewsletterStatusRequest:
       type: object
       title: GetNewsletterStatusRequest
@@ -11482,6 +11513,28 @@ components:
       description: |-
         GitHubTriggerConfig is config version 1 for trigger_type "github". Events
          arrive through the Bossanova GitHub App installation on repo_origin_url.
+    bossanova.v1.GitHubUsageRow:
+      type: object
+      properties:
+        label:
+          type: string
+          title: label
+          description: |-
+            Attribution, e.g. "stage:finalize", "daemon:poller", "cron:<name>",
+             "plugin:<name>" or "daemon:unattributed".
+        quota:
+          type: string
+          title: quota
+          description: 'GitHub quota the calls spent: "core" (REST) or "graphql".'
+        callCount:
+          type:
+            - integer
+            - string
+          title: call_count
+          format: int64
+      title: GitHubUsageRow
+      additionalProperties: false
+      description: GitHubUsageRow is the number of calls one label made against one quota.
     bossanova.v1.GlobalSettings:
       type: object
       properties:
@@ -18426,6 +18479,18 @@ components:
           title: organization
           $ref: '#/components/schemas/bossanova.v1.Organization'
       title: RenameOrganizationResponse
+      additionalProperties: false
+    bossanova.v1.RenewAgentCredentialDeviceEnrollmentRequest:
+      type: object
+      title: RenewAgentCredentialDeviceEnrollmentRequest
+      additionalProperties: false
+    bossanova.v1.RenewAgentCredentialDeviceEnrollmentResponse:
+      type: object
+      properties:
+        device:
+          title: device
+          $ref: '#/components/schemas/bossanova.v1.AgentCredentialDevice'
+      title: RenewAgentCredentialDeviceEnrollmentResponse
       additionalProperties: false
     bossanova.v1.RepairDoctorCheck:
       type: object

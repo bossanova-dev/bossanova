@@ -256,6 +256,8 @@
   "services/bossd/internal/accountwiring:materializerAdapter.client",
   "services/bossd/internal/adapter/accountcred:openSharedKeyring",
   "services/bossd/internal/adapter/github:cachedRead",
+  "services/bossd/internal/adapter/github:newestRead",
+  "services/bossd/internal/adapter/github:snapshotRead",
   "services/bossd/internal/adapter/proofenvkeyring:openSharedKeyring",
   "services/bossd/internal/adapter/r2upload:Uploader.OpenEvidenceBucket",
   "services/bossd/internal/adapter/reposecrets/oskeyring:Open",

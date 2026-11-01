@@ -112,6 +112,7 @@ type endedPRHarness struct {
 	repo      *models.Repo
 	sess      *models.Session
 	repos     steppedRepos
+	poller    *session.DisplayPoller
 }
 
 func newEndedPRHarness(t *testing.T) *endedPRHarness {
@@ -146,6 +147,7 @@ func newEndedPRHarness(t *testing.T) *endedPRHarness {
 	poller := session.NewDisplayPoller(h.sessions, h.repos, h.provider, h.tracker, endedPollInterval, zerolog.Nop())
 	poller.SetSnapshotStore(h.snapshots)
 	poller.SetEvidenceObserver(reader)
+	h.poller = poller
 	runCtx, cancel := context.WithCancel(ctx)
 	poller.Run(runCtx)
 	t.Cleanup(func() {
@@ -342,10 +344,11 @@ func TestGetSessionTimeline_AWebhookEndedPRResolvesThroughTheDisplayPoller(t *te
 
 // TestGetSessionTimeline_AReopenedPRIsOpenAgain pins that the terminal
 // snapshot the poller records for a webhook-ended PR does not outlive a
-// reopen: once the reopened PR's display entry is open again, poll() resumes
-// and the newer open snapshot supersedes the terminal one, so the timeline
-// waits on the parked PR again — although the session state still says
-// Merged.
+// reopen: once the reopened PR's display entry is open again, the reopen
+// webhook's refresh reads it (a parked PR is no longer on the poller's
+// immediate cadence) and the newer open snapshot supersedes the terminal one,
+// so the timeline waits on the parked PR again — although the session state
+// still says Merged.
 func TestGetSessionTimeline_AReopenedPRIsOpenAgain(t *testing.T) {
 	h := newEndedPRHarness(t)
 	h.parkOn(timelineHead)
@@ -360,6 +363,9 @@ func TestGetSessionTimeline_AReopenedPRIsOpenAgain(t *testing.T) {
 
 	h.parkOn(timelineHead)
 	h.refreshSessionPR(t)
+	if err := h.poller.RefreshPR(context.Background(), h.repo.OriginURL, 2979); err != nil {
+		t.Fatalf("RefreshPR: %v", err)
+	}
 	h.cycle()
 
 	steps := h.timeline(t)

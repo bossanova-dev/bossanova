@@ -40,6 +40,14 @@ List credential-sharing devices
 
 - `--json` — Emit stable JSON
 
+### `boss account devices request [flags]`
+
+Open a fresh credential device enrollment window
+
+**Flags:**
+
+- `--json` — Emit stable JSON
+
 ### `boss account devices revoke <daemon-id>`
 
 Revoke a device's future credential access

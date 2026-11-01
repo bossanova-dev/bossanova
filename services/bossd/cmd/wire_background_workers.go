@@ -77,6 +77,11 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 				// the reconcile, so by the time this runs the remaining PR-less
 				// sessions are the ones whose create genuinely failed and should
 				// be re-pushed rather than re-linked.
+				if n, err := w.lifecycle.ResumeQuotaBlockedFinalizesPeriodic(w.pollerCtx); err != nil {
+					log.Warn().Err(err).Msg("periodic quota-finalize resume: failed")
+				} else if n > 0 {
+					log.Info().Int("count", n).Msg("periodic quota-finalize resume: re-attempted finalizes after quota reset")
+				}
 				if n, err := w.lifecycle.RetryFailedDraftPRsPeriodic(w.pollerCtx); err != nil {
 					log.Warn().Err(err).Msg("periodic draft-PR retry: failed")
 				} else if n > 0 {
@@ -85,6 +90,8 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 			}
 		}
 	})
+
+	w.trackedGo("github-usage-prune", w.pruneGitHubUsage)
 
 	// Periodically clear repair alerts whose condition has ended (BOS-1535):
 	// a blocked/failed/stalled repair alert used to outlive the head, CI run and
@@ -261,6 +268,29 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 		w.deferCleanup(w.accountCredMaintenance.Stop)
 	}
 
+}
+
+// pruneGitHubUsage drops GitHub usage ledger buckets older than the report can
+// read until the daemon stops. Ten minutes keeps at most one stale hour on
+// disk; each pass is one ReadDir.
+func (w *daemonWiring) pruneGitHubUsage() {
+	if w.ghUsage == nil {
+		return
+	}
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.pollerCtx.Done():
+			return
+		case <-ticker.C:
+			if n, err := w.ghUsage.Prune(time.Now()); err != nil {
+				log.Warn().Err(err).Msg("github usage prune failed")
+			} else if n > 0 {
+				log.Debug().Int("count", n).Msg("pruned stale github usage buckets")
+			}
+		}
+	}
 }
 
 func reapOrphanedUsageProbeHomes() {

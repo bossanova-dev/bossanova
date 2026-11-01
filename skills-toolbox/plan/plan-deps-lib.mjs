@@ -611,11 +611,7 @@ function classifyAreaToken(
   // path segments and no real file is ever named `*.sql`, so
   // `services/x/migrations/*.sql` was an area that could never match the very
   // files it was written to name. Subsumes the older `dir/*` and `dir/**` forms.
-  // Whether that collapse consumed the token's ONLY slash decides the outcome of
-  // the slash-free branch below: `skills-toolbox/*.mjs` is path-shaped surface the
-  // plan genuinely named, and falling through to the prose branch on an undeclared
-  // root dropped it to `{}` while the explicit `skills-toolbox/plan/plan-deps-lib.mjs`
-  // produced an area — the middle outcome collapsed, which this module forbids.
+  const pathSpec = value.replace(/\/+$/, '')
   const globCollapsedToWord = /^[^/]*\/[^/]*\*[^/]*$/.test(value)
   value = value.replace(/\/[^/]*\*[^/]*$/, '')
   value = value.replace(/\/?\*+$/, '') // a bare glob suffix names the directory
@@ -624,8 +620,6 @@ function classifyAreaToken(
   if (value === '') return {}
   const named = namesAFile(value) // on the UNFOLDED value — see `namesAFile`
   value = value.toLowerCase()
-  // A wildcard surviving the segment collapse sits mid-path (`a*b/c.go`) and names
-  // no single site; an area carrying one can only ever compare false.
   if (value.includes('*')) return {}
   if (value.includes('/')) {
     const root = value.split('/')[0]
@@ -633,13 +627,13 @@ function classifyAreaToken(
     // area can stand for it — yet `../escape/x.go` resolved as an area on the
     // strength of its extension alone. Reported, never guessed at.
     if (root === '..') return { unresolved: value }
-    if (moduleRoots.size === 0) return { area: value }
+    if (moduleRoots.size === 0) return { area: value, pathSpec }
     // A leading segment the caller never declared: `origin/main`, a `/route`
     // string, a `vendor/legacy` tree named parenthetically. Path-shaped, but
     // nothing here can say whether it is a change site.
-    if (moduleRoots.has(root)) return { area: value }
-    if (DOT_ROOT_SEGMENT_RE.test(root)) return { area: value }
-    return named ? { area: value } : { unresolved: value }
+    if (moduleRoots.has(root)) return { area: value, pathSpec }
+    if (DOT_ROOT_SEGMENT_RE.test(root)) return { area: value, pathSpec }
+    return named ? { area: value, pathSpec } : { unresolved: value }
   }
   // A bare module-root name is a change site ONLY where the author marked it as
   // code, or file-shaped in a split list item lead. Unmarked words in prose
@@ -652,8 +646,10 @@ function classifyAreaToken(
   // first and needs no file extension — `Makefile` has none, and the tree already
   // proves it is a file. Marked or a split lead, it is a change site; anywhere
   // else it is REPORTED rather than dropped to `{}`, so a planner code-marks it.
-  if (rootFiles.has(value)) return marked || leadPosition ? { area: value } : { unresolved: value }
-  if (moduleRoots.has(value)) return marked || (named && leadPosition) ? { area: value } : {}
+  if (rootFiles.has(value))
+    return marked || leadPosition ? { area: value, pathSpec } : { unresolved: value }
+  if (moduleRoots.has(value))
+    return marked || (named && leadPosition) ? { area: value, pathSpec } : {}
   // The directory a one-level glob named, under a root the caller never declared.
   // Reported, never guessed at — see `globCollapsedToWord`.
   if (globCollapsedToWord) return { unresolved: value }
@@ -691,7 +687,14 @@ function noEditDeclaration(entry, split) {
   )
 }
 
-function areasFromLines(lines, moduleRoots, allowLeadFiles = true, rootFiles = new Set()) {
+function areasFromLines(
+  lines,
+  moduleRoots,
+  allowLeadFiles = true,
+  rootFiles = new Set(),
+  preservePaths = false,
+) {
+  const pathSpecs = new Set()
   const seenAreas = new Set()
   const seenUnresolved = new Set()
   const areas = []
@@ -723,6 +726,7 @@ function areasFromLines(lines, moduleRoots, allowLeadFiles = true, rootFiles = n
         continue
       }
       if (outcome.area !== undefined) {
+        pathSpecs.add(outcome.pathSpec)
         produced = true // BEFORE the dedupe: a repeat is still an outcome
         if (seenAreas.has(outcome.area)) continue
         seenAreas.add(outcome.area)
@@ -754,11 +758,6 @@ function areasFromLines(lines, moduleRoots, allowLeadFiles = true, rootFiles = n
       if (item !== '') arealessEntries.push(item)
     }
   }
-  // A bare basename beside its own resolved path is not an unplaceable token, it
-  // is one file named twice (`bs-review-caps.mjs` beside
-  // `<skills-toolbox/bs-review-caps.mjs>`) — reported, it sends a planner looking
-  // for a second change site that does not exist. A POST-pass, because the
-  // qualifying path routinely appears in a LATER bullet than the bare mention.
   const resolvedBasenames = new Set(areas.map((area) => area.slice(area.lastIndexOf('/') + 1)))
   const finalUnresolved = unresolved.filter(
     (value) => value.includes('/') || !resolvedBasenames.has(value),
@@ -766,6 +765,7 @@ function areasFromLines(lines, moduleRoots, allowLeadFiles = true, rootFiles = n
   const editTokens = new Set([...areas, ...finalUnresolved])
   return {
     areas,
+    ...(preservePaths ? { pathSpecs: [...pathSpecs] } : {}),
     unresolved: finalUnresolved,
     referenced: [...referenced].filter((value) => !editTokens.has(value)),
     arealessEntries,
@@ -782,13 +782,13 @@ function areasFromLines(lines, moduleRoots, allowLeadFiles = true, rootFiles = n
  *
  * @param {object} config resolved skill config (config-first, like every plan parser)
  * @param {string} description the ticket/plan description
- * @param {{moduleRoots?: string[], rootFiles?: string[], keyChangesHeading?: string}} [options]
+ * @param {{moduleRoots?: string[], rootFiles?: string[], keyChangesHeading?: string, preservePaths?: boolean}} [options]
  *   `moduleRoots` admits bare, slash-free tokens (a repo's top-level module names)
  *   as areas; `rootFiles` names the repo's root-level FILES (blobs, e.g. from
  *   `git ls-tree HEAD`): one is an area when code-marked or a split list-item lead
  *   and `unresolved` anywhere else, never silently dropped; `keyChangesHeading`
  *   overrides the heading resolved from the contract.
- * @returns {{areas: string[], unresolved: string[], referenced: string[], arealessEntries: string[], source: 'key-changes'|'fallback-text'|'none'}}
+ * @returns {{pathSpecs?: string[], areas: string[], unresolved: string[], referenced: string[], arealessEntries: string[], source: 'key-changes'|'fallback-text'|'none'}}
  *   `source` distinguishes THREE outcomes that must never be conflated: the
  *   section was parsed (`key-changes`), the section was absent so the whole
  *   description was scanned (`fallback-text`), or there was no body to read at
@@ -799,21 +799,8 @@ function areasFromLines(lines, moduleRoots, allowLeadFiles = true, rootFiles = n
  *   `referenced` reports path-shaped tokens demoted from description tails or explicit
  *   no-edit declarations. It is disjoint from the final `areas` and `unresolved`.
  *
- *   `unresolved` is the ADDITIVE fourth outcome: tokens this scan recognised as
- *   path-shaped but could not resolve to a repo-relative area. It is a new field
- *   beside the existing two rather than a replacement for them, so a caller
- *   reading `.areas` keeps working unchanged. Feed it back as
- *   `subjectUnresolvedAreas` to `planDependencyEdges` and an arealess scan stops
- *   looking like a clean one.
- *
- *   `arealessEntries` is a second ADDITIVE field, informational rather than
- *   actionable: each LIST-ITEM entry that produced neither an area nor an
- *   unresolved token, with its list marker stripped. It makes a silently dropped
- *   bullet AVAILABLE to a caller that chooses to read it, without growing
- *   `unresolved`, which every prose bullet would otherwise flood. No shipped
- *   caller surfaces it yet, so do NOT lean on it as the safety net that makes a
- *   `{}` outcome operator-visible — it is not one until a caller unrolls it.
- *   It does not make the dropped bullet resolvable either way.
+ *   With `preservePaths`, `pathSpecs` retains accepted edit tokens before glob collapse
+ *   and case folding, for callers matching individual tracked files.
  */
 export function extractKeyChangeAreas(config, description, options = {}) {
   assertConfigFirst(config, 'extractKeyChangeAreas')
@@ -833,14 +820,27 @@ export function extractKeyChangeAreas(config, description, options = {}) {
 
   if (!section) {
     const lines = scanFences(body).lines.map((entry) => entry.line)
-    return { ...areasFromLines(lines, moduleRoots, false, rootFiles), source: 'fallback-text' }
+    return {
+      ...areasFromLines(lines, moduleRoots, false, rootFiles, options.preservePaths),
+      source: 'fallback-text',
+    }
   }
 
   const lines = scanFences(section.bodyLines.join('\n')).lines.map((entry) => entry.line)
   if (!lines.some((line) => line.trim() !== '')) {
-    return { areas: [], unresolved: [], referenced: [], arealessEntries: [], source: 'none' }
+    return {
+      areas: [],
+      ...(options.preservePaths ? { pathSpecs: [] } : {}),
+      unresolved: [],
+      referenced: [],
+      arealessEntries: [],
+      source: 'none',
+    }
   }
-  return { ...areasFromLines(lines, moduleRoots, true, rootFiles), source: 'key-changes' }
+  return {
+    ...areasFromLines(lines, moduleRoots, true, rootFiles, options.preservePaths),
+    source: 'key-changes',
+  }
 }
 
 // ---------------------------------------------------------------------------

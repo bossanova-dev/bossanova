@@ -30,6 +30,7 @@ go_test(
         "ambientauth_test.go",
         "codexauth_complete_test.go",
         "credmaterialize_test.go",
+        "projection_dangling_test.go",
         "refresh_broker_test.go",
     ],
     embed = [":credmaterialize"],

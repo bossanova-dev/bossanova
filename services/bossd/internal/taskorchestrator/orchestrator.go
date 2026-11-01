@@ -440,7 +440,7 @@ func (o *Orchestrator) handoffGreenRepair(ctx context.Context, task *bossanovav1
 		}
 		o.releaseRepairSlot(ctx, repo.id, mapping.ID)
 		if !repo.isFactory {
-			o.goWorker(func() { o.handleAutoMerge(ctx, task, repo, mapping) })
+			o.goWorker(func() { o.handleAutoMerge(withMergeLabel(ctx), task, repo, mapping) })
 			return true
 		}
 	}
@@ -788,7 +788,7 @@ func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem
 
 	switch action {
 	case bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE:
-		o.handleAutoMerge(ctx, task, repo, mapping)
+		o.handleAutoMerge(withMergeLabel(ctx), task, repo, mapping)
 
 	case bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION:
 		o.handleCreateSession(ctx, task, repo, mapping, false)

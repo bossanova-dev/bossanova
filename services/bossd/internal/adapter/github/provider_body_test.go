@@ -19,7 +19,7 @@ func TestUpdatePRBodyPreservesBodyAndInvalidatesCachedStatus(t *testing.T) {
 	remoteBody := "Original body"
 	views := 0
 	var logs bytes.Buffer
-	p := New(zerolog.New(&logs), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+	p := New(zerolog.New(&logs), WithRunGH(withoutSnapshot(func(_ context.Context, args ...string) (string, error) {
 		if len(args) >= 2 && args[0] == "pr" && args[1] == "edit" {
 			want := []string{"pr", "edit", "42", "--repo", "owner/repo", "--body", body}
 			if !reflect.DeepEqual(args, want) {
@@ -31,7 +31,7 @@ func TestUpdatePRBodyPreservesBodyAndInvalidatesCachedStatus(t *testing.T) {
 		views++
 		out, err := json.Marshal(map[string]any{"state": "OPEN", "isDraft": true, "body": remoteBody})
 		return string(out), err
-	}))
+	})))
 	ctx := vcs.WithCachedReads(context.Background())
 	for range 2 {
 		if _, err := p.GetPRStatus(ctx, "owner/repo", 42); err != nil {

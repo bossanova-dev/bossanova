@@ -319,6 +319,7 @@ service DaemonService {
 
   // Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.
   rpc GetAgentCredentialDeviceStatus(GetAgentCredentialDeviceStatusRequest) returns (GetAgentCredentialDeviceStatusResponse);
+  rpc RenewAgentCredentialDeviceEnrollment(RenewAgentCredentialDeviceEnrollmentRequest) returns (RenewAgentCredentialDeviceEnrollmentResponse);
   // The daemon locally signs and forwards this same operation to the orchestrator.
   // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
   rpc ListAgentCredentialDevices(ListAgentCredentialDevicesRequest) returns (ListAgentCredentialDevicesResponse);
@@ -388,6 +389,12 @@ service DaemonService {
   // or an aggregate filter set. Duration and parallelism are computed in the
   // daemon so the CLI never creates a second timestamp semantic.
   rpc GetRunCost(GetRunCostRequest) returns (GetRunCostResponse);
+
+  // GetGitHubUsage reports the GitHub calls recorded in the daemon's usage
+  // ledger over a recent window, counted per attribution label (the cron,
+  // stage or daemon subsystem that made them) and quota. It counts calls, not
+  // quota points: one GraphQL call can cost more than one point.
+  rpc GetGitHubUsage(GetGitHubUsageRequest) returns (GetGitHubUsageResponse);
 
   // ListAgents returns the names + GetInfo metadata of every agent runner
   // plugin currently loaded. Used by the boss TUI to (a) decide whether to
@@ -2335,6 +2342,31 @@ message GetRunCostResponse {
   RunCostBackfillSummary backfill_summary = 3;
 }
 
+// --- GitHub Usage ---
+
+message GetGitHubUsageRequest {
+  // Length of the report window, ending now. Zero means 3600 (the last hour);
+  // the daemon keeps two hours of ledger, so at most 7200.
+  int64 window_seconds = 1;
+}
+
+// GitHubUsageRow is the number of calls one label made against one quota.
+message GitHubUsageRow {
+  // Attribution, e.g. "stage:finalize", "daemon:poller", "cron:<name>",
+  // "plugin:<name>" or "daemon:unattributed".
+  string label = 1;
+  // GitHub quota the calls spent: "core" (REST) or "graphql".
+  string quota = 2;
+  int64 call_count = 3;
+}
+
+message GetGitHubUsageResponse {
+  // Sorted by call_count descending, then label and quota.
+  repeated GitHubUsageRow rows = 1;
+  google.protobuf.Timestamp window_started_at = 2;
+  google.protobuf.Timestamp window_ended_at = 3;
+}
+
 // --- Agent Listing ---
 
 message ListAgentsRequest {}
@@ -2469,6 +2501,11 @@ message UploadEvidenceResponse {
   string key_prefix = 1;
   string public_base_url = 2;
   repeated string object_keys = 3;
+}
+
+message RenewAgentCredentialDeviceEnrollmentRequest {}
+message RenewAgentCredentialDeviceEnrollmentResponse {
+  AgentCredentialDevice device = 1;
 }
 
 message GetAgentCredentialDeviceStatusRequest {}

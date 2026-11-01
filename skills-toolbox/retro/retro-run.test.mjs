@@ -322,6 +322,47 @@ test('record-run persists the supplied class report with the run', (t) => {
   )
 })
 
+test('record-run persists counts-only outcomes and omission retains the original state shape', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'retro-outcome-state-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const report = {
+    v: 1,
+    window: { since: '2026-10-01T00:00:00.000Z', until: '2026-10-08T00:00:00.000Z' },
+    truncated: true,
+    sections: {
+      mergesWithoutVerdict: { status: 'ok', rows: [{ number: 42, title: 'Private detail' }] },
+      verifyCronHealth: { status: 'failed', reason: 'command-failed' },
+    },
+  }
+  const file = path.join(dir, 'outcomes.json')
+  fs.writeFileSync(file, JSON.stringify(report))
+  const result = runCli(['record-run', '--run-id', 'outcomes-run', '--outcomes', file], {
+    commonDir: dir,
+    now: () => 0,
+  })
+  const expected = {
+    window: report.window,
+    truncated: true,
+    sections: {
+      mergesWithoutVerdict: { status: 'ok', count: 1 },
+      verifyCronHealth: { status: 'failed' },
+    },
+  }
+  assert.deepEqual(result.lastOutcomes, expected)
+  const stateFile = path.join(dir, 'boss-retro/state.json')
+  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)).lastOutcomes, expected)
+  assert.doesNotMatch(fs.readFileSync(stateFile, 'utf8'), /Private detail|"rows"/)
+  const without = runCli(['record-run', '--run-id', 'next-run'], {
+    commonDir: dir,
+    now: () => 1,
+  })
+  assert.deepEqual(without, {
+    version: 1,
+    lastRunAt: '1970-01-01T00:00:00.001Z',
+    runId: 'next-run',
+  })
+})
+
 test('finalize verifies PR state and exact class markers before excluding filing', () => {
   const input = selection([{ id: 'note' }], { rung: 'check' })
   const key = input.selected[0].cluster.key

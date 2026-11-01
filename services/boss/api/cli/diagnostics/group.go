@@ -83,5 +83,5 @@ func (deps *Group) Commands() []*cobra.Command {
 	if deps.sessionCommand != nil {
 		cmds = append(cmds, deps.sessionCommand())
 	}
-	return append(cmds, deps.envCmd(), proofCmd(), fixTerminalCmd(), tailCmd(), deps.costCmd())
+	return append(cmds, deps.envCmd(), proofCmd(), fixTerminalCmd(), tailCmd(), deps.costCmd(), deps.gitHubUsageCmd())
 }

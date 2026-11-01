@@ -382,6 +382,19 @@ export const schema = object({
       additionalProperties: false,
       'x-unknown': 'warn',
     },
+    planDefaults: object({
+      'x-msg': {
+        type: 'planDefaults must be an object when present',
+        additionalProperties: 'planDefaults.{extra} is unknown',
+      },
+      properties: {
+        predictedVerifyPark: {
+          enum: ['needs-human', 'rank-last'],
+          'x-msg': 'planDefaults.predictedVerifyPark must be needs-human or rank-last',
+        },
+      },
+      additionalProperties: false,
+    }),
     buildDefaults: object({
       'x-msg': { type: 'buildDefaults must be an object when present' },
       properties: {

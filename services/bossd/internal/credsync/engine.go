@@ -123,7 +123,8 @@ func (e *Engine) aad(blob Blob) CredentialAAD {
 }
 
 // Publish encrypts a local credential with optimistic versioning. A winning peer
-// is received rather than overwritten when the compare-and-set loses.
+// is received on a lost compare-and-set for a distributed copy; independent
+// version-zero credentials converge by publishing their own login.
 func (e *Engine) Publish(ctx context.Context, syncedID, localID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -132,7 +133,7 @@ func (e *Engine) Publish(ctx context.Context, syncedID, localID string) error {
 	}
 	current, err := e.remote.GetBlob(ctx, syncedID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return err
+		return fmt.Errorf("credential sync: read published credential for %s: %w", syncedID, err)
 	}
 	if err == nil && current.SyncedAgentAccountID != syncedID {
 		return errors.New("credential sync: mismatched account blob")
@@ -143,6 +144,13 @@ func (e *Engine) Publish(ctx context.Context, syncedID, localID string) error {
 	}
 	if current.CredentialVersion < local.SyncedCredentialVersion {
 		return ErrRollback
+	}
+	if local.SyncedCredentialVersion == 0 && current.CredentialVersion > 0 {
+		if local.IsAuthInvalid {
+			return e.receive(ctx, syncedID)
+		}
+		_, err := e.convergeLocked(ctx, syncedID, localID)
+		return err
 	}
 	plain, err := e.local.Read(ctx, localID)
 	if err != nil {
@@ -368,24 +376,36 @@ func (e *Engine) PublishRefresh(ctx context.Context, syncedID, localID string, p
 // The caller must discard the result and receive the new credential outside its lock.
 var ErrCredentialReplaced = errors.New("credential sync: refresh credential replaced")
 
-// ResolveRefreshVersion identifies a distributed copy without adopting a different
-// independently authenticated credential. It returns the remote CAS guard either way.
+// ErrPublishedCredentialUnreadable means the published credential cannot be authenticated.
+var ErrPublishedCredentialUnreadable = errors.New("credential sync: published credential unreadable")
+
+// ErrLocalCredentialUnrefreshable means this daemon must authenticate its account again.
+var ErrLocalCredentialUnrefreshable = errors.New("credential sync: local credential unrefreshable")
+
+// ResolveRefreshVersion converges independent version-zero credentials and returns
+// the distributed credential version to use as the refresh lease guard.
 func (e *Engine) ResolveRefreshVersion(ctx context.Context, syncedID, localID string) (int64, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err := e.ensure(ctx, true); err != nil {
 		return 0, err
 	}
-	current, err := e.remote.GetBlob(ctx, syncedID)
-	if err != nil {
-		return 0, err
-	}
-	if current.SyncedAgentAccountID != syncedID || current.KeyGeneration != e.generation {
-		return 0, ErrRollback
-	}
 	local, err := e.local.Lookup(ctx, syncedID)
 	if err != nil {
 		return 0, err
+	}
+	if local.SyncedCredentialVersion == 0 {
+		if local.IsAuthInvalid {
+			return 0, ErrLocalCredentialUnrefreshable
+		}
+		return e.convergeLocked(ctx, syncedID, localID)
+	}
+	current, err := e.remote.GetBlob(ctx, syncedID)
+	if err != nil {
+		return 0, fmt.Errorf("credential sync: read published credential for %s: %w", syncedID, err)
+	}
+	if current.SyncedAgentAccountID != syncedID || current.KeyGeneration != e.generation {
+		return 0, ErrRollback
 	}
 	if current.CredentialVersion < local.SyncedCredentialVersion {
 		return 0, ErrRollback
@@ -394,7 +414,7 @@ func (e *Engine) ResolveRefreshVersion(ctx context.Context, syncedID, localID st
 	if err != nil {
 		return 0, err
 	}
-	remoteFingerprint, err := refreshFingerprint(remotePlain)
+	_, err = refreshFingerprint(remotePlain)
 	if err != nil {
 		return 0, err
 	}
@@ -402,16 +422,61 @@ func (e *Engine) ResolveRefreshVersion(ctx context.Context, syncedID, localID st
 	if err != nil {
 		return 0, err
 	}
-	localFingerprint, err := refreshFingerprint(localPlain)
+	_, err = refreshFingerprint(localPlain)
 	if err != nil {
 		return 0, err
 	}
-	if local.SyncedCredentialVersion == 0 && bytes.Equal(remoteFingerprint, localFingerprint) {
-		if err := e.local.SetVersion(ctx, localID, current.CredentialVersion); err != nil {
+	return current.CredentialVersion, nil
+}
+
+func (e *Engine) convergeLocked(ctx context.Context, syncedID, localID string) (int64, error) {
+	plain, err := e.local.Read(ctx, localID)
+	if err != nil {
+		return 0, err
+	}
+	fingerprint, err := refreshFingerprint(plain)
+	if err != nil {
+		return 0, fmt.Errorf("credential sync: read local credential for %s; reauthenticate this daemon's account: %w: %w", syncedID, ErrLocalCredentialUnrefreshable, err)
+	}
+	for range 3 {
+		current, err := e.remote.GetBlob(ctx, syncedID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return 0, fmt.Errorf("credential sync: read published credential for %s: %w", syncedID, err)
+		}
+		var version int64
+		if err == nil {
+			if current.SyncedAgentAccountID != syncedID {
+				return 0, fmt.Errorf("credential sync: read published credential for %s: mismatched account: %w", syncedID, ErrRollback)
+			}
+			if current.KeyGeneration != e.generation {
+				return 0, fmt.Errorf("credential sync: read published credential for %s: published generation %d, device generation %d: %w", syncedID, current.KeyGeneration, e.generation, ErrRollback)
+			}
+			remotePlain, err := DecryptCredential(e.key, current.Ciphertext, e.aad(current))
+			var remoteFingerprint []byte
+			if err == nil {
+				remoteFingerprint, err = refreshFingerprint(remotePlain)
+			}
+			if err != nil {
+				return 0, fmt.Errorf("credential sync: read published credential for %s; approve or pin this device again from an enrolled daemon, or reauthenticate the account: %w: %w", syncedID, ErrPublishedCredentialUnreadable, err)
+			}
+			if bytes.Equal(fingerprint, remoteFingerprint) {
+				return current.CredentialVersion, e.local.SetVersion(ctx, localID, current.CredentialVersion)
+			}
+			version = current.CredentialVersion
+		}
+		blob := Blob{SyncedAgentAccountID: syncedID, CredentialVersion: version + 1, KeyGeneration: e.generation}
+		blob.Ciphertext, err = EncryptCredential(e.key, plain, e.aad(blob))
+		if err != nil {
 			return 0, err
 		}
+		if err = e.remote.PutBlob(ctx, version, blob); errors.Is(err, ErrConflict) {
+			continue
+		} else if err != nil {
+			return 0, fmt.Errorf("credential sync: publish credential for %s: %w", syncedID, err)
+		}
+		return blob.CredentialVersion, e.local.SetVersion(ctx, localID, blob.CredentialVersion)
 	}
-	return current.CredentialVersion, nil
+	return 0, fmt.Errorf("credential sync: publish credential for %s after three attempts: %w", syncedID, ErrConflict)
 }
 
 func refreshFingerprint(plain []byte) ([]byte, error) {

@@ -13,6 +13,7 @@ go_library(
         "//lib/bossalib/kit/vcs",
         "//services/bossd/internal/cron",
         "//services/bossd/internal/domain",
+        "//services/bossd/internal/ghusage",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

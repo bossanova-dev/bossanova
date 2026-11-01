@@ -3,6 +3,7 @@ package sessionreason
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestFinalizeFailure(t *testing.T) {
@@ -56,5 +57,19 @@ func TestRunBlocked(t *testing.T) {
 	}
 	if blank := RunBlocked(" "); blank != "run blocked: no reason given" {
 		t.Fatalf("RunBlocked(blank) = %q", blank)
+	}
+}
+
+func TestFinalizeQuotaWait(t *testing.T) {
+	reset := time.Date(2026, 11, 1, 12, 30, 0, 0, time.UTC)
+	reason := FinalizeQuotaWait(reset)
+	got, ok := ParseFinalizeQuotaWait(reason)
+	if !ok || !got.Equal(reset) {
+		t.Fatalf("round trip = %v, %v; want %v", got, ok, reset)
+	}
+	for _, reason := range []string{FinalizeFailure("pr_failed", errors.New("forbidden")), "finalize failed (quota_wait): invalid", "", FinalizeQuotaWait(time.Time{})} {
+		if _, ok := ParseFinalizeQuotaWait(reason); ok {
+			t.Errorf("parsed non-resumable reason %q", reason)
+		}
 	}
 }

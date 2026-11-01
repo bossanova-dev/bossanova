@@ -16,9 +16,10 @@ import (
 
 type credentialDeviceCLIStub struct {
 	Client
-	approve *pb.ApproveAgentCredentialDeviceRequest
-	revoked string
-	devices []*pb.AgentCredentialDevice
+	approve  *pb.ApproveAgentCredentialDeviceRequest
+	revoked  string
+	requests int
+	devices  []*pb.AgentCredentialDevice
 }
 
 func (*credentialDeviceCLIStub) GetAgentCredentialDeviceStatus(context.Context) (*pb.GetAgentCredentialDeviceStatusResponse, error) {
@@ -107,6 +108,46 @@ func TestDevicesListShowsExpiry_Accounts_AC20(t *testing.T) {
 	for _, want := range []string{"DAEMON", "STATUS", "FINGERPRINT", "EXPIRES", "target", "pending", "abcd", expiry.Format(time.RFC3339)} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output %q missing %q", out.String(), want)
+		}
+	}
+}
+
+func (s *credentialDeviceCLIStub) RenewAgentCredentialDeviceEnrollment(context.Context) (*pb.RenewAgentCredentialDeviceEnrollmentResponse, error) {
+	s.requests++
+	return &pb.RenewAgentCredentialDeviceEnrollmentResponse{Device: &pb.AgentCredentialDevice{DaemonId: "local", Status: "pending", Fingerprint: "abcd", DevicePublicKey: []byte("hidden-key"), ExpiresAt: timestamppb.New(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC))}}, nil
+}
+
+func TestDevicesRequest_Accounts_AC224501(t *testing.T) {
+	s, out, err := executeDeviceCLI("devices", "request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.requests != 1 {
+		t.Fatalf("renewals=%d", s.requests)
+	}
+	for _, want := range []string{"Status: pending", "Fingerprint: abcd", "Expires: 2026-11-01T12:00:00Z", "On an enrolled machine run: boss account devices approve local --fingerprint abcd"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+}
+
+func TestDevicesRequestJSON_Accounts_AC224501(t *testing.T) {
+	s, out, err := executeDeviceCLI("devices", "request", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"daemon_id": "local", "status": "pending", "fingerprint": "abcd", "requested_at": "", "expires_at": "2026-11-01T12:00:00Z", "approved_at": "", "approved_by_daemon_id": "", "revoked_at": ""}
+	if s.requests != 1 || len(got) != len(want) {
+		t.Fatalf("renewals=%d JSON=%v", s.requests, got)
+	}
+	for key, value := range want {
+		if actual, ok := got[key]; !ok || actual != value {
+			t.Errorf("%s=%q, want %q (present=%t)", key, actual, value, ok)
 		}
 	}
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/detach"
 	"github.com/recurser/bossd/internal/domain/repotrust"
+	"github.com/recurser/bossd/internal/verifyjob"
 	"github.com/rs/zerolog"
 )
 
@@ -2284,6 +2285,7 @@ func managedSessionEnv(f Facts) map[string]string {
 	if f.IsCron {
 		env["BOSS_CRON_JOB_ID"] = f.CronJobID
 		env["BOSS_CRON_NAME"] = f.CronName
+		env[verifyjob.QuotaFloorEnv] = f.QuotaFloor
 	}
 	if f.IsUnattended && f.IsQuickChat {
 		env[zeroOutputEnvKey] = "true"
@@ -2316,6 +2318,7 @@ type Facts struct {
 	IsUnattended   bool
 	CronJobID      string
 	CronName       string
+	QuotaFloor     string // cron only: verifyjob.QuotaFloorValue of the job prompt (the session plan)
 }
 
 func resolveChatLaunchFacts(sess *models.Session, agentSessionID, agentName string, autonomous bool) Facts {
@@ -2342,6 +2345,7 @@ func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string)
 			f.IsCron = true
 			f.CronJobID = *sess.CronJobID
 			f.CronName = sess.Title
+			f.QuotaFloor = verifyjob.QuotaFloorValue(&domain.CronJob{Prompt: sess.Plan})
 		}
 	}
 	f.Agent = agentName

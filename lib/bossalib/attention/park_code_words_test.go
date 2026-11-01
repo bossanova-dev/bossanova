@@ -18,9 +18,10 @@ import (
 const parkCodeWordsGolden = "testdata/park_code_words.json"
 
 type parkCodeWord struct {
-	Plain    string `json:"plain"`
-	Category string `json:"category"`
-	SignOff  bool   `json:"signOff"`
+	DecidingPriority bool   `json:"decidingPriority"`
+	Plain            string `json:"plain"`
+	Category         string `json:"category"`
+	SignOff          bool   `json:"signOff"`
 	// Restates is whether Plain only repeats Category, so a line naming the
 	// category already says it (ParkCodeRestatesCategory).
 	Restates bool `json:"restates"`
@@ -56,7 +57,8 @@ func parkCodeWordsJSON(t *testing.T) []byte {
 	}
 	for code, info := range knownParkCodes {
 		table.Codes[code] = parkCodeWord{
-			Plain: info.plain, Category: info.category, SignOff: info.signOff,
+			DecidingPriority: info.hasDecidingPriority,
+			Plain:            info.plain, Category: info.category, SignOff: info.signOff,
 			Restates: ParkCodeRestatesCategory(code),
 		}
 	}

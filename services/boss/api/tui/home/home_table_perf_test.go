@@ -167,8 +167,12 @@ func TestHomeSpinnerRefreshBranches_Sessions_AC124(t *testing.T) {
 					}
 				}
 			}
-			if changed != 1 {
-				t.Fatalf("spinner changed %d cells, want one", changed)
+			wantChanged := 1
+			if tc.name == "working review" {
+				wantChanged = 0
+			}
+			if changed != wantChanged {
+				t.Fatalf("spinner changed %d cells, want %d", changed, wantChanged)
 			}
 			_ = h.View()
 			if delta := h.Table.RenderedRows() - rendered; delta > 1 {

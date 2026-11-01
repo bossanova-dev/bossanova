@@ -13,7 +13,6 @@ import {
   armDecision,
   hasStageJob,
   invokedSkill,
-  isEpicChild,
   main,
   pickVerifyChat,
 } from './stage-chain.mjs'
@@ -217,12 +216,21 @@ describe('armDecision', () => {
   })
 })
 
-describe('isEpicChild', () => {
-  it('unattended without a cron job id is an epic child', () => {
-    assert.equal(isEpicChild({ BOSS_UNATTENDED: 'true' }), true)
-    assert.equal(isEpicChild({ BOSS_CRON: 'true' }), true)
-    assert.equal(isEpicChild({ BOSS_UNATTENDED: 'true', BOSS_CRON_JOB_ID: 'j' }), false)
-    assert.equal(isEpicChild({}), false)
+describe('epicCoordinated', () => {
+  it('accepts only live epic watches for this exact PR', () => {
+    const row = { pr_number: 12, group_id: 'epicwait-12-merged', state: 'active' }
+    for (const state of ['active', 'leased', 'triggered', 'ACTIVE', 'Leased', 'TRIGGERED']) {
+      const live = { ...row, state }
+      assert.equal(stageChain.epicCoordinated([live], 12), live)
+    }
+    for (const other of [
+      ...['delivered', 'expired', 'canceled', 'cancelled'].map((state) => ({ ...row, state })),
+      { ...row, pr_number: 13 },
+      { ...row, group_id: 'epicwait-120-merged' },
+      { ...row, group_id: 'reverify-12-deadbee' },
+    ])
+      assert.equal(stageChain.epicCoordinated([other], 12), null)
+    assert.equal(stageChain.epicCoordinated([], 12), null)
   })
 })
 
@@ -341,6 +349,7 @@ describe('scheduled stages stay independent', () => {
         const { exitCode, result, boss } = await run(argv, {
           fs: fakeFs({ [completion]: JSON.stringify(record) }),
           routes: {
+            'callback list': json([]),
             'cron ls': json(
               ['build', 'verify', 'release'].map((stage) =>
                 job({ id: stage, prompt: `/boss-${stage}` }),
@@ -371,6 +380,7 @@ describe('arm-verify', () => {
   it('no verify chat: chat new --title verify, then callback add (state-matched)', async () => {
     const { exitCode, result, boss } = await run(['arm-verify', '--pr', '12'], {
       routes: {
+        'callback list': json([]),
         'cron ls': json(verifyJobs),
         ...chatsRoute([{ agent_session_id: 'chat-self', title: 'build', status: 'WORKING' }]),
         'chat new sess-1': json({
@@ -382,6 +392,7 @@ describe('arm-verify', () => {
     assert.equal(exitCode, 0)
     assert.deepEqual(boss.argvs(), [
       ['cron', 'ls', '--repo', 'repo-1', '--json'],
+      ['callback', 'list', '--pr', '12', '--json'],
       ['chats', 'sess-1', '--json'],
       ['chat', 'new', 'sess-1', '--title', 'verify', '--role', 'verify', '--json'],
       [
@@ -411,6 +422,7 @@ describe('arm-verify', () => {
         [completion]: JSON.stringify({ runId: 'r1', action: 'skipped', reason: 'defect:findings' }),
       }),
       routes: {
+        'callback list': json([]),
         'cron ls': json(verifyJobs),
         ...chatsRoute([]),
         'chat new sess-1': json({ chat: { agent_session_id: 'chat-v' } }),
@@ -444,7 +456,7 @@ describe('arm-verify', () => {
       },
     })
     const argvs = boss.argvs()
-    assert.deepEqual(argvs[2], [
+    assert.deepEqual(argvs[3], [
       'callback',
       'list',
       '--chat',
@@ -472,13 +484,14 @@ describe('arm-verify', () => {
   it('a STOPPED verify chat is not reused', async () => {
     const { boss } = await run(['arm-verify', '--pr', '12'], {
       routes: {
+        'callback list': json([]),
         'cron ls': json(verifyJobs),
         ...chatsRoute([{ agent_session_id: 'chat-dead', title: 'verify', status: 'STOPPED' }]),
         'chat new sess-1': json({ chat: { agent_session_id: 'chat-v2' } }),
         'callback add': json({ id: 'cb-4' }),
       },
     })
-    assert.deepEqual(boss.argvs()[2], [
+    assert.deepEqual(boss.argvs()[3], [
       'chat',
       'new',
       'sess-1',
@@ -529,10 +542,10 @@ describe('arm-verify', () => {
     ]) {
       const { result, boss } = await run(['arm-verify', '--pr', '12', '--completion', completion], {
         fs: fakeFs({ [completion]: JSON.stringify(reasonRecord) }),
-        routes: { 'cron ls': json(verifyJobs) },
+        routes: { 'cron ls': json(verifyJobs), 'callback list': json([]) },
       })
       assert.equal(result.action, 'none', JSON.stringify(reasonRecord))
-      assert.equal(boss.calls.length, 1)
+      assert.equal(boss.calls.length, 2)
     }
   })
 
@@ -541,6 +554,7 @@ describe('arm-verify', () => {
       const { result } = await run(['arm-verify', '--pr', '12', '--completion', completion], {
         fs: fakeFs(files),
         routes: {
+          'callback list': json([]),
           'cron ls': json(verifyJobs),
           ...chatsRoute([]),
           'chat new sess-1': json({ chat: { agent_session_id: 'chat-v' } }),
@@ -549,15 +563,6 @@ describe('arm-verify', () => {
       })
       assert.equal(result.mode, 'state')
     }
-  })
-
-  it('an epic child arms nothing and calls nothing', async () => {
-    const { exitCode, result, boss } = await run(['arm-verify', '--pr', '12'], {
-      env: managedEnv({ BOSS_CRON_JOB_ID: '' }),
-    })
-    assert.equal(exitCode, 0)
-    assert.equal(`${result.action}/${result.reason}`, 'skipped/epic-child')
-    assert.equal(boss.calls.length, 0)
   })
 })
 
@@ -611,6 +616,7 @@ describe('non-fatal: every failure exits 0 with one JSON line', () => {
   it('a timeout on callback add ⇒ error with reason timeout', async () => {
     const { exitCode, result } = await run(['arm-verify', '--pr', '12'], {
       routes: {
+        'callback list': json([]),
         'cron ls': json(verifyJobs),
         'chats sess-1': json({ chats: [] }),
         'chat new sess-1': json({ chat: { agent_session_id: 'chat-v' } }),
@@ -633,6 +639,7 @@ describe('non-fatal: every failure exits 0 with one JSON line', () => {
 
   it('each arm-verify step failing ⇒ error, never armed', async () => {
     const base = {
+      'callback list': json([]),
       'cron ls': json(verifyJobs),
       'chats sess-1': json({ chats: [] }),
       'chat new sess-1': json({ chat: { agent_session_id: 'chat-v' } }),
@@ -782,17 +789,7 @@ describe('arm-reverify', () => {
     assert.equal(result.head, head)
     assert.equal(result.chatCreated, true)
     const calls = boss.argvs()
-    assert.deepEqual(calls[2], [
-      'callback',
-      'list',
-      '--pr',
-      '12',
-      '--trigger',
-      'checks_passed_ready',
-      '--state',
-      'active',
-      '--json',
-    ])
+    assert.deepEqual(calls[1], ['callback', 'list', '--pr', '12', '--json'])
     assert.deepEqual(calls[3], [
       'chat',
       'new',
@@ -882,7 +879,6 @@ describe('arm-reverify', () => {
     assert.equal(`${disabled.result.action}/${disabled.result.reason}`, 'none/no-verify-cron')
     assert.equal(disabled.boss.calls.length, 1)
     for (const [env, reason] of [
-      [managedEnv({ BOSS_CRON_JOB_ID: '' }), 'epic-child'],
       [managedEnv({ BOSS_SESSION_ID: '' }), 'not-managed'],
       [managedEnv({ BOSS_REPO_ID: '' }), 'no-repo-id'],
     ]) {
@@ -990,4 +986,56 @@ describe('routed verification ownership', () => {
       ['a', 'same'],
     )
   })
+})
+
+describe('live epic coordination', () => {
+  for (const verb of ['arm-verify', 'arm-reverify']) {
+    const argv = [verb, '--pr', '12', ...(verb === 'arm-reverify' ? ['--head', 'deadbee'] : [])]
+    it(`${verb} arms unattended sessions without a cron id when no epic is live`, async () => {
+      const { result } = await run(argv, {
+        env: managedEnv({ BOSS_CRON: 'true', BOSS_CRON_JOB_ID: '' }),
+        routes: {
+          'cron ls': json(verifyJobs),
+          'callback list': json([]),
+          'chats sess-1': json({ chats: [] }),
+          'chat new sess-1': json({ chat: { agent_session_id: 'new' } }),
+          'callback add': json({ id: 'armed' }),
+        },
+      })
+      assert.equal(result.action, 'armed')
+    })
+    for (const state of ['active', 'leased', 'triggered']) {
+      it(`${verb} skips a live ${state} coordinator even with a cron id`, async () => {
+        const { result, boss } = await run(argv, {
+          routes: {
+            'cron ls': json(verifyJobs),
+            'callback list': json([{ pr_number: 12, group_id: 'epicwait-12-merged', state }]),
+          },
+        })
+        assert.deepEqual(result, {
+          verb,
+          action: 'skipped',
+          reason: 'epic-child',
+          detail: 'epicwait-12-merged',
+        })
+        assert.deepEqual(boss.argvs(), [
+          ['cron', 'ls', '--repo', 'repo-1', '--json'],
+          ['callback', 'list', '--pr', '12', '--json'],
+        ])
+      })
+    }
+    for (const response of [{ code: 1 }, { stdout: 'not json' }, json({ rows: [] })]) {
+      it(`${verb} fails closed on unreadable PR watches ${JSON.stringify(response)}`, async () => {
+        const { result, boss } = await run(argv, {
+          routes: {
+            'cron ls': json(verifyJobs),
+            'callback list': response,
+          },
+        })
+        assert.equal(result.action, 'error')
+        assert.match(result.reason, /^callback-list-/)
+        assert.equal(boss.argvs().length, 2)
+      })
+    }
+  }
 })

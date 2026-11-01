@@ -38,9 +38,12 @@ import { delimiter, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { loadSkillConfig } from '../skill-config.mjs'
-import { verdictFileArgs } from './verify-post-files.mjs'
+import { verdictFileArgs, postArgv, failedPostRecord } from './verify-post-files.mjs'
+import {
+  readSweepEntries as readEntries,
+  writeSweepEntries as writeEntries,
+} from './verify-post-failures.mjs'
 import { readFailureDetail } from './verify-gate.mjs'
-import { reviewerArgs } from './verify-review-request.mjs'
 import { candidateFailureMessage } from './verify-open-prs.mjs'
 import { configuredTrackerName } from '../tracker/adapter.mjs'
 import { repoRootFrom, resolveBossBinary } from '../boss-binary.mjs'
@@ -421,7 +424,7 @@ export function quotaLow(run, timeoutMs) {
 // unparseable, of another version or missing reads as no
 // previous fingerprint, and a write that fails is never an error: the next tick just runs in full.
 
-export const SWEEP_STATE_VERSION = 1
+export { SWEEP_STATE_VERSION } from './verify-post-failures.mjs'
 const FS = { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync }
 
 /** One sweep scope's key: its selection args and whether it acts on local sessions only. */
@@ -447,27 +450,11 @@ export function sweepStatePath(run, cwd, timeoutMs) {
   return join(isAbsolute(common) ? common : join(cwd, common), 'boss-verify', 'sweep-state.json')
 }
 
-function readEntries(fs, file) {
-  try {
-    const state = JSON.parse(fs.readFileSync(file, 'utf8'))
-    if (state?.version !== SWEEP_STATE_VERSION) return {}
-    const entries = state.entries
-    return entries && typeof entries === 'object' && !Array.isArray(entries) ? entries : {}
-  } catch {
-    return {}
-  }
-}
-
 /** The quiet fingerprint stored for `key`, or null. */
 export function readQuietFingerprint(file, key, fs = FS) {
   if (!text(file)) return null
   const entry = readEntries(fs, file)[key]
   return text(entry?.fingerprint) ? entry.fingerprint : null
-}
-
-// Writes the state atomically: a fresh temp file, renamed over the old one.
-function writeEntries(fs, file, entries) {
-  return writeAtomicJson(fs, file, { version: SWEEP_STATE_VERSION, entries })
 }
 
 /** Stores `fingerprint` for `key`; false when it could not be written. */
@@ -857,37 +844,38 @@ export function sweep(options = {}, deps = {}) {
     }
     if (j.verdict === 'human' || j.verdict === 'blocked') {
       acted++
-      const policy = j.policyFingerprint // Policy records belong to human parks.
       const fileArgs = verdictFileArgs({ fs: FS, logDir, pr, head, judged: j })
       if (!fileArgs) {
         record(pr, 'skipped', 'skipped: invalid or unwritable blockers')
         continue
       }
-      const posted = gate([
-        'post',
-        '--pr',
-        String(pr),
-        '--head',
+      const posted = gate(postArgv({ pr, head, judged: j, fileArgs, repoArgs, dry }))
+      const postState = {
+        fs,
+        stateFile: dryRun ? null : statePath(),
+        logDir,
+        pr,
         head,
-        '--verdict',
-        j.verdict,
-        ...fileArgs,
-        '--reason',
-        j.reason,
-        ...(j.verdict === 'human' && text(policy) ? ['--policy', policy] : []),
-        ...reviewerArgs(j.reviewers),
-        ...repoArgs,
-        ...dry,
-      ])
+        judged: j,
+        repo: c.repo,
+        repoArgs,
+        dry,
+        gate,
+        now,
+      }
       if (posted.payload?.trackerWrites === 'unavailable')
         record(pr, 'skipped', 'skipped: tracker writes unavailable')
-      else if (posted.ok && (posted.payload?.posted || posted.payload?.skipped))
+      else if (posted.ok && (posted.payload?.posted || posted.payload?.skipped)) {
+        failedPostRecord(postState, null)
         record(
           pr,
           'parked',
           `parked: ${j.verdict === 'blocked' ? 'blocked' : 'needs human'} (${j.reason})${posted.payload?.why === 'no-ticket' ? ' · no ticket' : ''}${suffix}`,
         )
-      else record(pr, 'skipped', `skipped: post failed (${postWhy(posted)})`)
+      } else {
+        const failure = failedPostRecord(postState, posted)
+        record(pr, failure.outcome, failure.line, { stderr: failure.stderr })
+      }
       continue
     }
     // Under an admission tier, a pass with no live session anywhere is merged by the session verify
@@ -903,27 +891,39 @@ export function sweep(options = {}, deps = {}) {
     if (j.verdict === 'pass' && !sessionless) {
       if (!needBoss(pr)) continue
       acted++
-      const posted = gate([
-        'post',
-        '--pr',
-        String(pr),
-        '--head',
+      const posted = gate(
+        postArgv({
+          pr,
+          head,
+          judged: j,
+          fileArgs: verdictFileArgs({ fs: FS, logDir, pr, head, judged: j }),
+          repoArgs,
+          dry,
+        }),
+      )
+      const postState = {
+        fs,
+        stateFile: dryRun ? null : statePath(),
+        logDir,
+        pr,
         head,
-        '--verdict',
-        'pass',
-        ...verdictFileArgs({ fs: FS, logDir, pr, head, judged: j }),
-        ...(text(j.reason) ? ['--reason', j.reason] : []),
-        ...repoArgs,
-        ...dry,
-      ])
+        judged: j,
+        repo: c.repo,
+        repoArgs,
+        dry,
+        gate,
+        now,
+      }
       if (posted.payload?.abandoned === 'claim-lost') {
         record(pr, 'skipped', 'skipped: claim lost')
         continue
       }
       if (!posted.ok || !(posted.payload?.posted || posted.payload?.skipped)) {
-        record(pr, 'skipped', `skipped: post failed (${postWhy(posted)})`)
+        const failure = failedPostRecord(postState, posted)
+        record(pr, failure.outcome, failure.line, { stderr: failure.stderr })
         continue
       }
+      failedPostRecord(postState, null)
       if (dryRun) {
         // A dry-run post wrote no `verified` status, so a dry-run merge could only say
         // not-verified; the plan is the merge itself.
@@ -1113,10 +1113,6 @@ function settleMerges(pending, records, { readFile, sleep, remaining, gate }) {
     if (mergeSha) fill(p, 'merged', `merged ${mergeSha}`)
     else fill(p, 'dispatched', `dispatched: merge in flight (log ${p.log})`)
   }
-}
-
-function postWhy(result) {
-  return result?.payload?.reason ?? result?.payload?.trackerWrites ?? result?.error ?? 'unknown'
 }
 
 // `boss new --tracker-source` accepts only the trackers it knows; anything else binds nothing.

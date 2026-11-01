@@ -55,3 +55,17 @@ func TestComputeParkLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestComputePostFailurePark_Sessions_AC217801(t *testing.T) {
+	const code = "verify-post-failed"
+	got := Compute(Input{HasPR: true, PRState: PRStateOpen, IsFactoryRepo: true, ParkCodes: []string{code}})
+	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetSentence() != "Not verified · blocked · verify could not record its verdict on this commit" {
+		t.Fatalf("post failure attention = %v, want a blocked FIX describing the failed post", got)
+	}
+	if len(got.GetActions()) != 1 || got.GetActions()[0] != pb.AttentionAction_ATTENTION_ACTION_GITHUB {
+		t.Errorf("post failure actions = %v, want only GITHUB", got.GetActions())
+	}
+	if len(got.GetParkCodes()) != 1 || got.GetParkCodes()[0] != code || ParkCodeCategory(code) != "verify could not post" || !IsReportedParkCode(code) || IsSignOffPark([]string{code}) {
+		t.Errorf("post failure must retain its approvable, non-sign-off park code: %v", got)
+	}
+}

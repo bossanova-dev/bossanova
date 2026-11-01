@@ -329,8 +329,8 @@ func TestHomeAttentionStatus(t *testing.T) {
 		want       string
 	}{
 		{pb.AttentionKind_ATTENTION_KIND_QUESTION, false, "? question"},
-		{pb.AttentionKind_ATTENTION_KIND_REVIEW, false, "review"},
-		{pb.AttentionKind_ATTENTION_KIND_REVIEW, true, "review"},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, false, "waiting for you"},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, true, "waiting for you"},
 		{pb.AttentionKind_ATTENTION_KIND_MERGE, false, "✓ merge"},
 		{pb.AttentionKind_ATTENTION_KIND_MERGE, true, "✓ ready"},
 		{pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, false, ansi.Strip(h.Spinner.View()) + "building"},
@@ -421,7 +421,7 @@ func TestHomeOutcomeStatusSpinsInPlaceOfItsGlyphWhileAChatIsWorking(t *testing.T
 		style   func(...string) string
 	}{
 		{pb.AttentionKind_ATTENTION_KIND_FIX, spin + "fix", "fix", ui.StyleStatusDanger.Render},
-		{pb.AttentionKind_ATTENTION_KIND_REVIEW, spin + "review", "review", ui.StyleStatusWarning.Render},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, "waiting for you", "waiting for you", ui.StyleStatusWarning.Render},
 		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "? question", "? question", ui.StyleStatusWarning.Render},
 	} {
 		for _, working := range []bool{true, false} {
@@ -569,9 +569,9 @@ func TestHomeIdleAttentionRowsKeepTheirWords(t *testing.T) {
 	h := NewModel(nil, context.Background(), nil)
 	for _, label := range []string{"✓ passing", "idle", "initializing", "repairing", "waiting", "usage-limited", "? question"} {
 		for want, a := range map[string]*pb.SessionAttention{
-			"✓ ready": {Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, IsUnverified: true},
-			"review":  {Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
-			"fix":     {Kind: pb.AttentionKind_ATTENTION_KIND_FIX},
+			"✓ ready":         {Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, IsUnverified: true},
+			"waiting for you": {Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+			"fix":             {Kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		} {
 			s := &pb.Session{DisplayLabel: label, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Attention: a}
 			if got := ansi.Strip(h.RenderSessionStatus(s)); got != want {
@@ -719,10 +719,10 @@ func TestHomeFixRowShowsTheStateThatNeedsFixing(t *testing.T) {
 	}
 }
 
-func TestHomeSignOffParkReadsReview(t *testing.T) {
+func TestHomeSignOffParkReadsWaitingForYou(t *testing.T) {
 	h := NewModel(nil, context.Background(), nil)
 	s := &pb.Session{DisplayLabel: displaystatus.NeedsSignOffLabel, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
-	if got, want := h.RenderSessionStatus(s), ui.StyleStatusWarning.Render("review"); got != want {
+	if got, want := h.RenderSessionStatus(s), ui.StyleStatusWarning.Render("waiting for you"); got != want {
 		t.Fatalf("sign-off park = %q, want the review cell %q", got, want)
 	}
 	review := &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW}}

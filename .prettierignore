@@ -48,3 +48,4 @@ lib/bossalib/kit/projectconfig/schema/boss-project.schema.json
 
 # Go owns the byte-compared cross-language park verdict fixture.
 lib/bossalib/attention/testdata/park_verdicts.json
+lib/bossalib/attention/testdata/park_asks.json

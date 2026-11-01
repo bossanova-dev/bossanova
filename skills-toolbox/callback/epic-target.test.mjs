@@ -1,7 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { normalizeRepositoryIdentity, selectEpicCallbackTarget } from './epic-target.mjs'
+import {
+  epicWaitGroup,
+  isEpicWaitGroup,
+  normalizeRepositoryIdentity,
+  selectEpicCallbackTarget,
+} from './epic-target.mjs'
 
 const childPrRepo = 'acme/child-pr'
 const matchingOrchestrator = { chatId: 'chat-orchestrator', repo: childPrRepo }
@@ -249,4 +254,10 @@ test('normalizeRepositoryIdentity returns null for unusable input and never thro
       `expected null for ${JSON.stringify(value) ?? String(value)}`,
     )
   }
+})
+
+test('epic wait groups identify an exact PR prefix', () => {
+  assert.equal(epicWaitGroup(3796, 'merged'), 'epicwait-3796-merged')
+  assert.equal(isEpicWaitGroup('epicwait-3796-merged', 3796), true)
+  for (const pr of [379, 37960]) assert.equal(isEpicWaitGroup('epicwait-3796-merged', pr), false)
 })

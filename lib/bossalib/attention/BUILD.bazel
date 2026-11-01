@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "alertkeys.go",
         "attention.go",
+        "review_ask.go",
         "rotation.go",
         "templates.go",
         "verdict.go",
@@ -22,10 +23,12 @@ go_test(
     srcs = [
         "alertkeys_test.go",
         "attention_test.go",
+        "park_asks_test.go",
         "park_code_words_test.go",
         "park_kind_test.go",
         "park_verdicts_test.go",
         "partial_marker_test.go",
+        "review_ask_test.go",
         "verdict_test.go",
         "verified_not_merged_test.go",
         "verify_hold_test.go",
@@ -38,3 +41,5 @@ go_test(
         "@org_golang_google_protobuf//proto",
     ],
 )
+
+exports_files(["testdata/park_asks.json"])

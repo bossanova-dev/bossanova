@@ -216,6 +216,7 @@ read are the authoritative filter, and both run again on every wake regardless o
      # single watch whose trigger name is the whole space-joined string, and no real trigger at all.
      printf '%s\n' "$DRAFT_AWARE_TRIGGERS" | while IFS= read -r T; do
        [ -n "$T" ] || continue
+       # Group format: epicWaitGroup in toolbox/callback/epic-target.mjs; stage-chain.mjs reads it.
        boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --independent-watch --message "$MSG" --expires-in "$WATCH_EXPIRY" --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json </dev/null
      done
    fi

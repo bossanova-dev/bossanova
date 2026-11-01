@@ -39,7 +39,7 @@
       "prompt": "/boss-build headless --max-open-prs 8",
       "schedule": "*/30 * * * *",
       "concurrencyPolicy": "allow-concurrent",
-      "gateCommand": "node skills-toolbox/cron-gates/boss-build.mjs --max-open-prs 8",
+      "gateCommand": "node skills-toolbox/cron-gates/boss-build-capped.mjs",
       "daemons": ["delta"]
     },
     {

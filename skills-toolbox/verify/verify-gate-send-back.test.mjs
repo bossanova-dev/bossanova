@@ -19,20 +19,38 @@ function world({
   unreadable = false,
   failStatus = false,
   comments = [],
+  isDraft = false,
+  autoRepair = true,
+  verifyOnly = false,
+  failDraft = false,
 } = {}) {
   const writes = []
+  const conversions = []
+  const events = []
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload) })
   const read = (command, args) => {
     if (command === 'boss' && args[0] === 'ls')
       return ok({ sessions: [{ id: 's', pr_url: 'https://github.com/o/r/pull/7' }] })
     if (command === 'boss' && args[0] === 'show')
-      return ok({ session: { repo_can_auto_repair: true, last_repair: null } })
+      return ok({
+        session: {
+          repo_can_auto_repair: autoRepair,
+          is_verify_only: verifyOnly,
+          last_repair: null,
+        },
+      })
+    if (command === 'gh' && args[0] === 'pr' && args[1] === 'ready') {
+      conversions.push(args)
+      events.push('draft')
+      return { ok: !failDraft }
+    }
     if (command === 'gh' && args[0] === 'pr')
       return ok({
         state,
+        isDraft,
         headRefOid: liveHead,
         url: 'https://github.com/o/r/pull/7',
-        body: '',
+        body: 'Tracker issue: https://linear.app/team/issue/BOS-1/change',
         title: 'Change',
       })
     if (command === 'gh' && args[0] === 'api') {
@@ -46,6 +64,7 @@ function world({
             }),
         )
         writes.push(values)
+        events.push(values.state ? 'status' : 'comment')
         if (failStatus && args[3].includes('/statuses/')) return { ok: false }
         return ok({ html_url: 'https://github.com/o/r/pull/7#issuecomment-9' })
       }
@@ -56,7 +75,16 @@ function world({
     }
     throw new Error(`Unexpected read ${command} ${args.join(' ')}`)
   }
-  return { writes, deps: { read, loadConfig: () => ({}) } }
+  return {
+    writes,
+    conversions,
+    events,
+    deps: {
+      read,
+      loadConfig: () => ({}),
+      adapter: { selectPlanned: async () => [], applyIssueWrites: async () => ({ outcome: 'ok' }) },
+    },
+  }
 }
 function comment(file, login = 'writer', id = 1) {
   return {
@@ -134,10 +162,12 @@ test('send-back dry-run plans the comment before the failure status without muta
   const w = world()
   const result = await run(t, w, ['--dry-run'])
   assert.equal(result.dryRun, true)
+  assert.equal(result.draft, 'planned')
+  assert.deepEqual(w.conversions, [])
   assert.deepEqual(w.writes, [])
   assert.deepEqual(
     result.writes.map((w) => w.kind),
-    ['pr-comment', 'status'],
+    ['pr-comment', 'status', 'pr-draft'],
   )
   assert.equal(parseBlockerTrailer(result.writes[0].body).blockers[0].id, 'operator-note')
   assert.equal(result.writes[1].state, 'failure')
@@ -186,4 +216,35 @@ test('send-back reads legacy missing-review trailers without sending them to rep
   const w = world({ comments: [comment(previous)] })
   assert.equal((await run(t, w)).sentBack, true)
   assert.deepEqual(parseBlockerTrailer(w.writes[0].body).blockers.slice(1), standing.blockers)
+})
+
+test('unparked send-back marks and drafts only after the failure status, preserving the trailer', async (t) => {
+  const w = world()
+  const result = await run(t, w)
+  assert.equal(result.draft, 'converted')
+  assert.deepEqual(w.events, ['comment', 'status', 'draft'])
+  assert.deepEqual(w.conversions, [['pr', 'ready', '7', '--undo', '--repo', 'o/r']])
+  assert.ok(w.writes[0].body.includes(`boss-verify draft ${head}\nboss-verify head ${head}\n`))
+  assert.equal(parseBlockerTrailer(w.writes[0].body).head, head)
+})
+
+test('parked, verify-only and existing personal drafts never get a draft marker or conversion', async (t) => {
+  for (const options of [{ autoRepair: false }, { verifyOnly: true }, { isDraft: true }]) {
+    const w = world(options)
+    const result = await run(t, w)
+    assert.equal(result.draft, undefined)
+    assert.ok(w.writes[0], JSON.stringify({ options, result }))
+    assert.equal(w.writes[0].body.includes(`boss-verify draft ${head}`), false)
+    assert.deepEqual(w.conversions, [])
+  }
+})
+
+test('draft failure is cosmetic and a failed status never converts', async (t) => {
+  const failedDraft = world({ failDraft: true })
+  const result = await run(t, failedDraft)
+  assert.equal(result.sentBack, true)
+  assert.equal(result.draft, 'failed')
+  const failedStatus = world({ failStatus: true })
+  assert.equal((await run(t, failedStatus)).draft, undefined)
+  assert.deepEqual(failedStatus.conversions, [])
 })

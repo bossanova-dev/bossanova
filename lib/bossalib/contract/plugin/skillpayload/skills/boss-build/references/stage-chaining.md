@@ -19,8 +19,8 @@ allows the callback; the callback continues work on the same PR without firing a
 | `arm-reverify --pr <n> --head <sha> …` | arms a repaired head into a new verify chat, reusing an earlier pending repair chat | `armed`, `none`, `skipped`, `error`                  |
 | `phase <name>`                         | `boss session phase <name>`                                                         | `set`, `skipped`, `error`                            |
 
-Shared skips: `not-managed`, `no-boss-binary`, `no-repo-id`, `epic-child` (both arm verbs — the
-epic orchestrator owns merge order) and `phase-unsupported` (an older CLI). `--dry-run` prints the
+Shared skips: `not-managed`, `no-boss-binary`, `no-repo-id`, `epic-child` (both arm verbs — the PR has a live
+`epicwait-<pr>-*` watch, so boss-epic is coordinating its merge order) and `phase-unsupported` (an older CLI). `--dry-run` prints the
 argv and runs nothing.
 
 ## Which call Step 12 makes

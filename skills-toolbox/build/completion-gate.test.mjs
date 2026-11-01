@@ -667,7 +667,8 @@ for (const enabled of [true, false]) {
           if (args[0] === 'cron') value = [{ repo_id: 'repo-1', enabled, prompt: '/boss-verify' }]
           else if (args[0] === 'chats') value = { chats: [] }
           else if (args[0] === 'chat') value = { chat: { agent_session_id: 'verify-chat' } }
-          else if (args[0] === 'callback') value = { id: 'callback' }
+          else if (args[0] === 'callback' && args[1] === 'list') value = []
+          else if (args[0] === 'callback' && args[1] === 'add') value = { id: 'callback' }
           else assert.fail(`unexpected call ${args}`)
           cb(null, JSON.stringify(value), '')
         },
@@ -683,7 +684,7 @@ for (const enabled of [true, false]) {
         calls.find((args) => args[0] === 'chat'),
         ['chat', 'new', 'session', '--title', 'verify', '--role', 'verify', '--json'],
       )
-      const callback = calls.find((args) => args[0] === 'callback')
+      const callback = calls.find((args) => args[0] === 'callback' && args[1] === 'add')
       assert.equal(callback.includes('--on-transition'), false)
       assert.equal(callback[3], 'checks_passed_ready')
       assert.equal(callback[callback.indexOf('--message') + 1], '/boss-verify 42')

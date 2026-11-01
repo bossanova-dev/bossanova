@@ -9,7 +9,7 @@
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { homedir, platform } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
@@ -79,7 +79,11 @@ function main() {
   fs.writeFileSync(stamp, '')
   const script = join(dirname(fileURLToPath(import.meta.url)), 'recover-disk-space.mjs')
   try {
-    execFileSync(process.execPath, [script], { stdio: 'inherit' })
+    // launchd starts the guard in /, and recover-disk-space finds sibling repos from its cwd.
+    execFileSync(process.execPath, [script], {
+      stdio: 'inherit',
+      cwd: resolve(dirname(script), '..', '..'),
+    })
   } catch (error) {
     log(`recover-disk-space failed: ${error.message.split('\n')[0]}`)
   }

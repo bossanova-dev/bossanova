@@ -164,6 +164,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchGetChatStatuses(ctx, cmdID, cmd.GetGetChatStatuses(), outbound)
 	case *pb.OrchestratorCommand_GetSessionStatuses:
 		return c.dispatchGetSessionStatuses(ctx, cmdID, cmd.GetGetSessionStatuses(), outbound)
+	case *pb.OrchestratorCommand_GetSessionTimeline:
+		return c.dispatchGetSessionTimeline(ctx, cmdID, cmd.GetGetSessionTimeline(), outbound)
 	case *pb.OrchestratorCommand_ListCheckSnapshots:
 		return c.dispatchListCheckSnapshots(ctx, cmdID, cmd.GetListCheckSnapshots(), outbound)
 	case *pb.OrchestratorCommand_ListPlugins:
@@ -1246,19 +1248,10 @@ func (c *StreamClient) dispatchGetSessionStatuses(ctx context.Context, cmdID str
 // CommandResult{list_check_snapshots}. session_id scopes the read for authz.
 // Dispatched asynchronously.
 func (c *StreamClient) dispatchListCheckSnapshots(ctx context.Context, cmdID string, req *pb.ListCheckSnapshotsCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
-	if c.commandHandler == nil {
-		return commandErr(cmdID, "command handler not wired")
-	}
-	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+	return c.dispatchReadCommand(ctx, cmdID, outbound, func() (*pb.CommandResult, error) {
 		out, err := c.commandHandler.ListCheckSnapshots(ctx, req.GetSessionId(), req.GetLimit())
-		if err != nil {
-			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
-		}
-		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
-			CommandId: cmdID, Ok: true,
-			Payload: &pb.CommandResult_ListCheckSnapshots{ListCheckSnapshots: out},
-		}}}
-	})
+		return &pb.CommandResult{Payload: &pb.CommandResult_ListCheckSnapshots{ListCheckSnapshots: out}}, err
+	}, classifyCommandError)
 }
 
 // dispatchListPlugins routes a (session-less) ListPluginsCommand to the handler

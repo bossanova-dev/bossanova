@@ -1,0 +1,204 @@
+[
+  {
+    "codes": [
+      "always-human-path"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "protected path"
+    ]
+  },
+  {
+    "codes": [
+      "always-human-path"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-merge"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Verify passed head abc1234. Merge it when you are ready.",
+    "items": null
+  },
+  {
+    "codes": [
+      "human-merge"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Verify passed head abc1234. Merge it when you are ready.",
+    "items": null
+  },
+  {
+    "codes": [
+      "human-review:database"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "database migration"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:database"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:security"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "security"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:security"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "UI change"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:unproven"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "unproven checks"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:unproven"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "no-receipt"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "latest commit not reviewed"
+    ]
+  },
+  {
+    "codes": [
+      "no-receipt"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "",
+    "evidenceUrl": "https://example.com/evidence.mp4",
+    "head": "abc123456789",
+    "question": "Watch the evidence video, then approve these on head abc1234:",
+    "items": [
+      "UI change"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui",
+      "human-review:database"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "database migration",
+      "UI change"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "UI change"
+    ]
+  }
+]

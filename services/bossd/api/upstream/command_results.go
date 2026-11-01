@@ -1,6 +1,10 @@
 package upstream
 
-import pb "github.com/recurser/bossalib/gen/bossanova/v1"
+import (
+	"context"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+)
 
 // commandOK builds a success CommandResult. session may be nil for
 // commands whose response doesn't include a session payload (e.g.
@@ -35,4 +39,18 @@ func webhookAck(cmdID string, ok bool, errMsg string) *pb.DaemonEvent {
 	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Ack{
 		Ack: &pb.WebhookAck{CommandId: cmdID, Ok: ok, Error: errMsg},
 	}}
+}
+
+func (c *StreamClient) dispatchReadCommand(ctx context.Context, cmdID string, outbound chan<- *pb.DaemonEvent, read func() (*pb.CommandResult, error), classify func(error) pb.CommandResult_ErrorCode) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		result, err := read()
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classify(err))
+		}
+		result.CommandId, result.Ok = cmdID, true
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: result}}
+	})
 }

@@ -17,6 +17,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/api/upstream"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/sessionattention"
@@ -177,7 +178,7 @@ func TestGetSessionTimeline_Reproduces2979(t *testing.T) {
 		{at(21), "verify", "no chat", done},
 		{at(21), "CI passed, 6 checks", "", done},
 		{at(40), "Evidence recorded", "5 of 5 proven · 2:40 video", done},
-		{at(40), "Parked for you · UI change", "", current},
+		{at(40), "Parked for you", "a UI change", current},
 	})
 }
 
@@ -242,7 +243,7 @@ func TestGetSessionTimeline_ShowsEvidenceOnlyForTheNewestSnapshotHead(t *testing
 			if gotStep != tc.wantStep {
 				t.Fatalf("Evidence recorded step present = %v, want %v", gotStep, tc.wantStep)
 			}
-			if last := steps[len(steps)-1]; last.GetTitle() != "Parked for you · UI change" || last.GetState() != current {
+			if last := steps[len(steps)-1]; last.GetTitle() != "Parked for you" || last.GetState() != current {
 				t.Fatalf("last step = %q (%s), want the newest head's park CURRENT", last.GetTitle(), last.GetState())
 			}
 		})
@@ -311,7 +312,7 @@ func TestGetSessionTimeline_ReadsTheRepoVerifyStage(t *testing.T) {
 	}
 }
 
-func TestGetSessionTimeline_NoPRYieldsOnlyBuildStarted(t *testing.T) {
+func TestGetSessionTimeline_UpstreamAdapterNoPRYieldsBuildStarted(t *testing.T) {
 	ctx := context.Background()
 	sqlDB := setupServerTestDB(t)
 	repos := db.NewRepoStore(sqlDB)
@@ -333,11 +334,12 @@ func TestGetSessionTimeline_NoPRYieldsOnlyBuildStarted(t *testing.T) {
 	}
 
 	srv := New(Config{Repos: repos, Sessions: sessions, AgentRuns: runs, CheckSnapshots: db.NewCheckSnapshotStore(sqlDB)})
-	resp, err := srv.GetSessionTimeline(ctx, connect.NewRequest(&pb.GetSessionTimelineRequest{SessionId: sess.ID}))
+	adapter := &upstream.CommandHandlerAdapter{Commands: srv}
+	resp, err := adapter.GetSessionTimeline(ctx, sess.ID)
 	if err != nil {
 		t.Fatalf("GetSessionTimeline: %v", err)
 	}
-	assertSteps(t, resp.Msg.GetSteps(), []wantStep{{at(4), "Build started", "", current}})
+	assertSteps(t, resp.GetSteps(), []wantStep{{at(4), "Build started", "", current}})
 }
 
 func TestGetSessionTimeline_Errors(t *testing.T) {
@@ -674,7 +676,7 @@ func TestBuildTimeline_FixOutranksReview(t *testing.T) {
 		{at(20), "Built and reviewed", "checklist open", done},
 		{at(35), "Automatic repair failed", "3 attempts", current},
 		{at(40), "CI passed, 3 checks", "", done},
-		{at(40), "Parked for you · open checklist items", "", done},
+		{at(40), "Parked for you", "the PR checklist has open items", done},
 	})
 }
 
@@ -699,7 +701,7 @@ func TestBuildTimeline_BlockedParkIsAFixThatWaitsOnThePark(t *testing.T) {
 		{at(20), "Built and reviewed", "checklist open", done},
 		{at(35), "Automatic repair failed", "3 attempts", failed},
 		{at(40), "CI passed, 3 checks", "", done},
-		{at(40), "Parked for you · open checklist items", "", current},
+		{at(40), "Parked for you", "the PR checklist has open items", current},
 	})
 }
 
@@ -725,13 +727,12 @@ func TestBuildTimeline_AStepAfterTheWaitStaysAfterIt(t *testing.T) {
 	if kind != pb.AttentionKind_ATTENTION_KIND_REVIEW {
 		t.Fatalf("kind = %s, want REVIEW", kind)
 	}
-	category, _ := attention.ParkCategory([]string{"no-receipt", "human-review:ui"})
 	assertSteps(t, steps, []wantStep{
 		{at(0), "Build started", "", done},
 		{at(11), "Built and reviewed", "checklist closed", done},
 		{at(36), "CI passed, 10 checks", "", done},
 		{at(40), "Run ended unexpectedly", "", failed},
-		{at(42), "Parked for you · " + category, "", current},
+		{at(42), "Parked for you", "a UI change", current},
 		{at(55), "Resumed", "new run", done},
 	})
 }
@@ -753,7 +754,7 @@ func TestBuildTimeline_AnUnknownParkCodeReadsInPlainWords(t *testing.T) {
 		{at(4), "Build started", "", done},
 		{at(11), "Built and reviewed", "checklist closed", done},
 		{at(21), "CI passed, 2 checks", "", done},
-		{at(21), "Parked for you · an issue this version of boss does not recognise", "", current},
+		{at(21), "Parked for you", "an issue this version of boss does not recognise", current},
 	})
 }
 
@@ -877,7 +878,7 @@ func TestBuildTimeline_DismissedFixIsNotTheWait(t *testing.T) {
 		{at(20), "Built and reviewed", "checklist closed", done},
 		{at(35), "Automatic repair failed", "3 attempts", failed},
 		{at(40), "CI passed, 3 checks", "", done},
-		{at(40), "Parked for you · UI change", "", current},
+		{at(40), "Parked for you", "a UI change", current},
 	})
 
 	facts.DismissedAlertKey = attention.BlockedAlertKey
@@ -999,7 +1000,7 @@ func TestBuildTimeline_AgreesWithAttentionCompute(t *testing.T) {
 			facts: timelineFacts{HasPR: true, Runs: []domain.AgentRun{reviewReady},
 				Snapshots: []db.CheckSnapshot{snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: human-review:ui"))}},
 			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, ParkCodes: []string{"human-review:ui"}, ChecksTotal: 3, ChecksDone: 3},
-			wantCurrent: "Parked for you · UI change",
+			wantCurrent: "Parked for you",
 		},
 		{
 			name: "park with no codes is in progress",

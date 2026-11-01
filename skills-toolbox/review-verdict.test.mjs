@@ -625,10 +625,9 @@ test('standing report findings round trip and reject malformed trailers', () => 
     head: HEAD,
     findings: [
       Object.fromEntries(
-        ['id', 'severity', 'file', 'line', 'title', 'evidence', 'introduced'].map((k) => [
-          k,
-          open[k],
-        ]),
+        ['id', 'severity', 'file', 'line', 'title', 'evidence', 'introduced', 'assertionHead'].map(
+          (k) => [k, k === 'assertionHead' ? HEAD : open[k]],
+        ),
       ),
     ],
   })

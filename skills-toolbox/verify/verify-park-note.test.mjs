@@ -15,6 +15,7 @@ import {
   afterMergeNote,
   extensionFailures,
   parkNote,
+  parkVerdict,
   restatesCategory,
 } from './verify-park-note.mjs'
 
@@ -79,6 +80,10 @@ test('the park words equal the table the TUI renders, code for code, so the PR a
     ),
   )
   assert.deepEqual(Object.keys(PARK_CODE_WORDS).sort(), Object.keys(table.codes).sort())
+  assert.deepEqual(
+    Object.keys(PARK_CODE_WORDS).filter((code) => !code.startsWith('ticket-')),
+    table.order,
+  )
   const withRule = (words) => ({ ...words, restates: restatesCategory(words) })
   for (const [code, words] of Object.entries(table.codes)) {
     assert.deepEqual(withRule(PARK_CODE_WORDS[code]), words, code)
@@ -121,13 +126,15 @@ test('parkNote names each code by its issue and evidence, once each, and ends on
   const codes = ['partial-build', 'extension-failed', 'human-review:ui']
   const note = parkNote({ codes, headSha: HEAD, pr: 7, facts })
   const lines = note.body.split('\n')
-  assert.match(lines[0], /: partial build, verify extension failed, UI change\.$/)
+  assert.equal(
+    lines[0],
+    '**Not verified · blocked · only part of the ticket was finished, so the PR is held** on `aaaaaaaaaaaa`.',
+  )
   const plainLine = (code) => {
     const plain = PARK_CODE_WORDS[code].plain
     return `- ${plain[0].toUpperCase()}${plain.slice(1)}.`
   }
-  for (const code of ['partial-build', 'extension-failed'])
-    assert.ok(lines.indexOf(plainLine(code)) > 0, code)
+  for (const code of ['extension-failed']) assert.ok(lines.indexOf(plainLine(code)) > 0, code)
   assert.equal(
     lines.filter((l) => /UI change/i.test(l)).length,
     1,
@@ -141,9 +148,7 @@ test('parkNote names each code by its issue and evidence, once each, and ends on
     codes,
     'the exact codes ride in a hidden line',
   )
-  assert.ok(
-    lines.includes('  - `## Partial` reads: do not merge — partial: 2/5 acceptance criteria'),
-  )
+  assert.ok(lines.includes('- `## Partial` reads: do not merge — partial: 2/5 acceptance criteria'))
   assert.ok(lines.includes('  - `boss-verify-evidence` crashed or returned nothing'))
   assert.ok(lines.includes('- The change touches web UI.'), 'the UI change keeps its evidence')
   assert.ok(
@@ -170,7 +175,7 @@ test('parkNote says the park label once, as its own line before the codes', () =
     1,
     `two labelled codes repeat the label:\n${both.join('\n')}`,
   )
-  assert.equal(both.indexOf(touches), 2, both.join('\n'))
+  assert.equal(both.indexOf(touches), -1, both.join('\n'))
   assert.ok(both.includes('- A security-sensitive change for a person to review.'), both.join('\n'))
 
   const withPartial = parkNote({
@@ -179,10 +184,10 @@ test('parkNote says the park label once, as its own line before the codes', () =
     facts: { title: 'Feature (partial 1/2)', body: PROSE, label: 'web/a' },
   }).body.split('\n')
   const label = withPartial.indexOf('- The change touches web/a.')
-  const partial = withPartial.findIndex((l) => l.startsWith('- Only part of the ticket'))
-  const evidence = withPartial.indexOf('  - The title reads: Feature (partial 1/2)')
+  const partial = 0
+  const evidence = withPartial.indexOf('- The title reads: Feature (partial 1/2)')
   assert.ok(
-    label > 0 && label < partial && partial < evidence,
+    partial < label && label < evidence,
     `the label sits above the partial code:\n${withPartial.join('\n')}`,
   )
   assert.equal(withPartial.filter((l) => l.includes('web/a')).length, 1)
@@ -290,13 +295,13 @@ test('parkNote stays under the comment size limit, cutting evidence with a count
   })
   assert.ok(note.body.length <= NOTE_CHAR_LIMIT, `${note.body.length} chars`)
   const lines = note.body.split('\n')
-  const shown = lines.filter((line) => /^ {2}- `ext-\d+-x+` crashed/.test(line)).length
+  const shown = lines.filter((line) => /^- `ext-\d+-x+` crashed/.test(line)).length
   assert.ok(shown > 0 && shown < failed.length, `${shown} shown`)
-  assert.ok(lines.includes(`  - …and ${failed.length - shown} more.`))
+  assert.ok(lines.includes(`- …and ${failed.length - shown} more.`))
   const words = PARK_CODE_WORDS['no-receipt']
   const receipt = lines.indexOf(`- ${words.plain[0].toUpperCase()}${words.plain.slice(1)}.`)
   assert.ok(receipt > 0, 'every code keeps its line')
-  assert.equal(lines[receipt + 1], '  - …and 1 more.')
+  assert.equal(lines[receipt + 1], '  - No automated build and review has passed on this commit.')
   assert.ok(lines.some((line) => line.startsWith('An approval waives')))
   assert.match(lines.at(-1), PARK_NOTE_MARKER)
 
@@ -325,7 +330,7 @@ test('a note written under the retired checklist gate still reads as its head no
   const marker = old.match(PARK_NOTE_MARKER)
   assert.deepEqual([marker?.[1], marker?.[2]], [HEAD, '0'.repeat(16)])
   const note = parkNote({ codes: ['ledger-open'], headSha: HEAD, pr: 7, facts: { body: PROSE } })
-  assert.match(note.body, /: open checklist items\.$/m)
+  assert.match(note.body, /Not verified · blocked · the PR checklist has open items/)
   assert.ok(!note.body.includes('an issue this version of boss does not recognise'), note.body)
 })
 
@@ -409,13 +414,12 @@ test('repair exhaustion caps evidence and counts omitted outcomes and standing b
   assert.ok(note.body.length <= NOTE_CHAR_LIMIT, `${note.body.length} chars`)
   const shown = note.body.split('\n').filter((line) => line.includes('not fixable:')).length
   assert.ok(shown > 0 && shown < notFixable.length)
-  assert.ok(note.body.includes(`  - …and ${notFixable.length + blockers.length - shown} more.`))
+  assert.ok(note.body.includes(`- …and ${notFixable.length + blockers.length - shown} more.`))
   assert.match(note.body.split('\n').at(-1), PARK_NOTE_MARKER)
 })
 
-test('repair exhaustion without round facts preserves the legacy note byte for byte', () => {
-  const legacy =
-    '**This PR is waiting for a person** on `aaaaaaaaaaaa`: repair exhausted.\n\n- Automatic repair gave up on this PR.\n\nAn approval waives exactly what is listed above, on this commit only. A new push is judged afresh.\n\n<!-- boss-park-codes: ["repair-exhausted"] -->\n\n<!-- boss-park-note head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa digest=d39d547568cf6d76 -->'
+test('repair exhaustion without round facts ignores blocker evidence', () => {
+  const expected = parkNote({ codes: ['repair-exhausted'], headSha: HEAD }).body
   for (const repairRounds of [undefined, null]) {
     assert.equal(
       parkNote({
@@ -426,7 +430,7 @@ test('repair exhaustion without round facts preserves the legacy note byte for b
           blockers: { blockers: [{ summary: 'ignored without round facts' }] },
         },
       }).body,
-      legacy,
+      expected,
     )
   }
 })
@@ -454,4 +458,65 @@ test('repair exhaustion names repeated blockers even with only one round', () =>
     },
   })
   assert.match(note.body, /P1.*a\.go:9.*CI.*not fixable twice: Needs operator access/)
+})
+
+test('parkVerdict matches every Go verdict fixture row', () => {
+  const rows = JSON.parse(
+    readFileSync(
+      new URL('../../lib/bossalib/attention/testdata/park_verdicts.json', import.meta.url),
+      'utf8',
+    ),
+  )
+  for (const { codes, label, evidenceUrl, videoSeconds, openItems, ...expected } of rows)
+    assert.deepEqual(
+      parkVerdict(codes, { label, evidence: { url: evidenceUrl, videoSeconds }, openItems }),
+      expected,
+    )
+  assert.equal(parkVerdict([]), null)
+  assert.equal(parkVerdict([' , ']), null)
+})
+
+test('parkVerdict normalizes order and selects failures before sign-off codes', () => {
+  for (const [codes, reason] of [
+    [
+      ['human-review:ui, repair-exhausted', 'repair-exhausted'],
+      'automatic repair gave up on this PR',
+    ],
+    [
+      ['extension-failed', 'partial-build'],
+      'only part of the ticket was finished, so the PR is held',
+    ],
+    [['always-human-path', 'human-review:ui'], 'a UI change'],
+    [['ticket-not-selected', 'ticket-needs-person'], PARK_CODE_WORDS['ticket-not-selected'].plain],
+    [['unknown', 'ticket-needs-person'], UNKNOWN_CODE_WORDS.plain],
+    [['__proto__'], UNKNOWN_CODE_WORDS.plain],
+    [['toString'], UNKNOWN_CODE_WORDS.plain],
+  ])
+    assert.equal(parkVerdict(codes).reason, reason)
+  assert.equal(
+    parkVerdict(['human-review:ui'], {
+      evidence: { url: 'https://example.com/video', videoSeconds: 59.6 },
+    }).evidence,
+    'evidence video (1:00)',
+  )
+})
+
+test('parkNote opens with the verdict and says each labelled issue once', () => {
+  const note = parkNote({
+    codes: ['always-human-path'],
+    headSha: HEAD,
+    facts: { label: 'the verify judge (cannot grade itself)' },
+  }).body
+  assert.equal(
+    note.split('\n')[0],
+    '**Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)** on `aaaaaaaaaaaa`.',
+  )
+  assert.ok(note.includes("- Touches a path that always needs a person's sign-off."))
+  assert.ok(!note.includes('security') && !note.includes('The change touches'))
+  const ui = parkNote({ codes: ['human-review:ui'], headSha: HEAD }).body
+  assert.ok(ui.startsWith('**Not verified · waiting for you · a UI change**'))
+  assert.ok(!ui.includes('- A UI change.'))
+  const mixed = parkNote({ codes: ['repair-exhausted', 'human-review:ui'], headSha: HEAD }).body
+  assert.ok(mixed.startsWith('**Not verified · blocked · automatic repair gave up on this PR**'))
+  assert.ok(mixed.includes('- A UI change.'))
 })

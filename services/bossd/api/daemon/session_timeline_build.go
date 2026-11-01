@@ -61,6 +61,8 @@ type timelineFacts struct {
 	IsFactoryRepo   bool
 	VerifyAdmission attention.Admission
 	IsPartial       bool
+	ParkLabel       string
+	OpenItems       []string
 	// Mergeable is the live mergeability on HeadSHA, nil when unavailable.
 	Mergeable *bool
 	// Now is when the timeline is built; it decides whether verify's merge of
@@ -145,8 +147,8 @@ func (c waitCandidate) latest() time.Time {
 //     above exists (every ordinary check skipped, never a draft), the start of
 //     the newest run of green snapshots.
 //   - Evidence recorded: the evidence comment's last write on the head.
-//   - Parked for you · <category> / Verifying: the start of the newest run of
-//     snapshots in that verify phase.
+//   - Parked for you (detail: verdict reason) / Verifying: the start of the
+//     newest run of snapshots in that verify phase.
 //   - Fix rows: a lost login or usage limit (rotation audit) with each
 //     automatic resume and the give-up; an interruption (one per daemon
 //     restart, however many chats it stopped) and the run that resumed it;
@@ -202,6 +204,8 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 	ans.Input.ParkSince, ans.Input.VerifiedSince = headSince(newestFirstSnapshots(snaps), newestFirstSnapshots(snaps))
 	ans.Input.Now = f.Now
 	ans.Input.IsSentBack = f.IsSentBack
+	ans.Input.ParkLabel = f.ParkLabel
+	ans.Input.OpenItems = f.OpenItems
 	parkCodes, parked := ans.Input.ParkCodes, ans.Parked
 
 	if built := newestReviewReady(runs); built != nil {
@@ -231,9 +235,15 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 		since := trailingRunStart(snaps)
 		switch vcs.DisplayStatus(latest.ComputedStatus) {
 		case vcs.DisplayStatusNeedsHuman:
-			category, kind := attention.ParkCategory(parkCodes)
+			_, kind := attention.ParkCategory(parkCodes)
 			if kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
-				st := add(&tlStep{at: since, rank: rankParked, title: "Parked for you · " + category})
+				// No dated apiversion bump: the TUI prints timeline titles and
+				// details verbatim; the web does not render them and no client
+				// parses the old category title. A down-convert would only restore
+				// that misleading display text. See
+				// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+				verdict, _ := attention.ParkVerdict(parkCodes, f.ParkLabel, nil, len(f.OpenItems))
+				st := add(&tlStep{at: since, rank: rankParked, title: "Parked for you", detail: verdict.Reason})
 				candidates = append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
 			} else {
 				// Only waiting codes, or none: verify still holds the PR,
@@ -304,7 +314,7 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 
 	att := attention.Compute(ans.Input)
 	kind := att.GetKind()
-	candidates = partialParkCandidates(att, snaps, candidates, add)
+	candidates = partialParkCandidates(att, f, candidates, add)
 	if kind == pb.AttentionKind_ATTENTION_KIND_MERGE && attention.VerifyHolds(ans.Input) {
 		// A factory repo's PR is the operator's to merge only once verify
 		// passed its head and left it unmerged: the wait began at the
@@ -338,12 +348,14 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 
 // partialParkCandidates dates a locally detected partial park like a verify park,
 // replacing the merge wait that a green snapshot otherwise contributes.
-func partialParkCandidates(att *pb.SessionAttention, snaps []domain.CheckSnapshot, candidates []waitCandidate, add func(*tlStep) *tlStep) []waitCandidate {
+func partialParkCandidates(att *pb.SessionAttention, f timelineFacts, candidates []waitCandidate, add func(*tlStep) *tlStep) []waitCandidate {
+	snaps := f.Snapshots
 	if !slices.Contains(att.GetParkCodes(), attention.ParkCodePartial) || len(snaps) == 0 || vcs.DisplayStatus(snaps[len(snaps)-1].ComputedStatus) == vcs.DisplayStatusNeedsHuman {
 		return candidates
 	}
-	category, kind := attention.ParkCategory(att.GetParkCodes())
-	st := add(&tlStep{at: trailingRunStart(snaps), rank: rankParked, title: "Parked for you · " + category})
+	_, kind := attention.ParkCategory(att.GetParkCodes())
+	verdict, _ := attention.ParkVerdict(att.GetParkCodes(), f.ParkLabel, nil, len(f.OpenItems))
+	st := add(&tlStep{at: trailingRunStart(snaps), rank: rankParked, title: "Parked for you", detail: verdict.Reason})
 	candidates = slices.DeleteFunc(candidates, func(c waitCandidate) bool { return c.kind == pb.AttentionKind_ATTENTION_KIND_MERGE })
 	return append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
 }

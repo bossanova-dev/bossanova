@@ -18,6 +18,7 @@ import path from 'node:path'
 
 import { resolveBossBinary } from './boss-binary.mjs'
 import { isBossdManaged } from './bossd-present.mjs'
+import { isEpicWaitGroup } from './callback/epic-target.mjs'
 import { isMainModule } from './main-module.mjs'
 
 export const STAGE_SKILL = Object.freeze({
@@ -207,10 +208,20 @@ export function armDecision(record, { runId } = {}) {
   return { arm: 'state', reason: reason || 'unrecognized-record' }
 }
 
-/** An epic child or prompt-carrying unattended launch: unattended with no cron job id. */
-export function isEpicChild(env = {}) {
-  const unattended = env.BOSS_UNATTENDED === 'true' || env.BOSS_CRON === 'true'
-  return unattended && !text(env.BOSS_CRON_JOB_ID)
+/** The first live boss-epic coordinator watch for this PR, or null. */
+export function epicCoordinated(rows, pr) {
+  return (
+    rows.find(
+      (row) =>
+        row?.pr_number === pr &&
+        isEpicWaitGroup(row.group_id, pr) &&
+        ['active', 'leased', 'triggered'].includes(String(row.state).toLowerCase()),
+    ) ?? null
+  )
+}
+
+export function prWatchesArgv(pr) {
+  return ['callback', 'list', '--pr', String(pr), '--json']
 }
 
 export function cronListArgv(repoId) {
@@ -396,8 +407,6 @@ export async function runVerb(opts, deps = {}) {
     out(detail ? { action: 'error', reason, detail } : { action: 'error', reason })
 
   if (!isBossdManaged(env)) return skipped('not-managed')
-  // boss-epic owns merge ordering for its children; verify routing for epics is out of scope.
-  if (opts.verb !== 'phase' && isEpicChild(env)) return skipped('epic-child')
   const repoId = String(env.BOSS_REPO_ID ?? '').trim()
   if (opts.verb !== 'phase' && !repoId) return skipped('no-repo-id')
   const resolved = resolveBoss(env)
@@ -429,8 +438,8 @@ export async function runVerb(opts, deps = {}) {
       action: 'dry-run',
       argv: [
         cronListArgv(repoId),
+        prWatchesArgv(opts.pr),
         ['chats', sessionId, '--json'],
-        activeVerifyCallbacksArgv(opts.pr),
         verifyChatArgv(sessionId, '<nextVerifyTitle>'),
         reverifyCallbackArgv({ pr: opts.pr, chatId: '<verifyChat>', head: opts.head }),
         removeCallbackArgv({ id: '<supersededId>', target_chat_id: '<supersededChat>' }),
@@ -441,6 +450,7 @@ export async function runVerb(opts, deps = {}) {
       action: 'dry-run',
       argv: [
         cronListArgv(repoId),
+        prWatchesArgv(opts.pr),
         ['chats', sessionId, '--json'],
         verifyChatArgv(sessionId),
         armedListArgv({ pr: opts.pr, chatId: '<verifyChat>' }),
@@ -452,8 +462,14 @@ export async function runVerb(opts, deps = {}) {
   if (!hasStageJob({ stage: 'verify', jobs: jobs.value }))
     return out({ action: 'none', reason: 'no-verify-cron' })
 
+  const watches = await callJson(prWatchesArgv(opts.pr))
+  if (!watches.ok) return failed(`callback-list-${watches.reason}`, watches.detail)
+  if (!Array.isArray(watches.value)) return failed('callback-list-unreadable-json')
+  const coordinator = epicCoordinated(watches.value, opts.pr)
+  if (coordinator) return skipped('epic-child', coordinator.group_id)
+
   if (opts.verb === 'arm-reverify')
-    return armReverify(opts, { sessionId, call, callJson, out, failed })
+    return armReverify(opts, { sessionId, call, callJson, out, failed, rows: watches.value })
 
   let record = null
   if (text(opts.completion)) {
@@ -507,16 +523,13 @@ export async function runVerb(opts, deps = {}) {
   })
 }
 
-async function armReverify(opts, { sessionId, call, callJson, out, failed }) {
+async function armReverify(opts, { sessionId, call, callJson, out, failed, rows }) {
   const listed = await callJson(['chats', sessionId, '--json'])
   if (!listed.ok) return failed(`chats-${listed.reason}`, listed.detail)
   if (!Array.isArray(listed.value?.chats)) return failed('chats-unreadable-json')
   const chats = verifyChats(listed.value.chats)
-  const active = await callJson(activeVerifyCallbacksArgv(opts.pr))
-  if (!active.ok) return failed(`callback-list-${active.reason}`, active.detail)
-  if (!Array.isArray(active.value)) return failed('callback-list-unreadable-json')
   const superseded = supersededRows(
-    active.value,
+    rows,
     chats.map((chat) => chat.agent_session_id),
     opts.pr,
   )

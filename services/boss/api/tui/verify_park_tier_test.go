@@ -30,8 +30,8 @@ func servedVerifyPark(codes ...string) *pb.Session {
 
 // TestHomeVerifyParkTierByMix renders the parks the operator saw read red
 // "blocked" on green PRs, which only need a person's look, and two parks that
-// are still blocked. A look-only park reads the amber "review" cell, its hint
-// is amber and starts "review", and nothing on the row says "needs sign-off";
+// are still blocked. A look-only park reads the amber "waiting for you" cell, its hint
+// is amber and starts "waiting for you", and nothing on the row says "needs sign-off";
 // a blocked park keeps the red "blocked" cell and a red hint.
 func TestHomeVerifyParkTierByMix(t *testing.T) {
 	for _, tc := range []struct {
@@ -50,7 +50,7 @@ func TestHomeVerifyParkTierByMix(t *testing.T) {
 			h := NewHomeModel(nil, context.Background(), nil)
 			h.Width, h.Height = 160, 30
 			s := servedVerifyPark(tc.codes...)
-			wantCell, wantHint, wantPrefix := ui.StyleStatusWarning.Render("review"), ui.StyleStatusWarning, "review: "
+			wantCell, wantHint, wantPrefix := ui.StyleStatusWarning.Render("waiting for you"), ui.StyleStatusWarning, "waiting for you: "
 			if tc.blocked {
 				wantCell, wantHint, wantPrefix = ui.StyleStatusDanger.Render("blocked"), ui.StyleStatusDanger, "blocked: "
 			}
@@ -62,7 +62,7 @@ func TestHomeVerifyParkTierByMix(t *testing.T) {
 			}
 			var park *ui.SessionHint
 			for _, hint := range ui.SessionWarningHints(s) {
-				if strings.HasPrefix(hint.Text, "review: ") || strings.HasPrefix(hint.Text, "blocked: ") {
+				if strings.HasPrefix(hint.Text, "waiting for you: ") || strings.HasPrefix(hint.Text, "blocked: ") {
 					park = &hint
 				}
 			}

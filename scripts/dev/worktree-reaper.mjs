@@ -146,21 +146,40 @@ export function processCwds() {
     .map((line) => line.slice(1))
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
 /**
  * Branches of the boss sessions that are not archived, or null when boss cannot answer. A host
- * with bossd state but no boss on PATH (launchd's minimal PATH) cannot answer either.
+ * with bossd state but no boss on PATH (launchd's minimal PATH) cannot answer either. Attempts
+ * are spaced so that a bossd restart, which refuses calls for a few seconds, does not end the run.
  */
-export function liveSessionBranches({ env = process.env, home = homedir(), attempts = 2 } = {}) {
+export function liveSessionBranches({
+  env = process.env,
+  home = homedir(),
+  attempts = 4,
+  delayMs = 20 * 1000,
+  sleep = sleepSync,
+} = {}) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const branches = sessionBranchesOnce(env, home)
     if (branches !== null) return branches
+    if (attempt < attempts) sleep(delayMs)
   }
   return null
 }
 
+// Only the local bossd owns worktrees on this host, so its session list is the one that matters.
+// Without BOSS_SOCKET, boss starts a daemon of its own when it finds none, so never call it bare;
+// and run it from home, because boss refuses to run inside a checkout newer than its binary.
 function sessionBranchesOnce(env, home) {
+  const bossdHost = fs.existsSync(join(home, '.bossanova'))
+  if (!env.BOSS_SOCKET) return bossdHost ? null : new Set()
   try {
-    const out = execFileSync(env.BOSS_BIN || 'boss', ['ls', '--json', '--all-daemons'], {
+    const out = execFileSync(env.BOSS_BIN || 'boss', ['ls', '--json'], {
+      cwd: home,
+      env,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 60 * 1000,
@@ -169,7 +188,7 @@ function sessionBranchesOnce(env, home) {
     const sessions = Array.isArray(parsed) ? parsed : parsed.sessions
     return new Set(sessions.map((session) => session.branch).filter(Boolean))
   } catch (error) {
-    if (error.code === 'ENOENT' && !fs.existsSync(join(home, '.bossanova'))) return new Set()
+    if (error.code === 'ENOENT' && !bossdHost) return new Set()
     return null
   }
 }

@@ -14,8 +14,27 @@ import (
 // look, the rest report that something is wrong.
 var (
 	signOffCodes = []string{"no-receipt", "always-human-path", "human-merge", "human-review:database", "human-review:security", "human-review:ui", "human-review:unproven"}
-	failureCodes = []string{"repair-exhausted", "partial-build", "ledger-open", "extension-failed", "no-session", "worktree-diverged", "worktree-unsynced"}
+	failureCodes = []string{"repair-exhausted", "partial-build", "ledger-open", "extension-failed", "cannot-assess", "no-session", "worktree-diverged", "worktree-unsynced"}
 )
+
+func TestCannotAssessParkIsBlockedAndRecognised(t *testing.T) {
+	code := "cannot-assess"
+	got := attention.Compute(attention.Input{ParkCodes: []string{code}})
+	category, kind := attention.ParkCategory([]string{code})
+	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || kind != pb.AttentionKind_ATTENTION_KIND_FIX || attention.IsSignOffPark([]string{code}) {
+		t.Errorf("cannot-assess park = %v / %v, want blocked FIX", got.GetKind(), kind)
+	}
+	if category != "cannot assess" || attention.ParkCodePlainWords(code) == attention.ParkCodePlainWords("brand-new") {
+		t.Errorf("cannot-assess category = %q, want recognised evidence failure", category)
+	}
+	if !attention.IsReportedParkCode(code) {
+		t.Error("cannot-assess is absent from the reported park vocabulary")
+	}
+	order := attention.ParkCodes([]string{"no-session,cannot-assess,extension-failed"})
+	if want := []string{"extension-failed", "cannot-assess", "no-session"}; !slices.Equal(order, want) {
+		t.Errorf("ParkCodes order = %q, want %q", order, want)
+	}
+}
 
 // A PARTIAL park reports unfinished work in its own words; the retired
 // ledger-open code still renders as it did, but no approval can waive it.

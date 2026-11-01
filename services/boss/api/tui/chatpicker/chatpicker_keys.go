@@ -354,6 +354,11 @@ func (m Model) cancelRename() Model {
 // carries its armed line, untruncated, so the launching view can say what the
 // chat is parked on (BOS-1517).
 func (m Model) keyOpenChat() (tea.Model, tea.Cmd) {
+	if m.earlierRowSelected() {
+		m.showEarlier = !m.showEarlier
+		m.buildTableRows()
+		return m, nil
+	}
 	if chat := m.selectedChat(); chat != nil {
 		resumeID := chat.AgentSessionId
 		armedNote := m.armedLine(chat)

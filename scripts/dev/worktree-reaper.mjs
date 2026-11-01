@@ -1,14 +1,27 @@
 // Removes linked git worktrees nobody is using, with the Bazel output bases built from them.
 // Removing a worktree keeps its branch, so committed work survives; the holds below protect what
-// would not: uncommitted changes, a HEAD no ref reaches, and a tree something is still using.
+// would not: uncommitted changes, commits no ref reaches, and a tree something is still using.
+// Once a worktree has sat idle long enough, the first two are salvaged instead: its changes,
+// untracked files and loose commits are saved under the salvage folder, then it is removed.
 
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, sep } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 
 const DAY = 24 * 60 * 60 * 1000
 const MAX_DEPTH = 3
+const MAX_SALVAGE_BYTES = 256 * 1024 ** 2
+// Churn the repository never commits, so it is not work that removal could lose.
+const IGNORED_CHANGES = new Set(['go.work.sum'])
+const UPSTREAMS = [
+  'refs/remotes/origin/HEAD',
+  'refs/remotes/origin/main',
+  'refs/remotes/origin/master',
+  'refs/heads/main',
+  'refs/heads/master',
+]
 
 /**
  * @typedef {{ commonDir: string, path: string, branch: string | null, locked: boolean, prunable: boolean }} Worktree
@@ -16,6 +29,7 @@ const MAX_DEPTH = 3
  * @typedef {Worktree & {
  *   changes: number,
  *   headOnRef: boolean,
+ *   looseLanded: boolean,
  *   lastActiveMs: number,
  *   inUse: boolean | null,
  *   liveSession: boolean | null,
@@ -23,22 +37,55 @@ const MAX_DEPTH = 3
  * }} WorktreeFacts
  */
 
-/** @type {Array<[string, (facts: WorktreeFacts, ctx: { now: number, minIdleMs: number }) => boolean]>} */
+/**
+ * Why a worktree stays. A salvageable hold guards work that salvage can save before removal.
+ * @type {Array<{ reason: string, salvageable?: boolean, holds: (facts: WorktreeFacts, ctx: { now: number, minIdleMs: number }) => boolean }>}
+ */
 const HOLDS = [
-  ['locked', (f) => f.locked],
-  ['uncommitted changes', (f) => f.changes > 0],
-  ['HEAD is on no branch, tag or remote', (f) => !f.headOnRef],
-  ['a process is working in it', (f) => f.inUse === true],
-  ['process working directories could not be listed', (f) => f.inUse === null],
-  ['its Bazel server is running', (f) => f.bases.some((base) => base.alive)],
-  ['a live boss session is on its branch', (f) => f.liveSession === true],
-  ['boss sessions could not be listed', (f) => f.liveSession === null],
-  ['used recently', (f, { now, minIdleMs }) => now - f.lastActiveMs < minIdleMs],
+  { reason: 'locked', holds: (f) => f.locked },
+  { reason: 'uncommitted changes', salvageable: true, holds: (f) => f.changes > 0 },
+  {
+    reason: 'commits on no branch, tag or remote that main lacks',
+    salvageable: true,
+    holds: (f) => !f.headOnRef && !f.looseLanded,
+  },
+  { reason: 'a process is working in it', holds: (f) => f.inUse === true },
+  { reason: 'process working directories could not be listed', holds: (f) => f.inUse === null },
+  { reason: 'its Bazel server is running', holds: (f) => f.bases.some((base) => base.alive) },
+  { reason: 'a live boss session is on its branch', holds: (f) => f.liveSession === true },
+  { reason: 'boss sessions could not be listed', holds: (f) => f.liveSession === null },
+  {
+    reason: 'used recently',
+    holds: (f, { now, minIdleMs }) => now - f.lastActiveMs < minIdleMs,
+  },
 ]
 
-/** The reasons to keep a worktree; an empty list means it can go. */
-export function holdReasons(facts, ctx) {
-  return HOLDS.filter(([, holds]) => holds(facts, ctx)).map(([reason]) => reason)
+/** The holds that keep a worktree; an empty list means it can go. */
+export function holdsOn(facts, ctx) {
+  return HOLDS.filter(({ holds }) => holds(facts, ctx))
+}
+
+/** True when every loose commit on HEAD has a patch-identical commit on the upstream branch. */
+function looseCommitsLanded(path) {
+  const upstream = UPSTREAMS.find((ref) => {
+    try {
+      git(['rev-parse', '--verify', '-q', ref], path)
+      return true
+    } catch {
+      return false
+    }
+  })
+  if (!upstream) return false
+  const loose = git(['rev-list', 'HEAD', '--not', '--branches', '--remotes', '--tags'], path)
+    .split('\n')
+    .filter(Boolean)
+  const landed = new Set(
+    git(['cherry', upstream, 'HEAD'], path)
+      .split('\n')
+      .filter((line) => line.startsWith('- '))
+      .map((line) => line.slice(2)),
+  )
+  return loose.every((sha) => landed.has(sha))
 }
 
 function git(args, cwd) {
@@ -204,12 +251,14 @@ function isWithin(path, dir) {
  */
 export function worktreeFacts(worktree, { cwds, sessions, outputBases }) {
   const path = fs.realpathSync(worktree.path)
-  const changes = git(
-    ['status', '--porcelain', '--untracked-files=normal', '--ignore-submodules=none'],
+  const changed = git(
+    ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'],
     path,
   )
     .split('\n')
-    .filter(Boolean).length
+    .filter((line) => line && !IGNORED_CHANGES.has(line.slice(3)))
+    .map((line) => line.slice(3).split(' -> ').pop())
+  const changes = changed.length
   const headOnRef =
     git(
       [
@@ -224,20 +273,24 @@ export function worktreeFacts(worktree, { cwds, sessions, outputBases }) {
       ],
       path,
     ).trim() !== ''
+  const looseLanded = !headOnRef && looseCommitsLanded(path)
   const gitDir = git(['rev-parse', '--absolute-git-dir'], path).trim()
   const bases = outputBases.filter(
     (base) => base.workspace === worktree.path || base.workspace === path,
   )
-  const lastActiveMs = Math.max(
+  // Editing a file is activity too, so a fresh edit in an old checkout is never salvaged away.
+  const lastActiveMs = [
     mtimeMs(join(gitDir, 'HEAD')),
     lastReflogMs(gitDir),
     ...bases.map((base) => mtimeMs(join(base.path, 'command.log'))),
-  )
+    ...changed.map((file) => mtimeMs(join(path, file))),
+  ].reduce((latest, ms) => Math.max(latest, ms), 0)
   return {
     ...worktree,
     path,
     changes,
     headOnRef,
+    looseLanded,
     lastActiveMs,
     inUse: cwds === null ? null : cwds.some((cwd) => isWithin(cwd, path)),
     liveSession:
@@ -262,6 +315,71 @@ function kib(path) {
 const gib = (kibibytes) => `${(kibibytes / 1024 ** 2).toFixed(1)} GiB`
 
 /**
+ * Save what removing a worktree would lose: tracked changes as a binary patch, untracked files as
+ * a tarball and loose commits as a bundle. Throws, leaving nothing behind, if any part fails.
+ */
+export function salvageWorktree(facts, salvageDir, now = Date.now()) {
+  const stamp = new Date(now).toISOString().slice(0, 10)
+  const head = git(['rev-parse', 'HEAD'], facts.path).trim()
+  // Worktrees under different roots share folder names and commits, so key the folder by path,
+  // and create it exclusively so one salvage can never overwrite another.
+  const id = createHash('sha256').update(facts.path).digest('hex').slice(0, 8)
+  const dest = join(salvageDir, `${stamp}-${basename(facts.path)}-${id}`)
+  fs.mkdirSync(salvageDir, { recursive: true })
+  fs.mkdirSync(dest)
+  try {
+    // A patch records a changed submodule only as a gitlink, never the edits inside it.
+    const submodule = git(['status', '--porcelain=v2', '--ignore-submodules=none'], facts.path)
+      .split('\n')
+      .find((line) => /^[12] \S{2} S/.test(line))
+    if (submodule)
+      throw new Error(`a submodule has changes salvage cannot save: ${submodule.split(' ').pop()}`)
+    const patch = git(['diff', 'HEAD', '--binary'], facts.path)
+    if (patch) fs.writeFileSync(join(dest, 'changes.patch'), patch)
+    const untracked = git(['ls-files', '--others', '--exclude-standard', '-z'], facts.path)
+    const files = untracked.split('\0').filter(Boolean)
+    if (files.length > 0) {
+      const bytes = files.reduce(
+        (sum, file) => sum + (fs.lstatSync(join(facts.path, file)).size || 0),
+        0,
+      )
+      if (bytes > MAX_SALVAGE_BYTES) throw new Error(`untracked files hold ${bytes} bytes`)
+      execFileSync('tar', ['-czf', join(dest, 'untracked.tar.gz'), '--null', '-T', '-'], {
+        cwd: facts.path,
+        input: untracked,
+        stdio: ['pipe', 'ignore', 'pipe'],
+      })
+    }
+    if (!facts.headOnRef) {
+      git(
+        [
+          'bundle',
+          'create',
+          join(dest, 'commits.bundle'),
+          'HEAD',
+          '--not',
+          '--branches',
+          '--remotes',
+          '--tags',
+        ],
+        facts.path,
+      )
+    }
+    const info = {
+      path: facts.path,
+      branch: facts.branch,
+      head,
+      salvagedAt: new Date(now).toISOString(),
+    }
+    fs.writeFileSync(join(dest, 'info.json'), `${JSON.stringify(info, null, 2)}\n`)
+    return dest
+  } catch (error) {
+    fs.rmSync(dest, { recursive: true, force: true })
+    throw error
+  }
+}
+
+/**
  * Remove idle, clean, unused worktrees under `roots` and their Bazel output bases. Every worktree
  * found is reported, kept ones with the reasons that held them.
  */
@@ -272,6 +390,8 @@ export function reapWorktrees({
   dryRun = false,
   now = Date.now(),
   minIdleMs = 7 * DAY,
+  salvageAfterMs = 30 * DAY,
+  salvageDir = join(homedir(), '.cache', 'bossanova', 'reaped'),
   cwds = processCwds(),
   sessions = liveSessionBranches(),
   sizeKiB = kib,
@@ -294,10 +414,14 @@ export function reapWorktrees({
         )
         continue
       }
-      const reasons = holdReasons(facts, ctx)
-      if (reasons.length > 0) {
+      const holds = holdsOn(facts, ctx)
+      const salvage =
+        holds.length > 0 &&
+        holds.every((hold) => hold.salvageable) &&
+        now - facts.lastActiveMs >= salvageAfterMs
+      if (holds.length > 0 && !salvage) {
         kept++
-        write(`worktrees: kept ${facts.path}: ${reasons.join(', ')}`)
+        write(`worktrees: kept ${facts.path}: ${holds.map((hold) => hold.reason).join(', ')}`)
         continue
       }
       const size = dryRun
@@ -305,18 +429,31 @@ export function reapWorktrees({
         : 0
       const idleDays = Math.floor((now - facts.lastActiveMs) / DAY)
       const label = `${facts.path} (${facts.branch ?? 'detached'}, idle ${idleDays}d, ${facts.bases.length} bazel base${facts.bases.length === 1 ? '' : 's'})`
+      const verb = salvage ? 'salvage and remove' : 'remove'
       if (dryRun) {
         reaped++
         reapedKiB += size
-        write(`worktrees: would remove ${label}, ${gib(size)}`)
+        write(`worktrees: would ${verb} ${label}, ${gib(size)}`)
         continue
+      }
+      let saved = ''
+      if (salvage) {
+        try {
+          saved = `; saved its work to ${salvageWorktree(facts, salvageDir, now)}`
+        } catch (error) {
+          kept++
+          write(
+            `worktrees: kept ${facts.path}: could not salvage it (${error.message.split('\n')[0]})`,
+          )
+          continue
+        }
       }
       try {
         git(['--git-dir', commonDir, 'worktree', 'remove', '--force', facts.path])
         if (fs.existsSync(facts.path)) removeTree(facts.path)
         for (const base of facts.bases) removeTree(base.path)
         reaped++
-        write(`worktrees: removed ${label}`)
+        write(`worktrees: removed ${label}${saved}`)
       } catch (error) {
         kept++
         write(`worktrees: could not remove ${facts.path}: ${error.message.split('\n')[0]}`)

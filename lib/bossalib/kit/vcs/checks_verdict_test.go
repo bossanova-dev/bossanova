@@ -395,3 +395,52 @@ func TestIsVerifyRepairing(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyCannotAssess_Sessions_AC214601(t *testing.T) {
+	success, failure := CheckConclusionSuccess, CheckConclusionFailure
+	for _, tc := range []struct {
+		name       string
+		status     CheckStatus
+		conclusion *CheckConclusion
+	}{
+		{"error", CheckStatusCompleted, &failure},
+		{"pending", CheckStatusQueued, nil},
+		{"success", CheckStatusCompleted, &success},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hold := CheckResult{Name: VerifyStatusContext, Status: tc.status, Conclusion: tc.conclusion, Description: "cannot assess: pr-unreadable"}
+			checks := []CheckResult{{Name: "ci", Status: CheckStatusCompleted, Conclusion: &success}, hold}
+			if !IsVerifyCannotAssess(hold) || !IsVerifyHold(hold) {
+				t.Error("cannot-assess status is not a hold")
+			}
+			if IsVerifyPark(hold) || IsVerifyRepairing(hold) || VerifyPassed(checks) {
+				t.Error("cannot-assess status is a park, repair request or pass")
+			}
+			verdict := EvaluateChecks("head", checks, nil)
+			if verdict.Total != 1 || verdict.Passed != 1 || !verdict.DemonstratedPass() {
+				t.Errorf("CI verdict = %+v", verdict)
+			}
+			if phase := ClassifyVerify(checks); phase.Kind != VerifyPhaseVerifying || phase.Reason != "" {
+				t.Errorf("phase = %+v", phase)
+			}
+			display := ComputeDisplayStatus(&PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)}, checks, nil)
+			if display.Status != DisplayStatusVerifying {
+				t.Errorf("display = %+v", display)
+			}
+			if block := DeriveMergeBlock(display.Status, false, nil, ""); block.Gate != MergeGatePending {
+				t.Errorf("merge block = %+v", block)
+			}
+			park := CheckResult{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &success, Description: "needs human: human-review:security"}
+			if phase := ClassifyVerify(append(checks, park)); phase.Kind != VerifyPhaseNeedsHuman {
+				t.Errorf("park precedence = %+v", phase)
+			}
+		})
+	}
+	control := CheckResult{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &failure, Description: "other error"}
+	if IsVerifyHold(control) {
+		t.Error("ordinary error is held")
+	}
+	if display := ComputeDisplayStatus(&PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)}, []CheckResult{control}, nil); display.Status != DisplayStatusFailing {
+		t.Errorf("ordinary error display = %+v", display)
+	}
+}

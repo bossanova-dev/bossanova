@@ -78,6 +78,7 @@ go_library(
         "//services/bossd/internal/adapter/accountcred",
         "//services/bossd/internal/adapter/credmaterialize",
         "//services/bossd/internal/adapter/dotenv",
+        "//services/bossd/internal/adapter/factoryversions",
         "//services/bossd/internal/adapter/git",
         "//services/bossd/internal/adapter/github",
         "//services/bossd/internal/adapter/migrate",

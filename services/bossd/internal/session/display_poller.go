@@ -142,10 +142,10 @@ func (p *DisplayPoller) observeEvidence(ctx context.Context, sessionID, repoPath
 }
 
 // hasConcludedVerify reports whether checks carry a completed boss/verify
-// status: the verify stage finished on the head (passed or failed).
+// status without a hold: the verify stage finished on the head (passed or failed).
 func hasConcludedVerify(checks []vcs.CheckResult) bool {
 	for _, c := range checks {
-		if c.Name == vcs.VerifyStatusContext && c.Status == vcs.CheckStatusCompleted && !vcs.IsVerifyPark(c) {
+		if c.Name == vcs.VerifyStatusContext && c.Status == vcs.CheckStatusCompleted && !vcs.IsVerifyHold(c) {
 			return true
 		}
 	}

@@ -11,8 +11,10 @@ clean-cache:
 	node scripts/dev/clean-go-build-cache.mjs
 
 ## recover-disk-space: Reclaim disk from build and test leftovers (idle worktrees and their
-## Bazel output bases, Go and golangci-lint caches, old logs, stale temp dirs, package-manager
-## caches; see scripts/dev/recover-disk-space.mjs, which takes --dry-run), Docker caches,
+## Bazel output bases, Go build and module caches, golangci-lint caches, copied Terraform
+## providers, old Playwright browsers and Xcode DerivedData, old logs and Maestro output, stale
+## temp dirs, package-manager caches; see scripts/dev/recover-disk-space.mjs, which takes
+## --dry-run), Docker caches,
 ## ALL WhatsApp Desktop media (quits WhatsApp; chat text survives) and downloaded
 ## macOS aerial wallpapers (re-downloaded on demand).
 WHATSAPP_MEDIA := $(HOME)/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media

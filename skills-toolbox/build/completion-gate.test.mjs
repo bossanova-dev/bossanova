@@ -823,8 +823,9 @@ test('fast path: an invalid extension envelope never claims the head', (t) => {
   assert.deepEqual(h.state.calls, [judge()])
 })
 test('fast path: human posts the verdict with its reason and never merges', (t) => {
+  const confidence = { level: 'moderate', asks: [], reasons: [], loweredBy: [], health: [] }
   const h = fastHarness(t, {
-    judge: { verdict: 'human', reason: 'no-receipt', headSha: HEAD },
+    judge: { verdict: 'human', reason: 'no-receipt', headSha: HEAD, confidence },
     post: { verdict: 'human', reason: 'no-receipt', posted: true },
   })
   assert.deepEqual(h.run(), {
@@ -833,7 +834,12 @@ test('fast path: human posts the verdict with its reason and never merges', (t) 
     reason: 'human:no-receipt',
     mergeSha: '',
   })
-  assert.deepEqual(h.state.calls, [judge(), postCall('human', ['--reason', 'no-receipt'])])
+  const file = join(h.dir, 'boss-build-verify-confidence-test-run.json')
+  assert.deepEqual(h.state.calls, [
+    judge(),
+    postCall('human', ['--reason', 'no-receipt', '--confidence', file]),
+  ])
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), confidence)
 })
 test('fast path: defect posts the verdict, reason and findings file and never merges', (t) => {
   const findings = [{ title: 'broken', detail: 'x' }]

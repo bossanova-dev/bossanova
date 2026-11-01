@@ -104,6 +104,7 @@ type Session struct {
 	Model                   string // opaque agent model id; "" = plugin default.
 	EffectiveModel          string
 	EffectiveEffort         string
+	PRReadiedAt             *time.Time
 	PRNumber                *int
 	PRURL                   *string
 	TrackerID               *string

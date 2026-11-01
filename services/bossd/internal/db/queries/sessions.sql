@@ -35,6 +35,7 @@ INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base
 -- name: UpdateSession :one
 UPDATE sessions SET
  updated_at = sqlc.arg(updated_at),
+ pr_readied_at = CASE WHEN CAST(sqlc.arg(set_pr_readied_at) AS BOOLEAN) AND (CASE WHEN CAST(sqlc.arg(set_pr_number) AS BOOLEAN) THEN sqlc.narg(pr_number) ELSE pr_number END) IS NOT NULL THEN COALESCE(pr_readied_at, sqlc.narg(pr_readied_at)) ELSE pr_readied_at END,
  state_entered_at = CASE WHEN CAST(sqlc.narg(state) AS INTEGER) IS NOT NULL AND state != CAST(sqlc.narg(state) AS INTEGER) THEN sqlc.arg(updated_at) ELSE state_entered_at END,
  state = COALESCE(CAST(sqlc.narg(state) AS INTEGER), state),
  title = COALESCE(sqlc.narg(title), title),

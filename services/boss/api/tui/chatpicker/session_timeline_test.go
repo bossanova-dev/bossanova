@@ -205,6 +205,10 @@ func detailFixture(kind pb.AttentionKind, height int) Model {
 		m.timeline = append(m.timeline, &pb.TimelineStep{At: timestamppb.New(time.Date(now.Year(), now.Month(), now.Day(), 23, 4+i, 0, 0, time.Local)), Title: title, State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
 	}
 	m.timeline[len(m.timeline)-1].State = pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT
+	if kind != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+		// This fixture tests generic wait placement; park history has its own tests.
+		m.timeline[len(m.timeline)-1].Title = "Verify waiting"
+	}
 	if kind == pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED {
 		m.session.Attention = nil
 		m.session.LastRepairRunnerError = ""
@@ -1003,42 +1007,6 @@ func TestChatPickerTimelineCapsLongHistory(t *testing.T) {
 	}
 }
 
-// PR 3162: the session entered its fixing state at 13:18, verify parked the
-// rebased head at 14:12, and the operator's message started a run at 17:15.
-// The waiting step takes the park's time and place, not the state's start
-// drawn last below a later row.
-func TestChatPickerTimelineWaitKeepsTheDaemonsTimeAndPlace(t *testing.T) {
-	now := time.Now()
-	clock := func(hour, minute int) time.Time {
-		return time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, time.Local)
-	}
-	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 60)
-	m.session.Attention.Since = timestamppb.New(clock(13, 18))
-	m.timeline = []*pb.TimelineStep{
-		{At: timestamppb.New(clock(11, 0)), Title: "Build started", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
-		{At: timestamppb.New(clock(13, 40)), Title: "Run ended unexpectedly", State: pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED},
-		{At: timestamppb.New(clock(14, 12)), Title: "Parked for you · UI change", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
-		{At: timestamppb.New(clock(17, 15)), Title: "Resumed", Detail: "new run", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
-	}
-	block := stripANSI(m.timelineBlock())
-	t.Logf("timeline:\n%s", block)
-	rows := strings.Split(block, "\n")[1:]
-	want := []string{
-		"  11:00  ✓ Build started",
-		"  13:40  ✗ Run ended unexpectedly",
-		"  14:12  ● Waiting for a fix",
-		"  17:15  ✓ Resumed",
-	}
-	if len(rows) != len(want) {
-		t.Fatalf("rows = %d, want %d:\n%s", len(rows), len(want), block)
-	}
-	for i, row := range rows {
-		if !strings.HasPrefix(row, want[i]) {
-			t.Errorf("row %d = %q, want prefix %q", i, row, want[i])
-		}
-	}
-}
-
 // TestChatPickerTimelineDatesStepsAcrossDays: when visible steps span local
 // days, each row that starts a new day carries its date (or "Today") before
 // its time, the time and glyph columns stay aligned, and a timeline within one
@@ -1715,7 +1683,7 @@ func waitAmongLaterSteps(height, later int) Model {
 	for i, title := range []string{"Build started", "Built", "CI failed", "Repair started"} {
 		m.timeline = append(m.timeline, &pb.TimelineStep{At: clock(i + 1), Title: title, State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
 	}
-	m.timeline = append(m.timeline, &pb.TimelineStep{At: clock(5), Title: "Parked for you", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT})
+	m.timeline = append(m.timeline, &pb.TimelineStep{At: clock(5), Title: "Verify waiting", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT})
 	for i := range later {
 		m.timeline = append(m.timeline, &pb.TimelineStep{At: clock(10 + i), Title: fmt.Sprintf("Resumed %d", i), State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
 	}

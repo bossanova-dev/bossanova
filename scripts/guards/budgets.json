@@ -287,7 +287,7 @@
       "skills-toolbox/skill-config.mjs": 3864,
       "skills-toolbox/tracker/cli.mjs": 1256,
       "skills-toolbox/tracker/linear.mjs": 1125,
-      "skills-toolbox/verify/verify-gate.mjs": 4657,
+      "skills-toolbox/verify/verify-gate.mjs": 4624,
       "skills-toolbox/verify/verify-route.mjs": 1158
     }
   },
@@ -307,7 +307,7 @@
       "services/boss/api/cli/skills/skill_sync_test.go": 2729,
       "services/boss/api/tui/attach/attach_host_test.go": 1547,
       "services/boss/api/tui/chatpicker/chatpicker_test.go": 3503,
-      "services/boss/api/tui/chatpicker/session_timeline_test.go": 1903,
+      "services/boss/api/tui/chatpicker/session_timeline_test.go": 1862,
       "services/boss/api/tui/cron/cron_form_test.go": 1628,
       "services/boss/api/tui/home/home_test.go": 5306,
       "services/boss/api/tui/newsession/newsession_test.go": 3222,

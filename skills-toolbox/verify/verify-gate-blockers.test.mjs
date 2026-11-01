@@ -11,6 +11,9 @@ import {
 } from './verify-gate.mjs'
 import { buildBlockers, encodeBlockerTrailer, encodeOutcomesTrailer } from './verify-blockers.mjs'
 const facts = (extra = {}) => ({
+  changedPaths: [],
+  changedLines: 12,
+  sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
   prState: 'OPEN',
   isDraft: false,
   headSha: 'a'.repeat(40),
@@ -38,7 +41,7 @@ test('standing P2 review findings send the head back with all blockers before pa
       prClass: 'boss',
       eligibilityReasons: ['merge-state-dirty'],
       ci: { settled: false },
-      alwaysHumanHits: ['a'],
+      areas: [{ area: 'verify-policy', label: 'Verify policy', defaultAsk: 'always' }],
       extensions: [{ name: 'proof' }],
     }),
   )

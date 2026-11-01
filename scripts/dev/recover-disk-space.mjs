@@ -5,14 +5,20 @@
 // safe on hosts with different layouts. A step only removes what it can prove is regenerable:
 // - linked git worktrees that are clean, idle for RECOVER_WORKTREE_IDLE_DAYS (7), and not in use
 //   by a process, a running Bazel server or a live boss session, with their Bazel output bases
-//   (worktree-reaper.mjs; branches are kept, so committed work survives);
+//   (worktree-reaper.mjs; branches are kept, so committed work survives). After
+//   RECOVER_WORKTREE_SALVAGE_DAYS (30) idle, uncommitted work and loose commits no longer hold a
+//   worktree: they are saved to ~/.cache/bossanova/reaped first;
 // - Bazel output bases whose workspace no longer exists (deleted worktrees), unless their server
 //   is still alive;
 // - golangci-lint cache entries unused for an hour, down to GOLANGCI_CACHE_MAX_GIB (8 GiB): with
 //   many worktrees nearly all of it is under a day old, so the Go cache's one-day floor frees nothing;
-// - Go build cache entries unused for two hours, down to GO_CACHE_MAX_GIB (20 GiB);
-// - bossd logs older than a week (LOG_RETENTION);
-// - puppeteer browsers beyond the newest two per browser and platform;
+// - Go build cache entries unused for two hours, down to GO_CACHE_MAX_GIB (20 GiB), and the whole
+//   Go module cache once it passes GO_MODCACHE_MAX_GIB (20 GiB);
+// - bossd logs, Maestro test output and salvaged worktree changes past their LOG_RETENTION;
+// - `.terraform/providers` folders holding their own provider copies (`terraform init` relinks
+//   them; it says so once when no shared plugin cache is configured);
+// - Playwright and puppeteer browsers beyond the newest two of each, and Xcode DerivedData no
+//   build has touched for two weeks;
 // - os.mkdtemp / os.MkdirTemp-shaped directories in the temp roots that this user owns and that
 //   nothing has touched for three days;
 // - package-manager caches (npm, yarn, pnpm, uv, bun, and brew's old versions and downloads)
@@ -259,7 +265,126 @@ export function recoverGolangciCaches({
  * transcripts never belong here: an idle chat resumes from its Codex rollout or Claude project
  * file and bossd reads a session's agent log, however old either is.
  */
-export const LOG_RETENTION = [{ label: 'bossd logs', path: ['.bossanova', 'logs'], days: 7 }]
+export const LOG_RETENTION = [
+  { label: 'bossd logs', path: ['.bossanova', 'logs'], days: 7 },
+  { label: 'maestro test output', path: ['.maestro', 'tests'], days: 3 },
+  { label: 'salvaged worktree changes', path: ['.cache', 'bossanova', 'reaped'], days: 90 },
+]
+
+const PLAYWRIGHT_BUILD = /^(.+)-(\d+)$/
+const TERRAFORM_SKIP = new Set(['node_modules', '.git', 'vendor'])
+
+/** Playwright browser builds older than the newest `keep` of each browser. */
+export function stalePlaywrightBuilds(root, { keep = 2, fsImpl = fs } = {}) {
+  const groups = new Map()
+  for (const name of readdir(fsImpl, root)) {
+    const match = PLAYWRIGHT_BUILD.exec(name)
+    if (!match || !lstat(fsImpl, join(root, name))?.isDirectory()) continue
+    const builds = groups.get(match[1]) ?? []
+    builds.push({ path: join(root, name), build: Number(match[2]) })
+    groups.set(match[1], builds)
+  }
+  return [...groups.values()].flatMap((builds) =>
+    builds
+      .sort((a, b) => b.build - a.build)
+      .slice(keep)
+      .map((entry) => entry.path),
+  )
+}
+
+function holdsRegularFile(dir, fsImpl) {
+  for (const name of readdir(fsImpl, dir)) {
+    const stat = lstat(fsImpl, join(dir, name))
+    if (stat?.isFile() || (stat?.isDirectory() && holdsRegularFile(join(dir, name), fsImpl))) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * `.terraform/providers` folders under the roots that hold their own copies of provider binaries
+ * instead of links into a shared plugin cache. `terraform init` restores them, and the rest of
+ * `.terraform` (the selected workspace, backend settings and modules) is left alone.
+ */
+export function copiedTerraformProviders(roots, { maxDepth = 6, fsImpl = fs } = {}) {
+  const found = []
+  const walk = (dir, depth) => {
+    for (const name of readdir(fsImpl, dir)) {
+      const path = join(dir, name)
+      if (TERRAFORM_SKIP.has(name) || name.startsWith('bazel-')) continue
+      if (!lstat(fsImpl, path)?.isDirectory()) continue
+      if (name === '.terraform') {
+        const providers = join(path, 'providers')
+        if (holdsRegularFile(providers, fsImpl)) found.push(providers)
+      } else if (depth < maxDepth) walk(path, depth + 1)
+    }
+  }
+  for (const root of roots) walk(root, 1)
+  return found
+}
+
+function terraformCacheConfigured(env, home) {
+  if (env.TF_PLUGIN_CACHE_DIR) return true
+  return /^\s*plugin_cache_dir\s*=/m.test(
+    readText(fs, env.TF_CLI_CONFIG_FILE || join(home, '.terraformrc')),
+  )
+}
+
+/** Xcode DerivedData project folders no build has touched within `maxAgeMs`. */
+export function staleDerivedData(
+  root,
+  { now = Date.now(), maxAgeMs = 14 * DAY, fsImpl = fs } = {},
+) {
+  return readdir(fsImpl, root)
+    .filter((name) => !name.endsWith('.noindex'))
+    .map((name) => join(root, name))
+    .filter((path) => {
+      const stat = lstat(fsImpl, path)
+      if (!stat?.isDirectory()) return false
+      // A build may only touch files below the project folder, so take the newest of the places
+      // every build writes: the build log and product folders as well as the project's info.plist.
+      const touched = [
+        'info.plist',
+        join('Logs', 'Build'),
+        join('Build', 'Products'),
+        join('Build', 'Intermediates.noindex'),
+      ]
+        .map((entry) => lstat(fsImpl, join(path, entry))?.mtimeMs ?? 0)
+        .reduce((latest, ms) => Math.max(latest, ms), stat.mtimeMs)
+      return touched < now - maxAgeMs
+    })
+}
+
+/** Clear the Go module cache once it outgrows GO_MODCACHE_MAX_GIB (20 GiB); go refetches on demand. */
+export function trimGoModCache({ dryRun, env, exec, write }) {
+  const capGiB = Number(env.GO_MODCACHE_MAX_GIB ?? '20')
+  if (!Number.isFinite(capGiB) || capGiB < 0) {
+    write('go module cache: GO_MODCACHE_MAX_GIB must be a non-negative number; skipping')
+    return
+  }
+  try {
+    const modCache = String(exec('go', ['env', 'GOMODCACHE'], { encoding: 'utf8' })).trim()
+    if (!lstat(fs, modCache)?.isDirectory()) return
+    let kib
+    try {
+      kib = Number(String(exec('du', ['-sk', modCache], { encoding: 'utf8' })).split('\t')[0])
+    } catch (error) {
+      kib = Number(String(error.stdout ?? '').split('\t')[0])
+    }
+    const bytes = kib * 1024
+    if (!(bytes > capGiB * GiB)) {
+      write(`go module cache: ${formatGiB(bytes)}, within ${capGiB} GiB`)
+    } else if (dryRun) {
+      write(`go module cache: would clear ${modCache} (${formatGiB(bytes)} > ${capGiB} GiB)`)
+    } else {
+      exec('go', ['clean', '-modcache'], { stdio: 'ignore', timeout: 30 * 60 * 1000 })
+      write(`go module cache: cleared ${formatGiB(bytes)}; modules download again on demand`)
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') write(`go module cache: skipped: ${error.message.split('\n')[0]}`)
+  }
+}
 
 /** Files under root last modified before the cutoff, and the bytes they hold. */
 export function expiredFiles(root, { cutoffMs, fsImpl = fs }) {
@@ -383,8 +508,13 @@ export function run({
   }
 
   const idleDays = Number(env.RECOVER_WORKTREE_IDLE_DAYS ?? '7')
+  const salvageDays = Number(env.RECOVER_WORKTREE_SALVAGE_DAYS ?? '30')
   if (!Number.isFinite(idleDays) || idleDays < 0) {
     write('worktrees: RECOVER_WORKTREE_IDLE_DAYS must be a non-negative number; skipping')
+  } else if (!Number.isFinite(salvageDays) || salvageDays < idleDays) {
+    write(
+      'worktrees: RECOVER_WORKTREE_SALVAGE_DAYS must be a number no smaller than RECOVER_WORKTREE_IDLE_DAYS; skipping',
+    )
   } else {
     reapWorktrees({
       roots: defaultWorktreeRoots({ env, home }),
@@ -392,8 +522,20 @@ export function run({
       removeTree,
       dryRun,
       minIdleMs: idleDays * DAY,
+      salvageAfterMs: salvageDays * DAY,
+      salvageDir: join(home, '.cache', 'bossanova', 'reaped'),
       write,
     })
+  }
+
+  removeAll(
+    'terraform provider copies',
+    copiedTerraformProviders(defaultWorktreeRoots({ env, home })),
+  )
+  if (!terraformCacheConfigured(env, home)) {
+    write(
+      'terraform: no shared plugin cache, so every init copies its providers again; add plugin_cache_dir = "$HOME/.terraform.d/plugin-cache" to ~/.terraformrc',
+    )
   }
 
   for (const root of bazelOutputUserRoots({ env, home })) {
@@ -410,7 +552,22 @@ export function run({
   recoverGolangciCaches({ dryRun, env, home, os, write })
 
   trimGoCache({ dryRun, env, exec, write })
+  trimGoModCache({ dryRun, env, exec, write })
   expireLogs({ dryRun, home, write })
+
+  const playwright =
+    env.PLAYWRIGHT_BROWSERS_PATH ||
+    (os === 'darwin'
+      ? join(home, 'Library', 'Caches', 'ms-playwright')
+      : join(home, '.cache', 'ms-playwright'))
+  if (lstat(fs, playwright)?.isDirectory())
+    removeAll('playwright browsers', stalePlaywrightBuilds(playwright))
+
+  if (os === 'darwin') {
+    const derived = join(home, 'Library', 'Developer', 'Xcode', 'DerivedData')
+    if (lstat(fs, derived)?.isDirectory())
+      removeAll('xcode derived data', staleDerivedData(derived))
+  }
 
   const puppeteer = env.PUPPETEER_CACHE_DIR || join(home, '.cache', 'puppeteer')
   if (lstat(fs, puppeteer)?.isDirectory()) {

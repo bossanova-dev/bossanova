@@ -379,7 +379,7 @@ func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine
 		Str("newState", sm.State().String()).
 		Msg("checks passed")
 
-	// If we transitioned to GreenDraft, mark the PR ready for review.
+	// If we transitioned to GreenDraft, ready a PR only on its first pass.
 	if sm.State() == machine.GreenDraft && sess.PRNumber != nil {
 		repo, err := d.repos.Get(ctx, sess.RepoID)
 		if err != nil {
@@ -388,6 +388,9 @@ func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine
 		}
 		if !repo.CanAutoMerge {
 			d.logger.Info().Str("session", sess.ID).Msg("auto-merge disabled, skipping mark ready for review")
+			return nil
+		}
+		if d.readyOnceSkipsMarkReady(ctx, sm, sess, repo) {
 			return nil
 		}
 		if err := d.provider.MarkReadyForReview(ctx, repo.OriginURL, *sess.PRNumber); err != nil {
@@ -407,6 +410,31 @@ func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine
 	}
 
 	return nil
+}
+
+// readyOnceSkipsMarkReady leaves a once-ready PR's draft state to its owner.
+// A PR that is still ready can immediately complete the repaired session.
+func (d *Dispatcher) readyOnceSkipsMarkReady(ctx context.Context, sm *machine.Machine, sess *models.Session, repo *models.Repo) bool {
+	if sess.PRReadiedAt == nil {
+		return false
+	}
+	pr, err := d.provider.GetPRStatus(ctx, repo.OriginURL, *sess.PRNumber)
+	if err != nil {
+		d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to read once-ready PR status; leaving green draft")
+		return true
+	}
+	if pr.State != vcs.PRStateOpen {
+		d.logger.Info().Str("session", sess.ID).Msg("once-ready PR is not open; leaving green draft unchanged")
+		return true
+	}
+	if pr.Draft {
+		d.logger.Info().Str("session", sess.ID).Int("pr", *sess.PRNumber).Msg("PR was ready once and is draft now; leaving it draft")
+		return true
+	}
+	if err := d.handlePRReadyForReview(ctx, sm, sess); err != nil {
+		d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to update once-ready session to ready_for_review")
+	}
+	return true
 }
 
 func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine, sess *models.Session, event vcs.ChecksFailed) error {

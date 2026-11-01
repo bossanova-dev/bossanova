@@ -127,13 +127,10 @@ func (m Model) timelineSteps() []*pb.TimelineStep {
 	if len(m.timeline) == 0 {
 		return mergeRotationSteps(nil, m.session.GetRotationEvents())
 	}
-	// The daemon's current step is replaced with the session's current
-	// attention so every kind explains its waiting point, in place and at the
-	// daemon's time. A question, a park and a fix carry their own since when
-	// the daemon can date them. Otherwise, and for a merge outside a factory
-	// repo, since is when the session's state began, which can predate the
-	// wait by hours. A timeline fetched without a current step takes the
-	// waiting step at attention's since, still in time order.
+	// Attention replaces the daemon's current step at its time and place,
+	// except a park awaiting a fix or answer: keep that history and put the
+	// wait directly after it. A review already explains the park, so it keeps
+	// one row. Without a current step, insert at attention's since.
 	steps := slices.Clone(m.timeline)
 	if attention.NeedsYou(a.GetKind()) {
 		title := map[pb.AttentionKind]string{pb.AttentionKind_ATTENTION_KIND_FIX: "Waiting for a fix", pb.AttentionKind_ATTENTION_KIND_QUESTION: "Waiting for your answer", pb.AttentionKind_ATTENTION_KIND_REVIEW: "Parked for you", pb.AttentionKind_ATTENTION_KIND_MERGE: "Waiting for merge"}[a.GetKind()]
@@ -142,24 +139,33 @@ func (m Model) timelineSteps() []*pb.TimelineStep {
 			detail = plainMarkdown(detail)
 		}
 		wait := &pb.TimelineStep{At: a.GetSince(), Title: title, Detail: detail, State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT}
-		if i := slices.IndexFunc(steps, func(s *pb.TimelineStep) bool {
-			return s.GetState() == pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT
-		}); i >= 0 {
-			if at := steps[i].GetAt(); at != nil {
-				wait.At = at
-			}
-			steps[i] = wait
-		} else {
-			at := slices.IndexFunc(steps, func(s *pb.TimelineStep) bool {
-				return wait.GetAt() != nil && s.GetAt() != nil && s.GetAt().AsTime().After(wait.GetAt().AsTime())
-			})
-			if at < 0 {
-				at = len(steps)
-			}
-			steps = slices.Insert(steps, at, wait)
-		}
+		steps = placeWait(steps, wait, a.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW)
 	}
 	return mergeRotationSteps(steps, m.session.GetRotationEvents())
+}
+
+func placeWait(steps []*pb.TimelineStep, wait *pb.TimelineStep, keepPark bool) []*pb.TimelineStep {
+	if i := slices.IndexFunc(steps, func(s *pb.TimelineStep) bool {
+		return s.GetState() == pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT
+	}); i >= 0 {
+		step := steps[i]
+		if at := step.GetAt(); at != nil {
+			wait.At = at
+		}
+		if keepPark && attention.IsParkStepTitle(step.GetTitle()) {
+			steps[i] = &pb.TimelineStep{At: step.GetAt(), Title: step.GetTitle(), Detail: step.GetDetail(), State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE}
+			return slices.Insert(steps, i+1, wait)
+		}
+		steps[i] = wait
+		return steps
+	}
+	at := slices.IndexFunc(steps, func(s *pb.TimelineStep) bool {
+		return wait.GetAt() != nil && s.GetAt() != nil && s.GetAt().AsTime().After(wait.GetAt().AsTime())
+	})
+	if at < 0 {
+		at = len(steps)
+	}
+	return slices.Insert(steps, at, wait)
 }
 
 // rotationStepTitle names every rotation on the timeline; its detail says what
@@ -402,7 +408,7 @@ const detailsReservedChats = 5
 // detailsReservedTableRows is the chat table's header plus every chat row up to
 // detailsReservedChats.
 func (m Model) detailsReservedTableRows() int {
-	return min(len(m.chats), detailsReservedChats) + 1
+	return min(len(m.visibleChatRows()), detailsReservedChats) + 1
 }
 
 // timelineDayLabels returns, when the steps span more than one local day or

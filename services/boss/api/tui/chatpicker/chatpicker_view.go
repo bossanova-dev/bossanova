@@ -348,6 +348,13 @@ func (m Model) chatListActionGroups() (left, middle, back []string) {
 			left = append(left, "[w]ake")
 		}
 	}
+	if m.earlierRowSelected() {
+		label := "[enter] show earlier"
+		if m.showEarlier {
+			label = "[enter] hide earlier"
+		}
+		left = []string{label}
+	}
 	return left, middle, []string{"[esc] back"}
 }
 

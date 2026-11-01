@@ -119,6 +119,7 @@ go_test(
         "session_list_rank_migration_test.go",
         "session_list_rank_move_test.go",
         "session_list_rank_test.go",
+        "session_pr_readied_test.go",
         "session_store_test.go",
         "session_tmux_names_test.go",
         "session_verify_only_test.go",

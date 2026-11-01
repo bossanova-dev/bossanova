@@ -7,6 +7,7 @@
 // upserts the rendered comment, one per head, by the digest its marker carries.
 
 import { createHash } from 'node:crypto'
+import { levelNoteLead } from './verify-level.mjs'
 
 import { sectionToken, sections } from '../epic/merge-eligibility.mjs'
 import { classifyVerifyOutcome } from '../skill-extensions.mjs'
@@ -54,6 +55,12 @@ export const PARK_CODE_WORDS = Object.freeze({
   'extension-failed': {
     plain: 'a verify extension failed to run',
     category: 'verify extension failed',
+    signOff: false,
+    decidingPriority: false,
+  },
+  'cannot-assess': {
+    plain: 'verify could not gather the evidence to judge the PR',
+    category: 'cannot assess',
     signOff: false,
     decidingPriority: false,
   },
@@ -347,15 +354,34 @@ function labelBlocks(codes, facts) {
 export const NOTE_CHAR_LIMIT = 60_000
 const MARKER_RESERVE = 160
 const MORE_RESERVE = 32
+const blockReserve = (blocks) =>
+  blocks.reduce((sum, block) => sum + (block.line?.length ?? 0) + 1 + MORE_RESERVE, 0)
+
+// Keep the level and reasons first, then as many Low asks as the rest of the note leaves room for.
+function fitConfidenceLead(confidence, room) {
+  const lines = levelNoteLead(confidence).map(quote)
+  const askCount = confidence.level === 'low' ? confidence.asks.length : 0
+  const out = lines.slice(0, lines.length - askCount)
+  room -= out.reduce((sum, line) => sum + line.length + 1, 0)
+  const asks = lines.slice(lines.length - askCount)
+  for (const [index, line] of asks.entries()) {
+    const remaining = asks.length - index - 1
+    const more = remaining ? `- …and ${remaining} more review asks.` : ''
+    if (line.length + 1 + (more ? more.length + 1 : 0) > room) {
+      out.push(`- …and ${asks.length - index} more review asks.`)
+      break
+    }
+    out.push(line)
+    room -= line.length + 1
+  }
+  return out
+}
 
 // The code lines and as much evidence as fits in what `used` leaves of NOTE_CHAR_LIMIT, in order;
 // each code whose evidence was cut ends with how many lines it lost. A code with no line of its own
 // lists its evidence at the top level.
 function fitEvidence(blocks, used) {
-  let room =
-    NOTE_CHAR_LIMIT -
-    used -
-    blocks.reduce((sum, block) => sum + (block.line?.length ?? 0) + 1 + MORE_RESERVE, 0)
+  let room = NOTE_CHAR_LIMIT - used - blockReserve(blocks)
   const out = []
   for (const { line, evidence } of blocks) {
     const indent = line ? '  - ' : '- '
@@ -430,6 +456,15 @@ export function parkNote({ codes, headSha, facts = {} }) {
     'An approval waives exactly what is listed above, on this commit only. A new push is judged afresh.',
   )
   tail.push('', parkCodesLine(codes))
+  if (facts.confidence) {
+    const room =
+      NOTE_CHAR_LIMIT -
+      [...head, ...tail].join('\n').length -
+      MARKER_RESERVE -
+      blockReserve(blocks) -
+      1
+    head.unshift(...fitConfidenceLead(facts.confidence, room), '')
+  }
   const content = [
     ...head,
     ...fitEvidence(blocks, [...head, ...tail].join('\n').length + MARKER_RESERVE),

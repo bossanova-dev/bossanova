@@ -29,6 +29,20 @@
   },
   {
     "codes": [
+      "cannot-assess"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "verify could not gather the evidence to judge the PR",
+    "evidence": "",
+    "sentence": "Not verified · blocked · verify could not gather the evidence to judge the PR"
+  },
+  {
+    "codes": [
       "extension-failed"
     ],
     "label": "",

@@ -314,9 +314,10 @@ func telemetryAgent(name string) string {
 }
 
 // markFinalizePRReady marks the session's PR ready for review, unless the run
-// reported itself BLOCKED: that PR stays draft. session is the snapshot
-// finalizeSessionFrom read, so this decision and the run_blocked outcome come
-// from the same read.
+// reported itself BLOCKED or its PR was ready once: its draft state is preserved.
+// session is the snapshot finalizeSessionFrom read, so the blocked-run decision
+// and the run_blocked outcome come from the same read. Ready history comes from
+// the refreshed session.
 func (l *Lifecycle) markFinalizePRReady(ctx context.Context, session *models.Session, originURL string) error {
 	sessionID := session.ID
 	cur, err := l.sessions.Get(ctx, sessionID)
@@ -335,6 +336,13 @@ func (l *Lifecycle) markFinalizePRReady(ctx context.Context, session *models.Ses
 	}
 	if err := l.assertPRHasDiffBeforeMarkReady(ctx, cur); err != nil {
 		return err
+	}
+	if cur.PRReadiedAt != nil {
+		l.logger.Info().
+			Str("session", sessionID).
+			Int("pr", *cur.PRNumber).
+			Msg("finalize: PR was ready once; preserving externally chosen draft state")
+		return nil
 	}
 	if err := l.provider.MarkReadyForReview(ctx, originURL, *cur.PRNumber); err != nil {
 		l.logger.Warn().Err(err).
@@ -381,8 +389,9 @@ func markReadyFailureOutcome(err error) domain.CronJobOutcome {
 // was exactly the vacuous-green shape this ticket exists to stop.
 //
 // It is NOT the only MarkReadyForReview call in bossd: Dispatcher.handleChecksPassed
-// (dispatcher.go) also marks a green draft ready when repo.CanAutoMerge, and
-// that path does not run this check. It is unreachable for a session this
+// (dispatcher.go) also marks a green draft ready when repo.CanAutoMerge and
+// the PR has never been ready. Its ready-once guard preserves later drafts,
+// but that path does not run this check. It is unreachable for a session this
 // backstop refused — Blocked does not Permit ChecksPassed (machine.go) — but do
 // not read this comment as "an empty PR can never be marked ready anywhere".
 //

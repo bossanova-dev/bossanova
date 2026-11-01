@@ -8,6 +8,7 @@ import test from 'node:test'
 
 import {
   bazelOutputUserRoots,
+  copiedTerraformProviders,
   expireLogs,
   expiredFiles,
   findOrphanOutputBases,
@@ -17,7 +18,9 @@ import {
   removeEmptyDirs,
   removeTree,
   recoverGolangciCaches,
+  stalePlaywrightBuilds,
   stalePuppeteerBuilds,
+  staleDerivedData,
   trimGoCache,
 } from './recover-disk-space.mjs'
 
@@ -277,4 +280,77 @@ test('the Go cache trim spares entries a build used within the last two hours', 
 
   assert.equal(fs.existsSync(recent), true)
   assert.equal(fs.existsSync(stale), false)
+})
+
+test('finds Terraform provider copies but not cache links, and keeps the rest of .terraform', (t) => {
+  const root = fixture(t)
+  const copied = join(root, 'app', 'infra', '.terraform')
+  fs.mkdirSync(
+    join(copied, 'providers', 'registry', 'hashicorp', 'null', '3.3.2', 'darwin_arm64'),
+    {
+      recursive: true,
+    },
+  )
+  fs.writeFileSync(
+    join(
+      copied,
+      'providers',
+      'registry',
+      'hashicorp',
+      'null',
+      '3.3.2',
+      'darwin_arm64',
+      'terraform-provider-null',
+    ),
+    'bin',
+  )
+  fs.writeFileSync(join(copied, 'environment'), 'production')
+  const linked = join(root, 'app', 'linked', '.terraform', 'providers', 'registry')
+  fs.mkdirSync(linked, { recursive: true })
+  fs.symlinkSync(join(copied, 'providers'), join(linked, 'null'))
+  fs.mkdirSync(join(root, 'app', 'node_modules', 'pkg', '.terraform', 'providers'), {
+    recursive: true,
+  })
+  fs.writeFileSync(join(root, 'app', 'node_modules', 'pkg', '.terraform', 'providers', 'x'), 'bin')
+
+  assert.deepEqual(copiedTerraformProviders([root]), [join(copied, 'providers')])
+})
+
+test('keeps the newest two Playwright builds of each browser', (t) => {
+  const root = fixture(t)
+  for (const name of [
+    'chromium-1100',
+    'chromium-1187',
+    'chromium-1200',
+    'firefox-1490',
+    'ffmpeg-1011',
+  ]) {
+    fs.mkdirSync(join(root, name))
+  }
+  fs.writeFileSync(join(root, '.links'), '')
+  assert.deepEqual(stalePlaywrightBuilds(root), [join(root, 'chromium-1100')])
+})
+
+test('finds DerivedData projects no build touched for two weeks, never the shared module cache', (t) => {
+  const root = fixture(t)
+  const old = join(root, 'App-abc')
+  const fresh = join(root, 'Other-def')
+  const shared = join(root, 'ModuleCache.noindex')
+  for (const dir of [old, fresh, shared]) fs.mkdirSync(dir)
+  fs.writeFileSync(join(old, 'info.plist'), '')
+  age(join(old, 'info.plist'), 30 * DAY)
+  age(old, 30 * DAY)
+  age(shared, 30 * DAY)
+  assert.deepEqual(staleDerivedData(root, { now: NOW }), [old])
+})
+
+test('a DerivedData project with a recent build log is not stale, however old its folder', (t) => {
+  const root = fixture(t)
+  const project = join(root, 'App-xyz')
+  fs.mkdirSync(join(project, 'Logs', 'Build'), { recursive: true })
+  fs.writeFileSync(join(project, 'info.plist'), '')
+  age(join(project, 'info.plist'), 30 * DAY)
+  age(project, 30 * DAY)
+  age(join(project, 'Logs', 'Build'), 1 * DAY)
+  assert.deepEqual(staleDerivedData(root, { now: NOW }), [])
 })

@@ -514,6 +514,80 @@ test('off-review links distinguish configured person labels only on selection mi
   )
 })
 
+test('judged off-review links override selection only after a known, unambiguous probe', async () => {
+  const { offReviewLinks } = await import('./verify-admission.mjs')
+  const prs = Array.from({ length: 7 }, (_, i) =>
+    pr(i + 1, { body: `Tracker issue: https://linear.app/demo/issue/BOS-${i + 1}/title` }),
+  )
+  prs[3].isDraft = true
+  const probe = async ({ id }) => ({
+    available: id !== 'BOS-3',
+    labels: id === 'BOS-2' ? ['needs-human'] : id === 'BOS-7' ? ['agent-build'] : ['bug'],
+  })
+  const options = {
+    included: () => true,
+    probe,
+    rules: { selection: null, requireLabels: ['agent-build'], excludeLabels: [] },
+    personLabels: ['needs-human'],
+  }
+  for (const judged of [undefined, () => false, () => true]) {
+    const result = await offReviewLinks([...prs, { ...prs[4], number: 8 }], { ...options, judged })
+    const overrides = judged?.(prs[0]) === true
+    assert.deepEqual(
+      result.linked.map(({ pr, judged }) => [pr.number, judged]),
+      overrides
+        ? [
+            [1, true],
+            [2, true],
+            [6, true],
+            [7, undefined],
+          ]
+        : [[7, undefined]],
+    )
+    assert.deepEqual(
+      result.skipped.map(({ pr, reason }) => [pr, reason]),
+      [
+        ...(overrides
+          ? []
+          : [
+              [1, 'ticket-not-selected'],
+              [2, 'ticket-needs-person'],
+            ]),
+        [3, 'unknown:ticket'],
+        [4, 'draft'],
+        [5, 'ambiguous-pr'],
+        [8, 'ambiguous-pr'],
+        ...(overrides ? [] : [[6, 'ticket-not-selected']]),
+      ],
+    )
+    assert.deepEqual(
+      result.tickets.map(({ identifier }) => identifier),
+      ['BOS-1', 'BOS-2', 'BOS-3', 'BOS-6', 'BOS-7'],
+    )
+  }
+})
+
+test('judged admission persists its reason while ordinary links remain ticket admissions', () => {
+  const prs = [pr(1), pr(2)]
+  const entries = classifyAdmission({
+    prs,
+    linked: [
+      { ticket, pr: prs[0], judged: true },
+      { ticket, pr: prs[1] },
+    ],
+  })
+  assert.deepEqual(
+    entries.map(({ state, reason }) => ({ state, reason })),
+    [
+      { state: 'admitted', reason: 'judged' },
+      { state: 'admitted', reason: 'ticket' },
+    ],
+  )
+  const file = join(tempDir('admission-judged-'), 'verify-admission.json')
+  assert.equal(storeAdmission(file, 'default', entries, at), true)
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).scopes.default.prs['1'].reason, 'judged')
+})
+
 test('closing issue refs accept closing keywords, supported URLs, ids and numeric references', async () => {
   const { closingIssueRefs } = await import('./verify-admission.mjs')
   for (const keyword of [

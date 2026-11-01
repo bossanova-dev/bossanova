@@ -10,6 +10,7 @@ import {
   prLevelDelta,
   selectChangedRange,
 } from './verify-range.mjs'
+import { levelAreasFor } from './verify-gate.mjs'
 const HEAD = 'a'.repeat(40)
 const BASE = 'b'.repeat(40)
 const REPO = 'o/r'
@@ -279,7 +280,8 @@ function world({ graphql = anchorPayload(), compare = {}, diff = ['src/full.go']
     let payload
     if (args[1] === 'graphql') payload = graphql
     else if (args[1].includes('/compare/')) {
-      const side = compare[args[1].split('...')[1]]
+      const range = args[1].split('/compare/')[1]
+      const side = compare[range] ?? compare[range.split('...')[1]]
       payload = Array.isArray(side) ? { files: side } : side
     } else payload = diff === null ? null : [diff.map((filename) => ({ filename }))]
     return { ok: payload != null, payload }
@@ -318,6 +320,11 @@ test('readApprovalAnchor requires revocations and preserves GraphQL-before-comme
 for (const [name, payload, expected] of [
   ['read failure', null, { files: null, why: 'compare-unreadable' }],
   ['missing files', {}, { files: null, why: 'compare-unreadable' }],
+  ...[null, {}, [], 'file', { filename: '' }, { filename: ' ' }].map((row) => [
+    `malformed row ${JSON.stringify(row)}`,
+    { files: [row] },
+    { files: null, why: 'compare-unreadable' },
+  ]),
   [
     'file cap',
     { files: Array(COMPARE_FILE_CAP).fill(UI_FILE) },
@@ -341,6 +348,7 @@ for (const [name, payload, expected] of [
 const fullRead = 'repos/o/r/pulls/7/files?per_page=100'
 const anchorRead = `repos/o/r/compare/${BASE}...${ANCHOR}`
 const headRead = `repos/o/r/compare/${BASE}...${HEAD}`
+const deltaRead = `repos/o/r/compare/${ANCHOR}...${HEAD}`
 const cappedFiles = Array(COMPARE_FILE_CAP).fill(UI_FILE)
 for (const scenario of [
   { name: 'no-base-sha', baseSha: null, why: 'no-base-sha', reads: [fullRead] },
@@ -397,8 +405,39 @@ for (const scenario of [
     compare: { [ANCHOR]: [UI_FILE], [HEAD]: [UI_FILE, TEST_FILE] },
     delta: true,
     paths: ['src/a_test.go'],
-    reads: ['graphql', anchorRead, headRead],
+    reads: ['graphql', anchorRead, headRead, deltaRead],
   },
+  ...[null, {}, { filename: '' }].flatMap((row) => [
+    {
+      name: `malformed anchor row ${JSON.stringify(row)}`,
+      compare: { [ANCHOR]: [row], [HEAD]: [TEST_FILE] },
+      why: 'compare-unreadable',
+      anchorSha: ANCHOR,
+      reads: ['graphql', anchorRead, fullRead],
+    },
+    {
+      name: `malformed head row ${JSON.stringify(row)}`,
+      compare: { [ANCHOR]: [UI_FILE], [HEAD]: [row] },
+      why: 'compare-unreadable',
+      anchorSha: ANCHOR,
+      reads: ['graphql', anchorRead, headRead, fullRead],
+    },
+  ]),
+  ...[
+    ['unreadable', {}, 'compare-unreadable'],
+    ['malformed', { files: [null] }, 'compare-unreadable'],
+    ['capped', { files: cappedFiles }, 'compare-file-cap'],
+  ].map(([name, metadata, why]) => ({
+    name: `delta compare ${name}`,
+    compare: {
+      [ANCHOR]: [UI_FILE],
+      [HEAD]: [UI_FILE, TEST_FILE],
+      [`${ANCHOR}...${HEAD}`]: metadata,
+    },
+    why,
+    anchorSha: ANCHOR,
+    reads: ['graphql', anchorRead, headRead, deltaRead, fullRead],
+  })),
   {
     name: 'full diff unreadable',
     graphql: null,
@@ -443,3 +482,73 @@ for (const scenario of [
       scenario.reads.includes('graphql') && scenario.graphql !== null ? 1 : 0,
     )
   })
+
+for (const [name, deltaPatch, ask] of [
+  [
+    'an unrelated later manifest edit',
+    '-  "description": "before"\n+  "description": "after"',
+    'never',
+  ],
+  ['another major dependency bump', '-    "react": "19.0.0"\n+    "react": "20.0.0"', 'always'],
+]) {
+  test(`selectChangedRange: ${name} classifies only its unapproved patch`, () => {
+    const approvedBump = '-    "react": "18.0.0"\n+    "react": "19.0.0"'
+    const patch = (lines) => `@@ -1,3 +1,3 @@\n${lines}`
+    const anchorManifest = cfile('package.json', patch(approvedBump))
+    const headPatch =
+      ask === 'always' ? approvedBump.replace('19.0.0', '20.0.0') : `${approvedBump}\n${deltaPatch}`
+    const headManifest = cfile('package.json', patch(headPatch))
+    const deltaManifest = cfile('package.json', patch(deltaPatch))
+    // The PR-level UI diff stays identical across a rebase, though anchor...head contains
+    // the base branch's UI edit. It must never enter the PR's changed paths or area asks.
+    const baseUi = cfile('web/a.tsx', `${UI_PATCH}\n+ // base-only change`)
+    const w = world({
+      graphql: approvedAt(ANCHOR),
+      compare: {
+        [ANCHOR]: [anchorManifest, UI_FILE],
+        [HEAD]: [headManifest, UI_FILE],
+        [`${ANCHOR}...${HEAD}`]: [deltaManifest, baseUi],
+      },
+    })
+    const result = selectChangedRange(w.read, {
+      repo: REPO,
+      pr: 7,
+      baseSha: BASE,
+      headSha: HEAD,
+      readRevocations: unrevoked,
+    })
+    assert.deepEqual(result.paths, ['package.json'])
+    assert.deepEqual(result.files, [deltaManifest])
+    const { areas } = levelAreasFor(result.files, { review: { alwaysReview: [], neverReview: [] } })
+    assert.deepEqual(
+      areas.map(({ area, defaultAsk }) => [area, defaultAsk]),
+      [['dependencies', ask]],
+    )
+  })
+}
+
+test('selectChangedRange retains reverted paths omitted by a rewritten-head compare', () => {
+  const reverted = cfile('proto/service.proto', '@@ -0,0 +1 @@\n+message Added {}', {
+    status: 'added',
+  })
+  const changed = cfile('src/a.go', '@@ -1 +1 @@\n-old()\n+new()')
+  const w = world({
+    graphql: approvedAt(ANCHOR),
+    compare: {
+      [ANCHOR]: [reverted],
+      [HEAD]: [changed],
+      [`${ANCHOR}...${HEAD}`]: [changed],
+    },
+  })
+  const result = selectChangedRange(w.read, {
+    repo: REPO,
+    pr: 7,
+    baseSha: BASE,
+    headSha: HEAD,
+    readRevocations: unrevoked,
+  })
+  assert.deepEqual(result.paths, ['proto/service.proto', 'src/a.go'])
+  assert.ok(result.files.some((file) => file.filename === reverted.filename))
+  const { areas } = levelAreasFor(result.files, { review: { alwaysReview: [], neverReview: [] } })
+  assert.equal(areas.find((area) => area.paths.includes(reverted.filename))?.defaultAsk, 'always')
+})

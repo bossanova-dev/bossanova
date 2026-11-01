@@ -40,6 +40,9 @@ const (
 	// DaemonServiceUploadEvidenceProcedure is the fully-qualified name of the DaemonService's
 	// UploadEvidence RPC.
 	DaemonServiceUploadEvidenceProcedure = "/bossanova.v1.DaemonService/UploadEvidence"
+	// DaemonServiceGetFactoryHealthProcedure is the fully-qualified name of the DaemonService's
+	// GetFactoryHealth RPC.
+	DaemonServiceGetFactoryHealthProcedure = "/bossanova.v1.DaemonService/GetFactoryHealth"
 	// DaemonServiceValidateRepoPathProcedure is the fully-qualified name of the DaemonService's
 	// ValidateRepoPath RPC.
 	DaemonServiceValidateRepoPathProcedure = "/bossanova.v1.DaemonService/ValidateRepoPath"
@@ -322,6 +325,8 @@ type DaemonServiceClient interface {
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
 	// Upload finished evidence through daemon-held credentials.
 	UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error)
+	// GetFactoryHealth reads host-local factory problems for one repository.
+	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
 	// Repo management
 	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
@@ -674,6 +679,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceUploadEvidenceProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("UploadEvidence")),
+			connect.WithClientOptions(opts...),
+		),
+		getFactoryHealth: connect.NewClient[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse](
+			httpClient,
+			baseURL+DaemonServiceGetFactoryHealthProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetFactoryHealth")),
 			connect.WithClientOptions(opts...),
 		),
 		validateRepoPath: connect.NewClient[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse](
@@ -1241,6 +1252,7 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 type daemonServiceClient struct {
 	resolveContext                 *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
 	uploadEvidence                 *connect.Client[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse]
+	getFactoryHealth               *connect.Client[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse]
 	validateRepoPath               *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
 	registerRepo                   *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
 	cloneAndRegisterRepo           *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
@@ -1344,6 +1356,11 @@ func (c *daemonServiceClient) ResolveContext(ctx context.Context, req *connect.R
 // UploadEvidence calls bossanova.v1.DaemonService.UploadEvidence.
 func (c *daemonServiceClient) UploadEvidence(ctx context.Context, req *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error) {
 	return c.uploadEvidence.CallUnary(ctx, req)
+}
+
+// GetFactoryHealth calls bossanova.v1.DaemonService.GetFactoryHealth.
+func (c *daemonServiceClient) GetFactoryHealth(ctx context.Context, req *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error) {
+	return c.getFactoryHealth.CallUnary(ctx, req)
 }
 
 // ValidateRepoPath calls bossanova.v1.DaemonService.ValidateRepoPath.
@@ -1817,6 +1834,8 @@ type DaemonServiceHandler interface {
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
 	// Upload finished evidence through daemon-held credentials.
 	UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error)
+	// GetFactoryHealth reads host-local factory problems for one repository.
+	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
 	// Repo management
 	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
@@ -2165,6 +2184,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceUploadEvidenceProcedure,
 		svc.UploadEvidence,
 		connect.WithSchema(daemonServiceMethods.ByName("UploadEvidence")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceGetFactoryHealthHandler := connect.NewUnaryHandler(
+		DaemonServiceGetFactoryHealthProcedure,
+		svc.GetFactoryHealth,
+		connect.WithSchema(daemonServiceMethods.ByName("GetFactoryHealth")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceValidateRepoPathHandler := connect.NewUnaryHandler(
@@ -2731,6 +2756,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceResolveContextHandler.ServeHTTP(w, r)
 		case DaemonServiceUploadEvidenceProcedure:
 			daemonServiceUploadEvidenceHandler.ServeHTTP(w, r)
+		case DaemonServiceGetFactoryHealthProcedure:
+			daemonServiceGetFactoryHealthHandler.ServeHTTP(w, r)
 		case DaemonServiceValidateRepoPathProcedure:
 			daemonServiceValidateRepoPathHandler.ServeHTTP(w, r)
 		case DaemonServiceRegisterRepoProcedure:
@@ -2932,6 +2959,10 @@ func (UnimplementedDaemonServiceHandler) ResolveContext(context.Context, *connec
 
 func (UnimplementedDaemonServiceHandler) UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UploadEvidence is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetFactoryHealth is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error) {

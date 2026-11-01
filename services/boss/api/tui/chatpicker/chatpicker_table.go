@@ -21,6 +21,11 @@ import (
 
 // buildTableRows rebuilds the table rows from m.chats.
 func (m *Model) buildTableRows() {
+	m.buildTableRowsWithSelection(m.selectedChat(), m.earlierRowSelected())
+}
+
+func (m *Model) buildTableRowsWithSelection(selected *pb.AgentChat, toggleSelected bool) {
+	m.chatRows = projectChatRows(m.chats, m.daemonStatuses, m.session.GetAttention().GetTargetChatId(), m.highlightID, m.showEarlier)
 	m.refreshChatLabels()
 	if len(m.chats) == 0 {
 		m.tableRows = chatTableRows{}
@@ -28,12 +33,17 @@ func (m *Model) buildTableRows() {
 		return
 	}
 
-	titles := make([]string, len(m.chats))
-	createds := make([]string, len(m.chats))
-	actives := make([]string, len(m.chats))
-	agents := make([]string, len(m.chats))
+	titles := make([]string, len(m.chatRows))
+	createds := make([]string, len(m.chatRows))
+	actives := make([]string, len(m.chatRows))
+	agents := make([]string, len(m.chatRows))
 	showAgentColumn := len(m.agents) > 1
-	for i, chat := range m.chats {
+	for i := range m.chatRows {
+		chat := m.projectedChat(i)
+		if chat == nil {
+			titles[i] = m.chatRows[i].label
+			continue
+		}
 		titles[i] = m.chatDisplayTitle(chat)
 		createds[i] = display.RelativeTime(chat.CreatedAt.AsTime())
 		actives[i] = display.RelativeTime(m.chatLastActive(chat))
@@ -45,7 +55,11 @@ func (m *Model) buildTableRows() {
 	createdWidth := display.MaxColWidth("CREATED", createds, 12)
 	activeWidth := display.MaxColWidth("ACTIVE", actives, 12)
 	statusWidth := 12 // preserve the default width for unphased chats
-	for _, chat := range m.chats {
+	for i := range m.chatRows {
+		chat := m.projectedChat(i)
+		if chat == nil {
+			continue
+		}
 		label := m.detailChatStatus(chat)
 		if label == "" {
 			label = m.statusDetail(chat)
@@ -76,15 +90,21 @@ func (m *Model) buildTableRows() {
 	cols := ui.FittedColumns(fitted)
 
 	cursor := m.table.Cursor()
-	rows := make([]table.Row, len(m.chats))
+	rows := make([]table.Row, len(m.chatRows))
 	m.tableRows = chatTableRows{
-		labels:      make([]chatRowLabels, len(m.chats)),
+		labels:      make([]chatRowLabels, len(m.chatRows)),
 		statusWidth: statusWidth,
+		chatCount:   len(m.chats),
 		frameWidth:  lipgloss.Width(m.spinner.View()),
 		project:     func(row table.Row) table.Row { return ui.ProjectRow(fitted, row) },
 	}
 	probe := spinner.New(spinner.WithSpinner(spinner.Spinner{Frames: []string{chatSpinnerMarker}}))
-	for i, chat := range m.chats {
+	for i := range m.chatRows {
+		chat := m.projectedChat(i)
+		if chat == nil {
+			rows[i] = m.tableRows.project(m.chatTableRow(i, "", ""))
+			continue
+		}
 		m.tableRows.labels[i] = chatRowLabels{
 			created: createds[i], active: actives[i],
 			animates: strings.Contains(m.chatStatusCell(chat, probe, statusWidth), chatSpinnerMarker),
@@ -97,6 +117,19 @@ func (m *Model) buildTableRows() {
 	ui.SetTableContent(&m.table, cols, rows)
 	m.table.SetWidth(ui.ColumnsWidth(cols))
 	m.table.SetHeight(m.tableHeight())
+	if toggleSelected && len(m.chatRows) > 0 {
+		cursor = len(m.chatRows) - 1
+	} else if selected != nil {
+		if len(m.chatRows) < len(m.chats) {
+			cursor = len(m.chatRows) - 1
+		}
+		for i := range m.chatRows {
+			if m.projectedChat(i).GetAgentSessionId() == selected.GetAgentSessionId() {
+				cursor = i
+				break
+			}
+		}
+	}
 	m.table.SetCursor(cursor)
 }
 
@@ -230,7 +263,7 @@ func (m Model) chatListOverhead() int {
 }
 
 func (m Model) tableHeight() int {
-	return ui.ClampedTableHeight(len(m.chats), m.height, m.chatListOverhead()+m.attentionDetailsHeight())
+	return ui.ClampedTableHeight(len(m.visibleChatRows()), m.height, m.chatListOverhead()+m.attentionDetailsHeight())
 }
 
 // httpEndpointLine returns the muted "HTTP  :3000 :5173" line for the

@@ -47,6 +47,9 @@ const (
 // unattended writer can tell whether its own payload is older.
 type PayloadRecord struct {
 	Origin PayloadOrigin `json:"origin"`
+	// SourceRoot is the local source checkout for a checkout payload. It is
+	// installation metadata, never public health text. Older records omit it.
+	SourceRoot string `json:"source_root,omitempty"`
 	// Revision is the payload's git revision: a full SHA where known, the
 	// build's short SHA for an embedded payload, or "unknown".
 	Revision string `json:"revision"`

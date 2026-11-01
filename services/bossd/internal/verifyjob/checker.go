@@ -35,13 +35,22 @@ func New(store CronStore) *Checker {
 
 // Enabled reports whether an enabled job invokes the verify stage by prompt or gate.
 func Enabled(jobs []*domain.CronJob) bool {
-	verify, _ := projectconfig.DefaultFactoryStages().Lookup("verify")
 	for _, job := range jobs {
-		if job != nil && job.IsEnabled && (verify.MatchesPrompt(job.Prompt) || verify.MatchesGate(job.GateCommand)) {
+		if job != nil && job.IsEnabled && IsVerifyJob(job) {
 			return true
 		}
 	}
 	return false
+}
+
+var verifyStage, _ = projectconfig.DefaultFactoryStages().Lookup("verify")
+
+// IsVerifyJob reports whether a job invokes verification, regardless of enabled state.
+func IsVerifyJob(job *domain.CronJob) bool {
+	if job == nil {
+		return false
+	}
+	return verifyStage.MatchesPrompt(job.Prompt) || verifyStage.MatchesGate(job.GateCommand)
 }
 
 // IsFactoryRepo reports the cached answer; failed reads are false and uncached.

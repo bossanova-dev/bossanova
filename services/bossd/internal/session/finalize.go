@@ -18,6 +18,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
+	"github.com/recurser/bossd/internal/ghusage"
 )
 
 // FinalizeResult is the shared outcome of the finalize pipeline.
@@ -82,17 +83,40 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 // clear token, block-on-failure — is identical regardless of the accepted
 // from-set.
 func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, expectedStates []int, trigger finalizeTrigger) (*FinalizeResult, error) {
+	var release func()
+	if trigger == finalizeTriggerQuotaResume {
+		sess, err := l.sessions.Get(ctx, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("get quota-blocked session: %w", err)
+		}
+		_, unlock, ok := lockRevival(ctx, l.sessions, sess, l.logger, "quota finalize resume", func(f *models.Session) bool {
+			return quotaFinalizeDue(f, l.now())
+		})
+		if !ok {
+			return &FinalizeResult{NoOp: true}, nil
+		}
+		release = unlock
+	}
 	// Step 1: conditional state transition. The rows_affected guard is the
 	// authoritative idempotency mechanism — a check-then-set Go path would
 	// race with concurrent Stop events.
 	advanced, err := l.sessions.UpdateStateConditionalFrom(
 		ctx, sessionID, int(machine.Finalizing), expectedStates,
 	)
+	if release != nil {
+		release()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("advance to finalizing: %w", err)
 	}
 	if !advanced {
 		return &FinalizeResult{NoOp: true}, nil
+	}
+	if trigger == finalizeTriggerQuotaResume {
+		var cleared *string
+		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{BlockedReason: &cleared}); err != nil {
+			return nil, fmt.Errorf("clear quota-wait reason: %w", err)
+		}
 	}
 	return l.finalizeAdvanced(ctx, sessionID, trigger)
 }
@@ -100,6 +124,7 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 // finalizeAdvanced runs the finalize pipeline after step 1 moved the session
 // to Finalizing.
 func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string, trigger finalizeTrigger) (*FinalizeResult, error) {
+	ctx = ghusage.WithLabel(ctx, ghusage.LabelFinalize)
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
@@ -242,7 +267,7 @@ func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string, trig
 	// leaving a failed session there would hide the problem. Deleted sessions
 	// (Deleted=true) have no row to transition — skip them regardless of outcome.
 	if needsAttention(result.Outcome) && !result.Deleted {
-		reason := sessionreason.FinalizeFailure(string(result.Outcome), result.Err)
+		reason := finalizeFailureReason(result, runBlocked)
 		var consumeReport **string
 		if runBlocked {
 			// The report's reason moves into blocked_reason and the report is

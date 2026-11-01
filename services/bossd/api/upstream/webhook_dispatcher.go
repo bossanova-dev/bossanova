@@ -70,6 +70,14 @@ type PRPoller interface {
 	PollPR(ctx context.Context, repoOriginURL string, prNumber int)
 }
 
+// BaseMoveNotifier learns of a push to a repo branch. It marks every session
+// whose PR targets that branch due for its next scheduled read (a base move
+// can make a PR conflict, and no PR-scoped webhook announces it) and returns
+// those PR numbers. Implemented by session.DisplayPoller; optional.
+type BaseMoveNotifier interface {
+	NoteBaseMoved(ctx context.Context, repoOriginURL, branch string) []int
+}
+
 // prPollTimeout bounds a detached on-demand state-machine poll.
 const prPollTimeout = 2 * time.Minute
 
@@ -82,6 +90,7 @@ type WebhookDispatcher struct {
 	verifyEvents   VerifyEventNotifier
 	invalidator    vcs.ReadInvalidator
 	prPoller       PRPoller
+	baseMoves      BaseMoveNotifier
 	health         *WebhookHealth
 	logger         zerolog.Logger
 	// evalDoneHook, when set (tests only), receives the done channel of each
@@ -135,6 +144,13 @@ func (d *WebhookDispatcher) WithPRPoller(poller PRPoller) *WebhookDispatcher {
 	return d
 }
 
+// WithBaseMoves attaches the notifier a branch push is reported to. Returns d
+// for chaining.
+func (d *WebhookDispatcher) WithBaseMoves(n BaseMoveNotifier) *WebhookDispatcher {
+	d.baseMoves = n
+	return d
+}
+
 // WithWebhookHealth attaches the tracker every delivery is recorded in, which
 // lets GitHub pollers slow down for repos whose webhooks arrive. Returns d for
 // chaining.
@@ -172,6 +188,10 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 	// Any delivery — PR-scoped or not — proves webhooks reach this daemon for
 	// the repo.
 	d.health.RecordDelivery(ev.GetRepoOriginUrl())
+	if ev.GetEventType() == "push" {
+		d.dispatchPush(ctx, ev)
+		return nil
+	}
 
 	payloadPR := d.maybeEmitRealtime(ctx, ev)
 
@@ -227,6 +247,38 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 		Int("pull_request", prNumber).
 		Msg("refreshed PR from webhook")
 	return nil
+}
+
+// dispatchPush reports a branch push to the base-move notifier and drops the
+// cached reads of every PR it marks due, so their next scheduled read sees the
+// post-push mergeability. A push names no PR, so nothing is refreshed inline:
+// GitHub computes mergeability lazily after a base push.
+func (d *WebhookDispatcher) dispatchPush(ctx context.Context, ev *pb.WebhookEvent) {
+	branch, ok := pushedBranch(ev.GetPayload())
+	if !ok {
+		d.logger.Debug().
+			Str("repo_origin_url", ev.GetRepoOriginUrl()).
+			Msg("webhook: push is not a live branch; skipping")
+		return
+	}
+	if d.baseMoves == nil {
+		return
+	}
+	prs := d.baseMoves.NoteBaseMoved(ctx, ev.GetRepoOriginUrl(), branch)
+	if d.invalidator != nil {
+		for _, pr := range prs {
+			d.invalidator.InvalidatePR(ev.GetRepoOriginUrl(), pr)
+		}
+	}
+	level := zerolog.DebugLevel
+	if len(prs) > 0 {
+		level = zerolog.InfoLevel
+	}
+	d.logger.WithLevel(level).
+		Str("repo_origin_url", ev.GetRepoOriginUrl()).
+		Str("branch", branch).
+		Ints("pull_requests", prs).
+		Msg("webhook: base branch moved; PRs marked due")
 }
 
 // evaluateCallbacks verifies authoritative GitHub state and fires durable

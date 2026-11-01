@@ -3754,7 +3754,7 @@ func TestBossSessionContext_AdvertisesExactlyExportedIdentifiers(t *testing.T) {
 		IsCron: true, IsUnattended: true, CronJobID: "j", CronName: "n",
 	}
 	// Behavioral (non-identifier) vars are intentionally never advertised.
-	behavioral := map[string]bool{"BOSS_UNATTENDED": true, "BOSS_CRON": true, "BOSS_CRON_JOB_ID": true, "BOSS_CRON_NAME": true}
+	behavioral := map[string]bool{"BOSS_UNATTENDED": true, "BOSS_CRON": true, "BOSS_CRON_JOB_ID": true, "BOSS_CRON_NAME": true, "BOSS_GITHUB_QUOTA_FLOOR": true}
 
 	prompt := bossSessionContext(f)
 	for name := range managedSessionEnv(f) {

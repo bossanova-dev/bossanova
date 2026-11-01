@@ -150,3 +150,54 @@ func TestAdmissionHoldCodes(t *testing.T) {
 		}
 	}
 }
+
+func TestCompute_JudgedHeadSupersedesAdmission_Sessions_AC221601(t *testing.T) {
+	for _, hold := range []string{"ticket-not-selected", "ticket-needs-person"} {
+		for _, tc := range []struct {
+			name             string
+			judged, verified bool
+			codes            []string
+			failing          int
+			kind             pb.AttentionKind
+			sentence         string
+			merge            bool
+			chatStatus       pb.ChatStatus
+			progressPhase    string
+			checksPending    bool
+		}{
+			{name: "sign-off", judged: true, codes: []string{"always-human-path", "human-review:database", "human-review:ui"}, kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, sentence: "Not verified · waiting for you · a database migration for a person to review", merge: true},
+			{name: "defect park", judged: true, codes: []string{"repair-exhausted"}, failing: 1, kind: pb.AttentionKind_ATTENTION_KIND_FIX, sentence: "Not verified · blocked · automatic repair gave up on this PR"},
+			{name: "blocked park", judged: true, codes: []string{"ledger-open"}, failing: 1, kind: pb.AttentionKind_ATTENTION_KIND_FIX, sentence: "Not verified · blocked · the PR checklist has open items"},
+			{name: "passed", judged: true, verified: true},
+			{name: "unparked failure", judged: true, failing: 1},
+			{name: "claim", chatStatus: pb.ChatStatus_CHAT_STATUS_WORKING, progressPhase: "verifying"},
+			{name: "wait", chatStatus: pb.ChatStatus_CHAT_STATUS_WAITING, progressPhase: "verifying", checksPending: true},
+		} {
+			t.Run(hold+"/"+tc.name, func(t *testing.T) {
+				in := unverifiedPR()
+				in.IsFactoryRepo, in.VerifyJudged, in.Verified = true, tc.judged, tc.verified
+				in.ParkCodes, in.ChecksFailing = tc.codes, tc.failing
+				in.ChatStatus, in.ProgressPhase = tc.chatStatus, tc.progressPhase
+				if tc.checksPending {
+					in.ChecksDone = 1
+				}
+				baseline := attention.Compute(in)
+				in.VerifyAdmission = attention.Admission{State: attention.AdmissionPending, Reason: hold}
+				got := attention.Compute(in)
+				if tc.judged {
+					if !proto.Equal(got, baseline) {
+						t.Fatalf("admission changed judged attention: %v, want %v", got, baseline)
+					}
+					if slices.Contains(got.GetParkCodes(), hold) {
+						t.Fatalf("judged head retained admission: %v", got)
+					}
+				} else if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !slices.Equal(got.GetParkCodes(), []string{hold}) {
+					t.Fatalf("pending head lost admission hold: %v", got)
+				}
+				if tc.sentence != "" && (got.GetKind() != tc.kind || got.GetSentence() != tc.sentence || slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) != tc.merge) {
+					t.Fatalf("attention = %v, want %s %q merge=%v", got, tc.kind, tc.sentence, tc.merge)
+				}
+			})
+		}
+	}
+}

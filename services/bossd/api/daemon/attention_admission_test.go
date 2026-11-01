@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"slices"
+
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -17,6 +19,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/sessionattention"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -24,6 +27,7 @@ func TestAttentionVerifyAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name, state, head, reason, label string
 		park                             string
+		parked                           bool
 		invalid                          string
 		missing, partial                 bool
 		want                             pb.AttentionKind
@@ -31,6 +35,7 @@ func TestAttentionVerifyAdmission(t *testing.T) {
 		{name: "excluded", state: "excluded", head: timelineHead, want: pb.AttentionKind_ATTENTION_KIND_MERGE},
 		{name: "admitted", state: "admitted", head: timelineHead, label: "queued", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 		{name: "pending", state: "pending", head: timelineHead, reason: "ticket-not-in-review", label: "needs In Review", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
+		{name: "ticket not selected, parked head", state: "pending", head: timelineHead, reason: "ticket-not-selected", parked: true, park: "human-review:ui", want: pb.AttentionKind_ATTENTION_KIND_REVIEW},
 		{name: "ticket not selected", state: "pending", head: timelineHead, reason: "ticket-not-selected", park: "ticket-not-selected", want: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "ticket needs person", state: "pending", head: timelineHead, reason: "ticket-needs-person", park: "ticket-needs-person", want: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "pending unknown", state: "pending", head: timelineHead, reason: "unknown:tracker", label: "verify unknown", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
@@ -51,7 +56,21 @@ func TestAttentionVerifyAdmission(t *testing.T) {
 					data = []byte(tc.invalid)
 				}
 			}
-			got, facts := boardAttentionWithAdmission(t, data, tc.partial)
+			var verdicts []vcs.CheckResult
+			if tc.parked {
+				verdicts = []vcs.CheckResult{{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: "needs human: human-review:ui"}}
+			}
+			got, facts := boardAttentionWithAdmission(t, data, tc.partial, verdicts...)
+			if tc.parked {
+				latest := &facts.Snapshots[len(facts.Snapshots)-1]
+				timeline := attention.Compute(sessionattention.Derive(attentionFacts(facts, latest)).Input)
+				if got.GetKind() != timeline.GetKind() || got.GetSentence() != timeline.GetSentence() || !slices.Equal(got.GetParkCodes(), timeline.GetParkCodes()) || !slices.Equal(got.GetActions(), timeline.GetActions()) {
+					t.Fatalf("board %v disagrees with timeline %v", got, timeline)
+				}
+				if !slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
+					t.Fatalf("park lost merge action: %v", got)
+				}
+			}
 			if (facts.VerifyAdmission.State == attention.AdmissionExcluded) != (tc.state == "excluded" && tc.head == timelineHead) {
 				t.Fatalf("timeline admission=%v disagrees with board attention=%v", facts.VerifyAdmission, tc.want)
 			}
@@ -91,7 +110,7 @@ func admissionSnapshot(t *testing.T, head, state, reason string) []byte {
 // boardAttentionWithAdmission lists a green, mergeable PR session in a repository with an enabled
 // verify cron whose admission file holds data (none when nil), returning its board attention and
 // its timeline facts.
-func boardAttentionWithAdmission(t *testing.T, data []byte, partial bool) (*pb.SessionAttention, timelineFacts) {
+func boardAttentionWithAdmission(t *testing.T, data []byte, partial bool, verdicts ...vcs.CheckResult) (*pb.SessionAttention, timelineFacts) {
 	t.Helper()
 	repoPath := t.TempDir()
 	cmd := exec.CommandContext(t.Context(), "git", "init", repoPath)
@@ -111,11 +130,15 @@ func boardAttentionWithAdmission(t *testing.T, data []byte, partial bool) (*pb.S
 	n, mergeable := 1, true
 	row := &models.Session{ID: "s", RepoID: "r", PRNumber: &n, State: machine.ReadyForReview}
 	tr := status.NewDisplayTracker()
-	tr.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HeadSHA: timelineHead, Mergeable: &mergeable, IsPartial: partial})
+	display := vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HeadSHA: timelineHead, Mergeable: &mergeable, IsPartial: partial}
+	if phase := vcs.ClassifyVerify(verdicts); phase.Kind == vcs.VerifyPhaseNeedsHuman {
+		display.Status, display.VerifyReason = vcs.DisplayStatusNeedsHuman, phase.Reason
+	}
+	tr.Set("s", display)
 	s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tr, nil)
 	s.repos = &listSessionsRepoStoreFake{repos: map[string]*models.Repo{"r": {ID: "r", LocalPath: repoPath}}}
 	s.cronJobs = &attentionCronStore{jobs: []*domain.CronJob{{Prompt: "/boss-verify", IsEnabled: true}}}
-	s.checkSnapshots = &fakeCheckSnapshotStore{snaps: []db.CheckSnapshot{{HeadSHA: timelineHead, RawJSON: checksJSON(t, greenCI(2, ""))}}}
+	s.checkSnapshots = &fakeCheckSnapshotStore{snaps: []db.CheckSnapshot{{SessionID: "s", HeadSHA: timelineHead, ComputedStatus: int(display.Status), RawJSON: checksJSON(t, append(greenCI(2, ""), verdicts...))}}}
 	resp, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
 	if err != nil {
 		t.Fatal(err)

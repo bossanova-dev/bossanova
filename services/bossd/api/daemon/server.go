@@ -135,6 +135,7 @@ type Server struct {
 	accountMaterializations AgentAccountMaterializations
 	checkSnapshots          checkSnapshotReader
 	agentRuns               agentRunStore
+	gitHubUsage             GitHubUsageReader
 	rotationEvents          rotationEventReader
 	evidence                EvidenceSource
 	cronScheduler           *cron.Scheduler
@@ -256,6 +257,7 @@ type Server struct {
 	webhookEvidence       WebhookEvidence
 	listener              net.Listener
 	srv                   *http.Server
+	callers               CallerAuthority
 	agentLogsDir          string
 	// protectedRoots is the symlink-resolved protected-root list the startup
 	// diagnostic derived (BOS-725). The doctor check unions it with its own
@@ -336,6 +338,8 @@ var (
 
 // Config holds all dependencies for creating a new Server.
 type Config struct {
+	Callers CallerAuthority
+
 	CredentialDevices *CredentialDeviceService
 
 	EvidenceBucketOpener evidenceBucketOpener
@@ -433,6 +437,7 @@ type Config struct {
 	AccountMaterializations AgentAccountMaterializations
 	CheckSnapshots          checkSnapshotReader
 	AgentRuns               agentRunStore
+	GitHubUsage             GitHubUsageReader // nil: GetGitHubUsage fails FailedPrecondition
 	// RotationEvents is the rotation audit store hydrated onto
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
 	RotationEvents rotationEventReader
@@ -679,6 +684,7 @@ type PRRefresher interface {
 func New(cfg Config) *Server {
 	srv := &Server{
 		chatTmux:              cfg.ChatTmux,
+		callers:               cfg.Callers,
 		protectedRootsProbe:   cfg.ProtectedRootsProbe,
 		verifyVerbsFactory:    cfg.NewVerifyVerbs,
 		environmentOverlay:    cfg.EnvironmentOverlay,
@@ -720,6 +726,7 @@ func New(cfg Config) *Server {
 
 		checkSnapshots:   cfg.CheckSnapshots,
 		agentRuns:        cfg.AgentRuns,
+		gitHubUsage:      cfg.GitHubUsage,
 		rotationEvents:   cfg.RotationEvents,
 		evidence:         cfg.Evidence,
 		webhookEvidence:  cfg.WebhookEvidence,
@@ -895,6 +902,7 @@ func (s *Server) Listen(socketPath string) error {
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(s, connect.WithInterceptors(
 		socketauth.NewServerInterceptor(token),
+		NewCallerInterceptor(s.callers, nil),
 		errortrack.Interceptor(),
 	))
 	mux.Handle(path, withStreamingWriteDeadlineOverride(handler))
@@ -909,6 +917,9 @@ func (s *Server) Listen(socketPath string) error {
 		// cross-service account-switch boundary.
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  120 * time.Second,
+	}
+	if s.callers != nil {
+		s.srv.ConnContext = s.callers.ConnContext
 	}
 	return nil
 }

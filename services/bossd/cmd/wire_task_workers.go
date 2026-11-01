@@ -76,8 +76,10 @@ func (w *daemonWiring) wireTaskWorkers() {
 		Canceller: cronCanceller,
 		// Cron gates receive only the scoped proof model key, never the upload token.
 		GateProofEnv: proofenvkeyring.New(log.Logger),
-		Logger:       log.Logger,
-		Telemetry:    w.telemetryClient,
+		// Scheduled fires leave the daemon token's GitHub quota floor for verify.
+		Quota:     w.ghProvider,
+		Logger:    log.Logger,
+		Telemetry: w.telemetryClient,
 	})
 	// NOTE: cronScheduler.Start is intentionally deferred until after the hook
 	// server is bound and lifecycle.SetHookPort has run (below). A tick that

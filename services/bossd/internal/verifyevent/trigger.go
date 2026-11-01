@@ -17,6 +17,7 @@ import (
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/rs/zerolog"
 )
 
@@ -229,7 +230,7 @@ func (t *Trigger) execute(ctx context.Context, key prKey, class string, generati
 	if !ok {
 		return
 	}
-	ctx = vcs.WithCachedReads(ctx)
+	ctx = ghusage.WithLabel(vcs.WithCachedReads(ctx), ghusage.LabelVerifyEvent)
 	var head string
 	if class == "checks" {
 		if t.checks == nil {

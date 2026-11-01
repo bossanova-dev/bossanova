@@ -10,6 +10,7 @@ go_library(
         "agent_chat_params.go",
         "agent_run.go",
         "broadcast.go",
+        "caller.go",
         "chat_delivery.go",
         "check_snapshot.go",
         "cron_job.go",
@@ -58,6 +59,7 @@ go_test(
     srcs = [
         "agent_account_test.go",
         "broadcast_test.go",
+        "caller_test.go",
         "proxy_companion_test.go",
     ],
     embed = [":domain"],

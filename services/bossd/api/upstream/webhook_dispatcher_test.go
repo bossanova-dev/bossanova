@@ -1369,3 +1369,67 @@ func TestWebhookDispatcherVerifyDoesNotWaitForGate(t *testing.T) {
 	default:
 	}
 }
+
+type baseMoveCall struct{ repo, branch string }
+
+type recordingBaseMoves struct {
+	calls []baseMoveCall
+	prs   []int
+}
+
+func (r *recordingBaseMoves) NoteBaseMoved(_ context.Context, repoOriginURL, branch string) []int {
+	r.calls = append(r.calls, baseMoveCall{repoOriginURL, branch})
+	return r.prs
+}
+
+// TestDispatch_PushNotesBaseMove pins the branch-push path: a live branch push
+// reaches the base-move notifier with the bare branch name and drops the cached
+// reads of every PR it marks due, without refreshing, polling or evaluating a
+// PR; a tag push, a branch deletion or an unparsable payload reaches nothing.
+func TestDispatch_PushNotesBaseMove(t *testing.T) {
+	const origin = "https://github.com/owner/repo"
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    []baseMoveCall
+	}{
+		{"branch push", `{"ref":"refs/heads/main","deleted":false}`, []baseMoveCall{{origin, "main"}}},
+		{"nested branch name", `{"ref":"refs/heads/release/2026"}`, []baseMoveCall{{origin, "release/2026"}}},
+		{"tag push", `{"ref":"refs/tags/v1.0.0"}`, nil},
+		{"branch deletion", `{"ref":"refs/heads/main","deleted":true}`, nil},
+		{"unparsable payload", `{`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &orderLog{}
+			moves := &recordingBaseMoves{prs: []int{7, 9}}
+			evaluator := &blockingEvaluator{started: make(chan struct{})}
+			dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).
+				WithReadInvalidator(orderedInvalidator{log}).
+				WithPRPoller(orderedPRPoller{log}).
+				WithEvaluator(evaluator).
+				WithBaseMoves(moves)
+
+			if err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+				EventType:     "push",
+				RepoOriginUrl: origin,
+				Payload:       []byte(tc.payload),
+			}); err != nil {
+				t.Fatalf("Dispatch: %v", err)
+			}
+
+			if !slices.Equal(moves.calls, tc.want) {
+				t.Fatalf("NoteBaseMoved calls = %v, want %v", moves.calls, tc.want)
+			}
+			var wantSteps []string
+			if tc.want != nil {
+				wantSteps = []string{"invalidate " + origin + "#7", "invalidate " + origin + "#9"}
+			}
+			if steps := log.snapshot(); !slices.Equal(steps, wantSteps) {
+				t.Fatalf("steps = %v, want only %v (no refresh or poll)", steps, wantSteps)
+			}
+			if len(evaluator.calls) != 0 {
+				t.Fatalf("callback evaluator called %v, want never", evaluator.calls)
+			}
+		})
+	}
+}

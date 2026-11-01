@@ -245,29 +245,36 @@ func TestPrApprove(t *testing.T) {
 	})
 }
 
-func TestPrVerbsRefuseInsideAnAgentChat(t *testing.T) {
-	g := New(nil, Options{Getenv: func(key string) string {
-		if key == "BOSS_AGENT_SESSION_ID" {
-			return "chat-123"
-		}
-		return ""
-	}})
-	for _, verb := range []string{"approve"} {
-		cmd, _ := prTestCmd(false)
-		cmd.Use = verb
-		cmd.Flags().Bool("dry-run", false, "")
-		cmd.Flags().String("repo", "", "")
-		ran := false
-		err := g.runPrVerb(cmd, "7", func(context.Context, Client, prOptions) error {
-			ran = true
-			return nil
-		})
-		if ran {
-			t.Fatalf("%s ran inside an agent chat", verb)
-		}
-		if rpcerr.KindOf(err) != rpcerr.PermissionDenied || !strings.Contains(err.Error(), "chat-123") || !strings.Contains(err.Error(), "your own terminal") {
-			t.Fatalf("%s: err = %v", verb, err)
-		}
+type prCallerFake struct {
+	Client
+	*prFake
+}
+
+func (f *prCallerFake) ApproveSessionPR(ctx context.Context, id string, dryRun bool) (*pb.VerifyApproveResult, error) {
+	return f.prFake.ApproveSessionPR(ctx, id, dryRun)
+}
+func (f *prCallerFake) ListSessions(ctx context.Context, req *pb.ListSessionsRequest, opts rpc.SessionReadOptions) ([]*pb.Session, error) {
+	return f.prFake.ListSessions(ctx, req, opts)
+}
+
+func TestPrApproveSurfacesDaemonPermissionDenied(t *testing.T) {
+	f := &prFake{sessions: []*pb.Session{prSession("s-a", 7, originA, "/wt/a")}, approveErr: rpcerror.WrapError(connect.NewError(connect.CodePermissionDenied, errors.New("agent chat chat-123 (role build); run from your own terminal")))}
+	g := New(func(*cobra.Command) (Client, error) { return &prCallerFake{prFake: f}, nil }, Options{Getenv: func(string) string { t.Fatal("approve read client environment"); return "" }})
+	cmd, out := prTestCmd(true)
+	cmd.Flags().Bool("dry-run", false, "")
+	cmd.Flags().String("repo", "", "")
+	err := g.runPrVerb(cmd, "7", func(ctx context.Context, c Client, opts prOptions) error { return prApprove(ctx, cmd, c, opts) })
+	if rpcerr.KindOf(err) != rpcerr.PermissionDenied || len(f.verbs) != 1 {
+		t.Fatalf("err=%v verbs=%v", err, f.verbs)
+	}
+	var body struct {
+		OK    bool `json:"ok"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if e := json.Unmarshal(out.Bytes(), &body); e != nil || body.OK || body.Error.Code != "PERMISSION_DENIED" {
+		t.Fatalf("envelope: %s (%v)", out.String(), e)
 	}
 }
 

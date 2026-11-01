@@ -413,8 +413,8 @@ func TestVerifyCannotAssess_Sessions_AC214601(t *testing.T) {
 			if !IsVerifyCannotAssess(hold) || !IsVerifyHold(hold) {
 				t.Error("cannot-assess status is not a hold")
 			}
-			if IsVerifyPark(hold) || IsVerifyRepairing(hold) || VerifyPassed(checks) {
-				t.Error("cannot-assess status is a park, repair request or pass")
+			if IsVerifyPark(hold) || IsVerifyRepairing(hold) || VerifyPassed(checks) || VerifyJudged(checks) {
+				t.Error("cannot-assess status is a park, repair request, pass or judgment")
 			}
 			verdict := EvaluateChecks("head", checks, nil)
 			if verdict.Total != 1 || verdict.Passed != 1 || !verdict.DemonstratedPass() {
@@ -442,5 +442,33 @@ func TestVerifyCannotAssess_Sessions_AC214601(t *testing.T) {
 	}
 	if display := ComputeDisplayStatus(&PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)}, []CheckResult{control}, nil); display.Status != DisplayStatusFailing {
 		t.Errorf("ordinary error display = %+v", display)
+	}
+}
+
+func TestVerifyJudged(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		check CheckResult
+		want  bool
+	}{
+		{"pending park", CheckResult{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: "needs human: human-review:ui"}, true},
+		{"completed park", CheckResult{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess), Description: "needs human: human-review:ui"}, true},
+		{"pass", CheckResult{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)}, true},
+		{"defect", CheckResult{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "defect: tests red"}, true},
+		{"blocked", CheckResult{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "blocked: no review"}, true},
+		{"claim", CheckResult{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: "verifying…"}, false},
+		{"wait", CheckResult{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: "waiting: base"}, false},
+		{"other context", CheckResult{Name: "ci", Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)}, false},
+		{"no conclusion", CheckResult{Name: VerifyStatusContext, Status: CheckStatusCompleted}, false},
+		{"skipped", CheckResult{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSkipped)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := VerifyJudged([]CheckResult{tc.check}); got != tc.want {
+				t.Fatalf("VerifyJudged = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if VerifyJudged(nil) {
+		t.Fatal("no checks must not judge the head")
 	}
 }

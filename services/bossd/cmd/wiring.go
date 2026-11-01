@@ -32,6 +32,7 @@ import (
 	"github.com/recurser/bossd/internal/domain/questionsignal"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"github.com/recurser/bossd/internal/evidence"
+	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/recurser/bossd/internal/notesync"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
@@ -104,6 +105,7 @@ type daemonWiring struct {
 	evidenceReader                 *evidence.Reader
 	executablePath                 string
 	ghProvider                     *github.Provider
+	ghUsage                        *ghusage.Ledger
 	githubCallbacks                *db.SQLiteGitHubCallbackStore
 	goroutineBudget                time.Duration
 	hookSrv                        *hooks.HookServer

@@ -53,6 +53,17 @@ type Provider struct {
 	limits rateLimitBreaker
 	// cache serves and coalesces background reads; see cachedRead.
 	cache *readCache
+	// quotas caches and coalesces `gh api rate_limit` readings; see readQuotas.
+	quotas quotaCache
+	// usage meters every call gh sends to GitHub; nil records nothing.
+	usage UsageRecorder
+}
+
+// UsageRecorder meters one GitHub call: label is the attribution the call's
+// context carries and quota the GitHub quota it spends. Record must not block
+// or fail the call it meters.
+type UsageRecorder interface {
+	Record(label, quota string)
 }
 
 const ghWaitDelay = 5 * time.Second
@@ -82,6 +93,11 @@ func WithReadCacheTTL(ttl time.Duration) ProviderOption {
 	return func(p *Provider) { p.cache.ttl = ttl }
 }
 
+// WithUsageRecorder meters every call the provider sends to GitHub.
+func WithUsageRecorder(r UsageRecorder) ProviderOption {
+	return func(p *Provider) { p.usage = r }
+}
+
 // New creates a new GitHub provider.
 func New(logger zerolog.Logger, opts ...ProviderOption) *Provider {
 	p := &Provider{
@@ -97,6 +113,7 @@ func New(logger zerolog.Logger, opts ...ProviderOption) *Provider {
 	p.limits.logger = logger
 	p.limits.now = p.nowFn
 	p.cache.now = p.nowFn
+	p.quotas.now = p.nowFn
 	return p
 }
 
@@ -580,12 +597,8 @@ func (p *Provider) PostCommitStatus(ctx context.Context, repoPath, sha string, s
 }
 
 // fetchCheckSet reads CI checks and build provenance for a pull request from GitHub,
-// bypassing the read cache (see GetCheckSet).
-//
-// The gh CLI's "pr checks" command combines status and conclusion into a single
-// "state" field (SUCCESS, FAILURE, PENDING, STARTUP_FAILURE, etc.) rather than
-// exposing them separately. We map these combined states back to our Status +
-// Conclusion model.
+// bypassing the read cache (see GetCheckSet). buildCheckSet turns its rows
+// into the result.
 func (p *Provider) fetchCheckSet(ctx context.Context, repoPath string, prID int) (vcs.CheckSet, error) {
 	out, err := p.gh(ctx,
 		"pr", "checks", strconv.Itoa(prID),
@@ -603,57 +616,11 @@ func (p *Provider) fetchCheckSet(ctx context.Context, repoPath string, prID int)
 		return vcs.CheckSet{}, fmt.Errorf("get check results: %w", err)
 	}
 
-	var raw []struct {
-		Name        string `json:"name"`
-		State       string `json:"state"`
-		Workflow    string `json:"workflow"`
-		Description string `json:"description"`
-	}
+	var raw []checkRow
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return vcs.CheckSet{}, fmt.Errorf("parse check results: %w", err)
 	}
-
-	set := vcs.CheckSet{Checks: make([]vcs.CheckResult, 0, len(raw))}
-	for _, r := range raw {
-		status, conclusion, recognized := parseCheckState(r.State)
-		if r.Workflow == "" && provenanceContexts[r.Name] {
-			if r.Name == vcs.BuildReceiptContext {
-				// Any boss/build status, whatever its state, means a
-				// receipt carrier must not post over it.
-				set.BuildReceiptSeen = true
-			}
-			if r.Name == vcs.BuildReceiptContext && status == vcs.CheckStatusCompleted && conclusion != nil && *conclusion == vcs.CheckConclusionSuccess {
-				set.HasBuildReceipt = true
-			}
-			// A provenance receipt (a commit status a boss skill posts to say
-			// who produced the head) is not a gate. Counting it would turn a
-			// head with no CI into a demonstrated pass; skills-toolbox/
-			// pr-check-state.mjs drops the same contexts.
-			continue
-		}
-		if !recognized {
-			// An unrecognized state means GitHub introduced (or we missed)
-			// a value we don't enumerate. Surface the gap so we can add it
-			// to the switch; the aggregate verdict treats it as unknown.
-			p.logger.Warn().
-				Str("state", r.State).
-				Str("name", r.Name).
-				Str("workflow", r.Workflow).
-				Msg("unknown gh pr checks state; treating check as unclassified")
-		}
-		set.Checks = append(set.Checks, vcs.CheckResult{
-			ID:           r.Workflow + "/" + r.Name,
-			Name:         r.Name,
-			Status:       status,
-			Unclassified: !recognized,
-			Conclusion:   conclusion,
-			// The description carries the boss/verify phase and park reason
-			// (vcs.ClassifyVerify); for an Actions job it is informational.
-			Description: r.Description,
-		})
-	}
-
-	return set, nil
+	return p.buildCheckSet(raw), nil
 }
 
 // GetFailedCheckLogs returns the log output for a specific failed check run.

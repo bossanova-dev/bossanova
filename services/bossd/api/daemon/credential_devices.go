@@ -161,6 +161,29 @@ func (s *Server) GetAgentCredentialDeviceStatus(ctx context.Context, _ *connect.
 	if d == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("device enrollment is not configured"))
 	}
+	device, err := d.status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pb.GetAgentCredentialDeviceStatusResponse{Device: device}), nil
+}
+
+func (s *Server) RenewAgentCredentialDeviceEnrollment(ctx context.Context, _ *connect.Request[pb.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[pb.RenewAgentCredentialDeviceEnrollmentResponse], error) {
+	d := s.credentialDevices
+	if d == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("device enrollment is not configured"))
+	}
+	if err := d.EnsureEnrollment(ctx); err != nil {
+		return nil, err
+	}
+	device, err := d.status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pb.RenewAgentCredentialDeviceEnrollmentResponse{Device: device}), nil
+}
+
+func (d *CredentialDeviceService) status(ctx context.Context) (*pb.AgentCredentialDevice, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.config.LoadKey == nil || len(d.config.IdentityKey) != ed25519.PrivateKeySize {
@@ -189,7 +212,7 @@ func (s *Server) GetAgentCredentialDeviceStatus(ctx context.Context, _ *connect.
 	device.IdentityPublicKey = identity
 	device.DevicePublicKey = key.PublicKey().Bytes()
 	device.Fingerprint = devicekey.Fingerprint(identity, device.DevicePublicKey)
-	return connect.NewResponse(&pb.GetAgentCredentialDeviceStatusResponse{Device: device}), nil
+	return device, nil
 }
 func (s *Server) ListAgentCredentialDevices(ctx context.Context, _ *connect.Request[pb.ListAgentCredentialDevicesRequest]) (*connect.Response[pb.ListAgentCredentialDevicesResponse], error) {
 	if s.credentialDevices == nil {

@@ -5,6 +5,7 @@ package vcs
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // Provider is the interface that VCS hosting implementations must satisfy.
@@ -179,6 +180,15 @@ var ErrReviewThreadsUnverified = errors.New("review thread state could not be ve
 // the PR.
 var ErrRateLimited = errors.New("VCS API rate limit exhausted")
 
+// Quota is one of the hosting service's API quotas as it last reported it: how
+// many calls the window allows, how many are left, and when the window resets.
+type Quota struct {
+	Name      string
+	Limit     int
+	Remaining int
+	ResetAt   time.Time
+}
+
 type cachedReadsKey struct{}
 
 // WithCachedReads marks ctx as a background read that may be served from a
@@ -201,4 +211,14 @@ func CachedReadsAllowed(ctx context.Context) bool {
 // before anything re-reads it. Callers type-assert and skip it when absent.
 type ReadInvalidator interface {
 	InvalidatePR(repoPath string, prID int)
+}
+
+// RateLimitResetAt returns the provider's quota reset time through wrapped errors.
+func RateLimitResetAt(err error) (time.Time, bool) {
+	var limited interface{ ResetAt() time.Time }
+	if !errors.As(err, &limited) {
+		return time.Time{}, false
+	}
+	reset := limited.ResetAt()
+	return reset, !reset.IsZero()
 }

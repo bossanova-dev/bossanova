@@ -18,6 +18,7 @@ const (
 	finalizeTriggerFinishRequest
 	finalizeTriggerBlockedFinish
 	finalizeTriggerArchive
+	finalizeTriggerQuotaResume
 )
 
 func finalizePRBody(session *models.Session, trigger finalizeTrigger) string {
@@ -27,6 +28,7 @@ func finalizePRBody(session *models.Session, trigger finalizeTrigger) string {
 		"the run's own finish request",
 		"blocked-run finish",
 		"archive (zero-output)",
+		"quota reset resume",
 	}
 	body := fmt.Sprintf("bossd opened this PR while finalizing session `%s`.\n\nTrigger: %s.\n\nThe agent's run ended without opening its own PR.\n", session.ID, reasons[trigger])
 	// Verify ties a PR to its ticket only through this first line

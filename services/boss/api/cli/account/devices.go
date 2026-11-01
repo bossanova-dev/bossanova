@@ -18,6 +18,7 @@ import (
 
 // credentialDeviceClient keeps enrollment separate from the account registry interface.
 type credentialDeviceClient interface {
+	RenewAgentCredentialDeviceEnrollment(context.Context) (*pb.RenewAgentCredentialDeviceEnrollmentResponse, error)
 	GetAgentCredentialDeviceStatus(context.Context) (*pb.GetAgentCredentialDeviceStatusResponse, error)
 	ListAgentCredentialDevices(context.Context) (*pb.ListAgentCredentialDevicesResponse, error)
 	ApproveAgentCredentialDevice(context.Context, *pb.ApproveAgentCredentialDeviceRequest) error
@@ -59,14 +60,15 @@ func (g *group) withDeviceClient(cmd *cobra.Command, run func(credentialDeviceCl
 func (g *group) devicesCommand() *cobra.Command {
 	devices := &cobra.Command{Use: "devices", Short: "Manage credential-sharing device enrollment"}
 	status := &cobra.Command{Use: "status", Short: "Show this daemon's device fingerprint and enrollment status", Args: cobra.NoArgs, RunE: g.runDeviceStatus}
+	request := &cobra.Command{Use: "request", Short: "Open a fresh credential device enrollment window", Args: cobra.NoArgs, RunE: g.runDeviceRequest}
 	ls := &cobra.Command{Use: "ls", Short: "List credential-sharing devices", Args: cobra.NoArgs, RunE: g.runDeviceList}
-	for _, cmd := range []*cobra.Command{status, ls} {
+	for _, cmd := range []*cobra.Command{status, request, ls} {
 		cmd.Flags().Bool("json", false, "Emit stable JSON")
 	}
 	approve := &cobra.Command{Use: "approve <daemon-id>", Short: "Approve a device after checking its fingerprint out of band", Args: cobra.ExactArgs(1), RunE: g.runDeviceApprove}
 	approve.Flags().String("fingerprint", "", "Fingerprint verified out of band on the target daemon")
 	revoke := &cobra.Command{Use: "revoke <daemon-id>", Short: "Revoke a device's future credential access", Args: cobra.ExactArgs(1), RunE: g.runDeviceRevoke}
-	devices.AddCommand(status, ls, approve, revoke)
+	devices.AddCommand(status, request, ls, approve, revoke)
 	return devices
 }
 func (g *group) runDeviceStatus(cmd *cobra.Command, _ []string) error {
@@ -81,6 +83,26 @@ func (g *group) runDeviceStatus(cmd *cobra.Command, _ []string) error {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(d)
 		}
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Daemon: %s\nStatus: %s\nFingerprint: %s\n", d.DaemonID, d.Status, d.Fingerprint)
+		return err
+	})
+}
+
+func (g *group) runDeviceRequest(cmd *cobra.Command, _ []string) error {
+	return g.withDeviceClient(cmd, func(c credentialDeviceClient) error {
+		resp, err := c.RenewAgentCredentialDeviceEnrollment(cmd.Context())
+		if err != nil {
+			return err
+		}
+		d := deviceToJSON(resp.GetDevice())
+		asJSON, _ := cmd.Flags().GetBool("json")
+		if asJSON {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(d)
+		}
+		expires := d.ExpiresAt
+		if expires == "" {
+			expires = "—"
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Daemon: %s\nStatus: %s\nFingerprint: %s\nExpires: %s\nOn an enrolled machine run: boss account devices approve %s --fingerprint %s\n", d.DaemonID, d.Status, d.Fingerprint, expires, d.DaemonID, d.Fingerprint)
 		return err
 	})
 }

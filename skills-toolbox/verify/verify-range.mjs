@@ -252,3 +252,38 @@ export function selectChangedRange(read, { repo, pr, baseSha, headSha, readRevoc
   }
   return { paths, files, range: delta }
 }
+
+// Resolve the last observed CI context set from the PR timeline.
+export function resolvePriorHead(payload, headSha) {
+  const unknown = { known: false }
+  if (!plainObject(payload) || payload.errors !== undefined) return unknown
+  const nodes = payload.data?.repository?.pullRequest?.timelineItems?.nodes
+  if (!Array.isArray(nodes)) return unknown
+  for (const node of [...nodes].reverse()) {
+    const commit = node?.commit ?? node?.beforeCommit
+    if (!isSha(commit?.oid)) return unknown
+    if (commit.oid.toLowerCase() === headSha.toLowerCase()) continue
+    if (commit.statusCheckRollup === null) continue
+    const connection = commit.statusCheckRollup?.contexts
+    if (
+      !plainObject(connection) ||
+      connection.pageInfo?.hasNextPage !== false ||
+      !Array.isArray(connection.nodes)
+    )
+      return unknown
+    const contexts = []
+    for (const context of connection.nodes) {
+      const name = context?.name ?? context?.context
+      if (typeof name !== 'string' || !name.trim()) return unknown
+      if (name.startsWith('boss/')) continue
+      const workflow = context.checkSuite?.workflowRun?.workflow
+      contexts.push({
+        ...context,
+        ...(workflow?.name ? { workflowName: workflow.name } : {}),
+        ...(Number.isInteger(workflow?.databaseId) ? { workflowId: workflow.databaseId } : {}),
+      })
+    }
+    if (contexts.length) return { known: true, sha: commit.oid.toLowerCase(), contexts }
+  }
+  return { known: true, sha: null }
+}

@@ -28,6 +28,7 @@ type credentialDeviceRPCSpy struct {
 	revokedKeys   map[string]bool
 	rejectAllKeys bool
 	enrollmentErr error
+	onEnrollment  func(*pb.RequestAgentCredentialDeviceEnrollmentRequest)
 }
 
 func (f *credentialDeviceRPCSpy) ListAgentCredentialDevices(context.Context, *connect.Request[pb.ListAgentCredentialDevicesRequest]) (*connect.Response[pb.ListAgentCredentialDevicesResponse], error) {
@@ -108,6 +109,9 @@ func (f *credentialDeviceRPCSpy) RequestAgentCredentialDeviceEnrollment(_ contex
 		}
 		err.AddDetail(detail)
 		return nil, err
+	}
+	if f.onEnrollment != nil {
+		f.onEnrollment(r.Msg)
 	}
 	return connect.NewResponse(&pb.RequestAgentCredentialDeviceEnrollmentResponse{}), nil
 }
@@ -270,5 +274,61 @@ func TestEnsureHiddenRevokedCredentialDevice_Accounts_AC29(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRenewCredentialDeviceEnrollment_Accounts_AC224501(t *testing.T) {
+	for _, tc := range []struct {
+		status       string
+		wantRequests int
+		wantStatus   string
+	}{
+		{"expired", 1, "pending"}, {"enrolled", 0, "enrolled"}, {"pending", 0, "pending"},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			public, private, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, err := ecdh.X25519().GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expiry := time.Now().Add(time.Hour)
+			if tc.status == "expired" {
+				expiry = time.Now().Add(-time.Hour)
+			}
+			rpc := &credentialDeviceRPCSpy{devices: []*pb.AgentCredentialDevice{{DaemonId: "self", Status: tc.status, DevicePublicKey: key.PublicKey().Bytes(), IdentityPublicKey: []byte("untrusted upstream identity"), ExpiresAt: timestamppb.New(expiry)}}}
+			rpc.onEnrollment = func(r *pb.RequestAgentCredentialDeviceEnrollmentRequest) {
+				rpc.devices = []*pb.AgentCredentialDevice{{DaemonId: "self", Status: "pending", DevicePublicKey: r.DevicePublicKey, IdentityPublicKey: []byte("untrusted upstream identity"), ExpiresAt: timestamppb.New(time.Now().Add(time.Hour))}}
+			}
+			s := &Server{credentialDevices: NewCredentialDeviceService(CredentialDeviceConfig{
+				DaemonID: "self", IdentityKey: private, Client: rpc,
+				LoadKey:        func(string) (*ecdh.PrivateKey, error) { return key, nil },
+				SessionToken:   func() string { return "daemon-session" },
+				OnTrustChanged: func(context.Context) { t.Fatal("renewal changed trust") },
+			})}
+			response, err := s.RenewAgentCredentialDeviceEnrollment(context.Background(), connect.NewRequest(&pb.RenewAgentCredentialDeviceEnrollmentRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			device := response.Msg.Device
+			if rpc.enrollments != tc.wantRequests || device.Status != tc.wantStatus {
+				t.Fatalf("requests=%d status=%q", rpc.enrollments, device.Status)
+			}
+			if device.DaemonId != "self" || device.Fingerprint != devicekey.Fingerprint(public, key.PublicKey().Bytes()) || !bytes.Equal(device.IdentityPublicKey, public) || !bytes.Equal(device.DevicePublicKey, key.PublicKey().Bytes()) {
+				t.Fatalf("renewal did not return local trust anchor: %v", device)
+			}
+			if tc.status == "expired" && !device.ExpiresAt.AsTime().After(time.Now()) {
+				t.Fatal("renewal did not return fresh expiry")
+			}
+		})
+	}
+}
+
+func TestRenewCredentialDeviceEnrollmentUnconfigured_Accounts_AC224501(t *testing.T) {
+	_, err := (&Server{}).RenewAgentCredentialDeviceEnrollment(context.Background(), connect.NewRequest(&pb.RenewAgentCredentialDeviceEnrollmentRequest{}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("error=%v", err)
 	}
 }

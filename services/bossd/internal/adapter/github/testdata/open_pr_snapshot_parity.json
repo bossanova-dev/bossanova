@@ -1,0 +1,496 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 1,
+            "title": "clean",
+            "body": "body 1",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature-1",
+            "baseRefName": "main",
+            "headRefOid": "sha1",
+            "isCrossRepository": false,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "canBeRebased": true,
+            "reviewDecision": "",
+            "author": {
+              "login": "dependabot",
+              "__typename": "Bot"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": false
+              },
+              "nodes": [
+                {
+                  "id": "PRR_1",
+                  "state": "COMMENTED",
+                  "authorAssociation": "NONE",
+                  "author": {
+                    "login": "coderabbitai",
+                    "__typename": "Bot"
+                  }
+                },
+                {
+                  "id": "PRR_2",
+                  "state": "CHANGES_REQUESTED",
+                  "authorAssociation": "CONTRIBUTOR",
+                  "author": {
+                    "login": "drive-by",
+                    "__typename": "User"
+                  }
+                }
+              ]
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha1",
+                    "statusCheckRollup": {
+                      "contexts": {
+                        "pageInfo": {
+                          "hasNextPage": false
+                        },
+                        "nodes": [
+                          {
+                            "__typename": "CheckRun",
+                            "name": "lint",
+                            "status": "COMPLETED",
+                            "conclusion": "FAILURE",
+                            "startedAt": "2026-11-01T10:01:00Z",
+                            "checkSuite": {
+                              "workflowRun": {
+                                "event": "pull_request",
+                                "workflow": {
+                                  "name": "ci"
+                                }
+                              }
+                            }
+                          },
+                          {
+                            "__typename": "CheckRun",
+                            "name": "build",
+                            "status": "COMPLETED",
+                            "conclusion": "SUCCESS",
+                            "startedAt": "2026-11-01T10:02:00Z",
+                            "checkSuite": {
+                              "workflowRun": {
+                                "event": "pull_request",
+                                "workflow": {
+                                  "name": "ci"
+                                }
+                              }
+                            }
+                          },
+                          {
+                            "__typename": "StatusContext",
+                            "context": "boss/build",
+                            "state": "SUCCESS",
+                            "description": "built by boss-build"
+                          },
+                          {
+                            "__typename": "CheckRun",
+                            "name": "deploy",
+                            "status": "COMPLETED",
+                            "conclusion": "FAILURE",
+                            "startedAt": "2026-11-01T10:03:00Z",
+                            "checkSuite": {
+                              "workflowRun": {
+                                "event": "pull_request",
+                                "workflow": {
+                                  "name": "release"
+                                }
+                              }
+                            }
+                          },
+                          {
+                            "__typename": "CheckRun",
+                            "name": "test",
+                            "status": "IN_PROGRESS",
+                            "conclusion": null,
+                            "startedAt": "2026-11-01T10:04:00Z",
+                            "checkSuite": {
+                              "workflowRun": {
+                                "event": "pull_request",
+                                "workflow": {
+                                  "name": "ci"
+                                }
+                              }
+                            }
+                          },
+                          {
+                            "__typename": "StatusContext",
+                            "context": "boss/verify",
+                            "state": "PENDING",
+                            "description": "verify: claimed by delta"
+                          },
+                          {
+                            "__typename": "CheckRun",
+                            "name": "lint",
+                            "status": "COMPLETED",
+                            "conclusion": "SUCCESS",
+                            "startedAt": "2026-11-01T10:05:00Z",
+                            "checkSuite": {
+                              "workflowRun": {
+                                "event": "pull_request",
+                                "workflow": {
+                                  "name": "ci"
+                                }
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 2,
+            "title": "conflicting",
+            "body": "body 2",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature-2",
+            "baseRefName": "main",
+            "headRefOid": "sha2",
+            "isCrossRepository": false,
+            "mergeable": "CONFLICTING",
+            "mergeStateStatus": "DIRTY",
+            "canBeRebased": false,
+            "reviewDecision": "",
+            "author": {
+              "login": "alice",
+              "__typename": "User"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": false
+              },
+              "nodes": []
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha2",
+                    "statusCheckRollup": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 3,
+            "title": "review required",
+            "body": "body 3",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature-3",
+            "baseRefName": "main",
+            "headRefOid": "sha3",
+            "isCrossRepository": false,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "BLOCKED",
+            "canBeRebased": false,
+            "reviewDecision": "REVIEW_REQUIRED",
+            "author": {
+              "login": "alice",
+              "__typename": "User"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": false
+              },
+              "nodes": []
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha3",
+                    "statusCheckRollup": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 4,
+            "title": "behind",
+            "body": "body 4",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature-4",
+            "baseRefName": "main",
+            "headRefOid": "sha4",
+            "isCrossRepository": false,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "BEHIND",
+            "canBeRebased": true,
+            "reviewDecision": "APPROVED",
+            "author": {
+              "login": "alice",
+              "__typename": "User"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": true
+              },
+              "nodes": [
+                {
+                  "id": "PRR_3",
+                  "state": "COMMENTED",
+                  "authorAssociation": "MEMBER",
+                  "author": {
+                    "login": "bob",
+                    "__typename": "User"
+                  }
+                }
+              ]
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha4",
+                    "statusCheckRollup": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 5,
+            "title": "draft",
+            "body": "body 5",
+            "state": "OPEN",
+            "isDraft": true,
+            "headRefName": "feature-5",
+            "baseRefName": "main",
+            "headRefOid": "sha5",
+            "isCrossRepository": false,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "DRAFT",
+            "canBeRebased": true,
+            "reviewDecision": "",
+            "author": {
+              "login": "alice",
+              "__typename": "User"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": false
+              },
+              "nodes": []
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha5",
+                    "statusCheckRollup": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 6,
+            "title": "fork",
+            "body": "body 6",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature-6",
+            "baseRefName": "main",
+            "headRefOid": "sha6",
+            "isCrossRepository": true,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "BLOCKED",
+            "canBeRebased": true,
+            "reviewDecision": "CHANGES_REQUESTED",
+            "author": {
+              "login": "alice",
+              "__typename": "User"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": false
+              },
+              "nodes": [
+                {
+                  "id": "PRR_4",
+                  "state": "APPROVED",
+                  "authorAssociation": "OWNER",
+                  "author": {
+                    "login": "carol",
+                    "__typename": "User"
+                  }
+                }
+              ]
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha6",
+                    "statusCheckRollup": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 7,
+            "title": "mergeability unknown",
+            "body": "body 7",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature-7",
+            "baseRefName": "main",
+            "headRefOid": "sha7",
+            "isCrossRepository": false,
+            "mergeable": "UNKNOWN",
+            "mergeStateStatus": "UNKNOWN",
+            "canBeRebased": true,
+            "reviewDecision": "",
+            "author": {
+              "login": "alice",
+              "__typename": "User"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": false
+              },
+              "nodes": []
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha7",
+                    "statusCheckRollup": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 8,
+            "title": "truncated reviews",
+            "body": "body 8",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature-8",
+            "baseRefName": "main",
+            "headRefOid": "sha8",
+            "isCrossRepository": false,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "canBeRebased": true,
+            "reviewDecision": "",
+            "author": {
+              "login": "alice",
+              "__typename": "User"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": true
+              },
+              "nodes": [
+                {
+                  "id": "PRR_5",
+                  "state": "PENDING",
+                  "authorAssociation": "MEMBER",
+                  "author": {
+                    "login": "bob",
+                    "__typename": "User"
+                  }
+                }
+              ]
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha8",
+                    "statusCheckRollup": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 9,
+            "title": "truncated rollup",
+            "body": "body 9",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature-9",
+            "baseRefName": "main",
+            "headRefOid": "sha9",
+            "isCrossRepository": false,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "canBeRebased": true,
+            "reviewDecision": "",
+            "author": {
+              "login": "alice",
+              "__typename": "User"
+            },
+            "reviews": {
+              "pageInfo": {
+                "hasPreviousPage": false
+              },
+              "nodes": []
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "sha9",
+                    "statusCheckRollup": {
+                      "contexts": {
+                        "pageInfo": {
+                          "hasNextPage": true
+                        },
+                        "nodes": [
+                          {
+                            "__typename": "CheckRun",
+                            "name": "build",
+                            "status": "COMPLETED",
+                            "conclusion": "SUCCESS",
+                            "startedAt": "2026-11-01T10:02:00Z",
+                            "checkSuite": {
+                              "workflowRun": {
+                                "event": "pull_request",
+                                "workflow": {
+                                  "name": "ci"
+                                }
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

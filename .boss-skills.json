@@ -76,6 +76,9 @@
       "baseUrl": "https://proof.bossanova.dev"
     }
   },
+  "planDefaults": {
+    "predictedVerifyPark": "needs-human"
+  },
   "planDependencies": {
     "moduleRoots": [
       "docs",

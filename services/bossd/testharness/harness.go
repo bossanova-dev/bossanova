@@ -60,6 +60,9 @@ var socketCounter atomic.Int64
 // Options configures harness construction. Zero-value Options is equivalent
 // to New(t).
 type Options struct {
+	// Callers overrides the deterministic operator identity used by socket tests.
+	Callers server.CallerAuthority
+
 	// DBPath, when non-empty, opens a file-backed SQLite DB at that path.
 	// Required for restart-recovery tests that need state to survive a
 	// harness Close + re-open cycle.
@@ -384,21 +387,16 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// Mirror the daemon: prompt-receipt tokens derive from the socket token.
 	lifecycle.SetPromptReceiptKey(token)
 
-	mux := http.NewServeMux()
-	path, handler := bossanovav1connect.NewDaemonServiceHandler(srv, connect.WithInterceptors(socketauth.NewServerInterceptor(token)))
-	mux.Handle(path, handler)
-
-	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	callers := opts.Callers
+	if callers == nil {
+		callers = operatorCallerAuthority{}
+	}
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(srv, connect.WithInterceptors(socketauth.NewServerInterceptor(token), server.NewCallerInterceptor(callers, nil)))
+	httpServer := newHarnessHTTPServer(callers, path, handler)
 	go func() { _ = httpServer.Serve(ln) }()
 
 	// Create ConnectRPC client over Unix socket.
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
-			},
-		},
-	}
+	httpClient := newHarnessHTTPClient(socketPath)
 	client := bossanovav1connect.NewDaemonServiceClient(
 		httpClient,
 		"http://localhost",

@@ -68,9 +68,13 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
 1. `validateDecomposition` + `assertAcyclic` on the spec.
 2. Fully plan every child locally (`allowEpic: false`): write its plan to
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.plan.md` and its composed description to
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.description.md`. Copy each child plan's
-   `agentBuild` verdict and `openQuestions` back onto its spec entry (`serializeEpicSpec` defaults a
-   missing `agentBuild` to `true` and derives `agent-question` from `openQuestions`). Re-run
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.description.md`. After its premise
+   re-check and before the secret, image and contract gates, run
+   `node "$BOSS_PLAN_TOOLBOX/plan/plan-park-prediction.mjs" annotate --description .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.description.md --plan .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.plan.md --json`.
+   Copy each child plan's `agentBuild` verdict and `openQuestions` back onto its spec entry, setting
+   `agentBuild` to `false` when it predicts a park with action `needs-human`; report its predicted
+   codes and labels in Phase 6 (`serializeEpicSpec` defaults a missing `agentBuild` to `true` and
+   derives `agent-question` from `openQuestions`). Re-run
    `validateDecomposition` on the completed spec. Run the secret gate on every description, then
    `plan-image-guard.mjs` with `--original` set to the parent's shared safe source
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md`, `--rewritten` set to that

@@ -68,6 +68,7 @@ const (
 )
 
 var errSymlinkOutsideBase = errors.New("symlink resolves outside base home")
+var errDanglingSymlink = errors.New("symlink target does not exist")
 
 // errForeignAccountEntry marks the refusal to touch an account-home entry this
 // package did not create. Codex runs with CODEX_HOME set to the account home
@@ -337,8 +338,8 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 // all of its entries are optional to a generic Codex invocation. An optional
 // entry that has become unsafe is not merely skipped: any projection created
 // while it was safe is withdrawn, so the account home never keeps resolving
-// through a base entry that now leaves the validated base home. An entry that
-// disappears from the base home entirely is not returned by os.ReadDir and so is
+// through a base entry that leaves the validated base home or has a dangling
+// symlink. An entry that disappears entirely is not returned by os.ReadDir and so is
 // out of this loop's reach — a separate, lower-severity gap.
 //
 // An account-home entry this package did not create (a real file or directory
@@ -411,11 +412,11 @@ func (m *Materializer) projectCodexBaseHome(accountHome string) error {
 			return fmt.Errorf("refusing base home entry %q: resolves to auth.json", entry.Name())
 		}
 		if err := validateProjectedDirectory(source, canonicalBase, canonicalAuth); err != nil {
-			if isOptionalCodexBaseEntry(entry.Name()) && errors.Is(err, errSymlinkOutsideBase) {
+			if unprojectableOptionalEntry(entry.Name(), err) {
 				// Same withdrawal as the !projectable branch: skipping creation is not
 				// enough once an already-projected entry has become unsafe.
 				if removeErr := removeStaleProjection(filepath.Join(accountHome, entry.Name()), canonicalBase); removeErr != nil {
-					// Keep the errSymlinkOutsideBase diagnosis: it names why the entry
+					// Keep the validation diagnosis: it names why the entry
 					// went unsafe, which the removal error alone does not say.
 					joined := errors.Join(err, removeErr)
 					if !errors.Is(removeErr, errForeignAccountEntry) {
@@ -505,6 +506,9 @@ func walkProjectedDirectory(path, canonicalBase string, authInfo os.FileInfo, vi
 	if linkInfo.Mode()&os.ModeSymlink != 0 {
 		resolved, err := filepath.EvalSymlinks(path)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("%w: resolve symlink %q: %w", errDanglingSymlink, path, err)
+			}
 			return fmt.Errorf("resolve symlink %q: %w", path, err)
 		}
 		withinBase, err := isWithinCanonicalBase(canonicalBase, resolved)
@@ -602,16 +606,19 @@ func isOptionalCodexBaseEntry(name string) bool {
 	}
 }
 
-// isAccountLocalCodexEntry identifies base-home entries holding the state of
-// the background app-server daemon codex runs per CODEX_HOME: its pid, lock and
-// socket, and its startup lock. They are never projected. Codex refuses to start
-// when its daemon state directory is a symlink ("socket directory path exists and
-// is not a directory"), which kills every managed pane at launch; and sharing it
-// would hand an account-home codex the daemon running under the base home's own
-// login.
+// unprojectableOptionalEntry allows unsafe optional trees to remain absent while
+// required configuration and plugin state keep failing closed.
+func unprojectableOptionalEntry(name string, err error) bool {
+	return isOptionalCodexBaseEntry(name) &&
+		(errors.Is(err, errSymlinkOutsideBase) || errors.Is(err, errDanglingSymlink))
+}
+
+// isAccountLocalCodexEntry identifies scratch and app-server state kept per
+// CODEX_HOME. Scratch may hold transient, dangling links; daemon pid, socket and
+// lock state must belong to the account's own login. Neither is projected.
 func isAccountLocalCodexEntry(name string) bool {
 	switch name {
-	case "app-server-daemon", "app-server-control":
+	case ".tmp", "app-server-daemon", "app-server-control":
 		return true
 	default:
 		return false

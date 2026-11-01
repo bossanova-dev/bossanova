@@ -139,3 +139,61 @@ func (*grpcTestWorkflow) GetInfo(context.Context, *bossanovav1.WorkflowServiceGe
 }
 
 func (h *grpcTestHost) Register(srv *grpc.Server) { bossanovav1.RegisterHostServiceServer(srv, h) }
+
+type hostOptionKey struct{}
+
+// optionedTestHost answers ListSessions with the value its own interceptor
+// put in the call context, proving HostServerOptions reached the server.
+type optionedTestHost struct {
+	grpcTestHost
+}
+
+func (*optionedTestHost) ListSessions(ctx context.Context, _ *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error) {
+	id, _ := ctx.Value(hostOptionKey{}).(string)
+	return &bossanovav1.HostServiceListSessionsResponse{Sessions: []*bossanovav1.Session{{Id: id}}}, nil
+}
+
+func (h *optionedTestHost) Register(srv *grpc.Server) { bossanovav1.RegisterHostServiceServer(srv, h) }
+
+func (*optionedTestHost) HostServerOptions() []grpc.ServerOption {
+	return []grpc.ServerOption{grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		return handler(context.WithValue(ctx, hostOptionKey{}, "intercepted"), req)
+	})}
+}
+
+func TestServeHostAppliesHostServerOptions(t *testing.T) {
+	brokers := make(chan *goplugin.GRPCBroker, 1)
+	p := &AgentRunnerPlugin{HostService: &optionedTestHost{}, NewServer: func(b *goplugin.GRPCBroker) bossanovav1.AgentRunnerServiceServer {
+		brokers <- b
+		return &grpcTestAgentRunner{}
+	}}
+	client, _ := goplugin.TestPluginGRPCConn(t, false, map[string]goplugin.Plugin{"test": p})
+	t.Cleanup(func() { _ = client.Close() })
+	raw, err := client.Dispense("test")
+	if err != nil {
+		t.Fatalf("Dispense: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := raw.(bossanovav1.AgentRunnerServiceClient).GetInfo(ctx, &bossanovav1.AgentRunnerServiceGetInfoRequest{}); err != nil {
+		t.Fatalf("GetInfo: %v", err)
+	}
+	var broker *goplugin.GRPCBroker
+	select {
+	case broker = <-brokers:
+	case <-ctx.Done():
+		t.Fatal("NewServer did not receive a broker")
+	}
+	conn, err := broker.Dial(BrokerIDAgentRunnerHostService)
+	if err != nil {
+		t.Fatalf("dial HostService: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	resp, err := bossanovav1.NewHostServiceClient(conn).ListSessions(ctx, &bossanovav1.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("HostService.ListSessions: %v", err)
+	}
+	if got := resp.GetSessions()[0].GetId(); got != "intercepted" {
+		t.Fatalf("host call context value = %q, want the host's own interceptor to have run", got)
+	}
+}

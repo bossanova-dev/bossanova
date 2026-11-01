@@ -29,6 +29,15 @@ Report this session's boss context and the full CLI + MCP capability inventory
 
 Clear stranded terminal mouse- and focus-reporting modes
 
+### `boss github-usage [flags]`
+
+Report the GitHub calls each cron, stage and daemon subsystem made
+
+**Flags:**
+
+- `--json` — emit JSON
+- `--window` — report window ending now, at most 2h (default: 1h0m0s)
+
 ### `boss proof`
 
 Provision credentials for the verification evidence publisher

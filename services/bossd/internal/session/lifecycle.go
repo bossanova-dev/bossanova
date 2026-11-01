@@ -464,6 +464,9 @@ type Lifecycle struct {
 	draftPRRetryMu sync.Mutex
 	draftPRRetries map[string]draftPRRetryState
 
+	quotaFinalizeMu       sync.Mutex
+	quotaFinalizeAttempts map[string]time.Time
+
 	// draftPREnsurer is the PR-open entry the draft-PR retry sweep calls, held
 	// as a seam for the same reason as reapFinalizer above: nil means the real
 	// EnsurePR, and tests inject a recorder so the sweep's selection, cooldown

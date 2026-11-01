@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/domain/mergepolicy"
+	"github.com/recurser/bossd/internal/ghusage"
 )
 
 func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
@@ -39,6 +40,7 @@ type mergeGate struct {
 }
 
 func (s *Server) mergeSession(ctx context.Context, id string, g mergeGate) (*connect.Response[pb.MergeSessionResponse], error) {
+	ctx = ghusage.WithLabel(ctx, ghusage.LabelMerge)
 	pin := g.pin
 
 	sess, err := s.sessions.Get(ctx, id)

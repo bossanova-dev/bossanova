@@ -17,6 +17,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/evidence"
+	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -55,15 +56,19 @@ type DisplayPoller struct {
 	// lastPollMu. Other tracker writers never touch it, so a difference between
 	// two reads is a change on GitHub, not another writer's update.
 	observed map[string]prObservation
+	// baseMoved maps session ID -> when a push to its PR's base branch was
+	// noted (NoteBaseMoved), guarded by lastPollMu. See baseMovePending.
+	baseMoved map[string]time.Time
 }
 
 // prObservation is one GitHub read of a session's PR, reduced to the changes
 // GitHub always announces with a pull_request webhook.
 type prObservation struct {
-	prNumber int
-	headSHA  string
-	ended    bool
-	at       time.Time
+	prNumber   int
+	headSHA    string
+	baseBranch string
+	ended      bool
+	at         time.Time
 }
 
 // announcedBy reports whether going from o to next is a change GitHub sends a
@@ -177,7 +182,8 @@ func (p *DisplayPoller) SetReceiptCarrier(poster vcs.CommitStatusPoster, probe R
 // SetWebhookHealth wires the webhook-delivery tracker. Sessions in a repo whose
 // webhooks reach the daemon are polled at webhookSafetyNetInterval instead of
 // interval, and every PR change a read finds is reported to it as a candidate
-// missed webhook. nil-safe: leaving it unset polls every repo at interval.
+// missed webhook. nil-safe: leaving it unset polls every repo at interval,
+// and parked sessions at parkedInterval's fallback.
 func (p *DisplayPoller) SetWebhookHealth(h DisplayWebhookHealth) {
 	p.health = h
 }
@@ -217,6 +223,7 @@ func (p *DisplayPoller) notifyCompletion(ctx context.Context, sessionID string, 
 // Run restores each session's last persisted status, then starts the polling
 // loop in a background goroutine. It stops when the context is cancelled.
 func (p *DisplayPoller) Run(ctx context.Context) {
+	ctx = ghusage.WithLabel(ctx, ghusage.LabelPoller)
 	p.restore(ctx)
 	safego.Go(p.logger, func() {
 		defer close(p.done)
@@ -252,17 +259,21 @@ func (p *DisplayPoller) recordRefresh(sessionID string, ts time.Time) {
 	}
 }
 
-// intervalFor is the poll interval for one session. A parked session keeps the
-// configured interval: webhooks never announce a base-move conflict, and a
-// person acts on the park. For other sessions, webhook evidence only ever
+// intervalFor is the poll interval for one session. A session whose PR's base
+// branch just moved keeps the configured interval until GitHub answers its
+// mergeability, and a parked one backs off as parkedInterval says (a base-move
+// conflict arrives only as a branch push). For other sessions, webhook evidence only ever
 // LENGTHENS it: a session a webhook refreshed recently backs off to at least
 // webhookHealthyInterval, and a session in a repo whose webhooks reach the
 // daemon backs off to at least webhookSafetyNetInterval. Both take the max with
 // the configured interval, so a deliberately long DisplayPollInterval is never
 // shortened by good news.
 func (p *DisplayPoller) intervalFor(repoOriginURL, sessionID string, now time.Time) time.Duration {
-	if entry := p.tracker.Get(sessionID); entry != nil && entry.Status == vcs.DisplayStatusNeedsHuman {
+	if p.baseMovePending(sessionID, now) {
 		return p.interval
+	}
+	if entry := p.tracker.Get(sessionID); entry != nil && entry.Status == vcs.DisplayStatusNeedsHuman {
+		return p.parkedInterval(repoOriginURL)
 	}
 	interval := p.interval
 	p.refreshMu.Lock()
@@ -328,17 +339,25 @@ func (p *DisplayPoller) pruneLastPoll(active map[string]struct{}) {
 			delete(p.observed, sessionID)
 		}
 	}
+	for sessionID := range p.baseMoved {
+		if _, ok := active[sessionID]; !ok {
+			delete(p.baseMoved, sessionID)
+		}
+	}
 }
 
 // observePR records this read of a session's PR. When the poller read the same
 // PR before and it has since changed in a way a webhook announces, it reports
 // the change to the webhook tracker, which decides whether a webhook was missed.
+// A read that knows the PR's mergeability (or finds it ended) settles a pending
+// base move.
 func (p *DisplayPoller) observePR(repoOriginURL, sessionID string, prNumber int, pr *vcs.PRStatus) {
 	next := prObservation{
-		prNumber: prNumber,
-		headSHA:  pr.HeadSHA,
-		ended:    pr.State == vcs.PRStateMerged || pr.State == vcs.PRStateClosed,
-		at:       time.Now(),
+		prNumber:   prNumber,
+		headSHA:    pr.HeadSHA,
+		baseBranch: pr.BaseBranch,
+		ended:      pr.State == vcs.PRStateMerged || pr.State == vcs.PRStateClosed,
+		at:         time.Now(),
 	}
 	p.lastPollMu.Lock()
 	if p.observed == nil {
@@ -346,6 +365,9 @@ func (p *DisplayPoller) observePR(repoOriginURL, sessionID string, prNumber int,
 	}
 	prev, seen := p.observed[sessionID]
 	p.observed[sessionID] = next
+	if pr.Mergeable != nil || next.ended {
+		delete(p.baseMoved, sessionID)
+	}
 	p.lastPollMu.Unlock()
 	if seen && p.health != nil && prev.announcedBy(next) {
 		p.health.NotePolledChange(repoOriginURL, prev.at)

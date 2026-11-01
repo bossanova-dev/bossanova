@@ -494,6 +494,7 @@ func (w *daemonWiring) wireUpstream() {
 				WithVerifyEvents(verifyevent.New(w.repos, w.cronJobs, w.callbackEvaluator, proofenvkeyring.New(log.Logger), log.Logger)).
 				WithReadInvalidator(w.ghProvider).
 				WithPRPoller(w.poller).
+				WithBaseMoves(w.displayPoller).
 				WithWebhookHealth(webhookHealth),
 			Attacher:   attacher,
 			Creator:    w.creatorAdapter,

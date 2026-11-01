@@ -22,6 +22,7 @@ import (
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/callback"
 	"github.com/recurser/bossd/internal/evidence"
+	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -47,7 +48,10 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 		tmux.WithSessionStartReadyDeadline(w.settings.TmuxDelivery.SessionStartReadyDeadline()),
 		tmux.WithSendReadyDeadline(w.settings.TmuxDelivery.SendReadyDeadline()),
 	)
-	w.ghProvider = github.New(log.Logger)
+	// Every GitHub call the provider sends is metered into the shared usage
+	// ledger, which gate and session processes append to as well.
+	w.ghUsage = ghusage.New(ghusage.Dir(w.appDataDir), log.Logger)
+	w.ghProvider = github.New(log.Logger, github.WithUsageRecorder(w.ghUsage))
 	// publishStoreSessionUpdate emits the update event for a session a daemon
 	// pass wrote directly through the store. The PR-association reconcile
 	// (rename to the PR title) and the tracker linker (tracker_id/tracker_url)

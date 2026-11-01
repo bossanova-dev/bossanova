@@ -117,7 +117,7 @@
       "services/bossd/internal/broadcast:DeliveryWorker.scan": 31,
       "services/bossd/internal/callback:Evaluator.EvaluatePR": 50,
       "services/bossd/internal/callback:Retirer.ReconcileSession": 47,
-      "services/bossd/internal/cron:Scheduler.fire": 33,
+      "services/bossd/internal/cron:Scheduler.fireWith": 32,
       "services/bossd/internal/db:matchBackfillSession": 32,
       "services/bossd/internal/db:validateTelemetryCounts": 34,
       "services/bossd/internal/domain/agenttelemetry:tallyJSONL": 195,
@@ -287,7 +287,7 @@
       "skills-toolbox/skill-config.mjs": 3864,
       "skills-toolbox/tracker/cli.mjs": 1256,
       "skills-toolbox/tracker/linear.mjs": 1125,
-      "skills-toolbox/verify/verify-gate.mjs": 4624,
+      "skills-toolbox/verify/verify-gate.mjs": 4600,
       "skills-toolbox/verify/verify-route.mjs": 1158
     }
   },

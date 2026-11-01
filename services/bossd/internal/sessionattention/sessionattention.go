@@ -208,6 +208,7 @@ func applyPR(in *attention.Input, pr *PR) {
 	in.ChecksDone = verdict.Total - verdict.Pending - verdict.Unclassified
 	in.ChecksFailing = verdict.Failed
 	in.Verified = vcs.VerifyPassed(pr.Checks)
+	in.VerifyJudged = vcs.VerifyJudged(pr.Checks)
 	mergeable := true
 	switch pr.Status {
 	case vcs.DisplayStatusMerged:

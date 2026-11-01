@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -131,22 +132,183 @@ func TestDisplayPollerIntervalOnlyLengthens(t *testing.T) {
 	}
 }
 
-func TestDisplayPollerParkedInterval_Sessions_AC164_ParkedPolling(t *testing.T) {
-	now := time.Unix(1_800_000_000, 0)
+// parkedCadence is the interval intervalFor gives one session after it was
+// polled, in a repo whose webhook health is health (nil: no tracker wired).
+func parkedCadence(t *testing.T, configured time.Duration, health DisplayWebhookHealth, display vcs.DisplayStatus) time.Duration {
+	t.Helper()
+	now := time.Now()
 	tracker := status.NewDisplayTracker()
 	p := NewDisplayPoller(newMockSessionStore(), newMockRepoStore(), newMockVCSProvider(),
-		tracker, 2*time.Minute, zerolog.Nop())
-	p.SetWebhookHealth(stubWebhookHealth{"owner/repo": true})
-	tracker.Set("parked", vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman})
-	tracker.Set("passing", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
-	p.recordRefresh("parked", now)
-	p.recordRefresh("passing", now)
-
-	if got := p.intervalFor("owner/repo", "parked", now); got != p.interval {
-		t.Errorf("parked session polls every %s, want configured interval %s", got, p.interval)
+		tracker, configured, zerolog.Nop())
+	if health != nil {
+		p.SetWebhookHealth(health)
 	}
-	if got := p.intervalFor("owner/repo", "passing", now); got != webhookSafetyNetInterval {
-		t.Errorf("passing session polls every %s, want safety net %s", got, webhookSafetyNetInterval)
+	tracker.Set("sess-1", vcs.DisplayInfo{Status: display})
+	return p.intervalFor("owner/repo", "sess-1", now)
+}
+
+// TestDisplayPollerParkedInterval_Sessions_AC164_ParkedPolling pins the
+// healthy-webhook cadence: a parked PR with no pending base move backs off to
+// the safety net (a base move arrives as a branch push instead), a longer
+// configured interval still wins, and a non-parked session keeps today's rules.
+func TestDisplayPollerParkedInterval_Sessions_AC164_ParkedPolling(t *testing.T) {
+	healthy := stubWebhookHealth{"owner/repo": true}
+	for _, tc := range []struct {
+		name       string
+		configured time.Duration
+		display    vcs.DisplayStatus
+		want       time.Duration
+	}{
+		{"parked, 2m configured", 2 * time.Minute, vcs.DisplayStatusNeedsHuman, webhookSafetyNetInterval},
+		{"parked, 15m configured", 15 * time.Minute, vcs.DisplayStatusNeedsHuman, 15 * time.Minute},
+		{"passing, 2m configured", 2 * time.Minute, vcs.DisplayStatusPassing, webhookSafetyNetInterval},
+		{"passing, 15m configured", 15 * time.Minute, vcs.DisplayStatusPassing, 15 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parkedCadence(t, tc.configured, healthy, tc.display); got != tc.want {
+				t.Fatalf("polls every %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDisplayPollerParkedFallback_Sessions_AC226001_NoWebhookPolling pins the
+// cadence without webhook delivery: no push can announce a base move, so a
+// parked PR is still read every parkedFallbackInterval (5 minutes) unless the
+// configured interval is longer, while a non-parked session keeps the
+// configured interval.
+func TestDisplayPollerParkedFallback_Sessions_AC226001_NoWebhookPolling(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		health     DisplayWebhookHealth
+		configured time.Duration
+		display    vcs.DisplayStatus
+		want       time.Duration
+	}{
+		{"parked, no tracker, 2m", nil, 2 * time.Minute, vcs.DisplayStatusNeedsHuman, 5 * time.Minute},
+		{"parked, unhealthy, 2m", stubWebhookHealth{}, 2 * time.Minute, vcs.DisplayStatusNeedsHuman, 5 * time.Minute},
+		{"parked, no tracker, 15m", nil, 15 * time.Minute, vcs.DisplayStatusNeedsHuman, 15 * time.Minute},
+		{"parked, unhealthy, 15m", stubWebhookHealth{}, 15 * time.Minute, vcs.DisplayStatusNeedsHuman, 15 * time.Minute},
+		{"passing, no tracker, 2m", nil, 2 * time.Minute, vcs.DisplayStatusPassing, 2 * time.Minute},
+		{"passing, unhealthy, 2m", stubWebhookHealth{}, 2 * time.Minute, vcs.DisplayStatusPassing, 2 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parkedCadence(t, tc.configured, tc.health, tc.display); got != tc.want {
+				t.Fatalf("polls every %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// baseMoveFixture is a webhook-healthy display poller over two open PRs in one
+// repo: #1 targets main and #2 targets develop. Both are parked and were just
+// polled, so neither is due on the safety-net cadence.
+func baseMoveFixture(t *testing.T) (*DisplayPoller, *mockVCSProvider) {
+	t.Helper()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	one, two := 1, 2
+	sessions.sessions["sess-main"] = &models.Session{ID: "sess-main", RepoID: "repo-1", PRNumber: &one, BaseBranch: "main"}
+	sessions.sessions["sess-dev"] = &models.Session{ID: "sess-dev", RepoID: "repo-1", PRNumber: &two, BaseBranch: "develop"}
+	mergeable := true
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "head-1", Mergeable: &mergeable}
+	vp.nextCheckResults = parkedChecks()
+	tracker := status.NewDisplayTracker()
+	p := NewDisplayPoller(sessions, repos, vp, tracker, 2*time.Minute, zerolog.Nop())
+	p.SetWebhookHealth(stubWebhookHealth{"owner/repo": true})
+	p.poll(context.Background())
+	for _, id := range []string{"sess-main", "sess-dev"} {
+		if got := tracker.Get(id); got == nil || got.Status != vcs.DisplayStatusNeedsHuman {
+			t.Fatalf("%s display = %+v, want NEEDS_HUMAN", id, got)
+		}
+	}
+	vp.getPRStatusPRNumbers = nil
+	p.poll(context.Background())
+	if got := vp.getPRStatusPRNumbers; len(got) != 0 {
+		t.Fatalf("parked PRs re-read %v right after a poll, want none", got)
+	}
+	return p, vp
+}
+
+// TestDisplayPollerNoteBaseMovedMarksTargetingPRsDue pins due-marking: only
+// the PR targeting the pushed branch is read on the very next cycle, and
+// NoteBaseMoved returns exactly its number.
+func TestDisplayPollerNoteBaseMovedMarksTargetingPRsDue(t *testing.T) {
+	p, vp := baseMoveFixture(t)
+
+	if got := p.NoteBaseMoved(context.Background(), "owner/repo", "main"); !slices.Equal(got, []int{1}) {
+		t.Fatalf("NoteBaseMoved = %v, want [1]", got)
+	}
+	p.poll(context.Background())
+	if got := vp.getPRStatusPRNumbers; !slices.Equal(got, []int{1}) {
+		t.Fatalf("PRs read after the base move = %v, want only #1", got)
+	}
+	if got := p.NoteBaseMoved(context.Background(), "owner/other", "main"); got != nil {
+		t.Fatalf("NoteBaseMoved for an unknown repo = %v, want none", got)
+	}
+}
+
+// TestDisplayPollerNoteBaseMovedUsesTheReadBase pins that a PR retargeted on
+// GitHub is matched by the base its last read reported, not the session's.
+func TestDisplayPollerNoteBaseMovedUsesTheReadBase(t *testing.T) {
+	p, vp := baseMoveFixture(t)
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "head-1", BaseBranch: "release"}
+	p.NoteBaseMoved(context.Background(), "owner/repo", "main")
+	p.poll(context.Background()) // #1 re-read: it now targets release
+
+	if got := p.NoteBaseMoved(context.Background(), "owner/repo", "main"); len(got) != 0 {
+		t.Fatalf("NoteBaseMoved(main) after the retarget = %v, want none", got)
+	}
+	if got := p.NoteBaseMoved(context.Background(), "owner/repo", "release"); !slices.Equal(got, []int{1}) {
+		t.Fatalf("NoteBaseMoved(release) = %v, want [1]", got)
+	}
+}
+
+// TestDisplayPollerBaseMoveHoldsUntilMergeabilityKnown pins the mark's life: a
+// read that reports mergeability unknown keeps the configured interval, a read
+// that reports it returns the PR to its parked cadence, and a mark older than
+// the safety net no longer shortens the interval.
+func TestDisplayPollerBaseMoveHoldsUntilMergeabilityKnown(t *testing.T) {
+	p, vp := baseMoveFixture(t)
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "head-1"} // mergeability unknown
+	p.NoteBaseMoved(context.Background(), "owner/repo", "main")
+	p.poll(context.Background())
+
+	now := time.Now()
+	if got := p.intervalFor("owner/repo", "sess-main", now); got != 2*time.Minute {
+		t.Fatalf("unknown mergeability after a base move: polls every %s, want the configured 2m", got)
+	}
+	if got := p.intervalFor("owner/repo", "sess-main", now.Add(webhookSafetyNetInterval)); got != webhookSafetyNetInterval {
+		t.Fatalf("expired base-move mark: polls every %s, want %s", got, webhookSafetyNetInterval)
+	}
+
+	mergeable := true
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "head-1", Mergeable: &mergeable}
+	p.NoteBaseMoved(context.Background(), "owner/repo", "main")
+	p.poll(context.Background())
+	if got := p.intervalFor("owner/repo", "sess-main", time.Now()); got != webhookSafetyNetInterval {
+		t.Fatalf("known mergeability: polls every %s, want parked cadence %s", got, webhookSafetyNetInterval)
+	}
+}
+
+// TestDisplayPollerBaseMoveConflictReplacesPark pins the outcome: a parked PR
+// that a base push made conflicting shows CONFLICT after the first cycle that
+// reads Mergeable == false.
+func TestDisplayPollerBaseMoveConflictReplacesPark(t *testing.T) {
+	p, vp := baseMoveFixture(t)
+	conflicting := false
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "head-1", Mergeable: &conflicting}
+
+	p.NoteBaseMoved(context.Background(), "owner/repo", "main")
+	p.poll(context.Background())
+
+	if got := p.tracker.Get("sess-main"); got == nil || got.Status != vcs.DisplayStatusConflict {
+		t.Fatalf("sess-main display = %+v, want CONFLICT", got)
+	}
+	if got := p.tracker.Get("sess-dev"); got == nil || got.Status != vcs.DisplayStatusNeedsHuman {
+		t.Fatalf("sess-dev display = %+v, want NEEDS_HUMAN (its base did not move)", got)
 	}
 }
 

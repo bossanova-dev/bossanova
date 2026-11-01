@@ -62,6 +62,9 @@ Run `retro-signals.mjs collect`, adding `--dry-run` in preview mode. Preserve th
 its collector statuses; collector failures are non-fatal. Write-mode collection stores signals
 before the snapshot so those new notes participate in the same guarded retirement.
 
+In both modes run `retro-outcomes-report.mjs report --out <run-dir>/outcomes.json`; report any
+collection or rendering failure without stopping, and keep its rows out of notes and the snapshot.
+
 Read `boss notes ls --tag improvement --json --limit 0` into `notes.json`, then call
 `retro-write.mjs snapshot <notes.json> <snapshot-ids>`. A failed read or snapshot stops the run.
 Run `guidance-audit.mjs --notes --run-id <runId>` with `--config <guidanceAuditConfig>` when set.
@@ -75,7 +78,8 @@ Record the fetch time. Fetch the entire marked set with
 `tracker/cli.mjs fetch-marked --prefix "Notes: " --out-file <marked.json>` in either mode.
 Any non-zero result stops safely. Call `retro-notes.mjs follow-through-due <marked.json>`;
 its default cap bounds completed promises. Report `problems` and leave them untouched.
-If the augmented notes and the due promises are both empty, report nothing to retro, run phase 7,
+If the augmented notes and the due promises are both empty, report nothing to retro, print
+`retro-outcomes-report.mjs render <outcomes.json>` when the report exists, run phase 7,
 and teardown.
 
 ## 2. Theme — one awaited dispatch
@@ -168,6 +172,8 @@ Write `class-report.json` with `retro-classes.mjs report <classes.json>
 with its class counts in the preview and phase 6 report.
 
 In dry-run mode, print `retro-run.mjs preview <remedy-route.json> --path-aliases <aliases>` including `forward` and `flagged`.
+Print `retro-outcomes-report.mjs render <outcomes.json>` when the report exists; a render failure
+is reported without stopping.
 For each admitted refile, print `retro-notes.mjs refile-describe <follow-through.json> <key>`.
 Report enforced/unconfirmed follow-through without updating markers. Teardown; no attachment,
 recording, note mutation or tracker write. Preview includes rendered `## Codify as` and `## Cleanup`.
@@ -238,6 +244,8 @@ Then call `retire-plan <currency-buckets.json> <selection.json> <delete-ids.json
 
 After successful retirement, call `guidance-audit.mjs --record --run-id <runId>` with the same
 optional config, then `retro-run.mjs record-run --run-id <runId> --classes <class-report.json>`. Report recording failures.
+Add `--outcomes <outcomes.json>` to `record-run` only when the report exists and is readable,
+and print `retro-outcomes-report.mjs render <outcomes.json>` when available, reporting render failures without stopping.
 Report forwarded and failed themes from `forward-result.json` when present, flagged counts from `remedy-route.json`,
 and the class report (also persisted as state `lastReport`), mode, parent/child ids, helper counts, the `merge-verdicts` coverage object, deferred and
 unconfirmed work, collector statuses,

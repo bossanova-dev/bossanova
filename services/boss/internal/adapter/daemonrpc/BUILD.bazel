@@ -4,6 +4,7 @@ go_library(
     name = "daemonrpc",
     srcs = [
         "credential_devices.go",
+        "github_usage.go",
         "local.go",
         "netns_linux.go",
         "netns_other.go",

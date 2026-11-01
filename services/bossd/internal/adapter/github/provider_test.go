@@ -2544,7 +2544,7 @@ func TestGetCheckSet_BuildReceipt(t *testing.T) {
 func TestGetCheckSet_CacheSharesReceiptAndClearsOnNewHead(t *testing.T) {
 	calls := 0
 	response := `[{"name":"boss/build","state":"SUCCESS","workflow":""},{"name":"build","state":"SUCCESS","workflow":"ci"}]`
-	p := New(zerolog.Nop(), WithRunGH(func(context.Context, ...string) (string, error) { calls++; return response, nil }))
+	p := New(zerolog.Nop(), WithRunGH(withoutSnapshot(func(context.Context, ...string) (string, error) { calls++; return response, nil })))
 	ctx := vcs.WithCachedReads(context.Background())
 	results, err := p.GetCheckResults(ctx, "owner/repo", 42)
 	if err != nil {

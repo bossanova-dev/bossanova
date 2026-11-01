@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "verifyjob",
-    srcs = ["checker.go"],
+    srcs = [
+        "checker.go",
+        "quota_floor.go",
+    ],
     importpath = "github.com/recurser/bossd/internal/verifyjob",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
@@ -13,7 +16,10 @@ go_library(
 
 go_test(
     name = "verifyjob_test",
-    srcs = ["checker_test.go"],
+    srcs = [
+        "checker_test.go",
+        "quota_floor_test.go",
+    ],
     embed = [":verifyjob"],
     deps = ["//services/bossd/internal/domain"],
 )

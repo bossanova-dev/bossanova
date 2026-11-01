@@ -335,8 +335,11 @@ and 8).
   non-empty, stop `NO_CHANGE` quoting its stderr; never fall back to the unfiltered call. With no
   selection in effect, fall back to the `selectPlanned` operation descriptor (resolved team,
   planned state, limit 250); its nodes have no `blockerVerdict` and are treated as `unknown`.
-  Keep `agent-build` tickets, with or without a plan attachment, drop `needs-human`, rank by
-  priority (Urgent first, None last), then lowest estimate, then oldest. Walk the ranking: for
+  Keep `agent-build` tickets, with or without a plan attachment, drop `needs-human`, then rank
+  candidates whose active `## Planning` section (before `## Original notes`) carries a
+  `- Predicted verify park:` line after all candidates without that active marker. Ignore
+  markers in Original notes or any other section. Within each group rank by priority (Urgent first, None last), then lowest
+  estimate, then oldest. Named tickets are unaffected. Walk the ranking: for
   every candidate whose `blockerVerdict` is not `unblocked`, run
   `node "$BOSS_BUILD_TOOLBOX/build/blocker-verdict.mjs" --mode selection --id <id>`.
   Use its verdict: completed/canceled or merged blockers clear; a blocker in the configured

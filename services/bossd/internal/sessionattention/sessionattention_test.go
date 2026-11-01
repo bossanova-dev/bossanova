@@ -291,3 +291,24 @@ func TestDerive_ParkStateNeverPassesVerify_Sessions_AC147(t *testing.T) {
 		})
 	}
 }
+
+func TestDerive_VerifyJudgedFromHeadsChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		check vcs.CheckResult
+		want  bool
+	}{
+		{"park", vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: "needs human: human-review:ui"}, true},
+		{"pass", vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: new(vcs.CheckConclusionSuccess)}, true},
+		{"failure", vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: new(vcs.CheckConclusionFailure)}, true},
+		{"wait", vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: "waiting: base"}, false},
+		{"other context", vcs.CheckResult{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: new(vcs.CheckConclusionFailure)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := Derive(Facts{HasPR: true, PR: &PR{Status: vcs.DisplayStatusNeedsHuman, Checks: []vcs.CheckResult{tc.check}}}).Input
+			if in.VerifyJudged != tc.want {
+				t.Fatalf("VerifyJudged = %v, want %v", in.VerifyJudged, tc.want)
+			}
+		})
+	}
+}

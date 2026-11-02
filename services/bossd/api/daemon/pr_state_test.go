@@ -127,7 +127,7 @@ func TestGetPRStateMapsSnapshot_Callbacks_AC230301(t *testing.T) {
 			ReviewDecisionState: vcs.ReviewStateRequired, LatestReviewState: vcs.ReviewStateCommented,
 		},
 		Checks: []vcs.CheckResult{
-			{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &success},
+			{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &success, Workflow: "build"},
 			{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusInProgress, Description: "waiting: merge-state-unknown"},
 		},
 		HasBuildReceipt: true,
@@ -153,6 +153,7 @@ func TestGetPRStateMapsSnapshot_Callbacks_AC230301(t *testing.T) {
 	}
 	checks := resp.GetChecks()
 	if len(checks) != 2 || checks[0].GetConclusion() != pb.CheckConclusion_CHECK_CONCLUSION_SUCCESS || checks[1].Conclusion != nil ||
+		checks[0].GetWorkflowName() != "build" || checks[1].GetWorkflowName() != "" ||
 		checks[1].GetStatus() != pb.CheckStatus_CHECK_STATUS_IN_PROGRESS || checks[1].GetDescription() != "waiting: merge-state-unknown" {
 		t.Fatalf("checks = %v", checks)
 	}

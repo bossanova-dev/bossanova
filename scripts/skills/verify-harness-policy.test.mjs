@@ -109,6 +109,7 @@ function factsFor(changedPaths) {
     needChangedPaths: true,
     changedPaths,
     areas,
+    judgeAreas: [],
     review: policy.review,
     changedLines: 12,
     sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },

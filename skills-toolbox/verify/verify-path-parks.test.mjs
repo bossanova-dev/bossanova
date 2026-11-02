@@ -22,6 +22,7 @@ for (const paths of [
       ...prediction,
       review,
       changedPaths: paths,
+      judgeAreas: [],
       changedLines: 0,
       sizeBaseline: { ok: true, thresholds: null },
       prState: 'OPEN',

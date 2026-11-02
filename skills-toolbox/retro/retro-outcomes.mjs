@@ -10,6 +10,8 @@ export const SECOND_MODEL_MIN_REVIEWS = 5
 export const SECOND_MODEL_MIN_RAN_SHARE = 0.5
 export const MAX_PRS = 200
 export const MAX_HOLD_HEADS = 50
+export const RATE_WINDOW_DAYS = 28
+export const VERDICT_CLASSES = ['passed', 'approved', 'parked', 'sent-back', 'none']
 
 /** @typedef {Record<string, any>} Data */
 /** @typedef {{start?: string, end?: string}} Window */
@@ -23,7 +25,8 @@ const contexts = (commit) => nodes(commit?.statusCheckRollup?.contexts)
 const successfulReceipt = (status) =>
   status.context === RECEIPT_CONTEXT && status.state?.toUpperCase() === 'SUCCESS'
 /** @param {Data} pr */
-const factory = (pr) => commits(pr).some((commit) => contexts(commit).some(successfulReceipt))
+export const factory = (pr) =>
+  commits(pr).some((commit) => contexts(commit).some(successfulReceipt))
 /** @param {Data[]} statuses */
 const verifyStatuses = (statuses) => statuses.filter((status) => status.context === VERIFY_CONTEXT)
 /** @param {string | number} value */
@@ -33,14 +36,24 @@ const latest = (statuses) =>
   [...statuses].sort(
     (a, b) => time(b.createdAt ?? b.created_at) - time(a.createdAt ?? a.created_at),
   )[0]
+/** @param {string | undefined | null} description */
+export function verdictClass(description) {
+  if (description === D.verified) return 'passed'
+  if (description === D.verifiedApproved) return 'approved'
+  if (description?.startsWith(D.needsHuman)) return 'parked'
+  if ([D.defect, D.blocked].some((prefix) => description?.startsWith(prefix))) return 'sent-back'
+  return 'none'
+}
 /** @param {Data} status */
-const terminal = (status) => {
-  const description = status?.description ?? ''
-  return (
-    description === D.verified ||
-    description === D.verifiedApproved ||
-    [D.needsHuman, D.defect, D.blocked].some((prefix) => description.startsWith(prefix))
-  )
+const terminal = (status) => verdictClass(status?.description) !== 'none'
+/** @param {Data} pr */
+export function mergeVerdict(pr) {
+  const statuses = contexts(commits(pr).find((commit) => commit.oid === pr.headRefOid))
+  return {
+    number: pr.number,
+    mergedAt: pr.mergedAt,
+    verifyDescription: latest(verifyStatuses(statuses))?.description ?? null,
+  }
 }
 /** @param {Data[]} statuses */
 export const hasTerminalVerdict = (statuses) => verifyStatuses(statuses).some(terminal)
@@ -254,6 +267,60 @@ export function secondModelHealth(prs) {
   return { ...ok([]), health, reviewed, ran, skipped, error, absent, byAgent, topSkipReasons }
 }
 
+/** @param {Data[] | Data} records @param {Window} window */
+export function escapeRows(records, window) {
+  if (!Array.isArray(records)) return records
+  const pairs = new Set()
+  const rows = records
+    .filter((record) => {
+      const key = `${record.original.number}/${record.fix.number}`
+      if (!inWindow(record.fix.mergedAt, window) || pairs.has(key)) return false
+      pairs.add(key)
+      return true
+    })
+    .sort((a, b) => time(b.fix.mergedAt) - time(a.fix.mergedAt))
+    .map(({ original, fix, basis, ticket, areas, areaBasis, signals }) => ({
+      original: { number: original.number, title: original.title, mergedAt: original.mergedAt },
+      fix,
+      basis,
+      ...(ticket ? { ticket } : {}),
+      areas,
+      areaBasis,
+      signals,
+    }))
+  return ok(rows)
+}
+
+/** @param {Data[] | Data} merges @param {Data[] | Data} records @param {Window} window */
+export function laterFixRates(merges, records, window) {
+  if (!Array.isArray(records)) return records
+  if (!Array.isArray(merges)) return merges
+  const originals = new Set(records.map((record) => record.original.number))
+  const merged = new Map(
+    merges
+      .filter((merge) => inWindow(merge.mergedAt, window))
+      .map((merge) => [merge.number, merge]),
+  )
+  const rows = VERDICT_CLASSES.map((verdict) => {
+    const group = [...merged.values()].filter(
+      (merge) => verdictClass(merge.verifyDescription) === verdict,
+    )
+    const escapes = group.filter((merge) => originals.has(merge.number)).length
+    return {
+      class: verdict,
+      merges: group.length,
+      escapes,
+      rate: group.length ? escapes / group.length : null,
+    }
+  })
+  return {
+    ...ok(rows),
+    by: 'verdict',
+    window,
+    unmatched: [...originals].filter((number) => !merged.has(number)).length,
+  }
+}
+
 /** @param {{window: Window, truncated?: boolean, sections?: Record<string, Data>}} parts */
 export function buildReport({ window, truncated = false, sections = {} }) {
   return { v: 1, window, truncated, sections }
@@ -266,6 +333,8 @@ const sectionTitles = {
   unnecessaryHolds: 'Unnecessary holds',
   verifyCronHealth: 'Verify cron health',
   secondModelHealth: 'Second-model health',
+  escapeRows: 'Escapes',
+  laterFixRates: 'Later-fix rate',
 }
 /** @param {unknown} value */
 const oneLine = (value) => String(value ?? '').replace(/[\r\n]+/g, ' ')
@@ -295,7 +364,9 @@ export function renderReport(report) {
     if (!section) continue
     lines.push('', `### ${sectionTitles[name] ?? oneLine(name)}`, '')
     if (section.status !== 'ok') {
-      lines.push(`${oneLine(section.status)}: ${oneLine(section.reason)}`)
+      lines.push(
+        `${oneLine(section.status)}: ${oneLine(section.reason)}${section.detail ? ` (${oneLine(section.detail)})` : ''}`,
+      )
       continue
     }
     if (section.health) lines.push(`Health: ${section.health}`)
@@ -309,7 +380,20 @@ export function renderReport(report) {
       )
     const rows = section.rows ?? []
     if (!rows.length && !section.health) lines.push('0 rows.')
-    lines.push(...rows.slice(0, 10).map((/** @type {Data} */ row) => `- ${display(row)}`))
+    if (name === 'laterFixRates') lines.push(`Unmatched: ${section.unmatched}`)
+    if (name === 'escapeRows' && Object.keys(section.skipped ?? {}).length)
+      lines.push(`Skipped: ${oneLine(JSON.stringify(section.skipped))}`)
+    lines.push(
+      ...rows.slice(0, 10).map((/** @type {Data} */ row) => {
+        if (name === 'escapeRows') {
+          const { findings, secondModel, size, verify } = row.signals
+          return `- #${row.original.number} ← #${row.fix.number} (${oneLine(row.basis)}); areas: ${row.areas.map((/** @type {Data} */ area) => oneLine(area.area)).join(', ')}; blocking: ${findings.blocking}; unapplied: ${findings.unapplied}; max severity: ${oneLine(findings.maxSeverity ?? 'none')}; second model: ${oneLine(secondModel)}; +${size.additions}/-${size.deletions} across ${size.changedFiles} files; verify: ${oneLine(verify)}`
+        }
+        if (name === 'laterFixRates')
+          return `- ${row.class}: merges: ${row.merges}; escapes: ${row.escapes}; rate: ${row.rate === null ? 'n/a' : `${(row.rate * 100).toFixed(2).replace(/\.?0+$/, '')}%`}`
+        return `- ${display(row)}`
+      }),
+    )
     if (rows.length > 10) lines.push(`+${rows.length - 10} more`)
     if (name === 'unnecessaryHolds' && Object.keys(section.byCodes ?? {}).length)
       lines.push(`By codes: ${display(section.byCodes)}`)
@@ -326,7 +410,16 @@ export function outcomeCounts(report) {
       Object.entries(report.sections).map(([name, section]) => [
         name,
         section.status === 'ok'
-          ? { status: section.status, count: section.rows?.length ?? 0 }
+          ? {
+              status: section.status,
+              count:
+                name === 'laterFixRates'
+                  ? (section.rows ?? []).reduce(
+                      (/** @type {number} */ sum, /** @type {Data} */ row) => sum + row.merges,
+                      0,
+                    )
+                  : (section.rows?.length ?? 0),
+            }
           : { status: section.status },
       ]),
     ),

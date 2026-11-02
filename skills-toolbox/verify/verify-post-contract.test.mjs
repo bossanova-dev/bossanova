@@ -18,6 +18,7 @@ const PR = 12030
 const REPO = 'o/r'
 const facts = (extra = {}) => ({
   changedPaths: [],
+  judgeAreas: [],
   changedLines: 12,
   sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
   prState: 'OPEN',
@@ -114,6 +115,7 @@ for (const scenario of [
     verdict: 'blocked',
   },
   { name: 'verified head', changes: {}, verdict: 'pass' },
+  { name: 'unjudged head', changes: { judgeAreas: undefined }, verdict: 'judge-required' },
   {
     name: '#12030 boss head without a receipt',
     changes: { receipt: 'absent', prClass: 'boss' },
@@ -133,7 +135,9 @@ for (const scenario of [
     assert.deepEqual(w.errors, [])
     assert.equal(w.posts.length, 1)
     const { args, options, parsed } = w.posts[0]
-    const claimed = ['review-required', 'extensions-required'].includes(judged.verdict)
+    const claimed = ['review-required', 'extensions-required', 'judge-required'].includes(
+      judged.verdict,
+    )
     assert.equal(parsed.verdict, claimed ? 'claim' : judged.verdict)
     assert.equal(parsed.pr, PR)
     assert.equal(parsed.headSha, HEAD)
@@ -206,6 +210,7 @@ test('every gate verdict has an explicit sweep post or deliberate nonpost route'
     pass: 'pass',
     'review-required': 'claim',
     'extensions-required': 'claim',
+    'judge-required': 'claim',
     wait: null,
     defect: null,
     reverify: null,

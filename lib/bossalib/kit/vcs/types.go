@@ -230,6 +230,9 @@ type CheckResult struct {
 	// commit status it is the status description; ClassifyVerify reads it to
 	// tell a live boss/verify claim from a park awaiting a human.
 	Description string
+	// Workflow is the Actions workflow the check belongs to; empty for a
+	// commit status.
+	Workflow string
 }
 
 // WorkflowRun is one GitHub Actions workflow run for a commit. Status is the

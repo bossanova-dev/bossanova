@@ -115,7 +115,7 @@ func prStateResponse(slug string, pr int, snap prstate.Snapshot) *pb.GetPRStateR
 		IsWorkflowRunsRead:     snap.RunsRead,
 	}
 	for _, c := range snap.Checks {
-		check := &pb.PRCheck{Name: c.Name, Status: pb.CheckStatus(clampInt32(int(c.Status))), Description: c.Description, IsUnclassified: c.Unclassified}
+		check := &pb.PRCheck{Name: c.Name, Status: pb.CheckStatus(clampInt32(int(c.Status))), Description: c.Description, IsUnclassified: c.Unclassified, WorkflowName: c.Workflow}
 		if c.Conclusion != nil {
 			conclusion := pb.CheckConclusion(clampInt32(int(*c.Conclusion)))
 			check.Conclusion = &conclusion

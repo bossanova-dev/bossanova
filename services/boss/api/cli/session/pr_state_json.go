@@ -43,6 +43,9 @@ type prCheckJSON struct {
 	Conclusion     string `json:"conclusion"`
 	Description    string `json:"description"`
 	IsUnclassified bool   `json:"is_unclassified"`
+	// WorkflowName lets a saved prior head's check set be matched against
+	// the head's workflow runs; a commit status has none.
+	WorkflowName string `json:"workflow_name,omitempty"`
 }
 
 type prCheckVerdictJSON struct {
@@ -134,7 +137,7 @@ func newPRStateJSON(r *pb.GetPRStateResponse) prStateJSON {
 		IsWorkflowRunsRead:     r.GetIsWorkflowRunsRead(),
 	}
 	for _, c := range r.GetChecks() {
-		check := prCheckJSON{Name: c.GetName(), Status: enumName(c.GetStatus(), "CHECK_STATUS_"), Description: c.GetDescription(), IsUnclassified: c.GetIsUnclassified()}
+		check := prCheckJSON{Name: c.GetName(), Status: enumName(c.GetStatus(), "CHECK_STATUS_"), Description: c.GetDescription(), IsUnclassified: c.GetIsUnclassified(), WorkflowName: c.GetWorkflowName()}
 		if c.Conclusion != nil {
 			check.Conclusion = enumName(c.GetConclusion(), "CHECK_CONCLUSION_")
 		}

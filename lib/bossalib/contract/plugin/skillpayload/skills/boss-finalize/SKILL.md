@@ -40,14 +40,18 @@ branch, the gate commands and the "Done means" list above. It keeps all bulk out
 check tables) in its own context and returns only the final PR state, check status and what it
 pushed. If it meets a real merge conflict or a failing gate that needs a code change, it stops and
 returns `NEEDS_OPUS: <reason>` rather than resolving it; you then run the steps inline on your own
-model, as you also do if the dispatch itself fails. Afterwards re-verify with one call:
-`gh pr view --json isDraft,mergeable,statusCheckRollup`.
+model, as you also do if the dispatch itself fails. Afterwards re-verify with one call, setting
+`BOSS_FINALIZE_TOOLBOX` first as Step 1 does (this runs in your context, not the subagent's):
+`node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" view` (PR state reads go through this daemon-first
+reader; it runs labelled `gh` only when no daemon answers).
 
 ## Step 1: Find the base and make sure it is in the branch
 
 ```bash
 git status                            # Uncommitted changes?
-BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
+BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
+if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+BASE_BRANCH=$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" view --field baseRefName 2>/dev/null || true)
 if [ -z "$BASE_BRANCH" ]; then
   CURRENT_BRANCH=$(git branch --show-current)
   UPSTREAM_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | sed 's#^origin/##' || true)
@@ -67,7 +71,7 @@ fi
 test -n "$BASE_BRANCH" || { echo "Could not determine PR base branch"; exit 1; }
 git fetch origin "$BASE_BRANCH"
 git log "origin/$BASE_BRANCH"..HEAD --oneline   # ALL commits on this branch (vs PR base)
-gh pr view --json number -q .number   # Get PR number
+node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field number   # Get PR number
 ```
 
 Check the inferred base before continuing when GitHub metadata was unavailable. Then:
@@ -127,7 +131,9 @@ Commit remaining work with the repo's commit convention (conventional commits by
   could not tag (usually a message a repo hook rejected — fix exactly what the hook names). Verify:
 
   ```bash
-  PR_NUM=$(gh pr view --json number -q .number)
+  BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
+  if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+  PR_NUM=$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field number)
   git log origin/$BASE_BRANCH..HEAD --format='%H%x09%s' |
     while IFS=$'\t' read -r sha subject; do
       tree=$(git show -s --format=%T "$sha") || exit 1
@@ -197,24 +203,21 @@ ran:
 BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
 if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
 CHECK_DIR="$(mktemp -d)"
-HEAD_SHA="$(gh pr view --json headRefOid -q .headRefOid)"
-gh pr checks --json name,state,bucket > "$CHECK_DIR/checks.json"
-gh api "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?per_page=100" --paginate --slurp > "$CHECK_DIR/runs.json"
-gh run list --commit "$HEAD_SHA" --json name,workflowName,status,conclusion,headSha,event --limit 100 > "$CHECK_DIR/workflow-runs.json"
-node "$BOSS_FINALIZE_TOOLBOX/pr-check-state.mjs" classify \
-  --head-sha "$HEAD_SHA" --observed-sha "$HEAD_SHA" \
-  --checks "$CHECK_DIR/checks.json" --check-runs "$CHECK_DIR/runs.json" \
-  --workflow-runs "$CHECK_DIR/workflow-runs.json"
+PR_NUMBER="$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field number)"
+test -n "$PR_NUMBER" || exit 1
+node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" read --pr "$PR_NUMBER" --fresh > "$CHECK_DIR/pr-state.json"
+node "$BOSS_FINALIZE_TOOLBOX/pr-check-state.mjs" classify --pr-state "$CHECK_DIR/pr-state.json"
 ```
 
-- `green` — done (`provesGreen: true` means a gate actually ran and the set was compared with the
-  prior head).
+- `green` — one reading, not yet done: settle it with
+  `node "$BOSS_FINALIZE_TOOLBOX/ci-wait.mjs" run --pr "$PR_NUMBER"`, re-issued while it returns
+  `state: continue`. Only `settled` (two fresh greens of the same head an interval apart) is done.
 - `pending` — keep waiting (a head workflow run still queued or running is `pending` too), except
   reason `absent-gate` (a gate the prior head had is missing; it will never arrive) — report it with
   its `absentGateRemedy`: `re-trigger-absent-gate`, or `reported-on-prior-head` (it already passed
   on the prior head and will not re-run; treat it as advisory or read `merge-state`).
 - `unknown` — unobserved; report it, never call it green.
-- `failing` — find the failing check (`gh pr checks --json name,state,bucket`), read only the failing
+- `failing` — find the failing check in `$CHECK_DIR/pr-state.json`, read only the failing
   log lines (`gh run view <run-id> --log-failed | tail`, or in a subagent), fix, push, re-check. A
   failure you have proven also fails on the base branch is not yours: record it in the handoff and a
   PR comment, and continue.
@@ -222,9 +225,10 @@ node "$BOSS_FINALIZE_TOOLBOX/pr-check-state.mjs" classify \
 ## Step 6: Ready and mergeable
 
 ```bash
-PR_URL=$(gh pr view --json url -q .url)
 BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
 if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+PR_NUMBER="$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field number)"
+PR_URL="$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field url)"
 DRAFT_GUARD=$(node "$BOSS_FINALIZE_TOOLBOX/finalize/draft-guard.mjs" decide --pr "$PR_URL") || true
 printf '%s\n' "$DRAFT_GUARD"
 DRAFT_VERDICT=$(printf '%s\n' "$DRAFT_GUARD" | sed -n 's/^verdict: //p')
@@ -234,7 +238,7 @@ case "$DRAFT_VERDICT" in
     gh pr ready "$PR_URL"
     IS_DRAFT=""
     for attempt in 1 2 3 4 5 6; do
-      IS_DRAFT=$(gh pr view "$PR_URL" --json isDraft -q .isDraft)
+      IS_DRAFT=$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" view --pr "$PR_NUMBER" --fresh --field isDraft)
       if [ "$IS_DRAFT" = "false" ]; then break; fi
       sleep 5
     done
@@ -259,7 +263,8 @@ case "$DRAFT_VERDICT" in
 esac
 ```
 
-`gh pr view --json mergeable -q .mergeable`: `MERGEABLE` is done; `UNKNOWN` means wait and re-read;
+`node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" view --fresh --field mergeable`: `MERGEABLE` is done; `UNKNOWN`
+means wait and re-read the same way (no webhook clears a cached `UNKNOWN`);
 `CONFLICTING` means rebase onto `origin/$BASE_BRANCH`, resolve, re-run the gates, assert zero merge
 commits, push with lease, and re-check.
 

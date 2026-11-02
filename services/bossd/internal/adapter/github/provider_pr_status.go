@@ -203,6 +203,7 @@ func (p *Provider) buildCheckSet(rows []checkRow) vcs.CheckSet {
 			// The description carries the boss/verify phase and park reason
 			// (vcs.ClassifyVerify); for an Actions job it is informational.
 			Description: r.Description,
+			Workflow:    r.Workflow,
 		})
 	}
 	return set

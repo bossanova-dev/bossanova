@@ -52,8 +52,8 @@ import {
   parseExtensionRecord,
   claimState,
   classifyApproval,
-  decideVerdict,
-  judge,
+  decideVerdict as rawDecideVerdict,
+  judge as rawJudge,
   main,
   materializeTrustedTree,
   reapTrustedTrees,
@@ -135,6 +135,34 @@ const BODY = [
 
 // boss-build's PARTIAL marker, the one explicit hold a PR body carries.
 const PARTIAL_BODY = `${BODY}\n## Partial\n\ndo not merge — partial: 2/5 acceptance criteria\n`
+
+// Unrelated policy tests start after a successful, empty model pass.
+const decideVerdict = (facts) => rawDecideVerdict({ judgeAreas: [], ...facts })
+async function judge(options, deps) {
+  if (options.judgeAreas !== undefined) return rawJudge(options, deps)
+  const read = (command, args, ...rest) => {
+    if (args[1]?.endsWith('/collaborators/judge-fixture/permission'))
+      return { ok: true, payload: { permission: 'write' } }
+    const result = deps.read(command, args, ...rest)
+    if (
+      result.ok &&
+      /\/issues\/\d+\/comments\?per_page=100$/.test(args[1] ?? '') &&
+      Array.isArray(result.payload)
+    ) {
+      const records = [HEAD, OTHER].map((head) => ({
+        id: 0,
+        user: { login: 'judge-fixture' },
+        author_association: 'MEMBER',
+        created_at: iso(7_200_000),
+        body: `<!-- boss-judge-record head=${head} areas=W10 -->`,
+      }))
+      return { ...result, payload: [...result.payload, records] }
+    }
+    return result
+  }
+  Object.assign(read, { writeAware: deps.read.writeAware })
+  return rawJudge(options, { ...deps, read })
+}
 
 const green = [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }]
 
@@ -3348,6 +3376,7 @@ test('parsePostOptions preserves validation order and every invalid option diagn
     humanCodes: null,
     confidence: null,
     record: null,
+    judgeRecord: null,
     carryRecord: null,
     extensionResults: undefined,
     findings: [],
@@ -4194,7 +4223,7 @@ test('rearm retries instead of arming a blind callback when the PR read fails @s
 test('main dispatches verbs and rejects usage errors before any read', async () => {
   const w = world()
   const r = await main(['judge', '--pr', '7', '--repo', REPO], deps(w))
-  assert.equal(r.verdict, 'pass')
+  assert.equal(r.verdict, 'judge-required')
   const dry = await main(
     ['post', '--pr', '7', '--head', HEAD, '--verdict', 'pass', '--repo', REPO, '--dry-run'],
     deps(world()),
@@ -10653,4 +10682,224 @@ test('rearm arms a CI callback for a ci-not-requested wait', async () => {
   assert.equal(r.waitingOn, 'ci')
   assert.equal(r.wake, 'callback')
   assert.deepEqual(s.calls, [])
+})
+
+test('an unjudged head reaches the model only after extensions and before confidence settles', () => {
+  assert.equal(rawDecideVerdict(greenFacts()).verdict, 'judge-required')
+  assert.equal(rawDecideVerdict(greenFacts({ extensions: [EXT] })).verdict, 'extensions-required')
+  assert.equal(
+    rawDecideVerdict(greenFacts({ extensions: [EXT], extensionResults: ranPass })).verdict,
+    'judge-required',
+  )
+  assert.equal(rawDecideVerdict(greenFacts({ judgeAreas: [] })).verdict, 'pass')
+  assert.equal(rawDecideVerdict(greenFacts({ waive: 'always-human-path' })).reason, 'approved')
+})
+
+test('judge additions persist through trusted per-head records and keep a standing park', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-model-'))
+  try {
+    const w = world()
+    const initial = await rawJudge({ pr: 7 }, deps(w))
+    assert.equal(initial.verdict, 'judge-required')
+    assert.equal(initial.judgeEnvelope.headSha, HEAD)
+    const file = jsonFile(dir, 'judge.json', {
+      version: 1,
+      head: HEAD,
+      areas: [{ label: 'Access', path: 'src/a.go', reason: 'Access checks removed' }],
+    })
+    const judged = await rawJudge({ pr: 7, judgeAreas: file }, deps(w))
+    assert.equal(judged.verdict, 'human')
+    assert.equal(judged.confidence.level, 'moderate')
+    assert.ok(judged.reasons.includes('always-human-path'))
+    assert.ok(judged.judgeRecord)
+    const posted = await post(
+      {
+        pr: 7,
+        head: HEAD,
+        verdict: 'human',
+        reason: judged.reason,
+        judgeRecord: judged.judgeRecord,
+        dryRun: true,
+      },
+      deps(w),
+    )
+    const comment = posted.writes.find(
+      (write) => write.kind === 'pr-comment' && write.body.includes('boss-judge-record'),
+    )
+    assert.ok(comment)
+    assert.ok(comment.body.includes('src/a.go'))
+    w.comments.push({
+      id: 99,
+      user: { login: 'operator' },
+      author_association: 'MEMBER',
+      created_at: iso(1),
+      body: comment.body,
+    })
+    const recorded = await rawJudge({ pr: 7 }, deps(w))
+    assert.equal(recorded.verdict, 'human')
+    assert.ok(recorded.confidence.asks.some((ask) => ask.source === 'judge'))
+    w.statuses[HEAD].unshift({
+      context: 'boss/verify',
+      state: 'success',
+      description: needsHumanDescription('always-human-path'),
+      updated_at: iso(1),
+    })
+    const standing = await rawJudge({ pr: 7 }, deps(w))
+    assert.equal(standing.verdict, 'human')
+    assert.equal(standing.held, true)
+    const empty = jsonFile(dir, 'empty.json', { version: 1, head: HEAD, areas: [] })
+    const later = await rawJudge({ pr: 7, judgeAreas: empty }, deps(w))
+    assert.equal(later.verdict, 'human', 'a fresh empty pass cannot retract a recorded addition')
+    const untrusted = world({ comments: [w.comments.at(-1)], permissions: { operator: 'read' } })
+    assert.equal((await rawJudge({ pr: 7 }, deps(untrusted))).verdict, 'judge-required')
+    approving(w, 'always-human-path')
+    const approved = await rawJudge({ pr: 7 }, deps(w))
+    assert.equal(approved.verdict, 'pass')
+    assert.equal(approved.reason, 'approved')
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('an unusable model output parks cannot-assess; empty output passes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-model-output-'))
+  try {
+    const w = world()
+    const file = jsonFile(dir, 'judge.json', { version: 1, head: HEAD, areas: [] })
+    assert.equal((await rawJudge({ pr: 7, judgeAreas: file }, deps(w))).verdict, 'pass')
+    writeFileSync(file, '{')
+    const failed = await rawJudge({ pr: 7, judgeAreas: file }, deps(w))
+    assert.equal(failed.confidence.level, 'cannot-assess')
+    assert.equal(failed.reason, 'cannot-assess')
+    await assert.rejects(
+      post({ pr: 7, head: HEAD, verdict: 'pass', judgeRecord: 'W10' }, deps(w)),
+      UsageError,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('judge asks count toward Low and hostile keys only produce health warnings', () => {
+  const area = {
+    area: 'judge:access',
+    label: 'Access',
+    paths: ['src/a.go'],
+    defaultAsk: 'always',
+    source: 'judge',
+    reason: 'Checks removed',
+  }
+  const result = rawDecideVerdict(
+    greenFacts({
+      judgeAreas: [area],
+      judgeHealth: ['judge-keys-ignored'],
+      areas: ['one', 'two', 'three'].map((area) => ({ area, label: area, defaultAsk: 'always' })),
+    }),
+  )
+  assert.equal(result.confidence.level, 'low')
+  assert.equal(result.confidence.asks.length, 4)
+  assert.ok(result.confidence.health.includes('judge-keys-ignored'))
+})
+
+test('a judge park is never published if its durable record cannot be written', async () => {
+  const w = world({ commentWritesFail: true })
+  const record = Buffer.from(
+    JSON.stringify([{ label: 'Access', path: 'src/a.go', reason: 'Checks removed' }]),
+  ).toString('base64url')
+  const result = await post(
+    { pr: 7, head: HEAD, verdict: 'human', reason: 'always-human-path', judgeRecord: record },
+    deps(w),
+  )
+  assert.equal(result.posted, false)
+  assert.equal(result.reason, 'judge-record-failed')
+  assert.ok(!w.statuses[HEAD].some((status) => status.context === 'boss/verify'))
+})
+
+test('valid judge additions survive an evidence park and recovered zero-token rejudge', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-judge-evidence-'))
+  try {
+    const w = world()
+    assert.equal((await rawJudge({ pr: 7 }, deps(w))).verdict, 'judge-required')
+    const file = jsonFile(dir, 'judge.json', {
+      version: 1,
+      head: HEAD,
+      areas: [{ label: 'Access', path: 'src/a.go', reason: 'Access checks removed' }],
+    })
+    const missing = await rawJudge(
+      { pr: 7, judgeAreas: file },
+      deps(w, {
+        readSizeBaseline: () => ({ ok: false, error: 'temporarily unavailable' }),
+      }),
+    )
+    assert.equal(missing.verdict, 'human')
+    assert.equal(missing.confidence.level, 'cannot-assess')
+    assert.equal(missing.reason, 'cannot-assess')
+    assert.ok(missing.judgeRecord, 'the evidence park must carry the validated additions')
+    const posted = await post(
+      {
+        pr: 7,
+        head: HEAD,
+        verdict: 'human',
+        reason: missing.reason,
+        judgeRecord: missing.judgeRecord,
+      },
+      deps(w),
+    )
+    assert.equal(posted.posted, true)
+    const recovered = await rawJudge({ pr: 7 }, deps(w))
+    assert.equal(recovered.verdict, 'human')
+    assert.equal(recovered.confidence.level, 'moderate')
+    assert.ok(
+      recovered.confidence.asks.some((ask) => ask.source === 'judge' && ask.label === 'Access'),
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('missing changed-file evidence cannot persist an empty assessment or replace trusted asks', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-judge-files-'))
+  try {
+    const file = jsonFile(dir, 'judge.json', {
+      version: 1,
+      head: HEAD,
+      areas: [{ label: 'Access', path: 'src/a.go', reason: 'Access checks removed' }],
+    })
+    for (const previouslyJudged of [false, true]) {
+      const w = world()
+      assert.equal((await rawJudge({ pr: 7 }, deps(w))).verdict, 'judge-required')
+      if (previouslyJudged) {
+        const valid = await rawJudge({ pr: 7, judgeAreas: file }, deps(w))
+        await post(
+          {
+            pr: 7,
+            head: HEAD,
+            verdict: 'human',
+            reason: valid.reason,
+            judgeRecord: valid.judgeRecord,
+          },
+          deps(w),
+        )
+      }
+      w.diff = null
+      const missing = await rawJudge({ pr: 7, judgeAreas: file }, deps(w))
+      assert.equal(missing.verdict, 'human')
+      assert.equal(missing.confidence.level, 'cannot-assess')
+      assert.equal(
+        missing.judgeRecord,
+        undefined,
+        'unknown files must never certify an empty model pass',
+      )
+      await post({ pr: 7, head: HEAD, verdict: 'human', reason: missing.reason }, deps(w))
+      w.diff = ['src/a.go']
+      const recovered = await rawJudge({ pr: 7 }, deps(w))
+      assert.equal(recovered.verdict, previouslyJudged ? 'human' : 'judge-required')
+      if (previouslyJudged)
+        assert.ok(
+          recovered.confidence.asks.some((ask) => ask.source === 'judge' && ask.label === 'Access'),
+        )
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
 })

@@ -150,6 +150,7 @@ test('plan predictions match judge path reasons across policy categories and mix
       ...pathParkFacts(paths, policy),
       review: policy.review,
       changedPaths: paths,
+      judgeAreas: [],
       changedLines: 0,
       sizeBaseline: { ok: true, thresholds: null },
       prState: 'OPEN',

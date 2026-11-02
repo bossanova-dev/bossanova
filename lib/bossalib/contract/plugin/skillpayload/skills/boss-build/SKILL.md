@@ -375,6 +375,7 @@ create a `boss-build/<ticket-id>` branch off the base first
 ## Step 2.5: Ours to adopt, or foreign?
 
 ```bash
+# Stays on gh: the ownership judgement reads the PR title and body, which the daemon does not carry.
 PR_JSON="$(gh pr list --head "$SESSION_BRANCH" --state open \
   --json number,title,body,headRefName,state)"
 BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
@@ -716,14 +717,15 @@ Every route from Step 6 comes through here.
 ## Step 8: Tag and get to green
 
 ```bash
-# PR_NUMBER was captured in Step 7; re-derive if unset (resume / fresh shell).
-PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
-test -n "$PR_NUMBER" || exit 1
 BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
 if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" || exit 1
-BASE_BRANCH="$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)"
+# PR_NUMBER was captured in Step 7; re-derive if unset (resume / fresh shell). PR state reads go
+# through the daemon-first reader; it runs labelled gh only when no daemon answers.
+PR_NUMBER="${PR_NUMBER:-$(node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" session-pr --field number)}"
+test -n "$PR_NUMBER" || exit 1
+BASE_BRANCH="$(node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" view --pr "$PR_NUMBER" --field baseRefName)"
 git fetch origin "$BASE_BRANCH"
 # Rebase all commits since the PR base and inject [#PR_NUMBER] into any missing it.
 # Run with a 600s tool timeout. Redirect output to a file, never to head/tail; a
@@ -802,11 +804,14 @@ Readying, on every non-BLOCKED route:
 # Gate mergeability before readying. GitHub may report UNKNOWN briefly after a push, so poll with
 # a bound; CONFLICTING or any dirty mergeStateStatus means rebase onto the base, re-run the tests
 # relevant to the change (## Verification), push, wait for checks, and re-read mergeability.
+# GitHub sends no webhook when it finishes computing mergeability, so a re-read is --fresh.
+FRESH=""
 for attempt in 1 2 3 4 5 6; do
-  PR_STATE="$(gh pr view "$PR_NUMBER" --json isDraft,mergeable,mergeStateStatus)"
+  PR_STATE="$(node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" view --pr "$PR_NUMBER" ${FRESH:+--fresh})"
   MERGEABLE="$(printf '%s' "$PR_STATE" | jq -r .mergeable)"
   MERGE_STATE="$(printf '%s' "$PR_STATE" | jq -r .mergeStateStatus)"
   if [ "$MERGEABLE" != "UNKNOWN" ]; then break; fi
+  FRESH=1
   sleep 10
 done
 if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_STATE" = "BLOCKED" ]; then
@@ -821,7 +826,7 @@ if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_
   # poll (Protocol step 5) until CI_WAIT_STATE=settled; anything else goes back to Step 8.
   arm_ci_watches "$PR_NUMBER"
   ci_wait_bounded "$PR_NUMBER"
-  PR_STATE="$(gh pr view "$PR_NUMBER" --json isDraft,mergeable,mergeStateStatus)"
+  PR_STATE="$(node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" view --pr "$PR_NUMBER")"
   MERGEABLE="$(printf '%s' "$PR_STATE" | jq -r .mergeable)"
   MERGE_STATE="$(printf '%s' "$PR_STATE" | jq -r .mergeStateStatus)"
   test "$MERGEABLE" = "MERGEABLE" || exit 1
@@ -832,12 +837,13 @@ if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_
 fi
 # Ready the PR — the finalize adapter's readyPr capability (isDraft==true guard; command: gh pr ready).
 if [ "$(printf '%s' "$PR_STATE" | jq -r .isDraft)" = "true" ]; then gh pr ready "$PR_NUMBER"; fi
-test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false" || exit 1
+# Reads right after our own write are --fresh: a late webhook would still serve the draft state.
+test "$(node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" view --pr "$PR_NUMBER" --fresh --field isDraft)" = "false" || exit 1
 # Readying is what STARTS the non-draft-only advisory bot, so the merge state degrades on a branch
 # that has not changed. Decide that degraded value through the shared classifier, never by reading
 # the raw token: --readied-this-run names the post-ready degrade, and its verdict is pending
 # (reason advisory-unsettled), non-blocking. Only `blocking: true` routes back to Step 8.
-POST_READY_STATE="$(gh pr view "$PR_NUMBER" --json mergeStateStatus -q .mergeStateStatus)"
+POST_READY_STATE="$(node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" view --pr "$PR_NUMBER" --fresh --field mergeStateStatus)"
 POST_READY_VERDICT="$(node "$BOSS_BUILD_TOOLBOX/pr-check-state.mjs" merge-state \
   --merge-state "$POST_READY_STATE" --check-state green --check-reason ok \
   --unresolved-threads 0 --readied-this-run)"
@@ -916,7 +922,7 @@ may change it.
 
   ```bash
   SESSION_BRANCH="${SESSION_BRANCH:-$(git branch --show-current)}"
-  PR_URL="$(gh pr view "${PR_NUMBER:-$SESSION_BRANCH}" --json url -q .url 2>/dev/null)"
+  PR_URL="$(node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" session-pr --field url 2>/dev/null)"
   if git fetch -q origin "$SESSION_BRANCH" &&
     [ "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$SESSION_BRANCH")" ]; then
     node "$BOSS_BUILD_TOOLBOX/commit-status.mjs" post --context boss/build --state success \

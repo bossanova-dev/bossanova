@@ -10,7 +10,7 @@ import test from 'node:test'
 
 import { takeReading } from '../ci-wait.mjs'
 import { CHECK_REASONS, CHECK_STATES, classifyChecks } from '../pr-check-state.mjs'
-import { daemonFirstReader, ghCheckReader } from '../pr-state.mjs'
+import { daemonFirstReader, ghCheckReader, readPRView } from '../pr-state.mjs'
 import { classifyInputsFromPrState } from './pr-state-envelope.mjs'
 import { requiredChecksFor } from './required-checks.mjs'
 
@@ -319,4 +319,84 @@ for (const scenario of SCENARIOS) {
       verdictOf(fromGh.state, fromGh.reason),
     )
   })
+
+  test(`parity — ${scenario.name}: the view verb's rollup classifies like gh's`, () => {
+    const requiredChecks = requiredChecksFor(
+      scenario.required ? { checks: scenario.required } : null,
+      'main',
+    )
+    const view = readPRView({ pr: 7, timeoutMs: 60_000, deps: daemonDeps(scenario) })
+    assert.equal(view.out.source, 'daemon')
+    const classify = (rollup, prior) =>
+      classifyChecks({
+        headSHA: HEAD,
+        observedSHA: view.out.headRefOid,
+        rollup,
+        priorContexts: prior,
+        workflowRuns: scenario.gh.runs,
+        requiredChecks,
+      })
+    const fromGh = classify({ statusCheckRollup: scenario.gh.rollup }, scenario.prior ?? null)
+    const fromView = classify(view.out, scenario.prior ?? null)
+    assert.deepEqual(
+      verdictOf(fromView.state, fromView.reason),
+      verdictOf(fromGh.state, fromGh.reason),
+    )
+    // A prior head's view is a `--prior` payload: the same set as prior reads as no absent gate.
+    const againstItself = classify(view.out, view.out)
+    assert.equal(againstItself.priorKnown, true)
+    assert.deepEqual(againstItself.absent, [])
+  })
 }
+
+// A path-filtered push drops a whole workflow's checks. The prior head's view, saved as `--prior`,
+// names each check's workflow on the daemon path as gh's rollup does, so a check whose workflow did
+// not run on the head is `notTriggered` either way; a prior without workflow names stays absent.
+test('parity — a prior head saved through view keeps workflow identity for notTriggered', () => {
+  const priorDaemon = envelope({
+    checks: [
+      daemonCheck('build', 'completed', 'success', { workflow_name: 'CI' }),
+      daemonCheck('docs-lint', 'completed', 'success', { workflow_name: 'Docs' }),
+    ],
+    runs: [daemonRun('CI', 'completed', 'success'), daemonRun('Docs', 'completed', 'success')],
+    verdict: verdictOf('green', 'ok'),
+    settled: true,
+  })
+  const priorGh = [
+    ghCheck('build', 'SUCCESS'),
+    { ...ghCheck('docs-lint', 'SUCCESS'), workflowName: 'Docs' },
+  ]
+  const deps = {
+    resolveBoss: () => ({ ok: true, path: '/fake/boss' }),
+    spawn: (cmd, args) => {
+      assert.equal(cmd, '/fake/boss', `the daemon path spawned ${cmd} ${args.join(' ')}`)
+      return { status: 0, stdout: JSON.stringify(priorDaemon) }
+    },
+  }
+  const view = readPRView({ pr: 7, timeoutMs: 60_000, deps })
+  assert.equal(view.out.source, 'daemon')
+  const classify = (prior) =>
+    classifyChecks({
+      headSHA: HEAD,
+      observedSHA: HEAD,
+      rollup: { statusCheckRollup: [ghCheck('build', 'SUCCESS')] },
+      priorContexts: prior,
+      workflowRuns: [ghRun('CI', 'completed', 'success')],
+    })
+  const fromView = classify(view.out)
+  const fromGh = classify({ statusCheckRollup: priorGh })
+  assert.deepEqual(fromView.notTriggered, ['docs-lint'])
+  assert.deepEqual(
+    verdictOf(fromView.state, fromView.reason),
+    verdictOf(fromGh.state, fromGh.reason),
+  )
+  assert.equal(fromView.state, CHECK_STATES.GREEN)
+
+  const unplaced = classify({
+    statusCheckRollup: view.out.statusCheckRollup.map(({ workflowName, ...node }) => node),
+  })
+  assert.deepEqual(
+    verdictOf(unplaced.state, unplaced.reason),
+    verdictOf(CHECK_STATES.PENDING, CHECK_REASONS.ABSENT_GATE),
+  )
+})

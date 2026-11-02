@@ -2615,3 +2615,18 @@ test('confirmed routing supersedes only this head callbacks and removal failure 
       )
   }
 })
+
+test('judge-required claims and routes the head into its verify session', () => {
+  const w = world({
+    verdicts: { 1: { verdict: 'judge-required', reason: 'judge-needed' } },
+    sessions: [{ id: 's1', pr_url: url(1), updated_at: '2026-10-01T00:00:00Z' }],
+    chats: { s1: [{ agent_session_id: 'chat-v', title: 'Verify' }] },
+  })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(w.posts()[0].slice(5, 7), ['--verdict', 'claim'])
+  const send = w.calls.find((c) => c.args[0] === 'chat' && c.args[1] === 'send')
+  assert.deepEqual(send.args, ['chat', 'send', 'chat-v', '/boss-verify 1 --claim tok-1', '--json'])
+  const claimIndex = w.calls.findIndex((c) => c.cmd === NODE && c.args[1] === 'post')
+  assert.ok(claimIndex < w.calls.indexOf(send))
+  assert.deepEqual(lines(r), ['#1 dispatched: existing-verify-chat'])
+})

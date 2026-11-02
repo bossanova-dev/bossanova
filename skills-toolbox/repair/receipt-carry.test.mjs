@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 import { parseReportFindings } from '../review-verdict.mjs'
 
@@ -179,9 +179,11 @@ function gitIn(dir) {
   return { git, commit }
 }
 
-// git runs for real; gh answers `boss/build` reads from `receipts` and records each post.
+// git runs for real; `boss` is absent (ENOENT), so the PR base comes from the labelled gh
+// fallback; gh answers `boss/build` reads from `receipts` and records each post.
 function fakeSpawn(receipts, posts) {
   const gh = (args) => {
+    if (args[0] === 'pr' && args[1] === 'list') return { status: 0, stdout: '[{"number":7}]' }
     if (args[0] === 'pr') return { status: 0, stdout: '{"baseRefName":"main"}' }
     if (args.includes('POST')) {
       posts.push(args)
@@ -193,8 +195,10 @@ function fakeSpawn(receipts, posts) {
       : []
     return { status: 0, stdout: JSON.stringify([statuses]) }
   }
-  return (command, args, options) =>
-    command === 'gh' ? gh(args) : spawnSync(command, args, options)
+  return (command, args, options) => {
+    if (basename(command) === 'boss') return { status: null, error: { code: 'ENOENT' } }
+    return command === 'gh' ? gh(args) : spawnSync(command, args, options)
+  }
 }
 
 function fixture(t) {

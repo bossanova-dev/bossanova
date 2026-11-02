@@ -939,13 +939,14 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
   // core that runs a post-terminal notes phase vendors it for notesSampleRate (BOS-1099)
   // — boss-repair included, which reads the knob to take its per-run sampling roll — and
   // boss-verify imports it directly from verify-gate.mjs for the tracker role names, the verify
-  // selection query and the always-human paths. It must still not leak into any skill that
-  // consumes none of those.
+  // selection query and the always-human paths; boss-finalize ships it with ci-wait.mjs, which
+  // reads `ci.required`. It must still not leak into any skill that consumes none of those.
   const skillConfigConsumers = new Set([
     'boss-retro',
     'boss-review',
     'boss-build',
     'boss-epic',
+    'boss-finalize',
     'boss-plan',
     'boss-repair',
     'boss-verify',

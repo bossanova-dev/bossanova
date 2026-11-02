@@ -12,6 +12,7 @@ export function createPrLookup({ run = spawnSync, timeoutMs = 10_000 } = {}) {
     try {
       const result = await Promise.race([
         Promise.resolve().then(() =>
+          // Stays on gh: the daemon's PR state carries no merged time or file list.
           run(
             'gh',
             ['pr', 'view', url, '--json', 'state,isDraft,mergedAt,files,statusCheckRollup'],

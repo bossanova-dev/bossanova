@@ -3,8 +3,16 @@ import { test } from 'node:test'
 import { RECEIPT_CONTEXT } from '../commit-status.mjs'
 import { VERIFY_CONTEXT, VERIFY_DESCRIPTIONS as D } from '../verify/verify-vocabulary.mjs'
 import { needsHumanDescription } from '../verify/verify-gate.mjs'
+import { escapeRecord, renderEscapeComment, parseEscapeComment } from '../verify/verify-escapes.mjs'
 import { renderPrSection } from '../review-verdict.mjs'
 import {
+  RATE_WINDOW_DAYS,
+  VERDICT_CLASSES,
+  verdictClass,
+  escapeRows,
+  laterFixRates,
+  mergeVerdict,
+  factory,
   HOLD_MINUTES,
   JUDGE_GRACE_MINUTES,
   CRON_STALE_MINUTES,
@@ -263,4 +271,153 @@ test('report renderer includes failures, future sections, row limits and counts-
   assert.deepEqual(counts.sections.unjudgedHeads, { status: 'failed' })
   assert.equal(JSON.stringify(counts).includes('rows'), false)
   assert.deepEqual(counts.window, window)
+})
+
+const escaped = (originalNumber = 1, fixNumber = 20, minutes = 30) => {
+  const original = {
+    ...pr(originalNumber),
+    files: ['skills-toolbox/retro/retro-outcomes.mjs'],
+    body: '## Review findings\n- [ ] **P1** defect\n## Unapplied review findings\n- [ ] **P2** deferred\n## Cross-model review\nran (other)\n',
+    additions: 12,
+    deletions: 3,
+    changedFiles: 2,
+    verifyState: D.verified,
+  }
+  const fix = { ...pr(fixNumber), mergedAt: at(minutes), files: original.files }
+  const record = escapeRecord({
+    repo: 'a/b',
+    fix,
+    link: { original, basis: 'explicit-reference', evidence: `Fixes #${originalNumber}` },
+    tracedAt: at(60),
+  })
+  const parsed = parseEscapeComment(renderEscapeComment(record))
+  assert.ok(parsed)
+  return parsed
+}
+
+test('verdict classes share the terminal vocabulary and merge-head selection', () => {
+  assert.equal(RATE_WINDOW_DAYS, 28)
+  const descriptions = [
+    D.verified,
+    D.verifiedApproved,
+    park,
+    `${D.defect} tests`,
+    `${D.defect} tests${D.defectParkedSuffix}`,
+    `${D.blocked} conflict`,
+    `${D.waiting} checks`,
+    `${D.verifying} runner`,
+    undefined,
+  ]
+  assert.deepEqual(descriptions.map(verdictClass), [
+    'passed',
+    'approved',
+    'parked',
+    'sent-back',
+    'sent-back',
+    'sent-back',
+    'none',
+    'none',
+    'none',
+  ])
+  const sample = pr(1, [status(D.verified, 2), status(park, 1)])
+  sample.commits.nodes.unshift(commit('old', [status(D.verifiedApproved, 5)]))
+  assert.equal(factory(sample), true)
+  assert.deepEqual(mergeVerdict(sample), {
+    number: 1,
+    mergedAt: at(40),
+    verifyDescription: D.verified,
+  })
+  assert.equal(mergeVerdict({ ...sample, headRefOid: 'missing' }).verifyDescription, null)
+})
+
+test('escape rows retain merge evidence, deduplicate pairs and sort fixes in the window', () => {
+  const older = escaped(1, 20, 10)
+  const newer = escaped(1, 21, 40)
+  const section = escapeRows([older, newer, older, escaped(2, 22, 90)], window)
+  assert.deepEqual(
+    section.rows.map((row) => row.fix.number),
+    [21, 20],
+  )
+  assert.deepEqual(section.rows[0].areas, newer.areas)
+  assert.deepEqual(section.rows[0].signals, newer.signals)
+  assert.equal('mergeHeadSha' in section.rows[0].original, false)
+  section.skipped = { 'tracker-unavailable': 1 }
+  const rendered = renderReport(buildReport({ window, sections: { escapeRows: section } }))
+  assert.ok(rendered.includes('tracker-unavailable'))
+  for (const fragment of [
+    '#1 ← #21',
+    newer.basis,
+    newer.areas[0].area,
+    'blocking: 1',
+    'unapplied: 1',
+    'P1',
+    'ran',
+    '+12/-3',
+    '2 files',
+    D.verified,
+  ])
+    assert.ok(rendered.includes(fragment), fragment)
+})
+
+test('rates count distinct escaped originals against merge classes and expose unmatched originals', () => {
+  const merges = Array.from({ length: 4 }, (_, i) => ({
+    number: i + 1,
+    mergedAt: at(5),
+    verifyDescription: D.verified,
+  }))
+  merges.push({ number: 5, mergedAt: at(5), verifyDescription: park })
+  merges.push({ number: 99, mergedAt: at(90), verifyDescription: D.verified })
+  const section = laterFixRates(merges, [escaped(1), escaped(1, 21), escaped(99)], window)
+  assert.equal(section.by, 'verdict')
+  assert.deepEqual(section.window, window)
+  assert.deepEqual(
+    section.rows.map((row) => row.class),
+    VERDICT_CLASSES,
+  )
+  assert.deepEqual(section.rows[0], { class: 'passed', merges: 4, escapes: 1, rate: 0.25 })
+  assert.deepEqual(section.rows[1], { class: 'approved', merges: 0, escapes: 0, rate: null })
+  assert.equal(section.unmatched, 1)
+  const report = buildReport({ window, sections: { laterFixRates: section } })
+  const rendered = renderReport(report)
+  for (const fragment of ['25%', 'n/a', 'Unmatched: 1'])
+    assert.ok(rendered.includes(fragment), fragment)
+  assert.deepEqual(outcomeCounts(report).sections.laterFixRates, { status: 'ok', count: 5 })
+})
+
+test('escape and rate read failures remain isolated and preserve their reasons and detail', () => {
+  const failed = {
+    status: 'failed',
+    reason: 'tracer-failed',
+    detail: 'trace could not read statuses',
+  }
+  assert.deepEqual(escapeRows(failed, window), failed)
+  assert.deepEqual(laterFixRates([], failed, window), failed)
+  const rateFailed = { status: 'failed', reason: 'read-failed' }
+  assert.deepEqual(laterFixRates(rateFailed, [], window), rateFailed)
+  for (const failure of [failed, rateFailed]) {
+    const sections = {
+      mergesWithoutVerdict: mergesWithoutVerdict([], window),
+      unjudgedHeads: unjudgedHeads([]),
+      unnecessaryHolds: unnecessaryHolds([], []),
+      verifyCronHealth: verifyCronHealth([]),
+      secondModelHealth: secondModelHealth([]),
+      escapeRows: escapeRows(failure === failed ? failure : [], window),
+      laterFixRates: laterFixRates(
+        failure === rateFailed ? failure : [],
+        failure === failed ? failure : [],
+        window,
+      ),
+    }
+    for (const name of [
+      'mergesWithoutVerdict',
+      'unjudgedHeads',
+      'unnecessaryHolds',
+      'verifyCronHealth',
+      'secondModelHealth',
+    ])
+      assert.equal(sections[name].status, 'ok')
+    const rendered = renderReport(buildReport({ window, sections }))
+    assert.ok(rendered.includes(failure.reason))
+    assert.equal(outcomeCounts({ sections }).sections.laterFixRates.count, undefined)
+  }
 })

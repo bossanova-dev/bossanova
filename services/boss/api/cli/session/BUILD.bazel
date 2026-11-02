@@ -61,6 +61,7 @@ go_test(
         "new_test.go",
         "pr_accept_test.go",
         "pr_followup_test.go",
+        "pr_state_golden_test.go",
         "pr_state_test.go",
         "pr_test.go",
         "pr_wait_test.go",
@@ -72,6 +73,7 @@ go_test(
         "session_tracker_test.go",
         "test_helpers_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":session"],
     embedsrcs = ["session_mcp.go"],
     deps = [

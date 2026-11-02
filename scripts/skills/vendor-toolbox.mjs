@@ -186,8 +186,10 @@ export const VENDOR_MAP = {
   'boss-finalize': [
     'finalize/draft-guard.mjs',
     'bs-dispatch-await.mjs',
+    'ci-wait.mjs',
     'commit-work-predicate.mjs',
     'pr-check-state.mjs',
+    'pr-state.mjs',
     'worktree-state.mjs',
   ],
   'boss-verify': [

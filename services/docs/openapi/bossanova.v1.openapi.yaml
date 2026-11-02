@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-10-31'
+  version: '2026-11-01'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -6594,6 +6594,7 @@ components:
         - ATTENTION_ACTION_VIDEO
         - ATTENTION_ACTION_MERGE
         - ATTENTION_ACTION_TRACKER
+        - ATTENTION_ACTION_PROOF
       description: |-
         AttentionAction is one operator action a client offers for a
          SessionAttention. The set per kind is fixed by lib/bossalib/attention.
@@ -8199,6 +8200,17 @@ components:
           title: repos
       title: CompleteGitHubAppSetupResponse
       additionalProperties: false
+    bossanova.v1.ConfidenceLevel:
+      type: string
+      title: ConfidenceLevel
+      enum:
+        - CONFIDENCE_LEVEL_UNSPECIFIED
+        - CONFIDENCE_LEVEL_HIGH
+        - CONFIDENCE_LEVEL_MODERATE
+        - CONFIDENCE_LEVEL_LOW
+        - CONFIDENCE_LEVEL_BLOCKED
+        - CONFIDENCE_LEVEL_CANNOT_ASSESS
+      description: ConfidenceLevel is the verify park's confidence level or assessment state.
     bossanova.v1.ConfigureFinalizeHookRequest:
       type: object
       properties:
@@ -8958,6 +8970,54 @@ components:
          a terminal created/error) correlated by command_id — mirroring
          AttachSessionCommand/SessionAttachChunk. Fields are a wizard-relevant subset
          of daemon.proto's CreateSessionRequest.
+    bossanova.v1.CreateSessionConflict:
+      type: object
+      properties:
+        reason:
+          title: reason
+          $ref: '#/components/schemas/bossanova.v1.CreateSessionConflictReason'
+        existingSessionId:
+          type: string
+          title: existing_session_id
+          description: Set for DUPLICATE_ACTIVE_SESSION and SESSION_STARTING.
+        trackerId:
+          type: string
+          title: tracker_id
+          description: Set for ALREADY_SHIPPED.
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        prState:
+          type: string
+          title: pr_state
+          description: '"open" | "merged"'
+        matchedTarget:
+          type: string
+          title: matched_target
+          description: 'DUPLICATE_ACTIVE_SESSION only: "tracker issue" | "PR" | "branch".'
+        branchName:
+          type: string
+          title: branch_name
+          description: 'SESSION_STARTING / BRANCH_EXISTS: the branch in question, when known.'
+      title: CreateSessionConflict
+      additionalProperties: false
+      description: |-
+        CreateSessionConflict is attached as a Connect error detail to every
+         CodeAlreadyExists refusal CreateSession returns, so a client can tell the
+         causes apart and send the matching bypass (force vs force_branch).
+    bossanova.v1.CreateSessionConflictReason:
+      type: string
+      title: CreateSessionConflictReason
+      enum:
+        - CREATE_SESSION_CONFLICT_REASON_UNSPECIFIED
+        - CREATE_SESSION_CONFLICT_REASON_ALREADY_SHIPPED
+        - CREATE_SESSION_CONFLICT_REASON_DUPLICATE_ACTIVE_SESSION
+        - CREATE_SESSION_CONFLICT_REASON_SESSION_STARTING
+        - CREATE_SESSION_CONFLICT_REASON_BRANCH_EXISTS
+      description: |-
+        CreateSessionConflictReason names why CreateSession refused with
+         CodeAlreadyExists and therefore which request flag, if any, bypasses it.
     bossanova.v1.CreateSessionRequest:
       type: object
       properties:
@@ -10619,6 +10679,33 @@ components:
         - FIX_ATTEMPT_TRIGGER_CONFLICT
         - FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK
       description: FixAttemptTrigger represents what triggered a fix attempt.
+    bossanova.v1.FollowUpSessionPRNotesRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        verifyNoteIds:
+          type: array
+          items:
+            type: string
+          title: verify_note_ids
+        shouldFollowUpAll:
+          type: boolean
+          title: should_follow_up_all
+        isDryRun:
+          type: boolean
+          title: is_dry_run
+      title: FollowUpSessionPRNotesRequest
+      additionalProperties: false
+    bossanova.v1.FollowUpSessionPRNotesResponse:
+      type: object
+      properties:
+        result:
+          title: result
+          $ref: '#/components/schemas/bossanova.v1.VerifyFollowUpResult'
+      title: FollowUpSessionPRNotesResponse
+      additionalProperties: false
     bossanova.v1.GetAgentCredentialBlobRequest:
       type: object
       properties:
@@ -20732,7 +20819,9 @@ components:
         evidenceUrl:
           type: string
           title: evidence_url
-          description: Evidence (video) URL behind a verify park, when one exists.
+          description: |-
+            Evidence (video) URL behind a verify park, when one exists. Kept alongside
+             proof_url from 2026-11-01 so older pins can still receive VIDEO.
         openItems:
           type: array
           items:
@@ -20762,6 +20851,26 @@ components:
           type: string
           title: park_label
           description: Operator-written path label of a verify park; empty when verify derived none.
+        confidenceLevel:
+          title: confidence_level
+          description: Verify park confidence from 2026-11-01; cleared for older pins.
+          $ref: '#/components/schemas/bossanova.v1.ConfidenceLevel'
+        asks:
+          type: array
+          items:
+            type: string
+          title: asks
+          description: Verify park ask names in park order from 2026-11-01; cleared for older pins.
+        proofUrl:
+          type: string
+          title: proof_url
+          description: Current head's proof page on a verify park from 2026-11-01; cleared for older pins.
+        loweredBy:
+          type: array
+          items:
+            type: string
+          title: lowered_by
+          description: Reasons the verify park is below High from 2026-11-01; cleared for older pins.
       title: SessionAttention
       additionalProperties: false
       description: SessionAttention is the computed attention answer for one session.
@@ -24528,6 +24637,61 @@ components:
           title: text
       title: VerifyBlocker
       additionalProperties: false
+    bossanova.v1.VerifyFollowUpResult:
+      type: object
+      properties:
+        isOk:
+          type: boolean
+          title: is_ok
+        isDryRun:
+          type: boolean
+          title: is_dry_run
+        reason:
+          type: string
+          title: reason
+        unknownVerifyNoteIds:
+          type: array
+          items:
+            type: string
+          title: unknown_verify_note_ids
+        headSha:
+          type: string
+          title: head_sha
+        comment:
+          type: string
+          title: comment
+        notes:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.VerifyNoteFollowUp'
+          title: notes
+      title: VerifyFollowUpResult
+      additionalProperties: false
+      description: VerifyFollowUpResult is verify-followups.mjs follow-up's outcome.
+    bossanova.v1.VerifyNoteFollowUp:
+      type: object
+      properties:
+        verifyNoteId:
+          type: string
+          title: verify_note_id
+        outcome:
+          type: string
+          title: outcome
+        ticketIdentifier:
+          type: string
+          title: ticket_identifier
+        ticketUrl:
+          type: string
+          title: ticket_url
+        isLinked:
+          type: boolean
+          title: is_linked
+        reason:
+          type: string
+          title: reason
+      title: VerifyNoteFollowUp
+      additionalProperties: false
+      description: VerifyNoteFollowUp reports the tracker write and comment link for one verify note.
     bossanova.v1.WaitAgentRunHostRequest:
       type: object
       properties:

@@ -31,7 +31,7 @@ forms).
 - A ticket id → resolve its PR with `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" candidates --ticket <id>`. No candidate → report
   the `skipped` reason and stop.
 - `--claim <token>` → adopt a claim the router already posted; pass it as `--token` to every writing
-  verb. Never post a second claim.
+  verb. Never post a second claim while it stands.
 - `--waive <code>` → the router already read an approved policy park; judge with `--waive <code>`
   (the claim replaced the parked status, so the hand-back cannot recover it).
 - `--dry-run` → pass `--dry-run` to every writing verb (`post`, `merge`, `rearm`). Reads still run.
@@ -54,7 +54,7 @@ This normally runs in the PR's own session, in its verify chat (role `verify`). 
 
 | Verdict               | Action                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `wait`                | In a boss chat, `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID" --verdict <verdict> --reason <reason>`; otherwise report. The cron gate retries.                                                                                                                                                                                                                            |
+| `wait`                | With a `headSha`, `post --pr <n> --head <sha> --verdict wait --reason <reason>` (plus `--token` when a claim is held). Then in a boss chat, `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID" --verdict <verdict> --reason <reason>`; otherwise report. The cron gate retries.                                                                                                |
 | `human`               | `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" post --pr <n> --head <sha> --verdict human --reason <reason> --confidence <confidence-file> [--notes <notes-file>] [--not-applicable <file>]`, plus `--reviewers <csv>` when the judge output carries `reviewers`. Write the judge’s `confidence` object to the confidence file. `post` labels the park with its level, leaves one park note per head and asks for review. |
 | `blocked`             | Write `{version: 1, pr, head: headSha, blockers}` from judge output to a run-temp JSON file. `post --pr <n> --head <sha> --verdict blocked --blockers <file> [--notes <notes-file>] [--not-applicable <file>]`, then in a boss chat rearm as for `wait` and stop; a new head is judged again.                                                                                                                                  |
 | `pass`                | `post --verdict pass [--notes <notes-file>] [--not-applicable <file>]` (with `--reason approved` when `reason` is `approved`, and `--carry-record <carryRecord>` when the judge output carries one), then `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" merge --pr <n> --head <sha>`.                                                                                                                                    |
@@ -62,6 +62,9 @@ This normally runs in the PR's own session, in its verify chat (role `verify`). 
 | `review-required`     | No `boss/build` receipt stands behind the head (a boss head that lost its receipt, or an admitted human/bot head): run the review (below).                                                                                                                                                                                                                                                                                     |
 
 Report `owner` and `waitingOn` from `rearm` output, for example “waiting on repair: conflict”.
+Wherever this skill rearms, a result carrying `retry` means judge again from **Judge** instead of
+stopping, passing `--attempt <attempt+1>` to the next `rearm`. `fallback: gate` means report
+“waiting on verify: <waitingOn> (retries exhausted; the cron gate re-judges)” and stop.
 
 After each judge, when `findingNotes` is non-empty, write that JSON array to a run-temp file, and
 when `notApplicableNotes` is non-empty, write that JSON array to another run-temp file.
@@ -95,7 +98,7 @@ Other `won: false` reasons (`pr-unreadable`, `pr-not-open`, `status-unreadable`,
 
 ### Running the `verify` extensions
 
-1. **Claim.** Adopt `--claim`, or `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" post --pr <n> --head <sha> --verdict claim`.
+1. **Claim.** Adopt `--claim` unless this run already posted a wait, which used it up; otherwise `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" post --pr <n> --head <sha> --verdict claim`, and pass the `token` it returns as `--token` to every later write.
    `won: false` → follow **Losing a claim** below.
 2. **Same tree.** The worktree `HEAD` must equal the judged `headSha`:
    `node "$BOSS_VERIFY_TOOLBOX/worktree-sync.mjs" sync --head <sha>`. It moves the worktree to the

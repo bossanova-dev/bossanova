@@ -117,7 +117,11 @@ func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branc
 			continue
 		}
 		if sess.WorktreePath == "" {
-			return true, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("session already starting for branch %q", branch))
+			return true, createSessionConflictError(fmt.Errorf("session already starting for branch %q", branch), &pb.CreateSessionConflict{
+				Reason:            pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_SESSION_STARTING,
+				ExistingSessionId: sess.ID,
+				BranchName:        branch,
+			})
 		}
 		if _, err := os.Stat(sess.WorktreePath); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -137,9 +141,55 @@ func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branc
 	return false, nil
 }
 
+// createSessionConflictError builds a CreateSession CodeAlreadyExists refusal
+// carrying a CreateSessionConflict detail, so the client can tell the cause
+// apart and send the matching bypass. The cause text is unchanged; a detail
+// that cannot be encoded leaves the bare refusal. No dated API bump: the
+// detail is additive and CreateSession is a daemon-local API apiversion never
+// sees. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+func createSessionConflictError(cause error, conflict *pb.CreateSessionConflict) error {
+	failure := connect.NewError(connect.CodeAlreadyExists, cause)
+	if detail, err := connect.NewErrorDetail(conflict); err == nil {
+		failure.AddDetail(detail)
+	}
+	return failure
+}
+
+// typedCreateSessionConflict maps the session package's typed AlreadyExists
+// causes to their CreateSessionConflict detail.
+func typedCreateSessionConflict(err error) (*pb.CreateSessionConflict, bool) {
+	var shipped *session.AlreadyShippedPRError
+	if errors.As(err, &shipped) {
+		return &pb.CreateSessionConflict{
+			Reason:    pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_ALREADY_SHIPPED,
+			TrackerId: shipped.TrackerID,
+			PrNumber:  clampInt32(shipped.PRNumber),
+			PrState:   shipped.State,
+		}, true
+	}
+	var duplicatePR *session.DuplicateActivePRSessionError
+	if errors.As(err, &duplicatePR) {
+		return &pb.CreateSessionConflict{
+			Reason:            pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_DUPLICATE_ACTIVE_SESSION,
+			ExistingSessionId: duplicatePR.ExistingSessionID,
+			MatchedTarget:     "PR",
+		}, true
+	}
+	var duplicateBranch *session.DuplicateActiveBranchSessionError
+	if errors.As(err, &duplicateBranch) {
+		return &pb.CreateSessionConflict{
+			Reason:            pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_DUPLICATE_ACTIVE_SESSION,
+			ExistingSessionId: duplicateBranch.ExistingSessionID,
+			MatchedTarget:     "branch",
+			BranchName:        duplicateBranch.BranchName,
+		}, true
+	}
+	return nil, false
+}
+
 func createSessionConnectError(err error) error {
-	if session.IsDuplicateActiveSessionError(err) || session.IsAlreadyShippedError(err) {
-		return connect.NewError(connect.CodeAlreadyExists, err)
+	if conflict, ok := typedCreateSessionConflict(err); ok {
+		return createSessionConflictError(err, conflict)
 	}
 	// No dated API bump: CreateSession is a daemon-local API consumed by boss.
 	// The version-skewed hosted ProxyCreateSession relay forwards only diagnostic

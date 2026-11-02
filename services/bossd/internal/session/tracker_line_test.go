@@ -374,7 +374,7 @@ func TestEnsureTicketTagsLeadingFailures_Sessions_AC214801(t *testing.T) {
 	}
 }
 
-func TestEnsureTicketTagsRetriesLocalTitle(t *testing.T) {
+func TestEnsureTicketTagsRetriesLocalTitle_Sessions_AC214901(t *testing.T) {
 	for _, title := range []string{"Current title", "Operator title", "Nightly build"} {
 		t.Run(title, func(t *testing.T) {
 			h, p := ticketTagHarness(t)

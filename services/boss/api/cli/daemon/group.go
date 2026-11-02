@@ -42,6 +42,7 @@ type Group struct {
 	daemonGetStatus                   func() (*daemon.Status, error)
 	daemonLoadSupervisionMode         func() daemon.SupervisionModeStatus
 	daemonLocalSupervisionObservation func() daemonSupervisionObservation
+	daemonNow                         func() time.Time
 	daemonObserveWatchdogOwnership    func() daemon.WatchdogOwnership
 	daemonObserveLaunchAgentJob       func() daemon.LaunchAgentJob
 	daemonProcesses                   *daemon.ProcessManager
@@ -66,6 +67,7 @@ type Group struct {
 func defaultGroup() *Group {
 	deps := &Group{}
 	deps.daemonDoctorGOOS = runtime.GOOS
+	deps.daemonNow = time.Now
 	deps.findDaemonProcess = func(pid int) (daemon.ProcessSignaler, error) {
 		return os.FindProcess(pid)
 	}

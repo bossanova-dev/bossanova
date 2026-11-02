@@ -39,11 +39,15 @@ func (f *verifyRepoStoreFake) Get(context.Context, string) (*models.Repo, error)
 // calls, when set, is a log shared with the merge provider so a test can assert
 // the order of approve, merge and mark-merged.
 type verifyVerbsFake struct {
-	env        []string
-	targets    []verifybridge.Target
-	forMerge   []*verifybridge.MergeApproval
-	calls      *[]string
-	markCtxErr error
+	env             []string
+	followUp        domain.VerifyFollowUpResult
+	followSelection domain.VerifyFollowUp
+	followCtxErr    error
+	followDeadline  time.Time
+	targets         []verifybridge.Target
+	forMerge        []*verifybridge.MergeApproval
+	calls           *[]string
+	markCtxErr      error
 	// markCtxDeadline is the deadline MarkMerged ran under.
 	markCtxDeadline time.Time
 
@@ -355,4 +359,12 @@ func (f *verifyVerbsFake) Accept(context.Context, domain.VerifyTarget, domain.Ve
 }
 func (f *verifyVerbsFake) Blockers(context.Context, domain.VerifyTarget, string) (domain.VerifyBlockers, error) {
 	return domain.VerifyBlockers{}, f.err
+}
+
+func (f *verifyVerbsFake) FollowUp(ctx context.Context, t domain.VerifyTarget, selection domain.VerifyFollowUp) (domain.VerifyFollowUpResult, error) {
+	f.targets = append(f.targets, t)
+	f.followSelection = selection
+	f.followCtxErr = ctx.Err()
+	f.followDeadline, _ = ctx.Deadline()
+	return f.followUp, f.err
 }

@@ -29,6 +29,7 @@ func TestReaderProofCombinesRecords(t *testing.T) {
 	p := proofPayload()
 	p["page"] = "https://example.test/proof"
 	p["asks"] = []string{"ui"}
+	p["loweredBy"] = []string{"Needs a UI review"}
 	p["level"] = "moderate"
 	proof := proofComment(t, p)
 	video := evidence.Format(evidence.Summary{Head: sha, VideoURL: "http://example.test/video", VideoDuration: time.Second})
@@ -59,7 +60,7 @@ func TestReaderProofCombinesRecords(t *testing.T) {
 				t.Fatalf("unexpected media %+v", got.Media)
 			}
 			if tt.hasProof {
-				if got.Page != "https://example.test/proof" || got.Level != "moderate" || !reflect.DeepEqual(got.Asks, []string{"ui"}) || got.Digest != p["digest"] {
+				if got.Page != "https://example.test/proof" || got.Level != "moderate" || !reflect.DeepEqual(got.Asks, []string{"ui"}) || got.Digest != p["digest"] || !reflect.DeepEqual(got.LoweredBy, []string{"Needs a UI review"}) {
 					t.Fatalf("proof: %+v", got)
 				}
 			} else if got.Page != "" || got.Level != "" || len(got.Asks) != 0 || got.Digest != "" {
@@ -71,6 +72,9 @@ func TestReaderProofCombinesRecords(t *testing.T) {
 			if _, ok := r.Proof("s", strings.Repeat("b", 40)); ok {
 				t.Fatal("returned another head")
 			}
+			if len(got.LoweredBy) > 0 {
+				got.LoweredBy[0] = "changed"
+			}
 			if len(got.Asks) > 0 {
 				got.Asks[0] = "changed"
 			}
@@ -78,6 +82,9 @@ func TestReaderProofCombinesRecords(t *testing.T) {
 				got.Media[0].URL = "changed"
 			}
 			next, _ := r.Proof("s", sha)
+			if tt.hasProof && !reflect.DeepEqual(next.LoweredBy, []string{"Needs a UI review"}) {
+				t.Fatal("mutated cached reasons")
+			}
 			if len(next.Asks) > 0 && next.Asks[0] != "ui" || len(next.Media) > 0 && next.Media[0].URL != "http://example.test/video" {
 				t.Fatal("cache mutated through accessor")
 			}

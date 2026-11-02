@@ -20,6 +20,7 @@ import {
 import {
   admitGate,
   gateBazelEnv,
+  gateClass,
   releaseGateSlot,
   renderAdmissionLine,
 } from './test-infra/gate-admission-lib.mjs'
@@ -193,7 +194,9 @@ function unknownCauseLine(runDir) {
   ]
   const queued = readJson(runDir, 'queued')
   if (queued && !fs.existsSync(path.join(runDir, 'admission.json'))) {
-    parts.push(`phase: queued for a host gate slot - held by ${queued}`)
+    // A marker from before pools existed is a bare holder string for the one (heavy) pool.
+    const { pool = 'heavy', holders = queued } = typeof queued === 'object' ? queued : {}
+    parts.push(`phase: queued for a ${pool} gate slot - held by ${holders}`)
   }
   const isolationDir = path.join(runDir, 'isolation')
   if (fs.existsSync(isolationDir) && !fs.existsSync(path.join(runDir, 'isolation.json'))) {
@@ -421,15 +424,19 @@ async function supervise(args) {
   let admissionFailed = false
   try {
     admission = await admitGate(process.env, {
+      argv: command,
       label: command.join(' '),
       signal: admissionAbort.signal,
       log: (line) => fs.writeSync(logFd, `${line}\n`),
-      onWait: (holders) => writeFileAtomic(path.join(runDir, 'queued'), JSON.stringify(holders)),
+      onWait: (holders, pool) =>
+        writeFileAtomic(path.join(runDir, 'queued'), JSON.stringify({ pool, holders })),
     })
-    const { slots, waitedMs, heldByAtAdmission, inherited } = admission
+    const { slots, pool, waitedMs, heldByAtAdmission, inherited } = admission
     writeFileAtomic(
       path.join(runDir, 'admission.json'),
       JSON.stringify({
+        pool,
+        gateClass: gateClass(command),
         slots,
         waitedMs,
         heldByAtAdmission,

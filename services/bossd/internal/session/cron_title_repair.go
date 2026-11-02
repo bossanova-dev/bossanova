@@ -10,6 +10,7 @@ import (
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // adoptPRTitleWhenCronTitleStale renames a cron session to its PR's current
@@ -101,6 +102,33 @@ func isCronDefaultTitle(title, jobName string) bool {
 	return t == name || t == normalizeCronPRTitle(name)
 }
 
+// cronTitleRepairCandidate reports whether the stale-cron-title pass may have
+// work for sess: its stored title is still job's default, either as stored or
+// behind the session's own tracker prefix. Marking a PR [BLOCKED] always leaves
+// that unmarked default on the row, so any other title means there is nothing
+// for the pass to clear or adopt, and it can skip the git and GitHub reads.
+func cronTitleRepairCandidate(sess *models.Session, job *domain.CronJob) bool {
+	if sess == nil || job == nil {
+		return false
+	}
+	return isCronDefaultTitle(stripTrackerTitlePrefix(sess.Title, sess.TrackerID), job.Name)
+}
+
+// stripTrackerTitlePrefix removes a leading "[<trackerID>] " from title,
+// case-insensitively, as withTrackerTitlePrefix matches it. Any other title,
+// including another tracker's prefix, is returned trimmed but otherwise as-is.
+func stripTrackerTitlePrefix(title string, trackerID *string) string {
+	t := strings.TrimSpace(title)
+	if trackerID == nil || *trackerID == "" {
+		return t
+	}
+	prefix := "[" + *trackerID + "] "
+	if len(t) > len(prefix) && strings.EqualFold(t[:len(prefix)], prefix) {
+		return strings.TrimSpace(t[len(prefix):])
+	}
+	return t
+}
+
 const noCommitsPRTitleMarker = "[BLOCKED]"
 
 func hasNoCommitsPRTitleMarker(title string) bool {
@@ -145,7 +173,7 @@ func (r *PRAssociationResolver) clearNoCommitsPRTitle(ctx context.Context, sess 
 	if err != nil {
 		return nil, false, err
 	}
-	if job != nil && isCronDefaultTitle(title, job.Name) {
+	if job != nil && isCronDefaultTitle(stripTrackerTitlePrefix(title, sess.TrackerID), job.Name) {
 		title = normalizeCronPRTitle(real[len(real)-1])
 	}
 	title, err = WriteSessionPRTitle(ctx, r.provider, repo.OriginURL, sess, *sess.PRNumber, title)

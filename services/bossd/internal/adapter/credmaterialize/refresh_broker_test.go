@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,9 +23,13 @@ import (
 
 type brokerMemory struct {
 	fakeStore
-	stateMu  sync.Mutex
-	state    []byte
-	stateErr error
+	stateMu         sync.Mutex
+	state           []byte
+	stateErr        error
+	endpoint        []byte
+	endpointErr     error
+	endpointSaveErr error
+	endpointTried   []byte
 }
 
 func (s *brokerMemory) LoadRefreshState(context.Context, string) ([]byte, error) {
@@ -38,6 +44,25 @@ func (s *brokerMemory) SaveRefreshState(_ context.Context, _ string, b []byte) e
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	s.state = append([]byte(nil), b...)
+	return nil
+}
+
+func (s *brokerMemory) LoadRefreshBrokerEndpoint(context.Context) ([]byte, error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.endpointErr != nil {
+		return nil, s.endpointErr
+	}
+	return append([]byte(nil), s.endpoint...), nil
+}
+func (s *brokerMemory) SaveRefreshBrokerEndpoint(_ context.Context, b []byte) error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.endpointTried = append([]byte(nil), b...)
+	if s.endpointSaveErr != nil {
+		return s.endpointSaveErr
+	}
+	s.endpoint = append([]byte(nil), b...)
 	return nil
 }
 
@@ -90,7 +115,15 @@ func brokerFixture(t *testing.T) (*RefreshBroker, *brokerMemory, *brokerLease, *
 func brokerPost(t *testing.T, url, capability string) (int, []byte) {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"client_id": codexOAuthClientID, "grant_type": "refresh_token", "refresh_token": capability})
-	r, err := http.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// A restarted broker reclaims the same address, so a pooled keep-alive
+	// connection to its closed predecessor must never carry the next request.
+	req.Close = true
+	r, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,27 +543,235 @@ func TestRuntimeBrokerWaitsForActiveOwnerPublication(t *testing.T) {
 	}
 }
 
-func TestRuntimeBrokerRejectsCapabilityFromPreviousDaemonInstance(t *testing.T) {
+// restartBroker closes first and starts its successor on the same store, as a
+// daemon restart does.
+func restartBroker(t *testing.T, first *RefreshBroker, store *brokerMemory, gate RefreshBrokerGate, rebind refreshBrokerRebind) *RefreshBroker {
+	t.Helper()
+	first.Close()
+	next, err := newRefreshBroker(store, gate, zerolog.Nop(), rebind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(next.Close)
+	next.providerURL = first.providerURL
+	return next
+}
+
+func persistedEndpoint(t *testing.T, store *brokerMemory) refreshBrokerEndpoint {
+	t.Helper()
+	raw, _ := store.LoadRefreshBrokerEndpoint(context.Background())
+	e, ok := decodeRefreshBrokerEndpoint(raw)
+	if !ok {
+		t.Fatalf("endpoint state not persisted: %q", raw)
+	}
+	return e
+}
+
+func brokerPort(b *RefreshBroker) int { return b.listener.Addr().(*net.TCPAddr).Port }
+
+func TestRuntimeBrokerCapabilitySurvivesRestart_Accounts_AC223601(t *testing.T) {
+	first, store, gate, calls := brokerFixture(t)
+	oldCap, err := first.Capability(context.Background(), "shared", store.currentBlob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := restartBroker(t, first, store, gate, defaultRefreshBrokerRebind)
+	if next.URL() != first.URL() {
+		t.Fatalf("restart moved the broker from %s to %s", first.URL(), next.URL())
+	}
+	status, raw := brokerPost(t, next.URL(), oldCap)
+	if status != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("previous-instance capability: status=%d exchanges=%d", status, calls.Load())
+	}
+	var issued tokenFields
+	if err := json.Unmarshal(raw, &issued); err != nil || !strings.HasPrefix(issued.RefreshToken, brokerCapabilityPrefix) {
+		t.Fatal("broker did not return a capability")
+	}
+	second := &atomic.Int64{}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		second.Add(1)
+		_, _ = io.WriteString(w, `{"access_token":"third-access","refresh_token":"third-secret","id_token":"third-id"}`)
+	}))
+	t.Cleanup(provider.Close)
+	next.providerURL = provider.URL
+	third := restartBroker(t, next, store, gate, defaultRefreshBrokerRebind)
+	if status, _ := brokerPost(t, third.URL(), issued.RefreshToken); status != http.StatusOK || second.Load() != 1 {
+		t.Fatalf("capability issued after the first restart: status=%d exchanges=%d", status, second.Load())
+	}
+}
+
+func TestRuntimeBrokerRotatesWhenPortIsTaken_Accounts_AC223601(t *testing.T) {
+	first, store, gate, calls := brokerFixture(t)
+	oldCap, err := first.Capability(context.Background(), "shared", store.currentBlob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := persistedEndpoint(t, store)
+	first.Close()
+	squatter, err := net.Listen("tcp4", first.listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = squatter.Close() })
+	next := restartBroker(t, first, store, gate, refreshBrokerRebind{window: 20 * time.Millisecond, step: 5 * time.Millisecond})
+	if next.URL() == first.URL() {
+		t.Fatal("broker shared the squatted port")
+	}
+	after := persistedEndpoint(t, store)
+	if after.Port != brokerPort(next) || after.BrokerID != next.instanceID || after.BrokerID == before.BrokerID {
+		t.Fatalf("rotation not persisted: before=%+v after=%+v", before, after)
+	}
+	if status, _ := brokerPost(t, next.URL(), oldCap); status != http.StatusUnauthorized || calls.Load() != 0 {
+		t.Fatalf("rotated broker accepted previous capability: status=%d exchanges=%d", status, calls.Load())
+	}
+	freshCap, err := next.Capability(context.Background(), "shared", store.currentBlob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := brokerPost(t, next.URL(), freshCap); status != http.StatusOK || calls.Load() != 1 {
+		t.Fatal("rotated broker rejected its own capability")
+	}
+}
+
+func TestRuntimeBrokerRefusesUnpersistedRotation_Accounts_AC223601(t *testing.T) {
+	first, store, _, _ := brokerFixture(t)
+	before := persistedEndpoint(t, store)
+	first.Close()
+	squatter, err := net.Listen("tcp4", first.listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = squatter.Close() })
+	store.stateMu.Lock()
+	store.endpointSaveErr = errors.New("keyring locked")
+	store.stateMu.Unlock()
+	next, err := newRefreshBroker(store, &brokerLease{owned: true}, zerolog.Nop(), refreshBrokerRebind{window: 20 * time.Millisecond, step: 5 * time.Millisecond})
+	if err == nil {
+		next.Close()
+		t.Fatal("broker served a rotation it could not persist")
+	}
+	if strings.Contains(err.Error(), before.BrokerID) {
+		t.Fatal("error leaked the broker id")
+	}
+	if after := persistedEndpoint(t, store); after != before {
+		t.Fatalf("persisted endpoint changed: before=%+v after=%+v", before, after)
+	}
+	store.stateMu.Lock()
+	tried, ok := decodeRefreshBrokerEndpoint(store.endpointTried)
+	store.stateMu.Unlock()
+	if !ok || tried.Port == before.Port {
+		t.Fatalf("no rotation was attempted: %+v", tried)
+	}
+	rebound, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(tried.Port)))
+	if err != nil {
+		t.Fatalf("rotated listener left open on port %d: %v", tried.Port, err)
+	}
+	_ = rebound.Close()
+	if stolen, err := net.Listen("tcp4", first.listener.Addr().String()); err == nil {
+		_ = stolen.Close()
+		t.Fatal("squatter lost the occupied port")
+	}
+}
+
+func TestRuntimeBrokerRefusesUnpersistedRotationAfterLoadError_Accounts_AC223601(t *testing.T) {
+	first, store, _, _ := brokerFixture(t)
+	before := persistedEndpoint(t, store)
+	first.Close()
+	store.stateMu.Lock()
+	store.endpointErr, store.endpointSaveErr = errors.New("keyring locked"), errors.New("keyring locked")
+	store.stateMu.Unlock()
+	next, err := newRefreshBroker(store, &brokerLease{owned: true}, zerolog.Nop(), refreshBrokerRebind{window: 20 * time.Millisecond, step: 5 * time.Millisecond})
+	if err == nil {
+		next.Close()
+		t.Fatal("broker served a rotation a cleared load error could undo")
+	}
+	store.stateMu.Lock()
+	store.endpointErr = nil
+	tried, ok := decodeRefreshBrokerEndpoint(store.endpointTried)
+	store.stateMu.Unlock()
+	if after := persistedEndpoint(t, store); after != before {
+		t.Fatalf("persisted endpoint changed: before=%+v after=%+v", before, after)
+	}
+	if !ok {
+		t.Fatal("no rotation was attempted")
+	}
+	rebound, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(tried.Port)))
+	if err != nil {
+		t.Fatalf("rotated listener left open on port %d: %v", tried.Port, err)
+	}
+	_ = rebound.Close()
+}
+
+func TestRuntimeBrokerRotatesOnUnreadableEndpointState_Accounts_AC223601(t *testing.T) {
+	for name, corrupt := range map[string]func(*brokerMemory){
+		"garbage":    func(s *brokerMemory) { s.endpoint = []byte("not json") },
+		"zero port":  func(s *brokerMemory) { s.endpoint = []byte(`{"broker_id":"id","port":0}`) },
+		"empty id":   func(s *brokerMemory) { s.endpoint = []byte(`{"broker_id":"","port":4000}`) },
+		"load error": func(s *brokerMemory) { s.endpointErr = errors.New("keyring locked") },
+		"lost and unsaveable": func(s *brokerMemory) {
+			s.endpoint, s.endpointSaveErr = nil, errors.New("keyring locked")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			first, store, gate, calls := brokerFixture(t)
+			oldCap, err := first.Capability(context.Background(), "shared", store.currentBlob())
+			if err != nil {
+				t.Fatal(err)
+			}
+			store.stateMu.Lock()
+			corrupt(store)
+			store.stateMu.Unlock()
+			next := restartBroker(t, first, store, gate, defaultRefreshBrokerRebind)
+			if status, _ := brokerPost(t, next.URL(), oldCap); status != http.StatusUnauthorized || calls.Load() != 0 {
+				t.Fatalf("rotated broker accepted previous capability: status=%d exchanges=%d", status, calls.Load())
+			}
+			freshCap, err := next.Capability(context.Background(), "shared", store.currentBlob())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status, _ := brokerPost(t, next.URL(), freshCap); status != http.StatusOK {
+				t.Fatal("rotated broker did not serve")
+			}
+		})
+	}
+}
+
+func TestRuntimeBrokerRemovedAccountRefusedAfterRestart_Accounts_AC223601(t *testing.T) {
 	first, store, gate, calls := brokerFixture(t)
 	oldCap, err := first.Capability(context.Background(), "shared", store.currentBlob())
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.Close()
-	next, err := NewRefreshBroker(store, gate, zerolog.Nop())
-	if err != nil {
-		t.Fatal(err)
+	store.stateMu.Lock()
+	store.state = nil
+	store.stateMu.Unlock()
+	next := restartBroker(t, first, store, gate, defaultRefreshBrokerRebind)
+	if next.URL() != first.URL() {
+		t.Fatal("restart did not reclaim the endpoint")
 	}
-	defer next.Close()
-	next.providerURL = first.providerURL
 	if status, _ := brokerPost(t, next.URL(), oldCap); status != http.StatusUnauthorized || calls.Load() != 0 {
-		t.Fatal("old broker capability remained redeemable after restart")
+		t.Fatalf("removed account redeemed: status=%d exchanges=%d", status, calls.Load())
 	}
-	freshCap, err := next.Capability(context.Background(), "shared", store.currentBlob())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status, _ := brokerPost(t, next.URL(), freshCap); status != 200 || calls.Load() != 1 {
-		t.Fatal("new broker capability did not work")
+}
+
+func TestRuntimeBrokerGateStillDecidesAfterRestart_Accounts_AC223601(t *testing.T) {
+	for name, deny := range map[string]func(*brokerLease){
+		"denied":  func(g *brokerLease) { g.owned = false },
+		"offline": func(g *brokerLease) { g.offline = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			first, store, gate, calls := brokerFixture(t)
+			oldCap, err := first.Capability(context.Background(), "shared", store.currentBlob())
+			if err != nil {
+				t.Fatal(err)
+			}
+			next := restartBroker(t, first, store, gate, defaultRefreshBrokerRebind)
+			deny(gate)
+			next.peerWait = time.Millisecond
+			if status, _ := brokerPost(t, next.URL(), oldCap); status == http.StatusOK || calls.Load() != 0 {
+				t.Fatalf("gate bypassed: status=%d exchanges=%d", status, calls.Load())
+			}
+		})
 	}
 }

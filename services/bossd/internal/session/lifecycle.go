@@ -50,6 +50,7 @@ import (
 	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 	"github.com/recurser/bossd/internal/domain/keyedgate"
 	"github.com/recurser/bossd/internal/domain/repotrust"
+	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/recurser/bossd/internal/rotation"
 )
 
@@ -334,6 +335,9 @@ type Lifecycle struct {
 	// NewLifecycle to a real keyring-backed resolver; SetProofEnvResolver
 	// overrides it for tests. Resolved fresh per spawn; never logged.
 	proofEnv proofEnvResolver
+
+	// ghUsageShim meters managed chats' gh calls; nil leaves them unmetered.
+	ghUsageShim *ghusage.Shim
 
 	// accountEnv resolves the selected account's env overlay (e.g.
 	// CLAUDE_CODE_OAUTH_TOKEN / CODEX_HOME) for account rotation, keyed off the
@@ -857,6 +861,34 @@ func (l *Lifecycle) warnIfTmuxServerCarriesEnv(ctx context.Context) {
 		"run `tmux kill-server` once no agent pane is live to retire it")
 }
 
+// reArmableSession loads the parent session of a surviving tmux chat and
+// reports whether its finalize hook should be re-armed.
+//
+// HookToken lives on the parent session record (the per-run hook token used by
+// /boss-repair lives only in HostServiceServer's in-memory map — that flavour
+// of run is gone after a daemon restart anyway). If the session has no
+// HookToken there's nothing the Stop hook would have authenticated against, so
+// nothing to fall back from. An archived session's worktree is gone, and a hook
+// write into it would re-create the directory (BOS-2228), so it is skipped too.
+func (l *Lifecycle) reArmableSession(ctx context.Context, chat *domain.AgentChat) (*models.Session, bool) {
+	sess, err := l.sessions.Get(ctx, chat.SessionID)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("agent_session", chat.AgentSessionID).
+			Str("session", chat.SessionID).
+			Msg("bootstrap re-arm: failed to load session; skipping")
+		return nil, false
+	}
+	if sess.ArchivedAt != nil {
+		l.logger.Debug().
+			Str("agent_session", chat.AgentSessionID).
+			Str("session", chat.SessionID).
+			Msg("bootstrap re-arm: session is archived; skipping")
+		return nil, false
+	}
+	return sess, sess.HookToken != nil && *sess.HookToken != ""
+}
+
 // reArmSurvivingTmuxChats restores supported session-keyed finalize hooks for
 // tmux chats that were alive when the daemon last shut down.
 //
@@ -885,21 +917,8 @@ func (l *Lifecycle) reArmSurvivingTmuxChats(ctx context.Context) {
 		if chat == nil || chat.AgentSessionID == "" {
 			continue
 		}
-		// HookToken lives on the parent session record (the per-run hook
-		// token used by /boss-repair lives only in HostServiceServer's
-		// in-memory map — that flavour of run is gone after a daemon
-		// restart anyway). If the session has no HookToken there's
-		// nothing the Stop hook would have authenticated against, so
-		// nothing to fall back from.
-		sess, err := l.sessions.Get(ctx, chat.SessionID)
-		if err != nil {
-			l.logger.Warn().Err(err).
-				Str("agent_session", chat.AgentSessionID).
-				Str("session", chat.SessionID).
-				Msg("bootstrap re-arm: failed to load session; skipping")
-			continue
-		}
-		if sess.HookToken == nil || *sess.HookToken == "" {
+		sess, ok := l.reArmableSession(ctx, chat)
+		if !ok {
 			continue
 		}
 		client, ok := l.agents[chat.AgentName]

@@ -108,6 +108,9 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		if e.HasFailures && in.ChecksFailing == 0 {
 			in.ChecksFailing = 1
 		}
+		// The tracker entry is the one the view's composite reads, so the two
+		// labels agree even when the newest snapshot's head lags the entry.
+		in.VerifyWaitReason = e.VerifyWaitReason()
 		if e.Status == vcs.DisplayStatusNeedsHuman {
 			in.ParkCodes = e.ParkCodes()
 			in.ParkLabel = e.VerifyLabel
@@ -115,12 +118,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 				in.OpenItems = s.evidence.OpenItems(row.ID, e.HeadSHA)
 			}
 		}
-		if s.evidence != nil && e.HeadSHA != "" {
-			if entry, ok := s.evidence.Entry(row.ID); ok && strings.EqualFold(entry.Summary.Head, e.HeadSHA) {
-				summary := entry.Summary
-				in.Evidence = &attention.Evidence{URL: summary.VideoURL, VideoDuration: summary.VideoDuration, Proven: summary.Proven, Total: summary.Total}
-			}
-		}
+		s.hydrateAttentionEvidence(row.ID, e.HeadSHA, &in)
 	}
 	// The start flag Lifecycle.StartSession holds is the same one the display
 	// cascade reads as "initializing", so the board and the label agree.

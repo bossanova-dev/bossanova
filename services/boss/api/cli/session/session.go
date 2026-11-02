@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 
 	"github.com/recurser/boss/internal/domain/rpc"
@@ -175,6 +174,7 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 	deferPR, _ := cmd.Flags().GetBool("defer-pr")
 	quickChat, _ := cmd.Flags().GetBool("quick-chat")
 	verifyOnly, _ := cmd.Flags().GetBool("verify-only")
+	force, _ := cmd.Flags().GetBool("force")
 	trackerID, _ := cmd.Flags().GetString("tracker-id")
 	trackerSource, _ := cmd.Flags().GetString("tracker-source")
 	trackerURL, _ := cmd.Flags().GetString("tracker-url")
@@ -257,6 +257,7 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 			DeferPR:        deferPR,
 			QuickChat:      quickChat,
 			VerifyOnly:     verifyOnly,
+			Force:          force,
 			TrackerID:      trackerID,
 			TrackerSource:  trackerSource,
 			TrackerURL:     trackerURL,
@@ -309,6 +310,7 @@ func newDetachRequest(opts newSessionOpts) *pb.CreateSessionRequest {
 		DeferPr:      opts.DeferPR,
 		IsQuickChat:  opts.QuickChat,
 		IsVerifyOnly: opts.VerifyOnly,
+		Force:        opts.Force,
 	}
 	if opts.AgentName != "" {
 		req.AgentName = &opts.AgentName
@@ -367,6 +369,8 @@ type newSessionOpts struct {
 	QuickChat bool
 	// VerifyOnly prevents automatic repair for a session adopted to verify a PR.
 	VerifyOnly bool
+	// Force bypasses the daemon's already-shipped and duplicate-session guards.
+	Force bool
 	// Tracker* bind the session to an external issue. Empty = flag absent, which
 	// leaves the corresponding optional proto field unset.
 	TrackerID     string
@@ -397,27 +401,6 @@ func validatePRFlag(pr *int32, quickChat, deferPR, nonInteractive bool) error {
 			"--pr is supported only on the non-interactive --repo + --prompt path"))
 	}
 	return nil
-}
-
-// trackerSources is the tracker_source vocabulary the proto documents
-// (proto/bossanova/v1/daemon.proto: `optional string tracker_source = 13; //
-// "linear" | "sentry"`).
-var trackerSources = []string{"linear", "sentry"}
-
-// validateTrackerSource rejects an unknown --tracker-source. The daemon does
-// not validate this field — it stores it and uses it only to format a plan from
-// a tracker issue — so an unrecognised value is persisted verbatim and the
-// binding it was meant to establish silently does not happen. Catching it here
-// keeps the failure at the call the caller can still fix.
-//
-// An empty value is valid: it means the flag was omitted.
-func validateTrackerSource(source string) error {
-	if source == "" || slices.Contains(trackerSources, source) {
-		return nil
-	}
-	return cliutil.CodedError(cliutil.CodeInvalidArgument, fmt.Errorf(
-		"invalid --tracker-source %q: want one of %s",
-		source, strings.Join(trackerSources, ", ")))
 }
 
 // deriveSessionTitle builds a session title from the prompt for the

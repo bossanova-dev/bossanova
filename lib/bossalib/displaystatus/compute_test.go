@@ -1629,7 +1629,7 @@ func TestIsLiveActivityLabel_CoversEveryCascadeLabel(t *testing.T) {
 		add(out)
 	}
 	for name, value := range pb.DisplayStatus_value {
-		out, ok := prOutput(&pb.Session{DisplayStatus: pb.DisplayStatus(value)}, nil)
+		out, ok := prOutput(&pb.Session{DisplayStatus: pb.DisplayStatus(value)}, nil, "")
 		if !ok {
 			continue // UNSPECIFIED and any future non-label value
 		}

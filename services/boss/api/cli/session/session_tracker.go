@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/recurser/boss/api/cli/cliutil"
@@ -54,4 +55,25 @@ func (g *Group) runSessionSetTracker(cmd *cobra.Command, sessionID, issueID stri
 	}
 	_, err = fmt.Fprintf(cmd.OutOrStdout(), "Session %s linked to %s (%s).\n", sess.GetId(), sess.GetTrackerId(), sess.GetTrackerUrl())
 	return err
+}
+
+// trackerSources is the tracker_source vocabulary the proto documents
+// (proto/bossanova/v1/daemon.proto: `optional string tracker_source = 13; //
+// "linear" | "sentry"`).
+var trackerSources = []string{"linear", "sentry"}
+
+// validateTrackerSource rejects an unknown --tracker-source. The daemon does
+// not validate this field — it stores it and uses it only to format a plan from
+// a tracker issue — so an unrecognised value is persisted verbatim and the
+// binding it was meant to establish silently does not happen. Catching it here
+// keeps the failure at the call the caller can still fix.
+//
+// An empty value is valid: it means the flag was omitted.
+func validateTrackerSource(source string) error {
+	if source == "" || slices.Contains(trackerSources, source) {
+		return nil
+	}
+	return cliutil.CodedError(cliutil.CodeInvalidArgument, fmt.Errorf(
+		"invalid --tracker-source %q: want one of %s",
+		source, strings.Join(trackerSources, ", ")))
 }

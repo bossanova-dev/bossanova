@@ -28,11 +28,12 @@ const (
 
 // ProofLine is the confidence and page pin recorded for a PR head.
 type ProofLine struct {
-	Head   string
-	Page   string
-	Level  string
-	Asks   []string
-	Digest string
+	Head      string
+	Page      string
+	Level     string
+	Asks      []string
+	LoweredBy []string
+	Digest    string
 }
 
 // Media is a legacy evidence video attached to a proof record.
@@ -49,6 +50,7 @@ type ProofRecord struct {
 	Page       string
 	Level      string
 	Asks       []string
+	LoweredBy  []string
 	Digest     string
 	Media      []Media
 	Legacy     bool
@@ -61,11 +63,12 @@ func (p *ProofRecord) equal(other *ProofRecord) bool {
 	}
 	return p.Head == other.Head && p.Page == other.Page && p.Level == other.Level &&
 		p.Digest == other.Digest && p.Legacy == other.Legacy && p.RecordedAt.Equal(other.RecordedAt) &&
-		slices.Equal(p.Asks, other.Asks) && slices.Equal(p.Media, other.Media)
+		slices.Equal(p.LoweredBy, other.LoweredBy) && slices.Equal(p.Asks, other.Asks) && slices.Equal(p.Media, other.Media)
 }
 
 func (p ProofRecord) clone() ProofRecord {
 	p.Asks = slices.Clone(p.Asks)
+	p.LoweredBy = slices.Clone(p.LoweredBy)
 	p.Media = slices.Clone(p.Media)
 	return p
 }
@@ -77,12 +80,13 @@ var (
 )
 
 type proofWire struct {
-	Schema string          `json:"schema"`
-	Head   string          `json:"head"`
-	Page   json.RawMessage `json:"page"`
-	Level  string          `json:"level"`
-	Asks   []string        `json:"asks"`
-	Digest string          `json:"digest"`
+	LoweredBy json.RawMessage `json:"loweredBy"`
+	Schema    string          `json:"schema"`
+	Head      string          `json:"head"`
+	Page      json.RawMessage `json:"page"`
+	Level     string          `json:"level"`
+	Asks      []string        `json:"asks"`
+	Digest    string          `json:"digest"`
 }
 
 // ParseProof returns the last well-formed boss-proof/1 line. Unknown keys are
@@ -116,7 +120,19 @@ func parseProofPayload(payload string) (ProofLine, bool) {
 			return ProofLine{}, false
 		}
 	}
-	return ProofLine{Head: head, Page: page, Level: w.Level, Asks: w.Asks, Digest: w.Digest}, true
+	// Reasons are optional, additive metadata. A malformed field or element
+	// must not discard an otherwise valid head-pinned proof record.
+	var rawReasons []json.RawMessage
+	var loweredBy []string
+	if json.Unmarshal(w.LoweredBy, &rawReasons) == nil {
+		for _, raw := range rawReasons {
+			var reason string
+			if json.Unmarshal(raw, &reason) == nil && strings.TrimSpace(reason) != "" {
+				loweredBy = append(loweredBy, reason)
+			}
+		}
+	}
+	return ProofLine{LoweredBy: loweredBy, Head: head, Page: page, Level: w.Level, Asks: w.Asks, Digest: w.Digest}, true
 }
 
 // isHTTPSURL matches the proof writer's URL contract. Its character cap uses
@@ -136,6 +152,7 @@ func buildRecord(proof *ProofLine, proofAt time.Time, legacy *Entry) *ProofRecor
 	record := &ProofRecord{}
 	if proof != nil {
 		record.Head, record.Page, record.Level = proof.Head, proof.Page, proof.Level
+		record.LoweredBy = slices.Clone(proof.LoweredBy)
 		record.Asks, record.Digest, record.RecordedAt = slices.Clone(proof.Asks), proof.Digest, proofAt
 	} else {
 		record.Head, record.Legacy, record.RecordedAt = legacy.Summary.Head, true, legacy.RecordedAt

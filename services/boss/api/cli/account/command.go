@@ -8,9 +8,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// New constructs the account commands with command-scoped client and target resolution.
-func New(factory cliutil.ClientFactory[Client], remoteURL, hostDestination func(*cobra.Command) string) *cobra.Command {
-	g := &group{newClient: factory, remoteURL: remoteURL, hostDestination: hostDestination}
+// New constructs the account commands with command-scoped client and target
+// resolution. syncedRegistry reaches the hosted synced-account registry for
+// `ls --json`; nil reports every synced account's sync_state as unknown.
+func New(factory cliutil.ClientFactory[Client], syncedRegistry SyncedRegistryFactory, remoteURL, hostDestination func(*cobra.Command) string) *cobra.Command {
+	g := &group{newClient: factory, syncedRegistry: syncedRegistry, remoteURL: remoteURL, hostDestination: hostDestination}
 	account := &cobra.Command{
 		Use:   "account",
 		Short: "Manage agent accounts (credential registry)",

@@ -23,9 +23,10 @@ import (
 
 // accountJSON is the stable, documented schema emitted by `boss account ls
 // --json` and `boss account test --json`. Field names are part of the machine
-// contract that scripts depend on: renames are breaking changes. Timestamps are
-// RFC3339 strings, empty when the underlying timestamp is nil/zero. There is
-// NO credential field — the secret blob never crosses this boundary.
+// contract that scripts depend on: renames are breaking changes, and fields are
+// only ever added, never renamed. Timestamps are RFC3339 strings, empty when the
+// underlying timestamp is nil/zero. There is NO credential field — the secret
+// blob never crosses this boundary.
 type accountJSON struct {
 	ID             string   `json:"id"`
 	Provider       string   `json:"provider"`
@@ -56,6 +57,15 @@ type accountJSON struct {
 	AuthCheckOutcome      string `json:"auth_check_outcome"`
 	AuthCheckFailureClass string `json:"auth_check_failure_class"`
 	AuthCheckedAt         string `json:"auth_checked_at"`
+	// Sync membership (BOS-2256), additive. SyncState is local_only, synced
+	// or unknown; only `ls --json` reads the hosted registry, so other
+	// commands report unknown for an account with a synced id.
+	// SyncedMemberCount is 0 unless the registry row is known, and
+	// LinkSuggestionIDs is never null.
+	SyncedAgentAccountID string   `json:"synced_agent_account_id"`
+	SyncState            string   `json:"sync_state"`
+	SyncedMemberCount    int      `json:"synced_member_count"`
+	LinkSuggestionIDs    []string `json:"link_suggestion_ids"`
 }
 
 // accountToJSON maps a proto Account to the stable JSON schema.
@@ -89,6 +99,7 @@ func accountToJSON(a *pb.AgentAccount) accountJSON {
 		out.PlanTier = u.GetPlanTier()
 		out.UsageFetchedAt = cliutil.Rfc3339OrEmpty(u.GetFetchedAt())
 	}
+	applyAccountSync(&out, a, nil, false)
 	return out
 }
 
@@ -101,14 +112,17 @@ func (g *group) runAccountLS(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	return accountLS(cmd, c)
+	return accountLS(cmd, c, g.syncedRegistry)
 }
 
 type accountLister interface {
 	ListAgentAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error)
 }
 
-func accountLS(cmd *cobra.Command, c accountLister) error {
+// accountLS lists accounts. Only --json reads the hosted sync registry, best
+// effort: an unavailable registry reports sync_state unknown and never fails
+// the command.
+func accountLS(cmd *cobra.Command, c accountLister, registry SyncedRegistryFactory) error {
 	ctx := cmd.Context()
 
 	provider, _ := cmd.Flags().GetString("provider")
@@ -120,9 +134,11 @@ func accountLS(cmd *cobra.Command, c accountLister) error {
 
 	asJSON, _ := cmd.Flags().GetBool("json")
 	if asJSON {
+		reg, known := loadSyncedRegistry(cmd, registry)
 		out := make([]accountJSON, len(accounts))
 		for i, a := range accounts {
 			out[i] = accountToJSON(a)
+			applyAccountSync(&out[i], a, reg, known)
 		}
 		b, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
@@ -845,6 +861,7 @@ type Client interface {
 }
 type group struct {
 	newClient       cliutil.ClientFactory[Client]
+	syncedRegistry  SyncedRegistryFactory
 	remoteURL       func(*cobra.Command) string
 	hostDestination func(*cobra.Command) string
 }

@@ -115,7 +115,7 @@ node "$BOSS_BUILD_TOOLBOX/selection.mjs" split-args -- <skill arguments>
 # -> {"tickets":[...],"selectionArgs":[...],"other":[...]}  (exit 2 + "error" on a malformed flag)
 ```
 
-A ticket in `tickets` takes the named-ticket branch and bypasses the guards; any `selectionArgs`
+A ticket in `tickets` takes the named-ticket branch and bypasses the selection guards (verify admission still applies); any `selectionArgs`
 beside it are ignored with one warning line. Otherwise `selectionArgs` is forwarded verbatim.
 
 **Why the executable read comes first.** Step 2 always tries `list-planned`, which returns
@@ -275,7 +275,7 @@ The liveness object is adapter-owned claim evidence, normally including `now`, `
 
 A claim whose owner is provably inactive beyond the window is forfeit. A claim whose owner the run could not identify is never forfeited on that basis; unknown owner means the claim survives liveness arbitration.
 
-An explicitly named ticket may override a claim it can prove stale, matching the existing explicit-ID override for `needs-human` and `blockedBy`. It must delete the stale claim comment it overrides, then post its own claim before proceeding. An explicit ID may not override a claim whose owner is live or unknown; that path still stops `NO_CHANGE`.
+An explicitly named ticket may override a claim it can prove stale, matching the existing explicit-ID override for `blockedBy` (and, with `--approve`, `needs-human`). It must delete the stale claim comment it overrides, then post its own claim before proceeding. An explicit ID may not override a claim whose owner is live or unknown; that path still stops `NO_CHANGE`.
 
 After an explicit-ID run wins because liveness forfeited an older claim, delete each overridden stale claim comment before proceeding. Use the re-read `COMMENTS_JSON`: parse claim comments with their comment ids, match only comments whose `owner:<sessionId>` has a known `sessions[sessionId].lastAgentActivityAt` where `Date.parse(now) - Date.parse(lastAgentActivityAt) > inactiveAfterMs`, and delete only stale claims that would otherwise sort ahead of this run's token. If a stale override candidate lacks a comment id, stop `BLOCKED` rather than leaving a superseded claim behind. After deletion, re-read comments, rebuild `BOSS_CLAIM_LIVENESS_JSON`, and rerun `claim-verdict`. Never delete live or unknown-owner claims.
 

@@ -159,3 +159,12 @@ test('refused disk preflight is a disk-exhaustion environment failure', async ()
   const { DISK_FLOOR_SIGNATURE } = await import('./disk-headroom-lib.mjs')
   assert.equal(classifyEnvironmentFailure(`${DISK_FLOOR_SIGNATURE}: 0 GiB`).kind, 'disk-exhaustion')
 })
+
+test('a host admission timeout from either pool names both pool width variables', () => {
+  const classification = classifyEnvironmentFailure(
+    'gate-run admission: no host gate slot within 30ms (held by 123 worktree make lint)',
+  )
+  assert.equal(classification?.kind, 'host-gate-admission')
+  assert.match(classification.remedy, /BOSS_GATE_MAX_CONCURRENT/)
+  assert.match(classification.remedy, /BOSS_GATE_LIGHT_MAX_CONCURRENT/)
+})

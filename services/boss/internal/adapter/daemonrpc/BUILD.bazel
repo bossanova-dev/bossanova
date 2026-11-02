@@ -13,6 +13,7 @@ go_library(
         "rpcdeadline_prod.go",
         "unsupported.go",
         "verify_blockers.go",
+        "verify_pr.go",
     ],
     importpath = "github.com/recurser/boss/internal/adapter/daemonrpc",
     visibility = ["//services/boss:__subpackages__"],

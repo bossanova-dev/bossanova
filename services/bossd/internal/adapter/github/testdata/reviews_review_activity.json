@@ -1,0 +1,18 @@
+[
+  {
+    "id": 101,
+    "node_id": "PRR_1",
+    "user": { "login": "bob" },
+    "author_association": "MEMBER",
+    "state": "CHANGES_REQUESTED",
+    "body": "please fix"
+  },
+  {
+    "id": 102,
+    "node_id": "PRR_2",
+    "user": { "login": "chatgpt-codex-connector[bot]" },
+    "author_association": "NONE",
+    "state": "COMMENTED",
+    "body": "suggestions"
+  }
+]

@@ -100,6 +100,10 @@ type AgentAccountEditModel struct {
 	testStatus    string
 	testStatusErr bool
 
+	// sync is the hosted synced-registry snapshot the Sync and Link
+	// suggestion detail rows are built from (BOS-2256).
+	sync syncRegistry
+
 	width  int
 	height int
 }
@@ -144,9 +148,9 @@ func (m *AgentAccountEditModel) seedInputs() {
 	m.priorityInput.SetValue(strconv.Itoa(int(m.account.GetPriority())))
 }
 
-// Init satisfies tea.Model. The account is seeded at construction, so there is
-// nothing to load.
-func (m AgentAccountEditModel) Init() tea.Cmd { return nil }
+// Init satisfies tea.Model. The account is seeded at construction; only the
+// hosted sync registry is loaded, and only when a client is set.
+func (m AgentAccountEditModel) Init() tea.Cmd { return m.sync.fetchCmd(m.ctx) }
 
 // Cancelled reports whether the user dismissed the edit form.
 func (m AgentAccountEditModel) Cancelled() bool { return m.cancel }
@@ -165,6 +169,10 @@ func (m AgentAccountEditModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// to the textinput (the editing branch below) would silently drop the
 	// result — a failed save would surface no error.
 	switch msg := msg.(type) {
+	case syncedRegistryLoadedMsg:
+		m.sync.apply(msg)
+		return m, nil
+
 	case AgentAccountEditSavedMsg:
 		// The status flip's action is captured at the app root
 		// (App.handleAccountEditSavedResult): [esc] is accepted while the save
@@ -454,7 +462,7 @@ func (m AgentAccountEditModel) View() tea.View {
 	// Read-only Details: the full SAFE operational breakdown (BOS-269). Rendered
 	// above the editable rows so the operator sees health / cooldown / last-test
 	// context before editing. The last-test error is ALWAYS masked.
-	details := accountDetailRows(a, time.Now())
+	details := accountDetailRows(a, time.Now(), m.sync)
 	keyWidth := accountEditKeyWidth(details)
 	b.WriteString(renderAccountDetails(details, keyWidth))
 
@@ -496,11 +504,12 @@ func (m AgentAccountEditModel) View() tea.View {
 
 // accountDetailRows is the read-only account breakdown shown above the
 // editable rows (BOS-269): provider, status, health, priority, tier, cooldown,
-// last-used, last-tested, created, and updated. Every value is derived from the
-// Account metadata proto (no credential field), and the last-tested line routes
+// last-used, last-tested, created, updated, and sync membership. Every value is
+// derived from the Account metadata proto (no credential field) or the hosted
+// sync registry, and the last-tested line routes
 // its error through maskTestError so a secret-shaped daemon message is never
 // rendered raw.
-func accountDetailRows(a *pb.AgentAccount, now time.Time) []ui.KeyValue {
+func accountDetailRows(a *pb.AgentAccount, now time.Time, sync syncRegistry) []ui.KeyValue {
 	u := a.GetUsage()
 	baseRows := []ui.KeyValue{
 		{Key: "Provider", Value: a.GetProvider()},
@@ -524,16 +533,12 @@ func accountDetailRows(a *pb.AgentAccount, now time.Time) []ui.KeyValue {
 		{Key: "Updated", Value: detailTimestamp(a.GetUpdatedAt())},
 	}
 
-	rows := make([]ui.KeyValue, 0, len(baseRows)+len(u.GetModelWindows())+1)
+	rows := make([]ui.KeyValue, 0, len(baseRows)+len(u.GetModelWindows())+2)
 	rows = append(rows, baseRows...)
 	for _, window := range visibleModelWindows(u) {
 		rows = append(rows, ui.KeyValue{Key: "Usage " + window.GetModelName(), Value: accountUsageWindowDetail(u, window.GetUtil(), window.GetResetsAt(), now)})
 	}
-	sync := "This daemon only"
-	if a.GetSyncedAgentAccountId() != "" {
-		sync = "Synced across your daemons"
-	}
-	return append(rows, ui.KeyValue{Key: "Sync", Value: sync})
+	return append(rows, sync.detailRows(a)...)
 }
 
 // accountEditKeyWidth is the key column shared by the details and the editable

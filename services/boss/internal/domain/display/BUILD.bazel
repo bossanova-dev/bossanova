@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "account.go",
         "account_labels.go",
+        "account_sync.go",
         "chat.go",
         "chat_status.go",
         "chat_title.go",
@@ -29,6 +30,7 @@ go_library(
 go_test(
     name = "display_test",
     srcs = [
+        "account_sync_test.go",
         "repo_github_test.go",
         "repo_naming_test.go",
     ],

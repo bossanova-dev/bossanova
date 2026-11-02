@@ -169,6 +169,17 @@ func TestCreateSessionAlreadyShippedGuard(t *testing.T) {
 				if !strings.Contains(err.Error(), wantMsg) {
 					t.Fatalf("error = %q, want to mention %q", err.Error(), wantMsg)
 				}
+				shipped := tt.searchPRs[0]
+				wantState := "open"
+				if shipped.State == vcs.PRStateMerged {
+					wantState = "merged"
+				}
+				requireConflictEqual(t, requireCreateSessionConflict(t, err), &pb.CreateSessionConflict{
+					Reason:    pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_ALREADY_SHIPPED,
+					TrackerId: trackerID,
+					PrNumber:  int32(shipped.Number),
+					PrState:   wantState,
+				})
 			} else if err != nil {
 				t.Fatalf("error = %v, want nil (session should be created)", err)
 			}

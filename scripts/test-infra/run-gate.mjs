@@ -48,6 +48,7 @@ async function main(argv = process.argv.slice(2)) {
   let admission
   try {
     admission = await admitGate(process.env, {
+      argv: command,
       label,
       log: (line) => process.stderr.write(`${line}\n`),
       signal: controller.signal,

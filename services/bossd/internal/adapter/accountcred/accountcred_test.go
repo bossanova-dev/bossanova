@@ -313,3 +313,47 @@ func TestDeleteRemovesRefreshJournalEvenWhenCredentialMissing(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshBrokerEndpointIsDaemonWideKeyringItem_Accounts_AC223601(t *testing.T) {
+	ring := newFakeKeyring()
+	s := storeOver(ring)
+	if raw, err := s.LoadRefreshBrokerEndpoint(); err != nil || raw != nil {
+		t.Fatal("missing endpoint must be distinguishable from an unreadable keyring")
+	}
+	endpoint := []byte(`{"broker_id":"fixture-id","port":41234}`)
+	if err := s.SaveRefreshBrokerEndpoint(endpoint); err != nil {
+		t.Fatal(err)
+	}
+	endpoint[0] = 'x'
+	if err := s.Save("shared", []byte("credential")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveRefreshState("shared", []byte("journal")); err != nil {
+		t.Fatal(err)
+	}
+	restarted := storeOver(ring)
+	if err := restarted.Delete("shared"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := restarted.LoadRefreshBrokerEndpoint()
+	if err != nil || string(raw) != `{"broker_id":"fixture-id","port":41234}` {
+		t.Fatalf("endpoint did not survive restart and account delete: %q", raw)
+	}
+	ring.failAll = true
+	if _, err := restarted.LoadRefreshBrokerEndpoint(); err == nil {
+		t.Fatal("unreadable keyring treated as missing endpoint")
+	}
+	if err := restarted.SaveRefreshBrokerEndpoint(raw); err == nil || strings.Contains(err.Error(), "fixture-id") {
+		t.Fatal("save failure was hidden or leaked data")
+	}
+}
+
+func TestNewWithKeyringUsesTheInjectedKeyring(t *testing.T) {
+	ring := keyring.NewArrayKeyring(nil)
+	if err := NewWithKeyring(ring).SaveRefreshBrokerEndpoint([]byte("endpoint")); err != nil {
+		t.Fatal(err)
+	}
+	if item, err := ring.Get(refreshBrokerEndpointKey); err != nil || string(item.Data) != "endpoint" {
+		t.Fatal("store did not write through the injected keyring")
+	}
+}

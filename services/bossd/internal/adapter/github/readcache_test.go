@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -248,5 +249,52 @@ func TestCachedBranchHeadReadsShareOneFetchPerBranch(t *testing.T) {
 	clock.Advance(defaultReadCacheTTL)
 	if sha, _ := p.GetBranchHeadSHA(bg, "o/r", "main"); sha != "tip-3" {
 		t.Fatalf("sha after TTL = %q, want a fresh tip-3", sha)
+	}
+}
+
+// TestReserveReadDoesNotJoinRefusedStandardFlight_Callbacks_AC222201 pins the flight split: a
+// reserve-tier read that arrives while a standard-tier flight for the same PR
+// is in flight runs its own fetch, so the standard tier's floor refusal at 30%
+// does not reach it.
+func TestReserveReadDoesNotJoinRefusedStandardFlight_Callbacks_AC222201(t *testing.T) {
+	clock := newFakeClock()
+	var p *Provider
+	probing := make(chan struct{})
+	var holdFirstProbe sync.Once
+	gh := &scriptedGH{reply: func(args []string) (string, error) {
+		switch {
+		case isRateLimitProbe(args):
+			// Hold the standard flight's probe until the reserve read waits
+			// on it from a flight of its own.
+			holdFirstProbe.Do(func() {
+				close(probing)
+				deadline := time.Now().Add(10 * time.Second)
+				for p.quotas.waitingCount() < 2 && time.Now().Before(deadline) {
+					runtime.Gosched()
+				}
+			})
+			return graphQLAt(clock, 1500, time.Hour), nil
+		case isPRView(args):
+			return draftPRView, nil
+		}
+		return "", fmt.Errorf("unexpected gh call %v", args)
+	}}
+	p = New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now),
+		WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
+	standard := vcs.WithCachedReads(context.Background())
+	reserve := vcs.WithReserveQuotaReads(standard)
+
+	var standardErr error
+	var done sync.WaitGroup
+	done.Go(func() { _, standardErr = p.GetPRStatus(standard, "o/r", 7) })
+	<-probing
+	status, err := p.GetPRStatus(reserve, "o/r", 7)
+	done.Wait()
+
+	if !errors.Is(standardErr, vcs.ErrRateLimited) {
+		t.Fatalf("standard-tier read err = %v, want the floor's refusal", standardErr)
+	}
+	if err != nil || status == nil {
+		t.Fatalf("reserve-tier read = %+v, %v; want a value", status, err)
 	}
 }

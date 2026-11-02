@@ -162,7 +162,7 @@ func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo,
 		}
 	}
 
-	info := vcs.ComputeDisplayStatusWith(prStatus, checkSet.Checks, reviews, vcs.DisplayOptions{DraftHeldByBossd: sess.State.HoldsBossdDraft()})
+	info := vcs.ComputeDisplayStatusWith(prStatus, checkSet.Checks, reviews, vcs.DisplayOptions{DraftHeldByBossd: sess.State.HoldsBossdDraft(), Required: s.requiredChecksFor(ctx, repo.LocalPath)})
 	info.HasBuildReceipt = checkSet.HasBuildReceipt
 	info.BuildReceiptSeen = checkSet.BuildReceiptSeen
 	info.HeadSHA = prStatus.HeadSHA

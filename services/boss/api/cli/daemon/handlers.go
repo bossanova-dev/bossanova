@@ -532,10 +532,7 @@ func (deps *Group) runDaemonStart(cmd *cobra.Command) error {
 	}
 	mode, err := deps.daemonEnsureRunningWithPolicy(socketPath, policy)
 	if errors.Is(err, daemon.ErrServiceInstalledNotServing) {
-		return fmt.Errorf("start daemon refused: %w. "+
-			"Run 'boss daemon doctor' to see why the service manager did not serve it, "+
-			"'boss daemon restart' to re-bootstrap the service, "+
-			"or 'boss daemon start --detached' to start an unsupervised daemon deliberately", err)
+		return deps.daemonStartRefusal(socketPath, err)
 	}
 	if err != nil {
 		return fmt.Errorf("start daemon failed: %w", err)
@@ -777,6 +774,7 @@ func (deps *Group) runDaemonRestart(cmd *cobra.Command) error {
 	if modeStatus := daemon.LoadSupervisionModeStatus(); modeStatus.Err != nil {
 		return cliutil.EmitJSONFailure(cmd, asJSON, fmt.Errorf("daemon restart refused, daemon left running: daemon supervision mode: %w", modeStatus.Err))
 	}
+	deps.noteRestartDuringStartup(cmd, socketPath)
 	if st.Running {
 		if err := deps.daemonStop(); err != nil {
 			return cliutil.EmitJSONFailure(cmd, asJSON, fmt.Errorf("stop daemon failed: %w", err))

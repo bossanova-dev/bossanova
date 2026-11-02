@@ -20,6 +20,7 @@ type CallerAuthority interface {
 // commands before dispatching them through CommandHandlerAdapter.
 var callerCapabilities = map[string]domain.CallerCapability{
 	bossanovav1connect.DaemonServiceAcceptSessionPRBlockerProcedure: domain.CapabilityVerifyAccept,
+	bossanovav1connect.DaemonServiceFollowUpSessionPRNotesProcedure: domain.CapabilityVerifyFollowUp,
 	bossanovav1connect.DaemonServiceApproveSessionPRProcedure:       domain.CapabilityVerifyApprove,
 	bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure:   domain.CapabilityOperatorMerge,
 }
@@ -60,7 +61,11 @@ func (i *callerInterceptor) check(ctx context.Context, procedure string) error {
 	case domain.CallerOperator, domain.CallerUnattested:
 		// Operators pass the capability check above; retain the fail-closed guidance.
 	}
-	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("acting on a verify verdict is the operator's call; %s. Run it from your own terminal or press [m] on the session in the TUI", who))
+	remedy := "Run it from your own terminal"
+	if capability != domain.CapabilityVerifyFollowUp {
+		remedy += " or press [m] on the session in the TUI"
+	}
+	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("acting on a PR's verify outcome is the operator's call; %s. %s", who, remedy))
 }
 
 func (i *callerInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {

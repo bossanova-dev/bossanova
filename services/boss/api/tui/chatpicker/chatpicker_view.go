@@ -328,6 +328,9 @@ func (m Model) chatListActionGroups() (left, middle, back []string) {
 	if _, ok := ui.AttentionBinding(m.session, "m", true); !ok && m.canMerge() {
 		middle = append(middle, "[m]erge")
 	}
+	if m.canAcceptBlocker() {
+		middle = append(middle, "acc[e]pt blocker")
+	}
 	if m.sessionID != "" {
 		middle = append(middle, "[a]rchive")
 	}

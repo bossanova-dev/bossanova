@@ -690,7 +690,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		return "", fmt.Errorf("resolve account env for session %s: %w", sessionID, redactedInjection(accountErr))
 	}
 	launchFacts := resolveChatLaunchFacts(sess, agentSessionID, spawnAgentName, hookOpts.AutonomousRun)
-	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(managedSessionEnv(launchFacts), chatAccountEnv, l.resolveProofEnvFor(repo)), sess.WorktreePath, repo), sess.WorktreePath)
+	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(meteredSessionEnv(launchFacts, l.ghUsageShim), chatAccountEnv, l.resolveProofEnvFor(repo)), sess.WorktreePath, repo), sess.WorktreePath)
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
@@ -2250,17 +2250,9 @@ func unattendedMarkerEnv() map[string]string {
 	}
 }
 
-// ManagedSessionEnv returns BOSS_* context, omitting unresolved binaries.
+// managedSessionEnv returns BOSS_* context, omitting unresolved binaries.
 // Unattended markers match BuildAppendSystemPrompt; cron identity is cron-only.
 // Autonomous spawns share launch facts without changing the parent lifecycle.
-//
-// agentName is the running agent for this chat. It takes precedence over
-// sess.AgentName, so a codex chat spawned from a claude session correctly
-// reports BOSS_AGENT=codex. Pass "" to fall back to sess.AgentName.
-func ManagedSessionEnv(sess *models.Session, agentSessionID, agentName string) map[string]string {
-	return managedSessionEnv(ResolveSessionFacts(sess, agentSessionID, agentName))
-}
-
 func managedSessionEnv(f Facts) map[string]string {
 	env := map[string]string{
 		"BOSS_SESSION_ID":       f.SessionID,

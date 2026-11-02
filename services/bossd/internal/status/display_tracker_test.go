@@ -1,6 +1,7 @@
 package status
 
 import (
+	"context"
 	"reflect"
 	"sync"
 	"testing"
@@ -133,6 +134,66 @@ func TestDisplayTracker_VerifyLabel_ThreadsFromParkToReadPath(t *testing.T) {
 	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "ledger-open"})
 	if e := tr.Get("sess-1"); e == nil || e.VerifyLabel != "" || e.VerifyReason != "ledger-open" {
 		t.Fatalf("Get after unlabelled park = %+v, want empty label", e)
+	}
+}
+
+func TestDisplayEntry_VerifyWaitReason(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry *DisplayEntry
+		want  string
+	}{
+		{name: "nil entry", want: ""},
+		{name: "verifying wait", entry: &DisplayEntry{Status: vcs.DisplayStatusVerifying, VerifyReason: "merge-state-unknown"}, want: "merge-state-unknown"},
+		{name: "verifying claim", entry: &DisplayEntry{Status: vcs.DisplayStatusVerifying}, want: ""},
+		{name: "park codes are not a wait", entry: &DisplayEntry{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "ledger-open"}, want: ""},
+		{name: "stale reason off verifying", entry: &DisplayEntry{Status: vcs.DisplayStatusPassing, VerifyReason: "merge-state-unknown"}, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.entry.VerifyWaitReason(); got != tt.want {
+				t.Fatalf("VerifyWaitReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if codes := (&DisplayEntry{Status: vcs.DisplayStatusVerifying, VerifyReason: "merge-state-unknown"}).ParkCodes(); codes != nil {
+		t.Fatalf("ParkCodes() of a wait = %v, want nil", codes)
+	}
+}
+
+// countingRecomputer counts the recomputes a tracker schedules.
+type countingRecomputer struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (r *countingRecomputer) Recompute(context.Context, string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	return nil
+}
+
+func (r *countingRecomputer) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// A wait reason that changes under an unchanged VERIFYING status still reaches
+// the composite: every Set recomputes, not only a status change.
+func TestDisplayTracker_WaitReasonChangeRecomputes(t *testing.T) {
+	tr := NewDisplayTracker()
+	rc := &countingRecomputer{}
+	tr.SetRecomputer(rc)
+	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusVerifying, VerifyReason: "ci-not-settled"})
+	before := rc.count()
+	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusVerifying, VerifyReason: "merge-state-unknown"})
+	if rc.count() != before+1 {
+		t.Fatalf("recomputes = %d, want %d after a reason-only change", rc.count(), before+1)
+	}
+	if got := tr.Get("sess-1").VerifyWaitReason(); got != "merge-state-unknown" {
+		t.Fatalf("VerifyWaitReason() = %q, want merge-state-unknown", got)
 	}
 }
 

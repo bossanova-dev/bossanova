@@ -336,5 +336,11 @@
         "required": "always"
       }
     ]
+  },
+  "ci": {
+    "required": {
+      "checks": ["go-test", "scripts"],
+      "exemptBases": ["staging", "production"]
+    }
   }
 }

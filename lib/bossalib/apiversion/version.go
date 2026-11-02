@@ -669,6 +669,10 @@ const V20260930 Version = "2026-09-30"
 // verdict and carry the operator-written park_label. Older pins keep their copy.
 const V20261031 Version = "2026-10-31"
 
+// V20261101 ships ProofAttentionChange: verify parks carry confidence, asks,
+// proof URLs and lowered-by reasons, with PROOF replacing VIDEO.
+const V20261101 Version = "2026-11-01"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -835,8 +839,9 @@ func DefaultRegistry() *Registry {
 			V20260929,
 			V20260930,
 			V20261031,
+			V20261101,
 		},
-		V20261031,
+		V20261101,
 		Baseline,
 	)
 	if err != nil {

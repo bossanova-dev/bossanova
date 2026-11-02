@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "ui",
     srcs = [
+        "accept_blocker.go",
         "accounts.go",
         "auth_changes.go",
         "banner.go",
@@ -26,6 +27,7 @@ go_library(
         "session_title.go",
         "status.go",
         "status_attention.go",
+        "status_confidence.go",
         "subscription.go",
         "table.go",
         "tablehelpers.go",
@@ -36,6 +38,7 @@ go_library(
     importpath = "github.com/recurser/boss/api/tui/ui",
     visibility = ["//visibility:public"],
     deps = [
+        "//lib/bossalib/attention",
         "//lib/bossalib/contract/daemon/alertstate",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
@@ -66,6 +69,7 @@ go_library(
 go_test(
     name = "ui_test",
     srcs = [
+        "accept_blocker_test.go",
         "buttons_test.go",
         "cloudpromo_test.go",
         "confirm_test.go",
@@ -81,6 +85,8 @@ go_test(
         "nav_test.go",
         "rename_test.go",
         "session_title_test.go",
+        "status_attention_test.go",
+        "status_confidence_test.go",
         "status_test.go",
         "status_waiting_test.go",
         "table_bench_test.go",
@@ -101,12 +107,15 @@ go_test(
         "//lib/bossalib/kit/telemetry",
         "//lib/bossalib/sessionreason",
         "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/prverdict",
+        "//services/boss/internal/domain/rpcerr",
         "@com_github_charmbracelet_x_ansi//:ansi",
         "@land_charm_bubbles_v2//key",
         "@land_charm_bubbles_v2//table",
         "@land_charm_bubbletea_v2//:bubbletea",
         "@land_charm_huh_v2//:huh",
         "@land_charm_lipgloss_v2//:lipgloss",
+        "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

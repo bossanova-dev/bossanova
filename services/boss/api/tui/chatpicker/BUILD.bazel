@@ -4,6 +4,7 @@ go_library(
     name = "chatpicker",
     srcs = [
         "chatpicker.go",
+        "chatpicker_accept.go",
         "chatpicker_agent.go",
         "chatpicker_agents.go",
         "chatpicker_armed.go",
@@ -51,6 +52,7 @@ go_test(
     name = "chatpicker_test",
     srcs = [
         "attention_fixture_test.go",
+        "chatpicker_accept_test.go",
         "chatpicker_actionbar_table_height_test.go",
         "chatpicker_armed_test.go",
         "chatpicker_attention_actions_test.go",
@@ -77,6 +79,7 @@ go_test(
         "chatpicker_test.go",
         "chatpicker_waiting_status_test.go",
         "review_ask_test.go",
+        "session_raise_test.go",
         "session_timeline_chats_test.go",
         "session_timeline_park_test.go",
         "session_timeline_test.go",

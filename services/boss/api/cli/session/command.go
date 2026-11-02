@@ -164,6 +164,10 @@ func (g *Group) NewCmd() *cobra.Command {
 			"Non-interactive --repo + --prompt path only")
 	cmd.Flags().Bool("verify-only", false,
 		"Mark a --pr session as verify-only: automatic repair never acts on it. Requires --pr")
+	cmd.Flags().Bool("force", false,
+		"Create the session even if the ticket already shipped via a tagged PR or another "+
+			"active session already owns it (bypasses the already-shipped and duplicate-session "+
+			"guards). Non-interactive --repo + --prompt path only")
 	// The example is a generic placeholder on purpose: this usage string is
 	// harvested into the globally-installed `boss` skill core, which
 	// TestPublishedCoresAreProjectAgnostic forbids from carrying a real

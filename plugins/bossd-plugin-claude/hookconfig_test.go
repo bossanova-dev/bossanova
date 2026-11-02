@@ -1041,3 +1041,39 @@ func TestWritePromptSubmitHookConfig_OmitsBearerHeaderWhenTokenEmpty(t *testing.
 		t.Fatalf("empty token must write the command without an Authorization header: %#v", bossd[0])
 	}
 }
+
+// TestHookWritersRefuseMissingWorktree pins BOS-2228: a hook write for a
+// worktree that has already been removed must fail and leave the path absent,
+// never re-create the worktree root just to hold .claude/settings.local.json.
+// A path that exists but is not a directory is refused the same way.
+func TestHookWritersRefuseMissingWorktree(t *testing.T) {
+	writers := map[string]func(worktree string) error{
+		"WriteHookConfig": func(wt string) error {
+			return WriteHookConfig(wt, "sess-1", "", "tok-abc", 45678)
+		},
+		"WritePromptSubmitHookConfig": func(wt string) error {
+			return WritePromptSubmitHookConfig(wt, "agent-1", 4242, "")
+		},
+	}
+	for name, write := range writers {
+		t.Run(name+"/missing root", func(t *testing.T) {
+			worktree := filepath.Join(t.TempDir(), "removed-worktree")
+			err := write(worktree)
+			if err == nil || !strings.Contains(err.Error(), "does not exist") {
+				t.Fatalf("error = %v, want a missing-worktree error", err)
+			}
+			if _, statErr := os.Lstat(worktree); !os.IsNotExist(statErr) {
+				t.Fatalf("worktree root was re-created (lstat err = %v)", statErr)
+			}
+		})
+		t.Run(name+"/root is a file", func(t *testing.T) {
+			worktree := filepath.Join(t.TempDir(), "not-a-dir")
+			if err := os.WriteFile(worktree, nil, 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if err := write(worktree); err == nil {
+				t.Fatal("want an error for a worktree path that is not a directory")
+			}
+		})
+	}
+}

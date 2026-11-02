@@ -280,6 +280,8 @@ func rootCmdWithGroups(g *skills.Group, daemonGroup daemonCommands) *cobra.Comma
 			return newRemoteClient(cmd, remote)
 		}
 		return newDaemonClient(cmd)
+	}, func(cmd *cobra.Command) (account.SyncedRegistryClient, error) {
+		return settingscli.NewCloudRemote(cmd, account.ErrNotLoggedIn)
 	}, remoteURL, hostDestination))
 	addGrouped("trash", trash.New(func(cmd *cobra.Command) (trash.Client, error) {
 		if remote := remoteURL(cmd); remote != "" {

@@ -424,6 +424,7 @@ func (a App) updateAccountRegister(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.activeView = ui.ViewAgentAccounts
 		a.accountsList = accounts.NewAgentAccountsListModel(a.client, a.ctx)
 		a.accountsList.SetTelemetry(a.telemetry)
+		a.wireAccountsListSync(&a.accountsList)
 		a.accountsList.SetReturnView(ui.ViewSettings)
 		a.accountsList.SetSize(a.width, a.height)
 		// An add is self-evidencing: the new row appears. A reauthentication is

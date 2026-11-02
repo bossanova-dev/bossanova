@@ -517,6 +517,23 @@ export const schema = object({
     }),
     planDependencies,
     planContract,
+    // Check names a PR head must have run before it is green (skills-toolbox/ci/required-checks.mjs).
+    ci: object({
+      'x-msg': { type: 'ci must be an object when present' },
+      properties: {
+        required: object({
+          'x-msg':
+            'ci.required must be an object of checks (non-empty check names) and optional exemptBases (non-empty base branches)',
+          properties: {
+            checks: { type: 'array', items: nonBlankString },
+            exemptBases: { type: 'array', items: nonBlankString },
+          },
+          additionalProperties: false,
+        }),
+      },
+      additionalProperties: false,
+      'x-unknown': 'warn',
+    }),
     // Read by other toolbox modules, not validated here.
     gateCache: known,
     builtinExtensions: known,

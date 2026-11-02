@@ -100,6 +100,7 @@ func (w *daemonWiring) wireDaemon() {
 		CheckSnapshots:          w.checkSnapshots,
 		AgentRuns:               w.agentRuns,
 		GitHubUsage:             w.ghUsage,
+		GitHubUsageShim:         w.ghUsageShim,
 		RotationEvents:          w.rotationEvents,
 		Evidence:                w.evidenceReader,
 		ResumeAttempts:          w.resumeAttempts,
@@ -161,6 +162,7 @@ func (w *daemonWiring) wireDaemon() {
 		ProtectedRoots: w.startupProtectedRoots,
 	}
 	w.srv = server.New(daemonConfig)
+	w.srv.SetRequiredChecks(w.checkPolicy)
 	if w.opts.onVerifyJobSeamsWired != nil {
 		w.opts.onVerifyJobSeamsWired(w.orchestrator.HasFactoryRepoChecker() && w.orchestrator.HasRepairActivity(), daemonConfig.FactoryRepoChecker == w.factoryRepoChecker && w.factoryRepoChecker != nil && w.orchestrator.UsesFactoryRepoChecker(w.factoryRepoChecker))
 	}

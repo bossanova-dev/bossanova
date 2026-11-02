@@ -101,6 +101,12 @@ func New() *Store {
 	return &Store{open: openSharedKeyring}
 }
 
+// NewWithKeyring returns a Store over an already-open keyring, so daemon
+// startup tests never read or write the developer's OS keyring.
+func NewWithKeyring(ring keyring.Keyring) *Store {
+	return &Store{open: func() (credKeyring, error) { return ring, nil }}
+}
+
 // WithCredentialLock serializes a compound operation on one account's
 // credential. The account server uses it for explicit refreshes, while the
 // materializer uses it around load-merge-save reconciliation and usage probes;
@@ -233,6 +239,41 @@ func (s *Store) SaveRefreshState(accountID string, blob []byte) error {
 	}
 	if err = ring.Set(keyring.Item{Key: "account-refresh-journal-" + accountID, Data: append([]byte(nil), blob...), Label: "bossanova", Description: "local credential refresh journal"}); err != nil {
 		return fmt.Errorf("save refresh journal: %w", err)
+	}
+	return nil
+}
+
+// refreshBrokerEndpointKey holds the daemon-wide refresh broker endpoint. It
+// belongs to no account, so account Delete leaves it in place.
+const refreshBrokerEndpointKey = "credential-refresh-broker-endpoint"
+
+// LoadRefreshBrokerEndpoint loads the daemon-local refresh broker endpoint
+// state (loopback port and broker id). It is never uploaded to bosso. A missing
+// item returns nil, nil; errors never contain data.
+func (s *Store) LoadRefreshBrokerEndpoint() ([]byte, error) {
+	ring, err := s.open()
+	if err != nil {
+		return nil, fmt.Errorf("open refresh broker endpoint keyring: %w", err)
+	}
+	item, err := ring.Get(refreshBrokerEndpointKey)
+	if errors.Is(err, keyring.ErrKeyNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load refresh broker endpoint: %w", err)
+	}
+	return append([]byte(nil), item.Data...), nil
+}
+
+// SaveRefreshBrokerEndpoint persists the refresh broker endpoint so a
+// restarted daemon can reclaim it. Errors never contain data.
+func (s *Store) SaveRefreshBrokerEndpoint(blob []byte) error {
+	ring, err := s.open()
+	if err != nil {
+		return fmt.Errorf("open refresh broker endpoint keyring: %w", err)
+	}
+	if err = ring.Set(keyring.Item{Key: refreshBrokerEndpointKey, Data: append([]byte(nil), blob...), Label: "bossanova", Description: "local credential refresh broker endpoint"}); err != nil {
+		return fmt.Errorf("save refresh broker endpoint: %w", err)
 	}
 	return nil
 }

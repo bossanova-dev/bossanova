@@ -26,6 +26,7 @@ go_test(
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/kit/gatecmd",
         "//services/bossd/internal/domain",
+        "//services/bossd/internal/ghusage",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

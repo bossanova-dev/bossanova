@@ -75,9 +75,12 @@ type Model struct {
 	fd             *formData
 
 	// Async / conflict state
-	createdSess         *pb.Session
-	forceBranch         bool
-	confirmingOverwrite bool
+	createdSess *pb.Session
+	// force and forceBranch are the CreateSession bypass flags a conflict
+	// prompt armed; conflict is the open prompt, or nil (BOS-2143).
+	force       bool
+	forceBranch bool
+	conflict    *pb.CreateSessionConflict
 
 	// initialAgent overrides the per-session agent at create time. Empty
 	// means "let the daemon fall back to Settings.DefaultAgent".
@@ -335,7 +338,7 @@ func (m Model) CreatedSession() *pb.Session { return m.createdSess }
 // View selects the renderer for the current wizard state. The guard order
 // below is the order of the original if-chain and is behaviour.
 func (m Model) View() tea.View {
-	if m.err != nil && !m.confirmingOverwrite {
+	if m.err != nil && m.conflict == nil {
 		return tea.NewView(m.renderErr())
 	}
 
@@ -371,8 +374,8 @@ func (m Model) View() tea.View {
 		return tea.NewView(m.renderDone())
 	}
 
-	if m.confirmingOverwrite {
-		return tea.NewView(m.renderConfirmOverwrite())
+	if m.conflict != nil {
+		return tea.NewView(m.renderConflict())
 	}
 
 	if m.form != nil {

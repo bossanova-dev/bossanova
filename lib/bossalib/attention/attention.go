@@ -115,6 +115,13 @@ type Input struct {
 	// VerifyJudged marks a verdict (park, pass, defect or blocked) verify posted
 	// on the head the checks were read on.
 	VerifyJudged bool
+	// VerifyPending marks a PR whose display status is DISPLAY_STATUS_VERIFYING:
+	// ordinary CI settled and a pending boss/verify status holds the head. It is
+	// the same fact the session view's label branches on.
+	VerifyPending bool
+	// VerifyWaitReason is the reason code of a pending "waiting: <reason>"
+	// boss/verify status on a VerifyPending head; empty for a live claim.
+	VerifyWaitReason string
 	// VerifiedSince is when the current head was first seen verified, in the
 	// newest unbroken run of polls that saw it verified; zero when unknown.
 	VerifiedSince time.Time
@@ -160,6 +167,7 @@ type Input struct {
 	ChatStatus pb.ChatStatus
 
 	Evidence *Evidence
+	Proof    *Proof
 
 	// StateSince is when the session's current state began.
 	StateSince time.Time
@@ -355,7 +363,7 @@ func computeQuestion(in Input) *pb.SessionAttention {
 // computePark answers a verify park from the code that decides it
 // (decidingParkCode): a sign-off code makes it a REVIEW the operator may merge
 // over, any other code makes it a blocked FIX they fix through a chat. Both
-// offer GITHUB, and VIDEO when there is evidence; only the REVIEW ends with
+// offer GITHUB, and PROOF or VIDEO when there is evidence; only the REVIEW ends with
 // MERGE.
 func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 	info := knownParkCodes[code]
@@ -379,6 +387,25 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 	evidenceURL := ""
 	if in.Evidence != nil && in.Evidence.URL != "" {
 		evidenceURL = in.Evidence.URL
+	}
+	var proofURL string
+	var loweredBy []string
+	asks := labelAsks(in.ParkLabel)
+	if in.Proof != nil {
+		proofURL = in.Proof.URL
+		loweredBy = slices.Clone(in.Proof.LoweredBy[:min(3, len(in.Proof.LoweredBy))])
+		if len(asks) == 0 {
+			asks = slices.Clone(in.Proof.Asks[:min(3, len(in.Proof.Asks))])
+		}
+	}
+	if proofURL != "" {
+		// Bosso pins down-convert PROOF to VIDEO. A version-skewed TUI talking
+		// directly to bossd bypasses that interceptor and ignores unknown actions;
+		// only a proof-bearing park loses its video key until the client renders
+		// PROOF. No response transform can reach that direct daemon path. See
+		// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+		actions = append(actions, pb.AttentionAction_ATTENTION_ACTION_PROOF)
+	} else if evidenceURL != "" {
 		actions = append(actions, pb.AttentionAction_ATTENTION_ACTION_VIDEO)
 	}
 	if info.signOff {
@@ -393,14 +420,18 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 		since = in.ParkSince
 	}
 	return &pb.SessionAttention{
-		Kind:        info.kind(),
-		Sentence:    sentence,
-		ParkLabel:   in.ParkLabel,
-		Actions:     actions,
-		Since:       timestamp(since),
-		ParkCodes:   codes,
-		EvidenceUrl: evidenceURL,
-		OpenItems:   openItems,
+		Kind:            info.kind(),
+		Sentence:        sentence,
+		ParkLabel:       in.ParkLabel,
+		Actions:         actions,
+		Since:           timestamp(since),
+		ParkCodes:       codes,
+		EvidenceUrl:     evidenceURL,
+		OpenItems:       openItems,
+		ConfidenceLevel: ParkLevel(codes, in.ParkLabel),
+		Asks:            asks,
+		ProofUrl:        proofURL,
+		LoweredBy:       loweredBy,
 	}
 }
 
@@ -471,6 +502,9 @@ func progressLabel(in Input, codes []string) string {
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
 		return "working"
 	}
+	if verifyPendingOnOpenPR(in) {
+		return verifyPendingLabel(in)
+	}
 	if VerifyHolds(in) && !in.IsSentBack && prGreenAndMergeable(in) {
 		return verifyHoldLabel(in)
 	}
@@ -494,6 +528,37 @@ func progressLabel(in Input, codes []string) string {
 	default:
 		return "idle"
 	}
+}
+
+// verifyPendingOnOpenPR reports an open, non-draft PR whose head a pending
+// boss/verify status holds. It needs neither known mergeability nor admission,
+// as the session view shows the verify state whenever the display status is
+// VERIFYING, including the merge-state-unknown wait where Mergeable is nil. A
+// conflict or failing check never reaches it: the display status would be
+// CONFLICT or FAILING.
+func verifyPendingOnOpenPR(in Input) bool {
+	return in.VerifyPending && in.HasPR && in.PRState == PRStateOpen && !in.PRDraft
+}
+
+// verifyPendingLabel is the list label of a pending boss/verify status, the
+// same label displaystatus gives the session view: the wait's short label, or
+// VerifyingLabel for a live claim.
+//
+// No dated apiversion bump for these labels replacing "queued", a hold label
+// or the chat words, and why: Session.attention reaches the version-skewed boss
+// TUI and web (through bosso). Every client era renders a "waiting"-prefixed
+// progress label as a wait spinner and "verifying", already a known phase, as
+// live work, which is truthful; the two reused short labels are already
+// down-converted by ShortWaitLabelChange. No exact inverse exists, because the
+// old label for the same input depended on admission and mergeability, and a
+// down-convert to "queued" would restore the list-versus-view contradiction
+// this corrects. See
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+func verifyPendingLabel(in Input) string {
+	if in.VerifyWaitReason != "" {
+		return VerifyWaitLabel(in.VerifyWaitReason)
+	}
+	return VerifyingLabel
 }
 
 func verifyHoldLabel(in Input) string {

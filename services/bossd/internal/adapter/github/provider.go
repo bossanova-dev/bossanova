@@ -55,6 +55,9 @@ type Provider struct {
 	cache *readCache
 	// quotas caches and coalesces `gh api rate_limit` readings; see readQuotas.
 	quotas quotaCache
+	// floors holds background reads back below a share of their quota; see
+	// backgroundFloorRefusal.
+	floors backgroundFloors
 	// usage meters every call gh sends to GitHub; nil records nothing.
 	usage UsageRecorder
 	// rateLimitLog logs each best-effort read's quota refusal once per window.
@@ -424,7 +427,7 @@ func (p *Provider) getPRMergeability(ctx context.Context, repoPath string, prID 
 // `git/ref` so it stays off the GraphQL quota. Background callers
 // (vcs.WithCachedReads) may be served from the read cache.
 func (p *Provider) GetBranchHeadSHA(ctx context.Context, repoPath, branch string) (string, error) {
-	return cachedRead(ctx, p.cache, branchReadKey(readKindBranchHead, repoPath, branch), func(sha string) string { return sha },
+	return cachedRead(ctx, p.cache, branchReadKey(readKindBranchHead, repoPath, branch), noFingerprint, func(sha string) string { return sha },
 		func(ctx context.Context) (string, error) { return p.fetchBranchHeadSHA(ctx, repoPath, branch) })
 }
 

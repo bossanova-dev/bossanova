@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/gatecmd"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/rs/zerolog"
 )
 
@@ -29,7 +32,7 @@ func (f *fixture) ListByRepo(context.Context, string) ([]*domain.CronJob, error)
 	if !f.jobs {
 		return nil, nil
 	}
-	return []*domain.CronJob{{ID: "job", IsEnabled: f.enabled, Prompt: "/boss-verify", GateCommand: "gate"}}, nil
+	return []*domain.CronJob{{ID: "job", Name: "bs-verify", IsEnabled: f.enabled, Prompt: "/boss-verify", GateCommand: "gate"}}, nil
 }
 func (f *fixture) ChecksPassedReady(context.Context, string, string, int) (string, bool, error) {
 	return f.head, f.ready, nil
@@ -101,6 +104,32 @@ func TestBurstAndHeadMemo(t *testing.T) {
 	finish(t, ticks, done)
 	if calls.Load() != 2 {
 		t.Fatalf("new head runs=%d", calls.Load())
+	}
+}
+func TestEventGateKeepsPRScopeAndMetersUnderTheCronLabel(t *testing.T) {
+	fakeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakeDir, "gh"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { // #nosec G306 -- test fixture must be executable
+		t.Fatal(err)
+	}
+	shim, err := ghusage.InstallShim(t.TempDir(), fakeDir)
+	if err != nil || shim == nil {
+		t.Fatalf("InstallShim = (%v, %v), want a wrapper", shim, err)
+	}
+	tr, _, ticks, done, calls := newFixture(t)
+	tr.WithGHUsage(shim)
+	var label atomic.Value
+	run := tr.run
+	tr.run = func(ctx context.Context, opts gatecmd.Options) gatecmd.Result {
+		label.Store(opts.ExtraEnv[ghusage.EnvLabel])
+		return run(ctx, opts) // asserts the PR URL survived
+	}
+	tr.Notify(context.Background(), completed(), 42)
+	finish(t, ticks, done)
+	if calls.Load() != 1 {
+		t.Fatalf("event ran %d gates, want 1", calls.Load())
+	}
+	if got := label.Load(); got != "cron:bs-verify" {
+		t.Fatalf("event gate label = %v, want cron:bs-verify", got)
 	}
 }
 func TestPendingRedThenGreen(t *testing.T) {

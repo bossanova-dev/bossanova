@@ -8,6 +8,8 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/domain/rpcerr"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestRPCErrorBoundary(t *testing.T) {
@@ -38,5 +40,39 @@ func TestRPCErrorBoundary(t *testing.T) {
 	got := WrapError(context.DeadlineExceeded)
 	if !errors.Is(got, context.DeadlineExceeded) || rpcerr.KindOf(got) != rpcerr.Unknown {
 		t.Fatalf("plain error changed: %v", got)
+	}
+}
+
+// A CreateSessionConflict detail survives WrapError, including the
+// unauthenticated fmt.Errorf wrap mapClientErr applies, and reaches
+// rpcerr.Detail without the caller importing Connect.
+func TestRPCDetailsExposeCreateSessionConflict(t *testing.T) {
+	want := &pb.CreateSessionConflict{
+		Reason:    pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_ALREADY_SHIPPED,
+		TrackerId: "BOS-289",
+		PrNumber:  1146,
+		PrState:   "merged",
+	}
+	detail, err := connect.NewErrorDetail(want)
+	if err != nil {
+		t.Fatalf("NewErrorDetail: %v", err)
+	}
+	original := connect.NewError(connect.CodeAlreadyExists, errors.New("ticket BOS-289 already shipped via PR #1146 (merged)"))
+	original.AddDetail(detail)
+
+	for name, incoming := range map[string]error{
+		"bare":            original,
+		"unauthenticated": fmt.Errorf("daemon rejected this client: %w", original),
+	} {
+		got, ok := rpcerr.Detail[*pb.CreateSessionConflict](WrapError(incoming))
+		if !ok || !proto.Equal(got, want) {
+			t.Fatalf("%s: Detail = %v, %v; want %v, true", name, got, ok, want)
+		}
+	}
+	if _, ok := rpcerr.Detail[*pb.CreateSessionConflict](WrapError(connect.NewError(connect.CodeAlreadyExists, errors.New("no detail")))); ok {
+		t.Fatal("Connect error without a detail yielded one")
+	}
+	if _, ok := rpcerr.Detail[*pb.CreateSessionConflict](WrapError(errors.New("not connect"))); ok {
+		t.Fatal("non-Connect error yielded a detail")
 	}
 }

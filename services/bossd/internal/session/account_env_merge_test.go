@@ -282,7 +282,7 @@ func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 
 	// Interactive tmux call-site expression.
 	tmuxAccountEnv, _ := l.resolveAccountEnv(ctx, sess)
-	tmuxEnv := mergeSessionEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), tmuxAccountEnv, l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
+	tmuxEnv := mergeSessionEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName, nil), tmuxAccountEnv, l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
 	if tmuxEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Errorf("tmux: account token missing: %v", tmuxEnv)
 	}

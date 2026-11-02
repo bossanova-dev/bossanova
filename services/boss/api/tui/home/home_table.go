@@ -26,6 +26,10 @@ const homeTableBlockPadding = 1
 
 const homeStatusWidth = 16
 
+// homeStatusMaxWidth caps how far a verify park's confidence cell widens the
+// STATUS column; a longer cell ends in "…".
+const homeStatusMaxWidth = 32
+
 // tableAvailWidth returns the rendered columns the session table may occupy —
 // the terminal width less renderSessionTable's block padding on either side.
 // See fitAvailWidth (theme.go) for the unknown-width and padding-swamped cases.
@@ -63,8 +67,8 @@ func (h Model) RenderSessionStatus(sess *pb.Session) string {
 	}
 	// A finished row reads its PR's end ("✓ merged", "closed") like the rest of
 	// its struck-through cells.
-	if a := sess.GetAttention(); a != nil && a.GetKind() != pb.AttentionKind_ATTENTION_KIND_DONE && (a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess)) {
-		return h.renderAttentionStatus(a, sess.GetDisplayLabel() == ui.StatusWorking)
+	if showsAttentionStatus(sess) {
+		return h.renderAttentionStatus(sess, sess.GetDisplayLabel() == ui.StatusWorking)
 	}
 	if sess != nil && sess.GetDisplayLabel() == ui.StatusWorking {
 		if phase := h.DaemonPhases[sess.GetId()]; phase != "" {
@@ -87,7 +91,7 @@ func (h *Model) BuildTableRows() {
 	}
 	sessions := h.BoardSessions()
 	h.Filter.SetCounts(len(sessions), len(h.Sessions))
-	h.layout = &homeTableLayout{source: h.Sessions, query: h.Filter.Query(), sessions: sessions, sessionRows: make(map[string]int)}
+	h.layout = &homeTableLayout{source: h.Sessions, query: h.Filter.Query(), sessions: sessions, sessionRows: make(map[string]int), statusWidth: homeStatusColumnWidth(sessions)}
 	h.warningCells = nil
 	grouped, sectioned := h.hasAttentionBoard(), h.showsSections()
 	if len(sessions) == 0 {
@@ -131,7 +135,7 @@ func (h *Model) BuildTableRows() {
 	}
 	nameWidth := display.MaxColWidth("NAME", nameWidthLabels, 60) + ui.TableColumnSep
 	if grouped && h.tableAvailWidth() > 0 {
-		other := 1 + (display.MaxColWidth("REPO", repos, 20) + ui.TableColumnSep) + (display.MaxColWidth("PR", prLabels, 8) + ui.TableColumnSep) + (homeStatusWidth + ui.TableColumnSep) + 5
+		other := 1 + (display.MaxColWidth("REPO", repos, 20) + ui.TableColumnSep) + (display.MaxColWidth("PR", prLabels, 8) + ui.TableColumnSep) + (h.layout.statusWidth + ui.TableColumnSep) + 5
 		nameWidth = min(nameWidth, max(homeNameMinWidth(h.Width), h.tableAvailWidth()-other))
 	}
 	rcols := []ui.ResponsiveColumn{
@@ -139,7 +143,7 @@ func (h *Model) BuildTableRows() {
 		{Col: table.Column{Title: "REPO", Width: display.MaxColWidth("REPO", repos, 20) + ui.TableColumnSep}, Priority: 3, MinWidth: 6},
 		{Col: table.Column{Title: "NAME", Width: nameWidth}, Priority: 0, MinWidth: homeNameMinWidth(h.Width)},
 		{Col: table.Column{Title: "PR", Width: display.MaxColWidth("PR", prLabels, 8) + ui.TableColumnSep}, Priority: 2, MinWidth: 3},
-		{Col: table.Column{Title: "STATUS", Width: homeStatusWidth + ui.TableColumnSep}, Priority: 1, MinWidth: 8},
+		{Col: table.Column{Title: "STATUS", Width: h.layout.statusWidth + ui.TableColumnSep}, Priority: 1, MinWidth: 8},
 	}
 
 	fitted := ui.FitColumnsIndexed(rcols, h.tableAvailWidth())

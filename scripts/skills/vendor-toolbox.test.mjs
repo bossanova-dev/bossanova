@@ -674,6 +674,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'callback/boss.mjs',
       'callback/ci-watch.mjs',
       'callback/epic-target.mjs',
+      // ci/required-checks.mjs (BOS-2231) is imported by pr-check-state.mjs and skill-config.mjs.
+      'ci/required-checks.mjs',
       'epic/dag-scheduler.mjs',
       // epic-driver.mjs (BOS-1271) is the executable lifecycle authority the SKILL body calls by
       // path. An installed tree without it is a terminal guard that cannot RUN rather than one that
@@ -745,6 +747,10 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       assert.ok(
         files.includes('selection.mjs'),
         `${core} must vendor selection.mjs beside skill-config.mjs`,
+      )
+      assert.ok(
+        files.includes('ci/required-checks.mjs'),
+        `${core} must vendor the ci.required parser imported by skill-config.mjs`,
       )
     }
   }

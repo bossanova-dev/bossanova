@@ -40,7 +40,14 @@
 // terminal verify status, and any pending one the read cannot confirm, still counts. A prior-head
 // `boss/verify` status judged that head and is never a gate the new head must restore.
 //
-// Project-agnostic: only `gh` and Node builtins.
+// A repo's `.boss-skills.json` `ci.required` (read once per `run`, for the PR's base) names checks
+// that must have RUN on the head. A head with a workflow run but missing one ends the wait
+// `unknown`/`not-requested` once that head's consecutive reads have agreed for
+// NOT_REQUESTED_SETTLE_MS, and never settles green on the light checks that did run; the missing
+// names are in `notRequested`. A head with no workflow run yet keeps waiting. With nothing required
+// the wait is exactly as before.
+//
+// Project-agnostic: only `gh`, Node builtins and sibling toolbox modules.
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -66,6 +73,8 @@ import {
   classifyChecks,
 } from './pr-check-state.mjs'
 import { VERIFY_CONTEXT, claimState } from './verify/verify-vocabulary.mjs'
+import { requiredChecksFor } from './ci/required-checks.mjs'
+import { loadSkillConfig } from './skill-config.mjs'
 
 export const CEILING_MS = 570000
 export const DEFAULTS = Object.freeze({
@@ -77,6 +86,9 @@ export const DEFAULTS = Object.freeze({
 })
 export const TREND_WINDOW_MS = 10 * 60 * 1000
 export const INTERRUPTION_LIMIT = 3
+// How long a head must keep reading not-requested before the wait ends on it: well past the lag
+// between a push and Actions creating that head's workflow runs.
+export const NOT_REQUESTED_SETTLE_MS = 3 * 60 * 1000
 // Delays shorter than this cannot be told apart from an inert timer, so none is ever requested.
 export const MIN_DELAY_MS = 1000
 // A read is only started when at least this much chunk time remains for it.
@@ -272,7 +284,7 @@ function verifyHoldOf(read, headSha, now) {
 //
 // A pending `boss/verify` node adds the statuses read (see the header); with too little time left
 // for it the node stays, so the reading stays pending and the next read retries.
-async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, now }) {
+async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, ciRequired, now }) {
   const timeoutFor = () => Math.min(readTimeoutMs, deadline - now())
   const noHold = { verifyHold: null, excludedContexts: [], verifyStatus: null }
   const view = await read({ what: 'view', pr, timeoutMs: timeoutFor() })
@@ -309,6 +321,7 @@ async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, n
       buckets: withoutHold(buckets),
       priorContexts: dropContext(priorContexts, VERIFY_CONTEXT),
       workflowRuns,
+      requiredChecks: requiredChecksFor(ciRequired, view.payload?.baseRefName ?? ''),
     })
   let verdict = classify(null)
   if (verdict.reason === CHECK_REASONS.UNCLASSIFIED && timeoutFor() >= READ_FLOOR_MS) {
@@ -317,7 +330,9 @@ async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, n
   }
   if (
     runsError !== null &&
-    (verdict.state === CHECK_STATES.GREEN || verdict.reason === CHECK_REASONS.ABSENT_GATE)
+    (verdict.state === CHECK_STATES.GREEN ||
+      verdict.reason === CHECK_REASONS.ABSENT_GATE ||
+      verdict.reason === CHECK_REASONS.NOT_REQUESTED)
   ) {
     verdict = classifyChecks({
       headSHA: headSha,
@@ -344,6 +359,7 @@ function recordReading(record, reading) {
     absent: v.absent ?? [],
     notTriggered: v.notTriggered ?? [],
     pendingRuns: v.pendingRuns ?? [],
+    notRequested: v.notRequested ?? [],
     absentGateRemedy: absentGateRemedy(v),
     verifyHold: reading.verifyHold ?? null,
     excludedContexts: reading.excludedContexts ?? [],
@@ -379,6 +395,25 @@ function confirmsGreen(record) {
     Number.isFinite(last.total) &&
     prev.total <= last.total
   )
+}
+
+// confirmsNotRequested: a missing required run only ends the wait once the head's consecutive
+// not-requested readings span NOT_REQUESTED_SETTLE_MS. Any head run (a push-event run, a third-party
+// app's run) can make the classifier read CI as started while Actions is still creating the run
+// that carries the required check, so two reads one interval apart are no proof it never will.
+function confirmsNotRequested(record) {
+  const n = record.readings.length
+  const last = record.readings[n - 1]
+  if (last?.reason !== CHECK_REASONS.NOT_REQUESTED) return false
+  let first = n - 1
+  while (
+    first > 0 &&
+    record.readings[first - 1].reason === CHECK_REASONS.NOT_REQUESTED &&
+    record.readings[first - 1].headSha === last.headSha
+  ) {
+    first -= 1
+  }
+  return first < n - 1 && last.atMs - record.readings[first].atMs >= NOT_REQUESTED_SETTLE_MS
 }
 
 function totalBudget(record) {
@@ -421,6 +456,7 @@ export async function runChunk({ state, read, sleep, now, options }) {
       readTimeoutMs: opts.readTimeoutMs,
       deadline,
       priorContexts: opts.priorContexts ?? null,
+      ciRequired: opts.ciRequired ?? null,
       now,
     })
 
@@ -513,6 +549,7 @@ export async function runChunk({ state, read, sleep, now, options }) {
       absent: record.lastDetail?.absent ?? [],
       notTriggered: record.lastDetail?.notTriggered ?? [],
       pendingRuns: record.lastDetail?.pendingRuns ?? [],
+      notRequested: record.lastDetail?.notRequested ?? [],
       absentGateRemedy: record.lastDetail?.absentGateRemedy ?? 'none',
       verifyHold: record.lastDetail?.verifyHold ?? null,
       excludedContexts: record.lastDetail?.excludedContexts ?? [],
@@ -561,7 +598,9 @@ export async function runChunk({ state, read, sleep, now, options }) {
     const decision = mapVerdict(reading.verdict)
     // A green read settles only once a second read of the same head confirms it; until then it is
     // one more interval of waiting like any pending read.
-    const unconfirmed = decision.state === WAIT_STATES.SETTLED && !confirmsGreen(record)
+    const unconfirmed =
+      (decision.state === WAIT_STATES.SETTLED && !confirmsGreen(record)) ||
+      (decision.reason === CHECK_REASONS.NOT_REQUESTED && !confirmsNotRequested(record))
     if (!decision.wait && !unconfirmed) return close(decision.state, decision.reason)
 
     let elapsed = now() - record.startedAtMs
@@ -694,7 +733,8 @@ export function fileStore({ dir, pr }) {
 const RUN_LIST_FIELDS = 'name,workflowName,status,conclusion,headSha,event'
 
 function ghArgs({ what, pr, headSha }) {
-  if (what === 'view') return ['pr', 'view', String(pr), '--json', 'headRefOid,statusCheckRollup']
+  if (what === 'view')
+    return ['pr', 'view', String(pr), '--json', 'headRefOid,statusCheckRollup,baseRefName']
   if (what === 'verify-status') return statusReadArgs({ sha: headSha, repo: '' })
   if (what === 'runs') {
     return [
@@ -884,20 +924,35 @@ function readPrior(file) {
   }
 }
 
+// The repo's `ci.required` block, read once per `run`. A config that does not load requires
+// nothing (the wait behaves as before) and says so; the skill-config validator rejects a malformed
+// block before it lands.
+function readCiRequired(load) {
+  try {
+    const block = load()?.ci?.required ?? null
+    requiredChecksFor(block)
+    return { block, messages: [] }
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error)
+    return { block: null, messages: [`ci-wait: ci.required not applied: ${why}`] }
+  }
+}
+
 export async function main(argv, deps = {}) {
   const [cmd, ...rest] = argv
   const now = deps.now ?? Date.now
   if (cmd === 'run') {
     const options = parseRunOptions(rest)
     const priorContexts = readPrior(options.prior)
+    const config = readCiRequired(deps.loadConfig ?? loadSkillConfig)
     const { verdict, messages } = await runChunk({
       state: deps.store ?? fileStore({ dir: options.stateDir, pr: options.pr }),
       read: deps.read ?? ghReader(),
       sleep: deps.sleep ?? realSleep,
       now,
-      options: { ...options, priorContexts },
+      options: { ...options, priorContexts, ciRequired: config.block },
     })
-    return { verdict, messages }
+    return { verdict, messages: [...config.messages, ...messages] }
   }
   if (cmd === 'status') {
     const flags = parseFlags(rest)

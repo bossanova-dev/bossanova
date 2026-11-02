@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func TestCleanupFailedCreateSessionDoesNotTrashBranchWithoutWorktree(t *testing.T) {
@@ -263,7 +264,8 @@ func sameStrings(got, want []string) bool {
 }
 
 type cleanupRepoStore struct {
-	repos map[string]*models.Repo
+	repos   map[string]*models.Repo
+	deleted []string
 }
 
 func (s *cleanupRepoStore) Create(context.Context, db.CreateRepoParams) (*models.Repo, error) {
@@ -284,21 +286,30 @@ func (s *cleanupRepoStore) List(context.Context) ([]*models.Repo, error) {
 func (s *cleanupRepoStore) Update(context.Context, string, db.UpdateRepoParams) (*models.Repo, error) {
 	panic("not used")
 }
-func (s *cleanupRepoStore) Delete(context.Context, string) error {
-	panic("not used")
+func (s *cleanupRepoStore) Delete(_ context.Context, id string) error {
+	s.deleted = append(s.deleted, id)
+	return nil
 }
 
 type cleanupSessionStore struct {
-	sessions map[string]*models.Session
-	deleted  map[string]bool
-	listErr  error
+	sessions    map[string]*models.Session
+	deleted     map[string]bool
+	deleteCalls int
+	listErr     error
+	// archiveDeletes makes MarkArchived drop the row instead, standing in for
+	// an archive that hard-deletes the session itself (zero-output finalize).
+	archiveDeletes bool
 }
 
 func (s *cleanupSessionStore) Create(context.Context, db.CreateSessionParams) (*models.Session, error) {
 	panic("not used")
 }
 func (s *cleanupSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
-	return s.sessions[id], nil
+	sess, ok := s.sessions[id]
+	if !ok || s.deleted[id] {
+		return nil, domain.ErrNotFound
+	}
+	return sess, nil
 }
 func (s *cleanupSessionStore) List(_ context.Context, repoID string) ([]*models.Session, error) {
 	if s.listErr != nil {
@@ -363,8 +374,16 @@ func (s *cleanupSessionStore) UpdateStateConditional(context.Context, string, in
 func (s *cleanupSessionStore) SetTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
 	panic("not used")
 }
-func (s *cleanupSessionStore) MarkArchived(context.Context, string) error {
-	panic("not used")
+func (s *cleanupSessionStore) MarkArchived(_ context.Context, id string) error {
+	sess, ok := s.sessions[id]
+	if !ok || s.deleted[id] || sess.ArchivedAt != nil {
+		return domain.ErrNotFound
+	}
+	if s.archiveDeletes {
+		return s.Delete(context.Background(), id)
+	}
+	sess.ArchivedAt = cleanupPtr(time.Now())
+	return nil
 }
 func (s *cleanupSessionStore) SetResurrectedState(context.Context, string, int) (bool, error) {
 	panic("not used")
@@ -373,6 +392,7 @@ func (s *cleanupSessionStore) SetFailedResurrectRolledBack(context.Context, stri
 	panic("not used")
 }
 func (s *cleanupSessionStore) Delete(_ context.Context, id string) error {
+	s.deleteCalls++
 	if s.deleted == nil {
 		s.deleted = map[string]bool{}
 	}
@@ -405,6 +425,10 @@ type cleanupWorktreeManager struct {
 	// purgeErr stands in for a purge that never ran (a contended clone), the one
 	// case the real manager reports back.
 	purgeErr error
+
+	archived []string
+	// archiveErr fails Archive for the worktree path it is keyed by.
+	archiveErr map[string]error
 }
 
 func (m *cleanupWorktreeManager) Create(context.Context, gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -413,8 +437,12 @@ func (m *cleanupWorktreeManager) Create(context.Context, gitpkg.CreateOpts) (*gi
 func (m *cleanupWorktreeManager) CreateFromExistingBranch(context.Context, gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
 	panic("not used")
 }
-func (m *cleanupWorktreeManager) Archive(context.Context, string, string, string) error {
-	panic("not used")
+func (m *cleanupWorktreeManager) Archive(_ context.Context, _, _, worktreePath string) error {
+	if err := m.archiveErr[worktreePath]; err != nil {
+		return err
+	}
+	m.archived = append(m.archived, worktreePath)
+	return nil
 }
 func (m *cleanupWorktreeManager) Resurrect(context.Context, gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error) {
 	panic("not used")

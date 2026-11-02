@@ -227,3 +227,25 @@ func TestRestoredDisplayInfo_ParkStateDoesNotChangeReasonAndLabel_Sessions_AC147
 		})
 	}
 }
+
+func TestRestoredDisplayInfo_VerifyingKeepsItsWaitReason(t *testing.T) {
+	tests := []struct {
+		description string
+		want        string
+	}{
+		{description: "waiting: merge-state-unknown", want: "merge-state-unknown"},
+		{description: "verifying… tok", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			raw, err := json.Marshal([]vcs.CheckResult{{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: tt.description}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, ok := restoredDisplayInfo(db.CheckSnapshot{ComputedStatus: int(vcs.DisplayStatusVerifying), RawJSON: string(raw)}, "")
+			if !ok || info.Status != vcs.DisplayStatusVerifying || info.VerifyReason != tt.want {
+				t.Fatalf("restored = %+v, ok = %v, want VERIFYING with reason %q", info, ok, tt.want)
+			}
+		})
+	}
+}

@@ -64,6 +64,7 @@ go_library(
 go_test(
     name = "tui_test",
     srcs = [
+        "accounts_sync_routing_test.go",
         "actionbar_table_height_test.go",
         "app_chrome_test.go",
         "app_ctrl_x_test.go",

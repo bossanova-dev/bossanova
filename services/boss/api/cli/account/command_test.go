@@ -30,11 +30,11 @@ func TestNewKeepsClientFactoriesIndependent(t *testing.T) {
 			t.Fatalf("factory received %q", cmd.Name())
 		}
 		return listCommandClient{stub: first}, nil
-	}, nil, nil)
+	}, nil, nil, nil)
 	secondCmd := New(func(cmd *cobra.Command) (Client, error) {
 		secondCalls++
 		return listCommandClient{stub: second}, nil
-	}, nil, nil)
+	}, nil, nil, nil)
 	firstCmd.SetOut(&firstOutput)
 	secondCmd.SetOut(&secondOutput)
 	firstCmd.SetArgs([]string{"ls", "--json", "--provider", "claude", "--refresh"})

@@ -59,6 +59,7 @@ type Trigger struct {
 	jobs     jobStore
 	checks   checksReader
 	proof    cron.GateProofEnvResolver
+	ghUsage  *ghusage.Shim
 	logger   zerolog.Logger
 	mu       sync.Mutex
 	active   map[prKey]*pending
@@ -86,6 +87,14 @@ func New(repos repoStore, jobs jobStore, checks checksReader, proof cron.GatePro
 				return false
 			}
 		}}
+}
+
+// WithGHUsage meters the gate's gh calls into the usage ledger under the
+// verify cron's own label. Call before the trigger handles events; nil leaves
+// gates unmetered.
+func (t *Trigger) WithGHUsage(gh *ghusage.Shim) *Trigger {
+	t.ghUsage = gh
+	return t
 }
 
 func classify(ev *pb.WebhookEvent) string {
@@ -304,9 +313,9 @@ func (t *Trigger) execute(ctx context.Context, key prKey, class string, generati
 		return
 	}
 	var output tailWriter
-	opts := cron.GateOptions(repo, job, t.proof, false, nil)
+	opts := cron.GateOptions(repo, job, t.proof, false, nil, t.ghUsage)
 	opts.Output = &output
-	opts.ExtraEnv = map[string]string{"BOSS_VERIFY_EVENT_PR_URL": fmt.Sprintf("https://github.com/%s/pull/%d", nwo, key.number)}
+	opts.ExtraEnv["BOSS_VERIFY_EVENT_PR_URL"] = fmt.Sprintf("https://github.com/%s/pull/%d", nwo, key.number)
 	result := t.run(ctx, opts)
 	event := t.logger.Info()
 	if result.CouldNotRun() {

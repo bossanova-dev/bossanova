@@ -36,7 +36,13 @@ type prFake struct {
 
 func (f *prFake) ListSessions(_ context.Context, req *pb.ListSessionsRequest, _ rpc.SessionReadOptions) ([]*pb.Session, error) {
 	f.log = append(f.log, "list")
-	return f.sessions, f.listErr
+	var sessions []*pb.Session
+	for _, s := range f.sessions {
+		if s.GetArchivedAt() == nil || req.GetIncludeArchived() {
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions, f.listErr
 }
 
 // prVerbCall is one daemon verify verb request.
@@ -284,7 +290,7 @@ func TestPrCmdIsRegistered(t *testing.T) {
 	if c, _, err := root.Find([]string{"pr", "send-back"}); err == nil && c.Name() == "send-back" {
 		t.Fatal("boss pr send-back is still registered; the operator removed send-back")
 	}
-	for _, path := range [][]string{{"pr", "approve"}} {
+	for _, path := range [][]string{{"pr", "approve"}, {"pr", "follow-up"}} {
 		c, _, err := root.Find(path)
 		if err != nil || c.Name() != path[1] {
 			t.Fatalf("boss %s not registered: %v", strings.Join(path, " "), err)

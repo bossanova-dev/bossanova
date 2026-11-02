@@ -4,6 +4,7 @@ import { DOC_FILES } from '../guards/check-doc-make-targets.mjs'
 import { rootMakefileSources } from '../dev/root-makefile-lib.mjs'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { generatedConsumerTargets, resolveGeneratedConsumers } from './generated-consumers.mjs'
 
 export const moduleRules = [
   { root: 'lib/bossalib/', target: 'test-bossalib' },
@@ -21,8 +22,6 @@ export const moduleRules = [
   { root: 'plugins/bossd-plugin-sentry/', target: 'test-sentry' },
   { root: 'plugins/bossd-plugin-stub-runner/', target: 'test-stub-runner' },
 ]
-
-const protoTargets = ['test-bossalib', 'test-boss', 'test-bossd', 'test-bosso-postgres']
 
 // BOS-370: Go-bazel-target selection for the PR fast tier (bazel.yml go-test).
 // This is a SEPARATE map from the make `moduleRules` above: it maps a changed
@@ -400,7 +399,9 @@ export function selectLedgerModules(files) {
   return { all: false, modules: [...modules].sort() }
 }
 
-export function selectTargets(files) {
+// BOS-2298: `generatedConsumers` resolves generated bossalib inputs to consumer test packages;
+// tests inject a fake graph, everything else reads the live one.
+export function selectTargets(files, { generatedConsumers = resolveGeneratedConsumers } = {}) {
   const selections = new Map()
   let selectedPrimaryTarget = false
   let selectedExternalInputTarget = false
@@ -448,10 +449,8 @@ export function selectTargets(files) {
       selectedPrimaryTarget = true
     }
 
+    // Go consumers come from generatedConsumerTargets below, after the whole diff is seen.
     if (file.startsWith('proto/') && file.endsWith('.proto')) {
-      for (const target of protoTargets) {
-        selectWholeTarget(selections, target)
-      }
       selectedPrimaryTarget = true
       continue
     }
@@ -759,6 +758,14 @@ export function selectTargets(files) {
       selectedPrimaryTarget = true
     }
   }
+
+  const generated = generatedConsumerTargets(
+    files.map(normalizePath),
+    moduleRules,
+    generatedConsumers,
+  )
+  for (const target of generated.whole) selectWholeTarget(selections, target)
+  for (const [target, dir] of generated.packages) selectPackageTarget(selections, target, dir)
 
   if (selections.size === 0) {
     selectWholeTarget(selections, 'test-smoke')

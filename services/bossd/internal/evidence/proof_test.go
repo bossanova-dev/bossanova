@@ -99,3 +99,20 @@ func TestParseProofBoundsEscapingAndLastValid(t *testing.T) {
 		t.Fatalf("last wins: %+v %v", got, ok)
 	}
 }
+
+func TestParseProofLoweredBy(t *testing.T) {
+	for _, tc := range []struct {
+		value any
+		want  []string
+	}{
+		{[]any{"Needs migration review", 3, "Missing production access"}, []string{"Needs migration review", "Missing production access"}},
+		{"malformed", nil}, {nil, nil},
+	} {
+		p := proofPayload()
+		p["loweredBy"] = tc.value
+		got, ok := evidence.ParseProof(proofComment(t, p))
+		if !ok || !reflect.DeepEqual(got.LoweredBy, tc.want) {
+			t.Fatalf("ParseProof = %+v, %v", got, ok)
+		}
+	}
+}

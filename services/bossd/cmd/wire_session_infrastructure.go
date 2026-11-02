@@ -24,6 +24,8 @@ import (
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/session/checkpolicy"
+	"github.com/recurser/bossd/internal/verifyjob"
 )
 
 func (w *daemonWiring) wireSessionInfrastructure() error {
@@ -49,9 +51,25 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 		tmux.WithSendReadyDeadline(w.settings.TmuxDelivery.SendReadyDeadline()),
 	)
 	// Every GitHub call the provider sends is metered into the shared usage
-	// ledger, which gate and session processes append to as well.
+	// ledger, which gate and session processes append to as well. Background
+	// reads stop at the cron quota floors, so the crons and the daemon's own
+	// loops leave the same reserve for verify and finalize.
 	w.ghUsage = ghusage.New(ghusage.Dir(w.appDataDir), log.Logger)
-	w.ghProvider = github.New(log.Logger, github.WithUsageRecorder(w.ghUsage))
+	w.ghProvider = github.New(log.Logger,
+		github.WithUsageRecorder(w.ghUsage),
+		github.WithBackgroundQuotaFloors(verifyjob.StandardQuotaFloor, verifyjob.ReserveQuotaFloor),
+	)
+	// The gh wrapper meters the calls bossd does not make itself: cron gates
+	// and the agent sessions it spawns put it first on PATH. Best-effort — a
+	// wrapper that cannot be written leaves gh unmetered, never broken.
+	shim, shimErr := ghusage.InstallShim(ghusage.Dir(w.appDataDir), os.Getenv("PATH"))
+	switch {
+	case shimErr != nil:
+		log.Warn().Err(shimErr).Msg("github usage: gh wrapper not installed; gate and session gh calls are not metered")
+	case shim == nil:
+		log.Warn().Msg("github usage: gh not found on PATH; gate and session gh calls are not metered")
+	}
+	w.ghUsageShim = shim
 	// publishStoreSessionUpdate emits the update event for a session a daemon
 	// pass wrote directly through the store. The PR-association reconcile
 	// (rename to the PR title) and the tracker linker (tracker_id/tracker_url)
@@ -91,6 +109,10 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 	// poller's next cycle.
 	w.dispatcher.SetDisplayStatusSetter(w.displayTracker)
 	w.poller = session.NewPoller(w.sessions, w.repos, w.ghProvider, session.DefaultPollInterval, session.DefaultPollTimeout, log.Logger)
+	// Every green reader (state poller, callbacks, display, merge gate) holds a
+	// head whose .boss-skills.json ci.required checks have not run (BOS-2231).
+	w.checkPolicy = checkpolicy.New(w.repos, log.Logger)
+	w.poller.SetRequiredChecks(w.checkPolicy)
 	// Both evaluate the FixingChecks release against the live repair lease
 	// (BOS-2162); wireStores created w.repairLease before this runs.
 	w.dispatcher.SetRepairActivity(w.repairLease)
@@ -105,6 +127,7 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 	// reconcile safety net.
 	w.callbackEvaluator = callback.NewEvaluator(w.githubCallbacks, w.ghProvider, time.Now, log.Logger)
 	w.callbackEvaluator.SetRetirer(w.callbackRetirer)
+	w.callbackEvaluator.SetRequiredChecks(w.checkPolicy)
 
 	// --- Settings + Display Poller ---
 
@@ -155,6 +178,7 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 	// store is shared with the gRPC server below so reads and writes hit
 	// one instance.
 	w.displayPoller.SetSnapshotStore(w.checkSnapshots)
+	w.displayPoller.SetRequiredChecks(w.checkPolicy)
 	// Carry the boss/build receipt forward when a session's own worktree
 	// pushes on top of a receipted head (BOS-1452).
 	w.displayPoller.SetReceiptCarrier(w.ghProvider, w.worktrees)

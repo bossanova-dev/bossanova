@@ -78,6 +78,7 @@ func (w *daemonWiring) wireTaskWorkers() {
 		GateProofEnv: proofenvkeyring.New(log.Logger),
 		// Scheduled fires leave the daemon token's GitHub quota floor for verify.
 		Quota:     w.ghProvider,
+		GHUsage:   w.ghUsageShim,
 		Logger:    log.Logger,
 		Telemetry: w.telemetryClient,
 	})

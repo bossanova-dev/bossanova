@@ -41,12 +41,14 @@ func TestHomeProgressLabelSetsFitColumn(t *testing.T) {
 	labels := append(attention.VerifyHoldLabels(), attention.WaitLabels()...)
 	labels = append(labels, attention.VerifyUnknownLabel)
 	labels = append(labels, attention.CallbackWaitLabels()...)
+	labels = append(labels, attention.VerifyWaitLabels()...)
+	labels = append(labels, attention.VerifyingLabel)
 	for _, label := range labels {
 		t.Run(label, func(t *testing.T) {
 			cell := h.renderProgressStatus(label)
 			assertHomeStatusFits(t, cell)
 			want := label
-			if attention.IsWaitLabel(label) {
+			if attention.IsWaitLabel(label) || label == attention.VerifyingLabel {
 				want = ansi.Strip(h.Spinner.View()) + label
 			}
 			if got := ansi.Strip(cell); got != want {
@@ -70,7 +72,7 @@ func assertHomeStatusFits(t *testing.T, cell string) {
 func TestHomeReviewStatusFitsWithoutSpinner_Sessions_AC216001(t *testing.T) {
 	h := NewModel(nil, context.Background(), nil)
 	for _, working := range []bool{false, true} {
-		cell := h.renderAttentionStatus(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW}, working)
+		cell := h.renderAttentionStatus(&pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW}}, working)
 		assertHomeStatusFits(t, cell)
 		if got := ansi.Strip(cell); got != "waiting for you" {
 			t.Errorf("working=%v: got %q", working, got)

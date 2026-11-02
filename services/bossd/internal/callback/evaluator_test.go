@@ -230,7 +230,7 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ChecksPassedReady: %v", err)
 			}
-			wantReady := satisfiedTriggers(tc.status, tc.checks, true)[models.GitHubCallbackTriggerChecksPassedReady]
+			wantReady := satisfiedTriggers(tc.status, tc.checks, nil, true)[models.GitHubCallbackTriggerChecksPassedReady]
 			if ready != wantReady || head != tc.status.HeadSHA {
 				t.Fatalf("ChecksPassedReady = (%q, %v), want (%q, %v)", head, ready, tc.status.HeadSHA, wantReady)
 			}
@@ -582,21 +582,21 @@ func TestSatisfiedTriggers_RunsSettledGatesChecksPassed(t *testing.T) {
 	red := []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionFailure)}
 	open := prStatusDraft(vcs.PRStateOpen, false)
 
-	held := satisfiedTriggers(open, green, false)
+	held := satisfiedTriggers(open, green, nil, false)
 	if held[models.GitHubCallbackTriggerChecksPassed] || held[models.GitHubCallbackTriggerChecksPassedReady] {
 		t.Errorf("unsettled runs: checks_passed pair satisfied = %v, want neither", held)
 	}
 	if !held[models.GitHubCallbackTriggerReadyForReview] {
 		t.Errorf("unsettled runs: ready_for_review must still be satisfied")
 	}
-	settled := satisfiedTriggers(open, green, true)
+	settled := satisfiedTriggers(open, green, nil, true)
 	if !settled[models.GitHubCallbackTriggerChecksPassed] || !settled[models.GitHubCallbackTriggerChecksPassedReady] {
 		t.Errorf("settled runs: checks_passed pair = %v, want both", settled)
 	}
-	if !satisfiedTriggers(open, red, false)[models.GitHubCallbackTriggerChecksFailed] {
+	if !satisfiedTriggers(open, red, nil, false)[models.GitHubCallbackTriggerChecksFailed] {
 		t.Errorf("unsettled runs: checks_failed must still be satisfied by a completed failure")
 	}
-	if !satisfiedTriggers(prStatus(vcs.PRStateMerged), green, false)[models.GitHubCallbackTriggerMerged] {
+	if !satisfiedTriggers(prStatus(vcs.PRStateMerged), green, nil, false)[models.GitHubCallbackTriggerMerged] {
 		t.Errorf("unsettled runs: merged must still be satisfied")
 	}
 }
@@ -614,7 +614,7 @@ func TestSatisfiedTriggers_PendingVerifyDoesNotHoldOrdinaryCI(t *testing.T) {
 				completedCheck("build", vcs.CheckConclusionSuccess),
 				{ID: "/" + vcs.VerifyStatusContext, Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: desc},
 			}
-			got := satisfiedTriggers(open, checks, true)
+			got := satisfiedTriggers(open, checks, nil, true)
 			if !got[models.GitHubCallbackTriggerChecksPassed] || !got[models.GitHubCallbackTriggerChecksPassedReady] {
 				t.Errorf("checks_passed pair = %v, want both satisfied beside a pending boss/verify", got)
 			}
@@ -628,7 +628,7 @@ func TestSatisfiedTriggers_PendingVerifyDoesNotHoldOrdinaryCI(t *testing.T) {
 			completedCheck("build", vcs.CheckConclusionSuccess),
 			{ID: "/" + vcs.VerifyStatusContext, Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: conclusion(vcs.CheckConclusionFailure), Description: "defect: tests red"},
 		}
-		got := satisfiedTriggers(open, checks, true)
+		got := satisfiedTriggers(open, checks, nil, true)
 		if !got[models.GitHubCallbackTriggerChecksFailed] {
 			t.Errorf("checks_failed = false, want a completed boss/verify failure to satisfy it")
 		}

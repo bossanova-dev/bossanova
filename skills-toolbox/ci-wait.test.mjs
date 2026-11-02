@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import {
   CEILING_MS,
   DEFAULTS,
+  NOT_REQUESTED_SETTLE_MS,
   TRENDS,
   TREND_WINDOW_MS,
   UsageError,
@@ -24,7 +25,7 @@ import {
   statusOf,
   trendOf,
 } from './ci-wait.mjs'
-import { classifyChecks } from './pr-check-state.mjs'
+import { CHECK_REASONS, classifyChecks } from './pr-check-state.mjs'
 import { CLAIM_STALE_AFTER_MS } from './verify/verify-vocabulary.mjs'
 
 const HELPER = fileURLToPath(new URL('./ci-wait.mjs', import.meta.url))
@@ -880,6 +881,7 @@ test('main: run persists to the state dir and status reads it back as a latch', 
       read: h.read,
       sleep: h.sleep,
       now: h.now,
+      loadConfig: () => ({}),
     })
     assert.equal(out.verdict.state, WAIT_STATES.SETTLED)
     assert.equal(out.verdict.stateFile, path.join(dir, `pr4-${HEAD_A}.json`))
@@ -1098,4 +1100,113 @@ test('ghReader: the verify-status read lists the head commit statuses and needs 
     false,
   )
   assert.equal(seen.length, 0, 'a missing or malformed head never reaches gh')
+})
+
+// ---------------------------------------------------------------------------
+// ci.required: a head missing a required run ends the wait instead of settling on light checks.
+
+const REQUIRED = { checks: ['go-test'], exemptBases: ['staging'] }
+const startedRuns = () => ({ ok: true, payload: [headRun('Bazel', 'completed', 'success')] })
+const baseView = (headSha, nodes, baseRefName = 'main') => {
+  const v = view(headSha, nodes)
+  v.payload.baseRefName = baseRefName
+  return v
+}
+
+test('ci.required: a light-only green head ends unknown/not-requested once it held for the settle window', async () => {
+  const h = harness({
+    script: () => baseView(HEAD_A, [passing('lint'), skipped('go-test')]),
+    runs: startedRuns,
+  })
+  const { verdict } = await run(h, memStore(), { ciRequired: REQUIRED })
+  assert.equal(verdict.state, WAIT_STATES.UNKNOWN)
+  assert.equal(verdict.reason, CHECK_REASONS.NOT_REQUESTED)
+  assert.deepEqual(verdict.notRequested, ['go-test'])
+  const span = h.calls.at(-1).atMs - h.calls[0].atMs
+  assert.ok(span >= NOT_REQUESTED_SETTLE_MS, `ended after ${span}ms of not-requested reads`)
+  assert.ok(span < NOT_REQUESTED_SETTLE_MS + DEFAULTS.intervalMs, 'ends at the first read past it')
+})
+
+test('ci.required: a required run Actions creates after an early head run settles the wait', async () => {
+  // A push-event run completes first; the pull_request run carrying go-test appears two minutes
+  // later, longer than two read intervals but inside the settle window.
+  const lagMs = 2 * 60 * 1000
+  const h = harness({
+    script: () => {
+      const late = h.now() - T0 >= lagMs
+      return baseView(HEAD_A, late ? [passing('lint'), passing('go-test')] : [passing('lint')])
+    },
+    runs: startedRuns,
+  })
+  const { verdict } = await run(h, memStore(), { ciRequired: REQUIRED })
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.deepEqual(verdict.notRequested, [])
+})
+
+test('ci.required: a head with no workflow run yet keeps waiting, never settles on light checks', async () => {
+  const h = harness({ script: () => baseView(HEAD_A, [passing('lint')]) })
+  const { verdict } = await run(h, memStore(), { ciRequired: REQUIRED })
+  assert.notEqual(verdict.state, WAIT_STATES.SETTLED)
+  assert.notEqual(verdict.reason, CHECK_REASONS.NOT_REQUESTED)
+})
+
+test('ci.required: the wait settles once the required check has run', async () => {
+  const h = harness({ script: () => baseView(HEAD_A, [passing('lint'), passing('go-test')]) })
+  const { verdict } = await run(h, memStore(), { ciRequired: REQUIRED })
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.deepEqual(verdict.notRequested, [])
+})
+
+test('ci.required: a pending head workflow run keeps the wait pending', async () => {
+  const h = harness({
+    script: (_req, i) =>
+      baseView(HEAD_A, i < 2 ? [passing('lint')] : [passing('lint'), passing('go-test')]),
+    runs: (_req, i) => ({
+      ok: true,
+      payload:
+        i < 2 ? [{ name: 'Bazel', status: 'in_progress', conclusion: '', headSha: HEAD_A }] : [],
+    }),
+  })
+  const { verdict } = await run(h, memStore(), { ciRequired: REQUIRED })
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+})
+
+test('ci.required: an exempt base or no requirement behaves exactly as before', async () => {
+  for (const options of [{ ciRequired: REQUIRED }, {}]) {
+    const base = options.ciRequired ? 'staging' : 'main'
+    const h = harness({ script: () => baseView(HEAD_A, [passing('lint')], base) })
+    const { verdict } = await run(h, memStore(), options)
+    assert.equal(verdict.state, WAIT_STATES.SETTLED, JSON.stringify(options))
+  }
+})
+
+test('main: run reads ci.required once from the skill config', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'ci-wait-required-'))
+  try {
+    let loads = 0
+    const h = harness({ script: () => baseView(HEAD_A, [passing('lint')]), runs: startedRuns })
+    const out = await main(['run', '--pr', '4', '--state-dir', dir], {
+      read: h.read,
+      sleep: h.sleep,
+      now: h.now,
+      loadConfig: () => {
+        loads += 1
+        return { ci: { required: REQUIRED } }
+      },
+    })
+    assert.equal(loads, 1)
+    assert.equal(out.verdict.reason, CHECK_REASONS.NOT_REQUESTED)
+    const broken = await main(['run', '--pr', '5', '--state-dir', dir], {
+      read: harness({ script: () => baseView(HEAD_B, [passing('lint')]) }).read,
+      sleep: h.sleep,
+      now: h.now,
+      loadConfig: () => {
+        throw new Error('skill-config: invalid')
+      },
+    })
+    assert.equal(broken.verdict.state, WAIT_STATES.SETTLED)
+    assert.match(broken.messages[0], /ci\.required not applied/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
 })

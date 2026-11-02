@@ -48,3 +48,6 @@ func (m AgentAccountRegisterModel) BeginReauth(id string) (AgentAccountRegisterM
 func (m AgentAccountsListModel) ConfirmActive() bool                   { return m.confirm.Active }
 func (m *AgentAccountRegisterModel) SetReauthAgentAccountID(id string) { m.reauthAccountID = id }
 func (m *AgentAccountRegisterModel) SetPrompter(p *TUIPrompter)        { m.prompter = p }
+
+func (m AgentAccountsListModel) HasSyncedRegistry() bool { return m.sync.client != nil }
+func (m AgentAccountEditModel) HasSyncedRegistry() bool  { return m.sync.client != nil }

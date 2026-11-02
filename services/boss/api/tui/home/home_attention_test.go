@@ -158,7 +158,7 @@ func TestHomeAttentionOrderingAndSections(t *testing.T) {
 	for _, s := range got {
 		ids = append(ids, s.Id)
 	}
-	want := []string{"attention-2", "attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9"}
+	want := []string{"attention-2", "attention-10", "attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9"}
 	if !reflect.DeepEqual(ids, want) {
 		t.Fatalf("order=%v, want %v", ids, want)
 	}
@@ -219,12 +219,12 @@ func TestHomeAttentionFooterAndCursor(t *testing.T) {
 	h.Table.SetCursor(row)
 	h.BuildTableRows()
 	left, _, _ = h.SessionTableFooterActions()
-	if want := []string{"[n]ew session", "[enter] select", "[v] video", "[m] merge", "[/] search"}; !reflect.DeepEqual(left, want) {
+	if want := []string{"[n]ew session", "[enter] select", "[p] proof", "[m] merge", "[/] search"}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("review footer=%v", left)
 	}
 
 	h.Table.SetCursor(h.TableCursorForSessionIndex(0))
-	for _, want := range []string{"attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9"} {
+	for _, want := range []string{"attention-10", "attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9"} {
 		next, _ := h.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 		h = next.(Model)
 		if got := h.SelectedSessionID(); got != want {
@@ -922,6 +922,7 @@ func TestHomeFooterActionsNeverShareAKey(t *testing.T) {
 		"fix":         {Fix: &attention.FixFact{AlertKey: "alert", Sentence: "broken"}},
 		"question":    {QuestionText: "which one?"},
 		"review":      {ParkCodes: []string{"human-review:ui"}, Evidence: &attention.Evidence{URL: "https://example.com/proof.mp4"}},
+		"proof":       {ParkCodes: []string{"human-review:ui"}, Proof: &attention.Proof{URL: "https://example.com/proof"}},
 		"blocked":     {ParkCodes: []string{"ledger-open"}},
 		"merge":       {HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable},
 		"in progress": {ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},

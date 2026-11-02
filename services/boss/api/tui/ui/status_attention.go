@@ -49,13 +49,57 @@ var AttentionActionBindings = []AttentionActionBinding{
 	{Action: pb.AttentionAction_ATTENTION_ACTION_DISMISS, Key: "x", Label: "dismiss", Details: true, HomeHidden: true, DetailsHidden: true},
 	{Action: pb.AttentionAction_ATTENTION_ACTION_RESUME, Key: "r", Label: "resume", Details: true, HomeHidden: true, DetailsHidden: true},
 	{Action: pb.AttentionAction_ATTENTION_ACTION_GITHUB, Key: "g", Label: "github", Details: true, HomeHidden: true},
-	{Action: pb.AttentionAction_ATTENTION_ACTION_VIDEO, Key: "v", Label: "video", Details: true},
+	// [p]roof opens ProofTarget, offered exactly when it has one. It stands
+	// for a served VIDEO too, so no key opens the video on its own.
+	{Action: pb.AttentionAction_ATTENTION_ACTION_PROOF, Key: "p", Label: "proof", Details: true},
 	{Action: pb.AttentionAction_ATTENTION_ACTION_TRACKER, Key: "t", Label: "tracker", HomeHidden: true},
+}
+
+// ProofTarget is what [p]roof opens: the proof page when PROOF is offered,
+// else the legacy evidence video when VIDEO is, else, on a verify park (a
+// REVIEW or blocked FIX, both with park codes), the PR conversation holding
+// verify's park note.
+func ProofTarget(s *pb.Session) (string, bool) {
+	a := s.GetAttention()
+	switch {
+	case slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_PROOF) && a.GetProofUrl() != "":
+		return a.GetProofUrl(), true
+	case slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_VIDEO) && a.GetEvidenceUrl() != "":
+		return a.GetEvidenceUrl(), true
+	case len(a.GetParkCodes()) > 0 && s.GetPrUrl() != "" && (a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW || a.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX):
+		return s.GetPrUrl(), true
+	}
+	return "", false
+}
+
+// offeredActions is the served action order with PROOF and VIDEO folded into
+// one PROOF, present exactly when ProofTarget has a target. It stands where
+// the daemon listed either, else after GITHUB, else first.
+func offeredActions(s *pb.Session) []pb.AttentionAction {
+	_, proof := ProofTarget(s)
+	out := make([]pb.AttentionAction, 0, len(s.GetAttention().GetActions())+1)
+	at := -1
+	for _, a := range s.GetAttention().GetActions() {
+		if a == pb.AttentionAction_ATTENTION_ACTION_PROOF || a == pb.AttentionAction_ATTENTION_ACTION_VIDEO {
+			if at < 0 {
+				at = len(out)
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	if !proof {
+		return out
+	}
+	if at < 0 {
+		at = slices.Index(out, pb.AttentionAction_ATTENTION_ACTION_GITHUB) + 1
+	}
+	return slices.Insert(out, at, pb.AttentionAction_ATTENTION_ACTION_PROOF)
 }
 
 func AttentionBinding(s *pb.Session, key string, details bool) (AttentionActionBinding, bool) {
 	for _, b := range AttentionActionBindings {
-		if b.Key == key && (!details || b.Details) && slices.Contains(s.GetAttention().GetActions(), b.Action) {
+		if b.Key == key && (!details || b.Details) && slices.Contains(offeredActions(s), b.Action) {
 			return b, true
 		}
 	}
@@ -64,7 +108,7 @@ func AttentionBinding(s *pb.Session, key string, details bool) (AttentionActionB
 
 func AttentionFooter(s *pb.Session, details bool) []string {
 	var labels []string
-	for _, a := range s.GetAttention().GetActions() {
+	for _, a := range offeredActions(s) {
 		for _, b := range AttentionActionBindings {
 			if b.Action == a && (details && b.Details && !b.DetailsHidden || !details && !b.HomeHidden) {
 				labels = append(labels, b.Footer())
@@ -224,9 +268,10 @@ func AttentionActionCmd(ctx context.Context, c AttentionClient, s *pb.Session, a
 		case pb.AttentionAction_ATTENTION_ACTION_GITHUB:
 			result.Err = openURL(s.GetPrUrl())
 			result.Text = "Opened GitHub"
-		case pb.AttentionAction_ATTENTION_ACTION_VIDEO:
-			result.Err = openURL(s.GetAttention().GetEvidenceUrl())
-			result.Text = "Opened video"
+		case pb.AttentionAction_ATTENTION_ACTION_PROOF, pb.AttentionAction_ATTENTION_ACTION_VIDEO:
+			url, _ := ProofTarget(s)
+			result.Err = openURL(url)
+			result.Text = "Opened proof"
 		case pb.AttentionAction_ATTENTION_ACTION_TRACKER:
 			result.Err = openURL(s.GetTrackerUrl())
 			result.Text = "Opened issue"

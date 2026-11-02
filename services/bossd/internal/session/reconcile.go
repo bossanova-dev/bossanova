@@ -537,6 +537,12 @@ func adoptedPRState(current machine.State) (machine.State, bool) {
 // though the agent set a real title on the GitHub PR. This pass closes that gap
 // (and auto-heals any already-stuck rows). It is a no-op without a cron-job
 // store (see WithCronJobs).
+//
+// It reads the branch and GitHub only for sessions whose stored title is still
+// the cron default (plain or behind their own tracker prefix): marking a PR
+// [BLOCKED] always leaves that title on the row, so any other title has nothing
+// to clear or adopt. Accepted residual: a PR marked on the attach path after
+// its session was already renamed is left for finalize or attach to retitle.
 func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessions []*models.Session) int64 {
 	if r.cronJobs == nil {
 		return 0
@@ -548,6 +554,14 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 	for _, sess := range sessions {
 		if sess == nil || sess.ArchivedAt != nil || sess.PRNumber == nil ||
 			sess.CronJobID == nil || *sess.CronJobID == "" {
+			continue
+		}
+		job, err := r.cronJobs.Get(ctx, *sess.CronJobID)
+		if err != nil {
+			r.logger.Warn().Err(err).Str("session", sess.ID).Msg("reconcile: get cron job for title repair")
+			continue
+		}
+		if !cronTitleRepairCandidate(sess, job) {
 			continue
 		}
 		var real []string

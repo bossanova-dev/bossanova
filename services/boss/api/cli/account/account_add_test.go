@@ -21,7 +21,7 @@ var handlersSource string
 // findAddSubcommand returns the `add` subcommand of the account command group.
 func findAddSubcommand(t *testing.T) *cobra.Command {
 	t.Helper()
-	account := New(nil, nil, nil)
+	account := New(nil, nil, nil, nil)
 	for _, c := range account.Commands() {
 		if c.Name() == "add" {
 			return c

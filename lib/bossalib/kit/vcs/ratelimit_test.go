@@ -1,6 +1,7 @@
 package vcs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -106,5 +107,27 @@ func TestRateLimitLogLevel(t *testing.T) {
 	}
 	if got := l.Level("site", ErrRateLimited); got != zerolog.DebugLevel {
 		t.Fatalf("level for a repeat = %v, want debug", got)
+	}
+}
+
+// TestReserveQuotaReadsMark pins that the reserve mark round-trips and stays
+// independent of the cached-reads mark in both directions.
+func TestReserveQuotaReadsMark(t *testing.T) {
+	plain := context.Background()
+	if ReserveQuotaReads(plain) {
+		t.Fatal("an unmarked ctx reports reserve-tier reads")
+	}
+	reserve := WithReserveQuotaReads(plain)
+	if !ReserveQuotaReads(reserve) {
+		t.Fatal("WithReserveQuotaReads did not mark ctx")
+	}
+	if CachedReadsAllowed(reserve) {
+		t.Fatal("the reserve mark implied cached reads")
+	}
+	if ReserveQuotaReads(WithCachedReads(plain)) {
+		t.Fatal("the cached-reads mark implied reserve-tier reads")
+	}
+	if both := WithCachedReads(reserve); !ReserveQuotaReads(both) || !CachedReadsAllowed(both) {
+		t.Fatal("stacking the marks lost one of them")
 	}
 }

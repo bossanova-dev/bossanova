@@ -32,7 +32,7 @@ func (s *switchStub) SwitchSessionAgentAccount(_ context.Context, req *pb.Switch
 // which carries the real --chat/--force flag definitions.
 func findSwitchSubcommand(t *testing.T) *cobra.Command {
 	t.Helper()
-	account := New(nil, nil, nil)
+	account := New(nil, nil, nil, nil)
 	for _, c := range account.Commands() {
 		if c.Name() == "switch" {
 			return c

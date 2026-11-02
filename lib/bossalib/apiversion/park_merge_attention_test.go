@@ -72,10 +72,14 @@ func TestParkMergeAttention_OlderPinsGetApproveAndSendBackBack(t *testing.T) {
 				switch {
 				case !reg.Newer(V20260920, v):
 					if !proto.Equal(resp.GetSession(), func() *pb.Session {
-						if reg.Newer(V20261031, v) {
-							return downconvertParkVerdictSentence(source)
+						want := source
+						if reg.Newer(V20261101, v) {
+							want = downconvertProofAttentionSession(want)
 						}
-						return source
+						if reg.Newer(V20261031, v) {
+							want = downconvertParkVerdictSentence(want)
+						}
+						return want
 					}()) {
 						t.Fatalf("attention = %v, want today's answer unchanged", got)
 					}

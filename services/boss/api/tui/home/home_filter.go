@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/recurser/boss/api/tui/ui"
 	"github.com/recurser/bossalib/displaystatus"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -27,13 +28,17 @@ func (h Model) BoardSessions() []*pb.Session {
 
 func homeFilterHaystack(sess *pb.Session) string {
 	status := sess.GetDisplayLabel()
-	if att := sess.GetAttention(); att != nil && !displaystatus.IsStateEndingLabel(status) && (att.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess)) {
+	if att := sess.GetAttention(); att != nil && !displaystatus.IsStateEndingLabel(status) && (att.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || showsAttentionStatus(sess)) {
 		// Progress labels are stable; the rendered spinner is deliberately excluded,
 		// and a merge cell is matched by its resting text.
-		if att.GetKind() == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
+		// A confidence cell is matched by its full text, so an ask the
+		// column cuts off is still found.
+		if c, ok := ui.ConfidenceCell(sess); ok {
+			status = c.Text()
+		} else if att.GetKind() == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
 			status = att.GetProgressLabel()
 		} else {
-			status = ansi.Strip((Model{}).renderAttentionStatus(att, false))
+			status = ansi.Strip((Model{}).renderAttentionStatus(sess, false))
 		}
 	}
 	fields := []string{sess.GetRepoDisplayName(), sess.GetTitle(), sess.GetBranchName(), sess.GetTrackerId(), status}

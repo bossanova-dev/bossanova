@@ -133,6 +133,11 @@ whichever you prefer. To manage accounts inside the TUI:
    see [Credential checks](#credential-checks).
    Codex publishes a single weekly (7-day) rate-limit window, so a Codex row
    populates UTIL7D and leaves UTIL5H at `0%`; Claude publishes both windows.
+   SYNC reads `synced (N)` when N daemons share the account, `local only` when
+   a change stays on this daemon, and `unknown` when you are signed out of
+   Bossanova Cloud or its registry cannot be read; a `· link?` suffix and a
+   footer hint mean the account looks like one on another daemon, which you
+   link or keep separate in **Settings → Accounts** in the web app.
 2. In the accounts list, use these keys:
    - **`a`** — register a new account. A `claude | codex` chooser runs the same
      interactive setup-token / device-flow walkthrough as `boss account add`,

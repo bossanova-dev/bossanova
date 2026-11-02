@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -70,6 +71,11 @@ func TestCreateSessionDuplicateActiveTrackerReturnsAlreadyExists(t *testing.T) {
 	if !strings.Contains(err.Error(), existing.ID) {
 		t.Fatalf("error = %q, want to contain existing session id %q", err.Error(), existing.ID)
 	}
+	requireConflictEqual(t, requireCreateSessionConflict(t, err), &pb.CreateSessionConflict{
+		Reason:            pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_DUPLICATE_ACTIVE_SESSION,
+		ExistingSessionId: existing.ID,
+		MatchedTarget:     "tracker issue",
+	})
 	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
 	if listErr != nil {
 		t.Fatalf("list sessions: %v", listErr)
@@ -180,5 +186,49 @@ func TestCreateSessionConcurrentTrackerCreatesOneWinner(t *testing.T) {
 	}
 	if len(sessions) != 1 {
 		t.Fatalf("sessions len = %d, want exactly 1 winner", len(sessions))
+	}
+}
+
+// A create for a branch whose session is still starting (no worktree yet) is
+// refused with SESSION_STARTING naming that session, a cause no request flag
+// bypasses.
+func TestCreateSessionStartingBranchCarriesSessionStartingConflict(t *testing.T) {
+	t.Parallel()
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+	starting, err := h.sessions.Create(context.Background(), db.CreateSessionParams{
+		RepoID:     h.repo.ID,
+		Title:      "still starting",
+		Plan:       "do work",
+		BaseBranch: "main",
+		BranchName: "bos-2143-starting",
+		AgentName:  "claude",
+	})
+	if err != nil {
+		t.Fatalf("create starting session: %v", err)
+	}
+
+	err = h.createBranchSession(context.Background(), h.repo.ID, "second", "bos-2143-starting")
+	requireConflictEqual(t, requireCreateSessionConflict(t, err), &pb.CreateSessionConflict{
+		Reason:            pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_SESSION_STARTING,
+		ExistingSessionId: starting.ID,
+		BranchName:        "bos-2143-starting",
+	})
+}
+
+// A real local branch collision is refused with BRANCH_EXISTS, the cause
+// force_branch bypasses.
+func TestCreateSessionBranchCollisionCarriesBranchExistsConflict(t *testing.T) {
+	t.Parallel()
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{createErr: gitpkg.ErrBranchExists}, &setupStreamAgent{})
+
+	err := h.createBranchSession(context.Background(), h.repo.ID, "collides", "bos-2143-existing")
+	requireConflictEqual(t, requireCreateSessionConflict(t, err), &pb.CreateSessionConflict{
+		Reason:     pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_BRANCH_EXISTS,
+		BranchName: "bos-2143-existing",
+	})
+	if !strings.Contains(err.Error(), "branch already exists for this session title") {
+		t.Fatalf("error = %q, want the unchanged branch-exists text", err)
 	}
 }

@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "checkpolicy",
+    srcs = ["checkpolicy.go"],
+    importpath = "github.com/recurser/bossd/internal/session/checkpolicy",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/kit/vcs",
+        "//services/bossd/internal/domain",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "checkpolicy_test",
+    srcs = ["checkpolicy_test.go"],
+    embed = [":checkpolicy"],
+    deps = [
+        "//services/bossd/internal/domain",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

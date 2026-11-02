@@ -605,3 +605,34 @@ func TestNewVerifyOnlyRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestNewDetachRequestForce(t *testing.T) {
+	if req := newDetachRequest(newSessionOpts{RepoID: "repo-1", Prompt: "do work", Title: "T", Force: true}); !req.GetForce() {
+		t.Fatal("force = false, want true when Force is set")
+	}
+	if req := newDetachRequest(newSessionOpts{RepoID: "repo-1", Prompt: "do work", Title: "T"}); req.GetForce() {
+		t.Fatal("force = true, want false by default")
+	}
+}
+
+func TestNewForceFlagSendsForce_Sessions_AC214304(t *testing.T) {
+	for _, force := range []bool{true, false} {
+		t.Run(map[bool]string{true: "force", false: "default"}[force], func(t *testing.T) {
+			c := &verifyOnlyCreateClient{}
+			g := New(func(*cobra.Command) (Client, error) { return c, nil }, Options{})
+			cmd := g.NewCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			args := []string{"--repo", "repo-1", "--prompt", "ship it", "--tracker-id", "PROJ-42"}
+			if force {
+				args = append(args, "--force")
+			}
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if c.request == nil || c.request.GetForce() != force || c.request.GetForceBranch() {
+				t.Fatalf("request = %v, want force=%t and force_branch=false", c.request, force)
+			}
+		})
+	}
+}

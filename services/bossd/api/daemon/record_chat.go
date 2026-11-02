@@ -214,7 +214,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *domain.AgentCh
 			return nil, err
 		}
 		return mergeManagedOverAccount(
-			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
+			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName, s.gitHubUsageShim),
 			accountEnv,
 		), nil
 	}

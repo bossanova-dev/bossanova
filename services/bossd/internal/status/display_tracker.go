@@ -44,9 +44,11 @@ type DisplayEntry struct {
 	// every poll via Set — unlike IsRepairing, it is not preserved across a
 	// Set that omits it, because each poll carries the authoritative value.
 	Mergeable *bool
-	// VerifyReason is the verify stage's park reason, set only when Status is
-	// DisplayStatusNeedsHuman (and possibly empty there). Like Mergeable it is
-	// refreshed by every poll via Set, not preserved.
+	// VerifyReason is vcs.DisplayInfo.VerifyReason: the park's codes when Status
+	// is DisplayStatusNeedsHuman (and possibly empty there), or a wait's reason
+	// code when it is DisplayStatusVerifying. Read it through ParkCodes or
+	// VerifyWaitReason, which guard on Status. Like Mergeable it is refreshed by
+	// every poll via Set, not preserved.
 	VerifyReason string
 	// VerifyLabel is the operator-written label the park carries after its
 	// codes (empty when it names none). Refreshed by every poll, like
@@ -74,6 +76,17 @@ func (e *DisplayEntry) ParkCodes() []string {
 		return nil
 	}
 	return strings.Split(e.VerifyReason, ",")
+}
+
+// VerifyWaitReason returns the reason code of a "waiting: <reason>"
+// boss/verify status for displaystatus.Input.VerifyWaitReason and
+// attention.Input.VerifyWaitReason: the VerifyReason of a Verifying entry, or
+// "" for a nil entry, a live claim or any other status.
+func (e *DisplayEntry) VerifyWaitReason() string {
+	if e == nil || e.Status != vcs.DisplayStatusVerifying {
+		return ""
+	}
+	return e.VerifyReason
 }
 
 // DisplayTracker is a thread-safe in-memory cache of session display statuses.

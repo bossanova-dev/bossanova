@@ -350,6 +350,13 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		return sessionProbes(noVerifyStageMergeSession, func(s *pb.Session) bool {
 			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW
 		})
+	case ProofAttentionChange:
+		return sessionProbes(func() *pb.Session {
+			return &pb.Session{Attention: &pb.SessionAttention{ConfidenceLevel: pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE, Asks: []string{"Migrations"}, ProofUrl: "https://proof.test/page", LoweredBy: []string{"Needs review"}, EvidenceUrl: "https://video.test/clip", Actions: []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_PROOF}}}
+		}, func(s *pb.Session) bool {
+			a := s.GetAttention()
+			return a.GetConfidenceLevel() == pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED && len(a.GetAsks()) == 0 && a.GetProofUrl() == "" && len(a.GetLoweredBy()) == 0 && slices.Equal(a.GetActions(), []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_VIDEO})
+		})
 	case ParkVerdictSentenceChange:
 		return sessionProbes(noReceiptParkSession, func(s *pb.Session) bool {
 			return s.GetAttention().GetSentence() == "No review of the latest commit" && s.GetAttention().GetParkLabel() == ""

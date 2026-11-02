@@ -34,7 +34,8 @@ summary (cost extraction matches a line-leading token).
   `<!-- bs-review -->` comment ([`references/publish.md`](references/publish.md)). An unmet
   criterion alone is not BLOCKED.
 - `NO_CHANGE` — no eligible candidate, a named ticket with nothing to build from, claim lost with
-  no runner-up, a foreign branch carrying other work, a peer already holding the worktree lock, or nothing committable after claiming (ticket
+  no runner-up, a foreign branch carrying other work, a peer already holding the worktree lock, a
+  named ticket verify would not admit, started without approval, or nothing committable after claiming (ticket
   restored to its entry state).
 
 An existing PR/branch (bossd's bootstrap draft, an empty PR, or a prior run's work) is **adopted and
@@ -85,6 +86,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Who won the ticket claim?                                              | `node tracker/cli.mjs claim-verdict …`                                                 |
 | Which PR belongs to this branch?                                       | `node pr-ownership.mjs number --pr-json <json>`                                        |
 | What does this ticket build from?                                      | `node plan-attachment.mjs build-source <issue-json> [<plan-out>]`                      |
+| Would verify admit this named ticket?                                  | `node build/named-admission.mjs check\|apply …`                                        |
 | Which repo-local extensions exist?                                     | `node skill-extensions.mjs discover --core boss-build --role <role> --json`            |
 | Do the plan’s citations and premises still hold?                       | `node plan-recheck.mjs <plan> [--root <dir>]`                                          |
 | Is a failed criterion only "checkout behind origin"? Re-run it rebased | `node acceptance-retry.mjs classify\|retry …`                                          |
@@ -317,11 +319,13 @@ and 8).
 
 ## Step 2: Select one ticket
 
-- **A named ticket** (e.g. `<ISSUE-ID>`): `getIssue` with relations. Naming it bypasses the
-  `agent-build` label and estimate filters, and overrides — loudly — the `needs-human` and
-  blocked-by skips:
-  `WARNING: <ID> is labelled needs-human — implementing only because it was named explicitly` /
+- **A named ticket** (e.g. `<ISSUE-ID>`): `getIssue` with relations, saved as `$ISSUE_JSON`. Naming
+  it bypasses the estimate filter and overrides — loudly — the blocked-by skip:
   `WARNING: <ID> is blocked by <BLOCKER-IDS> (unmerged) — implementing only because it was named explicitly`.
+  Verify must still admit it: run `node "$BOSS_BUILD_TOOLBOX/build/named-admission.mjs" check "$ISSUE_JSON"`,
+  with `--approve` when the arguments carry it (`split-args` puts it in `other`). Any non-zero
+  exit stops `NO_CHANGE` quoting `reason`, with no claim or state move; on exit 3 an interactive run
+  asks the operator instead, and a yes re-runs `check` with `--approve`.
   It needs something to build from: when `build-source` exits 3 (no readable plan attachment and no
   title or description text), stop `NO_CHANGE` quoting its `reason`, with no claim or state move.
 - **Selection flags** (`--label`, `--exclude-label`, `--assignee`, `--creator`, `--project` and their
@@ -420,6 +424,9 @@ node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comment
   `NO_CHANGE`.
 - exit 4 (NO_WINNER) — delete your claim and repeat Step 3 once; again ⇒ `NO_CHANGE`.
 - anything else ⇒ `BLOCKED: claim`.
+
+Once WON on Step 2's `approve` route, run `node "$BOSS_BUILD_TOOLBOX/build/named-admission.mjs" apply "$ISSUE_JSON"`
+before Step 4; a non-zero exit stops `NO_CHANGE` (Step 12) quoting its `reason`.
 
 Once WON with `BOSS_SESSION_ID` set, link the session to the ticket so a run that dies before Step 9
 still leaves bossd a session naming its ticket (best-effort; warn and continue on failure):

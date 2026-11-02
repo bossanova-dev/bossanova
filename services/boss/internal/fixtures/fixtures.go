@@ -1930,7 +1930,7 @@ func AttentionSessions() []*pb.Session {
 				a.ProgressLabel = "checking 4/9"
 			}
 		}
-		out = append(out, &pb.Session{Id: fmt.Sprintf("attention-%d", i), RepoId: "repo-1", RepoDisplayName: "my-app", Title: fmt.Sprintf("[BOS-%d] Improve the unattended session workflow", 1500+i), BranchName: fmt.Sprintf("attention-%d", i), PrNumber: i32(int32(2980 + i)), Attention: a, DisplayLabel: label, DisplayIntent: intent, DisplayStatus: displayStatus})
+		out = append(out, attentionSession(i, a, label, intent, displayStatus))
 	}
-	return out
+	return withConfidenceParks(out)
 }

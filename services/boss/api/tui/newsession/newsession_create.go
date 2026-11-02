@@ -148,7 +148,7 @@ func (m *Model) buildForm() {
 }
 
 func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
-	if m.form == nil || m.phase != newSessionPhaseForm || m.confirmingOverwrite {
+	if m.form == nil || m.phase != newSessionPhaseForm || m.conflict != nil {
 		return m, nil, false
 	}
 
@@ -165,7 +165,7 @@ func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.form = nil
 		m.err = nil
 		m.fd = nil
-		m.forceBranch = false
+		m.clearCreateOverrides()
 		return m, nil, true
 	}
 
@@ -206,6 +206,7 @@ func (m *Model) startCreating() tea.Cmd {
 	req := &pb.CreateSessionRequest{
 		RepoId:      repo.Id,
 		BaseBranch:  repo.DefaultBaseBranch,
+		Force:       m.force,
 		ForceBranch: m.forceBranch,
 	}
 	if m.initialAgent != "" {

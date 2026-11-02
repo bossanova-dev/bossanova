@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,4 +74,73 @@ func countLogLines(logs, level, msg string) int {
 		}
 	}
 	return n
+}
+
+// reserveObservingProvider records, per read, whether the evaluator marked its
+// ctx reserve-tier.
+type reserveObservingProvider struct {
+	*fakeProvider
+	mu       sync.Mutex
+	unmarked []string
+	reads    int
+}
+
+func (p *reserveObservingProvider) observe(ctx context.Context, read string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.reads++
+	if !vcs.ReserveQuotaReads(ctx) {
+		p.unmarked = append(p.unmarked, read)
+	}
+}
+
+func (p *reserveObservingProvider) GetPRStatus(ctx context.Context, rp string, pr int) (*vcs.PRStatus, error) {
+	p.observe(ctx, "status")
+	return p.fakeProvider.GetPRStatus(ctx, rp, pr)
+}
+
+func (p *reserveObservingProvider) GetCheckResults(ctx context.Context, rp string, pr int) ([]vcs.CheckResult, error) {
+	p.observe(ctx, "checks")
+	return p.fakeProvider.GetCheckResults(ctx, rp, pr)
+}
+
+func (p *reserveObservingProvider) ListWorkflowRuns(ctx context.Context, rp, sha string) ([]vcs.WorkflowRun, error) {
+	p.observe(ctx, "workflow runs")
+	return p.fakeProvider.ListWorkflowRuns(ctx, rp, sha)
+}
+
+// TestEvaluatorReadsAreReserveTier_Callbacks_AC222201 pins that every read the
+// evaluator makes, from the webhook path and from ChecksPassedReady alike,
+// carries the reserve-tier mark, so it keeps reading between the floors.
+func TestEvaluatorReadsAreReserveTier_Callbacks_AC222201(t *testing.T) {
+	for name, read := range map[string]func(*Evaluator) error{
+		"EvaluatePR": func(ev *Evaluator) error { return ev.EvaluatePR(context.Background(), "acme", "widgets", 7) },
+		"ChecksPassedReady": func(ev *Evaluator) error {
+			_, _, err := ev.ChecksPassedReady(context.Background(), "acme", "widgets", 7)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newStore(t)
+			mustCreate(t, store, db.CreateGitHubCallbackParams{
+				TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+				Trigger: models.GitHubCallbackTriggerMerged, Message: "on merge",
+			})
+			prov := &reserveObservingProvider{fakeProvider: &fakeProvider{
+				status: prStatus(vcs.PRStateOpen),
+				checks: []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
+			}}
+			ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+
+			if err := read(ev); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if prov.reads != 3 {
+				t.Fatalf("%s made %d reads, want 3 (status, checks, workflow runs)", name, prov.reads)
+			}
+			if len(prov.unmarked) > 0 {
+				t.Fatalf("%s reads without the reserve-tier mark: %v", name, prov.unmarked)
+			}
+		})
+	}
 }

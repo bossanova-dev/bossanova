@@ -15,12 +15,19 @@ import (
 
 type wiringBrokerCreds struct {
 	fakeCreds
-	journal []byte
+	journal  []byte
+	endpoint []byte
 }
 
 func (s *wiringBrokerCreds) LoadRefreshState(string) ([]byte, error) { return s.journal, nil }
 func (s *wiringBrokerCreds) SaveRefreshState(_ string, blob []byte) error {
 	s.journal = append([]byte(nil), blob...)
+	return nil
+}
+
+func (s *wiringBrokerCreds) LoadRefreshBrokerEndpoint() ([]byte, error) { return s.endpoint, nil }
+func (s *wiringBrokerCreds) SaveRefreshBrokerEndpoint(blob []byte) error {
+	s.endpoint = append([]byte(nil), blob...)
 	return nil
 }
 

@@ -29,6 +29,12 @@ const (
 	// readCacheSweepAt is the entry count above which a store also evicts
 	// expired entries, bounding memory without a background goroutine.
 	readCacheSweepAt = 256
+	// reviewCommentsMaxAge bounds how long a review-comments entry whose
+	// review-activity fingerprint still matches the open-PR snapshot's stays
+	// servable to background callers. The fingerprint cannot see an edit to an
+	// existing inline comment's body; a webhook catches that on connected
+	// repositories, and this bound catches it everywhere else.
+	reviewCommentsMaxAge = 10 * time.Minute
 )
 
 // Cache key kinds. One PR's kinds are dropped together by InvalidatePR.
@@ -51,6 +57,19 @@ type readCacheEntry struct {
 	// compare by the age of their data: a slow fetch that completes late is
 	// still as old as the moment it asked GitHub.
 	fetchedAt time.Time
+	// fingerprint is the review-activity fingerprint of an open-PR snapshot
+	// fetched no later than this entry's fetch began, or "" when there was
+	// none. Only review-comments entries carry one; see GetReviewComments.
+	fingerprint string
+}
+
+// maxAge is how long e may stay cached: a fingerprinted entry up to
+// reviewCommentsMaxAge, any other for the TTL.
+func (c *readCache) maxAge(e readCacheEntry) time.Duration {
+	if e.fingerprint != "" {
+		return max(c.ttl, reviewCommentsMaxAge)
+	}
+	return c.ttl
 }
 
 // readCache holds recent successful reads for callers that opted in with
@@ -139,9 +158,32 @@ func (c *readCache) begin(key string) (uint64, time.Time) {
 	return c.generation[key], c.now()
 }
 
-// store records value, fetched from at, for key unless key was invalidated
-// after gen was read.
-func (c *readCache) store(key string, gen uint64, at time.Time, value any) {
+// matching returns key's entry while it carries fingerprint and is younger
+// than reviewCommentsMaxAge. An empty fingerprint never matches.
+func (c *readCache) matching(key, fingerprint string) (any, bool) {
+	if fingerprint == "" || c.ttl <= 0 {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || entry.fingerprint != fingerprint || c.now().Sub(entry.fetchedAt) >= reviewCommentsMaxAge {
+		return nil, false
+	}
+	return entry.value, true
+}
+
+// peek returns key's entry whatever its age.
+func (c *readCache) peek(key string) (readCacheEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	return entry, ok
+}
+
+// store records value, fetched from at and carrying fingerprint, for key
+// unless key was invalidated after gen was read.
+func (c *readCache) store(key string, gen uint64, at time.Time, value any, fingerprint string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.generation[key] != gen {
@@ -150,12 +192,12 @@ func (c *readCache) store(key string, gen uint64, at time.Time, value any) {
 	now := c.now()
 	if len(c.entries) >= readCacheSweepAt {
 		for k, e := range c.entries {
-			if now.Sub(e.fetchedAt) >= c.ttl {
+			if now.Sub(e.fetchedAt) >= c.maxAge(e) {
 				delete(c.entries, k)
 			}
 		}
 	}
-	c.entries[key] = readCacheEntry{value: value, fetchedAt: at}
+	c.entries[key] = readCacheEntry{value: value, fetchedAt: at, fingerprint: fingerprint}
 }
 
 func (c *readCache) invalidate(keys ...string) {
@@ -170,7 +212,21 @@ func (c *readCache) invalidate(keys ...string) {
 	// before it.
 	for _, key := range keys {
 		c.flights.Forget(key)
+		c.flights.Forget(key + reserveFlightSuffix)
 	}
+}
+
+// reserveFlightSuffix keeps a reserve-tier read (vcs.WithReserveQuotaReads)
+// from joining a standard-tier flight for the same key, which the background
+// floor may refuse while the reserve tier still has quota to spend. Both
+// tiers share the cached entry.
+const reserveFlightSuffix = "|reserve"
+
+func flightKey(ctx context.Context, key string) string {
+	if vcs.ReserveQuotaReads(ctx) {
+		return key + reserveFlightSuffix
+	}
+	return key
 }
 
 // InvalidatePR drops every cached read for one PR, plus the repository's open
@@ -192,9 +248,10 @@ func (p *Provider) InvalidatePR(repoPath string, prID int) {
 // cachedRead serves one read. A ctx marked with vcs.WithCachedReads gets a
 // fresh-enough cached value, or joins an identical read already in flight. Any
 // other ctx always reads GitHub, and its result refreshes the cache for the
-// background callers. clone keeps callers from sharing (and mutating) one
-// cached value.
-func cachedRead[T any](ctx context.Context, c *readCache, key string, clone func(T) T, fetch func(context.Context) (T, error)) (T, error) {
+// background callers. The stored entry carries fingerprint(at), at being when
+// its fetch began; noFingerprint for every kind but review comments. clone
+// keeps callers from sharing (and mutating) one cached value.
+func cachedRead[T any](ctx context.Context, c *readCache, key string, fingerprint func(time.Time) string, clone func(T) T, fetch func(context.Context) (T, error)) (T, error) {
 	var zero T
 	if !vcs.CachedReadsAllowed(ctx) {
 		gen, at := c.begin(key)
@@ -202,7 +259,7 @@ func cachedRead[T any](ctx context.Context, c *readCache, key string, clone func
 		if err != nil {
 			return zero, err
 		}
-		c.store(key, gen, at, clone(v))
+		c.store(key, gen, at, clone(v), fingerprint(at))
 		return v, nil
 	}
 	if v, ok := c.get(key); ok {
@@ -210,7 +267,7 @@ func cachedRead[T any](ctx context.Context, c *readCache, key string, clone func
 			return clone(typed), nil
 		}
 	}
-	ch := c.flights.DoChan(key, func() (any, error) {
+	ch := c.flights.DoChan(flightKey(ctx, key), func() (any, error) {
 		gen, at := c.begin(key)
 		flightCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readFlightTimeout)
 		defer cancel()
@@ -218,7 +275,7 @@ func cachedRead[T any](ctx context.Context, c *readCache, key string, clone func
 		if err != nil {
 			return nil, err
 		}
-		c.store(key, gen, at, clone(v))
+		c.store(key, gen, at, clone(v), fingerprint(at))
 		return v, nil
 	})
 	select {
@@ -275,13 +332,83 @@ func (p *Provider) GetCheckSet(ctx context.Context, repoPath string, prID int) (
 		func(ctx context.Context) (vcs.CheckSet, error) { return p.fetchCheckSet(ctx, repoPath, prID) })
 }
 
-// GetReviewComments returns review comments on a pull request. Background
-// callers (vcs.WithCachedReads) may be served from the read cache.
+// GetReviewComments returns review comments on a pull request. A background
+// caller (vcs.WithCachedReads) is served an entry younger than the TTL, then
+// one whose review-activity fingerprint still matches the open-PR snapshot's
+// for up to reviewCommentsMaxAge; otherwise it reads GitHub and stores the
+// result with the fingerprint it read before the fetch began. Any other caller
+// always reads GitHub, never fetches a snapshot, and stores the cached
+// snapshot's fingerprint only when that snapshot predates its fetch. So an
+// entry never carries a fingerprint taken after its fetch began, and a match
+// means the snapshot saw no review activity since the entry's data was read.
 func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID int) ([]vcs.ReviewComment, error) {
-	return cachedRead(ctx, p.cache, prReadKey(readKindReviews, repoPath, prID), slices.Clone[[]vcs.ReviewComment],
-		func(ctx context.Context) ([]vcs.ReviewComment, error) {
-			return p.fetchReviewComments(ctx, repoPath, prID)
-		})
+	key := prReadKey(readKindReviews, repoPath, prID)
+	clone := slices.Clone[[]vcs.ReviewComment]
+	fetch := func(ctx context.Context) ([]vcs.ReviewComment, error) {
+		return p.fetchReviewComments(ctx, repoPath, prID)
+	}
+	if !vcs.CachedReadsAllowed(ctx) {
+		return cachedRead(ctx, p.cache, key, func(at time.Time) string {
+			return p.cachedReviewActivity(repoPath, prID, at)
+		}, clone, fetch)
+	}
+	if v, ok := p.cache.get(key); ok {
+		if typed, ok := v.([]vcs.ReviewComment); ok {
+			return clone(typed), nil
+		}
+	}
+	fp, err := p.currentReviewActivity(ctx, repoPath, prID)
+	if err != nil {
+		return nil, err
+	}
+	if v, ok := p.cache.matching(key, fp); ok {
+		if typed, ok := v.([]vcs.ReviewComment); ok {
+			return clone(typed), nil
+		}
+	}
+	return cachedRead(ctx, p.cache, key, func(time.Time) string { return fp }, clone, fetch)
+}
+
+func noFingerprint(time.Time) string { return "" }
+
+// currentReviewActivity returns prID's fingerprint from the fresh open-PR
+// snapshot, fetching it when none is cached. It returns "" (no proof of no
+// change) when the snapshot declines the PR, is backing off or failed, and an
+// error only for an exhausted quota or a caller that gave up: a per-PR read
+// would spend the same quota, or fail the same way.
+func (p *Provider) currentReviewActivity(ctx context.Context, repoPath string, prID int) (string, error) {
+	snapKey := repoReadKey(readKindOpenPRSnapshot, repoPath)
+	entry, fresh := p.cache.fresh(snapKey)
+	snap, ok := entry.value.(*prSnapshot)
+	if !fresh || !ok {
+		if p.cache.backingOff(snapKey) {
+			return "", nil
+		}
+		var err error
+		snap, err = p.readOpenPRSnapshot(ctx, repoPath)
+		switch {
+		case errors.Is(err, vcs.ErrRateLimited), err != nil && ctx.Err() != nil:
+			return "", err
+		case err != nil:
+			return "", nil
+		}
+	}
+	fp, _ := snap.reviewActivity(prID)
+	return fp, nil
+}
+
+// cachedReviewActivity returns prID's fingerprint from the cached open-PR
+// snapshot, of any age, when that snapshot completed no later than at; ""
+// otherwise. A snapshot that began before at but read a page after it could
+// record activity the fetch begun at at never saw. It never fetches.
+func (p *Provider) cachedReviewActivity(repoPath string, prID int, at time.Time) string {
+	entry, ok := p.cache.peek(repoReadKey(readKindOpenPRSnapshot, repoPath))
+	snap, typed := entry.value.(*prSnapshot)
+	if !ok || !typed || snap.completedAt.After(at) {
+		return ""
+	}
+	fp, _ := snap.reviewActivity(prID)
+	return fp
 }
 
 // ListOpenPRs returns all open pull requests for a repository. Background
@@ -303,7 +430,7 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 // background reads go straight to the per-PR read meanwhile.
 func snapshotRead[T any](ctx context.Context, p *Provider, repoPath, key string, clone func(T) T, project func(*prSnapshot) (T, bool), fetch func(context.Context) (T, error)) (T, error) {
 	if !vcs.CachedReadsAllowed(ctx) {
-		return cachedRead(ctx, p.cache, key, clone, fetch)
+		return cachedRead(ctx, p.cache, key, noFingerprint, clone, fetch)
 	}
 	snapKey := repoReadKey(readKindOpenPRSnapshot, repoPath)
 	v, served, snapOK := newestRead(p.cache, key, snapKey, clone, project)
@@ -312,16 +439,7 @@ func snapshotRead[T any](ctx context.Context, p *Provider, repoPath, key string,
 	}
 	if !snapOK && !p.cache.backingOff(snapKey) {
 		var zero T
-		fetched, err := cachedRead(ctx, p.cache, snapKey, func(s *prSnapshot) *prSnapshot { return s },
-			func(ctx context.Context) (*prSnapshot, error) {
-				s, err := p.fetchOpenPRSnapshot(ctx, repoPath)
-				// The flight records its own failure, so one that fails after
-				// its caller gave up still backs off the next reads.
-				if err != nil && !errors.Is(err, vcs.ErrRateLimited) && p.cache.backOff(snapKey) {
-					p.logger.Warn().Err(err).Str("repo", repoFlag(repoPath)).Msg("open PR snapshot failed; reading PRs one at a time")
-				}
-				return s, err
-			})
+		fetched, err := p.readOpenPRSnapshot(ctx, repoPath)
 		switch {
 		case errors.Is(err, vcs.ErrRateLimited):
 			// Falling back would spend the same exhausted quota per PR.
@@ -340,7 +458,24 @@ func snapshotRead[T any](ctx context.Context, p *Provider, repoPath, key string,
 			}
 		}
 	}
-	return cachedRead(ctx, p.cache, key, clone, fetch)
+	return cachedRead(ctx, p.cache, key, noFingerprint, clone, fetch)
+}
+
+// readOpenPRSnapshot reads the repository's open-PR snapshot through the
+// cache, coalesced with any identical read in flight. A failed fetch backs the
+// snapshot off for one TTL and is logged once per backoff window.
+func (p *Provider) readOpenPRSnapshot(ctx context.Context, repoPath string) (*prSnapshot, error) {
+	snapKey := repoReadKey(readKindOpenPRSnapshot, repoPath)
+	return cachedRead(ctx, p.cache, snapKey, noFingerprint, func(s *prSnapshot) *prSnapshot { return s },
+		func(ctx context.Context) (*prSnapshot, error) {
+			s, err := p.fetchOpenPRSnapshot(ctx, repoPath)
+			// The flight records its own failure, so one that fails after
+			// its caller gave up still backs off the next reads.
+			if err != nil && !errors.Is(err, vcs.ErrRateLimited) && p.cache.backOff(snapKey) {
+				p.logger.Warn().Err(err).Str("repo", repoFlag(repoPath)).Msg("open PR snapshot failed; reading PRs one at a time")
+			}
+			return s, err
+		})
 }
 
 // newestRead serves key from whichever of its own fresh entry and the fresh

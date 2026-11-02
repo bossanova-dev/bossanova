@@ -396,6 +396,11 @@ Read the findings, then decide.
   runs it on its own host with the repo's stored Linear key, so it works from
   any machine connected to that daemon. Removing `needs-human` from the ticket
   alone does not hand a park back.
+- Verify's folded notes never block a PR. Run `boss pr follow-up <pr> --note <id>`
+  (repeat `--note` for several notes), or `boss pr follow-up <pr> --all`, to file
+  them as follow-up tickets and link them in the notes comment. `--dry-run` previews
+  the writes. The daemon runs the command on its own host with the repo's tracker
+  credentials and refuses callers inside an agent chat; run it from your own terminal.
 - Verification also accepts a teammate's approving review on GitHub, and still
   checks the required gates. GitHub does not let authors approve their own PRs,
   so for solo work use the TUI merge or `boss pr approve`.

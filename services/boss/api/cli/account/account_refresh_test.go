@@ -25,7 +25,7 @@ func (s *refreshStub) RefreshAgentAccount(_ context.Context, req *pb.RefreshAgen
 
 func findRefreshSubcommand(t *testing.T) *cobra.Command {
 	t.Helper()
-	account := New(nil, nil, nil)
+	account := New(nil, nil, nil, nil)
 	for _, c := range account.Commands() {
 		if c.Name() == "refresh" {
 			return c
@@ -126,7 +126,7 @@ func TestAccountRefreshJSONSchema(t *testing.T) {
 
 func findReauthSubcommand(t *testing.T) *cobra.Command {
 	t.Helper()
-	account := New(nil, nil, nil)
+	account := New(nil, nil, nil, nil)
 	for _, c := range account.Commands() {
 		if c.Name() == "reauth" {
 			return c

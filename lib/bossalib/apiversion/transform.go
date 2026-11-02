@@ -694,6 +694,7 @@ func ProductionChanges() *Changes {
 		StateEndingErroredIntentChange{},
 		VerifyHoldLabelChange{},
 		ParkVerdictSentenceChange{},
+		ProofAttentionChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())

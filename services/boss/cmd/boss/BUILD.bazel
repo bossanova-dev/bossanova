@@ -115,6 +115,7 @@ go_test(
         "//services/boss/api/cli/settings",
         "//services/boss/api/cli/skills",
         "//services/boss/api/tui",
+        "//services/boss/api/tui/accounts",
         "//services/boss/api/tui/home",
         "//services/boss/cmd/skillgen",
         "//services/boss/internal/adapter/daemonrpc",

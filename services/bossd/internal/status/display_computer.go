@@ -175,9 +175,11 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 
 	// Hydrate display tracker fields onto the proto session.
 	var parkCodes []string
+	var verifyWaitReason string
 	if c.display != nil {
 		if e := c.display.Get(sessionID); e != nil {
 			parkCodes = e.ParkCodes()
+			verifyWaitReason = e.VerifyWaitReason()
 			pbSess.DisplayStatus = pb.DisplayStatus(clampInt32(int(e.Status)))
 			pbSess.HasBuildReceipt = e.HasBuildReceipt
 			pbSess.DisplayHasFailures = e.HasFailures
@@ -305,6 +307,10 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 		ChatStatus:  chatStatus,
 		ChatResetAt: chatResetAt,
 		ParkCodes:   parkCodes,
+		// The wait reason travels beside the park codes; DisplayTracker.Set
+		// recomputes on every poll, so a reason change under an unchanged
+		// VERIFYING status still reaches the composite.
+		VerifyWaitReason: verifyWaitReason,
 		// BOS-1269. AllIdle is false unless the fold actually landed on
 		// WAITING, so a session holding one parked chat and one genuinely
 		// working chat carries a false aggregate exactly as it should.

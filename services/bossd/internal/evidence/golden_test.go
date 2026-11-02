@@ -2,6 +2,7 @@ package evidence_test
 
 import (
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -44,7 +45,8 @@ func TestParseProofTheVerifyRenderersGoldenComment(t *testing.T) {
 	}
 	got, ok := evidence.ParseProof(string(body))
 	if !ok || got.Head != sha || got.Level != evidence.LevelCannotAssess ||
-		got.Digest != "sha256:ec976fdeef241ca9dbd55d88629af7b56541e8776665999faa29703dd805e697" || got.Page != "" || len(got.Asks) != 0 {
+		got.Digest != "sha256:ec976fdeef241ca9dbd55d88629af7b56541e8776665999faa29703dd805e697" || got.Page != "" || len(got.Asks) != 0 ||
+		!slices.Equal(got.LoweredBy, []string{"Confidence is not computed yet."}) {
 		t.Fatalf("golden proof: %+v, %v", got, ok)
 	}
 }

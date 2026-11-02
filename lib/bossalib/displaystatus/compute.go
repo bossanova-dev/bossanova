@@ -56,6 +56,9 @@ type Input struct {
 	// reads "needs sign-off" or "blocked"; none at all reads "blocked", because
 	// a park that names no cause is not a sign-off anyone can give.
 	ParkCodes []string
+	// VerifyWaitReason is the reason code of a "waiting: <reason>" boss/verify
+	// status on a DISPLAY_STATUS_VERIFYING session, empty for a live claim.
+	VerifyWaitReason string
 }
 
 // Output is the rendered result clients consume.
@@ -210,8 +213,10 @@ const (
 
 // VerifyingLabel is the PR-derived label for DISPLAY_STATUS_VERIFYING: ordinary
 // CI settled and a pending boss/verify status holds the head (BOS-1382). It
-// carries a spinner because verification is in progress.
-const VerifyingLabel = "verifying"
+// carries a spinner because verification is in progress. A "waiting: <reason>"
+// status shows attention.VerifyWaitLabel instead. It is the list's label for
+// the same head, so the two surfaces cannot disagree.
+const VerifyingLabel = attention.VerifyingLabel
 
 // NeedsHumanLabel is the label DISPLAY_STATUS_NEEDS_HUMAN carried before a
 // verify park split into NeedsSignOffLabel and BlockedLabel. Only the
@@ -501,7 +506,12 @@ func UnderlyingIntent(sess *pb.Session) pb.DisplayIntent {
 // parkCodes are the verify park's codes; PreErroredOutput passes none, so its
 // answer for older pins stays what it was.
 func preErroredBlockedIntent(sess *pb.Session, parkCodes []string, servedLabel string, servedIntent pb.DisplayIntent) pb.DisplayIntent {
-	if out, ok := prOutput(sess, parkCodes); ok && out.Label == servedLabel {
+	// The served wait reason is not on the wire, but a wait label under
+	// VERIFYING can only come from prOutput's VERIFYING branch.
+	if sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_VERIFYING && attention.IsVerifyWaitLabel(servedLabel) {
+		return verifyingOutput(sess, servedLabel).Intent
+	}
+	if out, ok := prOutput(sess, parkCodes, ""); ok && out.Label == servedLabel {
 		return out.Intent
 	}
 	if out, ok := workflowOutput(sess); ok && out.Label == servedLabel {
@@ -712,7 +722,8 @@ func PreVerifyStatusOutput(sess *pb.Session) Output {
 		Spinner: sess.GetDisplaySpinner(),
 	}
 	switch {
-	case sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_VERIFYING && served.Label == VerifyingLabel,
+	case sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_VERIFYING &&
+		(served.Label == VerifyingLabel || attention.IsVerifyWaitLabel(served.Label)),
 		sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN && isVerifyParkLabel(served.Label):
 	default:
 		return served
@@ -941,7 +952,7 @@ func cascade(in Input, withReady bool) Output {
 	if in.Session != nil && in.Session.DisplayIsRepairing {
 		return Output{Label: "repairing", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true}
 	}
-	if out, ok := prOutput(in.Session, in.ParkCodes); ok {
+	if out, ok := prOutput(in.Session, in.ParkCodes, in.VerifyWaitReason); ok {
 		return out
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_IDLE {
@@ -1009,7 +1020,9 @@ func workflowOutput(sess *pb.Session) (Output, bool) {
 	}
 }
 
-func prOutput(sess *pb.Session, parkCodes []string) (Output, bool) {
+// prOutput is the PR-derived label. verifyWaitReason is read only for
+// DISPLAY_STATUS_VERIFYING.
+func prOutput(sess *pb.Session, parkCodes []string, verifyWaitReason string) (Output, bool) {
 	if sess == nil {
 		return Output{}, false
 	}
@@ -1039,16 +1052,34 @@ func prOutput(sess *pb.Session, parkCodes []string) (Output, bool) {
 		}
 		return Output{Label: labelChecking, Intent: intent, Spinner: true}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_VERIFYING:
-		intent := pb.DisplayIntent_DISPLAY_INTENT_INFO
-		if sess.DisplayHasChangesRequested || sess.DisplayHasFailures {
-			intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+		// No dated apiversion bump for a wait reading its short wait label
+		// instead of "verifying", and why: every client era renders the served
+		// display_label verbatim, and each wait label starts with "waiting" or
+		// is an existing wait label. A down-convert to "verifying" would restore
+		// the contradiction with the list, which reads the same wait label;
+		// PreVerifyStatusOutput still restores "checking" for pins before
+		// V20260916. See
+		// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+		label := VerifyingLabel
+		if verifyWaitReason != "" {
+			label = attention.VerifyWaitLabel(verifyWaitReason)
 		}
-		return Output{Label: VerifyingLabel, Intent: intent, Spinner: true}, true
+		return verifyingOutput(sess, label), true
 	case pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
 		return VerifyParkOutput(parkCodes), true
 	default:
 		return Output{}, false
 	}
+}
+
+// verifyingOutput is DISPLAY_STATUS_VERIFYING's tuple for label: INFO, or
+// DANGER with changes requested or failures, with a spinner.
+func verifyingOutput(sess *pb.Session, label string) Output {
+	intent := pb.DisplayIntent_DISPLAY_INTENT_INFO
+	if sess.GetDisplayHasChangesRequested() || sess.GetDisplayHasFailures() {
+		intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+	}
+	return Output{Label: label, Intent: intent, Spinner: true}
 }
 
 // IsVerifyParkAttention reports whether sess carries the attention the bossd

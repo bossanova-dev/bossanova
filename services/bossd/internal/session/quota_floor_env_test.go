@@ -25,7 +25,7 @@ func TestManagedSessionEnv_CronQuotaFloor(t *testing.T) {
 		{"attended", &models.Session{ID: "s6", Plan: "/boss-verify"}, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := ManagedSessionEnv(tt.sess, "agent-1", "claude")["BOSS_GITHUB_QUOTA_FLOOR"]
+			got, ok := ManagedSessionEnv(tt.sess, "agent-1", "claude", nil)["BOSS_GITHUB_QUOTA_FLOOR"]
 			if tt.want == "" {
 				if ok {
 					t.Fatalf("BOSS_GITHUB_QUOTA_FLOOR = %q, want it unset", got)

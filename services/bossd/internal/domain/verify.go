@@ -2,6 +2,8 @@ package domain
 
 import (
 	"errors"
+	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -149,4 +151,57 @@ type VerifyBlocker struct {
 	Line     int    `json:"line"`
 	Summary  string `json:"summary"`
 	Text     string `json:"text"`
+}
+
+// VerifyFollowUp selects verify notes to file as tracker tickets.
+type VerifyFollowUp struct {
+	VerifyNoteIDs []string
+	All           bool
+}
+
+// VerifyFollowUpResult is verify-followups.mjs follow-up's outcome.
+type VerifyFollowUpResult struct {
+	OK                   bool                 `json:"ok"`
+	DryRun               bool                 `json:"dryRun,omitempty"`
+	Reason               string               `json:"reason,omitempty"`
+	UnknownVerifyNoteIDs []string             `json:"ids,omitempty"`
+	HeadSHA              string               `json:"head,omitempty"`
+	Comment              string               `json:"comment,omitempty"`
+	Notes                []VerifyNoteFollowUp `json:"results,omitempty"`
+}
+
+// VerifyFollowUpTicket names the filed tracker ticket.
+type VerifyFollowUpTicket struct {
+	Identifier string `json:"identifier"`
+	URL        string `json:"url"`
+}
+
+// VerifyNoteFollowUp is one selected verify note's outcome.
+type VerifyNoteFollowUp struct {
+	VerifyNoteID string                `json:"note"`
+	Outcome      string                `json:"outcome"`
+	Ticket       *VerifyFollowUpTicket `json:"ticket,omitempty"`
+	IsLinked     bool                  `json:"linked"`
+	Reason       string                `json:"reason,omitempty"`
+}
+
+var verifyNoteIDPattern = regexp.MustCompile(`^note:[0-9a-f]{12}$`)
+
+// Normalize validates the exclusive selection and removes duplicate IDs in order.
+func (s VerifyFollowUp) Normalize() (VerifyFollowUp, error) {
+	if s.All == (len(s.VerifyNoteIDs) > 0) {
+		return VerifyFollowUp{}, fmt.Errorf("%w: select exactly one of --note or --all", ErrVerifyInvalidTarget)
+	}
+	out := VerifyFollowUp{All: s.All}
+	seen := make(map[string]bool)
+	for _, id := range s.VerifyNoteIDs {
+		if !verifyNoteIDPattern.MatchString(id) {
+			return VerifyFollowUp{}, fmt.Errorf("%w: invalid verify note id %q", ErrVerifyInvalidTarget, id)
+		}
+		if !seen[id] {
+			out.VerifyNoteIDs = append(out.VerifyNoteIDs, id)
+			seen[id] = true
+		}
+	}
+	return out, nil
 }

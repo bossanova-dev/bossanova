@@ -281,7 +281,8 @@ func TestOpenPRSnapshotCheckSetParity(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("snapshot checks = %+v\nper-PR checks   = %+v", got, want)
 	}
-	if len(got.Checks) != 5 || !got.HasBuildReceipt || got.Checks[0].Name != "lint" || *got.Checks[0].Conclusion != vcs.CheckConclusionSuccess {
+	if len(got.Checks) != 5 || !got.HasBuildReceipt || got.Checks[0].Name != "lint" || *got.Checks[0].Conclusion != vcs.CheckConclusionSuccess ||
+		got.Checks[0].Workflow != "ci" || got.Checks[2].Workflow != "release" {
 		t.Fatalf("checks = %+v; want 5 gates led by the re-run lint success, with a build receipt", got)
 	}
 

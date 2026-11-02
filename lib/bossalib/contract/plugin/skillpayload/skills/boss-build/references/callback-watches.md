@@ -125,8 +125,7 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    _look_, not _act_. Query real state before changing course:
 
    ```bash
-   gh pr checks "$PR" --json name,state -q '[.[]|{name,state}]'   # actual check rollup
-   gh pr view  "$PR" --json state,isDraft,mergedAt,mergeStateStatus
+   node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" view --pr "$PR"   # state, isDraft, mergeStateStatus, rollup
    ```
 
    Decide from that real state, not from the trigger name, and record which conjunct declined:
@@ -148,11 +147,11 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    cached `boss pr state`; labelled `gh` only when no daemon answers) and pass that file as
    `--pr-state`: it supplies the head SHA, the checks and the head's workflow runs, so a head run
    still queued or running holds the verdict at `pending`, and a prior context whose workflow has no
-   run on the head is `notTriggered`, not absent. Pass the prior head's
-   `gh pr checks --json name,state,bucket,workflow` payload as `--prior` whenever the run has it (a
-   bare array of names still works): a path-filtered follow-up push shrinks the check set, and the
+   run on the head is `notTriggered`, not absent. Pass the prior head's `pr-state.mjs view` output
+   (its `statusCheckRollup`, saved only from a read that exited 0) as `--prior` whenever the run has it (a bare array of names still works): a path-filtered follow-up push shrinks the check set, and the
    reason `absent-gate` is what separates a gate that vanished from one that is merely queued.
-   Decide the merge-state half with the same helper's `merge-state` subcommand.
+   Decide the merge-state half with the same helper's `merge-state` subcommand. That one reading
+   never settles green: only the bounded poll below (two fresh greens of one head) does.
 
    A check count of zero is not a pass. An empty commit that skips CI can produce a head SHA with no
    merge workflow runs; a rollup containing only third-party checks can satisfy a bare non-empty

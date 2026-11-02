@@ -36,6 +36,8 @@ if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/bo
 | Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …`                              |
 | What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                                              |
 | Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`                                   |
+| This session's PR number                         | `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" session-pr --field number`                     |
+| Head, base, draft, mergeability, merge state     | `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" view [--pr <n>] [--field <name>]`              |
 | What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …`                              |
 | Read the `boss/build` receipt                    | `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" read …`                                   |
 | Carry the receipt to the pushed head             | `node "$BOSS_REPAIR_TOOLBOX/repair/receipt-carry.mjs" …` (step 4)                        |
@@ -78,8 +80,8 @@ judgement.
    `git push --force-with-lease`. Never force-push over commits someone else pushed.
 
 4. **Don't push a CI fix onto a head that moved.** Note the PR head SHA when you start
-   (`gh pr view --json headRefOid -q .headRefOid`). Just before pushing a fix for a check failure,
-   re-read it; if someone else moved the head, that CI result is stale — keep your commit, don't push
+   (`node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" view --fresh --field headRefOid`). Just before pushing a fix for a
+   check failure, re-read it the same way (`--fresh`: a cached head can hide another actor's push); if someone else moved the head, that CI result is stale — keep your commit, don't push
    it, and report it as built but unpushed. Your own pushes don't count: re-baseline after each one.
    Review-feedback fixes don't depend on CI, so they are not affected.
    If someone else moved the head, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger human-push-on-agent-pr --where "boss-repair push guard"` (never fatal).
@@ -188,7 +190,7 @@ judgement.
      [ "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$BRANCH")" ]; then
      node "$BOSS_REPAIR_TOOLBOX/repair/receipt-carry.mjs" --start-sha "$START_SHA" --head "$(git rev-parse HEAD)" \
        --carry-findings "$CARRY_FINDINGS_FILE" \
-       --target-url "$(gh pr view --json url -q .url 2>/dev/null)"
+       --target-url "$(node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" session-pr --field url 2>/dev/null)"
    else
      echo "warning: boss/build receipt not posted — fetch failed or HEAD is not origin/$BRANCH" >&2
    fi
@@ -205,8 +207,9 @@ judgement.
    remains unreadable or failed. Neither changes the pass's outcome:
 
    ```bash
-   if node "$BOSS_REPAIR_TOOLBOX/verify/verify-draft.mjs" ready --pr "$(gh pr view --json number -q .number)" --start-sha "$START_SHA"; then
-     node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" arm-reverify --pr "$(gh pr view --json number -q .number)" --head "$(git rev-parse HEAD)"
+   PR_NUMBER="$(node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" session-pr --field number)"
+   if node "$BOSS_REPAIR_TOOLBOX/verify/verify-draft.mjs" ready --pr "$PR_NUMBER" --start-sha "$START_SHA"; then
+     node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" arm-reverify --pr "$PR_NUMBER" --head "$(git rev-parse HEAD)"
    fi
    ```
 
@@ -334,26 +337,30 @@ BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolb
 if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
 CHECK_DIR="$(git rev-parse --git-dir)/boss-repair-checks"
 mkdir -p "$CHECK_DIR"
-HEAD_SHA="$(gh pr view --json headRefOid -q .headRefOid)" || exit 1
-gh pr checks --json name,state,bucket,workflow > "$CHECK_DIR/checks.json"
-gh api "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?per_page=100" --paginate --slurp > "$CHECK_DIR/runs.json"
-gh run list --commit "$HEAD_SHA" --json name,workflowName,status,conclusion,headSha,event --limit 100 > "$CHECK_DIR/workflow-runs.json"
+PR_NUMBER="$(node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" session-pr --field number)"
+test -n "$PR_NUMBER" || exit 1
+node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" read --pr "$PR_NUMBER" --fresh > "$CHECK_DIR/pr-state.json"
 node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify \
-  --head-sha "$HEAD_SHA" --observed-sha "$HEAD_SHA" \
-  --checks "$CHECK_DIR/checks.json" --check-runs "$CHECK_DIR/runs.json" \
-  --workflow-runs "$CHECK_DIR/workflow-runs.json" --prior "$CHECK_DIR/prior-contexts.json"
+  --pr-state "$CHECK_DIR/pr-state.json" --prior "$CHECK_DIR/prior-contexts.json"
 ```
 
-Before you push, copy the current head's `checks.json` payload to `$CHECK_DIR/prior-contexts.json`
+One `green` reading is not settled: green counts only once `ci-wait.mjs run --pr "$PR_NUMBER"`
+returns `settled` (two fresh greens of the same head an interval apart).
+
+Before you push, save the current head's check set as the prior:
+`node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" view --fresh --pr "$PR_NUMBER" > "$CHECK_DIR/prior.tmp" && mv "$CHECK_DIR/prior.tmp" "$CHECK_DIR/prior-contexts.json" || rm -f "$CHECK_DIR/prior.tmp" "$CHECK_DIR/prior-contexts.json"`
+(a failed read leaves no prior, never an older head's or an empty one)
 (a bare JSON array of names is still accepted): a path-filtered push can shrink the check set, and
 without the previous set the classifier cannot tell "all gates passed" from "fewer gates ran"
-(`provesGreen` stays false). The payload's `workflow` and conclusions let the classifier drop a
-context whose workflow did not run on the new head (`notTriggered`) and name the
-`reported-on-prior-head` remedy. A head workflow run still queued or running holds the verdict at
-`pending`.
+(`provesGreen` stays false). Its conclusions name the `reported-on-prior-head` remedy, and a
+rollup that names each check's workflow (both the daemon's and the gh fallback's do) lets the classifier drop a
+context whose workflow did not run on the new head (`notTriggered`). A head workflow run still
+queued or running holds the verdict at `pending`.
 
-**GraphQL quota.** GitHub's GraphQL quota runs out before REST. When a `gh pr …` read is
-rate-limited, use REST and say so in the report (start the line with `DEGRADED_READ`):
+**GraphQL quota.** GitHub's GraphQL quota runs out before REST. When the reader reported
+`source: gh-fallback` and that `gh` read was rate-limited, use REST and say so in the report (start
+the line with `DEGRADED_READ`). A daemon `RESOURCE_EXHAUSTED` is `DEGRADED_READ` too: wait it out,
+never re-read through `gh`:
 
 | Question     | REST                                                                     |
 | ------------ | ------------------------------------------------------------------------ |
@@ -437,7 +444,7 @@ Run passes in a loop, at most **5 repair passes**:
    or `parked` with every fixed or declined thread resolved. Re-poll review feedback after checks go
    green — that is when fresh threads appear. Before exiting, make sure something will still observe
    the PR (`$CHECK_VERDICT_JSON` is the classify output above, `$PR_VIEW_JSON` is
-   `gh pr view --json state,isDraft,mergedAt,mergeStateStatus`, `$WATCH_LIST_JSON` is
+   `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" view --pr "$PR_NUMBER"`, `$WATCH_LIST_JSON` is
    `boss callback list --chat "$BOSS_AGENT_SESSION_ID" --json`):
 
    ```bash

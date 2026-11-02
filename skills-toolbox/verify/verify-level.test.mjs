@@ -107,3 +107,21 @@ test('park level matches the shared Go contract fixture', () => {
     assert.equal(parkLevel({ codes, label }), level, name)
   }
 })
+
+test('judge additions ask for review with their grounded file and reason', () => {
+  const area = {
+    area: 'judge:access',
+    label: 'Access',
+    paths: ['src/access.mjs'],
+    reason: 'A check was removed',
+    source: 'judge',
+    defaultAsk: 'always',
+  }
+  const result = confidence(levelFacts(facts, { judgeAreas: [area] }))
+  assert.equal(result.level, 'moderate')
+  assert.deepEqual(legacyCodes(result), ['always-human-path'])
+  assert.ok(levelLabel(result).includes(area.label))
+  assert.ok(
+    result.reasons.some((reason) => reason.includes(area.paths[0]) && reason.includes(area.reason)),
+  )
+})

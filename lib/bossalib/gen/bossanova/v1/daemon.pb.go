@@ -13566,8 +13566,11 @@ type PRCheck struct {
 	Description string `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
 	// The provider could not classify the upstream status; never a pass.
 	IsUnclassified bool `protobuf:"varint,5,opt,name=is_unclassified,json=isUnclassified,proto3" json:"is_unclassified,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The Actions workflow the check belongs to; empty for a commit status. It
+	// lets a prior head's check be matched against the head's workflow runs.
+	WorkflowName  string `protobuf:"bytes,6,opt,name=workflow_name,json=workflowName,proto3" json:"workflow_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PRCheck) Reset() {
@@ -13633,6 +13636,13 @@ func (x *PRCheck) GetIsUnclassified() bool {
 		return x.IsUnclassified
 	}
 	return false
+}
+
+func (x *PRCheck) GetWorkflowName() string {
+	if x != nil {
+		return x.WorkflowName
+	}
+	return ""
 }
 
 // PRCheckVerdict is the check verdict over the head's ordinary checks; a
@@ -17454,7 +17464,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\tpr_number\x18\x02 \x01(\x05R\bprNumber\x12.\n" +
 	"\x13should_bypass_cache\x18\x03 \x01(\bR\x11shouldBypassCache\x12C\n" +
 	"\x1eshould_include_review_comments\x18\x04 \x01(\bR\x1bshouldIncludeReviewComments\x12?\n" +
-	"\x1cshould_include_workflow_runs\x18\x05 \x01(\bR\x19shouldIncludeWorkflowRuns\"\xee\x01\n" +
+	"\x1cshould_include_workflow_runs\x18\x05 \x01(\bR\x19shouldIncludeWorkflowRuns\"\x93\x02\n" +
 	"\aPRCheck\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x121\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x19.bossanova.v1.CheckStatusR\x06status\x12B\n" +
@@ -17462,7 +17472,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"conclusion\x18\x03 \x01(\x0e2\x1d.bossanova.v1.CheckConclusionH\x00R\n" +
 	"conclusion\x88\x01\x01\x12 \n" +
 	"\vdescription\x18\x04 \x01(\tR\vdescription\x12'\n" +
-	"\x0fis_unclassified\x18\x05 \x01(\bR\x0eisUnclassifiedB\r\n" +
+	"\x0fis_unclassified\x18\x05 \x01(\bR\x0eisUnclassified\x12#\n" +
+	"\rworkflow_name\x18\x06 \x01(\tR\fworkflowNameB\r\n" +
 	"\v_conclusion\"\xc1\x02\n" +
 	"\x0ePRCheckVerdict\x127\n" +
 	"\x05state\x18\x01 \x01(\x0e2!.bossanova.v1.PRCheckVerdictStateR\x05state\x12\x16\n" +

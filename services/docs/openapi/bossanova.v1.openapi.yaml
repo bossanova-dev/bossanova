@@ -15566,6 +15566,12 @@ components:
           type: boolean
           title: is_unclassified
           description: The provider could not classify the upstream status; never a pass.
+        workflowName:
+          type: string
+          title: workflow_name
+          description: |-
+            The Actions workflow the check belongs to; empty for a commit status. It
+             lets a prior head's check be matched against the head's workflow runs.
       title: PRCheck
       additionalProperties: false
       description: PRCheck is one check run or commit status on the PR head.

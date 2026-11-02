@@ -10,6 +10,9 @@ import {
   daemonFirstReader,
   main,
   readPRState,
+  readPRView,
+  readSessionPR,
+  viewFromEnvelope,
   waitAnswered,
   waitPRState,
 } from './pr-state.mjs'
@@ -280,7 +283,13 @@ test('read CLI: the daemon path prints the envelope verbatim', () => {
 
 test('read CLI: the fallback path builds the same shape from labelled gh reads', () => {
   const rollup = [
-    { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+    {
+      __typename: 'CheckRun',
+      name: 'build',
+      status: 'COMPLETED',
+      conclusion: 'SUCCESS',
+      workflowName: 'CI',
+    },
     {
       __typename: 'StatusContext',
       context: 'boss/verify',
@@ -353,6 +362,7 @@ test('read CLI: the fallback path builds the same shape from labelled gh reads',
       conclusion: 'success',
       description: '',
       is_unclassified: false,
+      workflow_name: 'CI',
     },
     {
       name: 'boss/verify',
@@ -360,6 +370,7 @@ test('read CLI: the fallback path builds the same shape from labelled gh reads',
       conclusion: '',
       description: 'verifying… t',
       is_unclassified: false,
+      workflow_name: '',
     },
   ])
   assert.deepEqual(out.state.workflow_runs, [
@@ -393,4 +404,265 @@ test('read CLI: argv is parsed strictly', () => {
   assert.throws(() => main(['read']), UsageError)
   assert.throws(() => main(['fetch', '--pr', '7']), UsageError)
   assert.throws(() => main(['read', '--pr', '7', '--timeout-ms', '5']), UsageError)
+})
+
+// recorded lists every spawn as [command, args, env.BOSS_GH_USAGE_LABEL].
+const recorded = (io) =>
+  io.spawns.map(({ cmd, args, opts }) => [cmd, args, opts.env?.[GH_USAGE_LABEL_ENV]])
+const viewEnvelope = (extra = {}) =>
+  envelope({
+    pr_number: 7,
+    state: 'open',
+    is_draft: true,
+    head_branch: 'feat',
+    is_mergeable: true,
+    merge_state_status: 'blocked',
+    review_decision: 'changes_requested',
+    ...extra,
+  })
+
+test('view: the daemon answers in gh pr view shape with no gh spawn and no runs read', () => {
+  const io = fakeIo({ bossAnswer: () => json(viewEnvelope()) })
+  const { exit, out } = main(['view', '--pr', '7', '--repo', 'acme/widgets'], io.deps)
+  assert.equal(exit, 0)
+  assert.deepEqual(out, {
+    number: 7,
+    state: 'OPEN',
+    isDraft: true,
+    headRefOid: HEAD,
+    headRefName: 'feat',
+    baseRefName: 'main',
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'BLOCKED',
+    reviewDecision: 'CHANGES_REQUESTED',
+    statusCheckRollup: [
+      { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS', description: '' },
+    ],
+    source: 'daemon',
+  })
+  assert.equal('mergedAt' in out, false, 'a merged time the envelope lacks is never invented')
+  assert.deepEqual(recorded(io), [
+    [BOSS, ['pr', 'state', '7', '--json', '--repo', 'acme/widgets'], undefined],
+  ])
+})
+
+test('view: mergeability true/false/unset maps to MERGEABLE/CONFLICTING/UNKNOWN', () => {
+  for (const [isMergeable, want] of [
+    [true, 'MERGEABLE'],
+    [false, 'CONFLICTING'],
+    [null, 'UNKNOWN'],
+    [undefined, 'UNKNOWN'],
+  ]) {
+    assert.equal(viewFromEnvelope(viewEnvelope({ is_mergeable: isMergeable })).mergeable, want)
+  }
+  const merged = viewFromEnvelope(viewEnvelope({ state: 'merged', merge_state_status: '' }))
+  assert.equal(merged.state, 'MERGED')
+  assert.equal(merged.mergeStateStatus, 'UNKNOWN')
+  assert.equal(
+    viewFromEnvelope(viewEnvelope({ review_decision: 'required' })).reviewDecision,
+    'REVIEW_REQUIRED',
+  )
+  assert.equal(viewFromEnvelope(viewEnvelope({ review_decision: '' })).reviewDecision, '')
+})
+
+test('view: --fresh reaches the daemon read; --field prints the raw value', () => {
+  const io = fakeIo({ bossAnswer: () => json(viewEnvelope({ is_draft: false })) })
+  const res = main(['view', '--pr', '7', '--fresh', '--field', 'isDraft'], io.deps)
+  assert.equal(res.text, 'false')
+  assert.ok(io.spawns[0].args.includes('--fresh'))
+  const base = main(['view', '--pr', '7', '--field', 'baseRefName'], io.deps)
+  assert.equal(base.text, 'main')
+  assert.equal(main(['view', '--pr', '7', '--field', 'nope'], io.deps).text, '')
+})
+
+// The fallback table: exactly a missing daemon or binary reaches labelled gh; every other daemon
+// failure is a failed read that spends no GitHub quota.
+const FALLBACK_TABLE = [
+  ['UNAVAILABLE', { bossAnswer: () => failure('UNAVAILABLE', 'unavailable') }, 'gh'],
+  ['UNIMPLEMENTED', { bossAnswer: () => failure('UNIMPLEMENTED', 'unimplemented') }, 'gh'],
+  ['NOT_FOUND', { bossAnswer: () => failure('NOT_FOUND', 'not_found') }, 'gh'],
+  ['no boss binary', { binary: false }, 'gh'],
+  ['binary vanished', { bossAnswer: () => ({ error: { code: 'ENOENT' } }) }, 'gh'],
+  [
+    'RESOURCE_EXHAUSTED',
+    { bossAnswer: () => failure('RESOURCE_EXHAUSTED', 'resource_exhausted') },
+    'error',
+  ],
+  [
+    'INVALID_ARGUMENT',
+    { bossAnswer: () => failure('INVALID_ARGUMENT', 'invalid_argument') },
+    'error',
+  ],
+]
+const ghViewPayload = {
+  number: 7,
+  state: 'OPEN',
+  isDraft: false,
+  headRefOid: HEAD,
+  headRefName: 'feat',
+  baseRefName: 'main',
+  mergeable: 'CONFLICTING',
+  mergeStateStatus: 'DIRTY',
+  reviewDecision: '',
+  statusCheckRollup: [],
+}
+
+test('view: falls back to labelled gh exactly for a missing daemon or binary', () => {
+  for (const [name, io0, want] of FALLBACK_TABLE) {
+    const io = fakeIo({
+      ...io0,
+      ghAnswer: (args) => (args[1] === 'view' ? json(ghViewPayload) : assert.fail(args.join(' '))),
+    })
+    const res = main(['view', '--pr', '7'], io.deps)
+    const gh = recorded(io).filter(([cmd]) => cmd === 'gh')
+    if (want === 'gh') {
+      assert.equal(res.exit, 0, name)
+      assert.equal(res.out.source, 'gh-fallback', name)
+      assert.equal(res.out.mergeable, 'CONFLICTING', name)
+      assert.deepEqual(
+        gh,
+        [
+          [
+            'gh',
+            [
+              'pr',
+              'view',
+              '7',
+              '--json',
+              'number,headRefOid,headRefName,baseRefName,state,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup',
+            ],
+            FALLBACK_LABELS.PR_STATE,
+          ],
+        ],
+        name,
+      )
+    } else {
+      assert.equal(res.exit, 1, name)
+      assert.equal(res.out.source, 'daemon', name)
+      assert.equal(res.out.error.code, name, name)
+      assert.deepEqual(gh, [], `${name}: no gh spawn`)
+    }
+  }
+})
+
+test('view: an envelope without a head SHA is a failed read, never a gh retry', () => {
+  const io = fakeIo({ bossAnswer: () => json({ pr_number: 7 }) })
+  const res = readPRView({ pr: 7, deps: io.deps })
+  assert.equal(res.exit, 1)
+  assert.equal(res.out.error.code, 'MALFORMED')
+  assert.equal(io.gh().length, 0)
+})
+
+// sessionIo answers `boss env`, `boss show` and `boss pr state` from the given bodies, `git branch`
+// with `feat`, and `gh pr list` with one open PR.
+function sessionIo({ env, show, binary = true, list = [{ number: 9, url: 'https://gh/pr/9' }] }) {
+  const io = fakeIo({
+    binary,
+    bossAnswer: (args) => {
+      if (args[0] === 'env') return env
+      if (args[0] === 'show') return show
+      return json(viewEnvelope({ pr_number: Number(args[2]) }))
+    },
+    ghAnswer: (args) =>
+      args[1] === 'list' ? json(list) : assert.fail(`unexpected gh ${args.join(' ')}`),
+  })
+  const spawn = io.deps.spawn
+  io.deps.spawn = (cmd, args, opts) => {
+    if (cmd !== 'git') return spawn(cmd, args, opts)
+    io.spawns.push({ cmd, args, opts })
+    return { status: 0, stdout: 'feat\n' }
+  }
+  return io
+}
+const SESSION = json({ session: { session_id: 'sess-1', repo_id: 'r1' } })
+const shown = (prNumber, prUrl = '') =>
+  json({ session: { id: 'sess-1', pr_number: prNumber, pr_url: prUrl } })
+
+test('session-pr: the session record answers with no gh spawn', () => {
+  const io = sessionIo({ env: SESSION, show: shown(7, 'https://gh/pr/7') })
+  const res = readSessionPR({ deps: io.deps })
+  assert.deepEqual(res, { exit: 0, out: { number: 7, url: 'https://gh/pr/7', source: 'daemon' } })
+  assert.deepEqual(recorded(io), [
+    [BOSS, ['env', '--json'], undefined],
+    [BOSS, ['show', 'sess-1', '--json'], undefined],
+  ])
+  assert.equal(main(['session-pr', '--field', 'number'], io.deps).text, '7')
+})
+
+test('session-pr: no session, no recorded PR or no daemon reads labelled gh pr list --head', () => {
+  const cases = [
+    ['no session', { env: json({ session: { session_id: '' } }) }, 'no-session'],
+    ['pr_number null', { env: SESSION, show: shown(null) }, 'no-session-pr'],
+    ['daemon down', { env: failure('UNAVAILABLE', 'unavailable') }, 'daemon-unavailable'],
+    [
+      'old daemon',
+      { env: SESSION, show: failure('UNIMPLEMENTED', 'unimplemented') },
+      'daemon-unimplemented',
+    ],
+    [
+      'session unknown',
+      { env: SESSION, show: failure('NOT_FOUND', 'not_found') },
+      'daemon-not_found',
+    ],
+    ['no boss binary', { binary: false }, 'no-boss-binary'],
+  ]
+  for (const [name, answers, reason] of cases) {
+    const io = sessionIo(answers)
+    const res = readSessionPR({ deps: io.deps })
+    assert.deepEqual(
+      res.out,
+      { number: 9, url: 'https://gh/pr/9', source: 'gh-fallback', fallbackReason: reason },
+      name,
+    )
+    const gh = recorded(io).filter(([cmd]) => cmd === 'gh')
+    assert.deepEqual(
+      gh,
+      [
+        [
+          'gh',
+          ['pr', 'list', '--head', 'feat', '--state', 'open', '--json', 'number,url'],
+          FALLBACK_LABELS.PR_STATE,
+        ],
+      ],
+      name,
+    )
+  }
+  const none = readSessionPR({
+    deps: sessionIo({ env: SESSION, show: shown(null), list: [] }).deps,
+  })
+  assert.deepEqual([none.exit, none.out.number], [0, null])
+})
+
+test('session-pr: a daemon failure that is not a missing daemon spawns no gh', () => {
+  for (const code of ['RESOURCE_EXHAUSTED', 'INVALID_ARGUMENT']) {
+    const io = sessionIo({ env: SESSION, show: failure(code, code.toLowerCase()) })
+    const res = readSessionPR({ deps: io.deps })
+    assert.equal(res.exit, 1, code)
+    assert.equal(res.out.error.code, code)
+    assert.equal(io.gh().length, 0, code)
+  }
+})
+
+test('view with no --pr reads the session PR; no open PR is a failed read', () => {
+  const io = sessionIo({ env: SESSION, show: shown(7) })
+  const res = main(['view', '--field', 'number'], io.deps)
+  assert.equal(res.text, '7')
+  assert.deepEqual(io.spawns.at(-1).args.slice(0, 3), ['pr', 'state', '7'])
+  assert.equal(io.gh().length, 0)
+  const none = main(['view'], sessionIo({ env: SESSION, show: shown(null), list: [] }).deps)
+  assert.equal(none.exit, 1)
+  assert.equal(none.out.error.code, 'NO_PR')
+  const quiet = main(
+    ['view', '--field', 'number'],
+    sessionIo({ env: SESSION, show: shown(null), list: [] }).deps,
+  )
+  assert.deepEqual([quiet.exit, quiet.text, quiet.toStderr], [1, undefined, true])
+})
+
+test('view and session-pr CLI: argv is parsed strictly per verb', () => {
+  assert.throws(() => main(['session-pr', '--pr', '7']), UsageError)
+  assert.throws(() => main(['read', '--pr', '7', '--field', 'state']), UsageError)
+  assert.throws(() => main(['view', '--pr', 'x']), UsageError)
+  assert.throws(() => main(['view', '--field', '.state']), UsageError)
+  assert.throws(() => main(['view', '--repo', 'acme/widgets']), UsageError)
 })

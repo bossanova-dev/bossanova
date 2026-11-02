@@ -1,0 +1,75 @@
+{
+  "repo": "acme/widgets",
+  "pr_number": 7,
+  "state": "open",
+  "is_draft": false,
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_branch": "feat",
+  "base_branch": "main",
+  "is_mergeable": true,
+  "merge_state_status": "clean",
+  "review_decision": "",
+  "latest_review_state": "",
+  "checks": [
+    {
+      "name": "build",
+      "status": "completed",
+      "conclusion": "success",
+      "description": "",
+      "is_unclassified": false,
+      "workflow_name": "CI"
+    },
+    {
+      "name": "docs-lint",
+      "status": "completed",
+      "conclusion": "success",
+      "description": "",
+      "is_unclassified": false,
+      "workflow_name": "Docs"
+    },
+    {
+      "name": "Terraform Cloud",
+      "status": "completed",
+      "conclusion": "success",
+      "description": "",
+      "is_unclassified": false
+    }
+  ],
+  "check_verdict": {
+    "state": "green",
+    "reason": "ok",
+    "total_count": 3,
+    "passed_count": 3,
+    "failed_count": 0,
+    "pending_count": 0,
+    "skipped_count": 0,
+    "unclassified_count": 0
+  },
+  "verify_phase": {
+    "kind": "none",
+    "reason": "",
+    "label": ""
+  },
+  "has_build_receipt": false,
+  "has_settled_workflow_runs": null,
+  "held_workflow_runs": [],
+  "review_comments": [],
+  "observed_at": "2026-11-02T09:00:00Z",
+  "workflow_runs": [
+    {
+      "name": "CI",
+      "status": "completed",
+      "conclusion": "success",
+      "event": "pull_request",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "Docs",
+      "status": "completed",
+      "conclusion": "success",
+      "event": "pull_request",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "is_workflow_runs_read": true
+}

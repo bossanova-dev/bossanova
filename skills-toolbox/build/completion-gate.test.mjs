@@ -579,7 +579,7 @@ function fastHarness(t, gate = {}) {
       return null
     }
   }
-  return { dir, state, out, run, record }
+  return { dir, state, out, run, record, deps: { spawn, cwd: dir } }
 }
 const pr = ['--pr', '42']
 const repoFlags = ['--repo', 'owner/repo']
@@ -1146,4 +1146,83 @@ test('fast path posts blocked with the complete blocker file and never merges', 
     blockers,
   })
   assert.equal(result.reason, 'blocked:blockers')
+})
+
+const judgeEnvelope = {
+  version: 1,
+  headSha: HEAD,
+  baseSha: OTHER,
+  files: ['a.go'],
+  areas: [],
+  confidence: { level: 'high', asks: [] },
+  pr: { title: 'Feature', body: '' },
+}
+test('fast path: judge-required claims then settles the supplied areas through the CLI', (t) => {
+  let phase = 1
+  const h = fastHarness(t, {
+    judge: () =>
+      phase === 1
+        ? { verdict: 'judge-required', headSha: HEAD, judgeEnvelope }
+        : { verdict: 'pass', headSha: HEAD },
+    post: (args) => (args.includes('claim') ? { won: true, token: 'tok' } : { posted: true }),
+    merge: mergeReply,
+  })
+  assert.deepEqual(h.run(), {
+    runId: 'test-run',
+    action: 'judge-required',
+    token: 'tok',
+    judgeEnvelope,
+  })
+  assert.equal(h.record(), null)
+  assert.deepEqual(h.state.calls, [judge(), postCall('claim')])
+  phase = 2
+  const areas = join(h.dir, 'judge.json'),
+    envelope = join(h.dir, 'envelope.json')
+  writeFileSync(areas, JSON.stringify({ version: 1, head: HEAD, areas: [] }))
+  writeFileSync(envelope, JSON.stringify(green()))
+  const result = main(
+    ['fast-path', '--envelope', envelope, '--out', h.out, '--judge-areas', areas, '--token', 'tok'],
+    h.deps,
+  )
+  assert.equal(result.reason, 'merged-by-verify')
+  assert.deepEqual(h.state.calls.slice(2), [
+    judge(['--judge-areas', areas]),
+    postCall('pass', ['--token', 'tok']),
+    mergeCall(['--token', 'tok']),
+  ])
+})
+test('fast path: extensions then judge retain the existing claim', (t) => {
+  const h = fastHarness(t, { judge: { verdict: 'judge-required', headSha: HEAD, judgeEnvelope } })
+  const results = join(h.dir, 'extensions.json')
+  assert.deepEqual(h.run({ extensionResults: results, token: 'tok' }), {
+    runId: 'test-run',
+    action: 'judge-required',
+    token: 'tok',
+    judgeEnvelope,
+  })
+  assert.deepEqual(h.state.calls, [judge(['--extension-results', results])])
+  assert.equal(h.record(), null)
+})
+test('fast path: unresolved judge releases the claim', (t) => {
+  const h = fastHarness(t, {
+    judge: { verdict: 'judge-required', headSha: HEAD, judgeEnvelope },
+    post: { verdict: 'wait', posted: true },
+  })
+  const areas = join(h.dir, 'judge.json')
+  assert.equal(h.run({ judgeAreas: areas, token: 'tok' }).reason, 'wait:judge-unresolved')
+  assert.deepEqual(h.state.calls, [
+    judge(['--judge-areas', areas]),
+    postCall('wait', ['--reason', 'judge-unresolved', '--token', 'tok']),
+  ])
+})
+test('fast path: a human verdict persists the judge record', (t) => {
+  const h = fastHarness(t, {
+    judge: { verdict: 'human', headSha: HEAD, reason: 'always-human-path', judgeRecord: 'record' },
+    post: { verdict: 'human', posted: true },
+  })
+  h.run()
+  assert.deepEqual(h.state.calls, [
+    judge(),
+    postCall('human', ['--reason', 'always-human-path', '--judge-record', 'record']),
+  ])
 })

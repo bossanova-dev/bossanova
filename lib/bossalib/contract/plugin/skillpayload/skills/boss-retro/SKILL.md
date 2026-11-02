@@ -62,7 +62,7 @@ Run `retro-signals.mjs collect`, adding `--dry-run` in preview mode. Preserve th
 its collector statuses; collector failures are non-fatal. Write-mode collection stores signals
 before the snapshot so those new notes participate in the same guarded retirement.
 
-In both modes run `retro-outcomes-report.mjs report --out <run-dir>/outcomes.json`; report any
+In both modes run `retro-outcomes-report.mjs report --out <run-dir>/outcomes.json`, adding `--dry-run` in preview mode; report any
 collection or rendering failure without stopping, and keep its rows out of notes and the snapshot.
 
 Read `boss notes ls --tag improvement --json --limit 0` into `notes.json`, then call

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 import { parsePostOptions } from './verify-gate.mjs'
 import {
@@ -57,8 +57,11 @@ function fixture(t, { baseConfig } = {}) {
     gh: [],
   }
   const spawn = (command, args, options) => {
+    // `boss` is absent, so the ready gate's PR base read takes the labelled gh fallback.
+    if (basename(command) === 'boss') return { status: null, error: { code: 'ENOENT' } }
     if (command !== 'gh') return spawnSync(command, args, options)
     world.gh.push(args)
+    if (args[0] === 'pr' && args[1] === 'list') return { status: 0, stdout: '[{"number":7}]' }
     if (args[0] === 'pr') return { status: 0, stdout: JSON.stringify(world.view) }
     if (args.includes('POST')) {
       world.posts.push(args)

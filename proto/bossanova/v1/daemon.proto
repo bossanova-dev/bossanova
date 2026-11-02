@@ -2491,6 +2491,9 @@ message PRCheck {
   string description = 4;
   // The provider could not classify the upstream status; never a pass.
   bool is_unclassified = 5;
+  // The Actions workflow the check belongs to; empty for a commit status. It
+  // lets a prior head's check be matched against the head's workflow runs.
+  string workflow_name = 6;
 }
 
 // PRCheckVerdictState is the aggregate state of the ordinary checks.

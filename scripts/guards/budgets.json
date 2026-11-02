@@ -287,7 +287,7 @@
       "skills-toolbox/skill-config.mjs": 3864,
       "skills-toolbox/tracker/cli.mjs": 1256,
       "skills-toolbox/tracker/linear.mjs": 1125,
-      "skills-toolbox/verify/verify-gate.mjs": 4600,
+      "skills-toolbox/verify/verify-gate.mjs": 4680,
       "skills-toolbox/verify/verify-route.mjs": 1158
     }
   },
@@ -299,7 +299,6 @@
       "lib/bossalib/contract/plugin/statusdetect/question_test.go": 2795,
       "lib/bossalib/displaystatus/compute_test.go": 2132,
       "lib/bossalib/kit/config/config_test.go": 3307,
-      "plugins/bossd-plugin-codex/server_test.go": 2066,
       "plugins/bossd-plugin-repair/server_test.go": 2331,
       "services/boss/api/cli/daemon/daemon_doctor_test.go": 5389,
       "services/boss/api/cli/daemon/handlers_test.go": 2072,

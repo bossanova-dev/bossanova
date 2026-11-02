@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { resolveCheckout } from '../git-checkout.mjs'
@@ -9,6 +10,11 @@ import { isMainModule } from '../main-module.mjs'
 import { checked, graphql, SKIP_REASONS } from './retro-signals.mjs'
 import {
   MAX_PRS,
+  RATE_WINDOW_DAYS,
+  factory,
+  mergeVerdict,
+  escapeRows,
+  laterFixRates,
   MAX_HOLD_HEADS,
   HOLD_MINUTES,
   JUDGE_GRACE_MINUTES,
@@ -24,6 +30,10 @@ import {
   renderReport,
 } from './retro-outcomes.mjs'
 
+export const MAX_RATE_PRS = 1500
+export const TRACE_TIMEOUT_MS = 20 * 60_000
+export const LIST_TIMEOUT_MS = 5 * 60_000
+const tracerPath = fileURLToPath(new URL('../verify/verify-escapes-trace.mjs', import.meta.url))
 const day = 86400000
 const pageSize = 20
 const selection = `number title body state mergedAt closedAt headRefOid commits(last:20){pageInfo{hasPreviousPage} nodes{commit{oid statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{... on StatusContext{context state description createdAt}}}}}}} reviews(first:30){pageInfo{hasNextPage} nodes{state body submittedAt author{__typename}}} reviewThreads(first:100){pageInfo{hasNextPage} nodes{comments(first:100){pageInfo{hasNextPage} nodes{createdAt author{__typename}}}}}`
@@ -37,23 +47,24 @@ function nestedTruncated(pr) {
     nodes(pr.commits).some((c) => c.commit?.statusCheckRollup?.contexts?.pageInfo?.hasNextPage)
   )
 }
-function fetchPrs(repo, start, run) {
+/** @param {string} repo @param {string | null} start @param {Function} run @param {{searchText?: string, limit?: number}} [options] */
+function fetchPrs(repo, start, run, { searchText, limit = MAX_PRS } = {}) {
   const prs = []
   let cursor = '',
     truncated = false
-  const query = `query($search:String!,$cursor:String){search(query:$search,type:ISSUE,first:${pageSize},after:$cursor){pageInfo{hasNextPage endCursor} nodes{... on PullRequest{${selection}}}}}`
-  for (let page = 0; page < MAX_PRS / pageSize; page++) {
+  const query = `query($search:String!,$cursor:String){search(query:$search,type:ISSUE,first:${pageSize},after:$cursor){issueCount pageInfo{hasNextPage endCursor} nodes{... on PullRequest{${selection}}}}}`
+  for (let page = 0; page < Math.ceil(limit / pageSize); page++) {
     const { search } = graphql(run, query, {
-      search: `repo:${repo} is:pr updated:>=${start} sort:updated-desc`,
+      search: searchText ?? `repo:${repo} is:pr updated:>=${start} sort:updated-desc`,
       ...(cursor ? { cursor } : {}),
     })
     if (!Array.isArray(search?.nodes) || typeof search.pageInfo?.hasNextPage !== 'boolean')
       throw new Error('malformed search')
-    const rows = search.nodes.slice(0, MAX_PRS - prs.length)
+    const rows = search.nodes.slice(0, limit - prs.length)
     prs.push(...rows)
-    truncated ||= rows.some(nestedTruncated)
+    truncated ||= search.issueCount > limit || rows.some(nestedTruncated)
     if (!search.pageInfo.hasNextPage) break
-    if (prs.length >= MAX_PRS || page === MAX_PRS / pageSize - 1) {
+    if (prs.length >= limit || page === Math.ceil(limit / pageSize) - 1) {
       truncated = true
       break
     }
@@ -64,11 +75,117 @@ function fetchPrs(repo, start, run) {
   return { prs, truncated }
 }
 function reason(error) {
-  return [...SKIP_REASONS, 'status-history-limit'].includes(error?.reason)
+  return [...SKIP_REASONS, 'status-history-limit', 'tracer-missing', 'tracer-failed'].includes(
+    error?.reason,
+  )
     ? error.reason
     : 'graphql-error'
 }
-const failed = (error) => ({ status: 'failed', reason: reason(error) })
+/** @typedef {{status: 'failed', reason: string, detail?: string}} ReadFailure */
+/** @param {any} error @returns {ReadFailure} */
+const failed = (error) => ({
+  status: 'failed',
+  reason: reason(error),
+  ...(error?.detail ? { detail: error.detail } : {}),
+})
+function fetchRatePrs(repo, window, run) {
+  const unique = new Map()
+  let truncated = false
+  for (let start = Date.parse(window.start); start < Date.parse(window.end); start += 7 * day) {
+    const end = Math.min(start + 7 * day, Date.parse(window.end))
+    const result = fetchPrs(repo, null, run, {
+      searchText: `repo:${repo} is:pr is:merged merged:${new Date(start).toISOString()}..${new Date(end).toISOString()}`,
+      limit: Math.min(1000, MAX_RATE_PRS - unique.size),
+    })
+    truncated ||= result.truncated
+    for (const pr of result.prs) unique.set(pr.number, pr)
+    if (unique.size >= MAX_RATE_PRS) {
+      truncated = true
+      break
+    }
+  }
+  return { merges: [...unique.values()].filter(factory).map(mergeVerdict), truncated }
+}
+/** @returns {ReadFailure | {status: 'ok', records: Record<string, any>[], skipped: Record<string, unknown>, truncated: boolean}} */
+function readEscapes(repo, window, rateWindow, dryRun, run, exists) {
+  if (!exists(tracerPath)) return { status: 'failed', reason: 'tracer-missing' }
+  const invoke = (command, args, timeout) => {
+    let result
+    try {
+      result = run(process.execPath, [tracerPath, command, ...args], {
+        timeout,
+        maxBuffer: 32 * 1024 * 1024,
+      })
+    } catch (error) {
+      result = { error }
+    }
+    let data
+    try {
+      data = JSON.parse(String(result.stdout ?? ''))
+    } catch {}
+    const timeoutFailure = result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGTERM'
+    if (result.error || result.status !== 0 || !data) {
+      const failure = data?.failures?.[0]
+      throw Object.assign(new Error('escape tracer failed'), {
+        reason: timeoutFailure
+          ? 'timeout'
+          : result.error?.code === 'ENOENT'
+            ? 'gh-unavailable'
+            : 'tracer-failed',
+        detail: String(
+          failure?.reason ?? failure?.operation ?? String(result.stderr ?? '').split(/\r?\n/)[0],
+        ).slice(0, 200),
+      })
+    }
+    return data
+  }
+  try {
+    const trace = invoke(
+      'trace',
+      [
+        '--since',
+        window.start,
+        '--until',
+        window.end,
+        '--repo',
+        repo,
+        ...(dryRun ? ['--dry-run'] : []),
+      ],
+      TRACE_TIMEOUT_MS,
+    )
+    const list = invoke(
+      'list',
+      [
+        '--since',
+        window.start < rateWindow.start ? window.start : rateWindow.start,
+        '--repo',
+        repo,
+      ],
+      LIST_TIMEOUT_MS,
+    )
+    if (!Array.isArray(trace.links) || !Array.isArray(list.escapes) || list.unreadable > 0)
+      throw Object.assign(new Error('incomplete tracer records'), {
+        reason: 'tracer-failed',
+        detail:
+          list.unreadable > 0
+            ? `${list.unreadable} unreadable escape records`
+            : 'malformed tracer output',
+      })
+    const unique = new Map()
+    for (const record of [...list.escapes, ...trace.links]) {
+      const key = `${record.original.number}/${record.fix.number}`
+      if (!unique.has(key)) unique.set(key, record)
+    }
+    return {
+      status: 'ok',
+      records: [...unique.values()],
+      skipped: trace.skipped ?? [],
+      truncated: Boolean(trace.truncated),
+    }
+  } catch (error) {
+    return failed(error)
+  }
+}
 
 export function collect(options = {}, deps = {}) {
   const io = deps.fs ?? fs
@@ -82,6 +199,7 @@ export function collect(options = {}, deps = {}) {
     checkoutError = error
   }
   const run = (cmd, args, opts) => execute(cmd, args, { ...opts, cwd: checkout?.root ?? deps.cwd })
+  let repo, repoError
   let lastRunAt
   if (checkout)
     try {
@@ -110,7 +228,7 @@ export function collect(options = {}, deps = {}) {
     verdictDataUnavailable = false
   try {
     if (checkoutError) throw checkoutError
-    const repo =
+    repo =
       options.repo ??
       JSON.parse(checked(run, 'gh', ['repo', 'view', '--json', 'nameWithOwner'])).nameWithOwner
     if (!repo) throw Object.assign(new Error('missing repository'), { reason: 'no-repo' })
@@ -200,6 +318,7 @@ export function collect(options = {}, deps = {}) {
       sections.unnecessaryHolds = failed(error)
     }
   } catch (error) {
+    if (!repo) repoError = error
     verdictDataUnavailable = true
     for (const name of [
       'mergesWithoutVerdict',
@@ -238,6 +357,37 @@ export function collect(options = {}, deps = {}) {
   } catch (error) {
     sections.verifyCronHealth = failed(error)
   }
+  const rateWindow = {
+    start: new Date(now.getTime() - RATE_WINDOW_DAYS * day).toISOString(),
+    end: window.end,
+  }
+  if (repoError || !repo) {
+    sections.escapeRows = failed(repoError)
+    sections.laterFixRates = failed(repoError)
+  } else {
+    const escapes = readEscapes(
+      repo,
+      window,
+      rateWindow,
+      options.dryRun,
+      run,
+      deps.existsSync ?? io.existsSync?.bind(io) ?? fs.existsSync,
+    )
+    truncated ||= escapes.status === 'ok' && escapes.truncated
+    sections.escapeRows =
+      escapes.status === 'ok'
+        ? { ...escapeRows(escapes.records, window), skipped: escapes.skipped }
+        : escapes
+    if (escapes.status !== 'ok') sections.laterFixRates = escapes
+    else
+      try {
+        const rates = fetchRatePrs(repo, rateWindow, run)
+        truncated ||= rates.truncated
+        sections.laterFixRates = laterFixRates(rates.merges, escapes.records, rateWindow)
+      } catch (error) {
+        sections.laterFixRates = failed(error)
+      }
+  }
   if (verdictDataUnavailable && sections.verifyCronHealth.status === 'ok')
     sections.verifyCronHealth = { ...sections.verifyCronHealth, verifySilent: null }
   return buildReport({ window, truncated, sections })
@@ -250,6 +400,7 @@ function flags(argv) {
     strict: true,
     options: {
       since: { type: 'string' },
+      'dry-run': { type: 'boolean' },
       repo: { type: 'string' },
       out: { type: 'string' },
       'hold-minutes': { type: 'string' },
@@ -263,7 +414,7 @@ function flags(argv) {
   if (command !== 'report' || file || !values.out)
     throw new Error('expected report --out <file> or render <report.json>')
   if (values.since && !Number.isFinite(Date.parse(values.since))) throw new Error('invalid --since')
-  const options = { since: values.since, repo: values.repo }
+  const options = { since: values.since, repo: values.repo, dryRun: values['dry-run'] ?? false }
   for (const [flag, key] of [
     ['hold-minutes', 'holdMinutes'],
     ['grace-minutes', 'graceMinutes'],

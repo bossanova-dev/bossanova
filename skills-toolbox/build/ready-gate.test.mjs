@@ -260,6 +260,15 @@ test('reviewedTreeDrift: unknown heads, a missing base or a failed read are unkn
 // ---------------------------------------------------------------------------
 // readyGateReport with a fake git/gh; unexpected commands fail the test.
 
+const FAKE_BOSS = '/fake/bin/boss'
+const bossFailure = (code) => ({
+  status: 1,
+  stdout: JSON.stringify({ error: { code, connect_code: code.toLowerCase(), message: 'x' } }),
+})
+
+// `daemon` is how `boss` answers: 'ok' serves the session record and `boss pr state`, any other
+// value is that error code on every boss call. `prBase` '' means the session has no PR. The PR
+// reads go to FAKE_BOSS, and `gh` answers only the labelled fallback reads.
 function gateHarness(
   t,
   {
@@ -270,6 +279,7 @@ function gateHarness(
     route = null,
     prBase = 'main',
     remoteHead = 'origin/main',
+    daemon = 'ok',
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'ready-gate-test-'))
@@ -279,25 +289,38 @@ function gateHarness(
   if (reviewed !== null) writeFileSync(join(dir, 'boss-build-reviewed-head'), `${reviewed}\n`)
   if (route !== null) writeFileSync(join(dir, 'boss-build-ready-route'), route)
   const calls = []
-  const spawn = (command, args) => {
+  const out = (value) => ({ status: 0, stdout: JSON.stringify(value) })
+  const boss = (args) => {
+    if (daemon !== 'ok') return bossFailure(daemon)
+    if (args[0] === 'env') return out({ session: { session_id: 'sess-1' } })
+    if (args[0] === 'show') return out({ session: { pr_number: prBase ? 7 : null, pr_url: '' } })
+    if (args[0] === 'pr' && args[1] === 'state')
+      return out({ pr_number: 7, head_sha: head, base_branch: prBase, checks: [] })
+    assert.fail(`unexpected boss ${args.join(' ')}`)
+  }
+  const spawn = (command, args, opts) => {
     calls.push([command, ...args])
+    if (command === FAKE_BOSS) return boss(args)
     if (command === 'git' && args[0] === 'rev-parse') {
       if (args[1] === '--absolute-git-dir') return { status: 0, stdout: `${dir}\n` }
       if (args.at(-1).endsWith('^{tree}'))
         return { status: 0, stdout: `${trees[args.at(-1).replace('^{tree}', '')] ?? TREE}\n` }
       return { status: 0, stdout: `${head}\n` }
     }
-    if (command === 'gh' && args[0] === 'pr')
-      return prBase
-        ? { status: 0, stdout: JSON.stringify({ baseRefName: prBase }) }
-        : { status: 1, stdout: '' }
+    if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: 'feat\n' }
+    if (command === 'gh' && args[0] === 'pr') {
+      calls.at(-1).push(`label=${opts?.env?.BOSS_GH_USAGE_LABEL}`)
+      if (args[1] === 'list') return out(prBase ? [{ number: 7, url: '' }] : [])
+      if (args[1] === 'view') return out({ number: 7, baseRefName: prBase })
+    }
     if (command === 'git' && args[0] === 'symbolic-ref')
       return remoteHead ? { status: 0, stdout: remoteHead } : { status: 1, stdout: '' }
     if (command === 'git' && args[0] === 'merge-base') return { status: 0, stdout: MERGED }
     assert.fail(`unexpected command ${command} ${args.join(' ')}`)
   }
-  return { dir, calls, deps: { spawn, cwd: dir } }
+  return { dir, calls, deps: { spawn, cwd: dir, bossBin: FAKE_BOSS } }
 }
+const ghCalls = (h) => h.calls.filter(([c]) => c === 'gh')
 test('readyGateReport: reviewed head is HEAD — ready without reading the base', (t) => {
   const h = gateHarness(t)
   assert.deepEqual(readyGateReport({}, h.deps), {
@@ -309,7 +332,7 @@ test('readyGateReport: reviewed head is HEAD — ready without reading the base'
     treeDrift: 'none',
   })
   assert.equal(
-    h.calls.some(([c, a]) => c === 'gh' || a === 'merge-base'),
+    h.calls.some(([c, a]) => c === 'gh' || c === FAKE_BOSS || a === 'merge-base'),
     false,
   )
 })
@@ -343,6 +366,36 @@ test('readyGateReport: no PR base falls back to origin/HEAD; neither is drift un
   const report = readyGateReport({}, none.deps)
   assert.equal(report.treeDrift, 'unknown')
   assert.deepEqual(report.reasons, ['tree-drift-unknown'])
+})
+test('readyGateReport: the PR base is read from the daemon with no gh spawn', (t) => {
+  const h = gateHarness(t, { head: OTHER, prBase: 'release' })
+  assert.equal(readyGateReport({}, h.deps).ready, true)
+  assert.ok(h.calls.some(([c, a, b]) => c === FAKE_BOSS && a === 'pr' && b === 'state'))
+  assert.ok(h.calls.some(([, a, b]) => a === 'merge-base' && b === 'origin/release'))
+  assert.deepEqual(ghCalls(h), [])
+})
+test('readyGateReport: an UNAVAILABLE daemon reads the base through labelled gh', (t) => {
+  const h = gateHarness(t, { head: OTHER, prBase: 'release', daemon: 'UNAVAILABLE' })
+  assert.equal(readyGateReport({}, h.deps).ready, true)
+  assert.ok(h.calls.some(([, a, b]) => a === 'merge-base' && b === 'origin/release'))
+  const gh = ghCalls(h)
+  assert.deepEqual(
+    gh.map((call) => [call.slice(1, 3).join(' '), call.at(-1)]),
+    [
+      ['pr list', 'label=fallback:pr-state'],
+      ['pr view', 'label=fallback:pr-state'],
+    ],
+  )
+})
+test('readyGateReport: a rate-limited daemon spends no gh read; the base is origin/HEAD', (t) => {
+  const h = gateHarness(t, {
+    head: OTHER,
+    daemon: 'RESOURCE_EXHAUSTED',
+    remoteHead: 'origin/trunk',
+  })
+  readyGateReport({}, h.deps)
+  assert.deepEqual(ghCalls(h), [])
+  assert.ok(h.calls.some(([, a, b]) => a === 'merge-base' && b === 'origin/trunk'))
 })
 test('readyGateReport: --head pins the head instead of HEAD', (t) => {
   const h = gateHarness(t, { head: HEAD })

@@ -143,14 +143,16 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    `$BOSS_BUILD_TOOLBOX/pr-check-state.mjs classify` rather than by reading the rollup by eye: it is
    the same verdict the bounded poll below uses, it reconciles a null-shaped node against the named
    context before that node can contribute `unknown`, and its `green` / `failing` / `pending` /
-   `unknown` map onto `ready` / red / `not-yet` / `could-not-evaluate` respectively. Pass the prior
-   head's `gh pr checks --json name,state,bucket,workflow` payload as `--prior` whenever the run has
-   it (a bare array of names still works): a path-filtered follow-up push shrinks the check set, and
-   the reason `absent-gate` is what separates a gate that vanished from one that is merely queued.
-   Pass `gh run list --commit "$HEAD_SHA" --json name,workflowName,status,conclusion,headSha,event
---limit 100` as `--workflow-runs`: a head run still queued or running holds the verdict at
-   `pending`, and a prior context whose workflow has no run on the head is `notTriggered`, not
-   absent. Decide the merge-state half with the same helper's `merge-state` subcommand.
+   `unknown` map onto `ready` / red / `not-yet` / `could-not-evaluate` respectively. Read its inputs
+   with `node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" read --pr "$PR" > "$STATE_FILE"` (the daemon's
+   cached `boss pr state`; labelled `gh` only when no daemon answers) and pass that file as
+   `--pr-state`: it supplies the head SHA, the checks and the head's workflow runs, so a head run
+   still queued or running holds the verdict at `pending`, and a prior context whose workflow has no
+   run on the head is `notTriggered`, not absent. Pass the prior head's
+   `gh pr checks --json name,state,bucket,workflow` payload as `--prior` whenever the run has it (a
+   bare array of names still works): a path-filtered follow-up push shrinks the check set, and the
+   reason `absent-gate` is what separates a gate that vanished from one that is merely queued.
+   Decide the merge-state half with the same helper's `merge-state` subcommand.
 
    A check count of zero is not a pass. An empty commit that skips CI can produce a head SHA with no
    merge workflow runs; a rollup containing only third-party checks can satisfy a bare non-empty
@@ -192,8 +194,11 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    node "$BOSS_BUILD_TOOLBOX/ci-wait.mjs" run --pr "$PR"
    ```
 
+   - **Daemon first.** Each reading is `boss pr state` and each delay `boss pr wait --until
+checks-settled`, which webhooks wake; it reads with `gh` (under a fallback usage label) only when
+     no daemon answers. Relay the verdict's `source` (`daemon` or `gh-fallback`).
    - **`continue` means call again.** Each `run` reads before any delay, takes its own delay
-     in-process and proves it elapsed, bounds every `gh` read, and returns inside one tool call (it
+     in-process and proves it elapsed, bounds every read, and returns inside one tool call (it
      refuses, exit 2, any `--chunk-ms` plus `--read-timeout-ms` over 570000). `state: continue` is
      the only non-terminal verdict: issue the same command in a **new** tool call, and never assign
      it to `CI_WAIT_STATE`. Never loop over `run` inside one call or background it. Any other

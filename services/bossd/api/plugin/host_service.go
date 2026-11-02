@@ -769,13 +769,20 @@ func (s *HostServiceServer) Register(srv *grpc.Server) {
 // --- VCS RPC implementations ---
 
 func (s *HostServiceServer) ListOpenPRs(ctx context.Context, req *bossanovav1.ListOpenPRsRequest) (*bossanovav1.ListOpenPRsResponse, error) {
-	// Plugin listings are background sweeps (the dependabot orchestrator lists
-	// every repo every interval), so they may share the cached open-PR list.
+	// All four plugin PR reads (ListOpenPRs, GetCheckResults, GetPRStatus,
+	// ListClosedPRs) are background sweeps: the dependabot orchestrator polls
+	// every repo every interval. Marking them cached lets open-PR reads project
+	// from the shared open-PR snapshot and holds all of them at the background
+	// quota floor. Auto-merge re-reads the head in the foreground before merging.
 	prs, err := s.provider.ListOpenPRs(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl())
 	if err != nil {
 		return nil, githubReadErr(err)
 	}
+	return &bossanovav1.ListOpenPRsResponse{Prs: prSummariesToProto(prs)}, nil
+}
 
+// prSummariesToProto converts provider PR summaries to their wire form.
+func prSummariesToProto(prs []vcs.PRSummary) []*bossanovav1.PRSummary {
 	pbPRs := make([]*bossanovav1.PRSummary, len(prs))
 	for i, pr := range prs {
 		pbPRs[i] = &bossanovav1.PRSummary{
@@ -786,12 +793,11 @@ func (s *HostServiceServer) ListOpenPRs(ctx context.Context, req *bossanovav1.Li
 			Author:     pr.Author,
 		}
 	}
-
-	return &bossanovav1.ListOpenPRsResponse{Prs: pbPRs}, nil
+	return pbPRs
 }
 
 func (s *HostServiceServer) GetCheckResults(ctx context.Context, req *bossanovav1.GetCheckResultsRequest) (*bossanovav1.GetCheckResultsResponse, error) {
-	checks, err := s.provider.GetCheckResults(ctx, req.GetRepoOriginUrl(), int(req.GetPrNumber()))
+	checks, err := s.provider.GetCheckResults(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl(), int(req.GetPrNumber()))
 	if err != nil {
 		return nil, githubReadErr(err)
 	}
@@ -814,7 +820,7 @@ func (s *HostServiceServer) GetCheckResults(ctx context.Context, req *bossanovav
 }
 
 func (s *HostServiceServer) GetPRStatus(ctx context.Context, req *bossanovav1.GetPRStatusRequest) (*bossanovav1.GetPRStatusResponse, error) {
-	status, err := s.provider.GetPRStatus(ctx, req.GetRepoOriginUrl(), int(req.GetPrNumber()))
+	status, err := s.provider.GetPRStatus(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl(), int(req.GetPrNumber()))
 	if err != nil {
 		return nil, githubReadErr(err)
 	}
@@ -833,23 +839,11 @@ func (s *HostServiceServer) GetPRStatus(ctx context.Context, req *bossanovav1.Ge
 }
 
 func (s *HostServiceServer) ListClosedPRs(ctx context.Context, req *bossanovav1.ListClosedPRsRequest) (*bossanovav1.ListClosedPRsResponse, error) {
-	prs, err := s.provider.ListClosedPRs(ctx, req.GetRepoOriginUrl())
+	prs, err := s.provider.ListClosedPRs(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl())
 	if err != nil {
-		return nil, err
+		return nil, githubReadErr(err)
 	}
-
-	pbPRs := make([]*bossanovav1.PRSummary, len(prs))
-	for i, pr := range prs {
-		pbPRs[i] = &bossanovav1.PRSummary{
-			Number:     safeInt32(pr.Number),
-			Title:      pr.Title,
-			HeadBranch: pr.HeadBranch,
-			State:      vcsPRStateToProto(pr.State),
-			Author:     pr.Author,
-		}
-	}
-
-	return &bossanovav1.ListClosedPRsResponse{Prs: pbPRs}, nil
+	return &bossanovav1.ListClosedPRsResponse{Prs: prSummariesToProto(prs)}, nil
 }
 
 func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error) {

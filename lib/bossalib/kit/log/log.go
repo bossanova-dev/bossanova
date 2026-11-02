@@ -6,11 +6,48 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/term"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+// Option adjusts how Setup builds the logger.
+type Option func(*options)
+
+type options struct {
+	stderr      io.Writer
+	stderrLevel zerolog.Level
+}
+
+// WithStderrLevel mirrors only events at level or above to stderr. The rotated
+// file still receives every level. A supervised daemon uses it so the file its
+// service manager appends stderr to does not duplicate the rotated log.
+func WithStderrLevel(level zerolog.Level) Option {
+	return func(o *options) { o.stderrLevel = level }
+}
+
+// WithStderr replaces os.Stderr as the console destination. A caller that has
+// already inspected its stderr handle passes that handle; tests pass a buffer
+// so they never reassign the process-wide os.Stderr.
+func WithStderr(w io.Writer) Option {
+	return func(o *options) { o.stderr = w }
+}
+
+// consoleWriter renders console lines with an RFC 3339 timestamp (full date,
+// seconds, offset), the same shape as the JSON time field in the rotated file,
+// so a console line and its file twin pair by exact string. Colour escapes are
+// emitted only to a terminal: a service manager's stderr file is plain text.
+func consoleWriter(out io.Writer) zerolog.ConsoleWriter {
+	return zerolog.ConsoleWriter{Out: out, TimeFormat: time.RFC3339, NoColor: !isTerminal(out)}
+}
+
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
 
 // Setup configures zerolog with human-friendly console output and a service tag.
 // Logs are mirrored to stderr and a rotated file under $XDG_STATE_HOME/bossanova/logs/<service>.log
@@ -22,8 +59,11 @@ import (
 // The returned io.Closer must be closed at shutdown to stop lumberjack's rotation
 // goroutine. It is always non-nil (a no-op when file logging is disabled) so
 // callers can `defer closer.Close()` without a nil check.
-func Setup(service string) io.Closer {
-	return setup(service, true)
+//
+// Console lines carry an RFC 3339 timestamp and no colour when stderr is not a
+// terminal. WithStderrLevel narrows what reaches stderr without narrowing the file.
+func Setup(service string, opts ...Option) io.Closer {
+	return setup(service, true, opts...)
 }
 
 // SetupFileOnly configures zerolog to write only to the rotated log file,
@@ -33,13 +73,19 @@ func SetupFileOnly(service string) io.Closer {
 	return setup(service, false)
 }
 
-func setup(service string, includeStderr bool) io.Closer {
+func setup(service string, includeStderr bool, opts ...Option) io.Closer {
+	o := options{stderr: os.Stderr, stderrLevel: zerolog.TraceLevel}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	var (
 		writer io.Writer
 		closer io.Closer = noopCloser{}
 	)
 	if includeStderr {
-		writer = zerolog.ConsoleWriter{Out: os.Stderr}
+		// Unfiltered until a file sink exists: with no rotated file, stderr is
+		// the only record, so no level is withheld from it.
+		writer = consoleWriter(o.stderr)
 	} else {
 		writer = io.Discard
 	}
@@ -55,7 +101,7 @@ func setup(service string, includeStderr bool) io.Closer {
 		} else {
 			fileWriter := &closedSink{writer: newRotatingFile(path)}
 			if includeStderr {
-				writer = io.MultiWriter(writer, fileWriter)
+				writer = fileFirstWriter{file: fileWriter, stderr: writer, stderrLevel: o.stderrLevel}
 			} else {
 				writer = fileWriter
 			}
@@ -70,7 +116,7 @@ func setup(service string, includeStderr bool) io.Closer {
 		fileFallback = !includeStderr
 	}
 	if fileFallback {
-		writer = zerolog.ConsoleWriter{Out: os.Stderr}
+		writer = consoleWriter(o.stderr)
 	}
 
 	log.Logger = zerolog.New(writer).With().Timestamp().Str("service", service).Logger()
@@ -93,6 +139,31 @@ func newRotatingFile(path string) *lumberjack.Logger {
 		// Readers discover -*.log backups and require io.ReaderAt; keep them uncompressed.
 		Compress: false,
 	}
+}
+
+// fileFirstWriter sends every event to the file sink and mirrors only events
+// at stderrLevel or above to stderr. The rotated file opens lazily, so an event
+// the file sink rejects (EACCES, read-only FS, ENOSPC) reaches stderr whatever
+// its level: no event lands in neither sink.
+type fileFirstWriter struct {
+	file        io.Writer
+	stderr      io.Writer
+	stderrLevel zerolog.Level
+}
+
+func (w fileFirstWriter) Write(p []byte) (int, error) {
+	return w.WriteLevel(zerolog.NoLevel, p)
+}
+
+func (w fileFirstWriter) WriteLevel(level zerolog.Level, p []byte) (int, error) {
+	_, fileErr := w.file.Write(p)
+	if fileErr == nil && level < w.stderrLevel {
+		return len(p), nil
+	}
+	if _, err := w.stderr.Write(p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 type noopCloser struct{}

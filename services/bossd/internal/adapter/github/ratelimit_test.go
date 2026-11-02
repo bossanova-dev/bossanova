@@ -199,27 +199,22 @@ func TestBreakerDoesNotPauseWhenQuotaAlreadyReset(t *testing.T) {
 	}
 }
 
-// TestBreakerIgnoresAuthAndSecondaryLimits pins the two look-alikes that must
-// not open the breaker: the anonymous limit (an auth failure) and a secondary
-// rate limit (short, retried by the transient ladder).
-func TestBreakerIgnoresAuthAndSecondaryLimits(t *testing.T) {
-	for _, msg := range []string{
-		"gh api: HTTP 403: API rate limit exceeded for 203.0.113.7. (But here's the good news: Authenticated requests get a higher rate limit.)",
-		"gh pr view: HTTP 403: You have exceeded a secondary rate limit",
-	} {
-		t.Run(msg, func(t *testing.T) {
-			gh := &scriptedGH{reply: func(args []string) (string, error) {
-				if isRateLimitProbe(args) {
-					t.Fatal("probed rate_limit for an error that is not a spent primary quota")
-				}
-				return "", errors.New(msg)
-			}}
-			p := New(zerolog.Nop(), WithRunGH(gh.run))
-			_, err := p.GetPRStatus(context.Background(), "o/r", 7)
-			if errors.Is(err, vcs.ErrRateLimited) {
-				t.Fatalf("err = %v classified as an exhausted quota", err)
-			}
-		})
+// TestBreakerIgnoresAuthFailures pins the look-alike that must not open the
+// breaker: the anonymous limit is an auth failure, not a refusal of the
+// account. A secondary limit does open it; see
+// TestSecondaryRefusalBurstPausesWithoutProbing.
+func TestBreakerIgnoresAuthFailures(t *testing.T) {
+	const msg = "gh api: HTTP 403: API rate limit exceeded for 203.0.113.7. (But here's the good news: Authenticated requests get a higher rate limit.)"
+	gh := &scriptedGH{reply: func(args []string) (string, error) {
+		if isRateLimitProbe(args) {
+			t.Fatal("probed rate_limit for an auth failure")
+		}
+		return "", errors.New(msg)
+	}}
+	p := New(zerolog.Nop(), WithRunGH(gh.run))
+	_, err := p.GetPRStatus(context.Background(), "o/r", 7)
+	if errors.Is(err, vcs.ErrRateLimited) {
+		t.Fatalf("err = %v classified as a rate-limit refusal", err)
 	}
 }
 
@@ -254,12 +249,12 @@ func failOpenGH(clock *clocktest.Clock) *scriptedGH {
 }
 
 // TestQuotaReadingIsReusedWithinTTL pins the probe budget: refusals inside one
-// TTL window share one rate_limit reading, and the first refusal after it
-// expires pays for exactly one more.
+// burst pause share one rate_limit reading, and the first refusal after it
+// ends pays for exactly one more.
 func TestQuotaReadingIsReusedWithinTTL(t *testing.T) {
 	clock := newFakeClock()
 	gh := failOpenGH(clock)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 
 	for i := 0; i < 50; i++ {
 		if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
@@ -325,81 +320,58 @@ func TestConcurrentRefusalsShareOneProbe(t *testing.T) {
 	}
 }
 
-// TestRefusalAfterHeadroomReadingPausesUntilExpiry pins the fail-open case: a
-// refusal newer than a headroom reading pauses that quota, without probing,
-// until the reading expires; the other quota keeps working.
-func TestRefusalAfterHeadroomReadingPausesUntilExpiry(t *testing.T) {
+// TestRefusalNewerThanCachedReadingReprobes pins that a refusal is judged by
+// a reading taken after the refused call: a cached headroom reading from
+// before it is re-probed rather than trusted or zeroed, and the burst pause
+// leaves the other quota working.
+func TestRefusalNewerThanCachedReadingReprobes(t *testing.T) {
 	clock := newFakeClock()
 	gh := failOpenGH(clock)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 	ctx := context.Background()
 
-	// First refusal: the probe after it reports headroom, so nothing pauses.
-	_, _ = p.GetPRStatus(ctx, "o/r", 7)
+	if _, err := p.QuotaStatus(ctx); err != nil {
+		t.Fatalf("QuotaStatus: %v", err)
+	}
 	clock.Advance(10 * time.Second)
 	if _, err := p.GetPRStatus(ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
-		t.Fatalf("refusal after headroom reading err = %v, want vcs.ErrRateLimited", err)
+		t.Fatalf("refused call err = %v, want vcs.ErrRateLimited", err)
 	}
-	for i := 0; i < 5; i++ {
-		clock.Advance(5 * time.Second)
-		if _, err := p.GetPRStatus(ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
-			t.Fatalf("paused call err = %v, want vcs.ErrRateLimited", err)
-		}
-	}
-	if got := gh.count(isPRView); got != 2 {
-		t.Fatalf("gh pr view ran %d times, want 2 (paused calls must not reach GitHub)", got)
-	}
-	if got := gh.count(isRateLimitProbe); got != 1 {
-		t.Fatalf("rate_limit probed %d times inside the reading's TTL, want 1", got)
+	if got := gh.count(isRateLimitProbe); got != 2 {
+		t.Fatalf("rate_limit probed %d times, want 2 (the cached reading predates the refusal)", got)
 	}
 	if _, err := p.GetReviewObservation(ctx, "o/r", 7); err != nil {
 		t.Fatalf("REST call while GraphQL is paused: %v", err)
 	}
-
-	clock.Advance(quotaReadingTTL)
-	_, _ = p.GetPRStatus(ctx, "o/r", 7)
-	if got := gh.count(isPRView); got != 3 {
-		t.Fatalf("gh pr view ran %d times after the reading expired, want 3", got)
-	}
-	if got := gh.count(isRateLimitProbe); got != 2 {
-		t.Fatalf("rate_limit probed %d times after the reading expired, want 2", got)
-	}
 }
 
-// TestRefusalZeroesCachedReading pins that later readers of the cache see a
-// refused quota as spent, while the other quota keeps GitHub's figures.
-func TestRefusalZeroesCachedReading(t *testing.T) {
+// TestRefusalLeavesCachedReadingAtGitHubsFigures pins that a refusal never
+// writes an inferred figure into the shared reading: both quotas keep what
+// GitHub reported.
+func TestRefusalLeavesCachedReadingAtGitHubsFigures(t *testing.T) {
 	clock := newFakeClock()
 	gh := failOpenGH(clock)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 	ctx := context.Background()
 
-	_, _ = p.GetPRStatus(ctx, "o/r", 7)
 	before, ok := p.readQuotas(ctx)
 	if !ok {
-		t.Fatal("no cached reading after the first refusal")
+		t.Fatal("no reading")
 	}
 	clock.Advance(10 * time.Second)
 	_, _ = p.GetPRStatus(ctx, "o/r", 7)
 
 	after, ok := p.readQuotas(ctx)
 	if !ok {
-		t.Fatal("no cached reading after the second refusal")
+		t.Fatal("no cached reading after the refusal")
 	}
-	if got := gh.count(isRateLimitProbe); got != 1 {
-		t.Fatalf("rate_limit probed %d times, want 1", got)
-	}
-	graphql, _ := after.status(quotaGraphQL)
-	if graphql.Remaining != 0 {
-		t.Fatalf("graphql remaining = %d after a refusal, want 0", graphql.Remaining)
-	}
-	if want, _ := before.status(quotaGraphQL); graphql.Reset != want.Reset {
-		t.Fatalf("graphql reset = %d, want %d kept from the reading", graphql.Reset, want.Reset)
-	}
-	gotCore, _ := after.status(quotaCore)
-	wantCore, _ := before.status(quotaCore)
-	if gotCore != wantCore {
-		t.Fatalf("core = %+v after a graphql refusal, want unchanged %+v", gotCore, wantCore)
+	for _, quota := range []string{quotaGraphQL, quotaCore} {
+		got, _ := after.status(quota)
+		want, _ := before.status(quota)
+		// The re-probe's reset moves with the fake clock; the figures must not.
+		if got.Remaining != want.Remaining || got.Limit != want.Limit {
+			t.Fatalf("%s = %+v after a graphql refusal, want GitHub's %+v", quota, got, want)
+		}
 	}
 }
 
@@ -496,8 +468,8 @@ func TestQuotaStatusFailuresAreNotCached(t *testing.T) {
 
 // TestGHMetersEverySentCall pins the usage ledger contract: every call gh
 // sends to GitHub appends one record carrying the context's label and the
-// call's quota, while a call the breaker refuses and the free rate_limit
-// probe append nothing.
+// call's quota, a call the breaker refuses appends a breaker skip instead, and
+// the free rate_limit probe appends nothing.
 func TestGHMetersEverySentCall(t *testing.T) {
 	clock := newFakeClock()
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
@@ -537,10 +509,10 @@ func TestGHMetersEverySentCall(t *testing.T) {
 	}
 	want := []ghusage.Count{
 		{Label: ghusage.LabelFinalize, Quota: ghusage.QuotaCore, Calls: int64(restCalls)},
-		{Label: ghusage.LabelUnattributed, Quota: ghusage.QuotaGraphQL, Calls: 1},
+		{Label: ghusage.LabelUnattributed, Quota: ghusage.QuotaGraphQL, Calls: 1, BreakerSkips: 2},
 	}
 	if restCalls == 1 {
-		// Equal counts sort by label: daemon:unattributed before stage:finalize.
+		// Equal calls sort by skips: the refused GraphQL row comes first.
 		want[0], want[1] = want[1], want[0]
 	}
 	if !reflect.DeepEqual(usage.Counts, want) {

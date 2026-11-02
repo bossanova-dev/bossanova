@@ -13,7 +13,7 @@ import (
 // Gate failures the refresh broker cannot see on its own; their texts are the
 // ones operators and log readers already know.
 var (
-	errCredentialIdentityNotPinned = errors.New("credential bootstrap identity is not locally pinned; confirm its fingerprint with device approve")
+	errCredentialIdentityNotPinned = credsync.ErrBootstrapUnpinned // the engine's FindBootstrap refusal
 	errCredentialSyncUnavailable   = errors.New("credential synchronization unavailable")
 )
 

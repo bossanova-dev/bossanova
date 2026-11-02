@@ -23,6 +23,8 @@ type fixture struct {
 	head    string
 	enabled bool
 	jobs    bool
+	// checksLabel is the usage label the last ChecksPassedReady read carried.
+	checksLabel atomic.Value
 }
 
 func (f *fixture) GetByOriginURL(context.Context, string) (*domain.Repo, error) {
@@ -34,7 +36,8 @@ func (f *fixture) ListByRepo(context.Context, string) ([]*domain.CronJob, error)
 	}
 	return []*domain.CronJob{{ID: "job", Name: "bs-verify", IsEnabled: f.enabled, Prompt: "/boss-verify", GateCommand: "gate"}}, nil
 }
-func (f *fixture) ChecksPassedReady(context.Context, string, string, int) (string, bool, error) {
+func (f *fixture) ChecksPassedReady(ctx context.Context, _, _ string, _ int) (string, bool, error) {
+	f.checksLabel.Store(ghusage.LabelFrom(ctx))
 	return f.head, f.ready, nil
 }
 func event(kind, payload string) *pb.WebhookEvent {
@@ -130,6 +133,18 @@ func TestEventGateKeepsPRScopeAndMetersUnderTheCronLabel(t *testing.T) {
 	}
 	if got := label.Load(); got != "cron:bs-verify" {
 		t.Fatalf("event gate label = %v, want cron:bs-verify", got)
+	}
+}
+
+// TestChecksReadMetersAsTheVerifyEventTrigger pins that the trigger's checks
+// read reaches the evaluator's shared ChecksPassedReady labelled
+// daemon:verify-event, even from an unlabelled webhook context.
+func TestChecksReadMetersAsTheVerifyEventTrigger(t *testing.T) {
+	tr, f, ticks, done, _ := newFixture(t)
+	tr.Notify(context.Background(), completed(), 42)
+	finish(t, ticks, done)
+	if got := f.checksLabel.Load(); got != ghusage.LabelVerifyEvent {
+		t.Fatalf("checks read label = %v, want %q", got, ghusage.LabelVerifyEvent)
 	}
 }
 func TestPendingRedThenGreen(t *testing.T) {

@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -58,17 +60,32 @@ type Provider struct {
 	// floors holds background reads back below a share of their quota; see
 	// backgroundFloorRefusal.
 	floors backgroundFloors
+	// pacer spaces sent calls below GitHub's per-minute limit; see admit.
+	pacer callPacer
+	// afterFn is the timer a paced background read waits on.
+	afterFn func(time.Duration) <-chan time.Time
 	// usage meters every call gh sends to GitHub; nil records nothing.
 	usage UsageRecorder
+	// tokens is the per-repo installation token source; nil means every call
+	// uses the user's gh login. See SetInstallationTokens.
+	tokens atomic.Pointer[tokenSourceBox]
+	// installQuotas holds one quota cache per installation identity; the
+	// user's is quotas. See quotaCacheFor.
+	installQuotasMu sync.Mutex
+	installQuotas   map[string]*quotaCache
 	// rateLimitLog logs each best-effort read's quota refusal once per window.
 	rateLimitLog vcs.RateLimitLog
 }
 
-// UsageRecorder meters one GitHub call: label is the attribution the call's
-// context carries and quota the GitHub quota it spends. Record must not block
-// or fail the call it meters.
+// UsageRecorder meters GitHub calls: label is the attribution the call's
+// context carries, quota the GitHub quota it spends and identity whose quota
+// that is (ghusage.IdentityUser or ghusage.InstallationIdentity). Record meters
+// a call sent to GitHub; RecordSkip meters one refused without contacting it,
+// with outcome ghusage.OutcomeBreaker or ghusage.OutcomeFloor. Neither may
+// block or fail the call it meters.
 type UsageRecorder interface {
-	Record(label, quota string)
+	Record(label, quota, identity string)
+	RecordSkip(label, quota, identity, outcome string)
 }
 
 const ghWaitDelay = 5 * time.Second
@@ -110,6 +127,7 @@ func New(logger zerolog.Logger, opts ...ProviderOption) *Provider {
 		runGH:   defaultRunGH,
 		sleepFn: time.Sleep,
 		nowFn:   time.Now,
+		afterFn: time.After,
 		cache:   newReadCache(defaultReadCacheTTL),
 	}
 	for _, opt := range opts {
@@ -293,6 +311,7 @@ func (p *Provider) blockingThreadAuthors(ctx context.Context, repoPath string, p
 // Deliberately a trivial delegation: the two callers must never be able to
 // drift into two different notions of "still blocking".
 func (p *Provider) BlockingThreadAuthors(ctx context.Context, repoPath string, prID int, botUsers map[string]bool) (map[string]bool, error) {
+	ctx = withRoute(ctx, "BlockingThreadAuthors", vcs.GitHubNWO(repoPath))
 	return p.blockingThreadAuthors(ctx, repoPath, prID, botUsers)
 }
 
@@ -300,6 +319,7 @@ func (p *Provider) BlockingThreadAuthors(ctx context.Context, repoPath string, p
 // It retries up to 3 times with exponential backoff when GitHub's API hasn't
 // finished indexing the pushed branches (common in newly-created repositories).
 func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
+	ctx = withRoute(ctx, "CreateDraftPR", vcs.GitHubNWO(opts.RepoPath))
 	repo := repoFlag(opts.RepoPath)
 	if repo == "" {
 		return nil, fmt.Errorf("repo path is empty; re-register the repository or configure its origin URL")
@@ -427,6 +447,7 @@ func (p *Provider) getPRMergeability(ctx context.Context, repoPath string, prID 
 // `git/ref` so it stays off the GraphQL quota. Background callers
 // (vcs.WithCachedReads) may be served from the read cache.
 func (p *Provider) GetBranchHeadSHA(ctx context.Context, repoPath, branch string) (string, error) {
+	ctx = withRoute(ctx, "GetBranchHeadSHA", vcs.GitHubNWO(repoPath))
 	return cachedRead(ctx, p.cache, branchReadKey(readKindBranchHead, repoPath, branch), noFingerprint, func(sha string) string { return sha },
 		func(ctx context.Context) (string, error) { return p.fetchBranchHeadSHA(ctx, repoPath, branch) })
 }
@@ -472,6 +493,7 @@ const workflowRunsPageSize = 100
 // returned, is an error: a truncated list can hide the one queued run that
 // makes a green check set premature, so the caller must fail closed.
 func (p *Provider) ListWorkflowRuns(ctx context.Context, repoPath, headSHA string) ([]vcs.WorkflowRun, error) {
+	ctx = withRoute(ctx, "ListWorkflowRuns", vcs.GitHubNWO(repoPath))
 	if headSHA == "" {
 		return nil, errors.New("list workflow runs: head SHA is empty")
 	}
@@ -569,6 +591,7 @@ func isHTTPURL(raw string) bool {
 // PR, which it does not know); callers drop the PR's cached reads through
 // vcs.ReadInvalidator.
 func (p *Provider) PostCommitStatus(ctx context.Context, repoPath, sha string, s vcs.CommitStatus) error {
+	ctx = withRoute(ctx, "PostCommitStatus", vcs.GitHubNWO(repoPath))
 	if !isFullLowerHexSHA(sha) {
 		return fmt.Errorf("post commit status: sha must be 40 lowercase hex characters, got %q", sha)
 	}
@@ -631,6 +654,7 @@ func (p *Provider) fetchCheckSet(ctx context.Context, repoPath string, prID int)
 
 // GetFailedCheckLogs returns the log output for a specific failed check run.
 func (p *Provider) GetFailedCheckLogs(ctx context.Context, repoPath string, checkID string) (string, error) {
+	ctx = withRoute(ctx, "GetFailedCheckLogs", vcs.GitHubNWO(repoPath))
 	// checkID is "workflow/job" — we use gh run view to get logs.
 	// gh doesn't have a direct "get check logs" command, so we use the API.
 	out, err := p.gh(ctx,
@@ -644,6 +668,7 @@ func (p *Provider) GetFailedCheckLogs(ctx context.Context, repoPath string, chec
 
 // MarkReadyForReview transitions a draft PR to ready for review.
 func (p *Provider) MarkReadyForReview(ctx context.Context, repoPath string, prID int) error {
+	ctx = withRoute(ctx, "MarkReadyForReview", vcs.GitHubNWO(repoPath))
 	_, err := p.gh(ctx,
 		"pr", "ready", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
@@ -770,6 +795,7 @@ func decodePaginatedPages[T any](out, what string) ([]T, error) {
 // current state, and a cached value would go stale between a display poll and a
 // merge. The cost is one extra REST call, paid only on the merge path.
 func (p *Provider) GetReviewObservation(ctx context.Context, repoPath string, prID int) (vcs.ReviewObservation, error) {
+	ctx = withRoute(ctx, "GetReviewObservation", vcs.GitHubNWO(repoPath))
 	raw, err := p.listRawReviews(ctx, repoPath, prID)
 	if err != nil {
 		return vcs.ReviewObservation{}, err
@@ -951,6 +977,7 @@ func (p *Provider) getInlineReviewComments(ctx context.Context, repoPath string,
 
 // GetReviewInlineComments returns inline comments attached to a single review.
 func (p *Provider) GetReviewInlineComments(ctx context.Context, repoPath string, prID int, reviewID int64) ([]vcs.ReviewComment, error) {
+	ctx = withRoute(ctx, "GetReviewInlineComments", vcs.GitHubNWO(repoPath))
 	out, err := p.gh(ctx,
 		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews/%d/comments", repoFlag(repoPath), prID, reviewID),
 	)
@@ -996,6 +1023,7 @@ func (p *Provider) fetchOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRS
 
 // ListClosedPRs returns recently-closed (not merged) pull requests.
 func (p *Provider) ListClosedPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
+	ctx = withRoute(ctx, "ListClosedPRs", vcs.GitHubNWO(repoPath))
 	return p.listPRsByState(ctx, repoPath, "list closed PRs", "closed", 50)
 }
 
@@ -1054,6 +1082,7 @@ func decodePRList(out string) ([]vcs.PRSummary, error) {
 // tokenizes bracket characters, so a "[BOS-289]" query would not narrow
 // reliably), and the exact bracket match is enforced in Go afterwards.
 func (p *Provider) SearchPRsByTitleTag(ctx context.Context, repoPath, tag string) ([]vcs.PRSummary, error) {
+	ctx = withRoute(ctx, "SearchPRsByTitleTag", vcs.GitHubNWO(repoPath))
 	out, err := p.runGHWithTransientRetry(ctx, "search PRs by title tag",
 		"pr", "list",
 		"--repo", repoFlag(repoPath),
@@ -1088,6 +1117,7 @@ func (p *Provider) SearchPRsByTitleTag(ctx context.Context, repoPath, tag string
 // --match-head-commit makes GitHub refuse the merge atomically unless the PR
 // head is exactly that commit; the refusal wraps vcs.ErrHeadMismatch.
 func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int, opts vcs.MergePROpts) error {
+	ctx = withRoute(ctx, "MergePR", vcs.GitHubNWO(repoPath))
 	flag := "--merge"
 	switch opts.Strategy {
 	case "rebase":
@@ -1129,6 +1159,7 @@ func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int, opts 
 // GetPRMergeCommit returns the merge commit SHA GitHub recorded for the PR.
 // Returns vcs.ErrPRNotMerged if the PR is not in MERGED state.
 func (p *Provider) GetPRMergeCommit(ctx context.Context, repoPath string, prID int) (string, error) {
+	ctx = withRoute(ctx, "GetPRMergeCommit", vcs.GitHubNWO(repoPath))
 	out, err := p.gh(ctx,
 		"pr", "view", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
@@ -1161,6 +1192,7 @@ func (p *Provider) GetPRMergeCommit(ctx context.Context, repoPath string, prID i
 // enabled, ordered "merge", "squash", "rebase" when present. Used as a
 // fallback when the configured strategy is empty or disabled upstream.
 func (p *Provider) GetAllowedMergeStrategies(ctx context.Context, repoPath string) ([]string, error) {
+	ctx = withRoute(ctx, "GetAllowedMergeStrategies", vcs.GitHubNWO(repoPath))
 	nwo := repoFlag(repoPath)
 	out, err := p.gh(ctx,
 		"api", "repos/"+nwo,
@@ -1194,6 +1226,7 @@ func (p *Provider) GetAllowedMergeStrategies(ctx context.Context, repoPath strin
 
 // UpdatePRTitle updates the title of an existing pull request.
 func (p *Provider) UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error {
+	ctx = withRoute(ctx, "UpdatePRTitle", vcs.GitHubNWO(repoPath))
 	_, err := p.gh(ctx,
 		"pr", "edit", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
@@ -1213,6 +1246,7 @@ func (p *Provider) UpdatePRTitle(ctx context.Context, repoPath string, prID int,
 
 // UpdatePRBody replaces the body of an existing pull request.
 func (p *Provider) UpdatePRBody(ctx context.Context, repoPath string, prID int, body string) error {
+	ctx = withRoute(ctx, "UpdatePRBody", vcs.GitHubNWO(repoPath))
 	_, err := p.gh(ctx,
 		"pr", "edit", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
@@ -1378,6 +1412,7 @@ func ghResponseText(err error) string {
 // defaultRunGH executes a gh CLI command and returns stdout.
 func defaultRunGH(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Env = ghEnv(ctx)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -1477,11 +1512,14 @@ func isGitHubTransient(err error) bool {
 	if isGitHubAuthFailure(err) {
 		return false
 	}
-	// An exhausted primary quota is not transient either: it lasts until the
-	// hourly reset, so a 30s/60s/120s ladder only spends the wait re-hitting an
-	// empty quota. gh opens the rate-limit breaker for it instead, and a call the
-	// breaker refused must not be retried behind its back.
-	if errors.Is(err, vcs.ErrRateLimited) || isPrimaryRateLimit(err) {
+	// A per-minute or secondary burst lasts about a minute, so the ladder waits
+	// it out; attempts inside the burst pause are refused without contacting
+	// GitHub. An exhausted hourly quota is not transient: it lasts until the
+	// reset, so the breaker pauses it and a refused call is not retried.
+	if isBurstRefusal(err) {
+		return true
+	}
+	if errors.Is(err, vcs.ErrRateLimited) || isRateLimitRefusal(err) {
 		return false
 	}
 	msg := strings.ToLower(ghResponseText(err))

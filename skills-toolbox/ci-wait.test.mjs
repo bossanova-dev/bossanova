@@ -26,6 +26,7 @@ import {
   trendOf,
 } from './ci-wait.mjs'
 import { CHECK_REASONS, classifyChecks } from './pr-check-state.mjs'
+import { PR_WAIT_CAP_MS, daemonFirstReader, waitPRState } from './pr-state.mjs'
 import { CLAIM_STALE_AFTER_MS } from './verify/verify-vocabulary.mjs'
 
 const HELPER = fileURLToPath(new URL('./ci-wait.mjs', import.meta.url))
@@ -1209,4 +1210,312 @@ test('main: run reads ci.required once from the skill config', async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
+})
+
+// ---------------------------------------------------------------------------
+// Daemon-served readings: `boss pr state` reads, `boss pr wait --until checks-settled` delays.
+
+const BOSS_BIN = '/fake/bin/boss'
+const daemonEnvelope = ({ check = 'success', run = 'completed', runsRead = true } = {}) => ({
+  head_sha: HEAD_A,
+  base_branch: 'main',
+  checks: [
+    {
+      name: 'build',
+      status: check === 'running' ? 'in_progress' : 'completed',
+      conclusion: check === 'running' ? '' : check,
+      description: '',
+      is_unclassified: false,
+    },
+  ],
+  // The daemon's own verdict; never what the wait keys on.
+  check_verdict: { state: 'green', reason: 'ok' },
+  verify_phase: { kind: 'none' },
+  workflow_runs: runsRead
+    ? [{ name: 'CI', status: run, conclusion: '', event: 'push', head_sha: HEAD_A }]
+    : [],
+  is_workflow_runs_read: runsRead,
+})
+
+// daemonIo answers `boss pr state` from `states` (the last repeats) and `boss pr wait` after
+// `waitMs` of fake time; it records every spawn so a test can count gh.
+function daemonIo(h, { states, waitMs = 20_000, waitAnswer = { outcome: 'met' } }) {
+  const spawns = []
+  let reads = 0
+  return {
+    spawns,
+    io: {
+      env: { PATH: '/usr/bin' },
+      resolveBoss: () => ({ ok: true, path: BOSS_BIN }),
+      spawn: (cmd, args, opts) => {
+        spawns.push({ cmd, args, opts })
+        if (cmd !== BOSS_BIN) throw new Error(`unexpected spawn ${cmd} ${args.join(' ')}`)
+        if (args[1] === 'wait') {
+          h.advance(waitMs)
+          return { status: 0, stdout: JSON.stringify(waitAnswer) }
+        }
+        const state = states[Math.min(reads, states.length - 1)]
+        reads += 1
+        return { status: 0, stdout: JSON.stringify(state) }
+      },
+    },
+  }
+}
+
+test('daemon: a daemon-served wait goes pending to settled through boss pr state and boss pr wait, spawning no gh', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'ci-wait-daemon-'))
+  try {
+    const h = harness({ script: () => ({ ok: false, error: 'unused' }) })
+    const d = daemonIo(h, {
+      states: [daemonEnvelope({ check: 'running', run: 'in_progress' }), daemonEnvelope()],
+    })
+    const out = await main(['run', '--pr', '4', '--state-dir', dir], {
+      io: d.io,
+      sleep: h.sleep,
+      now: h.now,
+      loadConfig: () => ({}),
+    })
+    assert.equal(out.verdict.state, WAIT_STATES.SETTLED)
+    assert.equal(out.verdict.source, 'daemon')
+    assert.equal(d.spawns.filter((s) => s.cmd === 'gh').length, 0)
+    const waits = d.spawns.filter((s) => s.args[1] === 'wait')
+    assert.ok(waits.length >= 2)
+    for (const w of waits)
+      assert.deepEqual(w.args.slice(0, 5), ['pr', 'wait', '4', '--until', 'checks-settled'])
+    assert.equal(
+      statusOf({ record: JSON.parse(readFileSync(out.verdict.stateFile, 'utf8')), now: h.now })
+        .source,
+      'daemon',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('daemon: an envelope whose runs were not read never settles, although the daemon said green', async () => {
+  const h = harness({ script: () => ({ ok: false, error: 'unused' }) })
+  const d = daemonIo(h, { states: [daemonEnvelope({ runsRead: false })] })
+  const { verdict, record } = await runChunk({
+    state: memStore(),
+    read: daemonFirstReader({ deps: d.io }),
+    wait: (req) => waitPRState({ ...req, deps: d.io }),
+    sleep: h.sleep,
+    now: h.now,
+    options: { pr: 7, chunkMs: 120_000 },
+  })
+  assert.equal(verdict.state, WAIT_STATES.CONTINUE)
+  assert.ok(record.readings.length >= 2)
+  for (const r of record.readings) assert.equal(r.reason, CHECK_REASONS.UNREADABLE)
+})
+
+test('daemon: a green settles only on two fresh greens of one head at least an interval apart', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'ci-wait-daemon-'))
+  try {
+    const h = harness({ script: () => ({ ok: false, error: 'unused' }) })
+    // The wait answers at once: the daemon's condition already holds.
+    const d = daemonIo(h, { states: [daemonEnvelope()], waitMs: 0 })
+    const out = await main(['run', '--pr', '4', '--state-dir', dir], {
+      io: d.io,
+      sleep: h.sleep,
+      now: h.now,
+      loadConfig: () => ({}),
+    })
+    assert.equal(out.verdict.state, WAIT_STATES.SETTLED)
+    const stateReads = d.spawns.filter((s) => s.args[1] === 'state')
+    assert.deepEqual(
+      stateReads.map((s) => s.args.includes('--fresh')),
+      [false, true, true],
+      'the cached first green is followed by two fresh reads',
+    )
+    const { readings } = JSON.parse(readFileSync(out.verdict.stateFile, 'utf8'))
+    const [first, second] = readings.slice(-2)
+    assert.equal(first.fresh, true)
+    assert.equal(second.fresh, true)
+    assert.equal(first.state, 'green')
+    assert.equal(second.state, 'green')
+    assert.equal(first.headSha, second.headSha)
+    assert.ok(
+      second.atMs - first.atMs >= 30_000,
+      `confirming greens ${second.atMs - first.atMs}ms apart, under the 30s interval`,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('daemon: cached greens never confirm, however many arrive', async () => {
+  const h = harness({ script: () => pendingView(HEAD_A, 0, 2) })
+  // The reader reports the daemon as its source and never serves a fresh reading.
+  const read = (req) => h.read(req).then((res) => ({ ...res, fresh: false }))
+  read.source = () => 'daemon'
+  read.fallbackReason = () => null
+  const { verdict, record } = await runChunk({
+    state: memStore(),
+    read,
+    wait: async () => ({ kind: 'ok', body: { outcome: 'met' } }),
+    sleep: h.sleep,
+    now: h.now,
+    options: { pr: 7, chunkMs: 240_000, intervalMs: 30_000 },
+  })
+  assert.notEqual(verdict.state, WAIT_STATES.SETTLED)
+  assert.ok(record.readings.filter((r) => r.state === 'green').length >= 3)
+})
+
+test('daemon: a cached failing check set does not fail the wait when the fresh read disagrees', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'ci-wait-daemon-'))
+  try {
+    const h = harness({ script: () => ({ ok: false, error: 'unused' }) })
+    // The cached check set still describes an older head's failure; the fresh read shows the head's
+    // own checks running, then passing.
+    const d = daemonIo(h, {
+      states: [
+        daemonEnvelope({ check: 'failure' }),
+        daemonEnvelope({ check: 'running', run: 'in_progress' }),
+        daemonEnvelope(),
+      ],
+    })
+    const out = await main(['run', '--pr', '4', '--state-dir', dir], {
+      io: d.io,
+      sleep: h.sleep,
+      now: h.now,
+      loadConfig: () => ({}),
+    })
+    assert.equal(out.verdict.state, WAIT_STATES.SETTLED)
+    const reads = d.spawns.filter((s) => s.args[1] === 'state')
+    assert.equal(reads[1].args.includes('--fresh'), true)
+    assert.equal(reads.at(-1).args.includes('--fresh'), true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test(
+  'daemon: a reader that never serves a fresh reading ends the chunk, never spins or fails on a cached red',
+  { timeout: 10_000 },
+  async () => {
+    const h = harness({ script: () => view(HEAD_A, [failing('build')]) })
+    const read = (req) => h.read(req).then((res) => ({ ...res, fresh: false }))
+    read.source = () => 'daemon'
+    read.fallbackReason = () => null
+    const { verdict } = await runChunk({
+      state: memStore(),
+      read,
+      wait: async () => ({ kind: 'ok', body: { outcome: 'met' } }),
+      sleep: h.sleep,
+      now: h.now,
+      options: { pr: 7, chunkMs: 60_000, intervalMs: 30_000 },
+    })
+    assert.equal(verdict.state, WAIT_STATES.CONTINUE)
+    assert.equal(verdict.reason, WAIT_REASONS.CHUNK_EXHAUSTED)
+  },
+)
+
+// daemonRead is a scripted reader that reports the daemon as its source.
+function daemonRead(h) {
+  const read = (req) => h.read(req)
+  read.source = () => 'daemon'
+  read.fallbackReason = () => null
+  return read
+}
+
+test('daemon: the wait is bounded by the chunk less the read floor; an early answer is topped up, not inert', async () => {
+  const h = harness({ script: () => pendingView(HEAD_A, 1) })
+  const waits = []
+  const wait = async (req) => {
+    waits.push({ ...req, atMs: h.now() })
+    return { kind: 'ok', body: { outcome: 'met' } }
+  }
+  const chunkMs = 100_000
+  const { verdict } = await runChunk({
+    state: memStore(),
+    read: daemonRead(h),
+    wait,
+    sleep: h.sleep,
+    now: h.now,
+    options: { pr: 7, chunkMs, intervalMs: 30_000 },
+  })
+  assert.notEqual(verdict.reason, WAIT_REASONS.DELAY_INERT)
+  assert.equal(verdict.source, 'daemon')
+  assert.ok(waits.length >= 2)
+  for (const w of waits) {
+    assert.equal(w.until, 'checks-settled')
+    assert.ok(
+      w.timeoutMs <= T0 + chunkMs - w.atMs - 1000,
+      `wait ${w.timeoutMs}ms outlives the chunk`,
+    )
+  }
+  // The first instant answer is topped up to MIN_DELAY_MS; a second in a row paces at the interval.
+  assert.deepEqual(h.sleeps.slice(0, 2), [1000, 30_000])
+})
+
+test('daemon: a top-up that does not elapse is delay-inert', async () => {
+  const h = harness({ script: () => pendingView(HEAD_A, 1), inert: true })
+  const { verdict } = await runChunk({
+    state: memStore(),
+    read: daemonRead(h),
+    wait: async () => ({ kind: 'ok', body: { outcome: 'met' } }),
+    sleep: h.sleep,
+    now: h.now,
+    options: { pr: 7 },
+  })
+  assert.equal(verdict.reason, WAIT_REASONS.DELAY_INERT)
+})
+
+test('daemon: a wait that falls back or errors drops to the interval timer for the rest of the chunk', async () => {
+  for (const answer of [
+    { kind: 'fallback', reason: 'daemon-unavailable' },
+    { kind: 'error', error: 'RESOURCE_EXHAUSTED: slow down', code: 'RESOURCE_EXHAUSTED' },
+  ]) {
+    const h = harness({ script: () => pendingView(HEAD_A, 1) })
+    let waits = 0
+    const { verdict, messages } = await runChunk({
+      state: memStore(),
+      read: daemonRead(h),
+      wait: async () => {
+        waits += 1
+        return answer
+      },
+      sleep: h.sleep,
+      now: h.now,
+      options: { pr: 7, chunkMs: 100_000, intervalMs: 30_000 },
+    })
+    assert.equal(waits, 1)
+    assert.ok(h.sleeps.length >= 2)
+    for (const ms of h.sleeps) assert.equal(ms, 30_000)
+    assert.equal(verdict.state, WAIT_STATES.CONTINUE)
+    assert.ok(messages.some((m) => /boss pr wait did not answer/.test(m)))
+    assert.ok(h.calls.length >= 3, 'readings stay daemon-served after the wait falls back')
+  }
+})
+
+test('daemon: a gh fallback reading names its source and reason once per chunk', async () => {
+  const h = harness({ script: () => view(HEAD_A, [passing('a')]) })
+  const read = (req) => h.read(req)
+  read.source = () => 'gh-fallback'
+  read.fallbackReason = () => 'no-boss-binary'
+  const { verdict, messages } = await runChunk({
+    state: memStore(),
+    read,
+    wait: async () => {
+      throw new Error('the gh path never waits on the daemon')
+    },
+    sleep: h.sleep,
+    now: h.now,
+    options: { pr: 7 },
+  })
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.equal(verdict.source, 'gh-fallback')
+  assert.equal(verdict.fallbackReason, 'no-boss-binary')
+  const notes = messages.filter((m) => m.includes('no daemon answered (no-boss-binary)'))
+  assert.equal(notes.length, 1)
+  assert.match(notes[0], /fallback:ci-wait/)
+})
+
+test('parseRunOptions: --daemon-wait-ms defaults to 240s and is clamped to the boss pr wait cap', () => {
+  assert.equal(parseRunOptions(['--pr', '1']).daemonWaitMs, DEFAULTS.daemonWaitMs)
+  assert.equal(
+    parseRunOptions(['--pr', '1', '--daemon-wait-ms', '9999999']).daemonWaitMs,
+    PR_WAIT_CAP_MS,
+  )
+  assert.throws(() => parseRunOptions(['--pr', '1', '--daemon-wait-ms', '10']), UsageError)
 })

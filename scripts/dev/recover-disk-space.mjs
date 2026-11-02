@@ -7,7 +7,8 @@
 //   by a process, a running Bazel server or a live boss session, with their Bazel output bases
 //   (worktree-reaper.mjs; branches are kept, so committed work survives). After
 //   RECOVER_WORKTREE_SALVAGE_DAYS (30) idle, uncommitted work and loose commits no longer hold a
-//   worktree: they are saved to ~/.cache/bossanova/reaped first;
+//   worktree: they are saved to ~/.cache/bossanova/reaped first. Landed Claude Code agent
+//   worktrees go sooner, within the grace period (agent-worktree-reaper.mjs, run by disk-guard);
 // - Bazel output bases whose workspace no longer exists (deleted worktrees), unless their server
 //   is still alive;
 // - golangci-lint cache entries unused for an hour, down to GOLANGCI_CACHE_MAX_GIB (8 GiB): with

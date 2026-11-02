@@ -29,6 +29,8 @@ hold it to that:
   rename, no merge or rebase, and no edits to the plan file.
 - Do not run `ce-code-review` from inside it; boss-build reviews the branch next.
 - Never ask questions. Decide ambiguity yourself and record each decision.
+- Rename identifiers with boss-build's `rename-symbol.mjs` helper, never a shell loop over `$(…)`
+  output into `sed` (Claude Code stops for a human on it).
 - Commit under the commit contract boss-build gave you, which overrides any commit convention
   `ce-work` brings.
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -37,13 +38,92 @@ type deviceJSON struct {
 	RevokedAt          string `json:"revoked_at"`
 }
 
-func deviceToJSON(d *pb.AgentCredentialDevice) deviceJSON {
-	stamp := func(t *timestamppb.Timestamp) string {
-		if t == nil {
-			return ""
-		}
-		return t.AsTime().UTC().Format(time.RFC3339)
+func stamp(t *timestamppb.Timestamp) string {
+	if t == nil {
+		return ""
 	}
+	return t.AsTime().UTC().Format(time.RFC3339)
+}
+
+// deviceStatusJSON extends the stable device schema with the daemon's readiness verdict.
+type deviceStatusJSON struct {
+	deviceJSON
+	Readiness *readinessJSON `json:"readiness,omitempty"`
+}
+
+type readinessJSON struct {
+	State             string                `json:"state"`
+	BootstrapDaemonID string                `json:"bootstrap_daemon_id"`
+	ApproverDaemonIDs []string              `json:"approver_daemon_ids"`
+	RemediationSteps  []remediationStepJSON `json:"remediation_steps"`
+	CheckedAt         string                `json:"checked_at"`
+	ExpiresAt         string                `json:"expires_at"`
+}
+
+type remediationStepJSON struct {
+	MachineDaemonID string `json:"machine_daemon_id"`
+	IsThisMachine   bool   `json:"is_this_machine"`
+	Command         string `json:"command"`
+}
+
+func readinessToJSON(r *pb.CredentialDeviceReadiness) *readinessJSON {
+	if r == nil {
+		return nil
+	}
+	out := &readinessJSON{State: r.GetState(), BootstrapDaemonID: r.GetBootstrapDaemonId(), ApproverDaemonIDs: append([]string{}, r.GetApproverDaemonIds()...), RemediationSteps: []remediationStepJSON{}, CheckedAt: stamp(r.GetCheckedAt()), ExpiresAt: stamp(r.GetExpiresAt())}
+	for _, step := range r.GetRemediationSteps() {
+		out.RemediationSteps = append(out.RemediationSteps, remediationStepJSON{MachineDaemonID: step.GetMachineDaemonId(), IsThisMachine: step.GetIsThisMachine(), Command: step.GetCommand()})
+	}
+	return out
+}
+
+// remediationMachine names where a step runs, machine before command.
+func remediationMachine(step remediationStepJSON) string {
+	switch {
+	case step.IsThisMachine:
+		return "this machine"
+	case step.MachineDaemonID != "":
+		return step.MachineDaemonID
+	default:
+		return "an enrolled machine"
+	}
+}
+
+// bootstrapLabel names the readiness ID: while a pin is missing it can be any
+// approver on this daemon's chain, not only the bootstrap.
+func bootstrapLabel(state string) string {
+	if state == "bootstrap_unpinned" {
+		return "Approver to pin"
+	}
+	return "Bootstrap"
+}
+
+func writeReadiness(w io.Writer, r *readinessJSON) error {
+	if r == nil {
+		return nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Readiness: %s\n", r.State)
+	if r.BootstrapDaemonID != "" {
+		fmt.Fprintf(&b, "%s: %s\n", bootstrapLabel(r.State), r.BootstrapDaemonID)
+	}
+	if r.ExpiresAt != "" {
+		fmt.Fprintf(&b, "Expires: %s\n", r.ExpiresAt)
+	}
+	if len(r.ApproverDaemonIDs) > 0 {
+		fmt.Fprintf(&b, "Approvers: %s\n", strings.Join(r.ApproverDaemonIDs, ", "))
+	}
+	if len(r.RemediationSteps) > 0 {
+		b.WriteString("Next steps:\n")
+	}
+	for i, step := range r.RemediationSteps {
+		fmt.Fprintf(&b, "  %d. On %s run: %s\n", i+1, remediationMachine(step), step.Command)
+	}
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+func deviceToJSON(d *pb.AgentCredentialDevice) deviceJSON {
 	return deviceJSON{DaemonID: d.GetDaemonId(), Status: d.GetStatus(), Fingerprint: d.GetFingerprint(), RequestedAt: stamp(d.GetRequestedAt()), ExpiresAt: stamp(d.GetExpiresAt()), ApprovedAt: stamp(d.GetApprovedAt()), ApprovedByDaemonID: d.GetApprovedByDaemonId(), RevokedAt: stamp(d.GetRevokedAt())}
 }
 func (g *group) withDeviceClient(cmd *cobra.Command, run func(credentialDeviceClient) error) error {
@@ -77,13 +157,15 @@ func (g *group) runDeviceStatus(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
-		d := deviceToJSON(resp.GetDevice())
+		d := deviceStatusJSON{deviceJSON: deviceToJSON(resp.GetDevice()), Readiness: readinessToJSON(resp.GetReadiness())}
 		asJSON, _ := cmd.Flags().GetBool("json")
 		if asJSON {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(d)
 		}
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Daemon: %s\nStatus: %s\nFingerprint: %s\n", d.DaemonID, d.Status, d.Fingerprint)
-		return err
+		if _, err = fmt.Fprintf(cmd.OutOrStdout(), "Daemon: %s\nStatus: %s\nFingerprint: %s\n", d.DaemonID, d.Status, d.Fingerprint); err != nil {
+			return err
+		}
+		return writeReadiness(cmd.OutOrStdout(), d.Readiness)
 	})
 }
 

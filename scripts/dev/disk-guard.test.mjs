@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { guardReason } from './disk-guard.mjs'
+import { guardReason, wake } from './disk-guard.mjs'
 
 const GiB = 1024 ** 3
 const HOUR = 60 * 60 * 1000
@@ -56,4 +56,41 @@ test('a guard that has never run cleans up on its first start', () => {
     now: NOW,
   })
   assert.equal(reason, 'scheduled')
+})
+
+function wakeWith(overrides) {
+  const calls = { agentPass: 0, cleanups: [], logs: [] }
+  const reason = wake({
+    runAgentPass: () => {
+      calls.agentPass++
+    },
+    freeBytes: () => 300 * GiB,
+    minFreeBytes: 75 * GiB,
+    lastRunMs: NOW - 2 * HOUR,
+    now: NOW,
+    runCleanup: (why) => calls.cleanups.push(why),
+    log: (line) => calls.logs.push(line),
+    ...overrides,
+  })
+  return { reason, calls }
+}
+
+test('every wake runs the agent worktree pass, even when no cleanup is due', () => {
+  const { reason, calls } = wakeWith({})
+  assert.equal(reason, null)
+  assert.equal(calls.agentPass, 1)
+  assert.deepEqual(calls.cleanups, [])
+})
+
+test('a failing agent worktree pass is logged and the free-space check still runs', () => {
+  const { reason, calls } = wakeWith({
+    runAgentPass: () => {
+      throw new Error('git exploded\nstack')
+    },
+    freeBytes: () => 40 * GiB,
+    lastRunMs: NOW - 7 * HOUR,
+  })
+  assert.equal(reason, 'low-space')
+  assert.deepEqual(calls.cleanups, ['low-space'])
+  assert.deepEqual(calls.logs, ['agent-worktree-reaper failed: git exploded'])
 })

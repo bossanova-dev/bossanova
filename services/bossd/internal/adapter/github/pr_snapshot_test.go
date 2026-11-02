@@ -488,27 +488,6 @@ func TestOpenPRSnapshotFailureAfterCallerGaveUpBacksOff(t *testing.T) {
 	})
 }
 
-// TestOpenPRSnapshotFreshness pins today's freshness: the snapshot serves
-// background reads for one TTL and is refetched after it.
-func TestOpenPRSnapshotFreshness(t *testing.T) {
-	clock := newFakeClock()
-	gh := routedGH(t, map[string]string{"graphql": readFixture(t, "open_pr_snapshot_three.json")})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
-	bg := vcs.WithCachedReads(context.Background())
-
-	_, _ = p.GetPRStatus(bg, "o/r", 1)
-	clock.Advance(defaultReadCacheTTL - time.Second)
-	_, _ = p.GetCheckSet(bg, "o/r", 2)
-	if got := gh.count(isGraphQL); got != 1 {
-		t.Fatalf("snapshot queries inside the TTL = %d, want 1", got)
-	}
-	clock.Advance(time.Second)
-	_, _ = p.GetCheckSet(bg, "o/r", 2)
-	if got := gh.count(isGraphQL); got != 2 {
-		t.Fatalf("snapshot queries after the TTL = %d, want 2", got)
-	}
-}
-
 // TestOpenPRSnapshotInvalidatedByAnyPR pins the webhook hook: InvalidatePR for
 // one PR marks the whole repo snapshot stale, so a read of another PR in the
 // repo refetches it.

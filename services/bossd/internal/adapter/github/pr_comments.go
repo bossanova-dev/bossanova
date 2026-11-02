@@ -38,6 +38,7 @@ func (c rawIssueComment) writtenAt() time.Time {
 // every verify run, so the update time, not the creation time, is when its
 // current body was recorded.
 func (p *Provider) FindPRCommentsWithMarker(ctx context.Context, repoPath string, prID int, marker string) ([]vcs.PRComment, error) {
+	ctx = withRoute(ctx, "FindPRCommentsWithMarker", vcs.GitHubNWO(repoPath))
 	if strings.TrimSpace(marker) == "" {
 		return nil, errors.New("find PR comments: marker is empty")
 	}

@@ -32,6 +32,7 @@ if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/bo
 | Question                                         | Ask                                                                                      |
 | ------------------------------------------------ | ---------------------------------------------------------------------------------------- |
 | Is the worktree clean?                           | `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"`                                         |
+| Rename an identifier across files                | `node "$BOSS_REPAIR_TOOLBOX/rename-symbol.mjs" --from <A> --to <B> [--path <p>] …`       |
 | Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …`                              |
 | What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                                              |
 | Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`                                   |
@@ -43,7 +44,8 @@ if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/bo
 
 `worktree-state.mjs` exists because a command-rewriting shell hook can make `git status` print a
 fabricated clean result. Its `unknown` verdict is never clean; confirm with `/usr/bin/git status
---porcelain` before treating the tree as clean.
+--porcelain` before treating the tree as clean. Rename identifiers through `rename-symbol.mjs`, never a
+`$(…)`-fed `sed` loop: Claude Code stops for a human on that loop even in bypass mode.
 
 ## Hard rules
 
@@ -422,7 +424,8 @@ Run passes in a loop, at most **5 repair passes**:
    ```
 
    On every wake, re-read the real state before acting. Without callbacks, wait with
-   `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`, one tool call per chunk: re-issue it while
+   `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>` (daemon-first: it reads `boss pr state` and
+   delays on `boss pr wait`), one tool call per chunk: re-issue it while
    it returns `state: continue`; `settled` is green, `failed` is red, a `timeout` with
    `trend: converging` earns one `run --extend`, and any other `timeout` or `unknown` is not green.
    Never `sleep` 60 seconds or more waiting for CI.

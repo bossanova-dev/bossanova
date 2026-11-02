@@ -78,6 +78,22 @@ type BaseMoveNotifier interface {
 	NoteBaseMoved(ctx context.Context, repoOriginURL, branch string) []int
 }
 
+// RepoReadInvalidator marks every cached read of a repo's open PRs stale. The
+// dispatcher calls it for a delivery that names no PR (a push, a commit status,
+// a check on a branch), since any of them may change what the repo's open-PR
+// snapshot reports. Implemented by bossd's GitHub provider; optional, found by
+// type assertion on the read invalidator.
+type RepoReadInvalidator interface {
+	InvalidateRepo(repoPath string)
+}
+
+// PRWaitNotifier wakes the PR waits blocked on a PR or a repo
+// (*prstate.WaitHub). Both calls return at once and never read GitHub.
+type PRWaitNotifier interface {
+	NotifyPR(repo string, pr int)
+	NotifyRepo(repo string)
+}
+
 // prPollTimeout bounds a detached on-demand state-machine poll.
 const prPollTimeout = 2 * time.Minute
 
@@ -91,6 +107,7 @@ type WebhookDispatcher struct {
 	invalidator    vcs.ReadInvalidator
 	prPoller       PRPoller
 	baseMoves      BaseMoveNotifier
+	prWaits        PRWaitNotifier
 	health         *WebhookHealth
 	logger         zerolog.Logger
 	rateLimitLog   vcs.RateLimitLog // logs a callback evaluation's quota refusal once per window
@@ -152,6 +169,13 @@ func (d *WebhookDispatcher) WithBaseMoves(n BaseMoveNotifier) *WebhookDispatcher
 	return d
 }
 
+// WithPRWaiters attaches the PR wait hub, woken after each invalidation so a
+// woken wait's re-read misses the dropped entry. Returns d for chaining.
+func (d *WebhookDispatcher) WithPRWaiters(n PRWaitNotifier) *WebhookDispatcher {
+	d.prWaits = n
+	return d
+}
+
 // WithWebhookHealth attaches the tracker every delivery is recorded in, which
 // lets GitHub pollers slow down for repos whose webhooks arrive. Returns d for
 // chaining.
@@ -201,6 +225,7 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 		prNumber = payloadPR
 	}
 	if prNumber == 0 {
+		invalidated := d.invalidateRepo(ev.GetRepoOriginUrl())
 		// Only PR-scoped event types are expected to always carry a PR
 		// number; for those a zero here points at a real resolution
 		// bug worth a WARN. Events like ping, check_suite/check_run on
@@ -215,6 +240,7 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 			Str("event_type", ev.GetEventType()).
 			Str("repo_origin_url", ev.GetRepoOriginUrl()).
 			Int("envelope_pull_request", int(ev.GetPullRequest())).
+			Bool("repo_snapshot_invalidated", invalidated).
 			Msg("webhook: no PR number resolved; skipping dispatch")
 		return nil
 	}
@@ -224,6 +250,9 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 	// GitHub rather than a pre-webhook answer.
 	if d.invalidator != nil {
 		d.invalidator.InvalidatePR(ev.GetRepoOriginUrl(), prNumber)
+		if d.prWaits != nil {
+			d.prWaits.NotifyPR(ev.GetRepoOriginUrl(), prNumber)
+		}
 	}
 	d.pollPR(ctx, ev.GetRepoOriginUrl(), prNumber)
 
@@ -250,15 +279,36 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 	return nil
 }
 
-// dispatchPush reports a branch push to the base-move notifier and drops the
-// cached reads of every PR it marks due, so their next scheduled read sees the
-// post-push mergeability. A push names no PR, so nothing is refreshed inline:
-// GitHub computes mergeability lazily after a base push.
+// invalidateRepo marks the repo's cached reads stale when the read
+// invalidator supports it, then wakes the repo's PR waits, and reports whether
+// it did. A commit status or a push names no PR, so every wait in the repo
+// re-reads.
+func (d *WebhookDispatcher) invalidateRepo(repoOriginURL string) bool {
+	repo, ok := d.invalidator.(RepoReadInvalidator)
+	if !ok {
+		return false
+	}
+	repo.InvalidateRepo(repoOriginURL)
+	if d.prWaits != nil {
+		d.prWaits.NotifyRepo(repoOriginURL)
+	}
+	return true
+}
+
+// dispatchPush marks the repo's cached reads stale, then reports a branch push
+// to the base-move notifier and drops the cached reads of every PR it marks
+// due, so their next scheduled read sees the post-push mergeability. A push
+// names no PR, so nothing is refreshed inline: GitHub computes mergeability
+// lazily after a base push.
 func (d *WebhookDispatcher) dispatchPush(ctx context.Context, ev *pb.WebhookEvent) {
+	// Before the notifier marks anything due, and whatever it returns, so every
+	// read it schedules misses the pre-push snapshot.
+	invalidated := d.invalidateRepo(ev.GetRepoOriginUrl())
 	branch, ok := pushedBranch(ev.GetPayload())
 	if !ok {
 		d.logger.Debug().
 			Str("repo_origin_url", ev.GetRepoOriginUrl()).
+			Bool("repo_snapshot_invalidated", invalidated).
 			Msg("webhook: push is not a live branch; skipping")
 		return
 	}
@@ -279,6 +329,7 @@ func (d *WebhookDispatcher) dispatchPush(ctx context.Context, ev *pb.WebhookEven
 		Str("repo_origin_url", ev.GetRepoOriginUrl()).
 		Str("branch", branch).
 		Ints("pull_requests", prs).
+		Bool("repo_snapshot_invalidated", invalidated).
 		Msg("webhook: base branch moved; PRs marked due")
 }
 

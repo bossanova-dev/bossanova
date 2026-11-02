@@ -12,15 +12,18 @@
 //     the tool ceiling;
 //   - the budget is WALL-CLOCK and lives in a state file keyed by PR and head SHA, which the helper
 //     derives from its own read — the caller carries nothing between calls;
-//   - the delay between reads is an in-process timer whose elapsed wall time is verified, so an
-//     inert delay ends the wait as `unknown`/`delay-inert` instead of spinning the budget away;
+//   - the delay between reads is `boss pr wait --until checks-settled`, which the daemon's webhooks
+//     wake, while readings are daemon-served; otherwise it is an in-process timer whose elapsed wall
+//     time is verified, so an inert delay ends the wait as `unknown`/`delay-inert`;
 //   - a chunk leaves an open-chunk marker until it closes, so a killed chunk is detected and
 //     counted by the next `run`, and three in a row end the wait rather than retrying forever.
 //
-// The verdict itself is `classifyChecks` from ./pr-check-state.mjs, called in-process; this module
+// Readings come from the daemon (`boss pr state`, ./pr-state.mjs) and from labelled `gh` only when
+// no daemon answers; the verdict says which (`source`). The verdict itself is `classifyChecks` from
+// ./pr-check-state.mjs over the raw checks and runs, never the daemon's own verdict; this module
 // restates none of its rules, it only maps them onto the CI_WAIT_STATE vocabulary. Every reading
-// carries the head SHA's workflow runs (`gh run list --commit`), so a set read before the head's
-// workflows attached their jobs is `pending`, not green; a runs read that fails never settles.
+// carries the head SHA's workflow runs, so a set read before the head's workflows attached their
+// jobs is `pending`, not green; a reading whose runs were not read never settles.
 //
 //   settled   green on two consecutive reads of the     terminal
 //             same head, the second no smaller
@@ -34,8 +37,8 @@
 //
 // A pending `boss/verify` claim (`verifying… <token>`) or `waiting:` hold on the head is the verify
 // stage's work, not ordinary CI: the build and repair waits run before verify, so waiting on it would
-// wait on a later stage. When the rollup carries a pending `boss/verify` node, one extra read of the
-// head's commit statuses (the rollup has no description) classifies it with `claimState`; only a
+// wait on a later stage. When the rollup carries a pending `boss/verify` node, the daemon's verify
+// phase or, on gh, one extra read of the head's commit statuses classifies it; only a
 // pending claim, stale claim or waiting hold is dropped, and it is reported in `verifyHold`. Every
 // terminal verify status, and any pending one the read cannot confirm, still counts. A prior-head
 // `boss/verify` status judged that head and is never a gate the new head must restore.
@@ -47,9 +50,8 @@
 // names are in `notRequested`. A head with no workflow run yet keeps waiting. With nothing required
 // the wait is exactly as before.
 //
-// Project-agnostic: only `gh`, Node builtins and sibling toolbox modules.
+// Project-agnostic: only `boss`, `gh`, Node builtins and sibling toolbox modules.
 
-import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   mkdirSync,
@@ -63,16 +65,25 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 
-import { classifyRead, readArgs as statusReadArgs } from './commit-status.mjs'
 import { isMainModule } from './main-module.mjs'
+import { CHECK_REASONS, CHECK_STATES, absentGateRemedy, classifyChecks } from './pr-check-state.mjs'
 import {
-  CHECK_REASONS,
-  CHECK_STATES,
-  WORKFLOW_RUNS_LIMIT,
-  absentGateRemedy,
-  classifyChecks,
-} from './pr-check-state.mjs'
-import { VERIFY_CONTEXT, claimState } from './verify/verify-vocabulary.mjs'
+  FALLBACK_LABELS,
+  PR_WAIT_CAP_MS,
+  daemonFirstReader,
+  ghCheckReader,
+  waitAnswered,
+  waitPRState,
+} from './pr-state.mjs'
+import { VERIFY_CONTEXT } from './verify/verify-vocabulary.mjs'
+import {
+  VERIFY_HOLD_LABELS,
+  dropContext,
+  hasPendingVerifyNode,
+  verifyHoldFromPhase,
+  verifyHoldOf,
+} from './ci/verify-hold.mjs'
+import { confirmsGreen, freshGreenAnchor } from './ci/green-confirmation.mjs'
 import { requiredChecksFor } from './ci/required-checks.mjs'
 import { loadSkillConfig } from './skill-config.mjs'
 
@@ -83,6 +94,7 @@ export const DEFAULTS = Object.freeze({
   chunkMs: 480 * 1000,
   readTimeoutMs: 60 * 1000,
   extendMs: 30 * 60 * 1000,
+  daemonWaitMs: 240 * 1000,
 })
 export const TREND_WINDOW_MS = 10 * 60 * 1000
 export const INTERRUPTION_LIMIT = 3
@@ -184,94 +196,6 @@ function seconds(ms) {
   return `${Math.round(ms / 1000)}s`
 }
 
-// The `claimState` kinds that are verify-stage holds rather than a verify verdict; the R7 line names
-// each one so the transcript shows why the count went down.
-const VERIFY_HOLD_LABELS = Object.freeze({
-  foreign: 'live boss/verify claim',
-  stale: 'stale boss/verify claim',
-  waiting: 'boss/verify waiting hold',
-})
-const PENDING_STATES = new Set(['PENDING', 'EXPECTED'])
-const ENVELOPE_KEYS = ['statusCheckRollup', 'checks', 'check_runs', 'workflow_runs']
-
-// Resolved the way pr-check-state.mjs resolves a context name: `name`, then `context`, then
-// `workflowName`.
-function contextName(node) {
-  if (typeof node === 'string') return node.trim()
-  if (!node || typeof node !== 'object') return ''
-  for (const key of ['name', 'context', 'workflowName']) {
-    const value = node[key]
-    if (typeof value === 'string' && value.trim() !== '') return value.trim()
-  }
-  return ''
-}
-
-function isEnvelope(value) {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    ENVELOPE_KEYS.some((key) => Array.isArray(value[key]))
-  )
-}
-
-// dropContext removes every node named `name` from any payload shape classifyChecks accepts (a bare
-// node array, a bare name array, an envelope object, or a `--paginate --slurp` page array), keeping
-// the shape.
-function dropContext(payload, name) {
-  if (payload == null) return payload
-  const keep = (node) => contextName(node) !== name
-  const filterEnvelope = (object) => {
-    const copy = { ...object }
-    for (const key of ENVELOPE_KEYS)
-      if (Array.isArray(copy[key])) copy[key] = copy[key].filter(keep)
-    return copy
-  }
-  if (Array.isArray(payload)) {
-    if (payload.some(isEnvelope))
-      return payload.map((page) => (isEnvelope(page) ? filterEnvelope(page) : page))
-    return payload.filter(keep)
-  }
-  return isEnvelope(payload) ? filterEnvelope(payload) : payload
-}
-
-function hasPendingVerifyNode(rollup) {
-  const nodes = Array.isArray(rollup?.statusCheckRollup) ? rollup.statusCheckRollup : []
-  return nodes.some(
-    (node) =>
-      contextName(node) === VERIFY_CONTEXT &&
-      PENDING_STATES.has(String(node?.state ?? node?.conclusion ?? '').toUpperCase()),
-  )
-}
-
-// verifyHoldOf classifies the statuses read. It returns the raw latest `boss/verify` status (null when
-// the read failed or carried none) and the hold it is, or a null hold when the node must stay: a
-// failed or malformed read, no status, a status no longer pending, or a description that is neither
-// a claim nor a waiting hold. The build holds no claim, so `claimState` never answers `mine` here.
-function verifyHoldOf(read, headSha, now) {
-  if (!read?.ok) return { status: null, hold: null }
-  // classifyRead owns the latest-per-context rule and reads gh's stdout, so hand it the payload back.
-  const classified = classifyRead({
-    exit: 0,
-    stdout: JSON.stringify(read.payload ?? null),
-    context: VERIFY_CONTEXT,
-    sha: headSha,
-  })
-  const status = classified.contexts?.[VERIFY_CONTEXT] ?? null
-  if (status === null || status.state !== 'pending') return { status, hold: null }
-  const claim = claimState(status, { now })
-  if (!Object.hasOwn(VERIFY_HOLD_LABELS, claim.kind)) return { status, hold: null }
-  return {
-    status,
-    hold: {
-      kind: claim.kind,
-      token: claim.token ?? null,
-      description: status.description,
-      updatedAt: status.updatedAt,
-    },
-  }
-}
-
 // takeReading performs one read — the rollup, then the head SHA's workflow runs, then the
 // named-context payload only when the rollup carries a null-shaped node — and classifies it. Each
 // `gh` call gets `min(readTimeoutMs, time left before deadline)`, so the reads together can never
@@ -284,13 +208,22 @@ function verifyHoldOf(read, headSha, now) {
 //
 // A pending `boss/verify` node adds the statuses read (see the header); with too little time left
 // for it the node stays, so the reading stays pending and the next read retries.
-async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, ciRequired, now }) {
+export async function takeReading({
+  read,
+  pr,
+  readTimeoutMs,
+  deadline,
+  priorContexts,
+  ciRequired,
+  now,
+  fresh = false,
+}) {
   const timeoutFor = () => Math.min(readTimeoutMs, deadline - now())
   const noHold = { verifyHold: null, excludedContexts: [], verifyStatus: null }
-  const view = await read({ what: 'view', pr, timeoutMs: timeoutFor() })
+  const view = await read({ what: 'view', pr, fresh, timeoutMs: timeoutFor() })
   if (!view?.ok) {
     const verdict = classifyChecks({ readError: view?.error ?? 'read failed' })
-    return { atMs: now(), headSha: '', verdict, ...noHold }
+    return { atMs: now(), headSha: '', verdict, fresh: false, ...noHold }
   }
   const headSha = typeof view.headSha === 'string' ? view.headSha : ''
   let runsError = 'no time left to read workflow runs'
@@ -307,7 +240,13 @@ async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, c
     }
   }
   let held = { status: null, hold: null }
-  if (headSha !== '' && hasPendingVerifyNode(view.payload) && timeoutFor() >= READ_FLOOR_MS) {
+  if (typeof view.payload?.verifyPhase === 'string') {
+    held = verifyHoldFromPhase(view.payload)
+  } else if (
+    headSha !== '' &&
+    hasPendingVerifyNode(view.payload) &&
+    timeoutFor() >= READ_FLOOR_MS
+  ) {
     const statuses = await read({ what: 'verify-status', pr, headSha, timeoutMs: timeoutFor() })
     held = verifyHoldOf(statuses, headSha, now())
   }
@@ -344,6 +283,7 @@ async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, c
     atMs: now(),
     headSha,
     verdict,
+    fresh: view.fresh === true,
     verifyHold: held.hold,
     excludedContexts: held.hold === null ? [] : [VERIFY_CONTEXT],
     verifyStatus: held.status,
@@ -369,6 +309,8 @@ function recordReading(record, reading) {
   record.readings.push({
     atMs: reading.atMs,
     headSha: reading.headSha,
+    // Whether the reading bypassed every read cache; only a fresh daemon reading may confirm a green.
+    fresh: reading.fresh === true,
     state: reading.verdict.state,
     reason: reading.verdict.reason,
     // An unreadable read counted nothing; a zero here would read as a fall to the trend.
@@ -378,23 +320,6 @@ function recordReading(record, reading) {
   if (record.readings.length > READINGS_KEPT) {
     record.readings.splice(0, record.readings.length - READINGS_KEPT)
   }
-}
-
-// confirmsGreen: a green reading only ends the wait when the reading before it, on the same head,
-// was green too and carried no more checks. One green read can be a partial set caught between two
-// workflows attaching their jobs; two in a row with a set that did not shrink is the settled shape.
-function confirmsGreen(record) {
-  const n = record.readings.length
-  if (n < 2) return false
-  const [prev, last] = [record.readings[n - 2], record.readings[n - 1]]
-  return (
-    prev.state === CHECK_STATES.GREEN &&
-    last.state === CHECK_STATES.GREEN &&
-    prev.headSha === last.headSha &&
-    Number.isFinite(prev.total) &&
-    Number.isFinite(last.total) &&
-    prev.total <= last.total
-  )
 }
 
 // confirmsNotRequested: a missing required run only ends the wait once the head's consecutive
@@ -435,12 +360,16 @@ function resumable(record) {
 //           `load('')` is the placeholder used while no read has named the head yet
 //   read    async ({what: 'view'|'runs'|'checks'|'verify-status', pr, headSha?, timeoutMs})
 //           → {ok, headSha?, payload?, error?}; `runs` and `verify-status` carry the head SHA they
-//           read for; `verify-status` is the head's commit statuses (`gh api …/statuses`)
+//           read for; `verify-status` is the head's commit statuses (`gh api …/statuses`);
+//           optional `read.source()` → 'daemon'|'gh-fallback'|null and `read.fallbackReason()`
+//   wait    optional ({pr, until, timeoutMs}) → a pr-state.mjs bossCall result; the delay while
+//           `read.source()` is 'daemon'
 //   sleep   async (ms) → void; the elapsed wall time is verified against `now`
 //   now     () → epoch ms
-//   options {pr, budgetMs, intervalMs, chunkMs, readTimeoutMs, extend, extendMs, priorContexts}
+//   options {pr, budgetMs, intervalMs, chunkMs, readTimeoutMs, daemonWaitMs, extend, extendMs,
+//           priorContexts}
 // It returns {verdict, record, messages}; `messages` are the stderr lines, in order.
-export async function runChunk({ state, read, sleep, now, options }) {
+export async function runChunk({ state, read, wait = null, sleep, now, options }) {
   const opts = { ...DEFAULTS, ...options }
   const { pr } = opts
   const messages = []
@@ -448,9 +377,10 @@ export async function runChunk({ state, read, sleep, now, options }) {
   const deadline = chunkStart + opts.chunkMs
   const remainingChunk = () => deadline - now()
 
-  // R8: every run takes a read before any delay.
-  const readOnce = () =>
-    takeReading({
+  // R8: every run takes a read before any delay. The first gh fallback in a chunk says so once.
+  let fallbackNoted = false
+  const readOnce = async ({ fresh = false } = {}) => {
+    const reading = await takeReading({
       read,
       pr,
       readTimeoutMs: opts.readTimeoutMs,
@@ -458,7 +388,64 @@ export async function runChunk({ state, read, sleep, now, options }) {
       priorContexts: opts.priorContexts ?? null,
       ciRequired: opts.ciRequired ?? null,
       now,
+      fresh,
     })
+    if (!fallbackNoted && read.source?.() === 'gh-fallback') {
+      fallbackNoted = true
+      messages.push(
+        `ci-wait: PR #${pr}: no daemon answered (${read.fallbackReason?.() ?? 'unknown'}); ` +
+          `reading with gh, labelled ${FALLBACK_LABELS.CI_WAIT}`,
+      )
+    }
+    return reading
+  }
+
+  // The delay is verified: one that returns well short of its length is an inert timer.
+  const verifiedSleep = async (ms) => {
+    const before = now()
+    await sleep(ms)
+    const slept = now() - before
+    if (slept >= ms - Math.max(50, ms * 0.05)) return true
+    messages.push(
+      `ci-wait: PR #${pr}: a ${ms}ms delay returned after ${slept}ms — the timer is inert`,
+    )
+    return false
+  }
+
+  // daemonGap is the delay between daemon-served readings: `boss pr wait --until checks-settled`,
+  // within the budget and the chunk less a read floor. A wait that answered is a real delay; one
+  // under MIN_DELAY_MS is topped up with a verified sleep, and a second early answer in a row (the
+  // daemon's condition holds while this verdict still waits) is paced at the interval instead. The
+  // gap before a confirming read (`confirmAtMs` set) lasts until one interval after the fresh green
+  // it confirms, or MIN_DELAY_MS when no fresh green stands yet and the next read must take one. A
+  // wait that did not answer hands the rest of the chunk to the timer.
+  let daemonWait = typeof wait === 'function'
+  let earlyAnswers = 0
+  const daemonGap = async (budgetLeft, confirmAtMs) => {
+    const limits = [opts.daemonWaitMs, PR_WAIT_CAP_MS, budgetLeft, remainingChunk() - READ_FLOOR_MS]
+    const timeoutMs = Math.min(...limits)
+    if (timeoutMs < MIN_DELAY_MS) return 'continue'
+    const before = now()
+    const answer = await wait({ pr, until: 'checks-settled', timeoutMs })
+    if (!waitAnswered(answer)) {
+      daemonWait = false
+      messages.push(
+        `ci-wait: PR #${pr}: boss pr wait did not answer (${answer?.reason ?? answer?.error ?? 'no answer'}); ` +
+          `delaying by the ${seconds(opts.intervalMs)} timer for the rest of this chunk`,
+      )
+      return 'timer'
+    }
+    const took = now() - before
+    earlyAnswers = took < opts.intervalMs ? earlyAnswers + 1 : 0
+    let floor = earlyAnswers > 1 ? Math.min(opts.intervalMs, budgetLeft) : MIN_DELAY_MS
+    if (confirmAtMs !== undefined) {
+      floor = Math.max(MIN_DELAY_MS, Math.min(confirmAtMs - before, budgetLeft))
+    }
+    const topUp = floor - took
+    if (topUp <= 0) return 'read'
+    if (remainingChunk() - topUp < READ_FLOOR_MS) return 'continue'
+    return (await verifiedSleep(topUp)) ? 'read' : 'inert'
+  }
 
   // R5: the chunk is marked open BEFORE its first read, so a chunk killed during that read is still
   // counted. The head is not known yet, so the marker goes on the wait this run resumes (see
@@ -530,10 +517,14 @@ export async function runChunk({ state, read, sleep, now, options }) {
     if (verdictState !== WAIT_STATES.CONTINUE) {
       record.lastVerdict = { state: verdictState, reason, atMs: now(), trend }
     }
+    const source = read.source?.() ?? null
+    record.source = source
     state.save(record)
     const verdict = {
       state: verdictState,
       reason,
+      source,
+      ...(source === 'gh-fallback' ? { fallbackReason: read.fallbackReason?.() ?? null } : {}),
       pr,
       headSha: record.headSha,
       headChanged,
@@ -598,10 +589,33 @@ export async function runChunk({ state, read, sleep, now, options }) {
     const decision = mapVerdict(reading.verdict)
     // A green read settles only once a second read of the same head confirms it; until then it is
     // one more interval of waiting like any pending read.
+    const daemonPath = read.source?.() === 'daemon'
+    const greenRule = { fresh: daemonPath, intervalMs: opts.intervalMs }
     const unconfirmed =
-      (decision.state === WAIT_STATES.SETTLED && !confirmsGreen(record)) ||
+      (decision.state === WAIT_STATES.SETTLED && !confirmsGreen(record, greenRule)) ||
       (decision.reason === CHECK_REASONS.NOT_REQUESTED && !confirmsNotRequested(record))
-    if (!decision.wait && !unconfirmed) return close(decision.state, decision.reason)
+    // The daemon's checks carry no SHA and may be cached from an older head than its status, so a
+    // daemon-path wait ends only on a fresh reading: a cached terminal one is re-read fresh first.
+    const cached = daemonPath && reading.fresh !== true
+    if (!decision.wait && !unconfirmed && !cached) return close(decision.state, decision.reason)
+    if (!decision.wait && !unconfirmed) {
+      // The re-read takes no delay, so it is bounded like any read: a reader that answers a fresh
+      // request with a cached reading must not spin here.
+      if (remainingChunk() < READ_FLOOR_MS || reads >= maxReads) {
+        return close(WAIT_STATES.CONTINUE, WAIT_REASONS.CHUNK_EXHAUSTED, { extendRefusal })
+      }
+      reading = await readOnce({ fresh: true })
+      if (reading.headSha !== '' && record.headSha !== '' && reading.headSha !== record.headSha) {
+        headChanged = true
+        return close(WAIT_STATES.CONTINUE, WAIT_REASONS.HEAD_CHANGED, {
+          extendRefusal,
+          newHeadSha: reading.headSha,
+        })
+      }
+      recordReading(record, reading)
+      state.save(record)
+      continue
+    }
 
     let elapsed = now() - record.startedAtMs
     if (elapsed >= totalBudget(record)) {
@@ -626,19 +640,26 @@ export async function runChunk({ state, read, sleep, now, options }) {
     }
 
     const budgetLeft = totalBudget(record) - elapsed
-    const delay = Math.max(MIN_DELAY_MS, Math.min(opts.intervalMs, budgetLeft))
-    if (remainingChunk() - delay < READ_FLOOR_MS || reads >= maxReads) {
+    if (reads >= maxReads) {
       return close(WAIT_STATES.CONTINUE, WAIT_REASONS.CHUNK_EXHAUSTED, { extendRefusal })
     }
-
     // R2: the helper takes the delay itself and proves it elapsed.
-    const before = now()
-    await sleep(delay)
-    const slept = now() - before
-    if (slept < delay - Math.max(50, delay * 0.05)) {
-      messages.push(
-        `ci-wait: PR #${pr}: a ${delay}ms delay returned after ${slept}ms — the timer is inert`,
-      )
+    const confirming = decision.state === WAIT_STATES.SETTLED
+    const anchor = confirming ? freshGreenAnchor(record.readings) : null
+    // With no fresh green yet the confirming gap is short: the next read must take the first one.
+    const confirmAtMs = confirming ? (anchor ? anchor.atMs + opts.intervalMs : 0) : undefined
+    const gap = daemonWait && daemonPath ? await daemonGap(budgetLeft, confirmAtMs) : 'timer'
+    if (gap === 'timer') {
+      const delay = Math.max(MIN_DELAY_MS, Math.min(opts.intervalMs, budgetLeft))
+      if (remainingChunk() - delay < READ_FLOOR_MS) {
+        return close(WAIT_STATES.CONTINUE, WAIT_REASONS.CHUNK_EXHAUSTED, { extendRefusal })
+      }
+      if (!(await verifiedSleep(delay))) {
+        return close(WAIT_STATES.UNKNOWN, WAIT_REASONS.DELAY_INERT, { extendRefusal })
+      }
+    } else if (gap === 'continue') {
+      return close(WAIT_STATES.CONTINUE, WAIT_REASONS.CHUNK_EXHAUSTED, { extendRefusal })
+    } else if (gap === 'inert') {
       return close(WAIT_STATES.UNKNOWN, WAIT_REASONS.DELAY_INERT, { extendRefusal })
     }
 
@@ -646,7 +667,8 @@ export async function runChunk({ state, read, sleep, now, options }) {
     if (remainingChunk() < READ_FLOOR_MS) {
       return close(WAIT_STATES.CONTINUE, WAIT_REASONS.CHUNK_EXHAUSTED, { extendRefusal })
     }
-    reading = await readOnce()
+    // The read that would confirm a green is fresh: on the daemon path only fresh greens confirm.
+    reading = await readOnce({ fresh: confirming })
     if (reading.headSha !== '' && record.headSha !== '' && reading.headSha !== record.headSha) {
       // A new head is a new wait with a fresh budget; the next `run` opens it.
       headChanged = true
@@ -685,11 +707,12 @@ export function statusOf({ record, now }) {
     extended: record.extended,
     interruptedChunks: record.interruptedChunks,
     chunkOpen: record.openChunk != null,
+    source: record.source ?? null,
   }
 }
 
 // ---------------------------------------------------------------------------
-// File-backed state store and the real `gh` reader.
+// File-backed state store and the raw-gh reader.
 
 export function fileStore({ dir, pr }) {
   const pathFor = (headSha) => path.join(dir, `pr${pr}-${headSha === '' ? 'nohead' : headSha}.json`)
@@ -730,57 +753,9 @@ export function fileStore({ dir, pr }) {
   }
 }
 
-const RUN_LIST_FIELDS = 'name,workflowName,status,conclusion,headSha,event'
-
-function ghArgs({ what, pr, headSha }) {
-  if (what === 'view')
-    return ['pr', 'view', String(pr), '--json', 'headRefOid,statusCheckRollup,baseRefName']
-  if (what === 'verify-status') return statusReadArgs({ sha: headSha, repo: '' })
-  if (what === 'runs') {
-    return [
-      'run',
-      'list',
-      '--commit',
-      headSha,
-      '--json',
-      RUN_LIST_FIELDS,
-      '--limit',
-      String(WORKFLOW_RUNS_LIMIT),
-    ]
-  }
-  return ['pr', 'checks', String(pr), '--json', 'name,state,bucket']
-}
-
-export function ghReader({ spawn = spawnSync } = {}) {
-  return async ({ what, pr, headSha = '', timeoutMs }) => {
-    if ((what === 'runs' || what === 'verify-status') && headSha === '')
-      return { ok: false, error: 'no head SHA' }
-    let args
-    try {
-      args = ghArgs({ what, pr, headSha })
-    } catch (error) {
-      // statusReadArgs refuses a SHA that is not 40 hex; gh is never spawned for it.
-      return { ok: false, error: error?.message ?? String(error) }
-    }
-    const res = spawn('gh', args, {
-      encoding: 'utf8',
-      timeout: Math.max(1, Math.floor(timeoutMs)),
-      killSignal: 'SIGKILL',
-      maxBuffer: 64 * 1024 * 1024,
-    })
-    // `gh pr checks` exits 8 while checks are pending and still prints the payload.
-    if (res.error || (res.status !== 0 && !(what === 'checks' && res.status === 8))) {
-      return { ok: false, error: res.error?.code ?? `gh exited ${res.status}` }
-    }
-    try {
-      const payload = JSON.parse(res.stdout)
-      return what === 'view'
-        ? { ok: true, headSha: payload?.headRefOid ?? '', payload }
-        : { ok: true, payload }
-    } catch {
-      return { ok: false, error: 'unparseable gh output' }
-    }
-  }
+// ghReader is the raw-gh reader, labelled as ci-wait's fallback (see ./pr-state.mjs).
+export function ghReader({ spawn } = {}) {
+  return ghCheckReader({ label: FALLBACK_LABELS.CI_WAIT, deps: spawn ? { spawn } : undefined })
 }
 
 export function realSleep(ms) {
@@ -797,6 +772,7 @@ const CLI_FLAGS = Object.freeze({
     'interval-ms',
     'chunk-ms',
     'read-timeout-ms',
+    'daemon-wait-ms',
     'prior',
     'extend',
     'extend-ms',
@@ -865,6 +841,11 @@ export function parseRunOptions(argv) {
     intervalMs: intFlag(flags, 'interval-ms', DEFAULTS.intervalMs, { min: MIN_DELAY_MS }),
     chunkMs: intFlag(flags, 'chunk-ms', DEFAULTS.chunkMs),
     readTimeoutMs: intFlag(flags, 'read-timeout-ms', DEFAULTS.readTimeoutMs),
+    // Clamped to `boss pr wait`'s own ceiling, which would clamp it anyway.
+    daemonWaitMs: Math.min(
+      PR_WAIT_CAP_MS,
+      intFlag(flags, 'daemon-wait-ms', DEFAULTS.daemonWaitMs, { min: MIN_DELAY_MS }),
+    ),
     extend: flags.extend === true,
     extendMs: intFlag(flags, 'extend-ms', DEFAULTS.extendMs),
     stateDir: typeof flags['state-dir'] === 'string' ? flags['state-dir'] : defaultStateDir(),
@@ -945,9 +926,15 @@ export async function main(argv, deps = {}) {
     const options = parseRunOptions(rest)
     const priorContexts = readPrior(options.prior)
     const config = readCiRequired(deps.loadConfig ?? loadSkillConfig)
+    // Daemon-first by default; an injected reader keeps the timer unless a wait is injected too.
+    const io = { now, ...deps.io }
+    const wait = deps.read
+      ? (deps.wait ?? null)
+      : (deps.wait ?? ((req) => waitPRState({ ...req, deps: io })))
     const { verdict, messages } = await runChunk({
       state: deps.store ?? fileStore({ dir: options.stateDir, pr: options.pr }),
-      read: deps.read ?? ghReader(),
+      read: deps.read ?? daemonFirstReader({ label: FALLBACK_LABELS.CI_WAIT, deps: io }),
+      wait,
       sleep: deps.sleep ?? realSleep,
       now,
       options: { ...options, priorContexts, ciRequired: config.block },

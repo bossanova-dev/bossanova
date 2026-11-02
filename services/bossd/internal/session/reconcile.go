@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/ghusage"
 )
 
 const defaultPRAssociationCacheTTL = 60 * time.Second
@@ -549,7 +550,7 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 	}
 	// A background read: the PR status is shared with the pollers through the
 	// provider's read cache.
-	ctx = vcs.WithCachedReads(ctx)
+	ctx = ghusage.WithLabel(vcs.WithCachedReads(ctx), ghusage.LabelReconcileTitle)
 	var repaired int64
 	for _, sess := range sessions {
 		if sess == nil || sess.ArchivedAt != nil || sess.PRNumber == nil ||
@@ -793,8 +794,10 @@ func (r *PRAssociationResolver) listOnce(ctx context.Context, cacheKey, repoID, 
 // listAndCache is the flight body: one provider call, one cache write.
 func (r *PRAssociationResolver) listAndCache(ctx context.Context, cacheKey, repoID, originURL string) ([]vcs.PRSummary, error) {
 	// A background read: it may share the provider's cached open-PR list with
-	// the plugin host's listings of the same repo.
-	openPRs, err := r.provider.ListOpenPRs(vcs.WithCachedReads(ctx), originURL)
+	// the plugin host's listings of the same repo. It is the one flight every
+	// caller of this repo's lookup joins, so it is metered under its own label.
+	listCtx := ghusage.WithLabel(vcs.WithCachedReads(ctx), ghusage.LabelReconcilePRLookup)
+	openPRs, err := r.provider.ListOpenPRs(listCtx, originURL)
 	if err != nil {
 		listErr := fmt.Errorf("list open PRs for repo %q: %w", repoID, err)
 		r.rememberListingFailure(ctx, cacheKey, listErr)

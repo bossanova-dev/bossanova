@@ -4,13 +4,18 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"reflect"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"connectrpc.com/connect"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	server "github.com/recurser/bossd/api/daemon"
+	"github.com/recurser/bossd/internal/credsync"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestHandshakeDoesNotWaitForCredentialKeyring(t *testing.T) {
@@ -172,6 +177,79 @@ func TestCredentialEnrollmentPassTimeout(t *testing.T) {
 		worker.Nudge()
 		if err := <-observed; !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("pass timeout = %v", err)
+		}
+		cancel()
+		<-done
+	})
+}
+
+// tickingDeviceUpstream lists a fixed device set and counts enrollment requests.
+type tickingDeviceUpstream struct {
+	server.CredentialDeviceUpstream
+	devices     []*pb.AgentCredentialDevice
+	enrollments int
+}
+
+func (u *tickingDeviceUpstream) ListAgentCredentialDevices(context.Context, *connect.Request[pb.ListAgentCredentialDevicesRequest]) (*connect.Response[pb.ListAgentCredentialDevicesResponse], error) {
+	return connect.NewResponse(&pb.ListAgentCredentialDevicesResponse{Devices: u.devices}), nil
+}
+func (u *tickingDeviceUpstream) RequestAgentCredentialDeviceEnrollment(context.Context, *connect.Request[pb.RequestAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[pb.RequestAgentCredentialDeviceEnrollmentResponse], error) {
+	u.enrollments++
+	return connect.NewResponse(&pb.RequestAgentCredentialDeviceEnrollmentResponse{}), nil
+}
+
+func TestCredentialReadinessTickerFlipsExpiryWithoutHandshake(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		key, err := ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const interval = time.Minute
+		rpc := &tickingDeviceUpstream{devices: []*pb.AgentCredentialDevice{{DaemonId: "self", Status: "pending", DevicePublicKey: key.PublicKey().Bytes(), ExpiresAt: timestamppb.New(time.Now().Add(interval + interval/2))}}}
+		devices := server.NewCredentialDeviceService(server.CredentialDeviceConfig{
+			DaemonID: "self", IdentityKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Client: rpc,
+			LoadKey:        func(string) (*ecdh.PrivateKey, error) { return key, nil },
+			PinnedIdentity: func(string) (ed25519.PublicKey, error) { return nil, errors.New("not pinned") },
+		})
+		worker := newCredentialEnrollmentWorker(devices.EnsureEnrollment, nil)
+		worker.refresh = func(ctx context.Context) { devices.RefreshReadiness(ctx) }
+		worker.interval = interval
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan struct{})
+		go func() { defer close(done); worker.Run(ctx) }()
+		time.Sleep(interval + time.Second)
+		synctest.Wait()
+		if got := devices.Readiness().State; got != credsync.ReadinessEnrollmentPending {
+			t.Fatalf("first tick=%q", got)
+		}
+		time.Sleep(interval)
+		synctest.Wait()
+		if got := devices.Readiness().State; got != credsync.ReadinessEnrollmentExpired {
+			t.Fatalf("tick after expiry=%q", got)
+		}
+		if rpc.enrollments != 0 {
+			t.Fatalf("ticker requested enrollment %d times", rpc.enrollments)
+		}
+		cancel()
+		<-done
+	})
+}
+
+func TestCredentialEnrollmentPassRefreshesReadiness(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls []string
+		worker := newCredentialEnrollmentWorker(func(context.Context) error { calls = append(calls, "enroll"); return nil }, nil)
+		worker.refresh = func(context.Context) { calls = append(calls, "refresh") }
+		worker.interval = time.Hour
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan struct{})
+		go func() { defer close(done); worker.Run(ctx) }()
+		worker.Nudge()
+		synctest.Wait()
+		if want := []string{"enroll", "refresh"}; !reflect.DeepEqual(calls, want) {
+			t.Errorf("calls = %v, want %v", calls, want)
 		}
 		cancel()
 		<-done

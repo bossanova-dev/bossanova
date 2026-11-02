@@ -238,3 +238,18 @@ func TestShimFallsBackToItsBuiltInLedgerAndRealGH(t *testing.T) {
 		t.Fatalf("ledger counts = %+v, want %+v", usage.Counts, want)
 	}
 }
+
+// The wrapper meters gate and session calls, which run on the operator's own
+// gh login, so every line it writes carries the user identity.
+func TestShimRecordsTheUserIdentity(t *testing.T) {
+	shim, ledgerDir := installTestShim(t)
+	runShim(t, shim.Env("cron:bs-verify"), "api", "repos/x/y")
+	recs := bucketRecords(t, ledgerDir, time.Now())
+	if len(recs) == 0 {
+		// The call straddled an hour boundary; the record is in the previous bucket.
+		recs = bucketRecords(t, ledgerDir, time.Now().Add(-time.Hour))
+	}
+	if len(recs) != 1 || recs[0].Identity != IdentityUser {
+		t.Fatalf("records = %+v, want one with identity %q", recs, IdentityUser)
+	}
+}

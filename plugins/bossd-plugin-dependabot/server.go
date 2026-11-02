@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -26,10 +28,17 @@ type server struct {
 	bossanovav1.UnimplementedTaskSourceServiceServer
 	host   hostClient
 	logger zerolog.Logger
+	// now is the clock the closed-history cache ages entries against.
+	now func() time.Time
+
+	// closedMu guards closedHistory, the per-repo closed-PR history cache
+	// keyed by repo origin URL (see closedHistoryFor).
+	closedMu      sync.Mutex
+	closedHistory map[string]closedHistoryEntry
 }
 
 func newServer(host hostClient, logger zerolog.Logger) *server {
-	return &server{host: host, logger: logger}
+	return &server{host: host, logger: logger, now: time.Now}
 }
 
 func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetInfoRequest) (*bossanovav1.TaskSourceServiceGetInfoResponse, error) {
@@ -67,10 +76,10 @@ func (s *server) PollTasks(ctx context.Context, req *bossanovav1.PollTasksReques
 	}
 
 	// Fetch recently-closed dependabot PRs to detect previously-rejected libraries.
-	closedPRs, err := listClosedDependabotPRs(ctx, s.host, repoURL)
+	closedPRs, err := s.closedHistoryFor(ctx, repoURL, prs)
 	if err != nil {
-		s.logger.Warn().Err(err).Str("repo", repo).Msg("failed to list closed PRs, skipping rejection check")
-		closedPRs = nil
+		s.logger.Warn().Err(err).Str("repo", repo).Int("cached_closed_prs", len(closedPRs)).
+			Msg("failed to list closed PRs, checking rejections against the last cached history")
 	}
 
 	var tasks []*bossanovav1.TaskItem

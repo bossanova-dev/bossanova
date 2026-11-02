@@ -25,6 +25,7 @@ go_library(
         "//services/bossd/internal/domain/deliverydiag",
         "//services/bossd/internal/domain/telemetry",
         "//services/bossd/internal/ghusage",
+        "//services/bossd/internal/prstate",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
@@ -39,6 +40,7 @@ go_test(
         "interests_test.go",
         "prompt_test.go",
         "retire_test.go",
+        "usage_label_test.go",
         "worker_test.go",
     ],
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
@@ -55,6 +57,7 @@ go_test(
         "//services/bossd/internal/adapter/migrate",
         "//services/bossd/internal/db",
         "//services/bossd/internal/domain",
+        "//services/bossd/internal/ghusage",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

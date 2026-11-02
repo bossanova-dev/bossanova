@@ -50,6 +50,21 @@ func newRegistry() map[string]Prose {
 				{Command: "boss ls --json | jq -r '.sessions[] | select(.state==\"READY_FOR_REVIEW\") | .pr_url'"},
 			},
 		},
+		"boss pr wait": {
+			Long: "Blocks until a PR meets `--until checks-settled`, `mergeable` or `head-changed`, " +
+				"the condition becomes unreachable (the PR closed or merged, or a mergeable wait " +
+				"saw a conflict), or `--timeout` passes (default 5m, capped at 8m; a larger value " +
+				"fails `INVALID_ARGUMENT`). The daemon re-reads the PR only when a webhook announces " +
+				"a change, so a wait costs GitHub reads per event; a condition that already holds " +
+				"answers at once. checks-settled means failing, or green with every head workflow " +
+				"run settled; a green head where no gate ran waits unless `--accept-no-gate`. " +
+				"`--json` emits `{outcome, condition, timeout_seconds, snapshot}`, with outcome " +
+				"`met`, `unreachable` or `timed_out` and snapshot the `boss pr state --json` " +
+				"envelope. Exit 0 means answered, whatever the outcome; branch on `outcome`.",
+			Examples: []Example{
+				{Command: "boss pr wait 123 --until checks-settled --json | jq -r .outcome"},
+			},
+		},
 		"boss show": {
 			Long: "Shows one session's details, then its chats in the same table `boss chats` " +
 				"prints -- ID, TITLE, CREATED, STATUS and LAST OUTPUT, with the same reading of " +

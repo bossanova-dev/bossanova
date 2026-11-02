@@ -12,7 +12,10 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/credsync"
 	"github.com/recurser/bossd/internal/devicekey"
+	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // CredentialDeviceUpstream is the daemon-authenticated enrollment transport.
@@ -33,12 +36,21 @@ type CredentialDeviceConfig struct {
 	SessionToken   func() string
 	PinIdentity    func(string, ed25519.PublicKey) error
 	OnTrustChanged func(context.Context)
+	// PinnedIdentity reads local pins; nil means credential sharing is not configured.
+	PinnedIdentity credsync.PinLookup
+	// ReadinessInterval bounds how stale the cached readiness may be (default five minutes).
+	ReadinessInterval time.Duration
+	Now               func() time.Time
+	// Logger receives one warning per transition into a non-ready state.
+	Logger *zerolog.Logger
 }
 
 // CredentialDeviceService keeps private keys behind local keyring access.
 type CredentialDeviceService struct {
-	mu     sync.Mutex
-	config CredentialDeviceConfig
+	mu        sync.Mutex
+	config    CredentialDeviceConfig
+	refreshMu sync.Mutex
+	readiness credsync.ReadinessHolder
 }
 
 // NewCredentialDeviceService constructs the local enrollment service.
@@ -165,7 +177,8 @@ func (s *Server) GetAgentCredentialDeviceStatus(ctx context.Context, _ *connect.
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&pb.GetAgentCredentialDeviceStatusResponse{Device: device}), nil
+	readiness := credentialReadinessToProto(d.currentReadiness(ctx))
+	return connect.NewResponse(&pb.GetAgentCredentialDeviceStatusResponse{Device: device, Readiness: readiness}), nil
 }
 
 func (s *Server) RenewAgentCredentialDeviceEnrollment(ctx context.Context, _ *connect.Request[pb.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[pb.RenewAgentCredentialDeviceEnrollmentResponse], error) {
@@ -173,7 +186,9 @@ func (s *Server) RenewAgentCredentialDeviceEnrollment(ctx context.Context, _ *co
 	if d == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("device enrollment is not configured"))
 	}
-	if err := d.EnsureEnrollment(ctx); err != nil {
+	err := d.EnsureEnrollment(ctx)
+	d.RefreshReadiness(ctx)
+	if err != nil {
 		return nil, err
 	}
 	device, err := d.status(ctx)
@@ -261,6 +276,7 @@ func (s *Server) ApproveAgentCredentialDevice(ctx context.Context, req *connect.
 			if d.config.OnTrustChanged != nil {
 				d.config.OnTrustChanged(ctx)
 			}
+			d.RefreshReadiness(ctx)
 			return connect.NewResponse(&pb.ApproveAgentCredentialDeviceResponse{}), nil
 		}
 		signature, err := devicekey.SignApproval(d.config.IdentityKey, devicekey.Approval{ApproverDaemonID: d.config.DaemonID, DaemonID: entry.DaemonId, DevicePub: entry.DevicePublicKey})
@@ -270,8 +286,11 @@ func (s *Server) ApproveAgentCredentialDevice(ctx context.Context, req *connect.
 		request := connect.NewRequest(&pb.ApproveAgentCredentialDeviceRequest{DaemonId: entry.DaemonId, ApprovalSignature: signature})
 		d.authorize(request.Header())
 		response, err := d.config.Client.ApproveAgentCredentialDevice(ctx, request)
-		if err == nil && d.config.OnTrustChanged != nil {
-			d.config.OnTrustChanged(ctx)
+		if err == nil {
+			if d.config.OnTrustChanged != nil {
+				d.config.OnTrustChanged(ctx)
+			}
+			d.RefreshReadiness(ctx)
 		}
 		return response, err
 	}
@@ -289,4 +308,109 @@ func (s *Server) RevokeAgentCredentialDevice(ctx context.Context, req *connect.R
 	request := connect.NewRequest(&pb.RevokeAgentCredentialDeviceRequest{DaemonId: req.Msg.DaemonId, RevocationSignature: signature})
 	d.authorize(request.Header())
 	return d.config.Client.RevokeAgentCredentialDevice(ctx, request)
+}
+
+// DefaultCredentialReadinessInterval is how stale a cached verdict may get.
+const DefaultCredentialReadinessInterval = 5 * time.Minute
+
+// Readiness returns the cached credential-sharing verdict; State is empty before the first refresh.
+func (d *CredentialDeviceService) Readiness() credsync.Readiness {
+	if d == nil {
+		return credsync.Readiness{}
+	}
+	return d.readiness.Load()
+}
+
+// RefreshReadiness re-evaluates readiness from the device list and local pins.
+// It never takes the enrollment lock, so it cannot order against Receive, and
+// it never requests enrollment.
+func (d *CredentialDeviceService) RefreshReadiness(ctx context.Context) credsync.Readiness {
+	if d == nil {
+		return credsync.Readiness{}
+	}
+	d.refreshMu.Lock()
+	defer d.refreshMu.Unlock()
+	r := credsync.EvaluateReadiness(d.readinessInput(ctx))
+	if d.readiness.Store(r) {
+		logger := zerolog.Nop()
+		if d.config.Logger != nil {
+			logger = *d.config.Logger
+		}
+		event := logger.Warn().Str("state", string(r.State)).Str("daemon_id", r.DaemonID)
+		if len(r.RemediationSteps) > 0 {
+			event = event.Str("remediation", r.RemediationSteps[0].Command)
+		}
+		event.Msg("credential sharing is not ready")
+	}
+	return r
+}
+
+func (d *CredentialDeviceService) readinessInterval() time.Duration {
+	if d.config.ReadinessInterval > 0 {
+		return d.config.ReadinessInterval
+	}
+	return DefaultCredentialReadinessInterval
+}
+
+func (d *CredentialDeviceService) now() time.Time {
+	if d.config.Now != nil {
+		return d.config.Now()
+	}
+	return time.Now()
+}
+
+// currentReadiness returns the cached verdict, refreshing one older than the interval.
+func (d *CredentialDeviceService) currentReadiness(ctx context.Context) credsync.Readiness {
+	r := d.readiness.Load()
+	if r.State == "" || d.now().Sub(r.CheckedAt) > d.readinessInterval() {
+		return d.RefreshReadiness(ctx)
+	}
+	return r
+}
+
+func (d *CredentialDeviceService) readinessInput(ctx context.Context) credsync.ReadinessInput {
+	in := credsync.ReadinessInput{DaemonID: d.config.DaemonID, Now: d.now(), Pins: d.config.PinnedIdentity}
+	in.IsConfigured = d.config.Client != nil && d.config.LoadKey != nil && len(d.config.IdentityKey) == ed25519.PrivateKeySize
+	if !in.IsConfigured || in.Pins == nil {
+		return in
+	}
+	key, err := d.config.LoadKey(d.config.DaemonID)
+	if err != nil {
+		in.Err = err
+		return in
+	}
+	in.DevicePublicKey = key.PublicKey().Bytes()
+	in.Fingerprint = devicekey.Fingerprint(ed25519.PublicKey(d.config.IdentityKey[ed25519.SeedSize:]), in.DevicePublicKey)
+	devices, err := d.list(ctx)
+	if err != nil {
+		in.Err = err
+		return in
+	}
+	for _, entry := range devices {
+		in.Devices = append(in.Devices, credentialDeviceFromProto(entry))
+	}
+	return in
+}
+
+// credentialDeviceFromProto keeps the fields readiness reads; bosso's evidence is never a pin.
+func credentialDeviceFromProto(d *pb.AgentCredentialDevice) credsync.Device {
+	device := credsync.Device{DaemonID: d.GetDaemonId(), Status: d.GetStatus(), ApprovedByDaemonID: d.GetApprovedByDaemonId(), DevicePublicKey: d.GetDevicePublicKey()}
+	if d.GetExpiresAt() != nil {
+		device.ExpiresAt = d.GetExpiresAt().AsTime()
+	}
+	return device
+}
+
+func credentialReadinessToProto(r credsync.Readiness) *pb.CredentialDeviceReadiness {
+	out := &pb.CredentialDeviceReadiness{State: string(r.State), BootstrapDaemonId: r.BootstrapDaemonID, ApproverDaemonIds: r.ApproverDaemonIDs}
+	for _, step := range r.RemediationSteps {
+		out.RemediationSteps = append(out.RemediationSteps, &pb.CredentialDeviceRemediationStep{MachineDaemonId: step.MachineDaemonID, IsThisMachine: step.IsThisMachine, Command: step.Command})
+	}
+	if !r.CheckedAt.IsZero() {
+		out.CheckedAt = timestamppb.New(r.CheckedAt)
+	}
+	if !r.ExpiresAt.IsZero() {
+		out.ExpiresAt = timestamppb.New(r.ExpiresAt)
+	}
+	return out
 }

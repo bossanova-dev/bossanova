@@ -81,6 +81,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Question                                                               | Ask                                                                                    |
 | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | Remove a recorded scratch dir                                          | `node scratch-remove.mjs --record <file>`                                              |
+| Rename an identifier across files                                      | `node rename-symbol.mjs --from <A> --to <B> [--path <p>] [--exclude <p>] [--dry-run]`  |
 | Is the worktree clean (hook-proof)?                                    | `node worktree-state.mjs [--base <ref>]`                                               |
 | Who owns this worktree?                                                | `worktree-lock.sh acquire\|heartbeat\|release <run-id> [ticket]`                       |
 | Who won the ticket claim?                                              | `node tracker/cli.mjs claim-verdict …`                                                 |
@@ -94,7 +95,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Push the branch, with retry and a rescue ref                           | `node finalize/push-branch.mjs --branch <name> [--base <ref>] [--expect-remote <sha>]` |
 | Tag commits with the PR number                                         | `node finalize/cli.mjs inject-pr-tag <pr>`                                             |
 | Are the checks green / is the merge state blocking?                    | `node pr-check-state.mjs classify\|merge-state …`                                      |
-| Wait for CI without guessing                                           | `node ci-wait.mjs run --pr <n>` (callback-watches.md Protocol step 5)                  |
+| Wait for CI without guessing                                           | `node ci-wait.mjs run --pr <n>` (daemon-first; callback-watches.md step 5)             |
 | May I stop watching CI?                                                | `node callback/ci-watch.mjs classify …`                                                |
 | May this head be readied / receipted?                                  | `node ready-gate.mjs [--base <branch>]` (reads the Step 9 route file)                  |
 | Opt-in inline verify and merge a green REVIEW_READY PR                 | `node completion-gate.mjs envelope\|fast-path`                                         |
@@ -518,6 +519,9 @@ verification only_). Thread only that into the next dispatch; every decision rea
   once; if it still fails, leave the work in the tree, report the paths, and never revert.
 - After a rejected commit, check `git show --stat HEAD` before the next `git add` — the rejected
   files are still staged.
+- Rename identifiers with `node <toolbox>/rename-symbol.mjs --from <Old> --to <New> --path <pathspec>`,
+  never a shell loop feeding `$(…)`/`${(f)…}` output to `sed -i` — Claude Code stops for a human on it
+  even in bypass mode.
 - Do not write to the PR or the tracker; report evidence in the contract.
 - Re-read your commit messages before returning; correct any claim the run later disproved.
 

@@ -9,10 +9,14 @@ import (
 
 // credentialEnrollmentWorker serializes enrollment and distribution reconnects.
 // A buffered nudge preserves one retry when the connection flaps during a pass.
+// With refresh set, it also re-evaluates readiness after each pass and on every
+// interval tick; a tick only evaluates and never requests enrollment.
 type credentialEnrollmentWorker struct {
 	nudge     chan struct{}
 	enroll    func(context.Context) error
 	reconnect func(context.Context) error
+	refresh   func(context.Context)
+	interval  time.Duration
 	timeout   time.Duration
 }
 
@@ -33,17 +37,38 @@ func (w *credentialEnrollmentWorker) Nudge() {
 // Run waits for an in-flight pass, including uncancellable keyring calls, before
 // returning. The daemon's bounded shutdown join accounts for a wedged keyring.
 func (w *credentialEnrollmentWorker) Run(ctx context.Context) {
+	var tick <-chan time.Time
+	if w.refresh != nil && w.interval > 0 {
+		ticker := time.NewTicker(w.interval)
+		defer ticker.Stop()
+		tick = ticker.C
+	}
 	for {
+		pass := false
 		select {
 		case <-ctx.Done():
 			return
 		case <-w.nudge:
+			pass = true
+		case <-tick:
 		}
 		if ctx.Err() != nil {
 			return
 		}
-		w.runPass(ctx)
+		if pass {
+			w.runPass(ctx)
+		}
+		w.refreshReadiness(ctx)
 	}
+}
+
+func (w *credentialEnrollmentWorker) refreshReadiness(ctx context.Context) {
+	if w.refresh == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, w.timeout)
+	defer cancel()
+	w.refresh(ctx)
 }
 
 func (w *credentialEnrollmentWorker) runPass(ctx context.Context) {

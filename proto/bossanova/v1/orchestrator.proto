@@ -652,6 +652,23 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "none";
   }
+  // IssueGitHubInstallationToken returns a short-lived, read-only GitHub App
+  // installation access token scoped to the one repository named by
+  // repo_origin_url. Every permission it asks for is read; it can never post a
+  // commit status or write anything else.
+  // It authenticates the daemon session, the same principal as
+  // SyncDaemonNotes; a user token is Unauthenticated. Only a daemon whose owner
+  // may receive the repository's GitHub events (the verified installation
+  // owner, or a member of the mapped organization when the installation owner
+  // is also a member) gets a token. Every other caller or repository, including
+  // an uninstalled or non-GitHub one, is PermissionDenied with one fixed
+  // message, so the answer reveals nothing about other tenants. The token is
+  // held in memory only on both sides: bosso never logs, audits or stores it.
+  rpc IssueGitHubInstallationToken(IssueGitHubInstallationTokenRequest) returns (IssueGitHubInstallationTokenResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -2292,6 +2309,31 @@ enum NoteSyncOutcome {
   // The cloud copy was deleted through DeleteOrganizationNote, which tombstoned
   // this source note. It will never be accepted again; stop retrying it.
   NOTE_SYNC_OUTCOME_SUPPRESSED = 8;
+}
+
+// IssueGitHubInstallationTokenRequest names the repository a daemon wants a
+// GitHub App installation token for.
+message IssueGitHubInstallationTokenRequest {
+  // The repository's origin URL. bosso canonicalises it the same way the repo
+  // RPCs do before looking up its installation.
+  string repo_origin_url = 1;
+}
+
+// IssueGitHubInstallationTokenResponse is one repository-scoped installation
+// token. The daemon holds it in memory until shortly before expires_at.
+message IssueGitHubInstallationTokenResponse {
+  // The installation access token. Secret: never log or persist it.
+  string token = 1;
+  // When GitHub expires the token, at most one hour after it was minted.
+  google.protobuf.Timestamp expires_at = 2;
+  // The GitHub App installation that has the repository installed.
+  int64 installation_id = 3;
+  // The GitHub account the installation belongs to.
+  string account_login = 4;
+  // What GitHub actually granted, permission name to access level. Every
+  // level is read: the token never carries a write permission, so a write
+  // must use another credential.
+  map<string, string> permissions = 5;
 }
 
 message SyncDaemonNotesResponse {

@@ -13,14 +13,14 @@ import (
 	"github.com/recurser/bossd/internal/ghusage"
 )
 
-// GitHubUsageReader counts the GitHub calls in the usage ledger over the
-// window ending at now.
+// GitHubUsageReader counts the GitHub calls and refused attempts in the usage
+// ledger over the window ending at now.
 type GitHubUsageReader interface {
 	Read(now time.Time, window time.Duration) (ghusage.Usage, error)
 }
 
-// GetGitHubUsage reports the per-label, per-quota GitHub call counts the usage
-// ledger holds for the requested window, the last hour by default.
+// GetGitHubUsage reports the per-label, per-quota GitHub call and skip counts
+// the usage ledger holds for the requested window, the last hour by default.
 func (s *Server) GetGitHubUsage(_ context.Context, req *connect.Request[bossanovav1.GetGitHubUsageRequest]) (*connect.Response[bossanovav1.GetGitHubUsageResponse], error) {
 	if s.gitHubUsage == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("github usage ledger not configured"))
@@ -39,7 +39,13 @@ func (s *Server) GetGitHubUsage(_ context.Context, req *connect.Request[bossanov
 		WindowEndedAt:   timestamppb.New(usage.WindowEnd),
 	}
 	for _, c := range usage.Counts {
-		resp.Rows = append(resp.Rows, &bossanovav1.GitHubUsageRow{Label: c.Label, Quota: c.Quota, CallCount: c.Calls})
+		resp.Rows = append(resp.Rows, &bossanovav1.GitHubUsageRow{
+			Label:            c.Label,
+			Quota:            c.Quota,
+			CallCount:        c.Calls,
+			BreakerSkipCount: c.BreakerSkips,
+			FloorSkipCount:   c.FloorSkips,
+		})
 	}
 	return connect.NewResponse(resp), nil
 }

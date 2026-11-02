@@ -5,8 +5,10 @@
 // The ledger is a directory of hour-bucketed JSON Lines files named
 // <YYYYMMDDHH UTC>.jsonl. Each record is one short line,
 //
-//	{"at": <unix seconds>, "label": "<attribution>", "quota": "core"|"graphql"}
+//	{"at": <unix seconds>, "label": "<attribution>", "quota": "core"|"graphql", "identity": "<credential>"}
 //
+// with an "outcome" field only on an attempt that was refused without
+// contacting GitHub ("breaker" or "floor"); a line without one is a sent call,
 // appended with O_APPEND in a single write, so several processes, including
 // non-Go gate and agent shims, can append to the same bucket without a lock.
 package ghusage
@@ -14,6 +16,7 @@ package ghusage
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -27,6 +30,16 @@ const (
 	QuotaGraphQL = "graphql"
 )
 
+// IdentityUser is the identity of a call made with the operator's own gh
+// login. A call made with a GitHub App installation token records
+// InstallationIdentity(id) instead. A record never carries the token itself.
+const IdentityUser = "user"
+
+// InstallationIdentity names the installation token pool of installation id.
+func InstallationIdentity(id int64) string {
+	return "installation:" + strconv.FormatInt(id, 10)
+}
+
 // Labels for the bossd subsystems that spend the quota. Cron gates and agent
 // sessions write their own records as cron:<name> and session:<kind>.
 const (
@@ -35,10 +48,30 @@ const (
 	LabelUnattributed = "daemon:unattributed"
 	LabelFinalize     = "stage:finalize"
 	LabelRepair       = "stage:repair"
-	LabelPoller       = "daemon:poller"
-	LabelCallbacks    = "daemon:callbacks"
-	LabelMerge        = "daemon:merge"
-	LabelVerifyEvent  = "daemon:verify-event"
+	// LabelPRPoller and LabelDisplayPoller are the two session pollers.
+	LabelPRPoller      = "daemon:pr-poller"
+	LabelDisplayPoller = "daemon:display-poller"
+	// LabelReconcileTitle and LabelReconcilePRLookup are reconcile's two
+	// GitHub reads: the no-commits title repair and the find-PR listing.
+	LabelReconcileTitle    = "daemon:reconcile-title"
+	LabelReconcilePRLookup = "daemon:reconcile-pr-lookup"
+	LabelCallbacks         = "daemon:callbacks"
+	LabelMerge             = "daemon:merge"
+	LabelVerifyEvent       = "daemon:verify-event"
+	LabelPRState           = "daemon:pr-state"
+	// LabelPRWait attributes the reads a WaitPRState call makes, so a wait's
+	// cost shows apart from one-shot PR-state reads.
+	LabelPRWait = "daemon:pr-wait"
+)
+
+// Outcomes of a metered attempt. A record with no outcome, or OutcomeSent, is
+// a call sent to GitHub; the others are attempts refused without contacting
+// it: by the rate-limit breaker while a quota is paused, or by the background
+// quota floor.
+const (
+	OutcomeSent    = "sent"
+	OutcomeBreaker = "breaker"
+	OutcomeFloor   = "floor"
 )
 
 // DefaultWindow is the report window when the caller names none.
@@ -60,11 +93,17 @@ const bucketLayout = "2006010215"
 
 const bucketExt = ".jsonl"
 
-// Record is one ledger line: one GitHub call.
+// Record is one ledger line: one GitHub call, or one refused attempt when
+// Outcome is set.
 type Record struct {
 	At    int64  `json:"at"`
 	Label string `json:"label"`
 	Quota string `json:"quota"`
+	// Identity is whose quota the call spent: IdentityUser or an
+	// InstallationIdentity. Records written before it existed read as
+	// IdentityUser.
+	Identity string `json:"identity,omitempty"`
+	Outcome  string `json:"outcome,omitempty"`
 }
 
 // Dir returns the ledger directory under appDataDir.

@@ -586,6 +586,36 @@ func TestRemoteClient_GetAuthStateIsLocalOnly(t *testing.T) {
 	}
 }
 
+// TestRemoteClient_GetPRStateIsLocalOnly pins that a remote client refuses a
+// PR state read: it reads one daemon's own cache, so no remote form answers it.
+func TestRemoteClient_GetPRStateIsLocalOnly(t *testing.T) {
+	t.Parallel()
+	c, _ := newTestRemote(t)
+
+	resp, err := c.GetPRState(context.Background(), &pb.GetPRStateRequest{Repo: "acme/widgets", PrNumber: 7})
+	if resp != nil {
+		t.Errorf("GetPRState() resp = %v, want nil", resp)
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
+		t.Fatalf("connect.CodeOf(err) = %v (%v), want %v", got, err, connect.CodeUnimplemented)
+	}
+}
+
+// TestRemoteClient_WaitPRStateIsLocalOnly pins that a remote client refuses a
+// PR wait: one daemon's own webhooks wake it, so no remote form answers it.
+func TestRemoteClient_WaitPRStateIsLocalOnly(t *testing.T) {
+	t.Parallel()
+	c, _ := newTestRemote(t)
+
+	resp, err := c.WaitPRState(context.Background(), &pb.WaitPRStateRequest{Repo: "acme/widgets", PrNumber: 7})
+	if resp != nil {
+		t.Errorf("WaitPRState() resp = %v, want nil", resp)
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
+		t.Fatalf("connect.CodeOf(err) = %v (%v), want %v", got, err, connect.CodeUnimplemented)
+	}
+}
+
 // TestRemoteClient_DismissSessionAlertRelaysProxyRefusal pins that a dismiss
 // goes to bosso's proxy and that the daemon's refusal comes back unchanged.
 func TestRemoteClient_DismissSessionAlertRelaysProxyRefusal(t *testing.T) {

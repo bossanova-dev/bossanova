@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ghtoken",
+    srcs = [
+        "credential.go",
+        "report.go",
+        "source.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/ghtoken",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/kit/vcs",
+        "//lib/bossalib/models",
+        "//services/bossd/internal/notesync",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "ghtoken_test",
+    srcs = ["source_test.go"],
+    embed = [":ghtoken"],
+    deps = [
+        "//lib/bossalib/models",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

@@ -76,7 +76,7 @@ if [ -n "$quota" ]; then
 	(
 		umask 077
 		stamp=$(date -u '+%s %Y%m%d%H') || exit 0
-		printf '{"at":%s,"label":"%s","quota":"%s"}\n' "${stamp% *}" "${` + EnvLabel + `-}" "$quota" >>"$dir/${stamp#* }` + bucketExt + `"
+		printf '{"at":%s,"label":"%s","quota":"%s","identity":"user"}\n' "${stamp% *}" "${` + EnvLabel + `-}" "$quota" >>"$dir/${stamp#* }` + bucketExt + `"
 	) 2>/dev/null
 fi
 exec "$real" "$@"

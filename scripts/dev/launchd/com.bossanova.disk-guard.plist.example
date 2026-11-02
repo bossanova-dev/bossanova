@@ -7,7 +7,8 @@ REPO_ROOT at the main checkout, not a worktree the cleanup could remove. PATH is
 install so launchd finds git, go and boss, and so is BOSS_SOCKET, so the worktree reaper can ask
 the running bossd which worktrees its sessions use; without it the reaper keeps every worktree.
 It also caps the Go build cache, so install boots out and removes
-com.bossanova.clean-go-build-cache, which it replaces.
+com.bossanova.clean-go-build-cache, which it replaces. Every wake also removes landed Claude Code
+agent worktrees within RECOVER_AGENT_WORKTREE_GRACE_MINUTES (60) of their parent going quiet.
 
 macOS asks once whether NODE may read Documents, and asks again whenever that binary's path
 changes. A version manager's pinned binary moves only when the repo bumps its Node version;

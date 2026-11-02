@@ -766,7 +766,7 @@ func firstLineOf(s string) string {
 // daemonLogSinkCheck reports WHERE bossd's logs actually are.
 //
 // It does not judge; it answers the question that cost an hour on 2026-09-03.
-// bossd logs through a lumberjack file sink AND (via io.MultiWriter) to stderr.
+// bossd logs through a lumberjack file sink AND to stderr (warn+ under launchd).
 // A daemon started detached has stderr on /dev/null, so the console half is
 // discarded — but the file half is untouched and every line is still recorded.
 // The trap is that the LaunchAgent's StandardErrorPath names a DIFFERENT file,

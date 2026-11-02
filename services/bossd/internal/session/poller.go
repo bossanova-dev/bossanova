@@ -119,7 +119,6 @@ func (p *Poller) SetRequiredChecks(src RequiredChecksSource) {
 // stops when the context is cancelled. The caller must consume from the
 // channel to prevent blocking.
 func (p *Poller) Run(ctx context.Context) <-chan Event {
-	ctx = ghusage.WithLabel(ctx, ghusage.LabelPoller)
 	ch := make(chan Event, 64)
 	p.sweepMu.Lock()
 	p.events = ch
@@ -328,8 +327,10 @@ func (p *Poller) checkSessionBounded(ctx context.Context, ch chan<- Event, repo 
 
 	// A scheduled sweep is a background read: it shares the provider's short
 	// read cache with the display poller and the callback reconcile, which poll
-	// the same PRs on their own clocks.
-	p.checkSession(vcs.WithCachedReads(sessCtx), ch, repo, sess)
+	// the same PRs on their own clocks. Its GitHub calls, from the sweep and
+	// from PollPR alike, are metered as the PR status poller's.
+	sessCtx = ghusage.WithLabel(vcs.WithCachedReads(sessCtx), ghusage.LabelPRPoller)
+	p.checkSession(sessCtx, ch, repo, sess)
 
 	// Distinguish a per-session timeout from ordinary parent-ctx cancellation
 	// (shutdown) so a slow-or-hung provider stays visible — now naming the

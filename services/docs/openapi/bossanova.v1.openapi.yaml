@@ -1225,6 +1225,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.IssueAttachTokenResponse'
+  /bossanova.v1.OrchestratorService/IssueGitHubInstallationToken:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: IssueGitHubInstallationToken
+      description: |-
+        IssueGitHubInstallationToken returns a short-lived, read-only GitHub App
+         installation access token scoped to the one repository named by
+         repo_origin_url. Every permission it asks for is read; it can never post a
+         commit status or write anything else.
+         It authenticates the daemon session, the same principal as
+         SyncDaemonNotes; a user token is Unauthenticated. Only a daemon whose owner
+         may receive the repository's GitHub events (the verified installation
+         owner, or a member of the mapped organization when the installation owner
+         is also a member) gets a token. Every other caller or repository, including
+         an uninstalled or non-GitHub one, is PermissionDenied with one fixed
+         message, so the answer reveals nothing about other tenants. The token is
+         held in memory only on both sides: bosso never logs, audits or stores it.
+      operationId: bossanova.v1.OrchestratorService.IssueGitHubInstallationToken
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.IssueGitHubInstallationTokenRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.IssueGitHubInstallationTokenResponse'
   /bossanova.v1.OrchestratorService/LeaveOrganization:
     post:
       tags:
@@ -9397,6 +9445,57 @@ components:
         CredentialAgentAccount is one synced agent account as credential sync sees it.
          is_in_scope is true when the account syncs to all daemons or the calling
          daemon is a selected member.
+    bossanova.v1.CredentialDeviceReadiness:
+      type: object
+      properties:
+        state:
+          type: string
+          title: state
+        bootstrapDaemonId:
+          type: string
+          title: bootstrap_daemon_id
+        approverDaemonIds:
+          type: array
+          items:
+            type: string
+          title: approver_daemon_ids
+          description: Enrolled daemons other than this one that can approve it.
+        remediationSteps:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.CredentialDeviceRemediationStep'
+          title: remediation_steps
+          description: Ordered commands that move this daemon to ready.
+        checkedAt:
+          title: checked_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        expiresAt:
+          title: expires_at
+          description: This daemon's pending enrollment expiry, when it has one.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: CredentialDeviceReadiness
+      additionalProperties: false
+      description: |-
+        CredentialDeviceReadiness is the daemon-computed credential-sharing verdict.
+         state is one of unavailable, unknown, revoked, unenrolled, enrollment_expired,
+         enrollment_pending, bootstrap_unpinned or ready.
+    bossanova.v1.CredentialDeviceRemediationStep:
+      type: object
+      properties:
+        machineDaemonId:
+          type: string
+          title: machine_daemon_id
+        isThisMachine:
+          type: boolean
+          title: is_this_machine
+        command:
+          type: string
+          title: command
+      title: CredentialDeviceRemediationStep
+      additionalProperties: false
+      description: |-
+        CredentialDeviceRemediationStep is one command and the machine that runs it.
+         An empty machine_daemon_id on another machine means any enrolled machine.
     bossanova.v1.CronJob:
       type: object
       properties:
@@ -10732,6 +10831,10 @@ components:
         device:
           title: device
           $ref: '#/components/schemas/bossanova.v1.AgentCredentialDevice'
+        readiness:
+          title: readiness
+          description: The daemon's cached credential-sharing readiness verdict.
+          $ref: '#/components/schemas/bossanova.v1.CredentialDeviceReadiness'
       title: GetAgentCredentialDeviceStatusResponse
       additionalProperties: false
     bossanova.v1.GetAgentCredentialKeySealRequest:
@@ -11103,7 +11206,9 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.GitHubUsageRow'
           title: rows
-          description: Sorted by call_count descending, then label and quota.
+          description: |-
+            Sorted by call_count descending, then by breaker_skip_count plus
+             floor_skip_count descending, then label and quota.
         windowStartedAt:
           title: window_started_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
@@ -11216,6 +11321,132 @@ components:
           title: organization
           $ref: '#/components/schemas/bossanova.v1.Organization'
       title: GetOrganizationResponse
+      additionalProperties: false
+    bossanova.v1.GetPRStateRequest:
+      type: object
+      properties:
+        repo:
+          type: string
+          title: repo
+          description: |-
+            Repository as owner/name or an origin URL; it must be registered on this
+             daemon.
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        shouldBypassCache:
+          type: boolean
+          title: should_bypass_cache
+          description: Skip the read cache, so every read goes to GitHub.
+        shouldIncludeReviewComments:
+          type: boolean
+          title: should_include_review_comments
+          description: Also read the PR's review comments, the expensive read.
+        shouldIncludeWorkflowRuns:
+          type: boolean
+          title: should_include_workflow_runs
+          description: |-
+            Read the head's workflow runs whatever the check verdict, so a caller that
+             judges the head by its own rules sees every run.
+      title: GetPRStateRequest
+      additionalProperties: false
+    bossanova.v1.GetPRStateResponse:
+      type: object
+      properties:
+        repo:
+          type: string
+          title: repo
+          description: Lowercase owner/name.
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        state:
+          title: state
+          $ref: '#/components/schemas/bossanova.v1.PRState'
+        isDraft:
+          type: boolean
+          title: is_draft
+        headSha:
+          type: string
+          title: head_sha
+        headBranch:
+          type: string
+          title: head_branch
+        baseBranch:
+          type: string
+          title: base_branch
+        isMergeable:
+          type:
+            - boolean
+            - "null"
+          title: is_mergeable
+          description: Unset while GitHub has not computed mergeability.
+        mergeStateStatus:
+          type: string
+          title: merge_state_status
+          description: |-
+            GitHub's mergeStateStatus, lowercase ("clean", "blocked", "behind",
+             "dirty", "draft", "has_hooks", "unknown", "unstable"); empty when unset.
+        reviewDecision:
+          title: review_decision
+          $ref: '#/components/schemas/bossanova.v1.ReviewState'
+        latestReviewState:
+          title: latest_review_state
+          $ref: '#/components/schemas/bossanova.v1.ReviewState'
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.PRCheck'
+          title: checks
+        checkVerdict:
+          title: check_verdict
+          $ref: '#/components/schemas/bossanova.v1.PRCheckVerdict'
+        verifyPhase:
+          title: verify_phase
+          $ref: '#/components/schemas/bossanova.v1.PRVerifyPhase'
+        hasBuildReceipt:
+          type: boolean
+          title: has_build_receipt
+          description: A successful boss/build status is on the head.
+        hasSettledWorkflowRuns:
+          type:
+            - boolean
+            - "null"
+          title: has_settled_workflow_runs
+          description: |-
+            Set only for a green verdict: true when every head workflow run has
+             completed, false while one is queued or running.
+        heldWorkflowRuns:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.PRHeldWorkflowRun'
+          title: held_workflow_runs
+        reviewComments:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ReviewComment'
+          title: review_comments
+          description: Read only with should_include_review_comments.
+        observedAt:
+          title: observed_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        workflowRuns:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.PRWorkflowRun'
+          title: workflow_runs
+          description: |-
+            Every head workflow run, when the runs read happened: for a green verdict
+             or with should_include_workflow_runs. Empty otherwise.
+        isWorkflowRunsRead:
+          type: boolean
+          title: is_workflow_runs_read
+          description: |-
+            The runs read happened, so an empty workflow_runs means the head has no
+             run rather than that its runs were not read.
+      title: GetPRStateResponse
       additionalProperties: false
     bossanova.v1.GetPRStatusRequest:
       type: object
@@ -11739,7 +11970,7 @@ components:
           type: string
           title: label
           description: |-
-            Attribution, e.g. "stage:finalize", "daemon:poller", "cron:<name>",
+            Attribution, e.g. "stage:finalize", "daemon:pr-poller", "cron:<name>",
              "plugin:<name>" or "daemon:unattributed".
         quota:
           type: string
@@ -11751,9 +11982,25 @@ components:
             - string
           title: call_count
           format: int64
+        breakerSkipCount:
+          type:
+            - integer
+            - string
+          title: breaker_skip_count
+          format: int64
+          description: Attempts the rate-limit breaker refused while the quota was paused.
+        floorSkipCount:
+          type:
+            - integer
+            - string
+          title: floor_skip_count
+          format: int64
+          description: Background reads the quota floor refused while the quota was low.
       title: GitHubUsageRow
       additionalProperties: false
-      description: GitHubUsageRow is the number of calls one label made against one quota.
+      description: |-
+        GitHubUsageRow is what one label did against one quota: the calls it sent
+         to GitHub and the attempts refused without contacting GitHub.
     bossanova.v1.GlobalSettings:
       type: object
       properties:
@@ -12038,6 +12285,68 @@ components:
         IssueAttachTokenResponse carries the freshly-minted attach JWT and its
          expiry. The browser sends `token` as the second value of the
          `Sec-WebSocket-Protocol` header on the /ws/attach handshake.
+    bossanova.v1.IssueGitHubInstallationTokenRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: |-
+            The repository's origin URL. bosso canonicalises it the same way the repo
+             RPCs do before looking up its installation.
+      title: IssueGitHubInstallationTokenRequest
+      additionalProperties: false
+      description: |-
+        IssueGitHubInstallationTokenRequest names the repository a daemon wants a
+         GitHub App installation token for.
+    bossanova.v1.IssueGitHubInstallationTokenResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          title: token
+          description: 'The installation access token. Secret: never log or persist it.'
+        expiresAt:
+          title: expires_at
+          description: When GitHub expires the token, at most one hour after it was minted.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        installationId:
+          type:
+            - integer
+            - string
+          title: installation_id
+          format: int64
+          description: The GitHub App installation that has the repository installed.
+        accountLogin:
+          type: string
+          title: account_login
+          description: The GitHub account the installation belongs to.
+        permissions:
+          type: object
+          title: permissions
+          additionalProperties:
+            type: string
+            title: value
+          description: |-
+            What GitHub actually granted, permission name to access level. Every
+             level is read: the token never carries a write permission, so a write
+             must use another credential.
+      title: IssueGitHubInstallationTokenResponse
+      additionalProperties: false
+      description: |-
+        IssueGitHubInstallationTokenResponse is one repository-scoped installation
+         token. The daemon holds it in memory until shortly before expires_at.
+    bossanova.v1.IssueGitHubInstallationTokenResponse.PermissionsEntry:
+      type: object
+      properties:
+        key:
+          type: string
+          title: key
+        value:
+          type: string
+          title: value
+      title: PermissionsEntry
+      additionalProperties: false
     bossanova.v1.LastTurnIsUserRequest:
       type: object
       properties:
@@ -15233,6 +15542,84 @@ components:
           $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: OutputLine
       additionalProperties: false
+    bossanova.v1.PRCheck:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        status:
+          title: status
+          $ref: '#/components/schemas/bossanova.v1.CheckStatus'
+        conclusion:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.CheckConclusion'
+            - type: "null"
+          title: conclusion
+        description:
+          type: string
+          title: description
+          description: |-
+            The commit status or check-run description; boss/verify carries its
+             phase here.
+        isUnclassified:
+          type: boolean
+          title: is_unclassified
+          description: The provider could not classify the upstream status; never a pass.
+      title: PRCheck
+      additionalProperties: false
+      description: PRCheck is one check run or commit status on the PR head.
+    bossanova.v1.PRCheckVerdict:
+      type: object
+      properties:
+        state:
+          title: state
+          $ref: '#/components/schemas/bossanova.v1.PRCheckVerdictState'
+        reason:
+          type: string
+          title: reason
+          description: |-
+            Why the state was reached: "ok", "no-gate-ran", "failed", "pending",
+             "no-checks", "unclassified", "unreadable", "stale-sha" or "not-requested".
+        totalCount:
+          type: integer
+          title: total_count
+          format: int32
+        passedCount:
+          type: integer
+          title: passed_count
+          format: int32
+        failedCount:
+          type: integer
+          title: failed_count
+          format: int32
+        pendingCount:
+          type: integer
+          title: pending_count
+          format: int32
+        skippedCount:
+          type: integer
+          title: skipped_count
+          format: int32
+        unclassifiedCount:
+          type: integer
+          title: unclassified_count
+          format: int32
+      title: PRCheckVerdict
+      additionalProperties: false
+      description: |-
+        PRCheckVerdict is the check verdict over the head's ordinary checks; a
+         verify-stage hold is not counted.
+    bossanova.v1.PRCheckVerdictState:
+      type: string
+      title: PRCheckVerdictState
+      enum:
+        - PR_CHECK_VERDICT_STATE_UNSPECIFIED
+        - PR_CHECK_VERDICT_STATE_UNKNOWN
+        - PR_CHECK_VERDICT_STATE_GREEN
+        - PR_CHECK_VERDICT_STATE_FAILING
+        - PR_CHECK_VERDICT_STATE_PENDING
+      description: PRCheckVerdictState is the aggregate state of the ordinary checks.
     bossanova.v1.PRClosedEvent:
       type: object
       properties:
@@ -15242,6 +15629,26 @@ components:
           format: int32
       title: PRClosedEvent
       additionalProperties: false
+    bossanova.v1.PRHeldWorkflowRun:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        status:
+          type: string
+          title: status
+          description: GitHub's raw run status, e.g. "queued", "in_progress" or "waiting".
+        event:
+          type: string
+          title: event
+        class:
+          type: string
+          title: class
+          description: '"in-flight" or "awaiting-approval".'
+      title: PRHeldWorkflowRun
+      additionalProperties: false
+      description: PRHeldWorkflowRun is one head workflow run that has not completed.
     bossanova.v1.PRInfo:
       type: object
       properties:
@@ -15318,6 +15725,75 @@ components:
       title: PRSummary
       additionalProperties: false
       description: PRSummary is a lightweight representation of a PR for listing.
+    bossanova.v1.PRVerifyPhase:
+      type: object
+      properties:
+        kind:
+          title: kind
+          $ref: '#/components/schemas/bossanova.v1.PRVerifyPhaseKind'
+        reason:
+          type: string
+          title: reason
+          description: A park's codes (NEEDS_HUMAN) or a wait's reason code (WAITING).
+        label:
+          type: string
+          title: label
+          description: The operator-written text after a park's codes.
+      title: PRVerifyPhase
+      additionalProperties: false
+    bossanova.v1.PRVerifyPhaseKind:
+      type: string
+      title: PRVerifyPhaseKind
+      enum:
+        - PR_VERIFY_PHASE_KIND_UNSPECIFIED
+        - PR_VERIFY_PHASE_KIND_NONE
+        - PR_VERIFY_PHASE_KIND_VERIFYING
+        - PR_VERIFY_PHASE_KIND_NEEDS_HUMAN
+        - PR_VERIFY_PHASE_KIND_WAITING
+      description: PRVerifyPhaseKind is the verify stage's hold on the head, if any.
+    bossanova.v1.PRWaitCondition:
+      type: string
+      title: PRWaitCondition
+      enum:
+        - PR_WAIT_CONDITION_UNSPECIFIED
+        - PR_WAIT_CONDITION_CHECKS_SETTLED
+        - PR_WAIT_CONDITION_MERGEABLE
+        - PR_WAIT_CONDITION_HEAD_CHANGED
+      description: PRWaitCondition names what a WaitPRState call waits for.
+    bossanova.v1.PRWaitOutcome:
+      type: string
+      title: PRWaitOutcome
+      enum:
+        - PR_WAIT_OUTCOME_UNSPECIFIED
+        - PR_WAIT_OUTCOME_MET
+        - PR_WAIT_OUTCOME_UNREACHABLE
+        - PR_WAIT_OUTCOME_TIMED_OUT
+      description: PRWaitOutcome is how a WaitPRState call ended.
+    bossanova.v1.PRWorkflowRun:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        status:
+          type: string
+          title: status
+          description: GitHub's raw run status, e.g. "queued", "in_progress" or "completed".
+        conclusion:
+          type: string
+          title: conclusion
+          description: GitHub's raw run conclusion; empty until the run completes.
+        event:
+          type: string
+          title: event
+        headSha:
+          type: string
+          title: head_sha
+      title: PRWorkflowRun
+      additionalProperties: false
+      description: |-
+        PRWorkflowRun is one GitHub Actions workflow run for the PR head, as GitHub
+         reported it.
     bossanova.v1.PauseSessionCommand:
       type: object
       properties:
@@ -19399,6 +19875,7 @@ components:
         - REVIEW_STATE_CHANGES_REQUESTED
         - REVIEW_STATE_COMMENTED
         - REVIEW_STATE_DISMISSED
+        - REVIEW_STATE_REQUIRED
       description: ReviewState represents the state of a PR review.
     bossanova.v1.ReviewSubmittedEvent:
       type: object
@@ -24745,6 +25222,64 @@ components:
             Provider-owned resume/session UUID, when the agent reports one. Empty means
              callers should resume using agent_session_id.
       title: WaitChatRunHostResponse
+      additionalProperties: false
+    bossanova.v1.WaitPRStateRequest:
+      type: object
+      properties:
+        repo:
+          type: string
+          title: repo
+          description: |-
+            Repository as owner/name or an origin URL; it must be registered on this
+             daemon.
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        condition:
+          title: condition
+          $ref: '#/components/schemas/bossanova.v1.PRWaitCondition'
+        sinceHeadSha:
+          type: string
+          title: since_head_sha
+          description: |-
+            The head a head-changed wait compares against; empty uses the first
+             read's head.
+        timeoutSeconds:
+          type: integer
+          title: timeout_seconds
+          format: int32
+          description: 0 uses the default; anything above the ceiling is clamped to it.
+        shouldBypassCache:
+          type: boolean
+          title: should_bypass_cache
+          description: Skip the read cache, so every read goes to GitHub.
+        shouldAcceptNoGateRan:
+          type: boolean
+          title: should_accept_no_gate_ran
+          description: |-
+            Let checks-settled meet on a green head where no gate ran (every check
+             skipped or neutral); by default such a head keeps waiting.
+      title: WaitPRStateRequest
+      additionalProperties: false
+    bossanova.v1.WaitPRStateResponse:
+      type: object
+      properties:
+        outcome:
+          title: outcome
+          $ref: '#/components/schemas/bossanova.v1.PRWaitOutcome'
+        snapshot:
+          title: snapshot
+          description: |-
+            The last successful read: the one that met the condition or found it
+             unreachable, or the last good read before the timeout.
+          $ref: '#/components/schemas/bossanova.v1.GetPRStateResponse'
+        timeoutSeconds:
+          type: integer
+          title: timeout_seconds
+          format: int32
+          description: The timeout the daemon applied after defaulting and clamping.
+      title: WaitPRStateResponse
       additionalProperties: false
     bossanova.v1.WakeChatCommand:
       type: object

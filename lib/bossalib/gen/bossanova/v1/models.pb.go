@@ -555,6 +555,8 @@ const (
 	ReviewState_REVIEW_STATE_CHANGES_REQUESTED ReviewState = 2
 	ReviewState_REVIEW_STATE_COMMENTED         ReviewState = 3
 	ReviewState_REVIEW_STATE_DISMISSED         ReviewState = 4
+	// REVIEW_REQUIRED: a review decision awaiting a required approval.
+	ReviewState_REVIEW_STATE_REQUIRED ReviewState = 5
 )
 
 // Enum value maps for ReviewState.
@@ -565,6 +567,7 @@ var (
 		2: "REVIEW_STATE_CHANGES_REQUESTED",
 		3: "REVIEW_STATE_COMMENTED",
 		4: "REVIEW_STATE_DISMISSED",
+		5: "REVIEW_STATE_REQUIRED",
 	}
 	ReviewState_value = map[string]int32{
 		"REVIEW_STATE_UNSPECIFIED":       0,
@@ -572,6 +575,7 @@ var (
 		"REVIEW_STATE_CHANGES_REQUESTED": 2,
 		"REVIEW_STATE_COMMENTED":         3,
 		"REVIEW_STATE_DISMISSED":         4,
+		"REVIEW_STATE_REQUIRED":          5,
 	}
 )
 
@@ -8343,13 +8347,14 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x14PR_STATE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rPR_STATE_OPEN\x10\x01\x12\x13\n" +
 	"\x0fPR_STATE_CLOSED\x10\x02\x12\x13\n" +
-	"\x0fPR_STATE_MERGED\x10\x03*\xa2\x01\n" +
+	"\x0fPR_STATE_MERGED\x10\x03*\xbd\x01\n" +
 	"\vReviewState\x12\x1c\n" +
 	"\x18REVIEW_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15REVIEW_STATE_APPROVED\x10\x01\x12\"\n" +
 	"\x1eREVIEW_STATE_CHANGES_REQUESTED\x10\x02\x12\x1a\n" +
 	"\x16REVIEW_STATE_COMMENTED\x10\x03\x12\x1a\n" +
-	"\x16REVIEW_STATE_DISMISSED\x10\x04*\xaa\x01\n" +
+	"\x16REVIEW_STATE_DISMISSED\x10\x04\x12\x19\n" +
+	"\x15REVIEW_STATE_REQUIRED\x10\x05*\xaa\x01\n" +
 	"\x11FixAttemptTrigger\x12#\n" +
 	"\x1fFIX_ATTEMPT_TRIGGER_UNSPECIFIED\x10\x00\x12%\n" +
 	"!FIX_ATTEMPT_TRIGGER_CHECK_FAILURE\x10\x01\x12 \n" +

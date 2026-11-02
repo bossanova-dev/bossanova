@@ -16,8 +16,11 @@ const webhookDeliveryWindow = 6 * time.Hour
 
 // polledReadStaleness bounds how old a poll's view of a PR can be: pollers
 // read through the GitHub read cache, so a change a poll reports may have
-// happened up to a cache TTL before the poll ran.
-const polledReadStaleness = 2 * time.Minute
+// happened that long before the poll ran. The repos NotePolledChange can flag
+// have had no delivery on the current stream, so their reads come from an
+// open-PR snapshot up to the GitHub adapter's snapshotFallbackMaxAge (5
+// minutes) old; this must never be smaller than that.
+const polledReadStaleness = 5 * time.Minute
 
 // missedDeliveryGrace is how long a poll-observed change must go unannounced
 // before it counts as a missed webhook, so a poll that merely beat a slow

@@ -22,7 +22,7 @@ import (
 func (g *Group) PRCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pr",
-		Short: "Approve PR verification, accept blockers, or file note follow-ups",
+		Short: "Read or wait on PR state, approve PR verification, accept blockers, or file note follow-ups",
 	}
 
 	approve := &cobra.Command{
@@ -49,7 +49,7 @@ func (g *Group) PRCmd() *cobra.Command {
 	approve.Flags().String("repo", "", "Repository as owner/repo, when sessions in two repos share the PR number")
 	approve.Flags().Bool("dry-run", false, "Show what would be written without writing anything")
 	approve.Flags().Bool(cliutil.JSONFlagName, false, "Emit a stable JSON envelope instead of human-readable text")
-	cmd.AddCommand(approve, g.prAcceptCmd(), g.prFollowUpCmd())
+	cmd.AddCommand(g.prStateCmd(), g.prWaitCmd(), approve, g.prAcceptCmd(), g.prFollowUpCmd())
 	return cmd
 }
 

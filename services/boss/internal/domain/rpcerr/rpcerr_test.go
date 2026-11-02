@@ -21,3 +21,31 @@ func TestClassificationSurvivesWrapping(t *testing.T) {
 		t.Fatal("plain error classification changed")
 	}
 }
+
+type detailSource struct {
+	error
+	details []any
+}
+
+func (e detailSource) Unwrap() error     { return e.error }
+func (e detailSource) RPCDetails() []any { return e.details }
+
+type conflictDetail struct{ reason string }
+
+func TestDetailFindsTypedDetailThroughWrapping(t *testing.T) {
+	want := &conflictDetail{reason: "already shipped"}
+	err := fmt.Errorf("create: %w", detailSource{error: errors.New("refused"), details: []any{"other", want}})
+	got, ok := Detail[*conflictDetail](err)
+	if !ok || got != want {
+		t.Fatalf("Detail = %v, %v; want %v, true", got, ok, want)
+	}
+	if _, ok := Detail[int](err); ok {
+		t.Fatal("Detail found a type that was never attached")
+	}
+	if got, ok := Detail[*conflictDetail](errors.New("plain")); ok || got != nil {
+		t.Fatalf("plain error Detail = %v, %v; want nil, false", got, ok)
+	}
+	if _, ok := Detail[*conflictDetail](nil); ok {
+		t.Fatal("nil error yielded a detail")
+	}
+}

@@ -4,6 +4,7 @@ go_library(
     name = "verifybridge",
     srcs = [
         "accept.go",
+        "follow_up.go",
         "send_back.go",
         "verifybridge.go",
     ],
@@ -16,6 +17,7 @@ go_test(
     name = "verifybridge_test",
     srcs = [
         "accept_test.go",
+        "follow_up_test.go",
         "send_back_test.go",
         "verifybridge_test.go",
     ],

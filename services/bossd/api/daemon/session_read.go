@@ -245,6 +245,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 			ChatStatus:          chatStatus,
 			AllWaitingChatsIdle: agg.AllIdle(chatStatus),
 			ParkCodes:           entries[p.Id].ParkCodes(),
+			VerifyWaitReason:    entries[p.Id].VerifyWaitReason(),
 		}
 		out := displaystatus.Compute(in)
 		p.DisplayLabel = out.Label

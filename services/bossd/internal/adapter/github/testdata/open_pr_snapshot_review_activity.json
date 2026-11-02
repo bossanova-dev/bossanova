@@ -1,0 +1,101 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 7,
+            "title": "reviewed",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature-7",
+            "baseRefName": "main",
+            "headRefOid": "sha-a",
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "BLOCKED",
+            "canBeRebased": true,
+            "reviewDecision": "CHANGES_REQUESTED",
+            "author": { "login": "alice", "__typename": "User" },
+            "reviews": {
+              "totalCount": 2,
+              "pageInfo": { "hasPreviousPage": false },
+              "nodes": [
+                {
+                  "id": "PRR_1",
+                  "state": "CHANGES_REQUESTED",
+                  "authorAssociation": "MEMBER",
+                  "updatedAt": "2026-11-01T10:00:00Z",
+                  "comments": { "totalCount": 1 },
+                  "author": { "login": "bob", "__typename": "User" }
+                },
+                {
+                  "id": "PRR_2",
+                  "state": "COMMENTED",
+                  "authorAssociation": "NONE",
+                  "updatedAt": "2026-11-01T10:05:00Z",
+                  "comments": { "totalCount": 2 },
+                  "author": { "login": "chatgpt-codex-connector", "__typename": "Bot" }
+                }
+              ]
+            },
+            "reviewThreads": {
+              "totalCount": 2,
+              "pageInfo": { "hasNextPage": false },
+              "nodes": [
+                { "id": "PRRT_1", "isResolved": false, "isOutdated": false },
+                { "id": "PRRT_2", "isResolved": true, "isOutdated": false }
+              ]
+            },
+            "commits": { "nodes": [] }
+          },
+          {
+            "number": 8,
+            "title": "truncated reviews",
+            "state": "OPEN",
+            "isDraft": true,
+            "headRefName": "feature-8",
+            "baseRefName": "main",
+            "headRefOid": "sha-8",
+            "author": { "login": "alice", "__typename": "User" },
+            "reviews": {
+              "totalCount": 51,
+              "pageInfo": { "hasPreviousPage": true },
+              "nodes": []
+            },
+            "reviewThreads": {
+              "totalCount": 0,
+              "pageInfo": { "hasNextPage": false },
+              "nodes": []
+            },
+            "commits": { "nodes": [] }
+          },
+          {
+            "number": 9,
+            "title": "truncated threads",
+            "state": "OPEN",
+            "isDraft": true,
+            "headRefName": "feature-9",
+            "baseRefName": "main",
+            "headRefOid": "sha-9",
+            "author": { "login": "alice", "__typename": "User" },
+            "reviews": {
+              "totalCount": 0,
+              "pageInfo": { "hasPreviousPage": false },
+              "nodes": []
+            },
+            "reviewThreads": {
+              "totalCount": 101,
+              "pageInfo": { "hasNextPage": true },
+              "nodes": []
+            },
+            "commits": { "nodes": [] }
+          }
+        ]
+      }
+    }
+  }
+}

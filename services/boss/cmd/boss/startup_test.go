@@ -10,7 +10,10 @@ import (
 
 	"github.com/recurser/boss/internal/domain/rpc"
 
+	settingscli "github.com/recurser/boss/api/cli/settings"
+	"github.com/recurser/boss/api/tui/accounts"
 	"github.com/recurser/boss/api/tui/home"
+	"github.com/recurser/boss/internal/auth"
 
 	"github.com/spf13/cobra"
 
@@ -480,4 +483,14 @@ func (s *agentPreflightStub) ResolveContext(context.Context, string) (*pb.Resolv
 
 func (s *agentPreflightStub) SwitchSessionAgentAccount(context.Context, *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 	panic("unused")
+}
+
+// The accounts screens find the synced registry by type-asserting the
+// cloud-access client the TUI is given, so a signature drift on either side
+// would silently leave every synced account reading unknown.
+func TestCloudAccessClientServesTheSyncedRegistry(t *testing.T) {
+	var client any = settingscli.NewAuthCloudAccessClient(auth.NewManager(nil, auth.Config{}), "https://orchestrator.example.test")
+	if _, ok := client.(accounts.SyncedRegistryClient); !ok {
+		t.Fatalf("%T does not implement accounts.SyncedRegistryClient", client)
+	}
 }

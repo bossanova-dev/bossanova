@@ -16,6 +16,7 @@ const spinnerProbe = "\ue000"
 // project closes over ui's private fitted-column projection.
 type homeTableLayout struct {
 	statusVisible                         bool
+	statusWidth                           int
 	source                                []*pb.Session
 	query                                 string
 	sessions                              []*pb.Session

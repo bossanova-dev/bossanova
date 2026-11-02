@@ -746,7 +746,7 @@ func TestNewSession_ConfirmOverwrite_EscGoesBackToForm(t *testing.T) {
 	m.phase = newSessionPhaseForm
 	m.buildForm()
 	m.fd.title = "my feature"
-	m.confirmingOverwrite = true
+	m.conflict = branchExistsConflict()
 
 	// Press esc — should go back to form with title preserved.
 	m = sendSpecialKey(t, m, tea.KeyEscape)
@@ -754,8 +754,8 @@ func TestNewSession_ConfirmOverwrite_EscGoesBackToForm(t *testing.T) {
 	if m.phase != newSessionPhaseForm {
 		t.Fatalf("phase = %d, want newSessionPhaseForm (%d)", m.phase, newSessionPhaseForm)
 	}
-	if m.confirmingOverwrite {
-		t.Error("expected confirmingOverwrite=false after esc")
+	if m.conflict != nil {
+		t.Error("expected the conflict prompt closed after esc")
 	}
 	if m.Cancelled() {
 		t.Error("expected not cancelled — should return to form, not exit")
@@ -784,15 +784,15 @@ func TestNewSession_ConfirmOverwrite_EnterRetriesLinearTicketWithForce(t *testin
 		Title:      "Test branch overwrite",
 		BranchName: branch,
 	}
-	m.confirmingOverwrite = true
+	m.conflict = branchExistsConflict()
 
 	result, cmd := m.Update(specialKeyPress(tea.KeyEnter))
 	updated := assertValueType(t, result)
 	if cmd == nil {
 		t.Fatal("confirm overwrite returned nil cmd")
 	}
-	if updated.confirmingOverwrite {
-		t.Fatal("confirmingOverwrite = true after Enter")
+	if updated.conflict != nil {
+		t.Fatal("conflict prompt still open after Enter")
 	}
 	if !updated.forceBranch {
 		t.Fatal("forceBranch = false after Enter")
@@ -2898,7 +2898,7 @@ func TestNewSession_ViewPhaseArmsRenderTheirOwnScreen(t *testing.T) {
 				m.selectedType = sessionTypeNewPR
 				m.phase = newSessionPhaseForm
 				m.buildForm()
-				m.confirmingOverwrite = true
+				m.conflict = branchExistsConflict()
 				return m
 			},
 			want:    "A branch with this name already exists.",

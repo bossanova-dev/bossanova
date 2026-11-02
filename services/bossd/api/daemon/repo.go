@@ -171,6 +171,13 @@ func (s *Server) RemoveRepo(ctx context.Context, req *connect.Request[pb.RemoveR
 	if req.Msg.Id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
+	// Deleting the repo deletes every session row with it, so their worktrees
+	// go first (BOS-2228). Detached: archiving kills the sessions' tmux panes,
+	// which can include the caller's own.
+	ctx = context.WithoutCancel(ctx)
+	if err := s.archiveRepoWorktrees(ctx, req.Msg.Id); err != nil {
+		return nil, err
+	}
 
 	if err := s.repos.Delete(ctx, req.Msg.Id); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -180,6 +187,29 @@ func (s *Server) RemoveRepo(ctx context.Context, req *connect.Request[pb.RemoveR
 	}
 
 	return connect.NewResponse(&pb.RemoveRepoResponse{}), nil
+}
+
+// archiveRepoWorktrees archives the worktree of every unarchived session of
+// repoID. It stops at the first failure, leaving the repo row and every
+// remaining session row in place. With no lifecycle (tests and cut-down
+// wirings) worktrees are left as before.
+func (s *Server) archiveRepoWorktrees(ctx context.Context, repoID string) error {
+	if s.lifecycle == nil {
+		return nil
+	}
+	sessions, err := s.sessions.List(ctx, repoID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("remove repo: list sessions: %w", err))
+	}
+	for _, sess := range sessions {
+		if sess.ArchivedAt != nil || sess.WorktreePath == "" {
+			continue
+		}
+		if err := s.archiveForRemoval(ctx, sess.ID); err != nil {
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("remove repo: session %s: %w", sess.ID, err))
+		}
+	}
+	return nil
 }
 
 func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error) {

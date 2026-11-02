@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { confidence } from './verify-confidence.mjs'
@@ -93,4 +94,16 @@ test('labels cap asks while Low notes retain every checklist item', () => {
   }
   assert.match(levelLabel(result), /^low: Migrations, API, UI \+1$/)
   assert.equal(levelNoteLead(result).filter((line) => line.startsWith('- [ ]')).length, 4)
+})
+
+test('park level matches the shared Go contract fixture', () => {
+  const rows = JSON.parse(
+    readFileSync(
+      new URL('../../lib/bossalib/attention/testdata/park_level.json', import.meta.url),
+      'utf8',
+    ),
+  )
+  for (const { name, codes, label, level } of rows) {
+    assert.equal(parkLevel({ codes, label }), level, name)
+  }
 })

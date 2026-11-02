@@ -23,6 +23,7 @@ import (
 type VerifyVerbs interface {
 	Accept(context.Context, domain.VerifyTarget, domain.VerifyAccept) (domain.VerifyAcceptResult, error)
 	Blockers(context.Context, domain.VerifyTarget, string) (domain.VerifyBlockers, error)
+	FollowUp(context.Context, domain.VerifyTarget, domain.VerifyFollowUp) (domain.VerifyFollowUpResult, error)
 	SendBack(context.Context, domain.VerifyTarget, domain.VerifySendBack) (domain.VerifySendBackResult, error)
 	Approve(context.Context, domain.VerifyTarget, *domain.VerifyMergeApproval) (domain.VerifyApproveResult, error)
 	MarkMerged(context.Context, domain.VerifyTarget) (domain.VerifyMarkMergedResult, error)
@@ -348,4 +349,36 @@ func (s *Server) verifyBridgeError(verb string, t domain.VerifyTarget, err error
 		code = connect.CodeFailedPrecondition
 	}
 	return connect.NewError(code, err)
+}
+
+// FollowUpSessionPRNotes files selected verify notes on the daemon host.
+func (s *Server) FollowUpSessionPRNotes(ctx context.Context, req *connect.Request[pb.FollowUpSessionPRNotesRequest]) (*connect.Response[pb.FollowUpSessionPRNotesResponse], error) {
+	selection, err := (domain.VerifyFollowUp{VerifyNoteIDs: req.Msg.GetVerifyNoteIds(), All: req.Msg.GetShouldFollowUpAll()}).Normalize()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), domain.VerifyVerbTimeout)
+	defer cancel()
+	target, env, err := s.verifyTargetIn(runCtx, req.Msg.GetId(), req.Msg.GetIsDryRun(), true)
+	if err != nil {
+		return nil, err
+	}
+	r, err := s.verifyVerbsFor(env).FollowUp(runCtx, target, selection)
+	if err != nil {
+		return nil, s.verifyBridgeError("follow-up", target, err)
+	}
+	return connect.NewResponse(&pb.FollowUpSessionPRNotesResponse{Result: followUpResultProto(r)}), nil
+}
+
+func followUpResultProto(r domain.VerifyFollowUpResult) *pb.VerifyFollowUpResult {
+	out := &pb.VerifyFollowUpResult{IsOk: r.OK, IsDryRun: r.DryRun, Reason: r.Reason, UnknownVerifyNoteIds: r.UnknownVerifyNoteIDs, HeadSha: r.HeadSHA, Comment: r.Comment}
+	for _, n := range r.Notes {
+		note := &pb.VerifyNoteFollowUp{VerifyNoteId: n.VerifyNoteID, Outcome: n.Outcome, IsLinked: n.IsLinked, Reason: n.Reason}
+		if n.Ticket != nil {
+			note.TicketIdentifier = n.Ticket.Identifier
+			note.TicketUrl = n.Ticket.URL
+		}
+		out.Notes = append(out.Notes, note)
+	}
+	return out
 }

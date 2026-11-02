@@ -2,6 +2,8 @@ package github
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,8 +23,8 @@ const (
 	openPRSnapshotMaxPages = 10
 )
 
-// openPRSnapshotQuery reads every open PR's status, reviews and head check
-// rollup for one repository, one page at a time.
+// openPRSnapshotQuery reads every open PR's status, reviews, review threads
+// and head check rollup for one repository, one page at a time.
 var openPRSnapshotQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: %d, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
@@ -32,8 +34,14 @@ var openPRSnapshotQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $c
         mergeable mergeStateStatus canBeRebased reviewDecision
         author { login __typename }
         reviews(last: 50) {
+          totalCount
           pageInfo { hasPreviousPage }
-          nodes { id state authorAssociation author { login __typename } }
+          nodes { id state authorAssociation updatedAt comments { totalCount } author { login __typename } }
+        }
+        reviewThreads(first: 100) {
+          totalCount
+          pageInfo { hasNextPage }
+          nodes { id isResolved isOutdated }
         }
         commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
           pageInfo { hasNextPage }
@@ -87,11 +95,19 @@ type snapshotPR struct {
 		Typename string `json:"__typename"`
 	} `json:"author"`
 	ReviewPage struct {
-		PageInfo struct {
+		TotalCount int `json:"totalCount"`
+		PageInfo   struct {
 			HasPreviousPage bool `json:"hasPreviousPage"`
 		} `json:"pageInfo"`
-		Nodes []prReview `json:"nodes"`
+		Nodes []snapshotReview `json:"nodes"`
 	} `json:"reviews"`
+	ReviewThreads struct {
+		TotalCount int `json:"totalCount"`
+		PageInfo   struct {
+			HasNextPage bool `json:"hasNextPage"`
+		} `json:"pageInfo"`
+		Nodes []snapshotThread `json:"nodes"`
+	} `json:"reviewThreads"`
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
@@ -106,6 +122,26 @@ type snapshotPR struct {
 			} `json:"commit"`
 		} `json:"nodes"`
 	} `json:"commits"`
+	// activity is the review-activity fingerprint computed at decode, or ""
+	// when the snapshot's review or thread window is truncated.
+	activity string
+}
+
+// snapshotReview is one review node: the fields a vcs.PRStatus reads, plus
+// the edit time and inline-comment count only the fingerprint reads.
+type snapshotReview struct {
+	prReview
+	UpdatedAt string `json:"updatedAt"`
+	Comments  struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"comments"`
+}
+
+// snapshotThread is one review thread's state, read only by the fingerprint.
+type snapshotThread struct {
+	ID         string `json:"id"`
+	IsResolved bool   `json:"isResolved"`
+	IsOutdated bool   `json:"isOutdated"`
 }
 
 type openPRSnapshotPage struct {
@@ -132,6 +168,10 @@ type prSnapshot struct {
 	p     *Provider
 	order []int
 	prs   map[int]*snapshotPR
+	// completedAt is when the last page returned. A page can read a PR after
+	// the fetch began, so only completedAt bounds the review activity the
+	// snapshot's fingerprints record.
+	completedAt time.Time
 }
 
 // fetchOpenPRSnapshot reads the repository's open PRs through p.gh, so the
@@ -160,6 +200,7 @@ func (p *Provider) fetchOpenPRSnapshot(ctx context.Context, repoPath string) (*p
 			return nil, fmt.Errorf("open PR snapshot: %w", err)
 		}
 		if next == "" {
+			snap.completedAt = p.nowFn()
 			return snap, nil
 		}
 		cursor = next
@@ -185,7 +226,11 @@ func (s *prSnapshot) addPage(out string) (string, error) {
 		if pr == nil || pr.Number <= 0 {
 			return "", errors.New("parse page: malformed pull request node")
 		}
-		pr.Reviews = pr.ReviewPage.Nodes
+		pr.Reviews = make([]prReview, len(pr.ReviewPage.Nodes))
+		for i, review := range pr.ReviewPage.Nodes {
+			pr.Reviews[i] = review.prReview
+		}
+		pr.activity = pr.reviewActivityDigest()
 		if _, seen := s.prs[pr.Number]; !seen {
 			s.order = append(s.order, pr.Number)
 		}
@@ -317,4 +362,58 @@ func (s *prSnapshot) openPRs() []vcs.PRSummary {
 		})
 	}
 	return prs
+}
+
+// reviewActivity returns one PR's review-activity fingerprint: a digest of
+// every input fetchReviewComments reads that the snapshot can observe (head
+// commit, the review set with each review's state, author, association, edit
+// time and inline-comment count, and every thread's resolution and outdated
+// state). Equal fingerprints mean the snapshot saw no review activity between
+// them. It declines (ok=false) a PR absent from the snapshot and one whose
+// review or thread window is truncated, since activity outside the window is
+// unseen. An inline comment's body edit moves none of these inputs; webhooks
+// and reviewCommentsMaxAge cover it.
+func (s *prSnapshot) reviewActivity(prID int) (string, bool) {
+	pr, ok := s.prs[prID]
+	if !ok || pr.activity == "" {
+		return "", false
+	}
+	return pr.activity, true
+}
+
+// reviewActivityDigest computes pr's fingerprint, or "" when its review or
+// thread window is truncated. The serialization is deterministic: fixed field
+// order, nodes in GitHub's returned order, and counts included so a removal
+// moves the digest.
+func (pr *snapshotPR) reviewActivityDigest() string {
+	if pr.ReviewPage.PageInfo.HasPreviousPage || pr.ReviewThreads.PageInfo.HasNextPage {
+		return ""
+	}
+	type review struct {
+		ID, State, Association, Login, Typename, UpdatedAt string
+		Comments                                           int
+	}
+	input := struct {
+		Head        string
+		ReviewCount int
+		Reviews     []review
+		ThreadCount int
+		Threads     []snapshotThread
+	}{
+		Head:        pr.HeadRefOid,
+		ReviewCount: pr.ReviewPage.TotalCount,
+		Reviews:     make([]review, 0, len(pr.ReviewPage.Nodes)),
+		ThreadCount: pr.ReviewThreads.TotalCount,
+		Threads:     pr.ReviewThreads.Nodes,
+	}
+	for _, r := range pr.ReviewPage.Nodes {
+		input.Reviews = append(input.Reviews, review{
+			ID: r.ID, State: r.State, Association: r.AuthorAssociation, Login: r.Author.Login,
+			Typename: r.Author.Typename, UpdatedAt: r.UpdatedAt, Comments: r.Comments.TotalCount,
+		})
+	}
+	// Marshalling plain strings, ints and bools cannot fail.
+	b, _ := json.Marshal(input)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

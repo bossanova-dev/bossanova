@@ -40,7 +40,34 @@ const (
 	CheckVerdictReasonUnclassified = "unclassified"
 	CheckVerdictReasonUnreadable   = "unreadable"
 	CheckVerdictReasonStaleSHA     = "stale-sha"
+	// CheckVerdictReasonNotRequested: a required check has no run on the head
+	// (absent, or present only as skipped/neutral). Nothing will start it on its
+	// own, so it is neither pending nor green.
+	CheckVerdictReasonNotRequested = "not-requested"
 )
+
+// RequiredChecks is a repository's configured list of check names that must
+// have run on a head before it can be green (.boss-skills.json ci.required).
+type RequiredChecks struct {
+	// Names are exact check-run names.
+	Names []string
+	// ExemptBases lists PR base branches the requirement does not apply to.
+	ExemptBases []string
+}
+
+// For returns the names required on a PR into base, or nil when base is exempt
+// or nothing is required.
+func (r RequiredChecks) For(base string) []string {
+	if len(r.Names) == 0 {
+		return nil
+	}
+	for _, exempt := range r.ExemptBases {
+		if exempt == base {
+			return nil
+		}
+	}
+	return r.Names
+}
 
 // CheckVerdict is the single aggregate definition of whether a check-run set is green.
 type CheckVerdict struct {
@@ -53,9 +80,13 @@ type CheckVerdict struct {
 	Pending      int
 	Skipped      int
 	Unclassified int
+	// NotRequested lists the required names with no run on the head, in
+	// requirement order. Empty when nothing is required or every name ran.
+	NotRequested []string
 }
 
 // EvaluateChecks classifies a check-run set without consulting external state.
+// It requires no named checks; see EvaluateChecksRequiring.
 //
 // A non-completed boss/verify status, park or cannot-assess hold (see IsVerifyHold) is not
 // ordinary CI: it is the verify stage holding a head whose CI already settled,
@@ -64,60 +95,84 @@ type CheckVerdict struct {
 // ChecksPassed, callback triggers, dependabot) inherits that exclusion here.
 // A completed boss/verify without a hold is still an ordinary check.
 func EvaluateChecks(headSHA string, checks []CheckResult, readErr error) CheckVerdict {
+	return EvaluateChecksRequiring(headSHA, checks, readErr, nil)
+}
+
+// EvaluateChecksRequiring is EvaluateChecks with a list of check names that
+// must have run on the head. A required name has run when at least one
+// ordinary check with exactly that name is pending, unclassified, or completed
+// with a conclusion other than skipped/neutral. Precedence:
+//
+//	unreadable > failed > unclassified > pending > not-requested >
+//	no-checks > no-gate-ran > ok
+func EvaluateChecksRequiring(headSHA string, checks []CheckResult, readErr error, required []string) CheckVerdict {
 	v := CheckVerdict{
 		State:   CheckVerdictUnknown,
 		Reason:  CheckVerdictReasonNoChecks,
 		HeadSHA: headSHA,
 	}
 
+	ran := make(map[string]bool, len(required))
 	for _, c := range checks {
 		if IsVerifyHold(c) {
 			continue
 		}
-		v.Total++
-		if c.Status != CheckStatusCompleted {
-			v.Pending++
-			continue
+		if v.count(c) {
+			ran[c.Name] = true
 		}
-		if c.Unclassified || c.Conclusion == nil {
-			v.Unclassified++
-			continue
-		}
-		switch *c.Conclusion {
-		case CheckConclusionSuccess:
-			v.Passed++
-		case CheckConclusionFailure, CheckConclusionCancelled, CheckConclusionTimedOut:
-			v.Failed++
-		case CheckConclusionNeutral, CheckConclusionSkipped:
-			v.Skipped++
+	}
+	for _, name := range required {
+		if !ran[name] {
+			v.NotRequested = append(v.NotRequested, name)
 		}
 	}
 
+	v.State, v.Reason = v.classify(readErr)
+	return v
+}
+
+// count tallies one ordinary check and reports whether it counts as a run.
+func (v *CheckVerdict) count(c CheckResult) bool {
+	v.Total++
+	if c.Status != CheckStatusCompleted {
+		v.Pending++
+		return true
+	}
+	if c.Unclassified || c.Conclusion == nil {
+		v.Unclassified++
+		return true
+	}
+	switch *c.Conclusion {
+	case CheckConclusionSuccess:
+		v.Passed++
+	case CheckConclusionFailure, CheckConclusionCancelled, CheckConclusionTimedOut:
+		v.Failed++
+	case CheckConclusionNeutral, CheckConclusionSkipped:
+		v.Skipped++
+		return false
+	}
+	return true
+}
+
+func (v CheckVerdict) classify(readErr error) (CheckVerdictState, string) {
 	switch {
 	case readErr != nil:
-		v.State = CheckVerdictUnknown
-		v.Reason = CheckVerdictReasonUnreadable
+		return CheckVerdictUnknown, CheckVerdictReasonUnreadable
 	case v.Failed > 0:
-		v.State = CheckVerdictFailing
-		v.Reason = CheckVerdictReasonFailed
+		return CheckVerdictFailing, CheckVerdictReasonFailed
 	case v.Unclassified > 0:
-		v.State = CheckVerdictUnknown
-		v.Reason = CheckVerdictReasonUnclassified
+		return CheckVerdictUnknown, CheckVerdictReasonUnclassified
 	case v.Pending > 0:
-		v.State = CheckVerdictPending
-		v.Reason = CheckVerdictReasonPending
+		return CheckVerdictPending, CheckVerdictReasonPending
+	case len(v.NotRequested) > 0:
+		return CheckVerdictUnknown, CheckVerdictReasonNotRequested
 	case v.Total == 0:
-		v.State = CheckVerdictUnknown
-		v.Reason = CheckVerdictReasonNoChecks
+		return CheckVerdictUnknown, CheckVerdictReasonNoChecks
 	case v.Passed == 0:
-		v.State = CheckVerdictGreen
-		v.Reason = CheckVerdictReasonNoGateRan
+		return CheckVerdictGreen, CheckVerdictReasonNoGateRan
 	default:
-		v.State = CheckVerdictGreen
-		v.Reason = CheckVerdictReasonOK
+		return CheckVerdictGreen, CheckVerdictReasonOK
 	}
-
-	return v
 }
 
 // At returns this verdict when observed at sha, or an unknown stale verdict on mismatch.
@@ -164,6 +219,10 @@ const verifyBlockedPrefix = "blocked:"
 // skills-toolbox/verify/verify-vocabulary.mjs.
 const verifyCannotAssessPrefix = "cannot assess:"
 
+// verifyWaitingPrefix mirrors VERIFY_DESCRIPTIONS.waiting in
+// skills-toolbox/verify/verify-vocabulary.mjs.
+const verifyWaitingPrefix = "waiting:"
+
 // verifyParkedSuffix mirrors VERIFY_DESCRIPTIONS.defectParkedSuffix in
 // skills-toolbox/verify/verify-vocabulary.mjs.
 const verifyParkedSuffix = ", needs human"
@@ -179,19 +238,25 @@ type VerifyPhaseKind int
 const (
 	// VerifyPhaseNone means no verify hold is on the head.
 	VerifyPhaseNone VerifyPhaseKind = iota
-	// VerifyPhaseVerifying means a pending boss/verify status that is not a
-	// park: a live claim ("verifying…"), an unclaimed head ("waiting: ..."),
-	// or an empty/unrecognised description; also a cannot-assess hold in any state.
+	// VerifyPhaseVerifying means a pending boss/verify status that is neither
+	// a park nor a wait: a live claim ("verifying…"), a bare "waiting:" with no
+	// reason, or an empty/unrecognised description; also a cannot-assess hold
+	// in any state.
 	VerifyPhaseVerifying
 	// VerifyPhaseNeedsHuman means a park in any state whose description
 	// starts "needs human".
 	VerifyPhaseNeedsHuman
+	// VerifyPhaseWaiting means a pending boss/verify status "waiting: <reason>"
+	// with a non-empty reason: verify judged the head and chose to wait.
+	VerifyPhaseWaiting
 )
 
 // VerifyPhase is ClassifyVerify's result. Reason carries the park's codes for
-// VerifyPhaseNeedsHuman (empty when the description names none) and Label the
-// operator-written text after the codes (empty when the park carries none);
-// both are empty otherwise.
+// VerifyPhaseNeedsHuman (empty when the description names none) or the wait's
+// trimmed reason code for VerifyPhaseWaiting (for example
+// "merge-state-unknown"). Label is the operator-written text after a park's
+// codes (empty when the park carries none). Both are empty otherwise, so a
+// live claim never carries a reason.
 type VerifyPhase struct {
 	Kind   VerifyPhaseKind
 	Reason string
@@ -264,10 +329,11 @@ func VerifyJudged(checks []CheckResult) bool {
 }
 
 // ClassifyVerify derives the verify phase from a check set. A park in any
-// state is NeedsHuman with its reason and label; any other pending boss/verify
-// or cannot-assess hold is Verifying. Completed statuses without a hold yield
-// VerifyPhaseNone. If several
-// holds are present, NeedsHuman wins.
+// state is NeedsHuman with its reason and label; a pending "waiting: <reason>"
+// status with a non-empty reason is Waiting with that reason; any other
+// pending boss/verify or cannot-assess hold is Verifying with no reason.
+// Completed statuses without a hold yield VerifyPhaseNone. If several holds
+// are present, NeedsHuman wins, then Waiting.
 func ClassifyVerify(checks []CheckResult) VerifyPhase {
 	phase := VerifyPhase{Kind: VerifyPhaseNone}
 	for _, c := range checks {
@@ -277,9 +343,25 @@ func ClassifyVerify(checks []CheckResult) VerifyPhase {
 		if reason, label, ok := parseNeedsHuman(c.Description); ok {
 			return VerifyPhase{Kind: VerifyPhaseNeedsHuman, Reason: reason, Label: label}
 		}
-		phase.Kind = VerifyPhaseVerifying
+		if reason, ok := parseVerifyWait(c); ok {
+			phase = VerifyPhase{Kind: VerifyPhaseWaiting, Reason: reason}
+			continue
+		}
+		if phase.Kind == VerifyPhaseNone {
+			phase.Kind = VerifyPhaseVerifying
+		}
 	}
 	return phase
+}
+
+// parseVerifyWait returns the reason of a pending "waiting: <reason>" status.
+// A completed status, or a bare "waiting:" with no reason, is not a wait.
+func parseVerifyWait(c CheckResult) (string, bool) {
+	if c.Status == CheckStatusCompleted || !strings.HasPrefix(c.Description, verifyWaitingPrefix) {
+		return "", false
+	}
+	reason := strings.TrimSpace(strings.TrimPrefix(c.Description, verifyWaitingPrefix))
+	return reason, reason != ""
 }
 
 // parseNeedsHuman reports whether description is a "needs human" park and

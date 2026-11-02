@@ -17,6 +17,11 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	if req.Msg.Id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
+	// A remove that archives a live session kills its tmux panes, so a session
+	// removing itself kills its own client mid-call; finish on a detached,
+	// bounded context, as the ArchiveSession RPC does (BOS-1372).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveRPCBudget)
+	defer cancel()
 
 	// Get session first to find branch name and repo for git cleanup.
 	sess, err := s.sessions.Get(ctx, req.Msg.Id)
@@ -44,6 +49,20 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 		if fresh, freshErr := s.sessions.Get(ctx, req.Msg.Id); freshErr == nil {
 			sess = fresh
 		}
+	}
+
+	// The worktree goes before the row (BOS-2228): deleting the row first
+	// leaves the directory on disk with nothing naming it, and its checked-out
+	// branch cannot be reaped below.
+	sess, gone, err := s.archiveLiveWorktree(ctx, sess)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove session: %w", err))
+	}
+	if gone {
+		if s.onSessionDeleted != nil {
+			s.onSessionDeleted(ctx, req.Msg.Id)
+		}
+		return connect.NewResponse(&pb.RemoveSessionResponse{}), nil
 	}
 
 	// Best-effort git cleanup: delete branch + prune worktree. Logged rather than
@@ -76,6 +95,41 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	}
 
 	return connect.NewResponse(&pb.RemoveSessionResponse{}), nil
+}
+
+// archiveLiveWorktree archives an unarchived session's worktree through the
+// single archive chokepoint, Lifecycle.ArchiveSession, and returns the re-read
+// row. gone reports that the archive deleted the row itself (a zero-output
+// session's finalize). Archived sessions, sessions with no worktree, and
+// servers with no lifecycle (tests and cut-down wirings) are returned as-is,
+// leaving the worktree exactly as before.
+func (s *Server) archiveLiveWorktree(ctx context.Context, sess *models.Session) (_ *models.Session, gone bool, _ error) {
+	if s.lifecycle == nil || sess.ArchivedAt != nil || sess.WorktreePath == "" {
+		return sess, false, nil
+	}
+	if err := s.archiveForRemoval(ctx, sess.ID); err != nil {
+		return nil, false, err
+	}
+	fresh, err := s.sessions.Get(ctx, sess.ID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("re-read session: %w", err)
+	}
+	return fresh, false, nil
+}
+
+// archiveForRemoval archives a session's worktree ahead of deleting its row.
+// domain.ErrNotFound is not a failure: the row is gone or was archived
+// concurrently, and the caller's re-read or delete settles which.
+func (s *Server) archiveForRemoval(ctx context.Context, sessionID string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveRPCBudget)
+	defer cancel()
+	if err := s.lifecycle.ArchiveSession(ctx, sessionID); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return fmt.Errorf("archive worktree: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {

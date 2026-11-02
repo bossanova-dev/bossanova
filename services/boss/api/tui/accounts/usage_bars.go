@@ -41,10 +41,3 @@ func visibleModelWindows(u *pb.UsageSnapshot) []*pb.UsageModelWindow {
 	slices.SortFunc(windows, func(a, b *pb.UsageModelWindow) int { return strings.Compare(a.GetModelName(), b.GetModelName()) })
 	return windows
 }
-
-func accountSyncLabel(a *pb.AgentAccount) string {
-	if a.GetSyncedAgentAccountId() != "" {
-		return "synced"
-	}
-	return "local"
-}

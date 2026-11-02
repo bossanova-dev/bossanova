@@ -1712,36 +1712,14 @@ func (deps *Group) runDaemonDoctor(cmd *cobra.Command) error {
 	// operator to foreground a second bossd — the duplicate the three
 	// isSocketReachable guards in platformEnsureRunning exist to prevent.
 	//
-	// notServing keeps its exact existing meaning — false for BOTH "reachable"
-	// and "unknown" — because the foreground remedy is gated on it (R8).
-	// socketKnown/socketReachable are the SEPARATE pair the candidate-cause
-	// report needs, which must distinguish those two: "the socket answers" is
-	// reassurance, and "we could not resolve a profile to ask" is not.
-	notServing := false
-	socketKnown := false
-	socketReachable := false
-	switch {
-	case profileErr != nil:
-		_, _ = fmt.Fprintf(out, "daemon socket: unknown (%v)\n", profileErr)
-	case deps.daemonSocketReachable(profile.SocketPath):
-		socketKnown = true
-		socketReachable = true
-		_, _ = fmt.Fprintf(out, "daemon socket: %s — reachable\n", profile.SocketPath)
-	default:
-		socketKnown = true
-		// Serving is what the daemon is FOR, so a socket known not to answer is
-		// a failure verdict rather than a note. Without it the directive below
-		// printed "run the staged bossd in the foreground" on a run that
-		// emitted no Remediation section and exited 0 — doctor asserting health
-		// while instructing recovery, which is R1's contradiction reproduced
-		// inside doctor's own output.
-		unhealthyNonAuth = true
-		startRemediation = true
-		notServing = true
-		_, _ = fmt.Fprintf(out, "FAIL daemon socket: %s — not reachable, so bossd is not serving\n", profile.SocketPath)
-	}
-	spawnFacts.SocketKnown = socketKnown
-	spawnFacts.SocketReachable = socketReachable
+	// notServing keeps its exact existing meaning — false for "reachable",
+	// "unknown" and a supervised bossd still starting (BOS-2168) — because the
+	// foreground remedy is gated on it (R8). Known/Reachable are the SEPARATE
+	// pair the candidate-cause report needs; reportDaemonSocket explains why.
+	socket := deps.reportDaemonSocket(out, profile, profileErr, &unhealthyNonAuth, &startRemediation)
+	notServing := socket.NotServing
+	spawnFacts.SocketKnown = socket.Known
+	spawnFacts.SocketReachable = socket.Reachable
 
 	reportDaemonStartupFailureDirective(out, stagedPath, notServing)
 
@@ -1809,6 +1787,10 @@ func (deps *Group) runDaemonDoctor(cmd *cobra.Command) error {
 				// Nothing is running, so there is nothing to restart. This is the
 				// recovery from a restart whose bootstrap failed after its bootout.
 				_, _ = fmt.Fprintln(out, "  run 'boss daemon start'")
+			case socket.Starting:
+				// BOS-2168: a crash loop's respawned instance can still be inside
+				// the grace. Restarting would discard that boot; wait and re-run.
+				_, _ = fmt.Fprintln(out, "  wait for bossd to finish starting, then re-run 'boss daemon doctor'")
 			default:
 				_, _ = fmt.Fprintln(out, "  run 'boss daemon restart'")
 			}

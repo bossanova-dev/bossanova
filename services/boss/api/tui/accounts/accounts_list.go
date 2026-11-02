@@ -119,6 +119,11 @@ type AgentAccountsListModel struct {
 	sessions      []*pb.Session
 	sessionsKnown bool
 
+	// sync is the hosted synced-registry snapshot the SYNC column and the
+	// link-suggestion footer are built from (BOS-2256). It is loaded beside
+	// the accounts and again on [r]; without a client it stays unknown.
+	sync syncRegistry
+
 	// transient status toast
 	status    string
 	statusErr bool
@@ -157,7 +162,7 @@ func (m AgentAccountsListModel) Init() tea.Cmd {
 	// disable/remove prompts (BOS-268) can state how many live chats are bound
 	// to the target account. The session snapshot is advisory; a failed fetch
 	// degrades the prompt to a generic warning (see sessionsLoadedMsg).
-	return tea.Batch(m.fetchAccounts(), m.fetchSessions(), m.spinner.Tick)
+	return tea.Batch(m.fetchAccounts(), m.fetchSessions(), m.sync.fetchCmd(m.ctx), m.spinner.Tick)
 }
 
 // --- Commands ---
@@ -266,6 +271,11 @@ func (m AgentAccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessions = msg.sessions
 			m.sessionsKnown = true
 		}
+		return m, nil
+
+	case syncedRegistryLoadedMsg:
+		m.sync.apply(msg)
+		m.rebuildTable()
 		return m, nil
 
 	case AgentAccountStatusUpdatedMsg:
@@ -485,8 +495,8 @@ func (m AgentAccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		m.setStatus("Refreshing usage…", false)
 		m.rebuildTable()
 		// The spinner is already ticking (started in Init and self-perpetuating
-		// via the TickMsg handler), so only the refresh RPC needs to fire here.
-		return m, m.refreshAccountsCmd()
+		// via the TickMsg handler), so only the refresh RPCs need to fire here.
+		return m, tea.Batch(m.refreshAccountsCmd(), m.sync.fetchCmd(m.ctx))
 
 	case "esc":
 		m.cancel = true
@@ -542,7 +552,11 @@ func (m AgentAccountsListModel) tableHeight() int {
 		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[R]eauth", "[r]efresh", "[space] toggle", "[d] remove"},
 		[]string{"[esc] back"},
 	)
-	return ui.ClampedTableHeight(len(m.accounts), m.height, ui.BannerOverhead+1+ui.ActionBarPadY+actionLines)
+	footerLines := 0
+	if footer := m.sync.renderSyncFooter(m.accounts, m.width); footer != "" {
+		footerLines = lipgloss.Height(footer)
+	}
+	return ui.ClampedTableHeight(len(m.accounts), m.height, ui.BannerOverhead+1+ui.ActionBarPadY+actionLines+footerLines)
 }
 
 func (m *AgentAccountsListModel) rebuildTable() {
@@ -567,7 +581,7 @@ func (m *AgentAccountsListModel) rebuildTable() {
 	now := time.Now()
 	for i, a := range m.accounts {
 		labels[i] = ui.AgentAccountRowLabel(a)
-		syncs[i] = accountSyncLabel(a)
+		syncs[i] = m.sync.cell(a)
 		providers[i] = a.GetProvider()
 		healths[i] = ui.AgentAccountHealthLabel(a)
 		u := a.GetUsage()
@@ -606,7 +620,7 @@ func (m *AgentAccountsListModel) rebuildTable() {
 		{Col: table.Column{Title: "CHECKED", Width: display.MaxColWidth("CHECKED", checkAges, 8) + ui.TableColumnSep}, Priority: 5, MinWidth: 1},
 		{Col: table.Column{Title: "UTIL5H", Width: display.MaxColWidth("UTIL5H", util5hs, 24) + ui.TableColumnSep}, Priority: 1, MinWidth: 1},
 		{Col: table.Column{Title: "UTIL7D", Width: display.MaxColWidth("UTIL7D", util7ds, 24) + ui.TableColumnSep}, Priority: 2, MinWidth: 1},
-		{Col: table.Column{Title: "SYNC", Width: display.MaxColWidth("SYNC", syncs, 6) + ui.TableColumnSep}, Priority: 3, MinWidth: 1},
+		{Col: table.Column{Title: "SYNC", Width: display.MaxColWidth("SYNC", syncs, 20) + ui.TableColumnSep}, Priority: 3, MinWidth: 1},
 	}
 	// COOLDOWN is declared last and only while some account is cooling down,
 	// so leaving it out keeps every earlier column index aligned with the row.
@@ -801,6 +815,12 @@ func (m AgentAccountsListModel) View() tea.View {
 			style = ui.StyleStatusDanger
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(style.Render(m.status)))
+		b.WriteString("\n")
+	}
+	// Link suggestions are resolved in the web app (BOS-2256), so the hint
+	// names where rather than offering a key.
+	if footer := m.sync.renderSyncFooter(m.accounts, m.width); footer != "" {
+		b.WriteString(footer)
 		b.WriteString("\n")
 	}
 	b.WriteString(ui.ActionBarWidth(m.width,

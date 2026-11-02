@@ -14,7 +14,6 @@ import (
 	// tea.Cmd) shape. tea.KeyMsg routing lives in newsession_keys.go.
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/recurser/boss/internal/domain/rpcerr"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/telemetry"
@@ -151,15 +150,7 @@ func (m Model) handleCreateStream(msg createSessionStreamMsg) (tea.Model, tea.Cm
 		if m.streamCancel != nil {
 			m.streamCancel()
 		}
-		if rpcerr.KindOf(msg.err) == rpcerr.AlreadyExists {
-			m.confirmingOverwrite = true
-			m.phase = newSessionPhaseForm
-			m.err = nil
-			return m, nil
-		}
-		m.err = msg.err
-		m.phase = newSessionPhaseForm
-		return m, nil
+		return m.applyCreateFailure(msg.err), nil
 	}
 	m.createStream = msg.stream
 	return m, readNextStreamMsg(m.createStream, nil, m.streamID)
@@ -216,15 +207,7 @@ func (m Model) handleStreamError(msg streamErrorMsg) (tea.Model, tea.Cmd) {
 		m.streamCancel()
 	}
 	// readNextStreamMsg closes the stream on terminal events.
-	if rpcerr.KindOf(msg.err) == rpcerr.AlreadyExists {
-		m.confirmingOverwrite = true
-		m.phase = newSessionPhaseForm
-		m.err = nil
-		return m, nil
-	}
-	m.err = msg.err
-	m.phase = newSessionPhaseForm
-	return m, nil
+	return m.applyCreateFailure(msg.err), nil
 }
 
 func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {

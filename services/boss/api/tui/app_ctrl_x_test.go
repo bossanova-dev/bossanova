@@ -362,7 +362,7 @@ func TestCtrlXMatchesEscapeWhereAFormOutlivesItsScreen(t *testing.T) {
 			// The wizard stays on the form phase while the y/n overwrite prompt
 			// renders instead of the SUBMITTED form — so the form is non-nil and
 			// completed, which is what makes `form != nil` the wrong question.
-			m := newSessionWithSubmittedForm(t, rpcerror.WrapError(connect.NewError(connect.CodeAlreadyExists, errCreateFailedFixture)))
+			m := newSessionWithSubmittedForm(t, branchExistsCreateErr(t))
 			a.newSession = m
 			return a
 		}
@@ -425,7 +425,7 @@ func TestCtrlXMatchesEscapeAfterSelectingFromAFilteredIssuePicker(t *testing.T) 
 	t.Run("overwrite prompt cancels", func(t *testing.T) {
 		build := func(t *testing.T) App {
 			t.Helper()
-			m := base(t, rpcerror.WrapError(connect.NewError(connect.CodeAlreadyExists, errCreateFailedFixture)))
+			m := base(t, branchExistsCreateErr(t))
 			if !strings.Contains(m.View().Content, "Remove the old branch") {
 				t.Fatal("premise broken: an AlreadyExists stream error no longer raises the overwrite prompt")
 			}
@@ -1172,4 +1172,19 @@ func (ctrlXGitHubAppClient) GetGitHubAppInstallURL(context.Context, string) (str
 
 func (ctrlXGitHubAppClient) ListGitHubAppRepos(context.Context) (*pb.ListGitHubAppReposResponse, error) {
 	return &pb.ListGitHubAppReposResponse{}, nil
+}
+
+// branchExistsCreateErr is the refusal that raises the new-session branch
+// overwrite prompt: AlreadyExists carrying a BRANCH_EXISTS conflict detail.
+func branchExistsCreateErr(t *testing.T) error {
+	t.Helper()
+	failure := connect.NewError(connect.CodeAlreadyExists, errCreateFailedFixture)
+	detail, err := connect.NewErrorDetail(&pb.CreateSessionConflict{
+		Reason: pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_BRANCH_EXISTS,
+	})
+	if err != nil {
+		t.Fatalf("NewErrorDetail: %v", err)
+	}
+	failure.AddDetail(detail)
+	return rpcerror.WrapError(failure)
 }

@@ -118,6 +118,7 @@ type Model struct {
 
 	// Active y/n confirmation (confirmNone when no prompt is showing).
 	attentionAction        ui.AttentionActionState
+	acceptBlocker          ui.AcceptBlockerFlow
 	confirm                confirmKind
 	deletingAgentSessionID string
 
@@ -316,7 +317,7 @@ func (m Model) canRename() bool {
 // screen, so App leaves ctrl+x alone rather than aliasing it onto Esc (BOS-660):
 // inside a text field Esc cancels the edit, and ctrl+x is a line-editing key.
 func (m Model) textEntryActive() bool {
-	return m.err == nil && m.renaming
+	return m.acceptBlocker.TextEntryActive() || m.err == nil && m.renaming
 }
 
 // selectedChat returns the chat at the current table cursor, or nil if empty.
@@ -433,6 +434,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.table.SetHeight(m.tableHeight())
 		return m, nil
+	case ui.AcceptBlockersLoadedMsg:
+		return m.handleAcceptBlockerMsg(msg)
+
+	case ui.AcceptBlockerResultMsg:
+		return m.handleAcceptBlockerResult(msg), nil
+
 	case MergeResultMsg:
 		return m.handleMergeResult(msg)
 
@@ -463,6 +470,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleErr(msg)
 
 	case tea.WindowSizeMsg:
+		m.acceptBlocker, _ = m.acceptBlocker.Update(msg)
 		m.width = msg.Width
 		m.height = msg.Height
 		// Refit whichever table is currently visible before sizing the main
@@ -502,14 +510,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Bracketed paste is not a KeyMsg, so it must be forwarded explicitly or a
 	// pasted title never reaches the input. Placed ahead of the KeyMsg arm for
 	// the same reason the trash view does it: so paste can never be mistaken for
-	// a list shortcut. Inert unless the rename prompt is open.
+	// a list shortcut. Inert unless the rename prompt or the accept-blocker
+	// reason is open.
 	case tea.PasteMsg:
-		if !m.renaming {
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.renameInput, cmd = m.renameInput.Update(msg)
-		return m, cmd
+		return m.handlePaste(msg)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -523,6 +527,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // original inline order and is behaviour.
 func (m Model) View() tea.View {
 	switch {
+	case m.acceptBlocker.Active():
+		return tea.NewView(m.acceptBlocker.View(m.width, m.height-ui.BannerOverhead, m.spinner.View()))
 	case m.err != nil:
 		return tea.NewView(m.renderErrState())
 	case m.loading:

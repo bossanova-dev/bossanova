@@ -65,6 +65,22 @@ func Message(err error) string {
 	}
 	return err.Error()
 }
+
+// Detail returns the first decoded error detail of type T the transport
+// attached to err, when the transport exposes decoded details.
+func Detail[T any](err error) (T, bool) {
+	var zero T
+	var source interface{ RPCDetails() []any }
+	if !errors.As(err, &source) {
+		return zero, false
+	}
+	for _, detail := range source.RPCDetails() {
+		if typed, ok := detail.(T); ok {
+			return typed, true
+		}
+	}
+	return zero, false
+}
 func IsWireError(err error) bool {
 	var source interface{ RPCWireError() bool }
 	return errors.As(err, &source) && source.RPCWireError()

@@ -72,6 +72,14 @@ func TestCallerGateUnixSocket_Sessions_AC221001_AC221002(t *testing.T) {
 			assertCallerGateResult(t, kind, err)
 			_, err = client.ApproveSessionPR(context.Background(), connect.NewRequest(&pb.ApproveSessionPRRequest{Id: "s1"}))
 			assertCallerGateResult(t, kind, err)
+			_, err = client.FollowUpSessionPRNotes(context.Background(), connect.NewRequest(&pb.FollowUpSessionPRNotesRequest{Id: "s1", ShouldFollowUpAll: true}))
+			if kind == domain.CallerOperator {
+				if err != nil {
+					t.Fatalf("operator follow-up: %v", err)
+				}
+			} else if connect.CodeOf(err) != connect.CodePermissionDenied {
+				t.Fatalf("%s follow-up: %v", kind, err)
+			}
 			for _, approve := range []bool{true, false} {
 				_, err = client.OperatorMergeSession(context.Background(), connect.NewRequest(&pb.OperatorMergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin, ShouldApprove: approve}))
 				assertCallerGateResult(t, kind, err)

@@ -758,6 +758,7 @@ enum AttentionKind {
   // ATTENTION_ACTION_GITHUB (and ATTENTION_ACTION_VIDEO) then
   // ATTENTION_ACTION_MERGE, where it led with ATTENTION_ACTION_APPROVE and
   // ATTENTION_ACTION_SEND_BACK; older pins receive those back.
+  // From 2026-11-01 a proof page offers PROOF instead of VIDEO.
   ATTENTION_KIND_REVIEW = 3;
   // The PR is open, green and mergeable, and nothing else will merge it: no
   // enabled verify job on the daemon will reach its head, or the repo's verify
@@ -787,10 +788,24 @@ enum AttentionAction {
   // verify park's REVIEW or blocked FIX.
   ATTENTION_ACTION_SEND_BACK = 6;
   ATTENTION_ACTION_GITHUB = 7;
+  // Open the legacy evidence video. From 2026-11-01 a proof page replaces
+  // this action with PROOF; older pins receive VIDEO when evidence_url exists.
   ATTENTION_ACTION_VIDEO = 8;
   ATTENTION_ACTION_MERGE = 9;
   // Open the session's linked tracker issue (tracker_url).
   ATTENTION_ACTION_TRACKER = 10;
+  // Open the proof page (proof_url), served from 2026-11-01.
+  ATTENTION_ACTION_PROOF = 11;
+}
+
+// ConfidenceLevel is the verify park's confidence level or assessment state.
+enum ConfidenceLevel {
+  CONFIDENCE_LEVEL_UNSPECIFIED = 0;
+  CONFIDENCE_LEVEL_HIGH = 1;
+  CONFIDENCE_LEVEL_MODERATE = 2;
+  CONFIDENCE_LEVEL_LOW = 3;
+  CONFIDENCE_LEVEL_BLOCKED = 4;
+  CONFIDENCE_LEVEL_CANNOT_ASSESS = 5;
 }
 
 // SessionAttention is the computed attention answer for one session.
@@ -813,7 +828,8 @@ message SessionAttention {
   string alert_key = 7;
   // The chat a FIX or QUESTION action should open.
   string target_chat_id = 8;
-  // Evidence (video) URL behind a verify park, when one exists.
+  // Evidence (video) URL behind a verify park, when one exists. Kept alongside
+  // proof_url from 2026-11-01 so older pins can still receive VIDEO.
   string evidence_url = 9;
   // What keeps a verify park's PR checklist open, one plain line each (an
   // unticked item, a missing section, a do-not-merge marker), as the park's
@@ -831,6 +847,14 @@ message SessionAttention {
   bool should_show_display_label = 12;
   // Operator-written path label of a verify park; empty when verify derived none.
   string park_label = 13;
+  // Verify park confidence from 2026-11-01; cleared for older pins.
+  ConfidenceLevel confidence_level = 14;
+  // Verify park ask names in park order from 2026-11-01; cleared for older pins.
+  repeated string asks = 15;
+  // Current head's proof page on a verify park from 2026-11-01; cleared for older pins.
+  string proof_url = 16;
+  // Reasons the verify park is below High from 2026-11-01; cleared for older pins.
+  repeated string lowered_by = 17;
 }
 
 // DisplayStatus represents the unified display status for a session in the TUI.

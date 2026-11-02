@@ -58,7 +58,8 @@ export const workflowRouteExemptions = [
   {
     workflow: 'test-proto.yml',
     pattern: 'lib/bossalib/gen/**',
-    reason: 'generated Go files route by owning module instead of the proto workflow fan-out',
+    reason:
+      'generated Go files route through the Go test import graph to consumer packages, not one proto target',
   },
   {
     workflow: 'test-proto.yml',

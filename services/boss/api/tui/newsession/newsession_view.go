@@ -200,21 +200,6 @@ func (m Model) renderDone() string {
 				m.createdSess.Id, m.createdSess.Title, m.createdSess.BranchName))
 }
 
-// renderConfirmOverwrite renders the branch-overwrite prompt.
-func (m Model) renderConfirmOverwrite() string {
-	var b strings.Builder
-	b.WriteString(m.headerView())
-	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(ui.ColorWarning).Render(
-		"A branch with this name already exists."))
-	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-		"Remove the old branch and create a new session?"))
-	b.WriteString("\n")
-	b.WriteString(ui.StyleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
-	return b.String()
-}
-
 // renderForm renders the huh form. The caller must have checked m.form != nil;
 // like renderDone this body relied on its enclosing View guard before the
 // split. The single trailing newline before the action bar is the BOS-509

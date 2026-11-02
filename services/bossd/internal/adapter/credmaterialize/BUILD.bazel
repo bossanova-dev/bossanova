@@ -14,6 +14,7 @@ go_library(
         "openflags_unix.go",
         "persist_back.go",
         "refresh_broker.go",
+        "refresh_broker_endpoint.go",
         "refresh_failure.go",
     ],
     importpath = "github.com/recurser/bossd/internal/adapter/credmaterialize",

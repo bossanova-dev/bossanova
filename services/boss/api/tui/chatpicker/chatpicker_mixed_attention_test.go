@@ -52,6 +52,7 @@ func TestChatPickerFooterActionsNeverShareAKey(t *testing.T) {
 		"fix":         {Fix: &attention.FixFact{AlertKey: "alert", Sentence: "broken"}},
 		"question":    {QuestionText: "which one?"},
 		"review":      {ParkCodes: []string{"human-review:ui"}, Evidence: &attention.Evidence{URL: "https://example.com/proof.mp4"}},
+		"proof":       {ParkCodes: []string{"human-review:ui"}, Proof: &attention.Proof{URL: "https://example.com/proof"}},
 		"blocked":     {ParkCodes: []string{"ledger-open"}},
 		"merge":       {HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable},
 		"in progress": {ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},

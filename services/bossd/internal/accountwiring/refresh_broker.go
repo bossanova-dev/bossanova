@@ -11,6 +11,8 @@ import (
 type refreshJournalStore interface {
 	LoadRefreshState(string) ([]byte, error)
 	SaveRefreshState(string, []byte) error
+	LoadRefreshBrokerEndpoint() ([]byte, error)
+	SaveRefreshBrokerEndpoint([]byte) error
 }
 
 type brokerCredentialStore struct {
@@ -30,9 +32,22 @@ func (s brokerCredentialStore) SaveRefreshState(ctx context.Context, id string, 
 	}
 	return s.journal.SaveRefreshState(id, blob)
 }
+func (s brokerCredentialStore) LoadRefreshBrokerEndpoint(ctx context.Context) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.journal.LoadRefreshBrokerEndpoint()
+}
+func (s brokerCredentialStore) SaveRefreshBrokerEndpoint(ctx context.Context, blob []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.journal.SaveRefreshBrokerEndpoint(blob)
+}
 
 // NewCredentialRefreshBroker shares one daemon-owned broker between normal
-// sessions and smoke verification, using a local keyring journal for recovery.
+// sessions and smoke verification, using local keyring items for the refresh
+// journal and the broker endpoint so both survive a daemon restart.
 func NewCredentialRefreshBroker(store CredentialStore, gate credmaterialize.RefreshBrokerGate, logger zerolog.Logger) (*credmaterialize.RefreshBroker, error) {
 	journal, ok := store.(refreshJournalStore)
 	if !ok {

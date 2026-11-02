@@ -411,6 +411,9 @@ func TestCreateSessionDuplicateActivePRReturnsAlreadyExists(t *testing.T) {
 	if want := fmt.Sprintf("active session already exists for repo %s PR #123", h.repo.ID); !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %q, want to contain %q", err.Error(), want)
 	}
+	if got := requireCreateSessionConflict(t, err); got.GetReason() != pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_DUPLICATE_ACTIVE_SESSION || got.GetMatchedTarget() != "PR" || got.GetExistingSessionId() == "" {
+		t.Fatalf("conflict = %v, want DUPLICATE_ACTIVE_SESSION matched on PR with an existing session id", got)
+	}
 	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
 	if listErr != nil {
 		t.Fatalf("list sessions: %v", listErr)

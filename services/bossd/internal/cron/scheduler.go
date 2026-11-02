@@ -38,6 +38,7 @@ import (
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
+	"github.com/recurser/bossd/internal/ghusage"
 	sessionpkg "github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 	"github.com/recurser/bossd/internal/verifyjob"
@@ -47,19 +48,22 @@ import (
 // cron and event-driven gate runs. Callers supply output, timeout and event scope.
 // Cron runs explicitly override webhook health so inherited daemon values cannot
 // change their cadence, and name the GitHub quota floor the scheduler admitted
-// them under (verifyjob.QuotaFloorEnv).
-func GateOptions(repo *models.Repo, job *domain.CronJob, proof GateProofEnvResolver, cronRun bool, health WebhookHealth) gatecmd.Options {
+// them under (verifyjob.QuotaFloorEnv). With an installed gh wrapper, every
+// run's gh calls are metered into the usage ledger as cron:<job name>; a nil
+// wrapper adds nothing. ExtraEnv is never nil, so callers may add to it.
+func GateOptions(repo *models.Repo, job *domain.CronJob, proof GateProofEnvResolver, cronRun bool, health WebhookHealth, gh *ghusage.Shim) gatecmd.Options {
 	proofKey, unsetEnv := proofenv.GateEnvFor(proof, repo)
-	var extraEnv map[string]string
+	extraEnv := gh.Env(ghusage.LabelPrefixCron + job.Name)
+	if extraEnv == nil {
+		extraEnv = make(map[string]string, 2)
+	}
 	if cronRun {
 		healthy := "0"
 		if health != nil && health.WebhookDeliveryHealthy(repo.OriginURL) {
 			healthy = "1"
 		}
-		extraEnv = map[string]string{
-			"BOSS_WEBHOOKS_HEALTHY": healthy,
-			verifyjob.QuotaFloorEnv: verifyjob.QuotaFloorValue(job),
-		}
+		extraEnv["BOSS_WEBHOOKS_HEALTHY"] = healthy
+		extraEnv[verifyjob.QuotaFloorEnv] = verifyjob.QuotaFloorValue(job)
 	}
 	return gatecmd.Options{
 		ExtraEnv:             extraEnv,
@@ -122,7 +126,10 @@ type Config struct {
 	GateProofEnv GateProofEnvResolver
 	// Quota reads the GitHub quotas a scheduled fire must leave its floor of.
 	// Nil never reserves quota.
-	Quota         QuotaReader
+	Quota QuotaReader
+	// GHUsage meters gate gh calls into the usage ledger. Nil leaves gates
+	// unmetered.
+	GHUsage       *ghusage.Shim
 	MaxConcurrent int
 	Logger        zerolog.Logger
 
@@ -148,6 +155,7 @@ type Scheduler struct {
 	gateProofEnv  GateProofEnvResolver
 	quota         QuotaReader
 	webhookHealth WebhookHealth
+	ghUsage       *ghusage.Shim
 	logger        zerolog.Logger
 
 	cron *cron.Cron
@@ -207,6 +215,7 @@ func New(cfg Config) *Scheduler {
 		canceller:    cfg.Canceller,
 		gateProofEnv: cfg.GateProofEnv,
 		quota:        cfg.Quota,
+		ghUsage:      cfg.GHUsage,
 		logger:       logger,
 		cron: cron.New(
 			cron.WithLocation(time.UTC),
@@ -569,7 +578,7 @@ func (s *Scheduler) fireWith(ctx context.Context, jobID string, scheduled bool) 
 		gate := func() gatecmd.Result {
 			s.markGating(job.ID)
 			defer s.unmarkGating(job.ID)
-			opts := GateOptions(repo, job, s.gateProofEnv, true, s.webhookHealth)
+			opts := GateOptions(repo, job, s.gateProofEnv, true, s.webhookHealth, s.ghUsage)
 			// Zero in production uses gatecmd.DefaultTimeout; tests shorten it.
 			opts.Timeout = s.gateTimeout
 			opts.Output = &buf

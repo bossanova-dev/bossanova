@@ -3,7 +3,7 @@ package newsession
 import (
 
 	// Key routing for the new-session wizard (BOS-528). handleKey is the router
-	// Model.Update hands every tea.KeyMsg to: the confirm-overwrite
+	// Model.Update hands every tea.KeyMsg to: the create-conflict
 	// overlay first, then one handler per phase, then keyGlobal for the phases
 	// with no block of their own. That order is behaviour; do not reorder it. The
 	// PR and issue phases delegate their filter-mode keys to keyPRFilter /
@@ -15,8 +15,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// handleKey dispatches a key press on the wizard phase. The
-// confirmingOverwrite check stays first because the overwrite prompt
+// handleKey dispatches a key press on the wizard phase. The open
+// conflict prompt check stays first because the overwrite prompt
 // preceded every per-phase block in the original if-chain, and that
 // precedence is behaviour.
 //
@@ -25,8 +25,8 @@ import (
 // phases deliberately have no per-phase key block: they fall through to
 // keyGlobal exactly as they fell out of the if-chain before.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.confirmingOverwrite {
-		return m.updateConfirmOverwrite(msg)
+	if m.conflict != nil {
+		return m.updateConflict(msg)
 	}
 
 	switch m.phase {
@@ -148,7 +148,7 @@ func (m Model) keyPRSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case "esc":
 		m.phase = newSessionPhaseTypeSelect
-		m.forceBranch = false
+		m.clearCreateOverrides()
 		return m, nil
 	case "enter":
 		idx := m.prTable.Cursor()
@@ -209,7 +209,7 @@ func (m Model) keyIssueSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.issueSearchSeq++
 		m.pendingIssueActivate = false
 		m.phase = newSessionPhaseTypeSelect
-		m.forceBranch = false
+		m.clearCreateOverrides()
 		return m, nil
 	case "enter":
 		cmd := m.activateHighlightedIssue()
@@ -273,7 +273,7 @@ func (m Model) keyForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.form = nil
 		m.err = nil
 		m.fd = nil
-		m.forceBranch = false
+		m.clearCreateOverrides()
 		return m, nil
 	}
 	return m.keyGlobal(msg)
@@ -291,33 +291,6 @@ func (m Model) keyGlobal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if model, cmd, ok := m.updateForm(msg); ok {
 		return model, cmd
-	}
-	return m, nil
-}
-
-func (m Model) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "Y", "enter":
-		m.confirmingOverwrite = false
-		m.forceBranch = true
-		cmd := m.startCreating()
-		return m, cmd
-	case "n", "N", "esc":
-		m.confirmingOverwrite = false
-		m.forceBranch = false
-		m.err = nil
-		switch m.selectedType {
-		case sessionTypeLinearTicket, sessionTypeSentryIssue:
-			m.phase = newSessionPhaseIssueSelect
-			return m, nil
-		case sessionTypeExistingPR:
-			m.phase = newSessionPhasePRSelect
-			return m, nil
-		default:
-			m.phase = newSessionPhaseForm
-			m.buildForm()
-			return m, m.form.Init()
-		}
 	}
 	return m, nil
 }

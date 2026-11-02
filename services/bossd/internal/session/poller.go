@@ -43,8 +43,9 @@ type Poller struct {
 	logger         zerolog.Logger
 	done           chan struct{}
 	firstPoll      chan struct{}
-	health         WebhookHealth  // optional; nil polls every repo every interval
-	activity       RepairActivity // optional; nil never releases a lapsed FixingChecks
+	health         WebhookHealth        // optional; nil polls every repo every interval
+	activity       RepairActivity       // optional; nil never releases a lapsed FixingChecks
+	required       RequiredChecksSource // optional; nil requires no named checks
 	now            func() time.Time
 	// rateLimitLog logs each read site's quota refusal once per window.
 	rateLimitLog vcs.RateLimitLog
@@ -106,6 +107,13 @@ func (p *Poller) SetRepairActivity(a RepairActivity) {
 // HasRepairActivity reports whether a repair lease source is wired, so a
 // startup wiring test can assert the production call site supplied one.
 func (p *Poller) HasRepairActivity() bool { return p.activity != nil }
+
+// SetRequiredChecks wires the repo required-check policy, so a head whose
+// required checks have not run never emits ChecksPassed (and so never
+// auto-readies a green draft). Must be called before Run. nil-safe.
+func (p *Poller) SetRequiredChecks(src RequiredChecksSource) {
+	p.required = src
+}
 
 // Run starts the polling loop. It sends events on the returned channel and
 // stops when the context is cancelled. The caller must consume from the
@@ -444,7 +452,8 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models
 		return
 	}
 
-	verdict := vcs.EvaluateChecks(prStatus.HeadSHA, checks, nil)
+	required := requiredChecksPolicy(ctx, p.required, repo.LocalPath).For(prStatus.BaseBranch)
+	verdict := vcs.EvaluateChecksRequiring(prStatus.HeadSHA, checks, nil, required)
 	switch verdict.State {
 	case vcs.CheckVerdictGreen:
 		if emitIf(machine.ChecksPassed, vcs.ChecksPassed{PRID: prID, HeadSHA: verdict.HeadSHA, Demonstrated: verdict.DemonstratedPass()}) {

@@ -19,6 +19,7 @@ go_library(
         "//services/bossd/internal/db",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/telemetry",
+        "//services/bossd/internal/ghusage",
         "//services/bossd/internal/session",
         "//services/bossd/internal/taskorchestrator",
         "//services/bossd/internal/verifyjob",
@@ -30,6 +31,7 @@ go_library(
 go_test(
     name = "cron_test",
     srcs = [
+        "gate_options_test.go",
         "quota_floor_test.go",
         "scheduler_test.go",
         "tick_test.go",
@@ -37,6 +39,7 @@ go_test(
     embed = [":cron"],
     deps = [
         "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/gatecmd",
         "//lib/bossalib/kit/telemetry",
         "//lib/bossalib/kit/vcs",
         "//lib/bossalib/machine",
@@ -44,6 +47,7 @@ go_test(
         "//services/bossd/internal/adapter/proofenv",
         "//services/bossd/internal/db",
         "//services/bossd/internal/domain",
+        "//services/bossd/internal/ghusage",
         "//services/bossd/internal/taskorchestrator",
         "@com_github_rs_zerolog//:zerolog",
     ],

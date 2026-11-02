@@ -230,6 +230,20 @@ func applyPR(in *attention.Input, pr *PR) {
 	if pr.Mergeable != nil {
 		in.Mergeable = pr.Mergeable
 	}
+	applyVerifyPending(in, pr)
+}
+
+// applyVerifyPending marks a VERIFYING poll, the fact the session view's label
+// branches on, and carries the reason of a "waiting: <reason>" boss/verify
+// status, so the list reads the same verify label as the view.
+func applyVerifyPending(in *attention.Input, pr *PR) {
+	if pr.Status != vcs.DisplayStatusVerifying {
+		return
+	}
+	in.VerifyPending = true
+	if phase := vcs.ClassifyVerify(pr.Checks); phase.Kind == vcs.VerifyPhaseWaiting {
+		in.VerifyWaitReason = phase.Reason
+	}
 }
 
 // repairRow is the repair fix row, when the repair alert is current. Its key

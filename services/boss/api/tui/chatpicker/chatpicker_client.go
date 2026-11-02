@@ -3,6 +3,7 @@ package chatpicker
 import (
 	"context"
 
+	"github.com/recurser/boss/api/tui/ui"
 	"github.com/recurser/boss/internal/domain/rpc"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -28,4 +29,5 @@ type Client interface {
 	DismissSessionAlert(ctx context.Context, sessionID, alertKey string) (*pb.Session, error)
 	ResumeSessionRun(ctx context.Context, sessionID string) (*pb.Session, error)
 	OperatorMergeSession(ctx context.Context, id, head string, approve bool, waives []string) (*pb.OperatorMergeSessionResponse, error)
+	ui.BlockerAcceptClient
 }

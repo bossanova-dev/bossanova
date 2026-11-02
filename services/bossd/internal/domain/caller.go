@@ -25,9 +25,10 @@ type CallerPrincipal struct {
 type CallerCapability string
 
 const (
-	CapabilityVerifyAccept  CallerCapability = "verify.accept"
-	CapabilityVerifyApprove CallerCapability = "verify.approve"
-	CapabilityOperatorMerge CallerCapability = "verify.operator-merge"
+	CapabilityVerifyAccept   CallerCapability = "verify.accept"
+	CapabilityVerifyApprove  CallerCapability = "verify.approve"
+	CapabilityVerifyFollowUp CallerCapability = "verify.follow-up"
+	CapabilityOperatorMerge  CallerCapability = "verify.operator-merge"
 )
 
 // CallerGrantKey scopes a future coordinator grant to a principal kind and role.
@@ -42,7 +43,7 @@ type CallerGrants map[CallerGrantKey][]CallerCapability
 // HasCapability applies the default operator grant and an optional role grant.
 func (p CallerPrincipal) HasCapability(capability CallerCapability, grants CallerGrants) bool {
 	if p.Kind == CallerOperator {
-		return capability == CapabilityVerifyAccept || capability == CapabilityVerifyApprove || capability == CapabilityOperatorMerge
+		return capability == CapabilityVerifyAccept || capability == CapabilityVerifyApprove || capability == CapabilityOperatorMerge || capability == CapabilityVerifyFollowUp
 	}
 	if p.Kind != CallerAgentChat {
 		return false

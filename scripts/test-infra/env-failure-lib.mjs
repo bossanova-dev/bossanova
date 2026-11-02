@@ -13,7 +13,7 @@ export const ENV_FAILURE_RULES = [
     kind: 'host-gate-admission',
     pattern: ADMISSION_TIMEOUT_SIGNATURE,
     remedy:
-      "other worktrees' gates held every host slot; re-run once they finish, or raise BOSS_GATE_MAX_CONCURRENT",
+      "other worktrees' gates held every slot in this gate's pool; re-run once they finish, or raise BOSS_GATE_MAX_CONCURRENT (heavy gates) or BOSS_GATE_LIGHT_MAX_CONCURRENT (lint, format, build and codegen checks)",
   },
   {
     kind: 'test-postgres',

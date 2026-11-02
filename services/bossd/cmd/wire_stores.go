@@ -36,6 +36,12 @@ import (
 	"github.com/recurser/bossd/migrations"
 )
 
+// newAccountCredentialStore opens the OS-keyring account credential store.
+// Daemon startup tests swap it for an in-memory keyring, because startup now
+// persists the refresh broker endpoint and must not touch a developer's real
+// keyring.
+var newAccountCredentialStore = accountcred.New
+
 func (w *daemonWiring) wireStores() error {
 	var (
 		err             error
@@ -261,7 +267,7 @@ func (w *daemonWiring) wireStores() error {
 	)
 	// Credential blobs for account rotation live in the OS keyring, never in
 	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
-	w.accountCreds = accountcred.New()
+	w.accountCreds = newAccountCredentialStore()
 	backfillAccountIdentities(context.Background(), w.accounts, w.accountCreds, log.Logger)
 	w.resumeAttempts = db.NewResumeAttemptStore(database)
 	// Rotation audit trail (BOS-176): one store, shared by the Recorder (which

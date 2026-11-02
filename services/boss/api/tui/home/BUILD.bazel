@@ -71,6 +71,7 @@ go_test(
         "home_armed_test.go",
         "home_attention_test.go",
         "home_bench_test.go",
+        "home_confidence_test.go",
         "home_daemon_host_test.go",
         "home_endpoint_setting_test.go",
         "home_filter_test.go",

@@ -3858,7 +3858,7 @@ func TestResolveSessionFacts(t *testing.T) {
 func TestManagedSessionEnv(t *testing.T) {
 	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt", Title: "Manual"}
 	// Pass "codex" as the chat agent to verify the param wins over sess.AgentName ("claude").
-	env := ManagedSessionEnv(sess, "agent-7", "codex")
+	env := ManagedSessionEnv(sess, "agent-7", "codex", nil)
 	for k, want := range map[string]string{
 		"BOSS_SESSION_ID":       "s1",
 		"BOSS_AGENT_SESSION_ID": "agent-7",
@@ -3880,14 +3880,14 @@ func TestManagedSessionEnv(t *testing.T) {
 	}
 
 	// Empty agentName falls back to sess.AgentName.
-	envFallback := ManagedSessionEnv(sess, "agent-7", "")
+	envFallback := ManagedSessionEnv(sess, "agent-7", "", nil)
 	if envFallback["BOSS_AGENT"] != "claude" {
 		t.Fatalf("empty agentName should fall back to sess.AgentName: got %q, want %q", envFallback["BOSS_AGENT"], "claude")
 	}
 
 	job := "cron-42"
 	cron := &models.Session{ID: "s2", Title: "Nightly", CronJobID: &job}
-	cenv := ManagedSessionEnv(cron, "agent-1", "")
+	cenv := ManagedSessionEnv(cron, "agent-1", "", nil)
 	if cenv["BOSS_CRON"] != "true" || cenv["BOSS_UNATTENDED"] != "true" || cenv["BOSS_CRON_JOB_ID"] != "cron-42" || cenv["BOSS_CRON_NAME"] != "Nightly" {
 		t.Fatalf("cron env wrong: %v", cenv)
 	}
@@ -3904,7 +3904,7 @@ func TestManagedSessionEnv_UnattendedWithoutCronJob(t *testing.T) {
 		"detach":          {ID: "s10", Title: "Plan run", Detach: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			env := ManagedSessionEnv(sess, "agent-9", "claude")
+			env := ManagedSessionEnv(sess, "agent-9", "claude", nil)
 			for _, k := range []string{"BOSS_CRON", "BOSS_UNATTENDED"} {
 				if env[k] != "true" {
 					t.Fatalf("%s session must set %s=true, got %q", name, k, env[k])
@@ -3956,7 +3956,7 @@ func TestMergeEnv_ManagedKeysWin(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			base := ManagedSessionEnv(tc.sess, "agent-x", "")
+			base := ManagedSessionEnv(tc.sess, "agent-x", "", nil)
 			merged := mergeEnv(base, overlay)
 
 			// Managed key wins on conflict.
@@ -3995,7 +3995,7 @@ func TestLifecycleTmuxEnvIncludesProofOverlay(t *testing.T) {
 	}})
 
 	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt"}
-	env := mergeEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
+	env := mergeEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName, nil), l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
 
 	if env["PROOF_ANTHROPIC_API_KEY"] != "secret-anthropic" {
 		t.Errorf("proof secrets missing from tmux env: %v", env)
@@ -4817,7 +4817,7 @@ func TestManagedSessionEnv_ZeroOutputMarker(t *testing.T) {
 		"attended quick chat":  {&models.Session{ID: "s4", Title: "Chat", IsQuickChat: true}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, ok := ManagedSessionEnv(tc.sess, "agent-1", "claude")[zeroOutputEnvKey]
+			got, ok := ManagedSessionEnv(tc.sess, "agent-1", "claude", nil)[zeroOutputEnvKey]
 			if tc.want && got != "true" {
 				t.Fatalf("%s = %q, want true", zeroOutputEnvKey, got)
 			}

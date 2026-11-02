@@ -54,7 +54,7 @@ test('CHECK_REASONS is frozen and adds exactly the two agent-side reasons', () =
   const values = new Set(Object.values(CHECK_REASONS))
   assert.ok(values.has('absent-gate'), 'absent-gate must be in the reason vocabulary')
   assert.ok(values.has('advisory-unsettled'), 'advisory-unsettled must be in the reason vocabulary')
-  assert.equal(values.size, 10)
+  assert.equal(values.size, 11)
 })
 
 // The pin. This reads the Go source at test time rather than restating its tokens, which is what
@@ -2034,4 +2034,127 @@ test('partitionProvenance keeps gates and sorts unique receipts without mutating
     provenance: [...new Set([PROVENANCE_CONTEXTS[0], PROVENANCE_CONTEXTS[0]])].sort(),
   })
   assert.deepEqual(entries, original)
+})
+
+// Required checks (ci.required): mirrors the Go `EvaluateChecksRequiring` table.
+test('classifyChecks — a required check absent from the head is unknown/not-requested', () => {
+  const verdict = classifyChecks({
+    headSHA: 'h',
+    observedSHA: 'h',
+    checkRuns: { check_runs: [checkRun('lint', 'completed', 'success')] },
+    requiredChecks: ['go-test', 'scripts'],
+  })
+  assert.equal(verdict.state, CHECK_STATES.UNKNOWN)
+  assert.equal(verdict.reason, CHECK_REASONS.NOT_REQUESTED)
+  assert.deepEqual(verdict.notRequested, ['go-test', 'scripts'])
+  assert.equal(isGreen(verdict), false)
+})
+
+test('classifyChecks — a required check present only as skipped or neutral has not run', () => {
+  const verdict = classifyChecks({
+    checkRuns: {
+      check_runs: [
+        checkRun('lint', 'completed', 'success'),
+        checkRun('go-test', 'completed', 'skipped'),
+        checkRun('scripts', 'completed', 'neutral'),
+      ],
+    },
+    requiredChecks: ['go-test', 'scripts'],
+  })
+  assert.equal(verdict.reason, CHECK_REASONS.NOT_REQUESTED)
+  assert.deepEqual(verdict.notRequested, ['go-test', 'scripts'])
+})
+
+test('classifyChecks — a skipped plus a successful instance of a required check is green', () => {
+  const verdict = classifyChecks({
+    rollup: [checkRun('lint', 'COMPLETED', 'SUCCESS'), checkRun('go-test', 'COMPLETED', 'SKIPPED')],
+    checkRuns: { check_runs: [checkRun('go-test', 'completed', 'success')] },
+    requiredChecks: ['go-test'],
+  })
+  assert.equal(verdict.state, CHECK_STATES.GREEN)
+  assert.equal(verdict.reason, CHECK_REASONS.OK)
+  assert.deepEqual(verdict.notRequested, [])
+})
+
+test('classifyChecks — a failing light check beats a missing required check', () => {
+  const verdict = classifyChecks({
+    checkRuns: { check_runs: [checkRun('lint', 'completed', 'failure')] },
+    requiredChecks: ['go-test'],
+  })
+  assert.equal(verdict.state, CHECK_STATES.FAILING)
+  assert.equal(verdict.reason, CHECK_REASONS.FAILED)
+})
+
+test('classifyChecks — a pending head workflow run beats a missing required check', () => {
+  const verdict = classifyChecks({
+    headSHA: 'h',
+    observedSHA: 'h',
+    checkRuns: { check_runs: [checkRun('lint', 'completed', 'success')] },
+    workflowRuns: [{ name: 'Bazel', status: 'in_progress', conclusion: '', headSha: 'h' }],
+    requiredChecks: ['go-test'],
+  })
+  assert.equal(verdict.state, CHECK_STATES.PENDING)
+  assert.equal(verdict.reason, CHECK_REASONS.PENDING)
+})
+
+test('classifyChecks — not-requested is reported ahead of absent-gate and leaves blockingAbsent', () => {
+  const verdict = classifyChecks({
+    headSHA: 'h',
+    observedSHA: 'h',
+    checkRuns: { check_runs: [checkRun('lint', 'completed', 'success')] },
+    priorContexts: ['lint', 'go-test', 'web-e2e'],
+    requiredChecks: ['go-test'],
+  })
+  assert.equal(verdict.state, CHECK_STATES.UNKNOWN)
+  assert.equal(verdict.reason, CHECK_REASONS.NOT_REQUESTED)
+  assert.deepEqual(verdict.absent, ['go-test', 'web-e2e'])
+  assert.deepEqual(verdict.blockingAbsent, ['web-e2e'])
+})
+
+test('classifyChecks — a head with no workflow run yet is not not-requested', () => {
+  const options = { headSHA: 'h', observedSHA: 'h', requiredChecks: ['go-test'] }
+  const empty = classifyChecks({ ...options, checkRuns: { check_runs: [] }, workflowRuns: [] })
+  assert.equal(empty.state, CHECK_STATES.PENDING)
+  assert.deepEqual(empty.notRequested, [])
+  // A third-party check attached before Actions created its runs is no proof CI started, and the
+  // missing required check still holds the verdict short of green.
+  const app = { check_runs: [checkRun('pr_agent', 'completed', 'success')] }
+  const early = classifyChecks({ ...options, checkRuns: app, workflowRuns: [] })
+  assert.equal(early.state, CHECK_STATES.PENDING)
+  assert.equal(early.reason, CHECK_REASONS.PENDING)
+  assert.deepEqual(early.notRequested, [])
+  const run = { name: 'Bazel', status: 'completed', conclusion: 'success', headSha: 'h' }
+  const started = classifyChecks({ ...options, checkRuns: app, workflowRuns: [run] })
+  assert.equal(started.reason, CHECK_REASONS.NOT_REQUESTED)
+})
+
+test('classifyChecks — with no requirement the verdict is unchanged', () => {
+  const options = {
+    checkRuns: { check_runs: [checkRun('lint', 'completed', 'success')] },
+    priorContexts: ['lint'],
+  }
+  assert.deepEqual(classifyChecks({ ...options, requiredChecks: [] }), classifyChecks(options))
+  assert.equal(classifyChecks(options).reason, CHECK_REASONS.OK)
+})
+
+test('CLI classify — --required-checks holds a light-only head at not-requested', () => {
+  const dir = tempDir('pr-check-state-')
+  const checksPath = path.join(dir, 'checks.json')
+  writeFileSync(
+    checksPath,
+    JSON.stringify({ check_runs: [checkRun('lint', 'completed', 'success')] }),
+  )
+  const result = runCli([
+    'classify',
+    '--check-runs',
+    checksPath,
+    '--required-checks',
+    'go-test, scripts',
+  ])
+  rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  assert.equal(result.status, 0, result.stderr)
+  const parsed = JSON.parse(result.stdout)
+  assert.equal(parsed.reason, CHECK_REASONS.NOT_REQUESTED)
+  assert.deepEqual(parsed.notRequested, ['go-test', 'scripts'])
+  assert.equal(parsed.green, false)
 })

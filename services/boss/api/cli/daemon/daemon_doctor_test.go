@@ -2482,7 +2482,7 @@ func TestRunDaemonDoctorDirectsOperatorToTheStagedBinaryWhenNotServing(t *testin
 	home, _, stagedPath := deps.prepareDaemonDoctorInstall(t)
 	writeDaemonDoctorPlist(t, home, stagedPath)
 	deps.writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
-	deps.daemonSocketReachable = func(string) bool { return false }
+	deps.stubWedgedDaemonSocket(t)
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
@@ -2647,7 +2647,7 @@ func TestRunDaemonDoctorFailsAnUnreachableSocket(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write daemon state: %v", err)
 	}
-	deps.daemonSocketReachable = func(string) bool { return false }
+	deps.stubWedgedDaemonSocket(t)
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
@@ -2725,7 +2725,7 @@ func TestRunDaemonDoctorRemediatesACrashLoopWithTheForegroundRun(t *testing.T) {
 		LastExitCode:      1,
 		LastExitCodeKnown: true,
 	}, nil)
-	deps.daemonSocketReachable = func(string) bool { return false }
+	deps.stubWedgedDaemonSocket(t)
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
@@ -3883,7 +3883,7 @@ func TestRunDaemonDoctorDeclinesWithNoCauseAndNoSocket(t *testing.T) {
 		Label:  "com.bossanova.bossd",
 		Reason: "launchctl print-disabled output carried no \"disabled services\" line",
 	}, nil)
-	deps.daemonSocketReachable = func(string) bool { return false }
+	deps.stubWedgedDaemonSocket(t)
 
 	got := deps.runDaemonDoctorOutput(t)
 	for _, want := range []string{

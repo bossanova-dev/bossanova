@@ -111,6 +111,9 @@ const (
 	// DaemonServiceApproveSessionPRProcedure is the fully-qualified name of the DaemonService's
 	// ApproveSessionPR RPC.
 	DaemonServiceApproveSessionPRProcedure = "/bossanova.v1.DaemonService/ApproveSessionPR"
+	// DaemonServiceFollowUpSessionPRNotesProcedure is the fully-qualified name of the DaemonService's
+	// FollowUpSessionPRNotes RPC.
+	DaemonServiceFollowUpSessionPRNotesProcedure = "/bossanova.v1.DaemonService/FollowUpSessionPRNotes"
 	// DaemonServiceOperatorMergeSessionProcedure is the fully-qualified name of the DaemonService's
 	// OperatorMergeSession RPC.
 	DaemonServiceOperatorMergeSessionProcedure = "/bossanova.v1.DaemonService/OperatorMergeSession"
@@ -383,6 +386,9 @@ type DaemonServiceClient interface {
 	// stored tracker credentials. It hands a `needs human:` verify park on the
 	// PR's current head back to verify.
 	ApproveSessionPR(context.Context, *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error)
+	// FollowUpSessionPRNotes files verify notes as tracker tickets on the daemon
+	// host. It never writes a status, label or verify verdict.
+	FollowUpSessionPRNotes(context.Context, *connect.Request[v1.FollowUpSessionPRNotesRequest]) (*connect.Response[v1.FollowUpSessionPRNotesResponse], error)
 	// OperatorMergeSession is the operator's merge from a review or merge row.
 	// It refuses a session whose attention is a FIX (a blocked verify park or a
 	// failure), then merges the session's PR at exactly expected_head_sha
@@ -849,6 +855,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceApproveSessionPRProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("ApproveSessionPR")),
+			connect.WithClientOptions(opts...),
+		),
+		followUpSessionPRNotes: connect.NewClient[v1.FollowUpSessionPRNotesRequest, v1.FollowUpSessionPRNotesResponse](
+			httpClient,
+			baseURL+DaemonServiceFollowUpSessionPRNotesProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("FollowUpSessionPRNotes")),
 			connect.WithClientOptions(opts...),
 		),
 		operatorMergeSession: connect.NewClient[v1.OperatorMergeSessionRequest, v1.OperatorMergeSessionResponse](
@@ -1326,6 +1338,7 @@ type daemonServiceClient struct {
 	closeSession                         *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
 	mergeSession                         *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
 	approveSessionPR                     *connect.Client[v1.ApproveSessionPRRequest, v1.ApproveSessionPRResponse]
+	followUpSessionPRNotes               *connect.Client[v1.FollowUpSessionPRNotesRequest, v1.FollowUpSessionPRNotesResponse]
 	operatorMergeSession                 *connect.Client[v1.OperatorMergeSessionRequest, v1.OperatorMergeSessionResponse]
 	sendBackToRepair                     *connect.Client[v1.SendBackToRepairRequest, v1.SendBackToRepairResponse]
 	listSessionPRBlockers                *connect.Client[v1.ListSessionPRBlockersRequest, v1.ListSessionPRBlockersResponse]
@@ -1530,6 +1543,11 @@ func (c *daemonServiceClient) MergeSession(ctx context.Context, req *connect.Req
 // ApproveSessionPR calls bossanova.v1.DaemonService.ApproveSessionPR.
 func (c *daemonServiceClient) ApproveSessionPR(ctx context.Context, req *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error) {
 	return c.approveSessionPR.CallUnary(ctx, req)
+}
+
+// FollowUpSessionPRNotes calls bossanova.v1.DaemonService.FollowUpSessionPRNotes.
+func (c *daemonServiceClient) FollowUpSessionPRNotes(ctx context.Context, req *connect.Request[v1.FollowUpSessionPRNotesRequest]) (*connect.Response[v1.FollowUpSessionPRNotesResponse], error) {
+	return c.followUpSessionPRNotes.CallUnary(ctx, req)
 }
 
 // OperatorMergeSession calls bossanova.v1.DaemonService.OperatorMergeSession.
@@ -1955,6 +1973,9 @@ type DaemonServiceHandler interface {
 	// stored tracker credentials. It hands a `needs human:` verify park on the
 	// PR's current head back to verify.
 	ApproveSessionPR(context.Context, *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error)
+	// FollowUpSessionPRNotes files verify notes as tracker tickets on the daemon
+	// host. It never writes a status, label or verify verdict.
+	FollowUpSessionPRNotes(context.Context, *connect.Request[v1.FollowUpSessionPRNotesRequest]) (*connect.Response[v1.FollowUpSessionPRNotesResponse], error)
 	// OperatorMergeSession is the operator's merge from a review or merge row.
 	// It refuses a session whose attention is a FIX (a blocked verify park or a
 	// failure), then merges the session's PR at exactly expected_head_sha
@@ -2417,6 +2438,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceApproveSessionPRProcedure,
 		svc.ApproveSessionPR,
 		connect.WithSchema(daemonServiceMethods.ByName("ApproveSessionPR")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceFollowUpSessionPRNotesHandler := connect.NewUnaryHandler(
+		DaemonServiceFollowUpSessionPRNotesProcedure,
+		svc.FollowUpSessionPRNotes,
+		connect.WithSchema(daemonServiceMethods.ByName("FollowUpSessionPRNotes")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceOperatorMergeSessionHandler := connect.NewUnaryHandler(
@@ -2917,6 +2944,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceMergeSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceApproveSessionPRProcedure:
 			daemonServiceApproveSessionPRHandler.ServeHTTP(w, r)
+		case DaemonServiceFollowUpSessionPRNotesProcedure:
+			daemonServiceFollowUpSessionPRNotesHandler.ServeHTTP(w, r)
 		case DaemonServiceOperatorMergeSessionProcedure:
 			daemonServiceOperatorMergeSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceSendBackToRepairProcedure:
@@ -3176,6 +3205,10 @@ func (UnimplementedDaemonServiceHandler) MergeSession(context.Context, *connect.
 
 func (UnimplementedDaemonServiceHandler) ApproveSessionPR(context.Context, *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ApproveSessionPR is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) FollowUpSessionPRNotes(context.Context, *connect.Request[v1.FollowUpSessionPRNotesRequest]) (*connect.Response[v1.FollowUpSessionPRNotesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.FollowUpSessionPRNotes is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) OperatorMergeSession(context.Context, *connect.Request[v1.OperatorMergeSessionRequest]) (*connect.Response[v1.OperatorMergeSessionResponse], error) {

@@ -1,0 +1,134 @@
+[
+  {
+    "name": "always-human-path",
+    "codes": ["always-human-path"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-review:database",
+    "codes": ["human-review:database"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-review:security",
+    "codes": ["human-review:security"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-review:ui",
+    "codes": ["human-review:ui"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-review:unproven",
+    "codes": ["human-review:unproven"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "all path codes",
+    "codes": [
+      "always-human-path",
+      "human-review:database",
+      "human-review:security",
+      "human-review:ui",
+      "human-review:unproven"
+    ],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-merge only",
+    "codes": ["human-merge"],
+    "label": "",
+    "level": null
+  },
+  {
+    "name": "no-receipt only",
+    "codes": ["no-receipt"],
+    "label": "",
+    "level": null
+  },
+  {
+    "name": "partial-build only",
+    "codes": ["partial-build"],
+    "label": "",
+    "level": null
+  },
+  {
+    "name": "future-code only",
+    "codes": ["future-code"],
+    "label": "",
+    "level": null
+  },
+  {
+    "name": "waiting:ci only",
+    "codes": ["waiting:ci"],
+    "label": "",
+    "level": null
+  },
+  {
+    "name": "mixed path and merge",
+    "codes": ["human-review:ui", "human-merge"],
+    "label": "",
+    "level": null
+  },
+  {
+    "name": "mixed path and unknown",
+    "codes": ["human-review:ui", "future-code"],
+    "label": "",
+    "level": null
+  },
+  {
+    "name": "cannot assess",
+    "codes": ["human-review:ui", "cannot-assess"],
+    "label": "",
+    "level": "cannot-assess"
+  },
+  {
+    "name": "moderate label wins",
+    "codes": ["cannot-assess"],
+    "label": "moderate: Migrations",
+    "level": "moderate"
+  },
+  {
+    "name": "low label wins",
+    "codes": ["human-merge"],
+    "label": "low: A, B, C +2",
+    "level": "low"
+  },
+  {
+    "name": "high label alone",
+    "codes": [],
+    "label": "high: Review evidence",
+    "level": null
+  },
+  {
+    "name": "high label with merge",
+    "codes": ["human-merge"],
+    "label": "high: Review evidence",
+    "level": null
+  },
+  {
+    "name": "high label path fallback",
+    "codes": ["human-review:ui"],
+    "label": "high: Review evidence",
+    "level": "moderate"
+  },
+  {
+    "name": "empty",
+    "codes": [],
+    "label": "",
+    "level": null
+  },
+  {
+    "name": "null codes",
+    "codes": null,
+    "label": "",
+    "level": null
+  }
+]

@@ -56,9 +56,11 @@ type DisplayInfo struct {
 	// conflict-after-green is detectable without attempting a merge. Set by the
 	// display poller from the PR fetch, not derived by ComputeDisplayStatus.
 	Mergeable *bool
-	// VerifyReason is the verify stage's park reason. Populated only for
-	// DisplayStatusNeedsHuman, and may be empty there when the boss/verify
-	// description names no reason.
+	// VerifyReason is the verify stage's park codes for
+	// DisplayStatusNeedsHuman (empty there when the boss/verify description
+	// names none), or the wait's reason code for DisplayStatusVerifying when
+	// the head carries a "waiting: <reason>" status; empty otherwise, so a
+	// live claim carries none. Every reader must guard on Status first.
 	VerifyReason string
 	// VerifyLabel is the operator-written label a park carries after its
 	// codes. Populated only for DisplayStatusNeedsHuman, and empty when the
@@ -69,6 +71,10 @@ type DisplayInfo struct {
 // DisplayOptions supplies session ownership facts unavailable on the PR itself.
 type DisplayOptions struct {
 	DraftHeldByBossd bool
+	// Required is the repository's required-check policy. A non-draft head on
+	// which a required check has not run is not green (see
+	// EvaluateChecksRequiring); drafts are unaffected.
+	Required RequiredChecks
 }
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
@@ -82,6 +88,8 @@ type DisplayOptions struct {
 //
 // A draft held by bossd (through options or an unparked verify send-back)
 // instead uses Conflict > Failing > Draft; all other draft signals stay Draft.
+// Approved and Passing also require every check options.Required names for the
+// PR's base to have run; a not-requested head falls through to Checking/Idle.
 // A verify hold, including a park in any state, is excluded from the ordinary CI verdict (see
 // EvaluateChecks) and classified by ClassifyVerify instead. The two verify
 // statuses sit exactly where that pending check used to force Checking, so
@@ -125,7 +133,17 @@ func ComputeDisplayStatusWith(pr *PRStatus, checks []CheckResult, reviews []Revi
 	}
 
 	// Analyze CI checks.
-	checkVerdict := EvaluateChecks(pr.HeadSHA, checks, nil)
+	//
+	// No dated apiversion bump: a non-draft head whose configured required
+	// checks did not run now displays Idle (or Checking while mergeability is
+	// unknown) instead of Passing or Approved. Clients (TUI, web, and MCP via
+	// bosso) read Session.display_status, and the response carries neither the
+	// check set nor the repo's ci.required config, so no transform can tell
+	// this shape apart; restoring PASSING would re-serve the exact false green
+	// this removes. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	checkVerdict := EvaluateChecksRequiring(pr.HeadSHA, checks, nil, opts.Required.For(pr.BaseBranch))
+	notRequested := checkVerdict.Reason == CheckVerdictReasonNotRequested
 	hasFailed := checkVerdict.State == CheckVerdictFailing
 	checksChecking := checkVerdict.State == CheckVerdictPending ||
 		checkVerdict.Reason == CheckVerdictReasonUnreadable ||
@@ -173,6 +191,8 @@ func ComputeDisplayStatusWith(pr *PRStatus, checks []CheckResult, reviews []Revi
 	switch verify := ClassifyVerify(checks); verify.Kind {
 	case VerifyPhaseNeedsHuman:
 		return DisplayInfo{Status: DisplayStatusNeedsHuman, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy, VerifyReason: verify.Reason, VerifyLabel: verify.Label}
+	case VerifyPhaseWaiting:
+		return DisplayInfo{Status: DisplayStatusVerifying, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy, VerifyReason: verify.Reason}
 	case VerifyPhaseVerifying:
 		return DisplayInfo{Status: DisplayStatusVerifying, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy}
 	case VerifyPhaseNone:
@@ -190,7 +210,7 @@ func ComputeDisplayStatusWith(pr *PRStatus, checks []CheckResult, reviews []Revi
 		return DisplayInfo{Status: DisplayStatusReview}
 	}
 
-	if hasApproval && !mergeableUnknown {
+	if hasApproval && !mergeableUnknown && !notRequested {
 		return DisplayInfo{Status: DisplayStatusApproved}
 	}
 

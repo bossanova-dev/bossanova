@@ -212,6 +212,20 @@ test('judgeCiOnHead ignores failing and pending boss/* contexts in both node for
   assert.deepEqual(result.excluded, ['boss/build', 'boss/verify'])
 })
 
+test('judgeCiOnHead holds a head whose required check did not run at settled not-requested', () => {
+  const rollup = [run('unit', 'SUCCESS'), run('go-test', 'SKIPPED')]
+  const held = judgeCiOnHead({
+    headSHA: HEAD,
+    observedSHA: HEAD,
+    rollup,
+    requiredChecks: ['go-test'],
+  })
+  assert.equal(held.verdict.reason, 'not-requested')
+  assert.equal(held.settled, true)
+  assert.equal(held.green, false)
+  assert.equal(judgeCiOnHead({ headSHA: HEAD, observedSHA: HEAD, rollup }).green, true)
+})
+
 test('judgeCiOnHead filters check-run envelopes and paginated pages', () => {
   const checkRuns = [
     { total_count: 2, check_runs: [{ name: 'lint', status: 'completed', conclusion: 'success' }] },

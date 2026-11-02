@@ -34,8 +34,8 @@ function fixture(t) {
       encoding: 'utf8',
       timeout: 15000,
     })
-  const start = (body, extra) => {
-    const result = call(runner, ['start', '--', process.execPath, '-e', body], extra)
+  const startArgv = (argv, extra) => {
+    const result = call(runner, ['start', '--', ...argv], extra)
     assert.equal(result.status, 0, result.stderr)
     const run = result.stdout.split('\n')[0]
     t.after(() => {
@@ -44,8 +44,9 @@ function fixture(t) {
     })
     return run
   }
+  const start = (body, extra) => startArgv([process.execPath, '-e', body], extra)
   const wait = (run, timeout = '10000') => call(runner, ['wait', '--timeout', timeout, run])
-  return { dir, slots, env, call, start, wait }
+  return { dir, slots, env, call, start, startArgv, wait }
 }
 async function until(check) {
   const deadline = Date.now() + 10000
@@ -55,20 +56,21 @@ async function until(check) {
   }
 }
 const write = (file) => `require('fs').writeFileSync(${JSON.stringify(file)}, 'ran');`
+// A gate that holds its slot until the test writes the release file.
+const holdUntil = (marker, release) =>
+  `${write(marker)} const timer = setInterval(() => { if(require('fs').existsSync(${JSON.stringify(release)})) {clearInterval(timer)} }, 10)`
 
 test('two gates serialize commands and expose queued phase and admission evidence', async (t) => {
   const f = fixture(t)
   const firstMarker = path.join(f.dir, 'first')
   const release = path.join(f.dir, 'release')
-  const first = f.start(
-    `${write(firstMarker)} const timer = setInterval(() => { if(require('fs').existsSync(${JSON.stringify(release)})) {clearInterval(timer)} }, 10)`,
-  )
+  const first = f.start(holdUntil(firstMarker, release))
   await until(() => fs.existsSync(firstMarker))
   const secondMarker = path.join(f.dir, 'second')
   const second = f.start(write(secondMarker))
   await until(() => fs.existsSync(path.join(second, 'queued')))
   const queued = f.wait(second, '0')
-  assert.match(queued.stdout, /phase: queued for a host gate slot/)
+  assert.match(queued.stdout, /phase: queued for a heavy gate slot - held by /)
   assert.equal(fs.existsSync(secondMarker), false)
   fs.writeFileSync(release, 'go')
   assert.equal(f.wait(first).status, 0)
@@ -85,6 +87,58 @@ test('nested gate-run to run-gate and run-gate to run-gate inherit the single sl
   assert.equal(f.wait(f.start(body)).status, 0)
   assert.equal(fs.existsSync(path.join(f.dir, 'nested')), true)
   assert.deepEqual(fs.readdirSync(f.slots), [])
+})
+
+test('a light make lint passes while a heavy gate holds every heavy slot', async (t) => {
+  const f = fixture(t)
+  const bin = path.join(f.dir, 'bin')
+  fs.mkdirSync(bin)
+  fs.writeFileSync(path.join(bin, 'make'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  const heavyMarker = path.join(f.dir, 'heavy')
+  const release = path.join(f.dir, 'release')
+  const heavy = f.start(holdUntil(heavyMarker, release))
+  await until(() => fs.existsSync(heavyMarker))
+  const light = f.startArgv(['make', 'lint'], {
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+  })
+  const passed = f.wait(light)
+  assert.equal(passed.status, 0, passed.stdout)
+  assert.match(passed.stdout, /^GATE PASSED/)
+  assert.match(f.wait(heavy, '0').stdout, /^GATE UNKNOWN - still running/)
+  const admission = JSON.parse(fs.readFileSync(path.join(light, 'admission.json'), 'utf8'))
+  assert.equal(admission.pool, 'light')
+  assert.equal(admission.gateClass, 'light')
+  assert.deepEqual(admission.heldByAtAdmission, [])
+  fs.writeFileSync(release, 'go')
+  assert.equal(f.wait(heavy).status, 0)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(heavy, 'admission.json'))).pool, 'heavy')
+  assert.deepEqual(fs.readdirSync(f.slots), ['light'])
+  assert.deepEqual(fs.readdirSync(path.join(f.slots, 'light')), [])
+})
+
+test('heavy wrappers nested under a light gate inherit its slot instead of queueing', (t) => {
+  const f = fixture(t)
+  fs.mkdirSync(f.slots)
+  fs.writeFileSync(
+    path.join(f.slots, 'slot-0'),
+    JSON.stringify({ pid: process.pid, label: 'held' }),
+  )
+  const nested = path.join(f.dir, 'nested')
+  const script = path.join(f.dir, 'scripts', 'lint', 'nested.mjs')
+  fs.mkdirSync(path.dirname(script), { recursive: true })
+  fs.writeFileSync(
+    script,
+    `const r = (await import('node:child_process')).spawnSync(process.execPath, [${JSON.stringify(wrapper)}, '--', process.execPath, ${JSON.stringify(wrapper)}, '--', process.execPath, '-e', ${JSON.stringify(write(nested))}], {stdio: 'inherit'}); process.exit(r.status ?? 1)\n`,
+  )
+  const run = f.startArgv([process.execPath, 'scripts/lint/nested.mjs'], {
+    BOSS_GATE_ADMISSION_TIMEOUT_MS: '2000',
+  })
+  const result = f.wait(run)
+  assert.equal(result.status, 0, result.stdout)
+  assert.equal(fs.existsSync(nested), true)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(run, 'admission.json'))).pool, 'light')
+  assert.deepEqual(fs.readdirSync(f.slots).sort(), ['light', 'slot-0'])
+  assert.deepEqual(fs.readdirSync(path.join(f.slots, 'light')), [])
 })
 
 test('timeouts refuse both wrappers before the command and leave the live holder intact', (t) => {

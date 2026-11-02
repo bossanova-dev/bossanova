@@ -292,7 +292,11 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 				return connect.NewError(connect.CodeInternal, fmt.Errorf("dedup active sessions: %w", err))
 			}
 			if existingID, existingPlan, kind, ok := keys.duplicateSessionID(msg.TrackerId, prNumber, headBranch); ok {
-				return connect.NewError(connect.CodeAlreadyExists, duplicateSessionAlreadyExistsError(existingID, existingPlan, kind, msg.RepoId))
+				return createSessionConflictError(duplicateSessionAlreadyExistsError(existingID, existingPlan, kind, msg.RepoId), &pb.CreateSessionConflict{
+					Reason:            pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_DUPLICATE_ACTIVE_SESSION,
+					ExistingSessionId: existingID,
+					MatchedTarget:     kind,
+				})
 			}
 		}
 	}
@@ -538,7 +542,10 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID, nil)
 		}
 		if errors.Is(err, domain.ErrBranchExists) {
-			return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))
+			return createSessionConflictError(fmt.Errorf("branch already exists for this session title"), &pb.CreateSessionConflict{
+				Reason:     pb.CreateSessionConflictReason_CREATE_SESSION_CONFLICT_REASON_BRANCH_EXISTS,
+				BranchName: headBranch,
+			})
 		}
 		s.logger.Error().Err(err).
 			Str("session", sess.ID).

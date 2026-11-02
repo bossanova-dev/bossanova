@@ -1,12 +1,7 @@
-// Package verifybridge runs the installed boss-verify toolbox's operator verbs
-// (`verify-gate.mjs approve` and `mark-merged`) for one PR and decodes their
-// JSON.
-//
-// The verbs live in verify-gate because the park format, the needs-human label
-// and the tracker adapter already live there; this package only bridges. Like
-// the `boss init` node bridge, it is fail-closed: node missing, a non-zero exit,
-// a timeout, empty stdout, unparseable JSON and a result of the wrong shape are
-// each their own error, and none of them is ever read as success.
+// Package verifybridge runs installed boss-verify toolbox operator verbs on
+// the daemon host and decodes their JSON. Execution, decoding and shape
+// failures remain distinct errors. Follow-up refusals printed on exit 1 are
+// returned as results only after their shape and ok field are validated.
 package verifybridge
 
 import (
@@ -19,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -69,9 +65,10 @@ var (
 // script under the installed skill trees, applies DefaultTimeout and lets the
 // child inherit this process's environment.
 type Bridge struct {
-	Node    string        // node executable; empty looks `node` up on PATH
-	Script  string        // verify-gate.mjs; empty locates the installed copy
-	Timeout time.Duration // zero means DefaultTimeout
+	Node           string        // node executable; empty looks `node` up on PATH
+	Script         string        // verify-gate.mjs; empty locates the installed copy
+	FollowUpScript string        // verify-followups.mjs; empty locates the installed copy
+	Timeout        time.Duration // zero means DefaultTimeout
 	// Env is the child's whole environment, as exec.Cmd.Env takes it; nil
 	// inherits this process's. Values are secret-bearing and never logged.
 	Env []string
@@ -81,17 +78,21 @@ type Bridge struct {
 // toolbox: $BOSS_VERIFY_TOOLBOX, then $BOSS_SKILLS_HOME, then ~/.claude/skills,
 // then ~/.codex/skills. The first existing regular file wins.
 func Locate(getenv func(string) string, home string) (string, error) {
+	return locate(getenv, home, ScriptRelPath)
+}
+
+func locate(getenv func(string) string, home, rel string) (string, error) {
 	var candidates []string
 	if dir := getenv("BOSS_VERIFY_TOOLBOX"); dir != "" {
-		candidates = append(candidates, filepath.Join(dir, scriptInToolbox))
+		candidates = append(candidates, filepath.Join(dir, filepath.Base(filepath.Dir(rel)), filepath.Base(rel)))
 	}
 	if dir := getenv("BOSS_SKILLS_HOME"); dir != "" {
-		candidates = append(candidates, filepath.Join(dir, ScriptRelPath))
+		candidates = append(candidates, filepath.Join(dir, rel))
 	}
 	if home != "" {
 		candidates = append(candidates,
-			filepath.Join(home, ".claude", "skills", ScriptRelPath),
-			filepath.Join(home, ".codex", "skills", ScriptRelPath))
+			filepath.Join(home, ".claude", "skills", rel),
+			filepath.Join(home, ".codex", "skills", rel))
 	}
 	for _, c := range candidates {
 		if info, err := os.Stat(c); err == nil && info.Mode().IsRegular() {
@@ -226,6 +227,14 @@ func (b *Bridge) runAllowing(ctx context.Context, dir string, args []string, all
 		}
 		script = found
 	}
+	out, code, err := b.execute(ctx, dir, script, "verify-gate "+args[0], args, allowed...)
+	if code != 0 && errors.Is(err, ErrEmptyOutput) {
+		err = fmt.Errorf("%w: %w", ErrNodeExit, err)
+	}
+	return out, code, err
+}
+
+func (b *Bridge) execute(ctx context.Context, dir, script, what string, args []string, allowed ...int) ([]byte, int, error) {
 	nodePath := b.Node
 	if nodePath == "" {
 		found, err := exec.LookPath("node")
@@ -238,7 +247,6 @@ func (b *Bridge) runAllowing(ctx context.Context, dir string, args []string, all
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	what := "verify-gate " + args[0]
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -250,26 +258,26 @@ func (b *Bridge) runAllowing(ctx context.Context, dir string, args []string, all
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = waitDelay
 
+	exitCode := 0
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return nil, 0, fmt.Errorf("%w: %s did not finish within %s: %s", ErrNodeTimeout, what, timeout, truncate(stderr.Bytes()))
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			for _, code := range allowed {
-				if exitErr.ExitCode() == code && len(bytes.TrimSpace(stdout.Bytes())) > 0 {
-					return bytes.TrimSpace(stdout.Bytes()), code, nil
-				}
+			exitCode = exitErr.ExitCode()
+			if !slices.Contains(allowed, exitCode) {
+				return nil, exitCode, fmt.Errorf("%w: %s failed with exit status %d: %s", ErrNodeExit, what, exitCode, truncate(stderr.Bytes()))
 			}
-			return nil, 0, fmt.Errorf("%w: %s failed with exit status %d: %s", ErrNodeExit, what, exitErr.ExitCode(), truncate(stderr.Bytes()))
+		} else {
+			return nil, 0, fmt.Errorf("%w: %s could not be run: %v: %s", ErrNodeExit, what, err, truncate(stderr.Bytes()))
 		}
-		return nil, 0, fmt.Errorf("%w: %s could not be run: %v: %s", ErrNodeExit, what, err, truncate(stderr.Bytes()))
 	}
 	out := bytes.TrimSpace(stdout.Bytes())
 	if len(out) == 0 {
-		return nil, 0, fmt.Errorf("%w: %s exited 0 but printed nothing; that is a broken bridge, not a result: %s", ErrEmptyOutput, what, truncate(stderr.Bytes()))
+		return nil, exitCode, fmt.Errorf("%w: %s exited %d but printed nothing; that is a broken bridge, not a result: %s", ErrEmptyOutput, what, exitCode, truncate(stderr.Bytes()))
 	}
-	return out, 0, nil
+	return out, exitCode, nil
 }
 
 // decode parses exactly one JSON object.

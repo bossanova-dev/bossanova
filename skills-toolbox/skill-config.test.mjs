@@ -48,6 +48,7 @@ import {
   trackerConfigFor,
   selectionBlockFor,
   stageSelectionQuery,
+  verifyTicketRules,
   toleratedDescriptionTransforms,
   DESCRIPTION_NORMALIZATION_TRANSFORMS,
   unattributedDriftSeverity,
@@ -3773,6 +3774,30 @@ test('stageSelectionQuery: precedence is flag > stage > shared, per slot', () =>
   )
 })
 
+test('verifyTicketRules: requires the build label and drops needs-human from the verify excludes', () => {
+  const config = withSelection({ stages: { verify: { labels: { exclude: ['website'] } } } })
+  validateConfig(config, 'test')
+  assert.deepEqual(verifyTicketRules(config), {
+    selection: stageSelectionQuery(config, 'verify').selection,
+    requireLabels: ['agent-build'],
+    excludeLabels: [],
+  })
+  assert.deepEqual(verifyTicketRules(config).selection.labels, {
+    include: [],
+    exclude: ['website'],
+  })
+  assert.deepEqual(
+    verifyTicketRules(config, { labels: { include: ['flag'] } }).selection.labels.include,
+    ['flag'],
+  )
+  const renamed = withSelection(undefined)
+  renamed.trackerConfig.demo.labels = { agentBuild: 'ready-for-agent', needsHuman: 'hold' }
+  assert.deepEqual(verifyTicketRules(renamed).requireLabels, ['ready-for-agent'])
+  assert.deepEqual(verifyTicketRules(renamed).excludeLabels, [])
+  delete renamed.trackerConfig.demo.labels.agentBuild
+  assert.throws(() => verifyTicketRules(renamed), /labels\.agentBuild/)
+})
+
 test('stageSelectionQuery: build-only selection leaves planning unnarrowed', () => {
   const config = withSelection({ stages: { build: { labels: { exclude: ['website'] } } } })
   validateConfig(config, 'test')
@@ -4345,6 +4370,44 @@ test('verifyDefaults.requireGreenBase is an opt-in boolean', () => {
   )
 })
 
+test('ci.required is parsed onto the verify policy and validated by the schema', () => {
+  assert.deepEqual(verifyPolicyFromConfigText('{}', 'test').requiredChecks, {
+    checks: [],
+    exemptBases: [],
+  })
+  const policy = verifyPolicyFromConfigText(
+    JSON.stringify({ ci: { required: { checks: ['go-test'], exemptBases: ['staging'] } } }),
+    'test',
+  )
+  assert.deepEqual(policy.requiredChecks, { checks: ['go-test'], exemptBases: ['staging'] })
+  for (const ci of [
+    { required: { checks: 'go-test' } },
+    { required: { checks: [''] } },
+    { required: { checks: ['go-test'], exemptBases: 'staging' } },
+    { required: { checks: ['go-test'], unknown: true } },
+  ]) {
+    assert.throws(
+      () => verifyPolicyFromConfigText(JSON.stringify({ ci }), 'test'),
+      /ci\.required must be an object of checks/,
+      JSON.stringify(ci),
+    )
+  }
+  assert.throws(
+    () =>
+      validateConfig(
+        mergeConfig(DEFAULT_CONFIG, { ci: { required: { checks: 'go-test' } } }),
+        'test',
+      ),
+    /ci\.required must be an object of checks/,
+  )
+  assert.doesNotThrow(() =>
+    validateConfig(
+      mergeConfig(DEFAULT_CONFIG, { ci: { required: { checks: ['go-test'] } } }),
+      'test',
+    ),
+  )
+})
+
 test('verifyAdmissionPolicy is null without a block and fully defaulted with one', async () => {
   const { verifyAdmissionPolicy, VERIFY_ADMISSION_LABELS } = await import('./skill-config.mjs')
   assert.equal(verifyAdmissionPolicy(DEFAULT_CONFIG), null)
@@ -4478,7 +4541,7 @@ test('validateConfig rejects a malformed verifyDefaults.humanReview block naming
   )
 })
 
-test('verifyPolicyFromConfigText validates only verifyDefaults and returns the policy', async () => {
+test('verifyPolicyFromConfigText validates only verifyDefaults and ci and returns the policy', async () => {
   const { verifyPolicyFromConfigText } = await import('./skill-config.mjs')
   assert.throws(() => verifyPolicyFromConfigText('{not json', 'base'), /not valid JSON/)
   assert.throws(() => verifyPolicyFromConfigText('[]', 'base'), /JSON object/)
@@ -4492,6 +4555,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     generatedChecks: [],
     reviewers: [],
     admission: null,
+    requiredChecks: { checks: [], exemptBases: [] },
   })
   const text = JSON.stringify({
     lensMap: 'not an array',
@@ -4509,6 +4573,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     generatedChecks: [],
     reviewers: [],
     admission: null,
+    requiredChecks: { checks: [], exemptBases: [] },
   })
   assert.throws(
     () =>

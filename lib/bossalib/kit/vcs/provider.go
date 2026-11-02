@@ -206,6 +206,23 @@ func CachedReadsAllowed(ctx context.Context) bool {
 	return allowed
 }
 
+type reserveQuotaReadsKey struct{}
+
+// WithReserveQuotaReads marks ctx as a background read that feeds merge
+// decisions (callback evaluation, verify triggers). A provider that holds
+// background reads back as a quota runs low lets these spend down to the
+// reserve floor rather than the standard one. The mark does not imply
+// WithCachedReads.
+func WithReserveQuotaReads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, reserveQuotaReadsKey{}, true)
+}
+
+// ReserveQuotaReads reports whether ctx was marked by WithReserveQuotaReads.
+func ReserveQuotaReads(ctx context.Context) bool {
+	reserve, _ := ctx.Value(reserveQuotaReadsKey{}).(bool)
+	return reserve
+}
+
 // ReadInvalidator is an OPTIONAL Provider capability: a provider that caches
 // reads implements it so a webhook for a PR can drop that PR's cached state
 // before anything re-reads it. Callers type-assert and skip it when absent.

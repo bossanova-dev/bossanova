@@ -71,9 +71,15 @@ type rateLimitedError struct {
 	quota   string
 	resetAt time.Time
 	cause   error
+	// belowFloor is set when the background floor refused the call while the
+	// quota still had headroom; see backgroundFloorRefusal.
+	belowFloor *quotaShortfall
 }
 
 func (e *rateLimitedError) Error() string {
+	if e.belowFloor != nil {
+		return e.belowFloor.message(e.quota, e.resetAt)
+	}
 	if e.cause != nil {
 		return fmt.Sprintf("%v (GitHub %s quota exhausted; pausing %s calls until %s)",
 			e.cause, e.quota, e.quota, e.resetAt.Format(time.RFC3339))
@@ -140,13 +146,18 @@ func (b *rateLimitBreaker) pause(quota string, resetAt time.Time) {
 // gh runs one gh invocation behind the rate-limit breaker. While the call's
 // quota is paused it fails immediately without contacting GitHub; when GitHub
 // reports the quota exhausted it decides, from the cached quota reading, how
-// long to pause the quota for every caller. Every call it sends is metered
+// long to pause the quota for every caller. A background read below its
+// quota's floor also fails without contacting GitHub, but pauses nothing (see
+// backgroundFloorRefusal). Every call it sends is metered
 // against the label the context carries; a refused call and the free
 // rate_limit probe are not.
 func (p *Provider) gh(ctx context.Context, args ...string) (string, error) {
 	quota := quotaFor(args)
 	if until, paused := p.limits.pausedUntil(quota); paused {
 		return "", &rateLimitedError{quota: quota, resetAt: until}
+	}
+	if err := p.backgroundFloorRefusal(ctx, quota, args); err != nil {
+		return "", err
 	}
 	callStart := p.nowFn()
 	if p.usage != nil {

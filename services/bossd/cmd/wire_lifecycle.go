@@ -19,6 +19,7 @@ func (w *daemonWiring) wireLifecycle() {
 	// keyring-backed resolver so proof credentials reach managed session spawns.
 	w.lifecycle.SetProofEnvResolver(w.proofEnv)
 	w.lifecycle.SetAgentAccountEnvResolver(w.accountSpawnEnv)
+	w.lifecycle.SetGHUsageShim(w.ghUsageShim)
 	// Drop draft-PR in-flight markers left by a daemon that died mid-create
 	// (BOS-540). The marker means "a goroutine in THIS process is opening a PR
 	// right now", so any that exist before this process has started a single

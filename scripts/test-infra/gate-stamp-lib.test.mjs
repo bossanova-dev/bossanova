@@ -215,6 +215,21 @@ test('resolveBaseCommit uses the merge-base, not the base tip', (t) => {
   assert.equal(resolveBaseCommit(root, defaultBranch), git(root, ['rev-parse', 'HEAD^']))
 })
 
+test('a package-scoped module run never shares a stamp with the whole-module run', () => {
+  const key = (/** @type {Record<string, string>} */ env) =>
+    gateKey({
+      treeHash: 'tree',
+      command: 'make test-bossd',
+      baseCommit: 'base',
+      versions: expansionVersions(env),
+    })
+  assert.notEqual(key({}), key({ GO_TEST_PACKAGES: './internal/session' }))
+  assert.notEqual(
+    key({ GO_TEST_PACKAGES: './internal/session' }),
+    key({ GO_TEST_PACKAGES: './internal/session ./internal/server' }),
+  )
+})
+
 test('expansionVersions includes make-expansion variables', () => {
   const versions = expansionVersions({
     RACE: '1',

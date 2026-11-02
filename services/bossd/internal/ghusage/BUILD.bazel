@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "ghusage.go",
         "ledger.go",
+        "shim.go",
     ],
     importpath = "github.com/recurser/bossd/internal/ghusage",
     visibility = ["//services/bossd:__subpackages__"],
@@ -13,7 +14,10 @@ go_library(
 
 go_test(
     name = "ghusage_test",
-    srcs = ["ledger_test.go"],
+    srcs = [
+        "ledger_test.go",
+        "shim_test.go",
+    ],
     embed = [":ghusage"],
     deps = ["@com_github_rs_zerolog//:zerolog"],
 )

@@ -87,6 +87,28 @@ func timelineLabelInputs(chats []*pb.AgentChat, sessionTitle string) string {
 }
 
 func (m Model) neededQuestion() string {
+	question := m.neededAsk()
+	if question == "" {
+		return ""
+	}
+	return question + whatWouldRaise(m.session.GetAttention())
+}
+
+// whatWouldRaise lists a leveled verify park's lowered-by reasons, in served
+// order, under a heading, the way blockedParkNeeded lists open items. A park
+// without a level or reasons adds nothing.
+func whatWouldRaise(a *pb.SessionAttention) string {
+	if a.GetConfidenceLevel() == pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED || len(a.GetLoweredBy()) == 0 {
+		return ""
+	}
+	lines := []string{"", "What would raise this:"}
+	for _, reason := range a.GetLoweredBy() {
+		lines = append(lines, "  • "+reason)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) neededAsk() string {
 	a := m.session.GetAttention()
 	if !attention.NeedsYou(a.GetKind()) {
 		return ""

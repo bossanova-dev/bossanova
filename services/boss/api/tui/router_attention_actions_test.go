@@ -302,7 +302,8 @@ func TestAttentionActionNavigationAndAvailability(t *testing.T) {
 		url        string
 	}{
 		{"g", "g", pb.AttentionAction_ATTENTION_ACTION_GITHUB, "https://github.com/org/repo/pull/42"},
-		{"v", "v", pb.AttentionAction_ATTENTION_ACTION_VIDEO, "https://example.com/proof"},
+		// [p]roof opens a served VIDEO's evidence when there is no proof page.
+		{"p", "p", pb.AttentionAction_ATTENTION_ACTION_VIDEO, "https://example.com/proof"},
 		// Details keeps t for [t]erminal and opens the tracker from its own [l]inear.
 		{"t", "l", pb.AttentionAction_ATTENTION_ACTION_TRACKER, "https://example.com/issue"},
 	} {
@@ -398,10 +399,10 @@ const renderedHead = "0123456789abcdef0123456789abcdef01234567"
 
 func TestAttentionReviewMergeRecordsTheApprovalAndMergesOnce(t *testing.T) {
 	s := parkSession("human-review:ui")
-	if got, want := ui.AttentionFooter(s, false), []string{"[v] video", "[m] merge"}; !slices.Equal(got, want) {
+	if got, want := ui.AttentionFooter(s, false), []string{"[p] proof", "[m] merge"}; !slices.Equal(got, want) {
 		t.Fatalf("home footer = %q, want %q", got, want)
 	}
-	if got, want := ui.AttentionFooter(s, true), []string{"[g] github", "[v] video", "[m] merge"}; !slices.Equal(got, want) {
+	if got, want := ui.AttentionFooter(s, true), []string{"[g] github", "[p] proof", "[m] merge"}; !slices.Equal(got, want) {
 		t.Fatalf("details footer = %q, want %q", got, want)
 	}
 	for _, details := range []bool{false, true} {
@@ -617,6 +618,62 @@ func TestAttentionMergeIsNotOfferedTwiceWhileItRuns(t *testing.T) {
 			_ = merge()
 			if len(c.merges) != 1 {
 				t.Fatalf("merges = %+v, want only the merge already running", c.merges)
+			}
+		})
+	}
+}
+
+// TestProofKeyOpensTheProofTarget_Sessions_AC208902 presses p on Home and on
+// session details for each thing it may open, in its order (proof page, legacy
+// video, the verify park's PR conversation), and v on the same rows: p opens
+// the target, v does nothing.
+func TestProofKeyOpensTheProofTarget_Sessions_AC208902(t *testing.T) {
+	var opened []string
+	original := home.OpenURLFunc
+	home.OpenURLFunc = func(url string) error { opened = append(opened, url); return nil }
+	t.Cleanup(func() { home.OpenURLFunc = original })
+	pr := "https://github.com/org/repo/pull/42"
+	for _, tc := range []struct {
+		name    string
+		actions []pb.AttentionAction
+		kind    pb.AttentionKind
+		want    string
+	}{
+		{"proof page over video", []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_PROOF, pb.AttentionAction_ATTENTION_ACTION_MERGE}, pb.AttentionKind_ATTENTION_KIND_REVIEW, "https://example.com/proof-page"},
+		{"legacy video", []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_VIDEO, pb.AttentionAction_ATTENTION_ACTION_MERGE}, pb.AttentionKind_ATTENTION_KIND_REVIEW, "https://example.com/video.mp4"},
+		{"verify comment", []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB}, pb.AttentionKind_ATTENTION_KIND_FIX, pr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := attentionSession(tc.actions...)
+			s.PrUrl = &pr
+			s.Attention.Kind = tc.kind
+			if tc.kind == pb.AttentionKind_ATTENTION_KIND_REVIEW {
+				s.Attention.EvidenceUrl = "https://example.com/video.mp4"
+				s.Attention.ProofUrl = "https://example.com/proof-page"
+			}
+			for _, details := range []bool{false, true} {
+				c := &attentionStub{}
+				var model tea.Model = attentionHome(c, proto.CloneOf(s))
+				if details {
+					model = attentionDetails(c, proto.CloneOf(s))
+				}
+				if !strings.Contains(ansi.Strip(model.View().Content), "[p]roof") {
+					t.Errorf("details=%v: [p]roof not advertised:\n%s", details, ansi.Strip(model.View().Content))
+				}
+				if _, cmd := model.Update(keyPress('v')); cmd != nil {
+					t.Errorf("details=%v: v dispatched", details)
+				}
+				_, cmd := model.Update(keyPress('p'))
+				if cmd == nil {
+					t.Fatalf("details=%v: p dispatched nothing", details)
+				}
+				if details {
+					continue // details opens through its own external opener
+				}
+				opened = nil
+				if msg, _ := cmd().(ui.AttentionActionResultMsg); len(opened) != 1 || opened[0] != tc.want || msg.Text != "Opened proof" {
+					t.Errorf("p opened %v (%q), want %s", opened, msg.Text, tc.want)
+				}
 			}
 		})
 	}

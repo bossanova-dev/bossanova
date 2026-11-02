@@ -28,3 +28,7 @@ func (c *RemoteClient) AcceptSessionPRBlocker(context.Context, *pb.AcceptSession
 func (c *RemoteClient) ListSessionPRBlockers(context.Context, string) (*pb.ListSessionPRBlockersResponse, error) {
 	return nil, errLocalOnly("ListSessionPRBlockers")
 }
+
+func (c *RemoteClient) FollowUpSessionPRNotes(context.Context, string, []string, bool, bool) (*pb.VerifyFollowUpResult, error) {
+	return nil, errLocalOnly("FollowUpSessionPRNotes")
+}

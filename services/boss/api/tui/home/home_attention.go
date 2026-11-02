@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/api/tui/ui"
 	"github.com/recurser/bossalib/attention"
+	"github.com/recurser/bossalib/displaystatus"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -147,14 +148,19 @@ func (h Model) sectionTitle(sessions []*pb.Session, i int) string {
 // the spinner takes the place of its leading glyph: the PR may be ready, but the
 // agent is still at it. A verified merge keeps its check mark, because the PR
 // is mergeable whatever the agent is doing. A question or sign-off stays as it is, because
-// the agent is waiting on the operator.
-func (h Model) renderAttentionStatus(a *pb.SessionAttention, working bool) string {
+// the agent is waiting on the operator. A verify park's confidence cell
+// (ui.ConfidenceCell) leads with its level glyph the same way.
+func (h Model) renderAttentionStatus(sess *pb.Session, working bool) string {
 	lead := func(resting string) string {
 		if working {
 			return h.Spinner.View()
 		}
 		return resting
 	}
+	if c, ok := ui.ConfidenceCell(sess); ok {
+		return ui.StyleForIntent(c.Intent).Render(lead(c.Icon+" ") + ansi.Truncate(c.Words(), homeStatusMaxWidth-ansi.StringWidth(c.Icon+" "), "…"))
+	}
+	a := sess.GetAttention()
 	switch a.GetKind() {
 	case pb.AttentionKind_ATTENTION_KIND_FIX:
 		return ui.StyleStatusDanger.Render(lead("") + "fix")
@@ -192,4 +198,34 @@ func (h Model) renderProgressStatus(label string) string {
 		label = h.Spinner.View() + label
 	}
 	return style.Render(ansi.Truncate(label, homeStatusWidth, "…"))
+}
+
+// showsAttentionStatus reports whether a row's STATUS cell reads its attention
+// rather than its display status. A FIX whose own state is a failure reads that
+// failure instead (displaystatus.FixShowsLabel), unless it is a blocked verify
+// park with a confidence cell, which reads "blocked → repairing" over the
+// "repairing" display label.
+func showsAttentionStatus(sess *pb.Session) bool {
+	a := sess.GetAttention()
+	if a == nil || a.GetKind() == pb.AttentionKind_ATTENTION_KIND_DONE {
+		return false
+	}
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess) {
+		return true
+	}
+	_, ok := ui.ConfidenceCell(sess)
+	return ok
+}
+
+// homeStatusColumnWidth is the STATUS column's text width for a board: the
+// widest confidence cell, capped at homeStatusMaxWidth, or homeStatusWidth when
+// no row carries one, so a board without a level keeps its layout.
+func homeStatusColumnWidth(sessions []*pb.Session) int {
+	width := homeStatusWidth
+	for _, sess := range sessions {
+		if c, ok := ui.ConfidenceCell(sess); ok && showsAttentionStatus(sess) {
+			width = max(width, min(homeStatusMaxWidth, ansi.StringWidth(c.Text())))
+		}
+	}
+	return width
 }

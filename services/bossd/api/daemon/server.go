@@ -26,6 +26,7 @@ import (
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/detach"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
@@ -136,6 +137,7 @@ type Server struct {
 	checkSnapshots          checkSnapshotReader
 	agentRuns               agentRunStore
 	gitHubUsage             GitHubUsageReader
+	gitHubUsageShim         *ghusage.Shim
 	rotationEvents          rotationEventReader
 	evidence                EvidenceSource
 	cronScheduler           *cron.Scheduler
@@ -253,6 +255,7 @@ type Server struct {
 	endpointReader        SessionEndpointReader
 	endpointNamespaceGate func(clientNS string) bool
 	passthroughStats      passthroughStatsProvider // nil until SetPassthroughStatsProvider; BOS-483
+	requiredChecks        requiredChecksSource     // nil until SetRequiredChecks; requires no named checks
 	fixedPortStatus       fixedPortStatusProvider  // nil until SetFixedPortStatusProvider; BOS-1632
 	webhookEvidence       WebhookEvidence
 	listener              net.Listener
@@ -438,6 +441,7 @@ type Config struct {
 	CheckSnapshots          checkSnapshotReader
 	AgentRuns               agentRunStore
 	GitHubUsage             GitHubUsageReader // nil: GetGitHubUsage fails FailedPrecondition
+	GitHubUsageShim         *ghusage.Shim     // nil: spawned chats' gh calls go unmetered
 	// RotationEvents is the rotation audit store hydrated onto
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
 	RotationEvents rotationEventReader
@@ -727,6 +731,7 @@ func New(cfg Config) *Server {
 		checkSnapshots:   cfg.CheckSnapshots,
 		agentRuns:        cfg.AgentRuns,
 		gitHubUsage:      cfg.GitHubUsage,
+		gitHubUsageShim:  cfg.GitHubUsageShim,
 		rotationEvents:   cfg.RotationEvents,
 		evidence:         cfg.Evidence,
 		webhookEvidence:  cfg.WebhookEvidence,

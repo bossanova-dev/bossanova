@@ -63,6 +63,9 @@ service DaemonService {
   // stored tracker credentials. It hands a `needs human:` verify park on the
   // PR's current head back to verify.
   rpc ApproveSessionPR(ApproveSessionPRRequest) returns (ApproveSessionPRResponse);
+  // FollowUpSessionPRNotes files verify notes as tracker tickets on the daemon
+  // host. It never writes a status, label or verify verdict.
+  rpc FollowUpSessionPRNotes(FollowUpSessionPRNotesRequest) returns (FollowUpSessionPRNotesResponse);
   // OperatorMergeSession is the operator's merge from a review or merge row.
   // It refuses a session whose attention is a FIX (a blocked verify park or a
   // failure), then merges the session's PR at exactly expected_head_sha
@@ -646,6 +649,37 @@ message CreateSessionResponse {
   }
 }
 
+// CreateSessionConflict is attached as a Connect error detail to every
+// CodeAlreadyExists refusal CreateSession returns, so a client can tell the
+// causes apart and send the matching bypass (force vs force_branch).
+message CreateSessionConflict {
+  CreateSessionConflictReason reason = 1;
+  // Set for DUPLICATE_ACTIVE_SESSION and SESSION_STARTING.
+  string existing_session_id = 2;
+  // Set for ALREADY_SHIPPED.
+  string tracker_id = 3;
+  int32 pr_number = 4;
+  string pr_state = 5; // "open" | "merged"
+  // DUPLICATE_ACTIVE_SESSION only: "tracker issue" | "PR" | "branch".
+  string matched_target = 6;
+  // SESSION_STARTING / BRANCH_EXISTS: the branch in question, when known.
+  string branch_name = 7;
+}
+
+// CreateSessionConflictReason names why CreateSession refused with
+// CodeAlreadyExists and therefore which request flag, if any, bypasses it.
+enum CreateSessionConflictReason {
+  CREATE_SESSION_CONFLICT_REASON_UNSPECIFIED = 0;
+  // A tagged open or merged PR already exists. Bypassed by force.
+  CREATE_SESSION_CONFLICT_REASON_ALREADY_SHIPPED = 1;
+  // An active session owns the tracker issue, PR or branch. Bypassed by force.
+  CREATE_SESSION_CONFLICT_REASON_DUPLICATE_ACTIVE_SESSION = 2;
+  // A session for the branch is still starting. No request flag bypasses it.
+  CREATE_SESSION_CONFLICT_REASON_SESSION_STARTING = 3;
+  // The local branch already exists. Bypassed by force_branch.
+  CREATE_SESSION_CONFLICT_REASON_BRANCH_EXISTS = 4;
+}
+
 message SetupScriptOutput {
   string text = 1;
 }
@@ -869,6 +903,38 @@ message ApproveSessionPRRequest {
 
 message ApproveSessionPRResponse {
   VerifyApproveResult result = 1;
+}
+
+message FollowUpSessionPRNotesRequest {
+  string id = 1;
+  repeated string verify_note_ids = 2;
+  bool should_follow_up_all = 3;
+  bool is_dry_run = 4;
+}
+
+message FollowUpSessionPRNotesResponse {
+  VerifyFollowUpResult result = 1;
+}
+
+// VerifyFollowUpResult is verify-followups.mjs follow-up's outcome.
+message VerifyFollowUpResult {
+  bool is_ok = 1;
+  bool is_dry_run = 2;
+  string reason = 3;
+  repeated string unknown_verify_note_ids = 4;
+  string head_sha = 5;
+  string comment = 6;
+  repeated VerifyNoteFollowUp notes = 7;
+}
+
+// VerifyNoteFollowUp reports the tracker write and comment link for one verify note.
+message VerifyNoteFollowUp {
+  string verify_note_id = 1;
+  string outcome = 2;
+  string ticket_identifier = 3;
+  string ticket_url = 4;
+  bool is_linked = 5;
+  string reason = 6;
 }
 
 // VerifyApproveResult is `verify-gate.mjs approve`'s outcome. is_approved is

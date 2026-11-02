@@ -9,18 +9,78 @@ export const ADMISSION_TIMEOUT_SIGNATURE = 'gate-run admission: no host gate slo
 const positive = (value, fallback) =>
   Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : fallback
 
-export function admissionConfig(env = process.env, cpus = os.availableParallelism()) {
-  const configured = Number(env.BOSS_GATE_MAX_CONCURRENT)
+const MAKE_VALUE_OPTIONS = new Set(['-C', '-f', '-o', '-W', '-I'])
+const MAKE_NUMERIC_OPTIONS = new Set(['-j', '-l'])
+const LIGHT_MAKE_TARGET = /^(?:(?:lint|format|build|generate)(?:-.+)?|bin\/.+|.+-check)$/
+
+function makeTargets(args) {
+  const targets = []
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]
+    if (MAKE_VALUE_OPTIONS.has(arg)) index++
+    else if (MAKE_NUMERIC_OPTIONS.has(arg)) {
+      if (/^\d+(?:\.\d+)?$/.test(args[index + 1] ?? '')) index++
+    } else if (!arg.startsWith('-') && !arg.includes('=')) targets.push(arg)
+  }
+  return targets
+}
+
+/**
+ * Classifies a gate command: lint, format, build and codegen-check commands are 'light';
+ * everything else, including anything unrecognised, is 'heavy'.
+ * @param {readonly string[] | undefined} argv
+ * @returns {'light' | 'heavy'}
+ */
+export function gateClass(argv) {
+  const [command = '', ...args] = argv ?? []
+  const program = path.basename(command)
+  if (program === 'make' || program === 'gmake') {
+    const targets = makeTargets(args)
+    return targets.length > 0 &&
+      targets.every((target) => LIGHT_MAKE_TARGET.test(target) && !target.includes('test'))
+      ? 'light'
+      : 'heavy'
+  }
+  if (program === 'buf') return ['lint', 'format', 'breaking'].includes(args[0]) ? 'light' : 'heavy'
+  if (/^node(?:\.exe)?$/.test(program))
+    return /(?:^|\/)scripts\/lint\/[^/]+\.mjs$/.test((args[0] ?? '').replaceAll('\\', '/'))
+      ? 'light'
+      : 'heavy'
+  return 'heavy'
+}
+
+const width = (value) => {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : null
+}
+
+/**
+ * Light gates share `<dir>/light`, so the heavy pool's slot scan never sees them and one
+ * `BOSS_GATE_ADMISSION_DIR` override moves both pools.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {number} [cpus]
+ * @param {'light' | 'heavy'} [pool]
+ */
+export function admissionConfig(
+  env = process.env,
+  cpus = os.availableParallelism(),
+  pool = 'heavy',
+) {
+  const base = path.resolve(
+    env.BOSS_GATE_ADMISSION_DIR || path.join(os.homedir(), '.cache', 'boss', 'gate-admission'),
+  )
+  const bypassed = Boolean(env.CI) || env.BOSS_GATE_MAX_CONCURRENT === '0'
+  const light = pool === 'light'
   return {
-    dir: path.resolve(
-      env.BOSS_GATE_ADMISSION_DIR || path.join(os.homedir(), '.cache', 'boss', 'gate-admission'),
-    ),
-    slots:
-      env.CI || env.BOSS_GATE_MAX_CONCURRENT === '0'
-        ? 0
-        : Number.isInteger(configured) && configured > 0
-          ? configured
-          : Math.max(1, Math.floor(cpus / 4)),
+    pool: /** @type {'light' | 'heavy'} */ (light ? 'light' : 'heavy'),
+    dir: light ? path.join(base, 'light') : base,
+    slots: bypassed
+      ? 0
+      : light
+        ? env.BOSS_GATE_LIGHT_MAX_CONCURRENT === '0'
+          ? 0
+          : (width(env.BOSS_GATE_LIGHT_MAX_CONCURRENT) ?? Math.max(2, Math.floor(cpus / 4)))
+        : (width(env.BOSS_GATE_MAX_CONCURRENT) ?? Math.max(1, Math.floor(cpus / 4))),
     timeoutMs: positive(env.BOSS_GATE_ADMISSION_TIMEOUT_MS, 3600000),
     pollMs: positive(env.BOSS_GATE_ADMISSION_POLL_MS, 1000),
   }
@@ -32,8 +92,15 @@ export function bazelResourceFlags({ slots, cpus }) {
   return [`--local_resources=cpu=${share}`, `--local_test_jobs=${share}`]
 }
 
+// Bazel shares always divide the host by the heavy pool's width: a light gate that runs Bazel
+// must not claim a bigger share than the heavy gates it runs beside.
 export function gateBazelEnv(admission, cpus = os.availableParallelism()) {
-  return { BOSS_GATE_BAZEL_FLAGS: bazelResourceFlags({ slots: admission.slots, cpus }).join(' ') }
+  return {
+    BOSS_GATE_BAZEL_FLAGS: bazelResourceFlags({
+      slots: admission.bazelSlots ?? admission.slots,
+      cpus,
+    }).join(' '),
+  }
 }
 
 function alive(pid) {
@@ -57,15 +124,18 @@ export function staleSlot(record, isAlive = alive) {
   return !Number.isInteger(record?.pid) || record.pid <= 0 || !isAlive(record.pid)
 }
 
+/** @returns {'light' | 'heavy' | null} the pool whose directory holds a slot token, if any */
+function tokenPool(file, env) {
+  if (!file || !path.isAbsolute(file) || !/^slot-\d+$/.test(path.basename(file))) return null
+  for (const pool of /** @type {const} */ (['heavy', 'light']))
+    if (path.dirname(file) === admissionConfig(env, 1, pool).dir) return pool
+  return null
+}
+
+// A nested wrapper inherits a live token from either pool, so the outermost wrapper's class decides.
 export function inheritedAdmission(env = process.env, readSlot = readRecord, isAlive = alive) {
   const file = env.BOSS_GATE_ADMITTED
-  return file &&
-    path.isAbsolute(file) &&
-    path.dirname(file) === admissionConfig(env).dir &&
-    /^slot-\d+$/.test(path.basename(file)) &&
-    !staleSlot(readSlot(file), isAlive)
-    ? file
-    : null
+  return tokenPool(file, env) && !staleSlot(readSlot(file), isAlive) ? file : null
 }
 
 function holderText(holders) {
@@ -80,11 +150,12 @@ function* acquisitionSteps({
   timeoutMs,
   pollMs,
   label = '',
+  pool = 'host',
   log = (_line) => {},
   isAlive = alive,
   now = Date.now,
   signal = undefined,
-  onWait = (_holders) => {},
+  onWait = (_holders, _pool) => {},
 }) {
   const started = now()
   fs.mkdirSync(dir, { recursive: true })
@@ -115,6 +186,7 @@ function* acquisitionSteps({
             file,
             pid: process.pid,
             slots,
+            pool,
             waitedMs: lastHolders === null ? 0 : now() - started,
             heldByAtAdmission,
             inherited: false,
@@ -162,8 +234,8 @@ function* acquisitionSteps({
       heldByAtAdmission = holders
       const text = holderText(holders)
       if (text !== lastHolders) {
-        log(`gate-run admission: queued for a host gate slot - held by ${text}`)
-        onWait(text)
+        log(`gate-run admission: queued for a ${pool} gate slot - held by ${text}`)
+        onWait(text, pool)
         lastHolders = text
       }
       if (now() - started >= timeoutMs) {
@@ -213,22 +285,34 @@ export function releaseGateSlot(handle) {
   if (readRecord(handle.file)?.pid === handle.pid) fs.rmSync(handle.file, { force: true })
 }
 
+/**
+ * Admits a gate to its class's pool, or inherits a live token from either pool.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ argv?: readonly string[], gateClass?: 'light' | 'heavy', [key: string]: unknown }} [options]
+ */
 export async function admitGate(env = process.env, options = {}) {
-  const config = admissionConfig(env)
+  const { argv, gateClass: requested, ...acquire } = options
+  const cpus = os.availableParallelism()
+  const config = admissionConfig(env, cpus, requested ?? gateClass(argv))
+  const bazelSlots = admissionConfig(env, cpus).slots
   const inherited = inheritedAdmission(env)
-  if (config.slots === 0 || inherited)
+  if (config.slots === 0 || inherited) {
+    const held = inherited ? tokenPool(inherited, env) : config.pool
     return {
-      ...config,
+      ...admissionConfig(env, cpus, held ?? config.pool),
       file: inherited,
       inherited: Boolean(inherited),
       waitedMs: 0,
       heldByAtAdmission: [],
+      bazelSlots,
     }
-  return acquireGateSlot({ ...config, ...options })
+  }
+  return Object.assign(await acquireGateSlot({ ...config, ...acquire }), { bazelSlots })
 }
 
 export function renderAdmissionLine(record) {
+  const pool = record?.pool ?? 'heavy'
   return record
-    ? `admission: waited ${(record.waitedMs / 1000).toFixed(1)}s for a host gate slot (${record.slots} slots)`
+    ? `admission: waited ${(record.waitedMs / 1000).toFixed(1)}s for a ${pool} gate slot (${pool} pool, ${record.slots} slots)`
     : 'admission: unavailable'
 }

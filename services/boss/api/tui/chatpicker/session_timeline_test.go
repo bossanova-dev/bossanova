@@ -1674,7 +1674,7 @@ func assertTimelineFold(t *testing.T, m Model) bool {
 // four earlier steps and with later runs after it.
 func waitAmongLaterSteps(height, later int) Model {
 	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, height)
-	m.width = 80
+	m.width, m.session.RepairActive = 80, true // repair hides acc[e]pt blocker, keeping the two-line bar these heights assume
 	day := m.session.GetAttention().GetSince().AsTime().Local()
 	clock := func(minute int) *timestamppb.Timestamp {
 		return timestamppb.New(time.Date(day.Year(), day.Month(), day.Day(), 10, minute, 0, 0, time.Local))

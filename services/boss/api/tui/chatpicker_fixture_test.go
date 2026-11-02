@@ -110,6 +110,14 @@ func (s *routerClientFixture) OperatorMergeSession(context.Context, string, stri
 	panic("unused")
 }
 
+func (s *routerClientFixture) ListSessionPRBlockers(context.Context, string) (*pb.ListSessionPRBlockersResponse, error) {
+	panic("unused")
+}
+
+func (s *routerClientFixture) AcceptSessionPRBlocker(context.Context, *pb.AcceptSessionPRBlockerRequest) (*pb.AcceptSessionPRBlockerResponse, error) {
+	panic("unused")
+}
+
 func (s *routerClientFixture) ArchiveSession(_ context.Context, req *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

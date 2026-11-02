@@ -108,6 +108,7 @@ Use --json on the non-interactive path for a machine-readable envelope instead o
 - `--defer-pr` — Open no draft PR up front; a PR is opened at finalize only if the run produced commits. For runs not expected to change the repository. Pair with --tmux-unattended so a restart cannot strand commits before finalize. Non-interactive --repo + --prompt path only
 - `--detach` — A no-op on the non-interactive --repo + --prompt path, which always runs unattended (BOSS_UNATTENDED=true; skills take their headless branch), prints session-id as soon as the session exists, prints chat-id later if the daemon provides one, and streams setup progress on stderr; --tmux-unattended is the distinct durable-pane option
 - `--effort` — Agent reasoning effort to run this session under; empty = agent default
+- `--force` — Create the session even if the ticket already shipped via a tagged PR or another active session already owns it (bypasses the already-shipped and duplicate-session guards). Non-interactive --repo + --prompt path only
 - `--json` — Emit the created session as a stable JSON schema instead of the two-line output
 - `--model` — Agent model id to run this session under (e.g. an Opus id); empty = agent default
 - `--no-attach` — Alias for --detach
@@ -137,7 +138,7 @@ CHAT=$(boss new --repo my-repo --prompt "/boss-build PROJ-42" --json | jq -r .se
 
 ### `boss pr`
 
-Act on a pull request by number: approve a verify park or accept a blocker
+Approve PR verification, accept blockers, or file note follow-ups
 
 ### `boss pr accept <pr-number> <blocker-id> [flags]`
 
@@ -158,6 +159,18 @@ Approve the PR's needs-human verify park so verify re-checks and merges it
 
 - `--dry-run` — Show what would be written without writing anything
 - `--json` — Emit a stable JSON envelope instead of human-readable text
+- `--repo` — Repository as owner/repo, when sessions in two repos share the PR number
+
+### `boss pr follow-up <pr-number> [flags]`
+
+File selected verify notes as follow-up tickets on the daemon host
+
+**Flags:**
+
+- `--all` — Follow up every note in the verify notes comment
+- `--dry-run` — Show what would be written without writing anything
+- `--json` — Emit a stable JSON envelope instead of human-readable text
+- `--note` — Verify note id to follow up (repeatable)
 - `--repo` — Repository as owner/repo, when sessions in two repos share the PR number
 
 ### `boss rename <session-id> <new-title...>`

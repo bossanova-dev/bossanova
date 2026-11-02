@@ -39,6 +39,7 @@ import (
 	"github.com/recurser/bossd/internal/resume"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/session/checkpolicy"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 	"github.com/recurser/bossd/internal/verifyjob"
@@ -79,6 +80,7 @@ type daemonWiring struct {
 	callbackEvaluator              *callback.Evaluator
 	callbackRetirer                *callback.Retirer
 	chatRotator                    *rotation.ChatRotator
+	checkPolicy                    *checkpolicy.Resolver
 	chatStatusTracker              *status.Tracker
 	chatUploadManager              upstream.UploadManager
 	chatUploadMgr                  *chatupload.Manager
@@ -106,6 +108,7 @@ type daemonWiring struct {
 	executablePath                 string
 	ghProvider                     *github.Provider
 	ghUsage                        *ghusage.Ledger
+	ghUsageShim                    *ghusage.Shim
 	githubCallbacks                *db.SQLiteGitHubCallbackStore
 	goroutineBudget                time.Duration
 	hookSrv                        *hooks.HookServer

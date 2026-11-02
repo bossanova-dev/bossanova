@@ -61,13 +61,27 @@ func restoredDisplayInfo(snap db.CheckSnapshot, label string) (vcs.DisplayInfo, 
 	case vcs.DisplayStatusRejected:
 		info.HasChangesRequested = true
 	case vcs.DisplayStatusNeedsHuman:
-		var checks []vcs.CheckResult
-		if snap.RawJSON != "" && json.Unmarshal([]byte(snap.RawJSON), &checks) == nil {
-			verify := vcs.ClassifyVerify(checks)
+		if verify, ok := snapshotVerifyPhase(snap); ok {
 			info.VerifyReason, info.VerifyLabel = verify.Reason, verify.Label
 		}
+	case vcs.DisplayStatusVerifying:
+		// A wait's reason restores too, so a restarted daemon serves the same
+		// wait label before the first live poll.
+		if verify, ok := snapshotVerifyPhase(snap); ok && verify.Kind == vcs.VerifyPhaseWaiting {
+			info.VerifyReason = verify.Reason
+		}
 	case vcs.DisplayStatusUnspecified, vcs.DisplayStatusIdle, vcs.DisplayStatusChecking, vcs.DisplayStatusConflict,
-		vcs.DisplayStatusMerged, vcs.DisplayStatusClosed, vcs.DisplayStatusDraft, vcs.DisplayStatusVerifying:
+		vcs.DisplayStatusMerged, vcs.DisplayStatusClosed, vcs.DisplayStatusDraft:
 	}
 	return info, true
+}
+
+// snapshotVerifyPhase classifies the boss/verify status in a snapshot's checks;
+// ok is false when the snapshot has no readable checks.
+func snapshotVerifyPhase(snap db.CheckSnapshot) (vcs.VerifyPhase, bool) {
+	var checks []vcs.CheckResult
+	if snap.RawJSON == "" || json.Unmarshal([]byte(snap.RawJSON), &checks) != nil {
+		return vcs.VerifyPhase{}, false
+	}
+	return vcs.ClassifyVerify(checks), true
 }

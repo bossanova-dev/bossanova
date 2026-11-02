@@ -45,7 +45,8 @@ type Evaluator struct {
 	now      func() time.Time
 	logger   zerolog.Logger
 	retirer  *Retirer
-	health   webhookHealth // optional; nil reconciles every PR every pass
+	health   webhookHealth        // optional; nil reconciles every PR every pass
+	required requiredChecksSource // optional; nil requires no named checks
 	// rateLimitLog logs each read site's quota refusal once per window.
 	rateLimitLog vcs.RateLimitLog
 
@@ -57,6 +58,29 @@ type Evaluator struct {
 // a repo. upstream.WebhookHealth implements it.
 type webhookHealth interface {
 	WebhookDeliveryHealthy(repo string) bool
+}
+
+// requiredChecksSource resolves a repo reference to the repo's configured
+// required-check policy. checkpolicy.Resolver implements it.
+type requiredChecksSource interface {
+	RequiredChecks(ctx context.Context, repoRef string) vcs.RequiredChecks
+}
+
+// SetRequiredChecks wires the repo required-check policy, so checks_passed and
+// checks_passed_ready stay unsatisfied on a head whose required checks have not
+// run. Must be called before the evaluator is shared. nil-safe.
+func (e *Evaluator) SetRequiredChecks(src requiredChecksSource) { e.required = src }
+
+// requiredFor returns the check names rp requires on a PR into status's base.
+func (e *Evaluator) requiredFor(ctx context.Context, rp string, status *vcs.PRStatus) []string {
+	if e.required == nil {
+		return nil
+	}
+	base := ""
+	if status != nil {
+		base = status.BaseBranch
+	}
+	return e.required.RequiredChecks(ctx, rp).For(base)
 }
 
 // reconcileSafetyNetInterval is how often ReconcileAll still re-reads a PR in a
@@ -142,10 +166,15 @@ func (e *Evaluator) ChecksPassedReady(ctx context.Context, owner, name string, p
 	if status != nil {
 		headSHA = status.HeadSHA
 	}
-	return headSHA, satisfiedTriggers(status, checks, settled)[models.GitHubCallbackTriggerChecksPassedReady], nil
+	return headSHA, satisfiedTriggers(status, checks, e.requiredFor(ctx, repoPath(owner, name), status), settled)[models.GitHubCallbackTriggerChecksPassedReady], nil
 }
 
+// readPRState reads the PR status, its checks and, when they are green, its
+// workflow runs. These reads feed merge decisions, so they are marked
+// reserve-tier: below the standard background quota floor they keep reading
+// down to the reserve floor (see vcs.WithReserveQuotaReads).
 func (e *Evaluator) readPRState(ctx context.Context, rp string, prNumber int) (*vcs.PRStatus, []vcs.CheckResult, bool, error) {
+	ctx = vcs.WithReserveQuotaReads(ctx)
 	status, err := e.provider.GetPRStatus(ctx, rp, prNumber)
 	if err != nil {
 		e.logger.WithLevel(e.rateLimitLog.Level("get PR status", err)).Err(err).Str("repo", rp).Int("pr", prNumber).
@@ -162,7 +191,7 @@ func (e *Evaluator) readPRState(ctx context.Context, rp string, prNumber int) (*
 	// The runs read only matters when the attached check set is green, so it is
 	// skipped otherwise to spare the API quota.
 	runsSettled := false
-	if vcs.EvaluateChecks("", checks, nil).IsGreen() {
+	if vcs.EvaluateChecksRequiring("", checks, nil, e.requiredFor(ctx, rp, status)).IsGreen() {
 		runsSettled, _ = e.runsSettled(ctx, rp, prNumber, status)
 	}
 	return status, checks, runsSettled, nil
@@ -205,8 +234,9 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 	if err != nil {
 		return err
 	}
-	satisfied := satisfiedTriggers(status, checks, runsSettled)
-	checkState := vcs.EvaluateChecks("", checks, nil).State
+	required := e.requiredFor(ctx, rp, status)
+	satisfied := satisfiedTriggers(status, checks, required, runsSettled)
+	checkState := vcs.EvaluateChecksRequiring("", checks, nil, required).State
 	now := e.now()
 	for _, cb := range cbs {
 		if !satisfied[cb.Trigger] {
@@ -403,15 +433,15 @@ func unreachableAfterMerge(status *vcs.PRStatus, checkState vcs.CheckVerdictStat
 //
 //   - merged:               PR is merged.
 //   - closed:               PR is closed and NOT merged (PRStateMerged is distinct).
-//   - checks_passed:        check verdict is green AND every head workflow run
-//     has completed (runsSettled).
+//   - checks_passed:        check verdict is green (every required check ran)
+//     AND every head workflow run has completed (runsSettled).
 //   - checks_failed:        at least one completed check failed/timed_out/cancelled.
 //   - ready_for_review:     PR is open and not a draft (the draft-to-ready flip).
 //   - checks_passed_ready:  checks_passed AND the PR is open and not a draft.
 //
 // Pending checks satisfy neither passed nor failed; a completed failure still
 // satisfies checks_failed even if other checks are still pending.
-func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult, runsSettled bool) map[models.GitHubCallbackTrigger]bool {
+func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult, required []string, runsSettled bool) map[models.GitHubCallbackTrigger]bool {
 	out := make(map[models.GitHubCallbackTrigger]bool, 6)
 	openAndReady := false
 	if status != nil {
@@ -428,7 +458,7 @@ func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult, runsSettl
 		}
 	}
 
-	checkVerdict := vcs.EvaluateChecks("", checks, nil)
+	checkVerdict := vcs.EvaluateChecksRequiring("", checks, nil, required)
 	if checkVerdict.State == vcs.CheckVerdictFailing {
 		out[models.GitHubCallbackTriggerChecksFailed] = true
 	}

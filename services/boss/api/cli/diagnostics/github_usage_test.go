@@ -35,6 +35,9 @@ func newGitHubUsageFake() *gitHubUsageFake {
 			{Label: "daemon:poller", Quota: "graphql", CallCount: 40},
 			{Label: "stage:finalize", Quota: "graphql", CallCount: 7},
 			{Label: "daemon:poller", Quota: "core", CallCount: 11},
+			// Rows the gh wrapper records for cron gates and agent sessions.
+			{Label: "session:interactive", Quota: "core", CallCount: 3},
+			{Label: "cron:bs-verify", Quota: "graphql", CallCount: 9},
 		},
 		WindowStartedAt: timestamppb.New(end.Add(-time.Hour)),
 		WindowEndedAt:   timestamppb.New(end),
@@ -62,7 +65,7 @@ func TestGitHubUsagePrintsTableSortedByCalls_GitHubUsage_AC220201(t *testing.T) 
 	if len(fake.reqs) != 1 || fake.reqs[0].GetWindowSeconds() != 3600 {
 		t.Fatalf("requests = %v, want one with the default 3600s window", fake.reqs)
 	}
-	order := []string{"daemon:poller", "stage:finalize", "daemon:unattributed"}
+	order := []string{"daemon:poller", "cron:bs-verify", "stage:finalize", "session:interactive", "daemon:unattributed"}
 	last := -1
 	for _, label := range order {
 		i := strings.Index(text, label)
@@ -71,7 +74,7 @@ func TestGitHubUsagePrintsTableSortedByCalls_GitHubUsage_AC220201(t *testing.T) 
 		}
 		last = i
 	}
-	for _, want := range []string{"LABEL", "QUOTA", "CALLS", "40", "(last 1h0m0s)", "Total: 60 calls (core 13, graphql 47)"} {
+	for _, want := range []string{"LABEL", "QUOTA", "CALLS", "40", "(last 1h0m0s)", "Total: 72 calls (core 16, graphql 56)"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("output = %q, want it to contain %q", text, want)
 		}
@@ -104,11 +107,18 @@ func TestGitHubUsageJSONCarriesRowsAndTotals_GitHubUsage_AC220201(t *testing.T) 
 	if got.WindowEndedAt != "2026-11-01T11:30:00Z" || got.WindowStartedAt != "2026-11-01T10:30:00Z" {
 		t.Fatalf("window = [%s, %s]", got.WindowStartedAt, got.WindowEndedAt)
 	}
-	if len(got.Rows) != 4 || got.Rows[0].Label != "daemon:poller" || got.Rows[0].Quota != "graphql" || got.Rows[0].CallCount != 40 {
+	if len(got.Rows) != 6 || got.Rows[0].Label != "daemon:poller" || got.Rows[0].Quota != "graphql" || got.Rows[0].CallCount != 40 {
 		t.Fatalf("rows = %+v, want the poller's 40 GraphQL calls first", got.Rows)
 	}
-	if got.QuotaTotals["core"] != 13 || got.QuotaTotals["graphql"] != 47 || got.TotalCallCount != 60 {
-		t.Fatalf("totals = %v / %d, want core 13, graphql 47, 60 in all", got.QuotaTotals, got.TotalCallCount)
+	if got.QuotaTotals["core"] != 16 || got.QuotaTotals["graphql"] != 56 || got.TotalCallCount != 72 {
+		t.Fatalf("totals = %v / %d, want core 16, graphql 56, 72 in all", got.QuotaTotals, got.TotalCallCount)
+	}
+	labels := map[string]bool{}
+	for _, row := range got.Rows {
+		labels[row.Label] = true
+	}
+	if !labels["cron:bs-verify"] || !labels["session:interactive"] {
+		t.Fatalf("rows = %+v, want the cron: and session: rows the gh wrapper records", got.Rows)
 	}
 }
 

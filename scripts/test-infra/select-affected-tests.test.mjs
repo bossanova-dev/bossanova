@@ -112,14 +112,12 @@ test('selectTargets runs the whole module for module Makefile changes', () => {
 })
 
 test('selectTargets fans proto changes out to generated-code consumers', () => {
-  assert.deepEqual(
-    selectTargets(['proto/bossanova/v1/session.proto']).map(({ target }) => target),
-    ['test-scripts', 'test-web', 'test-bossalib', 'test-boss', 'test-bossd', 'test-bosso-postgres'],
-  )
-  assert.deepEqual(
-    selectTargets(['proto/bossanova/v1/session.proto']).map(({ env }) => env),
-    [{}, {}, {}, {}, {}, {}],
-  )
+  const generatedConsumers = () => new Map([['services/bossd/', ['./internal/session']]])
+  assert.deepEqual(selectTargets(['proto/bossanova/v1/session.proto'], { generatedConsumers }), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-web', env: {} },
+    { kind: 'make', target: 'test-bossd', env: { GO_TEST_PACKAGES: './internal/session' } },
+  ])
 })
 
 test('selectTargets maps proto support files to web generated-code consumers', () => {

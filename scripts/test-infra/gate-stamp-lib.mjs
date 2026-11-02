@@ -91,6 +91,8 @@ export function expansionVersions(env = process.env) {
     BAZEL_TEST_EXTRA_FLAGS: env.BAZEL_TEST_EXTRA_FLAGS || '',
     MAKEFLAGS: env.MAKEFLAGS || '',
     MAKEOVERRIDES: env.MAKEOVERRIDES || '',
+    // Native module targets pass it to `go test`; a package-scoped run is not a whole-module run.
+    GO_TEST_PACKAGES: env.GO_TEST_PACKAGES || '',
   }
 }
 

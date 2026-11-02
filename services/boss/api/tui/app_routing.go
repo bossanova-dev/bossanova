@@ -112,12 +112,16 @@ func (a App) handleSwitchView(msg ui.SwitchViewMsg) (tea.Model, tea.Cmd) {
 	case ui.ViewAgentAccounts:
 		a.accountsList = accounts.NewAgentAccountsListModel(a.client, a.ctx)
 		a.accountsList.SetTelemetry(a.telemetry)
+		a.wireAccountsListSync(&a.accountsList)
 		a.accountsList.SetReturnView(msg.ReturnView)
 		a.accountsList.SetSize(a.width, a.height)
 		return a, a.accountsList.Init()
 	case ui.ViewAgentAccountEdit:
 		a.accountEdit = accounts.NewAgentAccountEditModel(a.client, a.ctx, msg.Account)
 		a.accountEdit.SetTelemetry(a.telemetry)
+		if c, ok := a.cloudAccess.(accounts.SyncedRegistryClient); ok {
+			a.accountEdit.SetSyncedRegistry(c, accountsWebURL(a.checkoutReturnURL))
+		}
 		a.accountEdit.SetReturnView(msg.ReturnView)
 		a.accountEdit.SetSize(a.width, a.height)
 		return a, a.accountEdit.Init()
@@ -399,6 +403,34 @@ func accountSettingsReturnURL(rawURL string) string {
 	u.RawPath = ""
 	u.Fragment = ""
 	return u.String()
+}
+
+// accountsWebURL is the web app's Settings → Accounts page, derived from the
+// configured web base the same way accountSettingsReturnURL is. It is "" when
+// no base is configured or it does not parse, and the screens then name the
+// page without a URL.
+func accountsWebURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	u.Path = "/settings/accounts"
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
+// wireAccountsListSync gives an accounts list the hosted synced registry when
+// the cloud-access client can read it, mirroring the repos.GitHubAppClient
+// assertion. Without it, accounts with a synced id read unknown.
+func (a *App) wireAccountsListSync(list *accounts.AgentAccountsListModel) {
+	if c, ok := a.cloudAccess.(accounts.SyncedRegistryClient); ok {
+		list.SetSyncedRegistry(c, accountsWebURL(a.checkoutReturnURL))
+	}
 }
 
 var openGitHubAppInstallURL = openURLFunc

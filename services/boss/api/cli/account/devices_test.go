@@ -38,7 +38,7 @@ func (s *credentialDeviceCLIStub) RevokeAgentCredentialDevice(_ context.Context,
 }
 func executeDeviceCLI(args ...string) (*credentialDeviceCLIStub, string, error) {
 	s := &credentialDeviceCLIStub{}
-	cmd := New(func(*cobra.Command) (Client, error) { return s, nil }, nil, nil)
+	cmd := New(func(*cobra.Command) (Client, error) { return s, nil }, nil, nil, nil)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -98,7 +98,7 @@ func TestDevicesRevokeWarnsToRotate_Accounts_AC22(t *testing.T) {
 func TestDevicesListShowsExpiry_Accounts_AC20(t *testing.T) {
 	expiry := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 	stub := &credentialDeviceCLIStub{devices: []*pb.AgentCredentialDevice{{DaemonId: "target", Status: "pending", Fingerprint: "abcd", ExpiresAt: timestamppb.New(expiry)}}}
-	cmd := New(func(*cobra.Command) (Client, error) { return stub, nil }, nil, nil)
+	cmd := New(func(*cobra.Command) (Client, error) { return stub, nil }, nil, nil, nil)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"devices", "ls"})

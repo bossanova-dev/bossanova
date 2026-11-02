@@ -6,6 +6,7 @@ go_library(
         "newsession.go",
         "newsession_client.go",
         "newsession_cmds.go",
+        "newsession_conflict.go",
         "newsession_create.go",
         "newsession_handlers.go",
         "newsession_keys.go",
@@ -37,6 +38,7 @@ go_library(
 go_test(
     name = "newsession_test",
     srcs = [
+        "newsession_conflict_test.go",
         "newsession_issue_activation_test.go",
         "newsession_sentry_test.go",
         "newsession_setup_watch_test.go",
@@ -55,8 +57,10 @@ go_test(
         "//lib/bossalib/kit/config",
         "//lib/bossalib/kit/telemetry",
         "//services/boss/api/tui/ui",
+        "//services/boss/internal/adapter/rpcerror",
         "//services/boss/internal/domain/rpc",
         "//services/boss/internal/domain/rpcerr",
+        "@com_connectrpc_connect//:connect",
         "@com_github_charmbracelet_x_ansi//:ansi",
         "@land_charm_bubbles_v2//spinner",
         "@land_charm_bubbles_v2//table",

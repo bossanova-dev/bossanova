@@ -2,6 +2,7 @@ package vcs
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -99,6 +100,9 @@ func TestEvaluateChecks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := EvaluateChecks("sha", tt.checks, tt.readErr)
+			if viaEmpty := EvaluateChecksRequiring("sha", tt.checks, tt.readErr, []string{}); !reflect.DeepEqual(viaEmpty, got) {
+				t.Errorf("EvaluateChecksRequiring(empty) = %+v, want %+v", viaEmpty, got)
+			}
 			if got.State != tt.wantState {
 				t.Fatalf("State = %s, want %s", got.State, tt.wantState)
 			}
@@ -275,7 +279,15 @@ func TestClassifyVerify(t *testing.T) {
 	}{
 		{name: "no checks", wantKind: VerifyPhaseNone},
 		{name: "verifying claim", checks: []CheckResult{pending("verifying… 3f2a")}, wantKind: VerifyPhaseVerifying},
-		{name: "waiting unclaimed head", checks: []CheckResult{pending("waiting: checks-pending")}, wantKind: VerifyPhaseVerifying},
+		{name: "waiting unclaimed head", checks: []CheckResult{pending("waiting: checks-pending")}, wantKind: VerifyPhaseWaiting, wantReason: "checks-pending"},
+		{name: "waiting reason is trimmed", checks: []CheckResult{pending("waiting:   merge-state-unknown  ")}, wantKind: VerifyPhaseWaiting, wantReason: "merge-state-unknown"},
+		{name: "bare waiting stays verifying", checks: []CheckResult{pending("waiting:")}, wantKind: VerifyPhaseVerifying},
+		{name: "blank waiting reason stays verifying", checks: []CheckResult{pending("waiting:   ")}, wantKind: VerifyPhaseVerifying},
+		{name: "claim has no reason", checks: []CheckResult{pending("verifying… 3f2a")}, wantKind: VerifyPhaseVerifying, wantReason: ""},
+		{name: "cannot assess stays verifying", checks: []CheckResult{pending("cannot assess: waiting: ci-not-settled")}, wantKind: VerifyPhaseVerifying},
+		{name: "needs human wins over waiting", checks: []CheckResult{pending("waiting: merge-state-unknown"), pending("needs human: park")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "park"},
+		{name: "waiting wins over a claim", checks: []CheckResult{pending("verifying… 3f2a"), pending("waiting: ci-not-settled")}, wantKind: VerifyPhaseWaiting, wantReason: "ci-not-settled"},
+		{name: "completed waiting is not a hold", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &success, Description: "waiting: merge-state-unknown"}}, wantKind: VerifyPhaseNone},
 		{name: "needs human with reason", checks: []CheckResult{pending("needs human: always-human-path")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "always-human-path"},
 		{name: "needs human set reason is opaque", checks: []CheckResult{pending("needs human: always-human-path,human-review:ui")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "always-human-path,human-review:ui"},
 		{name: "needs human colon no reason", checks: []CheckResult{pending("needs human:")}, wantKind: VerifyPhaseNeedsHuman},
@@ -470,5 +482,125 @@ func TestVerifyJudged(t *testing.T) {
 	}
 	if VerifyJudged(nil) {
 		t.Fatal("no checks must not judge the head")
+	}
+}
+
+func TestEvaluateChecksRequiring(t *testing.T) {
+	success := CheckConclusionSuccess
+	failure := CheckConclusionFailure
+	skipped := CheckConclusionSkipped
+	neutral := CheckConclusionNeutral
+	light := CheckResult{Name: "lint", Status: CheckStatusCompleted, Conclusion: &success}
+	required := []string{"go-test", "scripts"}
+
+	tests := []struct {
+		name             string
+		checks           []CheckResult
+		readErr          error
+		wantState        CheckVerdictState
+		wantReason       string
+		wantNotRequested []string
+	}{
+		{
+			name:             "required names absent is not-requested",
+			checks:           []CheckResult{light},
+			wantState:        CheckVerdictUnknown,
+			wantReason:       CheckVerdictReasonNotRequested,
+			wantNotRequested: []string{"go-test", "scripts"},
+		},
+		{
+			name:             "no checks at all is not-requested",
+			wantState:        CheckVerdictUnknown,
+			wantReason:       CheckVerdictReasonNotRequested,
+			wantNotRequested: []string{"go-test", "scripts"},
+		},
+		{
+			name: "present only as skipped or neutral is not-requested",
+			checks: []CheckResult{
+				light,
+				{Name: "go-test", Status: CheckStatusCompleted, Conclusion: &skipped},
+				{Name: "scripts", Status: CheckStatusCompleted, Conclusion: &neutral},
+			},
+			wantState:        CheckVerdictUnknown,
+			wantReason:       CheckVerdictReasonNotRequested,
+			wantNotRequested: []string{"go-test", "scripts"},
+		},
+		{
+			name: "skipped plus success instance is green",
+			checks: []CheckResult{
+				light,
+				{Name: "go-test", Status: CheckStatusCompleted, Conclusion: &skipped},
+				{Name: "go-test", Status: CheckStatusCompleted, Conclusion: &success},
+				{Name: "scripts", Status: CheckStatusCompleted, Conclusion: &success},
+			},
+			wantState:  CheckVerdictGreen,
+			wantReason: CheckVerdictReasonOK,
+		},
+		{
+			name:             "pending light check with missing required name is pending",
+			checks:           []CheckResult{{Name: "lint", Status: CheckStatusInProgress}},
+			wantState:        CheckVerdictPending,
+			wantReason:       CheckVerdictReasonPending,
+			wantNotRequested: []string{"go-test", "scripts"},
+		},
+		{
+			name:             "failing light check with missing required name is failing",
+			checks:           []CheckResult{{Name: "lint", Status: CheckStatusCompleted, Conclusion: &failure}},
+			wantState:        CheckVerdictFailing,
+			wantReason:       CheckVerdictReasonFailed,
+			wantNotRequested: []string{"go-test", "scripts"},
+		},
+		{
+			name: "pending required check counts as run",
+			checks: []CheckResult{
+				light,
+				{Name: "go-test", Status: CheckStatusQueued},
+				{Name: "scripts", Status: CheckStatusCompleted, Conclusion: &success},
+			},
+			wantState:  CheckVerdictPending,
+			wantReason: CheckVerdictReasonPending,
+		},
+		{
+			name:             "one required name missing names only that one",
+			checks:           []CheckResult{light, {Name: "go-test", Status: CheckStatusCompleted, Conclusion: &success}},
+			wantState:        CheckVerdictUnknown,
+			wantReason:       CheckVerdictReasonNotRequested,
+			wantNotRequested: []string{"scripts"},
+		},
+		{
+			name:             "unreadable still wins",
+			readErr:          errors.New("gh failed"),
+			wantState:        CheckVerdictUnknown,
+			wantReason:       CheckVerdictReasonUnreadable,
+			wantNotRequested: []string{"go-test", "scripts"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateChecksRequiring("sha", tt.checks, tt.readErr, required)
+			if got.State != tt.wantState || got.Reason != tt.wantReason {
+				t.Fatalf("verdict = %s/%s, want %s/%s", got.State, got.Reason, tt.wantState, tt.wantReason)
+			}
+			if !reflect.DeepEqual(got.NotRequested, tt.wantNotRequested) {
+				t.Errorf("NotRequested = %v, want %v", got.NotRequested, tt.wantNotRequested)
+			}
+			if got.IsGreen() != (tt.wantState == CheckVerdictGreen) {
+				t.Errorf("IsGreen() = %v", got.IsGreen())
+			}
+		})
+	}
+}
+
+func TestRequiredChecksFor(t *testing.T) {
+	r := RequiredChecks{Names: []string{"go-test"}, ExemptBases: []string{"staging", "production"}}
+	if got := r.For("main"); !reflect.DeepEqual(got, []string{"go-test"}) {
+		t.Errorf("For(main) = %v, want [go-test]", got)
+	}
+	if got := r.For("staging"); got != nil {
+		t.Errorf("For(staging) = %v, want nil", got)
+	}
+	if got := (RequiredChecks{ExemptBases: []string{"main"}}).For("feature"); got != nil {
+		t.Errorf("empty Names For = %v, want nil", got)
 	}
 }

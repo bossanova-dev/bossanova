@@ -27,7 +27,7 @@ func (w *daemonWiring) wireAccounts() {
 	// server (creation-time default policy) and both spawn seams below.
 	broker, brokerErr := accountwiring.NewCredentialRefreshBroker(w.accountCreds, daemonRefreshGate{w: w}, log.Logger)
 	if brokerErr != nil {
-		log.Warn().Msg("account credential refresh broker unavailable; managed Codex launches fail closed")
+		log.Warn().Err(brokerErr).Msg("account credential refresh broker unavailable; managed Codex launches fail closed")
 	} else {
 		w.deferCleanup(broker.Close)
 	}

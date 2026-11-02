@@ -29,7 +29,7 @@ func (s *accountLSStub) ListAgentAccounts(_ context.Context, provider string, re
 
 func findLSSubcommand(t *testing.T) *cobra.Command {
 	t.Helper()
-	account := New(nil, nil, nil)
+	account := New(nil, nil, nil, nil)
 	for _, c := range account.Commands() {
 		if c.Name() == "ls" {
 			return c
@@ -128,7 +128,7 @@ func TestAccountLSTableOmitsPriorityColumn(t *testing.T) {
 	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{Id: "acct-1", Provider: "claude", Label: "work", Priority: 0},
 	}}
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	if strings.Contains(out.String(), "PRIORITY") {
@@ -147,7 +147,7 @@ func TestAccountLSHintWhenProviderHasNoEligibleAccount(t *testing.T) {
 		{Id: "acct-1", Provider: "claude", Label: "work", Status: "disabled"},
 		{Id: "acct-2", Provider: "claude", Label: "home", Status: "disabled"},
 	}}
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	got := out.String()
@@ -170,7 +170,7 @@ func TestAccountLSHintWhenActiveAccountUnhealthy(t *testing.T) {
 	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{Id: "acct-1", Provider: "claude", Label: "work", Status: "active", Health: "failed"},
 	}}
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	if !strings.Contains(out.String(), "no eligible account") {
@@ -188,7 +188,7 @@ func TestAccountLSNoHintWhenProviderHasEligibleAccount(t *testing.T) {
 		{Id: "acct-1", Provider: "claude", Label: "work", Status: "disabled"},
 		{Id: "acct-2", Provider: "claude", Label: "home", Status: "active", Health: "ok"},
 	}}
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	if strings.Contains(out.String(), "no eligible account") {
@@ -208,7 +208,7 @@ func TestAccountLSJSONNeverPrintsHint(t *testing.T) {
 	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{Id: "acct-1", Provider: "claude", Label: "work", Status: "disabled"},
 	}}
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	got := out.String()
@@ -244,7 +244,7 @@ func TestAccountLSJSONIncludesUsageAndForwardsRefresh(t *testing.T) {
 		},
 	}}}
 
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	if stub.provider != "claude" || !stub.refresh {
@@ -289,7 +289,7 @@ func TestAccountLSTableShowsUsageAndNeverProbedDash(t *testing.T) {
 		},
 	}}
 
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	got := out.String()
@@ -348,7 +348,7 @@ func TestAccountLSSurfacesInjectionFailedAccount(t *testing.T) {
 		LastTestError: "credential injection failed: materialize codex account: " +
 			"project codex base home: existing entry is not a symlink",
 	}}}
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	got := out.String()
@@ -478,7 +478,7 @@ func TestAccountLSRendersTheCredentialCheckColumns(t *testing.T) {
 		},
 		{Id: "acct-codex-2", Provider: "codex", Label: "codex-two", Status: "active", Health: "ok"},
 	}}
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	got := out.String()
@@ -507,7 +507,7 @@ func TestAccountLSJSONCarriesTheCredentialCheckFields(t *testing.T) {
 		},
 		{Id: "acct-codex-2", Provider: "codex"},
 	}}
-	if err := accountLS(ls, stub); err != nil {
+	if err := accountLS(ls, stub, nil); err != nil {
 		t.Fatalf("accountLS: %v", err)
 	}
 	var rows []accountJSON

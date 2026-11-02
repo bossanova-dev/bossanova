@@ -519,6 +519,7 @@ func TestSlowProcedures_KeysAreGeneratedProcedureConstants(t *testing.T) {
 		bossanovav1connect.DaemonServiceApproveSessionPRProcedure:          true,
 		bossanovav1connect.DaemonServiceAcceptSessionPRBlockerProcedure:    true,
 		bossanovav1connect.DaemonServiceListSessionPRBlockersProcedure:     true,
+		bossanovav1connect.DaemonServiceFollowUpSessionPRNotesProcedure:    true,
 		bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:          true,
 		bossanovav1connect.DaemonServiceGetRunCostProcedure:                true,
 		bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:         true,

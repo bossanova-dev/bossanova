@@ -345,3 +345,91 @@ func TestReconcileNoCommitsMarkerBypassesMemoOnRealCommit(t *testing.T) {
 		t.Fatalf("titles = %v", provider.updatedPRTitles)
 	}
 }
+
+// TestReconcileRestartDoesNotRereadRenamedCronPRs pins the restart budget: a
+// cron session whose stored title is no longer the cron default cannot carry a
+// [BLOCKED] marker this pass should clear, so a fresh resolver (empty memo, as
+// after a daemon start) must not read its PR or its branch at all.
+func TestReconcileRestartDoesNotRereadRenamedCronPRs(t *testing.T) {
+	ctx := context.Background()
+	sessions, provider, cron, sess := titleRepairFixture(t, "[BOS-7] Fix archive cleanup", "[BOS-7] Fix archive cleanup")
+	tracker := "BOS-7"
+	sess.TrackerID = &tracker
+	sess.WorktreePath, sess.BaseBranch = "/wt", "main"
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/acme/widgets"}
+	wt := &mockWorktreeManager{commitSubjects: []string{"fix: archive cleanup"}}
+	for i := 0; i < 2; i++ {
+		r := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).WithCronJobs(cron).WithCommitSubjects(wt)
+		if n, err := r.Reconcile(ctx); err != nil || n != 0 {
+			t.Fatalf("restart %d: Reconcile = %d, %v; want 0, nil", i, n, err)
+		}
+	}
+	if provider.prStatusCalls != 0 || len(provider.updatedPRTitles) != 0 {
+		t.Fatalf("PR reads = %d, title writes = %v; want none", provider.prStatusCalls, provider.updatedPRTitles)
+	}
+	if len(wt.commitSubjectsBaseRefs) != 0 {
+		t.Fatalf("CommitSubjects called with %v; want no call", wt.commitSubjectsBaseRefs)
+	}
+}
+
+func TestReconcileClearsNoCommitsMarkerOnTrackerPrefixedDefault(t *testing.T) {
+	ctx := context.Background()
+	sessions, provider, cron, sess := titleRepairFixture(t, "[BOS-1] Bossanova auto-implement", "[BLOCKED] [BOS-1] Bossanova auto-implement")
+	tracker := "BOS-1"
+	sess.TrackerID = &tracker
+	sess.State = machine.Blocked
+	sess.WorktreePath, sess.BaseBranch = "/wt", "main"
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/acme/widgets"}
+	wt := &mockWorktreeManager{commitSubjects: []string{draftPRPlaceholderCommitSubject, "fix: real change"}}
+	var notified int
+	r := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		WithCronJobs(cron).WithCommitSubjects(wt).
+		WithUpdateNotifier(func(context.Context, *models.Session) { notified++ })
+	n, err := r.Reconcile(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("Reconcile = %d, %v; want 1, nil", n, err)
+	}
+	if len(provider.updatedPRTitles) != 1 || provider.updatedPRTitles[0] != "[BOS-1] Real change" {
+		t.Fatalf("title writes = %v", provider.updatedPRTitles)
+	}
+	if got := sessions.sessions[sess.ID].Title; got != "[BOS-1] Real change" {
+		t.Fatalf("row title = %q", got)
+	}
+	if notified != 1 {
+		t.Fatalf("notified = %d, want 1", notified)
+	}
+}
+
+func TestCronTitleRepairCandidate(t *testing.T) {
+	own, other := "BOS-1", "BOS-2"
+	job := &domain.CronJob{Name: "Bossanova auto-implement"}
+	for _, tc := range []struct {
+		name, title string
+		tracker     *string
+		job         *domain.CronJob
+		want        bool
+	}{
+		{name: "plain default", title: "Bossanova auto-implement", job: job, want: true},
+		{name: "normalized default", title: "Auto implement", job: &domain.CronJob{Name: "feat: auto implement"}, want: true},
+		{name: "own tracker prefix", title: "[BOS-1] Bossanova auto-implement", tracker: &own, job: job, want: true},
+		{name: "own tracker prefix any case", title: "[bos-1] Bossanova auto-implement", tracker: &own, job: job, want: true},
+		{name: "other tracker prefix", title: "[BOS-2] Bossanova auto-implement", tracker: &own, job: job},
+		{name: "prefix without session tracker", title: "[BOS-2] Bossanova auto-implement", job: job},
+		{name: "own prefix only", title: "[BOS-1]", tracker: &own, job: job},
+		{name: "meaningful title", title: "[BOS-1] Fix archive cleanup", tracker: &own, job: job},
+		{name: "empty title", title: "", job: job},
+		{name: "nil job", title: "Bossanova auto-implement", tracker: &other},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := &models.Session{Title: tc.title, TrackerID: tc.tracker}
+			if got := cronTitleRepairCandidate(sess, tc.job); got != tc.want {
+				t.Fatalf("cronTitleRepairCandidate(%q) = %v, want %v", tc.title, got, tc.want)
+			}
+		})
+	}
+	if cronTitleRepairCandidate(nil, job) {
+		t.Fatal("nil session must not be a candidate")
+	}
+}

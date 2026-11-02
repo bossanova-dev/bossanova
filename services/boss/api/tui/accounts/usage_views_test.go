@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/api/tui/ui"
+	"github.com/recurser/boss/internal/domain/display"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -18,7 +19,7 @@ func TestUsageViews_Accounts_AC26_AC27(t *testing.T) {
 	account := &pb.AgentAccount{Id: "usage", Label: "Usage account production with a long label", Provider: "claude", Status: "active", SyncedAgentAccountId: "synced-id", Usage: &pb.UsageSnapshot{FetchedAt: timestamppb.Now(), Util_5H: .75, Util_7D: .92, ModelWindows: []*pb.UsageModelWindow{{ModelName: "Fable", Util: .92}, {ModelName: "Other", Util: .2}, {ModelName: "Hidden"}}}}
 	m := seedAccountsList(t, &accountsStub{accounts: []*pb.AgentAccount{account}})
 	view := ansi.Strip(m.table.View())
-	for _, want := range []string{"75%", "92%", strings.Repeat(ui.MeterGlyph, 5), "synced"} {
+	for _, want := range []string{"75%", "92%", strings.Repeat(ui.MeterGlyph, 5)} {
 		if !strings.Contains(view, want) {
 			t.Errorf("list missing %q: %s", want, view)
 		}
@@ -38,8 +39,13 @@ func TestUsageViews_Accounts_AC26_AC27(t *testing.T) {
 			}
 		}
 	}
-	detail := ansi.Strip(renderAccountDetails(accountDetailRows(account, time.Now()), 0))
-	for _, want := range []string{"Usage Fable:", "Usage Other:", "Synced across your daemons", strings.Repeat(ui.MeterGlyph, 10) + " 92%"} {
+	// A bare synced id no longer means synced (BOS-2256): with no registry the
+	// account is unknown, and the sync tests cover each classification.
+	if got := m.sync.resolve(account).State; got != display.AgentAccountSyncUnknown {
+		t.Errorf("synced id without a registry resolved to %q, want unknown", got)
+	}
+	detail := ansi.Strip(renderAccountDetails(accountDetailRows(account, time.Now(), syncRegistry{}), 0))
+	for _, want := range []string{"Usage Fable:", "Usage Other:", "Sync:", strings.Repeat(ui.MeterGlyph, 10) + " 92%"} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("detail missing %q: %s", want, detail)
 		}
@@ -48,8 +54,8 @@ func TestUsageViews_Accounts_AC26_AC27(t *testing.T) {
 		t.Error("zero window visible")
 	}
 	account.SyncedAgentAccountId = ""
-	if accountSyncLabel(account) != "local" || !strings.Contains(renderAccountDetails(accountDetailRows(account, time.Now()), 0), "This daemon only") {
-		t.Error("local sync label missing")
+	if got := m.sync.resolve(account).State; got != display.AgentAccountSyncLocalOnly {
+		t.Errorf("account with no synced id resolved to %q, want local only", got)
 	}
 	account.Status = "disabled"
 	m.accounts = []*pb.AgentAccount{account}

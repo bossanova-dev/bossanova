@@ -367,6 +367,10 @@ test('marker contains exactly the compact summary and escapes HTML characters', 
     x.page = 'https://example.test/--><&'
     x.areas[0].items = ['--><&']
     x.areas[0].media[0].caption = '--><&'
+    x.confidence.loweredBy = [
+      { code: 'needs-review', text: 'Review --><& needed' },
+      { code: 'unproven', text: 'Evidence is incomplete' },
+    ]
   })
   const line = p.proofLine(record)
   assert.ok(line.startsWith(p.PROOF_MARKER))
@@ -380,6 +384,7 @@ test('marker contains exactly the compact summary and escapes HTML characters', 
     page: record.page,
     level: record.confidence.level,
     asks: record.confidence.asks,
+    loweredBy: record.confidence.loweredBy.map(({ text }) => text),
     digest: record.digest,
   })
   assert.throws(() => p.proofLine({ ...record, digest: 'bad' }))

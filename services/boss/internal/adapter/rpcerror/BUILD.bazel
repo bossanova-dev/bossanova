@@ -16,7 +16,9 @@ go_test(
     srcs = ["rpcerr_test.go"],
     embed = [":rpcerror"],
     deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//services/boss/internal/domain/rpcerr",
         "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//proto",
     ],
 )

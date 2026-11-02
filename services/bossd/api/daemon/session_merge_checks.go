@@ -193,7 +193,7 @@ func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, mergeVerdict{}, ctxErr
 	}
-	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
+	info := vcs.ComputeDisplayStatusWith(prStatus, checks, reviews, vcs.DisplayOptions{Required: s.requiredChecksFor(ctx, originURL)})
 	verdict := mergeVerdict{verified: vcs.VerifyPassed(checks), info: info}
 	if !blocks[info.Status] {
 		return nil, verdict, nil

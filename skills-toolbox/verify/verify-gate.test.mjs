@@ -92,6 +92,7 @@ import {
 } from './verify-gate.mjs'
 import * as verifyGate from './verify-gate.mjs'
 import { isCannotAssess } from './verify-vocabulary.mjs'
+import { VERIFY_RETRY_AFTER_MS, VERIFY_RETRY_ATTEMPTS } from './verify-wake.mjs'
 import { judgeTier } from './verify-admission.mjs'
 import { encodeBlockerTrailer, parseBlockerTrailer } from './verify-blockers.mjs'
 import { resolveApprovalAnchor } from './verify-range.mjs'
@@ -631,6 +632,24 @@ test('judge excludes boss/* contexts from the head CI judgment', async () => {
   const r = await judge({ pr: 7, repo: REPO }, deps(w))
   assert.equal(r.verdict, 'pass')
   assert.deepEqual(r.facts.ci.excluded, ['boss/build', 'boss/verify'])
+})
+
+test('judge does not wait when verify own pending status makes the PR UNSTABLE @sessions.AC224103', async () => {
+  for (const description of ['verifying… feedf00d', 'waiting: merge-state-unknown']) {
+    const w = world({
+      pr: {
+        mergeStateStatus: 'UNSTABLE',
+        statusCheckRollup: [...green, { context: 'boss/verify', state: 'PENDING' }],
+      },
+      statuses: [
+        { context: 'boss/verify', state: 'pending', description, updated_at: iso(1000) },
+        receipt(),
+      ],
+    })
+    const r = await judge({ pr: 7, repo: REPO }, deps(w))
+    assert.notEqual(r.verdict, 'wait', description)
+    assert.equal(r.verdict, 'pass', description)
+  }
 })
 
 test('judge waits, never defects, on unsettled or red head CI, a draft and a closed PR', async () => {
@@ -2817,14 +2836,25 @@ test('post claim takes over a stale claim with a note but not a fresh foreign on
 // ---------------------------------------------------------------------------
 // post: wait and pass.
 
-test('post wait without a claim writes nothing; after a claim it posts waiting', async () => {
+const waitStatus = (state, description) => ({
+  context: 'boss/verify',
+  state,
+  description,
+  updated_at: iso(1000),
+})
+const waitPost = (w, reason = 'merge-state-unknown', token = 'feedf00d') =>
+  post({ pr: 7, head: HEAD, verdict: 'wait', reason, token, repo: REPO }, deps(w))
+
+test('post wait with no status posts waiting; after a claim it replaces it @sessions.AC224101', async () => {
   const w = world()
   const r = await post(
     { pr: 7, head: HEAD, verdict: 'wait', reason: 'ci-not-settled', repo: REPO },
     deps(w),
   )
-  assert.equal(r.posted, false)
-  assert.equal(w.mutating().length, 0)
+  assert.equal(r.posted, true)
+  assert.deepEqual(w.statusPosts(), [
+    { state: 'pending', description: 'waiting: ci-not-settled', target: undefined },
+  ])
 
   const claimed = world({
     statuses: [
@@ -2847,10 +2877,51 @@ test('post wait without a claim writes nothing; after a claim it posts waiting',
   ])
 })
 
+test('post wait updates a different waiting reason and never re-posts an identical one @sessions.AC224101', async () => {
+  const other = world({ statuses: [waitStatus('pending', 'waiting: ci-not-settled'), receipt()] })
+  const r = await waitPost(other)
+  assert.equal(r.posted, true)
+  assert.deepEqual(other.statusPosts(), [
+    { state: 'pending', description: 'waiting: merge-state-unknown', target: undefined },
+  ])
+
+  const same = world({
+    statuses: [waitStatus('pending', 'waiting: merge-state-unknown'), receipt()],
+  })
+  const r2 = await waitPost(same)
+  assert.equal(r2.posted, false)
+  assert.equal(r2.skipped, 'already-posted')
+  assert.equal(same.mutating().length, 0)
+})
+
+test('post wait never writes over a verdict, a cannot-assess hold or another run claim @sessions.AC224101', async () => {
+  for (const standing of [
+    waitStatus('success', 'verified'),
+    waitStatus('success', 'needs human: partial-build'),
+    waitStatus('failure', 'defect: 2 findings'),
+    waitStatus('failure', 'blocked: 1 blocker'),
+    waitStatus('error', 'cannot assess: base-ci-unknown'),
+  ]) {
+    const w = world({ statuses: [standing, receipt()] })
+    const r = await waitPost(w)
+    assert.equal(r.posted, false, standing.description)
+    assert.equal(r.skipped, 'status-standing', standing.description)
+    assert.equal(w.mutating().length, 0, standing.description)
+  }
+  const stale = world({
+    statuses: [{ ...waitStatus('pending', 'verifying… 0ther0ne'), updated_at: iso(3_600_000) }],
+  })
+  assert.equal((await waitPost(stale)).abandoned, 'claim-lost')
+  assert.equal(stale.mutating().length, 0)
+})
+
 test('post wait for an unreadable base records an evidence-unknown note', async () => {
   const w = world()
   await post({ pr: 7, head: HEAD, verdict: 'wait', reason: 'base-ci-unknown', repo: REPO }, deps(w))
-  assert.equal(w.statusPosts().length, 0)
+  assert.deepEqual(
+    w.statusPosts().map((s) => s.description),
+    ['waiting: base-ci-unknown'],
+  )
   assert.equal(w.notes().length, 1)
   assert.ok(w.notes()[0].args.includes(`verify:evidence-unknown:7:${HEAD.slice(0, 12)}`))
 })
@@ -3984,7 +4055,17 @@ test('classifyApproval: a repair-path defect has no label to remove; unreadable 
 // ---------------------------------------------------------------------------
 // rearm and CLI.
 
-test('rearm arms exactly the checks_passed_ready on-transition callback', async () => {
+const red = [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }]
+const redRuns = [
+  { workflow_runs: [{ name: 'CI', status: 'completed', conclusion: 'failure', head_sha: HEAD }] },
+]
+// A sleep that records its calls instead of blocking.
+const sleeper = () => {
+  const calls = []
+  return { calls, sleep: (ms) => calls.push(ms) }
+}
+
+test('rearm arms the checks_passed_ready on-transition callback for a CI wait on red checks @sessions.AC216602', async () => {
   const expected = [
     'callback',
     'add',
@@ -4000,16 +4081,72 @@ test('rearm arms exactly the checks_passed_ready on-transition callback', async 
     '--json',
   ]
   assert.deepEqual(rearmArgv({ pr: 7, chat: 'chat-1', repo: REPO }), expected)
-  const w = world()
-  const r = await rearm({ pr: 7, chat: 'chat-1', repo: REPO }, deps(w))
+  const failing = () => world({ pr: { statusCheckRollup: red }, headRuns: redRuns })
+  const ciWait = {
+    pr: 7,
+    chat: 'chat-1',
+    repo: REPO,
+    verdict: 'wait',
+    reason: 'ci-not-green-on-head',
+  }
+  const w = failing()
+  const s = sleeper()
+  const r = await rearm(ciWait, deps(w, { sleep: s.sleep }))
   assert.equal(r.armed, true)
+  assert.equal(r.owner, 'verify')
+  assert.equal(r.waitingOn, 'ci')
   assert.deepEqual(w.mutating()[0].args, expected)
+  assert.deepEqual(s.calls, [])
 
-  const dry = world()
-  const d = await rearm({ pr: 7, chat: 'chat-1', repo: REPO, dryRun: true }, deps(dry))
+  const dry = failing()
+  const d = await rearm({ ...ciWait, dryRun: true }, deps(dry, { sleep: s.sleep }))
   assert.equal(d.dryRun, true)
   assert.equal(dry.mutating().length, 0)
   assert.deepEqual(d.writes, [{ kind: 'callback', argv: expected }])
+})
+
+test('rearm retries a merge-state wait on a green ready PR instead of arming a callback @sessions.AC224102', async () => {
+  for (const mergeStateStatus of ['UNKNOWN', 'BEHIND', 'BLOCKED', 'UNSTABLE']) {
+    const reason = `merge-state-${mergeStateStatus.toLowerCase()}`
+    const w = world({ pr: { mergeStateStatus } })
+    const s = sleeper()
+    const argv = ['rearm', '--pr', '7', '--chat', 'chat-1', '--repo', REPO, '--verdict', 'wait']
+    const r = await main(
+      [...argv, '--reason', reason, '--attempt', '2'],
+      deps(w, { sleep: s.sleep }),
+    )
+    assert.equal(r.armed, false, reason)
+    assert.equal(r.waitingOn, 'merge-state', reason)
+    assert.deepEqual(r.retry, {
+      attempt: 2,
+      of: VERIFY_RETRY_ATTEMPTS,
+      afterMs: VERIFY_RETRY_AFTER_MS,
+    })
+    assert.deepEqual(s.calls, [VERIFY_RETRY_AFTER_MS], reason)
+    assert.equal(w.mutating().length, 0, reason)
+  }
+})
+
+test('rearm falls back to the gate once the retries run out, and a dry run never sleeps @sessions.AC224102', async () => {
+  const wait = { pr: 7, chat: 'chat-1', repo: REPO, verdict: 'wait', reason: 'merge-state-unknown' }
+  const w = world({ pr: { mergeStateStatus: 'UNKNOWN' } })
+  const s = sleeper()
+  const out = await rearm(
+    { ...wait, attempt: String(VERIFY_RETRY_ATTEMPTS + 1) },
+    deps(w, { sleep: s.sleep }),
+  )
+  assert.equal(out.armed, false)
+  assert.equal(out.fallback, 'gate')
+  assert.equal(out.retry, undefined)
+  assert.deepEqual(s.calls, [])
+  assert.equal(w.mutating().length, 0)
+
+  const dry = world({ pr: { mergeStateStatus: 'UNKNOWN' } })
+  const d = await rearm({ ...wait, dryRun: true }, deps(dry, { sleep: s.sleep }))
+  assert.equal(d.dryRun, true)
+  assert.equal(d.retry.attempt, 1)
+  assert.deepEqual(s.calls, [])
+  assert.equal(dry.mutating().length, 0)
 })
 
 test('rearm reads the PR once and chooses the draft owner wake through CLI flags @sessions.AC216602', async () => {
@@ -4042,14 +4179,16 @@ test('rearm reads the PR once and chooses the draft owner wake through CLI flags
   )
 })
 
-test('rearm still arms the ready trigger when the PR read fails', async () => {
+test('rearm retries instead of arming a blind callback when the PR read fails @sessions.AC224102', async () => {
   const w = world()
   w.pr = null
-  const r = await rearm({ pr: 7, chat: 'chat-1', repo: REPO }, deps(w))
-  assert.equal(r.armed, true)
+  const s = sleeper()
+  const r = await rearm({ pr: 7, chat: 'chat-1', repo: REPO }, deps(w, { sleep: s.sleep }))
+  assert.equal(r.armed, false)
   assert.equal(r.owner, 'unknown')
-  assert.equal(r.trigger, 'checks_passed_ready')
-  assert.equal(w.mutating()[0].args[3], 'checks_passed_ready')
+  assert.equal(r.retry.attempt, 1)
+  assert.deepEqual(s.calls, [VERIFY_RETRY_AFTER_MS])
+  assert.equal(w.mutating().length, 0)
 })
 
 test('main dispatches verbs and rejects usage errors before any read', async () => {
@@ -4069,6 +4208,7 @@ test('main dispatches verbs and rejects usage errors before any read', async () 
     ['judge', '--pr', 'x'],
     ['judge', '--pr', '7', '--bogus', '1'],
     ['rearm', '--pr', '7'],
+    ...['0', 'x', '1.5', ''].map((n) => ['rearm', '--pr', '7', '--chat', 'c', '--attempt', n]),
   ]) {
     await assert.rejects(main(argv, deps(fresh)), UsageError, JSON.stringify(argv))
   }
@@ -10447,4 +10587,70 @@ test('candidates: cannot-assess re-judges a standing park under changed policy',
     result.candidates.map((c) => [c.pr, c.claim, c.rejudge]),
     [[7, 'waiting', 'policy-changed']],
   )
+})
+
+// ci.required: the base tip's list holds a head whose required check did not run.
+const REQUIRE_GO_TEST = JSON.stringify({ ci: { required: { checks: ['go-test'] } } })
+
+test('judge and merge wait with ci-not-requested for a head missing a base-required check @sessions.AC223102', async () => {
+  const r = await judge({ pr: 7, repo: REPO }, deps(world({ baseConfig: REQUIRE_GO_TEST })))
+  assert.equal(r.verdict, 'wait')
+  assert.equal(r.reason, 'ci-not-requested')
+  assert.equal(r.facts.ci.reason, 'not-requested')
+
+  const skipped = [...green, { name: 'go-test', status: 'COMPLETED', conclusion: 'SKIPPED' }]
+  const s = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ baseConfig: REQUIRE_GO_TEST, pr: { statusCheckRollup: skipped } })),
+  )
+  assert.equal(s.reason, 'ci-not-requested')
+
+  const m = world({ baseConfig: REQUIRE_GO_TEST, statuses: verifyStatus('success', 'verified') })
+  const merged = await merge({ pr: 7, repo: REPO, head: HEAD }, deps(m))
+  assert.equal(merged.merged, false)
+  assert.equal(merged.verdict, 'wait')
+  assert.equal(merged.reason, 'ci-not-requested')
+  assert.equal(
+    m.calls.some((c) => c.command === 'boss' && c.args[0] === 'merge'),
+    false,
+  )
+})
+
+test('judge reads the required checks from the base tip, never the head config @sessions.AC223102', async () => {
+  const ran = [...green, { name: 'go-test', status: 'COMPLETED', conclusion: 'SUCCESS' }]
+  const satisfied = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ baseConfig: REQUIRE_GO_TEST, pr: { statusCheckRollup: ran } })),
+  )
+  assert.notEqual(satisfied.reason, 'ci-not-requested')
+  // A head config cannot drop the base's requirement…
+  const dropped = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ baseConfig: REQUIRE_GO_TEST }), { loadConfig: () => ({ ci: {} }) }),
+  )
+  assert.equal(dropped.reason, 'ci-not-requested')
+  // …and a head config alone adds none.
+  const headOnly = await judge(
+    { pr: 7, repo: REPO },
+    deps(world(), { loadConfig: () => JSON.parse(REQUIRE_GO_TEST) }),
+  )
+  assert.notEqual(headOnly.reason, 'ci-not-requested')
+  // An exempt base requires nothing.
+  const exempt = JSON.stringify({
+    ci: { required: { checks: ['go-test'], exemptBases: ['main'] } },
+  })
+  const onExempt = await judge({ pr: 7, repo: REPO }, deps(world({ baseConfig: exempt })))
+  assert.notEqual(onExempt.reason, 'ci-not-requested')
+})
+
+test('rearm arms a CI callback for a ci-not-requested wait', async () => {
+  const w = world({ baseConfig: REQUIRE_GO_TEST })
+  const s = sleeper()
+  const r = await rearm(
+    { pr: 7, chat: 'chat-1', repo: REPO, verdict: 'wait', reason: 'ci-not-requested' },
+    deps(w, { sleep: s.sleep }),
+  )
+  assert.equal(r.waitingOn, 'ci')
+  assert.equal(r.wake, 'callback')
+  assert.deepEqual(s.calls, [])
 })

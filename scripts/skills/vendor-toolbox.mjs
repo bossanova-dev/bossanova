@@ -72,6 +72,7 @@ export const VENDOR_MAP = {
     'build/followup-route.mjs',
     'linear-deps-lib.mjs',
     'linear-gate-lib.mjs',
+    'build/named-admission.mjs',
     'notes-record.mjs',
     'build/open-pr-limit.mjs',
     'plan-attachment.mjs',

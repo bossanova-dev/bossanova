@@ -28,12 +28,15 @@ var ErrRefreshOwned = errors.New("refresh is owned by another daemon")
 const brokerCapabilityPrefix = "boss-refresh-v1."
 const codexOAuthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
-// RefreshBrokerStore keeps the attempt journal in a separate local keyring item.
-// A missing journal returns nil, nil; an unreadable journal must return an error.
+// RefreshBrokerStore keeps the attempt journal in a separate local keyring item,
+// and the broker's endpoint (port and broker id) in one daemon-wide item.
+// A missing item returns nil, nil; an unreadable item must return an error.
 type RefreshBrokerStore interface {
 	CredentialStore
 	LoadRefreshState(context.Context, string) ([]byte, error)
 	SaveRefreshState(context.Context, string, []byte) error
+	LoadRefreshBrokerEndpoint(context.Context) ([]byte, error)
+	SaveRefreshBrokerEndpoint(context.Context, []byte) error
 }
 
 // RefreshBrokerGate binds an exchange to the exact distributed credential and
@@ -83,25 +86,37 @@ type RefreshBroker struct {
 	failures    map[string]refreshFailureRecord
 }
 
-// NewRefreshBroker starts the local endpoint. The caller must Close it at daemon shutdown.
+// NewRefreshBroker starts the local endpoint, reclaiming the persisted loopback
+// port and broker id when it can and rotating both when it cannot. It fails
+// when a rotation away from a still-persisted endpoint cannot be saved, so
+// managed launches fail closed rather than serve a rotation that a later
+// restart would undo. The caller must Close it at daemon shutdown.
 func NewRefreshBroker(store RefreshBrokerStore, gate RefreshBrokerGate, logger zerolog.Logger) (*RefreshBroker, error) {
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return nil, errors.New("credential refresh listener unavailable")
-	}
+	return newRefreshBroker(store, gate, logger, defaultRefreshBrokerRebind)
+}
+
+func newRefreshBroker(store RefreshBrokerStore, gate RefreshBrokerGate, logger zerolog.Logger, rebind refreshBrokerRebind) (*RefreshBroker, error) {
 	// #nosec G118 -- Close owns cancellation beyond the constructor and joins active requests.
 	// owner=@recurser review-by=2027-01-25 issue=BOS-1952
 	ctx, cancel := context.WithCancel(context.Background())
-	b := &RefreshBroker{store: store, gate: gate, listener: listener, ctx: ctx, cancel: cancel, logger: logger, now: time.Now, failures: map[string]refreshFailureRecord{}, providerURL: "https://auth.openai.com/oauth/token", instanceID: rand.Text(), peerWait: 30 * time.Second, client: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	listener, instanceID, err := openRefreshBrokerEndpoint(ctx, store, logger, rebind)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	b := &RefreshBroker{store: store, gate: gate, listener: listener, ctx: ctx, cancel: cancel, logger: logger, now: time.Now, failures: map[string]refreshFailureRecord{}, providerURL: "https://auth.openai.com/oauth/token", instanceID: instanceID, peerWait: 30 * time.Second, client: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	b.server = &http.Server{Handler: http.HandlerFunc(b.serve), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 65 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 8192}
 	b.done = safego.Go(logger, func() { _ = b.server.Serve(listener) })
 	return b, nil
 }
 
-// URL is the sole refresh destination injected into the managed Codex environment.
+// URL is the sole refresh destination injected into the managed Codex
+// environment. It stays the same across a daemon restart that reclaims the
+// persisted endpoint, and changes only when the endpoint rotates.
 func (b *RefreshBroker) URL() string { return "http://" + b.listener.Addr().String() + "/refresh" }
 
-// Close shuts down the endpoint; retained capabilities then fail closed.
+// Close shuts down the endpoint. Retained capabilities fail closed until a
+// restarted broker reclaims the same endpoint; a rotated one never accepts them.
 func (b *RefreshBroker) Close() {
 	b.closeOnce.Do(func() {
 		b.requestMu.Lock()

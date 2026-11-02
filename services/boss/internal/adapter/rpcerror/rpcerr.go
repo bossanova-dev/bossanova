@@ -20,6 +20,24 @@ func (e rpcFailure) RPCMessage() string {
 }
 func (e rpcFailure) RPCWireError() bool { return connect.IsWireError(e.error) }
 
+// RPCDetails decodes the Connect error details attached to the failure,
+// skipping any whose message type this binary cannot decode.
+func (e rpcFailure) RPCDetails() []any {
+	var source *connect.Error
+	if !errors.As(e.error, &source) {
+		return nil
+	}
+	var details []any
+	for _, detail := range source.Details() {
+		value, err := detail.Value()
+		if err != nil {
+			continue
+		}
+		details = append(details, value)
+	}
+	return details
+}
+
 // WrapError exposes transport classification while preserving the original error.
 func WrapError(err error) error {
 	if err == nil {

@@ -406,6 +406,19 @@ func (c *authCloudAccessClient) ListOrganizations(ctx context.Context) ([]*pb.Or
 	return remote.ListOrganizations(ctx)
 }
 
+// DialSyncedRegistry returns a read of the hosted synced-account registry for
+// the TUI accounts screens, which reach it by type-asserting App.cloudAccess.
+// Fetching the token here, apart from the read, lets the caller bound only
+// the request: the fetch may refresh an expired login, and cancelling that
+// after the provider rotates the single-use refresh token forces `boss login`.
+func (c *authCloudAccessClient) DialSyncedRegistry(ctx context.Context) (func(context.Context) (*pb.ListSyncedAgentAccountsResponse, error), error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return remote.ListSyncedAgentAccounts, nil
+}
+
 func (c *authCloudAccessClient) GetRepoOrganization(ctx context.Context, repoOriginURL string) (*pb.RepoOrganizationMapping, error) {
 	remote, err := c.remote(ctx)
 	if err != nil {

@@ -33,6 +33,7 @@ go_test(
     name = "callback_test",
     srcs = [
         "evaluator_rate_limit_test.go",
+        "evaluator_required_checks_test.go",
         "evaluator_test.go",
         "helpers_test.go",
         "interests_test.go",

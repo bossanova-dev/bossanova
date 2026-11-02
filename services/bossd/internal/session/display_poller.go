@@ -41,6 +41,7 @@ type DisplayPoller struct {
 	receiptPoster      vcs.CommitStatusPoster // optional; nil (or nil receiptProbe) disables receipt carrying
 	receiptProbe       ReceiptPushProbe       // optional; see SetReceiptCarrier
 	evidence           EvidenceObserver       // optional; nil disables evidence reads
+	required           RequiredChecksSource   // optional; nil requires no named checks
 	interval           time.Duration
 	logger             zerolog.Logger
 	rateLimitLog       vcs.RateLimitLog // logs each read site's quota refusal once per window
@@ -590,7 +591,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	}
 
 	checks := checkSet.Checks
-	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
+	info := vcs.ComputeDisplayStatusWith(prStatus, checks, reviews, vcs.DisplayOptions{Required: requiredChecksPolicy(ctx, p.required, repo.LocalPath)})
 	info.HasBuildReceipt = checkSet.HasBuildReceipt
 	info.BuildReceiptSeen = checkSet.BuildReceiptSeen
 	// Carry the receipt BEFORE Set, so Ready shows on this same tick and the

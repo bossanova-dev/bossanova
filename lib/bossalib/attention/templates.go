@@ -110,6 +110,90 @@ func WaitLabels() []string {
 	return labels
 }
 
+// VerifyingLabel is the progress label of a head whose boss/verify status is
+// pending and not a wait: a live claim or a cannot-assess hold. It is also
+// displaystatus.VerifyingLabel, the session view's label for the same head.
+const VerifyingLabel = "verifying"
+
+// Verify wait labels for a pending "waiting: <reason>" boss/verify status. Each
+// starts with "waiting", so every client era styles it as a wait, and none is
+// bare "waiting", which is the chat-parked display label. Labels must fit the
+// 16-column home STATUS budget, spinner included, enforced by
+// TestHomeProgressLabelSetsFitColumn in the home package.
+const (
+	verifyWaitMergeLabel = "waiting: merge"
+	verifyWaitCILabel    = "waiting: CI"
+	verifyWaitMainLabel  = "waiting: main"
+	verifyWaitBuildLabel = "waiting: build"
+	verifyWaitDraftLabel = "waiting: draft"
+	verifyWaitPRLabel    = "waiting: PR"
+	verifyWaitRetryLabel = "waiting: retry"
+)
+
+// verifyWaitExact maps the verify gate's wait reason codes
+// (skills-toolbox/verify/verify-gate.mjs decideVerdict waits and verifier wait
+// verdicts) that a prefix family below does not settle.
+var verifyWaitExact = map[string]string{
+	"pr-draft":               verifyWaitDraftLabel,
+	"merge-state-draft":      verifyWaitDraftLabel,
+	"pr-unreadable":          verifyWaitPRLabel,
+	"pr-not-open":            verifyWaitPRLabel,
+	"head-unknown":           verifyWaitPRLabel,
+	"head-mismatch":          verifyWaitPRLabel,
+	"worktree-head-mismatch": verifyWaitPRLabel,
+}
+
+// verifyWaitFamilies maps wait reason code families by prefix, in match order:
+// base-ci- must be tried before ci-.
+var verifyWaitFamilies = []struct{ prefix, label string }{
+	{"merge-state-", verifyWaitMergeLabel},
+	{"base-ci-", verifyWaitMainLabel},
+	{"ci-", verifyWaitCILabel},
+	{"receipt-", verifyWaitBuildLabel},
+}
+
+// VerifyWaitLabel returns the short label for a boss/verify wait reason code,
+// for example "waiting: merge" for merge-state-unknown. The mapping is closed:
+// every label it returns is in VerifyWaitLabels, and an unknown code reads
+// "waiting: retry".
+func VerifyWaitLabel(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if label, ok := waitingLabels[reason]; ok {
+		return label
+	}
+	if label, ok := verifyWaitExact[reason]; ok {
+		return label
+	}
+	for _, family := range verifyWaitFamilies {
+		if strings.HasPrefix(reason, family.prefix) {
+			return family.label
+		}
+	}
+	return verifyWaitRetryLabel
+}
+
+// VerifyWaitLabels returns the sorted, distinct labels VerifyWaitLabel can return.
+func VerifyWaitLabels() []string {
+	labels := make([]string, 1, 1+len(waitingLabels)+len(verifyWaitExact)+len(verifyWaitFamilies))
+	labels[0] = verifyWaitRetryLabel
+	for _, label := range waitingLabels {
+		labels = append(labels, label)
+	}
+	for _, label := range verifyWaitExact {
+		labels = append(labels, label)
+	}
+	for _, family := range verifyWaitFamilies {
+		labels = append(labels, family.label)
+	}
+	slices.Sort(labels)
+	return slices.Compact(labels)
+}
+
+// IsVerifyWaitLabel reports whether label is one VerifyWaitLabel can return.
+func IsVerifyWaitLabel(label string) bool {
+	return slices.Contains(VerifyWaitLabels(), label)
+}
+
 // VerifyUnknownLabel identifies a head without a readable verify admission answer.
 const VerifyUnknownLabel = "verify unknown"
 

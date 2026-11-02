@@ -30,6 +30,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.table.SetHeight(m.tableHeight())
 		return m, cmd
 	}
+	if m.acceptBlocker.Active() {
+		return m.handleAcceptBlockerKey(msg)
+	}
 	if m.err != nil {
 		return m.handleErrModeKey(msg)
 	}
@@ -137,6 +140,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keyDelete()
 	case "r":
 		return m.keyRename()
+	case "e":
+		return m.keyAcceptBlocker()
 	case "enter":
 		return m.keyOpenChat()
 	}

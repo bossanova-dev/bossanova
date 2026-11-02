@@ -11,6 +11,10 @@ import {
   inheritedAdmission,
   acquireGateSlot,
   releaseGateSlot,
+  admitGate,
+  gateClass,
+  renderAdmissionLine,
+  ADMISSION_TIMEOUT_SIGNATURE,
 } from './gate-admission-lib.mjs'
 
 test('configuration coordinates homes and disables admission explicitly or in CI', () => {
@@ -133,4 +137,169 @@ test('Bazel CPU shares follow admission width and clear bypassed flags', () => {
     assert.deepEqual(bazelResourceFlags({ slots, cpus: 10 }), [])
     assert.deepEqual(gateBazelEnv({ slots }, 10), { BOSS_GATE_BAZEL_FLAGS: '' })
   }
+})
+
+test('gateClass admits only lint, format, build and codegen-check argv as light', () => {
+  const light = [
+    ['make', 'lint'],
+    ['make', 'lint-scripts'],
+    ['make', '-C', 'services/docs', 'lint'],
+    ['make', 'format'],
+    ['make', 'format-affected'],
+    ['make', 'build'],
+    ['make', 'build-boss'],
+    ['make', 'bin/bossd'],
+    ['make', '-B', 'bin/boss'],
+    ['make', 'codex-skills-check'],
+    ['make', 'generate'],
+    ['make', 'RACE=1', 'lint'],
+    ['/usr/bin/make', '-j', '4', 'lint', 'format'],
+    ['make', '-j', 'lint'],
+    ['buf', 'lint'],
+    ['/repo/bin/buf', 'format'],
+    ['buf', 'breaking'],
+    ['node', 'scripts/lint/lint-affected.mjs'],
+    [process.execPath, 'scripts/lint/lint-docs-affected.mjs', '--base', 'main'],
+  ]
+  const heavy = [
+    [],
+    ['make'],
+    ['make', 'RACE=1'],
+    ['make', '-C', 'services/docs'],
+    ['make', 'test'],
+    ['make', 'test-bossd'],
+    ['make', 'test-affected'],
+    ['make', 'test-smoke'],
+    ['make', 'lint', 'test'],
+    ['make', 'test-race'],
+    ['make', 'lint-test-check'],
+    ['make', 'linter'],
+    ['bazel', 'test', '//...'],
+    ['buf', 'generate'],
+    ['node', '-e', ''],
+    ['node', 'scripts/lint/nested/deep.mjs'],
+    ['node', 'scripts/test-infra/run-gate.mjs'],
+    ['sh', '-c', 'make lint'],
+    ['go', 'test', './...'],
+    [
+      'node',
+      'scripts/test-infra/gate-cache.mjs',
+      'run',
+      '--site',
+      'test-smoke',
+      '--command',
+      'make test-smoke',
+      '--',
+      'make',
+      'test-smoke',
+    ],
+    ['./scripts/unknown.sh'],
+  ]
+  for (const argv of light) assert.equal(gateClass(argv), 'light', JSON.stringify(argv))
+  for (const argv of heavy) assert.equal(gateClass(argv), 'heavy', JSON.stringify(argv))
+  assert.equal(gateClass(undefined), 'heavy')
+})
+
+test('the light pool lives beside the heavy pool and bypasses only itself at zero', () => {
+  const base = { BOSS_GATE_ADMISSION_DIR: '/slots' }
+  const heavy = admissionConfig(base, 10)
+  const light = admissionConfig(base, 10, 'light')
+  assert.deepEqual([heavy.dir, heavy.slots, heavy.pool], ['/slots', 2, 'heavy'])
+  assert.deepEqual([light.dir, light.slots, light.pool], ['/slots/light', 2, 'light'])
+  assert.equal(admissionConfig(base, 2, 'light').slots, 2)
+  assert.equal(admissionConfig(base, 20, 'light').slots, 5)
+  assert.equal(
+    admissionConfig({ ...base, BOSS_GATE_LIGHT_MAX_CONCURRENT: '6' }, 10, 'light').slots,
+    6,
+  )
+  assert.equal(admissionConfig({ ...base, BOSS_GATE_MAX_CONCURRENT: '6' }, 10, 'light').slots, 2)
+  const lightOff = { ...base, BOSS_GATE_LIGHT_MAX_CONCURRENT: '0' }
+  assert.equal(admissionConfig(lightOff, 10, 'light').slots, 0)
+  assert.equal(admissionConfig(lightOff, 10).slots, 2)
+  for (const bypass of [{ CI: '1' }, { BOSS_GATE_MAX_CONCURRENT: '0' }]) {
+    const env = { ...base, ...bypass, BOSS_GATE_LIGHT_MAX_CONCURRENT: '4' }
+    assert.equal(admissionConfig(env, 10).slots, 0)
+    assert.equal(admissionConfig(env, 10, 'light').slots, 0)
+  }
+})
+
+test('live tokens from either pool are inherited; dead and foreign ones are not', () => {
+  const env = (token) => ({ BOSS_GATE_ADMITTED: token, BOSS_GATE_ADMISSION_DIR: '/slots' })
+  const live = () => true
+  const read = () => ({ pid: 7 })
+  assert.equal(inheritedAdmission(env('/slots/light/slot-1'), read, live), '/slots/light/slot-1')
+  assert.equal(inheritedAdmission(env('/slots/slot-1'), read, live), '/slots/slot-1')
+  assert.equal(
+    inheritedAdmission(env('/slots/light/slot-1'), read, () => false),
+    null,
+  )
+  for (const foreign of ['/slots/other/slot-0', '/foreign/light/slot-0', '/slots/light/x'])
+    assert.equal(inheritedAdmission(env(foreign), read, live), null, foreign)
+})
+
+test('light admissions take a light slot but export the heavy-width Bazel share', async () => {
+  const dir = tempDir('gate-admission-')
+  const env = { BOSS_GATE_ADMISSION_DIR: dir, BOSS_GATE_MAX_CONCURRENT: '2' }
+  const handle = await admitGate(env, { argv: ['make', 'lint'], label: 'make lint' })
+  try {
+    assert.equal(handle.pool, 'light')
+    assert.equal(path.dirname(handle.file), path.join(dir, 'light'))
+    assert.deepEqual(fs.readdirSync(dir), ['light'])
+    assert.deepEqual(gateBazelEnv(handle, 10), gateBazelEnv({ slots: 2 }, 10))
+    const nested = await admitGate(
+      { ...env, BOSS_GATE_ADMITTED: handle.file },
+      { argv: ['make', 'test'] },
+    )
+    assert.deepEqual([nested.inherited, nested.pool, nested.file], [true, 'light', handle.file])
+    assert.deepEqual(gateBazelEnv(nested, 10), gateBazelEnv({ slots: 2 }, 10))
+  } finally {
+    releaseGateSlot(handle)
+  }
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'light')), [])
+  const heavy = await admitGate(env, { argv: ['make', 'test'] })
+  releaseGateSlot(heavy)
+  assert.deepEqual([heavy.pool, path.dirname(heavy.file)], ['heavy', dir])
+  const bypassed = await admitGate({ ...env, CI: '1' }, { argv: ['make', 'lint'] })
+  assert.deepEqual([bypassed.file, bypassed.pool], [null, 'light'])
+  assert.deepEqual(gateBazelEnv(bypassed, 10), { BOSS_GATE_BAZEL_FLAGS: '' })
+  const lightOff = await admitGate(
+    { ...env, BOSS_GATE_LIGHT_MAX_CONCURRENT: '0' },
+    { argv: ['make', 'lint'] },
+  )
+  assert.equal(lightOff.file, null)
+  assert.deepEqual(gateBazelEnv(lightOff, 10), gateBazelEnv({ slots: 2 }, 10))
+})
+
+test('a light queue names its pool and times out with the shared admission signature', async () => {
+  const dir = tempDir('gate-admission-')
+  fs.mkdirSync(path.join(dir, 'light'))
+  fs.writeFileSync(path.join(dir, 'light', 'slot-0'), JSON.stringify({ pid: process.pid }))
+  const logs = []
+  await assert.rejects(
+    admitGate(
+      {
+        BOSS_GATE_ADMISSION_DIR: dir,
+        BOSS_GATE_LIGHT_MAX_CONCURRENT: '1',
+        BOSS_GATE_ADMISSION_TIMEOUT_MS: '20',
+        BOSS_GATE_ADMISSION_POLL_MS: '5',
+      },
+      { argv: ['buf', 'lint'], log: (line) => logs.push(line) },
+    ),
+    (error) =>
+      error.code === 'GATE_ADMISSION_TIMEOUT' &&
+      error.message.startsWith(ADMISSION_TIMEOUT_SIGNATURE),
+  )
+  assert.match(logs[0], /^gate-run admission: queued for a light gate slot - held by /)
+})
+
+test('admission lines name the pool and read a pool-less record as heavy', () => {
+  assert.equal(
+    renderAdmissionLine({ waitedMs: 0, slots: 2, pool: 'light' }),
+    'admission: waited 0.0s for a light gate slot (light pool, 2 slots)',
+  )
+  assert.equal(
+    renderAdmissionLine({ waitedMs: 303000, slots: 2 }),
+    'admission: waited 303.0s for a heavy gate slot (heavy pool, 2 slots)',
+  )
+  assert.equal(renderAdmissionLine(null), 'admission: unavailable')
 })

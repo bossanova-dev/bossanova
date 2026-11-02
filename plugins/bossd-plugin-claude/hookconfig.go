@@ -102,12 +102,9 @@ func WriteHookConfig(worktreePath, sessionID, agentSessionID, token string, port
 		return fmt.Errorf("port must be positive, got %d", port)
 	}
 
-	claudeDir := filepath.Join(worktreePath, ".claude")
-	// 0o700: this directory holds settings.local.json, which carries the
-	// bossd hook Bearer token (written 0o600). Keep the parent dir owner-only
-	// too (G301) rather than the world-readable 0o755.
-	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
-		return fmt.Errorf("create .claude dir: %w", err)
+	claudeDir, err := ensureClaudeDir(worktreePath)
+	if err != nil {
+		return err
 	}
 	target := filepath.Join(claudeDir, "settings.local.json")
 
@@ -402,9 +399,9 @@ func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int, 
 	if !receiptTokenPattern.MatchString(receiptToken) {
 		return errors.New("receipt token contains characters that are unsafe in a shell command")
 	}
-	claudeDir := filepath.Join(worktreePath, ".claude")
-	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
-		return fmt.Errorf("create .claude dir: %w", err)
+	claudeDir, err := ensureClaudeDir(worktreePath)
+	if err != nil {
+		return err
 	}
 	target := filepath.Join(claudeDir, "settings.local.json")
 	root, err := loadHookConfig(target)
@@ -433,6 +430,26 @@ func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int, 
 	}
 	out = append(out, '\n')
 	return atomicWrite(claudeDir, target, out)
+}
+
+// ensureClaudeDir returns worktreePath/.claude, creating only that directory.
+// The worktree root itself must already exist: a hook write for a session
+// whose worktree was archived or removed would otherwise re-create the root
+// to hold a lone settings.local.json, leaving a directory no session owns
+// (BOS-2228).
+func ensureClaudeDir(worktreePath string) (string, error) {
+	info, err := os.Stat(worktreePath)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("worktree %q does not exist; not re-creating it", worktreePath)
+	}
+	claudeDir := filepath.Join(worktreePath, ".claude")
+	// 0o700: this directory holds settings.local.json, which carries the
+	// bossd hook Bearer token (written 0o600). Keep the parent dir owner-only
+	// too (G301) rather than the world-readable 0o755.
+	if err := os.Mkdir(claudeDir, 0o700); err != nil && !os.IsExist(err) {
+		return "", fmt.Errorf("create .claude dir: %w", err)
+	}
+	return claudeDir, nil
 }
 
 // receiptTokenPattern bounds the prompt-receipt token to characters that are

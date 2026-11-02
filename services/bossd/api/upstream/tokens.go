@@ -312,10 +312,10 @@ func logAuthWedge(logger *zerolog.Logger, reason string) {
 }
 
 // replayWarnFallback is where logRefreshReplay writes when the caller's context
-// carries no logger. It is os.Stderr because that is where bossalog.Setup points
-// the daemon's global logger, so a dropped-context warning lands in the same
-// bossd.stderr.log as every other line — just without the caller's component
-// field. A var, not a const, only so the test can capture it.
+// carries no logger. It is os.Stderr, where bossalog.Setup's console leg writes
+// too (warn+ only under launchd), so this warning lands in bossd.stderr.log next
+// to the daemon's other warnings — just without the caller's component field.
+// A var, not a const, only so the test can capture it.
 var replayWarnFallback io.Writer = os.Stderr
 
 // logRefreshReplay emits the one warning per in-window replay of an exchange

@@ -3,11 +3,13 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "credsync",
     srcs = [
+        "bootstrap.go",
         "contracts.go",
         "crypto.go",
         "devices.go",
         "engine.go",
         "key_seal.go",
+        "readiness.go",
         "recipient.go",
         "rotation.go",
     ],
@@ -22,6 +24,7 @@ go_test(
         "crypto_test.go",
         "engine_test.go",
         "key_seal_test.go",
+        "readiness_test.go",
     ],
     embed = [":credsync"],
     deps = ["//services/bossd/internal/devicekey"],

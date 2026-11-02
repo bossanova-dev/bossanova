@@ -23,6 +23,7 @@ import (
 	"github.com/recurser/bossd/internal/callback"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/ghusage"
+	"github.com/recurser/bossd/internal/prstate"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/session/checkpolicy"
 	"github.com/recurser/bossd/internal/verifyjob"
@@ -53,11 +54,16 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 	// Every GitHub call the provider sends is metered into the shared usage
 	// ledger, which gate and session processes append to as well. Background
 	// reads stop at the cron quota floors, so the crons and the daemon's own
-	// loops leave the same reserve for verify and finalize.
+	// loops leave the same reserve for verify and finalize. Sent calls are paced
+	// below GitHub's per-minute limit at the settings' github_pacing rates.
 	w.ghUsage = ghusage.New(ghusage.Dir(w.appDataDir), log.Logger)
 	w.ghProvider = github.New(log.Logger,
 		github.WithUsageRecorder(w.ghUsage),
 		github.WithBackgroundQuotaFloors(verifyjob.StandardQuotaFloor, verifyjob.ReserveQuotaFloor),
+		github.WithCallPacing(github.CallPacing{
+			CorePointsPerMinute:    w.settings.GitHubPacing.CorePointsPerMinute(),
+			GraphQLPointsPerMinute: w.settings.GitHubPacing.GraphQLPointsPerMinute(),
+		}),
 	)
 	// The gh wrapper meters the calls bossd does not make itself: cron gates
 	// and the agent sessions it spawns put it first on PATH. Best-effort — a
@@ -113,6 +119,12 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 	// head whose .boss-skills.json ci.required checks have not run (BOS-2231).
 	w.checkPolicy = checkpolicy.New(w.repos, log.Logger)
 	w.poller.SetRequiredChecks(w.checkPolicy)
+	// One PR-state reader over the shared provider (the instance the webhook
+	// dispatcher invalidates) serves GetPRState and the PR wait hub, which
+	// wireUpstream attaches to the dispatcher before wireDaemon serves it.
+	w.prState = prstate.NewReader(w.ghProvider, nil)
+	w.prState.SetRequiredChecks(w.checkPolicy)
+	w.prWaits = prstate.NewWaitHub(w.prState)
 	// Both evaluate the FixingChecks release against the live repair lease
 	// (BOS-2162); wireStores created w.repairLease before this runs.
 	w.dispatcher.SetRepairActivity(w.repairLease)

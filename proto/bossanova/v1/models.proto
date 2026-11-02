@@ -128,6 +128,8 @@ enum ReviewState {
   REVIEW_STATE_CHANGES_REQUESTED = 2;
   REVIEW_STATE_COMMENTED = 3;
   REVIEW_STATE_DISMISSED = 4;
+  // REVIEW_REQUIRED: a review decision awaiting a required approval.
+  REVIEW_STATE_REQUIRED = 5;
 }
 
 // FixAttemptTrigger represents what triggered a fix attempt.

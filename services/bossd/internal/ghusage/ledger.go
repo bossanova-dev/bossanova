@@ -44,13 +44,25 @@ func New(dir string, logger zerolog.Logger, opts ...Option) *Ledger {
 	return l
 }
 
-// Record appends one call to the current hour's bucket. Metering must never
-// fail a GitHub call, so a write error is logged once and otherwise swallowed.
-func (l *Ledger) Record(label, quota string) {
+// Record appends one call to the current hour's bucket. identity is whose
+// quota it spent; empty means IdentityUser. Metering must never fail a GitHub
+// call, so a write error is logged once and otherwise swallowed.
+func (l *Ledger) Record(label, quota, identity string) {
+	l.write(label, quota, identity, "")
+}
+
+// RecordSkip appends one attempt that was refused without contacting GitHub,
+// with outcome OutcomeBreaker or OutcomeFloor, against identity's quota. It
+// fails like Record: a write error is logged once and otherwise swallowed.
+func (l *Ledger) RecordSkip(label, quota, identity, outcome string) {
+	l.write(label, quota, identity, outcome)
+}
+
+func (l *Ledger) write(label, quota, identity, outcome string) {
 	if l == nil {
 		return
 	}
-	if err := l.append(label, quota); err != nil {
+	if err := l.append(label, quota, identity, outcome); err != nil {
 		l.warnOnce.Do(func() {
 			l.logger.Warn().Err(err).Str("dir", l.dir).
 				Msg("github usage ledger: write failed; calls are not being metered")
@@ -58,15 +70,18 @@ func (l *Ledger) Record(label, quota string) {
 	}
 }
 
-func (l *Ledger) append(label, quota string) error {
+func (l *Ledger) append(label, quota, identity, outcome string) error {
 	if label == "" {
 		label = LabelUnattributed
+	}
+	if identity == "" {
+		identity = IdentityUser
 	}
 	if len(label) > maxLabelBytes {
 		label = label[:maxLabelBytes]
 	}
 	now := l.now()
-	line, err := json.Marshal(Record{At: now.Unix(), Label: label, Quota: quota})
+	line, err := json.Marshal(Record{At: now.Unix(), Label: label, Quota: quota, Identity: identity, Outcome: outcome})
 	if err != nil {
 		return err
 	}
@@ -94,25 +109,48 @@ func openAppend(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 }
 
-// Count is the number of calls one label made against one quota.
+// Count is what one label did against one quota: the calls it sent to
+// GitHub and the attempts the breaker or the background floor refused.
 type Count struct {
-	Label string
-	Quota string
-	Calls int64
+	Label        string
+	Quota        string
+	Calls        int64
+	BreakerSkips int64
+	FloorSkips   int64
 }
 
-// Usage is the ledger's per-label, per-quota call counts over a window.
+// Skips is every refused attempt in c.
+func (c Count) Skips() int64 { return c.BreakerSkips + c.FloorSkips }
+
+// add counts one record's outcome. An outcome this reader does not know counts
+// as neither a call nor a skip, so a future outcome cannot inflate the calls.
+func (c *Count) add(outcome string) bool {
+	switch outcome {
+	case "", OutcomeSent:
+		c.Calls++
+	case OutcomeBreaker:
+		c.BreakerSkips++
+	case OutcomeFloor:
+		c.FloorSkips++
+	default:
+		return false
+	}
+	return true
+}
+
+// Usage is the ledger's per-label, per-quota counts over a window.
 type Usage struct {
 	WindowStart time.Time
 	WindowEnd   time.Time
-	// Counts is sorted by Calls descending, then Label and Quota.
+	// Counts is sorted by Calls descending, then Skips descending, then
+	// Label and Quota.
 	Counts []Count
 }
 
-// Read counts the calls recorded in the window ending at now. It reads every
-// bucket the window touches, drops records outside the window and lines that
-// do not parse (a torn or foreign line must not hide the rest), and treats a
-// missing bucket as an hour with no calls.
+// Read counts the calls and skips recorded in the window ending at now. It
+// reads every bucket the window touches, drops records outside the window and
+// lines that do not parse (a torn or foreign line must not hide the rest), and
+// treats a missing bucket as an hour with no calls.
 func (l *Ledger) Read(now time.Time, window time.Duration) (Usage, error) {
 	if window <= 0 {
 		window = DefaultWindow
@@ -120,26 +158,36 @@ func (l *Ledger) Read(now time.Time, window time.Duration) (Usage, error) {
 	start := now.Add(-window)
 	usage := Usage{WindowStart: start, WindowEnd: now, Counts: []Count{}}
 	type key struct{ label, quota string }
-	counts := map[key]int64{}
+	counts := map[key]*Count{}
 	from, to := start.Unix(), now.Unix()
 	for hour := start.UTC().Truncate(time.Hour); !hour.After(now); hour = hour.Add(time.Hour) {
 		err := readBucket(filepath.Join(l.dir, bucketName(hour)), func(r Record) {
 			if r.At < from || r.At > to {
 				return
 			}
-			counts[key{r.Label, r.Quota}]++
+			k := key{r.Label, r.Quota}
+			c, ok := counts[k]
+			if !ok {
+				c = &Count{Label: r.Label, Quota: r.Quota}
+			}
+			if c.add(r.Outcome) && !ok {
+				counts[k] = c
+			}
 		})
 		if err != nil {
 			return Usage{}, err
 		}
 	}
-	for k, n := range counts {
-		usage.Counts = append(usage.Counts, Count{Label: k.label, Quota: k.quota, Calls: n})
+	for _, c := range counts {
+		usage.Counts = append(usage.Counts, *c)
 	}
 	sort.Slice(usage.Counts, func(i, j int) bool {
 		a, b := usage.Counts[i], usage.Counts[j]
 		if a.Calls != b.Calls {
 			return a.Calls > b.Calls
+		}
+		if a.Skips() != b.Skips() {
+			return a.Skips() > b.Skips()
 		}
 		if a.Label != b.Label {
 			return a.Label < b.Label
@@ -185,6 +233,9 @@ func parseRecord(line []byte) (Record, bool) {
 	}
 	if rec.Label == "" {
 		rec.Label = LabelUnattributed
+	}
+	if rec.Identity == "" {
+		rec.Identity = IdentityUser
 	}
 	return rec, true
 }

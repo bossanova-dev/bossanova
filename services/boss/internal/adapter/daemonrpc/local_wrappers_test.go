@@ -189,6 +189,13 @@ func (f *fakeDaemonRPC) DismissSessionAlert(_ context.Context, req *connect.Requ
 	})
 }
 
+func (f *fakeDaemonRPC) GetPRState(_ context.Context, req *connect.Request[pb.GetPRStateRequest]) (*connect.Response[pb.GetPRStateResponse], error) {
+	return sessionResp(f, func() *pb.GetPRStateResponse {
+		// Echo the request so the wrapper test sees it reached the daemon.
+		return &pb.GetPRStateResponse{Repo: req.Msg.GetRepo(), PrNumber: req.Msg.GetPrNumber()}
+	})
+}
+
 // TestLocalClientValueWrappers drives every remaining value-returning wrapper
 // on both paths: success must surface the daemon payload (so the `if err != nil`
 // negation can't pass off a nil/empty value as a result) and error must
@@ -298,6 +305,10 @@ func TestLocalClientValueWrappers(t *testing.T) {
 		{"DismissSessionAlert", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.DismissSessionAlert(ctx, fakeSessionID, "resume:auth_expired")
 			return err == nil && got.GetId() == fakeSessionID && got.GetTitle() == "resume:auth_expired", got == nil, err
+		}},
+		{"GetPRState", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.GetPRState(ctx, &pb.GetPRStateRequest{Repo: "acme/widgets", PrNumber: 7})
+			return err == nil && got.GetRepo() == "acme/widgets" && got.GetPrNumber() == 7, got == nil, err
 		}},
 		{"SendChatMessage", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.SendChatMessage(ctx, &pb.SendChatMessageRequest{AgentSessionId: "agent-1", Message: "hi"})

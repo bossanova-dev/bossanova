@@ -227,8 +227,7 @@ func (c TmuxReaperConfig) IsDryRun() bool {
 	return c.DryRun == nil || *c.DryRun
 }
 
-// ReapsUnstamped reports whether panes carrying no BOSS_DAEMON_ID are eligible.
-// Unset means no.
+// ReapsUnstamped reports whether panes carrying no BOSS_DAEMON_ID are eligible; unset means no.
 func (c TmuxReaperConfig) ReapsUnstamped() bool {
 	return c.ReapUnstamped != nil && *c.ReapUnstamped
 }
@@ -1070,6 +1069,7 @@ type Settings struct {
 	TmuxReaper            TmuxReaperConfig           `json:"tmux_reaper,omitzero"`
 	TmuxIdleReap          TmuxIdleReapConfig         `json:"tmux_idle_reap,omitzero"`
 	TmuxDelivery          TmuxDeliveryConfig         `json:"tmux_delivery,omitzero"`
+	GitHubPacing          GitHubPacingConfig         `json:"github_pacing,omitzero"`
 	Notes                 NotesConfig                `json:"notes,omitzero"`
 	ProofUpload           ProofUploadConfig          `json:"proof_upload,omitzero"`
 	ProvidersAcknowledged bool                       `json:"providers_acknowledged,omitempty"`

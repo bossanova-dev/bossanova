@@ -29,9 +29,13 @@ type credentialDeviceRPCSpy struct {
 	rejectAllKeys bool
 	enrollmentErr error
 	onEnrollment  func(*pb.RequestAgentCredentialDeviceEnrollmentRequest)
+	listErr       error
 }
 
 func (f *credentialDeviceRPCSpy) ListAgentCredentialDevices(context.Context, *connect.Request[pb.ListAgentCredentialDevicesRequest]) (*connect.Response[pb.ListAgentCredentialDevicesResponse], error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return connect.NewResponse(&pb.ListAgentCredentialDevicesResponse{Devices: f.devices}), nil
 }
 func (f *credentialDeviceRPCSpy) ApproveAgentCredentialDevice(_ context.Context, r *connect.Request[pb.ApproveAgentCredentialDeviceRequest]) (*connect.Response[pb.ApproveAgentCredentialDeviceResponse], error) {

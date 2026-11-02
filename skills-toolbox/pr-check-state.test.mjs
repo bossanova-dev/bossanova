@@ -1388,6 +1388,89 @@ test('CLI classify — reads a rollup from stdin', () => {
   assert.equal(parsed.reason, CHECK_REASONS.OK)
 })
 
+// `--pr-state`: a `boss pr state --json` envelope (or `pr-state.mjs read` output) fills every input
+// an explicit flag does not pass. The daemon's own check_verdict is never what it reads.
+const PR_STATE_HEAD = 'c'.repeat(40)
+const prStateEnvelope = (runStatus) => ({
+  head_sha: PR_STATE_HEAD,
+  checks: [{ name: 'build', status: 'completed', conclusion: 'success', is_unclassified: false }],
+  check_verdict: { state: 'green', reason: 'ok' },
+  workflow_runs: [
+    { name: 'CI', status: runStatus, conclusion: '', event: 'push', head_sha: PR_STATE_HEAD },
+  ],
+  is_workflow_runs_read: true,
+})
+
+test('CLI classify --pr-state — equals classify with the equivalent flags', () => {
+  const dir = tempDir('pr-check-state-pr-state-')
+  const statePath = path.join(dir, 'state.json')
+  const rollupPath = path.join(dir, 'rollup.json')
+  const runsPath = path.join(dir, 'runs.json')
+  writeFileSync(statePath, JSON.stringify(prStateEnvelope('in_progress')))
+  writeFileSync(
+    rollupPath,
+    JSON.stringify({ statusCheckRollup: [checkRun('build', 'COMPLETED', 'SUCCESS')] }),
+  )
+  writeFileSync(
+    runsPath,
+    JSON.stringify([
+      {
+        name: 'CI',
+        workflowName: 'CI',
+        status: 'in_progress',
+        conclusion: '',
+        headSha: PR_STATE_HEAD,
+      },
+    ]),
+  )
+  const viaState = runCli(['classify', '--pr-state', statePath, '--prior', '-'], '["build"]')
+  const viaFlags = runCli(
+    [
+      'classify',
+      '--head-sha',
+      PR_STATE_HEAD,
+      '--observed-sha',
+      PR_STATE_HEAD,
+      '--rollup',
+      rollupPath,
+      '--workflow-runs',
+      runsPath,
+      '--prior',
+      '-',
+    ],
+    '["build"]',
+  )
+  assert.equal(viaState.status, 0, viaState.stderr)
+  assert.equal(viaFlags.status, 0, viaFlags.stderr)
+  const [a, b] = [JSON.parse(viaState.stdout), JSON.parse(viaFlags.stdout)]
+  assert.equal(
+    a.state,
+    CHECK_STATES.PENDING,
+    'an unfinished head run is pending although the daemon said green',
+  )
+  assert.deepEqual(
+    { state: a.state, reason: a.reason, total: a.total, pendingRuns: a.pendingRuns },
+    { state: b.state, reason: b.reason, total: b.total, pendingRuns: b.pendingRuns },
+  )
+})
+
+test('CLI classify --pr-state — explicit flags win and the read output shape is accepted', () => {
+  const settled = JSON.stringify({ source: 'daemon', state: prStateEnvelope('completed') })
+  const green = JSON.parse(runCli(['classify', '--pr-state', '-'], settled).stdout)
+  assert.equal(green.state, CHECK_STATES.GREEN)
+  const stale = JSON.parse(
+    runCli(['classify', '--pr-state', '-', '--head-sha', 'd'.repeat(40)], settled).stdout,
+  )
+  assert.equal(stale.reason, CHECK_REASONS.STALE_SHA)
+  const failed = runCli(
+    ['classify', '--pr-state', '-'],
+    JSON.stringify({
+      error: { code: 'RESOURCE_EXHAUSTED', connect_code: 'resource_exhausted', message: 'x' },
+    }),
+  )
+  assert.equal(JSON.parse(failed.stdout).reason, CHECK_REASONS.UNREADABLE)
+})
+
 test('CLI merge-state — the post-ready UNSTABLE degrade prints advisory-unsettled', () => {
   const result = runCli([
     'merge-state',

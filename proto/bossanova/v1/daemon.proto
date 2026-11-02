@@ -408,6 +408,23 @@ service DaemonService {
   // quota points: one GraphQL call can cost more than one point.
   rpc GetGitHubUsage(GetGitHubUsageRequest) returns (GetGitHubUsageResponse);
 
+  // GetPRState reads one pull request's state through the daemon's
+  // webhook-invalidated GitHub read cache: status, checks (commit statuses
+  // included), the check verdict, the verify phase and, for a green verdict,
+  // whether every head workflow run has settled. Only repos registered on this
+  // daemon are read; any other answers NOT_FOUND before any GitHub call.
+  rpc GetPRState(GetPRStateRequest) returns (GetPRStateResponse);
+
+  // WaitPRState blocks until one condition holds on a pull request, a
+  // condition becomes unreachable, or the timeout passes. The daemon re-reads
+  // the PR through its cached reader only when a webhook invalidates the PR's
+  // or its repo's reads, and on a slow timer while the repo's webhook delivery
+  // is unhealthy, so a wait costs GitHub reads per event, not per poll tick. A
+  // condition that already holds answers after one read. Only repos
+  // registered on this daemon are read; any other answers NOT_FOUND before
+  // any GitHub call.
+  rpc WaitPRState(WaitPRStateRequest) returns (WaitPRStateResponse);
+
   // ListAgents returns the names + GetInfo metadata of every agent runner
   // plugin currently loaded. Used by the boss TUI to (a) decide whether to
   // show the onboarding wizard, (b) populate the new-session agent-select
@@ -2425,21 +2442,205 @@ message GetGitHubUsageRequest {
   int64 window_seconds = 1;
 }
 
-// GitHubUsageRow is the number of calls one label made against one quota.
+// GitHubUsageRow is what one label did against one quota: the calls it sent
+// to GitHub and the attempts refused without contacting GitHub.
 message GitHubUsageRow {
-  // Attribution, e.g. "stage:finalize", "daemon:poller", "cron:<name>",
+  // Attribution, e.g. "stage:finalize", "daemon:pr-poller", "cron:<name>",
   // "plugin:<name>" or "daemon:unattributed".
   string label = 1;
   // GitHub quota the calls spent: "core" (REST) or "graphql".
   string quota = 2;
   int64 call_count = 3;
+  // Attempts the rate-limit breaker refused while the quota was paused.
+  int64 breaker_skip_count = 4;
+  // Background reads the quota floor refused while the quota was low.
+  int64 floor_skip_count = 5;
 }
 
 message GetGitHubUsageResponse {
-  // Sorted by call_count descending, then label and quota.
+  // Sorted by call_count descending, then by breaker_skip_count plus
+  // floor_skip_count descending, then label and quota.
   repeated GitHubUsageRow rows = 1;
   google.protobuf.Timestamp window_started_at = 2;
   google.protobuf.Timestamp window_ended_at = 3;
+}
+
+// --- PR State ---
+
+message GetPRStateRequest {
+  // Repository as owner/name or an origin URL; it must be registered on this
+  // daemon.
+  string repo = 1;
+  int32 pr_number = 2;
+  // Skip the read cache, so every read goes to GitHub.
+  bool should_bypass_cache = 3;
+  // Also read the PR's review comments, the expensive read.
+  bool should_include_review_comments = 4;
+  // Read the head's workflow runs whatever the check verdict, so a caller that
+  // judges the head by its own rules sees every run.
+  bool should_include_workflow_runs = 5;
+}
+
+// PRCheck is one check run or commit status on the PR head.
+message PRCheck {
+  string name = 1;
+  CheckStatus status = 2;
+  optional CheckConclusion conclusion = 3;
+  // The commit status or check-run description; boss/verify carries its
+  // phase here.
+  string description = 4;
+  // The provider could not classify the upstream status; never a pass.
+  bool is_unclassified = 5;
+}
+
+// PRCheckVerdictState is the aggregate state of the ordinary checks.
+enum PRCheckVerdictState {
+  PR_CHECK_VERDICT_STATE_UNSPECIFIED = 0;
+  PR_CHECK_VERDICT_STATE_UNKNOWN = 1;
+  PR_CHECK_VERDICT_STATE_GREEN = 2;
+  PR_CHECK_VERDICT_STATE_FAILING = 3;
+  PR_CHECK_VERDICT_STATE_PENDING = 4;
+}
+
+// PRCheckVerdict is the check verdict over the head's ordinary checks; a
+// verify-stage hold is not counted.
+message PRCheckVerdict {
+  PRCheckVerdictState state = 1;
+  // Why the state was reached: "ok", "no-gate-ran", "failed", "pending",
+  // "no-checks", "unclassified", "unreadable", "stale-sha" or "not-requested".
+  string reason = 2;
+  int32 total_count = 3;
+  int32 passed_count = 4;
+  int32 failed_count = 5;
+  int32 pending_count = 6;
+  int32 skipped_count = 7;
+  int32 unclassified_count = 8;
+}
+
+// PRVerifyPhaseKind is the verify stage's hold on the head, if any.
+enum PRVerifyPhaseKind {
+  PR_VERIFY_PHASE_KIND_UNSPECIFIED = 0;
+  PR_VERIFY_PHASE_KIND_NONE = 1;
+  PR_VERIFY_PHASE_KIND_VERIFYING = 2;
+  PR_VERIFY_PHASE_KIND_NEEDS_HUMAN = 3;
+  PR_VERIFY_PHASE_KIND_WAITING = 4;
+}
+
+message PRVerifyPhase {
+  PRVerifyPhaseKind kind = 1;
+  // A park's codes (NEEDS_HUMAN) or a wait's reason code (WAITING).
+  string reason = 2;
+  // The operator-written text after a park's codes.
+  string label = 3;
+}
+
+// PRHeldWorkflowRun is one head workflow run that has not completed.
+message PRHeldWorkflowRun {
+  string name = 1;
+  // GitHub's raw run status, e.g. "queued", "in_progress" or "waiting".
+  string status = 2;
+  string event = 3;
+  // "in-flight" or "awaiting-approval".
+  string class = 4;
+}
+
+// PRWorkflowRun is one GitHub Actions workflow run for the PR head, as GitHub
+// reported it.
+message PRWorkflowRun {
+  string name = 1;
+  // GitHub's raw run status, e.g. "queued", "in_progress" or "completed".
+  string status = 2;
+  // GitHub's raw run conclusion; empty until the run completes.
+  string conclusion = 3;
+  string event = 4;
+  string head_sha = 5;
+}
+
+message GetPRStateResponse {
+  // Lowercase owner/name.
+  string repo = 1;
+  int32 pr_number = 2;
+  PRState state = 3;
+  bool is_draft = 4;
+  string head_sha = 5;
+  string head_branch = 6;
+  string base_branch = 7;
+  // Unset while GitHub has not computed mergeability.
+  optional bool is_mergeable = 8;
+  // GitHub's mergeStateStatus, lowercase ("clean", "blocked", "behind",
+  // "dirty", "draft", "has_hooks", "unknown", "unstable"); empty when unset.
+  string merge_state_status = 9;
+  ReviewState review_decision = 10;
+  ReviewState latest_review_state = 11;
+  repeated PRCheck checks = 12;
+  PRCheckVerdict check_verdict = 13;
+  PRVerifyPhase verify_phase = 14;
+  // A successful boss/build status is on the head.
+  bool has_build_receipt = 15;
+  // Set only for a green verdict: true when every head workflow run has
+  // completed, false while one is queued or running.
+  optional bool has_settled_workflow_runs = 16;
+  repeated PRHeldWorkflowRun held_workflow_runs = 17;
+  // Read only with should_include_review_comments.
+  repeated ReviewComment review_comments = 18;
+  google.protobuf.Timestamp observed_at = 19;
+  // Every head workflow run, when the runs read happened: for a green verdict
+  // or with should_include_workflow_runs. Empty otherwise.
+  repeated PRWorkflowRun workflow_runs = 20;
+  // The runs read happened, so an empty workflow_runs means the head has no
+  // run rather than that its runs were not read.
+  bool is_workflow_runs_read = 21;
+}
+
+// PRWaitCondition names what a WaitPRState call waits for.
+enum PRWaitCondition {
+  PR_WAIT_CONDITION_UNSPECIFIED = 0;
+  // The check verdict is failing, or green with every head workflow run
+  // settled; a green head where no gate ran meets it only with
+  // should_accept_no_gate_ran, and an unknown verdict keeps waiting.
+  PR_WAIT_CONDITION_CHECKS_SETTLED = 1;
+  // GitHub reports the PR mergeable; a reported conflict is unreachable.
+  PR_WAIT_CONDITION_MERGEABLE = 2;
+  // The head SHA differs from since_head_sha, or from the first read's head
+  // when since_head_sha is empty.
+  PR_WAIT_CONDITION_HEAD_CHANGED = 3;
+}
+
+// PRWaitOutcome is how a WaitPRState call ended.
+enum PRWaitOutcome {
+  PR_WAIT_OUTCOME_UNSPECIFIED = 0;
+  PR_WAIT_OUTCOME_MET = 1;
+  // The condition can no longer hold: the PR is closed or merged, or a
+  // mergeable wait saw a conflict.
+  PR_WAIT_OUTCOME_UNREACHABLE = 2;
+  PR_WAIT_OUTCOME_TIMED_OUT = 3;
+}
+
+message WaitPRStateRequest {
+  // Repository as owner/name or an origin URL; it must be registered on this
+  // daemon.
+  string repo = 1;
+  int32 pr_number = 2;
+  PRWaitCondition condition = 3;
+  // The head a head-changed wait compares against; empty uses the first
+  // read's head.
+  string since_head_sha = 4;
+  // 0 uses the default; anything above the ceiling is clamped to it.
+  int32 timeout_seconds = 5;
+  // Skip the read cache, so every read goes to GitHub.
+  bool should_bypass_cache = 6;
+  // Let checks-settled meet on a green head where no gate ran (every check
+  // skipped or neutral); by default such a head keeps waiting.
+  bool should_accept_no_gate_ran = 7;
+}
+
+message WaitPRStateResponse {
+  PRWaitOutcome outcome = 1;
+  // The last successful read: the one that met the condition or found it
+  // unreachable, or the last good read before the timeout.
+  GetPRStateResponse snapshot = 2;
+  // The timeout the daemon applied after defaulting and clamping.
+  int32 timeout_seconds = 3;
 }
 
 // --- Agent Listing ---
@@ -2586,6 +2787,31 @@ message RenewAgentCredentialDeviceEnrollmentResponse {
 message GetAgentCredentialDeviceStatusRequest {}
 message GetAgentCredentialDeviceStatusResponse {
   AgentCredentialDevice device = 1;
+  // The daemon's cached credential-sharing readiness verdict.
+  CredentialDeviceReadiness readiness = 2;
+}
+
+// CredentialDeviceReadiness is the daemon-computed credential-sharing verdict.
+// state is one of unavailable, unknown, revoked, unenrolled, enrollment_expired,
+// enrollment_pending, bootstrap_unpinned or ready.
+message CredentialDeviceReadiness {
+  string state = 1;
+  string bootstrap_daemon_id = 2;
+  // Enrolled daemons other than this one that can approve it.
+  repeated string approver_daemon_ids = 3;
+  // Ordered commands that move this daemon to ready.
+  repeated CredentialDeviceRemediationStep remediation_steps = 4;
+  google.protobuf.Timestamp checked_at = 5;
+  // This daemon's pending enrollment expiry, when it has one.
+  google.protobuf.Timestamp expires_at = 6;
+}
+
+// CredentialDeviceRemediationStep is one command and the machine that runs it.
+// An empty machine_daemon_id on another machine means any enrolled machine.
+message CredentialDeviceRemediationStep {
+  string machine_daemon_id = 1;
+  bool is_this_machine = 2;
+  string command = 3;
 }
 
 // SendBackToRepairRequest identifies exactly the head and proof the operator saw.

@@ -340,6 +340,16 @@ type streamAuthAdapter struct {
 	// with the reactive tryReRegister path, so login and auth-failure
 	// recovery never double-register. Nil in local-only mode.
 	reRegister func(context.Context) (string, error)
+	// githubCredentials is reset on logout and on every login, so no GitHub
+	// installation token minted for the previous sign-in outlives it. Nil
+	// in the login unit tests.
+	githubCredentials credentialResetter
+}
+
+// credentialResetter drops cached credentials after a sign-in change.
+// *ghtoken.Source satisfies it.
+type credentialResetter interface {
+	Reset()
 }
 
 // NotifyLogin reloads keychain credentials so the running stream picks
@@ -384,6 +394,9 @@ type streamAuthAdapter struct {
 // below), a NeedsLogin-parked loop simply stays parked — there is nothing to
 // dial without a token yet.
 func (a *streamAuthAdapter) NotifyLogin(ctx context.Context, _ []string) (server.LoginVerdict, error) {
+	// A login may be a different account: tokens minted for the previous one
+	// must not be served.
+	a.resetGitHubCredentials()
 	// reloadUnverified records that the reload could not read the record at
 	// all, so the cache below describes the PRE-login state and cannot be used
 	// to judge the credentials this login just wrote. See the gate below.
@@ -480,6 +493,9 @@ func (a *streamAuthAdapter) NotifyLogin(ctx context.Context, _ []string) (server
 		} else if a.streamClient != nil {
 			a.streamClient.Reconnect()
 		}
+		// A poller may have minted with the previous account's session token
+		// between the reset above and the new token landing; drop that too.
+		a.resetGitHubCredentials()
 	}
 	// MarkOK still fires when only the re-register failed. Re-register is
 	// documented best-effort and the reactive path is the backstop; withholding
@@ -548,12 +564,20 @@ func (a *streamAuthAdapter) AuthState(_ context.Context) server.DaemonAuthState 
 	return state
 }
 
-// NotifyLogout marks the auth state as "needs login". Active streams watch
-// this transition and cancel their contexts immediately, then the Run loops
-// pause before reconnecting. Idempotent.
+// NotifyLogout marks the auth state as "needs login" and drops every cached
+// GitHub installation token. Active streams watch this transition and cancel
+// their contexts immediately, then the Run loops pause before reconnecting.
+// Idempotent.
 func (a *streamAuthAdapter) NotifyLogout() {
 	if a.authState != nil {
 		a.authState.MarkNeedsLogin()
+	}
+	a.resetGitHubCredentials()
+}
+
+func (a *streamAuthAdapter) resetGitHubCredentials() {
+	if a.githubCredentials != nil {
+		a.githubCredentials.Reset()
 	}
 }
 

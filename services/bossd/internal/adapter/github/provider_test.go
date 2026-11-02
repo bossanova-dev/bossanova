@@ -387,9 +387,11 @@ func TestCreateDraftPR_RespectsContextCancellation(t *testing.T) {
 	}
 }
 
+// The secondary refusal opens a 60s burst pause: the 30s retry is refused by
+// the breaker without reaching GitHub, and the next one (at 90s) succeeds.
 func TestListOpenPRs_RetriesSecondaryRateLimit(t *testing.T) {
 	var calls atomic.Int32
-	var slept atomic.Int32
+	clock := newFakeClock()
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		n := calls.Add(1)
 		if n == 1 {
@@ -398,12 +400,7 @@ func TestListOpenPRs_RetriesSecondaryRateLimit(t *testing.T) {
 		return `[]`, nil
 	}
 
-	p := New(zerolog.Nop(),
-		WithRunGH(fakeGH),
-		WithSleepFunc(func(time.Duration) {
-			slept.Add(1)
-		}),
-	)
+	p := New(zerolog.Nop(), WithRunGH(fakeGH), WithNowFunc(clock.Now), WithJitterFunc(noJitter), WithSleepFunc(clock.Advance))
 
 	if _, err := p.ListOpenPRs(context.Background(), "owner/repo"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -411,8 +408,8 @@ func TestListOpenPRs_RetriesSecondaryRateLimit(t *testing.T) {
 	if got := calls.Load(); got != 2 {
 		t.Errorf("got %d calls, want 2", got)
 	}
-	if got := slept.Load(); got != 1 {
-		t.Errorf("got %d sleeps, want 1", got)
+	if slept := clock.Now().Sub(newFakeClock().Now()); slept != 90*time.Second {
+		t.Errorf("slept %v, want 90s (the 30s and 60s rungs)", slept)
 	}
 }
 
@@ -2371,10 +2368,10 @@ func TestIsGitHubTransientRefusesTheAnonymousRateLimit(t *testing.T) {
 	if isGitHubTransient(authenticated) {
 		t.Fatal("an exhausted primary quota is classified transient; the breaker owns it")
 	}
-	if !isPrimaryRateLimit(authenticated) {
+	if !isRateLimitRefusal(authenticated) {
 		t.Fatal("a genuine authenticated rate limit is no longer recognised as one")
 	}
-	if isPrimaryRateLimit(anonymous) {
+	if isRateLimitRefusal(anonymous) {
 		t.Fatal("the anonymous rate limit is recognised as a primary quota; it is an auth failure")
 	}
 	if !isGitHubTransient(errors.New("gh pr list: HTTP 403: You have exceeded a secondary rate limit")) {

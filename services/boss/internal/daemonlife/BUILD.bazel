@@ -50,6 +50,7 @@ go_test(
         "ensurerunningpolicy_darwin_test.go",
         "ensurerunningpolicy_linux_test.go",
         "launchagent_job_darwin_test.go",
+        "launchd_stderr_test.go",
         "launchd_test.go",
         "mcpprocess_test.go",
         "process_test.go",

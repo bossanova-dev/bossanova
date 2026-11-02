@@ -8,6 +8,8 @@ go_library(
         "local.go",
         "netns_linux.go",
         "netns_other.go",
+        "pr_state.go",
+        "pr_wait.go",
         "rpcdeadline.go",
         "rpcdeadline_e2e.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
         "rpcdeadline_prod.go",
@@ -42,6 +44,7 @@ go_test(
         "notes_test.go",
         "organizations_test.go",
         "phase_test.go",
+        "pr_wait_test.go",
         "rpcdeadline_prod_test.go",
         "rpcerr_test.go",
         "setup_watch_test.go",

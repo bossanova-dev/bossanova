@@ -317,6 +317,12 @@ const (
 	// DaemonServiceGetGitHubUsageProcedure is the fully-qualified name of the DaemonService's
 	// GetGitHubUsage RPC.
 	DaemonServiceGetGitHubUsageProcedure = "/bossanova.v1.DaemonService/GetGitHubUsage"
+	// DaemonServiceGetPRStateProcedure is the fully-qualified name of the DaemonService's GetPRState
+	// RPC.
+	DaemonServiceGetPRStateProcedure = "/bossanova.v1.DaemonService/GetPRState"
+	// DaemonServiceWaitPRStateProcedure is the fully-qualified name of the DaemonService's WaitPRState
+	// RPC.
+	DaemonServiceWaitPRStateProcedure = "/bossanova.v1.DaemonService/WaitPRState"
 	// DaemonServiceListAgentsProcedure is the fully-qualified name of the DaemonService's ListAgents
 	// RPC.
 	DaemonServiceListAgentsProcedure = "/bossanova.v1.DaemonService/ListAgents"
@@ -666,6 +672,21 @@ type DaemonServiceClient interface {
 	// stage or daemon subsystem that made them) and quota. It counts calls, not
 	// quota points: one GraphQL call can cost more than one point.
 	GetGitHubUsage(context.Context, *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error)
+	// GetPRState reads one pull request's state through the daemon's
+	// webhook-invalidated GitHub read cache: status, checks (commit statuses
+	// included), the check verdict, the verify phase and, for a green verdict,
+	// whether every head workflow run has settled. Only repos registered on this
+	// daemon are read; any other answers NOT_FOUND before any GitHub call.
+	GetPRState(context.Context, *connect.Request[v1.GetPRStateRequest]) (*connect.Response[v1.GetPRStateResponse], error)
+	// WaitPRState blocks until one condition holds on a pull request, a
+	// condition becomes unreachable, or the timeout passes. The daemon re-reads
+	// the PR through its cached reader only when a webhook invalidates the PR's
+	// or its repo's reads, and on a slow timer while the repo's webhook delivery
+	// is unhealthy, so a wait costs GitHub reads per event, not per poll tick. A
+	// condition that already holds answers after one read. Only repos
+	// registered on this daemon are read; any other answers NOT_FOUND before
+	// any GitHub call.
+	WaitPRState(context.Context, *connect.Request[v1.WaitPRStateRequest]) (*connect.Response[v1.WaitPRStateResponse], error)
 	// ListAgents returns the names + GetInfo metadata of every agent runner
 	// plugin currently loaded. Used by the boss TUI to (a) decide whether to
 	// show the onboarding wizard, (b) populate the new-session agent-select
@@ -1277,6 +1298,18 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("GetGitHubUsage")),
 			connect.WithClientOptions(opts...),
 		),
+		getPRState: connect.NewClient[v1.GetPRStateRequest, v1.GetPRStateResponse](
+			httpClient,
+			baseURL+DaemonServiceGetPRStateProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetPRState")),
+			connect.WithClientOptions(opts...),
+		),
+		waitPRState: connect.NewClient[v1.WaitPRStateRequest, v1.WaitPRStateResponse](
+			httpClient,
+			baseURL+DaemonServiceWaitPRStateProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("WaitPRState")),
+			connect.WithClientOptions(opts...),
+		),
 		listAgents: connect.NewClient[v1.ListAgentsRequest, v1.ListAgentsResponse](
 			httpClient,
 			baseURL+DaemonServiceListAgentsProcedure,
@@ -1408,6 +1441,8 @@ type daemonServiceClient struct {
 	getSessionTimeline                   *connect.Client[v1.GetSessionTimelineRequest, v1.GetSessionTimelineResponse]
 	getRunCost                           *connect.Client[v1.GetRunCostRequest, v1.GetRunCostResponse]
 	getGitHubUsage                       *connect.Client[v1.GetGitHubUsageRequest, v1.GetGitHubUsageResponse]
+	getPRState                           *connect.Client[v1.GetPRStateRequest, v1.GetPRStateResponse]
+	waitPRState                          *connect.Client[v1.WaitPRStateRequest, v1.WaitPRStateResponse]
 	listAgents                           *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
 	listPlugins                          *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
 	getDaemonCapabilities                *connect.Client[v1.GetDaemonCapabilitiesRequest, v1.GetDaemonCapabilitiesResponse]
@@ -1896,6 +1931,16 @@ func (c *daemonServiceClient) GetGitHubUsage(ctx context.Context, req *connect.R
 	return c.getGitHubUsage.CallUnary(ctx, req)
 }
 
+// GetPRState calls bossanova.v1.DaemonService.GetPRState.
+func (c *daemonServiceClient) GetPRState(ctx context.Context, req *connect.Request[v1.GetPRStateRequest]) (*connect.Response[v1.GetPRStateResponse], error) {
+	return c.getPRState.CallUnary(ctx, req)
+}
+
+// WaitPRState calls bossanova.v1.DaemonService.WaitPRState.
+func (c *daemonServiceClient) WaitPRState(ctx context.Context, req *connect.Request[v1.WaitPRStateRequest]) (*connect.Response[v1.WaitPRStateResponse], error) {
+	return c.waitPRState.CallUnary(ctx, req)
+}
+
 // ListAgents calls bossanova.v1.DaemonService.ListAgents.
 func (c *daemonServiceClient) ListAgents(ctx context.Context, req *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error) {
 	return c.listAgents.CallUnary(ctx, req)
@@ -2253,6 +2298,21 @@ type DaemonServiceHandler interface {
 	// stage or daemon subsystem that made them) and quota. It counts calls, not
 	// quota points: one GraphQL call can cost more than one point.
 	GetGitHubUsage(context.Context, *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error)
+	// GetPRState reads one pull request's state through the daemon's
+	// webhook-invalidated GitHub read cache: status, checks (commit statuses
+	// included), the check verdict, the verify phase and, for a green verdict,
+	// whether every head workflow run has settled. Only repos registered on this
+	// daemon are read; any other answers NOT_FOUND before any GitHub call.
+	GetPRState(context.Context, *connect.Request[v1.GetPRStateRequest]) (*connect.Response[v1.GetPRStateResponse], error)
+	// WaitPRState blocks until one condition holds on a pull request, a
+	// condition becomes unreachable, or the timeout passes. The daemon re-reads
+	// the PR through its cached reader only when a webhook invalidates the PR's
+	// or its repo's reads, and on a slow timer while the repo's webhook delivery
+	// is unhealthy, so a wait costs GitHub reads per event, not per poll tick. A
+	// condition that already holds answers after one read. Only repos
+	// registered on this daemon are read; any other answers NOT_FOUND before
+	// any GitHub call.
+	WaitPRState(context.Context, *connect.Request[v1.WaitPRStateRequest]) (*connect.Response[v1.WaitPRStateResponse], error)
 	// ListAgents returns the names + GetInfo metadata of every agent runner
 	// plugin currently loaded. Used by the boss TUI to (a) decide whether to
 	// show the onboarding wizard, (b) populate the new-session agent-select
@@ -2860,6 +2920,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("GetGitHubUsage")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetPRStateHandler := connect.NewUnaryHandler(
+		DaemonServiceGetPRStateProcedure,
+		svc.GetPRState,
+		connect.WithSchema(daemonServiceMethods.ByName("GetPRState")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceWaitPRStateHandler := connect.NewUnaryHandler(
+		DaemonServiceWaitPRStateProcedure,
+		svc.WaitPRState,
+		connect.WithSchema(daemonServiceMethods.ByName("WaitPRState")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceListAgentsHandler := connect.NewUnaryHandler(
 		DaemonServiceListAgentsProcedure,
 		svc.ListAgents,
@@ -3084,6 +3156,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceGetRunCostHandler.ServeHTTP(w, r)
 		case DaemonServiceGetGitHubUsageProcedure:
 			daemonServiceGetGitHubUsageHandler.ServeHTTP(w, r)
+		case DaemonServiceGetPRStateProcedure:
+			daemonServiceGetPRStateHandler.ServeHTTP(w, r)
+		case DaemonServiceWaitPRStateProcedure:
+			daemonServiceWaitPRStateHandler.ServeHTTP(w, r)
 		case DaemonServiceListAgentsProcedure:
 			daemonServiceListAgentsHandler.ServeHTTP(w, r)
 		case DaemonServiceListPluginsProcedure:
@@ -3485,6 +3561,14 @@ func (UnimplementedDaemonServiceHandler) GetRunCost(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) GetGitHubUsage(context.Context, *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetGitHubUsage is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetPRState(context.Context, *connect.Request[v1.GetPRStateRequest]) (*connect.Response[v1.GetPRStateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetPRState is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) WaitPRState(context.Context, *connect.Request[v1.WaitPRStateRequest]) (*connect.Response[v1.WaitPRStateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.WaitPRState is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error) {

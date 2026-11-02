@@ -65,8 +65,18 @@ export function holdsOn(facts, ctx) {
   return HOLDS.filter(({ holds }) => holds(facts, ctx))
 }
 
-/** True when every loose commit on HEAD has a patch-identical commit on the upstream branch. */
-function looseCommitsLanded(path) {
+/**
+ * True when every commit on `rev` that the `excluded` refs do not reach has a patch-identical
+ * commit on the upstream branch. With no upstream branch, nothing has landed.
+ * @param {string} path
+ * @param {string[]} [excluded] rev-list ref selectors whose commits count as safe already
+ * @param {string} [rev]
+ */
+export function looseCommitsLanded(
+  path,
+  excluded = ['--branches', '--remotes', '--tags'],
+  rev = 'HEAD',
+) {
   const upstream = UPSTREAMS.find((ref) => {
     try {
       git(['rev-parse', '--verify', '-q', ref], path)
@@ -76,11 +86,11 @@ function looseCommitsLanded(path) {
     }
   })
   if (!upstream) return false
-  const loose = git(['rev-list', 'HEAD', '--not', '--branches', '--remotes', '--tags'], path)
+  const loose = git(['rev-list', rev, '--not', ...excluded], path)
     .split('\n')
     .filter(Boolean)
   const landed = new Set(
-    git(['cherry', upstream, 'HEAD'], path)
+    git(['cherry', upstream, rev], path)
       .split('\n')
       .filter((line) => line.startsWith('- '))
       .map((line) => line.slice(2)),

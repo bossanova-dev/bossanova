@@ -3,13 +3,19 @@ package cron
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/rs/zerolog"
+
+	"github.com/recurser/bossalib/kit/clocktest"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/github"
 	"github.com/recurser/bossd/internal/domain"
 )
 
@@ -221,5 +227,55 @@ func TestRunNowIgnoresQuotaFloor(t *testing.T) {
 	}
 	if n := len(creator.calls); n != 1 || quota.reads() != 0 {
 		t.Fatalf("CreateSession calls = %d, quota reads = %d; want 1 and 0", n, quota.reads())
+	}
+}
+
+// refusedProvider is a real GitHub provider that has just taken one GraphQL
+// refusal worded like GitHub's per-minute limit, while rate_limit reports
+// graphQLRemaining of 5000. It reads the quotas before the refusal, so a
+// refusal that zeroed the cached reading would reach the floor.
+func refusedProvider(t *testing.T, graphQLRemaining int) *github.Provider {
+	t.Helper()
+	clock := clocktest.New(time.Unix(1_800_000_000, 0))
+	runGH := func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 2 && args[0] == "api" && args[1] == "rate_limit" {
+			reset := clock.Now().Add(40 * time.Minute).Unix()
+			return fmt.Sprintf(`{"resources":{"core":{"limit":5000,"remaining":4900,"reset":%d},"graphql":{"limit":5000,"remaining":%d,"reset":%d}}}`,
+				reset, graphQLRemaining, reset), nil
+		}
+		return "", errors.New("gh pr view 7 --repo o/r: exit status 1: GraphQL: API rate limit already exceeded for user ID 96322.")
+	}
+	p := github.New(zerolog.Nop(), github.WithRunGH(runGH), github.WithNowFunc(clock.Now),
+		github.WithJitterFunc(func(time.Duration) time.Duration { return 0 }))
+	if _, err := p.QuotaStatus(context.Background()); err != nil {
+		t.Fatalf("QuotaStatus: %v", err)
+	}
+	clock.Advance(5 * time.Second)
+	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+		t.Fatalf("refused call err = %v, want vcs.ErrRateLimited", err)
+	}
+	return p
+}
+
+func TestVerifyCronFiresDuringBurstPause_ScheduledJobs_AC230402(t *testing.T) {
+	s, _, creator, _ := quotaScheduler(t, verifyJob(), quotaTestOrigin, nil)
+	s.quota = refusedProvider(t, 4699)
+	sess, skipped, err := s.fire(context.Background(), "verify")
+	if err != nil || skipped == SkipReasonQuotaReserved || sess == nil {
+		t.Fatalf("fire during a burst pause = (%v, %q, %v), want a verify session", sess, skipped, err)
+	}
+	if n := len(creator.calls); n != 1 {
+		t.Fatalf("CreateSession called %d times, want 1", n)
+	}
+
+	// The same path with GitHub reporting the hourly quota spent still skips,
+	// so the pass above is not vacuous.
+	s, _, creator, _ = quotaScheduler(t, verifyJob(), quotaTestOrigin, nil)
+	s.quota = refusedProvider(t, 0)
+	if _, skipped, err := s.fire(context.Background(), "verify"); err != nil || skipped != SkipReasonQuotaReserved {
+		t.Fatalf("fire after a real exhaustion = (%q, %v), want skip %q", skipped, err, SkipReasonQuotaReserved)
+	}
+	if n := len(creator.calls); n != 0 {
+		t.Fatalf("CreateSession called %d times after a real exhaustion, want 0", n)
 	}
 }

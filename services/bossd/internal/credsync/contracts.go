@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"errors"
+	"time"
 )
 
 // ErrConflict is a remote compare-and-set conflict. ErrNotFound means no seal/blob/local row exists.
@@ -18,6 +19,8 @@ var (
 type Device struct {
 	DaemonID, Status, ApprovedByDaemonID                  string
 	DevicePublicKey, IdentityPublicKey, ApprovalSignature []byte
+	// ExpiresAt is a pending row's enrollment deadline; it is not approval evidence.
+	ExpiresAt time.Time `json:"-"`
 }
 
 // KeySeal is an opaque box destined for one enrolled daemon.

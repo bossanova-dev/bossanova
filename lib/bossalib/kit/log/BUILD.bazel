@@ -13,12 +13,14 @@ go_library(
         "@com_github_rs_zerolog//:zerolog",
         "@com_github_rs_zerolog//log",
         "@in_gopkg_natefinch_lumberjack_v2//:lumberjack_v2",
+        "@org_golang_x_term//:term",
     ],
 )
 
 go_test(
     name = "log_test",
     srcs = [
+        "console_test.go",
         "discover_test.go",
         "log_test.go",
         "perms_unix_test.go",
@@ -26,6 +28,7 @@ go_test(
     ],
     embed = [":log"],
     deps = [
+        "@com_github_rs_zerolog//:zerolog",
         "@com_github_rs_zerolog//log",
         "@in_gopkg_natefinch_lumberjack_v2//:lumberjack_v2",
     ],

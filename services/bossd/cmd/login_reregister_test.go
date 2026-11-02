@@ -558,3 +558,55 @@ func TestNotifyLogin_DeletedRecordIsStillJudged(t *testing.T) {
 		t.Fatal("auth gate cleared for a deleted credential record")
 	}
 }
+
+// fakeCredentialResetter counts the GitHub credential resets a sign-in change
+// triggers.
+type fakeCredentialResetter struct{ resets atomic.Int32 }
+
+func (f *fakeCredentialResetter) Reset() { f.resets.Add(1) }
+
+// TestSignInChangesResetGitHubCredentials: a logout, and a login that may be
+// another account, both drop the cached GitHub installation tokens, so none
+// minted for the previous sign-in is served afterwards.
+func TestSignInChangesResetGitHubCredentials(t *testing.T) {
+	t.Parallel()
+	creds := &fakeCredentialResetter{}
+	authState := upstream.NewAuthState()
+	adapter := &streamAuthAdapter{authState: authState, logger: zerolog.Nop(), githubCredentials: creds}
+
+	adapter.NotifyLogout()
+	if !authState.NeedsLogin() {
+		t.Fatal("NotifyLogout did not mark the daemon as needing login")
+	}
+	if n := creds.resets.Load(); n != 1 {
+		t.Fatalf("resets after logout = %d, want 1", n)
+	}
+	if _, err := adapter.NotifyLogin(context.Background(), nil); err != nil {
+		t.Fatalf("NotifyLogin: %v", err)
+	}
+	if n := creds.resets.Load(); n != 2 {
+		t.Fatalf("resets after login = %d, want 2", n)
+	}
+}
+
+// TestNotifyLoginResetsGitHubCredentialsAfterReRegister: a token minted with
+// the previous account's session token while the re-register runs is dropped
+// once the new account's session token is installed.
+func TestNotifyLoginResetsGitHubCredentialsAfterReRegister(t *testing.T) {
+	t.Parallel()
+	creds := &fakeCredentialResetter{}
+	var resetsDuringReRegister int32
+	adapter := &streamAuthAdapter{
+		authState: upstream.NewAuthState(), logger: zerolog.Nop(), githubCredentials: creds,
+		reRegister: func(context.Context) (string, error) {
+			resetsDuringReRegister = creds.resets.Load()
+			return "new-session-token", nil
+		},
+	}
+	if _, err := adapter.NotifyLogin(context.Background(), nil); err != nil {
+		t.Fatalf("NotifyLogin: %v", err)
+	}
+	if n := creds.resets.Load(); n <= resetsDuringReRegister {
+		t.Fatalf("resets after login = %d, during re-register = %d; want a reset after the new session token landed", n, resetsDuringReRegister)
+	}
+}

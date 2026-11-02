@@ -9,6 +9,7 @@ import (
 
 // OpenIssueURL returns the URL of an open issue, excluding pull requests.
 func (p *Provider) OpenIssueURL(ctx context.Context, host, owner, repo string, number int) (string, bool, error) {
+	ctx = withRoute(ctx, "OpenIssueURL", issueNWO(host, owner, repo))
 	out, err := p.gh(ctx, "api", fmt.Sprintf("repos/%s/%s/issues/%d", owner, repo, number), "--hostname", host)
 	if err != nil {
 		if strings.Contains(ghResponseText(err), "HTTP 404") {
@@ -28,4 +29,13 @@ func (p *Provider) OpenIssueURL(ctx context.Context, host, owner, repo string, n
 		return "", false, nil
 	}
 	return issue.HTMLURL, true, nil
+}
+
+// issueNWO is the route key for an issue on host: owner/repo on github.com,
+// "" (the user login) on any other host.
+func issueNWO(host, owner, repo string) string {
+	if !strings.EqualFold(host, "github.com") || owner == "" || repo == "" {
+		return ""
+	}
+	return owner + "/" + repo
 }

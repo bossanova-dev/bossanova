@@ -30,15 +30,19 @@ type backgroundFloors struct {
 	reserve  float64
 
 	mu sync.Mutex
-	// refusing records the quota and tier pairs whose background reads are
+	// refusing records the pool and tier pairs whose background reads are
 	// being refused, so the start and the end of a refusal log once each.
 	refusing map[floorKey]bool
-	// probeFailedAt is when the gate last failed to read the quotas. Inside
-	// quotaReadingTTL after it the gate fails open without probing again.
-	probeFailedAt time.Time
+	// probeFailedAt is, per identity, when the gate last failed to read its
+	// quotas. Inside quotaReadingTTL after it the gate fails open without
+	// probing again.
+	probeFailedAt map[string]time.Time
 }
 
-type floorKey struct{ quota, tier string }
+type floorKey struct {
+	pool quotaPool
+	tier string
+}
 
 // WithBackgroundQuotaFloors holds background reads back below the given share
 // of the quota they spend: standard for vcs.WithCachedReads reads, reserve for
@@ -74,20 +78,22 @@ func (s *quotaShortfall) message(quota string, resetAt time.Time) string {
 }
 
 // backgroundFloorRefusal returns a rate-limited error, without contacting
-// GitHub, for a background read whose quota is below its tier's floor. It
+// GitHub, for a background read whose pool is below its tier's floor. Each
+// identity's pool is judged on its own reading (ctx carries the identity). It
 // returns nil for a foreground call, a write or an unknown gh shape, and fails
 // open when the quota's figures are unknown, have no limit or are stale. A
 // refusal never pauses the breaker, so foreground calls keep running.
-func (p *Provider) backgroundFloorRefusal(ctx context.Context, quota string, args []string) error {
+func (p *Provider) backgroundFloorRefusal(ctx context.Context, pool quotaPool, args []string) error {
 	floor, tier := p.floors.floorFor(ctx)
 	if floor <= 0 || !isReadInvocation(args) {
 		return nil
 	}
+	quota := pool.quota
 	res, ok := p.floorQuota(ctx, quota)
 	if !ok {
 		return nil
 	}
-	key := floorKey{quota: quota, tier: tier}
+	key := floorKey{pool: pool, tier: tier}
 	if float64(res.Remaining) >= floor*float64(res.Limit) {
 		p.floors.transition(p.logger, key, false, func(e *zerolog.Event) *zerolog.Event { return e })
 		return nil
@@ -98,6 +104,7 @@ func (p *Provider) backgroundFloorRefusal(ctx context.Context, quota string, arg
 	})
 	return &rateLimitedError{
 		quota:      quota,
+		identity:   pool.identity,
 		resetAt:    resetAt,
 		belowFloor: &quotaShortfall{remaining: res.Remaining, limit: res.Limit, floor: floor},
 	}
@@ -114,7 +121,7 @@ func (f *backgroundFloors) transition(logger zerolog.Logger, key floorKey, refus
 		f.refusing = make(map[floorKey]bool)
 	}
 	f.refusing[key] = refusing
-	event := fields(logger.Info().Str("quota", key.quota).Str("tier", key.tier))
+	event := fields(logger.Info().Str("quota", key.pool.quota).Str("identity", key.pool.identity).Str("tier", key.tier))
 	if refusing {
 		event.Msg("github quota below the background floor; refusing background reads until the quota resets")
 		return
@@ -139,7 +146,7 @@ func (p *Provider) floorQuota(ctx context.Context, quota string) (quotaStatus, b
 		if !reading.readAt.Before(time.Unix(res.Reset, 0)) {
 			return quotaStatus{}, false
 		}
-		p.quotas.expire(reading.readAt)
+		p.quotaCacheFor(ctx).expire(reading.readAt)
 		if reading, ok = p.floorReading(ctx); !ok {
 			return quotaStatus{}, false
 		}
@@ -154,15 +161,16 @@ func (p *Provider) floorQuota(ctx context.Context, quota string) (quotaStatus, b
 // floorReading returns the cached quota reading, probing only when it has
 // expired and no probe failed within quotaReadingTTL.
 func (p *Provider) floorReading(ctx context.Context) (quotaReading, bool) {
-	if reading, ok, _ := p.quotas.fresh(); ok {
+	if reading, ok, _ := p.quotaCacheFor(ctx).fresh(); ok {
 		return reading, true
 	}
-	if p.floors.probeBackingOff(p.nowFn()) {
+	identity := identityFrom(ctx).key
+	if p.floors.probeBackingOff(identity, p.nowFn()) {
 		return quotaReading{}, false
 	}
 	reading, ok := p.readQuotas(ctx)
 	if !ok {
-		p.floors.markProbeFailed(p.nowFn())
+		p.floors.markProbeFailed(identity, p.nowFn())
 	}
 	return reading, ok
 }
@@ -171,16 +179,20 @@ func (p *Provider) resetPassed(res quotaStatus) bool {
 	return !time.Unix(res.Reset, 0).After(p.nowFn())
 }
 
-func (f *backgroundFloors) probeBackingOff(now time.Time) bool {
+func (f *backgroundFloors) probeBackingOff(identity string, now time.Time) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return !f.probeFailedAt.IsZero() && now.Sub(f.probeFailedAt) < quotaReadingTTL
+	failedAt := f.probeFailedAt[identity]
+	return !failedAt.IsZero() && now.Sub(failedAt) < quotaReadingTTL
 }
 
-func (f *backgroundFloors) markProbeFailed(now time.Time) {
+func (f *backgroundFloors) markProbeFailed(identity string, now time.Time) {
 	f.mu.Lock()
-	f.probeFailedAt = now
-	f.mu.Unlock()
+	defer f.mu.Unlock()
+	if f.probeFailedAt == nil {
+		f.probeFailedAt = make(map[string]time.Time)
+	}
+	f.probeFailedAt[identity] = now
 }
 
 // expire drops the cached reading while it is still the one read at readAt, so

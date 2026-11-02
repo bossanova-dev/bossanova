@@ -18,9 +18,9 @@ const (
 	// defaultReadCacheTTL is how long a read stays servable to background
 	// callers. Long enough that the daemon's independent 2-minute loops (the
 	// state-machine poller, display poller, callback reconcile, cron-title
-	// repair) share one GitHub read per PR instead of each paying for its own;
-	// short enough that a repo without webhooks still sees changes within a
-	// poll cycle. A webhook for the PR drops the entry immediately.
+	// repair) share one GitHub read per PR instead of each paying for its own.
+	// A webhook for the PR drops the entry immediately. The open-PR snapshot
+	// is served longer instead (snapshotMaxAge).
 	defaultReadCacheTTL = 60 * time.Second
 	// readFlightTimeout bounds one coalesced fetch. The fetch runs detached from
 	// whichever caller started it, so one caller's short deadline cannot fail
@@ -35,7 +35,25 @@ const (
 	// existing inline comment's body; a webhook catches that on connected
 	// repositories, and this bound catches it everywhere else.
 	reviewCommentsMaxAge = 10 * time.Minute
+	// snapshotSafetyNetMaxAge is how long the open-PR snapshot serves
+	// background reads while the repo's webhook delivery is healthy: webhooks
+	// invalidate it on every change, so the age only bounds a dropped delivery.
+	// It mirrors the pollers' webhookSafetyNetInterval
+	// (services/bossd/internal/session/webhook_polling.go), so a lost webhook
+	// is caught on the same scale as their own safety net.
+	snapshotSafetyNetMaxAge = 10 * time.Minute
+	// snapshotFallbackMaxAge is how long the snapshot serves background reads
+	// for a repo without healthy webhook delivery (no Boss Cloud login, a quiet
+	// or broken webhook pipe, or a fresh reconnect): such a repo still catches
+	// every change within this age.
+	snapshotFallbackMaxAge = 5 * time.Minute
 )
+
+// WebhookDeliveryHealth reports whether GitHub webhooks are currently reaching
+// this daemon for a repo. upstream.WebhookHealth satisfies it.
+type WebhookDeliveryHealth interface {
+	WebhookDeliveryHealthy(repo string) bool
+}
 
 // Cache key kinds. One PR's kinds are dropped together by InvalidatePR.
 const (
@@ -61,15 +79,8 @@ type readCacheEntry struct {
 	// fetched no later than this entry's fetch began, or "" when there was
 	// none. Only review-comments entries carry one; see GetReviewComments.
 	fingerprint string
-}
-
-// maxAge is how long e may stay cached: a fingerprinted entry up to
-// reviewCommentsMaxAge, any other for the TTL.
-func (c *readCache) maxAge(e readCacheEntry) time.Duration {
-	if e.fingerprint != "" {
-		return max(c.ttl, reviewCommentsMaxAge)
-	}
-	return c.ttl
+	// retain is how long the size sweep keeps the entry.
+	retain time.Duration
 }
 
 // readCache holds recent successful reads for callers that opted in with
@@ -85,10 +96,17 @@ type readCache struct {
 	// invalidation must not store its (possibly pre-webhook) result after it.
 	generation map[string]uint64
 	flights    singleflight.Group
+	// repoEpoch is bumped by invalidateRepo. It counts toward the generation
+	// of every key of that repo it covers, so one bump stops every in-flight
+	// fetch of them from storing.
+	repoEpoch map[string]uint64
 	// failedAt records a key's last failed fetch. Background reads skip
 	// refetching it for one TTL, so a repository whose snapshot keeps failing
 	// pays for one attempt per TTL rather than one per read.
 	failedAt map[string]time.Time
+	// health decides the snapshot's max age per read; nil (no Boss Cloud
+	// login) is never healthy.
+	health WebhookDeliveryHealth
 }
 
 func newReadCache(ttl time.Duration) *readCache {
@@ -97,8 +115,69 @@ func newReadCache(ttl time.Duration) *readCache {
 		now:        time.Now,
 		entries:    make(map[string]readCacheEntry),
 		generation: make(map[string]uint64),
+		repoEpoch:  make(map[string]uint64),
 		failedAt:   make(map[string]time.Time),
 	}
+}
+
+// SetWebhookHealth lets the open-PR snapshot serve a repo whose webhooks are
+// healthy for snapshotSafetyNetMaxAge instead of snapshotFallbackMaxAge.
+// Safe to call while reads are in flight.
+func (p *Provider) SetWebhookHealth(h WebhookDeliveryHealth) {
+	p.cache.mu.Lock()
+	defer p.cache.mu.Unlock()
+	p.cache.health = h
+}
+
+// snapshotMaxAge is how old repoPath's snapshot may be and still serve a
+// background read, decided per read so a lapse in webhook health takes effect
+// on the next one.
+func (c *readCache) snapshotMaxAge(repoPath string) time.Duration {
+	c.mu.Lock()
+	h := c.health
+	c.mu.Unlock()
+	if h != nil && h.WebhookDeliveryHealthy(repoPath) {
+		return snapshotSafetyNetMaxAge
+	}
+	return snapshotFallbackMaxAge
+}
+
+// keyRepo splits a read key into its kind and its lower-cased repository.
+// Repository names hold neither '#' nor '@', so the first of them ends it.
+func keyRepo(key string) (kind, repo string) {
+	kind, rest, _ := strings.Cut(key, "|")
+	if i := strings.IndexAny(rest, "#@"); i >= 0 {
+		rest = rest[:i]
+	}
+	return kind, rest
+}
+
+// repoScoped reports whether invalidateRepo covers a kind. Reviews are left out:
+// pushes, statuses and checks never change them.
+func repoScoped(kind string) bool { return kind != readKindReviews }
+
+// generationOf is key's own generation plus its repository's epoch when
+// invalidateRepo covers it. Both only grow, so either bump changes the sum.
+// Callers hold c.mu.
+func (c *readCache) generationOf(key string) uint64 {
+	gen := c.generation[key]
+	if kind, repo := keyRepo(key); repoScoped(kind) {
+		gen += c.repoEpoch[repo]
+	}
+	return gen
+}
+
+// retention is how long the size sweep keeps key's entry: the snapshot serves
+// for up to snapshotSafetyNetMaxAge and a fingerprinted entry for up to
+// reviewCommentsMaxAge, so both outlive the TTL.
+func (c *readCache) retention(key, fingerprint string) time.Duration {
+	if kind, _ := keyRepo(key); kind == readKindOpenPRSnapshot {
+		return max(c.ttl, snapshotSafetyNetMaxAge)
+	}
+	if fingerprint != "" {
+		return max(c.ttl, reviewCommentsMaxAge)
+	}
+	return c.ttl
 }
 
 func prReadKey(kind, repoPath string, prID int) string {
@@ -119,12 +198,18 @@ func (c *readCache) get(key string) (any, bool) {
 	return entry.value, ok
 }
 
-// fresh returns key's entry while it is still servable.
+// fresh returns key's entry while it is younger than the TTL.
 func (c *readCache) fresh(key string) (readCacheEntry, bool) {
+	return c.freshWithin(key, c.ttl)
+}
+
+// freshWithin returns key's entry while it is younger than maxAge. A
+// non-positive TTL disables caching for every kind.
+func (c *readCache) freshWithin(key string, maxAge time.Duration) (readCacheEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
-	if !ok || c.ttl <= 0 || c.now().Sub(entry.fetchedAt) >= c.ttl {
+	if !ok || c.ttl <= 0 || c.now().Sub(entry.fetchedAt) >= maxAge {
 		return readCacheEntry{}, false
 	}
 	return entry, true
@@ -155,7 +240,7 @@ func (c *readCache) backingOff(key string) bool {
 func (c *readCache) begin(key string) (uint64, time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.generation[key], c.now()
+	return c.generationOf(key), c.now()
 }
 
 // matching returns key's entry while it carries fingerprint and is younger
@@ -186,18 +271,18 @@ func (c *readCache) peek(key string) (readCacheEntry, bool) {
 func (c *readCache) store(key string, gen uint64, at time.Time, value any, fingerprint string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.generation[key] != gen {
+	if c.generationOf(key) != gen {
 		return
 	}
 	now := c.now()
 	if len(c.entries) >= readCacheSweepAt {
 		for k, e := range c.entries {
-			if now.Sub(e.fetchedAt) >= c.maxAge(e) {
+			if now.Sub(e.fetchedAt) >= e.retain {
 				delete(c.entries, k)
 			}
 		}
 	}
-	c.entries[key] = readCacheEntry{value: value, fetchedAt: at, fingerprint: fingerprint}
+	c.entries[key] = readCacheEntry{value: value, fetchedAt: at, fingerprint: fingerprint, retain: c.retention(key, fingerprint)}
 }
 
 func (c *readCache) invalidate(keys ...string) {
@@ -227,6 +312,42 @@ func flightKey(ctx context.Context, key string) string {
 		return key + reserveFlightSuffix
 	}
 	return key
+}
+
+// invalidateRepo drops every cached read invalidateRepo covers for repoPath
+// and stops every in-flight fetch of them from storing.
+func (c *readCache) invalidateRepo(repoPath string) {
+	// Derived the way generationOf derives a key's repo, so both always agree.
+	_, repo := keyRepo(repoReadKey(readKindOpenPRSnapshot, repoPath))
+	c.mu.Lock()
+	c.repoEpoch[repo]++
+	for key := range c.entries {
+		if kind, r := keyRepo(key); r == repo && repoScoped(kind) {
+			delete(c.entries, key)
+		}
+	}
+	for key := range c.failedAt {
+		if kind, r := keyRepo(key); r == repo && repoScoped(kind) {
+			delete(c.failedAt, key)
+		}
+	}
+	c.mu.Unlock()
+	// A background read arriving after this must not join a snapshot or list
+	// fetch that started before it. A per-PR flight may still answer a caller
+	// that joins it, but it cannot store.
+	for _, key := range []string{repoReadKey(readKindOpenPRSnapshot, repoPath), repoReadKey(readKindOpenPRs, repoPath)} {
+		c.flights.Forget(key)
+		c.flights.Forget(key + reserveFlightSuffix)
+	}
+}
+
+// InvalidateRepo marks repoPath's open-PR snapshot, open-PR list, per-PR
+// status and checks, and branch heads stale, for a webhook that names no PR (a
+// push, a commit status, a check on a branch): the next background read of
+// any of them goes to GitHub, and a fetch begun before the call never stores.
+// Review comments are kept. The webhook dispatcher calls it.
+func (p *Provider) InvalidateRepo(repoPath string) {
+	p.cache.invalidateRepo(repoPath)
 }
 
 // InvalidatePR drops every cached read for one PR, plus the repository's open
@@ -307,6 +428,7 @@ func clonePRStatus(s *vcs.PRStatus) *vcs.PRStatus {
 // GetPRStatus returns the current status of a pull request. Background callers
 // (vcs.WithCachedReads) may be served from the read cache.
 func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (*vcs.PRStatus, error) {
+	ctx = withRoute(ctx, "GetPRStatus", vcs.GitHubNWO(repoPath))
 	return snapshotRead(ctx, p, repoPath, prReadKey(readKindStatus, repoPath, prID), clonePRStatus,
 		func(s *prSnapshot) (*vcs.PRStatus, bool) { return s.status(prID) },
 		func(ctx context.Context) (*vcs.PRStatus, error) { return p.fetchPRStatus(ctx, repoPath, prID) })
@@ -315,6 +437,7 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 // GetCheckResults returns CI check results for a pull request. Background
 // callers (vcs.WithCachedReads) may be served from the read cache.
 func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID int) ([]vcs.CheckResult, error) {
+	ctx = withRoute(ctx, "GetCheckResults", vcs.GitHubNWO(repoPath))
 	set, err := p.GetCheckSet(ctx, repoPath, prID)
 	return set.Checks, err
 }
@@ -327,6 +450,7 @@ func cloneCheckSet(set vcs.CheckSet) vcs.CheckSet {
 // GetCheckSet reads CI checks and build provenance together. Background callers
 // share the same cache entry as GetCheckResults.
 func (p *Provider) GetCheckSet(ctx context.Context, repoPath string, prID int) (vcs.CheckSet, error) {
+	ctx = withRoute(ctx, "GetCheckSet", vcs.GitHubNWO(repoPath))
 	return snapshotRead(ctx, p, repoPath, prReadKey(readKindChecks, repoPath, prID), cloneCheckSet,
 		func(s *prSnapshot) (vcs.CheckSet, bool) { return s.checkSet(prID) },
 		func(ctx context.Context) (vcs.CheckSet, error) { return p.fetchCheckSet(ctx, repoPath, prID) })
@@ -342,6 +466,7 @@ func (p *Provider) GetCheckSet(ctx context.Context, repoPath string, prID int) (
 // entry never carries a fingerprint taken after its fetch began, and a match
 // means the snapshot saw no review activity since the entry's data was read.
 func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID int) ([]vcs.ReviewComment, error) {
+	ctx = withRoute(ctx, "GetReviewComments", vcs.GitHubNWO(repoPath))
 	key := prReadKey(readKindReviews, repoPath, prID)
 	clone := slices.Clone[[]vcs.ReviewComment]
 	fetch := func(ctx context.Context) ([]vcs.ReviewComment, error) {
@@ -414,6 +539,7 @@ func (p *Provider) cachedReviewActivity(repoPath string, prID int, at time.Time)
 // ListOpenPRs returns all open pull requests for a repository. Background
 // callers (vcs.WithCachedReads) may be served from the read cache.
 func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
+	ctx = withRoute(ctx, "ListOpenPRs", vcs.GitHubNWO(repoPath))
 	return snapshotRead(ctx, p, repoPath, repoReadKey(readKindOpenPRs, repoPath), slices.Clone[[]vcs.PRSummary],
 		func(s *prSnapshot) ([]vcs.PRSummary, bool) { return s.openPRs(), true },
 		func(ctx context.Context) ([]vcs.PRSummary, error) { return p.fetchOpenPRs(ctx, repoPath) })
@@ -433,7 +559,8 @@ func snapshotRead[T any](ctx context.Context, p *Provider, repoPath, key string,
 		return cachedRead(ctx, p.cache, key, noFingerprint, clone, fetch)
 	}
 	snapKey := repoReadKey(readKindOpenPRSnapshot, repoPath)
-	v, served, snapOK := newestRead(p.cache, key, snapKey, clone, project)
+	maxAge := p.cache.snapshotMaxAge(repoPath)
+	v, served, snapOK := newestRead(p.cache, key, snapKey, maxAge, clone, project)
 	if served {
 		return v, nil
 	}
@@ -450,8 +577,13 @@ func snapshotRead[T any](ctx context.Context, p *Provider, repoPath, key string,
 		case err == nil:
 			// An unmarked read may have stored key while the snapshot was in
 			// flight, from newer data than the snapshot's.
-			if v, served, _ := newestRead(p.cache, key, snapKey, clone, project); served {
+			if v, served, _ := newestRead(p.cache, key, snapKey, maxAge, clone, project); served {
 				return v, nil
+			}
+			// A snapshot this read joined may predate key's own entry; it
+			// must not answer over it either.
+			if own, ok := p.cache.peek(key); ok && !own.fetchedAt.Before(fetched.completedAt) {
+				break
 			}
 			if v, ok := project(fetched); ok {
 				return clone(v), nil
@@ -478,18 +610,23 @@ func (p *Provider) readOpenPRSnapshot(ctx context.Context, repoPath string) (*pr
 		})
 }
 
-// newestRead serves key from whichever of its own fresh entry and the fresh
-// repository snapshot was fetched later; on a tie key's own entry wins. served
-// is false when neither answers, and snapOK reports whether a fresh snapshot
-// exists.
-func newestRead[T any](c *readCache, key, snapKey string, clone func(T) T, project func(*prSnapshot) (T, bool)) (v T, served, snapOK bool) {
-	own, ownOK := c.fresh(key)
+// newestRead serves key from whichever of its own fresh entry and the
+// repository snapshot younger than snapMaxAge was fetched later; on a tie key's
+// own entry wins. The snapshot outlives the TTL, so it never answers while key
+// still holds an entry, fresh or expired, fetched no earlier than it: that
+// would step back to older data, and key's own read is repeated instead.
+// served is false when neither answers, and snapOK reports whether a fresh
+// snapshot exists.
+func newestRead[T any](c *readCache, key, snapKey string, snapMaxAge time.Duration, clone func(T) T, project func(*prSnapshot) (T, bool)) (v T, served, snapOK bool) {
+	own, ownCached := c.peek(key)
 	cached, ownTyped := own.value.(T)
-	ownOK = ownOK && ownTyped
-	snapEntry, snapOK := c.fresh(snapKey)
+	ownCached = ownCached && ownTyped
+	_, ownOK := c.fresh(key)
+	ownOK = ownOK && ownCached
+	snapEntry, snapOK := c.freshWithin(snapKey, snapMaxAge)
 	snap, snapTyped := snapEntry.value.(*prSnapshot)
 	snapOK = snapOK && snapTyped
-	if snapOK && (!ownOK || snapEntry.fetchedAt.After(own.fetchedAt)) {
+	if snapOK && (!ownCached || snapEntry.fetchedAt.After(own.fetchedAt)) {
 		if pv, ok := project(snap); ok {
 			return clone(pv), true, true
 		}

@@ -674,6 +674,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'callback/boss.mjs',
       'callback/ci-watch.mjs',
       'callback/epic-target.mjs',
+      // ci/pr-state-envelope.mjs is imported by pr-check-state.mjs for `classify --pr-state`.
+      'ci/pr-state-envelope.mjs',
       // ci/required-checks.mjs (BOS-2231) is imported by pr-check-state.mjs and skill-config.mjs.
       'ci/required-checks.mjs',
       'epic/dag-scheduler.mjs',

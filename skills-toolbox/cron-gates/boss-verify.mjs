@@ -147,6 +147,8 @@ export function evaluateBossVerifyGate({ argv = [], env = process.env, deps = {}
     lines.push(
       `undispatchable: ${result.undispatchable}${eventPrUrl || result.dryRun || result.fleetUnreadable ? '' : ' — exit 0 hands this run to a /boss-verify session'}`,
     )
+  const skippedLine = discoverySkippedLine(result.discoverySkipped, result.claimExpiresAt)
+  if (skippedLine) lines.push(`${PREFIX}: ${skippedLine}`)
   const prefix = eventPrUrl ? `${PREFIX} (event #${eventPrUrl.split('/').pop()})` : PREFIX
   lines.push(`${summaryLine(prefix, result.summary)}${result.dryRun ? ' (dry-run)' : ''}`)
   return {
@@ -159,6 +161,28 @@ export function evaluateBossVerifyGate({ argv = [], env = process.env, deps = {}
         : 1,
     lines,
   }
+}
+
+/**
+ * `discovery skipped <n> (<reason> <count>, …)` for the discovery skips a cron sweep only counts,
+ * the `claimed` entry naming when the first live claim expires; null when nothing was skipped. One
+ * line, not one per PR, so a repo with dozens of open PRs keeps a readable cron history.
+ * @param {Record<string, number> | undefined} counts
+ * @param {number | undefined} claimExpiresAt
+ * @returns {string | null}
+ */
+export function discoverySkippedLine(counts, claimExpiresAt) {
+  const entries = Object.entries(counts ?? {})
+    .filter(([, n]) => Number.isInteger(n) && n > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+  if (entries.length === 0) return null
+  const total = entries.reduce((sum, [, n]) => sum + n, 0)
+  const parts = entries.map(([reason, n]) =>
+    reason === 'claimed' && Number.isFinite(claimExpiresAt)
+      ? `${reason} ${n} · first expires ${new Date(/** @type {number} */ (claimExpiresAt)).toISOString()}`
+      : `${reason} ${n}`,
+  )
+  return `discovery skipped ${total} (${parts.join(', ')})`
 }
 
 /** The process entry point: evaluate `argv`, print the lines, set the exit code. */

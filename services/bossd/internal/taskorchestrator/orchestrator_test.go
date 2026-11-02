@@ -229,18 +229,34 @@ type mockProvider struct {
 	mergeFn             func(ctx context.Context, repoPath string, prID int) error
 	mergeCommitFn       func(prID int) (string, error)
 	allowedStrategiesFn func() ([]string, error)
+	// status and checks override the fresh pre-merge read, which by default
+	// sees testHeadSHA with one passing check.
+	status *vcs.PRStatus
+	checks []vcs.CheckResult
+	// mergeOpts records the options of every MergePR call, guarded by mu.
+	mu        sync.Mutex
+	mergeOpts []vcs.MergePROpts
 }
+
+const testHeadSHA = "0123456789abcdef0123456789abcdef01234567"
 
 func (m *mockProvider) CreateDraftPR(_ context.Context, _ vcs.CreatePROpts) (*vcs.PRInfo, error) {
 	return nil, nil
 }
 
 func (m *mockProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
-	return nil, nil
+	if m.status != nil {
+		return m.status, nil
+	}
+	return &vcs.PRStatus{HeadSHA: testHeadSHA}, nil
 }
 
 func (m *mockProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
-	return nil, nil
+	if m.checks != nil {
+		return m.checks, nil
+	}
+	success := vcs.CheckConclusionSuccess
+	return []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &success}}, nil
 }
 
 func (m *mockProvider) GetFailedCheckLogs(_ context.Context, _ string, _ string) (string, error) {
@@ -266,7 +282,10 @@ func (m *mockProvider) SearchPRsByTitleTag(_ context.Context, _, _ string) ([]vc
 	return nil, nil
 }
 
-func (m *mockProvider) MergePR(ctx context.Context, repoPath string, prID int, _ vcs.MergePROpts) error {
+func (m *mockProvider) MergePR(ctx context.Context, repoPath string, prID int, opts vcs.MergePROpts) error {
+	m.mu.Lock()
+	m.mergeOpts = append(m.mergeOpts, opts)
+	m.mu.Unlock()
 	if m.mergeFn != nil {
 		return m.mergeFn(ctx, repoPath, prID)
 	}

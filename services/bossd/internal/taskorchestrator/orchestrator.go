@@ -872,20 +872,8 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 			Msg("auto-merge: substituted squash for rebase")
 	}
 
-	if err := o.provider.MergePR(ctx, repo.originURL, prNumber, vcs.MergePROpts{Strategy: strategy}); err != nil {
-		if mergepolicy.IsRebaseRefusal(strategy, err) {
-			o.logger.Info().Err(err).
-				Int("pr", prNumber).
-				Str("repo", repo.displayName).
-				Msg("auto-merge rebase failed; queueing repair session")
-			o.enqueueMappedCreateSession(ctx, rebaseRepairTask(task, repo, err), repo, mapping)
-			return
-		}
-		o.logger.Error().Err(err).
-			Int("pr", prNumber).
-			Str("repo", repo.displayName).
-			Msg("auto-merge failed")
-		o.updateMappingStatusWithDetails(ctx, mapping.ID, domain.TaskMappingStatusFailed, taskFailureDetails(err))
+	repairRebase := func(err error) { o.enqueueMappedCreateSession(ctx, rebaseRepairTask(task, repo, err), repo, mapping) }
+	if !o.mergeConfirmedHead(ctx, repo, mapping, prNumber, strategy, repairRebase) {
 		return
 	}
 

@@ -41,24 +41,16 @@ func (s *daemonCredentialSync) engine(ctx context.Context) (*credsync.Engine, er
 		return nil, err
 	}
 	trust := upstream.CredentialTrust{Namespace: s.userID + "\x00" + s.daemonID}
-	root := ""
-	for _, d := range devices {
-		if (d.Status == "enrolled" || d.Status == "revoked") && d.ApprovedByDaemonID == d.DaemonID {
-			if _, err := trust.PinnedIdentity(d.DaemonID); err == nil {
-				root = d.DaemonID
-				break
-			}
-		}
-	}
-	if root == "" {
-		return nil, errCredentialIdentityNotPinned
+	bootstrap, err := credsync.FindBootstrap(devices, trust.PinnedIdentity)
+	if err != nil {
+		return nil, err
 	}
 	identityKey, err := upstream.LoadDaemonIdentityKey(s.daemonID)
 	if err != nil {
 		return nil, err
 	}
 	s.cachedDeviceKey = string(key.PublicKey().Bytes())
-	s.cachedEngine = credsync.NewEngine(credsync.Config{UserID: s.userID, DaemonID: s.daemonID, BootstrapDaemonID: root, DeviceKey: key, IdentityKey: identityKey}, s.remote, s, trust)
+	s.cachedEngine = credsync.NewEngine(credsync.Config{UserID: s.userID, DaemonID: s.daemonID, BootstrapDaemonID: bootstrap.RootDaemonID, DeviceKey: key, IdentityKey: identityKey}, s.remote, s, trust)
 	return s.cachedEngine, nil
 }
 func (s *daemonCredentialSync) Receive(ctx context.Context, id string) error {
@@ -262,6 +254,7 @@ func (f credentialCommandForwarder) Receive(ctx context.Context, id string) erro
 	return f.w.credentialSync.Receive(ctx, id)
 }
 func (f credentialCommandForwarder) DevicesChanged(ctx context.Context, id string) error {
+	defer f.w.credentialDevices.RefreshReadiness(ctx)
 	if f.w.credentialSync == nil {
 		return fmt.Errorf("credential sync unavailable")
 	}
@@ -309,8 +302,13 @@ func (f credentialCommandForwarder) PublishLocal(ctx context.Context, id string)
 }
 
 func (w *daemonWiring) wireCredentialDistribution(cfg *upstream.Config, client bossanovav1connect.OrchestratorServiceClient, sessionTokenHolder *upstream.SessionTokenHolder, identityKey ed25519.PrivateKey, authToken string) {
+	namespace := credentialUserNamespace(authToken)
+	var pinned credsync.PinLookup
+	if namespace != "" {
+		pinned = upstream.CredentialTrust{Namespace: namespace + "\x00" + cfg.DaemonID}.PinnedIdentity
+	}
 	w.credentialDevices = server.NewCredentialDeviceService(server.CredentialDeviceConfig{
-		DaemonID: cfg.DaemonID, IdentityKey: identityKey, Client: client,
+		DaemonID: cfg.DaemonID, IdentityKey: identityKey, Client: client, PinnedIdentity: pinned, Logger: &log.Logger,
 		LoadKey: upstream.LoadDeviceKey, RotateKey: upstream.RotateDeviceKey,
 		SessionToken: sessionTokenHolder.Get,
 		PinIdentity:  upstream.PinCredentialIdentity,
@@ -322,7 +320,7 @@ func (w *daemonWiring) wireCredentialDistribution(cfg *upstream.Config, client b
 			}
 		},
 	})
-	if namespace := credentialUserNamespace(authToken); namespace != "" {
+	if namespace != "" {
 		if err := pinOwnCredentialIdentity(cfg.DaemonID, identityKey); err != nil {
 			log.Warn().Err(err).Msg("credential identity pin unavailable")
 		}
@@ -334,6 +332,8 @@ func (w *daemonWiring) wireCredentialDistribution(cfg *upstream.Config, client b
 		}
 		return w.credentialSync.Reconnect(ctx)
 	})
+	w.credentialEnrollment.refresh = func(ctx context.Context) { w.credentialDevices.RefreshReadiness(ctx) }
+	w.credentialEnrollment.interval = server.DefaultCredentialReadinessInterval
 }
 
 // PublishRefresh serializes with Receive and holds the credential lock in that

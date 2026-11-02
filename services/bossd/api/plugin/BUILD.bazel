@@ -58,6 +58,7 @@ go_test(
     embed = [":plugin"],
     rundir = ".",  # keep: migration paths are rooted at runtime.Caller runfile paths
     deps = [
+        "//lib/bossalib/contract/plugin/plugin",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/kit/log",
         "//lib/bossalib/kit/vcs",
@@ -70,6 +71,8 @@ go_test(
         "//services/bossd/internal/db",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/agenttelemetry",
+        "//services/bossd/internal/ghusage",
+        "//services/bossd/internal/plugin",
         "//services/bossd/internal/session",
         "//services/bossd/internal/status",
         "@com_github_rs_zerolog//:zerolog",

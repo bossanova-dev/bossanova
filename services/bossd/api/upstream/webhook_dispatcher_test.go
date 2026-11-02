@@ -955,20 +955,44 @@ func TestDispatch_BackwardCompatibleWithoutEmitter(t *testing.T) {
 	}
 }
 
+// TestWebhookDispatcherSkipsEventsWithoutPR pins the PR-less path: no PR is
+// refreshed, invalidated or polled, and the repo's cached reads are marked
+// stale once when the read invalidator supports it.
 func TestWebhookDispatcherSkipsEventsWithoutPR(t *testing.T) {
-	refresher := &fakePRRefresher{}
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop())
-
-	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
-		EventType:     "push",
-		RepoOriginUrl: "https://github.com/owner/repo",
-		PullRequest:   0,
-	})
-	if err != nil {
-		t.Fatalf("Dispatch returned error: %v", err)
-	}
-	if len(refresher.calls) != 0 {
-		t.Fatalf("RefreshPR call count = %d, want 0", len(refresher.calls))
+	const origin = "https://github.com/owner/repo"
+	for _, eventType := range []string{"push", "status", "check_suite", "pull_request"} {
+		t.Run(eventType, func(t *testing.T) {
+			for _, tc := range []struct {
+				name        string
+				invalidator func(*orderLog) vcs.ReadInvalidator
+				want        []string
+			}{
+				{"repo invalidator", func(l *orderLog) vcs.ReadInvalidator { return orderedRepoInvalidator{orderedInvalidator{l}} },
+					[]string{"invalidate-repo " + origin}},
+				{"PR-only invalidator", func(l *orderLog) vcs.ReadInvalidator { return orderedInvalidator{l} }, nil},
+				{"no invalidator", func(*orderLog) vcs.ReadInvalidator { return nil }, nil},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					log := &orderLog{}
+					dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).
+						WithPRPoller(orderedPRPoller{log})
+					if inv := tc.invalidator(log); inv != nil {
+						dispatcher = dispatcher.WithReadInvalidator(inv)
+					}
+					err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+						EventType:     eventType,
+						RepoOriginUrl: origin,
+						PullRequest:   0,
+					})
+					if err != nil {
+						t.Fatalf("Dispatch returned error: %v", err)
+					}
+					if steps := log.snapshot(); !slices.Equal(steps, tc.want) {
+						t.Fatalf("steps = %v, want only %v (no refresh, PR invalidation or poll)", steps, tc.want)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -1256,7 +1280,7 @@ func TestDispatch_InvalidatesCacheThenPollsPR(t *testing.T) {
 	log := &orderLog{}
 	health := NewWebhookHealth(func() (time.Time, bool) { return time.Now().Add(-time.Hour), true })
 	dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).
-		WithReadInvalidator(orderedInvalidator{log}).
+		WithReadInvalidator(orderedRepoInvalidator{orderedInvalidator{log}}).
 		WithPRPoller(orderedPRPoller{log}).
 		WithWebhookHealth(health)
 	hook, waitPoll := captureEvalDone(t)
@@ -1279,7 +1303,7 @@ func TestDispatch_InvalidatesCacheThenPollsPR(t *testing.T) {
 	}
 	steps := log.snapshot()
 	if len(steps) != 3 || steps[0] != "invalidate "+origin+"#42" {
-		t.Fatalf("steps = %v, want invalidate first, then the poll and the refresh", steps)
+		t.Fatalf("steps = %v, want invalidate first, then the poll and the refresh, and no repo invalidation", steps)
 	}
 	if !slices.Contains(steps, "poll "+origin+"#42") || !slices.Contains(steps, "refresh "+origin+"#42") {
 		t.Fatalf("steps = %v, want both a poll and a refresh of #42", steps)

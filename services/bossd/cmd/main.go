@@ -43,7 +43,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	if err := run(runOpts{stopSig: sigCh}); err != nil {
-		fmt.Fprintf(os.Stderr, "bossd: %v\n", err)
+		writeFatal(os.Stderr, time.Now(), err)
 		os.Exit(1)
 	}
 }

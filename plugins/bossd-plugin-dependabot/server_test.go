@@ -21,6 +21,9 @@ type mockHostService struct {
 	checks    map[int32][]*bossanovav1.CheckResult
 	status    map[int32]*bossanovav1.PRStatus
 	prErr     error
+	closedErr error
+	// closedCalls counts ListClosedPRs calls.
+	closedCalls int
 }
 
 func (m *mockHostService) ListOpenPRs(_ context.Context, _ string) ([]*bossanovav1.PRSummary, error) {
@@ -31,6 +34,10 @@ func (m *mockHostService) ListOpenPRs(_ context.Context, _ string) ([]*bossanova
 }
 
 func (m *mockHostService) ListClosedPRs(_ context.Context, _ string) ([]*bossanovav1.PRSummary, error) {
+	m.closedCalls++
+	if m.closedErr != nil {
+		return nil, m.closedErr
+	}
 	return m.closedPRs, nil
 }
 
@@ -53,11 +60,7 @@ var (
 )
 
 func newTestServer(mock *mockHostService) *server {
-	logger := zerolog.New(os.Stderr).Level(zerolog.Disabled)
-	return &server{
-		host:   mock,
-		logger: logger,
-	}
+	return newServer(mock, zerolog.New(os.Stderr).Level(zerolog.Disabled))
 }
 
 func boolPtr(b bool) *bool { return &b }

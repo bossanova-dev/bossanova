@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +12,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/ghusage"
+	"github.com/recurser/bossd/internal/prstate"
 	"github.com/rs/zerolog"
 )
 
@@ -332,12 +331,8 @@ func (e *Evaluator) ReconcileAll(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-type heldWorkflowRun struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Event  string `json:"event"`
-	Class  string `json:"class"`
-}
+// heldWorkflowRun is the shared classification of a head run still in flight.
+type heldWorkflowRun = prstate.HeldWorkflowRun
 
 // runsSettled reports whether every GitHub Actions workflow run for the PR's
 // head SHA has completed. A check set read before the head's workflows have
@@ -357,37 +352,13 @@ func (e *Evaluator) runsSettled(ctx context.Context, rp string, prNumber int, st
 			Str("head_sha", status.HeadSHA).Msg("callback evaluator: list workflow runs failed; checks_passed held")
 		return false, nil
 	}
-	var held []heldWorkflowRun
-	awaitingApproval := false
-	for _, run := range runs {
-		if run.HeadSHA != "" && run.HeadSHA != status.HeadSHA {
-			continue
-		}
-		if strings.EqualFold(run.Status, "completed") {
-			continue
-		}
-		class := "in-flight"
-		if strings.EqualFold(run.Status, "waiting") || strings.EqualFold(run.Status, "action_required") {
-			class = "awaiting-approval"
-			awaitingApproval = true
-		}
-		held = append(held, heldWorkflowRun{Name: run.Name, Status: run.Status, Event: run.Event, Class: class})
-	}
+	held := prstate.HeldHeadRuns(status.HeadSHA, runs)
 	if len(held) == 0 {
 		return true, nil
 	}
-	sort.Slice(held, func(i, j int) bool {
-		if held[i].Name != held[j].Name {
-			return held[i].Name < held[j].Name
-		}
-		if held[i].Status != held[j].Status {
-			return held[i].Status < held[j].Status
-		}
-		return held[i].Event < held[j].Event
-	})
 	level := zerolog.DebugLevel
 	message := "callback evaluator: checks_passed held; head workflow runs in flight"
-	if awaitingApproval {
+	if prstate.AwaitsApproval(held) {
 		level = zerolog.WarnLevel
 		message = "callback evaluator: checks_passed held; head workflow run awaits approval"
 	}

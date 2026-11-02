@@ -138,6 +138,8 @@ type Server struct {
 	agentRuns               agentRunStore
 	gitHubUsage             GitHubUsageReader
 	gitHubUsageShim         *ghusage.Shim
+	prState                 PRStateReader
+	prWaits                 PRWaiter
 	rotationEvents          rotationEventReader
 	evidence                EvidenceSource
 	cronScheduler           *cron.Scheduler
@@ -442,6 +444,12 @@ type Config struct {
 	AgentRuns               agentRunStore
 	GitHubUsage             GitHubUsageReader // nil: GetGitHubUsage fails FailedPrecondition
 	GitHubUsageShim         *ghusage.Shim     // nil: spawned chats' gh calls go unmetered
+	// PRState reads PRs through the shared GitHub provider's read cache
+	// (*prstate.Reader). nil: GetPRState fails FailedPrecondition.
+	PRState PRStateReader
+	// PRWaits blocks PR waits until a webhook names the PR (*prstate.WaitHub).
+	// nil: WaitPRState fails FailedPrecondition.
+	PRWaits PRWaiter
 	// RotationEvents is the rotation audit store hydrated onto
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
 	RotationEvents rotationEventReader
@@ -732,6 +740,8 @@ func New(cfg Config) *Server {
 		agentRuns:        cfg.AgentRuns,
 		gitHubUsage:      cfg.GitHubUsage,
 		gitHubUsageShim:  cfg.GitHubUsageShim,
+		prState:          cfg.PRState,
+		prWaits:          cfg.PRWaits,
 		rotationEvents:   cfg.RotationEvents,
 		evidence:         cfg.Evidence,
 		webhookEvidence:  cfg.WebhookEvidence,
@@ -950,6 +960,8 @@ var writeDeadlineExemptProcedures = map[string]struct{}{
 	// OperatorMergeSession runs detached for up to config.OperatorMergeCeiling,
 	// so a merge queued behind another still reports its outcome.
 	bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure: {},
+	// WaitPRState owns its own config.PRWaitCeiling.
+	bossanovav1connect.DaemonServiceWaitPRStateProcedure: {},
 }
 
 func withStreamingWriteDeadlineOverride(next http.Handler) http.Handler {

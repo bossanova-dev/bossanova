@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "prstate",
+    srcs = [
+        "reader.go",
+        "runs.go",
+        "wait_condition.go",
+        "wait_hub.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/prstate",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/kit/vcs",
+        "//services/bossd/internal/ghusage",
+    ],
+)
+
+go_test(
+    name = "prstate_test",
+    srcs = [
+        "reader_test.go",
+        "wait_condition_test.go",
+        "wait_hub_test.go",
+    ],
+    embed = [":prstate"],
+    deps = [
+        "//lib/bossalib/kit/vcs",
+        "//services/bossd/internal/ghusage",
+    ],
+)

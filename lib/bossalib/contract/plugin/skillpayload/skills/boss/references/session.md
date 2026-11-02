@@ -138,7 +138,7 @@ CHAT=$(boss new --repo my-repo --prompt "/boss-build PROJ-42" --json | jq -r .se
 
 ### `boss pr`
 
-Approve PR verification, accept blockers, or file note follow-ups
+Read or wait on PR state, approve PR verification, accept blockers, or file note follow-ups
 
 ### `boss pr accept <pr-number> <blocker-id> [flags]`
 
@@ -172,6 +172,38 @@ File selected verify notes as follow-up tickets on the daemon host
 - `--json` — Emit a stable JSON envelope instead of human-readable text
 - `--note` — Verify note id to follow up (repeatable)
 - `--repo` — Repository as owner/repo, when sessions in two repos share the PR number
+
+### `boss pr state <pr> [flags]`
+
+Read a PR's state through the daemon's GitHub read cache
+
+**Flags:**
+
+- `--fresh` — Bypass the daemon's read cache and read GitHub directly
+- `--json` — Emit a stable JSON envelope instead of human-readable text
+- `--repo` — Repository as owner/name (default: the PR URL's, else the working directory's)
+- `--with-review-comments` — Also read the PR's review comments (the expensive read)
+- `--with-workflow-runs` — Read the head's workflow runs whatever the check verdict
+
+### `boss pr wait <pr> [flags]`
+
+Wait for a PR condition, woken by the daemon's webhooks instead of polling
+
+Blocks until a PR meets `--until checks-settled`, `mergeable` or `head-changed`, the condition becomes unreachable (the PR closed or merged, or a mergeable wait saw a conflict), or `--timeout` passes (default 5m, capped at 8m; a larger value fails `INVALID_ARGUMENT`). The daemon re-reads the PR only when a webhook announces a change, so a wait costs GitHub reads per event; a condition that already holds answers at once. checks-settled means failing, or green with every head workflow run settled; a green head where no gate ran waits unless `--accept-no-gate`. `--json` emits `{outcome, condition, timeout_seconds, snapshot}`, with outcome `met`, `unreachable` or `timed_out` and snapshot the `boss pr state --json` envelope. Exit 0 means answered, whatever the outcome; branch on `outcome`.
+
+**Flags:**
+
+- `--accept-no-gate` — Let checks-settled meet on a green head where every check skipped
+- `--fresh` — Bypass the daemon's read cache and read GitHub directly
+- `--json` — Emit a stable JSON envelope instead of human-readable text
+- `--repo` — Repository as owner/name (default: the PR URL's, else the working directory's)
+- `--since-head` — Head SHA a head-changed wait compares against (default: the first read's head)
+- `--timeout` — How long to wait, at most 8m0s (default: 5m0s)
+- `--until` — Condition to wait for: checks-settled, head-changed, mergeable (required)
+
+```bash
+boss pr wait 123 --until checks-settled --json | jq -r .outcome
+```
 
 ### `boss rename <session-id> <new-title...>`
 

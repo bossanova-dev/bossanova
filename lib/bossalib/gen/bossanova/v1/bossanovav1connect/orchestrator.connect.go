@@ -316,6 +316,9 @@ const (
 	// OrchestratorServiceSyncDaemonNotesProcedure is the fully-qualified name of the
 	// OrchestratorService's SyncDaemonNotes RPC.
 	OrchestratorServiceSyncDaemonNotesProcedure = "/bossanova.v1.OrchestratorService/SyncDaemonNotes"
+	// OrchestratorServiceIssueGitHubInstallationTokenProcedure is the fully-qualified name of the
+	// OrchestratorService's IssueGitHubInstallationToken RPC.
+	OrchestratorServiceIssueGitHubInstallationTokenProcedure = "/bossanova.v1.OrchestratorService/IssueGitHubInstallationToken"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -746,6 +749,19 @@ type OrchestratorServiceClient interface {
 	// SyncDaemonNotesRequest for the batch bounds and NoteSyncOutcome for the
 	// per-item results.
 	SyncDaemonNotes(context.Context, *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error)
+	// IssueGitHubInstallationToken returns a short-lived, read-only GitHub App
+	// installation access token scoped to the one repository named by
+	// repo_origin_url. Every permission it asks for is read; it can never post a
+	// commit status or write anything else.
+	// It authenticates the daemon session, the same principal as
+	// SyncDaemonNotes; a user token is Unauthenticated. Only a daemon whose owner
+	// may receive the repository's GitHub events (the verified installation
+	// owner, or a member of the mapped organization when the installation owner
+	// is also a member) gets a token. Every other caller or repository, including
+	// an uninstalled or non-GitHub one, is PermissionDenied with one fixed
+	// message, so the answer reveals nothing about other tenants. The token is
+	// held in memory only on both sides: bosso never logs, audits or stores it.
+	IssueGitHubInstallationToken(context.Context, *connect.Request[v1.IssueGitHubInstallationTokenRequest]) (*connect.Response[v1.IssueGitHubInstallationTokenResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -1565,6 +1581,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("SyncDaemonNotes")),
 			connect.WithClientOptions(opts...),
 		),
+		issueGitHubInstallationToken: connect.NewClient[v1.IssueGitHubInstallationTokenRequest, v1.IssueGitHubInstallationTokenResponse](
+			httpClient,
+			baseURL+OrchestratorServiceIssueGitHubInstallationTokenProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("IssueGitHubInstallationToken")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -1994,6 +2016,7 @@ type orchestratorServiceClient struct {
 	releaseAgentCredentialRefreshLease     *connect.Client[v1.ReleaseAgentCredentialRefreshLeaseRequest, v1.ReleaseAgentCredentialRefreshLeaseResponse]
 	listCredentialAgentAccounts            *connect.Client[v1.ListCredentialAgentAccountsRequest, v1.ListCredentialAgentAccountsResponse]
 	syncDaemonNotes                        *connect.Client[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse]
+	issueGitHubInstallationToken           *connect.Client[v1.IssueGitHubInstallationTokenRequest, v1.IssueGitHubInstallationTokenResponse]
 	proxyStreamChats                       *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken                       *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream                         *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -2526,6 +2549,11 @@ func (c *orchestratorServiceClient) ListCredentialAgentAccounts(ctx context.Cont
 // SyncDaemonNotes calls bossanova.v1.OrchestratorService.SyncDaemonNotes.
 func (c *orchestratorServiceClient) SyncDaemonNotes(ctx context.Context, req *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error) {
 	return c.syncDaemonNotes.CallUnary(ctx, req)
+}
+
+// IssueGitHubInstallationToken calls bossanova.v1.OrchestratorService.IssueGitHubInstallationToken.
+func (c *orchestratorServiceClient) IssueGitHubInstallationToken(ctx context.Context, req *connect.Request[v1.IssueGitHubInstallationTokenRequest]) (*connect.Response[v1.IssueGitHubInstallationTokenResponse], error) {
+	return c.issueGitHubInstallationToken.CallUnary(ctx, req)
 }
 
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
@@ -3068,6 +3096,19 @@ type OrchestratorServiceHandler interface {
 	// SyncDaemonNotesRequest for the batch bounds and NoteSyncOutcome for the
 	// per-item results.
 	SyncDaemonNotes(context.Context, *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error)
+	// IssueGitHubInstallationToken returns a short-lived, read-only GitHub App
+	// installation access token scoped to the one repository named by
+	// repo_origin_url. Every permission it asks for is read; it can never post a
+	// commit status or write anything else.
+	// It authenticates the daemon session, the same principal as
+	// SyncDaemonNotes; a user token is Unauthenticated. Only a daemon whose owner
+	// may receive the repository's GitHub events (the verified installation
+	// owner, or a member of the mapped organization when the installation owner
+	// is also a member) gets a token. Every other caller or repository, including
+	// an uninstalled or non-GitHub one, is PermissionDenied with one fixed
+	// message, so the answer reveals nothing about other tenants. The token is
+	// held in memory only on both sides: bosso never logs, audits or stores it.
+	IssueGitHubInstallationToken(context.Context, *connect.Request[v1.IssueGitHubInstallationTokenRequest]) (*connect.Response[v1.IssueGitHubInstallationTokenResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -3883,6 +3924,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("SyncDaemonNotes")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceIssueGitHubInstallationTokenHandler := connect.NewUnaryHandler(
+		OrchestratorServiceIssueGitHubInstallationTokenProcedure,
+		svc.IssueGitHubInstallationToken,
+		connect.WithSchema(orchestratorServiceMethods.ByName("IssueGitHubInstallationToken")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -4403,6 +4450,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceListCredentialAgentAccountsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSyncDaemonNotesProcedure:
 			orchestratorServiceSyncDaemonNotesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceIssueGitHubInstallationTokenProcedure:
+			orchestratorServiceIssueGitHubInstallationTokenHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -4896,6 +4945,10 @@ func (UnimplementedOrchestratorServiceHandler) ListCredentialAgentAccounts(conte
 
 func (UnimplementedOrchestratorServiceHandler) SyncDaemonNotes(context.Context, *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SyncDaemonNotes is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) IssueGitHubInstallationToken(context.Context, *connect.Request[v1.IssueGitHubInstallationTokenRequest]) (*connect.Response[v1.IssueGitHubInstallationTokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.IssueGitHubInstallationToken is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

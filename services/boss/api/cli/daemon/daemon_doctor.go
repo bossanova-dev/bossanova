@@ -1429,8 +1429,8 @@ func reportDaemonSpawnCauses(out io.Writer, facts daemonSpawnCauseFacts) {
 	_, _ = fmt.Fprintf(out, "    settle it with: %s — inspect the domain's own state and the job's RunAtLoad handling.\n", facts.DomainCommand)
 }
 
-// reportDaemonStartupFailureDirective names the only way to see a bossd startup
-// failure that happens BEFORE the socket binds.
+// reportDaemonStartupFailureDirective names where a bossd startup failure that
+// happens BEFORE the socket binds can be seen.
 //
 // BOS-1183's second invisible failure, in the same incident: bossd exited
 // inside a fail-loud migration before it ever listened, and
@@ -1438,6 +1438,13 @@ func reportDaemonSpawnCauses(out io.Writer, facts daemonSpawnCauseFacts) {
 // by launchd's own stdout/stderr redirect, so it holds nothing at all when
 // launchd never ran the binary — neither `boss daemon status` nor doctor said a
 // word about either half.
+//
+// Since BOS-2171 a launchd-supervised bossd mirrors only warn+ to that file and
+// writes a run() error to it as one RFC 3339-dated `bossd:` line; the full
+// timeline is the rotated bossd.log, at the default state dir launchd's
+// environment resolves. An empty stderr file alone therefore no longer proves
+// launchd never ran bossd (it may have hung or been killed before any warn+
+// line); only an empty file with no new bossd.log lines does.
 //
 // It is deliberately a directive and not a probe. Detecting a pending migration
 // means opening the database doctor is diagnosing, contending with a daemon
@@ -1449,7 +1456,8 @@ func reportDaemonStartupFailureDirective(out io.Writer, stagedPath string, notSe
 	if !notServing {
 		return
 	}
-	_, _ = fmt.Fprintln(out, "startup diagnosis: a bossd failure before the socket binds (a fail-loud migration, for example) leaves nothing in ~/Library/Logs/bossanova/bossd.stderr.log — launchd writes that file through its own redirect, so it is empty when launchd never ran the binary at all")
+	_, _ = fmt.Fprintln(out, "startup diagnosis: ~/Library/Logs/bossanova/bossd.stderr.log holds bossd's warnings, errors and any startup error as a dated `bossd:` line, so a failure before the socket binds (a fail-loud migration, for example) lands there — an empty file alone only means none was written; an empty file and no new lines in the rotated bossd.log mean launchd never ran the binary at all")
+	_, _ = fmt.Fprintln(out, "  the full log is the rotated bossd.log: ~/.local/state/bossanova/logs/bossd.log")
 	_, _ = fmt.Fprintf(out, "  to see such an error, run the staged bossd in the foreground: %s\n", stagedPath)
 }
 

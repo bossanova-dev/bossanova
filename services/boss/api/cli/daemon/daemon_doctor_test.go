@@ -2467,12 +2467,12 @@ func TestRunDaemonDoctorReportsHealthySpawnHistory(t *testing.T) {
 	}
 }
 
-// TestRunDaemonDoctorDirectsOperatorToTheStagedBinaryWhenNotServing covers the
+// TestRunDaemonDoctorDirectsOperatorToTheStagedBinaryWhenNotServing_DaemonLifecycle_AC217101 covers the
 // second invisible failure of the same incident: bossd exited inside a fail-loud
 // migration BEFORE binding the socket, and bossd.stderr.log was 0 bytes because
 // launchd — which writes that file through its own redirect — had never run the
 // binary. Neither status nor doctor said anything at all.
-func TestRunDaemonDoctorDirectsOperatorToTheStagedBinaryWhenNotServing(t *testing.T) {
+func TestRunDaemonDoctorDirectsOperatorToTheStagedBinaryWhenNotServing_DaemonLifecycle_AC217101(t *testing.T) {
 	deps := newTestGroup()
 
 	if runtime.GOOS != "darwin" {
@@ -2491,11 +2491,11 @@ func TestRunDaemonDoctorDirectsOperatorToTheStagedBinaryWhenNotServing(t *testin
 	got := output.String()
 
 	directive := daemonDoctorLine(t, got, "startup diagnosis:")
-	if !strings.Contains(directive, "before the socket binds") {
-		t.Errorf("directive does not name the failure window:\n%s", directive)
+	if !strings.Contains(directive, "before the socket binds") || !strings.Contains(directive, "no new lines in the rotated bossd.log") {
+		t.Errorf("directive does not name the failure window and the never-ran evidence:\n%s", directive)
 	}
-	if !strings.Contains(got, "bossd.stderr.log") {
-		t.Errorf("directive does not explain why the launchd log is empty:\n%s", got)
+	if !strings.Contains(directive, "bossd.stderr.log") || !strings.Contains(got, "logs/bossd.log") {
+		t.Errorf("directive does not name the stderr file and the rotated full log:\n%s", got)
 	}
 	if !strings.Contains(got, stagedPath) {
 		t.Errorf("directive does not name the staged bossd to run:\n%s", got)

@@ -150,3 +150,99 @@ func TestGitHubUsageRejectsSubSecondWindow(t *testing.T) {
 		t.Fatal("a rejected window must not reach the daemon")
 	}
 }
+
+// newGitHubUsageSkipsFake is a quota-exhaustion window: the pollers were
+// refused by the breaker and the floor, and one loop was only ever refused.
+func newGitHubUsageSkipsFake() *gitHubUsageFake {
+	fake := newGitHubUsageFake()
+	fake.resp.Rows = []*pb.GitHubUsageRow{
+		{Label: "daemon:display-poller", Quota: "graphql", CallCount: 0, FloorSkipCount: 6},
+		{Label: "daemon:pr-poller", Quota: "graphql", CallCount: 12, BreakerSkipCount: 30, FloorSkipCount: 4},
+		{Label: "daemon:callbacks", Quota: "graphql", CallCount: 12, BreakerSkipCount: 2},
+		{Label: "plugin:repair", Quota: "core", CallCount: 5, FloorSkipCount: 1},
+		{Label: "daemon:reconcile-pr-lookup", Quota: "core", CallCount: 0, BreakerSkipCount: 1},
+	}
+	return fake
+}
+
+func TestGitHubUsageTableShowsBreakerAndFloorSkips_GitHubUsage_AC222301(t *testing.T) {
+	text, err := runGitHubUsageCmd(t, newGitHubUsageSkipsFake())
+	if err != nil {
+		t.Fatalf("github-usage: %v", err)
+	}
+	t.Logf("rendered table:\n%s", text)
+	// Calls first, then skips: the pr-poller's 34 skips outrank the evaluator's
+	// 2 at equal calls, and the refused-only loops still get rows.
+	order := []string{"daemon:pr-poller", "daemon:callbacks", "plugin:repair", "daemon:display-poller", "daemon:reconcile-pr-lookup"}
+	last := -1
+	for _, label := range order {
+		i := strings.Index(text, label)
+		if i < 0 || i < last {
+			t.Fatalf("output = %q, want rows ordered by calls, then skips: %v", text, order)
+		}
+		last = i
+	}
+	for _, want := range []string{
+		"BREAKER SKIPS", "FLOOR SKIPS",
+		"Total: 29 calls (core 5, graphql 24)",
+		"Skipped: 33 by the breaker (core 1, graphql 32), 11 by the floor (core 1, graphql 10)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output = %q, want it to contain %q", text, want)
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "daemon:pr-poller") && !strings.Contains(strings.Join(strings.Fields(line), " "), "graphql 12 30 4") {
+			t.Errorf("pr-poller row = %q, want calls 12, breaker skips 30, floor skips 4", line)
+		}
+	}
+}
+
+func TestGitHubUsageTableOmitsTheSkipsLineWhenNothingWasSkipped(t *testing.T) {
+	text, err := runGitHubUsageCmd(t, newGitHubUsageFake())
+	if err != nil {
+		t.Fatalf("github-usage: %v", err)
+	}
+	if strings.Contains(text, "Skipped:") {
+		t.Fatalf("output = %q, want no skips line for a window without skips", text)
+	}
+}
+
+func TestGitHubUsageJSONCarriesSkipCounts_GitHubUsage_AC222301(t *testing.T) {
+	text, err := runGitHubUsageCmd(t, newGitHubUsageSkipsFake(), "--"+cliutil.JSONFlagName)
+	if err != nil {
+		t.Fatalf("github-usage --json: %v", err)
+	}
+	var got struct {
+		Rows []struct {
+			Label            string `json:"label"`
+			CallCount        int64  `json:"call_count"`
+			BreakerSkipCount *int64 `json:"breaker_skip_count"`
+			FloorSkipCount   *int64 `json:"floor_skip_count"`
+		} `json:"rows"`
+		BreakerSkipTotals     map[string]int64 `json:"quota_breaker_skip_totals"`
+		FloorSkipTotals       map[string]int64 `json:"quota_floor_skip_totals"`
+		TotalBreakerSkipCount int64            `json:"total_breaker_skip_count"`
+		TotalFloorSkipCount   int64            `json:"total_floor_skip_count"`
+	}
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, text)
+	}
+	if len(got.Rows) != 5 {
+		t.Fatalf("rows = %+v, want 5", got.Rows)
+	}
+	for _, r := range got.Rows {
+		if r.BreakerSkipCount == nil || r.FloorSkipCount == nil {
+			t.Fatalf("row %q lacks a skip field: %s", r.Label, text)
+		}
+	}
+	first := got.Rows[0]
+	if first.Label != "daemon:pr-poller" || first.CallCount != 12 || *first.BreakerSkipCount != 30 || *first.FloorSkipCount != 4 {
+		t.Fatalf("first row = %+v, want the pr-poller's 12 calls, 30 breaker and 4 floor skips", first)
+	}
+	if got.TotalBreakerSkipCount != 33 || got.TotalFloorSkipCount != 11 ||
+		got.BreakerSkipTotals["graphql"] != 32 || got.FloorSkipTotals["core"] != 1 {
+		t.Fatalf("skip totals = %+v / %+v, %d / %d", got.BreakerSkipTotals, got.FloorSkipTotals,
+			got.TotalBreakerSkipCount, got.TotalFloorSkipCount)
+	}
+}

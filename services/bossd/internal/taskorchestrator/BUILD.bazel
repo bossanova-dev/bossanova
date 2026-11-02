@@ -35,6 +35,7 @@ go_library(
 go_test(
     name = "taskorchestrator_test",
     srcs = [
+        "automerge_test.go",
         "backoff_test.go",
         "lifecycle_test.go",
         "liveness_parked_test.go",

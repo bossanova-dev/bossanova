@@ -255,3 +255,15 @@ func TestWebhooksMissingNeverFlagsAnUnnormalisableOrigin(t *testing.T) {
 		t.Fatal("a nil tracker reported missing")
 	}
 }
+
+// TestNotePolledChangeIgnoresAChangeSeenThroughAFallbackSnapshot: a poll's
+// read can come from an open-PR snapshot up to five minutes old, so a change
+// it reports four minutes after the stream opened may predate the stream.
+func TestNotePolledChangeIgnoresAChangeSeenThroughAFallbackSnapshot(t *testing.T) {
+	h, openedAt, now, _ := missFixture(t)
+	h.NotePolledChange(noApp, openedAt.Add(4*time.Minute))
+	*now = now.Add(missedDeliveryGrace)
+	if h.WebhooksMissing(noApp) {
+		t.Fatal("a change a five-minute-old snapshot could have shown before the stream opened was reported as a missed webhook")
+	}
+}

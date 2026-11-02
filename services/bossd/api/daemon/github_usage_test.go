@@ -23,7 +23,7 @@ func seedLedger(t *testing.T, records map[time.Duration][]ghusage.Record) *ghusa
 	for ago, recs := range records {
 		stamp = now.Add(-ago)
 		for _, r := range recs {
-			l.Record(r.Label, r.Quota)
+			l.Record(r.Label, r.Quota, r.Identity)
 		}
 	}
 	return l
@@ -31,7 +31,7 @@ func seedLedger(t *testing.T, records map[time.Duration][]ghusage.Record) *ghusa
 
 func TestGetGitHubUsageReturnsLastHourPerLabelAndQuota(t *testing.T) {
 	finalize := ghusage.Record{Label: ghusage.LabelFinalize, Quota: ghusage.QuotaGraphQL}
-	poller := ghusage.Record{Label: ghusage.LabelPoller, Quota: ghusage.QuotaCore}
+	poller := ghusage.Record{Label: ghusage.LabelPRPoller, Quota: ghusage.QuotaCore}
 	cron := ghusage.Record{Label: "cron:verify", Quota: ghusage.QuotaGraphQL}
 	ledger := seedLedger(t, map[time.Duration][]ghusage.Record{
 		5 * time.Minute:  {finalize, finalize, poller},
@@ -53,7 +53,7 @@ func TestGetGitHubUsageReturnsLastHourPerLabelAndQuota(t *testing.T) {
 		got = append(got, row{r.GetLabel(), r.GetQuota(), r.GetCallCount()})
 	}
 	want := []row{
-		{ghusage.LabelPoller, ghusage.QuotaCore, 4},
+		{ghusage.LabelPRPoller, ghusage.QuotaCore, 4},
 		{ghusage.LabelFinalize, ghusage.QuotaGraphQL, 3},
 	}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
@@ -93,5 +93,42 @@ func TestGetGitHubUsageWithoutLedgerFailsPrecondition(t *testing.T) {
 	var cerr *connect.Error
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeFailedPrecondition {
 		t.Fatalf("err = %v, want FailedPrecondition", err)
+	}
+}
+
+// TestGetGitHubUsageReportsBreakerAndFloorSkips pins the skip columns: each
+// row carries its breaker and floor skips beside its calls, and a label the
+// gates only refused still gets a row, with no calls, after every row with
+// calls.
+func TestGetGitHubUsageReportsBreakerAndFloorSkips(t *testing.T) {
+	now := time.Now()
+	l := ghusage.New(t.TempDir(), zerolog.Nop(), ghusage.WithNow(func() time.Time { return now.Add(-time.Minute) }))
+	l.Record(ghusage.LabelPRPoller, ghusage.QuotaGraphQL, "")
+	l.RecordSkip(ghusage.LabelPRPoller, ghusage.QuotaGraphQL, "", ghusage.OutcomeBreaker)
+	l.RecordSkip(ghusage.LabelPRPoller, ghusage.QuotaGraphQL, "", ghusage.OutcomeFloor)
+	l.RecordSkip(ghusage.LabelDisplayPoller, ghusage.QuotaGraphQL, "", ghusage.OutcomeFloor)
+	l.RecordSkip(ghusage.LabelDisplayPoller, ghusage.QuotaGraphQL, "", ghusage.OutcomeFloor)
+	l.RecordSkip(ghusage.LabelDisplayPoller, ghusage.QuotaGraphQL, "", ghusage.OutcomeBreaker)
+	srv := &Server{gitHubUsage: l}
+
+	resp, err := srv.GetGitHubUsage(context.Background(), connect.NewRequest(&bossanovav1.GetGitHubUsageRequest{}))
+	if err != nil {
+		t.Fatalf("GetGitHubUsage: %v", err)
+	}
+	type row struct {
+		label          string
+		calls, breaker int64
+		floor          int64
+	}
+	var got []row
+	for _, r := range resp.Msg.GetRows() {
+		got = append(got, row{r.GetLabel(), r.GetCallCount(), r.GetBreakerSkipCount(), r.GetFloorSkipCount()})
+	}
+	want := []row{
+		{ghusage.LabelPRPoller, 1, 1, 1},
+		{ghusage.LabelDisplayPoller, 0, 1, 2},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("rows = %+v, want %+v", got, want)
 	}
 }

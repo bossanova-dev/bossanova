@@ -28,9 +28,8 @@ const (
 	// DefaultMcpPort is the loopback port the MCP HTTP daemon listens on.
 	DefaultMcpPort = 8765
 
-	// mcpPlistTemplate runs `mcp --http 127.0.0.1:<port>`. Its PATH comes from
-	// serviceEnvPath, the same helper the bossd plist renders from, so the MCP
-	// server (and any agent CLI it shells out to) can find node/agent binaries.
+	// mcpPlistTemplate runs `mcp --http 127.0.0.1:<port>`. Its PATH comes from serviceEnvPath, the
+	// helper the bossd plist renders from, so the MCP server (and any agent CLI it runs) finds node.
 	mcpPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -66,33 +65,29 @@ const (
 </plist>
 `
 
-	// ExitTimeOut is the SIGTERM-to-SIGKILL grace launchd gives bossd on
-	// `bootout`. It defaults to 20s, which is BELOW bossd's own graceful
-	// shutdown budget once the failover proxy drain is in the path (BOS-888) —
-	// a hard kill there skips the deferred database.Close and the socket
-	// cleanup. Keep it above LifecycleShutdownTimeout so the CLI's wait, not
-	// launchd's axe, is what bounds a stuck shutdown.
+	// ExitTimeOut is the SIGTERM-to-SIGKILL grace launchd gives bossd on `bootout`. It defaults
+	// to 20s, which is BELOW bossd's own graceful shutdown budget once the failover proxy drain is
+	// in the path (BOS-888) — a hard kill there skips the deferred database.Close and the socket
+	// cleanup. Keep it above LifecycleShutdownTimeout so the CLI's wait, not launchd's axe, is
+	// what bounds a stuck shutdown.
 	//
-	// Reach: platformRestart rewrites the plist, so existing installs pick this
-	// up without a reinstall — but it boots the old job out FIRST, so the one
-	// restart that performs the upgrade still shuts down under the previous
-	// ExitTimeOut. Only the restart after that is covered.
+	// Reach: platformRestart rewrites the plist, so existing installs pick this up without a
+	// reinstall — but it boots the old job out FIRST, so the one restart that performs the
+	// upgrade still shuts down under the previous ExitTimeOut. Only the restart after that is
+	// covered.
 	//
-	// ProcessType classifies the job for launchd's resource manager. Leaving it
-	// unspecified is NOT neutral: launchd then "will apply light resource
-	// limits to the job, throttling its CPU usage and I/O bandwidth"
-	// (launchd.plist(5)). Measured on a busy multi-session host, an unclassified
-	// bossd ran at priority 20 while the agent CLIs it supervises ran at 31 —
-	// launchd scheduled the daemon BELOW its own workload. Under a load average
-	// of 170 on 10 cores that starved startup to 0.64s of CPU in 3.5 minutes, so
-	// the socket missed LifecycleStartupTimeout and `boss daemon start` reported
-	// a failure for a daemon that was merely descheduled.
+	// ProcessType classifies the job for launchd's resource manager. Leaving it unspecified is
+	// NOT neutral: launchd then "will apply light resource limits to the job, throttling its CPU
+	// usage and I/O bandwidth" (launchd.plist(5)). Measured on a busy multi-session host, an
+	// unclassified bossd ran at priority 20 while the agent CLIs it supervises ran at 31 — launchd
+	// scheduled the daemon BELOW its own workload. Under a load average of 170 on 10 cores that
+	// starved startup to 0.64s of CPU in 3.5 minutes, so the socket missed LifecycleStartupTimeout
+	// and `boss daemon start` reported a failure for a daemon that was merely descheduled.
 	//
-	// Interactive is the right class, not Adaptive: Adaptive moves between
-	// Background and Interactive based on XPC transaction activity
-	// (xpc_transaction_begin(3)), which a Go daemon never signals, so it would
-	// settle at Background. The CLI and TUI block on this socket, so the user's
-	// perceived responsiveness depends on it directly.
+	// Interactive is the right class, not Adaptive: Adaptive moves between Background and
+	// Interactive based on XPC transaction activity (xpc_transaction_begin(3)), which a Go daemon
+	// never signals, so it would settle at Background. The CLI and TUI block on this socket, so
+	// the user's perceived responsiveness depends on it directly.
 	//
 	// Reach: platformRestart rewrites the plist, so existing installs pick this
 	// up on their next restart without a reinstall.
@@ -115,7 +110,7 @@ const (
 	<key>StandardOutPath</key>
 	<string>{{.LogDir}}/bossd.stdout.log</string>
 	<key>StandardErrorPath</key>
-	<string>{{.LogDir}}/bossd.stderr.log</string>
+	<string>{{.StderrLogPath}}</string>
 	<key>ExitTimeOut</key>
 	<integer>90</integer>
 	<key>SoftResourceLimits</key>
@@ -132,6 +127,8 @@ const (
 	<dict>
 		<key>PATH</key>
 		<string>{{.Path}}</string>
+		<key>BOSSD_STDERR_LOG_PATH</key>
+		<string>{{.StderrLogPath}}</string>
 		<key>LC_CTYPE</key>
 		<string>UTF-8</string>
 {{- if .SettingsPath}}
@@ -270,12 +267,14 @@ func bootoutLaunchdTarget(target string, stillRunning func() bool) error {
 // SettingsPath, on both plist data types, is the BOSS_SETTINGS_PATH the job is
 // started with. Empty renders no key at all, so a default install is
 // byte-identical to one made before the variable was carried (BOS-1368).
+// StderrLogPath is rendered as both StandardErrorPath and BOSSD_STDERR_LOG_PATH.
 type plistData struct {
-	Label        string
-	BossdPath    string
-	LogDir       string
-	Path         string
-	SettingsPath string
+	Label         string
+	BossdPath     string
+	LogDir        string
+	Path          string
+	SettingsPath  string
+	StderrLogPath string
 }
 
 type mcpPlistData struct {
@@ -352,11 +351,12 @@ func renderPlist(bossdPath, settingsPath string) (string, error) {
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, plistData{
-		Label:        Label,
-		BossdPath:    bossdPath,
-		LogDir:       ld,
-		Path:         serviceEnvPath(),
-		SettingsPath: settingsPath,
+		Label:         Label,
+		BossdPath:     bossdPath,
+		LogDir:        ld,
+		Path:          serviceEnvPath(),
+		SettingsPath:  settingsPath,
+		StderrLogPath: filepath.Join(ld, "bossd.stderr.log"),
 	}); err != nil {
 		return "", fmt.Errorf("render plist: %w", err)
 	}

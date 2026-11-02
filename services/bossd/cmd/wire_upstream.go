@@ -24,6 +24,7 @@ import (
 	"github.com/recurser/bossd/internal/broadcast"
 	"github.com/recurser/bossd/internal/callback"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/ghtoken"
 	"github.com/recurser/bossd/internal/notesync"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
@@ -32,6 +33,15 @@ import (
 )
 
 func (w *daemonWiring) wireUpstream() {
+	// githubCredentials answers which GitHub credential each repo uses
+	// (BOS-2264). The local-only source has no client, so every answer is the
+	// user's gh login with not_signed_in; the upstream block below replaces it
+	// with a signed-in source. Building it here keeps the field non-nil for
+	// every consumer.
+	w.githubCredentials = ghtoken.New(ghtoken.Config{
+		Repos:  w.repos,
+		Logger: log.Logger.With().Str("component", "github-credentials").Logger(),
+	})
 
 	// webhookEvidence stays a nil interface without an upstream, so ListRepos
 	// never flags a repo on a local-only daemon.
@@ -469,6 +479,8 @@ func (w *daemonWiring) wireUpstream() {
 		w.cronScheduler.SetWebhookHealth(webhookHealth)
 		w.displayPoller.SetWebhookHealth(webhookHealth)
 		w.callbackEvaluator.SetWebhookHealth(webhookHealth)
+		w.ghProvider.SetWebhookHealth(webhookHealth)
+		w.prWaits.SetWebhookHealth(webhookHealth)
 		w.webhookEvidence = webhookHealth
 		w.streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
 			Client:       client,
@@ -493,6 +505,7 @@ func (w *daemonWiring) wireUpstream() {
 				WithEvaluator(w.callbackEvaluator).
 				WithVerifyEvents(verifyevent.New(w.repos, w.cronJobs, w.callbackEvaluator, proofenvkeyring.New(log.Logger), log.Logger).WithGHUsage(w.ghUsageShim)).
 				WithReadInvalidator(w.ghProvider).
+				WithPRWaiters(w.prWaits).
 				WithPRPoller(w.poller).
 				WithBaseMoves(w.displayPoller).
 				WithWebhookHealth(webhookHealth),
@@ -554,6 +567,23 @@ func (w *daemonWiring) wireUpstream() {
 			Logger:     log.Logger.With().Str("component", "note-sync").Logger(),
 		})
 
+		// GitHub App installation tokens (BOS-2264): the same client, session
+		// token holder and re-register self-heal as note sync. A logout or a
+		// rejected refresh token (authState) stops minting and serving them.
+		w.githubCredentials = ghtoken.New(ghtoken.Config{
+			Client:     githubInstallationTokenClient{rpc: client},
+			Tokens:     sessionTokenHolder,
+			ReRegister: reRegister,
+			NeedsLogin: authState.NeedsLogin,
+			Repos:      w.repos,
+			Logger:     log.Logger.With().Str("component", "github-credentials").Logger(),
+		})
+		// The GitHub adapter's reads, and its status posts when the token
+		// allows, run on each repo's installation pool (BOS-2265). A
+		// local-only daemon attaches nothing, so every call stays on the
+		// user's gh login.
+		w.ghProvider.SetInstallationTokens(installationTokenSource{src: w.githubCredentials})
+
 		authAdapter := &streamAuthAdapter{
 			streamClient:  w.streamClient,
 			tokenProvider: tokenProvider,
@@ -569,6 +599,9 @@ func (w *daemonWiring) wireUpstream() {
 			// the one shared sessionTokenHolder — login and auth-failure
 			// recovery can never double-register or fight each other.
 			reRegister: reRegister,
+			// A logout or a fresh login (possibly another account) drops
+			// every cached installation token.
+			githubCredentials: w.githubCredentials,
 		}
 		w.authNotifier = authAdapter
 		// A nil *streamAuthAdapter stored in the AuthStateReporter INTERFACE is

@@ -14,7 +14,6 @@ import (
 	"github.com/recurser/bossalib/daemonstate"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
-	bossalog "github.com/recurser/bossalib/kit/log"
 	"github.com/recurser/bossd/internal/adapter/migrate"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -47,9 +46,7 @@ func (w *daemonWiring) wireStores() error {
 		err             error
 		tmuxDaemonIDErr error
 	)
-	// Human-friendly console logging plus rotated file at $XDG_STATE_HOME/bossanova/logs/bossd.log.
-	logCloser := bossalog.Setup("bossd")
-	w.deferCleanup(func() { _ = logCloser.Close() })
+	w.setupLogging(os.Getenv, os.Stderr)
 
 	// startupProtectedRoots is the symlink-resolved protected-root list the
 	// startup diagnostic derived. It is handed to the server so the RepairDoctor

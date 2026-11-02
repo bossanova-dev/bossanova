@@ -32,10 +32,12 @@ import (
 	"github.com/recurser/bossd/internal/domain/questionsignal"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"github.com/recurser/bossd/internal/evidence"
+	"github.com/recurser/bossd/internal/ghtoken"
 	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/recurser/bossd/internal/notesync"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
+	"github.com/recurser/bossd/internal/prstate"
 	"github.com/recurser/bossd/internal/resume"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
@@ -44,6 +46,10 @@ import (
 	"github.com/recurser/bossd/internal/taskorchestrator"
 	"github.com/recurser/bossd/internal/verifyjob"
 )
+
+// The webhook dispatcher finds repo-level read invalidation by type assertion
+// on its read invalidator, so pin that the shared GitHub provider offers it.
+var _ upstream.RepoReadInvalidator = (*github.Provider)(nil)
 
 // daemonWiring holds the daemon-owned dependencies shared by startup stages.
 // It is allocated once and never copied: callbacks capture the same slots that
@@ -110,6 +116,7 @@ type daemonWiring struct {
 	ghUsage                        *ghusage.Ledger
 	ghUsageShim                    *ghusage.Shim
 	githubCallbacks                *db.SQLiteGitHubCallbackStore
+	githubCredentials              *ghtoken.Source
 	goroutineBudget                time.Duration
 	hookSrv                        *hooks.HookServer
 	hostService                    *plugindoor.HostServiceServer
@@ -131,6 +138,8 @@ type daemonWiring struct {
 	pollerCancel                   context.CancelFunc
 	pollerCtx                      context.Context
 	prAssociationResolver          *session.PRAssociationResolver
+	prState                        *prstate.Reader
+	prWaits                        *prstate.WaitHub
 	proofEnv                       *proofenvkeyring.Resolver
 	proxySrv                       *proxy.ProxyServer
 	publishStoreSessionUpdate      func(ctx context.Context, sess *models.Session)

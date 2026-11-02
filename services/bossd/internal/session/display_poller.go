@@ -225,7 +225,6 @@ func (p *DisplayPoller) notifyCompletion(ctx context.Context, sessionID string, 
 // Run restores each session's last persisted status, then starts the polling
 // loop in a background goroutine. It stops when the context is cancelled.
 func (p *DisplayPoller) Run(ctx context.Context) {
-	ctx = ghusage.WithLabel(ctx, ghusage.LabelPoller)
 	p.restore(ctx)
 	safego.Go(p.logger, func() {
 		defer close(p.done)
@@ -382,8 +381,11 @@ func (p *DisplayPoller) observePR(repoOriginURL, sessionID string, prNumber int,
 // inbound webhook — the backoff is only sound as evidence that the webhook
 // pipeline is delivering for that session. Locally-initiated refreshes must use
 // RefreshPRWithoutWebhookCredit.
+//
+// Its GitHub calls are metered as the display poller's; the uncredited variant
+// keeps its caller's label, since the caller acted on the PR.
 func (p *DisplayPoller) RefreshPR(ctx context.Context, repoOriginURL string, prNumber int) error {
-	return p.refreshPR(ctx, repoOriginURL, prNumber, true)
+	return p.refreshPR(ghusage.WithLabel(ctx, ghusage.LabelDisplayPoller), repoOriginURL, prNumber, true)
 }
 
 // RefreshPRWithoutWebhookCredit re-polls one PR's display status on demand
@@ -454,7 +456,7 @@ func (p *DisplayPoller) refreshPR(ctx context.Context, repoOriginURL string, prN
 // state-machine poller. RefreshPR does not: it runs after a webhook or the
 // daemon's own action on the PR, when only a fresh read is useful.
 func (p *DisplayPoller) poll(ctx context.Context) {
-	ctx = vcs.WithCachedReads(ctx)
+	ctx = ghusage.WithLabel(vcs.WithCachedReads(ctx), ghusage.LabelDisplayPoller)
 	now := time.Now()
 	p.pruneWebhookRefreshes(now)
 	activeSessions := make(map[string]struct{})

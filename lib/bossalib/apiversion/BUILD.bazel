@@ -12,6 +12,7 @@ go_library(
         "park_verdict_sentence.go",
         "procedureset.go",
         "proof_attention.go",
+        "registry.go",
         "released.go",
         "state_ending_intent.go",
         "status_phrase.go",

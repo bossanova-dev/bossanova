@@ -55,7 +55,8 @@ func codexAuthBlob(t *testing.T, accountID, refresh string) []byte {
 // TestWithSupersededClass is the whole mapping from an ambient comparison onto
 // the durable failure class, including the two rules that keep the signal
 // honest: the provider's own verdict is never overwritten, and every ambient
-// state but "superseded" contributes nothing at all.
+// state but a shared chain contributes nothing at all. A separate grant (a
+// terminal `codex login` for the same account) is the BOS-2239 false alarm.
 func TestWithSupersededClass(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -65,15 +66,15 @@ func TestWithSupersededClass(t *testing.T) {
 		wantCls string
 	}{
 		{
-			name:    "healthy plus superseded is reported",
+			name:    "healthy plus a shared chain is reported",
 			outcome: domain.AuthCheckOutcomeHealthy, class: "",
-			ambient: credmaterialize.AmbientAuthSuperseded,
+			ambient: credmaterialize.AmbientAuthSharedChain,
 			wantCls: authFailureCredentialSuperseded,
 		},
 		{
-			name:    "healthy plus in sync says nothing",
+			name:    "healthy plus a separate grant says nothing",
 			outcome: domain.AuthCheckOutcomeHealthy, class: "",
-			ambient: credmaterialize.AmbientAuthInSync,
+			ambient: credmaterialize.AmbientAuthSeparateGrant,
 			wantCls: "",
 		},
 		{
@@ -88,19 +89,19 @@ func TestWithSupersededClass(t *testing.T) {
 		{
 			name:    "a confirmed auth failure keeps the provider class",
 			outcome: domain.AuthCheckOutcomeAuthInvalid, class: authFailureAuthInvalidated,
-			ambient: credmaterialize.AmbientAuthSuperseded,
+			ambient: credmaterialize.AmbientAuthSharedChain,
 			wantCls: authFailureAuthInvalidated,
 		},
 		{
 			name:    "a transient failure keeps its own class",
 			outcome: domain.AuthCheckOutcomeTransient, class: authFailureRateLimited,
-			ambient: credmaterialize.AmbientAuthSuperseded,
+			ambient: credmaterialize.AmbientAuthSharedChain,
 			wantCls: authFailureRateLimited,
 		},
 		{
 			name:    "an unavailable run keeps its own class",
 			outcome: domain.AuthCheckOutcomeUnavailable, class: authFailureRunnerUnavailable,
-			ambient: credmaterialize.AmbientAuthSuperseded,
+			ambient: credmaterialize.AmbientAuthSharedChain,
 			wantCls: authFailureRunnerUnavailable,
 		},
 	} {
@@ -115,8 +116,8 @@ func TestWithSupersededClass(t *testing.T) {
 // --- durable recording ----------------------------------------------------
 
 // TestMaintainerRecordsSupersededWithoutChangingEligibility is the acceptance
-// criterion in one test: a clean verification whose ambient login has rotated
-// the refresh chain records the superseded class, keeps the HEALTHY outcome,
+// criterion in one test: a clean verification whose ambient login shares the
+// stored refresh chain records the superseded class, keeps the HEALTHY outcome,
 // and leaves every input the selection predicates read untouched.
 //
 // The outcome half is the load-bearing half. auth_invalid is the single outcome
@@ -125,7 +126,7 @@ func TestWithSupersededClass(t *testing.T) {
 func TestMaintainerRecordsSupersededWithoutChangingEligibility(t *testing.T) {
 	acct := codexAcct("acct-1", nil)
 	store := newAuthStore(acct)
-	verifier := &fakeVerifier{ambient: credmaterialize.AmbientAuthSuperseded}
+	verifier := &fakeVerifier{ambient: credmaterialize.AmbientAuthSharedChain}
 	m := newMaintainer(t, verifier, store, nil)
 
 	if err := m.Smoke(context.Background(), "acct-1", "codex", nil); err != nil {
@@ -138,7 +139,7 @@ func TestMaintainerRecordsSupersededWithoutChangingEligibility(t *testing.T) {
 	}
 	got := writes[0]
 	if got.Outcome != domain.AuthCheckOutcomeHealthy {
-		t.Fatalf("outcome = %q; want %q: a superseded refresh chain is not a present rejection",
+		t.Fatalf("outcome = %q; want %q: a shared refresh chain is not a present rejection",
 			got.Outcome, domain.AuthCheckOutcomeHealthy)
 	}
 	if got.FailureClass != authFailureCredentialSuperseded {
@@ -167,14 +168,16 @@ func TestMaintainerRecordsSupersededWithoutChangingEligibility(t *testing.T) {
 }
 
 // TestMaintainerRecordsNoClassForNonSupersededAmbientStates pins that the
-// no-op and not-evaluable cases record NO failure class at all, rather than a
-// benign-looking one that an operator would have to learn to ignore.
+// separate-grant and not-evaluable cases record NO failure class at all, rather
+// than a benign-looking one that an operator would have to learn to ignore. The
+// separate-grant row is BOS-2239: a terminal `codex login` for an account bossd
+// also manages is its own grant and must not warn on any client.
 func TestMaintainerRecordsNoClassForNonSupersededAmbientStates(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		ambient credmaterialize.AmbientAuthState
 	}{
-		{"in sync", credmaterialize.AmbientAuthInSync},
+		{"separate grant", credmaterialize.AmbientAuthSeparateGrant},
 		{"not evaluable", credmaterialize.AmbientAuthNotEvaluable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -199,30 +202,96 @@ func TestMaintainerRecordsNoClassForNonSupersededAmbientStates(t *testing.T) {
 }
 
 // TestMaintainerKeepsProviderFailureClassOverSuperseded pins that the provider
-// remains the only authority on a present rejection. A run that failed already
+// remains the only authority on a present rejection. A run that failed with the
+// runner's auth-required sentinel records auth_invalid / auth_invalidated
+// whatever the ambient login holds: a refresh that actually failed is reported
+// as the failure it is, never as the superseded warning. A failed run already
 // carries a strictly more actionable class — "reauthenticate now" beats
 // "reauthenticate eventually" — and overwriting it would lose the remedy.
 func TestMaintainerKeepsProviderFailureClassOverSuperseded(t *testing.T) {
-	store := newAuthStore(codexAcct("acct-1", nil))
-	verifier := &fakeVerifier{
-		err:     errors.New("credential verification failed: " + codexAuthRequiredSentinel),
-		ambient: credmaterialize.AmbientAuthSuperseded,
-	}
-	m := newMaintainer(t, verifier, store, nil)
+	for _, tc := range []struct {
+		name    string
+		ambient credmaterialize.AmbientAuthState
+	}{
+		{"shared chain", credmaterialize.AmbientAuthSharedChain},
+		{"separate grant", credmaterialize.AmbientAuthSeparateGrant},
+		{"not evaluable", credmaterialize.AmbientAuthNotEvaluable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newAuthStore(codexAcct("acct-1", nil))
+			verifier := &fakeVerifier{
+				err:     errors.New("credential verification failed: " + codexAuthRequiredSentinel),
+				ambient: tc.ambient,
+			}
+			m := newMaintainer(t, verifier, store, nil)
 
-	if err := m.Smoke(context.Background(), "acct-1", "codex", nil); err == nil {
-		t.Fatal("Smoke reported a clean run for a refused credential")
+			if err := m.Smoke(context.Background(), "acct-1", "codex", nil); err == nil {
+				t.Fatal("Smoke reported a clean run for a refused credential")
+			}
+			writes := store.recorded()
+			if len(writes) != 1 {
+				t.Fatalf("RecordAuthCheck writes = %d; want 1", len(writes))
+			}
+			if writes[0].Outcome != domain.AuthCheckOutcomeAuthInvalid {
+				t.Fatalf("outcome = %q; want %q", writes[0].Outcome, domain.AuthCheckOutcomeAuthInvalid)
+			}
+			if writes[0].FailureClass != authFailureAuthInvalidated {
+				t.Fatalf("failure class = %q; want %q: the provider's verdict must win",
+					writes[0].FailureClass, authFailureAuthInvalidated)
+			}
+		})
 	}
-	writes := store.recorded()
-	if len(writes) != 1 {
-		t.Fatalf("RecordAuthCheck writes = %d; want 1", len(writes))
-	}
-	if writes[0].Outcome != domain.AuthCheckOutcomeAuthInvalid {
-		t.Fatalf("outcome = %q; want %q", writes[0].Outcome, domain.AuthCheckOutcomeAuthInvalid)
-	}
-	if writes[0].FailureClass != authFailureAuthInvalidated {
-		t.Fatalf("failure class = %q; want %q: the provider's verdict must win",
-			writes[0].FailureClass, authFailureAuthInvalidated)
+}
+
+// TestSupersededPrecedenceOverRefreshChainUnproven pins which ambient state may
+// suppress the BOS-1174 refresh-chain inference. A shared chain is a direct
+// observation about bossd's refresh token and takes precedence; a separate
+// grant observes nothing about bossd's chain, so the inference must still be
+// reported when its conjunction (clean run, refresh overdue, no credential
+// write) holds.
+func TestSupersededPrecedenceOverRefreshChainUnproven(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		ambient     credmaterialize.AmbientAuthState
+		wantOutcome domain.AuthCheckOutcome
+		wantClass   string
+	}{
+		{
+			name:        "a shared chain takes precedence",
+			ambient:     credmaterialize.AmbientAuthSharedChain,
+			wantOutcome: domain.AuthCheckOutcomeHealthy,
+			wantClass:   authFailureCredentialSuperseded,
+		},
+		{
+			name:        "a separate grant does not suppress the inference",
+			ambient:     credmaterialize.AmbientAuthSeparateGrant,
+			wantOutcome: domain.AuthCheckOutcomeRefreshChainUnproven,
+			wantClass:   authFailureRefreshNotObserved,
+		},
+		{
+			name:        "not evaluable does not suppress the inference",
+			ambient:     credmaterialize.AmbientAuthNotEvaluable,
+			wantOutcome: domain.AuthCheckOutcomeRefreshChainUnproven,
+			wantClass:   authFailureRefreshNotObserved,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newAuthStore(codexAcct("acct-1", nil))
+			verifier := &fakeVerifier{ambient: tc.ambient, refresh: credmaterialize.RefreshAssertionOverdue}
+			m := newMaintainer(t, verifier, store, nil)
+
+			if err := m.Smoke(context.Background(), "acct-1", "codex", nil); err != nil {
+				t.Fatalf("Smoke: %v", err)
+			}
+			writes := store.recorded()
+			if len(writes) != 1 {
+				t.Fatalf("RecordAuthCheck writes = %d; want 1", len(writes))
+			}
+			if writes[0].Outcome != tc.wantOutcome || writes[0].FailureClass != tc.wantClass {
+				t.Fatalf("recorded %q/%q; want %q/%q",
+					writes[0].Outcome, writes[0].FailureClass, tc.wantOutcome, tc.wantClass)
+			}
+		})
 	}
 }
 
@@ -231,7 +300,7 @@ func TestMaintainerKeepsProviderFailureClassOverSuperseded(t *testing.T) {
 // row is metadata by construction: a closed-set outcome and a closed-set class.
 func TestSupersededRecordCarriesNoCredentialMaterial(t *testing.T) {
 	store := newAuthStore(codexAcct("acct-1", nil))
-	m := newMaintainer(t, &fakeVerifier{ambient: credmaterialize.AmbientAuthSuperseded}, store, nil)
+	m := newMaintainer(t, &fakeVerifier{ambient: credmaterialize.AmbientAuthSharedChain}, store, nil)
 
 	if err := m.Smoke(context.Background(), "acct-1", "codex", nil); err != nil {
 		t.Fatalf("Smoke: %v", err)
@@ -288,14 +357,14 @@ func TestSmokeRunnerReportsAmbientComparison(t *testing.T) {
 		want    credmaterialize.AmbientAuthState
 	}{
 		{
-			name:    "rotated ambient login supersedes the stored credential",
+			name:    "a different ambient refresh token is a separate grant",
 			ambient: func(t *testing.T) []byte { return codexAuthBlob(t, ambientTestAccountID, ambientTestRotated) },
-			want:    credmaterialize.AmbientAuthSuperseded,
+			want:    credmaterialize.AmbientAuthSeparateGrant,
 		},
 		{
-			name:    "matching ambient login is in sync",
+			name:    "an identical ambient refresh token is a shared chain",
 			ambient: func(t *testing.T) []byte { return codexAuthBlob(t, ambientTestAccountID, ambientTestRefresh) },
-			want:    credmaterialize.AmbientAuthInSync,
+			want:    credmaterialize.AmbientAuthSharedChain,
 		},
 		{
 			name:    "an ambient login for another account is silent",
@@ -345,8 +414,8 @@ func TestSmokeRunnerAmbientComparisonSkipsNonCodexProviders(t *testing.T) {
 
 // TestSmokeRunnerAmbientComparisonSurvivesAFailedRun pins that the comparison
 // still happens on a failure path. A run that failed is exactly when an
-// operator most needs to know the stored refresh chain was superseded, and the
-// comparison is evaluated on every return rather than only the clean one.
+// operator most needs to know how the ambient login relates to the stored
+// chain, and the comparison is evaluated on every return rather than only the clean one.
 func TestSmokeRunnerAmbientComparisonSurvivesAFailedRun(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", home)
@@ -366,9 +435,9 @@ func TestSmokeRunnerAmbientComparisonSurvivesAFailedRun(t *testing.T) {
 	if verifyErr == nil {
 		t.Fatal("Verify reported a clean run for a failing agent")
 	}
-	if res.AmbientAuth != credmaterialize.AmbientAuthSuperseded {
+	if res.AmbientAuth != credmaterialize.AmbientAuthSeparateGrant {
 		t.Fatalf("SmokeResult.AmbientAuth = %v; want %v on a failure path",
-			res.AmbientAuth, credmaterialize.AmbientAuthSuperseded)
+			res.AmbientAuth, credmaterialize.AmbientAuthSeparateGrant)
 	}
 }
 

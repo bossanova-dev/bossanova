@@ -9,16 +9,23 @@ import (
 	"path/filepath"
 )
 
-// --- Ambient-login comparison (BOS-1175) ----------------------------------
+// --- Ambient-login comparison (BOS-1175, BOS-2239) -------------------------
 //
 // Nothing else in this package looks OUTWARD. reconcileRefreshedAuth folds the
 // ACCOUNT-LOCAL auth.json back into the store, and projectCodexBaseHome copies
 // non-credential config from the ambient home into the account home while
-// explicitly excluding auth.json. Neither notices that a third party — a manual
-// `codex login`, most often — rewrote the ambient credential chain and thereby
-// invalidated the refresh token bossd still holds. The stored access token keeps
-// working until it expires, so the account verifies clean for days while its
-// refresh chain is already dead.
+// explicitly excluding auth.json. Neither notices when the ambient login and
+// bossd hold the SAME refresh chain.
+//
+// That is the one hazard worth reporting. bossd's own logins run
+// `codex login --device-auth` under a private CODEX_HOME, so a terminal
+// `codex login` for the same provider account is a SEPARATE grant: its refresh
+// token differs from bossd's, and the provider refreshes each grant
+// independently (measured in docs/solutions/account-rotation/
+// separate-codex-device-logins-coexist-refresh-grants.md). A different token
+// therefore says nothing. An IDENTICAL token means an auth.json was copied
+// between the two homes, so two holders share one chain and the next rotation
+// by either one invalidates the other's copy.
 //
 // This file adds exactly one read-only comparison and no remedy. The remedy is
 // `boss account reauth` (BOS-1142); folding the ambient credential into the
@@ -43,26 +50,29 @@ const (
 	// here, and so does the ordinary two-account case: an ambient login for a
 	// DIFFERENT provider account says nothing about this account's credential,
 	// and must produce no signal that could be read as one. Collapsing that case
-	// into "in sync" would vouch for a credential nothing examined; giving it its
-	// own value would report the mere existence of an unrelated login.
+	// into a separate grant would vouch for a credential nothing examined; giving
+	// it its own value would report the mere existence of an unrelated login.
 	AmbientAuthNotEvaluable AmbientAuthState = iota
-	// AmbientAuthInSync means the ambient login is the same provider account and
-	// holds the same refresh token bossd has stored.
-	AmbientAuthInSync
-	// AmbientAuthSuperseded means the ambient login is the same provider account
-	// but holds a DIFFERENT refresh token: someone rotated the chain outside the
-	// daemon and the stored refresh token is no longer the live one.
-	AmbientAuthSuperseded
+	// AmbientAuthSharedChain means the ambient login is the same provider account
+	// and holds the SAME refresh token bossd has stored: two holders share one
+	// refresh chain, and whichever refreshes first invalidates the other's copy.
+	// This is the only state that warrants a warning.
+	AmbientAuthSharedChain
+	// AmbientAuthSeparateGrant means the ambient login is the same provider
+	// account but holds a DIFFERENT refresh token. That is an independent grant
+	// (a terminal `codex login`, most often), which the provider refreshes on its
+	// own, so it says nothing about the chain bossd stores.
+	AmbientAuthSeparateGrant
 )
 
 // String renders the state as a stable, redacted token. It is safe for logs and
 // durable metadata; it never derives from credential material.
 func (s AmbientAuthState) String() string {
 	switch s {
-	case AmbientAuthInSync:
-		return "in_sync"
-	case AmbientAuthSuperseded:
-		return "superseded"
+	case AmbientAuthSharedChain:
+		return "shared_chain"
+	case AmbientAuthSeparateGrant:
+		return "separate_grant"
 	case AmbientAuthNotEvaluable:
 		return "not_evaluable"
 	default:
@@ -70,17 +80,19 @@ func (s AmbientAuthState) String() string {
 	}
 }
 
-// CompareAmbientCodexAuth reports whether the ambient codex login has superseded
-// the refresh token stored for accountID.
+// CompareAmbientCodexAuth reports whether the ambient codex login shares the
+// refresh chain stored for accountID, holds a separate grant for the same
+// provider account, or cannot be compared.
 //
-// IDENTITY FIRST, DIFFERENCE SECOND. A differing refresh token means nothing
-// until both blobs are known to describe the same provider account: after any
-// legitimate rotation the tokens differ by definition, so difference alone is
-// not evidence, and an operator running one bound account plus one personal
-// ambient login would otherwise raise a permanent false alarm. account_id is
-// what establishes identity — it is a first-class parsed token field
+// IDENTITY FIRST, TOKEN SECOND. A refresh-token comparison means nothing until
+// both blobs are known to describe the same provider account: a matching token
+// for a different account cannot happen, and a differing one is the ordinary
+// two-account setup, so either answer would be noise. account_id is what
+// establishes identity — it is a first-class parsed token field
 // (codexTokenFields) that mergeTokens carries forward across rotations with
-// firstNonEmpty, which is exactly how an identity behaves.
+// firstNonEmpty, which is exactly how an identity behaves. Only once identity
+// matches does the token decide: identical is a shared chain, different is a
+// separate grant.
 //
 // It NEVER WRITES. It touches neither the store, nor the account-local auth.json,
 // nor the .bossd-auth-sha256 sidecar, and it does not reuse reconcileRefreshedAuth,
@@ -117,7 +129,7 @@ func (m *Materializer) CompareAmbientCodexAuth(ctx context.Context, accountID st
 		return AmbientAuthNotEvaluable
 	}
 
-	// The two-account case. Not "in sync" — nothing about this account's
+	// The two-account case. Not a separate grant — nothing about this account's
 	// credential was examined — and deliberately indistinguishable from every
 	// other not-evaluable case, so an unrelated personal login produces no
 	// signal at all rather than a quieter one.
@@ -125,9 +137,9 @@ func (m *Materializer) CompareAmbientCodexAuth(ctx context.Context, accountID st
 		return AmbientAuthNotEvaluable
 	}
 	if ambientRefresh == storedRefresh {
-		return AmbientAuthInSync
+		return AmbientAuthSharedChain
 	}
-	return AmbientAuthSuperseded
+	return AmbientAuthSeparateGrant
 }
 
 // readAmbientCodexAuth returns the ambient codex login's account_id and refresh

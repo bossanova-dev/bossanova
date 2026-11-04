@@ -18,6 +18,11 @@
           "head": "cccccccccccccccccccccccccccccccccccccccc",
           "state": "pending",
           "reason": "ticket-not-in-review"
+        },
+        "3554": {
+          "head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "pending",
+          "reason": "not-scanned"
         }
       },
       "remote": [3550, 3551]

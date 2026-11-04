@@ -102,8 +102,8 @@ func (s Snapshot) Lookup(prNumber int, headSHA string) Answer {
 			continue
 		}
 		prefer := e.Reason < candidate.Reason || (e.Reason == candidate.Reason && ruleBefore(e.Rule, candidate.Rule))
-		if e.State == StatePending && (e.Reason == "ticket-not-in-review") != (candidate.Reason == "ticket-not-in-review") {
-			prefer = candidate.Reason == "ticket-not-in-review"
+		if e.State == StatePending && undecided(e.Reason) != undecided(candidate.Reason) {
+			prefer = undecided(candidate.Reason)
 		}
 		if candidate.State == "" || prefer {
 			*candidate = Answer{State: e.State, Reason: e.Reason, Rule: e.Rule}
@@ -177,6 +177,13 @@ func Path(ctx context.Context, repoPath string) (string, error) {
 		return "", fmt.Errorf("invalid git common dir %q", commonDir)
 	}
 	return filepath.Join(commonDir, "boss-verify", "verify-admission.json"), nil
+}
+
+// undecided reports whether a pending reason is the scan's default answer for
+// a ticket-line PR no scan step decided: not-scanned, or ticket-not-in-review
+// as older toolboxes still write it. A decided pending reason beats it.
+func undecided(reason string) bool {
+	return reason == "not-scanned" || reason == "ticket-not-in-review"
 }
 
 // ruleBefore orders recorded rules lexically and ahead of an absent one, so a

@@ -80,18 +80,21 @@ func TestAdmissionLookupReasonOrder(t *testing.T) {
 
 func TestAdmissionLookupDecidedPendingReason(t *testing.T) {
 	head := strings.Repeat("a", 40)
-	for _, reason := range []string{"ticket-not-selected", "ticket-needs-person", "z"} {
-		t.Run(reason, func(t *testing.T) {
-			snapshot := Snapshot{Version: 1, Scopes: map[string]scope{
-				"unprobed": {PRs: map[string]entry{"3550": {Head: head, State: StatePending, Reason: "ticket-not-in-review"}}},
-				"decided":  {PRs: map[string]entry{"3550": {Head: head, State: StatePending, Reason: reason}}},
-			}}
-			for range 20 {
-				if got := snapshot.Lookup(3550, head); got != (Answer{State: StatePending, Reason: reason}) {
-					t.Fatalf("Lookup=%+v want decided pending reason %q", got, reason)
+	// not-scanned is the undecided default; ticket-not-in-review is an older toolbox's name for it.
+	for _, undecided := range []string{"not-scanned", "ticket-not-in-review"} {
+		for _, reason := range []string{"ticket-not-selected", "ticket-needs-person", "ci-red", "a", "z"} {
+			t.Run(undecided+"/"+reason, func(t *testing.T) {
+				snapshot := Snapshot{Version: 1, Scopes: map[string]scope{
+					"unprobed": {PRs: map[string]entry{"3550": {Head: head, State: StatePending, Reason: undecided}}},
+					"decided":  {PRs: map[string]entry{"3550": {Head: head, State: StatePending, Reason: reason}}},
+				}}
+				for range 20 {
+					if got := snapshot.Lookup(3550, head); got != (Answer{State: StatePending, Reason: reason}) {
+						t.Fatalf("Lookup=%+v want decided pending reason %q", got, reason)
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -181,6 +184,7 @@ func TestAdmissionFixture(t *testing.T) {
 		{3551, "b", Answer{State: StateAdmitted, Reason: "ticket"}},
 		{3552, "c", Answer{State: StatePending, Reason: "ticket-not-in-review"}},
 		{3553, "d", Answer{State: StateExcluded, Reason: "no-ticket"}},
+		{3554, "e", Answer{State: StatePending, Reason: "not-scanned"}},
 		{3550, "b", Answer{}}, {9999, "a", Answer{}},
 	} {
 		if got := snapshot.Lookup(tc.pr, strings.Repeat(tc.head, 40)); got != tc.want {

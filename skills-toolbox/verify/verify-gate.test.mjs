@@ -10331,6 +10331,25 @@ test('candidates admit a PR whose ticket moved back to In Progress after In Revi
   )
 })
 
+test('candidates record a ticket-line PR no scan step decided as not scanned', async () => {
+  const w = candidateWorld({
+    tickets: [],
+    prs: [1, 2].map((n) => ({
+      number: n,
+      url: `https://github.com/o/r/pull/${n}`,
+      body: ticketBody(`BOS-${n}`),
+      headRefOid: SHA_OF(n),
+      isDraft: false,
+    })),
+  })
+  const r = await candidates({ repo: REPO, prUrls: ['https://github.com/o/r/pull/1'] }, candDeps(w))
+  assert.equal(admissionOf(r, 1), 'admitted/ticket')
+  assert.deepEqual(
+    r.admission.find((entry) => entry.pr === 2),
+    { pr: 2, head: SHA_OF(2), state: 'pending', reason: 'not-scanned' },
+  )
+})
+
 const p2Review = {
   id: 'reciprocal-publication',
   severity: 'P2',

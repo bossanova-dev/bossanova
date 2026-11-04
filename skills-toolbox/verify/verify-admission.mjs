@@ -339,13 +339,18 @@ export async function offReviewLinks(
   }
 }
 
+// The undecided default for a ticket-line PR. Older toolboxes wrote `ticket-not-in-review` for the
+// same answer, from before admission stopped depending on the ticket's state; readers keep both.
+export const NOT_SCANNED_REASON = 'not-scanned'
+
 /**
  * The policy's answer for every scanned PR, independent of which machine acts on it. With an
  * admission `policy` (verifyAdmissionPolicy; null keeps the ticket-only answers and ignores labels), the
  * optOut label excludes any PR (`opted-out`), and a PR no ticket stands behind is `policy:<class>`
  * when its class admits or it carries the optIn label (only on a scan that admits ticketless PRs,
  * else `selection`), and `not-admitted:<class>` otherwise. A `judged: true` link is admitted
- * with reason `judged`; ordinary links keep `ticket` or `ticketless-factory`.
+ * with reason `judged`; ordinary links keep `ticket` or `ticketless-factory`. A ticket-line PR no
+ * scan step decided (one outside the scan's include set) is pending `not-scanned`.
  */
 export function classifyAdmission({
   prs = [],
@@ -382,7 +387,7 @@ export function classifyAdmission({
       reason = 'ambiguous-pr'
     } else if (parseTicketLine(pr.body)) {
       state = 'pending'
-      reason = skips.get(pr.number)?.reason ?? 'ticket-not-in-review'
+      reason = skips.get(pr.number)?.reason ?? NOT_SCANNED_REASON
       rule = skips.get(pr.number)?.rule ?? null
     } else if (attached.has(pr.number)) {
       state = 'pending'

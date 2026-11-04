@@ -1091,6 +1091,14 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (domain.Aut
 // hazard. Every not-evaluable case, including an ambient login belonging to a
 // DIFFERENT account, says nothing either, so the ordinary two-account setup
 // produces no signal rather than a benign-looking one.
+//
+// No dated API version for the BOS-2239 narrowing. Clients read this class
+// through ListAccounts and render it the same way for every version; only the
+// daemon-host observation that triggers it moved, which no response carries,
+// so no transform could restore the old emission. Clients pinned before
+// V20260913 already receive it blanked. See the AuthCheck.failure_class
+// comment in proto/bossanova/v1/models.proto and
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 func withSupersededClass(
 	outcome domain.AuthCheckOutcome,
 	failureClass string,

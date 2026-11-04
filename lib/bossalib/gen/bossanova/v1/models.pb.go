@@ -6053,11 +6053,23 @@ type AuthCheck struct {
 	//
 	// It normally qualifies a non-healthy outcome. The one exception is
 	// "credential_superseded", which the daemon writes ALONGSIDE a "healthy"
-	// outcome: an ambient `codex login` for the same provider account holds a
-	// different refresh token, so the stored refresh chain is dead even though the
-	// provider still accepts the stored access token. It is a warning about the
-	// future and does NOT affect eligibility. A client that does not know the token
-	// must render the outcome alone rather than a class it cannot interpret.
+	// outcome: the ambient `codex login` on the daemon host holds the SAME refresh
+	// token the daemon stores, so two holders share one refresh chain and the next
+	// refresh by either signs the other out. A different refresh token for the
+	// same provider account is a separate grant, which the provider refreshes
+	// independently, and carries no class (BOS-2239). It is a warning about the
+	// future and does NOT affect eligibility; the remedy is `boss account reauth`.
+	// A client that does not know the token must render the outcome alone rather
+	// than a class it cannot interpret.
+	//
+	// BOS-2239 narrowed only WHEN the daemon emits the token, with no dated
+	// version. The value set, the token's meaning to a client (healthy, reauth
+	// advised) and its remedy are unchanged, so every client renders it as before.
+	// The trigger is a classification of daemon-host state that no response
+	// carries, so no transform could restore the old emission, and clients pinned
+	// before V20260913 already receive it blanked by
+	// SupersededCredentialClassChange; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	FailureClass  string                 `protobuf:"bytes,2,opt,name=failure_class,json=failureClass,proto3" json:"failure_class,omitempty"`
 	CheckedAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`         // when the verification completed
 	NextRetryAt   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=next_retry_at,json=nextRetryAt,proto3" json:"next_retry_at,omitempty"` // earliest next scheduled check

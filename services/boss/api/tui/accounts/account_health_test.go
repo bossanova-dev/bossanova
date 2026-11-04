@@ -211,7 +211,7 @@ func TestAccountLastTestedDetail(t *testing.T) {
 // --- BOS-1175: a stored credential superseded by an ambient codex login ---
 
 // supersededAccount builds a codex account whose last check passed while the
-// daemon found the stored refresh chain superseded by an ambient login.
+// daemon found the stored refresh chain shared with the ambient login.
 func supersededAccount(id string) *pb.AgentAccount {
 	return &pb.AgentAccount{
 		Id:       id,

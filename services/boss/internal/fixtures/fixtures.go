@@ -1520,11 +1520,11 @@ func SetupProgressWorld() World {
 }
 
 // SupersededCredentialWorld is the demo world plus a FOURTH codex account whose
-// stored refresh chain has been superseded by an ambient `codex login`
-// (BOS-1175): the provider still accepts the stored credential, so the row is
+// stored refresh chain is shared with the ambient `codex login` (BOS-1175,
+// BOS-2239): the provider still accepts the stored credential, so the row is
 // active/ok and fully eligible, but its CHECK cell carries the
-// credential_superseded class that says the refresh token bossd holds is no
-// longer the live one.
+// credential_superseded class that says the ambient login holds the same
+// refresh token bossd stores, so the next refresh by either signs the other out.
 //
 // It APPENDS rather than mutating one of the three demo accounts on purpose.
 // The existing rows are asserted verbatim by committed scenarios (notably
@@ -1558,7 +1558,7 @@ func SupersededCredentialWorld() World {
 		// what eligibility reads, and it is untouched — this account is still
 		// selectable and still bindable. The class is the warning about the
 		// future that the operator needs in order to reach for
-		// `boss account reauth` before the access token expires.
+		// `boss account reauth` before either holder refreshes the shared chain.
 		AuthCheck: &pb.AuthCheck{
 			Outcome:      "healthy",
 			FailureClass: "credential_superseded",

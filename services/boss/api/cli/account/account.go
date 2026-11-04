@@ -394,9 +394,9 @@ func fmtAuthCheck(ac *pb.AuthCheck) string {
 	case "healthy":
 		// credential_superseded is the one class that qualifies a HEALTHY
 		// verdict rather than a failing one: the provider accepted the stored
-		// credential, but an ambient codex login for the same provider account
-		// holds a different refresh token, so the stored chain is already dead
-		// (BOS-1175). "ok" keeps its head because eligibility genuinely is
+		// credential, but the ambient codex login holds the SAME refresh token,
+		// so the two share one chain and the next refresh by either signs the
+		// other out (BOS-1175, BOS-2239). "ok" keeps its head because eligibility genuinely is
 		// unaffected; dropping the class would render a superseded credential
 		// identically to a clean one, which is the state the daemon's
 		// credcheck.go comment says both client mirrors render.
@@ -523,7 +523,7 @@ func accountHealthLegend(healths []string) string {
 		parts = append(parts, healthVetoUnprovenMark+" health says ok, but the last credential check did not establish it — see CHECK for what it did or did not conclude")
 	}
 	if superseded {
-		parts = append(parts, healthSupersededMark+" health says ok and the credential still works, but an ambient `codex login` has replaced the stored refresh token — this account will stop working when its access token expires; run `boss account reauth <id>`")
+		parts = append(parts, healthSupersededMark+" health says ok and the credential works, but the ambient `codex login` shares bossd's refresh chain, so the next refresh by either side will sign the other out — run `boss account reauth <id>` to give bossd its own login")
 	}
 	return strings.Join(parts, "\n")
 }

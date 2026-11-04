@@ -10167,7 +10167,7 @@ const admissionOf = (result, n) => {
   return `${state}/${reason}`
 }
 
-test('candidates store an admitted head skipped for CI or an unread step as pending under its hold', async () => {
+test('candidates store an admitted head skipped for CI or an unread step as pending under its hold @sessions.AC234401 @sessions.AC234402', async () => {
   const w = candidateWorld({
     tickets: [1, 2, 3, 4, 5, 6, 7].map((n) => heldTicket(n)),
     rollups: {
@@ -10251,7 +10251,7 @@ test('candidates leave admitted the heads the daemon already shows, and those pa
   for (const n of [1, 2, 3]) assert.equal(admissionOf(limited, n), 'admitted/ticket', `#${n}`)
 })
 
-test('a stored CI hold clears on the next sweep once CI recovers; read-gap holds never go quiet', async () => {
+test('a stored CI hold clears on the next sweep once CI recovers; read-gap holds never go quiet @sessions.AC234402', async () => {
   const dir = tmp()
   try {
     const file = join(dir, 'verify-admission.json')
@@ -10331,7 +10331,7 @@ test('candidates admit a PR whose ticket moved back to In Progress after In Revi
   )
 })
 
-test('candidates record a ticket-line PR no scan step decided as not scanned', async () => {
+test('candidates record a ticket-line PR no scan step decided as not scanned @sessions.AC234403', async () => {
   const w = candidateWorld({
     tickets: [],
     prs: [1, 2].map((n) => ({

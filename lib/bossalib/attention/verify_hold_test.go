@@ -49,7 +49,7 @@ func TestVerifyHoldLabels(t *testing.T) {
 // A head verify admitted but set aside at its candidate step reads a hold that
 // names the skip, never queued; an unscanned head reads its own hold, and the
 // legacy undecided reason keeps its label.
-func TestCompute_CandidateHoldLabels_Sessions_AC234401(t *testing.T) {
+func TestCompute_CandidateHoldLabels_Sessions_AC234401_AC234402_AC234403(t *testing.T) {
 	for reason, want := range map[string]string{
 		"ci-red":               "CI red to verify",
 		"ci-unsettled":         "CI unsettled",

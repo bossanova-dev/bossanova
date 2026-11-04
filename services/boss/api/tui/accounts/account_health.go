@@ -312,8 +312,8 @@ func accountCheckMark(a *pb.AgentAccount) string {
 }
 
 // accountCheckCell colors a CHECK mark: green only for a verified-clean check,
-// warning for a superseded credential that works now but whose refresh chain does
-// not, red for a confirmed credential fault, uncolored for everything else —
+// warning for a superseded credential that works now but shares its refresh chain
+// with the ambient codex login, red for a confirmed credential fault, uncolored for everything else —
 // including never checked, which must not read as reassurance.
 func accountCheckCell(mark string) string {
 	switch mark {
@@ -377,7 +377,7 @@ const (
 	// verdict — nothing has established the confidence the green would claim.
 	healthVetoUnprovenMark = "?"
 	// healthSupersededMark: health says ok and the check PASSED, but the stored
-	// refresh chain has been superseded by an ambient codex login (BOS-1175).
+	// refresh chain is shared with the ambient codex login (BOS-1175, BOS-2239).
 	//
 	// It is not a veto — eligibility is genuinely unaffected and
 	// accountCheckSeverity deliberately keeps this case at checkSeverityOK — but

@@ -672,3 +672,92 @@ func TestAccountLSJSONCredentialSyncBlockReason_Accounts_AC224803(t *testing.T) 
 		}
 	}
 }
+
+// TestAccountLSCodexAmbientLoginVerdicts_Accounts_AC223901_AC223902_AC223903
+// renders the three verdicts a codex account can carry after BOS-2239. A refused
+// credential reads as failed and never as the superseded warning; a healthy
+// check with no class (a separate terminal grant) reads as a plain ok with no
+// mark and no legend; a shared refresh chain reads ok:credential_superseded,
+// marks HEALTH, prints a legend naming the reauth remedy and leaves the account
+// eligible.
+func TestAccountLSCodexAmbientLoginVerdicts_Accounts_AC223901_AC223902_AC223903(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		check      *pb.AuthCheck
+		health     string
+		wantCheck  string
+		wantHealth string
+		wantLegend bool
+	}{
+		{
+			name:       "runner auth sentinel is invalid, not superseded",
+			check:      &pb.AuthCheck{Outcome: "auth_invalid", FailureClass: "auth_invalidated"},
+			health:     "ok",
+			wantCheck:  "failed:auth_invalidated",
+			wantHealth: "ok" + healthVetoInvalidMark,
+			wantLegend: true,
+		},
+		{
+			name:       "separate grant is a plain healthy check",
+			check:      &pb.AuthCheck{Outcome: "healthy"},
+			health:     "ok",
+			wantCheck:  "ok",
+			wantHealth: "ok",
+		},
+		{
+			name:       "shared chain warns and names the remedy",
+			check:      &pb.AuthCheck{Outcome: "healthy", FailureClass: supersededClass},
+			health:     "ok",
+			wantCheck:  "ok:" + supersededClass,
+			wantHealth: "ok" + healthSupersededMark,
+			wantLegend: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acct := &pb.AgentAccount{Id: "acct-codex", Provider: "codex", Status: "active", Health: tc.health, AuthCheck: tc.check}
+			if got := fmtAuthCheck(acct.GetAuthCheck()); got != tc.wantCheck {
+				t.Fatalf("CHECK = %q; want %q", got, tc.wantCheck)
+			}
+			health := fmtAccountHealth(acct)
+			if health != tc.wantHealth {
+				t.Fatalf("HEALTH = %q; want %q", health, tc.wantHealth)
+			}
+			legend := accountHealthLegend([]string{health})
+			if (legend != "") != tc.wantLegend {
+				t.Fatalf("legend present = %v; want %v: %q", legend != "", tc.wantLegend, legend)
+			}
+
+			ls := findLSSubcommand(t)
+			var out bytes.Buffer
+			ls.SetOut(&out)
+			if err := accountLS(ls, &accountLSStub{accounts: []*pb.AgentAccount{acct}}, nil); err != nil {
+				t.Fatalf("accountLS: %v", err)
+			}
+			got := out.String()
+			if !strings.Contains(got, tc.wantCheck) {
+				t.Fatalf("ls output missing CHECK %q:\n%s", tc.wantCheck, got)
+			}
+			if tc.check.GetFailureClass() != supersededClass {
+				if strings.Contains(got, supersededClass) {
+					t.Fatalf("ls output shows the superseded state for a %s check:\n%s", tc.check.GetOutcome(), got)
+				}
+				return
+			}
+			if !strings.Contains(legend, healthSupersededMark) || !strings.Contains(legend, "boss account reauth <id>") {
+				t.Fatalf("shared-chain legend must carry its mark and the reauth remedy: %q", legend)
+			}
+			if !strings.Contains(got, legend) {
+				t.Fatalf("ls output missing the shared-chain legend:\n%s", got)
+			}
+			// Eligibility is unchanged: the warning never produces the
+			// no-eligible-account hint a benched account would.
+			if hints := noEligibleAccountHints([]*pb.AgentAccount{acct}); len(hints) != 0 {
+				t.Fatalf("a shared-chain account was reported ineligible: %v", hints)
+			}
+		})
+	}
+}
+
+// supersededClass is the wire literal the daemon writes for a shared refresh
+// chain (display.AuthCheckClassSuperseded).
+const supersededClass = "credential_superseded"

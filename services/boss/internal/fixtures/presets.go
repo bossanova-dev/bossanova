@@ -186,8 +186,8 @@ func Presets() map[string]Preset {
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
 		// accounts-superseded: the demo world plus a fourth codex account whose
-		// stored refresh chain has been superseded by an ambient `codex login`
-		// (BOS-1175). Separate from demo rather than folded into it because demo
+		// stored refresh chain is shared with the ambient `codex login`
+		// (BOS-1175, BOS-2239). Separate from demo rather than folded into it because demo
 		// is the shared baseline every other accounts scenario captures against,
 		// and an extra eligible codex account would change what those captures
 		// show — including the no-eligible-codex-account hint `boss account ls`

@@ -168,8 +168,8 @@ type SmokeResult struct {
 	SelfCredentialWrites uint64
 
 	// AmbientAuth reports how the ambient codex login compares to the
-	// credential this account has stored: superseded, in sync, or not
-	// evaluable (BOS-1175).
+	// credential this account has stored: a shared chain, a separate grant, or
+	// not evaluable (BOS-1175, BOS-2239).
 	//
 	// It is a closed-set enum and nothing else. NO TOKEN BYTES AND NO
 	// account_id reach this struct: the comparison happens inside

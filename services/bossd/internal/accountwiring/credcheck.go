@@ -68,10 +68,13 @@ const (
 	authFailureTransientProvider = "transient_provider"
 	authFailureUnclassified      = "unclassified"
 	// authFailureCredentialSuperseded reports that the ambient codex login
-	// carries the SAME provider account as this row but a DIFFERENT refresh
-	// token: someone rotated the chain outside the daemon (a manual
-	// `codex login`, most often) and the stored refresh token is no longer the
-	// live one (BOS-1175).
+	// holds the same refresh token bossd stores, so two holders share one chain
+	// and the next rotation by either invalidates the other (BOS-1175,
+	// BOS-2239). That shared chain only arises from copying an auth.json
+	// between the ambient home and bossd's. A DIFFERENT refresh token for the
+	// same account is a separate grant (a terminal `codex login`) that the
+	// provider refreshes independently, and it raises no class at all. The
+	// wire literal predates that narrowing and is kept as-is.
 	//
 	// It is the one class that qualifies a HEALTHY outcome rather than a
 	// failing one, and it deliberately does NOT change eligibility. The stored
@@ -1065,11 +1068,12 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (domain.Aut
 }
 
 // withSupersededClass qualifies a HEALTHY verdict with the superseded class
-// when the ambient codex login has replaced the stored refresh chain.
+// when the ambient codex login shares bossd's refresh chain (the same refresh
+// token), so the next rotation by either holder signs the other out.
 //
 // The outcome is left alone on purpose. auth_invalid is the single outcome that
-// removes an account from both selection tiers, and a superseded refresh token
-// is not a present rejection: the provider just accepted the credential. Writing
+// removes an account from both selection tiers, and a shared refresh chain is
+// not a present rejection: the provider just accepted the credential. Writing
 // anything but healthy here would bench a working account on an inference this
 // package is not entitled to make, which is the inverse of the bug the class
 // exists to surface.
@@ -1077,13 +1081,16 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (domain.Aut
 // It only qualifies a verdict that has nothing else to say. A run that FAILED
 // already carries the provider's own class, and that class is strictly more
 // actionable — "the provider refused this credential" tells an operator to
-// reauthenticate now, where "the refresh chain moved" tells them to do it
-// eventually. The provider's answer must never be overwritten by ours.
+// reauthenticate now, where "the refresh chain is shared" tells them to do it
+// before the next rotation. The provider's answer must never be overwritten
+// by ours.
 //
-// Every non-superseded ambient state — in sync, and every not-evaluable case
-// including an ambient login belonging to a DIFFERENT account — contributes no
-// class at all, so the ordinary two-account setup produces no signal rather than
-// a benign-looking one.
+// Every other ambient state contributes no class at all. A separate grant (a
+// terminal `codex login` for the same account, holding its own refresh token)
+// is refreshed by the provider independently of bossd's chain, so it is not a
+// hazard. Every not-evaluable case, including an ambient login belonging to a
+// DIFFERENT account, says nothing either, so the ordinary two-account setup
+// produces no signal rather than a benign-looking one.
 func withSupersededClass(
 	outcome domain.AuthCheckOutcome,
 	failureClass string,
@@ -1092,7 +1099,7 @@ func withSupersededClass(
 	if outcome != domain.AuthCheckOutcomeHealthy || failureClass != "" {
 		return failureClass
 	}
-	if ambient != credmaterialize.AmbientAuthSuperseded {
+	if ambient != credmaterialize.AmbientAuthSharedChain {
 		return failureClass
 	}
 	return authFailureCredentialSuperseded
@@ -1133,14 +1140,15 @@ func withSupersededClass(
 //
 // PRECEDENCE against the BOS-1175 superseded class. Both signals say "the
 // refresh chain is suspect", and they can hold at once. The superseded class
-// wins: it is a DIRECT observation that the stored refresh token is not the
-// live one, while this outcome is an INFERENCE from the access token's expiry,
+// wins: it is a DIRECT observation that a second holder shares the stored
+// refresh token, while this outcome is an INFERENCE from the access token's expiry,
 // and it carries the more urgent remedy (`boss account reauth` now, rather
-// than eventually). So a superseded run returns ordinary health here and lets
+// than eventually). So a shared-chain run returns ordinary health here and lets
 // withSupersededClass qualify it, instead of reporting the weaker inference and
-// losing the stronger observation.
+// losing the stronger observation. A separate grant is no observation about
+// bossd's chain at all, so it must not suppress the inference.
 func classifyCleanVerification(res SmokeResult) (domain.AuthCheckOutcome, string) {
-	if res.AmbientAuth == credmaterialize.AmbientAuthSuperseded {
+	if res.AmbientAuth == credmaterialize.AmbientAuthSharedChain {
 		return domain.AuthCheckOutcomeHealthy, ""
 	}
 	if res.RefreshAssertion == credmaterialize.RefreshAssertionOverdue && res.SelfCredentialWrites == 0 {

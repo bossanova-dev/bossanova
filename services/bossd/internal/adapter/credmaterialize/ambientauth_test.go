@@ -128,8 +128,8 @@ func indexOfSecret(secret string) int {
 }
 
 // TestCompareAmbientCodexAuthOutcomes is the four-outcome table: same identity
-// and same token, same identity and a rotated token, a DIFFERENT identity, and
-// no ambient file at all.
+// and same token (a shared chain), same identity and a different token (a
+// separate grant), a DIFFERENT identity, and no ambient file at all.
 //
 // The no-op and not-evaluable rows are asserted to be the same value on purpose.
 // "An ambient login for another account" must produce no signal of any kind, and
@@ -143,14 +143,14 @@ func TestCompareAmbientCodexAuthOutcomes(t *testing.T) {
 		want    AmbientAuthState
 	}{
 		{
-			name:    "same identity same token is in sync",
+			name:    "same identity same token is a shared chain",
 			ambient: func(t *testing.T) []byte { return ambientBlob(t, fakeAccount, fakeRefresh) },
-			want:    AmbientAuthInSync,
+			want:    AmbientAuthSharedChain,
 		},
 		{
-			name:    "same identity different token is superseded",
+			name:    "same identity different token is a separate grant",
 			ambient: func(t *testing.T) []byte { return ambientBlob(t, fakeAccount, ambientNewRefresh) },
-			want:    AmbientAuthSuperseded,
+			want:    AmbientAuthSeparateGrant,
 		},
 		{
 			name:    "different identity is not evaluable",
@@ -232,8 +232,8 @@ func TestCompareAmbientCodexAuthReadsAccountStoreShapedBlob(t *testing.T) {
 	}
 	f := newAmbientFixture(t, stored)
 	f.writeAmbient(t, ambientBlob(t, fakeAccount, ambientNewRefresh))
-	if got := f.m.CompareAmbientCodexAuth(context.Background(), "acct-1"); got != AmbientAuthSuperseded {
-		t.Fatalf("CompareAmbientCodexAuth = %v; want %v", got, AmbientAuthSuperseded)
+	if got := f.m.CompareAmbientCodexAuth(context.Background(), "acct-1"); got != AmbientAuthSeparateGrant {
+		t.Fatalf("CompareAmbientCodexAuth = %v; want %v", got, AmbientAuthSeparateGrant)
 	}
 	f.assertNoSecretsLogged(t)
 }
@@ -354,7 +354,7 @@ func TestCompareAmbientCodexAuthRefusesHardLinkedAmbientPath(t *testing.T) {
 }
 
 // TestCompareAmbientCodexAuthWritesNothing is the acceptance criterion in its
-// strongest form: after the comparison reports superseded, the store blob, the
+// strongest form: after the comparison reports a separate grant, the store blob, the
 // account-local auth.json, and the .bossd-auth-sha256 sidecar must all be
 // byte-identical to what they were before, and the store must have taken no
 // save.
@@ -378,8 +378,8 @@ func TestCompareAmbientCodexAuthWritesNothing(t *testing.T) {
 	beforeSidecar := readFileForTest(t, sidecar)
 	beforeAmbient := readFileForTest(t, f.authPath)
 
-	if got := f.m.CompareAmbientCodexAuth(context.Background(), "acct-1"); got != AmbientAuthSuperseded {
-		t.Fatalf("CompareAmbientCodexAuth = %v; want %v", got, AmbientAuthSuperseded)
+	if got := f.m.CompareAmbientCodexAuth(context.Background(), "acct-1"); got != AmbientAuthSeparateGrant {
+		t.Fatalf("CompareAmbientCodexAuth = %v; want %v", got, AmbientAuthSeparateGrant)
 	}
 
 	if extra := f.store.saveCount() - beforeSaves; extra != 0 {
@@ -449,8 +449,8 @@ func TestCompareAmbientCodexAuthDoesNotTakeTheAccountLock(t *testing.T) {
 		t.Fatalf("write ambient auth.json: %v", err)
 	}
 
-	if got := m.CompareAmbientCodexAuth(context.Background(), "acct-1"); got != AmbientAuthSuperseded {
-		t.Fatalf("CompareAmbientCodexAuth = %v; want %v", got, AmbientAuthSuperseded)
+	if got := m.CompareAmbientCodexAuth(context.Background(), "acct-1"); got != AmbientAuthSeparateGrant {
+		t.Fatalf("CompareAmbientCodexAuth = %v; want %v", got, AmbientAuthSeparateGrant)
 	}
 	if n := store.lockCount(); n != 0 {
 		t.Fatalf("WithCredentialLock called %d times; want 0: the account lock must not be taken for a foreign path", n)
@@ -463,9 +463,9 @@ func TestCompareAmbientCodexAuthDoesNotTakeTheAccountLock(t *testing.T) {
 // SmokeResult, in the durable auth-check row, and in a log line.
 func TestAmbientAuthStateCarriesNoCredentialMaterial(t *testing.T) {
 	want := map[AmbientAuthState]string{
-		AmbientAuthNotEvaluable: "not_evaluable",
-		AmbientAuthInSync:       "in_sync",
-		AmbientAuthSuperseded:   "superseded",
+		AmbientAuthNotEvaluable:  "not_evaluable",
+		AmbientAuthSharedChain:   "shared_chain",
+		AmbientAuthSeparateGrant: "separate_grant",
 	}
 	for state, token := range want {
 		if got := state.String(); got != token {

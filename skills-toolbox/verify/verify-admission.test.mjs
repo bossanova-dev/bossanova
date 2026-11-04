@@ -64,7 +64,7 @@ test('admission classifies the admission seam without widening candidate selecti
       { pr: 2, state: 'admitted', reason: 'ticketless-factory' },
       { pr: 3, state: 'excluded', reason: 'no-ticket' },
       { pr: 4, state: 'pending', reason: 'attached' },
-      { pr: 5, state: 'pending', reason: 'ticket-not-in-review' },
+      { pr: 5, state: 'pending', reason: 'not-scanned' },
       { pr: 6, state: 'pending', reason: 'no-session' },
       { pr: 7, state: 'pending', reason: 'draft' },
       { pr: 8, state: 'pending', reason: 'ambiguous-pr' },
@@ -142,7 +142,9 @@ const at = '2026-10-24T00:00:00.000Z'
 const entries = [
   { pr: 3550, head: head('A'), state: 'excluded', reason: 'no-ticket' },
   { pr: 3551, head: head('b'), state: 'admitted', reason: 'ticket' },
+  // An older toolbox's undecided default, which readers keep honouring.
   { pr: 3552, head: head('c'), state: 'pending', reason: 'ticket-not-in-review' },
+  { pr: 3554, head: head('e'), state: 'pending', reason: 'not-scanned' },
 ]
 
 test('admission writer agrees with the shared version-one Go fixture', () => {
@@ -192,7 +194,7 @@ test('admission writer replaces full scans and merges only the event PR in its s
   storeAdmission(file, 'scope', [entries[2]], at)
   data = JSON.parse(fs.readFileSync(file, 'utf8'))
   assert.deepEqual(Object.keys(data.scopes.scope.prs), ['3552'])
-  assert.equal(Object.keys(data.scopes.other.prs).length, 3)
+  assert.equal(Object.keys(data.scopes.other.prs).length, entries.length)
 })
 
 test('admission writer stores remote PRs sorted and keeps them across event and remote-less stores', () => {
@@ -269,7 +271,7 @@ test('GitHub ticket lines keep admission pending and prevent ticketless factory 
       pr: 3,
       head: head('a'),
       state: 'pending',
-      reason: 'ticket-not-in-review',
+      reason: 'not-scanned',
     })
     const unexpectedRead = () => {
       throw new Error('ticket line must settle routing')
@@ -864,7 +866,7 @@ test('the admission entry carries and persists the rule only when present', () =
     [
       ['ticket-not-selected', 'assignees'],
       ['ticket-needs-person', undefined],
-      ['ticket-not-in-review', undefined],
+      ['not-scanned', undefined],
     ],
   )
   assert.equal('rule' in entries[1], false)

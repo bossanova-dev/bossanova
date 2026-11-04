@@ -9,6 +9,7 @@ import {
   admissionLabelHits,
   adoptsVerifyOnly,
   authorMention,
+  candidateHolds,
   readRepairFacts,
   admittedLinks,
   admittedTicketless,
@@ -85,6 +86,56 @@ test('admission classifies the admission seam without widening candidate selecti
       'pending',
     )
   }
+})
+
+test('candidateHolds answers pending only for an admitted head set aside by an allow-listed skip', () => {
+  const admitted = (n) => ({ pr: n, head: head('a'), state: 'admitted', reason: 'ticket' })
+  const holds = {
+    'ci-red': 'ci-red',
+    'ci-unsettled': 'ci-unsettled',
+    'unknown:ci': 'candidate-unread',
+    'unknown:rollup': 'candidate-unread',
+    'unknown:head': 'candidate-unread',
+    'unknown:status': 'candidate-unread',
+    'unknown:approval': 'candidate-unread',
+  }
+  for (const [skip, reason] of Object.entries(holds))
+    assert.deepEqual(candidateHolds([admitted(1)], [{ ticket: 'BOS-1', pr: 1, reason: skip }]), [
+      { pr: 1, head: head('a'), state: 'pending', reason },
+    ])
+  const shown = [
+    'verified',
+    'no-session',
+    'claimed',
+    'parked',
+    'defect-parked',
+    'needs-human',
+    'remote-session',
+    'opted-out',
+    'some-future-skip',
+  ]
+  for (const skip of shown)
+    assert.deepEqual(candidateHolds([admitted(1)], [{ pr: 1, reason: skip }]), [admitted(1)], skip)
+  // Only admitted answers move; another PR's skip, or a pending answer, stands.
+  const pending = {
+    pr: 2,
+    head: head('b'),
+    state: 'pending',
+    reason: 'ticket-not-selected',
+    rule: 'labels',
+  }
+  assert.deepEqual(
+    candidateHolds(
+      [admitted(1), pending],
+      [
+        { pr: 2, reason: 'ci-red' },
+        { pr: 3, reason: 'ci-red' },
+        { ticket: 'BOS-9', reason: 'no-open-pr' },
+      ],
+    ),
+    [admitted(1), pending],
+  )
+  assert.deepEqual(candidateHolds(), [])
 })
 
 const at = '2026-10-24T00:00:00.000Z'

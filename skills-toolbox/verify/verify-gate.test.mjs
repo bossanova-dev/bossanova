@@ -93,7 +93,8 @@ import {
 import * as verifyGate from './verify-gate.mjs'
 import { isCannotAssess } from './verify-vocabulary.mjs'
 import { VERIFY_RETRY_AFTER_MS, VERIFY_RETRY_ATTEMPTS } from './verify-wake.mjs'
-import { judgeTier } from './verify-admission.mjs'
+import { judgeTier, storeScanAdmission } from './verify-admission.mjs'
+import { tickWasQuiet } from './verify-settlement.mjs'
 import { encodeBlockerTrailer, parseBlockerTrailer } from './verify-blockers.mjs'
 import { resolveApprovalAnchor } from './verify-range.mjs'
 import {
@@ -10149,6 +10150,185 @@ test('candidates discover ticket-line heads outside In Review, including named s
     candDeps(w),
   )
   assert.notEqual(repeated.unchanged, true)
+})
+
+// BOS-2344: an admitted head the candidate step sets aside is stored as a hold, never as queued.
+const heldTicket = (n, labels = ['agent-build']) => ({
+  identifier: `BOS-${n}`,
+  labels,
+  attachments: [],
+})
+const cancelledBeside = [
+  { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+  { name: 'matrix', status: 'COMPLETED', conclusion: 'CANCELLED' },
+]
+const admissionOf = (result, n) => {
+  const { state, reason } = result.admission.find((entry) => entry.pr === n)
+  return `${state}/${reason}`
+}
+
+test('candidates store an admitted head skipped for CI or an unread step as pending under its hold', async () => {
+  const w = candidateWorld({
+    tickets: [1, 2, 3, 4, 5, 6, 7].map((n) => heldTicket(n)),
+    rollups: {
+      1: cancelledBeside,
+      2: [{ name: 'ci', status: 'IN_PROGRESS', conclusion: '' }],
+      3: [],
+    },
+    malformed: { status: [4], rollup: [5] },
+    statuses: { [SHA_OF(6)]: verifyStatus('pending', 'needs human: partial-build') },
+    commentsFail: [6],
+  })
+  const r = await candidates({ repo: REPO }, candDeps(w))
+  assert.deepEqual(
+    r.skipped.map(({ pr, reason }) => [pr, reason]),
+    [
+      [1, 'ci-red'],
+      [2, 'ci-unsettled'],
+      [3, 'unknown:ci'],
+      [4, 'unknown:status'],
+      [5, 'unknown:rollup'],
+      [6, 'unknown:approval'],
+    ],
+  )
+  // The #4008 shape: a stale cancelled job beside a green one, admitted through its ticket.
+  assert.deepEqual(
+    r.admission.find((entry) => entry.pr === 1),
+    { pr: 1, head: SHA_OF(1), state: 'pending', reason: 'ci-red' },
+  )
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 7].map((n) => admissionOf(r, n)),
+    [
+      'pending/ci-red',
+      'pending/ci-unsettled',
+      'pending/candidate-unread',
+      'pending/candidate-unread',
+      'pending/candidate-unread',
+      'pending/candidate-unread',
+      'admitted/ticket',
+    ],
+  )
+})
+
+test('candidates leave admitted the heads the daemon already shows, and those past the judge limit', async () => {
+  const w = candidateWorld({
+    tickets: [1, 2, 3, 4, 5, 6].map((n) =>
+      heldTicket(n, n === 4 ? ['agent-build', 'needs-human'] : ['agent-build']),
+    ),
+    statuses: {
+      [SHA_OF(1)]: verifyStatus('success', 'verified'),
+      [SHA_OF(2)]: verifyStatus('pending', 'verifying… t1', 60_000),
+      [SHA_OF(3)]: verifyStatus('pending', 'needs human: partial-build'),
+      [SHA_OF(4)]: verifyNodes(
+        ['pending', 'waiting: stack-busy', 1000],
+        ['pending', 'needs human: no-receipt', 5000],
+      ),
+    },
+  })
+  const r = await candidates(
+    { repo: REPO, excludePrUrls: ['https://github.com/o/r/pull/6'] },
+    candDeps(w),
+  )
+  assert.deepEqual(
+    r.skipped.map(({ pr, reason }) => [pr, reason]).sort((a, b) => a[0] - b[0]),
+    [
+      [1, 'verified'],
+      [2, 'claimed'],
+      [3, 'parked'],
+      [4, 'needs-human'],
+      [6, 'remote-session'],
+    ],
+  )
+  for (const n of [1, 2, 3, 4, 5, 6]) assert.equal(admissionOf(r, n), 'admitted/ticket', `#${n}`)
+  const limited = await candidates(
+    { repo: REPO, limit: 1 },
+    candDeps(candidateWorld({ tickets: [1, 2, 3].map((n) => heldTicket(n)) })),
+  )
+  assert.deepEqual(
+    limited.candidates.map(({ pr }) => pr),
+    [1],
+  )
+  for (const n of [1, 2, 3]) assert.equal(admissionOf(limited, n), 'admitted/ticket', `#${n}`)
+})
+
+test('a stored CI hold clears on the next sweep once CI recovers; read-gap holds never go quiet', async () => {
+  const dir = tmp()
+  try {
+    const file = join(dir, 'verify-admission.json')
+    const at = new Date(NOW).toISOString()
+    const stored = () => JSON.parse(readFileSync(file, 'utf8')).scopes.scope.prs
+    const scan = (rollups, options = {}) =>
+      candidates(
+        { repo: REPO, ...options },
+        candDeps(candidateWorld({ tickets: [heldTicket(1), heldTicket(2)], rollups })),
+      )
+    for (const rollup of [cancelledBeside, [{ name: 'ci', status: 'QUEUED', conclusion: '' }]]) {
+      const held = await scan({ 1: rollup })
+      assert.equal(storeScanAdmission(file, 'scope', held, at), true)
+      assert.equal(stored()['1'].state, 'pending')
+      // A CI hold may go quiet: the head's CI reading, its way out, is in the fingerprint.
+      assert.equal(
+        (await scan({ 1: rollup }, { quietFingerprint: held.fingerprint })).unchanged,
+        true,
+      )
+      const recovered = await scan({}, { quietFingerprint: held.fingerprint })
+      assert.notEqual(recovered.unchanged, true)
+      assert.notEqual(recovered.fingerprint, held.fingerprint)
+      assert.equal(storeScanAdmission(file, 'scope', recovered, at), true)
+      assert.deepEqual(stored()['1'], { head: SHA_OF(1), state: 'admitted', reason: 'ticket' })
+    }
+    // An event for the held PR rewrites only its own entry.
+    const event = await scan(
+      { 1: cancelledBeside, 2: cancelledBeside },
+      {
+        prUrls: ['https://github.com/o/r/pull/1'],
+      },
+    )
+    assert.equal(storeScanAdmission(file, 'scope', event, at, { eventPr: 1 }), true)
+    assert.deepEqual([stored()['1'].reason, stored()['2'].reason], ['ci-red', 'ticket'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+  for (const opts of [
+    { rollups: { 1: [] } },
+    { malformed: { status: [1] } },
+    { malformed: { rollup: [1] } },
+    {
+      statuses: { [SHA_OF(1)]: verifyStatus('pending', 'needs human: partial-build') },
+      commentsFail: [1],
+    },
+  ]) {
+    const r = await candidates(
+      { repo: REPO },
+      candDeps(candidateWorld({ tickets: [heldTicket(1)], ...opts })),
+    )
+    assert.equal(admissionOf(r, 1), 'pending/candidate-unread')
+    assert.equal(tickWasQuiet(r, [], null), false, JSON.stringify(opts))
+  }
+})
+
+test('candidates admit a PR whose ticket moved back to In Progress after In Review', async () => {
+  const pr7 = {
+    number: 7,
+    url: 'https://github.com/o/r/pull/7',
+    body: ticketBody('BOS-7'),
+    headRefOid: SHA_OF(7),
+    isDraft: false,
+  }
+  const inReview = await candidates(
+    { repo: REPO },
+    candDeps(candidateWorld({ tickets: [heldTicket(7)], prs: [pr7] })),
+  )
+  assert.equal(admissionOf(inReview, 7), 'admitted/ticket')
+  // The In Review fetch no longer returns BOS-7; its probed labels still match the selection.
+  const w = candidateWorld({ tickets: [], prs: [pr7] })
+  const moved = await candidates({ repo: REPO }, candDeps(w))
+  assert.deepEqual(w.probes, [{ issueId: 'BOS-7' }])
+  assert.equal(admissionOf(moved, 7), 'admitted/ticket')
+  assert.deepEqual(
+    moved.candidates.map(({ ticket, pr }) => [ticket, pr]),
+    [['BOS-7', 7]],
+  )
 })
 
 const p2Review = {

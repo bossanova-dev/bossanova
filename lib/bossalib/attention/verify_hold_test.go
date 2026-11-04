@@ -16,7 +16,7 @@ func TestVerifyHoldLabels(t *testing.T) {
 	if !slices.IsSorted(labels) || len(slices.Compact(slices.Clone(labels))) != len(labels) {
 		t.Fatalf("labels not sorted and distinct: %v", labels)
 	}
-	for _, reason := range []string{"ticket-not-in-review", "draft", "attached", "ambiguous-pr", "claimed", "no-session", "session-has-ticket", "brand-new-code", ""} {
+	for _, reason := range []string{"ticket-not-in-review", "not-scanned", "ci-red", "ci-unsettled", "candidate-unread", "draft", "attached", "ambiguous-pr", "claimed", "no-session", "session-has-ticket", "brand-new-code", ""} {
 		in := unverifiedPR()
 		in.IsFactoryRepo = true
 		in.VerifyAdmission = attention.Admission{State: attention.AdmissionPending, Reason: reason}
@@ -29,6 +29,10 @@ func TestVerifyHoldLabels(t *testing.T) {
 		if attention.IsWaitLabel(label) || label == attention.VerifyUnknownLabel {
 			t.Errorf("hold label collides with another progress label: %q", label)
 		}
+		// The `word: reason` form belongs to the waiting family.
+		if strings.Contains(label, ": ") || strings.HasPrefix(label, "waiting") {
+			t.Errorf("hold label reads as a wait: %q", label)
+		}
 	}
 	for _, label := range []string{"outside verify", "outside verify: draft", "outside verify: ticket not in review"} {
 		if !attention.IsVerifyHoldLabel(label) {
@@ -39,6 +43,50 @@ func TestVerifyHoldLabels(t *testing.T) {
 		if attention.IsVerifyHoldLabel(label) {
 			t.Errorf("other label %q recognised as hold", label)
 		}
+	}
+}
+
+// A head verify admitted but set aside at its candidate step reads a hold that
+// names the skip, never queued; an unscanned head reads its own hold, and the
+// legacy undecided reason keeps its label.
+func TestCompute_CandidateHoldLabels_Sessions_AC234401(t *testing.T) {
+	for reason, want := range map[string]string{
+		"ci-red":               "CI red to verify",
+		"ci-unsettled":         "CI unsettled",
+		"candidate-unread":     "verify unread",
+		"not-scanned":          "not scanned",
+		"ticket-not-in-review": "needs In Review",
+		"unknown:ticket":       attention.VerifyUnknownLabel,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			in := unverifiedPR()
+			in.IsFactoryRepo = true
+			in.VerifyAdmission = attention.Admission{State: attention.AdmissionPending, Reason: reason}
+			got := attention.Compute(in)
+			if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || got.GetProgressLabel() != want || got.GetStatusPhrase() != want {
+				t.Fatalf("attention = %v, want in progress %q with the same phrase", got, want)
+			}
+			if want != attention.VerifyUnknownLabel && !attention.IsVerifyHoldLabel(want) {
+				t.Fatalf("%q is not a hold label", want)
+			}
+			if len(got.GetParkCodes()) != 0 {
+				t.Fatalf("hold carried park codes %v", got.GetParkCodes())
+			}
+		})
+	}
+	// The same head admitted reads queued, and its pending hold changes nothing else.
+	in := unverifiedPR()
+	in.IsFactoryRepo = true
+	in.VerifyAdmission = attention.Admission{State: attention.AdmissionAdmitted, Reason: "ticket"}
+	admitted := attention.Compute(in)
+	if admitted.GetProgressLabel() != attention.WaitingForVerifyLabel {
+		t.Fatalf("admitted label = %q", admitted.GetProgressLabel())
+	}
+	in.VerifyAdmission = attention.Admission{State: attention.AdmissionPending, Reason: "ci-red"}
+	held := attention.Compute(in)
+	held.ProgressLabel, held.StatusPhrase = admitted.GetProgressLabel(), admitted.GetStatusPhrase()
+	if !proto.Equal(held, admitted) {
+		t.Fatalf("hold differs beyond its label: %v vs %v", held, admitted)
 	}
 }
 

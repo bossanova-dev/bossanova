@@ -64,7 +64,13 @@ const VerifyHoldFallbackLabel = "not verifiable"
 // Keep skew handling inside IsVerifyHoldLabel, shared by the TUI consumers.
 const legacyOutsideVerifyLabel = "outside verify"
 
+// verifyHoldLabels maps each pending admission reason to its fixed label.
+// not-scanned is the undecided default for a ticket-line PR no scan step
+// decided; ticket-not-in-review is the name older toolboxes still write for it.
+// ci-red, ci-unsettled and candidate-unread are admitted heads verify's
+// candidate step set aside until its CI reading or a read recovers.
 var verifyHoldLabels = map[string]string{
+	"not-scanned":          "not scanned",
 	"ticket-not-in-review": "needs In Review",
 	"draft":                "draft PR",
 	"attached":             "several PRs",
@@ -72,6 +78,9 @@ var verifyHoldLabels = map[string]string{
 	"claimed":              "PR claimed",
 	"no-session":           "no session",
 	"session-has-ticket":   "ticket mismatch",
+	"ci-red":               "CI red to verify",
+	"ci-unsettled":         "CI unsettled",
+	"candidate-unread":     "verify unread",
 }
 
 // IsVerifyHoldLabel reports whether label names a pending verify blocker,

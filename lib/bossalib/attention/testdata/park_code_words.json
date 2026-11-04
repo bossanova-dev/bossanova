@@ -160,9 +160,13 @@
   "verifyHold": {
     "ambiguous-pr": "several PRs",
     "attached": "several PRs",
+    "candidate-unread": "verify unread",
+    "ci-red": "CI red to verify",
+    "ci-unsettled": "CI unsettled",
     "claimed": "PR claimed",
     "draft": "draft PR",
     "no-session": "no session",
+    "not-scanned": "not scanned",
     "session-has-ticket": "ticket mismatch",
     "ticket-not-in-review": "needs In Review"
   },

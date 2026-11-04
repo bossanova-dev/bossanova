@@ -40,6 +40,7 @@ go_test(
         "attention_actions_test.go",
         "attention_since_test.go",
         "blocked_park_attention_test.go",
+        "candidate_hold_label_test.go",
         "changelogversion_test.go",
         "daemon_lacks_command_test.go",
         "dead_bootstrap_attention_test.go",

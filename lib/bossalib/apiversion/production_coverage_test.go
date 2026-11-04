@@ -357,6 +357,13 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 			a := s.GetAttention()
 			return a.GetConfidenceLevel() == pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED && len(a.GetAsks()) == 0 && a.GetProofUrl() == "" && len(a.GetLoweredBy()) == 0 && slices.Equal(a.GetActions(), []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_VIDEO})
 		})
+	case CandidateHoldLabelChange:
+		return sessionProbes(func() *pb.Session {
+			return &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "CI red to verify", StatusPhrase: "CI red to verify"}}
+		}, func(s *pb.Session) bool {
+			a := s.GetAttention()
+			return a.GetProgressLabel() == "queued" && a.GetStatusPhrase() == "queued"
+		})
 	case StatusPhraseChange:
 		return sessionProbes(func() *pb.Session {
 			return &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "repairing", StatusPhrase: "repairing 1 P2", StatusDetail: "in a.go"}}

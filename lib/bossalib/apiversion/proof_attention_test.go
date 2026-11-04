@@ -23,7 +23,7 @@ func TestProof_Sessions_AC208703_ProofAttentionEveryPin(t *testing.T) {
 						t.Fatal("mutated cached source")
 					}
 					got := get(msg).GetAttention()
-					if v == reg.Current() {
+					if !reg.Newer(V20261101, v) {
 						if get(msg) != source || !proto.Equal(got, source.Attention) {
 							t.Fatal("current response changed")
 						}

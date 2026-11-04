@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-11-01**. The engineering procedure for adding a new
+The current version is **2026-11-02**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/structure/contracts.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/structure/contracts.md)).
 
@@ -994,7 +994,7 @@ A verify park's attention sentence opens with `Not verified` (or `Verified` for
 video. `SessionAttention.park_label` carries the operator-written path label.
 Older pins receive their previous park sentences and an empty park label.
 
-### 2026-11-01 — Proof attention (Current)
+### 2026-11-01 — Proof attention
 
 Verify parks carry `confidence_level`, up to three `asks`, the current head's
 `proof_url` and `lowered_by` reasons. A proof page offers `ATTENTION_ACTION_PROOF`
@@ -1005,3 +1005,12 @@ PROOF's place when an evidence URL exists and neither action otherwise.
 Every attention also carries `status_phrase`, the row's STATUS words (at most 22
 display cells, never cut with an ellipsis), and `status_detail`, its detail
 line, empty when the row has nothing more to say. Older pins receive both cleared.
+
+### 2026-11-02 — Candidate hold labels (Current)
+
+A green PR whose head verify admitted but set aside at its candidate step reads
+a hold label naming why: `CI red to verify`, `CI unsettled`, or `verify unread`
+when a candidate read failed. A ticket-line PR no verify scan decided reads
+`not scanned`. Older pins receive `queued` for the three candidate holds and
+`needs In Review` for `not scanned`, in both `progress_label` and
+`status_phrase`.

@@ -144,3 +144,46 @@ func downconvertVerifyHoldLabelSession(s *pb.Session) *pb.Session {
 func (VerifyHoldLabelChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertVerifyHoldLabelSession)
 }
+
+// candidateHoldLabelPrevious maps each hold label V20261102 introduced to the
+// label an older pin was served for the same head: queued for an admitted head
+// verify's candidate step set aside, and needs In Review for the undecided
+// default older toolboxes named ticket-not-in-review.
+var candidateHoldLabelPrevious = map[string]string{
+	"CI red to verify": attention.WaitingForVerifyLabel,
+	"CI unsettled":     attention.WaitingForVerifyLabel,
+	"verify unread":    attention.WaitingForVerifyLabel,
+	"not scanned":      "needs In Review",
+}
+
+// CandidateHoldLabelChange restores the labels served before V20261102. The
+// served status phrase repeats the label, so it is restored with it; older
+// transforms then chain from the previous label as they always did.
+type CandidateHoldLabelChange struct{}
+
+// Version implements VersionChange.
+func (CandidateHoldLabelChange) Version() Version { return V20261102 }
+
+// downconvertCandidateHoldLabelSession clones before writing because bosso
+// caches session pointers. Only a row bearing a new hold label allocates.
+func downconvertCandidateHoldLabelSession(s *pb.Session) *pb.Session {
+	label := s.GetAttention().GetProgressLabel()
+	previous, ok := candidateHoldLabelPrevious[label]
+	if !ok {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	cloned.Attention.ProgressLabel = previous
+	if cloned.Attention.GetStatusPhrase() == label {
+		cloned.Attention.StatusPhrase = previous
+	}
+	return cloned
+}
+
+// TransformResponse implements VersionChange for session-bearing unary responses.
+func (CandidateHoldLabelChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertCandidateHoldLabelSession)
+}

@@ -14,8 +14,9 @@ import (
 func TestHomePendingVerifyStatusFitsColumn(t *testing.T) {
 	h := NewModel(nil, context.Background(), nil)
 	for _, reason := range []string{
-		"draft", "ambiguous-pr", "ticket-not-in-review", "attached", "claimed",
-		"no-session", "session-has-ticket", "brand-new-reason", "",
+		"draft", "ambiguous-pr", "ticket-not-in-review", "not-scanned", "attached", "claimed",
+		"no-session", "session-has-ticket", "ci-red", "ci-unsettled", "candidate-unread",
+		"brand-new-reason", "",
 	} {
 		t.Run(reason, func(t *testing.T) {
 			att := attention.Compute(attention.Input{

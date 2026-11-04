@@ -674,6 +674,12 @@ const V20261031 Version = "2026-10-31"
 // StatusPhraseChange: attention carries the row's status phrase and detail.
 const V20261101 Version = "2026-11-01"
 
+// V20261102 ships CandidateHoldLabelChange: an admitted head verify set aside
+// at its candidate step reads "CI red to verify", "CI unsettled" or "verify
+// unread" instead of "queued", and an unscanned head reads "not scanned"
+// instead of "needs In Review". Older pins keep their previous labels.
+const V20261102 Version = "2026-11-02"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -841,8 +847,9 @@ func DefaultRegistry() *Registry {
 			V20260930,
 			V20261031,
 			V20261101,
+			V20261102,
 		},
-		V20261101,
+		V20261102,
 		Baseline,
 	)
 	if err != nil {

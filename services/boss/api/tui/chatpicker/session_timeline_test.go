@@ -243,7 +243,7 @@ func TestChatPickerTimelineGoldens(t *testing.T) {
 				}
 			}
 			if tt.kind != pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED {
-				for _, text := range []string{"Timeline", "Needed from you", "done · standby: wakes if CI turns red", "verify", "[enter] open chat"} {
+				for _, text := range []string{"Timeline", strings.TrimSpace(stripANSI(strings.Split(m.neededBlock(), "\n")[0])), "done · standby: wakes if CI turns red", "verify", "[enter] open chat"} {
 					if !strings.Contains(screen, text) {
 						t.Errorf("missing %s", text)
 					}
@@ -591,17 +591,19 @@ const operatorMarkdownQuestion = "**Should I keep the YAML rewrite in this PR, o
 // change to the code's cap fails the tests rather than moving them with it.
 const summaryMaxRows = 5
 
-// neededRows is the answer's rows under the "Needed from you:" label, which
-// must sit alone on the block's first row, with the indent cut off each row.
+// neededRows is the answer's rows, indent cut: a question's under the label
+// alone on the first row, boss's own ask's with no label.
 func neededRows(t *testing.T, m Model) []string {
 	t.Helper()
 	block := stripANSI(m.neededBlock())
 	rows := strings.Split(block, "\n")
-	if rows[0] != neededLabel {
-		t.Fatalf("block opens with %q, want the label alone:\n%s", rows[0], block)
+	if question := m.session.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_QUESTION; question != (rows[0] == neededLabel) || slices.Contains(rows[1:], neededLabel) {
+		t.Fatalf("question %v, but the label rows read:\n%s", question, block)
+	} else if question {
+		rows = rows[1:]
 	}
 	var texts []string
-	for _, row := range rows[1:] {
+	for _, row := range rows {
 		text, ok := strings.CutPrefix(row, neededIndent)
 		if !ok || strings.TrimSpace(text) == "" {
 			t.Fatalf("row %q is not indented text under the label:\n%s", row, block)
@@ -980,7 +982,7 @@ func TestChatPickerTimelineCapsLongHistory(t *testing.T) {
 			if got := lipgloss.Height(screen) + ui.BannerOverhead; got > height {
 				t.Fatalf("view uses %d rows, budget %d", got, height)
 			}
-			for _, text := range []string{"verify", "Run bs-build", "third chat", "fourth chat", "Needed from you:", "Watch the evidence video, then approve these on head 2bbaede:", "[enter] open chat", "[esc] back", "Parked for you"} {
+			for _, text := range []string{"verify", "Run bs-build", "third chat", "fourth chat", "Watch the evidence video, then approve these on head 2bbaede:", "[enter] open chat", "[esc] back", "Parked for you"} {
 				if !strings.Contains(screen, text) {
 					t.Errorf("missing %q", text)
 				}
@@ -1499,7 +1501,7 @@ func TestChatPickerTimelineSitsUnderTheChatList(t *testing.T) {
 		t.Fatalf("missing %q:\n%s", text, strings.Join(lines, "\n"))
 		return -1
 	}
-	needed, header, lastChat, bar, timeline := row("Needed from you:"), row("CHAT"), row("Run bs-build"), row("[esc] back"), row("Timeline")
+	needed, header, lastChat, bar, timeline := row("Verify is blocked"), row("CHAT"), row("Run bs-build"), row("[esc] back"), row("Timeline")
 	if needed >= header || lastChat >= bar || bar >= timeline {
 		t.Fatalf("needed row %d, table header %d, last chat %d, action bar %d, timeline %d:\n%s", needed, header, lastChat, bar, timeline, strings.Join(lines, "\n"))
 	}
@@ -1585,7 +1587,7 @@ func TestChatPickerLongTimelineKeepsChatsVisible(t *testing.T) {
 			if got := lipgloss.Height(screen) + ui.BannerOverhead; got > height {
 				t.Fatalf("%dx%d: view uses %d rows:\n%s", width, height, got, screen)
 			}
-			if !strings.Contains(screen, "[esc] back") || !strings.Contains(screen, "Needed from you") {
+			if !strings.Contains(screen, "[esc] back") || !strings.Contains(screen, strings.TrimSpace(stripANSI(strings.Split(m.neededBlock(), "\n")[0]))) {
 				t.Fatalf("%dx%d: footer or answer pushed off:\n%s", width, height, screen)
 			}
 			if m.timelineBlock() == "" {

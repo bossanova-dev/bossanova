@@ -2,6 +2,7 @@ package factoryhealth
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,8 @@ func TestComputeRules(t *testing.T) {
 		{name: "same daemon", facts: Facts{DaemonVersion: "v1.10.0", SkillsVersion: "v1.10.0"}},
 		{name: "newer daemon", facts: Facts{DaemonVersion: "v2.0.0", SkillsVersion: "v1.10.0"}},
 		{name: "unknown daemon", facts: Facts{DaemonVersion: "dev", SkillsVersion: "v1.10.0"}},
+		{name: "no remote PRs", facts: Facts{RemotePRs: []int{}}},
+		{name: "remote PR", facts: Facts{RemotePRs: []int{42}}, code: "remote-sessions"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := Compute(tt.facts, now)
@@ -61,9 +64,9 @@ func TestComputeRules(t *testing.T) {
 func TestComputeOrderingAndLimits(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-61 * time.Minute)
-	facts := Facts{SecondModelNotes: []Note{{Body: "second-model review unavailable: z failed since bad", CreatedAt: old}, {Body: "second-model review unavailable: a failed since bad", CreatedAt: old}}, VerifyCrons: []CronFact{{Name: strings.Repeat("界", 81), Failing: true, LastOutcome: strings.Repeat("x", 400)}}, VerifyEnabled: true, Verifying: []VerifyingHead{{PR: 8, StartedAt: old}, {PR: 9, StartedAt: now.Add(-62 * time.Minute)}}, Unreadable: []string{strings.Repeat("界", 400)}, DaemonVersion: "v1.0.0", SkillsVersion: "v1.1.0", DaemonOutdated: true}
+	facts := Facts{SecondModelNotes: []Note{{Body: "second-model review unavailable: z failed since bad", CreatedAt: old}, {Body: "second-model review unavailable: a failed since bad", CreatedAt: old}}, VerifyCrons: []CronFact{{Name: strings.Repeat("界", 81), Failing: true, LastOutcome: strings.Repeat("x", 400)}}, VerifyEnabled: true, Verifying: []VerifyingHead{{PR: 8, StartedAt: old}, {PR: 9, StartedAt: now.Add(-62 * time.Minute)}}, Unreadable: []string{strings.Repeat("界", 400)}, DaemonVersion: "v1.0.0", SkillsVersion: "v1.1.0", DaemonOutdated: true, RemotePRs: []int{7}}
 	got := Compute(facts, now)
-	want := []string{"second-model-off", "second-model-off", "verify-cron-failing", "publishing-off", "verify-backlog", "daemon-outdated", "health-partial"}
+	want := []string{"second-model-off", "second-model-off", "verify-cron-failing", "publishing-off", "verify-backlog", "remote-sessions", "daemon-outdated", "health-partial"}
 	if len(got) != len(want) {
 		t.Fatalf("got %+v", got)
 	}
@@ -85,6 +88,34 @@ func TestComputeOrderingAndLimits(t *testing.T) {
 	got = Compute(facts, now)
 	if len(got) != MaxProblems {
 		t.Fatalf("got %d problems", len(got))
+	}
+}
+
+func TestRemoteSessionsText(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name string
+		prs  []int
+		want string
+	}{
+		{"one PR is singular", []int{42}, "1 PR skipped here: session on another machine (#42)"},
+		{"five PRs list all", []int{5, 4, 3, 2, 1}, "5 PRs skipped here: session on another machine (#1, #2, #3, #4, #5)"},
+		{"seven PRs list five and elide", []int{70, 10, 60, 20, 50, 30, 40}, "7 PRs skipped here: session on another machine (#10, #20, #30, #40, #50, …)"},
+		{"duplicates count once", []int{3, 3, 1}, "2 PRs skipped here: session on another machine (#1, #3)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			prs := append([]int(nil), tt.prs...)
+			got := Compute(Facts{RemotePRs: prs}, now)
+			if len(got) != 1 || got[0].Code != "remote-sessions" || got[0].Text != tt.want || !got[0].StartedAt.IsZero() {
+				t.Fatalf("got %+v, want %q", got, tt.want)
+			}
+			if utf8.RuneCountInString(got[0].Text) > 300 || strings.Contains(got[0].Text, "...") {
+				t.Fatalf("text out of contract: %q", got[0].Text)
+			}
+			if !slices.Equal(prs, tt.prs) {
+				t.Fatalf("Compute mutated its input: %v", prs)
+			}
+		})
 	}
 }
 

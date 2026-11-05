@@ -305,7 +305,7 @@ func TestCacheUsageProbeForRotationSignalHydratesHeadlessUsageLimit(t *testing.T
 		},
 	}
 
-	got := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, rotation.Signal{
+	got := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, nil, rotation.Signal{
 		Provider:        "codex",
 		CappedAccountID: "acct-1",
 		Kind:            rotation.UsageLimited,
@@ -339,7 +339,7 @@ func TestCacheUsageProbeForRotationSignalMarksUnavailableCandidateProbes(t *test
 		},
 	}
 
-	got := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, rotation.Signal{
+	got := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, nil, rotation.Signal{
 		Provider:        "codex",
 		CappedAccountID: "acct-1",
 		Kind:            rotation.UsageLimited,
@@ -382,7 +382,7 @@ func TestCacheUsageProbeForRotationSignalSkipsUnavailableCandidateSnapshots(t *t
 				},
 			}
 
-			got := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, rotation.Signal{
+			got := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, nil, rotation.Signal{
 				Provider:        "codex",
 				CappedAccountID: "acct-1",
 				Kind:            rotation.UsageLimited,
@@ -408,7 +408,7 @@ func TestCacheUsageProbeForRotationSignalSkipsUnavailableCandidateSnapshots(t *t
 func TestCacheUsageProbeForRotationSignalRequiresProbeWhenCandidateListFails(t *testing.T) {
 	cache := &fakeDecisionUsageCache{listErr: errors.New("sqlite busy")}
 
-	got := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, rotation.Signal{
+	got := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, nil, rotation.Signal{
 		Provider:        "codex",
 		CappedAccountID: "acct-1",
 		Kind:            rotation.UsageLimited,

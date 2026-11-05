@@ -1,17 +1,23 @@
    REPO    NAME                                                PR     STATUS                   
                                                                                                
    ──────────────────────────────────────── NEEDS YOU ─────────────────────────────────────────
-   my-app  [BOS-1502] Improve the unattended…                  #2982  ⨯ failing                
-   my-app  [BOS-1510] Improve the unattended…                  #2990  ⨯ blocked → repairing    
- ❯ my-app  [BOS-1500] Improve the unattended…                  #2980  ◐ moderate · schema, api 
-   my-app  [BOS-1503] Improve the unattended…                  #2983  ? question               
-   my-app  [BOS-1504] Improve the unattended…                  #2984  ▽ low · large, auth      
-   my-app  [BOS-1505] Improve the unattended…                  #2985  waiting for you          
-   my-app  [BOS-1506] Improve the unattended…                  #2986  waiting for you          
-   my-app  [BOS-1507] Improve the unattended…                  #2987  ✓ merge                  
+   my-app  [BOS-1502] Improve the unattended…                  #2982  repair failed: 1 P2      
+           in internal/api/schema.go                                                           
+ ❯ my-app  [BOS-1500] Improve the unattended…                  #2980  review API schema +1     
+           API schema, API compatibility · proof recorded                                      
+   my-app  [BOS-1503] Improve the unattended…                  #2983  answer question          
+   my-app  [BOS-1504] Improve the unattended…                  #2984  review Infrastructure    
+           no proof yet                                                                        
+   my-app  [BOS-1505] Improve the unattended…                  #2985  review PR                
+           no proof yet                                                                        
+   my-app  [BOS-1506] 権限ルールの見直し                       #2986  review セキュリティ      
+           no proof yet                                                                        
+   my-app  [BOS-1507] Improve the unattended…                  #2987  approve merge            
                                                                                                
    ─────────────────────────────────────── IN PROGRESS ────────────────────────────────────────
    my-app  [BOS-1501] Improve the unattended…                  #2981  ⣾ building               
-   my-app  [BOS-1508] Improve the unattended…                  #2988  ⣾ checking 4/9           
+   my-app  [BOS-1508] Improve the unattended…                  #2988  ⣾ checks 12/14           
    my-app  [BOS-1509] Improve the unattended…                  #2989  ✓ merged                 
+   my-app  [BOS-1510] Improve the unattended…                  #2990  ⣾ repairing 1 P2         
+           in services/web/src/App.tsx                                                         
 [n]ew session  [enter] select  [p]roof  [m]erge  [/] search · [s]ettings · [q]uit

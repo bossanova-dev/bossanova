@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,27 +29,28 @@ import (
 // underlying timestamp is nil/zero. There is NO credential field — the secret
 // blob never crosses this boundary.
 type accountJSON struct {
-	ID             string   `json:"id"`
-	Provider       string   `json:"provider"`
-	Label          string   `json:"label"`
-	Status         string   `json:"status"`
-	Priority       int32    `json:"priority"`
-	Health         string   `json:"health"`
-	Tier           string   `json:"tier"`
-	AllowedModels  []string `json:"allowed_models"`
-	CooldownUntil  string   `json:"cooldown_until"`
-	LastUsedAt     string   `json:"last_used_at"`
-	LastTestOkAt   string   `json:"last_test_ok_at"`
-	LastTestError  string   `json:"last_test_error"`
-	CreatedAt      string   `json:"created_at"`
-	UpdatedAt      string   `json:"updated_at"`
-	Util5h         float64  `json:"util_5h"`
-	Reset5h        string   `json:"reset_5h"`
-	Util7d         float64  `json:"util_7d"`
-	Reset7d        string   `json:"reset_7d"`
-	UsageStatus    string   `json:"usage_status"`
-	PlanTier       string   `json:"plan_tier"`
-	UsageFetchedAt string   `json:"usage_fetched_at"`
+	ID                        string   `json:"id"`
+	Provider                  string   `json:"provider"`
+	Label                     string   `json:"label"`
+	Status                    string   `json:"status"`
+	Priority                  int32    `json:"priority"`
+	Health                    string   `json:"health"`
+	CredentialSyncBlockReason string   `json:"credential_sync_block_reason"`
+	Tier                      string   `json:"tier"`
+	AllowedModels             []string `json:"allowed_models"`
+	CooldownUntil             string   `json:"cooldown_until"`
+	LastUsedAt                string   `json:"last_used_at"`
+	LastTestOkAt              string   `json:"last_test_ok_at"`
+	LastTestError             string   `json:"last_test_error"`
+	CreatedAt                 string   `json:"created_at"`
+	UpdatedAt                 string   `json:"updated_at"`
+	Util5h                    float64  `json:"util_5h"`
+	Reset5h                   string   `json:"reset_5h"`
+	Util7d                    float64  `json:"util_7d"`
+	Reset7d                   string   `json:"reset_7d"`
+	UsageStatus               string   `json:"usage_status"`
+	PlanTier                  string   `json:"plan_tier"`
+	UsageFetchedAt            string   `json:"usage_fetched_at"`
 	// Credential-check state (BOS-1141/BOS-1142). These are deliberately three
 	// separate fields rather than one rolled-up string: "never checked" and
 	// "checked, found nothing wrong" are opposite facts, and a consumer that
@@ -62,29 +64,34 @@ type accountJSON struct {
 	// commands report unknown for an account with a synced id.
 	// SyncedMemberCount is 0 unless the registry row is known, and
 	// LinkSuggestionIDs is never null.
-	SyncedAgentAccountID string   `json:"synced_agent_account_id"`
-	SyncState            string   `json:"sync_state"`
-	SyncedMemberCount    int      `json:"synced_member_count"`
-	LinkSuggestionIDs    []string `json:"link_suggestion_ids"`
+	SyncedAgentAccountID    string   `json:"synced_agent_account_id"`
+	SyncVersion             int64    `json:"sync_version"`
+	SyncedCredentialVersion int64    `json:"synced_credential_version"`
+	SyncState               string   `json:"sync_state"`
+	SyncedMemberCount       int      `json:"synced_member_count"`
+	LinkSuggestionIDs       []string `json:"link_suggestion_ids"`
 }
 
 // accountToJSON maps a proto Account to the stable JSON schema.
 func accountToJSON(a *pb.AgentAccount) accountJSON {
 	out := accountJSON{
-		ID:            a.GetId(),
-		Provider:      a.GetProvider(),
-		Label:         a.GetLabel(),
-		Status:        a.GetStatus(),
-		Priority:      a.GetPriority(),
-		Health:        a.GetHealth(),
-		Tier:          a.GetTier(),
-		AllowedModels: a.GetAllowedModels(),
-		CooldownUntil: cliutil.Rfc3339OrEmpty(a.GetCooldownUntil()),
-		LastUsedAt:    cliutil.Rfc3339OrEmpty(a.GetLastUsedAt()),
-		LastTestOkAt:  cliutil.Rfc3339OrEmpty(a.GetLastTestOkAt()),
-		LastTestError: a.GetLastTestError(),
-		CreatedAt:     cliutil.Rfc3339OrEmpty(a.GetCreatedAt()),
-		UpdatedAt:     cliutil.Rfc3339OrEmpty(a.GetUpdatedAt()),
+		ID:                        a.GetId(),
+		SyncVersion:               a.GetSyncVersion(),
+		SyncedCredentialVersion:   a.GetSyncedCredentialVersion(),
+		Provider:                  a.GetProvider(),
+		Label:                     a.GetLabel(),
+		Status:                    a.GetStatus(),
+		Priority:                  a.GetPriority(),
+		Health:                    a.GetHealth(),
+		CredentialSyncBlockReason: a.GetCredentialSyncBlockReason(),
+		Tier:                      a.GetTier(),
+		AllowedModels:             a.GetAllowedModels(),
+		CooldownUntil:             cliutil.Rfc3339OrEmpty(a.GetCooldownUntil()),
+		LastUsedAt:                cliutil.Rfc3339OrEmpty(a.GetLastUsedAt()),
+		LastTestOkAt:              cliutil.Rfc3339OrEmpty(a.GetLastTestOkAt()),
+		LastTestError:             a.GetLastTestError(),
+		CreatedAt:                 cliutil.Rfc3339OrEmpty(a.GetCreatedAt()),
+		UpdatedAt:                 cliutil.Rfc3339OrEmpty(a.GetUpdatedAt()),
 
 		AuthCheckOutcome:      a.GetAuthCheck().GetOutcome(),
 		AuthCheckFailureClass: a.GetAuthCheck().GetFailureClass(),
@@ -230,7 +237,8 @@ func accountLS(cmd *cobra.Command, c accountLister, registry SyncedRegistryFacto
 
 // noEligibleAccountHints returns one hint line per provider that has ≥1 account
 // but ZERO eligible to rotate to — where eligible means STATUS=="active" AND
-// HEALTH=="ok", mirroring the engine's isSelectable predicate
+// HEALTH=="ok", with no auth-invalid check or credential-sync block, mirroring
+// the engine's isSelectable predicate
 // (services/bossd/internal/rotation/engine.go). Computed client-side from the
 // already-listed accounts (no daemon-config plumbing); providers are emitted in
 // first-seen order for deterministic output. Rotation cannot switch onto a
@@ -253,6 +261,7 @@ func noEligibleAccountHints(accounts []*pb.AgentAccount) []string {
 	)
 	order := make([]string, 0, len(accounts))
 	hasEligible := make(map[string]bool)
+	hasCredentialOnlyBlock := make(map[string]bool)
 	seen := make(map[string]bool)
 	for _, a := range accounts {
 		p := a.GetProvider()
@@ -260,8 +269,12 @@ func noEligibleAccountHints(accounts []*pb.AgentAccount) []string {
 			seen[p] = true
 			order = append(order, p)
 		}
-		if a.GetStatus() == accountStatusActive && a.GetHealth() == accountHealthOK {
-			hasEligible[p] = true
+		if a.GetStatus() == accountStatusActive && a.GetHealth() == accountHealthOK && a.GetAuthCheck().GetOutcome() != "auth_invalid" {
+			if a.GetCredentialSyncBlockReason() == "" {
+				hasEligible[p] = true
+			} else {
+				hasCredentialOnlyBlock[p] = true
+			}
 		}
 	}
 	hints := make([]string, 0, len(order))
@@ -269,8 +282,12 @@ func noEligibleAccountHints(accounts []*pb.AgentAccount) []string {
 		if hasEligible[p] {
 			continue
 		}
+		if hasCredentialOnlyBlock[p] {
+			hints = append(hints, fmt.Sprintf("Hint: provider %q has no eligible account — credential sharing is not ready on this machine. Run boss account devices status for remediation", p))
+			continue
+		}
 		hints = append(hints, fmt.Sprintf(
-			"Hint: provider %q has no eligible account — rotation cannot switch. Enable or re-authenticate one, e.g. boss account update <id> --status active",
+			"Hint: provider %q has no eligible account — rotation cannot switch. Enable one with boss account update <id> --status active, or replace rejected credentials with boss account reauth <id>",
 			p))
 	}
 	return hints
@@ -420,6 +437,8 @@ func fmtAuthCheck(ac *pb.AuthCheck) string {
 const (
 	healthVetoInvalidMark  = "!"
 	healthVetoUnprovenMark = "?"
+	// healthVetoCredentialSyncMark will also be used by the TUI readiness sibling.
+	healthVetoCredentialSyncMark = "#"
 	// healthSupersededMark mirrors views.healthSupersededMark. Distinct from the
 	// two veto marks because it is not a veto: the check PASSED and the account
 	// is still eligible. It marks HEALTH as well as CHECK because CHECK sits at
@@ -445,6 +464,9 @@ const (
 // account, and marking it would spend the signal until it meant nothing.
 func fmtAccountHealth(a *pb.AgentAccount) string {
 	health := cliutil.OrDash(a.GetHealth())
+	if a.GetCredentialSyncBlockReason() != "" {
+		return health + healthVetoCredentialSyncMark
+	}
 	if health != "ok" {
 		return health
 	}
@@ -477,9 +499,11 @@ func fmtAccountHealth(a *pb.AgentAccount) string {
 // accountHealthLegend returns the legend for whichever veto marks the rendered
 // HEALTH column actually carries, or "" when it carries none.
 func accountHealthLegend(healths []string) string {
-	var invalid, unproven, superseded bool
+	var invalid, unproven, superseded, credentialSync bool
 	for _, h := range healths {
 		switch {
+		case strings.HasSuffix(h, healthVetoCredentialSyncMark):
+			credentialSync = true
 		case strings.HasSuffix(h, healthVetoInvalidMark):
 			invalid = true
 		case strings.HasSuffix(h, healthVetoUnprovenMark):
@@ -489,6 +513,9 @@ func accountHealthLegend(healths []string) string {
 		}
 	}
 	var parts []string
+	if credentialSync {
+		parts = append(parts, healthVetoCredentialSyncMark+" credential sharing is not ready on this machine — run `boss account devices status` for remediation")
+	}
 	if invalid {
 		parts = append(parts, healthVetoInvalidMark+" health says ok, but the last credential check found the credential rejected — see CHECK, then `boss account reauth <id>`")
 	}
@@ -534,6 +561,9 @@ func (g *group) runAccountAddDispatch(cmd *cobra.Command, args []string) error {
 	provider, err := resolveAddProvider(cmd, args)
 	if err != nil {
 		return err
+	}
+	if provider == "claude" && cmd.Flags().Changed("codex-bin") {
+		return errors.New("--codex-bin is codex only; use it with boss account add codex")
 	}
 	// Non-interactive path: a credential source pins the BOS-160 flag behavior.
 	if cmd.Flags().Changed("token") || cmd.Flags().Changed("credential-file") {
@@ -860,6 +890,7 @@ type Client interface {
 	SwitchSessionAgentAccount(context.Context, *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error)
 }
 type group struct {
+	servicePath     func() string
 	newClient       cliutil.ClientFactory[Client]
 	syncedRegistry  SyncedRegistryFactory
 	remoteURL       func(*cobra.Command) string

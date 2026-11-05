@@ -90,6 +90,7 @@ go_test(
         "fix_terminal_test.go",
         "flagerror_test.go",
         "gen_skill_test.go",
+        "gh_read_credential_test.go",
         "hangup_test.go",
         "host_wiring_test.go",
         "skill_coverage_test.go",

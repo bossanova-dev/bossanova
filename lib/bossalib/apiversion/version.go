@@ -670,7 +670,8 @@ const V20260930 Version = "2026-09-30"
 const V20261031 Version = "2026-10-31"
 
 // V20261101 ships ProofAttentionChange: verify parks carry confidence, asks,
-// proof URLs and lowered-by reasons, with PROOF replacing VIDEO.
+// proof URLs and lowered-by reasons, with PROOF replacing VIDEO, and
+// StatusPhraseChange: attention carries the row's status phrase and detail.
 const V20261101 Version = "2026-11-01"
 
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date

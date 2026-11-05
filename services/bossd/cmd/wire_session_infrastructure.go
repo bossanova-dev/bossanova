@@ -68,7 +68,11 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 	// The gh wrapper meters the calls bossd does not make itself: cron gates
 	// and the agent sessions it spawns put it first on PATH. Best-effort — a
 	// wrapper that cannot be written leaves gh unmetered, never broken.
-	shim, shimErr := ghusage.InstallShim(ghusage.Dir(w.appDataDir), os.Getenv("PATH"))
+	trustedBoss := config.ResolveTrustedExecutable("boss")
+	if trustedBoss == "" {
+		log.Info().Msg("github usage: no trusted boss binary found; gate and session gh reads stay on the user login")
+	}
+	shim, shimErr := ghusage.InstallShim(ghusage.Dir(w.appDataDir), os.Getenv("PATH"), ghusage.WithReadCredentialHelper(trustedBoss))
 	switch {
 	case shimErr != nil:
 		log.Warn().Err(shimErr).Msg("github usage: gh wrapper not installed; gate and session gh calls are not metered")

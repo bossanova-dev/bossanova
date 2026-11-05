@@ -80,22 +80,20 @@ func (m Model) chatStatusCell(chat *pb.AgentChat, sp spinner.Model, statusWidth 
 	daemon := m.daemonStatuses[chat.AgentSessionId]
 	statusStr := ui.RenderClaudeStatus(daemon, sp)
 	wait := m.chatWait(chat.GetAgentSessionId())
-	if label := m.detailChatStatus(chat); m.session.GetAttention() != nil && label != "" {
+	if m.stuckCallback(chat) {
+		statusStr = ui.StyleStatusWarning.Render(ansi.Truncate(m.statusDetail(chat), statusWidth, "…"))
+	} else if label := m.detailChatStatus(chat); m.session.GetAttention() != nil && label != "" {
 		statusStr = ui.StyleStatusMuted.Render(ansi.Truncate(label, statusWidth, "…"))
 	} else if wait == waitDone {
 		statusStr = ui.StyleStatusMuted.Render(chatDoneLabel)
 	} else if wait == waitStandby {
 		statusStr = ui.RenderStandbyStatus()
 	} else if label := m.statusDetail(chat); label != "" {
-		if m.stuckCallback(chat) {
-			statusStr = ui.StyleStatusWarning.Render(ansi.Truncate(label, statusWidth, "…"))
-		} else {
-			style := ui.StyleStatusSuccess
-			if daemon == ui.StatusWaiting {
-				style = ui.StyleStatusInfo
-			}
-			statusStr = style.Render(ansi.Truncate(sp.View()+label, statusWidth, "…"))
+		style := ui.StyleStatusSuccess
+		if daemon == ui.StatusWaiting {
+			style = ui.StyleStatusInfo
 		}
+		statusStr = style.Render(ansi.Truncate(sp.View()+label, statusWidth, "…"))
 	}
 	// A chat with start_error set never came up — the agent_chats
 	// row was created but StartTmuxChat hit a failure (e.g.

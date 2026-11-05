@@ -79,3 +79,13 @@ func TestHomeHiddenEndpointRowsFromSnapshot(t *testing.T) {
 		t.Fatal("stale endpoint snapshot rendered while hidden")
 	}
 }
+
+func TestHomeRebuildRetainsCredentialDeviceWarning(t *testing.T) {
+	previous := NewHomeModel(nil, context.Background(), nil)
+	previous.CredentialDeviceReadiness = &pb.CredentialDeviceReadiness{State: "enrollment_expired"}
+	app := App{ctx: context.Background(), home: previous}
+	rebuilt := app.newHomeModel()
+	if got := rebuilt.CredentialDeviceLine(); !strings.Contains(got, "enrollment expired") {
+		t.Fatalf("rebuilt Home lost credential warning: %q", got)
+	}
+}

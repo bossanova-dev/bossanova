@@ -25,10 +25,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// chatPickerStub implements Client that records WakeChat calls so the chat
-// picker tests can assert on what the TUI dispatched. Other methods panic;
-// the chat picker tests only drive the wake path directly via Update,
-// they don't go through the lifecycle that needs ListChats / GetSession.
+// chatPickerStub records writes and serves optional read fixtures for picker
+// tests; an unfixtured chat list leaves seeded model chats untouched.
 type chatPickerStub struct {
 	mu            sync.Mutex
 	wakeChatCalls []wakeChatCall
@@ -36,6 +34,8 @@ type chatPickerStub struct {
 	wakeErr       error
 	session       *pb.Session
 	repos         []*pb.Repo
+	chats         []*pb.AgentChat
+	statuses      []*pb.ChatStatusEntry
 
 	// deleteChatFixtured opts this stub into answering DeleteChat; see the
 	// method. deleteChatCalls and lastDeleteReason then record what the picker
@@ -109,11 +109,9 @@ func (s *chatPickerStub) wakeCalls() []wakeChatCall {
 	return out
 }
 
-// GetChatStatuses must not panic — the model's refreshStatuses tick may
-// call it; we just return nothing so the picker keeps the explicitly
-// seeded statuses.
+// Status polling returns optional fixtures; an unset list is harmless.
 func (s *chatPickerStub) GetChatStatuses(context.Context, string) ([]*pb.ChatStatusEntry, error) {
-	return nil, nil
+	return s.statuses, nil
 }
 
 // GetSession must not panic — refreshStatuses calls it on every tick.
@@ -123,8 +121,6 @@ func (s *chatPickerStub) GetSession(context.Context, string, rpc.SessionReadOpti
 	}
 	return &pb.Session{Id: "session-1"}, nil
 }
-
-// Unused interface methods — panic if called unexpectedly.
 
 func (s *chatPickerStub) ListRepos(context.Context) ([]*pb.Repo, error) { return s.repos, nil }
 
@@ -151,7 +147,10 @@ func (s *chatPickerStub) ArchiveSession(_ context.Context, req *pb.ArchiveSessio
 }
 
 func (s *chatPickerStub) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
-	panic("unused")
+	if s.chats == nil {
+		return nil, errors.New("chat list not fixtured")
+	}
+	return s.chats, nil
 }
 
 // UpdateChatTitle records the rename RPC the inline [r]ename prompt dispatches

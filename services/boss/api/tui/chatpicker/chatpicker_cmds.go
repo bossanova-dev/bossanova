@@ -112,16 +112,20 @@ func (m Model) fetchRepoWebLink() tea.Cmd {
 	}
 }
 
-// refreshStatuses fetches the latest session (for PR status) and daemon
-// chat statuses without re-listing all chats.
+// refreshStatuses fetches the session, chats and daemon statuses for polling.
 func (m Model) refreshStatuses() tea.Cmd {
+	chatsGen := m.chatsGen
 	return func() tea.Msg {
 		sess, err := m.client.GetSession(m.ctx, m.sessionID, rpc.SessionReadOptions{IncludeLocalHTTPEndpoints: m.showOpenPorts})
 		if err != nil {
 			return m.reply(RefreshMsg{})
 		}
 		statuses, lastOutput, waitingReasons, phases := parseChatStatuses(m.client, m.ctx, m.sessionID)
+		chats, chatsErr := m.client.ListChats(m.ctx, m.sessionID)
 		return m.reply(RefreshMsg{
+			Chats:                chats,
+			ChatsListed:          chatsErr == nil,
+			ChatsGen:             chatsGen,
 			Session:              sess,
 			DaemonStatuses:       statuses,
 			DaemonLastOutput:     lastOutput,

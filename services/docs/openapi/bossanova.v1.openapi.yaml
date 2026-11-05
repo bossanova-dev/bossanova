@@ -3242,6 +3242,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListReposAggregatedResponse'
+  /bossanova.v1.OrchestratorService/ProxyListReviewQueue:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListReviewQueue
+      description: |-
+        ProxyListReviewQueue lists the PRs of one repository, by origin URL, that
+         verify has parked for a person, with per-level header counts.
+      operationId: bossanova.v1.OrchestratorService.ProxyListReviewQueue
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListReviewQueueRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListReviewQueueResponse'
   /bossanova.v1.OrchestratorService/ProxyListSessions:
     post:
       tags:
@@ -5755,7 +5793,10 @@ components:
             - string
           title: synced_credential_version
           format: int64
-          description: NO credential field. Ever.
+        credentialSyncBlockReason:
+          type: string
+          title: credential_sync_block_reason
+          description: Live daemon credential-sharing readiness; empty when readiness does not block selection. NO credential field. Ever.
       title: AgentAccount
       additionalProperties: false
       description: |-
@@ -5769,11 +5810,13 @@ components:
         kind:
           type: string
           title: kind
-          description: '"" (not derived) | "none" | "codex_user"'
+          description: '"" (not derived) | "none" | "codex_user" | "claude_org_label"'
         digest:
           type: string
           title: digest
-          description: Hex SHA-256 of provider, workspace and user identity.
+          description: |-
+            Hex SHA-256 of public provider claims: workspace and user for codex_user,
+             Anthropic organization and normalized label for claude_org_label.
         isConfident:
           type: boolean
           title: is_confident
@@ -6770,6 +6813,26 @@ components:
          level only states the floor every call must clear.
 
          A daemon-token identity satisfies only DAEMON and USER_OR_DAEMON.
+    bossanova.v1.BlockerTally:
+      type: object
+      properties:
+        severity:
+          type: string
+          title: severity
+          description: P0, P1 or P2 for a review finding; empty for every other kind.
+        kind:
+          type: string
+          title: kind
+          description: |-
+            The verify blocker kind: review-finding, check, conflict, operator-note
+             or no-review.
+        blockerCount:
+          type: integer
+          title: blocker_count
+          format: int32
+      title: BlockerTally
+      additionalProperties: false
+      description: BlockerTally counts one group of a PR head's standing verify blockers.
     bossanova.v1.Broadcast:
       type: object
       properties:
@@ -10912,13 +10975,21 @@ components:
              daemon's periodic wedge WARN reads, so the log and the doctor agree by
              construction rather than by coincidence.
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        githubCredentialReport:
+          title: github_credential_report
+          description: |-
+            Per-repo GitHub credential state from the daemon's credential source.
+             Unset when the daemon has no source or its report failed; set but empty
+             when the daemon has no repos. Never carries a token.
+          $ref: '#/components/schemas/bossanova.v1.GitHubCredentialReport'
       title: GetAuthStateResponse
       additionalProperties: false
       description: |-
-        GetAuthStateResponse carries only scalar, enumerated, non-secret facts.
-         It never carries an access token, a refresh token, an Authorization header
-         value, or a raw upstream response body — the CLI renders these fields
-         verbatim to an operator's terminal.
+        GetAuthStateResponse carries only enumerated, non-secret facts: the
+         daemon's upstream auth state and, per repo, which GitHub credential it uses.
+         It never carries an access token, a refresh token, an installation token, an
+         Authorization header value, or a raw upstream response body — the CLI
+         renders these fields verbatim to an operator's terminal.
     bossanova.v1.GetBranchHeadRequest:
       type: object
       properties:
@@ -11184,6 +11255,50 @@ components:
           title: install_url
       title: GetGitHubAppInstallURLResponse
       additionalProperties: false
+    bossanova.v1.GetGitHubReadCredentialRequest:
+      type: object
+      properties:
+        ghArgs:
+          type: array
+          items:
+            type: string
+          title: gh_args
+          description: Arguments after gh, exactly as received by the caller.
+        workingDirectory:
+          type: string
+          title: working_directory
+          description: Working directory used to resolve an implicit repository.
+        ghHost:
+          type: string
+          title: gh_host
+          description: The caller's GH_HOST and GH_REPO values.
+        ghRepo:
+          type: string
+          title: gh_repo
+      title: GetGitHubReadCredentialRequest
+      additionalProperties: false
+      description: GetGitHubReadCredentialRequest describes exactly one gh invocation.
+    bossanova.v1.GetGitHubReadCredentialResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          title: token
+          description: |-
+            Read-only repository installation token, or empty to keep the user's login.
+             Secret: never log this field or the response.
+        installationId:
+          type:
+            - integer
+            - string
+          title: installation_id
+          format: int64
+        reason:
+          type: string
+          title: reason
+          description: installation on success; otherwise a stable fallback reason.
+      title: GetGitHubReadCredentialResponse
+      additionalProperties: false
     bossanova.v1.GetGitHubUsageRequest:
       type: object
       properties:
@@ -11208,7 +11323,7 @@ components:
           title: rows
           description: |-
             Sorted by call_count descending, then by breaker_skip_count plus
-             floor_skip_count descending, then label and quota.
+             floor_skip_count descending, then label, quota and identity.
         windowStartedAt:
           title: window_started_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
@@ -11947,6 +12062,69 @@ components:
          domain model; timestamps use google.protobuf.Timestamp and enum-like fields
          are stable lowercase strings. The message body is a secret payload — it is
          carried here for the registering owner but must never be logged.
+    bossanova.v1.GitHubCredentialIdentity:
+      type: string
+      title: GitHubCredentialIdentity
+      enum:
+        - GIT_HUB_CREDENTIAL_IDENTITY_UNSPECIFIED
+        - GIT_HUB_CREDENTIAL_IDENTITY_USER
+        - GIT_HUB_CREDENTIAL_IDENTITY_INSTALLATION
+      description: GitHubCredentialIdentity is which GitHub identity a repo's calls use.
+    bossanova.v1.GitHubCredentialReport:
+      type: object
+      properties:
+        repos:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.GitHubCredentialState'
+          title: repos
+      title: GitHubCredentialReport
+      additionalProperties: false
+      description: |-
+        GitHubCredentialReport wraps the per-repo list so its presence tells "this
+         daemon does not report credentials" apart from "this daemon has no repos".
+    bossanova.v1.GitHubCredentialState:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: The canonical origin, as the credential source keys it.
+        identity:
+          title: identity
+          $ref: '#/components/schemas/bossanova.v1.GitHubCredentialIdentity'
+        installationId:
+          type:
+            - integer
+            - string
+          title: installation_id
+          format: int64
+          description: 0 for the user identity.
+        accountLogin:
+          type: string
+          title: account_login
+          description: '"" for the user identity.'
+        reason:
+          type: string
+          title: reason
+          description: |-
+            The daemon's credential reason verbatim ("installation", "not_signed_in",
+             "not_github", "no_installation", ...). Readers must treat an unrecognized
+             value as forward-compatible rather than failing.
+        expiresAt:
+          title: expires_at
+          description: Unset unless an installation token is cached.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        nextAttemptAt:
+          title: next_attempt_at
+          description: Unset unless the repo is backing off or a refresh is scheduled.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: GitHubCredentialState
+      additionalProperties: false
+      description: GitHubCredentialState is one local repo's GitHub credential and why.
     bossanova.v1.GitHubTriggerConfig:
       type: object
       properties:
@@ -11982,6 +12160,7 @@ components:
             - string
           title: call_count
           format: int64
+          description: Billed calls; free conditional responses are not included.
         breakerSkipCount:
           type:
             - integer
@@ -11996,11 +12175,27 @@ components:
           title: floor_skip_count
           format: int64
           description: Background reads the quota floor refused while the quota was low.
+        identity:
+          type: string
+          title: identity
+          description: |-
+            GitHub identity the calls spent: "user" (the operator's gh login) or
+             "installation:<id>" (a Boss GitHub App installation pool). Empty from a
+             daemon that predates the field, which means "user".
+        notModifiedCount:
+          type:
+            - integer
+            - string
+          title: not_modified_count
+          format: int64
+          description: |-
+            Conditional REST reads answered 304 Not Modified; these spend no quota
+             and are not included in call_count.
       title: GitHubUsageRow
       additionalProperties: false
       description: |-
-        GitHubUsageRow is what one label did against one quota: the calls it sent
-         to GitHub and the attempts refused without contacting GitHub.
+        GitHubUsageRow is what one label did against one quota on one identity: the
+         calls it sent to GitHub and the attempts refused without contacting GitHub.
     bossanova.v1.GlobalSettings:
       type: object
       properties:
@@ -13427,6 +13622,34 @@ components:
             $ref: '#/components/schemas/bossanova.v1.Repo'
           title: repos
       title: ListReposResponse
+      additionalProperties: false
+    bossanova.v1.ListReviewQueueRequest:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+          description: The repo whose queue to list. Required.
+        sort:
+          title: sort
+          $ref: '#/components/schemas/bossanova.v1.ReviewQueueSort'
+      title: ListReviewQueueRequest
+      additionalProperties: false
+    bossanova.v1.ListReviewQueueResponse:
+      type: object
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ReviewQueueRow'
+          title: rows
+        levelCounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ReviewQueueLevelCount'
+          title: level_counts
+          description: One entry per ConfidenceLevel, in enum order, zeros included.
+      title: ListReviewQueueResponse
       additionalProperties: false
     bossanova.v1.ListSessionPRBlockersRequest:
       type: object
@@ -17401,6 +17624,50 @@ components:
              fails whole instead.
       title: ProxyListReposAggregatedResponse
       additionalProperties: false
+    bossanova.v1.ProxyListReviewQueueRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: The repository's origin URL; SSH and HTTPS forms of one repo match.
+        sort:
+          title: sort
+          $ref: '#/components/schemas/bossanova.v1.ReviewQueueSort'
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Unset means every organization the caller belongs to. Set narrows to that
+             organization after a membership check.
+      title: ProxyListReviewQueueRequest
+      additionalProperties: false
+    bossanova.v1.ProxyListReviewQueueResponse:
+      type: object
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ReviewQueueRow'
+          title: rows
+        levelCounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ReviewQueueLevelCount'
+          title: level_counts
+          description: One entry per ConfidenceLevel, in enum order, zeros included.
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationSessionReadFailure'
+          title: failed_organizations
+          description: |-
+            Organizations whose read failed. Their sessions are absent from rows and
+             level_counts; the rest of the union is still served.
+      title: ProxyListReviewQueueResponse
+      additionalProperties: false
     bossanova.v1.ProxyListSessionsAcrossOrganizationsRequest:
       type: object
       properties:
@@ -19872,6 +20139,47 @@ components:
       title: ReviewComment
       additionalProperties: false
       description: ReviewComment represents a review comment on a PR.
+    bossanova.v1.ReviewQueueLevelCount:
+      type: object
+      properties:
+        confidenceLevel:
+          title: confidence_level
+          $ref: '#/components/schemas/bossanova.v1.ConfidenceLevel'
+        sessionCount:
+          type: integer
+          title: session_count
+          format: int32
+      title: ReviewQueueLevelCount
+      additionalProperties: false
+      description: ReviewQueueLevelCount is the review queue header count for one level.
+    bossanova.v1.ReviewQueueRow:
+      type: object
+      properties:
+        session:
+          title: session
+          description: |-
+            The session as ListSessions serves it: title, PR, head, repo, and the
+             attention whose asks, lowered_by, proof_url, park_codes and since (the
+             park start, i.e. the row's age) the queue shows.
+          $ref: '#/components/schemas/bossanova.v1.Session'
+        confidenceLevel:
+          title: confidence_level
+          description: |-
+            The level the queue ranks and counts the row by: the attention's
+             confidence_level, or BLOCKED for a blocked park that carries none.
+          $ref: '#/components/schemas/bossanova.v1.ConfidenceLevel'
+      title: ReviewQueueRow
+      additionalProperties: false
+      description: ReviewQueueRow is one PR parked by verify for a person.
+    bossanova.v1.ReviewQueueSort:
+      type: string
+      title: ReviewQueueSort
+      enum:
+        - REVIEW_QUEUE_SORT_UNSPECIFIED
+        - REVIEW_QUEUE_SORT_MOST_CONFIDENT
+        - REVIEW_QUEUE_SORT_LEAST_CONFIDENT
+        - REVIEW_QUEUE_SORT_OLDEST
+      description: ReviewQueueSort orders the review queue. UNSPECIFIED is MOST_CONFIDENT.
     bossanova.v1.ReviewState:
       type: string
       title: ReviewState
@@ -21354,6 +21662,43 @@ components:
             type: string
           title: lowered_by
           description: Reasons the verify park is below High from 2026-11-01; cleared for older pins.
+        blockerTallies:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.BlockerTally'
+          title: blocker_tallies
+          description: |-
+            The current head's standing verify blockers, grouped by severity and kind,
+             most severe first. Served on every kind once bossd has read the blockers
+             file for the head the display tracker holds; empty for any other head and
+             before that read. Additive for every pin, so no dated version is owed (see
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+        blockerFiles:
+          type: array
+          items:
+            type: string
+          title: blocker_files
+          description: |-
+            Distinct file paths of the current head's review-finding blockers, at most
+             three, in blocker order.
+        statusPhrase:
+          type: string
+          title: status_phrase
+          description: |-
+            The row's STATUS phrase, which clients render verbatim: what the operator
+             must do under NEEDS YOU ("review API schema +1", "repair failed: 1 P2") or
+             what the agent is doing under IN PROGRESS ("repairing 1 P2", "checks
+             12/14"). At most 22 display cells, never cut with an ellipsis and never a
+             confidence word or glyph; empty for DONE. Pins older than 2026-11-01
+             receive it and status_detail cleared (StatusPhraseChange).
+        statusDetail:
+          type: string
+          title: status_detail
+          description: |-
+            One plain line for the row's detail, its parts joined with " · ", when
+             the row has more to say than status_phrase: every review area, the proof
+             state and open items of a review, the full blocker tally and its files,
+             or why a merge is unverified. Empty otherwise.
       title: SessionAttention
       additionalProperties: false
       description: SessionAttention is the computed attention answer for one session.

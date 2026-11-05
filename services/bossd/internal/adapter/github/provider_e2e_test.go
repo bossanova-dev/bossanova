@@ -505,8 +505,8 @@ func TestE2E_GitHub_ListWorkflowRuns(t *testing.T) {
 			t.Errorf("run %d = %+v, want %+v", i, runs[i], want[i])
 		}
 	}
-	if calls := f.callsContaining("actions/runs"); len(calls) != 1 || len(calls[0].Args) != 2 {
-		t.Errorf("want exactly one REST call with no extra flags, got %+v", calls)
+	if calls := f.callsContaining("actions/runs"); len(calls) != 1 || len(calls[0].Args) != 3 || calls[0].Args[2] != "-i" {
+		t.Errorf("want exactly one REST call with included headers, got %+v", calls)
 	}
 }
 

@@ -329,6 +329,8 @@ func (m Model) commitRename() (tea.Model, tea.Cmd) {
 	}
 
 	target := m.renameTargetChatID
+	m.chatsGen++
+	m.renameInFlight++
 	var previous string
 	for _, chat := range m.chats {
 		if chat.GetAgentSessionId() == target {

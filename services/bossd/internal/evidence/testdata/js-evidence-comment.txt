@@ -4,19 +4,15 @@
 <!-- boss-proof: {"schema":"boss-proof/1","head":"0123456789abcdef0123456789abcdef01234567","page":null,"level":"cannot-assess","asks":[],"loweredBy":["Confidence is not computed yet."],"digest":"sha256:ec976fdeef241ca9dbd55d88629af7b56541e8776665999faa29703dd805e697"} -->
 
 <details>
-<summary>Confidence: Cannot assess — Gather evidence before deciding</summary>
+<summary>Confidence: not computed yet</summary>
 
 ## Confidence
 
-- Confidence: Cannot assess — Gather evidence before deciding
+- Confidence: not computed yet
 
 ## What it does
 
 - intent unknown
-
-## Why not high
-
-- Confidence is not computed yet.
 
 ## Asks
 
@@ -33,7 +29,7 @@
 
 ## Verification evidence
 
-[![Verification video](https://proof.example.test/verify-evidence/AAAAAAAAAAAAAAAAAAAAAA/poster.png)](https://proof.example.test/golden/video.mp4)
+[Watch the verification video](https://proof.example.test/golden/video.mp4)
 
 Path class: `ui` · Features: `sessions`
 

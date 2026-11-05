@@ -31,17 +31,17 @@ func homeFilterHaystack(sess *pb.Session) string {
 	if att := sess.GetAttention(); att != nil && !displaystatus.IsStateEndingLabel(status) && (att.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || showsAttentionStatus(sess)) {
 		// Progress labels are stable; the rendered spinner is deliberately excluded,
 		// and a merge cell is matched by its resting text.
-		// A confidence cell is matched by its full text, so an ask the
-		// column cuts off is still found.
-		if c, ok := ui.ConfidenceCell(sess); ok {
-			status = c.Text()
+		// A served phrase is matched with its detail line, so an area the
+		// phrase counts as "+N" is still found.
+		if phrase := att.GetStatusPhrase(); phrase != "" {
+			status = phrase
 		} else if att.GetKind() == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
 			status = att.GetProgressLabel()
 		} else {
 			status = ansi.Strip((Model{}).renderAttentionStatus(sess, false))
 		}
 	}
-	fields := []string{sess.GetRepoDisplayName(), sess.GetTitle(), sess.GetBranchName(), sess.GetTrackerId(), status}
+	fields := []string{sess.GetRepoDisplayName(), sess.GetTitle(), sess.GetBranchName(), sess.GetTrackerId(), status, ui.SessionStatusDetail(sess)}
 	if sess.PrNumber != nil {
 		fields = append(fields, fmt.Sprintf("#%d", sess.GetPrNumber()))
 	}

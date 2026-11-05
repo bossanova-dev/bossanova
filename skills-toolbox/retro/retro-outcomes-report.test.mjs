@@ -6,6 +6,7 @@ import {
   MAX_RATE_PRS,
   TRACE_TIMEOUT_MS,
   LIST_TIMEOUT_MS,
+  CAPS_TIMEOUT_MS,
 } from './retro-outcomes-report.mjs'
 import { escapeRecord, renderEscapeComment, parseEscapeComment } from '../verify/verify-escapes.mjs'
 import { RECEIPT_CONTEXT } from '../commit-status.mjs'
@@ -23,17 +24,21 @@ function fixture({
   lastRunAt,
   more = false,
   tracer = true,
+  caps = true,
+  history = ok({ repo: 'owner/repo', episodes: [], unreadable: 0 }),
 } = {}) {
   const calls = [],
     writes = new Map()
   const run = (cmd, args) => {
     calls.push([cmd, ...args])
     if (cmd === process.execPath)
-      return ok(
-        args[1] === 'trace'
-          ? { links: [], skipped: [], truncated: false }
-          : { escapes: [], unreadable: 0 },
-      )
+      return args[0].endsWith('verify-area-caps-sync.mjs')
+        ? history
+        : ok(
+            args[1] === 'trace'
+              ? { links: [], skipped: [], truncated: false }
+              : { escapes: [], unreadable: 0 },
+          )
     if (cmd === 'git') return ok('/repo\n/common\n')
     if (args[0] === 'env') return ok({ session: { repo_id: repoId } })
     if (args[0] === 'cron')
@@ -49,7 +54,7 @@ function fixture({
     return ok([])
   }
   const fs = {
-    existsSync: () => tracer,
+    existsSync: (file) => (file.endsWith('verify-area-caps-sync.mjs') ? caps : tracer),
     readFileSync: () => JSON.stringify({ lastRunAt }),
     writeFileSync: (file, data) => writes.set(file, data),
   }
@@ -262,7 +267,8 @@ const escape = (original = 1, fix = 90) => {
 function traced(f, trace, list = ok({ escapes: [], unreadable: 0 })) {
   const base = f.deps.run
   f.deps.run = (cmd, args, options) => {
-    if (cmd !== process.execPath) return base(cmd, args, options)
+    if (cmd !== process.execPath || !args[0].endsWith('verify-escapes-trace.mjs'))
+      return base(cmd, args, options)
     f.calls.push([cmd, ...args])
     f.timeouts ??= []
     f.timeouts.push(options.timeout)
@@ -394,4 +400,86 @@ test('search ceilings remain visible when GitHub stops pagination at its result 
         })
       : base(cmd, args, opts)
   assert.equal(collect({}, f.deps).truncated, true)
+})
+
+const capped = (key, cappedAt, cleared = {}) => ({
+  key,
+  label: key,
+  cappedAt,
+  escapes: [{ original: 11, fix: 21, fixMergedAt: cappedAt }],
+  ...cleared,
+})
+test('area caps read the history verb once, write nothing and keep overlapping episodes', () => {
+  const episodes = [
+    capped('ui', '2026-10-20T00:00:00Z', {
+      clearedAt: '2026-10-30T00:00:00Z',
+      clearedBy: 'operator',
+      reason: 'guard repaired',
+    }),
+    capped('api', '2026-10-01T00:00:00Z'),
+    capped('old', '2026-10-01T00:00:00Z', {
+      clearedAt: '2026-10-10T00:00:00Z',
+      clearedBy: 'operator',
+      reason: 'stale',
+    }),
+  ]
+  const f = fixture({ history: ok({ repo: 'owner/repo', episodes, unreadable: 0 }) })
+  const writes = []
+  f.deps.fs = { ...f.deps.fs, writeFileSync: (...args) => writes.push(args) }
+  const timeouts = []
+  const base = f.deps.run
+  f.deps.run = (cmd, args, options) => {
+    if (args[0]?.endsWith?.('verify-area-caps-sync.mjs')) timeouts.push(options.timeout)
+    return base(cmd, args, options)
+  }
+  const report = collect({}, f.deps)
+  assert.equal(writes.length, 0)
+  const spawns = f.calls.filter(
+    (c) => c[0] === process.execPath && c[1].endsWith('verify-area-caps-sync.mjs'),
+  )
+  assert.deepEqual(
+    spawns.map((c) => c.slice(2)),
+    [['history', '--repo', 'owner/repo']],
+  )
+  assert.deepEqual(timeouts, [CAPS_TIMEOUT_MS])
+  const { rows, active } = report.sections.areaCaps
+  assert.deepEqual(
+    rows.map((row) => [row.key, row.state]),
+    [
+      ['api', 'active'],
+      ['ui', 'cleared'],
+    ],
+  )
+  assert.equal(rows[1].clearedBy, 'operator')
+  assert.equal(rows[1].reason, 'guard repaired')
+  assert.equal(active, 1)
+})
+test('area-cap history failures fail only that section while the CLI still writes', () => {
+  for (const [options, reason, detail] of [
+    [{ caps: false }, 'caps-missing'],
+    [{ history: { status: 1, stderr: 'gh failed\nmore' } }, 'caps-failed', 'gh failed'],
+    [{ history: ok('garbage') }, 'caps-failed'],
+    [{ history: ok({ repo: 'owner/repo' }) }, 'caps-failed', 'malformed cap history'],
+    [
+      { history: ok({ repo: 'owner/repo', episodes: [], unreadable: 2 }) },
+      'caps-failed',
+      '2 unreadable cap records',
+    ],
+    [{ history: { status: null, error: { code: 'ETIMEDOUT' } } }, 'timeout'],
+  ]) {
+    const f = fixture(options)
+    assert.equal(main(['report', '--out', '/out'], f.deps), 0)
+    const report = JSON.parse(f.writes.get('/out'))
+    assert.equal(report.sections.areaCaps.status, 'failed')
+    assert.equal(report.sections.areaCaps.reason, reason)
+    if (detail) assert.equal(report.sections.areaCaps.detail, detail)
+    assert.ok(
+      report.sections.areaCaps.detail === undefined ||
+        report.sections.areaCaps.detail.length <= 200,
+    )
+    for (const name of [...sections, 'verifyCronHealth', 'escapeRows', 'laterFixRates'])
+      assert.equal(report.sections[name].status, 'ok')
+  }
+  const noRepo = collect({}, fixture({ failure: 'API rate limit exceeded' }).deps)
+  assert.equal(noRepo.sections.areaCaps.reason, 'rate-limited')
 })

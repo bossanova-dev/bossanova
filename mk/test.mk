@@ -172,32 +172,42 @@ test-race:
 	@node scripts/test-infra/run-gate.mjs --label "make test-race" -- $(MAKE) test-all RACE=1
 
 ## Per-module test targets (no generate dep — CI uses committed gen code).
-## Each delegates to `bazel test //<module>/...` (cached) + that module's
+## Each delegates to scoped `bazel test` patterns (cached) + that scope's
 ## default-run ledger rows, with a native-loop fallback when bazel is absent.
+# Resolve package scope at execution time so gate command text stays independent
+# of package selections and resource shares. A failed/empty helper widens safely.
+define bazel-module-command
+targets=$$(node scripts/bazel/scope-targets.mjs --module $(1)) || targets=; targets=$${targets:-//$(1)/...}; status=0; $(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} $$targets || status=$$?; if [ "$$status" -ne 0 ]; then if [ "$$status" -ne 4 ] || [ "$$targets" = "//$(1)/..." ]; then exit "$$status"; fi; fi; node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run --targets "$$targets" $(if $(filter 1,$(RACE)),--race,)
+endef
+
+define bazel-module-test
+node scripts/test-infra/gate-cache.mjs run --site $(2) --command '$(call bazel-module-command,$(1))' -- sh -c '$(call bazel-module-command,$(1))'
+endef
+
 test-bossalib:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/test-infra/gate-cache.mjs run --site test-bossalib --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //lib/bossalib/... && node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //lib/bossalib/... && node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@$(call bazel-module-test,lib/bossalib,test-bossalib)
 else
 	@node scripts/test-infra/gate-cache.mjs run --site test-bossalib --command '$(MAKE) -C lib/bossalib test-all' -- $(MAKE) -C lib/bossalib test-all
 endif
 
 test-boss:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/test-infra/gate-cache.mjs run --site test-boss --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/boss/... && node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/boss/... && node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@$(call bazel-module-test,services/boss,test-boss)
 else
 	@node scripts/test-infra/gate-cache.mjs run --site test-boss --command '$(MAKE) -C services/boss test-all' -- $(MAKE) -C services/boss test-all
 endif
 
 test-bossd:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/test-infra/gate-cache.mjs run --site test-bossd --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bossd/... && node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bossd/... && node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@$(call bazel-module-test,services/bossd,test-bossd)
 else
 	@node scripts/test-infra/gate-cache.mjs run --site test-bossd --command '$(MAKE) -C services/bossd test-all' -- $(MAKE) -C services/bossd test-all
 endif
 
 test-mcp:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/test-infra/gate-cache.mjs run --site test-mcp --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp/... && node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp/... && node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@$(call bazel-module-test,services/mcp,test-mcp)
 else
 	@node scripts/test-infra/gate-cache.mjs run --site test-mcp --command '$(MAKE) -C services/mcp test-all' -- $(MAKE) -C services/mcp test-all
 endif
@@ -205,7 +215,7 @@ endif
 ifneq ($(wildcard services/mcp-gateway/go.mod),)
 test-mcp-gateway:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/test-infra/gate-cache.mjs run --site test-mcp-gateway --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp-gateway/... && node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp-gateway/... && node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@$(call bazel-module-test,services/mcp-gateway,test-mcp-gateway)
 else
 	@node scripts/test-infra/gate-cache.mjs run --site test-mcp-gateway --command '$(MAKE) -C services/mcp-gateway test-all' -- $(MAKE) -C services/mcp-gateway test-all
 endif
@@ -217,7 +227,7 @@ endif
 define define-plugin-test
 test-$(2):
 ifeq ($$(BAZEL_USABLE),1)
-	@node scripts/test-infra/gate-cache.mjs run --site test-$(2) --command '$$(BAZEL) test $$(BAZEL_TEST_FLAGS) $$$${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //$(1)/... && node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)' -- sh -c '$$(BAZEL) test $$(BAZEL_TEST_FLAGS) $$$${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //$(1)/... && node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)'
+	@$$(call bazel-module-test,$(1),test-$(2))
 else
 	@node scripts/test-infra/gate-cache.mjs run --site test-$(2) --command '$$(MAKE) -C $(1) test-all' -- $$(MAKE) -C $(1) test-all
 endif

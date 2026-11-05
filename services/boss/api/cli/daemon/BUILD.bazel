@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "command.go",
         "daemon_doctor.go",
+        "daemon_doctor_credential_devices.go",
+        "daemon_doctor_github_credentials.go",
         "daemon_rotate_token.go",
         "daemon_startup.go",
         "daemon_supervision.go",
@@ -29,12 +31,15 @@ go_library(
         "//services/boss/internal/daemonlife",
         "//services/boss/internal/domain/rpcerr",
         "@com_github_spf13_cobra//:cobra",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
 
 go_test(
     name = "daemon_test",
     srcs = [
+        "daemon_doctor_credential_devices_test.go",
+        "daemon_doctor_github_credentials_test.go",
         "daemon_doctor_test.go",
         "daemon_rotate_token_test.go",
         "daemon_startup_test.go",
@@ -57,6 +62,7 @@ go_test(
         "//services/boss/internal/adapter/revisiondrift",
         "//services/boss/internal/adapter/rpcerror",
         "//services/boss/internal/daemonlife",
+        "//services/boss/internal/domain/rpcerr",
         "//services/boss/internal/termreset",
         "@com_connectrpc_connect//:connect",
         "@com_github_spf13_cobra//:cobra",

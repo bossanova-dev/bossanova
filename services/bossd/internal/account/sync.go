@@ -46,13 +46,34 @@ func (a *SyncApplier) Apply(ctx context.Context, cmd domain.ApplyAgentAccountSyn
 	switch domain.AgentAccountStatus(cmd.DesiredStatus) {
 	case domain.AgentAccountStatusActive, domain.AgentAccountStatusDisabled:
 	default:
-		a.logger.Warn().Str("status", cmd.DesiredStatus).Msg("account: unknown synced status ignored")
+		a.logger.Warn().Str("account_id", cmd.LocalAgentAccountID).Str("status", cmd.DesiredStatus).Msg("account: unknown synced status ignored")
 		cmd.DesiredStatus = ""
 	}
+	logger := a.logger.With().
+		Str("account_id", cmd.LocalAgentAccountID).
+		Str("synced_agent_account_id", cmd.SyncedAgentAccountID).
+		Int64("version", cmd.Version).
+		Str("desired_status", cmd.DesiredStatus).
+		Int("priority", cmd.Priority).
+		Bool("is_quarantined", cmd.IsQuarantined).Logger()
 	applied, err := a.store.UpdateSync(ctx, cmd)
-	if err != nil || !applied {
+	if err != nil {
+		logger.Warn().Str("event", "account_sync.failed").Err(err).Msg("account sync failed")
 		return err
 	}
+	if !applied {
+		event := logger.Info().Str("event", "account_sync.stale")
+		if acct, err := a.store.Get(ctx, cmd.LocalAgentAccountID); err == nil {
+			event.Int64("local_sync_version", acct.SyncVersion)
+		}
+		event.Msg("stale account sync ignored")
+		return nil
+	}
+	verifyAuth := false
+	defer func() {
+		logger.Info().Str("event", "account_sync.applied").
+			Bool("verify_auth", verifyAuth).Msg("account sync applied")
+	}()
 	if a.changed != nil {
 		a.changed()
 	}
@@ -85,6 +106,7 @@ func (a *SyncApplier) Apply(ctx context.Context, cmd domain.ApplyAgentAccountSyn
 		}
 	})
 	a.workers = append(a.workers, done)
+	verifyAuth = true
 	return nil
 }
 

@@ -42,7 +42,7 @@ func TestOpenIssueURL(t *testing.T) {
 			if url != tc.wantURL || found != (tc.wantURL != "") {
 				t.Errorf("OpenIssueURL = (%q, %v), want (%q, %v)", url, found, tc.wantURL, tc.wantURL != "")
 			}
-			wantArgs := []string{"api", "repos/o/r/issues/2", "--hostname", "github.com"}
+			wantArgs := []string{"api", "repos/o/r/issues/2", "-i", "--hostname", "github.com"}
 			if !reflect.DeepEqual(gotArgs, wantArgs) {
 				t.Errorf("gh args = %v, want %v", gotArgs, wantArgs)
 			}

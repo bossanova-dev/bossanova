@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/recurser/boss/internal/domain/rpc"
@@ -129,7 +130,7 @@ func (s *routerClientFixture) ArchiveSession(_ context.Context, req *pb.ArchiveS
 }
 
 func (s *routerClientFixture) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
-	panic("unused")
+	return nil, errors.New("chat list not fixtured")
 }
 
 // UpdateChatTitle records the rename RPC the inline [r]ename prompt dispatches

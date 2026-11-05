@@ -99,3 +99,22 @@ func TestDraftCheckTransitionFromSession(t *testing.T) {
 		})
 	}
 }
+
+func TestStuckWaitAlertKey(t *testing.T) {
+	for _, blocker := range []WaitBlocker{"conflict", "failing", "draft"} {
+		for _, head := range []string{"head", ""} {
+			key := StuckWaitAlertKey(blocker, head)
+			if key != "stuck-wait:"+string(blocker)+":"+head {
+				t.Fatalf("key = %q", key)
+			}
+			if got, ok := StuckWaitBlocker(key); !ok || got != blocker {
+				t.Fatalf("parse %q = %q, %t", key, got, ok)
+			}
+		}
+	}
+	for _, key := range []string{"", "merge-conflict", "stuck-wait:", "stuck-wait::head", "stuck-wait:conflict"} {
+		if got, ok := StuckWaitBlocker(key); ok {
+			t.Fatalf("parse %q = %q, true", key, got)
+		}
+	}
+}

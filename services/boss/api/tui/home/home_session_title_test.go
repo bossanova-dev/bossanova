@@ -27,7 +27,7 @@ func TestHomeShortSessionTitle_Sessions_AC151(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sess.DisplayStatus = tt.status
 			name := h.primaryRow(sess, 0, tt.selected)[2]
-			if got, want := ansi.Strip(name), "BOS-1 · Improve session titles for the home…"; got != want {
+			if got, want := ansi.Strip(name), "BOS-1  Improve session titles for the home…"; got != want {
 				t.Errorf("got %q, want %q", got, want)
 			}
 			if !strings.Contains(name, "\x1b]8;;"+url) {

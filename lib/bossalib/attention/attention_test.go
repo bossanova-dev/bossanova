@@ -945,3 +945,81 @@ func TestCompute_Rebasing(t *testing.T) {
 		})
 	}
 }
+
+// TestCompute_RepairOwned pins which faults automatic repair takes from the
+// operator: a failed repair it retries and a blocked park it can fix read in
+// progress "repairing"; a fault no repair changes, or one it may never reach,
+// stays FIX, and without
+// RepairOwned every answer is the FIX it was.
+func TestCompute_RepairOwned(t *testing.T) {
+	failing := func() attention.Input {
+		in := readyPR()
+		in.Verified, in.ChecksFailing, in.Mergeable = false, 1, boolPtr(false)
+		return in
+	}
+	withFix := func(in attention.Input, key string) attention.Input {
+		in.Fix = fixFact(key)
+		return in
+	}
+	asked := withFix(failing(), attention.RepairFailedAlertKey)
+	asked.QuestionChatID = "chat-q"
+	fix, progress := pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
+	for _, tc := range []struct {
+		name string
+		in   attention.Input
+		kind pb.AttentionKind
+	}{
+		{"failed repair on a failing PR", withFix(failing(), attention.RepairFailedAlertKey), progress},
+		{"failing checks no wake reaches", withFix(failing(), "stuck-wait:failing:abc"), fix},
+		{"unknown park code", withParks(failing(), "a-code-this-version-lacks"), fix},
+		{"failure-code park", withParks(failing(), "cannot-assess"), progress},
+		{"failure and sign-off codes", withParks(failing(), "worktree-diverged", "human-review:ui"), progress},
+		{"repair exhausted alert", withFix(failing(), "repair-exhausted"), fix},
+		{"repair exhausted park", withParks(failing(), "repair-exhausted"), fix},
+		{"repair exhausted beside another failure", withParks(failing(), "cannot-assess", "repair-exhausted"), fix},
+		{"partial build", withParks(failing(), attention.ParkCodePartial), fix},
+		{"ticket admission hold", withParks(failing(), attention.ParkCodeTicketNeedsPerson), fix},
+		{"run blocked", withFix(failing(), "blocked:blocked"), fix},
+		{"auth wedge", withFix(failing(), "auth-wedge"), fix},
+		{"resume gave up", withFix(failing(), "resume:crash"), fix},
+		{"merge conflict", withFix(failing(), "merge-conflict"), fix},
+		{"merged PR", func() attention.Input {
+			in := withParks(failing(), "cannot-assess")
+			in.PRState = attention.PRStateMerged
+			return in
+		}(), fix},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := attention.Compute(tc.in)
+			if before.GetKind() != fix {
+				t.Fatalf("without RepairOwned: kind = %v, want FIX", before.GetKind())
+			}
+			in := tc.in
+			in.RepairOwned = true
+			got := attention.Compute(in)
+			if got.GetKind() != tc.kind {
+				t.Fatalf("RepairOwned: kind = %v, want %v (%v)", got.GetKind(), tc.kind, got)
+			}
+			if tc.kind == progress && (got.GetProgressLabel() != attention.RepairingLabel || len(got.GetParkCodes()) != 0 || got.GetAlertKey() != "") {
+				t.Fatalf("RepairOwned: %v, want a bare in-progress %q", got, attention.RepairingLabel)
+			}
+			if tc.kind == fix && got.GetProgressLabel() != "" {
+				t.Fatalf("FIX carries progress label %q", got.GetProgressLabel())
+			}
+		})
+	}
+	t.Run("a question still wins", func(t *testing.T) {
+		in := asked
+		in.RepairOwned = true
+		if got := attention.Compute(in); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_QUESTION {
+			t.Fatalf("kind = %v, want QUESTION", got.GetKind())
+		}
+	})
+	t.Run("a sign-off park stays a review", func(t *testing.T) {
+		in := withParks(failing(), "human-review:security")
+		in.RepairOwned = true
+		if got := attention.Compute(in); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+			t.Fatalf("kind = %v, want REVIEW", got.GetKind())
+		}
+	})
+}

@@ -123,6 +123,7 @@ test('reasons prioritize the final level and name their facts', () => {
   assert.equal(result.reasons.length, MAX_REASONS)
   assert.match(result.reasons[0], /2,?140/)
   assert.match(result.reasons[0], /99/)
+  assert.match(result.reasons[0], /\b200\b/)
   assert.ok(result.reasons.some((reason) => reason.includes('Migrations')))
   const config = confidence({
     ...base(),

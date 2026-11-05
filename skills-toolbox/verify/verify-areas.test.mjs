@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   AREAS,
+  GENERATED_GLOBS,
   bumpLevel,
   detectAreas,
   dependencyBumps,
@@ -9,6 +10,11 @@ import {
   reviewAreas,
 } from './verify-areas.mjs'
 import { realDiff } from './verify-git-fixture.mjs'
+
+test('generated conventions remain part of housekeeping', () => {
+  const housekeeping = AREAS.find((entry) => entry.area === 'housekeeping')
+  for (const glob of GENERATED_GLOBS) assert.ok(housekeeping.globs.includes(glob))
+})
 
 const conventions = {
   migrations:

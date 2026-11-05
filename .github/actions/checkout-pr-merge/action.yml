@@ -1,0 +1,27 @@
+name: Check out PR merge result
+description: Check out a dispatched PR merge ref and verify it contains the requested head.
+inputs:
+  pr:
+    description: Pull request number
+    required: true
+  fetch-depth:
+    description: History depth required by the caller
+    default: '2'
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: refs/pull/${{ inputs.pr }}/merge
+        fetch-depth: ${{ inputs.fetch-depth }}
+    - name: Assert merge head parent
+      shell: bash
+      env:
+        EXPECTED_HEAD: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        parent=$(git cat-file -p HEAD | awk '/^$/{exit} /^parent /{n++; if(n==2) print $2}')
+        if [ "$parent" != "$EXPECTED_HEAD" ]; then
+          echo "::error::PR merge ref does not contain dispatched head $EXPECTED_HEAD as its second parent (got $parent). The merge ref is stale or conflicted; request CI again."
+          exit 1
+        fi

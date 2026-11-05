@@ -31,6 +31,9 @@ func TestFindPRCommentsWithMarker_MarkedCommentsNewestWrittenFirst(t *testing.T)
 	]`
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		gotArgs = args
+		if strings.Contains(strings.Join(args, " "), " -i") {
+			return "HTTP/2.0 200 OK\nLink: <https://api.github.com/next>; rel=\"next\"\n\n[]", nil
+		}
 		return pages, nil
 	}
 	p := New(zerolog.Nop(), WithRunGH(fakeGH))

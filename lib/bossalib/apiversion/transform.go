@@ -695,6 +695,7 @@ func ProductionChanges() *Changes {
 		VerifyHoldLabelChange{},
 		ParkVerdictSentenceChange{},
 		ProofAttentionChange{},
+		StatusPhraseChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -1191,6 +1192,19 @@ func downconvertOrphanedSession(s *pb.Session) *pb.Session {
 	return clone
 }
 
+// transformReviewQueueRows applies transform to each review queue row's session.
+func transformReviewQueueRows(msg any, transform func(*pb.Session) *pb.Session) {
+	m, ok := msg.(*pb.ProxyListReviewQueueResponse)
+	if !ok {
+		return
+	}
+	for _, row := range m.GetRows() {
+		if row != nil {
+			row.Session = transform(row.GetSession())
+		}
+	}
+}
+
 func transformUnarySessionResponse(method string, msg any, transform func(*pb.Session) *pb.Session) bool {
 	switch method {
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
@@ -1210,6 +1224,8 @@ func transformUnarySessionResponse(method string, msg any, transform func(*pb.Se
 		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
 			m.Session = transform(m.GetSession())
 		}
+	case bossanovav1connect.OrchestratorServiceProxyListReviewQueueProcedure:
+		transformReviewQueueRows(msg, transform)
 	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
 		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
 			m.Session = transform(m.GetSession())

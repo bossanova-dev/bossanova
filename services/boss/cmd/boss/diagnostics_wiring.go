@@ -5,6 +5,7 @@ import (
 
 	"github.com/recurser/boss/api/cli/diagnostics"
 	"github.com/recurser/boss/cmd/skillgen"
+	"github.com/recurser/boss/internal/adapter/daemonrpc"
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/spf13/cobra"
 )
@@ -16,7 +17,9 @@ func newDiagnosticsGroup() *diagnostics.Group {
 			return newRemoteClient(cmd, remote)
 		}
 		return newDaemonClient(cmd)
-	}, diagnostics.Options{CLICommandPaths: cliCommandPaths, RevisionDrift: newDaemonGroup().RevisionDrift, TelemetryClient: commandTelemetryClient, CaptureRepairStarted: captureRepairStarted, CaptureRepairCompleted: captureRepairCompleted, SessionCommand: sessionCmd})
+	}, diagnostics.Options{GitHubReadCredentialClient: func(cmd *cobra.Command) (diagnostics.GitHubReadCredentialClient, error) {
+		return newGitHubReadCredentialClient(cmd)
+	}, CLICommandPaths: cliCommandPaths, RevisionDrift: newDaemonGroup().RevisionDrift, TelemetryClient: commandTelemetryClient, CaptureRepairStarted: captureRepairStarted, CaptureRepairCompleted: captureRepairCompleted, SessionCommand: sessionCmd})
 }
 func cliCommandPaths() []string {
 	groups, err := skillgen.Extract(rootCmd())
@@ -34,4 +37,14 @@ func cliCommandPaths() []string {
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+// newGitHubReadCredentialClient deliberately bypasses newDaemonClient: this
+// wrapper helper must neither start a daemon nor select a remote transport.
+func newGitHubReadCredentialClient(*cobra.Command) (*daemonrpc.LocalClient, error) {
+	socketPath, err := daemonrpc.DefaultSocketPath()
+	if err != nil {
+		return nil, err
+	}
+	return daemonrpc.NewLocal(socketPath), nil
 }

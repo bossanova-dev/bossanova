@@ -70,7 +70,7 @@ type codexAuthFile struct {
 func ValidateCodexAuthJSON(data []byte) (CodexAuth, error) {
 	var f codexAuthFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return CodexAuth{}, fmt.Errorf("%w: %v", ErrCodexAuthMalformed, err)
+		return CodexAuth{}, fmt.Errorf("%w: %w", ErrCodexAuthMalformed, err)
 	}
 	if f.Tokens == nil {
 		return CodexAuth{}, fmt.Errorf("%w: tokens", ErrCodexAuthMissingField)

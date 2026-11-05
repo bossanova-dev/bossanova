@@ -67,8 +67,8 @@ func TestBreakerRefusalRecordsOneBreakerSkip_GitHubUsage_AC222301(t *testing.T) 
 	}
 
 	want := []ghusage.Count{
-		{Label: ghusage.LabelUnattributed, Quota: ghusage.QuotaGraphQL, Calls: 1},
-		{Label: ghusage.LabelPRPoller, Quota: ghusage.QuotaGraphQL, BreakerSkips: 1},
+		{Label: ghusage.LabelUnattributed, Quota: ghusage.QuotaGraphQL, Identity: ghusage.IdentityUser, Calls: 1},
+		{Label: ghusage.LabelPRPoller, Quota: ghusage.QuotaGraphQL, Identity: ghusage.IdentityUser, BreakerSkips: 1},
 	}
 	if got := readCounts(t, ledger, clock); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ledger = %+v, want %+v", got, want)
@@ -92,7 +92,7 @@ func TestFloorRefusalRecordsOneFloorSkip_GitHubUsage_AC222301(t *testing.T) {
 		t.Fatal("the floor never probed the quota; the refusal under test did not happen")
 	}
 
-	want := []ghusage.Count{{Label: ghusage.LabelDisplayPoller, Quota: ghusage.QuotaGraphQL, FloorSkips: 1}}
+	want := []ghusage.Count{{Label: ghusage.LabelDisplayPoller, Quota: ghusage.QuotaGraphQL, Identity: ghusage.IdentityUser, FloorSkips: 1}}
 	if got := readCounts(t, ledger, clock); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ledger = %+v, want %+v", got, want)
 	}
@@ -120,7 +120,7 @@ func TestSentRefusalRecordsOneCallAndNoSkip_GitHubUsage_AC222301(t *testing.T) {
 		t.Fatalf("rate_limit probes = %d, want the reset probe and the QuotaStatus probe", got)
 	}
 
-	want := []ghusage.Count{{Label: ghusage.LabelCallbacks, Quota: ghusage.QuotaGraphQL, Calls: 1}}
+	want := []ghusage.Count{{Label: ghusage.LabelCallbacks, Quota: ghusage.QuotaGraphQL, Identity: ghusage.IdentityUser, Calls: 1}}
 	if got := readCounts(t, ledger, clock); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ledger = %+v, want %+v", got, want)
 	}

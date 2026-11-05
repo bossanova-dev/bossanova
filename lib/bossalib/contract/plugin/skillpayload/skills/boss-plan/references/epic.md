@@ -71,9 +71,8 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.description.md`. After its premise
    re-check and before the secret, image and contract gates, run
    `node "$BOSS_PLAN_TOOLBOX/plan/plan-park-prediction.mjs" annotate --description .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.description.md --plan .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.plan.md --json`.
-   Copy each child plan's `agentBuild` verdict and `openQuestions` back onto its spec entry, setting
-   `agentBuild` to `false` when it predicts a park with action `needs-human`; report its predicted
-   codes and labels in Phase 6 (`serializeEpicSpec` defaults a missing `agentBuild` to `true` and
+   Copy each child plan's `agentBuild` verdict and `openQuestions` back onto its spec entry; a
+   predicted park never sets `agentBuild` to `false`. Report its predicted codes and labels in Phase 6 (`serializeEpicSpec` defaults a missing `agentBuild` to `true` and
    derives `agent-question` from `openQuestions`). Re-run
    `validateDecomposition` on the completed spec. Run the secret gate on every description, then
    `plan-image-guard.mjs` with `--original` set to the parent's shared safe source

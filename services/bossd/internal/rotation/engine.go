@@ -204,6 +204,7 @@ type Engine struct {
 	telemetry            libtelemetry.Client
 	proactive5hThreshold func() float64
 	usageStalenessWindow time.Duration
+	credentialSyncGate   func(*domain.AgentAccount) string
 }
 
 type decisionResult struct {
@@ -245,6 +246,12 @@ func telemetryProvider(provider string) string {
 
 // Option configures an Engine.
 type Option func(*Engine)
+
+// WithCredentialSyncGate excludes accounts whose credentials cannot refresh on
+// this daemon. A nil gate leaves eligibility unchanged.
+func WithCredentialSyncGate(gate func(*domain.AgentAccount) string) Option {
+	return func(e *Engine) { e.credentialSyncGate = gate }
+}
 
 // WithDefaultCooldown overrides the fallback cooldown used when a UsageLimited
 // signal carries no ResetAt. Non-positive durations are ignored (the 60m
@@ -458,7 +465,7 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 		out.Kind = OutcomeRotate
 		return out, nil
 	}
-	if resumeAt, ok := minFutureCooldown(accts, now); ok {
+	if resumeAt, ok := minFutureCooldown(accts, now, e.credentialSyncGate); ok {
 		out.Kind = OutcomeAllExhausted
 		out.ResumeAt = resumeAt
 		return out, nil
@@ -483,10 +490,10 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 // returns a nil overlay, and the session silently runs on the agent CLI's
 // ambient login (BOS-973) — while the failover proxy materializes the account
 // directly and never consults the resolver at all.
-func isSelectable(a *domain.AgentAccount) bool {
+func isSelectable(a *domain.AgentAccount, gate func(*domain.AgentAccount) string) bool {
 	return a.Status == domain.AgentAccountStatusActive &&
 		a.Health == domain.AgentAccountHealthOK &&
-		!a.IsAuthInvalid()
+		!a.IsAuthInvalid() && (gate == nil || gate(a) == "")
 }
 
 // selectCandidate ranks probed eligible accounts through the shared consume-first
@@ -497,7 +504,7 @@ func (e *Engine) selectCandidate(accts []*domain.AgentAccount, cappedID string, 
 		var chosen *domain.AgentAccount
 		var best ConsumeFirstCandidate
 		for _, a := range accts {
-			if !candidateSelectable(a, cappedID, now) {
+			if !candidateSelectable(a, cappedID, now, e.credentialSyncGate) {
 				continue
 			}
 			snap, ok := usage[a.ID]
@@ -515,7 +522,7 @@ func (e *Engine) selectCandidate(accts []*domain.AgentAccount, cappedID string, 
 		return chosen
 	}
 	for _, a := range accts {
-		if candidateSelectable(a, cappedID, now) && !freshModelCapped(a.Usage, model, now, e.usageStalenessWindow) {
+		if candidateSelectable(a, cappedID, now, e.credentialSyncGate) && !freshModelCapped(a.Usage, model, now, e.usageStalenessWindow) {
 			return a
 		}
 	}
@@ -531,14 +538,11 @@ func liveConsumeFirstCandidate(a *domain.AgentAccount, snap domain.UsageSnapshot
 	}
 }
 
-func candidateSelectable(a *domain.AgentAccount, cappedID string, now time.Time) bool {
+func candidateSelectable(a *domain.AgentAccount, cappedID string, now time.Time, gate func(*domain.AgentAccount) string) bool {
 	if a.ID == cappedID {
 		return false
 	}
-	if !isSelectable(a) {
-		return false
-	}
-	return a.CooldownUntil == nil || !a.CooldownUntil.After(now)
+	return BindableNow(a, now, gate)
 }
 
 // minFutureCooldown returns the earliest cooldown_until strictly after now over
@@ -546,11 +550,11 @@ func candidateSelectable(a *domain.AgentAccount, cappedID string, now time.Time)
 // (active ∧ healthy), and whether any such future cooldown exists. A cooling
 // account that is also failed or disabled is NOT a genuine recovery, so it is
 // excluded — otherwise ResumeAt could point at a slot that stays unusable.
-func minFutureCooldown(accts []*domain.AgentAccount, now time.Time) (time.Time, bool) {
+func minFutureCooldown(accts []*domain.AgentAccount, now time.Time, gate func(*domain.AgentAccount) string) (time.Time, bool) {
 	var earliest time.Time
 	found := false
 	for _, a := range accts {
-		if !isSelectable(a) {
+		if !isSelectable(a, gate) {
 			continue
 		}
 		if a.CooldownUntil == nil || !a.CooldownUntil.After(now) {

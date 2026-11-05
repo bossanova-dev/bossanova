@@ -121,6 +121,7 @@ type Server struct {
 	rotationEngine         *rotation.Engine
 	resolver               *account.Resolver
 	accountCreds           AgentAccountCredentialStore
+	claudeOrganizations    account.ClaudeOrganizationResolver
 	agentAccountsChanged   func()
 	credentialPublisher    func(context.Context, string, string) error
 	addAccountMu           sync.Mutex
@@ -239,18 +240,20 @@ type Server struct {
 	// package's start/target gates, but acquisition is context-aware (see
 	// acquireRepoMerge) so a queued merge whose caller cancels can bail without
 	// merging.
-	mergeMu              sync.Mutex
-	repoMergeGates       map[string]*repoMergeGate
-	wakeHook             wakeHook             // test-only: zero in production; see wake_chat.go
-	mcpSurfaceHook       mcpSurfaceProber     // test-only: nil in production; see describe_chat_mcp.go
-	keepCurrentSweepHook keepCurrentSweepHook // test-only: zero in production; see keep_current.go
-	completionNotifier   session.CompletionNotifier
-	authNotifier         AuthNotifier
-	authStateReporter    AuthStateReporter
-	onSessionDeleted     func(context.Context, string)
-	onSessionUpdated     func(context.Context, *pb.Session)
-	logger               zerolog.Logger
-	fileLimitSoft        uint64
+	mergeMu               sync.Mutex
+	repoMergeGates        map[string]*repoMergeGate
+	wakeHook              wakeHook             // test-only: zero in production; see wake_chat.go
+	mcpSurfaceHook        mcpSurfaceProber     // test-only: nil in production; see describe_chat_mcp.go
+	keepCurrentSweepHook  keepCurrentSweepHook // test-only: zero in production; see keep_current.go
+	completionNotifier    session.CompletionNotifier
+	authNotifier          AuthNotifier
+	authStateReporter     AuthStateReporter
+	githubCredentials     GitHubCredentialReporter
+	gitHubReadCredentials GitHubReadCredentials
+	onSessionDeleted      func(context.Context, string)
+	onSessionUpdated      func(context.Context, *pb.Session)
+	logger                zerolog.Logger
+	fileLimitSoft         uint64
 	// endpointReader and endpointNamespaceGate back the BOS-473 opt-in local
 	// endpoint hydration. endpointReader is nil-safe (no hydration when unset);
 	// endpointNamespaceGate is always non-nil after New (platform default).
@@ -426,6 +429,9 @@ type Config struct {
 	// in Accounts; secrets never touch SQLite. Optional, may be nil (account
 	// RPCs then fail closed with a clear error).
 	AccountCredentials AgentAccountCredentialStore
+	// ClaudeOrganizations resolves a Claude token's Anthropic organization for
+	// account identity. Optional, may be nil; Claude identities then stay none.
+	ClaudeOrganizations account.ClaudeOrganizationResolver
 	// AgentAccountsChanged invalidates the upstream metadata inventory after account changes.
 	AgentAccountsChanged func()
 	CredentialPublisher  func(context.Context, string, string) error
@@ -505,7 +511,9 @@ type Config struct {
 	// nil in local-only mode, where the handler reports
 	// upstream_configured=false rather than an error — "this daemon has no
 	// upstream" is a real answer, not a failure to produce one.
-	AuthStateReporter AuthStateReporter
+	AuthStateReporter     AuthStateReporter
+	GitHubCredentials     GitHubCredentialReporter // optional; see auth_state.go
+	GitHubReadCredentials GitHubReadCredentials    // optional; local-only read tokens
 	// OnSessionDeleted, when non-nil, is invoked after a session row is
 	// removed from the local DB. cmd/main.go wires this to publish a
 	// SessionDelta_KIND_DELETED on the reverse stream so bosso's in-memory
@@ -619,58 +627,6 @@ func loginVerdictToProto(v LoginVerdict) *pb.NotifyAuthChangeResponse {
 	return resp
 }
 
-// AuthStateReporter is the read-only counterpart to AuthNotifier: it reports
-// what the RUNNING daemon currently knows about its own upstream auth, which
-// the GetAuthState RPC renders for `boss daemon doctor`.
-//
-// It is deliberately a second, separate interface rather than two more methods
-// on AuthNotifier. AuthNotifier is a command surface — a caller that holds it
-// can change the daemon's auth behaviour — and a diagnostic has no business
-// requiring that authority. Keeping them apart also means a build with no
-// reporter wired still compiles against every existing AuthNotifier
-// implementation.
-//
-// Like AuthNotifier it is nil in local-only mode, where there is no upstream to
-// report on. Implementations must be safe for concurrent use: the RPC handler
-// calls this from a request goroutine while the stream loop mutates the same
-// state.
-type AuthStateReporter interface {
-	// AuthState returns a snapshot of the daemon's live upstream auth state.
-	// It must never return token material: the caller renders these fields
-	// verbatim to an operator's terminal.
-	AuthState(ctx context.Context) DaemonAuthState
-}
-
-// DaemonAuthState is the scalar, non-secret snapshot AuthStateReporter returns.
-// It mirrors the wire message field for field, but is declared here so the
-// upstream package's adapter does not have to import the generated protobuf
-// types just to answer a diagnostic.
-type DaemonAuthState struct {
-	// NeedsLogin is the daemon's own "I have parked until someone runs
-	// `boss login`" flag. It is NOT a fault signal on its own — it is the
-	// correct, expected state right after a deliberate `boss logout`.
-	NeedsLogin bool
-	// ReloginReason is the enumerated, non-secret marker persisted alongside
-	// the credentials ("refresh_outcome_unknown", "refresh_token_rejected"),
-	// or "" when none. Treat an unrecognised value as forward-compatible:
-	// render it rather than mapping it to "unknown".
-	ReloginReason string
-	// LastRegisteredAt is when this daemon process last completed a successful
-	// upstream registration. Zero when it never has. It is context, not a
-	// liveness floor: a long-lived healthy daemon legitimately registers once
-	// and never again.
-	LastRegisteredAt time.Time
-	// Connected is the coarse "the last handshake reached snapshot-accepted"
-	// signal. False during any ordinary reconnect gap, so it is never a
-	// verdict by itself.
-	Connected bool
-	// AuthFailingSince is the discriminating BOS-942 fact: the start of the
-	// current unbroken run of unrecoverable auth failures, zero when auth is
-	// not currently failing. A daemon with NeedsLogin false and a non-zero
-	// AuthFailingSince is wedged, and nothing else in the system says so.
-	AuthFailingSince time.Time
-}
-
 // PRAssociationResolver refreshes local session-to-PR links.
 type PRAssociationResolver interface {
 	ReconcileSessions(context.Context, []*models.Session) (int64, error)
@@ -729,6 +685,7 @@ func New(cfg Config) *Server {
 		rotationEngine:          cfg.RotationEngine,
 		resolver:                cfg.Resolver,
 		accountCreds:            cfg.AccountCredentials,
+		claudeOrganizations:     cfg.ClaudeOrganizations,
 		agentAccountsChanged:    cfg.AgentAccountsChanged,
 		credentialPublisher:     cfg.CredentialPublisher,
 		credentialDevices:       cfg.CredentialDevices,
@@ -762,21 +719,23 @@ func New(cfg Config) *Server {
 		worktrees:    cfg.Worktrees,
 		provider:     cfg.Provider,
 
-		prResolver:         cfg.PRResolver,
-		pluginHost:         cfg.PluginHost,
-		trackerResolver:    NewTrackerResolver(cfg.PluginHost, cfg.GitHubIssues),
-		tmux:               cfg.Tmux,
-		repoMergeGates:     map[string]*repoMergeGate{},
-		completionNotifier: cfg.CompletionNotifier,
-		authNotifier:       cfg.AuthNotifier,
-		authStateReporter:  cfg.AuthStateReporter,
-		onSessionDeleted:   cfg.OnSessionDeleted,
-		onSessionUpdated:   cfg.OnSessionUpdated,
-		logger:             cfg.Logger,
-		fileLimitSoft:      cfg.FileLimitSoft,
-		endpointReader:     cfg.EndpointReader,
-		agentLogsDir:       cfg.AgentLogsDir,
-		protectedRoots:     cfg.ProtectedRoots,
+		prResolver:            cfg.PRResolver,
+		pluginHost:            cfg.PluginHost,
+		trackerResolver:       NewTrackerResolver(cfg.PluginHost, cfg.GitHubIssues),
+		tmux:                  cfg.Tmux,
+		repoMergeGates:        map[string]*repoMergeGate{},
+		completionNotifier:    cfg.CompletionNotifier,
+		authNotifier:          cfg.AuthNotifier,
+		authStateReporter:     cfg.AuthStateReporter,
+		githubCredentials:     cfg.GitHubCredentials,
+		gitHubReadCredentials: cfg.GitHubReadCredentials,
+		onSessionDeleted:      cfg.OnSessionDeleted,
+		onSessionUpdated:      cfg.OnSessionUpdated,
+		logger:                cfg.Logger,
+		fileLimitSoft:         cfg.FileLimitSoft,
+		endpointReader:        cfg.EndpointReader,
+		agentLogsDir:          cfg.AgentLogsDir,
+		protectedRoots:        cfg.ProtectedRoots,
 
 		endpointNamespaceGate: cfg.EndpointNamespaceGate,
 	}

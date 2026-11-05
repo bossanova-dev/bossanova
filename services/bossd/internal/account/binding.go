@@ -62,6 +62,10 @@ type Meta struct {
 	// is never selected and never launched on.
 	Suspended bool
 
+	// CredentialSyncBlocked is a live readiness reason. These accounts cannot
+	// refresh on this daemon and are excluded from both selection tiers.
+	CredentialSyncBlocked string
+
 	// Cached usage projection (from models.Account.Usage, populated by the
 	// probe/refresh paths). Read-only at bind time — the resolver never probes.
 	// A nil UsageFetchedAt means "never probed / unknown", which the selector
@@ -226,7 +230,7 @@ func (r *Resolver) selectDefault(ctx context.Context, provider, model, exclude s
 		// (which can be a transient injection blip worth retrying), this is a
 		// confirmed provider rejection, so "least bad" must never land here.
 		// With no other candidate the loop falls through to the system default.
-		if a.AuthInvalid || a.Suspended {
+		if a.AuthInvalid || a.Suspended || a.CredentialSyncBlocked != "" {
 			continue
 		}
 		if !fallbackFound || r.moreEligibleFallback(a, fallback, now, model) {

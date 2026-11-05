@@ -132,3 +132,51 @@ func TestGetGitHubUsageReportsBreakerAndFloorSkips(t *testing.T) {
 		t.Fatalf("rows = %+v, want %+v", got, want)
 	}
 }
+
+// TestGetGitHubUsageReturnsEachRowsIdentity_GitHubUsage_AC230601: the same
+// label and quota spent on an installation token and on the user login come
+// back as two rows, each naming its identity, and a call recorded with no
+// identity reports the user login.
+func TestGetGitHubUsageReturnsEachRowsIdentity_GitHubUsage_AC230601(t *testing.T) {
+	now := time.Now()
+	l := ghusage.New(t.TempDir(), zerolog.Nop(), ghusage.WithNow(func() time.Time { return now.Add(-time.Minute) }))
+	install := ghusage.InstallationIdentity(7)
+	l.Record(ghusage.LabelPRState, ghusage.QuotaGraphQL, install)
+	l.Record(ghusage.LabelPRState, ghusage.QuotaGraphQL, install)
+	l.Record(ghusage.LabelPRState, ghusage.QuotaGraphQL, "")
+	srv := &Server{gitHubUsage: l}
+
+	resp, err := srv.GetGitHubUsage(context.Background(), connect.NewRequest(&bossanovav1.GetGitHubUsageRequest{}))
+	if err != nil {
+		t.Fatalf("GetGitHubUsage: %v", err)
+	}
+	type row struct {
+		label, quota, identity string
+		calls                  int64
+	}
+	var got []row
+	for _, r := range resp.Msg.GetRows() {
+		got = append(got, row{r.GetLabel(), r.GetQuota(), r.GetIdentity(), r.GetCallCount()})
+	}
+	want := []row{
+		{ghusage.LabelPRState, ghusage.QuotaGraphQL, "installation:7", 2},
+		{ghusage.LabelPRState, ghusage.QuotaGraphQL, ghusage.IdentityUser, 1},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("rows = %+v, want %+v", got, want)
+	}
+}
+
+func TestGetGitHubUsageReportsNotModified_GitHubUsage_AC230701(t *testing.T) {
+	l := ghusage.New(t.TempDir(), zerolog.Nop())
+	l.Record(ghusage.LabelPRState, ghusage.QuotaCore, ghusage.IdentityUser)
+	l.RecordNotModified(ghusage.LabelPRState, ghusage.QuotaCore, ghusage.IdentityUser)
+	resp, err := (&Server{gitHubUsage: l}).GetGitHubUsage(context.Background(), connect.NewRequest(&bossanovav1.GetGitHubUsageRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := resp.Msg.GetRows()
+	if len(rows) != 1 || rows[0].GetCallCount() != 1 || rows[0].GetNotModifiedCount() != 1 {
+		t.Fatalf("rows = %v, want one billed call and one not-modified response", rows)
+	}
+}

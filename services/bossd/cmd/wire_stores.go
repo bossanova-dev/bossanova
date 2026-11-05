@@ -23,6 +23,7 @@ import (
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/adapter/accountcred"
+	"github.com/recurser/bossd/internal/adapter/anthropicorg"
 	"github.com/recurser/bossd/internal/adapter/reposecrets"
 	"github.com/recurser/bossd/internal/adapter/reposecrets/oskeyring"
 	"github.com/recurser/bossd/internal/broadcast"
@@ -261,10 +262,14 @@ func (w *daemonWiring) wireStores() error {
 		rotation.WithUsageStalenessWindow(w.settings.ManagedAccounts.UsageStalenessWindow()),
 		rotation.WithTelemetry(w.telemetryClient),
 		rotation.WithProactive5hThreshold(w.proactive5hThreshold),
+		rotation.WithCredentialSyncGate(w.credentialSyncBlockReason),
 	)
 	// Credential blobs for account rotation live in the OS keyring, never in
 	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
 	w.accountCreds = newAccountCredentialStore()
+	// Resolves Claude identities on credential saves and in the background
+	// backfill. The startup backfill below stays network-free.
+	w.claudeOrganizations = anthropicorg.New(anthropicorg.WithLogger(log.Logger))
 	backfillAccountIdentities(context.Background(), w.accounts, w.accountCreds, log.Logger)
 	w.resumeAttempts = db.NewResumeAttemptStore(database)
 	// Rotation audit trail (BOS-176): one store, shared by the Recorder (which

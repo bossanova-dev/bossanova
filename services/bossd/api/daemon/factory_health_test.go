@@ -3,6 +3,10 @@ package server
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,9 +78,45 @@ type healthSnapshots struct {
 func (s healthSnapshots) GetAttentionStartsBySessionHead(context.Context, string, string) (int, time.Time, time.Time, bool, error) {
 	return s.status, time.Now().Add(-2 * time.Hour), time.Time{}, s.tracked, s.err
 }
+
+// newHealthServer serves one repository whose checkout is a fresh git repo
+// with no verify admission file.
 func newHealthServer(t *testing.T) *Server {
 	t.Helper()
-	return &Server{repos: healthRepos{repo: &domain.Repo{ID: "a", LocalPath: t.TempDir()}}, sessions: healthSessions{}, notes: healthNotes{}, cronJobs: healthCrons{}}
+	repoPath := t.TempDir()
+	cmd := exec.CommandContext(t.Context(), "git", "init", "--quiet", repoPath)
+	cmd.WaitDelay = time.Second
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", out, err)
+	}
+	return &Server{repos: healthRepos{repo: &domain.Repo{ID: "a", LocalPath: repoPath}}, sessions: healthSessions{}, notes: healthNotes{}, cronJobs: healthCrons{}}
+}
+
+// writeHealthAdmission writes content as the health server's verify admission file.
+func writeHealthAdmission(t *testing.T, s *Server, content string) {
+	t.Helper()
+	dir := filepath.Join(s.repos.(healthRepos).repo.LocalPath, ".git", "boss-verify")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "verify-admission.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFactoryHealthRemoteSessions_Sessions_AC208201(t *testing.T) {
+	s := newHealthServer(t)
+	writeHealthAdmission(t, s, `{"version":1,"scopes":{"shared":{"scannedAt":"2026-10-24T00:00:00.000Z","prs":{`+
+		`"42":{"head":"a","state":"admitted","reason":"ticket"},"43":{"head":"b","state":"pending","reason":"draft"}},"remote":[43,42]}}}`)
+	resp, err := s.GetFactoryHealth(context.Background(), connect.NewRequest(&pb.GetFactoryHealthRequest{RepoId: "a"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	problems := resp.Msg.Problems
+	if len(problems) != 1 || problems[0].Code != "remote-sessions" || problems[0].StartedAt != nil ||
+		!strings.Contains(problems[0].Text, "(#42)") || !strings.HasPrefix(problems[0].Text, "1 PR ") {
+		t.Fatalf("problems: %v", problems)
+	}
 }
 func TestFactoryHealthSelectors(t *testing.T) {
 	s := newHealthServer(t)
@@ -155,6 +195,13 @@ func TestFactoryHealthDegradedSources(t *testing.T) {
 		{"older daemon", func(s *Server) {
 			s.factoryHealthVersions = func(context.Context, string) (string, string, bool, error) { return "v1.0.0", "v2.0.0", true, nil }
 		}, []string{"daemon-outdated"}},
+		{"corrupt admission", func(s *Server) { writeHealthAdmission(t, s, "{") }, []string{"health-partial"}},
+		{"unsupported admission version", func(s *Server) {
+			writeHealthAdmission(t, s, `{"version":2,"scopes":{}}`)
+		}, []string{"health-partial"}},
+		{"admission path unresolvable", func(s *Server) {
+			s.repos = healthRepos{repo: &domain.Repo{ID: "a", LocalPath: t.TempDir()}}
+		}, []string{"health-partial"}},
 		{"unreadable version", func(s *Server) {
 			s.factoryHealthVersions = func(context.Context, string) (string, string, bool, error) {
 				return "", "", false, errors.New("unreadable")

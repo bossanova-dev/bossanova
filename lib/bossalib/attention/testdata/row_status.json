@@ -1,0 +1,479 @@
+[
+  {
+    "name": "review one ask with proof",
+    "kind": "ATTENTION_KIND_REVIEW",
+    "sentence": "Not verified · waiting for you · a security-sensitive change for a person to review",
+    "parkCodes": [
+      "human-review:security"
+    ],
+    "asks": [
+      "Infrastructure"
+    ],
+    "proofUrl": "https://proof.test/p",
+    "phrase": "review Infrastructure",
+    "detail": "proof recorded"
+  },
+  {
+    "name": "review two asks",
+    "kind": "ATTENTION_KIND_REVIEW",
+    "sentence": "Not verified · waiting for you · a security-sensitive change for a person to review",
+    "parkCodes": [
+      "human-review:security"
+    ],
+    "asks": [
+      "API schema",
+      "API compatibility"
+    ],
+    "phrase": "review API schema +1",
+    "detail": "API schema, API compatibility · no proof yet"
+  },
+  {
+    "name": "review asks over budget",
+    "kind": "ATTENTION_KIND_REVIEW",
+    "sentence": "Not verified · waiting for you · a security-sensitive change for a person to review",
+    "parkCodes": [
+      "human-review:security"
+    ],
+    "asks": [
+      "Infrastructure as code",
+      "API schema",
+      "API compatibility"
+    ],
+    "phrase": "review 3 areas",
+    "detail": "Infrastructure as code, API schema, API compatibility · no proof yet"
+  },
+  {
+    "name": "review CJK ask that fits",
+    "kind": "ATTENTION_KIND_REVIEW",
+    "sentence": "Not verified · waiting for you · a security-sensitive change for a person to review",
+    "parkCodes": [
+      "human-review:security"
+    ],
+    "asks": [
+      "セキュリティ"
+    ],
+    "phrase": "review セキュリティ",
+    "detail": "no proof yet"
+  },
+  {
+    "name": "review CJK ask measured in cells",
+    "kind": "ATTENTION_KIND_REVIEW",
+    "sentence": "Not verified · waiting for you · a security-sensitive change for a person to review",
+    "parkCodes": [
+      "human-review:security"
+    ],
+    "asks": [
+      "データベース移行"
+    ],
+    "phrase": "review 1 area",
+    "detail": "データベース移行 · no proof yet"
+  },
+  {
+    "name": "review codes without asks",
+    "kind": "ATTENTION_KIND_REVIEW",
+    "sentence": "Not verified · waiting for you · a database migration for a person to review",
+    "parkCodes": [
+      "human-review:database",
+      "human-review:security"
+    ],
+    "phrase": "review database +1",
+    "detail": "database, security · no proof yet"
+  },
+  {
+    "name": "review latest commit",
+    "kind": "ATTENTION_KIND_REVIEW",
+    "sentence": "Not verified · waiting for you · the latest commit has not had an automated build and review, or changed after its review",
+    "parkCodes": [
+      "no-receipt"
+    ],
+    "phrase": "review latest commit",
+    "detail": "no proof yet"
+  },
+  {
+    "name": "human merge park",
+    "kind": "ATTENTION_KIND_REVIEW",
+    "sentence": "Verified · waiting for you · verify passed; this PR's policy leaves the merge to a person",
+    "parkCodes": [
+      "human-merge"
+    ],
+    "phrase": "approve merge",
+    "detail": "no proof yet"
+  },
+  {
+    "name": "question",
+    "kind": "ATTENTION_KIND_QUESTION",
+    "sentence": "“Which schema?”",
+    "phrase": "answer question",
+    "detail": ""
+  },
+  {
+    "name": "unverified merge",
+    "kind": "ATTENTION_KIND_MERGE",
+    "sentence": "Ready to merge",
+    "isUnverified": true,
+    "phrase": "approve merge",
+    "detail": "verify has not passed this head"
+  },
+  {
+    "name": "verified merge",
+    "kind": "ATTENTION_KIND_MERGE",
+    "sentence": "Ready to merge",
+    "phrase": "approve merge",
+    "detail": ""
+  },
+  {
+    "name": "repair exhausted alert",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "repair-exhausted",
+    "sentence": "Automatic repair exhausted its attempts",
+    "blockerTallies": [
+      {
+        "severity": "P2",
+        "kind": "review-finding",
+        "blockerCount": 1
+      }
+    ],
+    "blockerFiles": [
+      "a.go"
+    ],
+    "phrase": "repair failed: 1 P2",
+    "detail": "in a.go"
+  },
+  {
+    "name": "repair exhausted alert while repair owned",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "repair-exhausted",
+    "sentence": "Automatic repair exhausted its attempts",
+    "blockerTallies": [
+      {
+        "severity": "P2",
+        "kind": "review-finding",
+        "blockerCount": 1
+      }
+    ],
+    "blockerFiles": [
+      "a.go"
+    ],
+    "repairOwned": true,
+    "phrase": "repair failed: 1 P2",
+    "detail": "in a.go"
+  },
+  {
+    "name": "repair exhausted park",
+    "kind": "ATTENTION_KIND_FIX",
+    "sentence": "Not verified · blocked · automatic repair gave up on this PR",
+    "parkCodes": [
+      "repair-exhausted"
+    ],
+    "phrase": "repair failed",
+    "detail": ""
+  },
+  {
+    "name": "repair exhausted park with mixed blockers",
+    "kind": "ATTENTION_KIND_FIX",
+    "sentence": "Not verified · blocked · automatic repair gave up on this PR",
+    "parkCodes": [
+      "repair-exhausted"
+    ],
+    "blockerTallies": [
+      {
+        "severity": "P1",
+        "kind": "review-finding",
+        "blockerCount": 2
+      },
+      {
+        "kind": "check",
+        "blockerCount": 3
+      }
+    ],
+    "blockerFiles": [
+      "a.go",
+      "b.go"
+    ],
+    "phrase": "repair failed: 2 P1 +3",
+    "detail": "2 P1, 3 checks · in a.go, b.go"
+  },
+  {
+    "name": "merge conflict",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "merge-conflict",
+    "sentence": "Merge conflict",
+    "phrase": "resolve conflict",
+    "detail": ""
+  },
+  {
+    "name": "blocked park with blockers",
+    "kind": "ATTENTION_KIND_FIX",
+    "sentence": "Not verified · blocked · verify could not gather the evidence to judge the PR",
+    "parkCodes": [
+      "cannot-assess"
+    ],
+    "blockerTallies": [
+      {
+        "severity": "P1",
+        "kind": "review-finding",
+        "blockerCount": 2
+      },
+      {
+        "kind": "check",
+        "blockerCount": 3
+      }
+    ],
+    "blockerFiles": [
+      "a.go",
+      "b.go"
+    ],
+    "phrase": "fix needed: 2 P1 +3",
+    "detail": "2 P1, 3 checks · in a.go, b.go"
+  },
+  {
+    "name": "blocked park with checks only",
+    "kind": "ATTENTION_KIND_FIX",
+    "sentence": "Not verified · blocked · verify could not record its verdict on this commit",
+    "parkCodes": [
+      "verify-post-failed"
+    ],
+    "blockerTallies": [
+      {
+        "kind": "check",
+        "blockerCount": 3
+      }
+    ],
+    "phrase": "fix needed: 3 checks",
+    "detail": ""
+  },
+  {
+    "name": "blocked park category fits",
+    "kind": "ATTENTION_KIND_FIX",
+    "sentence": "Not verified · blocked · verify found no session behind this PR",
+    "parkCodes": [
+      "no-session"
+    ],
+    "phrase": "fix needed: no session",
+    "detail": ""
+  },
+  {
+    "name": "blocked park category too long",
+    "kind": "ATTENTION_KIND_FIX",
+    "sentence": "Not verified · blocked · the session worktree is off the PR head and holds work the PR lacks",
+    "parkCodes": [
+      "worktree-diverged"
+    ],
+    "phrase": "fix needed",
+    "detail": ""
+  },
+  {
+    "name": "partial build while repair owned",
+    "kind": "ATTENTION_KIND_FIX",
+    "sentence": "Not verified · blocked · only part of the ticket was finished, so the PR is held",
+    "parkCodes": [
+      "partial-build"
+    ],
+    "blockerTallies": [
+      {
+        "severity": "P2",
+        "kind": "review-finding",
+        "blockerCount": 1
+      }
+    ],
+    "repairOwned": true,
+    "phrase": "fix needed: 1 P2",
+    "detail": ""
+  },
+  {
+    "name": "stuck wait on failing checks",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "stuck-wait:failing:abc",
+    "sentence": "verify waits on a wake that cannot fire",
+    "blockerTallies": [
+      {
+        "kind": "check",
+        "blockerCount": 2
+      }
+    ],
+    "phrase": "fix needed: 2 checks",
+    "detail": ""
+  },
+  {
+    "name": "stuck wait without blockers",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "stuck-wait:failing:abc",
+    "sentence": "verify waits on a wake that cannot fire",
+    "phrase": "fix needed: checks",
+    "detail": ""
+  },
+  {
+    "name": "run blocked",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "blocked:blocked",
+    "sentence": "Run blocked: tests fail",
+    "phrase": "fix needed: run stuck",
+    "detail": ""
+  },
+  {
+    "name": "run stopped",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "blocked:blocked",
+    "sentence": "Run stopped",
+    "phrase": "fix needed: run halted",
+    "detail": ""
+  },
+  {
+    "name": "run lost its agent",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "blocked:orphaned",
+    "sentence": "Run lost its agent",
+    "phrase": "fix needed: agent lost",
+    "detail": ""
+  },
+  {
+    "name": "dead bootstrap",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "blocked:blocked",
+    "sentence": "Run died before setup finished and left no worktree or chat",
+    "phrase": "fix needed: setup died",
+    "detail": ""
+  },
+  {
+    "name": "agent authentication",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "auth-wedge",
+    "sentence": "Agent authentication failed",
+    "phrase": "fix needed: agent auth",
+    "detail": ""
+  },
+  {
+    "name": "resume gave up",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "resume:crash",
+    "sentence": "Resume gave up",
+    "phrase": "fix needed: resume",
+    "detail": ""
+  },
+  {
+    "name": "unknown alert",
+    "kind": "ATTENTION_KIND_FIX",
+    "alertKey": "mystery",
+    "sentence": "Something odd",
+    "phrase": "fix needed",
+    "detail": ""
+  },
+  {
+    "name": "repairing blocked park",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "repairing",
+    "blockerTallies": [
+      {
+        "severity": "P2",
+        "kind": "review-finding",
+        "blockerCount": 1
+      }
+    ],
+    "blockerFiles": [
+      "a.go"
+    ],
+    "repairOwned": true,
+    "phrase": "repairing 1 P2",
+    "detail": "in a.go"
+  },
+  {
+    "name": "repairing blocked park with mixed blockers",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "repairing",
+    "blockerTallies": [
+      {
+        "severity": "P1",
+        "kind": "review-finding",
+        "blockerCount": 2
+      },
+      {
+        "kind": "check",
+        "blockerCount": 3
+      }
+    ],
+    "blockerFiles": [
+      "a.go",
+      "b.go"
+    ],
+    "repairOwned": true,
+    "phrase": "repairing 2 P1 +3",
+    "detail": "2 P1, 3 checks · in a.go, b.go"
+  },
+  {
+    "name": "repairing failed repair",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "repairing",
+    "repairOwned": true,
+    "phrase": "repairing",
+    "detail": ""
+  },
+  {
+    "name": "repairing failing checks",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "idle",
+    "blockerTallies": [
+      {
+        "kind": "check",
+        "blockerCount": 2
+      }
+    ],
+    "repairOwned": true,
+    "phrase": "repairing 2 checks",
+    "detail": ""
+  },
+  {
+    "name": "rebasing",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "rebasing",
+    "phrase": "rebasing",
+    "detail": ""
+  },
+  {
+    "name": "checks running",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "checking 12/14",
+    "phrase": "checks 12/14",
+    "detail": ""
+  },
+  {
+    "name": "verifying",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "verifying",
+    "phrase": "verifying",
+    "detail": ""
+  },
+  {
+    "name": "initializing",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "initializing",
+    "phrase": "initializing",
+    "detail": ""
+  },
+  {
+    "name": "main red",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "main red",
+    "phrase": "main red",
+    "detail": ""
+  },
+  {
+    "name": "long waiting reason",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "waiting: a-reason-far-too-long-for-the-cell",
+    "phrase": "waiting",
+    "detail": ""
+  },
+  {
+    "name": "stopped",
+    "kind": "ATTENTION_KIND_IN_PROGRESS",
+    "progressLabel": "stopped",
+    "phrase": "stopped",
+    "detail": ""
+  },
+  {
+    "name": "done",
+    "kind": "ATTENTION_KIND_DONE",
+    "phrase": "",
+    "detail": ""
+  }
+]

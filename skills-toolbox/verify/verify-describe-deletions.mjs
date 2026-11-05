@@ -1,6 +1,6 @@
 // Built-in proof-describe script: lists an area's deleted files and deleted exports and marks the
-// area breaking when the head tree still mentions one. The scan is a whole-word `git grep`, so a
-// false positive only adds an ask; a search that cannot run counts as a reference.
+// area breaking when the head tree still mentions one. Moved exports count only imports of the
+// old module. Conservative false positives add an ask; a failed search counts as a reference.
 
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -15,6 +15,7 @@ import { stripModulePath } from './verify-moves.mjs'
  * @typedef {import('./verify-moves.mjs').ChangedFile} ChangedFile
  * @typedef {{module: string, directory: boolean}} Relative
  * @typedef {{key: string, label: string, exclude?: string, relative?: Relative, movedFrom?: string}} Target
+ * `movedFrom` is the old extension-less module path (Go: package directory).
  */
 
 /** Searches per run, and the wall-clock budget for all of them, inside the 60-second call. */
@@ -99,6 +100,133 @@ function importsModule(file, line, { module, directory }) {
   return false
 }
 
+/** @param {string} value */
+const escaped = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** @param {string} list @param {string} name */
+const namesExport = (list, name) =>
+  list.split(',').some(
+    (part) =>
+      part
+        .trim()
+        .replace(/^type\s+/, '')
+        .split(/\s+as\s+|\s*[:=]\s*/)[0] === name,
+  )
+
+/**
+ * @param {'js' | 'go' | 'py' | null} lang @param {string} file @param {string[]} lines
+ * @param {{key: string, movedFrom: string}} moved
+ */
+export function staleImporter(lang, file, lines, { key, movedFrom }) {
+  const basename = posix.basename(movedFrom)
+  /** @param {string} qualifier */
+  const uses = (qualifier) => {
+    const pattern = new RegExp(
+      `(?<![\\w$])${escaped(qualifier)}\\s*\\.\\s*${escaped(key)}(?![\\w$])`,
+    )
+    if (lang !== 'js' && lang !== null) return lines.some((line) => pattern.test(line))
+    const binding = `(?<![\\w$])${escaped(qualifier)}`
+    const member = new RegExp(
+      `${binding}\\s*(?:\\?\\.\\s*|\\.\\s*)${escaped(key)}(?![\\w$])|` +
+        `${binding}\\s*(?:\\?\\.\\s*)?\\[\\s*(['"\x60])${escaped(key)}\\1\\s*\\]`,
+    )
+    const destructured = new RegExp(
+      `\\{([^}]*)\\}\\s*=\\s*${binding}(?![\\w$]|\\s*(?:\\?\\.|\\.|\\[))`,
+    )
+    return lines.some((line) => {
+      if (member.test(line)) return true
+      const match = destructured.exec(line)
+      return Boolean(match && namesExport(match[1], key))
+    })
+  }
+  /** @param {string} spec @param {string} line */
+  const jsModule = (spec, line) =>
+    spec.startsWith('.')
+      ? importsModule(file, line, { module: movedFrom, directory: false })
+      : posix.basename(stripModulePath(spec)) === basename
+  if (lang === 'go' && posix.dirname(file) === movedFrom) return true
+  return lines.some((line) => {
+    // Embedded JS (MDX, Vue and other containers) uses the same import forms; prose alone does not.
+    if (lang === 'js' || lang === null) {
+      const from = /^\s*(?:import|export)\s+(.*?)\s+from\s*['"]([^'"]+)['"]/.exec(line)
+      const require = /^\s*(?:const|let|var)\s+(.*?)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]/.exec(
+        line,
+      )
+      const close = /^\s*[^{}]*}\s*(?:from\s*|=\s*require\s*\(\s*)['"]([^'"]+)['"]/.exec(line)
+      if (close && jsModule(close[1], line)) return true
+      const dynamic = /\bimport\s*\(\s*['"]([^'"]+)['"]/.exec(line)
+      const member = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*([\w$]+)/.exec(line)
+      if (dynamic && !/^\s*(?:\/\/|\*)/.test(line) && jsModule(dynamic[1], line)) return true
+      if (member && !/^\s*(?:\/\/|\*)/.test(line) && jsModule(member[1], line))
+        return member[2] === key
+      const match = from ?? require
+      if (!match) {
+        // Grep may omit a split import's opening line; incomplete old-module clauses stay stale.
+        const continuation =
+          /^\s*(?:[\w$*,:{}\s]*\bfrom\s*|(?:[\w$,:{}\s]*=\s*)?require\s*\(\s*)['"]([^'"]+)['"]/.exec(
+            line,
+          )
+        return Boolean(continuation && jsModule(continuation[1], line))
+      }
+      if (!jsModule(match[2], line)) return false
+      const clause = match[1].replace(/^type\s+/, '')
+      const named = /\{([^}]*)\}/.exec(clause)
+      if (named && namesExport(named[1], key)) return true
+      if (/^\*/.test(clause) && /^\s*export\b/.test(line)) return true
+      const namespace = /(?:^|,)\s*\*\s+as\s+([\w$]+)/.exec(clause)
+      const binding = namespace?.[1] ?? /^([A-Za-z_$][\w$]*)/.exec(clause)?.[1]
+      // Unknown containers may transform default bindings; keep an old-module import ambiguous.
+      if (lang === null && from && binding && !namespace) return true
+      return Boolean(binding && uses(binding))
+    }
+    if (lang === 'go') {
+      const match = /^\s*(?:import\s+)?(?:(\w+|\.)\s+)?"([^"]+)"/.exec(line)
+      if (!match || posix.basename(stripModulePath(match[2])) !== basename) return false
+      const qualifier = match[1] ?? basename
+      // Unaliased package names differing from their directory need compiler checks, not guessing.
+      return qualifier === '.' || (qualifier !== '_' && uses(qualifier))
+    }
+    if (lang === 'py') {
+      const from = /^\s*from\s+([.\w]+)\s+import\s+(.+)/.exec(line)
+      if (from) {
+        const [, spec, clause] = from
+        const list = clause.split(/[;#]/)[0].trim()
+        const dots = /^\.+/.exec(spec)?.[0].length ?? 0
+        const module = dots
+          ? posix.normalize(
+              posix.join(
+                posix.dirname(file),
+                ...Array(dots - 1).fill('..'),
+                spec.slice(dots).replaceAll('.', '/'),
+              ),
+            )
+          : spec.replaceAll('.', '/')
+        const matches = dots ? module === movedFrom : posix.basename(module) === basename
+        if (matches && (/^[(*]/.test(list) || list.endsWith('\\') || namesExport(list, key)))
+          return true
+        // `from pkg import old as alias` binds a module rather than an export from pkg.
+        return list.split(',').some((part) => {
+          const binding = /^\s*(\w+)(?:\s+as\s+(\w+))?\s*$/.exec(part)
+          if (!binding) return false
+          const importedModule = posix.join(module, binding[1])
+          const oldModule = dots
+            ? importedModule === movedFrom
+            : posix.basename(importedModule) === basename
+          return oldModule && uses(binding[2] ?? binding[1])
+        })
+      }
+      const imported = /^\s*import\s+(.+)/.exec(line)
+      return Boolean(
+        imported?.[1].split(',').some((part) => {
+          const match = /^\s*([\w.]+)(?:\s+as\s+(\w+))?/.exec(part)
+          return match && match[1].split('.').at(-1) === basename && uses(match[2] ?? match[1])
+        }),
+      )
+    }
+    return false
+  })
+}
+
 /**
  * @param {{area: {paths: string[]}, baseSha: string, headSha: string}} envelope
  * @param {{cwd?: string, run?: Run, now?: () => number}} [options]
@@ -122,8 +250,8 @@ export function describeDeletions(envelope, { cwd, run = spawnSync, now = Date.n
       if (added?.has(scope) || exports.has(key)) continue
       /** @type {Target} */
       const target = { key: name, label: `\`${name}\``, exclude: file.path }
-      // Defined again elsewhere: only a file that still names the old module is a stale importer.
-      if (added) target.movedFrom = posix.basename(scope)
+      // Defined again elsewhere: retain the old scope to resolve stale import specifiers.
+      if (added) target.movedFrom = scope
       exports.set(key, target)
     }
   const deleted = own.filter((file) => file.status === 'removed').map((file) => file.path)
@@ -163,12 +291,12 @@ export function describeDeletions(envelope, { cwd, run = spawnSync, now = Date.n
     entry.startsWith(`${headSha}:`) ? entry.slice(headSha.length + 1) : entry
   /** @param {string} stdout */
   const listed = (stdout) => stdout.split('\0').filter(Boolean).map(unprefix)
-  /** `-z` match lines read `<sha>:<path>\0<line>`. @param {string} stdout @param {Relative} relative */
-  const relativeHits = (stdout, relative) =>
+  /** `-z` match lines read `<sha>:<path>\0<line>`. @param {string} stdout */
+  const matchLines = (stdout) =>
     stdout.split('\n').flatMap((record) => {
       const at = record.indexOf('\0')
       const file = unprefix(record.slice(0, at))
-      return at > 0 && importsModule(file, record.slice(at + 1), relative) ? [file] : []
+      return at > 0 ? [{ file, line: record.slice(at + 1) }] : []
     })
   const started = now()
   let searches = 0
@@ -193,18 +321,31 @@ export function describeDeletions(envelope, { cwd, run = spawnSync, now = Date.n
       // A relative search lists match lines under the module's parent directory.
       const scope = posix.dirname(target.relative.module)
       const stdout = grep(target.key, [], scope === '.' ? [] : [`:(top)${scope}`])
-      return stdout === null ? null : relativeHits(stdout, target.relative)
+      return stdout === null
+        ? null
+        : matchLines(stdout)
+            .filter(({ file, line }) =>
+              importsModule(file, line, /** @type {Relative} */ (target.relative)),
+            )
+            .map(({ file }) => file)
+    }
+    if (target.movedFrom) {
+      const stdout = grep(target.key, ['--all-match', '-e', posix.basename(target.movedFrom)], [])
+      if (stdout === null) return null
+      /** @type {Map<string, string[]>} */
+      const byFile = new Map()
+      for (const { file, line } of matchLines(stdout)) {
+        if (file === target.exclude) continue
+        if (!byFile.has(file)) byFile.set(file, [])
+        byFile.get(file)?.push(line)
+      }
+      const moved = { key: target.key, movedFrom: target.movedFrom }
+      return [...byFile]
+        .filter(([file, lines]) => staleImporter(language(file), file, lines, moved))
+        .map(([file]) => file)
     }
     const stdout = grep(target.key, ['-l'], [])
-    if (stdout === null) return null
-    const hits = listed(stdout).filter((file) => file !== target.exclude)
-    if (!target.movedFrom || hits.length === 0) return hits
-    const naming = grep(
-      target.movedFrom,
-      ['-l'],
-      hits.map((file) => `:(top,literal)${file}`),
-    )
-    return naming === null ? null : listed(naming)
+    return stdout === null ? null : listed(stdout).filter((file) => file !== target.exclude)
   }
   /** @type {{target: Target, files: string[]}[]} */
   const referenced = []

@@ -665,14 +665,14 @@ func (w *daemonWiring) snapshotAgentAccounts(ctx context.Context) ([]*bossanovav
 	}
 	out := make([]*bossanovav1.AgentAccount, 0, len(accounts))
 	for _, account := range accounts {
-		out = append(out, server.AgentAccountMetadata(account))
+		out = append(out, server.AgentAccountMetadata(account, w.credentialDevices.Readiness()))
 	}
 	return out, nil
 }
 
 func (w *daemonWiring) publishUsageReport(_ context.Context, accountID string, usage *domain.UsageSnapshot, until time.Time) {
 	report := &bossanovav1.AgentAccountUsageReport{LocalAgentAccountId: accountID,
-		Usage: server.AgentAccountMetadata(&domain.AgentAccount{Usage: usage}).GetUsage()}
+		Usage: server.AgentAccountMetadata(&domain.AgentAccount{Usage: usage}, w.credentialDevices.Readiness()).GetUsage()}
 	if !until.IsZero() {
 		report.ThrottledUntilAt = timestamppb.New(until)
 	}

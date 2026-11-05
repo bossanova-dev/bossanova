@@ -158,7 +158,7 @@ func TestHomeAttentionOrderingAndSections(t *testing.T) {
 	for _, s := range got {
 		ids = append(ids, s.Id)
 	}
-	want := []string{"attention-2", "attention-10", "attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9"}
+	want := []string{"attention-2", "attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9", "attention-10"}
 	if !reflect.DeepEqual(ids, want) {
 		t.Fatalf("order=%v, want %v", ids, want)
 	}
@@ -224,7 +224,7 @@ func TestHomeAttentionFooterAndCursor(t *testing.T) {
 	}
 
 	h.Table.SetCursor(h.TableCursorForSessionIndex(0))
-	for _, want := range []string{"attention-10", "attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9"} {
+	for _, want := range []string{"attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9", "attention-10"} {
 		next, _ := h.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 		h = next.(Model)
 		if got := h.SelectedSessionID(); got != want {
@@ -233,8 +233,8 @@ func TestHomeAttentionFooterAndCursor(t *testing.T) {
 	}
 	next, _ := h.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	h = next.(Model)
-	if got := h.SelectedSessionID(); got != "attention-8" {
-		t.Fatalf("up selected %s, want attention-8", got)
+	if got := h.SelectedSessionID(); got != "attention-9" {
+		t.Fatalf("up selected %s, want attention-9", got)
 	}
 }
 
@@ -763,9 +763,10 @@ func TestHomeProgressStatusKeepsDisplayStyleAndSpinner(t *testing.T) {
 		}
 	}
 
-	// The style is chosen from the label text, so build the labels where the
-	// daemon builds them: a reword in attention.progressLabel must fail here,
-	// not silently recolour the row.
+	// The style is chosen from the served text, so build the phrases where the
+	// daemon builds them: a reword in attention.progressLabel or RowStatus
+	// must fail here, not silently recolour the row. A repair reads as live
+	// work whatever chat state its label reports.
 	for _, tc := range []struct {
 		name   string
 		in     attention.Input
@@ -778,18 +779,20 @@ func TestHomeProgressStatusKeepsDisplayStyleAndSpinner(t *testing.T) {
 		{"stopped", attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED}, pb.DisplayIntent_DISPLAY_INTENT_MUTED, false},
 		{"idle", attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE}, pb.DisplayIntent_DISPLAY_INTENT_WARNING, false},
 		{"working", attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING}, pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, true},
+		{"rebasing", attention.Input{HasPR: true, PRState: attention.PRStateOpen, IsRebasing: true, ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE}, pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, true},
+		{"repairing failing checks", attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 14, ChecksDone: 14, ChecksFailing: 2, RepairOwned: true, ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE, BlockerTallies: []attention.BlockerTally{{Kind: "check", Count: 2}}}, pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, true},
 	} {
 		att := attention.Compute(tc.in)
-		if att.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
-			t.Fatalf("%s: Compute answered %v, want IN_PROGRESS", tc.name, att.GetKind())
+		if att.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || att.GetStatusPhrase() == "" {
+			t.Fatalf("%s: Compute answered %v %q, want an IN_PROGRESS phrase", tc.name, att.GetKind(), att.GetStatusPhrase())
 		}
 		got := h.RenderSessionStatus(&pb.Session{Attention: att})
-		label := att.GetProgressLabel()
+		phrase := att.GetStatusPhrase()
 		if tc.spin {
-			label = h.Spinner.View() + label
+			phrase = h.Spinner.View() + phrase
 		}
-		if want := ui.StyleForIntent(tc.intent).Render(ansi.Truncate(label, homeStatusWidth, "…")); got != want {
-			t.Errorf("%s: Compute's label %q renders %q, want %v styling %q", tc.name, att.GetProgressLabel(), got, tc.intent, want)
+		if want := ui.StyleForIntent(tc.intent).Render(phrase); got != want {
+			t.Errorf("%s: Compute's phrase %q renders %q, want %v styling %q", tc.name, att.GetStatusPhrase(), got, tc.intent, want)
 		}
 	}
 

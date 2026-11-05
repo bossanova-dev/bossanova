@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/internal/fixtures"
 
+	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/displaystatus"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -668,6 +669,13 @@ func TestChatPicker_StuckWakeNamesOwner_ChatPicker_AC216601(t *testing.T) {
 			if tt.name == "pending" || tt.name == "green" {
 				sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: tt.want}
 			}
+			if strings.HasPrefix(tt.want, "stuck: ") {
+				blocker := displaystatus.WaitBlocker(strings.TrimPrefix(tt.want, "stuck: "))
+				if blocker == "red checks" {
+					blocker = "failing"
+				}
+				sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, AlertKey: displaystatus.StuckWaitAlertKey(blocker, "head"), TargetChatId: "agent-armed"}
+			}
 			statuses := map[string]string{"agent-armed": ui.StatusWaiting, "repair": ui.StatusIdle}
 			if tt.working {
 				statuses["repair"] = ui.StatusWorking
@@ -683,7 +691,7 @@ func TestChatPicker_StuckWakeNamesOwner_ChatPicker_AC216601(t *testing.T) {
 			if cell != want {
 				t.Fatalf("cell=%q want %q", stripANSI(cell), stripANSI(want))
 			}
-			if !tt.spins && !strings.Contains(m.armedLine(chat), "stuck: awaiting checks_passed_ready on") {
+			if !tt.spins && !strings.Contains(m.armedLine(chat), tt.want+" on "+sess.GetPrUrl()) {
 				t.Fatalf("armed line=%q", m.armedLine(chat))
 			}
 		})
@@ -731,6 +739,22 @@ func TestChatWaitUsesServedPRFacts_ChatPicker_AC225801(t *testing.T) {
 	}
 }
 
+// TestChatWaitReadsTheHomeRowPhrase_ChatPicker_AC233601: an own-PR waiting
+// chat reads the status phrase the daemon serves the session's home row.
+func TestChatWaitReadsTheHomeRowPhrase_ChatPicker_AC233601(t *testing.T) {
+	sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
+	sess.Attention = attention.Compute(attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 14, ChecksDone: 12, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING, Wait: attention.CallbackWait{Trigger: "checks_passed_ready"}})
+	if got := sess.GetAttention().GetStatusPhrase(); got != "checks 12/14" {
+		t.Fatalf("precondition: the home row reads %q", got)
+	}
+	chat := verifyChat("agent-armed", "verify")
+	m := armedPicker(t, &chatPickerStub{callbacks: []*pb.GitHubCallback{armedTestCallback("cb", "checks_passed_ready")}}, sess, []*pb.AgentChat{chat}, map[string]string{"agent-armed": ui.StatusWaiting}, map[string]string{"agent-armed": armedTestReason("checks_passed_ready")})
+	m.buildTableRows()
+	if got := stripANSI(statusCellsByTitle(m)["verify"]); got != stripANSI(m.spinner.View())+"checks 12/14" {
+		t.Fatalf("chat STATUS = %q, want the home row's checks 12/14", got)
+	}
+}
+
 func TestChatWaitUnknownChecksWithOlderMergeCallback(t *testing.T) {
 	sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
 	sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "waiting: merge"}
@@ -740,5 +764,86 @@ func TestChatWaitUnknownChecksWithOlderMergeCallback(t *testing.T) {
 	m.buildTableRows()
 	if got := stripANSI(statusCellsByTitle(m)["verify"]); !strings.HasSuffix(got, "waiting: CI") {
 		t.Fatalf("STATUS=%q, want waiting: CI while check facts are unknown", got)
+	}
+}
+
+func TestChatPicker_StuckWaitVerdict_ChatPicker_AC219901(t *testing.T) {
+	for _, tt := range []struct {
+		name, target, key, status, want, trigger string
+		kind                                     pb.AttentionKind
+		unlisted, stuck                          bool
+	}{
+		{name: "no FIX with unreachable wake", status: ui.StatusWaiting, want: "awaiting repair"},
+		{name: "other chat FIX", kind: pb.AttentionKind_ATTENTION_KIND_FIX, target: "other", key: "stuck-wait:conflict:head", status: ui.StatusWaiting, want: "awaiting repair"},
+		{name: "unlisted callbacks", kind: pb.AttentionKind_ATTENTION_KIND_FIX, target: "agent-armed", key: "stuck-wait:conflict:head", status: ui.StatusWaiting, want: "stuck: conflict", unlisted: true, stuck: true},
+		{name: "stale listed merge", kind: pb.AttentionKind_ATTENTION_KIND_FIX, target: "agent-armed", key: "stuck-wait:conflict:head", status: ui.StatusWaiting, want: "stuck: conflict", trigger: "merged", stuck: true},
+		{name: "not waiting", kind: pb.AttentionKind_ATTENTION_KIND_FIX, target: "agent-armed", key: "stuck-wait:conflict:head", status: ui.StatusWorking},
+		{name: "another FIX", kind: pb.AttentionKind_ATTENTION_KIND_FIX, target: "agent-armed", key: "merge-conflict", status: ui.StatusWaiting, want: "awaiting repair"},
+		{name: "non FIX attention", kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, target: "agent-armed", key: "stuck-wait:conflict:head", status: ui.StatusWaiting, want: "awaiting repair"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
+			sess.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_CONFLICT
+			if tt.kind != pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED {
+				sess.Attention = &pb.SessionAttention{Kind: tt.kind, TargetChatId: tt.target, AlertKey: tt.key}
+			}
+			trigger := tt.trigger
+			if trigger == "" {
+				trigger = "checks_passed_ready"
+			}
+			chat := verifyChat("agent-armed", "verify")
+			m := armedPicker(t, &chatPickerStub{callbacks: []*pb.GitHubCallback{armedTestCallback("cb", trigger)}}, sess, []*pb.AgentChat{chat}, map[string]string{"agent-armed": tt.status}, map[string]string{"agent-armed": armedTestReason(trigger)})
+			if tt.unlisted {
+				m.armedCallbacks = nil
+			}
+			m.buildTableRows()
+			cell := statusCellsByTitle(m)["verify"]
+			if tt.want != "" {
+				want := ui.StyleStatusInfo.Render(m.spinner.View() + tt.want)
+				if tt.stuck {
+					want = ui.StyleStatusWarning.Render(tt.want)
+				}
+				if cell != want {
+					t.Fatalf("STATUS=%q, want %q", stripANSI(cell), stripANSI(want))
+				}
+			} else if strings.Contains(stripANSI(cell), "stuck:") {
+				t.Fatalf("STATUS=%q", stripANSI(cell))
+			}
+			if got := strings.Contains(m.armedLine(chat), "stuck: "); got != tt.stuck {
+				t.Fatalf("armed line=%q, want stuck=%t", m.armedLine(chat), tt.stuck)
+			}
+		})
+	}
+}
+
+func TestChatPicker_StuckWaitDoesNotNameOtherCallbackPR_ChatPicker_AC219901(t *testing.T) {
+	for _, stuck := range []bool{false, true} {
+		t.Run(map[bool]string{false: "external wait", true: "session stuck FIX"}[stuck], func(t *testing.T) {
+			sess := prSession("https://github.com/acme/my-app/pull/3154", 3154)
+			sess.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_CONFLICT
+			if stuck {
+				sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, TargetChatId: "agent-armed", AlertKey: displaystatus.StuckWaitAlertKey("conflict", "head"), Sentence: "verify waits on a wake that cannot fire: the PR conflicts and no repair is running"}
+			}
+			chat := verifyChat("agent-armed", "verify")
+			m := armedPicker(t, &chatPickerStub{callbacks: []*pb.GitHubCallback{armedTestCallback("external", "checks_passed")}}, sess, []*pb.AgentChat{chat}, map[string]string{"agent-armed": ui.StatusWaiting}, map[string]string{"agent-armed": armedTestReason("checks_passed")})
+			m.buildTableRows()
+			want := ui.StyleStatusInfo.Render(m.spinner.View() + "waiting: CI #2960")
+			if stuck {
+				want = ui.StyleStatusWarning.Render("stuck: conflict")
+			}
+			if got := statusCellsByTitle(m)["verify"]; got != want {
+				t.Fatalf("STATUS=%q, want %q", stripANSI(got), stripANSI(want))
+			}
+			line := m.armedLine(chat)
+			wait := armedTestReason("checks_passed") + " · expires in 6d"
+			if stuck {
+				wantLine := "verify · stuck: conflict on " + sess.GetPrUrl() + " · " + sess.GetAttention().GetSentence() + " · " + wait
+				if line != wantLine {
+					t.Fatalf("armed line=%q, want %q", line, wantLine)
+				}
+			} else if line != "verify · "+wait {
+				t.Fatalf("armed line=%q, want reachable external wait %q", line, wait)
+			}
+		})
 	}
 }

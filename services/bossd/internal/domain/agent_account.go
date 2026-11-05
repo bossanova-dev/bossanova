@@ -149,17 +149,26 @@ type AgentAccountIdentityKind string
 const (
 	AgentAccountIdentityKindNone      AgentAccountIdentityKind = "none"
 	AgentAccountIdentityKindCodexUser AgentAccountIdentityKind = "codex_user"
+	// AgentAccountIdentityKindClaudeOrganizationLabel digests the Anthropic organization
+	// id together with the normalized account label. The org alone names an
+	// organization, not a person, so the label keeps two seats on one Team org
+	// apart unless the user gave them the same name.
+	AgentAccountIdentityKindClaudeOrganizationLabel AgentAccountIdentityKind = "claude_org_label"
 )
 
-// AgentAccountIdentity carries a digest of public identity claims, never credentials.
-// The zero kind means derivation has not yet run.
+// AgentAccountIdentity carries a digest of public provider claims, plus the
+// normalized label for kinds that need it, and never a credential. The zero
+// kind means derivation has not yet run.
 type AgentAccountIdentity struct {
 	Kind   AgentAccountIdentityKind
 	Digest string
 }
 
-// IsConfident reports whether the identity distinguishes a provider user and workspace.
-func (i AgentAccountIdentity) IsConfident() bool { return i.Kind == AgentAccountIdentityKindCodexUser }
+// IsConfident reports whether the identity is strong enough to link accounts
+// across daemons without a user decision.
+func (i AgentAccountIdentity) IsConfident() bool {
+	return i.Kind == AgentAccountIdentityKindCodexUser || i.Kind == AgentAccountIdentityKindClaudeOrganizationLabel
+}
 
 // AgentAccount is registry metadata for one provider login used by account rotation.
 // Credential blobs are NEVER stored here — they live in the OS keyring via

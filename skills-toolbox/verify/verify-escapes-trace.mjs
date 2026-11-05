@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util'
 import { isMainModule } from '../main-module.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
 import { claimPublication } from './verify-escapes-publication.mjs'
+import { parseClearComment } from './verify-area-caps.mjs'
 import {
   extractReferences,
   ticketKeys,
@@ -108,7 +109,7 @@ function github(deps) {
     const prefix = `repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}) { pullRequest(number:${number})`
     const pr = (
       await graphql(
-        `query { ${prefix} { number title body mergedAt baseRefName headRefOid additions deletions changedFiles labels(first:100){nodes{name}} closingIssuesReferences(first:100){nodes{title url}} files(first:100){nodes{path} pageInfo{hasNextPage endCursor}} comments(first:100){nodes{body} pageInfo{hasNextPage endCursor}} commits(last:1){nodes{commit{oid status{contexts{context state}}}}} } } }`,
+        `query { ${prefix} { number title body mergedAt baseRefName headRefOid additions deletions changedFiles labels(first:100){nodes{name}} closingIssuesReferences(first:100){nodes{title url}} files(first:100){nodes{path} pageInfo{hasNextPage endCursor}} comments(first:100){nodes{body author{login} createdAt updatedAt} pageInfo{hasNextPage endCursor}} commits(last:1){nodes{commit{oid status{contexts{context state description}}}}} } } }`,
       )
     ).repository?.pullRequest
     if (!pr) return null
@@ -118,7 +119,7 @@ function github(deps) {
         if (!cursor) throw new Error(`missing ${field} cursor`)
         const next = (
           await graphql(
-            `query { ${prefix} { ${field}(first:100,after:${JSON.stringify(cursor)}){nodes{${field === 'files' ? 'path' : 'body'}} pageInfo{hasNextPage endCursor}} } } }`,
+            `query { ${prefix} { ${field}(first:100,after:${JSON.stringify(cursor)}){nodes{${field === 'files' ? 'path' : 'body author{login} createdAt updatedAt'}} pageInfo{hasNextPage endCursor}} } } }`,
           )
         ).repository.pullRequest[field]
         if (next.pageInfo.hasNextPage && next.pageInfo.endCursor === cursor)
@@ -146,7 +147,7 @@ async function context(options, deps) {
       'nameWithOwner,defaultBranchRef',
     ]),
   )
-  return { gh, repo: options.repo ?? info.nameWithOwner, base: info.defaultBranchRef.name }
+  return { gh, repo: info.nameWithOwner, base: info.defaultBranchRef.name }
 }
 /** @param {any} options @param {any} deps */
 export async function trace(options = {}, deps = {}) {
@@ -399,15 +400,57 @@ export async function list(options, deps = {}) {
   const { gh, repo } = await context(options, deps)
   const search = await gh.search(`repo:${repo} is:pr label:boss-escape`, 1000)
   if (search.truncated) throw new Error('escape search truncated')
-  const result = { escapes: [], unreadable: 0 }
+  const result = { escapes: [], clears: [], unreadable: 0 }
   const seen = new Set()
+  const permissions = new Map()
+  const trustedAuthor = async (login) => {
+    if (!login) return false
+    if (!permissions.has(login)) {
+      const permission = JSON.parse(
+        await gh.checked([
+          'api',
+          `repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`,
+        ]),
+      )
+      permissions.set(login, ['admin', 'write'].includes(permission.permission))
+    }
+    return permissions.get(login)
+  }
   for (const { number } of search.nodes) {
     const pr = await gh.read(repo, number)
     if (!pr) throw new Error(`missing labelled PR ${number}`)
-    for (const { body } of pr.comments.nodes) {
+    for (const { body, author, createdAt } of pr.comments.nodes) {
+      if (body.includes('<!-- boss-area-cap-clear')) {
+        const clear = parseClearComment(body)
+        const login = author?.login
+        const commentTime = Date.parse(createdAt)
+        if (
+          !clear ||
+          clear.repo !== repo ||
+          !login ||
+          clear.clearedBy !== login ||
+          !Number.isFinite(commentTime)
+        ) {
+          result.unreadable++
+          continue
+        }
+        if (!(await trustedAuthor(login))) result.unreadable++
+        else
+          result.clears.push({
+            ...clear,
+            clearedBy: login,
+            clearedAt: new Date(commentTime).toISOString(),
+          })
+        continue
+      }
       if (!body.includes('<!-- boss-escape')) continue
       const record = parseEscapeComment(body)
-      if (!record || record.repo !== repo || record.original.number !== number) {
+      if (
+        !record ||
+        record.repo !== repo ||
+        record.original.number !== number ||
+        !(await trustedAuthor(author?.login))
+      ) {
         result.unreadable++
         continue
       }

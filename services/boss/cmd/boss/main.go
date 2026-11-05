@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/recurser/boss/internal/adapter/sshhost"
+	daemon "github.com/recurser/boss/internal/daemonlife"
 
 	"github.com/recurser/boss/api/cli/account"
 	"github.com/recurser/boss/api/cli/cron"
@@ -282,7 +283,7 @@ func rootCmdWithGroups(g *skills.Group, daemonGroup daemonCommands) *cobra.Comma
 		return newDaemonClient(cmd)
 	}, func(cmd *cobra.Command) (account.SyncedRegistryClient, error) {
 		return settingscli.NewCloudRemote(cmd, account.ErrNotLoggedIn)
-	}, remoteURL, hostDestination))
+	}, remoteURL, hostDestination, daemon.EffectiveServiceEnvPath))
 	addGrouped("trash", trash.New(func(cmd *cobra.Command) (trash.Client, error) {
 		if remote := remoteURL(cmd); remote != "" {
 			return newRemoteClient(cmd, remote)

@@ -52,14 +52,12 @@ func (m Model) handleChatsListed(msg ChatsListedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.chats = msg.Chats
+	m.chatsGen++
 	m.daemonStatuses = msg.DaemonStatuses
 	m.daemonLastOutput = msg.DaemonLastOutput
 	m.daemonWaitingReasons = msg.DaemonWaitingReasons
 	m.daemonPhases = msg.DaemonPhases
-	// Sort chats by creation time (newest first).
-	sort.SliceStable(m.chats, func(i, j int) bool {
-		return m.chats[i].CreatedAt.AsTime().After(m.chats[j].CreatedAt.AsTime())
-	})
+	sortChatsNewestFirst(m.chats)
 	m.buildTableRows()
 	// Highlight the chat the caller named (the chat the user just left, or the
 	// attention target); when it is no longer listed, use the default cursor.
@@ -111,6 +109,7 @@ func (m Model) defaultCursor() int {
 }
 
 func (m Model) handleTitlesBackfilled(msg chatTitlesBackfilledMsg) (tea.Model, tea.Cmd) {
+	m.chatsGen++
 	for i, chat := range m.chats {
 		if title, ok := msg.updates[chat.AgentSessionId]; ok {
 			m.chats[i].Title = title
@@ -121,6 +120,7 @@ func (m Model) handleTitlesBackfilled(msg chatTitlesBackfilledMsg) (tea.Model, t
 }
 
 func (m Model) handleChatDeleted(msg chatDeletedMsg) (tea.Model, tea.Cmd) {
+	m.chatsGen++
 	if msg.agentSessionID == m.deletingAgentSessionID {
 		m.deletingAgentSessionID = ""
 	}
@@ -147,6 +147,10 @@ func (m Model) handleChatDeleted(msg chatDeletedMsg) (tea.Model, tea.Cmd) {
 // on the row, so success refreshes the timeline; a failure restores the previous
 // title and reports why, rather than showing a name the daemon rejected.
 func (m Model) handleChatRenamed(msg chatRenamedMsg) (tea.Model, tea.Cmd) {
+	m.chatsGen++
+	if m.renameInFlight > 0 {
+		m.renameInFlight--
+	}
 	if msg.err == nil {
 		timeline := m.syncTimeline()
 		return m, timeline
@@ -283,7 +287,37 @@ func (m Model) handleSwitchAccountResult(msg SwitchAgentAccountResultMsg) (tea.M
 	return m, tea.Batch(m.listChats(), m.refreshStatuses())
 }
 
+func sortChatsNewestFirst(chats []*pb.AgentChat) {
+	sort.SliceStable(chats, func(i, j int) bool {
+		return chats[i].GetCreatedAt().AsTime().After(chats[j].GetCreatedAt().AsTime())
+	})
+}
+
+func (m *Model) reconcilePolledChats(msg RefreshMsg) bool {
+	if !msg.ChatsListed || m.loading || msg.ChatsGen != m.chatsGen || m.renameInFlight > 0 || m.deletingAgentSessionID != "" {
+		return false
+	}
+	selectedID := m.selectedChat().GetAgentSessionId()
+	m.chats = msg.Chats
+	sortChatsNewestFirst(m.chats)
+	if selectedID == "" {
+		return true
+	}
+	selectedIndex := slices.IndexFunc(m.chats, func(chat *pb.AgentChat) bool { return chat.GetAgentSessionId() == selectedID })
+	if selectedIndex >= 0 {
+		// New membership may push the selected chat into Earlier. Reveal it
+		// before applying new statuses, which retain their normal idle collapse.
+		rows := projectChatRows(m.chats, m.daemonStatuses, m.session.GetAttention().GetTargetChatId(), m.highlightID, m.showEarlier)
+		if !slices.ContainsFunc(rows, func(row chatPickerRow) bool { return row.chatIndex == selectedIndex }) {
+			m.showEarlier = true
+		}
+	}
+	return true
+}
+
 func (m Model) handleRefresh(msg RefreshMsg) (tea.Model, tea.Cmd) {
+	selected, toggleSelected := m.selectedChat(), m.earlierRowSelected()
+	reconciled := m.reconcilePolledChats(msg)
 	var refreshWebLink tea.Cmd
 	if msg.Session != nil {
 		// A PR number appearing (or changing) after the picker opened means
@@ -354,10 +388,15 @@ func (m Model) handleRefresh(msg RefreshMsg) (tea.Model, tea.Cmd) {
 	// Before the rebuild, so a chat that stopped waiting loses its trigger
 	// token in the same frame its reason disappears.
 	armedFetch := m.syncArmedCallbacks()
-	if len(m.chats) > 0 {
-		m.buildTableRows()
+	if reconciled || len(m.chats) > 0 {
+		m.buildTableRowsWithSelection(selected, toggleSelected)
 	}
-	timeline := m.syncTimeline()
+	// Until the rename RPC settles the daemon may still label its timeline
+	// with the old title. Let completion fetch it under the new label key.
+	var timeline tea.Cmd
+	if m.renameInFlight == 0 {
+		timeline = m.syncTimeline()
+	}
 	m.table.SetHeight(m.tableHeight())
 	return m, tea.Batch(refreshWebLink, armedFetch, timeline)
 }

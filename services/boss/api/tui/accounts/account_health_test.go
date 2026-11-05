@@ -360,3 +360,41 @@ func TestHealthSupersededMarkRequiresAHealthyOutcome(t *testing.T) {
 		})
 	}
 }
+
+func TestAccountHealthCredentialSharingBlock_Accounts_AC224901(t *testing.T) {
+	for _, outcome := range []string{"", authCheckHealthy, authCheckAuthInvalid, authCheckTransient} {
+		t.Run(outcome, func(t *testing.T) {
+			a := &pb.AgentAccount{
+				Health: "ok", CredentialSyncBlockReason: "bootstrap_unpinned",
+				AuthCheck: &pb.AuthCheck{Outcome: outcome},
+			}
+			if got, want := accountHealthCellFor(a, "ok"), ui.StyleStatusWarning.Render("ok?"); got != want {
+				t.Fatalf("blocked account health = %q, want %q", got, want)
+			}
+			if got, want := accountHealthCellFor(a, "failed"), accountHealthCell("failed"); got != want {
+				t.Fatalf("failed health = %q, want unchanged %q", got, want)
+			}
+			a.CredentialSyncBlockReason = ""
+			if outcome == "" || outcome == authCheckHealthy {
+				if got, want := accountHealthCellFor(a, "ok"), accountHealthCell("ok"); got != want {
+					t.Fatalf("unblocked health = %q, want unchanged %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestAccountDetailsCredentialSharingRemedy_Accounts_AC224901(t *testing.T) {
+	a := &pb.AgentAccount{Health: "ok", CredentialSyncBlockReason: "bootstrap_unpinned"}
+	rows := accountDetailRows(a, time.Now(), syncRegistry{})
+	got := detailValue(rows, "Credential sharing")
+	for _, want := range []string{"bootstrap_unpinned", "boss account devices status"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("credential sharing detail = %q, want %q", got, want)
+		}
+	}
+	a.CredentialSyncBlockReason = ""
+	if got := detailValue(accountDetailRows(a, time.Now(), syncRegistry{}), "Credential sharing"); got != "" {
+		t.Fatalf("unblocked account has sharing warning %q", got)
+	}
+}

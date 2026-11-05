@@ -54,24 +54,16 @@ func TestHomeVerifyParkTierByMix(t *testing.T) {
 			if tc.blocked {
 				wantCell, wantHint, wantPrefix = ui.StyleStatusDanger.Render("blocked"), ui.StyleStatusDanger, "blocked: "
 			}
-			// A park with a confidence level reads it in the same tier colour
-			// (BOS-2089): a blocked park leads with "blocked", a look-only one
-			// with its level, or "waiting for you" when it has none.
+			// The home row reads the served status phrase in the same tier
+			// colour (BOS-2336): a look-only park names what to review, a
+			// blocked one the fix it needs.
 			got := h.RenderSessionStatus(s)
 			wantStyle := ui.StyleStatusWarning
 			if tc.blocked {
 				wantStyle = ui.StyleStatusDanger
 			}
-			plain := ansi.Strip(got)
-			if got != wantStyle.Render(plain) {
-				t.Errorf("status cell = %q, want it in %q's colour", got, wantCell)
-			}
-			if c, ok := ui.ConfidenceCell(s); ok {
-				if tc.blocked != (c.Level == pb.ConfidenceLevel_CONFIDENCE_LEVEL_BLOCKED) || !strings.Contains(plain, c.Word) {
-					t.Errorf("status cell = %q, want level %v", plain, c.Level)
-				}
-			} else if got != wantCell {
-				t.Errorf("status cell = %q, want %q", got, wantCell)
+			if phrase := s.GetAttention().GetStatusPhrase(); phrase == "" || got != wantStyle.Render(phrase) {
+				t.Errorf("status cell = %q, want the served phrase %q in %q's colour", got, phrase, wantCell)
 			}
 			if got := ui.RenderDisplayStatus(s, h.Spinner); got != wantCell {
 				t.Errorf("display status cell = %q, want %q", got, wantCell)

@@ -1531,18 +1531,9 @@ func waitingSession() *pb.Session {
 // sessions row, so every one of these procedures serves it, and pinning only the
 // first eight is exactly how the six-procedure leak this table now covers was
 // able to ship green.
-func waitingResponseCases() []struct {
-	name   string
-	method string
-	build  func() any
-	get    func(any) *pb.Session
-} {
-	return []struct {
-		name   string
-		method string
-		build  func() any
-		get    func(any) *pb.Session
-	}{
+func waitingResponseCases() []sessionResponseCase {
+	return []sessionResponseCase{
+		reviewQueueResponseCase(waitingSession),
 		{"ProxyListSessions", bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
 			func() any { return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{waitingSession()}} },
 			func(m any) *pb.Session { return m.(*pb.ProxyListSessionsResponse).GetSessions()[0] }},
@@ -2386,18 +2377,9 @@ func stalledSession() *pb.Session {
 // the version Interceptor only transforms unary responses), so a future
 // Session-returning RPC that is added to the proto but forgotten here is the one
 // gap this table cannot catch; keep it in sync with ErroredStatusChange's set.
-func stalledResponseCases() []struct {
-	name   string
-	method string
-	build  func() any
-	get    func(any) *pb.Session
-} {
-	return []struct {
-		name   string
-		method string
-		build  func() any
-		get    func(any) *pb.Session
-	}{
+func stalledResponseCases() []sessionResponseCase {
+	return []sessionResponseCase{
+		reviewQueueResponseCase(stalledSession),
 		{"ProxyListSessions", bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
 			func() any { return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{stalledSession()}} },
 			func(m any) *pb.Session { return m.(*pb.ProxyListSessionsResponse).GetSessions()[0] }},

@@ -9,43 +9,54 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// TestNeededFromYouListsWhatWouldRaiseTheLevel_ChatPicker_AC208901: a leveled
-// park lists every lowered-by reason, in served order, under the raise heading
-// below its question; a park without reasons shows no heading.
-func TestNeededFromYouListsWhatWouldRaiseTheLevel_ChatPicker_AC208901(t *testing.T) {
-	reasons := []string{"large diff", "touches the auth path", "no end-to-end test"}
+// TestNeededFromYouStatesTheConfidenceSentence_ChatPicker_AC208901: a leveled
+// park states its level and lowered-by reasons as one sentence below its
+// question, wrapped to the answer's width and counted in the details height; a
+// leveled park without reasons still names its level; a park without a level
+// shows no sentence.
+func TestNeededFromYouStatesTheConfidenceSentence_ChatPicker_AC208901(t *testing.T) {
+	const want = "Moderate: changes Infrastructure. Reviewing this area would raise this."
 	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 40)
 	question := m.neededQuestion()
-	m.session.Attention.ConfidenceLevel = pb.ConfidenceLevel_CONFIDENCE_LEVEL_LOW
-	m.session.Attention.LoweredBy = reasons
-	got := m.neededQuestion()
-	if !strings.HasPrefix(got, question) {
-		t.Fatalf("raise list replaced the question:\n%s", got)
-	}
-	heading := strings.Index(got, "What would raise this")
-	if heading < 0 {
-		t.Fatalf("no raise heading:\n%s", got)
-	}
-	at := heading
-	for _, reason := range reasons {
-		next := strings.Index(got[at:], "• "+reason)
-		if next < 0 {
-			t.Fatalf("reason %q missing or out of order:\n%s", reason, got)
-		}
-		at += next
+	plainHeight := m.attentionDetailsHeight()
+	m.session.Attention.ConfidenceLevel = pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE
+	m.session.Attention.LoweredBy = []string{"Changes Infrastructure. Reviewing this area would raise this."}
+	if got := m.neededQuestion(); got != question+"\n\n"+want {
+		t.Fatalf("needed text = %q, want the question then %q", got, want)
 	}
 	m.buildTableRows()
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "What would raise this") || !strings.Contains(view, reasons[2]) {
-		t.Errorf("details view lacks the raise list:\n%s", view)
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, want) {
+		t.Errorf("details view lacks the confidence sentence:\n%s", view)
+	}
+
+	m.width = 40
+	m.buildTableRows()
+	lines := m.neededLines()
+	at := len(strings.Split(question, "\n")) + 1
+	if len(lines) <= at+1 {
+		t.Fatalf("sentence did not wrap at a narrow width: %q", lines)
+	}
+	if got := strings.Join(strings.Fields(strings.Join(lines[at:], " ")), " "); got != want {
+		t.Errorf("wrapped sentence = %q, want %q", got, want)
+	}
+	for _, line := range lines {
+		if ansi.StringWidth(line) > m.neededTextWidth() {
+			t.Errorf("line %q is wider than %d", line, m.neededTextWidth())
+		}
+	}
+	m.width = 100
+	m.buildTableRows()
+	if got := m.attentionDetailsHeight(); got != plainHeight+2 {
+		t.Errorf("details height = %d, want %d (blank row and sentence)", got, plainHeight+2)
 	}
 
 	m.session.Attention.LoweredBy = nil
-	if got := m.neededQuestion(); strings.Contains(got, "What would raise this") {
-		t.Errorf("a park without reasons shows the heading:\n%s", got)
+	if got := m.neededQuestion(); got != question+"\n\nModerate." {
+		t.Errorf("a leveled park without reasons = %q, want its level sentence", got)
 	}
-	m.session.Attention.LoweredBy = reasons
+	m.session.Attention.LoweredBy = []string{"Changes Infrastructure. Reviewing this area would raise this."}
 	m.session.Attention.ConfidenceLevel = pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED
-	if got := m.neededQuestion(); strings.Contains(got, "What would raise this") {
-		t.Errorf("a park without a level shows the heading:\n%s", got)
+	if got := m.neededQuestion(); got != question {
+		t.Errorf("a park without a level shows a sentence: %q", got)
 	}
 }

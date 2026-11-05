@@ -34,6 +34,9 @@ service DaemonService {
   rpc CreateSession(CreateSessionRequest) returns (stream CreateSessionResponse);
   rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  // ListReviewQueue lists the repo's PRs that verify has parked for a person,
+  // with per-level header counts.
+  rpc ListReviewQueue(ListReviewQueueRequest) returns (ListReviewQueueResponse);
   // MoveSession moves one session up or down relative to its current
   // neighbours in the rendered session list and returns the refreshed session.
   // The move arithmetic lives here rather than in each client so that no two
@@ -407,6 +410,10 @@ service DaemonService {
   // stage or daemon subsystem that made them) and quota. It counts calls, not
   // quota points: one GraphQL call can cost more than one point.
   rpc GetGitHubUsage(GetGitHubUsageRequest) returns (GetGitHubUsageResponse);
+  // GetGitHubReadCredential is local-only and read-only. A missing credential
+  // never errors: callers keep the user's gh login. The response contains a
+  // secret that callers must never log.
+  rpc GetGitHubReadCredential(GetGitHubReadCredentialRequest) returns (GetGitHubReadCredentialResponse);
 
   // GetPRState reads one pull request's state through the daemon's
   // webhook-invalidated GitHub read cache: status, checks (commit statuses
@@ -771,6 +778,18 @@ message ListSessionsRequest {
 
 message ListSessionsResponse {
   repeated Session sessions = 1;
+}
+
+message ListReviewQueueRequest {
+  // The repo whose queue to list. Required.
+  string repo_id = 1;
+  ReviewQueueSort sort = 2;
+}
+
+message ListReviewQueueResponse {
+  repeated ReviewQueueRow rows = 1;
+  // One entry per ConfidenceLevel, in enum order, zeros included.
+  repeated ReviewQueueLevelCount level_counts = 2;
 }
 
 // MoveDirection is the direction a MoveSession request moves a session in the
@@ -1577,10 +1596,11 @@ message NotifyAuthChangeResponse {
 
 message GetAuthStateRequest {}
 
-// GetAuthStateResponse carries only scalar, enumerated, non-secret facts.
-// It never carries an access token, a refresh token, an Authorization header
-// value, or a raw upstream response body — the CLI renders these fields
-// verbatim to an operator's terminal.
+// GetAuthStateResponse carries only enumerated, non-secret facts: the
+// daemon's upstream auth state and, per repo, which GitHub credential it uses.
+// It never carries an access token, a refresh token, an installation token, an
+// Authorization header value, or a raw upstream response body — the CLI
+// renders these fields verbatim to an operator's terminal.
 message GetAuthStateResponse {
   // Whether this daemon has an orchestrator client at all. False in
   // local-only mode, where there is nothing to authenticate against and a
@@ -1613,6 +1633,45 @@ message GetAuthStateResponse {
   // daemon's periodic wedge WARN reads, so the log and the doctor agree by
   // construction rather than by coincidence.
   google.protobuf.Timestamp auth_failing_since = 6;
+  // Per-repo GitHub credential state from the daemon's credential source.
+  // Unset when the daemon has no source or its report failed; set but empty
+  // when the daemon has no repos. Never carries a token.
+  GitHubCredentialReport github_credential_report = 7;
+}
+
+// GitHubCredentialReport wraps the per-repo list so its presence tells "this
+// daemon does not report credentials" apart from "this daemon has no repos".
+message GitHubCredentialReport {
+  repeated GitHubCredentialState repos = 1;
+}
+
+// GitHubCredentialIdentity is which GitHub identity a repo's calls use.
+enum GitHubCredentialIdentity {
+  GIT_HUB_CREDENTIAL_IDENTITY_UNSPECIFIED = 0;
+  // The operator's own gh login.
+  GIT_HUB_CREDENTIAL_IDENTITY_USER = 1;
+  // The Boss GitHub App installation token bosso minted.
+  GIT_HUB_CREDENTIAL_IDENTITY_INSTALLATION = 2;
+}
+
+// GitHubCredentialState is one local repo's GitHub credential and why.
+message GitHubCredentialState {
+  string repo_id = 1;
+  // The canonical origin, as the credential source keys it.
+  string repo_origin_url = 2;
+  GitHubCredentialIdentity identity = 3;
+  // 0 for the user identity.
+  int64 installation_id = 4;
+  // "" for the user identity.
+  string account_login = 5;
+  // The daemon's credential reason verbatim ("installation", "not_signed_in",
+  // "not_github", "no_installation", ...). Readers must treat an unrecognized
+  // value as forward-compatible rather than failing.
+  string reason = 6;
+  // Unset unless an installation token is cached.
+  google.protobuf.Timestamp expires_at = 7;
+  // Unset unless the repo is backing off or a refresh is scheduled.
+  google.protobuf.Timestamp next_attempt_at = 8;
 }
 
 // --- Cron jobs ---
@@ -2442,24 +2501,32 @@ message GetGitHubUsageRequest {
   int64 window_seconds = 1;
 }
 
-// GitHubUsageRow is what one label did against one quota: the calls it sent
-// to GitHub and the attempts refused without contacting GitHub.
+// GitHubUsageRow is what one label did against one quota on one identity: the
+// calls it sent to GitHub and the attempts refused without contacting GitHub.
 message GitHubUsageRow {
   // Attribution, e.g. "stage:finalize", "daemon:pr-poller", "cron:<name>",
   // "plugin:<name>" or "daemon:unattributed".
   string label = 1;
   // GitHub quota the calls spent: "core" (REST) or "graphql".
   string quota = 2;
+  // Billed calls; free conditional responses are not included.
   int64 call_count = 3;
   // Attempts the rate-limit breaker refused while the quota was paused.
   int64 breaker_skip_count = 4;
   // Background reads the quota floor refused while the quota was low.
   int64 floor_skip_count = 5;
+  // GitHub identity the calls spent: "user" (the operator's gh login) or
+  // "installation:<id>" (a Boss GitHub App installation pool). Empty from a
+  // daemon that predates the field, which means "user".
+  string identity = 6;
+  // Conditional REST reads answered 304 Not Modified; these spend no quota
+  // and are not included in call_count.
+  int64 not_modified_count = 7;
 }
 
 message GetGitHubUsageResponse {
   // Sorted by call_count descending, then by breaker_skip_count plus
-  // floor_skip_count descending, then label and quota.
+  // floor_skip_count descending, then label, quota and identity.
   repeated GitHubUsageRow rows = 1;
   google.protobuf.Timestamp window_started_at = 2;
   google.protobuf.Timestamp window_ended_at = 3;
@@ -2884,4 +2951,24 @@ message AcceptSessionPRBlockerResponse {
   bool is_already_accepted = 10;
   bool is_dry_run = 11;
   repeated string planned_writes = 12;
+}
+
+// GetGitHubReadCredentialRequest describes exactly one gh invocation.
+message GetGitHubReadCredentialRequest {
+  // Arguments after gh, exactly as received by the caller.
+  repeated string gh_args = 1;
+  // Working directory used to resolve an implicit repository.
+  string working_directory = 2;
+  // The caller's GH_HOST and GH_REPO values.
+  string gh_host = 3;
+  string gh_repo = 4;
+}
+
+message GetGitHubReadCredentialResponse {
+  // Read-only repository installation token, or empty to keep the user's login.
+  // Secret: never log this field or the response.
+  string token = 1;
+  int64 installation_id = 2;
+  // installation on success; otherwise a stable fallback reason.
+  string reason = 3;
 }

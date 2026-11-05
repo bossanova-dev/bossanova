@@ -13,6 +13,7 @@
 //   --disposition <default-run|explicit-only>  filter (required in practice)
 //   --module <path>                            optional module filter (e.g. services/boss);
 //                                              repeatable — the union is selected
+//   --targets "<patterns>"                      optional space-separated Bazel package patterns
 //   --race                                     inject `-race` into each `go test`
 //   --print                                    print commands, do not execute (dry run)
 // Env:
@@ -30,6 +31,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { isMainModule } from '../../skills-toolbox/main-module.mjs'
 import { quarantinedLabels } from '../guards/check-flaky-quarantine.mjs'
 
 // fileURLToPath (not `new URL(...).pathname`) so a checkout path containing a
@@ -52,7 +54,7 @@ const FLAKY_ATTEMPTS = 3
 const VALID_DISPOSITIONS = new Set(['default-run', 'explicit-only'])
 
 function parseArgs(argv) {
-  const opts = { disposition: null, modules: null, race: false, print: false }
+  const opts = { disposition: null, modules: null, targets: null, race: false, print: false }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     switch (arg) {
@@ -68,6 +70,13 @@ function parseArgs(argv) {
       case '--race':
         opts.race = true
         break
+      case '--targets':
+        if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) {
+          console.error('run-ledger: --targets requires a value')
+          process.exit(2)
+        }
+        opts.targets = argv[++i].trim().split(/\s+/).filter(Boolean)
+        break
       case '--print':
         opts.print = true
         break
@@ -77,6 +86,23 @@ function parseArgs(argv) {
     }
   }
   return opts
+}
+
+/**
+ * @param {string} label
+ * @param {string[]} patterns
+ * @returns {boolean}
+ */
+export function matchesTargets(label, patterns) {
+  const packageName = label.split(':')[0]
+  return patterns.some((pattern) => {
+    if (pattern.endsWith(':all')) return packageName === pattern.slice(0, -4)
+    if (pattern.endsWith('/...')) {
+      const root = pattern.slice(0, -4)
+      return packageName === root || packageName.startsWith(`${root}/`)
+    }
+    return false
+  })
 }
 
 function withRace(command) {
@@ -105,6 +131,7 @@ function main() {
   const selected = ledger.filter((row) => {
     if (opts.disposition && row.disposition !== opts.disposition) return false
     if (opts.modules && !opts.modules.has(row.module)) return false
+    if (opts.targets && !matchesTargets(row.label, opts.targets)) return false
     return true
   })
 
@@ -112,6 +139,7 @@ function main() {
     const scope = [
       opts.disposition ? `disposition=${opts.disposition}` : null,
       opts.modules ? `module=${[...opts.modules].join(',')}` : null,
+      opts.targets ? `targets=${opts.targets.join(' ')}` : null,
     ]
       .filter(Boolean)
       .join(' ')
@@ -151,4 +179,4 @@ function main() {
   }
 }
 
-main()
+if (isMainModule(import.meta.url)) main()

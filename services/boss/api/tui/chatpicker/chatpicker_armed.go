@@ -17,6 +17,7 @@ import (
 	// daemon's reason verbatim, the session's verify park when there is one, and
 	// the callback's expiry) to the launch screen.
 	//
+	// The daemon owns the stuck verdict through the session attention FIX.
 	// The daemon stays the only producer of the reason (docs/features/chat-picker.md "Waiting
 	// reason"). Two facts are not on the wire: the expiry, and whether the chat
 	// holds callbacks besides the one the reason names. Both are read from
@@ -268,18 +269,18 @@ func (m Model) callbackWaitReach(cb *pb.GitHubCallback) displaystatus.WaitReach 
 	return displaystatus.CallbackWaitReach(cb.GetTrigger(), cb.GetShouldRequireTransition() && !cb.GetHasObservedBaseline(), displaystatus.WaitPRFromSession(m.session))
 }
 
-func (m Model) anotherChatWorking(chatID string) bool {
-	for _, chat := range m.chats {
-		if id := chat.GetAgentSessionId(); id != chatID && m.daemonStatuses[id] == ui.StatusWorking {
-			return true
-		}
+func (m Model) stuckWait(chat *pb.AgentChat) (displaystatus.WaitBlocker, bool) {
+	id := chat.GetAgentSessionId()
+	a := m.session.GetAttention()
+	if m.daemonStatuses[id] != ui.StatusWaiting || a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || a.GetTargetChatId() != id {
+		return "", false
 	}
-	return false
+	return displaystatus.StuckWaitBlocker(a.GetAlertKey())
 }
 
 func (m Model) stuckCallback(chat *pb.AgentChat) bool {
-	return m.daemonStatuses[chat.GetAgentSessionId()] == ui.StatusWaiting &&
-		!m.callbackWaitReach(m.statusCallback(chat)).Reachable && !m.anotherChatWorking(chat.GetAgentSessionId())
+	_, stuck := m.stuckWait(chat)
+	return stuck
 }
 
 // armedDoneRelist is how often a steady waiting set is re-listed while any of
@@ -409,15 +410,23 @@ func (m Model) armedLine(chat *pb.AgentChat) string {
 		return ""
 	}
 	reason := m.daemonWaitingReasons[id]
+	stuck := m.stuckCallback(chat)
 	switch {
-	case m.stuckCallback(chat):
-		reason = "stuck: " + reason
-	case m.chatWait(id) == waitStandby:
+	case !stuck && m.chatWait(id) == waitStandby:
 		reason = displaystatus.StandbyLabel + ": " + reason
-	case ui.WaitingBadgeSuperseded(m.session):
+	case !stuck && ui.WaitingBadgeSuperseded(m.session):
 		reason = ui.StatusWaiting + ": " + reason
 	}
-	parts := []string{m.chatDisplayTitle(chat), reason}
+	parts := []string{m.chatDisplayTitle(chat)}
+	if stuck {
+		// The wait reason can name another PR's reachable callback. Keep it
+		// separate from the daemon's verdict about the session's own PR.
+		parts = append(parts, m.statusDetail(chat)+" on "+m.session.GetPrUrl())
+		if sentence := m.session.GetAttention().GetSentence(); sentence != "" {
+			parts = append(parts, sentence)
+		}
+	}
+	parts = append(parts, reason)
 	if park := armedParkSummary(m.session); park != "" {
 		parts = append(parts, park)
 	}

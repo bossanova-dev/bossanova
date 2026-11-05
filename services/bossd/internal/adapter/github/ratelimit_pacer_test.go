@@ -434,3 +434,5 @@ func TestPacerBucketsArePerIdentity(t *testing.T) {
 		t.Fatalf("user background read admit err = %v, want a paced refusal naming the user pool", err)
 	}
 }
+
+func (u *pacerUsage) RecordNotModified(string, string, string) {}

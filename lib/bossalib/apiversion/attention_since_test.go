@@ -128,7 +128,7 @@ func TestAttentionSince_EveryPinGetsItsOldAnswer(t *testing.T) {
 					if !reg.Newer(V20260922, v) {
 						want := today
 						if reg.Newer(V20261101, v) {
-							want = downconvertProofAttentionSession(want)
+							want = downconvertProofAttentionSession(downconvertStatusPhraseSession(want))
 						}
 						if reg.Newer(V20261031, v) {
 							want = downconvertParkVerdictSentence(want)

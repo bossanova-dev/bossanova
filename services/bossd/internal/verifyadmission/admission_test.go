@@ -2,9 +2,11 @@ package verifyadmission
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -184,6 +186,88 @@ func TestAdmissionFixture(t *testing.T) {
 		if got := snapshot.Lookup(tc.pr, strings.Repeat(tc.head, 40)); got != tc.want {
 			t.Errorf("PR%d got %+v want %+v", tc.pr, got, tc.want)
 		}
+	}
+	if got := snapshot.RemotePRs(); !slices.Equal(got, []int{3551}) {
+		t.Errorf("RemotePRs=%v want [3551]", got)
+	}
+}
+
+func TestAdmissionRemotePRs(t *testing.T) {
+	const (
+		older = "2026-10-24T00:00:00.000Z"
+		newer = "2026-10-25T00:00:00.000Z"
+	)
+	admitted := func(prs ...int) map[string]any {
+		out := map[string]any{}
+		for _, pr := range prs {
+			out[strconv.Itoa(pr)] = map[string]any{"head": "a", "state": StateAdmitted, "reason": "ticket"}
+		}
+		return out
+	}
+	scopeOf := func(at string, prs map[string]any, remote any) map[string]any {
+		s := map[string]any{"scannedAt": at, "prs": prs}
+		if remote != nil {
+			s["remote"] = remote
+		}
+		return s
+	}
+	mixed := admitted(1, 3)
+	mixed["2"] = map[string]any{"head": "b", "state": StatePending, "reason": "draft"}
+	for _, tc := range []struct {
+		name    string
+		version int
+		scopes  map[string]any
+		want    []int
+	}{
+		{"newest scope wins", 1, map[string]any{
+			"a": scopeOf(older, admitted(1, 2), []int{1}),
+			"b": scopeOf(newer, admitted(1, 2), []int{2}),
+		}, []int{2}},
+		{"ties break by smallest key", 1, map[string]any{
+			"b": scopeOf(newer, admitted(1, 2), []int{2}),
+			"a": scopeOf(newer, admitted(1, 2), []int{1}),
+		}, []int{1}},
+		{"scopes without remote are ignored", 1, map[string]any{
+			"a": scopeOf(older, admitted(1), []int{1}),
+			"b": scopeOf(newer, admitted(1), nil),
+		}, []int{1}},
+		{"unparseable scannedAt is ignored", 1, map[string]any{
+			"a": scopeOf(older, admitted(1), []int{1}),
+			"b": scopeOf("yesterday", admitted(2), []int{2}),
+		}, []int{1}},
+		{"only admitted remote PRs count, sorted", 1, map[string]any{
+			"a": scopeOf(newer, mixed, []int{3, 2, 1, 9}),
+		}, []int{1, 3}},
+		{"an empty newest list is nil", 1, map[string]any{
+			"a": scopeOf(older, admitted(1), []int{1}),
+			"b": scopeOf(newer, admitted(1), []int{}),
+		}, nil},
+		{"no admitted remote PR is nil", 1, map[string]any{
+			"a": scopeOf(newer, mixed, []int{2}),
+		}, nil},
+		{"no scope", 1, map[string]any{}, nil},
+		{"unsupported version", 2, map[string]any{
+			"a": scopeOf(newer, admitted(1), []int{1}),
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{"version": tc.version, "scopes": tc.scopes})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var snapshot Snapshot
+			if err := json.Unmarshal(data, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			for range 20 {
+				if got := snapshot.RemotePRs(); !slices.Equal(got, tc.want) || (tc.want == nil && got != nil) {
+					t.Fatalf("RemotePRs=%#v want %#v", got, tc.want)
+				}
+			}
+		})
+	}
+	if got := (Snapshot{}).RemotePRs(); got != nil {
+		t.Fatalf("zero snapshot: %v", got)
 	}
 }
 

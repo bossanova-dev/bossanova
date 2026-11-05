@@ -31,9 +31,9 @@ a human` and `## Open Questions` only when they apply, `## Planning` (with a `- 
   locally; the stored issue description stays unchanged.
 - **Labels**: the existing set, plus content labels that genuinely apply (`bug`, `feature`,
   `improvement`, `docs` — names via `optionalLabelName(config, '<role>')`, else the literal), plus
-  exactly one of `agent-build` (the default) or `needs-human` (when an agent genuinely could
-  not do it, or the predicted verify park action is `needs-human`; size alone is never the reason,
-  and the plan explains why), plus `agent-question`
+  exactly one of `agent-build` (the default) or `needs-human` (only when an agent genuinely could
+  not implement it; size and a predicted verify park are never the reason, and the plan explains
+  why), plus `agent-question`
   when there are open questions (headless only). The planning-queue label (`agent-plan`) is removed.
   Pipeline label roles resolve through `labelName(config, '<role>')`, whose keys are: `agentBuild`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic`
   (it throws on an unknown role). Never create labels.
@@ -436,11 +436,9 @@ Non-zero ⇒ no writes. Drift is annotated (`- Premise drift: …`) and named in
 
 **Predict verify parks.** Before the secret, image and contract gates, run
 `node "$BOSS_PLAN_TOOLBOX/plan/plan-park-prediction.mjs" annotate --description .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md --plan "$PLAN_FILE" --json`.
-It annotates both artifacts and prints `{predicted, codes, labels, action}`. When `predicted` is
-true and `action` is `needs-human`, use the `needsHuman` exposure label instead of `agentBuild`
-and name the predicted codes and labels in Phase 6. In `rank-last` mode keep the usual exposure
-label; the prediction marker lets boss-build rank the ticket last. All following gates see these
-final annotated bytes.
+It annotates both artifacts and prints `{predicted, codes, labels}`. A prediction never changes the
+exposure label: the marker lets boss-build rank the ticket last, and Phase 6 names the predicted
+codes and labels. All following gates see these final annotated bytes.
 
 **Secret gate (mandatory).** `node "${BOSS_PLAN_TOOLBOX:?}/plan-secret-scan.mjs" "$PLAN_FILE" <the
 description artifact>` — exit 1: redact the named lines and re-run; exit 2: fail closed. A clean scan
@@ -504,7 +502,6 @@ Then:
    exactly one `Implementation plan (<ISSUE-ID>)` plan record remains (the adapter exposes it as an
    attachment; duplicates ⇒ no further writes).
 2. **Labels**: read with `readLabels` and compute the merged set (see "What a planned ticket is").
-   A predicted park with action `needs-human` takes the `needsHuman` exposure label.
    Interactive runs strip a stale `agent-question` (a human answered every fork). Adopted
    `siblings` hold `needs-human` until step 6 verifies them.
 3. **Save** in one tracker write. On a tracker declaring `writePlan`, save only labels, estimate,

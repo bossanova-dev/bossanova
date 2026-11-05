@@ -857,6 +857,62 @@ message SessionAttention {
   string proof_url = 16;
   // Reasons the verify park is below High from 2026-11-01; cleared for older pins.
   repeated string lowered_by = 17;
+  // The current head's standing verify blockers, grouped by severity and kind,
+  // most severe first. Served on every kind once bossd has read the blockers
+  // file for the head the display tracker holds; empty for any other head and
+  // before that read. Additive for every pin, so no dated version is owed (see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+  repeated BlockerTally blocker_tallies = 18;
+  // Distinct file paths of the current head's review-finding blockers, at most
+  // three, in blocker order.
+  repeated string blocker_files = 19;
+  // The row's STATUS phrase, which clients render verbatim: what the operator
+  // must do under NEEDS YOU ("review API schema +1", "repair failed: 1 P2") or
+  // what the agent is doing under IN PROGRESS ("repairing 1 P2", "checks
+  // 12/14"). At most 22 display cells, never cut with an ellipsis and never a
+  // confidence word or glyph; empty for DONE. Pins older than 2026-11-01
+  // receive it and status_detail cleared (StatusPhraseChange).
+  string status_phrase = 20;
+  // One plain line for the row's detail, its parts joined with " · ", when
+  // the row has more to say than status_phrase: every review area, the proof
+  // state and open items of a review, the full blocker tally and its files,
+  // or why a merge is unverified. Empty otherwise.
+  string status_detail = 21;
+}
+
+// BlockerTally counts one group of a PR head's standing verify blockers.
+message BlockerTally {
+  // P0, P1 or P2 for a review finding; empty for every other kind.
+  string severity = 1;
+  // The verify blocker kind: review-finding, check, conflict, operator-note
+  // or no-review.
+  string kind = 2;
+  int32 blocker_count = 3;
+}
+
+// ReviewQueueSort orders the review queue. UNSPECIFIED is MOST_CONFIDENT.
+enum ReviewQueueSort {
+  REVIEW_QUEUE_SORT_UNSPECIFIED = 0;
+  REVIEW_QUEUE_SORT_MOST_CONFIDENT = 1;
+  REVIEW_QUEUE_SORT_LEAST_CONFIDENT = 2;
+  REVIEW_QUEUE_SORT_OLDEST = 3;
+}
+
+// ReviewQueueRow is one PR parked by verify for a person.
+message ReviewQueueRow {
+  // The session as ListSessions serves it: title, PR, head, repo, and the
+  // attention whose asks, lowered_by, proof_url, park_codes and since (the
+  // park start, i.e. the row's age) the queue shows.
+  Session session = 1;
+  // The level the queue ranks and counts the row by: the attention's
+  // confidence_level, or BLOCKED for a blocked park that carries none.
+  ConfidenceLevel confidence_level = 2;
+}
+
+// ReviewQueueLevelCount is the review queue header count for one level.
+message ReviewQueueLevelCount {
+  ConfidenceLevel confidence_level = 1;
+  int32 session_count = 2;
 }
 
 // DisplayStatus represents the unified display status for a session in the TUI.
@@ -1110,13 +1166,17 @@ message AgentAccount {
   string synced_agent_account_id = 19;
   int64 sync_version = 20;
   int64 synced_credential_version = 21;
+  // Live daemon credential-sharing readiness; empty when readiness does not block selection.
+  string credential_sync_block_reason = 22;
   // NO credential field. Ever.
 }
 
 // AgentAccountIdentity exposes equality metadata, never raw provider claims.
 message AgentAccountIdentity {
-  string kind = 1; // "" (not derived) | "none" | "codex_user"
-  string digest = 2; // Hex SHA-256 of provider, workspace and user identity.
+  string kind = 1; // "" (not derived) | "none" | "codex_user" | "claude_org_label"
+  // Hex SHA-256 of public provider claims: workspace and user for codex_user,
+  // Anthropic organization and normalized label for claude_org_label.
+  string digest = 2;
   bool is_confident = 3;
 }
 

@@ -1236,7 +1236,7 @@ func isHTTPEndpointURL(raw string) bool {
 // sessionSubRowCount returns how many NON-SELECTABLE auxiliary rows the Home
 // session list renders directly beneath a session's primary row: the endpoint
 // row (0 or 1), then the waiting-reason row (0 or 1), then one row per warning
-// hint. Attention rows show no auxiliary rows besides the endpoint row.
+// hint. Attention rows add only the endpoint row and the SessionStatusDetail row.
 //
 // waitingReason is the daemon-supplied reason for the session's aggregate
 // waiting state (SessionStatusEntry.waiting_reason), passed in rather than read
@@ -1251,6 +1251,9 @@ func SessionSubRowCount(sess *pb.Session, waitingReason string, showEndpoints bo
 	if sess.GetAttention() != nil {
 		n := 0
 		if showEndpoints && SessionHasEndpointRow(sess) {
+			n++
+		}
+		if SessionStatusDetail(sess) != "" {
 			n++
 		}
 		return n

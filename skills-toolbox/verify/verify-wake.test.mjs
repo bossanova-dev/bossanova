@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
+  VERIFY_RETRY_WINDOW_MS,
+  retryAttempt,
+  fileRetryStore,
   VERIFY_RETRY_AFTER_MS,
   VERIFY_RETRY_ATTEMPTS,
   applyWake,
@@ -157,4 +163,37 @@ test('applyWake sleeps out a retry, arms nothing, and a dry run never sleeps', a
   assert.equal(dry.slept, 0)
   assert.deepEqual(slept, [VERIFY_RETRY_AFTER_MS])
   assert.equal(reads.length, 0)
+})
+
+test('retryAttempt derives the count per head and wait episode, with a caller floor @sessions.AC229401', () => {
+  const now = 10 * VERIFY_RETRY_WINDOW_MS
+  const record = { version: 1, head: 'head', count: 2, at: now }
+  assert.equal(retryAttempt({ head: 'head', now }), 1)
+  assert.equal(retryAttempt({ record, head: 'head', now }), 3)
+  assert.equal(retryAttempt({ record, head: 'new-head', now }), 1)
+  assert.equal(retryAttempt({ record, head: 'head', now: now + VERIFY_RETRY_WINDOW_MS + 1 }), 1)
+  assert.equal(retryAttempt({ record, head: 'head', now, floor: 4 }), 4)
+  assert.equal(retryAttempt({ record: { ...record, head: null }, head: null, now }), 3)
+})
+
+test('file retry store survives new instances and isolates chat keys with safe paths @sessions.AC229401', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-wake-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const read = () => ({ ok: true, output: dir })
+  const store = fileRetryStore({ read })
+  const key = 'owner/repo#7:../../chat-1'
+  const other = 'owner/repo#7:chat-2'
+  const record = { version: 1, head: 'head', count: 2, at: 123 }
+  assert.equal(store.read(key), null)
+  assert.equal(store.write(key, record), true)
+  assert.deepEqual(fileRetryStore({ read }).read(key), record)
+  assert.equal(store.read(other), null)
+  assert.equal(store.write(other, { ...record, count: 1 }), true)
+  const files = readdirSync(join(dir, 'boss-verify', 'wake-retries'))
+  assert.equal(files.length, 2)
+  for (const file of files)
+    writeFileSync(join(dir, 'boss-verify', 'wake-retries', file), '{corrupt')
+  assert.equal(store.read(key), null)
+  assert.equal(store.write(key, record), true)
+  assert.deepEqual(store.read(key), record)
 })

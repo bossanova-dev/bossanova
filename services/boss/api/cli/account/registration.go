@@ -4,9 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/recurser/boss/internal/accountflow"
+	"github.com/recurser/boss/internal/daemonlife"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"golang.org/x/term"
 )
 
@@ -144,6 +148,14 @@ func (g *group) runAccountAddClaude(cmd *cobra.Command) error {
 	if err := guardInteractiveStdin(op); err != nil {
 		return err
 	}
+	var bin accountflow.AgentBin
+	if !tokenStdin {
+		var err error
+		bin, err = g.resolveAgentBin(cmd, "claude", "", "claude")
+		if err != nil {
+			return err
+		}
+	}
 	c, err := g.newClient(cmd)
 	if err != nil {
 		return err
@@ -152,6 +164,8 @@ func (g *group) runAccountAddClaude(cmd *cobra.Command) error {
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	priority, _ := cmd.Flags().GetInt32("priority")
 	return accountflow.RunClaudeAdd(cmd.Context(), accountflow.ClaudeOptions{
+		ClaudeBin: bin.Path,
+		BinEnv:    bin.Env,
 		Exec:      accountflow.NewOSExec(),
 		Prompter:  accountflow.NewIOPrompter(cmd.InOrStdin(), cmd.OutOrStdout()),
 		Client:    c,
@@ -180,6 +194,10 @@ func (g *group) runAccountAddCodex(cmd *cobra.Command) error {
 	if err := guardInteractiveStdin(op); err != nil {
 		return err
 	}
+	bin, err := g.resolveAgentBin(cmd, "codex", "--codex-bin", "codex")
+	if err != nil {
+		return err
+	}
 	c, err := g.newClient(cmd)
 	if err != nil {
 		return err
@@ -188,6 +206,8 @@ func (g *group) runAccountAddCodex(cmd *cobra.Command) error {
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	priority, _ := cmd.Flags().GetInt32("priority")
 	return accountflow.RunCodexAdd(cmd.Context(), accountflow.CodexOptions{
+		CodexBin: bin.Path,
+		BinEnv:   bin.Env,
 		Exec:     accountflow.NewOSExec(),
 		Prompter: accountflow.NewIOPrompter(cmd.InOrStdin(), cmd.OutOrStdout()),
 		Client:   c,
@@ -217,15 +237,52 @@ func (g *group) runAccountReauth(cmd *cobra.Command, id string) error {
 	if err := guardInteractiveStdin(op); err != nil {
 		return err
 	}
+	bin, err := g.resolveAgentBin(cmd, "codex", "--codex-bin", id)
+	if err != nil {
+		return err
+	}
 	c, err := g.newClient(cmd)
 	if err != nil {
 		return err
 	}
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	return accountflow.RunCodexReauth(cmd.Context(), accountflow.CodexOptions{
+		CodexBin: bin.Path,
+		BinEnv:   bin.Env,
 		Exec:     accountflow.NewOSExec(),
 		Prompter: accountflow.NewIOPrompter(cmd.InOrStdin(), cmd.OutOrStdout()),
 		Client:   c,
 		Timeout:  timeout,
 	}, id)
+}
+
+func (g *group) resolveAgentBin(cmd *cobra.Command, name, flag string, args ...string) (accountflow.AgentBin, error) {
+	explicit := ""
+	explicitSet := false
+	if flag != "" {
+		explicit, _ = cmd.Flags().GetString(flag[2:])
+		explicitSet = cmd.Flags().Changed(flag[2:])
+	}
+	service := ""
+	if !explicitSet && g.servicePath != nil {
+		service = g.servicePath()
+	}
+	return accountflow.ResolveAgentBin(accountflow.AgentBinSearch{Name: name, Explicit: explicit, ExplicitSet: explicitSet, ExplicitFlag: flag, CallerPATH: os.Getenv("PATH"), ServicePATH: service, Rerun: registrationRerun(cmd, args), LookPath: exec.LookPath, LookPathIn: daemonlife.LookPathIn})
+}
+
+func registrationRerun(cmd *cobra.Command, args []string) string {
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'" }
+	parts := []string{"boss", "account", cmd.Name()}
+	for _, arg := range args {
+		parts = append(parts, quote(arg))
+	}
+	appendFlag := func(f *pflag.Flag) {
+		if !f.Changed || f.Name == "token" || f.Name == "credential-file" {
+			return
+		}
+		parts = append(parts, "--"+f.Name+"="+quote(f.Value.String()))
+	}
+	cmd.LocalFlags().VisitAll(appendFlag)
+	cmd.InheritedFlags().VisitAll(appendFlag)
+	return strings.Join(parts, " ")
 }

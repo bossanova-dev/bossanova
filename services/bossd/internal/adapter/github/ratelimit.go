@@ -223,8 +223,8 @@ func (p *Provider) ghAs(ctx context.Context, id ghIdentity, args ...string) (str
 		}
 	}
 	callStart := p.nowFn()
-	p.recordSent(ctx, pool)
 	out, err := p.runGH(ctx, args...)
+	p.recordResult(ctx, pool, out, err)
 	if err == nil {
 		p.limits.succeeded(pool)
 		return out, nil

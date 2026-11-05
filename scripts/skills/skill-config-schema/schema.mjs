@@ -382,19 +382,6 @@ export const schema = object({
       additionalProperties: false,
       'x-unknown': 'warn',
     },
-    planDefaults: object({
-      'x-msg': {
-        type: 'planDefaults must be an object when present',
-        additionalProperties: 'planDefaults.{extra} is unknown',
-      },
-      properties: {
-        predictedVerifyPark: {
-          enum: ['needs-human', 'rank-last'],
-          'x-msg': 'planDefaults.predictedVerifyPark must be needs-human or rank-last',
-        },
-      },
-      additionalProperties: false,
-    }),
     buildDefaults: object({
       'x-msg': { type: 'buildDefaults must be an object when present' },
       properties: {
@@ -521,6 +508,24 @@ export const schema = object({
     ci: object({
       'x-msg': { type: 'ci must be an object when present' },
       properties: {
+        request: object({
+          'x-msg':
+            'ci.request must be an object with workflows containing workflow file names (.yml or .yaml)',
+          properties: {
+            workflows: {
+              type: 'array',
+              items: { type: 'string', pattern: '^[A-Za-z0-9._-]+\\.ya?ml$' },
+            },
+            coverageJobs: object({
+              additionalProperties: {
+                type: 'array',
+                minItems: 1,
+                items: nonBlankString,
+              },
+            }),
+          },
+          additionalProperties: false,
+        }),
         required: object({
           'x-msg':
             'ci.required must be an object of checks (non-empty check names) and optional exemptBases (non-empty base branches)',

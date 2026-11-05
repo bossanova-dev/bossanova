@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "accountflow",
     srcs = [
+        "agentbin.go",
         "claude.go",
         "client.go",
         "codex.go",
@@ -24,6 +25,7 @@ go_library(
 go_test(
     name = "accountflow_test",
     srcs = [
+        "agentbin_test.go",
         "claude_test.go",
         "codex_test.go",
         "exec_test.go",

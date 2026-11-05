@@ -12,6 +12,11 @@ import (
 )
 
 func (w *daemonWiring) wireBackgroundWorkers() {
+	// Re-derive Claude account identities off the startup path: each lookup is
+	// a network call to Anthropic, and daemon startup never waits on it.
+	w.trackedGo("claude-identity-backfill", func() {
+		backfillClaudeIdentities(w.pollerCtx, w.accounts, w.accountCreds, w.claudeOrganizations, w.publishAgentAccountsChanged, log.Logger)
+	})
 
 	// Start chat status cleanup goroutine (GC stale entries every 30s).
 	w.trackedGo("chat-status-cleanup", func() {

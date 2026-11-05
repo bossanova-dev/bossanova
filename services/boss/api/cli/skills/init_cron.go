@@ -206,10 +206,7 @@ func DefaultCronEnv() CronEnv {
 // tools against: the installed service file's when readable (what the running
 // daemon has), else the one the next restart writes.
 func daemonServicePathForResolution() string {
-	if installed, ok := daemon.InstalledServiceEnvPath(); ok {
-		return installed
-	}
-	return daemon.ServiceEnvPath()
+	return daemon.EffectiveServiceEnvPath()
 }
 
 func defaultCronSkillRoot(agent string) (string, error) {

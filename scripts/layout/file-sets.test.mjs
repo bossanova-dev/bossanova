@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { resolveFileSets } from './file-sets.mjs'
+import { resolveFileSets, testConcurrency } from './file-sets.mjs'
 
 test('test runner executes tests with default and caller-selected reporters', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'script-file-sets-reporters-'))
@@ -69,4 +69,11 @@ test('recursive file sets include new areas in test, format and syntax and exclu
   } finally {
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
+})
+
+test('test concurrency runs six files at once on small machines and one per spare core above that', () => {
+  assert.equal(testConcurrency(1), 6)
+  assert.equal(testConcurrency(2), 6)
+  assert.equal(testConcurrency(7), 6)
+  assert.equal(testConcurrency(10), 9)
 })

@@ -22,7 +22,7 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { selectTargets, selectBazelAffected } from './select-affected-tests.mjs'
-import { pushPaths } from '../dev/workflow-yaml-lib.mjs'
+import { classifyLines, pushPaths } from '../dev/workflow-yaml-lib.mjs'
 
 const repoRoot = path.dirname(fileURLToPath(new URL('../../Makefile', import.meta.url)))
 
@@ -120,6 +120,30 @@ test('push path extraction ignores pull_request paths that appear first', () => 
   ].join('\n')
 
   assert.deepEqual(extractPushPaths(workflow), ['push-only/**'])
+})
+
+test('in-job shell path filters retain local routing coverage without a push trigger', () => {
+  const workflow = [
+    'on:',
+    '  pull_request:',
+    'jobs:',
+    '  check:',
+    '    steps:',
+    '      - run: |',
+    '          case "$file" in',
+    '            services/web/*|unrouted/new-input/*) run=true ;;',
+    '          esac',
+  ].join('\n')
+  const patterns = extractWorkflowPaths(workflow)
+  assert.deepEqual(patterns, ['services/web/**', 'unrouted/new-input/**'])
+  assert.deepEqual(
+    validateWorkflowRoutes({
+      workflows: new Map([['synthetic.yml', patterns]]),
+      rules: [{ workflow: 'synthetic.yml', requiredTarget: 'test-web' }],
+      exemptions: [],
+    }),
+    ['synthetic.yml unrouted/new-input/** -> test-smoke, expected test-web or an exemption'],
+  )
 })
 
 test('workflow route validation fails when a new pattern has no route or exemption', () => {
@@ -258,7 +282,10 @@ function requiredTargetForPattern(rule, pattern) {
 
 function realWorkflowPaths() {
   return new Map(
-    workflowRouteRules.map(({ workflow }) => [workflow, extractPushPaths(readWorkflow(workflow))]),
+    workflowRouteRules.map(({ workflow }) => [
+      workflow,
+      extractWorkflowPaths(readWorkflow(workflow)),
+    ]),
   )
 }
 
@@ -267,7 +294,7 @@ function pathFilteredWorkflows() {
   return fs
     .readdirSync(workflowsDir)
     .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'))
-    .filter((name) => extractPushPaths(readWorkflow(name), { required: false }).length > 0)
+    .filter((name) => extractWorkflowPaths(readWorkflow(name), { required: false }).length > 0)
     .sort()
 }
 
@@ -280,6 +307,21 @@ export function extractPushPaths(text, { required = true } = {}) {
   if (!required && paths === null) return []
   assert.ok(hasPush, 'workflow push block not found')
   assert.notEqual(paths, null, 'workflow push.paths block not found')
+  return paths
+}
+
+// The web workflows scope paths inside shell steps so dispatch and PR events share
+// the same selection. Shell case '*' matches slashes, unlike a path glob's '*'.
+function extractWorkflowPaths(text, { required = true } = {}) {
+  const paths = extractPushPaths(text, { required: false })
+  for (const line of classifyLines(text)) {
+    if (line.kind !== 'scalar') continue
+    const match = /^\s*([^()]+)\)\s*run=true\s*;;\s*$/.exec(line.raw)
+    if (match) {
+      paths.push(...match[1].split('|').map((pattern) => pattern.trim().replace(/\/\*$/, '/**')))
+    }
+  }
+  if (required) assert.ok(paths.length > 0, 'workflow path filter not found')
   return paths
 }
 

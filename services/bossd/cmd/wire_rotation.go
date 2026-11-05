@@ -129,7 +129,7 @@ func (w *daemonWiring) wireRotation() {
 			if err != nil {
 				return rotation.Decision{}, err
 			}
-			sig := cacheUsageProbeForRotationSignal(ctx, log.Logger, w.accountMaterializer, w.accounts, rotation.Signal{
+			sig := cacheUsageProbeForRotationSignal(ctx, log.Logger, w.accountMaterializer, w.accounts, w.credentialSyncBlockReason, rotation.Signal{
 				Provider:        req.Provider,
 				Model:           req.Model,
 				CappedAccountID: req.AccountID,
@@ -207,7 +207,7 @@ func (w *daemonWiring) wireRotation() {
 			if !capable {
 				return rotation.ProactiveDecision{Kind: rotation.ProactiveNone}, nil
 			}
-			usage := probeCandidateUsageForRotationSignal(ctx, log.Logger, w.accountMaterializer, w.accounts, rotation.Signal{
+			usage := probeCandidateUsageForRotationSignal(ctx, log.Logger, w.accountMaterializer, w.accounts, w.credentialSyncBlockReason, rotation.Signal{
 				Provider:        req.Provider,
 				Model:           req.Model,
 				CappedAccountID: req.BoundAccountID, // excluded from candidates
@@ -301,11 +301,11 @@ func (w *daemonWiring) wireRotation() {
 	w.lifecycle.SetRotationConfigLoader(rotationConfigLoader)
 	w.lifecycle.SetRateLimitProbe(rateLimitProbe)
 	w.lifecycle.SetRotationDecider(func(ctx context.Context, sig rotation.Signal) (rotation.Outcome, error) {
-		return w.rotationEngine.Decide(ctx, cacheUsageProbeForRotationSignal(ctx, log.Logger, w.accountMaterializer, w.accounts, sig))
+		return w.rotationEngine.Decide(ctx, cacheUsageProbeForRotationSignal(ctx, log.Logger, w.accountMaterializer, w.accounts, w.credentialSyncBlockReason, sig))
 	})
 	w.lifecycle.SetRotationRecorder(w.rotationRecorder)
 	w.lifecycle.SetAgentAccountMaterializer(accountwiring.NewLifecycleMaterializer(w.accountMaterializer))
-	w.lifecycle.SetRotationBinding(accountwiring.NewRotationBindingResolver(accountwiring.NewRegistry(w.accounts), w.accountMaterializer))
+	w.lifecycle.SetRotationBinding(accountwiring.NewRotationBindingResolver(accountwiring.NewRegistry(w.accounts, accountwiring.WithCredentialSyncGate(w.credentialSyncBlockReason)), w.accountMaterializer))
 	// Account-by-id getter for CurrentBearer's first-leg sentinel→bearer
 	// translation (BOS-326): resolves the bound account the materializer needs.
 	w.lifecycle.SetAgentAccountGetter(w.accounts.Get)

@@ -77,7 +77,7 @@ judgement.
    holds.
 
 3. **Force-push only with a lease, and only over your own rebase.** After a rebase, push with
-   `git push --force-with-lease`. Never force-push over commits someone else pushed.
+   `git push --force-with-lease`. Never force-push over commits someone else pushed. <!-- ci-request: skip rule statement; step 4 requests after pushing -->
 
 4. **Don't push a CI fix onto a head that moved.** Note the PR head SHA when you start
    (`node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" view --fresh --field headRefOid`). Just before pushing a fix for a
@@ -212,6 +212,23 @@ judgement.
      node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" arm-reverify --pr "$PR_NUMBER" --head "$(git rev-parse HEAD)"
    fi
    ```
+
+   On every pass that pushed (Default, Watch or blocker mode), after that hand-off attempt,
+   request CI even when the receipt is blocked or ready failed. This follows step 3's local
+   verification. A verify-owned draft that was readied skips dispatch; a person's draft still
+   requests it:
+
+   ```bash
+   PR_NUMBER="$(node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" session-pr --field number)"
+   node "$BOSS_REPAIR_TOOLBOX/ci/ci-request.mjs" request --pr "$PR_NUMBER" --head "$(git rev-parse HEAD)"
+   ```
+
+   Exit 0 continues. `head-moved` re-reads the head and re-runs step 4 once, subject to rule 4.
+   `dispatch-failed` or `unconfirmed` records the JSON as a residual, then continues to the CI
+   wait. `skipped-conflicting` takes the conflict route: rebase, re-run local gates, push and
+   request again. A wait ending `not-requested` retries the request once; a second
+   `not-requested` is a blocked residual quoting the request JSON (boss-build cause 1 when called
+   from build).
 
 5. **Poll once** (default mode) and report.
 

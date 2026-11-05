@@ -1,7 +1,9 @@
 package account
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -11,14 +13,19 @@ import (
 )
 
 type syncAccountMemory struct {
-	mu      sync.Mutex
-	account domain.AgentAccount
-	checks  int
+	mu        sync.Mutex
+	account   domain.AgentAccount
+	checks    int
+	updateErr error
+	getErr    error
 }
 
 func (s *syncAccountMemory) UpdateSync(_ context.Context, cmd domain.ApplyAgentAccountSync) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.updateErr != nil {
+		return false, s.updateErr
+	}
 	if cmd.Version <= s.account.SyncVersion {
 		return false, nil
 	}
@@ -34,7 +41,7 @@ func (s *syncAccountMemory) Get(context.Context, string) (*domain.AgentAccount, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a := s.account
-	return &a, nil
+	return &a, s.getErr
 }
 func (s *syncAccountMemory) Smoke(context.Context, string, string, []byte) error {
 	s.mu.Lock()
@@ -110,5 +117,55 @@ func TestSyncApplierFailedVerificationOnlyBenchesLocalCopy(t *testing.T) {
 	a, _ := store.Get(context.Background(), "local")
 	if !a.IsAuthInvalid() || a.Status != domain.AgentAccountStatusActive || store.checks != 1 {
 		t.Fatalf("account=%+v checks=%d", a, store.checks)
+	}
+}
+
+func TestSyncApplierLogsOutcomes_Accounts_AC225702(t *testing.T) {
+	writeErr := errors.New("store unavailable")
+	for _, tc := range []struct {
+		name, event, level string
+		localVersion       int64
+		updateErr, getErr  error
+	}{
+		{name: "applied", event: "account_sync.applied", level: "info"},
+		{name: "same version", event: "account_sync.stale", level: "info", localVersion: 2},
+		{name: "older version", event: "account_sync.stale", level: "info", localVersion: 3},
+		{name: "stale read fails", event: "account_sync.stale", level: "info", localVersion: 2, getErr: errors.New("read unavailable")},
+		{name: "write fails", event: "account_sync.failed", level: "warn", updateErr: writeErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			store := &syncAccountMemory{account: domain.AgentAccount{SyncVersion: tc.localVersion}, updateErr: tc.updateErr, getErr: tc.getErr}
+			applier := NewSyncApplier(store, nil, nil, zerolog.New(&buf))
+			defer applier.Stop()
+			cmd := domain.ApplyAgentAccountSync{LocalAgentAccountID: "local", SyncedAgentAccountID: "synced", Version: 2, DesiredStatus: "disabled", Priority: 9, IsQuarantined: true}
+			if err := applier.Apply(context.Background(), cmd); !errors.Is(err, tc.updateErr) {
+				t.Fatalf("Apply error = %v, want %v", err, tc.updateErr)
+			}
+			var line map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &line); err != nil {
+				t.Fatalf("expected exactly one JSON outcome line: %v: %s", err, buf.String())
+			}
+			for key, want := range map[string]any{"event": tc.event, "level": tc.level, "account_id": "local", "synced_agent_account_id": "synced", "version": float64(2), "desired_status": "disabled", "priority": float64(9), "is_quarantined": true} {
+				if line[key] != want {
+					t.Errorf("%s = %v, want %v", key, line[key], want)
+				}
+			}
+			if tc.event == "account_sync.stale" {
+				got, present := line["local_sync_version"]
+				if tc.getErr == nil && got != float64(tc.localVersion) {
+					t.Errorf("local_sync_version = %v", got)
+				}
+				if tc.getErr != nil && present {
+					t.Error("failed read must omit local_sync_version")
+				}
+			}
+			if tc.event == "account_sync.applied" && line["verify_auth"] != false {
+				t.Errorf("verify_auth = %v", line["verify_auth"])
+			}
+			if tc.updateErr != nil && line["error"] != writeErr.Error() {
+				t.Errorf("error = %v", line["error"])
+			}
+		})
 	}
 }

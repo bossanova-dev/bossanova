@@ -159,6 +159,10 @@ type Model struct {
 	// still moves on every press — only the RPC waits.
 	MovePending []QueuedMove
 
+	CredentialDeviceReadiness *pb.CredentialDeviceReadiness
+	credentialDevicePolledAt  time.Time
+	credentialDevicePolling   bool
+
 	// Auth
 	authMgr       *auth.Manager // nil means auth not configured
 	AuthChanges   *AuthChangeQueue
@@ -365,6 +369,8 @@ func (h Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.handleBlur()
 	case RepoCountMsg:
 		return h.handleRepoCount(msg)
+	case CredentialDeviceReadinessMsg:
+		return h.handleCredentialDeviceReadiness(msg), nil
 	case AuthStatusMsg:
 		return h.handleAuthStatus(msg)
 	case cloudAccessMsg:
@@ -545,6 +551,9 @@ func (h *Model) pollCmds() []tea.Cmd {
 	}
 	if probe := h.tickDaemonSupervisionProbe(); probe != nil {
 		cmds = append(cmds, probe)
+	}
+	if readiness := h.tickCredentialDeviceReadiness(); readiness != nil {
+		cmds = append(cmds, readiness)
 	}
 	if notices := h.tickTicketNotices(); notices != nil {
 		cmds = append(cmds, notices)

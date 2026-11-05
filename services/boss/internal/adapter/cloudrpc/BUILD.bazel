@@ -28,6 +28,7 @@ go_test(
     name = "cloudrpc_test",
     srcs = [
         "credential_devices_test.go",
+        "github_read_credential_test.go",
         "notes_test.go",
         "phase_test.go",
         "remote_broadcast_test.go",

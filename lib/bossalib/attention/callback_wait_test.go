@@ -12,7 +12,7 @@ func TestCallbackWaitAgreement_ChatPicker_AC225802(t *testing.T) {
 		total, done int
 		want        string
 	}{
-		{"checks_passed_ready", 20, 12, "checking 12/20"},
+		{"checks_passed_ready", 20, 12, "checks 12/20"},
 		{"checks_passed_ready", 20, 20, "waiting: retry"},
 		{"checks_failed", 20, 20, "waiting: retry"},
 		{"checks_passed", 0, 0, "waiting: CI"},
@@ -24,7 +24,7 @@ func TestCallbackWaitAgreement_ChatPicker_AC225802(t *testing.T) {
 		t.Run(tc.trigger+tc.want, func(t *testing.T) {
 			in := Input{HasPR: true, PRState: PRStateOpen, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING, ChecksTotal: tc.total, ChecksDone: tc.done, Wait: CallbackWait{Trigger: tc.trigger}}
 			served := Compute(in)
-			if got := served.GetProgressLabel(); got != tc.want {
+			if got := served.GetStatusPhrase(); got != tc.want {
 				t.Fatalf("row = %q, want %q", got, tc.want)
 			}
 			if got := ChatWaitLabel(tc.trigger, served); got != tc.want {
@@ -51,6 +51,11 @@ func TestChatWaitPRFacts(t *testing.T) {
 	}
 	if got := ChatWaitLabel("checks_passed_ready", &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_MERGE}); got != "waiting: retry" {
 		t.Fatal(got)
+	}
+	// A daemon that serves the row's phrase gives the chat the same words.
+	served := &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "checking 12/14", StatusPhrase: "checks 12/14"}
+	if got := ChatWaitLabel("checks_passed_ready", served); got != "checks 12/14" {
+		t.Errorf("served phrase became %q, want the row's checks 12/14", got)
 	}
 }
 

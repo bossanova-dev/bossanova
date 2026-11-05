@@ -177,6 +177,8 @@ git push --force-with-lease || { echo "push rejected or failed; the branch did n
 LOCAL_HEAD="$(git rev-parse HEAD)" || exit 1
 PUSHED_HEAD="$(git rev-parse '@{push}')" || exit 1
 test -n "$LOCAL_HEAD" && test "$LOCAL_HEAD" = "$PUSHED_HEAD" || { echo "HEAD is not what @{push} holds; the push did not land"; exit 1; }
+PR_NUMBER="$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field number)"
+node "$BOSS_FINALIZE_TOOLBOX/ci/ci-request.mjs" request --pr "$PR_NUMBER" --head "$LOCAL_HEAD"
 ```
 
 Compare counts as strings (`test "$X" = 0`): `-eq` treats an empty operand as `0` and fails open. If
@@ -191,8 +193,19 @@ git rebase --onto "origin/$BASE_BRANCH" "$(git merge-base "origin/$BASE_BRANCH" 
 git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD || { echo "rebase did not land on the base"; exit 1; }
 MERGE_COUNT=$(git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD) || exit 1
 test "$MERGE_COUNT" = 0 || { echo "Branch still has merge commits; resolve by hand"; exit 1; }
+# Re-run the local verification gates on the rebased head before this push.
 git push --force-with-lease
+PR_NUMBER="$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field number)"
+node "$BOSS_FINALIZE_TOOLBOX/ci/ci-request.mjs" request --pr "$PR_NUMBER" --head "$(git rev-parse HEAD)"
 ```
+
+Both request sites follow local verification; re-run the local gates after resolving a rebase.
+Exit 0 continues to Step 5. `head-moved` re-reads the head and re-runs Step 4 once within branch
+ownership. `dispatch-failed` or `unconfirmed` records the JSON as a residual and continues to the
+CI wait. `skipped-conflicting` takes the existing conflict route: rebase, re-run local gates, push
+and request again. A wait ending `not-requested` retries the request once; a second
+`not-requested` blocks readiness, quoting the request JSON (boss-build cause 1 when called from
+build).
 
 ## Step 5: Checks
 

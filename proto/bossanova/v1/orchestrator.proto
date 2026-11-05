@@ -73,6 +73,13 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
     option (bossanova.v1.permission) = "sessions:read";
   }
+  // ProxyListReviewQueue lists the PRs of one repository, by origin URL, that
+  // verify has parked for a person, with per-level header counts.
+  rpc ProxyListReviewQueue(ProxyListReviewQueueRequest) returns (ProxyListReviewQueueResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
+    option (bossanova.v1.permission) = "sessions:read";
+  }
   rpc ProxyAttachSession(ProxyAttachSessionRequest) returns (stream ProxyAttachSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
@@ -1323,6 +1330,24 @@ message OrganizationSessionReadFailure {
   // Human-readable cause, safe to display. Never carries credentials or
   // internal identifiers beyond the organization id above.
   string reason = 3;
+}
+
+message ProxyListReviewQueueRequest {
+  // The repository's origin URL; SSH and HTTPS forms of one repo match.
+  string repo_origin_url = 1;
+  ReviewQueueSort sort = 2;
+  // Unset means every organization the caller belongs to. Set narrows to that
+  // organization after a membership check.
+  optional string organization_id = 3;
+}
+
+message ProxyListReviewQueueResponse {
+  repeated ReviewQueueRow rows = 1;
+  // One entry per ConfidenceLevel, in enum order, zeros included.
+  repeated ReviewQueueLevelCount level_counts = 2;
+  // Organizations whose read failed. Their sessions are absent from rows and
+  // level_counts; the rest of the union is still served.
+  repeated OrganizationSessionReadFailure failed_organizations = 3;
 }
 
 message ProxyGetSessionRequest {

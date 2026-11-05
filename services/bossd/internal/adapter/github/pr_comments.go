@@ -42,10 +42,7 @@ func (p *Provider) FindPRCommentsWithMarker(ctx context.Context, repoPath string
 	if strings.TrimSpace(marker) == "" {
 		return nil, errors.New("find PR comments: marker is empty")
 	}
-	out, err := p.gh(ctx,
-		"api", fmt.Sprintf("repos/%s/issues/%d/comments?per_page=100", repoFlag(repoPath), prID),
-		"--paginate",
-	)
+	out, err := p.ghConditionalSinglePage(ctx, fmt.Sprintf("repos/%s/issues/%d/comments?per_page=100", repoFlag(repoPath), prID))
 	if err != nil {
 		return nil, fmt.Errorf("list PR comments: %w", err)
 	}

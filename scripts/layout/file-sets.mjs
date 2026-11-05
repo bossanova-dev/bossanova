@@ -1,10 +1,18 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
 
 export const SCRIPT_TREES = ['scripts', 'skills-toolbox']
+
+// Most script tests wait on subprocesses and timers, not the CPU, so node's default of one
+// file per spare core left CI's 2 vCPU runner running files serially. Six files at once
+// measured 305 s against 557 s there; larger machines keep node's default.
+export function testConcurrency(parallelism = os.availableParallelism()) {
+  return Math.max(parallelism - 1, 6)
+}
 
 export function isFixturePath(file) {
   return (
@@ -87,7 +95,7 @@ function main() {
       : ['--test-reporter=tap']
     const args =
       action === 'test'
-        ? ['--test', ...reporter, ...batch]
+        ? ['--test', `--test-concurrency=${testConcurrency()}`, ...reporter, ...batch]
         : [path.join(values.root, 'node_modules/prettier/bin/prettier.cjs'), '--write', ...batch]
     const result = spawnSync(process.execPath, args, { cwd: values.root, stdio: 'inherit' })
     if (result.error) throw result.error

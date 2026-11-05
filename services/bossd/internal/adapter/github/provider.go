@@ -55,6 +55,7 @@ type Provider struct {
 	limits rateLimitBreaker
 	// cache serves and coalesces background reads; see cachedRead.
 	cache *readCache
+	etags etagStore
 	// quotas caches and coalesces `gh api rate_limit` readings; see readQuotas.
 	quotas quotaCache
 	// floors holds background reads back below a share of their quota; see
@@ -86,6 +87,7 @@ type Provider struct {
 type UsageRecorder interface {
 	Record(label, quota, identity string)
 	RecordSkip(label, quota, identity, outcome string)
+	RecordNotModified(label, quota, identity string)
 }
 
 const ghWaitDelay = 5 * time.Second
@@ -432,7 +434,7 @@ func (p *Provider) getPRMergeability(ctx context.Context, repoPath string, prID 
 	if _, _, ok := splitNWO(nwo); !ok {
 		return nil, fmt.Errorf("invalid GitHub repo: %s", nwo)
 	}
-	out, err := p.gh(ctx, "api", fmt.Sprintf("repos/%s/pulls/%d", nwo, prID))
+	out, err := p.ghConditional(ctx, fmt.Sprintf("repos/%s/pulls/%d", nwo, prID))
 	if err != nil {
 		return nil, err
 	}
@@ -464,7 +466,7 @@ func (p *Provider) fetchBranchHeadSHA(ctx context.Context, repoPath, branch stri
 	for i, segment := range segments {
 		segments[i] = url.PathEscape(segment)
 	}
-	out, err := p.gh(ctx, "api", fmt.Sprintf("repos/%s/git/ref/heads/%s", nwo, strings.Join(segments, "/")))
+	out, err := p.ghConditional(ctx, fmt.Sprintf("repos/%s/git/ref/heads/%s", nwo, strings.Join(segments, "/")))
 	if err != nil {
 		return "", fmt.Errorf("get branch head: %w", err)
 	}
@@ -501,7 +503,7 @@ func (p *Provider) ListWorkflowRuns(ctx context.Context, repoPath, headSHA strin
 	if _, _, ok := splitNWO(nwo); !ok {
 		return nil, fmt.Errorf("invalid GitHub repo: %s", nwo)
 	}
-	out, err := p.gh(ctx, "api", workflowRunsPath(nwo, headSHA))
+	out, err := p.ghConditional(ctx, workflowRunsPath(nwo, headSHA))
 	if err != nil {
 		return nil, fmt.Errorf("list workflow runs: %w", err)
 	}
@@ -748,9 +750,8 @@ func (p *Provider) trustedReviews(prID int, raw []rawReview) []rawReview {
 // default, so an unpaginated read silently drops the newest reviews on a busy
 // PR — exactly the ones that decide the latest review state.
 func (p *Provider) listRawReviews(ctx context.Context, repoPath string, prID int) ([]rawReview, error) {
-	out, err := p.gh(ctx,
-		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews?per_page=100", repoFlag(repoPath), prID),
-		"--paginate",
+	out, err := p.ghConditionalSinglePage(ctx,
+		fmt.Sprintf("repos/%s/pulls/%d/reviews?per_page=100", repoFlag(repoPath), prID),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get reviews: %w", err)
@@ -978,8 +979,8 @@ func (p *Provider) getInlineReviewComments(ctx context.Context, repoPath string,
 // GetReviewInlineComments returns inline comments attached to a single review.
 func (p *Provider) GetReviewInlineComments(ctx context.Context, repoPath string, prID int, reviewID int64) ([]vcs.ReviewComment, error) {
 	ctx = withRoute(ctx, "GetReviewInlineComments", vcs.GitHubNWO(repoPath))
-	out, err := p.gh(ctx,
-		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews/%d/comments", repoFlag(repoPath), prID, reviewID),
+	out, err := p.ghConditional(ctx,
+		fmt.Sprintf("repos/%s/pulls/%d/reviews/%d/comments", repoFlag(repoPath), prID, reviewID),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get review comments: %w", err)
@@ -1194,18 +1195,15 @@ func (p *Provider) GetPRMergeCommit(ctx context.Context, repoPath string, prID i
 func (p *Provider) GetAllowedMergeStrategies(ctx context.Context, repoPath string) ([]string, error) {
 	ctx = withRoute(ctx, "GetAllowedMergeStrategies", vcs.GitHubNWO(repoPath))
 	nwo := repoFlag(repoPath)
-	out, err := p.gh(ctx,
-		"api", "repos/"+nwo,
-		"--jq", "{m:.allow_merge_commit,s:.allow_squash_merge,r:.allow_rebase_merge}",
-	)
+	out, err := p.ghConditional(ctx, "repos/"+nwo)
 	if err != nil {
 		return nil, fmt.Errorf("gh api repo: %w", err)
 	}
 
 	var resp struct {
-		M bool `json:"m"`
-		S bool `json:"s"`
-		R bool `json:"r"`
+		M bool `json:"allow_merge_commit"`
+		S bool `json:"allow_squash_merge"`
+		R bool `json:"allow_rebase_merge"`
 	}
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		return nil, fmt.Errorf("parse allowed-strategies JSON: %w", err)
@@ -1376,6 +1374,7 @@ func isNoChecksReported(err error) bool {
 type ghError struct {
 	args   []string
 	stderr string
+	stdout string
 	err    error
 }
 
@@ -1418,7 +1417,7 @@ func defaultRunGH(ctx context.Context, args ...string) (string, error) {
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = ghWaitDelay
 	if err := cmd.Run(); err != nil {
-		return "", &ghError{args: args, stderr: strings.TrimSpace(stderr.String()), err: err}
+		return "", &ghError{args: args, stderr: strings.TrimSpace(stderr.String()), stdout: stdout.String(), err: err}
 	}
 	return stdout.String(), nil
 }

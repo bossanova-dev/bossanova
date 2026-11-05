@@ -51,6 +51,12 @@ func (l *Ledger) Record(label, quota, identity string) {
 	l.write(label, quota, identity, "")
 }
 
+// RecordNotModified appends one free conditional REST response against identity.
+// It does not count as a billed call. Write errors are swallowed like Record.
+func (l *Ledger) RecordNotModified(label, quota, identity string) {
+	l.write(label, quota, identity, OutcomeNotModified)
+}
+
 // RecordSkip appends one attempt that was refused without contacting GitHub,
 // with outcome OutcomeBreaker or OutcomeFloor, against identity's quota. It
 // fails like Record: a write error is logged once and otherwise swallowed.
@@ -109,12 +115,17 @@ func openAppend(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 }
 
-// Count is what one label did against one quota: the calls it sent to
-// GitHub and the attempts the breaker or the background floor refused.
+// Count is what one label did against one quota on one identity: billed
+// calls, free conditional responses, and attempts the breaker or
+// the background floor refused.
 type Count struct {
-	Label        string
-	Quota        string
+	Label string
+	Quota string
+	// Identity is whose quota the calls spent: IdentityUser or an
+	// InstallationIdentity. A record with no identity counts as IdentityUser.
+	Identity     string
 	Calls        int64
+	NotModified  int64
 	BreakerSkips int64
 	FloorSkips   int64
 }
@@ -128,6 +139,8 @@ func (c *Count) add(outcome string) bool {
 	switch outcome {
 	case "", OutcomeSent:
 		c.Calls++
+	case OutcomeNotModified:
+		c.NotModified++
 	case OutcomeBreaker:
 		c.BreakerSkips++
 	case OutcomeFloor:
@@ -138,16 +151,17 @@ func (c *Count) add(outcome string) bool {
 	return true
 }
 
-// Usage is the ledger's per-label, per-quota counts over a window.
+// Usage is the ledger's per-label, per-quota, per-identity counts over a
+// window.
 type Usage struct {
 	WindowStart time.Time
 	WindowEnd   time.Time
 	// Counts is sorted by Calls descending, then Skips descending, then
-	// Label and Quota.
+	// Label, Quota and Identity.
 	Counts []Count
 }
 
-// Read counts the calls and skips recorded in the window ending at now. It
+// Read counts billed calls, free responses and skips in the window ending at now. It
 // reads every bucket the window touches, drops records outside the window and
 // lines that do not parse (a torn or foreign line must not hide the rest), and
 // treats a missing bucket as an hour with no calls.
@@ -157,7 +171,7 @@ func (l *Ledger) Read(now time.Time, window time.Duration) (Usage, error) {
 	}
 	start := now.Add(-window)
 	usage := Usage{WindowStart: start, WindowEnd: now, Counts: []Count{}}
-	type key struct{ label, quota string }
+	type key struct{ label, quota, identity string }
 	counts := map[key]*Count{}
 	from, to := start.Unix(), now.Unix()
 	for hour := start.UTC().Truncate(time.Hour); !hour.After(now); hour = hour.Add(time.Hour) {
@@ -165,10 +179,10 @@ func (l *Ledger) Read(now time.Time, window time.Duration) (Usage, error) {
 			if r.At < from || r.At > to {
 				return
 			}
-			k := key{r.Label, r.Quota}
+			k := key{r.Label, r.Quota, r.Identity}
 			c, ok := counts[k]
 			if !ok {
-				c = &Count{Label: r.Label, Quota: r.Quota}
+				c = &Count{Label: r.Label, Quota: r.Quota, Identity: r.Identity}
 			}
 			if c.add(r.Outcome) && !ok {
 				counts[k] = c
@@ -192,7 +206,10 @@ func (l *Ledger) Read(now time.Time, window time.Duration) (Usage, error) {
 		if a.Label != b.Label {
 			return a.Label < b.Label
 		}
-		return a.Quota < b.Quota
+		if a.Quota != b.Quota {
+			return a.Quota < b.Quota
+		}
+		return a.Identity < b.Identity
 	})
 	return usage, nil
 }

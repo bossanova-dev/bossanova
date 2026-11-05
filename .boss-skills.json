@@ -76,9 +76,6 @@
       "baseUrl": "https://proof.bossanova.dev"
     }
   },
-  "planDefaults": {
-    "predictedVerifyPark": "needs-human"
-  },
   "planDependencies": {
     "moduleRoots": [
       "docs",
@@ -338,6 +335,15 @@
     ]
   },
   "ci": {
+    "request": {
+      "workflows": ["bazel.yml", "test-scripts.yml", "test-web.yml", "test-web-real-stack.yml"],
+      "coverageJobs": {
+        "bazel.yml": ["go-test", "go-ledger", "sqlc", "go-lint"],
+        "test-scripts.yml": ["scripts"],
+        "test-web.yml": ["web", "web-e2e"],
+        "test-web-real-stack.yml": ["real-stack"]
+      }
+    },
     "required": {
       "checks": ["go-test", "scripts"],
       "exemptBases": ["staging", "production"]

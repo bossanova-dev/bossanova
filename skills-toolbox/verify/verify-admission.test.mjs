@@ -16,6 +16,7 @@ import {
   judgeTier,
   prClass,
   storeAdmission,
+  storeScanAdmission,
   ticketlessReason,
 } from './verify-admission.mjs'
 
@@ -95,7 +96,7 @@ const entries = [
 
 test('admission writer agrees with the shared version-one Go fixture', () => {
   const file = join(tempDir('admission-fixture-'), 'verify-admission.json')
-  assert.equal(storeAdmission(file, 'default', entries, at), true)
+  assert.equal(storeAdmission(file, 'default', entries, at, { remote: [3551, 3550] }), true)
   assert.equal(
     storeAdmission(
       file,
@@ -141,6 +142,50 @@ test('admission writer replaces full scans and merges only the event PR in its s
   data = JSON.parse(fs.readFileSync(file, 'utf8'))
   assert.deepEqual(Object.keys(data.scopes.scope.prs), ['3552'])
   assert.equal(Object.keys(data.scopes.other.prs).length, 3)
+})
+
+test('admission writer stores remote PRs sorted and keeps them across event and remote-less stores', () => {
+  const file = join(tempDir('admission-remote-'), 'verify-admission.json')
+  const read = () => JSON.parse(fs.readFileSync(file, 'utf8')).scopes
+  storeAdmission(file, 'other', entries, at, { remote: [7] })
+  storeAdmission(file, 'scope', entries, at, { remote: [3552, 3550, 3552, 0, -1, 1.5, '9'] })
+  assert.deepEqual(read().scope.remote, [3550, 3552])
+  // A full store without `remote` (an untrustworthy fleet view) keeps the previous list.
+  storeAdmission(file, 'scope', entries, '2026-10-25T00:00:00.000Z')
+  assert.deepEqual(read().scope.remote, [3550, 3552])
+  assert.equal(read().scope.scannedAt, '2026-10-25T00:00:00.000Z')
+  // An event store passes nothing and keeps the previous list.
+  storeAdmission(file, 'scope', [{ ...entries[0], state: 'admitted' }], at, { eventPr: 3550 })
+  assert.deepEqual(read().scope.remote, [3550, 3552])
+  // An empty list is a scan that saw nothing remote, and replaces the previous list.
+  storeAdmission(file, 'scope', entries, at, { remote: [] })
+  assert.deepEqual(read().scope.remote, [])
+  assert.deepEqual(read().other.remote, [7])
+  // A scope that never had one stays without the field.
+  storeAdmission(file, 'fresh', entries, at)
+  storeAdmission(file, 'fresh', entries, at, { eventPr: 3551 })
+  assert.equal('remote' in read().fresh, false)
+})
+
+test('a scan stores its remote-session skips only when it is a full scan with a trusted fleet view', () => {
+  const file = join(tempDir('admission-scan-'), 'verify-admission.json')
+  const read = () => JSON.parse(fs.readFileSync(file, 'utf8')).scopes.scope
+  const skipped = [
+    { pr: 3552, reason: 'remote-session' },
+    { pr: 3550, reason: 'draft' },
+    { pr: 3551, reason: 'remote-session' },
+  ]
+  const payload = { admission: entries, skipped }
+  assert.equal(storeScanAdmission(file, 'scope', { ...payload, unchanged: true }, at), false)
+  assert.equal(storeScanAdmission(file, 'scope', { skipped }, at), false)
+  assert.equal(fs.existsSync(file), false)
+  assert.equal(storeScanAdmission(file, 'scope', payload, at, { trusted: true }), true)
+  assert.deepEqual(read().remote, [3551, 3552])
+  storeScanAdmission(file, 'scope', { admission: entries, skipped: [] }, at)
+  storeScanAdmission(file, 'scope', { admission: entries }, at, { trusted: true, eventPr: 3550 })
+  assert.deepEqual(read().remote, [3551, 3552])
+  storeScanAdmission(file, 'scope', { admission: entries }, at, { trusted: true })
+  assert.deepEqual(read().remote, [])
 })
 
 test('admission writer treats corrupt and other-version snapshots as empty and failures as false', () => {

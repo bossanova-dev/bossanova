@@ -352,6 +352,9 @@ func (h Model) RenderEmptyState() string {
 		// confirm.
 		content += "\n" + relogin
 	}
+	if readiness := h.CredentialDeviceLine(); readiness != "" && !h.Confirm.Active {
+		content += "\n" + readiness
+	}
 	if logoutErr := h.logoutErrorLine(); logoutErr != "" {
 		content += "\n" + logoutErr
 	}
@@ -509,6 +512,10 @@ func (h Model) RenderSessionTableFooter() string {
 		b.WriteString("\n")
 		b.WriteString(relogin)
 	}
+	if readiness := h.CredentialDeviceLine(); readiness != "" {
+		b.WriteString("\n")
+		b.WriteString(readiness)
+	}
 	if logoutErr := h.logoutErrorLine(); logoutErr != "" {
 		b.WriteString("\n")
 		b.WriteString(logoutErr)
@@ -574,6 +581,9 @@ func (h Model) SessionTableFooterLineCount() int {
 		// this multi-line warning, so reserve its rendered height and that
 		// separator too.
 		lines += 1 + lipgloss.Height(relogin)
+	}
+	if readiness := h.CredentialDeviceLine(); readiness != "" {
+		lines += 1 + lipgloss.Height(readiness)
 	}
 	if logoutErr := h.logoutErrorLine(); logoutErr != "" {
 		// The logout error follows the action bar (and any re-login warning),

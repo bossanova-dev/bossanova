@@ -239,9 +239,9 @@ func TestMergeStrategiesAreReadOnTheUserLogin(t *testing.T) {
 	t.Parallel()
 	gh := &tokenGH{reply: func(_ []string, token string) (string, error) {
 		if token != "" {
-			return `{"m":null,"s":null,"r":null}`, nil
+			return `{"allow_merge_commit":null,"allow_squash_merge":null,"allow_rebase_merge":null}`, nil
 		}
-		return `{"m":false,"s":true,"r":false}`, nil
+		return `{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":false}`, nil
 	}}
 	p := newRoutedProvider(gh, installationSource(map[string]string{"contents": "read", "statuses": "write"}))
 	got, err := p.GetAllowedMergeStrategies(context.Background(), testOrigin)
@@ -549,3 +549,5 @@ func TestBreakerSkipIsMeteredUnderTheRefusedIdentity_GitHubUsage_AC226501(t *tes
 		t.Fatalf("gh ran %d call(s) while the installation pool was paused", len(calls))
 	}
 }
+
+func (r *fakeUsageRecorder) RecordNotModified(string, string, string) {}

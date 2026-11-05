@@ -51,7 +51,7 @@ endif
 test-bosso:
 	@$(BOSSO_PG_SKIP_NOTICE)
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/test-infra/gate-cache.mjs run --site test-bosso --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@$(call bazel-module-test,services/bosso,test-bosso)
 else
 	@node scripts/test-infra/gate-cache.mjs run --site test-bosso --command '$(MAKE) -C services/bosso test-all' -- $(MAKE) -C services/bosso test-all
 endif

@@ -575,3 +575,83 @@ test('selected media always validate in a proof area', () => {
   const media = p.selectMedia([group('a', 'video', true), group('b'), group('c', 'image')])
   assert.deepEqual(errorsFor(media), [])
 })
+
+const proven = { proof: 'test', behaviour: true, test: 'shows a change', path: 'src/a.test.mjs' }
+
+test('claims and unmentioned are optional, validated and covered by the digest', () => {
+  const record = changed((x) => {
+    x.whatItDoes.claims = [proven]
+    x.areas[0].unmentioned = ['Hospital.state']
+    x.areas[0].undisclosed = true
+  })
+  assert.deepEqual(p.validateProof(record).errors, [])
+  assert.notEqual(record.digest, fixture().digest)
+  for (const claims of [
+    [{ proof: 'clip', behaviour: true, chapter: 'Shows it', atMs: 1000 }],
+    [{ proof: 'clip', behaviour: true, chapter: 'Shows it' }],
+    [{ proof: 'unproven', behaviour: false, note: 'docs only' }],
+  ])
+    assert.deepEqual(p.validateProof(changed((x) => (x.whatItDoes.claims = claims))).errors, [])
+  const capped = changed((x) => {
+    x.whatItDoes.claims = [{ proof: 'unproven', behaviour: true }]
+    x.confidence.loweredBy.push({ code: p.UNPROVEN_CLAIM, text: '1 behaviour claim(s) unproven.' })
+  })
+  assert.deepEqual(p.validateProof(capped).errors, [])
+})
+
+test('rejects claims that break the record rules', () => {
+  const high = (x) => {
+    x.confidence = { level: 'high', asks: [], loweredBy: [] }
+    x.areas[0].ask = false
+  }
+  assert.deepEqual(p.validateProof(changed(high)).errors, [])
+  const cases = {
+    'high with an unproven behaviour claim': (x) => {
+      high(x)
+      x.whatItDoes.claims = [{ proof: 'unproven', behaviour: true }]
+    },
+    'unproven behaviour claim without its reason': (x) => {
+      x.whatItDoes.claims = [{ proof: 'unproven', behaviour: true }]
+    },
+    'claims not one per bullet': (x) => {
+      x.whatItDoes.claims = [proven, proven]
+    },
+    'claims with an unknown source': (x) => {
+      x.whatItDoes = { source: 'unknown', bullets: [], claims: [] }
+    },
+    'test claim without a path': (x) => {
+      x.whatItDoes.claims = [{ proof: 'test', behaviour: true, test: 'shows a change' }]
+    },
+    'test claim with a chapter': (x) => {
+      x.whatItDoes.claims = [{ ...proven, chapter: 'Shows it' }]
+    },
+    'clip claim without a chapter': (x) => {
+      x.whatItDoes.claims = [{ proof: 'clip', behaviour: true }]
+    },
+    'clip claim with a test': (x) => {
+      x.whatItDoes.claims = [{ proof: 'clip', behaviour: true, chapter: 'c', test: 't' }]
+    },
+    'unproven claim with a test': (x) => {
+      x.whatItDoes.claims = [{ proof: 'unproven', behaviour: false, test: 't', path: 'p' }]
+    },
+    'claim with an unknown key': (x) => {
+      x.whatItDoes.claims = [{ ...proven, text: 'A rewritten claim' }]
+    },
+    'claim without behaviour': (x) => {
+      x.whatItDoes.claims = [{ proof: 'test', test: 't', path: 'p' }]
+    },
+    'unmentioned without undisclosed': (x) => {
+      x.areas[0].unmentioned = ['Hospital.state']
+    },
+    'unmentioned over the item cap': (x) => {
+      x.areas[0].undisclosed = true
+      x.areas[0].unmentioned = Array.from({ length: p.MAX_ITEMS + 1 }, (_, i) => `S.f${i}`)
+    },
+  }
+  for (const [name, edit] of Object.entries(cases))
+    assert.equal(p.validateProof(changed(edit)).ok, false, name)
+  const empty = changed((x) => {
+    x.areas[0].unmentioned = []
+  })
+  assert.deepEqual(p.validateProof(empty).errors, [])
+})

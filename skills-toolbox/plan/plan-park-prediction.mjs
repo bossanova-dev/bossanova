@@ -9,6 +9,8 @@ import { predictPathParks } from '../verify/verify-path-parks.mjs'
 import { extractKeyChangeAreas } from './plan-deps-lib.mjs'
 
 export const PREDICTED_PARK_MARKER = '- Predicted verify park:'
+// Text the retired needs-human mode generated. A predicted park only ranks a ticket last, so
+// annotation removes this text and leaves needs-human to plans an agent cannot implement.
 const HUMAN_TEXT = 'An agent can build this change, but verify will hold the merge for a person.'
 const HUMAN_AGENT = '- Agent-friendly: needs-human (see "Why this needs a human")'
 const GENERATED_AGENT = `${HUMAN_AGENT}\n<!-- predicted-verify-park-agent-friendly -->`
@@ -45,13 +47,7 @@ export function predictVerifyPark(config, description, deps = {}) {
     },
     { extensionRoots: extensionRootsFor(config), appliesScripts: [] },
   )
-  return {
-    predicted: codes.length > 0,
-    codes,
-    labels,
-    areas,
-    action: config.planDefaults?.predictedVerifyPark ?? 'rank-last',
-  }
+  return { predicted: codes.length > 0, codes, labels, areas }
 }
 
 /** Reconcile generated annotation only before the untouched original-notes boundary. */
@@ -83,16 +79,6 @@ export function annotatePrediction(source, prediction) {
     (_, heading, body) =>
       `${heading}\n${body.trim() ? `${body.trim()}\n` : ''}${PREDICTED_PARK_MARKER} ${details}\n\n`,
   )
-  if (prediction.action === 'needs-human') {
-    const human = `## Why this needs a human\n\n${HUMAN_TEXT}\nPredicted reasons: ${details}.\n\n`
-    if (/^## Why this needs a human\s*$/m.test(content)) {
-      content = content.replace(
-        /(^## Why this needs a human\s*\n)/m,
-        (_, heading) => `${heading}\n${HUMAN_TEXT}\nPredicted reasons: ${details}.\n`,
-      )
-    } else content = content.replace(/^## Planning/m, () => `${human}## Planning`)
-    content = content.replace(/^- Agent-friendly: yes[ \t]*$/m, GENERATED_AGENT)
-  }
   return content + original
 }
 
@@ -125,7 +111,7 @@ function main() {
     const updated = annotatePrediction(source, prediction)
     if (source !== updated) writeFileSync(path, updated)
   }
-  const { predicted, codes, labels, action } = prediction
-  process.stdout.write(`${JSON.stringify({ predicted, codes, labels, action })}\n`)
+  const { predicted, codes, labels } = prediction
+  process.stdout.write(`${JSON.stringify({ predicted, codes, labels })}\n`)
 }
 if (isMainModule(import.meta.url)) main()

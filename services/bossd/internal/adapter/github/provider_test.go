@@ -2935,7 +2935,7 @@ func TestGetPRStatus_BotReviewSetsLatestState(t *testing.T) {
 				if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
 					return `{"state":"OPEN","mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","isDraft":false,"title":"t","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"REVIEW_REQUIRED","reviews":[` + tt.reviews + `]}`, nil
 				}
-				if len(args) == 3 && args[0] == "api" && args[1] == "repos/owner/repo/pulls/42/reviews?per_page=100" && args[2] == "--paginate" {
+				if len(args) == 3 && args[0] == "api" && args[1] == "repos/owner/repo/pulls/42/reviews?per_page=100" && args[2] == "-i" {
 					restCalls++
 					return tt.rest, tt.restErr
 				}

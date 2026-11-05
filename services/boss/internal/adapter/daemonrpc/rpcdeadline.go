@@ -127,9 +127,11 @@ const operatorMergeRPCDeadline = config.OperatorMergeCeiling + time.Minute
 // here would be dead, misleading configuration rather than a shorter deadline.
 //
 // Deliberately NOT a member: DaemonServiceGetAuthState (BOS-944). It reads
-// in-memory daemon state under a mutex — no network, no subprocess, no
-// keychain — so the 30s default is already orders of magnitude more than it
-// needs. Granting it the slow bound would be strictly worse than harmless
+// in-memory daemon state under a mutex — no network, no subprocess — plus a
+// per-repo GitHub credential report whose repo listing may touch SQLite and the
+// keychain, but which the daemon cuts off at its own 2s bound (BOS-2268), so
+// the 30s default is already far more than it needs. Granting it the slow bound
+// would be strictly worse than harmless
 // here: `boss daemon doctor` calls it precisely when the daemon is suspected
 // of being wedged, and the whole value of the check is that a non-answering
 // daemon fails fast enough to be reported as a finding rather than hanging the

@@ -19,8 +19,9 @@ type GitHubUsageReader interface {
 	Read(now time.Time, window time.Duration) (ghusage.Usage, error)
 }
 
-// GetGitHubUsage reports the per-label, per-quota GitHub call and skip counts
-// the usage ledger holds for the requested window, the last hour by default.
+// GetGitHubUsage reports the per-label, per-quota, per-identity GitHub call and
+// skip counts the usage ledger holds for the requested window, the last hour by
+// default.
 func (s *Server) GetGitHubUsage(_ context.Context, req *connect.Request[bossanovav1.GetGitHubUsageRequest]) (*connect.Response[bossanovav1.GetGitHubUsageResponse], error) {
 	if s.gitHubUsage == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("github usage ledger not configured"))
@@ -42,7 +43,9 @@ func (s *Server) GetGitHubUsage(_ context.Context, req *connect.Request[bossanov
 		resp.Rows = append(resp.Rows, &bossanovav1.GitHubUsageRow{
 			Label:            c.Label,
 			Quota:            c.Quota,
+			Identity:         c.Identity,
 			CallCount:        c.Calls,
+			NotModifiedCount: c.NotModified,
 			BreakerSkipCount: c.BreakerSkips,
 			FloorSkipCount:   c.FloorSkips,
 		})

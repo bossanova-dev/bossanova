@@ -1,4 +1,5 @@
 import { detectAreas } from './verify-areas.mjs'
+import { VERIFY_DESCRIPTIONS } from './verify-vocabulary.mjs'
 import { isSecretBearing } from '../bs-record-notes.mjs'
 
 export const BASES = Object.freeze(['revert', 'explicit-reference', 'followup-ticket', 'judge'])
@@ -209,6 +210,10 @@ export function escapeAreas(original, fix) {
 /** @param {{repo:string, fix:any, link:any, tracedAt:string}} input */
 export function escapeRecord({ repo, fix, link, tracedAt }) {
   const original = link.original
+  const head = original.commits?.nodes?.find(
+    (n) => n.commit.oid === (original.mergeHeadSha ?? original.headRefOid),
+  )?.commit
+  const verify = head?.status?.contexts?.find((s) => s.context === 'boss/verify')
   return {
     v: 1,
     repo,
@@ -224,7 +229,10 @@ export function escapeRecord({ repo, fix, link, tracedAt }) {
     ...(link.ticket ? { ticket: link.ticket } : {}),
     ...(link.severity ? { severity: link.severity } : {}),
     ...escapeAreas(original, fix),
-    levelAtMerge: null,
+    levelAtMerge:
+      verify?.state === 'SUCCESS' && verify.description === VERIFY_DESCRIPTIONS.verified
+        ? 'high'
+        : null,
     signals: escapeSignals(original),
     tracedAt,
   }
@@ -272,7 +280,7 @@ export function parseEscapeComment(body) {
         r.signals.size.changedFiles,
       ].some((n) => !Number.isInteger(n) || n < 0) ||
       typeof r.original.mergeHeadSha !== 'string' ||
-      r.levelAtMerge !== null ||
+      (r.levelAtMerge !== null && r.levelAtMerge !== 'high') ||
       r.signals.proof !== null ||
       typeof r.evidence !== 'string'
     )

@@ -78,6 +78,9 @@ const (
 	// DaemonServiceListSessionsProcedure is the fully-qualified name of the DaemonService's
 	// ListSessions RPC.
 	DaemonServiceListSessionsProcedure = "/bossanova.v1.DaemonService/ListSessions"
+	// DaemonServiceListReviewQueueProcedure is the fully-qualified name of the DaemonService's
+	// ListReviewQueue RPC.
+	DaemonServiceListReviewQueueProcedure = "/bossanova.v1.DaemonService/ListReviewQueue"
 	// DaemonServiceMoveSessionProcedure is the fully-qualified name of the DaemonService's MoveSession
 	// RPC.
 	DaemonServiceMoveSessionProcedure = "/bossanova.v1.DaemonService/MoveSession"
@@ -317,6 +320,9 @@ const (
 	// DaemonServiceGetGitHubUsageProcedure is the fully-qualified name of the DaemonService's
 	// GetGitHubUsage RPC.
 	DaemonServiceGetGitHubUsageProcedure = "/bossanova.v1.DaemonService/GetGitHubUsage"
+	// DaemonServiceGetGitHubReadCredentialProcedure is the fully-qualified name of the DaemonService's
+	// GetGitHubReadCredential RPC.
+	DaemonServiceGetGitHubReadCredentialProcedure = "/bossanova.v1.DaemonService/GetGitHubReadCredential"
 	// DaemonServiceGetPRStateProcedure is the fully-qualified name of the DaemonService's GetPRState
 	// RPC.
 	DaemonServiceGetPRStateProcedure = "/bossanova.v1.DaemonService/GetPRState"
@@ -363,6 +369,9 @@ type DaemonServiceClient interface {
 	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.ServerStreamForClient[v1.CreateSessionResponse], error)
 	GetSession(context.Context, *connect.Request[v1.GetSessionRequest]) (*connect.Response[v1.GetSessionResponse], error)
 	ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error)
+	// ListReviewQueue lists the repo's PRs that verify has parked for a person,
+	// with per-level header counts.
+	ListReviewQueue(context.Context, *connect.Request[v1.ListReviewQueueRequest]) (*connect.Response[v1.ListReviewQueueResponse], error)
 	// MoveSession moves one session up or down relative to its current
 	// neighbours in the rendered session list and returns the refreshed session.
 	// The move arithmetic lives here rather than in each client so that no two
@@ -672,6 +681,10 @@ type DaemonServiceClient interface {
 	// stage or daemon subsystem that made them) and quota. It counts calls, not
 	// quota points: one GraphQL call can cost more than one point.
 	GetGitHubUsage(context.Context, *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error)
+	// GetGitHubReadCredential is local-only and read-only. A missing credential
+	// never errors: callers keep the user's gh login. The response contains a
+	// secret that callers must never log.
+	GetGitHubReadCredential(context.Context, *connect.Request[v1.GetGitHubReadCredentialRequest]) (*connect.Response[v1.GetGitHubReadCredentialResponse], error)
 	// GetPRState reads one pull request's state through the daemon's
 	// webhook-invalidated GitHub read cache: status, checks (commit statuses
 	// included), the check verdict, the verify phase and, for a green verdict,
@@ -810,6 +823,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceListSessionsProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("ListSessions")),
+			connect.WithClientOptions(opts...),
+		),
+		listReviewQueue: connect.NewClient[v1.ListReviewQueueRequest, v1.ListReviewQueueResponse](
+			httpClient,
+			baseURL+DaemonServiceListReviewQueueProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListReviewQueue")),
 			connect.WithClientOptions(opts...),
 		),
 		moveSession: connect.NewClient[v1.MoveSessionRequest, v1.MoveSessionResponse](
@@ -1298,6 +1317,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("GetGitHubUsage")),
 			connect.WithClientOptions(opts...),
 		),
+		getGitHubReadCredential: connect.NewClient[v1.GetGitHubReadCredentialRequest, v1.GetGitHubReadCredentialResponse](
+			httpClient,
+			baseURL+DaemonServiceGetGitHubReadCredentialProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetGitHubReadCredential")),
+			connect.WithClientOptions(opts...),
+		),
 		getPRState: connect.NewClient[v1.GetPRStateRequest, v1.GetPRStateResponse](
 			httpClient,
 			baseURL+DaemonServiceGetPRStateProcedure,
@@ -1360,6 +1385,7 @@ type daemonServiceClient struct {
 	createSession                        *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
 	getSession                           *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
 	listSessions                         *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
+	listReviewQueue                      *connect.Client[v1.ListReviewQueueRequest, v1.ListReviewQueueResponse]
 	moveSession                          *connect.Client[v1.MoveSessionRequest, v1.MoveSessionResponse]
 	dismissSessionAlert                  *connect.Client[v1.DismissSessionAlertRequest, v1.DismissSessionAlertResponse]
 	attachSession                        *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
@@ -1441,6 +1467,7 @@ type daemonServiceClient struct {
 	getSessionTimeline                   *connect.Client[v1.GetSessionTimelineRequest, v1.GetSessionTimelineResponse]
 	getRunCost                           *connect.Client[v1.GetRunCostRequest, v1.GetRunCostResponse]
 	getGitHubUsage                       *connect.Client[v1.GetGitHubUsageRequest, v1.GetGitHubUsageResponse]
+	getGitHubReadCredential              *connect.Client[v1.GetGitHubReadCredentialRequest, v1.GetGitHubReadCredentialResponse]
 	getPRState                           *connect.Client[v1.GetPRStateRequest, v1.GetPRStateResponse]
 	waitPRState                          *connect.Client[v1.WaitPRStateRequest, v1.WaitPRStateResponse]
 	listAgents                           *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
@@ -1523,6 +1550,11 @@ func (c *daemonServiceClient) GetSession(ctx context.Context, req *connect.Reque
 // ListSessions calls bossanova.v1.DaemonService.ListSessions.
 func (c *daemonServiceClient) ListSessions(ctx context.Context, req *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error) {
 	return c.listSessions.CallUnary(ctx, req)
+}
+
+// ListReviewQueue calls bossanova.v1.DaemonService.ListReviewQueue.
+func (c *daemonServiceClient) ListReviewQueue(ctx context.Context, req *connect.Request[v1.ListReviewQueueRequest]) (*connect.Response[v1.ListReviewQueueResponse], error) {
+	return c.listReviewQueue.CallUnary(ctx, req)
 }
 
 // MoveSession calls bossanova.v1.DaemonService.MoveSession.
@@ -1931,6 +1963,11 @@ func (c *daemonServiceClient) GetGitHubUsage(ctx context.Context, req *connect.R
 	return c.getGitHubUsage.CallUnary(ctx, req)
 }
 
+// GetGitHubReadCredential calls bossanova.v1.DaemonService.GetGitHubReadCredential.
+func (c *daemonServiceClient) GetGitHubReadCredential(ctx context.Context, req *connect.Request[v1.GetGitHubReadCredentialRequest]) (*connect.Response[v1.GetGitHubReadCredentialResponse], error) {
+	return c.getGitHubReadCredential.CallUnary(ctx, req)
+}
+
 // GetPRState calls bossanova.v1.DaemonService.GetPRState.
 func (c *daemonServiceClient) GetPRState(ctx context.Context, req *connect.Request[v1.GetPRStateRequest]) (*connect.Response[v1.GetPRStateResponse], error) {
 	return c.getPRState.CallUnary(ctx, req)
@@ -1989,6 +2026,9 @@ type DaemonServiceHandler interface {
 	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest], *connect.ServerStream[v1.CreateSessionResponse]) error
 	GetSession(context.Context, *connect.Request[v1.GetSessionRequest]) (*connect.Response[v1.GetSessionResponse], error)
 	ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error)
+	// ListReviewQueue lists the repo's PRs that verify has parked for a person,
+	// with per-level header counts.
+	ListReviewQueue(context.Context, *connect.Request[v1.ListReviewQueueRequest]) (*connect.Response[v1.ListReviewQueueResponse], error)
 	// MoveSession moves one session up or down relative to its current
 	// neighbours in the rendered session list and returns the refreshed session.
 	// The move arithmetic lives here rather than in each client so that no two
@@ -2298,6 +2338,10 @@ type DaemonServiceHandler interface {
 	// stage or daemon subsystem that made them) and quota. It counts calls, not
 	// quota points: one GraphQL call can cost more than one point.
 	GetGitHubUsage(context.Context, *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error)
+	// GetGitHubReadCredential is local-only and read-only. A missing credential
+	// never errors: callers keep the user's gh login. The response contains a
+	// secret that callers must never log.
+	GetGitHubReadCredential(context.Context, *connect.Request[v1.GetGitHubReadCredentialRequest]) (*connect.Response[v1.GetGitHubReadCredentialResponse], error)
 	// GetPRState reads one pull request's state through the daemon's
 	// webhook-invalidated GitHub read cache: status, checks (commit statuses
 	// included), the check verdict, the verify phase and, for a green verdict,
@@ -2432,6 +2476,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceListSessionsProcedure,
 		svc.ListSessions,
 		connect.WithSchema(daemonServiceMethods.ByName("ListSessions")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListReviewQueueHandler := connect.NewUnaryHandler(
+		DaemonServiceListReviewQueueProcedure,
+		svc.ListReviewQueue,
+		connect.WithSchema(daemonServiceMethods.ByName("ListReviewQueue")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceMoveSessionHandler := connect.NewUnaryHandler(
@@ -2920,6 +2970,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("GetGitHubUsage")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetGitHubReadCredentialHandler := connect.NewUnaryHandler(
+		DaemonServiceGetGitHubReadCredentialProcedure,
+		svc.GetGitHubReadCredential,
+		connect.WithSchema(daemonServiceMethods.ByName("GetGitHubReadCredential")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceGetPRStateHandler := connect.NewUnaryHandler(
 		DaemonServiceGetPRStateProcedure,
 		svc.GetPRState,
@@ -2994,6 +3050,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceGetSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceListSessionsProcedure:
 			daemonServiceListSessionsHandler.ServeHTTP(w, r)
+		case DaemonServiceListReviewQueueProcedure:
+			daemonServiceListReviewQueueHandler.ServeHTTP(w, r)
 		case DaemonServiceMoveSessionProcedure:
 			daemonServiceMoveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceDismissSessionAlertProcedure:
@@ -3156,6 +3214,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceGetRunCostHandler.ServeHTTP(w, r)
 		case DaemonServiceGetGitHubUsageProcedure:
 			daemonServiceGetGitHubUsageHandler.ServeHTTP(w, r)
+		case DaemonServiceGetGitHubReadCredentialProcedure:
+			daemonServiceGetGitHubReadCredentialHandler.ServeHTTP(w, r)
 		case DaemonServiceGetPRStateProcedure:
 			daemonServiceGetPRStateHandler.ServeHTTP(w, r)
 		case DaemonServiceWaitPRStateProcedure:
@@ -3237,6 +3297,10 @@ func (UnimplementedDaemonServiceHandler) GetSession(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListSessions is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListReviewQueue(context.Context, *connect.Request[v1.ListReviewQueueRequest]) (*connect.Response[v1.ListReviewQueueResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListReviewQueue is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) MoveSession(context.Context, *connect.Request[v1.MoveSessionRequest]) (*connect.Response[v1.MoveSessionResponse], error) {
@@ -3561,6 +3625,10 @@ func (UnimplementedDaemonServiceHandler) GetRunCost(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) GetGitHubUsage(context.Context, *connect.Request[v1.GetGitHubUsageRequest]) (*connect.Response[v1.GetGitHubUsageResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetGitHubUsage is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetGitHubReadCredential(context.Context, *connect.Request[v1.GetGitHubReadCredentialRequest]) (*connect.Response[v1.GetGitHubReadCredentialResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetGitHubReadCredential is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetPRState(context.Context, *connect.Request[v1.GetPRStateRequest]) (*connect.Response[v1.GetPRStateResponse], error) {

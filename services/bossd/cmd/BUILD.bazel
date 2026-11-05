@@ -83,6 +83,7 @@ go_library(
         "//services/bossd/internal/account",
         "//services/bossd/internal/accountwiring",
         "//services/bossd/internal/adapter/accountcred",
+        "//services/bossd/internal/adapter/anthropicorg",
         "//services/bossd/internal/adapter/credmaterialize",
         "//services/bossd/internal/adapter/dotenv",
         "//services/bossd/internal/adapter/factoryversions",

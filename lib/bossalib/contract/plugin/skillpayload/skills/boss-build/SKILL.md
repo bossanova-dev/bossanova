@@ -78,33 +78,34 @@ BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox
 if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
 ```
 
-| Question                                                               | Ask                                                                                    |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Remove a recorded scratch dir                                          | `node scratch-remove.mjs --record <file>`                                              |
-| Rename an identifier across files                                      | `node rename-symbol.mjs --from <A> --to <B> [--path <p>] [--exclude <p>] [--dry-run]`  |
-| Is the worktree clean (hook-proof)?                                    | `node worktree-state.mjs [--base <ref>]`                                               |
-| Who owns this worktree?                                                | `worktree-lock.sh acquire\|heartbeat\|release <run-id> [ticket]`                       |
-| Who won the ticket claim?                                              | `node tracker/cli.mjs claim-verdict …`                                                 |
-| Which PR belongs to this branch?                                       | `node pr-ownership.mjs number --pr-json <json>`                                        |
-| What does this ticket build from?                                      | `node plan-attachment.mjs build-source <issue-json> [<plan-out>]`                      |
-| Would verify admit this named ticket?                                  | `node build/named-admission.mjs check\|apply …`                                        |
-| Which repo-local extensions exist?                                     | `node skill-extensions.mjs discover --core boss-build --role <role> --json`            |
-| Do the plan’s citations and premises still hold?                       | `node plan-recheck.mjs <plan> [--root <dir>]`                                          |
-| Is a failed criterion only "checkout behind origin"? Re-run it rebased | `node acceptance-retry.mjs classify\|retry …`                                          |
-| Did the base move under me?                                            | `node base-drift.mjs check …`                                                          |
-| Push the branch, with retry and a rescue ref                           | `node finalize/push-branch.mjs --branch <name> [--base <ref>] [--expect-remote <sha>]` |
-| Tag commits with the PR number                                         | `node finalize/cli.mjs inject-pr-tag <pr>`                                             |
-| Are the checks green / is the merge state blocking?                    | `node pr-check-state.mjs classify\|merge-state …`                                      |
-| Wait for CI without guessing                                           | `node ci-wait.mjs run --pr <n>` (daemon-first; callback-watches.md step 5)             |
-| May I stop watching CI?                                                | `node callback/ci-watch.mjs classify …`                                                |
-| May this head be readied / receipted?                                  | `node ready-gate.mjs [--base <branch>]` (reads the Step 9 route file)                  |
-| Opt-in inline verify and merge a green REVIEW_READY PR                 | `node completion-gate.mjs envelope\|fast-path`                                         |
-| Where does a follow-up go?                                             | `node followup-route.mjs route --candidates <file> --notes-out <file>`                 |
-| Update a published PR body without duplicating it                      | `node pr-body.mjs merge --body-file <live> --update-file <sections>`                   |
-| Is the local-verification record well-formed?                          | `validateLocalVerification(config, body)` in `skill-config.mjs`                        |
-| Is the verify-only evidence well-formed?                               | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`                       |
-| What is left before this terminal state is honest?                     | `node finalize/route-contract.mjs assert --outcome <state> …`                          |
-| Post or read the boss/build commit-status receipt                      | `node commit-status.mjs post\|read …`                                                  |
+| Question                                                               | Ask                                                                                                                                                     |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Remove a recorded scratch dir                                          | `node scratch-remove.mjs --record <file>`                                                                                                               |
+| Rename an identifier across files                                      | `node rename-symbol.mjs --from <A> --to <B> [--path <p>] [--exclude <p>] [--dry-run]`                                                                   |
+| Is the worktree clean (hook-proof)?                                    | `node worktree-state.mjs [--base <ref>]`                                                                                                                |
+| Who owns this worktree?                                                | `worktree-lock.sh acquire\|heartbeat\|release <run-id> [ticket]`                                                                                        |
+| Who won the ticket claim?                                              | `node tracker/cli.mjs claim-verdict …`                                                                                                                  |
+| Which PR belongs to this branch?                                       | `node pr-ownership.mjs number --pr-json <json>`                                                                                                         |
+| What does this ticket build from?                                      | `node plan-attachment.mjs build-source <issue-json> [<plan-out>]`                                                                                       |
+| Would verify admit this named ticket?                                  | `node build/named-admission.mjs check\|apply …`                                                                                                         |
+| Which repo-local extensions exist?                                     | `node skill-extensions.mjs discover --core boss-build --role <role> --json`                                                                             |
+| Do the plan’s citations and premises still hold?                       | `node plan-recheck.mjs <plan> [--root <dir>]`                                                                                                           |
+| Is a failed criterion only "checkout behind origin"? Re-run it rebased | `node acceptance-retry.mjs classify\|retry …`                                                                                                           |
+| Did the base move under me?                                            | `node base-drift.mjs check …`                                                                                                                           |
+| Push the branch, with retry and a rescue ref                           | `node finalize/push-branch.mjs --branch <name> [--base <ref>] [--expect-remote <sha>]` <!-- ci-request: skip helper reference; routes below request --> |
+| Request configured heavy CI once per verified draft head               | `node ci/ci-request.mjs request --pr <n> --head <sha>`                                                                                                  |
+| Tag commits with the PR number                                         | `node finalize/cli.mjs inject-pr-tag <pr>`                                                                                                              |
+| Are the checks green / is the merge state blocking?                    | `node pr-check-state.mjs classify\|merge-state …`                                                                                                       |
+| Wait for CI without guessing                                           | `node ci-wait.mjs run --pr <n>` (daemon-first; callback-watches.md step 5)                                                                              |
+| May I stop watching CI?                                                | `node callback/ci-watch.mjs classify …`                                                                                                                 |
+| May this head be readied / receipted?                                  | `node ready-gate.mjs [--base <branch>]` (reads the Step 9 route file)                                                                                   |
+| Opt-in inline verify and merge a green REVIEW_READY PR                 | `node completion-gate.mjs envelope\|fast-path`                                                                                                          |
+| Where does a follow-up go?                                             | `node followup-route.mjs route --candidates <file> --notes-out <file>`                                                                                  |
+| Update a published PR body without duplicating it                      | `node pr-body.mjs merge --body-file <live> --update-file <sections>`                                                                                    |
+| Is the local-verification record well-formed?                          | `validateLocalVerification(config, body)` in `skill-config.mjs`                                                                                         |
+| Is the verify-only evidence well-formed?                               | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`                                                                                        |
+| What is left before this terminal state is honest?                     | `node finalize/route-contract.mjs assert --outcome <state> …`                                                                                           |
+| Post or read the boss/build commit-status receipt                      | `node commit-status.mjs post\|read …`                                                                                                                   |
 
 ## Rules
 
@@ -343,8 +344,10 @@ and 8).
   Keep `agent-build` tickets, with or without a plan attachment, drop `needs-human`, then rank
   candidates whose active `## Planning` section (before `## Original notes`) carries a
   `- Predicted verify park:` line after all candidates without that active marker. Ignore
-  markers in Original notes or any other section. Within each group rank by priority (Urgent first, None last), then lowest
-  estimate, then oldest. Named tickets are unaffected. Walk the ranking: for
+  markers in Original notes or any other section. Within each group keep `list-planned`'s order
+  (`effectivePriority`, a parent epic's when more urgent; earliest project start, then target date,
+  undated last; lowest estimate; oldest); rank descriptor-fallback nodes by priority, estimate, age.
+  Named tickets are unaffected. Walk the ranking: for
   every candidate whose `blockerVerdict` is not `unblocked`, run
   `node "$BOSS_BUILD_TOOLBOX/build/blocker-verdict.mjs" --mode selection --id <id>`.
   Use its verdict: completed/canceled or merged blockers clear; a blocker in the configured
@@ -666,6 +669,7 @@ Every route from Step 6 comes through here.
    `$(git rev-parse --git-dir)/boss-build-reviewed-head`):
 
    ```bash
+   # ci-request: skip pre-tag head; Step 8 pushes the tagged head and requests CI
    PUSH_JSON="$(node "$BOSS_BUILD_TOOLBOX/finalize/push-branch.mjs" --branch "$SESSION_BRANCH" --base "$BASE_REF")" || true
    if [ "$(printf '%s' "$PUSH_JSON" | jq -r .refused)" = "superseded" ]; then
      # Step 2.5 established branch ownership; lease exactly the superseded tip just classified.
@@ -741,6 +745,7 @@ BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr
   echo "inject-pr-tag exited non-zero; HEAD was $PRE_INJECT_HEAD before it ran. See $TAG_LOG" >&2
 git push --force-with-lease origin "$SESSION_BRANCH"
 test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$SESSION_BRANCH")" || exit 1  # HEAD == what was pushed
+node "$BOSS_BUILD_TOOLBOX/ci/ci-request.mjs" request --pr "$PR_NUMBER" --head "$(git rev-parse HEAD)"
 node "$BOSS_BUILD_TOOLBOX/build/ready-gate.mjs" remap-reviewed-head --base "$BASE_BRANCH"
 ```
 
@@ -750,6 +755,13 @@ missing scope, header or body-line length); fix exactly that. To rewrite a messa
 editor, use `git filter-branch --msg-filter` keyed on `$GIT_COMMIT`, back the range up first, and
 prove the rewrite touched only messages (`git diff <backup> HEAD` empty, same commit count).
 
+**CI request outcomes** (every request in this skill, after local verification): exit 0 continues.
+`head-moved` re-reads the PR head and re-runs the tag-and-push block once, within branch ownership.
+`dispatch-failed` or `unconfirmed` records the JSON under `## Autonomous decisions` and continues
+to the CI wait. `skipped-conflicting` takes the existing conflict route: rebase, re-run the local
+gates, push and request again. A CI wait ending `not-requested` retries the request once; a second
+`not-requested` is `BLOCKED` cause 1, quoting the request JSON. Never call an unconfirmed request green.
+
 Then wait for CI (arm watches, bounded poll) and run **boss-repair** for failing checks, conflicts
 and review comments, with `BOSS_NOTES_SUPPRESSED=1`, up to `policy.repairCap` (5) passes, re-arming
 the CI wait after every push. Still red after the cap ⇒ `BLOCKED` cause 1: PR stays draft, blocker
@@ -758,8 +770,8 @@ When the repair cap leaves checks red, run `node "$BOSS_BUILD_TOOLBOX/notes-reco
 
 ## Step 9: Decide the route and finalize
 
-Re-inject the tag only if boss-repair added untagged non-empty commits (then push with lease and
-wait for CI again). Add repair and readiness-rebase test re-runs to `## Local verification` as
+If boss-repair added untagged non-empty commits, re-run Step 8's tag-and-push block and CI wait.
+Add repair and readiness-rebase test re-runs to `## Local verification` as
 phase-labelled bullets (repair row `<command>: <result>` ⇒ ``repair: `<command>` → <result>``); fix findings from
 `validateLocalVerification(config, body)` and validate again before `gh pr ready`. Green CI on the head is the full test run; do not repeat it locally. Then
 decide, asking the gate first on the head you would ready:
@@ -791,8 +803,8 @@ below, and remove that file otherwise. The gate reads it on every later ask, so 
   ancestor of `HEAD`, else the whole branch) as a new pass — Step 6 pools it with every earlier pass,
   never clearing a blocking finding; a later pass may resolve earlier non-blocking findings it
   confirmed gone. Re-publish the review sections and comment,
-  persist the tip after that review's own fix commits as `REVIEWED_HEAD`, push, wait for CI as Step
-  8 does, and ask the gate again. At most two re-reviews per run; drift after that is `BLOCKED` cause 3 like any other
+  persist the tip after that review's own fix commits as `REVIEWED_HEAD`, re-run Step 8's
+  tag-and-push block and CI wait, and ask the gate again. At most two re-reviews per run; drift after that is `BLOCKED` cause 3 like any other
   not-ready reason.
 - **Not `ready`** otherwise — the review or re-review is not clean, or the drift or verdict is
   unknown ⇒ `BLOCKED` cause 3: publish per [`references/publish.md`](references/publish.md), never
@@ -822,6 +834,7 @@ if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_
   node "$BOSS_BUILD_TOOLBOX/post-rebase-audit.mjs" check --repo "$(git rev-parse --show-toplevel)" \
     --pre-rebase-head "$PRE_REBASE_HEAD" --base "origin/$BASE_BRANCH"
   git push --force-with-lease origin "$SESSION_BRANCH"
+  node "$BOSS_BUILD_TOOLBOX/ci/ci-request.mjs" request --pr "$PR_NUMBER" --head "$(git rev-parse HEAD)"
   # The push re-opened the CI wait: arm (callback-watches.md Protocol step 1), then the bounded
   # poll (Protocol step 5) until CI_WAIT_STATE=settled; anything else goes back to Step 8.
   arm_ci_watches "$PR_NUMBER"

@@ -12,6 +12,7 @@ Register an agent account
 
 **Flags:**
 
+- `--codex-bin` — codex only: path to the codex CLI; default: this shell’s PATH, then the daemon’s service PATH
 - `--credential-file` — Read the credential from a file (or '-' for stdin); preferred over --token
 - `--label` — Human label, unique per provider (required for the non-interactive flag path)
 - `--priority` — Sort order; lower = preferred (default: 0)
@@ -76,6 +77,7 @@ Re-run the provider login for an account and replace its credential in place
 
 **Flags:**
 
+- `--codex-bin` — codex only: path to the codex CLI; default: this shell’s PATH, then the daemon’s service PATH
 - `--timeout` — Deadline for the interactive device login (default: 10m0s)
 
 ### `boss account refresh <account-id> [flags]`

@@ -7,10 +7,14 @@ import (
 	"github.com/recurser/bossd/internal/ghusage"
 )
 
-// recordSent meters one call gh is about to send to GitHub from pool.
-func (p *Provider) recordSent(ctx context.Context, pool quotaPool) {
+func (p *Provider) recordResult(ctx context.Context, pool quotaPool, out string, err error) {
 	if p.usage != nil {
-		p.usage.Record(ghusage.LabelFrom(ctx), pool.quota, pool.identity)
+		status, _, _ := parseIncludedResponse(includedOutput(out, err))
+		if status == 304 {
+			p.usage.RecordNotModified(ghusage.LabelFrom(ctx), pool.quota, pool.identity)
+		} else {
+			p.usage.Record(ghusage.LabelFrom(ctx), pool.quota, pool.identity)
+		}
 	}
 }
 

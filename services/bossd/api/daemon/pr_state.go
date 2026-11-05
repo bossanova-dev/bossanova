@@ -12,6 +12,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/vcs"
 
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/prstate"
 )
 
@@ -74,6 +75,14 @@ func prReadError(action, slug string, pr int, err error) error {
 // registeredRepoSlug resolves repoArg (owner/name or an origin URL) to the
 // lowercase slug of the registered repo it names.
 func (s *Server) registeredRepoSlug(ctx context.Context, repoArg string) (string, error) {
+	repo, err := s.registeredRepo(ctx, repoArg)
+	if err != nil {
+		return "", err
+	}
+	return strings.ToLower(vcs.RepoSlug(repo.OriginURL)), nil
+}
+
+func (s *Server) registeredRepo(ctx context.Context, repoArg string) (*domain.Repo, error) {
 	want := repoArg
 	if parsed := vcs.RepoSlug(repoArg); parsed != "" {
 		want = parsed
@@ -81,14 +90,14 @@ func (s *Server) registeredRepoSlug(ctx context.Context, repoArg string) (string
 	want = strings.ToLower(strings.TrimSuffix(strings.Trim(want, "/"), ".git"))
 	repos, err := s.repos.List(ctx)
 	if err != nil {
-		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("list repos: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list repos: %w", err))
 	}
 	for _, r := range repos {
 		if slug := strings.ToLower(vcs.RepoSlug(r.OriginURL)); slug != "" && slug == want {
-			return slug, nil
+			return r, nil
 		}
 	}
-	return "", connect.NewError(connect.CodeNotFound, fmt.Errorf("repo %s is not registered on this daemon", repoArg))
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo %s is not registered on this daemon", repoArg))
 }
 
 // prStateResponse converts a snapshot to the wire. The vcs enums share the

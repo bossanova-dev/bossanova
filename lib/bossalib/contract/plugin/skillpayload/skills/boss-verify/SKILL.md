@@ -88,8 +88,9 @@ When `post --verdict claim` returns `won: false` with `reason: claim-held` or no
 (the read-back race), or any writing verb returns `abandoned: claim-lost`, follow the holder:
 
 - Run `node "$BOSS_VERIFY_TOOLBOX/verify/verify-await.mjs" await --pr <n> --head <sha>`;
-  repeat while `outcome: continue`. Each chunk fits one tool call; the claim's timestamp bounds the wait.
+  add `--token <token>` when the claim result carried a token, and repeat while `outcome: continue`. Each chunk fits one tool call; the claim's timestamp bounds the wait.
 - `verdict`, `merged`, `closed` or `head-moved` → print its `line` as the final report and stop.
+- `mine` → the claim is this run’s; continue from **Judge** with that token on every later write.
 - `stale` → run `post --verdict claim` again. `won: true` → continue from **Judge** with
   that token on every later write; otherwise await again. The claim helper records a stale takeover.
 - `unknown` → report its `why` and stop; a failed read is unknown, never a pass.
@@ -100,7 +101,7 @@ Other `won: false` reasons (`pr-unreadable`, `pr-not-open`, `status-unreadable`,
 ### Running the `verify` extensions
 
 1. **Claim.** Adopt `--claim` unless this run already posted a wait, which used it up; otherwise `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" post --pr <n> --head <sha> --verdict claim`, and pass the `token` it returns as `--token` to every later write.
-   `won: false` → follow **Losing a claim** below.
+   `won: false` → follow **Losing a claim** above.
 2. **Same tree.** The worktree `HEAD` must equal the judged `headSha`:
    `node "$BOSS_VERIFY_TOOLBOX/worktree-sync.mjs" sync --head <sha>`. It moves the worktree to the
    head only when no unpushed commit or non-incidental change would be lost. `synced: true` →

@@ -18,7 +18,10 @@ const POLL_MS = 30000
 
 export function verdictLine({ state, description = '', head, merged = false }) {
   const short = head.slice(0, 7)
-  if (merged) return `Verified and merged ${short}`
+  if (merged)
+    return state === 'success' && description.startsWith(VERIFY_DESCRIPTIONS.verified)
+      ? `Verified and merged ${short}`
+      : `Merged ${short}`
   if (isCannotAssess({ description }))
     return `Cannot assess ${short}: ${description.slice(VERIFY_DESCRIPTIONS.cannotAssess.length).trim()}`
   const park = parkOfStatus({ state, description })
@@ -45,7 +48,7 @@ export async function awaitVerdict({
   delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   options,
 }) {
-  const { pr, head, repo = '', chunkMs = DEFAULT_CHUNK_MS } = options
+  const { pr, head, repo = '', chunkMs = DEFAULT_CHUNK_MS, token: ownToken = '' } = options
   const end = now() + chunkMs
   let token = '',
     deadline = 0
@@ -65,8 +68,19 @@ export async function awaitVerdict({
         line: `Head moved from ${head.slice(0, 7)} to ${p.headRefOid.slice(0, 7)}; the new head gets its own verify run`,
       }
     }
-    if (p?.state === 'MERGED')
-      return { outcome: 'merged', line: verdictLine({ state: 'success', head, merged: true }) }
+    if (p?.state === 'MERGED') {
+      const reading = readStatus(read, head, repo, VERIFY_CONTEXT)
+      const status = reading.contexts?.[VERIFY_CONTEXT]
+      return {
+        outcome: 'merged',
+        line: verdictLine({
+          state: status?.state,
+          description: status?.description,
+          head,
+          merged: true,
+        }),
+      }
+    }
     if (p?.state === 'CLOSED')
       return { outcome: 'closed', line: `Closed without merging ${head.slice(0, 7)}` }
     if (p?.state !== 'OPEN' || p.headRefOid !== head)
@@ -75,7 +89,8 @@ export async function awaitVerdict({
     const reading = readStatus(read, head, repo, VERIFY_CONTEXT)
     if (reading.verdict === 'unknown') return { outcome: 'unknown', why: 'status-unreadable' }
     const status = reading.contexts?.[VERIFY_CONTEXT]
-    const claim = claimState(status, { now: now() })
+    const claim = claimState(status, { token: ownToken, now: now() })
+    if (claim.kind === 'mine') return { outcome: 'mine', token: claim.token }
     if (claim.kind === 'stale') return { outcome: 'stale', token: claim.token }
     if (claim.kind === 'terminal' || claim.kind === 'waiting') {
       const line = verdictLine({ state: status.state, description: status.description, head })
@@ -102,6 +117,7 @@ export function parseOptions(argv) {
       pr: { type: 'string' },
       head: { type: 'string' },
       repo: { type: 'string' },
+      token: { type: 'string' },
       'chunk-ms': { type: 'string' },
     },
   })
@@ -112,7 +128,9 @@ export function parseOptions(argv) {
     throw new Error('await needs --head <40-character SHA>')
   if (!Number.isInteger(chunkMs) || chunkMs < 1 || chunkMs > CEILING_MS)
     throw new Error(`chunk must fit the ${CEILING_MS}ms ceiling`)
-  return { pr, head: values.head, repo: values.repo ?? '', chunkMs }
+  if (values.token !== undefined && (!values.token || /\s/.test(values.token)))
+    throw new Error('await needs --token <non-empty claim token without whitespace>')
+  return { pr, head: values.head, repo: values.repo ?? '', chunkMs, token: values.token ?? '' }
 }
 
 export async function main(argv) {

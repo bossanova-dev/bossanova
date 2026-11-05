@@ -533,6 +533,27 @@ confirmed the account is eligible again; a save that merely did not error is
 not a success. If verification does not run or does not pass, it says so and
 leaves the account in place rather than removing it.
 
+### Terminal Codex alongside rotation
+
+You can keep using `codex` in your own terminal for an account bossd also
+manages. bossd's logins run the device login in a private Codex home, so a
+terminal `codex login` for the same OpenAI account is a **separate grant** with
+its own refresh token. The provider refreshes each grant on its own, so neither
+signs the other out, and the account's check stays a plain `ok`.
+
+What bossd warns about is a **shared** refresh chain: an `auth.json` copied
+between your terminal's `~/.codex` and bossd. Both copies then hold the same
+refresh token, and the next refresh by either side signs the other out. The
+check reads `ok:credential_superseded` in `boss account ls` and the TUI, and
+**Reauth needed** on the web accounts page. The credential still works and the
+account stays eligible for rotation. Give bossd its own login before either
+side refreshes:
+
+<CommandTabs
+chat='"reauthenticate account <account-id>"'
+cli="boss account reauth <account-id>"
+/>
+
 ## Audit trail
 
 Every rotation decision is recorded as a rotation event, including the ones

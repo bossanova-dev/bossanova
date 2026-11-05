@@ -83,8 +83,8 @@ type ListModel struct {
 
 	// highlightJobID, when non-empty, requests that the row for this job id be
 	// selected (caret placed on it) the next time jobs load. It is set by the
-	// parent App after a save so the just-edited/created job stays highlighted,
-	// and cleared after the first load attempt. Mirrors highlightRepoID in
+	// parent App when the form returns, so the edited, created or cancelled-from
+	// job stays highlighted, and cleared after the first load attempt. Mirrors highlightRepoID in
 	// repo_list.go.
 	highlightJobID string
 
@@ -669,6 +669,7 @@ func (m *ListModel) SetSize(width, height int)  { m.width, m.height = width, hei
 func (m *ListModel) SetReturnView(view ui.View) { m.returnView = view }
 func (m ListModel) ReturnView() ui.View         { return m.returnView }
 func (m *ListModel) HighlightJob(id string)     { m.highlightJobID = id }
+func (m ListModel) SelectedJobID() string       { return m.selectedJob().GetId() }
 func (m *ListModel) Table() *ui.Table           { return &m.table }
 func (m ListModel) TableHeight() int            { return m.tableHeight() }
 func (m *FormModel) SetSize(width, height int)  { m.width, m.height = width, height }

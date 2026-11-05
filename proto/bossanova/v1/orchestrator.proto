@@ -623,6 +623,20 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "none";
   }
+  // AcquireTrackerIssueLease acquires or renews organization-scoped issue work.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc AcquireTrackerIssueLease(AcquireTrackerIssueLeaseRequest) returns (AcquireTrackerIssueLeaseResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // ReleaseTrackerIssueLease releases only the matching holder's issue work.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc ReleaseTrackerIssueLease(ReleaseTrackerIssueLeaseRequest) returns (ReleaseTrackerIssueLeaseResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
   // AcquireAgentCredentialRefreshLease distributes opaque end-to-end credential material.
   rpc AcquireAgentCredentialRefreshLease(AcquireAgentCredentialRefreshLeaseRequest) returns (AcquireAgentCredentialRefreshLeaseResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;

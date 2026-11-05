@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/status"
 )
@@ -60,5 +61,45 @@ func TestProof_Sessions_AC208702_HydratesCurrentProof(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestMergedProofConfidence(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		state       machine.State
+		display     bool
+		head, level string
+		reader      bool
+		want        pb.ConfidenceLevel
+	}{
+		{"display head", machine.Merged, true, timelineHead, "high", true, pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH},
+		{"snapshot head", machine.Merged, false, timelineHead, "high", true, pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH},
+		{"open", machine.ReadyForReview, true, timelineHead, "high", true, 0},
+		{"different head", machine.Merged, true, strings.Repeat("b", 40), "high", true, 0},
+		{"legacy", machine.Merged, true, timelineHead, "", true, 0},
+		{"no reader", machine.Merged, true, timelineHead, "high", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := 1
+			row := &models.Session{ID: "s", RepoID: "r", State: tc.state, PRNumber: &n, UpdatedAt: time.Now()}
+			tracker := status.NewDisplayTracker()
+			if tc.display {
+				tracker.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusMerged, HeadSHA: timelineHead})
+			}
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
+			s.sessions = &sessionStoreFake{sess: row}
+			s.checkSnapshots = &fakeCheckSnapshotStore{snaps: []db.CheckSnapshot{{HeadSHA: timelineHead}}}
+			if tc.reader {
+				s.evidence = attentionProofEvidence{record: evidence.ProofRecord{Head: tc.head, Level: tc.level}}
+			}
+			resp, err := s.GetSession(t.Context(), connect.NewRequest(&pb.GetSessionRequest{Id: "s"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := resp.Msg.Session.GetMergedConfidenceLevel(); got != tc.want {
+				t.Fatalf("level=%v want %v", got, tc.want)
+			}
+		})
 	}
 }

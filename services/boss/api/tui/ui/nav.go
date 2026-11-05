@@ -42,15 +42,16 @@ const (
 
 // switchViewMsg requests the app to switch to a different view.
 type SwitchViewMsg struct {
-	View       View
-	SessionID  string           // used for ViewAttach and ViewChatPicker
-	ResumeID   string           // Claude Code session UUID to resume (ViewAttach only)
-	ChatID     string           // agent session ID of the chat to select once the list loads (ViewChatPicker only)
-	AgentName  string           // optional per-chat agent override (ViewAttach only); empty = inherit session
-	ArmedNote  string           // what a waiting chat is parked on, shown while launching (ViewAttach only)
-	ReturnView View             // optional view to return to when the target view is cancelled
-	FirstRepo  bool             // true when add-repo was opened from the zero-repo home empty state (return home on cancel)
-	Account    *pb.AgentAccount // selected account carrier for ViewAgentAccountEdit (BOS-266)
+	View           View
+	SessionID      string           // used for ViewAttach and ViewChatPicker
+	ResumeID       string           // Claude Code session UUID to resume (ViewAttach only)
+	ChatID         string           // agent session ID of the chat to select once the list loads (ViewChatPicker only)
+	AgentName      string           // optional per-chat agent override (ViewAttach only); empty = inherit session
+	ArmedNote      string           // what a waiting chat is parked on, shown while launching (ViewAttach only)
+	ReturnView     View             // optional view to return to when the target view is cancelled
+	FirstRepo      bool             // true when add-repo was opened from the zero-repo home empty state (return home on cancel)
+	Account        *pb.AgentAccount // selected account carrier for ViewAgentAccountEdit (BOS-266)
+	AgentAccountID string           // agent account to select once the list loads (ViewAgentAccounts only)
 	// reauthAccountID switches ViewAgentAccountRegister into in-place
 	// reauthentication for that account instead of adding a new one
 	// (BOS-1142): the provider chooser is skipped and the flow replaces the

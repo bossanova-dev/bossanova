@@ -649,3 +649,26 @@ func TestOpenPRSnapshotNotConsultedByUnmarkedReads(t *testing.T) {
 		t.Fatalf("gh calls = %q, want %q", got, want)
 	}
 }
+
+func TestSnapshotPRSize_Sessions_AC213501(t *testing.T) {
+	fixture := `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":42,"state":"OPEN","mergeable":"MERGEABLE","additions":12,"deletions":3,"changedFiles":2}]}}}}`
+	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		if !isGraphQL(args) {
+			t.Fatalf("unexpected per-PR call %v", args)
+		}
+		query := strings.Join(args, " ")
+		for _, field := range []string{"additions", "deletions", "changedFiles"} {
+			if !strings.Contains(query, field) {
+				t.Errorf("snapshot query misses %s", field)
+			}
+		}
+		return fixture, nil
+	}))
+	got, err := p.GetPRStatus(vcs.WithCachedReads(t.Context()), "o/r", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AddedLineCount != 12 || got.DeletedLineCount != 3 || got.ChangedFileCount != 2 {
+		t.Fatalf("size lost: %+v", got)
+	}
+}

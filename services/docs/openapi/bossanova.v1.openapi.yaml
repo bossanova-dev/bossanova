@@ -43,6 +43,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.AcquireAgentCredentialRefreshLeaseResponse'
+  /bossanova.v1.OrchestratorService/AcquireTrackerIssueLease:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: AcquireTrackerIssueLease
+      description: |-
+        AcquireTrackerIssueLease acquires or renews organization-scoped issue work.
+         buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+      operationId: bossanova.v1.OrchestratorService.AcquireTrackerIssueLease
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.AcquireTrackerIssueLeaseRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.AcquireTrackerIssueLeaseResponse'
   /bossanova.v1.OrchestratorService/ApproveAgentCredentialDevice:
     post:
       tags:
@@ -4668,6 +4706,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ReleaseAgentCredentialRefreshLeaseResponse'
+  /bossanova.v1.OrchestratorService/ReleaseTrackerIssueLease:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ReleaseTrackerIssueLease
+      description: |-
+        ReleaseTrackerIssueLease releases only the matching holder's issue work.
+         buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+      operationId: bossanova.v1.OrchestratorService.ReleaseTrackerIssueLease
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ReleaseTrackerIssueLeaseRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ReleaseTrackerIssueLeaseResponse'
   /bossanova.v1.OrchestratorService/RemoveOrganizationMember:
     post:
       tags:
@@ -5647,6 +5723,44 @@ components:
           title: expires_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: AcquireAgentCredentialRefreshLeaseResponse
+      additionalProperties: false
+    bossanova.v1.AcquireTrackerIssueLeaseRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+        issueKey:
+          type: string
+          title: issue_key
+        purpose:
+          title: purpose
+          $ref: '#/components/schemas/bossanova.v1.TrackerIssueLeasePurpose'
+        holderId:
+          type: string
+          title: holder_id
+        ttlSeconds:
+          type: integer
+          title: ttl_seconds
+          format: int32
+          description: Zero selects the default two hours; otherwise 60 through 14400 seconds.
+      title: AcquireTrackerIssueLeaseRequest
+      additionalProperties: false
+      description: AcquireTrackerIssueLeaseRequest acquires or renews one holder's issue lease.
+    bossanova.v1.AcquireTrackerIssueLeaseResponse:
+      type: object
+      properties:
+        isAcquired:
+          type: boolean
+          title: is_acquired
+        expiresAt:
+          title: expires_at
+          description: The new expiry, or the live peer's expiry; absent when unknown.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        scope:
+          title: scope
+          $ref: '#/components/schemas/bossanova.v1.TrackerIssueLeaseScope'
+      title: AcquireTrackerIssueLeaseResponse
       additionalProperties: false
     bossanova.v1.AddAgentAccountCommand:
       type: object
@@ -7808,6 +7922,14 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CloudTrialEligibility'
       title: CloudAccessStatus
       additionalProperties: false
+    bossanova.v1.CloudControl:
+      type: string
+      title: CloudControl
+      enum:
+        - CLOUD_CONTROL_UNSPECIFIED
+        - CLOUD_CONTROL_READ_ONLY
+        - CLOUD_CONTROL_FULL
+      description: CloudControl is the daemon's locally configured cloud control mode.
     bossanova.v1.CloudTrialEligibility:
       type: string
       title: CloudTrialEligibility
@@ -8286,6 +8408,7 @@ components:
         - ERROR_CODE_DEADLINE_EXCEEDED
         - ERROR_CODE_CANCELED
         - ERROR_CODE_UNIMPLEMENTED
+        - ERROR_CODE_CLOUD_CONTROL_DISABLED
       description: |-
         ErrorCode is a typed channel for failure-mode signalling so bosso can
          map daemon errors back to ConnectRPC codes without parsing the human-
@@ -10029,6 +10152,10 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.AgentAccount'
           title: agent_accounts
+        cloudControl:
+          title: cloud_control
+          description: Presentation only; the daemon enforces its locally configured mode.
+          $ref: '#/components/schemas/bossanova.v1.CloudControl'
       title: DaemonSnapshot
       additionalProperties: false
       description: |-
@@ -19367,6 +19494,31 @@ components:
       type: object
       title: ReleaseAgentCredentialRefreshLeaseResponse
       additionalProperties: false
+    bossanova.v1.ReleaseTrackerIssueLeaseRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+        issueKey:
+          type: string
+          title: issue_key
+        purpose:
+          title: purpose
+          $ref: '#/components/schemas/bossanova.v1.TrackerIssueLeasePurpose'
+        holderId:
+          type: string
+          title: holder_id
+      title: ReleaseTrackerIssueLeaseRequest
+      additionalProperties: false
+    bossanova.v1.ReleaseTrackerIssueLeaseResponse:
+      type: object
+      properties:
+        isReleased:
+          type: boolean
+          title: is_released
+      title: ReleaseTrackerIssueLeaseResponse
+      additionalProperties: false
     bossanova.v1.RemoveAgentAccountCommand:
       type: object
       properties:
@@ -20180,6 +20332,10 @@ components:
             The level the queue ranks and counts the row by: the attention's
              confidence_level, or BLOCKED for a blocked park that carries none.
           $ref: '#/components/schemas/bossanova.v1.ConfidenceLevel'
+        isAuditSample:
+          type: boolean
+          title: is_audit_sample
+          description: A merged High PR selected for audit, excluded from level_counts.
       title: ReviewQueueRow
       additionalProperties: false
       description: ReviewQueueRow is one PR parked by verify for a person.
@@ -20191,6 +20347,7 @@ components:
         - REVIEW_QUEUE_SORT_MOST_CONFIDENT
         - REVIEW_QUEUE_SORT_LEAST_CONFIDENT
         - REVIEW_QUEUE_SORT_OLDEST
+        - REVIEW_QUEUE_SORT_SMALLEST
       description: ReviewQueueSort orders the review queue. UNSPECIFIED is MOST_CONFIDENT.
     bossanova.v1.ReviewState:
       type: string
@@ -21529,6 +21686,29 @@ components:
           description: |-
             Adopted only for verification; automatic repair never acts on this session.
              Set at creation and never changes afterwards.
+        mergedConfidenceLevel:
+          title: merged_confidence_level
+          description: |-
+            Proof confidence for the head this MERGED session merged at; unset for
+             other states, legacy proofs without a level, or an unavailable record.
+          $ref: '#/components/schemas/bossanova.v1.ConfidenceLevel'
+        prAddedLineCount:
+          type: integer
+          title: pr_added_line_count
+          format: int32
+          description: |-
+            PR size from the display poller's PR fetch, never persisted. Zero changed
+             files means the size has not been polled yet (a restarted daemon, or no PR).
+             Additive fields need no dated API bump; see
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        prDeletedLineCount:
+          type: integer
+          title: pr_deleted_line_count
+          format: int32
+        prChangedFileCount:
+          type: integer
+          title: pr_changed_file_count
+          format: int32
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -23691,6 +23871,22 @@ components:
       title: TrackerIssue
       additionalProperties: false
       description: TrackerIssue represents an issue from an external tracker (Linear, Jira, etc.).
+    bossanova.v1.TrackerIssueLeasePurpose:
+      type: string
+      title: TrackerIssueLeasePurpose
+      enum:
+        - TRACKER_ISSUE_LEASE_PURPOSE_UNSPECIFIED
+        - TRACKER_ISSUE_LEASE_PURPOSE_PLAN
+        - TRACKER_ISSUE_LEASE_PURPOSE_BUILD
+      description: TrackerIssueLeasePurpose separates planning and building work on the same issue.
+    bossanova.v1.TrackerIssueLeaseScope:
+      type: string
+      title: TrackerIssueLeaseScope
+      enum:
+        - TRACKER_ISSUE_LEASE_SCOPE_UNSPECIFIED
+        - TRACKER_ISSUE_LEASE_SCOPE_ORGANIZATION
+        - TRACKER_ISSUE_LEASE_SCOPE_DAEMON
+      description: TrackerIssueLeaseScope identifies the coordinator that arbitrates a lease.
     bossanova.v1.TranscriptExistsRequest:
       type: object
       properties:

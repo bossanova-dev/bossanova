@@ -16,9 +16,12 @@ import {
   measureHeadroom,
   decideHeadroom,
   parseFloorGiB,
+  reclaimLockDir,
 } from './test-infra/disk-headroom-lib.mjs'
 import {
   admitGate,
+  admissionConfig,
+  acquireGateSlotSync,
   gateBazelEnv,
   gateClass,
   releaseGateSlot,
@@ -195,9 +198,14 @@ function unknownCauseLine(runDir) {
   const queued = readJson(runDir, 'queued')
   if (queued && !fs.existsSync(path.join(runDir, 'admission.json'))) {
     // A marker from before pools existed is a bare holder string for the one (heavy) pool.
-    const { pool = 'heavy', holders = queued } = typeof queued === 'object' ? queued : {}
-    parts.push(`phase: queued for a ${pool} gate slot - held by ${holders}`)
+    const { pool = 'heavy', holders = queued, ahead } = typeof queued === 'object' ? queued : {}
+    parts.push(
+      `phase: queued for a ${pool} gate slot - ${ahead === undefined ? '' : `${ahead} ahead, `}held by ${holders}`,
+    )
   }
+  const preflight = readJson(runDir, 'preflight')
+  if (preflight)
+    parts.push(`phase: disk preflight - ${preflight.phase} (${ageSeconds(preflight.startedAt)}s)`)
   const isolationDir = path.join(runDir, 'isolation')
   if (fs.existsSync(isolationDir) && !fs.existsSync(path.join(runDir, 'isolation.json'))) {
     const newest = fs
@@ -317,7 +325,7 @@ function loadSampler(load, phase, runDir) {
   }
 }
 
-function diskPreflight(logFd) {
+function diskPreflight(logFd, runDir, label) {
   const floorBytes =
     parseFloorGiB(process.env.BOSS_GATE_MIN_FREE_GIB, (line) => fs.writeSync(logFd, `${line}\n`)) *
     GiB
@@ -340,17 +348,87 @@ function diskPreflight(logFd) {
   const reclaim = (entries) => {
     const decision = decideHeadroom({ entries, floorBytes })
     if (decision.verdict !== 'below-floor') return
-    try {
-      const { bytes } = evictGoCache({ dir: cacheDir, targetBytes: Number.MAX_SAFE_INTEGER })
-      const targetBytes = Math.max(0, bytes - (floorBytes - decision.lowest.freeBytes) * 1.1)
-      record.reclaimedBytes += evictGoCache({ dir: cacheDir, targetBytes }).reclaimedBytes
-    } catch (error) {
-      fs.writeSync(logFd, `gate-run preflight: reclaim unavailable: ${error.message}\n`)
+    const startedAt = Date.now()
+    const marker = path.join(runDir, 'preflight')
+    const phase = (phase) => {
+      try {
+        writeFileAtomic(marker, JSON.stringify({ phase, startedAt }))
+      } catch {
+        // Diagnostics must not prevent reclaim when the run volume is already full.
+      }
     }
-    fs.writeSync(
-      logFd,
-      `gate-run preflight: reclaimed ${(record.reclaimedBytes / GiB).toFixed(2)} GiB from Go build cache\n`,
+    const log = (line) => {
+      try {
+        fs.writeSync(logFd, `gate-run preflight: ${line}\n`)
+      } catch {
+        // Reclaim must also survive a full filesystem backing the diagnostic log.
+      }
+    }
+    const shouldStop = () => wasStopped(runDir)
+    phase('starting reclaim')
+    log(
+      `${(decision.lowest.freeBytes / GiB).toFixed(2)} GiB free on ${decision.lowest.path}, below floor ${(floorBytes / GiB).toFixed(2)} GiB; reclaiming from Go cache ${cacheDir}`,
     )
+    let lock
+    try {
+      try {
+        lock = acquireGateSlotSync({
+          ...admissionConfig(),
+          dir: reclaimLockDir(process.env, cacheDir),
+          slots: 1,
+          label,
+          shouldStop,
+          log: () => {},
+          onWait: (holders) => {
+            phase('waiting for reclaim lock')
+            log(`waiting for ${holders} to finish reclaiming the Go cache`)
+          },
+        })
+      } catch (error) {
+        if (error.code === 'GATE_ADMISSION_STOPPED') return
+        // The lock only serializes scans; a timeout or a lock directory on a full
+        // volume must not stop the reclaim that would free that volume.
+        const reason = error.code === 'GATE_ADMISSION_TIMEOUT' ? 'timed out' : 'unavailable'
+        log(`reclaim lock ${reason}; continuing unlocked: ${error.message}`)
+      }
+      const remeasured = decideHeadroom({ entries: measure(), floorBytes })
+      if (remeasured.verdict !== 'below-floor') {
+        log(
+          `headroom recovered (${(remeasured.lowest.freeBytes / GiB).toFixed(2)} GiB free); skipping Go cache scan`,
+        )
+        return
+      }
+      const result = evictGoCache({
+        dir: cacheDir,
+        reclaimBytes: (floorBytes - remeasured.lowest.freeBytes) * 1.1,
+        shouldStop,
+        onProgress: (event) => {
+          const name = event.phase === 'scan' ? 'sizing Go cache' : 'evicting Go cache'
+          phase(name)
+          if (
+            event.bucketsDone === 1 ||
+            event.bucketsDone % 32 === 0 ||
+            event.bucketsDone === event.buckets
+          ) {
+            const amount =
+              event.phase === 'scan'
+                ? `${(event.bytes / GiB).toFixed(2)} GiB`
+                : `reclaimed ${(event.reclaimedBytes / GiB).toFixed(2)} GiB`
+            log(`${name}: ${event.bucketsDone}/${event.buckets} buckets, ${amount}`)
+          }
+        },
+      })
+      record.reclaimedBytes += result.reclaimedBytes
+      log(
+        `reclaimed ${(record.reclaimedBytes / GiB).toFixed(2)} GiB from Go build cache in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`,
+      )
+      if (result.stopped) log('stopped during Go cache reclaim')
+    } catch (error) {
+      log(`reclaim unavailable: ${error.message}`)
+    } finally {
+      releaseGateSlot(lock)
+      fs.rmSync(marker, { force: true })
+    }
   }
   reclaim(record.preflight)
   const decision = decideHeadroom({ entries: measure(), floorBytes })
@@ -428,8 +506,8 @@ async function supervise(args) {
       label: command.join(' '),
       signal: admissionAbort.signal,
       log: (line) => fs.writeSync(logFd, `${line}\n`),
-      onWait: (holders, pool) =>
-        writeFileAtomic(path.join(runDir, 'queued'), JSON.stringify({ pool, holders })),
+      onWait: (holders, pool, ahead) =>
+        writeFileAtomic(path.join(runDir, 'queued'), JSON.stringify({ pool, holders, ahead })),
     })
     const { slots, pool, waitedMs, heldByAtAdmission, inherited } = admission
     writeFileAtomic(
@@ -451,7 +529,7 @@ async function supervise(args) {
     fs.rmSync(path.join(runDir, 'queued'), { force: true })
   }
   try {
-    if (!admissionFailed) disk = diskPreflight(logFd)
+    if (!admissionFailed) disk = diskPreflight(logFd, runDir, command.join(' '))
   } catch (error) {
     fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
   }

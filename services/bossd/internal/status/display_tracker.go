@@ -44,6 +44,11 @@ type DisplayEntry struct {
 	// every poll via Set — unlike IsRepairing, it is not preserved across a
 	// Set that omits it, because each poll carries the authoritative value.
 	Mergeable *bool
+	// PR sizes are authoritative on every Set, like Mergeable, and not persisted.
+	// ChangedFileCount zero means the size is unknown.
+	AddedLineCount   int
+	DeletedLineCount int
+	ChangedFileCount int
 	// VerifyReason is vcs.DisplayInfo.VerifyReason: the park's codes when Status
 	// is DisplayStatusNeedsHuman (and possibly empty there), or a wait's reason
 	// code when it is DisplayStatusVerifying. Read it through ParkCodes or
@@ -166,6 +171,9 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		Archiving:           archiving,
 		HeadSHA:             info.HeadSHA,
 		Mergeable:           info.Mergeable,
+		AddedLineCount:      info.AddedLineCount,
+		DeletedLineCount:    info.DeletedLineCount,
+		ChangedFileCount:    info.ChangedFileCount,
 		VerifyReason:        info.VerifyReason,
 		VerifyLabel:         info.VerifyLabel,
 		BlockedRunWorkingAt: blockedRunWorkingAt,
@@ -180,6 +188,8 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	statusChanged := !existed || oldEntry.Restored || oldStatus != info.Status
 	onChange := t.onChange
 	partialChanged := info.IsPartial != (existed && oldEntry.IsPartial)
+	sizeChanged := (!existed && (info.AddedLineCount != 0 || info.DeletedLineCount != 0 || info.ChangedFileCount != 0)) ||
+		(existed && (info.AddedLineCount != oldEntry.AddedLineCount || info.DeletedLineCount != oldEntry.DeletedLineCount || info.ChangedFileCount != oldEntry.ChangedFileCount))
 	onAttentionChange := t.onAttentionChange
 	t.mu.Unlock()
 
@@ -187,7 +197,7 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		go onChange(sessionID, oldEntry, newEntry)
 	}
 	t.scheduleRecompute(sessionID)
-	if partialChanged && onAttentionChange != nil {
+	if (partialChanged || sizeChanged) && onAttentionChange != nil {
 		onAttentionChange(sessionID)
 	}
 }
@@ -242,6 +252,9 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 		Archiving:           e.Archiving,
 		HeadSHA:             e.HeadSHA,
 		Mergeable:           e.Mergeable,
+		AddedLineCount:      e.AddedLineCount,
+		DeletedLineCount:    e.DeletedLineCount,
+		ChangedFileCount:    e.ChangedFileCount,
 		VerifyReason:        e.VerifyReason,
 		VerifyLabel:         e.VerifyLabel,
 		BlockedRunWorkingAt: e.BlockedRunWorkingAt,
@@ -274,6 +287,9 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 			Archiving:           e.Archiving,
 			HeadSHA:             e.HeadSHA,
 			Mergeable:           e.Mergeable,
+			AddedLineCount:      e.AddedLineCount,
+			DeletedLineCount:    e.DeletedLineCount,
+			ChangedFileCount:    e.ChangedFileCount,
 			VerifyReason:        e.VerifyReason,
 			VerifyLabel:         e.VerifyLabel,
 			BlockedRunWorkingAt: e.BlockedRunWorkingAt,
@@ -454,7 +470,7 @@ func (t *DisplayTracker) SetOnChange(fn func(sessionID string, oldEntry, newEntr
 	t.onChange = fn
 }
 
-// SetOnAttentionChange wires publication for a partial marker added or removed
+// SetOnAttentionChange wires publication for partial marker or PR size changes
 // without changing the legacy display status. Set calls it after recomputation,
 // outside the tracker lock, so publishers can hydrate the current session.
 func (t *DisplayTracker) SetOnAttentionChange(fn func(sessionID string)) {

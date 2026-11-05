@@ -170,6 +170,9 @@ func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo,
 		info.IsPartial = vcs.IsPartialMarked(prStatus.Title, prStatus.Body)
 	}
 	info.Mergeable = prStatus.Mergeable
+	info.AddedLineCount = prStatus.AddedLineCount
+	info.DeletedLineCount = prStatus.DeletedLineCount
+	info.ChangedFileCount = prStatus.ChangedFileCount
 	s.displayTracker.Set(sess.ID, info)
 	return nil
 }

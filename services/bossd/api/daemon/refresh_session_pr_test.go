@@ -29,6 +29,9 @@ func TestRefreshSessionPRUpdatesStaleDraftSnapshot(t *testing.T) {
 			Mergeable:        boolPtr(true),
 			MergeStateStatus: vcs.MergeStateStatusClean,
 			HeadSHA:          "ready-sha",
+			AddedLineCount:   12,
+			DeletedLineCount: 3,
+			ChangedFileCount: 2,
 		},
 		checks: []vcs.CheckResult{{
 			Status:     vcs.CheckStatusCompleted,
@@ -44,7 +47,7 @@ func TestRefreshSessionPRUpdatesStaleDraftSnapshot(t *testing.T) {
 	if got := resp.Msg.GetSession().GetDisplayStatus(); got != pb.DisplayStatus_DISPLAY_STATUS_PASSING {
 		t.Fatalf("display_status = %v, want PASSING", got)
 	}
-	if got := tracker.Get("s1"); got == nil || got.Status != vcs.DisplayStatusPassing || got.HeadSHA != "ready-sha" {
+	if got := tracker.Get("s1"); got == nil || got.Status != vcs.DisplayStatusPassing || got.HeadSHA != "ready-sha" || got.AddedLineCount != 12 || got.DeletedLineCount != 3 || got.ChangedFileCount != 2 {
 		t.Fatalf("tracker entry = %+v, want passing at ready-sha", got)
 	}
 	if provider.prStatusCalls != 1 || provider.checkCalls != 1 || provider.reviewCalls != 1 {

@@ -307,6 +307,12 @@ const (
 	// OrchestratorServiceRollAgentCredentialKeyProcedure is the fully-qualified name of the
 	// OrchestratorService's RollAgentCredentialKey RPC.
 	OrchestratorServiceRollAgentCredentialKeyProcedure = "/bossanova.v1.OrchestratorService/RollAgentCredentialKey"
+	// OrchestratorServiceAcquireTrackerIssueLeaseProcedure is the fully-qualified name of the
+	// OrchestratorService's AcquireTrackerIssueLease RPC.
+	OrchestratorServiceAcquireTrackerIssueLeaseProcedure = "/bossanova.v1.OrchestratorService/AcquireTrackerIssueLease"
+	// OrchestratorServiceReleaseTrackerIssueLeaseProcedure is the fully-qualified name of the
+	// OrchestratorService's ReleaseTrackerIssueLease RPC.
+	OrchestratorServiceReleaseTrackerIssueLeaseProcedure = "/bossanova.v1.OrchestratorService/ReleaseTrackerIssueLease"
 	// OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure is the fully-qualified name of the
 	// OrchestratorService's AcquireAgentCredentialRefreshLease RPC.
 	OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure = "/bossanova.v1.OrchestratorService/AcquireAgentCredentialRefreshLease"
@@ -735,6 +741,12 @@ type OrchestratorServiceClient interface {
 	PutAgentCredentialBlob(context.Context, *connect.Request[v1.PutAgentCredentialBlobRequest]) (*connect.Response[v1.PutAgentCredentialBlobResponse], error)
 	// RollAgentCredentialKey distributes opaque end-to-end credential material.
 	RollAgentCredentialKey(context.Context, *connect.Request[v1.RollAgentCredentialKeyRequest]) (*connect.Response[v1.RollAgentCredentialKeyResponse], error)
+	// AcquireTrackerIssueLease acquires or renews organization-scoped issue work.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	AcquireTrackerIssueLease(context.Context, *connect.Request[v1.AcquireTrackerIssueLeaseRequest]) (*connect.Response[v1.AcquireTrackerIssueLeaseResponse], error)
+	// ReleaseTrackerIssueLease releases only the matching holder's issue work.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	ReleaseTrackerIssueLease(context.Context, *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error)
 	// AcquireAgentCredentialRefreshLease distributes opaque end-to-end credential material.
 	AcquireAgentCredentialRefreshLease(context.Context, *connect.Request[v1.AcquireAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.AcquireAgentCredentialRefreshLeaseResponse], error)
 	// ReleaseAgentCredentialRefreshLease distributes opaque end-to-end credential material.
@@ -1569,6 +1581,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("RollAgentCredentialKey")),
 			connect.WithClientOptions(opts...),
 		),
+		acquireTrackerIssueLease: connect.NewClient[v1.AcquireTrackerIssueLeaseRequest, v1.AcquireTrackerIssueLeaseResponse](
+			httpClient,
+			baseURL+OrchestratorServiceAcquireTrackerIssueLeaseProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("AcquireTrackerIssueLease")),
+			connect.WithClientOptions(opts...),
+		),
+		releaseTrackerIssueLease: connect.NewClient[v1.ReleaseTrackerIssueLeaseRequest, v1.ReleaseTrackerIssueLeaseResponse](
+			httpClient,
+			baseURL+OrchestratorServiceReleaseTrackerIssueLeaseProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ReleaseTrackerIssueLease")),
+			connect.WithClientOptions(opts...),
+		),
 		acquireAgentCredentialRefreshLease: connect.NewClient[v1.AcquireAgentCredentialRefreshLeaseRequest, v1.AcquireAgentCredentialRefreshLeaseResponse](
 			httpClient,
 			baseURL+OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure,
@@ -2025,6 +2049,8 @@ type orchestratorServiceClient struct {
 	getAgentCredentialBlob                 *connect.Client[v1.GetAgentCredentialBlobRequest, v1.GetAgentCredentialBlobResponse]
 	putAgentCredentialBlob                 *connect.Client[v1.PutAgentCredentialBlobRequest, v1.PutAgentCredentialBlobResponse]
 	rollAgentCredentialKey                 *connect.Client[v1.RollAgentCredentialKeyRequest, v1.RollAgentCredentialKeyResponse]
+	acquireTrackerIssueLease               *connect.Client[v1.AcquireTrackerIssueLeaseRequest, v1.AcquireTrackerIssueLeaseResponse]
+	releaseTrackerIssueLease               *connect.Client[v1.ReleaseTrackerIssueLeaseRequest, v1.ReleaseTrackerIssueLeaseResponse]
 	acquireAgentCredentialRefreshLease     *connect.Client[v1.AcquireAgentCredentialRefreshLeaseRequest, v1.AcquireAgentCredentialRefreshLeaseResponse]
 	releaseAgentCredentialRefreshLease     *connect.Client[v1.ReleaseAgentCredentialRefreshLeaseRequest, v1.ReleaseAgentCredentialRefreshLeaseResponse]
 	listCredentialAgentAccounts            *connect.Client[v1.ListCredentialAgentAccountsRequest, v1.ListCredentialAgentAccountsResponse]
@@ -2545,6 +2571,16 @@ func (c *orchestratorServiceClient) PutAgentCredentialBlob(ctx context.Context, 
 // RollAgentCredentialKey calls bossanova.v1.OrchestratorService.RollAgentCredentialKey.
 func (c *orchestratorServiceClient) RollAgentCredentialKey(ctx context.Context, req *connect.Request[v1.RollAgentCredentialKeyRequest]) (*connect.Response[v1.RollAgentCredentialKeyResponse], error) {
 	return c.rollAgentCredentialKey.CallUnary(ctx, req)
+}
+
+// AcquireTrackerIssueLease calls bossanova.v1.OrchestratorService.AcquireTrackerIssueLease.
+func (c *orchestratorServiceClient) AcquireTrackerIssueLease(ctx context.Context, req *connect.Request[v1.AcquireTrackerIssueLeaseRequest]) (*connect.Response[v1.AcquireTrackerIssueLeaseResponse], error) {
+	return c.acquireTrackerIssueLease.CallUnary(ctx, req)
+}
+
+// ReleaseTrackerIssueLease calls bossanova.v1.OrchestratorService.ReleaseTrackerIssueLease.
+func (c *orchestratorServiceClient) ReleaseTrackerIssueLease(ctx context.Context, req *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error) {
+	return c.releaseTrackerIssueLease.CallUnary(ctx, req)
 }
 
 // AcquireAgentCredentialRefreshLease calls
@@ -3097,6 +3133,12 @@ type OrchestratorServiceHandler interface {
 	PutAgentCredentialBlob(context.Context, *connect.Request[v1.PutAgentCredentialBlobRequest]) (*connect.Response[v1.PutAgentCredentialBlobResponse], error)
 	// RollAgentCredentialKey distributes opaque end-to-end credential material.
 	RollAgentCredentialKey(context.Context, *connect.Request[v1.RollAgentCredentialKeyRequest]) (*connect.Response[v1.RollAgentCredentialKeyResponse], error)
+	// AcquireTrackerIssueLease acquires or renews organization-scoped issue work.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	AcquireTrackerIssueLease(context.Context, *connect.Request[v1.AcquireTrackerIssueLeaseRequest]) (*connect.Response[v1.AcquireTrackerIssueLeaseResponse], error)
+	// ReleaseTrackerIssueLease releases only the matching holder's issue work.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	ReleaseTrackerIssueLease(context.Context, *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error)
 	// AcquireAgentCredentialRefreshLease distributes opaque end-to-end credential material.
 	AcquireAgentCredentialRefreshLease(context.Context, *connect.Request[v1.AcquireAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.AcquireAgentCredentialRefreshLeaseResponse], error)
 	// ReleaseAgentCredentialRefreshLease distributes opaque end-to-end credential material.
@@ -3927,6 +3969,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("RollAgentCredentialKey")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceAcquireTrackerIssueLeaseHandler := connect.NewUnaryHandler(
+		OrchestratorServiceAcquireTrackerIssueLeaseProcedure,
+		svc.AcquireTrackerIssueLease,
+		connect.WithSchema(orchestratorServiceMethods.ByName("AcquireTrackerIssueLease")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceReleaseTrackerIssueLeaseHandler := connect.NewUnaryHandler(
+		OrchestratorServiceReleaseTrackerIssueLeaseProcedure,
+		svc.ReleaseTrackerIssueLease,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ReleaseTrackerIssueLease")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceAcquireAgentCredentialRefreshLeaseHandler := connect.NewUnaryHandler(
 		OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure,
 		svc.AcquireAgentCredentialRefreshLease,
@@ -4471,6 +4525,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServicePutAgentCredentialBlobHandler.ServeHTTP(w, r)
 		case OrchestratorServiceRollAgentCredentialKeyProcedure:
 			orchestratorServiceRollAgentCredentialKeyHandler.ServeHTTP(w, r)
+		case OrchestratorServiceAcquireTrackerIssueLeaseProcedure:
+			orchestratorServiceAcquireTrackerIssueLeaseHandler.ServeHTTP(w, r)
+		case OrchestratorServiceReleaseTrackerIssueLeaseProcedure:
+			orchestratorServiceReleaseTrackerIssueLeaseHandler.ServeHTTP(w, r)
 		case OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure:
 			orchestratorServiceAcquireAgentCredentialRefreshLeaseHandler.ServeHTTP(w, r)
 		case OrchestratorServiceReleaseAgentCredentialRefreshLeaseProcedure:
@@ -4962,6 +5020,14 @@ func (UnimplementedOrchestratorServiceHandler) PutAgentCredentialBlob(context.Co
 
 func (UnimplementedOrchestratorServiceHandler) RollAgentCredentialKey(context.Context, *connect.Request[v1.RollAgentCredentialKeyRequest]) (*connect.Response[v1.RollAgentCredentialKeyResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RollAgentCredentialKey is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) AcquireTrackerIssueLease(context.Context, *connect.Request[v1.AcquireTrackerIssueLeaseRequest]) (*connect.Response[v1.AcquireTrackerIssueLeaseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.AcquireTrackerIssueLease is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ReleaseTrackerIssueLease(context.Context, *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ReleaseTrackerIssueLease is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) AcquireAgentCredentialRefreshLease(context.Context, *connect.Request[v1.AcquireAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.AcquireAgentCredentialRefreshLeaseResponse], error) {

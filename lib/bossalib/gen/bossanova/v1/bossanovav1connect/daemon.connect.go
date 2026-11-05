@@ -269,6 +269,12 @@ const (
 	// DaemonServiceDeleteBroadcastSubscriptionProcedure is the fully-qualified name of the
 	// DaemonService's DeleteBroadcastSubscription RPC.
 	DaemonServiceDeleteBroadcastSubscriptionProcedure = "/bossanova.v1.DaemonService/DeleteBroadcastSubscription"
+	// DaemonServiceAcquireTrackerIssueLeaseProcedure is the fully-qualified name of the DaemonService's
+	// AcquireTrackerIssueLease RPC.
+	DaemonServiceAcquireTrackerIssueLeaseProcedure = "/bossanova.v1.DaemonService/AcquireTrackerIssueLease"
+	// DaemonServiceReleaseTrackerIssueLeaseProcedure is the fully-qualified name of the DaemonService's
+	// ReleaseTrackerIssueLease RPC.
+	DaemonServiceReleaseTrackerIssueLeaseProcedure = "/bossanova.v1.DaemonService/ReleaseTrackerIssueLease"
 	// DaemonServiceGetAgentCredentialDeviceStatusProcedure is the fully-qualified name of the
 	// DaemonService's GetAgentCredentialDeviceStatus RPC.
 	DaemonServiceGetAgentCredentialDeviceStatusProcedure = "/bossanova.v1.DaemonService/GetAgentCredentialDeviceStatus"
@@ -617,6 +623,14 @@ type DaemonServiceClient interface {
 	// Idempotent: deleting an absent id, or one that has already fired, been
 	// canceled or expired, succeeds.
 	DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error)
+	// AcquireTrackerIssueLease forwards signed-in work to the organization coordinator.
+	// Local-only or signed-out daemons arbitrate in memory and return scope DAEMON.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	AcquireTrackerIssueLease(context.Context, *connect.Request[v1.AcquireTrackerIssueLeaseRequest]) (*connect.Response[v1.AcquireTrackerIssueLeaseResponse], error)
+	// ReleaseTrackerIssueLease releases the caller's local lease and, when signed in,
+	// its organization lease as well. Upstream errors never trigger a local acquire.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	ReleaseTrackerIssueLease(context.Context, *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error)
 	// Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.
 	GetAgentCredentialDeviceStatus(context.Context, *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error)
 	RenewAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RenewAgentCredentialDeviceEnrollmentResponse], error)
@@ -1215,6 +1229,18 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("DeleteBroadcastSubscription")),
 			connect.WithClientOptions(opts...),
 		),
+		acquireTrackerIssueLease: connect.NewClient[v1.AcquireTrackerIssueLeaseRequest, v1.AcquireTrackerIssueLeaseResponse](
+			httpClient,
+			baseURL+DaemonServiceAcquireTrackerIssueLeaseProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("AcquireTrackerIssueLease")),
+			connect.WithClientOptions(opts...),
+		),
+		releaseTrackerIssueLease: connect.NewClient[v1.ReleaseTrackerIssueLeaseRequest, v1.ReleaseTrackerIssueLeaseResponse](
+			httpClient,
+			baseURL+DaemonServiceReleaseTrackerIssueLeaseProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ReleaseTrackerIssueLease")),
+			connect.WithClientOptions(opts...),
+		),
 		getAgentCredentialDeviceStatus: connect.NewClient[v1.GetAgentCredentialDeviceStatusRequest, v1.GetAgentCredentialDeviceStatusResponse](
 			httpClient,
 			baseURL+DaemonServiceGetAgentCredentialDeviceStatusProcedure,
@@ -1450,6 +1476,8 @@ type daemonServiceClient struct {
 	createBroadcastSubscription          *connect.Client[v1.CreateBroadcastSubscriptionRequest, v1.CreateBroadcastSubscriptionResponse]
 	listBroadcastSubscriptions           *connect.Client[v1.ListBroadcastSubscriptionsRequest, v1.ListBroadcastSubscriptionsResponse]
 	deleteBroadcastSubscription          *connect.Client[v1.DeleteBroadcastSubscriptionRequest, v1.DeleteBroadcastSubscriptionResponse]
+	acquireTrackerIssueLease             *connect.Client[v1.AcquireTrackerIssueLeaseRequest, v1.AcquireTrackerIssueLeaseResponse]
+	releaseTrackerIssueLease             *connect.Client[v1.ReleaseTrackerIssueLeaseRequest, v1.ReleaseTrackerIssueLeaseResponse]
 	getAgentCredentialDeviceStatus       *connect.Client[v1.GetAgentCredentialDeviceStatusRequest, v1.GetAgentCredentialDeviceStatusResponse]
 	renewAgentCredentialDeviceEnrollment *connect.Client[v1.RenewAgentCredentialDeviceEnrollmentRequest, v1.RenewAgentCredentialDeviceEnrollmentResponse]
 	listAgentCredentialDevices           *connect.Client[v1.ListAgentCredentialDevicesRequest, v1.ListAgentCredentialDevicesResponse]
@@ -1877,6 +1905,16 @@ func (c *daemonServiceClient) DeleteBroadcastSubscription(ctx context.Context, r
 	return c.deleteBroadcastSubscription.CallUnary(ctx, req)
 }
 
+// AcquireTrackerIssueLease calls bossanova.v1.DaemonService.AcquireTrackerIssueLease.
+func (c *daemonServiceClient) AcquireTrackerIssueLease(ctx context.Context, req *connect.Request[v1.AcquireTrackerIssueLeaseRequest]) (*connect.Response[v1.AcquireTrackerIssueLeaseResponse], error) {
+	return c.acquireTrackerIssueLease.CallUnary(ctx, req)
+}
+
+// ReleaseTrackerIssueLease calls bossanova.v1.DaemonService.ReleaseTrackerIssueLease.
+func (c *daemonServiceClient) ReleaseTrackerIssueLease(ctx context.Context, req *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error) {
+	return c.releaseTrackerIssueLease.CallUnary(ctx, req)
+}
+
 // GetAgentCredentialDeviceStatus calls bossanova.v1.DaemonService.GetAgentCredentialDeviceStatus.
 func (c *daemonServiceClient) GetAgentCredentialDeviceStatus(ctx context.Context, req *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error) {
 	return c.getAgentCredentialDeviceStatus.CallUnary(ctx, req)
@@ -2274,6 +2312,14 @@ type DaemonServiceHandler interface {
 	// Idempotent: deleting an absent id, or one that has already fired, been
 	// canceled or expired, succeeds.
 	DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error)
+	// AcquireTrackerIssueLease forwards signed-in work to the organization coordinator.
+	// Local-only or signed-out daemons arbitrate in memory and return scope DAEMON.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	AcquireTrackerIssueLease(context.Context, *connect.Request[v1.AcquireTrackerIssueLeaseRequest]) (*connect.Response[v1.AcquireTrackerIssueLeaseResponse], error)
+	// ReleaseTrackerIssueLease releases the caller's local lease and, when signed in,
+	// its organization lease as well. Upstream errors never trigger a local acquire.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	ReleaseTrackerIssueLease(context.Context, *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error)
 	// Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.
 	GetAgentCredentialDeviceStatus(context.Context, *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error)
 	RenewAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RenewAgentCredentialDeviceEnrollmentResponse], error)
@@ -2868,6 +2914,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("DeleteBroadcastSubscription")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceAcquireTrackerIssueLeaseHandler := connect.NewUnaryHandler(
+		DaemonServiceAcquireTrackerIssueLeaseProcedure,
+		svc.AcquireTrackerIssueLease,
+		connect.WithSchema(daemonServiceMethods.ByName("AcquireTrackerIssueLease")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceReleaseTrackerIssueLeaseHandler := connect.NewUnaryHandler(
+		DaemonServiceReleaseTrackerIssueLeaseProcedure,
+		svc.ReleaseTrackerIssueLease,
+		connect.WithSchema(daemonServiceMethods.ByName("ReleaseTrackerIssueLease")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceGetAgentCredentialDeviceStatusHandler := connect.NewUnaryHandler(
 		DaemonServiceGetAgentCredentialDeviceStatusProcedure,
 		svc.GetAgentCredentialDeviceStatus,
@@ -3180,6 +3238,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceListBroadcastSubscriptionsHandler.ServeHTTP(w, r)
 		case DaemonServiceDeleteBroadcastSubscriptionProcedure:
 			daemonServiceDeleteBroadcastSubscriptionHandler.ServeHTTP(w, r)
+		case DaemonServiceAcquireTrackerIssueLeaseProcedure:
+			daemonServiceAcquireTrackerIssueLeaseHandler.ServeHTTP(w, r)
+		case DaemonServiceReleaseTrackerIssueLeaseProcedure:
+			daemonServiceReleaseTrackerIssueLeaseHandler.ServeHTTP(w, r)
 		case DaemonServiceGetAgentCredentialDeviceStatusProcedure:
 			daemonServiceGetAgentCredentialDeviceStatusHandler.ServeHTTP(w, r)
 		case DaemonServiceRenewAgentCredentialDeviceEnrollmentProcedure:
@@ -3557,6 +3619,14 @@ func (UnimplementedDaemonServiceHandler) ListBroadcastSubscriptions(context.Cont
 
 func (UnimplementedDaemonServiceHandler) DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteBroadcastSubscription is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) AcquireTrackerIssueLease(context.Context, *connect.Request[v1.AcquireTrackerIssueLeaseRequest]) (*connect.Response[v1.AcquireTrackerIssueLeaseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.AcquireTrackerIssueLease is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ReleaseTrackerIssueLease(context.Context, *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ReleaseTrackerIssueLease is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetAgentCredentialDeviceStatus(context.Context, *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error) {

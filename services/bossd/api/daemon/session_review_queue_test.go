@@ -10,7 +10,10 @@ import (
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/reviewqueue"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -24,7 +27,7 @@ func (f repoScopedSessionStore) ListActiveWithRepo(ctx context.Context, repoID s
 	rows, err := f.listSessionsSessionStoreFake.ListActiveWithRepo(ctx, repoID)
 	out := rows[:0]
 	for _, row := range rows {
-		if repoID == "" || row.RepoID == repoID {
+		if row.ArchivedAt == nil && (repoID == "" || row.RepoID == repoID) {
 			out = append(out, row)
 		}
 	}
@@ -91,5 +94,58 @@ func TestListReviewQueueServesHydratedParks_Sessions_AC209001(t *testing.T) {
 	}
 	if len(got.Msg.GetLevelCounts()) != len(pb.ConfidenceLevel_name) {
 		t.Fatalf("level counts = %v, want one per level", got.Msg.GetLevelCounts())
+	}
+}
+
+func (f repoScopedSessionStore) ListWithRepo(ctx context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+	rows, err := f.listSessionsSessionStoreFake.ListWithRepo(ctx, repoID)
+	out := make([]*db.SessionWithRepo, 0, len(rows))
+	for _, row := range rows {
+		if row.RepoID == repoID {
+			out = append(out, row)
+		}
+	}
+	return out, err
+}
+func (f repoScopedSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
+	for _, row := range f.sessions {
+		if row.ID == id {
+			return row, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+func TestListReviewQueueAudit_Sessions_AC213601(t *testing.T) {
+	origin := "https://github.com/recurser/repo"
+	n := 1
+	for !reviewqueue.IsAuditSample(origin, int32(n)) {
+		n++
+	}
+	now := time.Now()
+	recent := now.Add(-time.Hour)
+	old := now.Add(-reviewqueue.AuditWindow - time.Hour)
+	rows := []*models.Session{
+		{ID: "audit", RepoID: "r", State: machine.Merged, PRNumber: &n, StateEnteredAt: &recent, ArchivedAt: &now},
+		{ID: "expired", RepoID: "r", State: machine.Merged, PRNumber: &n, StateEnteredAt: &old, ArchivedAt: &now},
+		{ID: "elsewhere", RepoID: "other", State: machine.Merged, PRNumber: &n, StateEnteredAt: &recent, ArchivedAt: &now},
+	}
+	tracker := status.NewDisplayTracker()
+	for _, row := range rows {
+		tracker.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusMerged, HeadSHA: timelineHead})
+	}
+	s := newListSessionsDisplayStatusTestServer(rows, nil, tracker, nil)
+	s.sessions = repoScopedSessionStore{s.sessions.(*listSessionsSessionStoreFake)}
+	s.evidence = attentionProofEvidence{record: evidence.ProofRecord{Head: timelineHead, Level: "high"}}
+	got, err := s.ListReviewQueue(t.Context(), connect.NewRequest(&pb.ListReviewQueueRequest{RepoId: "r"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Msg.Rows) != 1 || got.Msg.Rows[0].GetSession().GetId() != "audit" || !got.Msg.Rows[0].GetIsAuditSample() {
+		t.Fatal(got.Msg)
+	}
+	for _, c := range got.Msg.LevelCounts {
+		if c.SessionCount != 0 {
+			t.Fatal("audit counted")
+		}
 	}
 }

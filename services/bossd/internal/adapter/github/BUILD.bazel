@@ -41,6 +41,7 @@ go_test(
         "provider_body_test.go",
         "provider_e2e_test.go",
         "provider_partial_test.go",
+        "provider_size_test.go",
         "provider_test.go",
         "ratelimit_burst_test.go",
         "ratelimit_headroom_test.go",

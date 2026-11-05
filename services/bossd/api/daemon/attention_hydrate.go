@@ -166,10 +166,12 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		in.Wait = callbackWaitForSession(p, reason)
 		in.ChatStatus = served
 		in.ProgressPhase = s.phaseForChats(d.chats, served)
+		in.ChatAtWork = served == pb.ChatStatus_CHAT_STATUS_WORKING && s.chatAtWork(d, p.GetAgentSessionId())
 	}
 	s.hydrateRepairAttention(ctx, p, d, &in)
 	in.BlockerTallies, in.BlockerFiles = s.attentionBlockers(p, d, in)
 	p.Attention = attention.Compute(in)
+	s.hydrateMergedConfidence(ctx, p, d)
 	p.Attention.ShouldShowDisplayLabel = p.Attention.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && displaystatus.FixShowsLabel(p)
 	if !session.CanResumeSessionRun(row) || (s.lifecycle != nil && !s.lifecycle.RunResumeAvailable(ctx, row, d.chats)) {
 		actions := p.Attention.Actions[:0]
@@ -180,6 +182,27 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		}
 		p.Attention.Actions = actions
 	}
+}
+
+// chatAtWork reports a chat mid-turn (attention.Input.ChatAtWork). A blocked or
+// orphaned run's own chat is left out: one wedged mid-turn still reports
+// working, and a turn the block did not see already clears the block's FIX
+// (alertstate.ClearRunWorking).
+func (s *Server) chatAtWork(d attentionDeps, runChatID string) bool {
+	runStuck := d.row.State == machine.Blocked || d.row.State == machine.Orphaned
+	for _, chat := range d.chats {
+		if chat == nil || runStuck && chat.AgentSessionID == runChatID {
+			continue
+		}
+		e := s.chatStatus.Get(chat.AgentSessionID)
+		if e == nil {
+			continue
+		}
+		if st, _ := status.PromoteWaiting(e.Status, s.chatStatus.Waiting(chat.AgentSessionID)); st == pb.ChatStatus_CHAT_STATUS_WORKING {
+			return true
+		}
+	}
+	return false
 }
 
 // callbackWaitForSession converts the served reason into plain attention facts.

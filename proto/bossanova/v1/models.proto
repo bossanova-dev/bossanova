@@ -580,6 +580,18 @@ message Session {
   // Adopted only for verification; automatic repair never acts on this session.
   // Set at creation and never changes afterwards.
   bool is_verify_only = 82;
+
+  // Proof confidence for the head this MERGED session merged at; unset for
+  // other states, legacy proofs without a level, or an unavailable record.
+  ConfidenceLevel merged_confidence_level = 83;
+
+  // PR size from the display poller's PR fetch, never persisted. Zero changed
+  // files means the size has not been polled yet (a restarted daemon, or no PR).
+  // Additive fields need no dated API bump; see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  int32 pr_added_line_count = 84;
+  int32 pr_deleted_line_count = 85;
+  int32 pr_changed_file_count = 86;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -896,6 +908,8 @@ enum ReviewQueueSort {
   REVIEW_QUEUE_SORT_MOST_CONFIDENT = 1;
   REVIEW_QUEUE_SORT_LEAST_CONFIDENT = 2;
   REVIEW_QUEUE_SORT_OLDEST = 3;
+  // Smallest known PR first, unknown sizes last.
+  REVIEW_QUEUE_SORT_SMALLEST = 4;
 }
 
 // ReviewQueueRow is one PR parked by verify for a person.
@@ -907,6 +921,8 @@ message ReviewQueueRow {
   // The level the queue ranks and counts the row by: the attention's
   // confidence_level, or BLOCKED for a blocked park that carries none.
   ConfidenceLevel confidence_level = 2;
+  // A merged High PR selected for audit, excluded from level_counts.
+  bool is_audit_sample = 3;
 }
 
 // ReviewQueueLevelCount is the review queue header count for one level.
@@ -1604,3 +1620,45 @@ message RevokeAgentCredentialDeviceRequest {
   bytes revocation_signature = 2;
 }
 message RevokeAgentCredentialDeviceResponse {}
+
+// TrackerIssueLeasePurpose separates planning and building work on the same issue.
+enum TrackerIssueLeasePurpose {
+  TRACKER_ISSUE_LEASE_PURPOSE_UNSPECIFIED = 0;
+  TRACKER_ISSUE_LEASE_PURPOSE_PLAN = 1;
+  TRACKER_ISSUE_LEASE_PURPOSE_BUILD = 2;
+}
+
+// TrackerIssueLeaseScope identifies the coordinator that arbitrates a lease.
+enum TrackerIssueLeaseScope {
+  TRACKER_ISSUE_LEASE_SCOPE_UNSPECIFIED = 0;
+  TRACKER_ISSUE_LEASE_SCOPE_ORGANIZATION = 1;
+  TRACKER_ISSUE_LEASE_SCOPE_DAEMON = 2;
+}
+
+// AcquireTrackerIssueLeaseRequest acquires or renews one holder's issue lease.
+message AcquireTrackerIssueLeaseRequest {
+  string repo_origin_url = 1;
+  string issue_key = 2;
+  TrackerIssueLeasePurpose purpose = 3;
+  string holder_id = 4;
+  // Zero selects the default two hours; otherwise 60 through 14400 seconds.
+  int32 ttl_seconds = 5;
+}
+
+message AcquireTrackerIssueLeaseResponse {
+  bool is_acquired = 1;
+  // The new expiry, or the live peer's expiry; absent when unknown.
+  google.protobuf.Timestamp expires_at = 2;
+  TrackerIssueLeaseScope scope = 3;
+}
+
+message ReleaseTrackerIssueLeaseRequest {
+  string repo_origin_url = 1;
+  string issue_key = 2;
+  TrackerIssueLeasePurpose purpose = 3;
+  string holder_id = 4;
+}
+
+message ReleaseTrackerIssueLeaseResponse {
+  bool is_released = 1;
+}

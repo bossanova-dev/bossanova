@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "encoding": "All byte fields are lowercase hex. Lengths are uint32 big-endian; counters are uint64 big-endian. Direction 1 is daemon-to-viewer, 2 is viewer-to-daemon. HPKE box = enc (32 bytes) || ciphertext. HKDF-SHA256 salt is empty; info = UTF-8 bossanova terminal frame v1 followed by NUL and direction byte.",
+  "attach": {
+    "context": {
+      "DaemonID": "daemon-vector",
+      "ViewerDeviceID": "viewer-vector",
+      "AttachID": "attach-vector",
+      "ChatID": "chat-vector"
+    },
+    "viewerPrivateKey": "2121212121212121212121212121212121212121212121212121212121212121",
+    "viewerPublicKey": "7d34a4815fa6b982535e60af3bd9b49556816080f1641ff81d2b7c8ae8268a44",
+    "daemonIdentityPublicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+    "attachKey": "6363636363636363636363636363636363636363636363636363636363636363",
+    "info": "626f7373616e6f7661207465726d696e616c20617474616368206b6579207631000000000d6461656d6f6e2d766563746f720000000d7669657765722d766563746f720000000d6174746163682d766563746f720000000b636861742d766563746f72",
+    "statement": "626f7373616e6f7661207369676e6564207465726d696e616c20617474616368206b6579207631000000000d6461656d6f6e2d766563746f720000000d7669657765722d766563746f720000000d6174746163682d766563746f720000000b636861742d766563746f72000000207d34a4815fa6b982535e60af3bd9b49556816080f1641ff81d2b7c8ae8268a440000005067e29af85ff201df44e4056a3553f83056619614bc4e474f15b43a19d64dbc635548168f94fdfdfabca3003a080f5583cd160025df7f211da1dee134fac0ced65152329e6d43dbc9339c875bf3f695fa",
+    "enc": "67e29af85ff201df44e4056a3553f83056619614bc4e474f15b43a19d64dbc63",
+    "ciphertext": "5548168f94fdfdfabca3003a080f5583cd160025df7f211da1dee134fac0ced65152329e6d43dbc9339c875bf3f695fa",
+    "box": "67e29af85ff201df44e4056a3553f83056619614bc4e474f15b43a19d64dbc635548168f94fdfdfabca3003a080f5583cd160025df7f211da1dee134fac0ced65152329e6d43dbc9339c875bf3f695fa",
+    "signature": "7e8192cebd968db33b9e6811847e379f4082751956335325ab3e4f2d8f68b94bb37ff0dd50a268a56d2aba02ccfcc55a4604598d7faad0768b155202dcf4c008"
+  },
+  "frames": [
+    {
+      "direction": 1,
+      "counter": 1,
+      "plaintext": "7465726d696e616c206672616d65206f6e650d0a",
+      "key": "4caa5ea5ad3170c7b470a65d5d09979284a47e1c5665a8d21b1d80170103e680",
+      "nonce": "000000000000000000000001",
+      "aad": "0000000d6174746163682d766563746f72010000000000000001",
+      "ciphertext": "d3aac7968b6a3c9078fc33de56ff0d767c0c441e7a29493274df73f0f0fdaa6df5a9def3",
+      "isValid": true
+    },
+    {
+      "direction": 1,
+      "counter": 2,
+      "plaintext": "00017f80ff",
+      "key": "4caa5ea5ad3170c7b470a65d5d09979284a47e1c5665a8d21b1d80170103e680",
+      "nonce": "000000000000000000000002",
+      "aad": "0000000d6174746163682d766563746f72010000000000000002",
+      "ciphertext": "60428047797feee9519e31e9ed3f635a2a7e59cf65",
+      "isValid": true
+    },
+    {
+      "direction": 1,
+      "counter": 3,
+      "plaintext": "",
+      "key": "4caa5ea5ad3170c7b470a65d5d09979284a47e1c5665a8d21b1d80170103e680",
+      "nonce": "000000000000000000000003",
+      "aad": "0000000d6174746163682d766563746f72010000000000000003",
+      "ciphertext": "eaec7217aa75cd4003e80dc2f375fde3",
+      "isValid": true
+    },
+    {
+      "direction": 1,
+      "counter": 3,
+      "plaintext": "",
+      "key": "4caa5ea5ad3170c7b470a65d5d09979284a47e1c5665a8d21b1d80170103e680",
+      "nonce": "000000000000000000000003",
+      "aad": "0000000d6174746163682d766563746f72010000000000000003",
+      "ciphertext": "ebec7217aa75cd4003e80dc2f375fde3",
+      "isValid": false
+    },
+    {
+      "direction": 2,
+      "counter": 1,
+      "plaintext": "7465726d696e616c206672616d65206f6e650d0a",
+      "key": "6062b3db7e902e87a162c7510aa191b0e5881e04a3dd76ed3700f7d714a00669",
+      "nonce": "000000000000000000000001",
+      "aad": "0000000d6174746163682d766563746f72020000000000000001",
+      "ciphertext": "414a69742494b1293779aa228ab174745b8619bf3199ec095a4ebdb8e5b6c4d6934b32c0",
+      "isValid": true
+    },
+    {
+      "direction": 2,
+      "counter": 2,
+      "plaintext": "00017f80ff",
+      "key": "6062b3db7e902e87a162c7510aa191b0e5881e04a3dd76ed3700f7d714a00669",
+      "nonce": "000000000000000000000002",
+      "aad": "0000000d6174746163682d766563746f72020000000000000002",
+      "ciphertext": "69e45bc657ad9268e6f6de6a27b0a5a74f518ebf85",
+      "isValid": true
+    },
+    {
+      "direction": 2,
+      "counter": 3,
+      "plaintext": "",
+      "key": "6062b3db7e902e87a162c7510aa191b0e5881e04a3dd76ed3700f7d714a00669",
+      "nonce": "000000000000000000000003",
+      "aad": "0000000d6174746163682d766563746f72020000000000000003",
+      "ciphertext": "3bc44c05fcc41443044b14052c220142",
+      "isValid": true
+    },
+    {
+      "direction": 2,
+      "counter": 3,
+      "plaintext": "",
+      "key": "6062b3db7e902e87a162c7510aa191b0e5881e04a3dd76ed3700f7d714a00669",
+      "nonce": "000000000000000000000003",
+      "aad": "0000000d6174746163682d766563746f72020000000000000003",
+      "ciphertext": "3ac44c05fcc41443044b14052c220142",
+      "isValid": false
+    }
+  ],
+  "sequences": [
+    {
+      "direction": 1,
+      "counters": [1, 2, 3],
+      "isValid": [true, true, true]
+    },
+    {
+      "direction": 1,
+      "counters": [2, 1],
+      "isValid": [false, false]
+    },
+    {
+      "direction": 1,
+      "counters": [1, 3, 2],
+      "isValid": [true, false, false]
+    },
+    {
+      "direction": 2,
+      "counters": [1, 2, 3],
+      "isValid": [true, true, true]
+    },
+    {
+      "direction": 2,
+      "counters": [2, 1],
+      "isValid": [false, false]
+    },
+    {
+      "direction": 2,
+      "counters": [1, 3, 2],
+      "isValid": [true, false, false]
+    }
+  ],
+  "fingerprints": {
+    "viewerDeviceID": "viewer-vector",
+    "publicKey": "7d34a4815fa6b982535e60af3bd9b49556816080f1641ff81d2b7c8ae8268a44",
+    "viewer": "WCL6-TZRE-WGT5-3GO3",
+    "daemon": "PQNM-667W-MNH6-EC2A"
+  }
+}

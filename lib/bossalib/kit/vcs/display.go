@@ -56,6 +56,11 @@ type DisplayInfo struct {
 	// conflict-after-green is detectable without attempting a merge. Set by the
 	// display poller from the PR fetch, not derived by ComputeDisplayStatus.
 	Mergeable *bool
+	// PR size is set by pollers from the PR fetch, never ComputeDisplayStatus.
+	// ChangedFileCount zero means the size has not been read.
+	AddedLineCount   int
+	DeletedLineCount int
+	ChangedFileCount int
 	// VerifyReason is the verify stage's park codes for
 	// DisplayStatusNeedsHuman (empty there when the boss/verify description
 	// names none), or the wait's reason code for DisplayStatusVerifying when

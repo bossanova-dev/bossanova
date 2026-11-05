@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "streamseal",
+    srcs = [
+        "fingerprint.go",
+        "frame.go",
+        "seal.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/streamseal",
+    visibility = ["//services/bossd:__subpackages__"],
+)
+
+go_test(
+    name = "streamseal_test",
+    srcs = [
+        "frame_test.go",
+        "seal_test.go",
+        "validation_test.go",
+        "vectors_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":streamseal"],
+)

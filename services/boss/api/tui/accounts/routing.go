@@ -11,6 +11,8 @@ func (m AgentAccountsListModel) Height() int                      { return m.hei
 func (m *AgentAccountsListModel) SetHeight(h int)                 { m.height = h }
 func (m *AgentAccountsListModel) SetReturnView(v ui.View)         { m.returnView = v }
 func (m AgentAccountsListModel) ReturnView() ui.View              { return m.returnView }
+func (m *AgentAccountsListModel) HighlightAgentAccount(id string) { m.highlightAgentAccountID = id }
+func (m AgentAccountsListModel) SelectedAgentAccountID() string   { return m.selectedAccount().GetId() }
 func (m AgentAccountsListModel) HasTelemetry() bool               { return m.telemetry != nil }
 func (m *AgentAccountEditModel) SetSize(w, h int)                 { m.width, m.height = w, h }
 func (m AgentAccountEditModel) Width() int                        { return m.width }

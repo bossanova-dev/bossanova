@@ -28,9 +28,10 @@
 // once per cycle. A merged or closed PR keeps the entry read for its head (the
 // session timeline reads only this cache, so merging must not erase the
 // evidence step) for as long as its session is listed, and only a new head
-// replaces it; nothing is dropped by time. The state of a session neither
-// listed nor observed since the previous cycle — archived or deleted — is
-// dropped.
+// replaces it. A session neither listed nor observed since the previous
+// cycle — archived or deleted — keeps its proof record for the audit window
+// after it first leaves the listing. A state with no proof record is dropped
+// at that cycle. Listing or observing a session again resets its audit window.
 package evidence
 
 import (
@@ -44,6 +45,7 @@ import (
 
 	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/kit/vcs"
+	"github.com/recurser/bossalib/reviewqueue"
 )
 
 // DefaultRefreshInterval bounds how often one head's comments are re-read.
@@ -171,6 +173,9 @@ type headState struct {
 	// cycle is the Reader's cycle count when the session was last observed,
 	// so Retain keeps a session observed after the cycle listed sessions.
 	cycle uint64
+	// unlistedAt starts the audit window when neither listing nor observation
+	// keeps this state live. Listing or observation clears it.
+	unlistedAt time.Time
 }
 
 // due reports whether the head's comments should be read on an observation
@@ -255,6 +260,7 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 	if head == "" || r.finder == nil {
 		if st != nil {
 			st.cycle = r.cycle
+			st.unlistedAt = time.Time{}
 		}
 		r.mu.Unlock()
 		return
@@ -265,6 +271,7 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 		r.sessions[obs.SessionID] = st
 	}
 	st.cycle = r.cycle
+	st.unlistedAt = time.Time{}
 	due := st.due(now, r.interval, active, concluded, ended)
 	st.verifyActive = active
 	if !ended {
@@ -346,23 +353,34 @@ func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq
 	}
 }
 
-// Retain drops the state of every session that is not in live and has not
-// been observed since the previous Retain. The display poller calls it once
-// per poll cycle with every session it listed — every non-archived session,
-// whatever its PR state — so an archived or deleted session's state goes at
-// the next cycle, while a merged session keeps its entry for as long as the
-// session exists. Sparing a session observed
-// since the previous cycle keeps one created after the cycle listed sessions
-// (and observed by a webhook refresh) until a cycle can list it. A read in
-// flight for a dropped state finds it gone and stores nothing.
+// Retain keeps listed sessions and those observed since the previous cycle.
+// The display poller calls it once per cycle with all non-archived sessions,
+// regardless of PR state. Unlisted, unobserved states with proof survive for
+// reviewqueue.AuditWindow from their first missed cycle; states without proof
+// are dropped immediately. Listing or observing a session resets the window.
+// Sparing a session observed since the previous cycle protects one created
+// after that cycle listed sessions. A read in flight for a dropped state
+// finds it gone and stores nothing.
 func (r *Reader) Retain(live map[string]struct{}) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.now()
 	for id, st := range r.sessions {
-		if _, ok := live[id]; !ok && st.cycle != r.cycle {
+		if _, ok := live[id]; ok || st.cycle == r.cycle {
+			st.unlistedAt = time.Time{}
+			continue
+		}
+		if st.proof == nil {
+			delete(r.sessions, id)
+			continue
+		}
+		if st.unlistedAt.IsZero() {
+			st.unlistedAt = now
+		}
+		if now.Sub(st.unlistedAt) >= reviewqueue.AuditWindow {
 			delete(r.sessions, id)
 		}
 	}

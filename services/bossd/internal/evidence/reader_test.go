@@ -759,11 +759,12 @@ func TestReader_KeepsALiveEndedSessionsEntryWithoutFurtherObservations(t *testin
 	}
 }
 
-// TestReader_RetainDropsSessionsNoLongerListed pins that the per-session map
+// TestReader_RetainDropsSessionsWithoutProofNoLongerListed pins that the per-session map
 // does not grow with every session bossd ever polled: a session the poller no
-// longer lists (archived or deleted) is dropped at the next cycle.
-func TestReader_RetainDropsSessionsNoLongerListed(t *testing.T) {
-	f := &fakeFinder{body: lineFor(headA), found: true}
+// longer lists (archived or deleted) is dropped at the next cycle when it
+// has no proof record.
+func TestReader_RetainDropsSessionsWithoutProofNoLongerListed(t *testing.T) {
+	f := &fakeFinder{}
 	r, _ := newTestReader(f)
 	r.Observe(context.Background(), ended(parked(headA)))
 	other := parked(headB)
@@ -786,14 +787,14 @@ func TestReader_RetainDropsSessionsNoLongerListed(t *testing.T) {
 // meanwhile, observed by a webhook refresh) is not dropped by that cycle's
 // Retain; only a cycle that neither lists nor observes it drops it.
 func TestReader_RetainKeepsASessionObservedSinceTheLastCycle(t *testing.T) {
-	f := &fakeFinder{body: lineFor(headA), found: true}
+	f := &fakeFinder{}
 	r, _ := newTestReader(f)
 	r.Retain(live())
 
 	r.Observe(context.Background(), ended(parked(headA)))
 	r.Retain(live())
-	if _, ok := r.Get("s1"); !ok {
-		t.Fatal("Get(s1) ok = false; a session observed since the last cycle must survive this cycle's Retain")
+	if !stateIDs(r)["s1"] {
+		t.Fatal("a session observed since the last cycle must survive this cycle's Retain")
 	}
 
 	r.Retain(live())

@@ -4,7 +4,23 @@
 
 Read `tracker/cli.mjs operations` and require `readComments,writeComment`. Before routing a selected
 issue, save its bare payload to this run's `precheck` scratch artifact. Generate a token with
-`node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" claim-token`, then format with
+`node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" claim-token`, retaining it as `PLAN_CLAIM_TOKEN`.
+Before posting any comment, acquire the issue lease with that same token:
+
+```sh
+node "$BOSS_PLAN_TOOLBOX/issue-lease.mjs" acquire --scope plan --issue "<ISSUE-ID>" --token "$PLAN_CLAIM_TOKEN"
+```
+
+- Exit 0 (`acquired`): retain the lease for the whole planning run; continue to the comment claim.
+- Exit 3 (`held`): post nothing. Treat this as `LOST` with no comment to delete: headless sweeps
+  try the next ranked head within the existing three-head cap; named-ticket or interactive runs
+  report the peer.
+- Exit 4 (`unavailable`): record its reason in the run report and continue to the comment claim.
+- Exit 2: correct the usage error or abort closed; never treat it as graceful degradation.
+
+The lease defaults to 7200 seconds. Per-child epic claims use this same protocol and retain their
+own issue id and token until release; the parent keeps its lease until the parent run ends.
+Then format the comment with
 `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" claim-comment --scope plan --token "$PLAN_CLAIM_TOKEN" --session-id "${BOSS_SESSION_ID:-}"`.
 Post that body through `writeComment`, retaining both token and returned comment id. Re-read
 `readComments` into `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.claim-comments.json` and run
@@ -20,10 +36,17 @@ Post that body through `writeComment`, retaining both token and returned comment
 - Exit 2 naming an unsupported `claimScopes` plan capability: warn, continue unclaimed and omit
   `--claim-token` at rechecks. Other errors stop closed; never format a build claim as a fallback.
 
-Release means deleting only the retained own comment id through optional `deleteComment` when
-available. It is best-effort, never fatal, and runs before retrying, every terminal Phase 6 notes
-flush, and every Phase 2 abort before scratch removal or `exit 1`. If deletion is unavailable or
-fails, report that the claim expires; never delete a peer's claim.
+Release always includes the lease, even when no comment was posted or deletion is unavailable:
+
+```sh
+node "$BOSS_PLAN_TOOLBOX/issue-lease.mjs" release --scope plan --issue "<ISSUE-ID>" --token "$PLAN_CLAIM_TOKEN"
+```
+
+Also delete only the retained own comment id through optional `deleteComment` when available.
+Both releases are best-effort, never fatal, and run before retrying or selecting another head,
+every terminal Phase 6 notes flush, and every Phase 2 abort before scratch removal or `exit 1`.
+If deletion is unavailable or fails, report that the comment claim expires; never delete a peer's
+claim. Release each retained issue/token pair on terminal paths, including parent and child claims.
 
 ## Recheck at write boundaries
 

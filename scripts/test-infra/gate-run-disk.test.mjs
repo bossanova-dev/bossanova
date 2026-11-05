@@ -5,11 +5,13 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { createHash } from 'node:crypto'
+import { setTimeout } from 'node:timers/promises'
 
 const runner = fileURLToPath(new URL('../gate-run.mjs', import.meta.url))
-function fixture(t, mode, body = '') {
+function fixture(t, mode, body = '', heldLock = false, markerFailure = '') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-disk-test-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
   const cache = path.join(dir, 'cache')
   fs.mkdirSync(path.join(cache, 'aa'), { recursive: true })
   fs.writeFileSync(
@@ -21,17 +23,60 @@ function fixture(t, mode, body = '') {
   fs.writeFileSync(old, 'old')
   fs.writeFileSync(young, 'young')
   fs.utimesSync(old, new Date(0), new Date(0))
+  fs.mkdirSync(path.join(cache, 'bb'))
+  fs.writeFileSync(path.join(cache, 'bb', `${'c'.repeat(64)}-d`), 'young')
+  const recovered = path.join(dir, 'recovered')
   const depleted = path.join(dir, 'depleted')
   const preload = path.join(dir, 'measure.mjs')
   // Filesystem measurements are injected; no host volume or cache is measured.
   fs.writeFileSync(
     preload,
-    `import fs from 'node:fs'; fs.statfsSync = () => ({bsize: 1, bavail: ${mode === 'restore' ? `fs.existsSync(${JSON.stringify(old)}) ? 1 : 100 * 1024 ** 3` : mode === 'refuse' ? '1' : mode === 'midrun' ? `fs.existsSync(${JSON.stringify(depleted)}) ? 1 : 100 * 1024 ** 3` : '100 * 1024 ** 3'}});`,
+    `import fs from 'node:fs'; fs.statfsSync = () => ({bsize: 1, bavail: ${heldLock ? `fs.existsSync(${JSON.stringify(recovered)}) ? 100 * 1024 ** 3 : 1` : mode === 'restore' ? `fs.existsSync(${JSON.stringify(old)}) ? 1 : 100 * 1024 ** 3` : mode === 'refuse' ? '1' : mode === 'midrun' ? `fs.existsSync(${JSON.stringify(depleted)}) ? 1 : 100 * 1024 ** 3` : '100 * 1024 ** 3'}});`,
   )
+  if (markerFailure) {
+    fs.appendFileSync(
+      preload,
+      `
+const write = fs.writeFileSync;
+const writeLog = fs.writeSync;
+fs.writeSync = (fd, content, ...args) => {
+  if (${JSON.stringify(markerFailure)} === 'reclaim log' &&
+      String(content).startsWith('gate-run preflight:')) {
+    throw Object.assign(new Error('injected log ENOSPC'), {code: 'ENOSPC'});
+  }
+  return writeLog(fd, content, ...args);
+};
+const mkdir = fs.mkdirSync;
+const reclaimLock = (file) => String(file).includes('/go-cache-reclaim-');
+fs.mkdirSync = (dir, ...args) => {
+  if (${JSON.stringify(markerFailure)} === 'reclaim lock dir' && reclaimLock(dir)) {
+    throw Object.assign(new Error('injected lock dir ENOSPC'), {code: 'ENOSPC'});
+  }
+  return mkdir(dir, ...args);
+};
+fs.writeFileSync = (file, content, ...args) => {
+  if (${JSON.stringify(markerFailure)} === 'reclaim lock candidate' && reclaimLock(file)) {
+    // A full volume can allocate the inode and then fail the write.
+    write(file, '', ...args);
+    throw Object.assign(new Error('injected lock candidate ENOSPC'), {code: 'ENOSPC'});
+  }
+  if (String(file).includes('/preflight.') &&
+      (${JSON.stringify(markerFailure)} === 'starting reclaim' ||
+       String(content).includes(${JSON.stringify(markerFailure)}))) {
+    throw Object.assign(new Error('injected marker ENOSPC'), {code: 'ENOSPC'});
+  }
+  return write(file, content, ...args);
+};`,
+    )
+  }
   const env = {
     ...process.env,
     GOCACHE: cache,
     HOME: dir,
+    BOSS_GATE_ADMISSION_DIR: path.join(dir, 'slots'),
+    BOSS_GATE_ADMISSION_POLL_MS: '10',
+    BOSS_GATE_ADMITTED: '',
+    CI: '',
     TMPDIR: dir,
     NODE_OPTIONS: `--import=${preload}`,
     BOSS_GATE_MIN_FREE_GIB: mode === 'disabled' ? '0' : '20',
@@ -44,6 +89,15 @@ function fixture(t, mode, body = '') {
       encoding: 'utf8',
       timeout: 20000,
     })
+  const lockDir = path.join(
+    env.BOSS_GATE_ADMISSION_DIR,
+    'go-cache-reclaim-' + createHash('sha256').update(cache).digest('hex').slice(0, 12),
+  )
+  const lock = path.join(lockDir, 'slot-0')
+  if (heldLock) {
+    fs.mkdirSync(lockDir, { recursive: true })
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, cwd: dir, label: 'fixture reclaim' }))
+  }
   const marker = path.join(dir, 'marker')
   const started = call([
     'start',
@@ -51,15 +105,25 @@ function fixture(t, mode, body = '') {
     process.execPath,
     '-e',
     body.replace('DEPLETED', JSON.stringify(depleted)) ||
-      `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`,
+      `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran'); console.log('child launched')`,
   ])
   assert.equal(started.status, 0, started.stderr)
   const run = started.stdout.split('\n')[0]
   t.after(() => {
     call(['stop', run])
-    fs.rmSync(run, { recursive: true, force: true })
+    fs.rmSync(run, { recursive: true, force: true, maxRetries: 3 })
   })
-  return { run, old, young, marker, wait: () => call(['wait', '--timeout', '15000', run]) }
+  return {
+    run,
+    old,
+    lockDir,
+    young,
+    marker,
+    recovered,
+    lock,
+    call,
+    wait: () => call(['wait', '--timeout', '15000', run]),
+  }
 }
 test('disk refusal evicts old fixture entries, preserves young entries and never launches child', (t) => {
   const f = fixture(t, 'refuse')
@@ -85,6 +149,12 @@ test('reclaim restores headroom and launches the gate', (t) => {
   assert.equal(fs.existsSync(f.old), false)
   assert.equal(JSON.parse(fs.readFileSync(path.join(f.run, 'disk.json'))).refused, false)
   assert.equal(fs.readFileSync(path.join(f.run, 'verdict'), 'utf8'), 'GATE PASSED\n')
+  const log = fs.readFileSync(path.join(f.run, 'log'), 'utf8')
+  assert.match(
+    log,
+    /gate-run preflight: .*below floor[\s\S]*sizing Go cache:[\s\S]*evicting Go cache:[\s\S]*reclaimed[\s\S]*child launched/,
+  )
+  assert.equal(fs.existsSync(path.join(f.run, 'preflight')), false)
 })
 test('zero floor disables all disk preflight work', (t) => {
   const f = fixture(t, 'disabled')
@@ -107,4 +177,79 @@ test('mid-run disk exhaustion reclaims once and preserves the failed result', (t
   assert.ok(disk.reclaimedBytes > 0)
   assert.equal(disk.atExit.length, 1)
   assert.match(result.stdout, /\ndisk: /)
+})
+
+for (const phase of ['starting reclaim', 'sizing Go cache', 'evicting Go cache', 'reclaim log']) {
+  test(`mid-run reclaim survives ENOSPC writing ${phase} marker`, (t) => {
+    const f = fixture(
+      t,
+      'midrun',
+      `require('fs').writeFileSync(DEPLETED, '1'); console.error('No space left on device'); process.exit(1)`,
+      false,
+      phase,
+    )
+    const result = f.wait()
+    assert.equal(result.status, 75, result.stdout + result.stderr)
+    assert.equal(fs.existsSync(f.old), false)
+    assert.equal(fs.existsSync(f.young), true)
+    const disk = JSON.parse(fs.readFileSync(path.join(f.run, 'disk.json')))
+    assert.ok(disk.reclaimedBytes > 0)
+    assert.equal(disk.atExit.length, 1)
+  })
+}
+
+for (const failure of ['reclaim lock dir', 'reclaim lock candidate']) {
+  test(`reclaim continues unlocked when ENOSPC prevents allocating the ${failure.slice(13)}`, (t) => {
+    const f = fixture(t, 'restore', '', false, failure)
+    const result = f.wait()
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    assert.equal(fs.existsSync(f.old), false)
+    assert.equal(fs.existsSync(f.young), true)
+    assert.equal(fs.existsSync(f.marker), true)
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.run, 'disk.json'))).refused, false)
+    const log = fs.readFileSync(path.join(f.run, 'log'), 'utf8')
+    assert.match(log, /reclaim lock unavailable; continuing unlocked: injected lock .*ENOSPC/)
+    const leftovers = fs.existsSync(f.lockDir) ? fs.readdirSync(f.lockDir) : []
+    assert.deepEqual(leftovers, [])
+  })
+}
+
+async function until(check) {
+  const deadline = Date.now() + 10000
+  while (!check()) {
+    assert.ok(Date.now() < deadline, 'fixture failed to reach expected state')
+    await setTimeout(10)
+  }
+}
+const waiting = (f) => fs.readFileSync(path.join(f.run, 'log'), 'utf8').includes('waiting for')
+test('reclaim wait exposes its phase and remeasures before scanning', async (t) => {
+  const f = fixture(t, 'restore', '', true)
+  await until(() => waiting(f))
+  assert.match(f.call(['wait', '--timeout', '0', f.run]).stdout, /phase: disk preflight/)
+  fs.writeFileSync(f.recovered, 'yes')
+  fs.unlinkSync(f.lock)
+  assert.equal(f.wait().status, 0)
+  const log = fs.readFileSync(path.join(f.run, 'log'), 'utf8')
+  assert.match(log, /headroom recovered/)
+  assert.doesNotMatch(log, /sizing Go cache/)
+  assert.equal(fs.existsSync(f.old), true)
+  assert.equal(fs.existsSync(f.marker), true)
+})
+test('stop cancels a reclaim lock wait without launching the child', async (t) => {
+  const f = fixture(t, 'restore', '', true)
+  await until(() => waiting(f))
+  const pid = Number(fs.readFileSync(path.join(f.run, 'pid'), 'utf8'))
+  f.call(['stop', f.run])
+  assert.match(f.wait().stdout, /^GATE STOPPED/)
+  await until(() => {
+    try {
+      process.kill(pid, 0)
+      return false
+    } catch {
+      return true
+    }
+  })
+  assert.equal(fs.existsSync(f.old), true)
+  assert.equal(fs.existsSync(f.marker), false)
+  assert.equal(fs.existsSync(path.join(f.run, 'preflight')), false)
 })

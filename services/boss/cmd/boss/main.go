@@ -27,6 +27,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/recurser/boss/api/cli/cliutil"
+	"github.com/recurser/boss/api/cli/lease"
 	repocli "github.com/recurser/boss/api/cli/repo"
 
 	settingscli "github.com/recurser/boss/api/cli/settings"
@@ -54,6 +55,9 @@ func main() {
 
 // exitStatus is 1 unless the error carries a specific status.
 func exitStatus(err error) int {
+	if status := lease.ExitStatus(err); status != 1 {
+		return status
+	}
 	return repocli.ExitStatus(err)
 }
 
@@ -273,6 +277,14 @@ func rootCmdWithGroups(g *skills.Group, daemonGroup daemonCommands) *cobra.Comma
 	}, func(cmd *cobra.Command) (notes.OrganizationClient, error) {
 		return settingscli.NewCloudRemote(cmd, notes.ErrNotLoggedIn)
 	}, osGetenv))
+	// Daemon only: the local daemon owns the session token and the local
+	// fallback, so a lease refuses --remote rather than dropping it.
+	addGrouped("lease", lease.New(func(cmd *cobra.Command) (lease.Client, error) {
+		if remote := remoteURL(cmd); remote != "" {
+			return nil, fmt.Errorf("boss lease talks only to the local daemon, which forwards to your organization when signed in; drop --remote %s", remote)
+		}
+		return newDaemonClient(cmd)
+	}))
 	addGrouped("webhook", webhook.New(func(cmd *cobra.Command) (webhook.Client, error) {
 		return settingscli.NewCloudRemote(cmd, webhook.ErrNotLoggedIn)
 	}))

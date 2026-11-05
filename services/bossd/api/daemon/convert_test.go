@@ -1404,6 +1404,9 @@ func TestHydrateDisplayEntry(t *testing.T) {
 		Merging:             true,
 		Archiving:           true,
 		Mergeable:           &mergeable,
+		AddedLineCount:      12,
+		DeletedLineCount:    3,
+		ChangedFileCount:    2,
 	})
 	if p.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_PASSING {
 		t.Errorf("display_status = %v, want PASSING", p.GetDisplayStatus())
@@ -1420,6 +1423,12 @@ func TestHydrateDisplayEntry(t *testing.T) {
 	}
 	if p.PrMergeable == nil || !p.GetPrMergeable() {
 		t.Errorf("pr_mergeable = %v, want true", p.PrMergeable)
+	}
+	if p.GetPrAddedLineCount() != 12 || p.GetPrDeletedLineCount() != 3 || p.GetPrChangedFileCount() != 2 {
+		t.Fatalf("size not hydrated: %+v", p)
+	}
+	if blank.GetPrAddedLineCount() != 0 || blank.GetPrDeletedLineCount() != 0 || blank.GetPrChangedFileCount() != 0 {
+		t.Fatal("nil entry acquired sizes")
 	}
 	if p.GetMergeBlock() == nil {
 		t.Error("merge_block not derived, want non-nil")

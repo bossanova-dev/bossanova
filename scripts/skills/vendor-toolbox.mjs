@@ -53,6 +53,7 @@ export const VENDOR_MAP = {
     'skill-config.mjs',
   ],
   'boss-build': [
+    'issue-lease.mjs',
     'ci/ci-request.mjs',
     'build/blocker-verdict.mjs',
     'build/acceptance-retry.mjs',
@@ -131,6 +132,7 @@ export const VENDOR_MAP = {
     'tracker/preflight.mjs',
   ],
   'boss-plan': [
+    'issue-lease.mjs',
     'plan/boss-plan-env.sh',
     'bs-dispatch-await.mjs',
     'bs-record-notes.mjs',
@@ -154,6 +156,7 @@ export const VENDOR_MAP = {
     'plan/plan-sibling-split.mjs',
     'plan/plan-slug.mjs',
     'plan/plan-writeback-verify.mjs',
+    'plan/plan-section-append.mjs',
     'selection.mjs',
     'session/session-self-archive.mjs',
     'skill-config.mjs',

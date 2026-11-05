@@ -126,6 +126,11 @@ func (k ConflictBlockKind) String() string {
 
 // PRStatus represents the current status of a pull/merge request.
 type PRStatus struct {
+	// PR size is refreshed by the PR fetch; ChangedFileCount zero means not yet read.
+	AddedLineCount   int
+	DeletedLineCount int
+	ChangedFileCount int
+
 	State               PRState
 	Mergeable           *bool
 	Rebaseable          *bool

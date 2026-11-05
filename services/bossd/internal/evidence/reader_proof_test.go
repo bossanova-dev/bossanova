@@ -168,3 +168,55 @@ func TestReaderProofLifecycle(t *testing.T) {
 		t.Fatalf("proof-only head invalidation count = %d", changes)
 	}
 }
+
+func TestReaderProofRetentionWindow(t *testing.T) {
+	for _, body := range []string{proofComment(t, proofPayload()), evidence.Format(evidence.Summary{Head: sha})} {
+		now := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
+		f := &proofCommentFinder{comments: []vcs.PRComment{{Body: body, AuthorAssociation: "OWNER"}}}
+		r := evidence.NewReader(f, zerolog.Nop(), evidence.WithClock(func() time.Time { return now }))
+		r.Observe(context.Background(), evidence.Observation{SessionID: "s", HeadSHA: sha})
+		r.Retain(map[string]struct{}{"s": {}})
+		r.Retain(nil)
+		now = now.Add(7*24*time.Hour - time.Nanosecond)
+		r.Retain(nil)
+		if _, ok := r.Proof("s", sha); !ok {
+			t.Fatal("proof removed before seven-day window elapsed")
+		}
+		now = now.Add(time.Nanosecond)
+		r.Retain(nil)
+		if _, ok := r.Proof("s", sha); ok {
+			t.Fatal("proof retained at seven-day expiration boundary")
+		}
+	}
+}
+
+func TestReaderProofRetentionResetsWhenSessionReturns(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "listed", true: "observed without head"}[observed], func(t *testing.T) {
+			now := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
+			f := &proofCommentFinder{comments: []vcs.PRComment{{Body: proofComment(t, proofPayload()), AuthorAssociation: "OWNER"}}}
+			r := evidence.NewReader(f, zerolog.Nop(), evidence.WithClock(func() time.Time { return now }))
+			r.Observe(context.Background(), evidence.Observation{SessionID: "s", HeadSHA: sha})
+			r.Retain(map[string]struct{}{"s": {}})
+			r.Retain(nil)
+			now = now.Add(6 * 24 * time.Hour)
+			if observed {
+				r.Observe(context.Background(), evidence.Observation{SessionID: "s"})
+				r.Retain(nil)
+			} else {
+				r.Retain(map[string]struct{}{"s": {}})
+			}
+			r.Retain(nil)
+			now = now.Add(7*24*time.Hour - time.Nanosecond)
+			r.Retain(nil)
+			if _, ok := r.Proof("s", sha); !ok {
+				t.Fatal("returning session did not restart its retention window")
+			}
+			now = now.Add(time.Nanosecond)
+			r.Retain(nil)
+			if _, ok := r.Proof("s", sha); ok {
+				t.Fatal("restarted retention window did not expire")
+			}
+		})
+	}
+}

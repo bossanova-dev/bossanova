@@ -44,51 +44,100 @@ function validateCache(dir, fsImpl, signature) {
   }
 }
 
-/** Total cache bytes; `visit` sees each recognized entry's stat without the walk keeping it. */
-function scanCache(dir, fsImpl, signature = GO_CACHE_SIGNATURE, visit = undefined) {
+/** Size the cache once; `visit` sees recognized entries without retaining their stats. */
+function scanCache(
+  dir,
+  fsImpl,
+  signature,
+  visit = undefined,
+  onProgress = undefined,
+  shouldStop = undefined,
+) {
   validateCache(dir, fsImpl, signature)
+  const names = fsImpl.readdirSync(dir)
+  const buckets = names.filter((name) => BUCKET.test(name))
   let bytes = 0
-  for (const name of fsImpl.readdirSync(dir)) {
-    const path = join(dir, name)
-    const stat = lstat(fsImpl, path)
+  for (const name of names) {
+    const stat = lstat(fsImpl, join(dir, name))
     if (stat?.isFile()) bytes += stat.size
-    if (!BUCKET.test(name) || !stat?.isDirectory()) continue
-    for (const filename of fsImpl.readdirSync(path)) {
-      const entryStat = lstat(fsImpl, join(path, filename))
-      if (!entryStat?.isFile()) continue
-      bytes += entryStat.size
-      if (ENTRY.test(filename)) visit?.(entryStat)
-    }
   }
-  return bytes
+  let bucketsDone = 0
+  for (const name of buckets) {
+    if (shouldStop?.()) return { bytes, stopped: true }
+    const path = join(dir, name)
+    if (lstat(fsImpl, path)?.isDirectory()) {
+      for (const filename of fsImpl.readdirSync(path)) {
+        const entryStat = lstat(fsImpl, join(path, filename))
+        if (!entryStat?.isFile()) continue
+        bytes += entryStat.size
+        if (ENTRY.test(filename)) visit?.(entryStat)
+      }
+    }
+    onProgress?.({
+      phase: 'scan',
+      bucketsDone: ++bucketsDone,
+      buckets: buckets.length,
+      bytes,
+      reclaimedBytes: 0,
+      entriesRemoved: 0,
+    })
+  }
+  return { bytes, stopped: false }
 }
 
 /**
  * Evict only old Go build-cache entries; active builds refresh their mtimes. A cache can hold
  * millions of entries, so the first walk keeps only each entry's mtime and size to find the
  * cutoff that reaches the target, and a second walk removes entries no newer than it.
+ * Returned bytes are arithmetic (initial minus reclaimed), so concurrent writes may cause drift.
+ * A stopped sizing walk reports only bytes observed so far and removes no entries.
  */
 export function evictGoCache({
   dir,
-  targetBytes,
+  targetBytes = undefined,
+  reclaimBytes = undefined,
+  onProgress = undefined,
+  shouldStop = undefined,
   minAgeMs = DAY,
   now = Date.now(),
   fsImpl = fs,
   signature = GO_CACHE_SIGNATURE,
 }) {
-  if (!Number.isFinite(targetBytes) || targetBytes < 0)
-    throw new Error('targetBytes must be non-negative')
+  if (
+    (targetBytes === undefined) === (reclaimBytes === undefined) ||
+    !Number.isFinite(targetBytes === undefined ? reclaimBytes : targetBytes) ||
+    (targetBytes === undefined ? reclaimBytes : targetBytes) < 0
+  ) {
+    throw new Error('exactly one of targetBytes and reclaimBytes must be finite and non-negative')
+  }
   if (!Number.isFinite(minAgeMs) || minAgeMs < 0 || !Number.isFinite(now)) {
     throw new Error('minAgeMs and now must be finite, with a non-negative minimum age')
   }
   const oldest = now - minAgeMs
   const mtimes = []
   const sizes = []
-  const initialBytes = scanCache(dir, fsImpl, signature, (stat) => {
-    if (stat.mtimeMs > oldest) return
-    mtimes.push(stat.mtimeMs)
-    sizes.push(stat.size)
-  })
+  const scan = scanCache(
+    dir,
+    fsImpl,
+    signature,
+    (stat) => {
+      if (stat.mtimeMs > oldest) return
+      mtimes.push(stat.mtimeMs)
+      sizes.push(stat.size)
+    },
+    onProgress,
+    shouldStop,
+  )
+  const initialBytes = scan.bytes
+  if (scan.stopped)
+    return {
+      initialBytes,
+      bytes: initialBytes,
+      reclaimedBytes: 0,
+      entriesRemoved: 0,
+      stopped: true,
+    }
+  targetBytes = targetBytes ?? Math.max(0, initialBytes - reclaimBytes)
   const order = Uint32Array.from(mtimes.keys()).sort((a, b) => mtimes[a] - mtimes[b])
   let cutoff = -Infinity
   let projected = initialBytes
@@ -100,37 +149,54 @@ export function evictGoCache({
   let bytes = initialBytes
   let reclaimedBytes = 0
   let entriesRemoved = 0
+  let stopped = false
   if (cutoff > -Infinity) {
-    sweep: for (const name of fsImpl.readdirSync(dir)) {
-      if (!BUCKET.test(name)) continue
+    const buckets = fsImpl.readdirSync(dir).filter((name) => BUCKET.test(name))
+    let bucketsDone = 0
+    for (const name of buckets) {
+      if (bytes <= targetBytes) break
+      if (shouldStop?.()) {
+        stopped = true
+        break
+      }
       const bucket = join(dir, name)
       // Recheck the path after the walk: the cache may have been replaced meanwhile.
       validateCache(dir, fsImpl, signature)
-      if (!lstat(fsImpl, bucket)?.isDirectory()) continue
-      for (const filename of fsImpl.readdirSync(bucket)) {
-        if (bytes <= targetBytes) break sweep
-        if (!ENTRY.test(filename)) continue
-        const path = join(bucket, filename)
-        // Go refreshes an entry's mtime when a build reuses it, which lifts it past the cutoff.
-        const current = lstat(fsImpl, path)
-        if (!current?.isFile() || current.mtimeMs > cutoff || current.mtimeMs > oldest) continue
-        try {
-          fsImpl.unlinkSync(path)
-        } catch (error) {
-          if (error.code === 'ENOENT') continue
-          throw error
+      if (lstat(fsImpl, bucket)?.isDirectory()) {
+        for (const filename of fsImpl.readdirSync(bucket)) {
+          if (bytes <= targetBytes) break
+          if (!ENTRY.test(filename)) continue
+          const path = join(bucket, filename)
+          // Go refreshes an entry's mtime when a build reuses it, which lifts it past the cutoff.
+          const current = lstat(fsImpl, path)
+          if (!current?.isFile() || current.mtimeMs > cutoff || current.mtimeMs > oldest) continue
+          try {
+            fsImpl.unlinkSync(path)
+          } catch (error) {
+            if (error.code === 'ENOENT') continue
+            throw error
+          }
+          bytes -= current.size
+          reclaimedBytes += current.size
+          entriesRemoved++
         }
-        bytes -= current.size
-        reclaimedBytes += current.size
-        entriesRemoved++
       }
+      onProgress?.({
+        phase: 'sweep',
+        bucketsDone: ++bucketsDone,
+        buckets: buckets.length,
+        bytes,
+        reclaimedBytes,
+        entriesRemoved,
+      })
     }
   }
   return {
     initialBytes,
-    bytes: scanCache(dir, fsImpl, signature),
+    bytes: initialBytes - reclaimedBytes,
     reclaimedBytes,
     entriesRemoved,
+    stopped,
   }
 }
 
@@ -147,7 +213,7 @@ export function runCleanup({
 } = {}) {
   const thresholdBytes = parseThresholdGiB(env.GO_CACHE_MAX_GIB ?? '100') * GiB
   const directory = String(executor('go', ['env', 'GOCACHE'], { encoding: 'utf8' })).trim()
-  const bytes = scanCache(directory, fsImpl)
+  const { bytes } = scanCache(directory, fsImpl, GO_CACHE_SIGNATURE)
   if (bytes < thresholdBytes) {
     write(
       `clean-cache: ${directory} is ${formatGiB(bytes)}, below threshold ${formatGiB(thresholdBytes)}; skipping.\n`,

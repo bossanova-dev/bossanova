@@ -755,6 +755,16 @@ const reconcile = (text, states = { 'GIG-46': 'In Progress', 'GIG-47': 'Todo' })
 const annotationBody = (prose) =>
   `## Risks / unknowns\n\n${prose}\n\n## Planning\n\n- Contract: v1\n- Scope: bounded\n\n## Original notes\n\nGIG-46 was Todo.\n`
 
+for (const marker of ['*', '+']) {
+  test(`reconcilePremiseAnnotations matches stored ${marker} bullets and removes resolved drift`, () => {
+    const before = annotationBody('GIG-46 was Todo.').replace(/^- /gm, `${marker} `)
+    const after = reconcile(before)
+    assert.ok(after.includes(`${marker} Scope: bounded\n${marker} Premise drift: GIG-46`))
+    assert.equal(reconcile(after), after)
+    assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+  })
+}
+
 test('reconcilePremiseAnnotations flags drifted prose only, reporting sections', () => {
   const before = annotationBody('- GIG-46 and GIG-47 were Todo.\n- GIG-47 stays Todo.')
   const after = reconcile(before)

@@ -44,6 +44,7 @@ go_test(
         "verify_hold_test.go",
         "verify_wait_labels_test.go",
         "waiting_words_test.go",
+        "working_chat_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":attention"],

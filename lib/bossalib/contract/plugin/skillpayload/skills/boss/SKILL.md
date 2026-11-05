@@ -41,6 +41,7 @@ syntax, arguments or flags from an index row.
 | `references/trigger.md`     | Creating, testing or inspecting an inbound HTTP or GitHub trigger                |
 | `references/broadcast.md`   | Sending a broadcast or registering an outcome subscription                       |
 | `references/notes.md`       | Recording or harvesting durable repo-scoped notes                                |
+| `references/lease.md`       | Taking or releasing a tracker issue lease before starting work                   |
 | `references/webhook.md`     | Registering, testing or inspecting an outbound session webhook (Bossanova Cloud) |
 | `references/account.md`     | Adding, testing, rotating or switching a provider account                        |
 | `references/trash.md`       | Resurrecting an archived session or emptying the trash                           |

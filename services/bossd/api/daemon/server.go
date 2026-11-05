@@ -69,7 +69,8 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
-	credentialDevices *CredentialDeviceService
+	credentialDevices  *CredentialDeviceService
+	trackerIssueLeases trackerIssueLeases
 
 	evidenceBucketOpener  evidenceBucketOpener
 	validateBranchName    func(context.Context, string) error
@@ -350,6 +351,11 @@ type Config struct {
 	Callers CallerAuthority
 
 	CredentialDevices *CredentialDeviceService
+	// TrackerIssueLeaseUpstream and its rotating daemon token are nil in local-only mode.
+	TrackerIssueLeaseUpstream     TrackerIssueLeaseUpstream
+	TrackerIssueLeaseSessionToken func() string
+	// TrackerIssueLeaseNow defaults to time.Now.
+	TrackerIssueLeaseNow func() time.Time
 
 	EvidenceBucketOpener evidenceBucketOpener
 	ChatTmux             ChatTmuxSpawner
@@ -653,6 +659,9 @@ type PRRefresher interface {
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
+	if cfg.TrackerIssueLeaseNow == nil {
+		cfg.TrackerIssueLeaseNow = time.Now
+	}
 	srv := &Server{
 		chatTmux:              cfg.ChatTmux,
 		callers:               cfg.Callers,
@@ -692,6 +701,7 @@ func New(cfg Config) *Server {
 		agentAccountsChanged:    cfg.AgentAccountsChanged,
 		credentialPublisher:     cfg.CredentialPublisher,
 		credentialDevices:       cfg.CredentialDevices,
+		trackerIssueLeases:      trackerIssueLeases{entries: make(map[trackerIssueLeaseKey]trackerIssueLeaseEntry), now: cfg.TrackerIssueLeaseNow, upstream: cfg.TrackerIssueLeaseUpstream, sessionToken: cfg.TrackerIssueLeaseSessionToken},
 		accountSmoke:            cfg.AccountSmokeRunner,
 		usageProbe:              cfg.UsageProbe,
 		accountMaterializations: cfg.AccountMaterializations,

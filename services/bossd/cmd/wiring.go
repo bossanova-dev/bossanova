@@ -130,6 +130,8 @@ type daemonWiring struct {
 	notes                          *db.SQLiteNoteStore
 	orchestrator                   *taskorchestrator.Orchestrator
 	credentialDevices              *server.CredentialDeviceService
+	trackerIssueLeaseUpstream      server.TrackerIssueLeaseUpstream
+	trackerIssueLeaseSessionToken  func() string
 	credentialEnrollment           *credentialEnrollmentWorker
 	credentialSync                 *daemonCredentialSync
 	persistedDaemonID              string

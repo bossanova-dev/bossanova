@@ -38,7 +38,7 @@ The helper skips fenced code and `## Original notes` through EOF. Headings, tabl
 `## Planning` receive no inline markers. `## Premises` and `## Acceptance criteria` stay intact
 because their checkbox bullets end in a guard-parsed `— check:` clause; their mentions appear in
 the drift line's `also stated in` clause. Inline sections appear in `flagged inline in`. Drift
-lines land directly after the last Planning bullet with no intervening blank line.
+lines land directly after the last Planning bullet with no intervening blank line, using that list's marker.
 
 `premise-limit`, `premise-unresolved` and `unreadable-input` write no annotation files. On the
 first pass these take the SAFE branch before tracker writeback. On the second pass the first save

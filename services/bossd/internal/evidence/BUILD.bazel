@@ -14,6 +14,7 @@ go_library(
     deps = [
         "//lib/bossalib/attention",
         "//lib/bossalib/kit/vcs",
+        "//lib/bossalib/reviewqueue",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

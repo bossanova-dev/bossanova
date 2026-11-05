@@ -30,6 +30,9 @@ type prReview struct {
 // prStatusFields are the GraphQL pull request fields a vcs.PRStatus is built
 // from. `gh pr view --json` and the open-PR snapshot both decode into it.
 type prStatusFields struct {
+	Additions         int        `json:"additions"`
+	Deletions         int        `json:"deletions"`
+	ChangedFiles      int        `json:"changedFiles"`
 	State             string     `json:"state"`
 	Mergeable         string     `json:"mergeable"`
 	MergeStateStatus  string     `json:"mergeStateStatus"`
@@ -58,7 +61,7 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 	out, err := p.gh(ctx,
 		"pr", "view", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--json", "state,mergeable,mergeStateStatus,isDraft,title,body,headRefName,baseRefName,headRefOid,isCrossRepository,reviewDecision,reviews",
+		"--json", "state,mergeable,mergeStateStatus,isDraft,title,body,headRefName,baseRefName,headRefOid,isCrossRepository,reviewDecision,reviews,additions,deletions,changedFiles",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get PR status: %w", err)
@@ -107,6 +110,9 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 func buildPRStatus(raw prStatusFields, mergeability *pullRequestMergeability, trusted func(prReview) bool) *vcs.PRStatus {
 	status := &vcs.PRStatus{
 		State:             parsePRState(raw.State),
+		AddedLineCount:    raw.Additions,
+		DeletedLineCount:  raw.Deletions,
+		ChangedFileCount:  raw.ChangedFiles,
 		Draft:             raw.IsDraft,
 		Title:             raw.Title,
 		Body:              raw.Body,

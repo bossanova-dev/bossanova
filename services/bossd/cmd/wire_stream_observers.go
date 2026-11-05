@@ -75,8 +75,8 @@ func (w *daemonWiring) wireStreamObservers() {
 		})
 	}
 	w.displayComputer.SetOnUpdate(publishSessionUpdated)
-	// Marker-only PR edits change attention even when the display trio stays
-	// identical. The tracker calls this after recomputing that trio.
+	// Partial marker or PR size changes need a full session delta even when
+	// the display trio stays identical. The tracker calls this after recomputing.
 	w.displayTracker.SetOnAttentionChange(func(sessionID string) {
 		publishSessionUpdated(context.Background(), sessionID)
 	})

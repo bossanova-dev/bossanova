@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "reviewqueue",
-    srcs = ["reviewqueue.go"],
+    srcs = [
+        "audit.go",
+        "reviewqueue.go",
+    ],
     importpath = "github.com/recurser/bossalib/reviewqueue",
     visibility = ["//visibility:public"],
     deps = [
@@ -13,7 +16,10 @@ go_library(
 
 go_test(
     name = "reviewqueue_test",
-    srcs = ["build_test.go"],
+    srcs = [
+        "audit_test.go",
+        "build_test.go",
+    ],
     embed = [":reviewqueue"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",

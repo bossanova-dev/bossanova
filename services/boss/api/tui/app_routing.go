@@ -115,6 +115,7 @@ func (a App) handleSwitchView(msg ui.SwitchViewMsg) (tea.Model, tea.Cmd) {
 		a.wireAccountsListSync(&a.accountsList)
 		a.accountsList.SetReturnView(msg.ReturnView)
 		a.accountsList.SetSize(a.width, a.height)
+		a.accountsList.HighlightAgentAccount(msg.AgentAccountID)
 		return a, a.accountsList.Init()
 	case ui.ViewAgentAccountEdit:
 		a.accountEdit = accounts.NewAgentAccountEditModel(a.client, a.ctx, msg.Account)
@@ -309,7 +310,11 @@ func (a *App) switchToReturn(v ui.View) tea.Cmd {
 		// Rebuild the accounts list (its Init re-fetches via ListAgentAccounts) so an
 		// edit made in the account-edit form is reflected on return, and route
 		// the rebuilt list's own esc back to Settings (its only entry point).
-		return func() tea.Msg { return ui.SwitchViewMsg{View: ui.ViewAgentAccounts, ReturnView: ui.ViewSettings} }
+		// It lands on the account the sub-view was opened from.
+		id := a.accountsList.SelectedAgentAccountID()
+		return func() tea.Msg {
+			return ui.SwitchViewMsg{View: ui.ViewAgentAccounts, ReturnView: ui.ViewSettings, AgentAccountID: id}
+		}
 	default:
 		return a.switchToHome()
 	}

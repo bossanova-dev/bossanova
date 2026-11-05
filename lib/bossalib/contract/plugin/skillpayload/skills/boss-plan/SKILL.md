@@ -210,7 +210,7 @@ First report the phase: `node "$BOSS_PLAN_TOOLBOX/stage-chain.mjs" phase plannin
 **Claim before routing.** Save the selected bare issue payload as
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`, then run the planning claim protocol in
 [planning claims](references/planning-claims.md#claim-before-drafting). It applies to named tickets,
-single tickets, fan-out parents and epic resumes. A planning claim must never use build scope.
+single tickets, fan-out parents and epic resumes; acquire the issue lease before posting the comment claim. A planning claim must never use build scope.
 
 **Route the selected issue** — named or sweep head — after claiming: when
 `tracker/cli.mjs operations` lists `listChildren`, run
@@ -574,9 +574,15 @@ Then:
    fi
    ```
 
-   then edit **that read-back** (never step 3's bytes — the tracker may have renormalised them)
-   to add the notes, questions and `- Dependencies: blocks <ID>; blocked by <ID>` under the right
-   sections, and save it with `write-description` (plus labels if `agent-question` was added).
+   Append the notes, questions and dependencies to `$FINAL` with one helper invocation per heading;
+   it matches the stored list marker and skips existing items:
+
+   ```bash
+   node "$BOSS_PLAN_TOOLBOX/plan/plan-section-append.mjs" --file "$FINAL" --heading Planning --item "Dependencies: blocks <ID>; blocked by <ID>" --item "<note>"
+   node "$BOSS_PLAN_TOOLBOX/plan/plan-section-append.mjs" --file "$FINAL" --heading "Open Questions" --item "<question>"
+   ```
+
+   Save `$FINAL` with `write-description` (plus labels if `agent-question` was added).
    The description and the attachment then legitimately differ at `## Planning`.
 
 5. **Verify the write-back, once, after the final description save.** Skip this entire step on a
@@ -630,7 +636,7 @@ the write-back verdict and read route; the dependency verdict (`<verdict> compar
 transitive-block warning; premise drift; predicted verify park codes, labels and action; for an epic,
 the parent and child ids; for a child fan-out, the per-child table and the parent-flip result ([`references/child-fanout.md`](references/child-fanout.md)).
 
-On every terminal path, first release this run's planning claim by its retained comment id with
+On every terminal path, first release this run's issue lease with its retained token per the planning claim protocol, then release its comment by the retained id with
 `deleteComment` when the adapter declares that optional operation. Release is best-effort and never
 fatal: a stranded plan claim expires after two hours and build arbitration ignores it. Release also
 before selecting the next candidate. See [planning claims](references/planning-claims.md).

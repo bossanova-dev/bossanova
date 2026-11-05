@@ -254,6 +254,14 @@ message CommandCancel {
 
 // --- Snapshot (first event on every connect) ---
 
+// CloudControl is the daemon's locally configured cloud control mode.
+enum CloudControl {
+  // The daemon predates the setting and dispatches every command.
+  CLOUD_CONTROL_UNSPECIFIED = 0;
+  CLOUD_CONTROL_READ_ONLY = 1;
+  CLOUD_CONTROL_FULL = 2;
+}
+
 // DaemonSnapshot is the required first event on every stream connect. It
 // carries slim metadata only (IDs, state, timestamps, preview strings) — full
 // chat transcripts are fetched on demand via AttachSessionCommand (decision #5).
@@ -279,6 +287,8 @@ message DaemonSnapshot {
   // to 65 (run_trigger_gate) and nothing newer.
   repeated int32 supported_command_fields = 8;
   repeated AgentAccount agent_accounts = 9;
+  // Presentation only; the daemon enforces its locally configured mode.
+  CloudControl cloud_control = 10;
 }
 
 // CallbackInterest advertises that a daemon holds one or more active GitHub
@@ -448,6 +458,9 @@ message CommandResult {
     // bosso for a command the daemon's snapshot does not list in
     // supported_command_fields. bosso renders it as CodeUnimplemented.
     ERROR_CODE_UNIMPLEMENTED = 6;
+    // The operator turned cloud control off on this machine. Re-sending fails
+    // identically until they turn it on locally, so the sender must NOT retry.
+    ERROR_CODE_CLOUD_CONTROL_DISABLED = 7;
   }
 
   string command_id = 1;

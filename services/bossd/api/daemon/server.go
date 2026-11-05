@@ -160,8 +160,9 @@ type Server struct {
 	// prRefresher re-polls a single PR's display status on demand. MergeSession
 	// uses it to repopulate the display tracker after every merge attempt (see
 	// the HoldMerging block there). Optional, may be nil in tests / older wiring.
-	prRefresher PRRefresher
-	repairLease *status.RepairLeaseManager
+	prRefresher          PRRefresher
+	repairLease          *status.RepairLeaseManager
+	repairWorkflowLoaded func() bool
 	// transcriptTally reads a chat transcript's telemetry for the
 	// restart-proof agent activity (wedgeActivity); nil means
 	// tallyInteractiveAgentRunForServer (tests substitute it).
@@ -490,8 +491,10 @@ type Config struct {
 	// scheduled poll repairs the label instead.
 	PRRefresher PRRefresher
 	RepairLease *status.RepairLeaseManager
-	TmuxPoller  *status.TmuxStatusPoller
-	Lifecycle   *session.Lifecycle
+	// RepairWorkflowLoaded reports whether repair was discovered at boot. Nil means loaded.
+	RepairWorkflowLoaded func() bool
+	TmuxPoller           *status.TmuxStatusPoller
+	Lifecycle            *session.Lifecycle
 	// BootstrapRunner runs session bootstraps on the daemon's root context.
 	// Optional: when nil and Lifecycle is set, New derives one from Lifecycle so
 	// existing wiring (and tests) keep working — but real daemon wiring MUST
@@ -693,26 +696,27 @@ func New(cfg Config) *Server {
 		usageProbe:              cfg.UsageProbe,
 		accountMaterializations: cfg.AccountMaterializations,
 
-		checkSnapshots:   cfg.CheckSnapshots,
-		agentRuns:        cfg.AgentRuns,
-		gitHubUsage:      cfg.GitHubUsage,
-		gitHubUsageShim:  cfg.GitHubUsageShim,
-		prState:          cfg.PRState,
-		prWaits:          cfg.PRWaits,
-		rotationEvents:   cfg.RotationEvents,
-		evidence:         cfg.Evidence,
-		webhookEvidence:  cfg.WebhookEvidence,
-		wedgeCache:       cfg.WedgeActivityCache,
-		cronScheduler:    cfg.CronScheduler,
-		cronActivity:     cfg.CronActivity,
-		chatStatus:       cfg.ChatStatus,
-		statusRecomputer: cfg.StatusRecomputer,
-		displayTracker:   cfg.DisplayTracker,
-		prRefresher:      cfg.PRRefresher,
-		repairLease:      cfg.RepairLease,
-		tmuxPoller:       cfg.TmuxPoller,
-		lifecycle:        cfg.Lifecycle,
-		bootstrapRunner:  cfg.BootstrapRunner,
+		checkSnapshots:       cfg.CheckSnapshots,
+		agentRuns:            cfg.AgentRuns,
+		gitHubUsage:          cfg.GitHubUsage,
+		gitHubUsageShim:      cfg.GitHubUsageShim,
+		prState:              cfg.PRState,
+		prWaits:              cfg.PRWaits,
+		rotationEvents:       cfg.RotationEvents,
+		evidence:             cfg.Evidence,
+		webhookEvidence:      cfg.WebhookEvidence,
+		wedgeCache:           cfg.WedgeActivityCache,
+		cronScheduler:        cfg.CronScheduler,
+		cronActivity:         cfg.CronActivity,
+		chatStatus:           cfg.ChatStatus,
+		statusRecomputer:     cfg.StatusRecomputer,
+		displayTracker:       cfg.DisplayTracker,
+		prRefresher:          cfg.PRRefresher,
+		repairLease:          cfg.RepairLease,
+		repairWorkflowLoaded: cfg.RepairWorkflowLoaded,
+		tmuxPoller:           cfg.TmuxPoller,
+		lifecycle:            cfg.Lifecycle,
+		bootstrapRunner:      cfg.BootstrapRunner,
 
 		agent:        cfg.Agent,
 		agentClients: cfg.AgentClients,

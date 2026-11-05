@@ -119,6 +119,7 @@ func (w *daemonWiring) wireDaemon() {
 		DisplayTracker:       w.displayTracker,
 		PRRefresher:          w.displayPoller,
 		RepairLease:          w.repairLease,
+		RepairWorkflowLoaded: func() bool { return w.pluginHost != nil && w.pluginHost.WorkflowDesire("repair") != nil },
 		TmuxPoller:           w.tmuxStatusPoller,
 		Lifecycle:            w.lifecycle,
 		Agent:                w.agentRunner,

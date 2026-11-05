@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "plugin",
     srcs = [
+        "chatrun.go",
         "errortracking.go",
         "grpc.go",
         "parentwatch.go",
@@ -26,6 +27,7 @@ go_library(
 go_test(
     name = "plugin_test",
     srcs = [
+        "chatrun_test.go",
         "errortracking_test.go",
         "grpc_test.go",
         "parentwatch_test.go",

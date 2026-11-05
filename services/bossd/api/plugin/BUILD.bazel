@@ -15,6 +15,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//lib/bossalib/contract/plugin/agenterr",
+        "//lib/bossalib/contract/plugin/plugin",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/kit/log",
         "//lib/bossalib/kit/safego",
@@ -43,6 +44,7 @@ go_test(
     srcs = [
         "account_env_test.go",
         "constructor_test.go",
+        "host_chatrun_contract_test.go",
         "host_github_errors_test.go",
         "host_service_test.go",
         "host_watchdog_test.go",

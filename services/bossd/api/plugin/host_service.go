@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/kit/log"
 	"github.com/recurser/bossalib/kit/safego"
@@ -2602,7 +2603,7 @@ func (s *HostServiceServer) providerSessionIDForAgentSession(ctx context.Context
 
 func waitChatRunNoSignalMessage(mode chatRunCompletionMode, reason string) string {
 	if mode == chatRunCompletionExplicit {
-		return fmt.Sprintf("interactive chat did not report completion before wait deadline: %s", reason)
+		return fmt.Sprintf("%s before wait deadline: %s", sharedplugin.ChatRunIncompleteError, reason)
 	}
 	return fmt.Sprintf("agent run did not signal completion within %s", reason)
 }

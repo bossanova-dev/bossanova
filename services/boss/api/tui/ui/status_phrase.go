@@ -41,11 +41,11 @@ func RenderStatusPhrase(a *pb.SessionAttention, sp spinner.Model) (cell string, 
 }
 
 // phraseProgressKey is the text an IN PROGRESS phrase is styled by. A repair
-// or a checks count styles by its phrase, which names the work under way
-// whatever chat state the progress label reports; every other phrase is its
-// progress label, or a cut of it, so it styles by the label.
+// styles by its phrase, which names the work under way whatever chat state
+// the progress label reports; every other phrase is its progress label, or a
+// cut of it, so it styles by the label.
 func phraseProgressKey(a *pb.SessionAttention) string {
-	if phrase := a.GetStatusPhrase(); strings.HasPrefix(phrase, attention.RepairingLabel) || strings.HasPrefix(phrase, "checks ") {
+	if phrase := a.GetStatusPhrase(); strings.HasPrefix(phrase, attention.RepairingLabel) {
 		return phrase
 	}
 	return a.GetProgressLabel()
@@ -62,7 +62,7 @@ func ProgressStatusStyle(label string) (style lipgloss.Style, spin bool) {
 		return StyleStatusMuted, false
 	case label == StatusIdle, attention.IsVerifyHoldLabel(label):
 		return StyleStatusWarning, false
-	case strings.HasPrefix(label, "checking "), strings.HasPrefix(label, "checks "):
+	case strings.HasPrefix(label, "checking "):
 		return StyleStatusWarning, true
 	case label == attention.InitializingLabel, attention.IsWaitLabel(label):
 		return StyleStatusInfo, true
@@ -71,10 +71,10 @@ func ProgressStatusStyle(label string) (style lipgloss.Style, spin bool) {
 	}
 }
 
-// SessionStatusDetail is the dim line Home draws under an attention row's
-// title: the served status detail on one line. It is "" for a row with
-// nothing to add and for a daemon that serves no detail, so the row stays one
-// line.
+// SessionStatusDetail is the served status detail on one line. Home draws no
+// line for it but its filter reads it, so an area the phrase counts as +N
+// still finds the row. It is "" for a row with nothing to add and for a
+// daemon that serves no detail.
 func SessionStatusDetail(sess *pb.Session) string {
 	if sess.GetAttention() == nil {
 		return ""

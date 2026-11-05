@@ -206,13 +206,6 @@ func (h *Model) appendSubRows(rows []table.Row, i int, sess *pb.Session) []table
 		rows = append(rows, h.layout.project(table.Row{"", "", ui.RenderSessionEndpoints(sess), "", ""}))
 	}
 	if sess.GetAttention() != nil {
-		// The served status detail sits on one dim line under the title,
-		// cut to the NAME column; it is counted by SessionSubRowCount and
-		// never widens NAME. The list shows no sentence; details and
-		// notifications do.
-		if detail := ui.SessionStatusDetail(sess); detail != "" {
-			rows = append(rows, h.layout.project(table.Row{"", "", ui.StyleSubtle.Render(detail), "", ""}))
-		}
 		return rows
 	}
 	// Why a session is parked on an external event (BOS-668). Informational,

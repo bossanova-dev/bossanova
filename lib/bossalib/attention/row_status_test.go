@@ -194,7 +194,7 @@ func rowStatusCases() []rowStatusCase {
 		{"repairing failed repair", withRowRepair(withRowFix(failing, RepairFailedAlertKey, "Repair failed")), progress, "repairing", "", RepairingLabel},
 		{"repairing failing checks", withRowRepair(withRowBlockers(failing, nil, checks2)), progress, "repairing 2 checks", "", "idle"},
 		{"rebasing", rebasing, progress, "rebasing", "", RebasingLabel},
-		{"checks running", checking, progress, "checks 12/14", "", "checking 12/14"},
+		{"checks running", checking, progress, "checking 12/14", "", "checking 12/14"},
 		{"verifying", verifying, progress, "verifying", "", "verifying"},
 		{"initializing", starting, progress, "initializing", "", InitializingLabel},
 		{"main red", withRowPark(openPR(), "base-ci-red"), progress, "main red", "", "main red"},

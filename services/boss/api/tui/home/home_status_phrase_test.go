@@ -83,7 +83,7 @@ func TestHomeRowsShowTheServedPhrase_Sessions_AC14(t *testing.T) {
 			{"attention-3", "answer question", "NEEDS YOU"},
 			{"attention-6", "review セキュリティ", "NEEDS YOU"},
 			{"attention-7", "approve merge", "NEEDS YOU"},
-			{"attention-8", spin + "checks 12/14", "IN PROGRESS"},
+			{"attention-8", spin + "checking 12/14", "IN PROGRESS"},
 			{"attention-10", spin + "repairing 1 P2", "IN PROGRESS"},
 		} {
 			if got := strings.TrimSpace(statusCell(t, h, tc.id)); got != tc.cell {
@@ -123,59 +123,37 @@ func TestHomeStatusCellsCarryNoLevelAndNoCut_Sessions_AC208901(t *testing.T) {
 	}
 }
 
-// TestHomeDetailLineSitsUnderItsTitle_Sessions_AC233601: a row with a served
-// detail has one dim line directly under it, starting in the NAME column
-// where the title starts; a row without one stays a single line.
-func TestHomeDetailLineSitsUnderItsTitle_Sessions_AC233601(t *testing.T) {
+// TestHomeRowsDrawNoDetailLine_Sessions_AC233601: a row whose daemon serves a
+// status detail is still one line; the detail appears nowhere on the board.
+func TestHomeRowsDrawNoDetailLine_Sessions_AC233601(t *testing.T) {
 	for _, width := range []int{80, 120} {
 		h := phraseBoard(t, width, 60, fixtures.AttentionSessions())
-		rows := h.Table.Rows()
+		board := strings.Join(boardLines(h), "\n")
+		details := 0
 		for _, s := range h.BoardSessions() {
-			row, _ := h.TableCursorForSessionID(s.GetId())
 			detail := ui.SessionStatusDetail(s)
 			if detail == "" {
-				// The next row is another session or a group's blank spacer.
-				if row+1 < len(rows) && h.layout.rowSession[row+1] < 0 && ansi.Strip(rows[row+1][2]) != "" {
-					t.Errorf("width %d: %s has no detail but the row under it reads %q", width, s.GetId(), ansi.Strip(rows[row+1][2]))
-				}
 				continue
 			}
-			if row+1 >= len(rows) {
-				t.Fatalf("width %d: %s has no row for its detail", width, s.GetId())
-			}
-			under := rows[row+1]
-			if under[2] != ui.StyleSubtle.Render(detail) {
-				t.Errorf("width %d: %s detail cell = %q, want %q in the subtle style", width, s.GetId(), under[2], detail)
-			}
-			for i, cell := range under {
-				if i != 2 && cell != "" {
-					t.Errorf("width %d: %s detail row fills column %d with %q", width, s.GetId(), i, cell)
-				}
+			details++
+			if strings.Contains(board, detail) {
+				t.Errorf("width %d: %s detail %q is drawn:\n%s", width, s.GetId(), detail, board)
 			}
 		}
-		lines := strings.Split(ansi.Strip(h.Table.View()), "\n")
-		for i, line := range lines {
-			if !strings.Contains(line, "[BOS-1500]") {
-				continue
-			}
-			before, _, _ := strings.Cut(line, "[BOS-1500]")
-			under, _, found := strings.Cut(lines[i+1], "API schema")
-			if !found {
-				t.Fatalf("width %d: no detail under the title:\n%s\n%s", width, line, lines[i+1])
-			}
-			title, detail := ansi.StringWidth(before), ansi.StringWidth(under)
-			if title != detail {
-				t.Errorf("width %d: title starts at column %d, its detail at %d:\n%s\n%s", width, title, detail, line, lines[i+1])
-			}
+		if details == 0 {
+			t.Fatal("precondition: no fixture session serves a detail")
+		}
+		if got, want := len(h.Table.Rows()), len(h.BoardSessions())+2*sectionHeaderRows; got != want {
+			t.Errorf("width %d: board has %d rows, want one per session plus the title rows (%d)", width, got, want)
 		}
 	}
 }
 
-// TestHomeDetailRowsNeverHoldTheCursor_Sessions_AC233601: walking the board
-// down and back up selects each session in turn and never a detail row, and
+// TestHomeCursorWalksEverySession_Sessions_AC233601: walking the board down
+// and back up selects each session in turn and never an auxiliary row, and
 // the row accounting the cursor and height helpers use without a layout
 // agrees with the rows rendered.
-func TestHomeDetailRowsNeverHoldTheCursor_Sessions_AC233601(t *testing.T) {
+func TestHomeCursorWalksEverySession_Sessions_AC233601(t *testing.T) {
 	h := phraseBoard(t, 120, 60, fixtures.AttentionSessions())
 	if got, want := h.TableDataRowCount(), len(h.Table.Rows()); got != want {
 		t.Fatalf("height counts %d rows, the table has %d", got, want)
@@ -214,7 +192,7 @@ func TestHomeDetailRowsNeverHoldTheCursor_Sessions_AC233601(t *testing.T) {
 }
 
 // TestHomeShortBoardScrollsToTheLastSession_Sessions_AC233601: on a board too
-// short for its detail rows, moving to the last session scrolls it into view.
+// short for its rows, moving to the last session scrolls it into view.
 func TestHomeShortBoardScrollsToTheLastSession_Sessions_AC233601(t *testing.T) {
 	h := phraseBoard(t, 120, 20, fixtures.AttentionSessions())
 	if h.Table.Height() >= len(h.Table.Rows()) {
@@ -272,8 +250,8 @@ func TestHomePhraseStatusColumnFitsEveryPhrase(t *testing.T) {
 }
 
 // TestHomeFilterMatchesPhraseAndDetail_Sessions_AC233601: the search reads
-// the served phrase and its detail line, so an area the phrase counts as +N
-// still finds its row.
+// the served phrase and its undrawn detail, so an area the phrase counts as
+// +N still finds its row.
 func TestHomeFilterMatchesPhraseAndDetail_Sessions_AC233601(t *testing.T) {
 	for query, want := range map[string]string{"compatibility": "attention-0", "repairing": "attention-10", "App.tsx": "attention-10"} {
 		h := phraseBoard(t, 120, 60, fixtures.AttentionSessions())

@@ -210,7 +210,7 @@ func progressStatus(in Input, att *pb.SessionAttention) (phrase, detail string) 
 		phrase, shown := withTally(RepairingLabel, " ", tallies)
 		return phrase, blockerDetail(tallies, shown, att.GetBlockerFiles())
 	case strings.HasPrefix(label, checkingLabelPrefix):
-		return fitOr("checks "+strings.TrimPrefix(label, checkingLabelPrefix), "checks"), ""
+		return fitOr(label, "checking"), ""
 	default:
 		return fitLabel(label), ""
 	}

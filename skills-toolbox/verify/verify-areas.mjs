@@ -151,10 +151,48 @@ const classify = (path) =>
 /** @param {string} a @param {string} b */
 const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 
-/**
- * @param {string} filename @param {string} line @returns {[string, string] | null}
+/** The expanded dependency name, an empty string for other tables, or undefined for no header.
+ * @param {string} line @returns {string | undefined}
  */
-function dependencyEntry(filename, line) {
+function tomlTable(line) {
+  const header = line.match(/^\s*\[(.+)\]\s*(?:#.*)?$/)
+  if (!header) return undefined
+  // Array tables are known non-dependency tables, and must clear preceding table context.
+  if (header[1].startsWith('[')) return ''
+  const segments = []
+  let segment = ''
+  let quote = ''
+  let escaped = false
+  for (const char of header[1]) {
+    if (escaped) {
+      segment += char
+      escaped = false
+    } else if (quote === '"' && char === '\\') {
+      segment += char
+      escaped = true
+    } else if (quote) {
+      segment += char
+      if (char === quote) quote = ''
+    } else if (char === '"' || char === "'") {
+      quote = char
+      segment += char
+    } else if (char === '.') {
+      segments.push(segment.trim())
+      segment = ''
+    } else segment += char
+  }
+  segments.push(segment.trim())
+  const unquote = (/** @type {string} */ value) => value.replace(/^(["'])(.*)\1$/, '$2')
+  const dependencyList = /^(?:dev-|build-)?dependencies$/
+  if (dependencyList.test(unquote(segments.at(-1) ?? ''))) return ''
+  return dependencyList.test(unquote(segments.at(-2) ?? '')) ? unquote(segments.at(-1) ?? '') : ''
+}
+
+/**
+ * @param {string} filename @param {string} line @param {string | null} [table]
+ * @returns {[string, string] | null}
+ */
+function dependencyEntry(filename, line, table = null) {
   if (filename === 'package.json') {
     const entry = line.match(/^\s*"([^"\n]+)"\s*:\s*"([^"\n]+)"/)
     return entry && !['name', 'version'].includes(entry[1]) ? [entry[1], entry[2]] : null
@@ -167,6 +205,7 @@ function dependencyEntry(filename, line) {
     const entry = line.match(
       /^\s*["']?([\w.-]+)["']?\s*=\s*(?:\{\s*version\s*=\s*)?["']([^"']+)["']/,
     )
+    if (table) return entry?.[1] === 'version' ? [table, entry[2]] : null
     if (entry) return ['name', 'version'].includes(entry[1]) ? null : [entry[1], entry[2]]
   }
   const requirement = line.match(
@@ -198,6 +237,7 @@ export function bumpLevel(from, to) {
 /**
  * Every direct dependency a manifest patch changes, adds or removes, paired by name. Lockfiles
  * carry no direct entries; Maven, Gradle, Gemfile and Composer manifests are unreadable.
+ * TOML expanded dependency tables retain their names; header-less version lines fail closed.
  * @param {string} path @param {string | undefined} patch
  * @returns {{readable: boolean, changes: Bump[], added: string[], removed: string[]}}
  */
@@ -215,9 +255,29 @@ export function dependencyChanges(path, patch) {
   const removed = new Map()
   /** @type {Map<string, string>} */
   const added = new Map()
+  let readable = true
+  /** @type {string | null} */
+  let oldTable = null
+  /** @type {string | null} */
+  let newTable = null
   for (const line of patch.split('\n')) {
+    if (filename.endsWith('.toml')) {
+      if (line.startsWith('@@')) oldTable = newTable = null
+      if (/^[ +\-]/.test(line) && !/^(---|\+\+\+)/.test(line)) {
+        const table = tomlTable(line.slice(1))
+        if (table !== undefined) {
+          if (line[0] !== '+') oldTable = table
+          if (line[0] !== '-') newTable = table
+          continue
+        }
+        const currentTable = line[0] === '-' ? oldTable : newTable
+        if (currentTable === null && /^[+-]\s*["']?version["']?\s*=\s*["']/.test(line)) {
+          readable = false
+        }
+      }
+    }
     if (!/^[+-]/.test(line) || /^(---|\+\+\+)/.test(line)) continue
-    const entry = dependencyEntry(filename, line.slice(1))
+    const entry = dependencyEntry(filename, line.slice(1), line[0] === '-' ? oldTable : newTable)
     if (entry) (line[0] === '-' ? removed : added).set(...entry)
   }
   /** @type {Bump[]} */
@@ -228,7 +288,7 @@ export function dependencyChanges(path, patch) {
   }
   changes.sort((a, b) => compare(a.name, b.name))
   return {
-    readable: true,
+    readable,
     changes,
     added: [...added.keys()].filter((name) => !removed.has(name)).sort(compare),
     removed: [...removed.keys()].filter((name) => !added.has(name)).sort(compare),

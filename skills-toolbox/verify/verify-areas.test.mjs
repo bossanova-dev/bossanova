@@ -294,6 +294,105 @@ for (const [path, previousPath, changes, area] of [
 }
 
 const patch = (before, after) => `@@ -1 +1 @@\n-${before}\n+${after}`
+const tablePatch = (table, before, after) => `@@ -1,2 +1,2 @@\n ${table}\n-${before}\n+${after}`
+
+for (const [path, table, name] of [
+  ['Cargo.toml', '[dependencies.serde]', 'serde'],
+  ['Cargo.toml', '[dev-dependencies.x]', 'x'],
+  ['Cargo.toml', '[build-dependencies.x]', 'x'],
+  ['Cargo.toml', '[workspace.dependencies.x]', 'x'],
+  ['Cargo.toml', "[target.'cfg(unix)'.dependencies.x]", 'x'],
+  ['Cargo.toml', `[target.'cfg(target_os = "linux.gnu")'.dependencies.x]`, 'x'],
+  ['Cargo.toml', '[dependencies."x-y"]', 'x-y'],
+  ['Cargo.toml', "[dependencies.'x.y']", 'x.y'],
+  ['pyproject.toml', '[tool.poetry.dependencies.x]', 'x'],
+  ['pyproject.toml', '[tool.poetry.group.dev.dependencies.x]', 'x'],
+]) {
+  test(`expanded TOML table ${table} preserves dependency identity`, () => {
+    const input = tablePatch(table, 'version = "1.0"', 'version = "2.0"')
+    const bump = { name, from: '1.0', to: '2.0' }
+    assert.deepEqual(dependencyBumps(path, input), { readable: true, bumps: [bump] })
+    const [area] = detectAreas([{ path, patch: input }])
+    assert.equal(area.defaultAsk, 'always')
+    assert.deepEqual(area.bumps, [{ path, ...bump }])
+  })
+}
+
+test('header-less TOML version changes fail closed without losing parsed dependencies', () => {
+  const input = patch('version = "1.0"', 'version = "2.0"')
+  for (const path of ['Cargo.toml', 'pyproject.toml']) {
+    assert.deepEqual(dependencyBumps(path, input), { readable: false, bumps: [] })
+    assert.equal(detectAreas([{ path, patch: input }])[0].defaultAsk, 'always')
+    assert.deepEqual(
+      dependencyChanges(path, input + '\n-x = "1.0"\n-gone = "1.0"\n+x = "2.0"\n+new = "1.0"'),
+      {
+        readable: false,
+        changes: [{ name: 'x', from: '1.0', to: '2.0' }],
+        added: ['new'],
+        removed: ['gone'],
+      },
+    )
+  }
+})
+
+test('real git: zero-context expanded TOML version changes ask', (t) => {
+  const manifest = (version) =>
+    `[package]\nname = "example"\nversion = "0.1.0"\n\n[dependencies.serde]\nversion = "${version}"\n`
+  const files = realDiff(t, { 'Cargo.toml': manifest('1.0') }, [], {
+    'Cargo.toml': manifest('2.0'),
+  })
+  assert.equal(detectAreas(files)[0].defaultAsk, 'always')
+})
+
+test('known TOML package identity stays quiet', () => {
+  const input = tablePatch('[package]', 'version = "0.1.0"', 'version = "0.2.0"')
+  assert.deepEqual(dependencyBumps('Cargo.toml', input), { readable: true, bumps: [] })
+  assert.equal(detectAreas([{ path: 'Cargo.toml', patch: input }])[0].defaultAsk, 'never')
+})
+
+test('expanded TOML table options are not dependency names', () => {
+  const input = tablePatch(
+    '[dependencies.serde]',
+    'git = "old"\n-features = ["old"]\n-path = "old"',
+    'git = "new"\n+features = ["new"]\n+path = "new"',
+  )
+  assert.deepEqual(dependencyChanges('Cargo.toml', input), {
+    readable: true,
+    changes: [],
+    added: [],
+    removed: [],
+  })
+})
+
+test('expanded TOML table additions, removals and renames keep side-specific names', () => {
+  for (const [input, added, removed] of [
+    ['@@ -0,0 +1,2 @@\n+[dependencies.foo]\n+version = "1.0"', ['foo'], []],
+    ['@@ -1,2 +0,0 @@\n-[dependencies.foo]\n-version = "1.0"', [], ['foo']],
+    [
+      '@@ -1,2 +1,2 @@\n-[dependencies.foo]\n-version = "1.0"\n+[dependencies.bar]\n+version = "2.0"',
+      ['bar'],
+      ['foo'],
+    ],
+  ]) {
+    assert.deepEqual(dependencyChanges('Cargo.toml', input), {
+      readable: true,
+      changes: [],
+      added,
+      removed,
+    })
+  }
+})
+
+test('TOML table context resets at each hunk', () => {
+  const input =
+    tablePatch('[dependencies.serde]', 'version = "1.0"', 'version = "2.0"') +
+    '\n@@ -10 +10 @@\n-version = "3.0"\n+version = "4.0"'
+  assert.deepEqual(dependencyBumps('Cargo.toml', input), {
+    readable: false,
+    bumps: [{ name: 'serde', from: '1.0', to: '2.0' }],
+  })
+})
+
 for (const [path, before, after, name, from, to] of [
   ['package.json', '"react": "^18.3.1",', '"react": "^19.0.0",', 'react', '^18.3.1', '^19.0.0'],
   [

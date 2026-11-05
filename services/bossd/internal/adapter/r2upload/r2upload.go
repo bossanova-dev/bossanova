@@ -15,7 +15,7 @@ import (
 
 // CredentialSource reads upload configuration fresh when a bucket is opened.
 type CredentialSource interface {
-	UploadTarget() (domain.EvidenceUploadTarget, bool)
+	UploadTarget() (domain.EvidenceUploadTarget, error)
 }
 
 // Uploader opens a credential-backed bucket for each evidence operation.
@@ -56,8 +56,11 @@ func (u *Uploader) OpenEvidenceBucket() (domain.EvidenceBucket, error) {
 	if u.source == nil {
 		return nil, domain.ErrEvidenceUploadNotConfigured
 	}
-	target, ok := u.source.UploadTarget()
-	if !ok || target.Token == "" {
+	target, err := u.source.UploadTarget()
+	if err != nil {
+		return nil, err
+	}
+	if target.Token == "" {
 		return nil, domain.ErrEvidenceUploadNotConfigured
 	}
 	return &bucket{target: target, baseURL: u.baseURL, client: u.client}, nil

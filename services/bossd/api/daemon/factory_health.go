@@ -126,7 +126,7 @@ func (s *Server) factoryHealthPublishing(f *factoryhealth.Facts) {
 	switch {
 	case err == nil:
 		f.PublishingConfigured = true
-	case errors.Is(err, domain.ErrEvidenceUploadNotConfigured):
+	case errors.Is(err, domain.ErrEvidenceUploadNotConfigured), errors.Is(err, domain.ErrEvidenceDestinationNotConfigured):
 	default:
 		f.Unreadable = append(f.Unreadable, "publishing")
 		f.PublishingConfigured = true

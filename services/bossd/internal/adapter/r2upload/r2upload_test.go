@@ -15,10 +15,11 @@ import (
 type uploadTestSource struct {
 	token string
 	pages bool
+	err   error
 }
 
-func (s *uploadTestSource) UploadTarget() (domain.EvidenceUploadTarget, bool) {
-	return domain.EvidenceUploadTarget{AccountID: "account", Bucket: "proof", PublicBaseURL: "https://proof.example", PagesEnabled: s.pages, Token: s.token}, s.token != ""
+func (s *uploadTestSource) UploadTarget() (domain.EvidenceUploadTarget, error) {
+	return domain.EvidenceUploadTarget{AccountID: "account", Bucket: "proof", PublicBaseURL: "https://proof.example", PagesEnabled: s.pages, Token: s.token}, s.err
 }
 
 func TestBucketPagesEnabledPassesThrough(t *testing.T) {
@@ -94,5 +95,14 @@ func TestUploadFailureSanitizesReflectedToken(t *testing.T) {
 	cancel()
 	if err := bucket.Put(ctx, "key", "text/plain", strings.NewReader("x"), 1); err == nil || strings.Contains(err.Error(), token) {
 		t.Fatalf("expected safe cancellation failure: %v", err)
+	}
+}
+
+func TestOpenEvidenceBucketPreservesSourceError(t *testing.T) {
+	for _, want := range []error{domain.ErrEvidenceDestinationNotConfigured, domain.ErrEvidenceUploadNotConfigured} {
+		_, err := New(&uploadTestSource{err: want}).OpenEvidenceBucket()
+		if err != want {
+			t.Fatalf("error = %v, want %v", err, want)
+		}
 	}
 }

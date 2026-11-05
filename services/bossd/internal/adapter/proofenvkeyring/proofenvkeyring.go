@@ -93,21 +93,21 @@ func (r *Resolver) Resolve() map[string]string {
 // UploadTarget reads the daemon upload credential and destination fresh on
 // every call, never from ambient env or a cached copy. An incomplete
 // destination reports not configured and is logged by key name only.
-func (r *Resolver) UploadTarget() (domain.EvidenceUploadTarget, bool) {
+func (r *Resolver) UploadTarget() (domain.EvidenceUploadTarget, error) {
 	dest, ok := r.destination()
 	if !ok {
-		return domain.EvidenceUploadTarget{}, false
+		return domain.EvidenceUploadTarget{}, domain.ErrEvidenceDestinationNotConfigured
 	}
 	ring, err := r.open()
 	if err != nil {
 		r.logger.Warn().Str("missing", ItemCloudflareAPIToken).Msg("proofenvkeyring: keyring unavailable")
-		return domain.EvidenceUploadTarget{}, false
+		return domain.EvidenceUploadTarget{}, domain.ErrEvidenceUploadNotConfigured
 	}
 	env := make(map[string]string)
 	r.readSecret(ring, env, proofenv.EnvCloudflareAPIToken, ItemCloudflareAPIToken)
 	token := env[proofenv.EnvCloudflareAPIToken]
 	if token == "" {
-		return domain.EvidenceUploadTarget{}, false
+		return domain.EvidenceUploadTarget{}, domain.ErrEvidenceUploadNotConfigured
 	}
 	return domain.EvidenceUploadTarget{
 		AccountID:     dest.AccountID,
@@ -115,7 +115,7 @@ func (r *Resolver) UploadTarget() (domain.EvidenceUploadTarget, bool) {
 		PublicBaseURL: dest.PublicBaseURL,
 		PagesEnabled:  dest.PagesEnabled,
 		Token:         token,
-	}, true
+	}, nil
 }
 
 // destination loads settings.json proof_upload and reports whether it names a

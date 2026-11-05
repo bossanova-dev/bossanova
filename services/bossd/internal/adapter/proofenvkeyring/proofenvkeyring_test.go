@@ -187,12 +187,15 @@ func TestUploadTargetFreshAndMissing(t *testing.T) {
 				store.data[ItemCloudflareAPIToken] = tc.token
 			}
 			r := newResolver(store, tc.openErr, &buf)
-			target, ok := r.UploadTarget()
-			if ok != tc.want {
-				t.Fatalf("ok=%v, want %v", ok, tc.want)
+			target, err := r.UploadTarget()
+			if (err == nil) != tc.want {
+				t.Fatalf("err=%v, want success %v", err, tc.want)
+			}
+			if !tc.want && !errors.Is(err, domain.ErrEvidenceUploadNotConfigured) {
+				t.Fatalf("credential error = %v", err)
 			}
 			want := domain.EvidenceUploadTarget{AccountID: completeDestination.AccountID, Bucket: completeDestination.Bucket, PublicBaseURL: completeDestination.PublicBaseURL, Token: string(tc.token)}
-			if ok && target != want {
+			if err == nil && target != want {
 				t.Errorf("target = %+v, want %+v", target, want)
 			}
 			if strings.Contains(buf.String(), "upload-secret") || strings.Contains(buf.String(), "must-not-log-this") {
@@ -200,8 +203,8 @@ func TestUploadTargetFreshAndMissing(t *testing.T) {
 			}
 			if tc.want {
 				store.data[ItemCloudflareAPIToken] = []byte("replacement")
-				target, ok = r.UploadTarget()
-				if !ok || target.Token != "replacement" {
+				target, err = r.UploadTarget()
+				if err != nil || target.Token != "replacement" {
 					t.Fatal("upload credential cached")
 				}
 			}
@@ -215,17 +218,17 @@ func TestUploadTargetTakesDestinationFromSettings_Sessions_AC208101(t *testing.T
 	r := newResolver(store, nil, &buf)
 	dest := config.ProofUploadConfig{AccountID: "acct-1", Bucket: "bucket-1", PublicBaseURL: "https://one.example/base", PagesEnabled: true}
 	r.settings = func() (config.ProofUploadConfig, error) { return dest, nil }
-	target, ok := r.UploadTarget()
+	target, err := r.UploadTarget()
 	want := domain.EvidenceUploadTarget{AccountID: "acct-1", Bucket: "bucket-1", PublicBaseURL: "https://one.example/base", PagesEnabled: true, Token: "cf-SECRET-token"}
-	if !ok || target != want {
-		t.Fatalf("target = %+v ok=%v, want %+v", target, ok, want)
+	if err != nil || target != want {
+		t.Fatalf("target = %+v err=%v, want %+v", target, err, want)
 	}
 	// Settings are re-read on every call: an edit takes effect without a restart.
 	dest = config.ProofUploadConfig{AccountID: "acct-2", Bucket: "bucket-2", PublicBaseURL: "https://two.example"}
-	target, ok = r.UploadTarget()
+	target, err = r.UploadTarget()
 	want = domain.EvidenceUploadTarget{AccountID: "acct-2", Bucket: "bucket-2", PublicBaseURL: "https://two.example", Token: "cf-SECRET-token"}
-	if !ok || target != want {
-		t.Fatalf("settings were cached: target = %+v ok=%v", target, ok)
+	if err != nil || target != want {
+		t.Fatalf("settings were cached: target = %+v err=%v", target, err)
 	}
 }
 
@@ -255,7 +258,7 @@ func TestUploadTargetIncompleteDestinationIsNotConfigured_Sessions_AC208101(t *t
 				tc.mutate(&dest)
 			}
 			r.settings = func() (config.ProofUploadConfig, error) { return dest, tc.err }
-			if target, ok := r.UploadTarget(); ok || target != (domain.EvidenceUploadTarget{}) {
+			if target, err := r.UploadTarget(); !errors.Is(err, domain.ErrEvidenceDestinationNotConfigured) || target != (domain.EvidenceUploadTarget{}) {
 				t.Fatalf("incomplete destination configured: %+v", target)
 			}
 			logs := buf.String()

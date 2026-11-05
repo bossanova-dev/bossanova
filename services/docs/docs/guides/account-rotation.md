@@ -535,8 +535,8 @@ leaves the account in place rather than removing it.
 
 ### Terminal Codex alongside rotation
 
-You can keep using `codex` in your own terminal for an account bossd also
-manages. bossd's logins run the device login in a private Codex home, so a
+Running `codex` in your own terminal for an account bossd also manages is
+fine. bossd's logins run the device login in a private Codex home, so a
 terminal `codex login` for the same OpenAI account is a **separate grant** with
 its own refresh token. The provider refreshes each grant on its own, so neither
 signs the other out, and the account's check stays a plain `ok`.

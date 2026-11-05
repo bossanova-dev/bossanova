@@ -4703,7 +4703,7 @@ type SessionAttention struct {
 	// three, in blocker order.
 	BlockerFiles []string `protobuf:"bytes,19,rep,name=blocker_files,json=blockerFiles,proto3" json:"blocker_files,omitempty"`
 	// The row's STATUS phrase, which clients render verbatim: what the operator
-	// must do under NEEDS YOU ("✓ review", "? question", "repair failed: 1 P2") or
+	// must do under NEEDS YOU ("✓ review", "? question", "⨯ conflict") or
 	// what the agent is doing under IN PROGRESS ("repairing 1 P2", "checking
 	// 12/14"). At most 22 display cells, never cut with an ellipsis and never a
 	// confidence word or level glyph; empty for DONE. Pins older than 2026-11-01

@@ -96,7 +96,7 @@
     "parkCodes": [
       "human-merge"
     ],
-    "phrase": "approve merge",
+    "phrase": "✓ merge",
     "detail": "no proof yet"
   },
   {
@@ -111,14 +111,14 @@
     "kind": "ATTENTION_KIND_MERGE",
     "sentence": "Ready to merge",
     "isUnverified": true,
-    "phrase": "approve merge",
+    "phrase": "? merge",
     "detail": "verify has not passed this head"
   },
   {
     "name": "verified merge",
     "kind": "ATTENTION_KIND_MERGE",
     "sentence": "Ready to merge",
-    "phrase": "approve merge",
+    "phrase": "✓ merge",
     "detail": ""
   },
   {
@@ -136,8 +136,8 @@
     "blockerFiles": [
       "a.go"
     ],
-    "phrase": "repair failed: 1 P2",
-    "detail": "in a.go"
+    "phrase": "⨯ repair failed",
+    "detail": "1 P2 · in a.go"
   },
   {
     "name": "repair exhausted alert while repair owned",
@@ -155,8 +155,8 @@
       "a.go"
     ],
     "repairOwned": true,
-    "phrase": "repair failed: 1 P2",
-    "detail": "in a.go"
+    "phrase": "⨯ repair failed",
+    "detail": "1 P2 · in a.go"
   },
   {
     "name": "repair exhausted park",
@@ -165,7 +165,7 @@
     "parkCodes": [
       "repair-exhausted"
     ],
-    "phrase": "repair failed",
+    "phrase": "⨯ repair failed",
     "detail": ""
   },
   {
@@ -190,7 +190,7 @@
       "a.go",
       "b.go"
     ],
-    "phrase": "repair failed: 2 P1 +3",
+    "phrase": "⨯ repair failed",
     "detail": "2 P1, 3 checks · in a.go, b.go"
   },
   {
@@ -198,7 +198,7 @@
     "kind": "ATTENTION_KIND_FIX",
     "alertKey": "merge-conflict",
     "sentence": "Merge conflict",
-    "phrase": "resolve conflict",
+    "phrase": "⨯ conflict",
     "detail": ""
   },
   {
@@ -223,7 +223,7 @@
       "a.go",
       "b.go"
     ],
-    "phrase": "fix needed: 2 P1 +3",
+    "phrase": "⨯ findings",
     "detail": "2 P1, 3 checks · in a.go, b.go"
   },
   {
@@ -239,8 +239,8 @@
         "blockerCount": 3
       }
     ],
-    "phrase": "fix needed: 3 checks",
-    "detail": ""
+    "phrase": "⨯ failing",
+    "detail": "3 checks"
   },
   {
     "name": "blocked park category fits",
@@ -249,7 +249,7 @@
     "parkCodes": [
       "no-session"
     ],
-    "phrase": "fix needed: no session",
+    "phrase": "⨯ no session",
     "detail": ""
   },
   {
@@ -259,7 +259,7 @@
     "parkCodes": [
       "worktree-diverged"
     ],
-    "phrase": "fix needed",
+    "phrase": "⨯ worktree diverged",
     "detail": ""
   },
   {
@@ -277,8 +277,8 @@
       }
     ],
     "repairOwned": true,
-    "phrase": "fix needed: 1 P2",
-    "detail": ""
+    "phrase": "⨯ findings",
+    "detail": "1 P2"
   },
   {
     "name": "stuck wait on failing checks",
@@ -291,15 +291,15 @@
         "blockerCount": 2
       }
     ],
-    "phrase": "fix needed: 2 checks",
-    "detail": ""
+    "phrase": "⨯ failing",
+    "detail": "2 checks"
   },
   {
     "name": "stuck wait without blockers",
     "kind": "ATTENTION_KIND_FIX",
     "alertKey": "stuck-wait:failing:abc",
     "sentence": "verify waits on a wake that cannot fire",
-    "phrase": "fix needed: checks",
+    "phrase": "⨯ failing",
     "detail": ""
   },
   {
@@ -307,7 +307,7 @@
     "kind": "ATTENTION_KIND_FIX",
     "alertKey": "blocked:blocked",
     "sentence": "Run blocked: tests fail",
-    "phrase": "fix needed: run stuck",
+    "phrase": "⨯ run stuck",
     "detail": ""
   },
   {
@@ -315,7 +315,7 @@
     "kind": "ATTENTION_KIND_FIX",
     "alertKey": "blocked:blocked",
     "sentence": "Run stopped",
-    "phrase": "fix needed: run halted",
+    "phrase": "⨯ run halted",
     "detail": ""
   },
   {
@@ -323,7 +323,7 @@
     "kind": "ATTENTION_KIND_FIX",
     "alertKey": "blocked:orphaned",
     "sentence": "Run lost its agent",
-    "phrase": "fix needed: agent lost",
+    "phrase": "⨯ agent lost",
     "detail": ""
   },
   {
@@ -331,7 +331,7 @@
     "kind": "ATTENTION_KIND_FIX",
     "alertKey": "blocked:blocked",
     "sentence": "Run died before setup finished and left no worktree or chat",
-    "phrase": "fix needed: setup died",
+    "phrase": "⨯ setup died",
     "detail": ""
   },
   {
@@ -339,7 +339,7 @@
     "kind": "ATTENTION_KIND_FIX",
     "alertKey": "auth-wedge",
     "sentence": "Agent authentication failed",
-    "phrase": "fix needed: agent auth",
+    "phrase": "⨯ agent auth",
     "detail": ""
   },
   {
@@ -347,7 +347,7 @@
     "kind": "ATTENTION_KIND_FIX",
     "alertKey": "resume:crash",
     "sentence": "Resume gave up",
-    "phrase": "fix needed: resume",
+    "phrase": "⨯ resume",
     "detail": ""
   },
   {
@@ -355,7 +355,7 @@
     "kind": "ATTENTION_KIND_FIX",
     "alertKey": "mystery",
     "sentence": "Something odd",
-    "phrase": "fix needed",
+    "phrase": "⨯ fix",
     "detail": ""
   },
   {

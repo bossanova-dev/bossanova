@@ -1,13 +1,13 @@
    REPO    NAME                                                PR     STATUS                   
                                                                                                
    ──────────────────────────────────────── NEEDS YOU ─────────────────────────────────────────
-   my-app  [BOS-1502] Improve the unattended…                  #2982  repair failed: 1 P2      
+   my-app  [BOS-1502] Improve the unattended…                  #2982  ⨯ repair failed          
  ❯ my-app  [BOS-1500] Improve the unattended…                  #2980  ✓ review                 
    my-app  [BOS-1503] Improve the unattended…                  #2983  ? question               
    my-app  [BOS-1504] Improve the unattended…                  #2984  ✓ review                 
    my-app  [BOS-1505] Improve the unattended…                  #2985  ✓ review                 
    my-app  [BOS-1506] 権限ルールの見直し                       #2986  ✓ review                 
-   my-app  [BOS-1507] Improve the unattended…                  #2987  approve merge            
+   my-app  [BOS-1507] Improve the unattended…                  #2987  ✓ merge                  
                                                                                                
    ─────────────────────────────────────── IN PROGRESS ────────────────────────────────────────
    my-app  [BOS-1501] Improve the unattended…                  #2981  ⣾ building               

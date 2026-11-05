@@ -166,29 +166,29 @@ func rowStatusCases() []rowStatusCase {
 		{"review CJK ask measured in cells", withRowProof(withRowPark(openPR(), "human-review:security"), "", "データベース移行"), review, ReviewPhrase, "データベース移行 · no proof yet", ""},
 		{"review codes without asks", withRowPark(openPR(), "human-review:database", "human-review:security"), review, ReviewPhrase, "database, security · no proof yet", ""},
 		{"review latest commit", withRowPark(openPR(), "no-receipt"), review, ReviewPhrase, "latest commit · no proof yet", ""},
-		{"human merge park", withRowPark(openPR(), ParkCodeHumanMerge), review, "approve merge", "no proof yet", ""},
+		{"human merge park", withRowPark(openPR(), ParkCodeHumanMerge), review, "✓ merge", "no proof yet", ""},
 		{"question", question, ask, "? question", "", ""},
-		{"unverified merge", merge, mergeKind, "approve merge", "verify has not passed this head", ""},
-		{"verified merge", verified, mergeKind, "approve merge", "", ""},
-		{"repair exhausted alert", withRowBlockers(withRowFix(failing, "repair-exhausted", "Automatic repair exhausted its attempts"), []string{"a.go"}, p2), fix, "repair failed: 1 P2", "in a.go", ""},
-		{"repair exhausted alert while repair owned", withRowRepair(withRowBlockers(withRowFix(failing, "repair-exhausted", "Automatic repair exhausted its attempts"), []string{"a.go"}, p2)), fix, "repair failed: 1 P2", "in a.go", ""},
-		{"repair exhausted park", withRowPark(openPR(), "repair-exhausted"), fix, "repair failed", "", ""},
-		{"repair exhausted park with mixed blockers", withRowBlockers(withRowPark(openPR(), "repair-exhausted"), files, twoP1, checks3), fix, "repair failed: 2 P1 +3", "2 P1, 3 checks · in a.go, b.go", ""},
-		{"merge conflict", withRowFix(openPR(), "merge-conflict", "Merge conflict"), fix, "resolve conflict", "", ""},
-		{"blocked park with blockers", withRowBlockers(withRowPark(openPR(), "cannot-assess"), files, twoP1, checks3), fix, "fix needed: 2 P1 +3", "2 P1, 3 checks · in a.go, b.go", ""},
-		{"blocked park with checks only", withRowBlockers(withRowPark(openPR(), "verify-post-failed"), nil, checks3), fix, "fix needed: 3 checks", "", ""},
-		{"blocked park category fits", withRowPark(openPR(), "no-session"), fix, "fix needed: no session", "", ""},
-		{"blocked park category too long", withRowPark(openPR(), "worktree-diverged"), fix, "fix needed", "", ""},
-		{"partial build while repair owned", withRowRepair(withRowBlockers(withRowPark(openPR(), ParkCodePartial), nil, p2)), fix, "fix needed: 1 P2", "", ""},
-		{"stuck wait on failing checks", withRowBlockers(withRowFix(failing, "stuck-wait:failing:abc", "verify waits on a wake that cannot fire"), nil, checks2), fix, "fix needed: 2 checks", "", ""},
-		{"stuck wait without blockers", withRowFix(failing, "stuck-wait:failing:abc", "verify waits on a wake that cannot fire"), fix, "fix needed: checks", "", ""},
-		{"run blocked", withRowFix(openPR(), "blocked:blocked", "Run blocked: tests fail"), fix, "fix needed: run stuck", "", ""},
-		{"run stopped", withRowFix(openPR(), "blocked:blocked", "Run stopped"), fix, "fix needed: run halted", "", ""},
-		{"run lost its agent", withRowFix(openPR(), "blocked:orphaned", "Run lost its agent"), fix, "fix needed: agent lost", "", ""},
-		{"dead bootstrap", withRowFix(openPR(), "blocked:blocked", "Run died before setup finished and left no worktree or chat"), fix, "fix needed: setup died", "", ""},
-		{"agent authentication", withRowFix(openPR(), "auth-wedge", "Agent authentication failed"), fix, "fix needed: agent auth", "", ""},
-		{"resume gave up", withRowFix(openPR(), "resume:crash", "Resume gave up"), fix, "fix needed: resume", "", ""},
-		{"unknown alert", withRowFix(openPR(), "mystery", "Something odd"), fix, "fix needed", "", ""},
+		{"unverified merge", merge, mergeKind, "? merge", "verify has not passed this head", ""},
+		{"verified merge", verified, mergeKind, "✓ merge", "", ""},
+		{"repair exhausted alert", withRowBlockers(withRowFix(failing, "repair-exhausted", "Automatic repair exhausted its attempts"), []string{"a.go"}, p2), fix, "⨯ repair failed", "1 P2 · in a.go", ""},
+		{"repair exhausted alert while repair owned", withRowRepair(withRowBlockers(withRowFix(failing, "repair-exhausted", "Automatic repair exhausted its attempts"), []string{"a.go"}, p2)), fix, "⨯ repair failed", "1 P2 · in a.go", ""},
+		{"repair exhausted park", withRowPark(openPR(), "repair-exhausted"), fix, "⨯ repair failed", "", ""},
+		{"repair exhausted park with mixed blockers", withRowBlockers(withRowPark(openPR(), "repair-exhausted"), files, twoP1, checks3), fix, "⨯ repair failed", "2 P1, 3 checks · in a.go, b.go", ""},
+		{"merge conflict", withRowFix(openPR(), "merge-conflict", "Merge conflict"), fix, "⨯ conflict", "", ""},
+		{"blocked park with blockers", withRowBlockers(withRowPark(openPR(), "cannot-assess"), files, twoP1, checks3), fix, "⨯ findings", "2 P1, 3 checks · in a.go, b.go", ""},
+		{"blocked park with checks only", withRowBlockers(withRowPark(openPR(), "verify-post-failed"), nil, checks3), fix, "⨯ failing", "3 checks", ""},
+		{"blocked park category fits", withRowPark(openPR(), "no-session"), fix, "⨯ no session", "", ""},
+		{"blocked park category too long", withRowPark(openPR(), "worktree-diverged"), fix, "⨯ worktree diverged", "", ""},
+		{"partial build while repair owned", withRowRepair(withRowBlockers(withRowPark(openPR(), ParkCodePartial), nil, p2)), fix, "⨯ findings", "1 P2", ""},
+		{"stuck wait on failing checks", withRowBlockers(withRowFix(failing, "stuck-wait:failing:abc", "verify waits on a wake that cannot fire"), nil, checks2), fix, "⨯ failing", "2 checks", ""},
+		{"stuck wait without blockers", withRowFix(failing, "stuck-wait:failing:abc", "verify waits on a wake that cannot fire"), fix, "⨯ failing", "", ""},
+		{"run blocked", withRowFix(openPR(), "blocked:blocked", "Run blocked: tests fail"), fix, "⨯ run stuck", "", ""},
+		{"run stopped", withRowFix(openPR(), "blocked:blocked", "Run stopped"), fix, "⨯ run halted", "", ""},
+		{"run lost its agent", withRowFix(openPR(), "blocked:orphaned", "Run lost its agent"), fix, "⨯ agent lost", "", ""},
+		{"dead bootstrap", withRowFix(openPR(), "blocked:blocked", "Run died before setup finished and left no worktree or chat"), fix, "⨯ setup died", "", ""},
+		{"agent authentication", withRowFix(openPR(), "auth-wedge", "Agent authentication failed"), fix, "⨯ agent auth", "", ""},
+		{"resume gave up", withRowFix(openPR(), "resume:crash", "Resume gave up"), fix, "⨯ resume", "", ""},
+		{"unknown alert", withRowFix(openPR(), "mystery", "Something odd"), fix, "⨯ fix", "", ""},
 		{"repairing blocked park", withRowRepair(withRowBlockers(withRowPark(openPR(), "cannot-assess"), []string{"a.go"}, p2)), progress, "repairing 1 P2", "in a.go", RepairingLabel},
 		{"repairing blocked park with mixed blockers", withRowRepair(withRowBlockers(withRowPark(openPR(), "cannot-assess"), files, twoP1, checks3)), progress, "repairing 2 P1 +3", "2 P1, 3 checks · in a.go, b.go", RepairingLabel},
 		{"repairing failed repair", withRowRepair(withRowFix(failing, RepairFailedAlertKey, "Repair failed")), progress, "repairing", "", RepairingLabel},
@@ -302,8 +302,9 @@ func assertRowStatusShape(t *testing.T, name, phrase, detail string) {
 	if strings.Contains(detail, "\n") {
 		t.Errorf("%s: detail %q spans lines", name, detail)
 	}
-	// The review tick marks a waiting sign-off, not a High level.
-	for _, s := range []string{strings.Replace(phrase, ReviewPhrase, "review", 1), detail} {
+	// A leading status mark ("✓ review", "⨯ conflict") says whether the row is
+	// a problem, not a confidence level.
+	for _, s := range []string{strings.TrimPrefix(strings.TrimPrefix(phrase, "✓ "), "⨯ "), detail} {
 		if strings.ContainsAny(s, confidenceGlyphs) {
 			t.Errorf("%s: %q carries a level glyph", name, s)
 		}

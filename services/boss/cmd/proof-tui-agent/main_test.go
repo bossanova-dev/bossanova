@@ -967,7 +967,7 @@ func TestE2E_SocketAttachDrivesExistingDaemon(t *testing.T) {
 		t.Errorf("attach-mode home missing the existing daemon's repo %q; screen:\n%s", repoName, screen)
 	}
 	// The details header names the served status phrase of the lost run.
-	assertRenderedDangerRGB(t, s, "fix needed: agent lost")
+	assertRenderedDangerRGB(t, s, "⨯ agent lost")
 	s.do(map[string]any{"id": 99, "op": "quit"})
 	_ = stdin.Close()
 	if err := cmd.Wait(); err != nil {

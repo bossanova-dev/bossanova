@@ -58,8 +58,8 @@ func TestAttentionRepairOwned_Sessions_AC233502_LeaseAndDisplayMoveABlockedParkI
 	for _, source := range []string{"lease", "display"} {
 		t.Run(source, func(t *testing.T) {
 			f := newRepairOwnedFixture(t, blockedPark, false, nil)
-			if got := f.attention(t); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetStatusPhrase() != "fix needed" {
-				t.Fatalf("before repair: %v, want FIX %q", got, "fix needed")
+			if got := f.attention(t); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetStatusPhrase() != "⨯ not assessed" {
+				t.Fatalf("before repair: %v, want FIX %q", got, "⨯ not assessed")
 			}
 			if source == "lease" {
 				if err := f.srv.repairLease.Acquire(f.row.ID, "repairer"); err != nil {
@@ -141,8 +141,8 @@ func TestAttentionRepairOwned_Sessions_AC233502_ArmedRepair(t *testing.T) {
 			got := f.attention(t)
 			if tc.edit != nil && f.row.LastRepairAttemptCount >= repairExhaustedAttempts {
 				// Exhausted repair is the operator's: its FIX never reads in progress.
-				if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetStatusPhrase() != "repair failed" {
-					t.Fatalf("exhausted repair: %v, want FIX %q", got, "repair failed")
+				if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetStatusPhrase() != "⨯ repair failed" {
+					t.Fatalf("exhausted repair: %v, want FIX %q", got, "⨯ repair failed")
 				}
 				return
 			}

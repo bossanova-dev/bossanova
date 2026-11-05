@@ -18,15 +18,20 @@ const StatusPhraseMaxWidth = 22
 // (Input.RepairOwned): the FIX it would otherwise be reads in progress.
 const RepairingLabel = "repairing"
 
-// ApproveMergePhrase is the phrase of a PR waiting only on the operator's
-// merge, which clients draw in the success colour whatever kind serves it.
-const ApproveMergePhrase = "approve merge"
+// MergePhrase is the phrase of a PR verify passed that waits only on the
+// operator's merge, whether a MERGE or a human-merge REVIEW park serves it.
+// UnverifiedMergePhrase is a mergeable PR verify has not passed: merging it
+// trusts CI alone, so it asks rather than ticks.
+const (
+	MergePhrase           = "✓ merge"
+	UnverifiedMergePhrase = "? merge"
+)
 
 // ReviewPhrase is the phrase of every sign-off review, drawn in the success
 // colour; the areas to review are in the detail and in session details.
 const ReviewPhrase = "✓ review"
 
-// Rewording a phrase ("✓ review", "? question", "checking N/M") ships with no
+// Rewording a phrase ("✓ review", "⨯ conflict", "checking N/M") ships with no
 // dated version. Session.attention reaches the version-skewed boss TUI and web
 // through bosso and bossd alike, and both render status_phrase verbatim, so a
 // skewed client shows the new words with nothing to parse. The only branching
@@ -36,9 +41,8 @@ const ReviewPhrase = "✓ review"
 // Status phrases with fixed words.
 const (
 	phraseQuestion        = "? question"
-	phraseResolveConflict = "resolve conflict"
-	phraseRepairFailed    = "repair failed"
-	phraseFixNeeded       = "fix needed"
+	phraseFix             = problemMark + "fix"
+	problemMark           = "⨯ "
 	detailUnverifiedMerge = "verify has not passed this head"
 	detailSeparator       = " · "
 )
@@ -67,9 +71,9 @@ func RowStatus(in Input, att *pb.SessionAttention) (phrase, detail string) {
 		return phraseQuestion, ""
 	case pb.AttentionKind_ATTENTION_KIND_MERGE:
 		if att.GetIsUnverified() {
-			return ApproveMergePhrase, detailUnverifiedMerge
+			return UnverifiedMergePhrase, detailUnverifiedMerge
 		}
-		return ApproveMergePhrase, ""
+		return MergePhrase, ""
 	case pb.AttentionKind_ATTENTION_KIND_FIX:
 		return fixStatus(att)
 	case pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS:
@@ -82,7 +86,7 @@ func RowStatus(in Input, att *pb.SessionAttention) (phrase, detail string) {
 func reviewStatus(att *pb.SessionAttention) (phrase, detail string) {
 	var parts []string
 	if code, _ := DecidingParkCode(att.GetParkCodes()); code == ParkCodeHumanMerge {
-		phrase = ApproveMergePhrase
+		phrase = MergePhrase
 	} else {
 		phrase = ReviewPhrase
 		if areas := reviewAreas(att); len(areas) > 0 {
@@ -126,38 +130,59 @@ func reviewAreas(att *pb.SessionAttention) []string {
 	return areas
 }
 
+// fixStatus is "⨯ <what is wrong>"; the blocker tally and files are the
+// detail, which session details show.
 func fixStatus(att *pb.SessionAttention) (phrase, detail string) {
 	key := att.GetAlertKey()
 	tallies := att.GetBlockerTallies()
-	shown := 0
 	switch {
 	case key == "repair-exhausted" || key == RepairFailedAlertKey ||
 		key == "" && slices.Contains(normalizeParkCodes(att.GetParkCodes()), "repair-exhausted"):
-		phrase, shown = withTally(phraseRepairFailed, ": ", tallies)
+		phrase = problemMark + "repair failed"
 	case key == "merge-conflict" || strings.HasPrefix(key, stuckWaitPrefix+"conflict:"):
-		return phraseResolveConflict, ""
+		return problemMark + "conflict", ""
 	case len(tallies) > 0 && (key == "" || strings.HasPrefix(key, stuckWaitPrefix+"failing:")):
-		phrase, shown = withTally(phraseFixNeeded, ": ", tallies)
+		phrase = problemMark + blockerNoun(tallies)
 	case key == "":
-		phrase = phraseFixNeeded
+		phrase = phraseFix
 		if code, ok := DecidingParkCode(att.GetParkCodes()); ok {
-			phrase = fitOr(phraseFixNeeded+": "+ParkCodeCategory(code), phraseFixNeeded)
+			phrase = fitOr(problemMark+parkProblem(code), phraseFix)
 		}
 	default:
-		phrase = phraseFixNeeded
+		phrase = phraseFix
 		if short := fixShort(key, att.GetSentence()); short != "" {
-			phrase = fitOr(phraseFixNeeded+": "+short, phraseFixNeeded)
+			phrase = problemMark + short
 		}
 	}
-	return phrase, blockerDetail(tallies, shown, att.GetBlockerFiles())
+	return phrase, blockerDetail(tallies, 0, att.GetBlockerFiles())
+}
+
+// parkProblem names a blocked park by its category, except that a park verify
+// could not assess says so without the confidence level's words.
+func parkProblem(code string) string {
+	if code == "cannot-assess" {
+		return "not assessed"
+	}
+	return ParkCodeCategory(code)
+}
+
+// blockerNoun names what blocks a head: "failing" when every blocker is a
+// check, else "findings".
+func blockerNoun(tallies []*pb.BlockerTally) string {
+	for _, t := range tallies {
+		if t.GetKind() != "check" {
+			return "findings"
+		}
+	}
+	return "failing"
 }
 
 // stuckWaitPrefix starts the alert key of a wait that cannot fire,
 // "stuck-wait:<blocker>:<head>".
 const stuckWaitPrefix = "stuck-wait:"
 
-// fixShort names a fix alert in at most ten cells, so "fix needed: <short>"
-// always fits; empty for an alert it does not know.
+// fixShort names a fix alert in at most ten cells, so "⨯ <short>" always
+// fits; empty for an alert it does not know.
 func fixShort(key, sentence string) string {
 	switch {
 	case key == "blocked:orphaned":
@@ -181,7 +206,7 @@ func fixShort(key, sentence string) string {
 	case strings.HasPrefix(key, "rotation:"):
 		return "rotation"
 	case strings.HasPrefix(key, stuckWaitPrefix+"failing:"):
-		return "checks"
+		return "failing"
 	case strings.HasPrefix(key, stuckWaitPrefix+"draft:"):
 		return "draft PR"
 	case key == RepairRefusedAlertKey:

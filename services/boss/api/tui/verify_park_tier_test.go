@@ -54,16 +54,15 @@ func TestHomeVerifyParkTierByMix(t *testing.T) {
 			if tc.blocked {
 				wantCell, wantHint, wantPrefix = ui.StyleStatusDanger.Render("blocked"), ui.StyleStatusDanger, "blocked: "
 			}
-			// The home row reads the served status phrase in the same tier
-			// colour (BOS-2336): a look-only park names what to review, a
-			// blocked one the fix it needs.
+			// The home row reads the served status phrase: a look-only park
+			// is a green review, a blocked one the fix it needs in danger.
 			got := h.RenderSessionStatus(s)
-			wantStyle := ui.StyleStatusWarning
+			wantStyle := ui.StyleStatusSuccess
 			if tc.blocked {
 				wantStyle = ui.StyleStatusDanger
 			}
 			if phrase := s.GetAttention().GetStatusPhrase(); phrase == "" || got != wantStyle.Render(phrase) {
-				t.Errorf("status cell = %q, want the served phrase %q in %q's colour", got, phrase, wantCell)
+				t.Errorf("status cell = %q, want the served phrase %q in %q", got, phrase, wantStyle.Render(phrase))
 			}
 			if got := ui.RenderDisplayStatus(s, h.Spinner); got != wantCell {
 				t.Errorf("display status cell = %q, want %q", got, wantCell)

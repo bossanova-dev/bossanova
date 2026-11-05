@@ -10,8 +10,8 @@
       "Infrastructure"
     ],
     "proofUrl": "https://proof.test/p",
-    "phrase": "review Infrastructure",
-    "detail": "proof recorded"
+    "phrase": "✓ review",
+    "detail": "Infrastructure · proof recorded"
   },
   {
     "name": "review two asks",
@@ -24,7 +24,7 @@
       "API schema",
       "API compatibility"
     ],
-    "phrase": "review API schema +1",
+    "phrase": "✓ review",
     "detail": "API schema, API compatibility · no proof yet"
   },
   {
@@ -39,7 +39,7 @@
       "API schema",
       "API compatibility"
     ],
-    "phrase": "review 3 areas",
+    "phrase": "✓ review",
     "detail": "Infrastructure as code, API schema, API compatibility · no proof yet"
   },
   {
@@ -52,8 +52,8 @@
     "asks": [
       "セキュリティ"
     ],
-    "phrase": "review セキュリティ",
-    "detail": "no proof yet"
+    "phrase": "✓ review",
+    "detail": "セキュリティ · no proof yet"
   },
   {
     "name": "review CJK ask measured in cells",
@@ -65,7 +65,7 @@
     "asks": [
       "データベース移行"
     ],
-    "phrase": "review 1 area",
+    "phrase": "✓ review",
     "detail": "データベース移行 · no proof yet"
   },
   {
@@ -76,7 +76,7 @@
       "human-review:database",
       "human-review:security"
     ],
-    "phrase": "review database +1",
+    "phrase": "✓ review",
     "detail": "database, security · no proof yet"
   },
   {
@@ -86,8 +86,8 @@
     "parkCodes": [
       "no-receipt"
     ],
-    "phrase": "review latest commit",
-    "detail": "no proof yet"
+    "phrase": "✓ review",
+    "detail": "latest commit · no proof yet"
   },
   {
     "name": "human merge park",
@@ -103,7 +103,7 @@
     "name": "question",
     "kind": "ATTENTION_KIND_QUESTION",
     "sentence": "“Which schema?”",
-    "phrase": "answer question",
+    "phrase": "? question",
     "detail": ""
   },
   {

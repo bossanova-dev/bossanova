@@ -13,8 +13,8 @@ import (
 
 // RenderStatusPhrase styles a's served status phrase, the one STATUS text of
 // a session row. A NEEDS YOU phrase reads in warning, a fix (repair failed,
-// fix needed, resolve conflict) in danger and approve merge in success, and
-// no glyph or spinner leads it: the move is the operator's. An IN PROGRESS
+// fix needed, resolve conflict) in danger, and a review or approve merge in
+// success; no spinner leads it: the move is the operator's. An IN PROGRESS
 // phrase is styled, and led by its spinner, as ProgressStatusStyle styles the
 // state it names. ok is false when the daemon serves no phrase (an older
 // daemon, or a finished session), so the caller keeps its own cell.
@@ -33,7 +33,7 @@ func RenderStatusPhrase(a *pb.SessionAttention, sp spinner.Model) (cell string, 
 	switch {
 	case a.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX:
 		return StyleStatusDanger.Render(phrase), true
-	case a.GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE, phrase == attention.ApproveMergePhrase:
+	case a.GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE, a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW, phrase == attention.ApproveMergePhrase:
 		return StyleStatusSuccess.Render(phrase), true
 	default:
 		return StyleStatusWarning.Render(phrase), true

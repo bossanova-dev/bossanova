@@ -25,11 +25,11 @@ func servedPark(codes ...string) *pb.Session {
 func TestSessionHeaderNamesTheServedPhrase_ChatPicker_AC233601(t *testing.T) {
 	sp := NewStatusSpinner()
 	park := servedPark("human-review:ui")
-	if park.GetAttention().GetStatusPhrase() != "review UI" {
+	if park.GetAttention().GetStatusPhrase() != attention.ReviewPhrase {
 		t.Fatalf("precondition: served phrase %q", park.GetAttention().GetStatusPhrase())
 	}
 	banner := ansi.Strip(RenderBanner(ViewChatPicker, BannerOpts{Session: park, Width: 160}))
-	if !strings.Contains(banner, "Hide the line (review UI)") {
+	if !strings.Contains(banner, "Hide the line (✓ review)") {
 		t.Errorf("header does not name the served phrase:\n%s", banner)
 	}
 

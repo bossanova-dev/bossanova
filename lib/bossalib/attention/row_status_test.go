@@ -159,15 +159,15 @@ func rowStatusCases() []rowStatusCase {
 	review, ask, mergeKind := pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_QUESTION, pb.AttentionKind_ATTENTION_KIND_MERGE
 	fix, progress, done := pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, pb.AttentionKind_ATTENTION_KIND_DONE
 	return []rowStatusCase{
-		{"review one ask with proof", withRowProof(withRowPark(openPR(), "human-review:security"), "https://proof.test/p", "Infrastructure"), review, "review Infrastructure", "proof recorded", ""},
-		{"review two asks", withRowProof(withRowPark(openPR(), "human-review:security"), "", "API schema", "API compatibility"), review, "review API schema +1", "API schema, API compatibility · no proof yet", ""},
-		{"review asks over budget", withRowProof(withRowPark(openPR(), "human-review:security"), "", "Infrastructure as code", "API schema", "API compatibility"), review, "review 3 areas", "Infrastructure as code, API schema, API compatibility · no proof yet", ""},
-		{"review CJK ask that fits", withRowProof(withRowPark(openPR(), "human-review:security"), "", "セキュリティ"), review, "review セキュリティ", "no proof yet", ""},
-		{"review CJK ask measured in cells", withRowProof(withRowPark(openPR(), "human-review:security"), "", "データベース移行"), review, "review 1 area", "データベース移行 · no proof yet", ""},
-		{"review codes without asks", withRowPark(openPR(), "human-review:database", "human-review:security"), review, "review database +1", "database, security · no proof yet", ""},
-		{"review latest commit", withRowPark(openPR(), "no-receipt"), review, "review latest commit", "no proof yet", ""},
+		{"review one ask with proof", withRowProof(withRowPark(openPR(), "human-review:security"), "https://proof.test/p", "Infrastructure"), review, ReviewPhrase, "Infrastructure · proof recorded", ""},
+		{"review two asks", withRowProof(withRowPark(openPR(), "human-review:security"), "", "API schema", "API compatibility"), review, ReviewPhrase, "API schema, API compatibility · no proof yet", ""},
+		{"review asks over budget", withRowProof(withRowPark(openPR(), "human-review:security"), "", "Infrastructure as code", "API schema", "API compatibility"), review, ReviewPhrase, "Infrastructure as code, API schema, API compatibility · no proof yet", ""},
+		{"review CJK ask that fits", withRowProof(withRowPark(openPR(), "human-review:security"), "", "セキュリティ"), review, ReviewPhrase, "セキュリティ · no proof yet", ""},
+		{"review CJK ask measured in cells", withRowProof(withRowPark(openPR(), "human-review:security"), "", "データベース移行"), review, ReviewPhrase, "データベース移行 · no proof yet", ""},
+		{"review codes without asks", withRowPark(openPR(), "human-review:database", "human-review:security"), review, ReviewPhrase, "database, security · no proof yet", ""},
+		{"review latest commit", withRowPark(openPR(), "no-receipt"), review, ReviewPhrase, "latest commit · no proof yet", ""},
 		{"human merge park", withRowPark(openPR(), ParkCodeHumanMerge), review, "approve merge", "no proof yet", ""},
-		{"question", question, ask, "answer question", "", ""},
+		{"question", question, ask, "? question", "", ""},
 		{"unverified merge", merge, mergeKind, "approve merge", "verify has not passed this head", ""},
 		{"verified merge", verified, mergeKind, "approve merge", "", ""},
 		{"repair exhausted alert", withRowBlockers(withRowFix(failing, "repair-exhausted", "Automatic repair exhausted its attempts"), []string{"a.go"}, p2), fix, "repair failed: 1 P2", "in a.go", ""},
@@ -302,7 +302,8 @@ func assertRowStatusShape(t *testing.T, name, phrase, detail string) {
 	if strings.Contains(detail, "\n") {
 		t.Errorf("%s: detail %q spans lines", name, detail)
 	}
-	for _, s := range []string{phrase, detail} {
+	// The review tick marks a waiting sign-off, not a High level.
+	for _, s := range []string{strings.Replace(phrase, ReviewPhrase, "review", 1), detail} {
 		if strings.ContainsAny(s, confidenceGlyphs) {
 			t.Errorf("%s: %q carries a level glyph", name, s)
 		}

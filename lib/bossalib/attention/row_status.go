@@ -22,13 +22,23 @@ const RepairingLabel = "repairing"
 // merge, which clients draw in the success colour whatever kind serves it.
 const ApproveMergePhrase = "approve merge"
 
+// ReviewPhrase is the phrase of every sign-off review, drawn in the success
+// colour; the areas to review are in the detail and in session details.
+const ReviewPhrase = "✓ review"
+
+// Rewording a phrase ("✓ review", "? question", "checking N/M") ships with no
+// dated version. Session.attention reaches the version-skewed boss TUI and web
+// through bosso and bossd alike, and both render status_phrase verbatim, so a
+// skewed client shows the new words with nothing to parse. The only branching
+// a client does on the words styles an older daemon's "checks N/M" by its
+// progress label. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+
 // Status phrases with fixed words.
 const (
-	phraseAnswerQuestion  = "answer question"
+	phraseQuestion        = "? question"
 	phraseResolveConflict = "resolve conflict"
 	phraseRepairFailed    = "repair failed"
 	phraseFixNeeded       = "fix needed"
-	phraseReview          = "review"
 	detailUnverifiedMerge = "verify has not passed this head"
 	detailSeparator       = " · "
 )
@@ -54,7 +64,7 @@ func RowStatus(in Input, att *pb.SessionAttention) (phrase, detail string) {
 	case pb.AttentionKind_ATTENTION_KIND_REVIEW:
 		return reviewStatus(att)
 	case pb.AttentionKind_ATTENTION_KIND_QUESTION:
-		return phraseAnswerQuestion, ""
+		return phraseQuestion, ""
 	case pb.AttentionKind_ATTENTION_KIND_MERGE:
 		if att.GetIsUnverified() {
 			return ApproveMergePhrase, detailUnverifiedMerge
@@ -74,10 +84,8 @@ func reviewStatus(att *pb.SessionAttention) (phrase, detail string) {
 	if code, _ := DecidingParkCode(att.GetParkCodes()); code == ParkCodeHumanMerge {
 		phrase = ApproveMergePhrase
 	} else {
-		areas := reviewAreas(att)
-		var listAreas bool
-		phrase, listAreas = reviewPhrase(areas)
-		if listAreas {
+		phrase = ReviewPhrase
+		if areas := reviewAreas(att); len(areas) > 0 {
 			parts = append(parts, strings.Join(areas, ", "))
 		}
 	}
@@ -116,23 +124,6 @@ func reviewAreas(att *pb.SessionAttention) []string {
 		}
 	}
 	return areas
-}
-
-// reviewPhrase is "review <first area>", "+N" for the others, or "review N
-// areas" when that does not fit. listAreas reports whether the phrase leaves
-// an area unnamed, so the detail line lists them all.
-func reviewPhrase(areas []string) (phrase string, listAreas bool) {
-	if len(areas) == 0 {
-		return phraseReview + " PR", false
-	}
-	phrase = phraseReview + " " + areas[0]
-	if len(areas) > 1 {
-		phrase += " +" + strconv.Itoa(len(areas)-1)
-	}
-	if fitsPhrase(phrase) {
-		return phrase, len(areas) > 1
-	}
-	return phraseReview + " " + countNoun(len(areas), "area"), true
 }
 
 func fixStatus(att *pb.SessionAttention) (phrase, detail string) {

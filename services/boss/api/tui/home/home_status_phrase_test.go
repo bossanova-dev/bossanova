@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/api/tui/ui"
 	"github.com/recurser/boss/internal/fixtures"
+	"github.com/recurser/bossalib/attention"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -78,10 +79,10 @@ func TestHomeRowsShowTheServedPhrase_Sessions_AC14(t *testing.T) {
 		lines := boardLines(h)
 		spin := ansi.Strip(h.Spinner.View())
 		for _, tc := range []struct{ id, cell, section string }{
-			{"attention-0", "review API schema +1", "NEEDS YOU"},
+			{"attention-0", attention.ReviewPhrase, "NEEDS YOU"},
 			{"attention-2", "repair failed: 1 P2", "NEEDS YOU"},
-			{"attention-3", "answer question", "NEEDS YOU"},
-			{"attention-6", "review セキュリティ", "NEEDS YOU"},
+			{"attention-3", "? question", "NEEDS YOU"},
+			{"attention-6", attention.ReviewPhrase, "NEEDS YOU"},
 			{"attention-7", "approve merge", "NEEDS YOU"},
 			{"attention-8", spin + "checking 12/14", "IN PROGRESS"},
 			{"attention-10", spin + "repairing 1 P2", "IN PROGRESS"},
@@ -283,8 +284,8 @@ func TestHomePhraseStylesBySection(t *testing.T) {
 		{pb.AttentionKind_ATTENTION_KIND_FIX, "resolve conflict", ui.StyleStatusDanger.Render},
 		{pb.AttentionKind_ATTENTION_KIND_MERGE, "approve merge", ui.StyleStatusSuccess.Render},
 		{pb.AttentionKind_ATTENTION_KIND_REVIEW, "approve merge", ui.StyleStatusSuccess.Render},
-		{pb.AttentionKind_ATTENTION_KIND_REVIEW, "review UI", ui.StyleStatusWarning.Render},
-		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "answer question", ui.StyleStatusWarning.Render},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, attention.ReviewPhrase, ui.StyleStatusSuccess.Render},
+		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "? question", ui.StyleStatusWarning.Render},
 	} {
 		for _, label := range []string{"working", "passing"} {
 			s := &pb.Session{DisplayLabel: label, Attention: &pb.SessionAttention{Kind: tc.kind, StatusPhrase: tc.phrase}}

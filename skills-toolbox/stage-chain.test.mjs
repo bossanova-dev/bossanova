@@ -218,19 +218,30 @@ describe('armDecision', () => {
 
 describe('epicCoordinated', () => {
   it('accepts only live epic watches for this exact PR', () => {
-    const row = { pr_number: 12, group_id: 'epicwait-12-merged', state: 'active' }
+    const row = {
+      pr_number: 12,
+      group_id: 'epicwait-12-merged',
+      state: 'active',
+      repo_owner: 'acme',
+      repo_name: 'widgets',
+    }
     for (const state of ['active', 'leased', 'triggered', 'ACTIVE', 'Leased', 'TRIGGERED']) {
       const live = { ...row, state }
-      assert.equal(stageChain.epicCoordinated([live], 12), live)
+      assert.equal(stageChain.epicCoordinated([live], 12, 'acme/widgets'), live)
     }
     for (const other of [
       ...['delivered', 'expired', 'canceled', 'cancelled'].map((state) => ({ ...row, state })),
+      ...['active', 'triggered'].map((state) => ({ ...row, state, repo_owner: 'other' })),
+      { ...row, repo_owner: undefined },
+      { ...row, repo_name: undefined },
       { ...row, pr_number: 13 },
       { ...row, group_id: 'epicwait-120-merged' },
       { ...row, group_id: 'reverify-12-deadbee' },
     ])
-      assert.equal(stageChain.epicCoordinated([other], 12), null)
-    assert.equal(stageChain.epicCoordinated([], 12), null)
+      assert.equal(stageChain.epicCoordinated([other], 12, 'acme/widgets'), null)
+    assert.equal(stageChain.epicCoordinated([], 12, 'acme/widgets'), null)
+    const mixed = { ...row, repo_owner: 'ACME', repo_name: 'Widgets' }
+    assert.equal(stageChain.epicCoordinated([mixed], 12, 'acme/widgets'), mixed)
   })
 })
 
@@ -281,7 +292,10 @@ function fakeBoss(routes) {
 }
 
 async function run(argv, { routes = {}, env = managedEnv(), fs, resolveBoss } = {}) {
-  const boss = fakeBoss(routes)
+  const boss = fakeBoss({
+    'repo show': json({ originUrl: 'https://github.com/acme/widgets.git' }),
+    ...routes,
+  })
   let warnings = ''
   const { exitCode, line } = await main(argv, {
     env,
@@ -392,7 +406,8 @@ describe('arm-verify', () => {
     assert.equal(exitCode, 0)
     assert.deepEqual(boss.argvs(), [
       ['cron', 'ls', '--repo', 'repo-1', '--json'],
-      ['callback', 'list', '--pr', '12', '--json'],
+      ['repo', 'show', 'repo-1', '--json'],
+      ['callback', 'list', '--pr', '12', '--repo', 'acme/widgets', '--json'],
       ['chats', 'sess-1', '--json'],
       ['chat', 'new', 'sess-1', '--title', 'verify', '--role', 'verify', '--json'],
       [
@@ -456,7 +471,7 @@ describe('arm-verify', () => {
       },
     })
     const argvs = boss.argvs()
-    assert.deepEqual(argvs[3], [
+    assert.deepEqual(argvs[4], [
       'callback',
       'list',
       '--chat',
@@ -491,7 +506,7 @@ describe('arm-verify', () => {
         'callback add': json({ id: 'cb-4' }),
       },
     })
-    assert.deepEqual(boss.argvs()[3], [
+    assert.deepEqual(boss.argvs()[4], [
       'chat',
       'new',
       'sess-1',
@@ -545,7 +560,7 @@ describe('arm-verify', () => {
         routes: { 'cron ls': json(verifyJobs), 'callback list': json([]) },
       })
       assert.equal(result.action, 'none', JSON.stringify(reasonRecord))
-      assert.equal(boss.calls.length, 2)
+      assert.equal(boss.calls.length, 3)
     }
   })
 
@@ -789,8 +804,16 @@ describe('arm-reverify', () => {
     assert.equal(result.head, head)
     assert.equal(result.chatCreated, true)
     const calls = boss.argvs()
-    assert.deepEqual(calls[1], ['callback', 'list', '--pr', '12', '--json'])
-    assert.deepEqual(calls[3], [
+    assert.deepEqual(calls[2], [
+      'callback',
+      'list',
+      '--pr',
+      '12',
+      '--repo',
+      'acme/widgets',
+      '--json',
+    ])
+    assert.deepEqual(calls[4], [
       'chat',
       'new',
       'sess-1',
@@ -800,10 +823,10 @@ describe('arm-reverify', () => {
       'verify',
       '--json',
     ])
-    assert.equal(flag(calls[4], '--group'), 'reverify-12-abcdef123456')
-    assert.equal(flag(calls[4], '--message'), '/boss-verify 12')
-    assert.equal(flag(calls[4], '--expires-in'), '7d')
-    assert.equal(calls[4].includes('--on-transition'), false)
+    assert.equal(flag(calls[5], '--group'), 'reverify-12-abcdef123456')
+    assert.equal(flag(calls[5], '--message'), '/boss-verify 12')
+    assert.equal(flag(calls[5], '--expires-in'), '7d')
+    assert.equal(calls[5].includes('--on-transition'), false)
     assert.deepEqual(result.superseded, [])
   })
 
@@ -812,7 +835,7 @@ describe('arm-reverify', () => {
       routes: routes([chat('old')], [row('old-cb', 'old')]),
     })
     assert.equal(result.chatTitle, 'verify 2')
-    assert.equal(flag(boss.argvs()[3], '--title'), 'verify 2')
+    assert.equal(flag(boss.argvs()[4], '--title'), 'verify 2')
     assert.deepEqual(boss.argvs().at(-1), ['callback', 'remove', 'old-cb', '--chat', 'old'])
     assert.deepEqual(result.superseded, ['old-cb'])
   })
@@ -912,6 +935,8 @@ describe('arm-reverify', () => {
       calls.push(args)
       let value
       if (args[0] === 'cron' && args[1] === 'ls') value = verifyJobs
+      else if (args[0] === 'repo' && args[1] === 'show')
+        value = { originUrl: 'https://github.com/acme/widgets.git' }
       else if (args[0] === 'chats') value = { chats }
       else if (args[0] === 'chat' && args[1] === 'new') {
         const created = chat(`chat-${chats.length + 1}`, { title: flagValue(args, '--title') })
@@ -1004,12 +1029,81 @@ describe('live epic coordination', () => {
       })
       assert.equal(result.action, 'armed')
     })
+    for (const state of ['active', 'triggered']) {
+      it(`${verb} arms despite a same-number coordinator in another repository (${state})`, async () => {
+        const { result, boss } = await run(argv, {
+          routes: {
+            'cron ls': json(verifyJobs),
+            'callback list': json([
+              {
+                pr_number: 12,
+                group_id: 'epicwait-12-merged',
+                state,
+                repo_owner: 'other',
+                repo_name: 'widgets',
+              },
+            ]),
+            'chats sess-1': json({ chats: [] }),
+            'chat new sess-1': json({ chat: { agent_session_id: 'new' } }),
+            'callback add': json({ id: 'armed' }),
+          },
+        })
+        assert.equal(result.action, 'armed')
+        assert.deepEqual(boss.argvs()[2], [
+          'callback',
+          'list',
+          '--pr',
+          '12',
+          '--repo',
+          'acme/widgets',
+          '--json',
+        ])
+      })
+    }
+    for (const [response, reason] of [
+      [{ code: 1 }, 'repo-identity-1'],
+      [{ stdout: 'not json' }, 'repo-identity-unreadable-json'],
+      [json({}), 'repo-identity-unresolved'],
+      [json({ originUrl: 'invalid' }), 'repo-identity-unresolved'],
+    ]) {
+      it(`${verb} fails closed for repository identity: ${JSON.stringify(response)}`, async () => {
+        const { result, boss } = await run(argv, {
+          routes: {
+            'cron ls': json(verifyJobs),
+            'repo show': response,
+          },
+        })
+        assert.equal(result.action, 'error')
+        assert.equal(result.reason, reason)
+        assert.deepEqual(boss.argvs(), [
+          ['cron', 'ls', '--repo', 'repo-1', '--json'],
+          ['repo', 'show', 'repo-1', '--json'],
+        ])
+      })
+    }
+    it(`${verb} dry-run describes the repository lookup and scoped watch listing`, async () => {
+      const { result, boss } = await run([...argv, '--dry-run'])
+      assert.deepEqual(result.argv.slice(0, 3), [
+        ['cron', 'ls', '--repo', 'repo-1', '--json'],
+        ['repo', 'show', 'repo-1', '--json'],
+        ['callback', 'list', '--pr', '12', '--repo', '<owner/repo>', '--json'],
+      ])
+      assert.equal(boss.calls.length, 0)
+    })
     for (const state of ['active', 'leased', 'triggered']) {
       it(`${verb} skips a live ${state} coordinator even with a cron id`, async () => {
         const { result, boss } = await run(argv, {
           routes: {
             'cron ls': json(verifyJobs),
-            'callback list': json([{ pr_number: 12, group_id: 'epicwait-12-merged', state }]),
+            'callback list': json([
+              {
+                pr_number: 12,
+                group_id: 'epicwait-12-merged',
+                state,
+                repo_owner: 'acme',
+                repo_name: 'widgets',
+              },
+            ]),
           },
         })
         assert.deepEqual(result, {
@@ -1020,7 +1114,8 @@ describe('live epic coordination', () => {
         })
         assert.deepEqual(boss.argvs(), [
           ['cron', 'ls', '--repo', 'repo-1', '--json'],
-          ['callback', 'list', '--pr', '12', '--json'],
+          ['repo', 'show', 'repo-1', '--json'],
+          ['callback', 'list', '--pr', '12', '--repo', 'acme/widgets', '--json'],
         ])
       })
     }
@@ -1034,7 +1129,7 @@ describe('live epic coordination', () => {
         })
         assert.equal(result.action, 'error')
         assert.match(result.reason, /^callback-list-/)
-        assert.equal(boss.argvs().length, 2)
+        assert.equal(boss.argvs().length, 3)
       })
     }
   }

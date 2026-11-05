@@ -2077,9 +2077,11 @@ test('recheck refuses peer planning races and malformed inputs', () => {
     [[], 3, ['claim-missing']],
   ]) {
     writeFileSync(commentsFile, JSON.stringify(tokens))
-    result = check(selected, ['--claim-token', me, '--comments', commentsFile])
-    assert.equal(result.status, code, result.stderr)
-    assert.deepEqual(JSON.parse(result.stdout).reasons, reasons)
+    for (const value of [commentsFile, JSON.stringify(tokens)]) {
+      result = check(selected, ['--claim-token', me, '--comments', value])
+      assert.equal(result.status, code, result.stderr)
+      assert.deepEqual(JSON.parse(result.stdout).reasons, reasons)
+    }
   }
 })
 
@@ -2134,4 +2136,57 @@ test('epic rechecks retain the original selection and exempt only own finalized 
   assert.equal(mismatched.status, 3)
   assert.deepEqual(JSON.parse(mismatched.stdout).reasons, ['fetched-issue-id-mismatch'])
   assert.equal(readFileSync(selectionFile, 'utf8'), selectionBytes)
+})
+
+test('plan claim helpers agree on the same file or inline comments value', () => {
+  const dir = tempDir('plan-claim-parity-')
+  const selected = issue({ status: 'Backlog', attachments: [], description: 'Needs a plan' })
+  writeFileSync(path.join(dir, '.boss-skills.json'), JSON.stringify(TEST_CONFIG))
+  const selectedFile = path.join(dir, 'selected.json')
+  writeFileSync(selectedFile, JSON.stringify(selected))
+  const winner = 'a'.repeat(32),
+    loser = 'b'.repeat(32)
+  const comments = [
+    {
+      body: `🔒 bs-plan-claim:${winner} (boss-plan run claiming this ticket)`,
+      createdAt: new Date().toISOString(),
+    },
+  ]
+  const tracker = fileURLToPath(new URL('../tracker/cli.mjs', import.meta.url))
+  for (const payload of [comments, { comments }]) {
+    const json = JSON.stringify(payload),
+      file = path.join(dir, 'comments.json')
+    writeFileSync(file, json)
+    for (const value of [file, json]) {
+      for (const [me, code] of [
+        [winner, 0],
+        [loser, 3],
+      ]) {
+        const verdict = spawnSync(
+          process.execPath,
+          [tracker, 'claim-verdict', '--scope', 'plan', '--me', me, '--comments', value],
+          { cwd: dir, encoding: 'utf8' },
+        )
+        const recheck = spawnSync(
+          process.execPath,
+          [
+            GUARD,
+            'recheck',
+            selectedFile,
+            selectedFile,
+            '--selected-id',
+            'BOS-1',
+            '--claim-token',
+            me,
+            '--comments',
+            value,
+          ],
+          { cwd: dir, encoding: 'utf8' },
+        )
+        assert.equal(verdict.status, code, verdict.stderr)
+        assert.equal(recheck.status, code, recheck.stderr)
+        assert.deepEqual(JSON.parse(recheck.stdout).reasons, code === 0 ? [] : ['claim-lost'])
+      }
+    }
+  }
 })

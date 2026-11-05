@@ -3,10 +3,14 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
   CLAIM_MARKER,
+  loadClaimComments,
   resolveClaimVerdict,
   PLAN_CLAIM_STALE_AFTER_MS,
   claimWinner,
@@ -524,4 +528,32 @@ test('shared verdict retains timestamp arbitration and null results', () => {
         )
     }
   }
+})
+
+test('loadClaimComments and verdict accept file and inline arrays and envelopes', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'claim-comments-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const me = 'a'.repeat(32)
+  const comments = [{ body: formatClaimComment(me), createdAt: new Date().toISOString() }]
+  for (const payload of [comments, { comments }]) {
+    const json = JSON.stringify(payload)
+    const file = join(dir, 'comments.json')
+    writeFileSync(file, json)
+    for (const value of [json, file]) {
+      assert.deepEqual(loadClaimComments(value), comments)
+      const result = spawnSync(
+        process.execPath,
+        [SCRIPT_PATH, 'verdict', '--me', me, '--comments', value],
+        { encoding: 'utf8' },
+      )
+      assert.equal(result.status, 0, result.stderr)
+      assert.match(result.stdout, /WON/)
+    }
+  }
+  for (const value of ['', '  ', join(dir, 'absent.json'), '[', '{}', '42']) {
+    assert.throws(() => loadClaimComments(value), /--comments .*file.*JSON.*envelope/)
+  }
+  const invalidFile = join(dir, 'invalid.json')
+  writeFileSync(invalidFile, 'null')
+  assert.throws(() => loadClaimComments(invalidFile), /--comments .*envelope/)
 })

@@ -665,6 +665,8 @@ for (const enabled of [true, false]) {
           calls.push(args)
           let value
           if (args[0] === 'cron') value = [{ repo_id: 'repo-1', enabled, prompt: '/boss-verify' }]
+          else if (args[0] === 'repo' && args[1] === 'show')
+            value = { originUrl: 'https://github.com/acme/widgets.git' }
           else if (args[0] === 'chats') value = { chats: [] }
           else if (args[0] === 'chat') value = { chat: { agent_session_id: 'verify-chat' } }
           else if (args[0] === 'callback' && args[1] === 'list') value = []
@@ -683,6 +685,10 @@ for (const enabled of [true, false]) {
       assert.deepEqual(
         calls.find((args) => args[0] === 'chat'),
         ['chat', 'new', 'session', '--title', 'verify', '--role', 'verify', '--json'],
+      )
+      assert.deepEqual(
+        calls.find((args) => args[0] === 'callback' && args[1] === 'list'),
+        ['callback', 'list', '--pr', '42', '--repo', 'acme/widgets', '--json'],
       )
       const callback = calls.find((args) => args[0] === 'callback' && args[1] === 'add')
       assert.equal(callback.includes('--on-transition'), false)

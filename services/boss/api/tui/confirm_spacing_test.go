@@ -65,8 +65,7 @@ func TestHomeAttentionConfirmLeavesOneBlankLine(t *testing.T) {
 		prompt  string
 		row     string
 	}{
-		// The park's last table row is its status detail line.
-		{"merge", parkSession("human-review:ui"), 'm', "Merge PR #42?", "no proof yet"},
+		{"merge", parkSession("human-review:ui"), 'm', "Merge PR #42?", "Parked change"},
 		{"dismiss", attentionSession(pb.AttentionAction_ATTENTION_ACTION_DISMISS), 'x', "Dismiss this alert?", "Needs review"},
 	}
 	for _, tt := range tests {
@@ -86,7 +85,7 @@ func TestHomeMergeResultLeavesOneBlankLine(t *testing.T) {
 	model, merge := model.Update(keyPress('y'))
 	model, _ = model.Update(merge())
 	screen := model.View().Content
-	assertOneBlankLineAbove(t, screen, "Merged PR #42", "no proof yet")
+	assertOneBlankLineAbove(t, screen, "Merged PR #42", "Parked change")
 	assertOneBlankLineAbove(t, screen, "[n]ew session", "Merged PR #42")
 }
 

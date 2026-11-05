@@ -744,14 +744,14 @@ func TestChatWaitUsesServedPRFacts_ChatPicker_AC225801(t *testing.T) {
 func TestChatWaitReadsTheHomeRowPhrase_ChatPicker_AC233601(t *testing.T) {
 	sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
 	sess.Attention = attention.Compute(attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 14, ChecksDone: 12, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING, Wait: attention.CallbackWait{Trigger: "checks_passed_ready"}})
-	if got := sess.GetAttention().GetStatusPhrase(); got != "checks 12/14" {
+	if got := sess.GetAttention().GetStatusPhrase(); got != "checking 12/14" {
 		t.Fatalf("precondition: the home row reads %q", got)
 	}
 	chat := verifyChat("agent-armed", "verify")
 	m := armedPicker(t, &chatPickerStub{callbacks: []*pb.GitHubCallback{armedTestCallback("cb", "checks_passed_ready")}}, sess, []*pb.AgentChat{chat}, map[string]string{"agent-armed": ui.StatusWaiting}, map[string]string{"agent-armed": armedTestReason("checks_passed_ready")})
 	m.buildTableRows()
-	if got := stripANSI(statusCellsByTitle(m)["verify"]); got != stripANSI(m.spinner.View())+"checks 12/14" {
-		t.Fatalf("chat STATUS = %q, want the home row's checks 12/14", got)
+	if got := stripANSI(statusCellsByTitle(m)["verify"]); got != stripANSI(m.spinner.View())+"checking 12/14" {
+		t.Fatalf("chat STATUS = %q, want the home row's checking 12/14", got)
 	}
 }
 

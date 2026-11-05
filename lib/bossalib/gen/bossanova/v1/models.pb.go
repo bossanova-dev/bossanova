@@ -4704,7 +4704,7 @@ type SessionAttention struct {
 	BlockerFiles []string `protobuf:"bytes,19,rep,name=blocker_files,json=blockerFiles,proto3" json:"blocker_files,omitempty"`
 	// The row's STATUS phrase, which clients render verbatim: what the operator
 	// must do under NEEDS YOU ("review API schema +1", "repair failed: 1 P2") or
-	// what the agent is doing under IN PROGRESS ("repairing 1 P2", "checks
+	// what the agent is doing under IN PROGRESS ("repairing 1 P2", "checking
 	// 12/14"). At most 22 display cells, never cut with an ellipsis and never a
 	// confidence word or glyph; empty for DONE. Pins older than 2026-11-01
 	// receive it and status_detail cleared (StatusPhraseChange).

@@ -12,7 +12,7 @@ func TestCallbackWaitAgreement_ChatPicker_AC225802(t *testing.T) {
 		total, done int
 		want        string
 	}{
-		{"checks_passed_ready", 20, 12, "checks 12/20"},
+		{"checks_passed_ready", 20, 12, "checking 12/20"},
 		{"checks_passed_ready", 20, 20, "waiting: retry"},
 		{"checks_failed", 20, 20, "waiting: retry"},
 		{"checks_passed", 0, 0, "waiting: CI"},
@@ -53,9 +53,9 @@ func TestChatWaitPRFacts(t *testing.T) {
 		t.Fatal(got)
 	}
 	// A daemon that serves the row's phrase gives the chat the same words.
-	served := &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "checking 12/14", StatusPhrase: "checks 12/14"}
-	if got := ChatWaitLabel("checks_passed_ready", served); got != "checks 12/14" {
-		t.Errorf("served phrase became %q, want the row's checks 12/14", got)
+	served := &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "checking 12/14", StatusPhrase: "checking 12/14"}
+	if got := ChatWaitLabel("checks_passed_ready", served); got != "checking 12/14" {
+		t.Errorf("served phrase became %q, want the row's checking 12/14", got)
 	}
 }
 

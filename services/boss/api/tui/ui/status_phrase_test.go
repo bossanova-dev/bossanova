@@ -56,6 +56,7 @@ func TestRenderStatusPhraseStylesInProgressWork(t *testing.T) {
 		style         func(...string) string
 		spin          bool
 	}{
+		{"checking 12/14", "checking 12/14", StyleStatusWarning.Render, true},
 		{"checking 12/14", "checks 12/14", StyleStatusWarning.Render, true},
 		{"idle", "repairing 2 checks", StyleStatusSuccess.Render, true},
 		{attention.RepairingLabel, "repairing 1 P2", StyleStatusSuccess.Render, true},

@@ -179,7 +179,7 @@ test('shuffled inputs give identical output', () => {
       'src/m.ts',
       patch(
         ["import { y } from './a/y'", "import { x } from './a/x'"],
-        ["import { x } from './b/x'", "import { y } from './b/y'"],
+        ["import { y } from './b/y'", "import { x } from './b/x'"],
       ),
     ),
   ]
@@ -316,7 +316,7 @@ test('real git: swapping unchanged side-effect imports beside a rename rewrite i
   assert.equal(realPure(goBlank, 'main.go'), false, 'swapped Go blank imports')
 })
 
-test('real git: in-place rewrites and re-sorting within one changed block stay pure', (t) => {
+test('real git: in-place rewrites stay pure but re-sorted bound imports do not', (t) => {
   const inPlace = realDiff(
     t,
     {
@@ -354,7 +354,7 @@ test('real git: in-place rewrites and re-sorting within one changed block stay p
     ],
     { 'src/m.ts': lines("import { x } from './b/x'", "import { y } from './b/y'", '', 'x(y)') },
   )
-  assert.equal(realPure(resorted, 'src/m.ts'), true, 'adjacent rewritten imports re-sorted')
+  assert.equal(realPure(resorted, 'src/m.ts'), false, 'adjacent rewritten imports re-sorted')
   const cssMove = realDiff(
     t,
     {
@@ -367,7 +367,7 @@ test('real git: in-place rewrites and re-sorting within one changed block stay p
   assert.equal(realPure(cssMove, 'src/m.tsx'), true, 'side-effect import renamed in place')
 })
 
-test('real git: a moved importer rewrites its relative imports, re-sorted or not', (t) => {
+test('real git: a moved importer is pure only when rewritten imports stay in order', (t) => {
   const files = realDiff(
     t,
     {
@@ -389,7 +389,28 @@ test('real git: a moved importer rewrites its relative imports, re-sorted or not
     },
   )
   assert.equal(files.length, 1)
-  assert.equal(realPure(files, 'src/a/deep/m.tsx'), true)
+  assert.equal(realPure(files, 'src/a/deep/m.tsx'), false)
+  const inOrder = realDiff(
+    t,
+    {
+      'src/a/m.tsx': lines(
+        "import { y } from './y'",
+        "import { x } from './x'",
+        "import './x.css'",
+        ...FILLER,
+      ),
+    },
+    [['src/a/m.tsx', 'src/a/deep/m.tsx']],
+    {
+      'src/a/deep/m.tsx': lines(
+        "import { y } from '../y'",
+        "import { x } from '../x'",
+        "import '../x.css'",
+        ...FILLER,
+      ),
+    },
+  )
+  assert.equal(realPure(inOrder, 'src/a/deep/m.tsx'), true)
   const swapped = realDiff(
     t,
     { 'src/a/m.ts': lines("import { p } from 'p'", "import { q } from 'q'", ...FILLER) },
@@ -503,4 +524,78 @@ test('real git: rewritten imports that swap a binding past a side-effect import 
     { 'src/m.ts': lines("import { y } from './b/y'", "import './b/x.css'", '', 'y()') },
   )
   assert.equal(realPure(files, 'src/m.ts'), false)
+})
+
+test('a renamed TSX patch that swaps bound package imports is not pure', () => {
+  const file = renamed(
+    'src/a/m.tsx',
+    'src/b/m.tsx',
+    patch(
+      ['import { a } from "package-a"', 'import { b } from "package-b"'],
+      ['import { b } from "package-b"', 'import { a } from "package-a"'],
+    ),
+  )
+  assert.equal(isPureMoveFile(file, []), false)
+})
+
+test('real git: rewritten Python imports that swap order are not pure', (t) => {
+  const files = realDiff(
+    t,
+    {
+      'app/utils/text.py': 'def slug(s):\n    return s\n',
+      'app/utils/data.py': 'value = 1\n',
+      'app/main.py': lines(
+        'from app.utils.text import slug',
+        'from app.utils.data import value',
+        '',
+        'print(slug(value))',
+      ),
+    },
+    [
+      ['app/utils/text.py', 'app/common/text.py'],
+      ['app/utils/data.py', 'app/common/data.py'],
+    ],
+    {
+      'app/main.py': lines(
+        'from app.common.data import value',
+        'from app.common.text import slug',
+        '',
+        'print(slug(value))',
+      ),
+    },
+  )
+  assert.equal(realPure(files, 'app/main.py'), false)
+})
+
+test('real git: rewritten Go bound imports can re-sort within one hunk', (t) => {
+  const files = realDiff(
+    t,
+    {
+      'internal/old/x/x.go': 'package x\n',
+      'internal/old/y/y.go': 'package y\n',
+      'main.go': lines(
+        'package main',
+        '',
+        'import (',
+        '\t"example.com/m/internal/old/y"',
+        '\t"example.com/m/internal/old/x"',
+        ')',
+      ),
+    },
+    [
+      ['internal/old/x/x.go', 'internal/new/x/x.go'],
+      ['internal/old/y/y.go', 'internal/new/y/y.go'],
+    ],
+    {
+      'main.go': lines(
+        'package main',
+        '',
+        'import (',
+        '\t"example.com/m/internal/new/x"',
+        '\t"example.com/m/internal/new/y"',
+        ')',
+      ),
+    },
+  )
+  assert.equal(realPure(files, 'main.go'), true)
 })

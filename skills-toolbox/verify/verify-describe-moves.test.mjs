@@ -22,7 +22,7 @@ function movedRepo(t, { behaviour = false } = {}) {
   if (behaviour) repo.write({ 'src/ui/Button.tsx': BODY + 'export const Button = () => 1\n' })
   repo.write({
     'src/pages/Home.tsx':
-      "import { Card } from '../ui/Card'\nimport { Button } from '../ui/Button'\n\nexport const Home = () => " +
+      "import { Button } from '../ui/Button'\nimport { Card } from '../ui/Card'\n\nexport const Home = () => " +
       (behaviour ? 'Card\n' : 'Button\n'),
   })
   return { repo, base, head: repo.commit('move') }

@@ -906,19 +906,21 @@ func TestListSessions_Sessions_AC163_ConflictWithdrawsPark(t *testing.T) {
 		activeRepair       bool
 		runnerError        string
 		exitError          string
+		pluginMissing      bool
 	}{
-		{"automatic repair", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", "", false, "", ""},
-		{"verify only", machine.ReadyForReview, true, true, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "stopped", "", false, "", ""},
-		{"repair disabled", machine.ReadyForReview, false, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", "", false, "", ""},
-		{"state repair skips", machine.ImplementingPlan, true, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", "", false, "", ""},
-		{"failed same head", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", timelineHead, false, "", ""},
-		{"live retry on failed head", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, true, "", ""},
-		{"head moved after failure", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", "old", false, "", ""},
-		{"verify only with lease", machine.ReadyForReview, true, true, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "stopped", timelineHead, true, "", ""},
-		{"disabled repair with lease", machine.ReadyForReview, false, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", timelineHead, true, "", ""},
-		{"runner retry pending", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, false, "runner missing", ""},
-		{"incomplete chat retry pending", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, false, "", "interactive chat did not report completion before wait deadline"},
-		{"idle watchdog retry pending", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, false, "", "agent went idle without completing"},
+		{"automatic repair", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", "", false, "", "", false},
+		{"verify only", machine.ReadyForReview, true, true, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "stopped", "", false, "", "", false},
+		{"repair disabled", machine.ReadyForReview, false, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", "", false, "", "", false},
+		{"state repair skips", machine.ImplementingPlan, true, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", "", false, "", "", false},
+		{"failed same head", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", timelineHead, false, "", "", false},
+		{"live retry on failed head", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, true, "", "", false},
+		{"head moved after failure", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", "old", false, "", "", false},
+		{"verify only with lease", machine.ReadyForReview, true, true, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "stopped", timelineHead, true, "", "", false},
+		{"disabled repair with lease", machine.ReadyForReview, false, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", timelineHead, true, "", "", false},
+		{"runner retry pending", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, false, "runner missing", "", false},
+		{"incomplete chat retry pending", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, false, "", "interactive chat did not report completion before wait deadline", false},
+		{"idle watchdog retry pending", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, false, "", "agent went idle without completing", false},
+		{"repair plugin not loaded", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", "", false, "", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := 1
@@ -936,6 +938,7 @@ func TestListSessions_Sessions_AC163_ConflictWithdrawsPark(t *testing.T) {
 			display := status.NewDisplayTracker()
 			display.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:always-human-path", HeadSHA: timelineHead})
 			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, display, nil)
+			s.repairWorkflowLoaded = func() bool { return !tc.pluginMissing }
 			s.repairLease = status.NewRepairLeaseManager()
 			if tc.activeRepair {
 				if err := s.repairLease.Acquire(row.ID, "repairer"); err != nil {

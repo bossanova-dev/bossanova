@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog/log"
@@ -36,7 +37,7 @@ func (s *HostServiceServer) handleChatRunWatchdog(agentSessionID string, run act
 			cancel()
 			s.finalizeChatRunWhenDone(agentSessionID, run)
 			return &bossanovav1.WaitChatRunHostResponse{
-				ExitError:         fmt.Sprintf("agent went idle without completing and pane reclaim failed (no output for %s; watchdog): %v", idleWindow, err),
+				ExitError:         fmt.Sprintf("%s and pane reclaim failed (no output for %s; watchdog): %v", sharedplugin.ChatRunIdleError, idleWindow, err),
 				ProviderSessionId: providerSessionID,
 			}
 		}
@@ -51,7 +52,7 @@ func (s *HostServiceServer) handleChatRunWatchdog(agentSessionID string, run act
 	s.removeRunHookBestEffort(agentSessionID)
 	s.cleanupRun(agentSessionID)
 	return &bossanovav1.WaitChatRunHostResponse{
-		ExitError:         fmt.Sprintf("agent went idle without completing (no output for %s; watchdog)", idleWindow),
+		ExitError:         fmt.Sprintf("%s (no output for %s; watchdog)", sharedplugin.ChatRunIdleError, idleWindow),
 		ProviderSessionId: providerSessionID,
 	}
 }

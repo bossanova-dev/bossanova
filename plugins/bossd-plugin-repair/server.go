@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/sessionreason"
@@ -28,12 +28,7 @@ const repairCommand = "boss-repair"
 var alreadyExistsAgentSessionRE = regexp.MustCompile(`agent_session_id=([^)]+)`)
 
 func isInteractiveChatIncomplete(exitErr string) bool {
-	return strings.Contains(exitErr, "interactive chat did not report completion") ||
-		// The daemon's WaitChatRun idle watchdog (BOS-153) fails a run whose
-		// agent went idle without ever reporting completion. Like the
-		// wait-deadline case, the agent never actually attempted the repair,
-		// so a same-head/status retry must stay allowed.
-		strings.Contains(exitErr, "agent went idle without completing")
+	return sharedplugin.ChatRunRetryable(exitErr)
 }
 
 func agentSessionIDFromAlreadyExists(err error) string {

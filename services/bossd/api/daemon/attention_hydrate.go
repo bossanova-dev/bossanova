@@ -15,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/safego"
@@ -47,10 +48,11 @@ type factoryAttention struct {
 	admission     verifyadmission.Snapshot
 }
 type attentionDeps struct {
-	row     *models.Session
-	display *status.DisplayEntry
-	repo    *models.Repo
-	chats   []*domain.AgentChat
+	row          *models.Session
+	display      *status.DisplayEntry
+	repo         *models.Repo
+	repairLoaded bool
+	chats        []*domain.AgentChat
 }
 
 // SessionAttention returns the current RPC attention for daemon policies.
@@ -415,7 +417,11 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 	if alertstate.AuthWedgeCurrent(p.RotationEvents, recovered) {
 		return fix("auth-wedge", "Agent authentication failed", since)
 	}
-	if p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT && d.repo != nil && !d.repo.CanAutoRepair {
+	// No dated apiversion bump: the version-skewed TUI and web must not
+	// promise a rebase when no repair workflow is loaded. A down-convert would
+	// restore that false promise, rather than a useful compatibility contract.
+	// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	if p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT && d.repo != nil && (!d.repo.CanAutoRepair || !d.repairLoaded) {
 		return fix("merge-conflict", "Merge conflict", since)
 	}
 	// A conflict in a state the repair plugin never acts on (madverts-core#6672:
@@ -439,6 +445,7 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 }
 
 func (s *Server) hydrateRepairAttention(ctx context.Context, p *pb.Session, d attentionDeps, in *attention.Input) {
+	d.repairLoaded = s.repairWorkflowLoaded == nil || s.repairWorkflowLoaded()
 	// Share one authoritative repository read across conflict FIX, conflict
 	// rebase and armed repair ownership.
 	if (p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT || repairMayArm(d)) && s.repos != nil {
@@ -518,15 +525,14 @@ func repairAttemptFinishedOn(row *models.Session, e *status.DisplayEntry) bool {
 	return e.HeadSHA != "" && row.LastRepairHeadSHA == e.HeadSHA &&
 		vcs.DisplayStatus(row.LastRepairDisplayStatus) == e.Status &&
 		row.LastRepairRunnerError == "" &&
-		!strings.Contains(row.LastRepairExitError, "interactive chat did not report completion") &&
-		!strings.Contains(row.LastRepairExitError, "agent went idle without completing")
+		!sharedplugin.ChatRunRetryable(row.LastRepairExitError)
 }
 
 // conflictRebaseOwned reports whether automatic repair owns this conflict.
 // List and stream snapshots may omit RepoCanAutoRepair, so use the repository read.
 func conflictRebaseOwned(d attentionDeps) bool {
 	return d.display != nil && d.display.Status == vcs.DisplayStatusConflict &&
-		!d.row.IsVerifyOnly && repairActsOn(d.row.State) && d.repo != nil && d.repo.CanAutoRepair
+		!d.row.IsVerifyOnly && repairActsOn(d.row.State) && d.repo != nil && d.repo.CanAutoRepair && d.repairLoaded
 }
 
 // repairActsOn mirrors bossd-plugin-repair's isRepairableState for a

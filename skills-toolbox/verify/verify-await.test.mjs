@@ -9,9 +9,10 @@ const live = (token = 'holder', updatedAt = 0) => ({
   description: `verifying… ${token}`,
   updated_at: new Date(updatedAt).toISOString(),
 })
-function fixture(statuses, { start = 0, views = [], chunkMs = 100000 } = {}) {
+function fixture(statuses, { start = 0, views = [], chunkMs = 100000, token = '' } = {}) {
   let time = start,
-    index = 0
+    index = 0,
+    delays = 0
   const read = (_command, args) => {
     if (args[0] === 'pr')
       return { ok: true, payload: views[index] ?? { state: 'OPEN', headRefOid: head } }
@@ -25,11 +26,13 @@ function fixture(statuses, { start = 0, views = [], chunkMs = 100000 } = {}) {
         read,
         now: () => time,
         delay: async (ms) => {
+          delays++
           time += ms
         },
-        options: { pr: 1, head, chunkMs },
+        options: { pr: 1, head, chunkMs, token },
       }),
     elapsed: () => time - start,
+    delays: () => delays,
   }
 }
 test('follows a claim to its operator park label', async () => {
@@ -48,7 +51,7 @@ test('verified status reports verification and a merged PR reports merge', async
   )
   assert.deepEqual(
     await fixture([live()], { views: [{ state: 'MERGED', headRefOid: head }] }).run(),
-    { outcome: 'merged', line: 'Verified and merged ab0585c' },
+    { outcome: 'merged', line: 'Merged ab0585c' },
   )
 })
 test('reports send-back and waiting reasons', () => {
@@ -168,3 +171,45 @@ for (const state of ['error', 'pending', 'success', 'failure']) {
     })
   })
 }
+
+for (const description of ['verified', 'verified (approved)']) {
+  test(`merged PR preserves completed verification: ${description}`, async () => {
+    assert.deepEqual(
+      await fixture([{ state: 'success', description }], {
+        views: [{ state: 'MERGED', headRefOid: head }],
+      }).run(),
+      { outcome: 'merged', line: 'Verified and merged ab0585c' },
+    )
+  })
+}
+for (const status of [
+  null,
+  {},
+  { state: 'pending', description: 'waiting: CI pending' },
+  { state: 'success', description: 'needs human: verify-policy' },
+  { state: 'failure', description: 'defect: failing checks' },
+  { state: 'pending', description: 'verified' },
+]) {
+  test(`merge without successful verification stays a merge: ${JSON.stringify(status)}`, async () => {
+    assert.deepEqual(
+      await fixture([status], { views: [{ state: 'MERGED', headRefOid: head }] }).run(),
+      { outcome: 'merged', line: 'Merged ab0585c' },
+    )
+  })
+}
+test('recognizes its own live claim immediately while tokenless callers keep following', async () => {
+  const mine = fixture([live('abc123')], { token: 'abc123' })
+  assert.deepEqual(await mine.run(), { outcome: 'mine', token: 'abc123' })
+  assert.equal(mine.delays(), 0)
+  const foreign = fixture([live('abc123')], { chunkMs: 1 })
+  assert.equal((await foreign.run()).outcome, 'continue')
+  assert.equal(foreign.delays(), 1)
+})
+test('CLI accepts a claim token and rejects empty or whitespace tokens', () => {
+  const args = ['--pr', '1', '--head', head]
+  assert.equal(parseOptions(args).token, '')
+  assert.equal(parseOptions([...args, '--token', 'abc123']).token, 'abc123')
+  for (const token of ['', ' ', 'abc def', 'abc\tdef', 'abc\ndef']) {
+    assert.throws(() => parseOptions([...args, '--token', token]))
+  }
+})

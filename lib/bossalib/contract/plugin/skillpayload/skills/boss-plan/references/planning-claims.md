@@ -8,7 +8,7 @@ issue, save its bare payload to this run's `precheck` scratch artifact. Generate
 `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" claim-comment --scope plan --token "$PLAN_CLAIM_TOKEN" --session-id "${BOSS_SESSION_ID:-}"`.
 Post that body through `writeComment`, retaining both token and returned comment id. Re-read
 `readComments` into `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.claim-comments.json` and run
-`node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" claim-verdict --scope plan --me "$PLAN_CLAIM_TOKEN" --comments "$(cat "$CLAIM_COMMENTS")"`.
+`node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" claim-verdict --scope plan --me "$PLAN_CLAIM_TOKEN" --comments "$CLAIM_COMMENTS"`.
 `CLAIM_COMMENTS` names that fresh scratch file. Planning claims never use build scope.
 
 - Exit 0 (`WON`): continue. Plan claims older than two hours forfeit automatically without a

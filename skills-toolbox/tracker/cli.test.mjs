@@ -330,7 +330,7 @@ test('claim-verdict exits 2 for malformed comments evidence', () => {
     errWrite: (s) => (err += s),
   })
   assert.equal(code, 2)
-  assert.match(err, /--comments: malformed JSON/)
+  assert.match(err, /--comments .*JSON/)
 })
 
 test('claim-verdict exits 2 for invalid liveness evidence', () => {
@@ -355,7 +355,7 @@ test('claim-verdict without --comments exits 2 (parity with the required arg)', 
   let err = ''
   const code = runCli(['claim-verdict', '--me', won], { errWrite: (s) => (err += s) })
   assert.equal(code, 2)
-  assert.match(err, /--comments <json-array> is required/)
+  assert.match(err, /--comments <file\|json> is required/)
 })
 
 test('an unknown capability exits 2', () => {
@@ -2431,4 +2431,39 @@ test('writeSourceNotes is required successfully only for GitHub, while Linear st
   assert.equal(missing.code, 2)
   assert.equal(missing.out, '')
   assert.match(missing.err, /writeSourceNotes/)
+})
+
+test('claim-verdict accepts file arrays and envelopes with inline verdict parity', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claim-verdict-input-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const comments = [
+    { body: marker(won), createdAt: early },
+    { body: marker(lost), createdAt: late },
+  ]
+  for (const payload of [comments, { comments }]) {
+    const json = JSON.stringify(payload)
+    const file = path.join(dir, 'comments.json')
+    fs.writeFileSync(file, json)
+    for (const [me, expected] of [
+      [won, 0],
+      [lost, 3],
+    ]) {
+      for (const value of [file, json]) {
+        assert.equal(runCli(['claim-verdict', '--me', me, '--comments', value], {}), expected)
+      }
+    }
+  }
+})
+
+test('claim-verdict rejects a null comments file before claim arbitration', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claim-verdict-null-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const file = path.join(dir, 'comments.json')
+  fs.writeFileSync(file, 'null')
+  let err = ''
+  const code = runCli(['claim-verdict', '--me', won, '--comments', file], {
+    errWrite: (s) => (err += s),
+  })
+  assert.equal(code, 2)
+  assert.match(err, /--comments .*envelope/)
 })

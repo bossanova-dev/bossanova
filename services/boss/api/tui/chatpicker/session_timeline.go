@@ -88,14 +88,35 @@ func timelineLabelInputs(chats []*pb.AgentChat, sessionTitle string) string {
 
 func (m Model) neededQuestion() string {
 	question := m.neededAsk()
-	if question == "" {
-		return ""
-	}
 	a := m.session.GetAttention()
+	if question == "" || m.checklistNamesLevel() && !hasReason(a.GetLoweredBy()) {
+		return question
+	}
 	if sentence := attention.ConfidenceSentence(a.GetConfidenceLevel(), a.GetLoweredBy()); sentence != "" {
 		return question + "\n\n" + sentence
 	}
 	return question
+}
+
+// checklistNamesLevel reports whether the answer is a sign-off checklist
+// whose park label item already names the served level ("low: UI, …"). A
+// bare level sentence ("Low.") would only repeat it; one that names its
+// reasons still follows.
+func (m Model) checklistNamesLevel() bool {
+	a := m.session.GetAttention()
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+		return false
+	}
+	level := attention.ParkLevel(nil, a.GetParkLabel())
+	if level == pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED || level != a.GetConfidenceLevel() {
+		return false
+	}
+	_, items, ok := attention.ReviewAsk(a.GetParkCodes(), a.GetParkLabel(), a.GetEvidenceUrl() != "", m.session.GetPrDisplayHeadSha())
+	return ok && slices.Contains(items, a.GetParkLabel())
+}
+
+func hasReason(reasons []string) bool {
+	return slices.ContainsFunc(reasons, func(r string) bool { return strings.TrimSpace(r) != "" })
 }
 
 func (m Model) neededAsk() string {
@@ -612,7 +633,9 @@ func wordWrap(text string, first, rest int) []string {
 	return lines
 }
 
-// neededLabel is the answer's heading row.
+// neededLabel heads an agent's question. Boss's own asks ("Approve these on
+// head …:", "Should this PR be merged?") already say what is needed, so they
+// go without it.
 const neededLabel = "Needed from you:"
 
 // neededIndent opens each of the answer's rows under the label.
@@ -622,11 +645,15 @@ const neededIndent = "  "
 // is a summary: the whole message is one [enter] away in the chat.
 const neededMaxLines = 5
 
-// neededBlock is the "Needed from you" answer above the chat table, or ""
-// when the session asks nothing of the operator: the label on its own row,
-// then the answer indented under it. A terminal too short for the whole answer
+// neededBlock is the answer above the chat table, or "" when the session asks
+// nothing of the operator: an agent's question under neededLabel, boss's own
+// ask on its own, each row indented. A terminal too short for the whole answer
 // gives it the rows left, at least one: a question is summarised into them.
 func (m Model) neededBlock() string {
+	var rows []string
+	if m.session.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_QUESTION {
+		rows = []string{neededLabel}
+	}
 	room := math.MaxInt
 	if m.height > 0 {
 		room = max(1, m.height-m.chatListOverhead()-m.timelineHeight()-neededChromeRows-m.detailsReservedTableRows()-1)
@@ -635,7 +662,6 @@ func (m Model) neededBlock() string {
 	if len(lines) == 0 {
 		return ""
 	}
-	rows := []string{neededLabel}
 	for _, line := range lines {
 		// The answer is the one thing on the screen the operator must act on,
 		// so it renders bold in the primary foreground, above the faint chrome.
@@ -647,7 +673,8 @@ func (m Model) neededBlock() string {
 // neededLines is the whole answer wrapped at neededTextWidth. An agent's
 // question is its message summarised as plain text in at most neededMaxLines
 // rows; the other kinds are boss's own short lines, shown whole, each keeping
-// its leading spaces, such as a checklist bullet's, on every row it wraps into.
+// its leading spaces on every row it wraps into, and a bullet's wrapped rows
+// starting under its text rather than under the bullet.
 func (m Model) neededLines() []string {
 	return m.neededLinesIn(math.MaxInt)
 }
@@ -666,9 +693,18 @@ func (m Model) neededLinesIn(rows int) []string {
 	}
 	var lines []string
 	for _, paragraph := range strings.Split(text, "\n") {
-		lead := paragraph[:len(paragraph)-len(strings.TrimLeft(paragraph, " "))]
-		for _, line := range wordWrap(paragraph, width-len(lead), width-len(lead)) {
-			lines = append(lines, lead+line)
+		body := strings.TrimLeft(paragraph, " ")
+		lead := paragraph[:len(paragraph)-len(body)]
+		hang := lead
+		if strings.HasPrefix(body, "• ") {
+			hang += "  "
+		}
+		for i, line := range wordWrap(body, width-len(lead), width-len(hang)) {
+			if i == 0 {
+				lines = append(lines, lead+line)
+			} else {
+				lines = append(lines, hang+line)
+			}
 		}
 	}
 	return cutLines(lines, rows, width)

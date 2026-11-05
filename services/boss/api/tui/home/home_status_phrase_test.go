@@ -80,10 +80,10 @@ func TestHomeRowsShowTheServedPhrase_Sessions_AC14(t *testing.T) {
 		spin := ansi.Strip(h.Spinner.View())
 		for _, tc := range []struct{ id, cell, section string }{
 			{"attention-0", attention.ReviewPhrase, "NEEDS YOU"},
-			{"attention-2", "repair failed: 1 P2", "NEEDS YOU"},
+			{"attention-2", "⨯ repair failed", "NEEDS YOU"},
 			{"attention-3", "? question", "NEEDS YOU"},
 			{"attention-6", attention.ReviewPhrase, "NEEDS YOU"},
-			{"attention-7", "approve merge", "NEEDS YOU"},
+			{"attention-7", attention.MergePhrase, "NEEDS YOU"},
 			{"attention-8", spin + "checking 12/14", "IN PROGRESS"},
 			{"attention-10", spin + "repairing 1 P2", "IN PROGRESS"},
 		} {
@@ -106,7 +106,8 @@ var confidenceWords = []string{"high", "moderate", "low", "blocked", "cannot ass
 
 // TestHomeStatusCellsCarryNoLevelAndNoCut_Sessions_AC208901 scans every STATUS
 // cell of the fixture board, whose parks still serve confidence levels: none
-// names a level or draws its glyph, and none is cut.
+// names a level or draws its glyph past the leading status mark ("⨯ conflict"
+// marks a problem, not the Blocked level), and none is cut.
 func TestHomeStatusCellsCarryNoLevelAndNoCut_Sessions_AC208901(t *testing.T) {
 	for _, width := range []int{80, 120} {
 		h := phraseBoard(t, width, 60, fixtures.AttentionSessions())
@@ -115,8 +116,9 @@ func TestHomeStatusCellsCarryNoLevelAndNoCut_Sessions_AC208901(t *testing.T) {
 			if strings.HasSuffix(cell, "…") {
 				t.Errorf("width %d: %s STATUS %q is cut", width, s.GetId(), cell)
 			}
+			words := strings.TrimPrefix(cell, "⨯ ")
 			for _, word := range confidenceWords {
-				if slices.Contains(strings.Fields(cell), word) || strings.Contains(cell, word) && len([]rune(word)) == 1 {
+				if slices.Contains(strings.Fields(words), word) || strings.Contains(words, word) && len([]rune(word)) == 1 {
 					t.Errorf("width %d: %s STATUS %q names %q", width, s.GetId(), cell, word)
 				}
 			}
@@ -280,10 +282,11 @@ func TestHomePhraseStylesBySection(t *testing.T) {
 		phrase string
 		style  func(...string) string
 	}{
-		{pb.AttentionKind_ATTENTION_KIND_FIX, "repair failed: 1 P2", ui.StyleStatusDanger.Render},
-		{pb.AttentionKind_ATTENTION_KIND_FIX, "resolve conflict", ui.StyleStatusDanger.Render},
-		{pb.AttentionKind_ATTENTION_KIND_MERGE, "approve merge", ui.StyleStatusSuccess.Render},
-		{pb.AttentionKind_ATTENTION_KIND_REVIEW, "approve merge", ui.StyleStatusSuccess.Render},
+		{pb.AttentionKind_ATTENTION_KIND_FIX, "⨯ repair failed", ui.StyleStatusDanger.Render},
+		{pb.AttentionKind_ATTENTION_KIND_FIX, "⨯ conflict", ui.StyleStatusDanger.Render},
+		{pb.AttentionKind_ATTENTION_KIND_MERGE, attention.MergePhrase, ui.StyleStatusSuccess.Render},
+		{pb.AttentionKind_ATTENTION_KIND_MERGE, attention.UnverifiedMergePhrase, ui.StyleStatusWarning.Render},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, attention.MergePhrase, ui.StyleStatusSuccess.Render},
 		{pb.AttentionKind_ATTENTION_KIND_REVIEW, attention.ReviewPhrase, ui.StyleStatusSuccess.Render},
 		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "? question", ui.StyleStatusWarning.Render},
 	} {

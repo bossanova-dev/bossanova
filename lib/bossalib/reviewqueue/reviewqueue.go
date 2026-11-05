@@ -11,23 +11,29 @@ import (
 	"cmp"
 	"slices"
 	"strings"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/vcs"
 )
 
-// Build returns the waiting rows of sessions in sort order, and one header count
-// per ConfidenceLevel in enum order.
+// Build returns waiting rows followed by recent merged High audit samples,
+// and one header count
+// per ConfidenceLevel in enum order. Audit rows never contribute to counts.
 //
 // A session is a row when it is open, not archived, has a PR, and its attention
 // is a verify park: REVIEW or FIX carrying park codes. A code-less FIX is an
 // ordinary fault, not a park. An open, non-archived PR session that is merging
 // now counts as HIGH without becoming a row, even while its park codes linger,
 // since nobody is waiting on it.
-func Build(sessions []*pb.Session, sort pb.ReviewQueueSort) ([]*pb.ReviewQueueRow, []*pb.ReviewQueueLevelCount) {
+func Build(sessions []*pb.Session, sort pb.ReviewQueueSort, now time.Time) ([]*pb.ReviewQueueRow, []*pb.ReviewQueueLevelCount) {
 	rows := make([]*pb.ReviewQueueRow, 0)
 	counts := make(map[pb.ConfidenceLevel]int32)
 	for _, sess := range sessions {
+		if isAuditRow(sess, now) {
+			rows = append(rows, &pb.ReviewQueueRow{Session: sess, ConfidenceLevel: pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH, IsAuditSample: true})
+			continue
+		}
 		if !isOpenPR(sess) {
 			continue
 		}
@@ -45,12 +51,19 @@ func Build(sessions []*pb.Session, sort pb.ReviewQueueSort) ([]*pb.ReviewQueueRo
 	return rows, levelCounts(counts)
 }
 
-// Sort orders rows in place by the requested sort, with a total tie-break: the
+// Sort puts audits after waiting rows, newest merge first. Waiting rows use
+// the requested sort, with a total tie-break: the
 // oldest park, then the normalized origin URL, then the PR number, then the
 // session id. UNSPECIFIED sorts as MOST_CONFIDENT, and rows without a level sort
 // last under both confidence sorts.
 func Sort(rows []*pb.ReviewQueueRow, sort pb.ReviewQueueSort) {
 	slices.SortStableFunc(rows, func(left, right *pb.ReviewQueueRow) int {
+		if order := compareAudit(left, right); order != 0 {
+			return order
+		}
+		if left.GetIsAuditSample() && right.GetIsAuditSample() {
+			return 0
+		}
 		if order := compareBySort(left, right, sort); order != 0 {
 			return order
 		}
@@ -121,6 +134,22 @@ var confidenceRank = map[pb.ConfidenceLevel]int{
 
 func compareBySort(left, right *pb.ReviewQueueRow, sort pb.ReviewQueueSort) int {
 	switch sort {
+	case pb.ReviewQueueSort_REVIEW_QUEUE_SORT_SMALLEST:
+		l, r := left.GetSession(), right.GetSession()
+		lKnown, rKnown := l.GetPrChangedFileCount() > 0, r.GetPrChangedFileCount() > 0
+		switch {
+		case lKnown && !rKnown:
+			return -1
+		case !lKnown && rKnown:
+			return 1
+		case !lKnown:
+			return 0
+		default:
+			return cmp.Or(
+				cmp.Compare(int64(l.GetPrAddedLineCount())+int64(l.GetPrDeletedLineCount()), int64(r.GetPrAddedLineCount())+int64(r.GetPrDeletedLineCount())),
+				cmp.Compare(l.GetPrChangedFileCount(), r.GetPrChangedFileCount()),
+			)
+		}
 	case pb.ReviewQueueSort_REVIEW_QUEUE_SORT_OLDEST:
 		return compareSince(left, right)
 	case pb.ReviewQueueSort_REVIEW_QUEUE_SORT_LEAST_CONFIDENT:

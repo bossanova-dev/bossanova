@@ -27,7 +27,7 @@ const questionMaxRunes = 200
 
 // knownPhases are the ProgressPhase values used as a progress label. Any
 // other value is ignored, so a label can never read "ready" or "passing".
-var knownPhases = []string{"planning", "building", "reviewing", "verifying"}
+var knownPhases = []string{"planning", "building", "reviewing", "verifying", RepairingLabel}
 
 // InitializingLabel is the progress label of a session the daemon is still
 // starting (Input.IsInitializing). It is the same word the display cascade
@@ -169,6 +169,11 @@ type Input struct {
 	// ChatStatus is the session's served chat status, the one its display
 	// label is composed from.
 	ChatStatus pb.ChatStatus
+	// ChatAtWork marks a chat mid-turn on work the operator's move waits on
+	// (bossd decides): a fix, park or merge then reads in progress until the
+	// turn ends. A blocked or lost run's own chat never counts, since a run
+	// wedged mid-turn still reports working.
+	ChatAtWork bool
 
 	Evidence *Evidence
 	Proof    *Proof
@@ -239,18 +244,21 @@ func computeKind(in Input) *pb.SessionAttention {
 	codes := parkCodesFor(in)
 	code, parked := decidingParkCode(codes)
 	alertTaken, parkTaken := repairTakes(in, codes)
-	if fixActive(in) && !alertTaken {
+	working := agentAtWork(in)
+	if fixActive(in) && !alertTaken && !working {
 		return computeFix(in)
 	}
-	if in.QuestionChatID != "" || strings.TrimSpace(in.QuestionText) != "" {
+	if hasQuestion(in) {
 		return computeQuestion(in)
 	}
-	if parked && !parkTaken {
+	// An admission hold stays the operator's however busy the chat is: no
+	// turn changes the ticket selection that holds the PR out of verify.
+	if parked && !parkTaken && (!working || IsAdmissionHoldCode(code)) {
 		return computePark(in, codes, code)
 	}
 	// Every code left here is a waiting code; a parked PR is not the
 	// operator's to merge, however green it looks.
-	if len(codes) == 0 && isMergeReady(in) {
+	if len(codes) == 0 && !working && isMergeReady(in) {
 		att := &pb.SessionAttention{
 			Kind:         pb.AttentionKind_ATTENTION_KIND_MERGE,
 			Sentence:     mergeSentence,
@@ -282,6 +290,26 @@ func computeKind(in Input) *pb.SessionAttention {
 		ProgressLabel: label,
 		Since:         timestamp(in.StateSince),
 	}
+}
+
+func hasQuestion(in Input) bool {
+	return in.QuestionChatID != "" || strings.TrimSpace(in.QuestionText) != ""
+}
+
+// agentAtWork reports a session with a chat at work (Input.ChatAtWork) that
+// asks nothing: a fix, park or merge it would otherwise show waits on that
+// turn, so the row reads in progress until the turn ends and the operator's
+// move comes back.
+//
+// No dated apiversion bump, and why: Session.attention reaches the boss TUI,
+// which can point at a remote daemon of another version, and the web through
+// version-skewed bosso. Both render an IN_PROGRESS label as live work with a
+// spinner, which is the truth while a chat works. A down-convert restoring
+// the FIX, REVIEW or MERGE would re-show a NEEDS YOU row whose agent is at
+// work on it, the defect this corrects. See
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+func agentAtWork(in Input) bool {
+	return in.ChatAtWork && !hasQuestion(in)
 }
 
 // fixActive reports a fix fact the operator has not dismissed.

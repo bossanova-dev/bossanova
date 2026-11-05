@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"cmp"
+
 	"github.com/recurser/boss/api/tui/accounts"
 	"github.com/recurser/boss/api/tui/attach"
 	"github.com/recurser/boss/api/tui/repos"
@@ -340,18 +342,21 @@ func (a App) updateCron(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) updateCronForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmd := updateSub(&a.cronForm, msg)
 	if a.cronForm.Cancelled() {
-		// Return to cron list without refreshing (user cancelled).
+		// Return to the cron list on the job the form was opened from.
+		selectedID := a.cronList.SelectedJobID()
 		returnView := a.cronList.ReturnView()
 		a.activeView = ui.ViewCron
 		a.cronList = NewCronListModel(a.client, a.ctx)
 		a.cronList.SetTelemetry(a.telemetry)
 		a.cronList.SetReturnView(returnView)
 		a.cronList.SetSize(a.width, a.height)
+		a.cronList.HighlightJob(selectedID)
 		return a, a.cronList.Init()
 	}
 	// cronFormDoneMsg is emitted by CronFormModel as a Cmd; when it
 	// arrives here as a message we return to the cron list and refresh.
 	if doneMsg, ok := msg.(cronFormDoneMsg); ok {
+		selectedID := a.cronList.SelectedJobID()
 		returnView := a.cronList.ReturnView()
 		a.activeView = ui.ViewCron
 		a.cronList = NewCronListModel(a.client, a.ctx)
@@ -359,8 +364,11 @@ func (a App) updateCronForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cronList.SetReturnView(returnView)
 		a.cronList.SetSize(a.width, a.height)
 		// Keep the just-saved (edited or created) job highlighted once the
-		// recreated list loads its jobs. Empty jobID falls back to row 0.
-		a.cronList.HighlightJob(doneMsg.JobID)
+		// recreated list loads its jobs, else the job the form was opened from.
+		if doneMsg.JobID != "" {
+			selectedID = doneMsg.JobID
+		}
+		a.cronList.HighlightJob(selectedID)
 		return a, a.cronList.Init()
 	}
 	return a, cmd
@@ -421,12 +429,14 @@ func (a App) updateAccountRegister(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// re-fetches via ListAgentAccounts) so the new account appears, routing its
 		// own esc back to Settings (mirrors the ViewCronForm→refreshed-ViewCron
 		// return). ViewAgentAccounts' only entry point is Settings.
+		selectedAgentAccountID := a.accountsList.SelectedAgentAccountID()
 		a.activeView = ui.ViewAgentAccounts
 		a.accountsList = accounts.NewAgentAccountsListModel(a.client, a.ctx)
 		a.accountsList.SetTelemetry(a.telemetry)
 		a.wireAccountsListSync(&a.accountsList)
 		a.accountsList.SetReturnView(ui.ViewSettings)
 		a.accountsList.SetSize(a.width, a.height)
+		a.accountsList.HighlightAgentAccount(cmp.Or(a.accountRegister.ReauthAgentAccountID(), selectedAgentAccountID))
 		// An add is self-evidencing: the new row appears. A reauthentication is
 		// not — it replaces a secret on a row that was already there, and this
 		// pop is immediate, so the flow's own closing verdict (which is the only

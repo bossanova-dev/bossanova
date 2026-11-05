@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout } from 'node:timers/promises'
 import { test } from 'node:test'
 import { tempDir } from './test-tmpdir.mjs'
+import { reclaimLockDir } from './disk-headroom-lib.mjs'
 
 const runner = fileURLToPath(new URL('../gate-run.mjs', import.meta.url))
 const wrapper = fileURLToPath(new URL('./run-gate.mjs', import.meta.url))
@@ -70,7 +71,7 @@ test('two gates serialize commands and expose queued phase and admission evidenc
   const second = f.start(write(secondMarker))
   await until(() => fs.existsSync(path.join(second, 'queued')))
   const queued = f.wait(second, '0')
-  assert.match(queued.stdout, /phase: queued for a heavy gate slot - held by /)
+  assert.match(queued.stdout, /phase: queued for a heavy gate slot - 0 ahead, held by /)
   assert.equal(fs.existsSync(secondMarker), false)
   fs.writeFileSync(release, 'go')
   assert.equal(f.wait(first).status, 0)
@@ -186,7 +187,9 @@ for (const mode of ['fail', 'stop', 'refusal']) {
     }
     const result = f.wait(run)
     assert.equal(result.status, mode === 'stop' ? 96 : mode === 'refusal' ? 75 : 1, result.stdout)
-    assert.deepEqual(fs.readdirSync(f.slots), [])
+    const reclaimDir = reclaimLockDir(f.env, f.env.GOCACHE)
+    assert.deepEqual(fs.readdirSync(f.slots), mode === 'refusal' ? [path.basename(reclaimDir)] : [])
+    if (mode === 'refusal') assert.deepEqual(fs.readdirSync(reclaimDir), [])
     assert.match(result.stdout, /admission:|GATE STOPPED/)
   })
 }

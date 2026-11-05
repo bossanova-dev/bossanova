@@ -47,8 +47,10 @@ func (w *daemonWiring) wireDaemon() {
 	bootstrapRunner := session.NewBootstrapRunner(w.pollerCtx, w.lifecycle, log.Logger)
 
 	daemonConfig := server.Config{
-		Callers:           w.callerAuthority(),
-		CredentialDevices: w.credentialDevices,
+		Callers:                       w.callerAuthority(),
+		CredentialDevices:             w.credentialDevices,
+		TrackerIssueLeaseUpstream:     w.trackerIssueLeaseUpstream,
+		TrackerIssueLeaseSessionToken: w.trackerIssueLeaseSessionToken,
 		CredentialPublisher: func(ctx context.Context, syncedID, localID string) error {
 			if w.credentialSync == nil {
 				return nil

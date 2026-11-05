@@ -10,6 +10,7 @@ import {
   staleSlot,
   inheritedAdmission,
   acquireGateSlot,
+  acquireGateSlotSync,
   releaseGateSlot,
   admitGate,
   gateClass,
@@ -289,7 +290,7 @@ test('a light queue names its pool and times out with the shared admission signa
       error.code === 'GATE_ADMISSION_TIMEOUT' &&
       error.message.startsWith(ADMISSION_TIMEOUT_SIGNATURE),
   )
-  assert.match(logs[0], /^gate-run admission: queued for a light gate slot - held by /)
+  assert.match(logs[0], /^gate-run admission: queued for a light gate slot - 0 ahead, held by /)
 })
 
 test('admission lines name the pool and read a pool-less record as heavy', () => {
@@ -302,4 +303,190 @@ test('admission lines name the pool and read a pool-less record as heavy', () =>
     'admission: waited 303.0s for a heavy gate slot (heavy pool, 2 slots)',
   )
   assert.equal(renderAdmissionLine(null), 'admission: unavailable')
+})
+
+function ticket(dir, { pid = 123, startedAt = 0, modifiedAt = startedAt, pollMs } = {}) {
+  const file = path.join(dir, `.candidate-${pid}-older`)
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ pid, startedAt: new Date(startedAt).toISOString(), pollMs }),
+  )
+  fs.utimesSync(file, new Date(modifiedAt), new Date(modifiedAt))
+  return file
+}
+
+test('a fresh older ticket prevents overtaking even when the slot is free', async () => {
+  const dir = tempDir('gate-admission-')
+  const older = ticket(dir)
+  let clock = 10
+  const options = {
+    dir,
+    slots: 1,
+    timeoutMs: 30,
+    pollMs: 10,
+    isAlive: () => true,
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms
+    },
+  }
+  const logs = []
+  const waits = []
+  await assert.rejects(
+    acquireGateSlot({
+      ...options,
+      log: (line) => logs.push(line),
+      onWait: (...args) => waits.push(args),
+    }),
+    { code: 'GATE_ADMISSION_TIMEOUT' },
+  )
+  assert.equal(fs.existsSync(path.join(dir, 'slot-0')), false)
+  assert.equal(logs.length, 1)
+  assert.match(logs[0], /1 ahead/)
+  assert.deepEqual(waits, [['', 'host', 1]])
+  fs.unlinkSync(older)
+  const handle = await acquireGateSlot(options)
+  releaseGateSlot(handle)
+  assert.deepEqual(fs.readdirSync(dir), [])
+})
+
+test('the oldest waiter wins a release even when the younger polls first', async () => {
+  const dir = tempDir('gate-admission-')
+  let clock = 0
+  const options = {
+    dir,
+    slots: 1,
+    timeoutMs: 100,
+    pollMs: 1,
+    isAlive: () => true,
+    now: () => clock,
+  }
+  const holder = await acquireGateSlot(options)
+  const wakeOlder = []
+  const wakeYounger = []
+  const older = acquireGateSlot({
+    ...options,
+    sleep: () => new Promise((resolve) => wakeOlder.push(resolve)),
+  })
+  clock++
+  let youngerAdmitted = false
+  const younger = acquireGateSlot({
+    ...options,
+    sleep: () => new Promise((resolve) => wakeYounger.push(resolve)),
+  }).then((handle) => {
+    youngerAdmitted = true
+    return handle
+  })
+  releaseGateSlot(holder)
+  wakeYounger.shift()()
+  await Promise.resolve()
+  assert.equal(youngerAdmitted, false)
+  assert.equal(fs.existsSync(path.join(dir, 'slot-0')), false)
+  wakeOlder.shift()()
+  const first = await older
+  assert.equal(youngerAdmitted, false)
+  releaseGateSlot(first)
+  wakeYounger.shift()()
+  const second = await younger
+  releaseGateSlot(second)
+  assert.deepEqual(fs.readdirSync(dir), [])
+})
+
+test('free-slot count admits the next ranked waiter without leaving capacity idle', async () => {
+  const dir = tempDir('gate-admission-')
+  const older = ticket(dir)
+  const handle = await acquireGateSlot({
+    dir,
+    slots: 2,
+    timeoutMs: 100,
+    pollMs: 1,
+    isAlive: () => true,
+    now: () => 10,
+    sleep: () => assert.fail('two free slots allow two ranked waiters'),
+  })
+  releaseGateSlot(handle)
+  assert.equal(fs.existsSync(older), true)
+})
+
+test('dead tickets are removed while stale live tickets are skipped without deletion', async () => {
+  for (const dead of [true, false]) {
+    const dir = tempDir('gate-admission-')
+    const older = ticket(dir)
+    const handle = await acquireGateSlot({
+      dir,
+      slots: 1,
+      timeoutMs: 100,
+      pollMs: 1,
+      isAlive: (pid) => !dead || pid === process.pid,
+      now: () => 30001,
+      sleep: () => assert.fail('dead or stale ticket must not block'),
+    })
+    releaseGateSlot(handle)
+    assert.equal(fs.existsSync(older), !dead)
+  }
+})
+
+test('ticket freshness covers ten of its own polling intervals', async () => {
+  const dir = tempDir('gate-admission-')
+  const older = ticket(dir, { pollMs: 5000 })
+  let clock = 40000
+  await assert.rejects(
+    acquireGateSlot({
+      dir,
+      slots: 1,
+      timeoutMs: 10,
+      pollMs: 10,
+      isAlive: () => true,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms
+      },
+    }),
+    { code: 'GATE_ADMISSION_TIMEOUT' },
+  )
+  assert.equal(fs.existsSync(older), true)
+  assert.equal(fs.existsSync(path.join(dir, 'slot-0')), false)
+})
+
+test('a candidate still being published is left for its owner to finish', async () => {
+  const dir = tempDir('gate-admission-')
+  const candidate = path.join(dir, '.candidate-publishing')
+  fs.writeFileSync(candidate, '')
+  const handle = await acquireGateSlot({
+    dir,
+    slots: 1,
+    timeoutMs: 100,
+    pollMs: 1,
+    isAlive: () => true,
+    sleep: () => assert.fail('an unpublished ticket has no queue position yet'),
+  })
+  releaseGateSlot(handle)
+  assert.equal(fs.existsSync(candidate), true, 'the writer must retain its ticket for heartbeat')
+})
+
+test('a synchronous slot wait stops cooperatively and preserves its live holder', () => {
+  const dir = tempDir('gate-admission-')
+  const slot = path.join(dir, 'slot-0')
+  const holder = JSON.stringify({ pid: process.pid, label: 'held' })
+  fs.writeFileSync(slot, holder)
+  let stopped = false
+  let clock = 0
+  assert.throws(
+    () =>
+      acquireGateSlotSync({
+        dir,
+        slots: 1,
+        timeoutMs: 30,
+        pollMs: 1,
+        now: () => clock++,
+        shouldStop: () => stopped,
+        onWait: () => {
+          stopped = true
+        },
+      }),
+    { code: 'GATE_ADMISSION_STOPPED' },
+  )
+  assert.equal(stopped, true)
+  assert.equal(fs.readFileSync(slot, 'utf8'), holder)
+  assert.deepEqual(fs.readdirSync(dir), ['slot-0'])
 })

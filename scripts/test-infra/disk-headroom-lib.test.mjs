@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { measureHeadroom, decideHeadroom, parseFloorGiB } from './disk-headroom-lib.mjs'
+import path from 'node:path'
+import { admissionConfig } from './gate-admission-lib.mjs'
+import {
+  measureHeadroom,
+  decideHeadroom,
+  parseFloorGiB,
+  reclaimLockDir,
+} from './disk-headroom-lib.mjs'
 
 test('headroom deduplicates filesystems and skips missing paths', () => {
   const entries = measureHeadroom(['a', 'missing', 'b', 'c'], {
@@ -38,4 +45,18 @@ test('floor defaults, disables, and warns on invalid input', () => {
       20,
     )
   assert.equal(warnings.length, 3)
+})
+
+test('reclaim locks share a stable per-cache key across worktree temp directories', () => {
+  const cache = '/shared/go-cache'
+  const first = reclaimLockDir({ TMPDIR: '/one/tmp' }, cache)
+  assert.equal(first, reclaimLockDir({ TMPDIR: '/another/tmp' }, cache))
+  assert.equal(path.dirname(first), admissionConfig({}).dir)
+  assert.match(path.basename(first), /^go-cache-reclaim-[a-f0-9]{12}$/)
+  assert.notEqual(first, reclaimLockDir({}, '/shared/other-cache'))
+  const override = { BOSS_GATE_ADMISSION_DIR: '/custom/admission' }
+  assert.equal(
+    reclaimLockDir(override, cache),
+    path.join(admissionConfig(override).dir, path.basename(first)),
+  )
 })

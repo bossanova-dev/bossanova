@@ -754,3 +754,36 @@ func TestDisplayTracker_SetBlockedRunWorking(t *testing.T) {
 		t.Fatal("an entry held only by the mark lingers after it clears")
 	}
 }
+
+func TestDisplayTrackerSize_Sessions_AC213501(t *testing.T) {
+	tr := NewDisplayTracker()
+	publications := 0
+	tr.SetOnAttentionChange(func(string) { publications++ })
+	info := vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, AddedLineCount: 12, DeletedLineCount: 3, ChangedFileCount: 2}
+	tr.Set("s", info)
+	for _, e := range []*DisplayEntry{tr.Get("s"), tr.GetBatch([]string{"s"})["s"]} {
+		if e == nil || e.AddedLineCount != 12 || e.DeletedLineCount != 3 || e.ChangedFileCount != 2 {
+			t.Fatalf("size lost: %+v", e)
+		}
+	}
+	tr.Set("s", info)
+	if publications != 1 {
+		t.Fatalf("unchanged size republished: %d", publications)
+	}
+	info.AddedLineCount = 14
+	tr.Set("s", info)
+	if publications != 2 {
+		t.Fatalf("size-only update not published: %d", publications)
+	}
+	tr.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	if publications != 3 {
+		t.Fatalf("size clearing not published: %d", publications)
+	}
+	tr.Restore("restored", info, time.Now())
+	for _, id := range []string{"s", "restored"} {
+		e := tr.Get(id)
+		if e == nil || e.AddedLineCount != 0 || e.DeletedLineCount != 0 || e.ChangedFileCount != 0 {
+			t.Fatalf("size should be unknown: %+v", e)
+		}
+	}
+}

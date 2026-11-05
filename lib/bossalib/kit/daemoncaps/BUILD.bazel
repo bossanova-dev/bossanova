@@ -4,6 +4,7 @@ go_library(
     name = "daemoncaps",
     srcs = [
         "capabilities.go",
+        "command_access.go",
         "stream_commands.go",
     ],
     importpath = "github.com/recurser/bossalib/kit/daemoncaps",
@@ -19,11 +20,13 @@ go_test(
     name = "daemoncaps_test",
     srcs = [
         "capabilities_test.go",
+        "command_access_test.go",
         "stream_commands_test.go",
     ],
     embed = [":daemoncaps"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )

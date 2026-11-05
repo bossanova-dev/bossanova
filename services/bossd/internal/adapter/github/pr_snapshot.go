@@ -31,7 +31,7 @@ var openPRSnapshotQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $c
       pageInfo { hasNextPage endCursor }
       nodes {
         number title body state isDraft headRefName baseRefName headRefOid isCrossRepository
-        mergeable mergeStateStatus canBeRebased reviewDecision
+        mergeable mergeStateStatus canBeRebased reviewDecision additions deletions changedFiles
         author { login __typename }
         reviews(last: 50) {
           totalCount

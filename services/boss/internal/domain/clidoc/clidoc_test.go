@@ -53,6 +53,7 @@ func TestGroupOrderReadWhenHintsArePinned(t *testing.T) {
 		"trigger":     "Creating, testing or inspecting an inbound HTTP or GitHub trigger",
 		"broadcast":   "Sending a broadcast or registering an outcome subscription",
 		"notes":       "Recording or harvesting durable repo-scoped notes",
+		"lease":       "Taking or releasing a tracker issue lease before starting work",
 		"webhook":     "Registering, testing or inspecting an outbound session webhook (Bossanova Cloud)",
 		"account":     "Adding, testing, rotating or switching a provider account",
 		"trash":       "Resurrecting an archived session or emptying the trash",

@@ -115,3 +115,21 @@ func labelAsks(label string) []string {
 	}
 	return asks
 }
+
+// ProofConfidenceLevel maps a boss-proof/1 level; legacy or unknown is unrated.
+func ProofConfidenceLevel(level string) pb.ConfidenceLevel {
+	switch level {
+	case "high":
+		return pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH
+	case "moderate":
+		return pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE
+	case "low":
+		return pb.ConfidenceLevel_CONFIDENCE_LEVEL_LOW
+	case "blocked":
+		return pb.ConfidenceLevel_CONFIDENCE_LEVEL_BLOCKED
+	case "cannot-assess":
+		return pb.ConfidenceLevel_CONFIDENCE_LEVEL_CANNOT_ASSESS
+	default:
+		return pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED
+	}
+}

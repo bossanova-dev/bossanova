@@ -102,13 +102,13 @@ func TestBuildListsOnlyVerifyParks_Sessions_AC209001(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rows, _ := Build([]*pb.Session{tc.session}, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED)
+			rows, _ := Build([]*pb.Session{tc.session}, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED, parkBase)
 			if got := len(rows) == 1; got != tc.isRow {
 				t.Fatalf("row = %v, want %v (rows %v)", got, tc.isRow, rowIDs(rows))
 			}
 		})
 	}
-	rows, _ := Build([]*pb.Session{nil}, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED)
+	rows, _ := Build([]*pb.Session{nil}, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED, parkBase)
 	if len(rows) != 0 {
 		t.Fatalf("nil session produced rows %v", rowIDs(rows))
 	}
@@ -128,7 +128,7 @@ func TestBuildRowLevelAndInputUntouched_Sessions_AC209001(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := proto.Clone(tc.session)
-			rows, _ := Build([]*pb.Session{tc.session}, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED)
+			rows, _ := Build([]*pb.Session{tc.session}, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED, parkBase)
 			if len(rows) != 1 {
 				t.Fatalf("rows = %v, want one", rowIDs(rows))
 			}
@@ -170,7 +170,7 @@ func TestSortOrdersRows_Sessions_AC209002(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.sort.String(), func(t *testing.T) {
-			rows, _ := Build(sortFixture(), tc.sort)
+			rows, _ := Build(sortFixture(), tc.sort, parkBase)
 			if got := rowIDs(rows); !slices.Equal(got, tc.want) {
 				t.Fatalf("order = %v, want %v", got, tc.want)
 			}
@@ -198,7 +198,7 @@ func TestSortTieBreakIsTotal_Sessions_AC209002(t *testing.T) {
 			pb.ReviewQueueSort_REVIEW_QUEUE_SORT_LEAST_CONFIDENT,
 			pb.ReviewQueueSort_REVIEW_QUEUE_SORT_OLDEST,
 		} {
-			rows, _ := Build(shuffled, sort)
+			rows, _ := Build(shuffled, sort, parkBase)
 			if got := rowIDs(rows); !slices.Equal(got, want) {
 				t.Fatalf("%v order = %v, want %v", sort, got, want)
 			}
@@ -214,7 +214,7 @@ func TestLevelCounts_Sessions_AC209002(t *testing.T) {
 		newSession("merging-merged", kind(pb.AttentionKind_ATTENTION_KIND_MERGE), noCodes(), merging(), state(pb.SessionState_SESSION_STATE_MERGED)),
 		newSession("fault", kind(pb.AttentionKind_ATTENTION_KIND_FIX), noCodes()),
 	)
-	rows, counts := Build(sessions, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED)
+	rows, counts := Build(sessions, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED, parkBase)
 	for _, id := range []string{"merging-now", "merging-parked"} {
 		if slices.Contains(rowIDs(rows), id) {
 			t.Fatalf("merging session %q became a row", id)
@@ -247,7 +247,7 @@ func TestLevelCounts_Sessions_AC209002(t *testing.T) {
 		t.Fatalf("counts = %v, want %v", got, want)
 	}
 
-	_, empty := Build(nil, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED)
+	_, empty := Build(nil, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED, parkBase)
 	if len(empty) != len(wantLevels) {
 		t.Fatalf("empty queue lists %d levels, want %d", len(empty), len(wantLevels))
 	}
@@ -284,5 +284,30 @@ func TestMatchesOrigin_Sessions_AC209001(t *testing.T) {
 	}
 	if MatchesOrigin(newSession("bad", origin("not a url")), "not a url") {
 		t.Fatal("two unparseable origins matched")
+	}
+}
+
+func TestSmallestSort_Sessions_AC213501(t *testing.T) {
+	sized := func(id string, added, deleted, files int32, opts ...sessionOpt) *pb.Session {
+		return newSession(id, append(opts, func(s *pb.Session) {
+			s.PrAddedLineCount = added
+			s.PrDeletedLineCount = deleted
+			s.PrChangedFileCount = files
+		})...)
+	}
+	sessions := []*pb.Session{
+		sized("unknown-new", 0, 0, 0, parkedAt(2)), sized("unknown-old", 100, 100, 0, parkedAt(1)),
+		sized("large", 2147483647, 2147483647, 1), sized("more-files", 8, 2, 3),
+		sized("tie-b", 9, 1, 2), sized("tie-a", 6, 4, 2), sized("small", 1, 2, 1),
+	}
+	want := []string{"small", "tie-a", "tie-b", "more-files", "large", "unknown-old", "unknown-new"}
+	rng := rand.New(rand.NewPCG(3, 4))
+	for range 20 {
+		shuffled := slices.Clone(sessions)
+		rng.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		rows, _ := Build(shuffled, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_SMALLEST, parkBase)
+		if got := rowIDs(rows); !slices.Equal(got, want) {
+			t.Fatalf("order=%v want %v", got, want)
+		}
 	}
 }

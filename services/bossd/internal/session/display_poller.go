@@ -539,6 +539,9 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		}
 		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
 		info.HeadSHA = prStatus.HeadSHA
+		info.AddedLineCount = prStatus.AddedLineCount
+		info.DeletedLineCount = prStatus.DeletedLineCount
+		info.ChangedFileCount = prStatus.ChangedFileCount
 		// The end is dated when the daemon learned of it: by the webhook's
 		// entry when one already marked the PR so, otherwise by this poll.
 		end := &status.DisplayEntry{Status: info.Status, HeadSHA: info.HeadSHA, UpdatedAt: time.Now()}
@@ -560,6 +563,9 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		checks := checkSet.Checks
 		info := vcs.ComputeDisplayStatusWith(prStatus, checks, nil, vcs.DisplayOptions{DraftHeldByBossd: sess.State.HoldsBossdDraft()})
 		info.Mergeable = prStatus.Mergeable
+		info.AddedLineCount = prStatus.AddedLineCount
+		info.DeletedLineCount = prStatus.DeletedLineCount
+		info.ChangedFileCount = prStatus.ChangedFileCount
 		info.HeadSHA = prStatus.HeadSHA
 		info.IsPartial = vcs.IsPartialMarked(prStatus.Title, prStatus.Body)
 		p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
@@ -609,6 +615,9 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	// Surface mergeability so a conflict-after-green is readable from
 	// get_session without a merge attempt (BOS-234). nil stays unknown.
 	info.Mergeable = prStatus.Mergeable
+	info.AddedLineCount = prStatus.AddedLineCount
+	info.DeletedLineCount = prStatus.DeletedLineCount
+	info.ChangedFileCount = prStatus.ChangedFileCount
 	// Attention publication from Set hydrates checks for this head.
 	p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
 	p.tracker.Set(sessionID, info)

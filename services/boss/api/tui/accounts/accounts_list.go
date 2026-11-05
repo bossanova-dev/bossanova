@@ -72,6 +72,10 @@ type AgentAccountsListModel struct {
 	cancel bool
 
 	returnView ui.View
+	// highlightAgentAccountID is the account the caret lands on when accounts next
+	// load, so a return from an account's edit or reauthentication keeps that
+	// row selected; cleared after the first load.
+	highlightAgentAccountID string
 
 	loading bool
 	spinner spinner.Model
@@ -234,6 +238,7 @@ func (m AgentAccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.accounts = msg.Accounts
 			m.rebuildTable()
+			m.applyHighlight()
 			if msg.Refresh {
 				m.setStatus("Usage refreshed.", false)
 			}
@@ -537,6 +542,16 @@ func (m *AgentAccountsListModel) setStatus(s string, isErr bool) {
 	m.status = s
 	m.statusErr = isErr
 	m.statusAt = time.Now()
+}
+
+// applyHighlight puts the caret on the requested account once, if listed.
+func (m *AgentAccountsListModel) applyHighlight() {
+	if id := m.highlightAgentAccountID; id != "" {
+		if i := slices.IndexFunc(m.accounts, func(a *pb.AgentAccount) bool { return a.GetId() == id }); i >= 0 {
+			m.table.SetCursor(i)
+		}
+		m.highlightAgentAccountID = ""
+	}
 }
 
 func (m AgentAccountsListModel) selectedAccount() *pb.AgentAccount {

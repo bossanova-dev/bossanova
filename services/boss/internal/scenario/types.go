@@ -41,6 +41,9 @@ type Chat struct {
 
 // PullRequest supplies synthetic GitHub inputs, never a computed display status.
 type PullRequest struct {
+	Additions    int `json:"additions,omitempty"`
+	Deletions    int `json:"deletions,omitempty"`
+	ChangedFiles int `json:"changedFiles,omitempty"`
 	// Body is the provider's PR description, including ordinary Markdown markers.
 	Body string `json:"body,omitempty"`
 	// HeadSHA is a full Git object ID or "branch-head" to use the prepared worktree HEAD.

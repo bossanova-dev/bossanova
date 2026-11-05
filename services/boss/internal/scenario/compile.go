@@ -110,7 +110,7 @@ func Compile(doc Document) (Plan, []Problem) {
 		if pr.Mergeable {
 			mergeable = "MERGEABLE"
 		}
-		view, _ := json.Marshal(map[string]any{"body": pr.Body, "headRefOid": pr.HeadSHA, "state": state, "mergeable": mergeable, "mergeStateStatus": "CLEAN", "isDraft": pr.State == "DRAFT" || pr.Draft, "title": s.Title, "headRefName": s.Key, "baseRefName": "main"})
+		view, _ := json.Marshal(map[string]any{"additions": pr.Additions, "deletions": pr.Deletions, "changedFiles": pr.ChangedFiles, "body": pr.Body, "headRefOid": pr.HeadSHA, "state": state, "mergeable": mergeable, "mergeStateStatus": "CLEAN", "isDraft": pr.State == "DRAFT" || pr.Draft, "title": s.Title, "headRefName": s.Key, "baseRefName": "main"})
 		checks := "PENDING"
 		switch pr.Checks {
 		case "PASSED", "PASSING":
@@ -132,7 +132,7 @@ func Compile(doc Document) (Plan, []Problem) {
 		restMergeability, _ := json.Marshal(map[string]any{"mergeable": pr.Mergeable, "mergeable_state": "clean", "rebaseable": true})
 		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n, "-i"}, Stdout: string(restMergeability)})
 		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n + "/reviews?per_page=100", "-i"}, Stdout: "[]"})
-		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"pr", "view", n, "--repo", s.Repo, "--json", "state,mergeable,mergeStateStatus,isDraft,title,body,headRefName,baseRefName,headRefOid,isCrossRepository,reviewDecision,reviews"}, Stdout: string(view)}, realstack.GHResponse{Args: []string{"pr", "checks", n, "--repo", s.Repo, "--json", "name,state,workflow,description"}, Stdout: string(checkJSON)})
+		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"pr", "view", n, "--repo", s.Repo, "--json", "state,mergeable,mergeStateStatus,isDraft,title,body,headRefName,baseRefName,headRefOid,isCrossRepository,reviewDecision,reviews,additions,deletions,changedFiles"}, Stdout: string(view)}, realstack.GHResponse{Args: []string{"pr", "checks", n, "--repo", s.Repo, "--json", "name,state,workflow,description"}, Stdout: string(checkJSON)})
 	}
 	p.GH = append(p.GH, heldMergeResponses(doc)...)
 	for _, r := range doc.Repos {

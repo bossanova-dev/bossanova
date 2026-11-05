@@ -37,7 +37,7 @@ func clampInt32(n int) int32 {
 
 // HydrateDisplayEntry stamps the per-axis display-tracker fields onto a Session
 // proto: DisplayStatus, the failure/changes-requested/repairing/setting-up/
-// merging flags, PR mergeability, and the derived MergeBlock. These live ONLY in
+// merging flags, PR mergeability and size counts, and the derived MergeBlock. These live ONLY in
 // the in-memory DisplayTracker, not on models.Session, so every read path that
 // needs them must apply this — the local GetSession/ListSessions RPCs AND the
 // reverse-stream projection that feeds the cloud/web read model (without it the
@@ -59,6 +59,9 @@ func HydrateDisplayEntry(p *pb.Session, e *status.DisplayEntry) {
 	p.DisplayMerging = e.Merging
 	p.ArchivePending = e.Archiving
 	p.PrMergeable = e.Mergeable
+	p.PrAddedLineCount = clampInt32(e.AddedLineCount)
+	p.PrDeletedLineCount = clampInt32(e.DeletedLineCount)
+	p.PrChangedFileCount = clampInt32(e.ChangedFileCount)
 	// The polled PR head lets clients apply the shared repair-alert end rule
 	// (head moved past last_repair_head_sha, alertstate BOS-1535).
 	p.PrDisplayHeadSha = e.HeadSHA

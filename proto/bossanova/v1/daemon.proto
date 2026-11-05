@@ -330,6 +330,16 @@ service DaemonService {
   // canceled or expired, succeeds.
   rpc DeleteBroadcastSubscription(DeleteBroadcastSubscriptionRequest) returns (DeleteBroadcastSubscriptionResponse);
 
+  // AcquireTrackerIssueLease forwards signed-in work to the organization coordinator.
+  // Local-only or signed-out daemons arbitrate in memory and return scope DAEMON.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc AcquireTrackerIssueLease(AcquireTrackerIssueLeaseRequest) returns (AcquireTrackerIssueLeaseResponse);
+
+  // ReleaseTrackerIssueLease releases the caller's local lease and, when signed in,
+  // its organization lease as well. Upstream errors never trigger a local acquire.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc ReleaseTrackerIssueLease(ReleaseTrackerIssueLeaseRequest) returns (ReleaseTrackerIssueLeaseResponse);
+
   // --- Accounts (BOS-157 rotation registry) ---
 
   // Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.

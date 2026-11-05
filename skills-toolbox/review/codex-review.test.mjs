@@ -1220,17 +1220,27 @@ test('probe: login rejection skips exec and live stage shares the deadline', asy
     assert.equal(await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir }), 'not_authed')
     assert.equal(fs.existsSync(path.join(dir, 'exec-called')), false)
     assert.equal(fs.readFileSync(path.join(dir, 'login-called'), 'utf8').trim(), 'invoked')
+    const loginSleepMs = 100
+    const budgetMs = 2000
     const hangSeconds = 30
     writeFakeBin(
       dir,
       'codex',
-      `if [ "$1" = login ]; then /bin/sleep 0.1; exit 0; fi\necho invoked > exec-called\nexec /bin/sleep ${hangSeconds}`,
+      `if [ "$1" = login ]; then /bin/sleep ${loginSleepMs / 1000}; exit 0; fi\necho invoked > exec-called\nexec /bin/sleep ${hangSeconds}`,
     )
     const started = Date.now()
-    assert.equal(
-      await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir, timeoutMs: 300, retryBackoffMs: 0 }),
-      'error',
-    )
+    // Allow host-load headroom; the reported exec budget proves the shared deadline.
+    const result = await probeDetailed({
+      env: { BOSS_CODEX_BIN: bin },
+      repo: dir,
+      timeoutMs: budgetMs,
+      retryBackoffMs: 0,
+    })
+    assert.equal(result.classification, 'error')
+    assert.equal(result.attempts, 2)
+    assert.equal(result.detail.kind, 'timeout')
+    assert.equal(result.detail.stage, 'exec')
+    assert.ok(result.detail.ms <= budgetMs - loginSleepMs)
     assert.ok(Date.now() - started < hangSeconds * 1000)
     assert.equal(fs.existsSync(path.join(dir, 'exec-called')), true)
   } finally {

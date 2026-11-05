@@ -338,18 +338,61 @@ func TestAttention2986NoStaleAlert(t *testing.T) {
 	s.rotationEvents = fakeRotationEventStore{events: []db.RotationEvent{{SessionID: "s", CreatedAt: at(16), Trigger: pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED.String(), Outcome: pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED.String()}}}
 	oldHead := "old"
 	row.LastAttemptHeadSHA = &oldHead
+	row.AgentSessionID = &chatID
+	// The run's own chat at work holds the review park in progress; once the
+	// run is blocked that chat may be wedged mid-turn, so the block's FIX shows.
 	for _, state := range []machine.State{machine.ReadyForReview, machine.Blocked} {
 		row.State = state
 		resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := pb.AttentionKind_ATTENTION_KIND_REVIEW
+		want := pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
 		if state == machine.Blocked {
 			want = pb.AttentionKind_ATTENTION_KIND_FIX
 		}
 		if got := onlySession(t, resp.Msg.Sessions).GetAttention(); got.GetKind() != want {
 			t.Fatalf("state=%v attention=%v, want %v", state, got, want)
+		}
+	}
+}
+
+// A blocked run another chat is repairing reads in progress while that chat
+// works, and the block's FIX comes back once it stops; the run's own chat
+// reporting working never hides the block.
+func TestAttentionBlockedRunHeldWhileAnotherChatWorks(t *testing.T) {
+	n := 4047
+	reason := "Run blocked: verify parked"
+	runChat, repairChat := "run", "repair"
+	row := &models.Session{ID: "s", RepoID: "r", State: machine.Blocked, PRNumber: &n, BlockedReason: &reason, AgentSessionID: &runChat}
+	tracker := status.NewDisplayTracker()
+	tracker.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusFailing, HeadSHA: timelineHead, HasFailures: true})
+	s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
+	s.agentChats = &listSessionsAgentChatStoreFake{chats: map[string][]*domain.AgentChat{"s": {
+		{SessionID: "s", AgentSessionID: runChat},
+		{SessionID: "s", AgentSessionID: repairChat},
+	}}}
+	s.chatStatus = status.NewTracker()
+	kind := func() pb.AttentionKind {
+		t.Helper()
+		resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return onlySession(t, resp.Msg.Sessions).GetAttention().GetKind()
+	}
+	for _, step := range []struct {
+		run, repair pb.ChatStatus
+		want        pb.AttentionKind
+	}{
+		{pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WORKING, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
+		{pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_IDLE, pb.AttentionKind_ATTENTION_KIND_FIX},
+		{pb.ChatStatus_CHAT_STATUS_WORKING, pb.ChatStatus_CHAT_STATUS_IDLE, pb.AttentionKind_ATTENTION_KIND_FIX},
+	} {
+		s.chatStatus.Update(runChat, step.run, at(20))
+		s.chatStatus.Update(repairChat, step.repair, at(20))
+		if got := kind(); got != step.want {
+			t.Fatalf("run %v, repair %v: attention %v, want %v", step.run, step.repair, got, step.want)
 		}
 	}
 }

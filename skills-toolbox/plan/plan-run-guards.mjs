@@ -37,6 +37,7 @@ import {
 import { CHILD_MAX_ESTIMATE, parseEpicSpec } from './plan-epic-lib.mjs'
 import { EPIC_REVERIFY_CLASS, epicReverifyVerdict } from './plan-epic-phase25.mjs'
 import { RUN_SCRATCH_DIR_PREFIX, planScratchPath, planScratchToken } from './plan-scratch-paths.mjs'
+import { sectionListMarker } from './plan-section-append.mjs'
 import { normalizeSiblings } from './plan-sibling-split.mjs'
 import { createGateRecorder } from '../gate-outcome.mjs'
 import { isMainModule } from '../main-module.mjs'
@@ -398,7 +399,7 @@ function reconcilePremises(text, { premises, drifted }) {
       checkbox: new Set(),
     }))
   const driftLine = ids.length
-    ? new RegExp(`^[-*] Premise drift: (${ids.map(escape).join('|')})(?![\\w-])`)
+    ? new RegExp(`^[-*+] Premise drift: (${ids.map(escape).join('|')})(?![\\w-])`)
     : null
   const marker = ids.length
     ? new RegExp(` \\(premise drift: (?:${ids.map(escape).join('|')})(?![\\w-])`, 'g')
@@ -502,8 +503,9 @@ function reconcilePremises(text, { premises, drifted }) {
     if (section === 'Planning') planningEnd = output.length
   }
   if (annotations.length) {
+    const listMarker = sectionListMarker(text, 'Planning')
     const reports = annotations.map((item) => {
-      let report = `- Premise drift: ${item.id} was ${item.plannedState}, is now ${item.currentState}`
+      let report = `${listMarker} Premise drift: ${item.id} was ${item.plannedState}, is now ${item.currentState}`
       if (item.inline.size) report += `; flagged inline in ${[...item.inline].join(', ')}`
       if (item.checkbox.size) report += `; also stated in ${[...item.checkbox].join(', ')}`
       return report + newline

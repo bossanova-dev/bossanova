@@ -20,13 +20,13 @@ const SIGNATURE = 'This directory holds cached build artifacts from the Go build
 
 function fixture(t) {
   const dir = fs.mkdtempSync(join(tmpdir(), 'go-cache-eviction-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
   fs.writeFileSync(join(dir, 'README'), `${SIGNATURE}\n`)
   return dir
 }
 
-function entry(dir, id, { age = 2 * DAY, size = 10, suffix = 'd' } = {}) {
-  const bucket = join(dir, 'ab')
+function entry(dir, id, { age = 2 * DAY, size = 10, suffix = 'd', bucketName = 'ab' } = {}) {
+  const bucket = join(dir, bucketName)
   fs.mkdirSync(bucket, { recursive: true })
   const path = join(bucket, `${id.toString(16).padStart(64, '0')}-${suffix}`)
   fs.writeFileSync(path, Buffer.alloc(size))
@@ -54,6 +54,7 @@ test('evicts oldest entries first and stops at target', (t) => {
     bytes: protectedBytes + 10,
     reclaimedBytes: 10,
     entriesRemoved: 1,
+    stopped: false,
   })
 })
 
@@ -102,7 +103,7 @@ test('only removes recognized files and never follows bucket or entry symlinks',
   const dir = fixture(t)
   const old = entry(dir, 1)
   const external = fs.mkdtempSync(join(tmpdir(), 'go-cache-protected-'))
-  t.after(() => fs.rmSync(external, { recursive: true, force: true }))
+  t.after(() => fs.rmSync(external, { recursive: true, force: true, maxRetries: 3 }))
   const outside = join(external, `${'f'.repeat(64)}-d`)
   fs.writeFileSync(outside, 'outside')
   const protectedPaths = [join(dir, 'trim.txt'), join(dir, 'ab', 'not-an-entry')]
@@ -154,6 +155,7 @@ test('tolerates an entry removed concurrently by another cleaner', (t) => {
   })
   assert.equal(fs.existsSync(path), false)
   assert.equal(result.entriesRemoved, 0)
+  assert.equal(result.bytes, result.initialBytes)
 })
 
 test('runCleanup evicts an oversized cache without checking for active Go builds', (t) => {
@@ -203,4 +205,114 @@ test('runCleanup stops at eighty percent instead of purging all old entries', (t
   assert.ok(result.bytes <= 180 * 0.8)
   assert.ok(!fs.existsSync(oldest))
   assert.ok(fs.existsSync(newer))
+})
+
+test('reclaims requested bytes with one sizing walk and one sweep', (t) => {
+  const dir = fixture(t)
+  const old = entry(dir, 1, { size: 10, bucketName: 'aa' })
+  const otherOld = entry(dir, 2, { size: 10, bucketName: 'bb' })
+  const young = entry(dir, 3, { age: 0, bucketName: 'bb' })
+  const listings = new Map()
+  const events = []
+  const result = evictGoCache({
+    dir,
+    reclaimBytes: 20,
+    now: NOW,
+    onProgress: (event) => events.push(event),
+    fsImpl: {
+      ...fs,
+      readdirSync(path) {
+        listings.set(path, (listings.get(path) ?? 0) + 1)
+        return fs.readdirSync(path)
+      },
+    },
+  })
+  assert.equal(fs.existsSync(old), false)
+  assert.equal(fs.existsSync(young), true)
+  assert.equal(fs.existsSync(otherOld), false)
+  assert.equal(result.reclaimedBytes, 20)
+  assert.equal(result.bytes, result.initialBytes - result.reclaimedBytes)
+  assert.equal(result.stopped, false)
+  for (const bucket of ['aa', 'bb']) assert.equal(listings.get(join(dir, bucket)), 2)
+  assert.deepEqual(
+    events
+      .filter((event) => event.phase === 'scan')
+      .map((event) => [event.bucketsDone, event.buckets]),
+    [
+      [1, 2],
+      [2, 2],
+    ],
+  )
+  assert.deepEqual(
+    events.map((event) => event.phase),
+    ['scan', 'scan', 'sweep', 'sweep'],
+  )
+  assert.deepEqual(
+    events.slice(2).map((event) => [event.bucketsDone, event.buckets]),
+    [
+      [1, 2],
+      [2, 2],
+    ],
+  )
+  assert.equal(events[3].reclaimedBytes, 20)
+  assert.equal(events[3].entriesRemoved, 2)
+})
+
+test('requires exactly one finite nonnegative target or reclaim amount', (t) => {
+  const dir = fixture(t)
+  for (const options of [
+    {},
+    { targetBytes: 0, reclaimBytes: 0 },
+    ...[-1, Infinity, NaN, '1', null].flatMap((value) => [
+      { targetBytes: value },
+      { reclaimBytes: value },
+    ]),
+  ]) {
+    assert.throws(() => evictGoCache({ dir, ...options }), /exactly one|non-negative/)
+  }
+  assert.equal(evictGoCache({ dir, reclaimBytes: 0 }).stopped, false)
+})
+
+test('stops sizing between buckets without removing entries', (t) => {
+  const dir = fixture(t)
+  const first = entry(dir, 1, { bucketName: 'aa' })
+  const later = entry(dir, 2, { bucketName: 'bb' })
+  let scanned = 0
+  const result = evictGoCache({
+    dir,
+    reclaimBytes: 20,
+    now: NOW,
+    onProgress(event) {
+      if (event.phase === 'scan') scanned++
+    },
+    shouldStop: () => scanned === 1,
+  })
+  assert.equal(scanned, 1)
+  assert.equal(result.stopped, true)
+  assert.equal(result.reclaimedBytes, 0)
+  assert.equal(fs.existsSync(first), true)
+  assert.equal(fs.existsSync(later), true)
+})
+
+test('stops sweeping between buckets and reports actual reclamation', (t) => {
+  const dir = fixture(t)
+  const first = entry(dir, 1, { bucketName: 'aa' })
+  const later = entry(dir, 2, { bucketName: 'bb' })
+  let swept = 0
+  const result = evictGoCache({
+    dir,
+    targetBytes: 0,
+    now: NOW,
+    onProgress(event) {
+      if (event.phase === 'sweep') swept++
+    },
+    shouldStop: () => swept === 1,
+  })
+  assert.equal(swept, 1)
+  assert.equal(result.stopped, true)
+  assert.equal(result.reclaimedBytes, 10)
+  assert.equal(result.entriesRemoved, 1)
+  assert.equal(result.bytes, result.initialBytes - 10)
+  assert.equal(fs.existsSync(first), false)
+  assert.equal(fs.existsSync(later), true)
 })

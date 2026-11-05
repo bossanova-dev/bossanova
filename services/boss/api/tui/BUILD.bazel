@@ -93,6 +93,7 @@ go_test(
         "form_mouse_views_test.go",
         "form_nav_hints_test.go",
         "github_app_install_url_test.go",
+        "list_return_cursor_test.go",
         "newsession_fixture_test.go",
         "picker_fixture_test.go",
         "repo_fixtures_test.go",

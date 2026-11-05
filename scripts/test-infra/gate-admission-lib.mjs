@@ -155,47 +155,48 @@ function* acquisitionSteps({
   isAlive = alive,
   now = Date.now,
   signal = undefined,
-  onWait = (_holders, _pool) => {},
+  shouldStop = () => false,
+  onWait = (_holders, _pool, _ahead) => {},
 }) {
   const started = now()
   fs.mkdirSync(dir, { recursive: true })
   const candidate = path.join(dir, `.candidate-${process.pid}-${randomUUID()}`)
-  fs.writeFileSync(
-    candidate,
-    JSON.stringify({
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      cwd: process.cwd(),
-      label,
-    }),
-    { flag: 'wx' },
-  )
-  let lastHolders = null
+  try {
+    fs.writeFileSync(
+      candidate,
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date(started).toISOString(),
+        pollMs,
+        cwd: process.cwd(),
+        label,
+      }),
+      { flag: 'wx' },
+    )
+  } catch (error) {
+    // A full volume can create the candidate and then fail its write; an empty
+    // candidate is skipped by every waiter forever, so remove it before failing.
+    fs.rmSync(candidate, { force: true })
+    throw error
+  }
+  let lastQueueState = null
   let heldByAtAdmission = []
   try {
     for (;;) {
       signal?.throwIfAborted()
+      if (shouldStop())
+        throw Object.assign(new Error('gate-run admission: stopped while waiting for a slot'), {
+          code: 'GATE_ADMISSION_STOPPED',
+        })
+      const heartbeat = new Date(now())
+      fs.utimesSync(candidate, heartbeat, heartbeat)
       const holders = []
+      const free = []
       for (let index = 0; index < slots; index++) {
         const file = path.join(dir, `slot-${index}`)
-        // Publish a complete record atomically. An open('wx') followed by write exposes an empty
-        // record that another contender could reclaim as malformed before its owner writes it.
-        try {
-          fs.linkSync(candidate, file)
-          const handle = {
-            file,
-            pid: process.pid,
-            slots,
-            pool,
-            waitedMs: lastHolders === null ? 0 : now() - started,
-            heldByAtAdmission,
-            inherited: false,
-          }
-          handle.onExit = () => releaseGateSlot(handle)
-          process.once('exit', handle.onExit)
-          return handle
-        } catch (error) {
-          if (error.code !== 'EEXIST') throw error
+        if (!fs.existsSync(file)) {
+          free.push(file)
+          continue
         }
         const record = readRecord(file)
         if (staleSlot(record, isAlive)) {
@@ -231,12 +232,58 @@ function* acquisitionSteps({
         }
         holders.push(record)
       }
+      let ahead = 0
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.startsWith('.candidate-')) continue
+        const file = path.join(dir, name)
+        if (file === candidate) continue
+        const record = readRecord(file)
+        // Another process may still be writing its newly created candidate.
+        if (!record) continue
+        try {
+          if (staleSlot(record, isAlive)) {
+            fs.unlinkSync(file)
+            continue
+          }
+          const freshMs = Math.max(30000, 10 * positive(record.pollMs, pollMs))
+          if (now() - fs.statSync(file).mtimeMs > freshMs) continue
+        } catch (error) {
+          if (error.code === 'ENOENT') continue
+          throw error
+        }
+        const arrival = Date.parse(record.startedAt)
+        if (arrival < started || (arrival === started && name < path.basename(candidate))) ahead++
+      }
+      if (ahead < free.length) {
+        for (const file of free) {
+          // Publish the complete ticket atomically; a competing admitted waiter may win this slot.
+          try {
+            fs.linkSync(candidate, file)
+          } catch (error) {
+            if (error.code === 'EEXIST') continue
+            throw error
+          }
+          const handle = {
+            file,
+            pid: process.pid,
+            slots,
+            pool,
+            waitedMs: lastQueueState === null ? 0 : now() - started,
+            heldByAtAdmission,
+            inherited: false,
+          }
+          handle.onExit = () => releaseGateSlot(handle)
+          process.once('exit', handle.onExit)
+          return handle
+        }
+      }
       heldByAtAdmission = holders
       const text = holderText(holders)
-      if (text !== lastHolders) {
-        log(`gate-run admission: queued for a ${pool} gate slot - held by ${text}`)
-        onWait(text, pool)
-        lastHolders = text
+      const state = `${ahead}:${text}`
+      if (state !== lastQueueState) {
+        log(`gate-run admission: queued for a ${pool} gate slot - ${ahead} ahead, held by ${text}`)
+        onWait(text, pool, ahead)
+        lastQueueState = state
       }
       if (now() - started >= timeoutMs) {
         const error = Object.assign(

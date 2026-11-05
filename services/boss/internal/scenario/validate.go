@@ -60,6 +60,15 @@ func Validate(doc Document) []Problem {
 }
 
 func validatePR(ps *[]Problem, path string, pr PullRequest) {
+	for _, size := range []struct {
+		name  string
+		count int
+	}{{"additions", pr.Additions}, {"deletions", pr.Deletions}, {"changedFiles", pr.ChangedFiles}} {
+		if size.count < 0 {
+			*ps = append(*ps, Problem{Path: path + "." + size.name, Code: "out-of-range", Message: "PR size must be non-negative", Hint: "Use zero for unknown size or a positive count."})
+		}
+	}
+
 	if pr.HeadSHA != "" && pr.HeadSHA != "branch-head" {
 		_, err := hex.DecodeString(pr.HeadSHA)
 		if err != nil || (len(pr.HeadSHA) != 40 && len(pr.HeadSHA) != 64) {

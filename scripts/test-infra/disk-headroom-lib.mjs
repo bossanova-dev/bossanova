@@ -1,7 +1,20 @@
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
+import path from 'node:path'
+import { admissionConfig } from './gate-admission-lib.mjs'
 
 export const DISK_FLOOR_SIGNATURE = 'gate-run preflight: free disk below floor'
 export const GiB = 1024 ** 3
+
+/**
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} cacheDir
+ * @returns {string}
+ */
+export function reclaimLockDir(env, cacheDir) {
+  const key = createHash('sha256').update(cacheDir).digest('hex').slice(0, 12)
+  return path.join(admissionConfig(env).dir, `go-cache-reclaim-${key}`)
+}
 
 export function measureHeadroom(paths, { statfs = fs.statfsSync, stat = fs.statSync } = {}) {
   const seen = new Set()

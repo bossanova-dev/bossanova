@@ -194,3 +194,54 @@ func TestPRHeadInputValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestPRSizes_Sessions_AC213501(t *testing.T) {
+	input := `{"version":1,"name":"sizes","repos":[{"key":"r","displayName":"Repo"}],"sessions":[{"key":"s","repo":"r","title":"Sizes","state":"READY_FOR_REVIEW","pr":{"number":1,"state":"OPEN","checks":"PASSED","mergeable":true,"additions":12,"deletions":3,"changedFiles":2}}]}`
+	doc, ps := Decode([]byte(input))
+	if len(ps) != 0 {
+		t.Fatal(ps)
+	}
+	plan, ps := Compile(doc)
+	if len(ps) != 0 {
+		t.Fatal(ps)
+	}
+	found := false
+	for _, r := range plan.GH {
+		if len(r.Args) < 2 || r.Args[0] != "pr" || r.Args[1] != "view" {
+			continue
+		}
+		found = true
+		fields := strings.Split(r.Args[len(r.Args)-1], ",")
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(r.Stdout), &raw); err != nil {
+			t.Fatal(err)
+		}
+		for field, want := range map[string]float64{"additions": 12, "deletions": 3, "changedFiles": 2} {
+			has := false
+			for _, f := range fields {
+				if f == field {
+					has = true
+				}
+			}
+			if !has || raw[field] != want {
+				t.Fatalf("field %s absent or wrong: %v %s", field, r.Args, r.Stdout)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing pr view")
+	}
+	for _, field := range []string{"additions", "deletions", "changedFiles"} {
+		bad := strings.Replace(input, `"`+field+`":`+map[string]string{"additions": "12", "deletions": "3", "changedFiles": "2"}[field], `"`+field+`":-1`, 1)
+		_, ps := Decode([]byte(bad))
+		matched := false
+		for _, p := range ps {
+			if p.Path == "sessions[0].pr."+field {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Fatalf("negative %s not rejected at its path: %+v", field, ps)
+		}
+	}
+}

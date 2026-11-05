@@ -171,6 +171,31 @@ type healthBucket struct{ err error }
 
 func (b healthBucket) OpenEvidenceBucket() (domain.EvidenceBucket, error) { return nil, b.err }
 
+func TestFactoryHealthMissingPublishingConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"destination", domain.ErrEvidenceDestinationNotConfigured},
+		{"wrapped destination", errors.Join(errors.New("open destination"), domain.ErrEvidenceDestinationNotConfigured)},
+		{"token", domain.ErrEvidenceUploadNotConfigured},
+		{"wrapped token", errors.Join(errors.New("open credential"), domain.ErrEvidenceUploadNotConfigured)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newHealthServer(t)
+			s.cronJobs = healthCrons{rows: []*domain.CronJob{{Prompt: "/boss-verify", IsEnabled: true}}}
+			s.evidenceBucketOpener = healthBucket{err: tc.err}
+			resp, err := s.GetFactoryHealth(t.Context(), connect.NewRequest(&pb.GetFactoryHealthRequest{RepoId: "a"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(resp.Msg.Problems) != 1 || resp.Msg.Problems[0].Code != "publishing-off" {
+				t.Fatalf("problems: %v", resp.Msg.Problems)
+			}
+		})
+	}
+}
+
 func TestFactoryHealthDegradedSources(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

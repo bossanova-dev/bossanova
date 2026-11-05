@@ -21,6 +21,9 @@ import (
 	"github.com/recurser/bossd/internal/domain/repotrust"
 )
 
+// EvidenceReasonHeader names the machine-readable upload precondition response header.
+const EvidenceReasonHeader = "Bossd-Evidence-Reason"
+
 const evidenceUploadCeiling = 10 * time.Minute
 const evidenceObjectSizeCap = 300 * 1024 * 1024
 
@@ -89,8 +92,17 @@ func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.Upl
 // evidenceOpenError maps a destination failure to its RPC error without the
 // opener's detail, which may name the destination.
 func evidenceOpenError(err error) error {
-	if errors.Is(err, domain.ErrEvidenceUploadNotConfigured) {
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("evidence upload is not configured"))
+	reason := ""
+	switch {
+	case errors.Is(err, domain.ErrEvidenceDestinationNotConfigured):
+		reason = "not-configured"
+	case errors.Is(err, domain.ErrEvidenceUploadNotConfigured):
+		reason = "no-token"
+	}
+	if reason != "" {
+		rpcErr := connect.NewError(connect.CodeFailedPrecondition, errors.New("evidence upload is not configured"))
+		rpcErr.Meta().Set(EvidenceReasonHeader, reason)
+		return rpcErr
 	}
 	return connect.NewError(connect.CodeUnavailable, errors.New("open evidence upload destination"))
 }

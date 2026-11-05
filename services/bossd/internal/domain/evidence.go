@@ -6,6 +6,9 @@ import (
 	"io"
 )
 
+// ErrEvidenceDestinationNotConfigured means no complete proof_upload destination exists.
+var ErrEvidenceDestinationNotConfigured = errors.New("no complete proof_upload destination")
+
 // ErrEvidenceUploadNotConfigured means no daemon upload credential is provisioned.
 var ErrEvidenceUploadNotConfigured = errors.New("evidence upload not configured")
 

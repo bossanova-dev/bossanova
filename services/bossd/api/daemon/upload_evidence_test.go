@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,10 +38,13 @@ func (s evidenceSessionList) List(context.Context, string) ([]*domain.Session, e
 	return []*domain.Session{s.session}, nil
 }
 
-type evidenceTargetSource struct{ target domain.EvidenceUploadTarget }
+type evidenceTargetSource struct {
+	target domain.EvidenceUploadTarget
+	err    error
+}
 
-func (s evidenceTargetSource) UploadTarget() (domain.EvidenceUploadTarget, bool) {
-	return s.target, s.target.Token != ""
+func (s evidenceTargetSource) UploadTarget() (domain.EvidenceUploadTarget, error) {
+	return s.target, s.err
 }
 
 func evidenceServer(t *testing.T, endpoint string) (*Server, string) {
@@ -57,7 +61,7 @@ func evidenceServer(t *testing.T, endpoint string) (*Server, string) {
 	return &Server{
 		repos:                evidenceRepoList{repo: &domain.Repo{ID: "repo", LocalPath: root, IsTrusted: true, OriginURL: "git@github.com:acme/widgets.git"}},
 		sessions:             evidenceSessionList{session: &domain.Session{ID: "session", RepoID: "repo", WorktreePath: worktree}},
-		evidenceBucketOpener: r2upload.New(evidenceTargetSource{domain.EvidenceUploadTarget{AccountID: "account", Bucket: "bucket", PublicBaseURL: "https://proof.example", Token: "private-token"}}, r2upload.WithBaseURL(endpoint)),
+		evidenceBucketOpener: r2upload.New(evidenceTargetSource{target: domain.EvidenceUploadTarget{AccountID: "account", Bucket: "bucket", PublicBaseURL: "https://proof.example", Token: "private-token"}}, r2upload.WithBaseURL(endpoint)),
 	}, dir
 }
 
@@ -230,7 +234,7 @@ func newRecordingEndpoint(t *testing.T) *recordingEndpoint {
 func pagesServer(t *testing.T, endpoint string, pages bool) (*Server, string) {
 	t.Helper()
 	s, dir := evidenceServer(t, endpoint)
-	s.evidenceBucketOpener = r2upload.New(evidenceTargetSource{domain.EvidenceUploadTarget{AccountID: "account", Bucket: "bucket", PublicBaseURL: "https://proof.example", PagesEnabled: pages, Token: "private-token"}}, r2upload.WithBaseURL(endpoint))
+	s.evidenceBucketOpener = r2upload.New(evidenceTargetSource{target: domain.EvidenceUploadTarget{AccountID: "account", Bucket: "bucket", PublicBaseURL: "https://proof.example", PagesEnabled: pages, Token: "private-token"}}, r2upload.WithBaseURL(endpoint))
 	if err := os.WriteFile(filepath.Join(dir, "proof.html"), []byte("<!doctype html>"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -330,6 +334,37 @@ func TestUploadEvidencePageGate_Sessions_AC208103(t *testing.T) {
 			}
 			if len(rec.puts) != 0 {
 				t.Fatalf("refused page sent PUTs: %v", rec.puts)
+			}
+		})
+	}
+}
+
+func TestUploadEvidenceConfigurationReasonMetadata_Sessions_AC220701(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		reason string
+	}{
+		{domain.ErrEvidenceDestinationNotConfigured, "not-configured"},
+		{domain.ErrEvidenceUploadNotConfigured, "no-token"},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			s, dir := evidenceServer(t, "http://unused")
+			s.evidenceBucketOpener = r2upload.New(evidenceTargetSource{err: tc.err})
+			route, handler := bossanovav1connect.NewDaemonServiceHandler(s)
+			mux := http.NewServeMux()
+			mux.Handle(route, handler)
+			server := httptest.NewServer(mux)
+			defer server.Close()
+			client := bossanovav1connect.NewDaemonServiceClient(server.Client(), server.URL)
+			_, err := client.UploadEvidence(context.Background(), connect.NewRequest(&pb.UploadEvidenceRequest{
+				EvidenceDir: dir, Objects: []*pb.EvidenceObject{{Name: "manifest.json", Path: "manifest.json"}},
+			}))
+			var connectErr *connect.Error
+			if !errors.As(err, &connectErr) || connectErr.Code() != connect.CodeFailedPrecondition {
+				t.Fatalf("error = %v", err)
+			}
+			if got := connectErr.Meta().Get("Bossd-Evidence-Reason"); got != tc.reason {
+				t.Fatalf("reason = %q, want %q", got, tc.reason)
 			}
 		})
 	}

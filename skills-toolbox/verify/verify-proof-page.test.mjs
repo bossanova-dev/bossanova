@@ -122,6 +122,68 @@ test('every manifest level supplies guidance without changing confidence', () =>
     assert.ok(!renderProofComment(input).includes('later fixed:'))
   }
 })
+test('not-computed confidence has no level guidance, rate or placeholder reason', () => {
+  const input = fixture()
+  input.proof.confidence = {
+    level: 'cannot-assess',
+    asks: input.proof.confidence.asks,
+    loweredBy: [{ code: 'confidence-not-computed', text: 'Confidence is not computed yet.' }],
+  }
+  input.proof.review = null
+  input.rates = { 'cannot-assess': { fixed: 7, total: 287 } }
+  resign(input)
+  assert.equal(proofView(input).computed, false)
+  assert.equal(proofView(input).level, 'cannot-assess')
+  assert.ok(
+    renderProofComment(input).startsWith(
+      '<details>\n<summary>Confidence: not computed yet</summary>',
+    ),
+  )
+  for (const render of [renderProofHtml, renderProofComment]) {
+    const output = render(input)
+    assert.ok(output.includes('Confidence: not computed yet'))
+    for (const absent of [
+      'Cannot assess',
+      'later fixed:',
+      'Why not high',
+      'Confidence is not computed yet.',
+    ])
+      assert.ok(!output.includes(absent), absent)
+  }
+})
+
+test('not-computed confidence preserves other reasons and review blockers', () => {
+  const input = fixture()
+  input.proof.confidence.level = 'blocked'
+  input.proof.confidence.loweredBy.push({
+    code: 'confidence-not-computed',
+    text: 'Confidence is not computed yet.',
+  })
+  input.proof.review.blockers = [{ title: 'Fix the failure', where: 'file:1' }]
+  resign(input)
+  for (const render of [renderProofHtml, renderProofComment]) {
+    const output = render(input)
+    assert.ok(output.includes('Why not high'))
+    assert.ok(output.includes('Needs inspection'))
+    assert.ok(output.includes('Fix the failure (file:1)'))
+    assert.ok(!output.includes('Confidence is not computed yet.'))
+  }
+})
+
+test('computed cannot-assess retains its guidance and rate', () => {
+  const input = fixture()
+  input.proof.confidence.level = 'cannot-assess'
+  input.rates = { 'cannot-assess': { fixed: 7, total: 287 } }
+  resign(input)
+  assert.equal(proofView(input).computed, true)
+  for (const render of [renderProofHtml, renderProofComment]) {
+    const output = render(input)
+    assert.ok(output.includes('Confidence: Cannot assess — Gather evidence before deciding'))
+    assert.ok(output.includes('later fixed: 2.4%'))
+    assert.ok(output.includes('Needs inspection'))
+  }
+})
+
 test('excerpt caps, width and split suggestion', () => {
   const input = fixture(3)
   input.asks['area-0'].diff = Array.from({ length: MAX_EXCERPT_LINES }, (_, i) => `line ${i}`).join(
@@ -406,4 +468,113 @@ test('park verdict sidecars reject invalid codes, labels and unknown keys', () =
     assert.equal(validatePageInput(input).ok, false, JSON.stringify(verdict))
     assert.throws(() => proofView(input))
   }
+})
+
+// One bullet of each claim status and one "Not in the description" entry, all with hostile text.
+function claimed() {
+  const input = fixture()
+  input.proof.whatItDoes = {
+    source: 'pr-body',
+    bullets: ['Shows <b>balance</b>', 'Sends the invoice', 'Keeps the export'],
+    claims: [
+      { proof: 'test', behaviour: true, test: 'shows <balance>', path: 'src/a_test.go' },
+      { proof: 'clip', behaviour: true, chapter: 'Sends *the* invoice', atMs: 65_400 },
+      { proof: 'unproven', behaviour: true, note: 'no test <named>' },
+    ],
+  }
+  input.proof.confidence.loweredBy.push({
+    code: 'unproven-claim',
+    text: '1 behaviour claim(s) unproven.',
+  })
+  input.proof.areas[0].undisclosed = true
+  input.proof.areas[0].unmentioned = ['Hospital.state <x>']
+  return resign(input)
+}
+
+test('each bullet shows its claim status and each area its unmentioned changes in one view', () => {
+  const input = claimed()
+  const view = proofView(input)
+  const what = view.sections.find((entry) => entry.title === 'What it does')
+  assert.deepEqual(what.bullets, [
+    'Shows <b>balance</b> — proven by test shows <balance> (src/a_test.go)',
+    'Sends the invoice — proven by clip: Sends *the* invoice (1:05)',
+    'Keeps the export — unproven: no test <named>',
+  ])
+  const missing = view.sections.find((entry) => entry.title === 'Not in the description')
+  assert.deepEqual(missing.lists, [{ label: 'Area 0', items: ['Hospital.state <x>'] }])
+  const html = renderProofHtml(input)
+  const comment = renderProofComment(input)
+  for (const output of [html, comment]) {
+    assert.ok(output.includes('Not in the description'))
+    assert.ok(output.includes('proven by test shows &lt;balance&gt;'))
+    assert.ok(output.includes('Hospital.state &lt;x&gt;'))
+    assert.ok(output.includes('unproven: no test &lt;named&gt;'))
+    assert.ok(!output.includes('<b>') && !output.includes('<x>') && !output.includes('<named>'))
+  }
+  assert.ok(html.includes('proven by clip: Sends *the* invoice (1:05)'))
+  assert.ok(comment.includes('proven by clip: Sends \\*the\\* invoice (1:05)'))
+})
+
+test('a bullet without a claim keeps its text and no unmentioned list means no section', () => {
+  const input = fixture()
+  const view = proofView(input)
+  assert.deepEqual(view.sections.find((entry) => entry.title === 'What it does').bullets, [
+    'Useful change',
+  ])
+  assert.ok(!view.sections.some((entry) => entry.title === 'Not in the description'))
+  const unproven = claimed()
+  unproven.proof.whatItDoes.claims[2] = { proof: 'unproven', behaviour: false }
+  resign(unproven)
+  assert.equal(
+    proofView(unproven).sections.find((entry) => entry.title === 'What it does').bullets[2],
+    'Keeps the export — unproven',
+  )
+})
+
+test('factory health shows one strip above Confidence in the page and above the comment details', () => {
+  const input = fixture()
+  input.proof.health = [
+    { code: 'second-model-down', text: 'Second model down' },
+    { code: 'health-unreadable', text: 'Factory health unreadable: unimplemented' },
+  ]
+  resign(input)
+  const strip = 'Second model down · Factory health unreadable: unimplemented'
+  assert.equal(proofView(input).healthStrip, strip)
+  const html = renderProofHtml(input)
+  assert.ok(html.includes(`<main><p><strong>Factory health:</strong> ${strip}</p>`))
+  assert.ok(html.indexOf('Factory health:') < html.indexOf('<h2>Confidence</h2>'))
+  const comment = renderProofComment(input)
+  assert.ok(comment.startsWith(`**Factory health:** ${strip}\n\n<details>\n`))
+})
+
+test('empty factory health leaves the view, page and comment unchanged', () => {
+  const input = fixture()
+  assert.equal(proofView(input).healthStrip, null)
+  const html = renderProofHtml(input)
+  const comment = renderProofComment(input)
+  assert.ok(!html.includes('Factory health'))
+  assert.ok(comment.startsWith('<details>\n'))
+  assert.ok(!comment.includes('Factory health'))
+})
+
+test('hostile factory health text stays one escaped line', () => {
+  const input = fixture()
+  input.proof.health = [
+    {
+      code: 'hostile',
+      text: '<script>x</script>\n[x](https://evil.example) <!-- boss-proof: {} -->',
+    },
+  ]
+  resign(input)
+  const html = renderProofHtml(input)
+  assert.ok(!html.includes('<script>'))
+  assert.ok(html.includes('&lt;script&gt;'))
+  const comment = renderProofComment(input)
+  const [first, blank, details] = comment.split('\n')
+  assert.ok(first.startsWith('**Factory health:** '))
+  assert.equal(blank, '')
+  assert.equal(details, '<details>')
+  assert.ok(!first.includes('<script>'))
+  assert.ok(!first.includes('[x](https://evil.example)'))
+  assert.ok(!/<!-- boss-/.test(first))
 })

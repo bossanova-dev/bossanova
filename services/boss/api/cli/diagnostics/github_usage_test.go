@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -74,7 +77,7 @@ func TestGitHubUsagePrintsTableSortedByCalls_GitHubUsage_AC220201(t *testing.T) 
 		}
 		last = i
 	}
-	for _, want := range []string{"LABEL", "QUOTA", "CALLS", "40", "(last 1h0m0s)", "Total: 72 calls (core 16, graphql 56)"} {
+	for _, want := range []string{"LABEL", "IDENTITY", "QUOTA", "CALLS", "40", "(last 1h0m0s)", "Total: 72 calls (core 16, graphql 56)", "By token: user: 72 calls (core 16, graphql 56)"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("output = %q, want it to contain %q", text, want)
 		}
@@ -192,7 +195,7 @@ func TestGitHubUsageTableShowsBreakerAndFloorSkips_GitHubUsage_AC222301(t *testi
 		}
 	}
 	for _, line := range strings.Split(text, "\n") {
-		if strings.Contains(line, "daemon:pr-poller") && !strings.Contains(strings.Join(strings.Fields(line), " "), "graphql 12 30 4") {
+		if strings.Contains(line, "daemon:pr-poller") && !strings.Contains(strings.Join(strings.Fields(line), " "), "graphql 12 0 30 4") {
 			t.Errorf("pr-poller row = %q, want calls 12, breaker skips 30, floor skips 4", line)
 		}
 	}
@@ -244,5 +247,143 @@ func TestGitHubUsageJSONCarriesSkipCounts_GitHubUsage_AC222301(t *testing.T) {
 		got.BreakerSkipTotals["graphql"] != 32 || got.FloorSkipTotals["core"] != 1 {
 		t.Fatalf("skip totals = %+v / %+v, %d / %d", got.BreakerSkipTotals, got.FloorSkipTotals,
 			got.TotalBreakerSkipCount, got.TotalFloorSkipCount)
+	}
+}
+
+// newGitHubUsageIdentityFake is a window where the daemon's PR reads ran on two
+// installation tokens beside calls on the user login, including one row from an
+// older daemon that reports no identity.
+func newGitHubUsageIdentityFake() *gitHubUsageFake {
+	fake := newGitHubUsageFake()
+	fake.resp.Rows = []*pb.GitHubUsageRow{
+		{Label: "daemon:pr-state", Identity: "installation:7", Quota: "graphql", CallCount: 30},
+		{Label: "daemon:pr-state", Identity: "installation:12", Quota: "core", CallCount: 4},
+		{Label: "daemon:pr-state", Identity: "user", Quota: "graphql", CallCount: 30},
+		{Label: "stage:merge", Identity: "user", Quota: "core", CallCount: 6},
+		{Label: "cron:bs-verify", Quota: "graphql", CallCount: 2},
+	}
+	return fake
+}
+
+func TestGitHubUsageTableSplitsCallsByToken_GitHubUsage_AC230601(t *testing.T) {
+	text, err := runGitHubUsageCmd(t, newGitHubUsageIdentityFake())
+	if err != nil {
+		t.Fatalf("github-usage: %v", err)
+	}
+	t.Logf("rendered table:\n%s", text)
+	// The table header is styled; compare the plain text.
+	plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(text, "")
+	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+	header := strings.Fields(lines[1])
+	if strings.Join(header[:4], " ") != "LABEL IDENTITY QUOTA CALLS" {
+		t.Fatalf("header = %q, want LABEL IDENTITY QUOTA CALLS first", lines[1])
+	}
+	// Equal calls, skips and label: installation:7 sorts before user.
+	wantRows := []string{
+		"daemon:pr-state installation:7 graphql 30 0 0 0",
+		"daemon:pr-state user graphql 30 0 0 0",
+		"stage:merge user core 6 0 0 0",
+		"daemon:pr-state installation:12 core 4 0 0 0",
+		"cron:bs-verify user graphql 2 0 0 0",
+	}
+	for i, want := range wantRows {
+		if got := strings.Join(strings.Fields(lines[2+i]), " "); got != want {
+			t.Errorf("row %d = %q, want %q", i, got, want)
+		}
+	}
+	wantTail := []string{
+		"Total: 72 calls (core 10, graphql 62)",
+		"By token: user: 38 calls (core 6, graphql 32)",
+		"By token: installation:12: 4 calls (core 4)",
+		"By token: installation:7: 30 calls (graphql 30)",
+	}
+	if got := lines[len(lines)-len(wantTail):]; strings.Join(got, "\n") != strings.Join(wantTail, "\n") {
+		t.Fatalf("totals = %q, want %q", got, wantTail)
+	}
+}
+
+func TestGitHubUsageJSONCarriesIdentityTotals_GitHubUsage_AC230601(t *testing.T) {
+	text, err := runGitHubUsageCmd(t, newGitHubUsageIdentityFake(), "--"+cliutil.JSONFlagName)
+	if err != nil {
+		t.Fatalf("github-usage --json: %v", err)
+	}
+	var got struct {
+		Rows []struct {
+			Label     string `json:"label"`
+			Identity  string `json:"identity"`
+			Quota     string `json:"quota"`
+			CallCount int64  `json:"call_count"`
+		} `json:"rows"`
+		IdentityTotals map[string]map[string]int64 `json:"identity_totals"`
+		QuotaTotals    map[string]int64            `json:"quota_totals"`
+		TotalCallCount int64                       `json:"total_call_count"`
+	}
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, text)
+	}
+	identities := make([]string, 0, len(got.Rows))
+	for _, r := range got.Rows {
+		identities = append(identities, r.Label+"/"+r.Identity)
+	}
+	wantIdentities := []string{
+		"daemon:pr-state/installation:7", "daemon:pr-state/user", "stage:merge/user",
+		"daemon:pr-state/installation:12", "cron:bs-verify/user",
+	}
+	if strings.Join(identities, ",") != strings.Join(wantIdentities, ",") {
+		t.Fatalf("row identities = %v, want %v (an empty identity reads as user)", identities, wantIdentities)
+	}
+	wantTotals := map[string]map[string]int64{
+		"user":            {"core": 6, "graphql": 32, "total": 38},
+		"installation:7":  {"graphql": 30, "total": 30},
+		"installation:12": {"core": 4, "total": 4},
+	}
+	if !reflect.DeepEqual(got.IdentityTotals, wantTotals) {
+		t.Fatalf("identity_totals = %v, want %v", got.IdentityTotals, wantTotals)
+	}
+	if got.QuotaTotals["core"] != 10 || got.QuotaTotals["graphql"] != 62 || got.TotalCallCount != 72 {
+		t.Fatalf("totals = %v / %d, want every identity summed: core 10, graphql 62, 72 in all", got.QuotaTotals, got.TotalCallCount)
+	}
+}
+
+func TestGitHubUsageReportsFreeConditionalReads_GitHubUsage_AC230701(t *testing.T) {
+	for _, onlyFree := range []bool{false, true} {
+		t.Run(strconv.FormatBool(onlyFree), func(t *testing.T) {
+			fake := newGitHubUsageFake()
+			calls := int64(3)
+			if onlyFree {
+				calls = 0
+			}
+			fake.resp.Rows = []*pb.GitHubUsageRow{{Label: "daemon:pr-state", Identity: "installation:7", Quota: "core", CallCount: calls, NotModifiedCount: 4}}
+			text, err := runGitHubUsageCmd(t, fake)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"NOT MODIFIED", "daemon:pr-state", "; 4 not modified (free)"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("output = %q, missing %q", text, want)
+				}
+			}
+			text, err = runGitHubUsageCmd(t, fake, "--json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Rows []struct {
+					CallCount        int64  `json:"call_count"`
+					NotModifiedCount *int64 `json:"not_modified_count"`
+				} `json:"rows"`
+				TotalCallCount        int64                       `json:"total_call_count"`
+				TotalNotModifiedCount *int64                      `json:"total_not_modified_count"`
+				QuotaTotals           map[string]int64            `json:"quota_totals"`
+				IdentityTotals        map[string]map[string]int64 `json:"identity_totals"`
+			}
+			if err := json.Unmarshal([]byte(text), &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Rows) != 1 || got.Rows[0].NotModifiedCount == nil || *got.Rows[0].NotModifiedCount != 4 || got.Rows[0].CallCount != calls ||
+				got.TotalNotModifiedCount == nil || *got.TotalNotModifiedCount != 4 || got.TotalCallCount != calls || got.QuotaTotals["core"] != calls || got.IdentityTotals["installation:7"]["total"] != calls {
+				t.Fatalf("JSON = %s, want %d billed calls and four free responses", text, calls)
+			}
+		})
 	}
 }

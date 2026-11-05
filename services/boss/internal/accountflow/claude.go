@@ -35,6 +35,7 @@ type ClaudeOptions struct {
 	Prompter   Prompter
 	Client     AgentAccountClient
 	ClaudeBin  string                 // default "claude"
+	BinEnv     []string               // extra environment required by the resolved binary
 	ScratchDir func() (string, error) // default: 0700 os.MkdirTemp
 	Timeout    time.Duration          // whole-walkthrough deadline, default 10m
 	PasteMode  bool                   // skip the CLI walkthrough, paste a token
@@ -286,7 +287,7 @@ func claudeWalkthrough(ctx context.Context, o ClaudeOptions) (string, error) {
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
 
-	proc, err := o.Exec.Start(ctx, o.ClaudeBin, []string{"setup-token"}, []string{"CLAUDE_CONFIG_DIR=" + scratch})
+	proc, err := o.Exec.Start(ctx, o.ClaudeBin, []string{"setup-token"}, append([]string{"CLAUDE_CONFIG_DIR=" + scratch}, o.BinEnv...))
 	if err != nil {
 		return "", err
 	}

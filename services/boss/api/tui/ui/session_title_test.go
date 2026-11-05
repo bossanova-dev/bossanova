@@ -35,18 +35,20 @@ func TestShortSessionTitle(t *testing.T) {
 func TestSessionListTitle(t *testing.T) {
 	id := "BOS-1"
 	for _, tt := range []struct {
-		name string
-		sess *pb.Session
-		want string
+		name  string
+		sess  *pb.Session
+		width int
+		want  string
 	}{
-		{"tracked", &pb.Session{Title: "[BOS-1] short", TrackerId: &id}, "BOS-1 · short"},
-		{"renamed", &pb.Session{Title: "short", TrackerId: &id}, "BOS-1 · short"},
-		{"only id", &pb.Session{Title: "[BOS-1]", TrackerId: &id}, "BOS-1"},
-		{"branch fallback", &pb.Session{BranchName: "branch", TrackerId: &id}, "BOS-1 · branch"},
-		{"untracked branch", &pb.Session{BranchName: "branch"}, "branch"},
+		{"tracked", &pb.Session{Title: "[BOS-1] short", TrackerId: &id}, 5, "BOS-1  short"},
+		{"renamed", &pb.Session{Title: "short", TrackerId: &id}, 5, "BOS-1  short"},
+		{"padded to widest id", &pb.Session{Title: "short", TrackerId: &id}, 8, "BOS-1     short"},
+		{"only id", &pb.Session{Title: "[BOS-1]", TrackerId: &id}, 8, "BOS-1"},
+		{"branch fallback", &pb.Session{BranchName: "branch", TrackerId: &id}, 5, "BOS-1  branch"},
+		{"untracked branch", &pb.Session{BranchName: "branch"}, 8, "branch"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := SessionListTitle(tt.sess); got != tt.want {
+			if got := SessionListTitle(tt.sess, tt.width); got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
@@ -57,7 +59,7 @@ func TestSessionListTrackerLinks_Sessions_AC151(t *testing.T) {
 	id, url := "BOS-1", "https://linear.app/example/issue/BOS-1"
 	for name, render := range map[string]func(*pb.Session, string) string{"normal": RenderTrackerLink, "muted": RenderMutedTrackerLink, "selected": RenderSelectedTrackerLink} {
 		t.Run(name, func(t *testing.T) {
-			for _, title := range []string{"BOS-1 · short", "BOS-1", "[BOS-1] original title"} {
+			for _, title := range []string{"BOS-1  short", "BOS-1     short", "BOS-1", "[BOS-1] original title"} {
 				got := render(&pb.Session{TrackerId: &id, TrackerUrl: &url}, title)
 				if ansi.Strip(got) != title || !strings.Contains(got, "\x1b]8;;"+url) {
 					t.Errorf("title %q not linked intact: %q", title, got)
@@ -66,11 +68,23 @@ func TestSessionListTrackerLinks_Sessions_AC151(t *testing.T) {
 					t.Errorf("URL-less title linked: %q", plain)
 				}
 			}
-			for _, title := range []string{"prefix BOS-1 title", "BOS-10 · title", "BOS-1 unrelated"} {
+			for _, title := range []string{"prefix BOS-1 title", "BOS-10  title", "BOS-1 unrelated"} {
 				if got := render(&pb.Session{TrackerId: &id, TrackerUrl: &url}, title); strings.Contains(got, "\x1b]8;;") {
 					t.Errorf("unrelated title linked: %q", got)
 				}
 			}
 		})
+	}
+}
+
+func TestSessionListIDWidth(t *testing.T) {
+	short, long := "GIG-629", "FRE-1966"
+	sessions := []*pb.Session{{TrackerId: &short}, {}, {TrackerId: &long}}
+	if got := SessionListIDWidth(sessions); got != len(long) {
+		t.Fatalf("got %d, want %d", got, len(long))
+	}
+	a, b := SessionListTitle(&pb.Session{Title: "a", TrackerId: &short}, 8), SessionListTitle(&pb.Session{Title: "b", TrackerId: &long}, 8)
+	if strings.Index(a, "a") != strings.Index(b, "b") {
+		t.Fatalf("titles not aligned: %q vs %q", a, b)
 	}
 }

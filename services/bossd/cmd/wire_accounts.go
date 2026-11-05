@@ -9,6 +9,7 @@ import (
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/adapter/credmaterialize"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func (w *daemonWiring) proactive5hThreshold() float64 {
@@ -17,6 +18,10 @@ func (w *daemonWiring) proactive5hThreshold() float64 {
 		return w.settings.ManagedAccounts.Proactive5hThreshold()
 	}
 	return loaded.ManagedAccounts.Proactive5hThreshold()
+}
+
+func (w *daemonWiring) credentialSyncBlockReason(a *domain.AgentAccount) string {
+	return w.credentialDevices.Readiness().AgentAccountBlockReason(a)
 }
 
 func (w *daemonWiring) wireAccounts() {
@@ -37,7 +42,7 @@ func (w *daemonWiring) wireAccounts() {
 	// materialization, so it keeps its pre-purge behavior (keyring + row only).
 	w.accountMaterializations, _ = w.accountMaterializer.(server.AgentAccountMaterializations)
 	w.accountResolver = account.NewResolver(
-		accountwiring.NewRegistry(w.accounts),
+		accountwiring.NewRegistry(w.accounts, accountwiring.WithCredentialSyncGate(w.credentialSyncBlockReason)),
 		w.accountMaterializer,
 		log.Logger,
 		account.WithUsageStalenessWindow(w.settings.ManagedAccounts.UsageStalenessWindow()),

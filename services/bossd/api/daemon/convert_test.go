@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/credsync"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
@@ -107,7 +108,7 @@ func TestAccountToProto_UsageSnapshotNilSafe(t *testing.T) {
 		Health:    domain.AgentAccountHealthOK,
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}, credsync.Readiness{})
 	if got.Usage != nil {
 		t.Fatalf("Usage = %#v, want nil", got.Usage)
 	}
@@ -1504,7 +1505,7 @@ func TestAccountToProto_AuthCheckRoundTrip(t *testing.T) {
 		},
 	}
 
-	got := accountToProto(account)
+	got := accountToProto(account, credsync.Readiness{})
 	if got.AuthCheck == nil {
 		t.Fatal("AuthCheck = nil, want populated")
 	}
@@ -1540,7 +1541,7 @@ func TestAccountToProto_AuthCheckAbsentWhenNeverChecked(t *testing.T) {
 		Health:    domain.AgentAccountHealthOK,
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}, credsync.Readiness{})
 	if got.AuthCheck != nil {
 		t.Fatalf("AuthCheck = %#v, want nil for a never-checked account", got.AuthCheck)
 	}
@@ -1563,7 +1564,7 @@ func TestAccountToProto_AuthCheckAuthInvalidNoCredentialMaterial(t *testing.T) {
 			Outcome:      domain.AuthCheckOutcomeAuthInvalid,
 			FailureClass: "auth_invalidated",
 		},
-	})
+	}, credsync.Readiness{})
 	if got.AuthCheck.GetOutcome() != string(domain.AuthCheckOutcomeAuthInvalid) {
 		t.Fatalf("outcome = %q", got.AuthCheck.GetOutcome())
 	}

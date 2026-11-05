@@ -18,6 +18,7 @@ import (
 	"github.com/recurser/bossd/api/upstream"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/ghtoken"
 	"github.com/recurser/bossd/internal/notesync"
 	"github.com/recurser/bossd/internal/session"
 )
@@ -235,6 +236,16 @@ func noteSyncNudger(w *notesync.Worker) server.NoteSyncNudger {
 		return nil
 	}
 	return w
+}
+
+// setGitHubCredentialReporter wires the credential source into the server's
+// GetAuthState report, leaving a nil source a nil INTERFACE: a typed nil
+// pointer would pass the handler's nil check and panic inside the diagnostic.
+func setGitHubCredentialReporter(cfg *server.Config, src *ghtoken.Source) {
+	if src != nil {
+		cfg.GitHubCredentials = src
+		cfg.GitHubReadCredentials = src
+	}
 }
 
 func buildSnapshotForPublish(ctx context.Context, stores upstream.StreamStores, daemonID, hostname string) (*bossanovav1.DaemonSnapshot, error) {

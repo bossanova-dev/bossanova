@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/factoryhealth"
+	"github.com/recurser/bossd/internal/verifyadmission"
 	"github.com/recurser/bossd/internal/verifyjob"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -29,6 +30,7 @@ func (s *Server) GetFactoryHealth(ctx context.Context, req *connect.Request[pb.G
 	s.factoryHealthCrons(ctx, repo.ID, &f)
 	s.factoryHealthPublishing(&f)
 	s.factoryHealthBacklog(ctx, repo.ID, &f)
+	s.factoryHealthRemote(ctx, repo, &f)
 	if s.factoryHealthVersions != nil {
 		var versionErr error
 		f.DaemonVersion, f.SkillsVersion, f.DaemonOutdated, versionErr = s.factoryHealthVersions(ctx, repo.LocalPath)
@@ -165,4 +167,20 @@ func (s *Server) factoryHealthBacklog(ctx context.Context, repoID string, f *fac
 			seen[*sess.PRNumber] = true
 		}
 	}
+}
+
+// factoryHealthRemote reports the admitted PRs this host's newest verify scan
+// left to another machine's session. An unreadable admission file is named,
+// never read as "nothing remote".
+func (s *Server) factoryHealthRemote(ctx context.Context, repo *domain.Repo, f *factoryhealth.Facts) {
+	path, err := verifyadmission.Path(ctx, repo.LocalPath)
+	var snapshot verifyadmission.Snapshot
+	if err == nil {
+		_, snapshot, err = s.loadVerifyAdmission(ctx, repo.ID, path)
+	}
+	if err != nil {
+		f.Unreadable = append(f.Unreadable, "verify admission")
+		return
+	}
+	f.RemotePRs = snapshot.RemotePRs()
 }

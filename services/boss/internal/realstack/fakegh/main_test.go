@@ -32,7 +32,7 @@ func TestFixtureResponses(t *testing.T) {
 		{"merge", []string{"pr", "merge", "42", "--repo", "owner/repo", "--merge", "--delete-branch"}, ""},
 		{"squash", []string{"pr", "merge", "42", "--repo", "owner/repo", "--squash", "--delete-branch"}, ""},
 		{"rebase with pinned head", []string{"pr", "merge", "42", "--repo", "owner/repo", "--rebase", "--delete-branch", "--match-head-commit", "0123456789012345678901234567890123456789"}, ""},
-		{"merge strategies", []string{"api", "repos/owner/repo", "--jq", "{m:.allow_merge_commit,s:.allow_squash_merge,r:.allow_rebase_merge}"}, `{"m":true,"s":true,"r":true}`},
+		{"merge strategies", []string{"api", "repos/owner/repo", "-i"}, `{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}`},
 		{"repo", []string{"repo", "view", "--json", "nameWithOwner"}, `{"nameWithOwner":"owner/repo"}`},
 		{"auth", []string{"auth", "status"}, "Logged in to github.com as fixture\n"},
 	} {

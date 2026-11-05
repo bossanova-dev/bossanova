@@ -27,7 +27,7 @@ go_library(
         "session_title.go",
         "status.go",
         "status_attention.go",
-        "status_confidence.go",
+        "status_phrase.go",
         "subscription.go",
         "table.go",
         "tablehelpers.go",
@@ -86,7 +86,7 @@ go_test(
         "rename_test.go",
         "session_title_test.go",
         "status_attention_test.go",
-        "status_confidence_test.go",
+        "status_phrase_test.go",
         "status_test.go",
         "status_waiting_test.go",
         "table_bench_test.go",
@@ -101,6 +101,7 @@ go_test(
     ),  # keep: nav_test parses the View enum
     embed = [":ui"],
     deps = [
+        "//lib/bossalib/attention",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/kit/config",

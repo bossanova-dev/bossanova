@@ -180,8 +180,9 @@ test('boss missing from PATH means sessions are unknown on a host that runs boss
     BOSS_BIN: join(withoutBossd, 'no-such-boss'),
     BOSS_SOCKET: join(withBossd, 'bossd.sock'),
   }
-  assert.equal(liveSessionBranches({ env, home: withBossd }), null)
-  assert.deepEqual(liveSessionBranches({ env, home: withoutBossd }), new Set())
+  const sleep = () => {}
+  assert.equal(liveSessionBranches({ env, home: withBossd, sleep }), null)
+  assert.deepEqual(liveSessionBranches({ env, home: withoutBossd, sleep }), new Set())
 })
 
 function flakyBoss(t, failures) {

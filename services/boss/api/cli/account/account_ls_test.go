@@ -29,7 +29,7 @@ func (s *accountLSStub) ListAgentAccounts(_ context.Context, provider string, re
 
 func findLSSubcommand(t *testing.T) *cobra.Command {
 	t.Helper()
-	account := New(nil, nil, nil, nil)
+	account := New(nil, nil, nil, nil, nil)
 	for _, c := range account.Commands() {
 		if c.Name() == "ls" {
 			return c
@@ -527,5 +527,148 @@ func TestAccountLSJSONCarriesTheCredentialCheckFields(t *testing.T) {
 	// tell "no check" from "check found nothing".
 	if rows[1].AuthCheckOutcome != "" || rows[1].AuthCheckedAt != "" {
 		t.Fatalf("row 1 should be never-checked, got %+v", rows[1])
+	}
+}
+
+func TestAccountLSJSONIncludesSyncFields_Accounts_AC225701(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	if err := ls.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{
+		{Id: "synced", SyncedAgentAccountId: "reg-1", SyncVersion: 7, SyncedCredentialVersion: 3},
+		{Id: "local"},
+	}}
+	if err := accountLS(ls, stub, nil); err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	for i, want := range []map[string]any{
+		{"synced_agent_account_id": "reg-1", "sync_version": float64(7), "synced_credential_version": float64(3)},
+		{"synced_agent_account_id": "", "sync_version": float64(0), "synced_credential_version": float64(0)},
+	} {
+		for key, value := range want {
+			if got, ok := rows[i][key]; !ok || got != value {
+				t.Errorf("row %d %s = %v (present %v), want %v", i, key, got, ok, value)
+			}
+		}
+	}
+}
+
+func TestAccountLSCredentialSyncBlock_Accounts_AC224801(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ready", true: "blocked"}[blocked], func(t *testing.T) {
+			ls := findLSSubcommand(t)
+			var out bytes.Buffer
+			ls.SetOut(&out)
+			a := &pb.AgentAccount{Id: "synced", Provider: "codex", Status: "active", Health: "ok"}
+			if blocked {
+				a.CredentialSyncBlockReason = "enrollment_expired"
+			}
+			if err := accountLS(ls, &accountLSStub{accounts: []*pb.AgentAccount{a}}, nil); err != nil {
+				t.Fatal(err)
+			}
+			got := out.String()
+			// Compare the complete output, ignoring only table padding.
+			want := "ID PROVIDER LABEL STATUS HEALTH UTIL5H UTIL7D USAGE AGE COOLDOWN CHECK CHECKED\nsynced codex - active ok - - - - - never -"
+			if blocked {
+				want = "ID PROVIDER LABEL STATUS HEALTH UTIL5H UTIL7D USAGE AGE COOLDOWN CHECK CHECKED\nsynced codex - active ok# - - - - - never -\n\n" +
+					"# credential sharing is not ready on this machine — run `boss account devices status` for remediation\n\n" +
+					"Hint: provider \"codex\" has no eligible account — credential sharing is not ready on this machine. Run boss account devices status for remediation"
+			}
+			lines := strings.Split(strings.TrimSpace(got), "\n")
+			for i, line := range lines {
+				lines[i] = strings.Join(strings.Fields(line), " ")
+			}
+			if normalized := strings.Join(lines, "\n"); normalized != want {
+				t.Errorf("account ls output differs from golden:\ngot:\n%s\nwant:\n%s", normalized, want)
+			}
+		})
+	}
+}
+
+func TestFmtAccountHealthCredentialSyncVeto_Accounts_AC224801(t *testing.T) {
+	for _, health := range []string{"ok", "failed", ""} {
+		for _, outcome := range []string{"", "healthy", "auth_invalid", "transient"} {
+			a := &pb.AgentAccount{Health: health, CredentialSyncBlockReason: "bootstrap_unpinned", AuthCheck: &pb.AuthCheck{Outcome: outcome}}
+			if got, want := fmtAccountHealth(a), map[string]string{"ok": "ok#", "failed": "failed#", "": "-#"}[health]; got != want {
+				t.Errorf("health %q, outcome %q: got %q, want %q", health, outcome, got, want)
+			}
+		}
+	}
+}
+
+func TestNoEligibleAccountHintsCredentialSync_Accounts_AC224802(t *testing.T) {
+	blocked := &pb.AgentAccount{Provider: "codex", Status: "active", Health: "ok", CredentialSyncBlockReason: "enrollment_expired"}
+	for _, tc := range []struct {
+		name        string
+		extra       *pb.AgentAccount
+		wantHint    bool
+		wantDevices bool
+	}{
+		{name: "credential only", wantHint: true, wantDevices: true},
+		{name: "another eligible", extra: &pb.AgentAccount{Provider: "codex", Status: "active", Health: "ok"}},
+		{name: "disabled alternative", extra: &pb.AgentAccount{Provider: "codex", Status: "disabled", Health: "ok"}, wantHint: true, wantDevices: true},
+		{name: "also unhealthy", extra: &pb.AgentAccount{Provider: "codex", Status: "active", Health: "failed"}, wantHint: true, wantDevices: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accounts := []*pb.AgentAccount{blocked}
+			if tc.extra != nil {
+				accounts = append(accounts, tc.extra)
+			}
+			hints := noEligibleAccountHints(accounts)
+			if (len(hints) > 0) != tc.wantHint {
+				t.Fatalf("hints = %v", hints)
+			}
+			if got := strings.Contains(strings.Join(hints, "\n"), "boss account devices status"); got != tc.wantDevices {
+				t.Errorf("device hint=%v: %v", got, hints)
+			}
+		})
+	}
+	for _, a := range []*pb.AgentAccount{
+		{Provider: "codex", Status: "active", Health: "ok", AuthCheck: &pb.AuthCheck{Outcome: "auth_invalid"}},
+		{Provider: "codex", Status: "disabled", Health: "ok"},
+		{Provider: "codex", Status: "active", Health: "failed"},
+	} {
+		a.CredentialSyncBlockReason = "enrollment_expired"
+		if hints := strings.Join(noEligibleAccountHints([]*pb.AgentAccount{a}), "\n"); !strings.Contains(hints, "boss account update") || strings.Contains(hints, "boss account devices status") {
+			t.Errorf("credential sync is not the only blocker: %s", hints)
+		}
+	}
+}
+
+func TestNoEligibleAccountHintsRejectedCredentials(t *testing.T) {
+	hints := noEligibleAccountHints([]*pb.AgentAccount{{Provider: "codex", Status: "active", Health: "ok", AuthCheck: &pb.AuthCheck{Outcome: "auth_invalid"}}})
+	if len(hints) != 1 || !strings.Contains(hints[0], "boss account reauth <id>") {
+		t.Fatalf("rejected credentials need a reauthentication command: %v", hints)
+	}
+}
+
+func TestAccountLSJSONCredentialSyncBlockReason_Accounts_AC224803(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	if err := ls.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := accountLS(ls, &accountLSStub{accounts: []*pb.AgentAccount{{Id: "blocked", CredentialSyncBlockReason: "bootstrap_unpinned"}, {Id: "local"}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"bootstrap_unpinned", ""} {
+		if got, ok := rows[i]["credential_sync_block_reason"]; !ok || got != want {
+			t.Errorf("row %d credential_sync_block_reason = %v (present %v), want %q", i, got, ok, want)
+		}
 	}
 }

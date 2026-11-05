@@ -142,25 +142,26 @@ func (h Model) sectionTitle(sessions []*pb.Session, i int) string {
 	return "IN PROGRESS"
 }
 
-// renderAttentionStatus styles a row's attention cell. working says an agent
-// chat of the row's session is working now (the session's served display label).
-// An outcome the row names (fix, ready) keeps its words and colour, but
-// the spinner takes the place of its leading glyph: the PR may be ready, but the
+// renderAttentionStatus styles a row's attention cell. A daemon that serves
+// the row's status phrase gets that phrase (ui.RenderStatusPhrase). Against an
+// older daemon the cell keeps its kind's words: working says an agent chat of
+// the row's session is working now (the session's served display label). An
+// outcome the row names (fix, ready) keeps its words and colour, but the
+// spinner takes the place of its leading glyph: the PR may be ready, but the
 // agent is still at it. A verified merge keeps its check mark, because the PR
-// is mergeable whatever the agent is doing. A question or sign-off stays as it is, because
-// the agent is waiting on the operator. A verify park's confidence cell
-// (ui.ConfidenceCell) leads with its level glyph the same way.
+// is mergeable whatever the agent is doing. A question or sign-off stays as it
+// is, because the agent is waiting on the operator.
 func (h Model) renderAttentionStatus(sess *pb.Session, working bool) string {
+	a := sess.GetAttention()
+	if cell, ok := ui.RenderStatusPhrase(a, h.Spinner); ok {
+		return cell
+	}
 	lead := func(resting string) string {
 		if working {
 			return h.Spinner.View()
 		}
 		return resting
 	}
-	if c, ok := ui.ConfidenceCell(sess); ok {
-		return ui.StyleForIntent(c.Intent).Render(lead(c.Icon+" ") + ansi.Truncate(c.Words(), homeStatusMaxWidth-ansi.StringWidth(c.Icon+" "), "…"))
-	}
-	a := sess.GetAttention()
 	switch a.GetKind() {
 	case pb.AttentionKind_ATTENTION_KIND_FIX:
 		return ui.StyleStatusDanger.Render(lead("") + "fix")
@@ -178,22 +179,10 @@ func (h Model) renderAttentionStatus(sess *pb.Session, working bool) string {
 	}
 }
 
-// renderProgressStatus styles an in-progress label the way the display status
-// styles the same state: stopped muted, idle in warning, running checks as a
-// warning spinner, a session still starting or a park on an external event as
-// an info spinner, and live work as a success spinner.
+// renderProgressStatus styles an older daemon's in-progress label as
+// ui.ProgressStatusStyle styles its state.
 func (h Model) renderProgressStatus(label string) string {
-	style, spin := ui.StyleStatusSuccess, true
-	switch {
-	case label == "stopped", label == attention.VerifyUnknownLabel:
-		style, spin = ui.StyleStatusMuted, false
-	case label == "idle", attention.IsVerifyHoldLabel(label):
-		style, spin = ui.StyleStatusWarning, false
-	case strings.HasPrefix(label, "checking "):
-		style = ui.StyleStatusWarning
-	case label == attention.InitializingLabel, attention.IsWaitLabel(label):
-		style = ui.StyleStatusInfo
-	}
+	style, spin := ui.ProgressStatusStyle(label)
 	if spin {
 		label = h.Spinner.View() + label
 	}
@@ -202,9 +191,8 @@ func (h Model) renderProgressStatus(label string) string {
 
 // showsAttentionStatus reports whether a row's STATUS cell reads its attention
 // rather than its display status. A FIX whose own state is a failure reads that
-// failure instead (displaystatus.FixShowsLabel), unless it is a blocked verify
-// park with a confidence cell, which reads "blocked → repairing" over the
-// "repairing" display label.
+// failure instead (displaystatus.FixShowsLabel), unless the daemon serves the
+// row's status phrase, which names the fix in the board's one grammar.
 func showsAttentionStatus(sess *pb.Session) bool {
 	a := sess.GetAttention()
 	if a == nil || a.GetKind() == pb.AttentionKind_ATTENTION_KIND_DONE {
@@ -213,19 +201,18 @@ func showsAttentionStatus(sess *pb.Session) bool {
 	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess) {
 		return true
 	}
-	_, ok := ui.ConfidenceCell(sess)
-	return ok
+	return a.GetStatusPhrase() != ""
 }
 
 // homeStatusColumnWidth is the STATUS column's text width for a board: the
-// widest confidence cell, capped at homeStatusMaxWidth, or homeStatusWidth when
-// no row carries one, so a board without a level keeps its layout.
+// phrase budget when any row carries a served status phrase, so no phrase is
+// ever cut, or homeStatusWidth for a board from a daemon that serves none, so
+// it keeps its layout.
 func homeStatusColumnWidth(sessions []*pb.Session) int {
-	width := homeStatusWidth
 	for _, sess := range sessions {
-		if c, ok := ui.ConfidenceCell(sess); ok && showsAttentionStatus(sess) {
-			width = max(width, min(homeStatusMaxWidth, ansi.StringWidth(c.Text())))
+		if sess.GetAttention().GetStatusPhrase() != "" {
+			return homePhraseStatusWidth
 		}
 	}
-	return width
+	return homeStatusWidth
 }

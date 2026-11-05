@@ -19,6 +19,7 @@ go_library(
 go_test(
     name = "prstate_test",
     srcs = [
+        "installation_quota_test.go",
         "reader_test.go",
         "wait_condition_test.go",
         "wait_hub_test.go",
@@ -26,6 +27,8 @@ go_test(
     embed = [":prstate"],
     deps = [
         "//lib/bossalib/kit/vcs",
+        "//services/bossd/internal/adapter/github",
         "//services/bossd/internal/ghusage",
+        "@com_github_rs_zerolog//:zerolog",
     ],
 )

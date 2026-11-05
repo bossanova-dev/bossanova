@@ -1000,6 +1000,8 @@ test('the list query selects every field the Step 2 eligibility walk reads', () 
     'estimate',
     'createdAt',
     /state\s*\{\s*name\s+type\s*\}/,
+    /parent\s*\{\s*identifier\s+priority\s*\}/,
+    /project\s*\{\s*startDate\s+targetDate\s*\}/,
     /labels\s*\{\s*nodes\s*\{\s*name\s*\}\s*\}/,
     /attachments\s*\{\s*nodes\s*\{\s*id\s+title\s+url\s+createdAt\s*\}\s*\}/,
   ]) {
@@ -1051,6 +1053,58 @@ test('selectPlanned flattens labels to names and attachments to a plain array', 
       const ticket = adapter.normalizeTicket(result[0])
       assert.equal(ticket.planAttachment?.id, 'att_1')
       assert.deepEqual(ticket.labels, ['agent-build', 'bug'])
+    },
+    { nodes },
+  )
+})
+
+test("selectPlanned ranks each candidate at its parent epic's priority when that is more urgent", async () => {
+  const node = (identifier, priority, parent) => ({
+    identifier,
+    priority,
+    parent,
+    labels: { nodes: [] },
+    attachments: { nodes: [] },
+  })
+  const nodes = [
+    node('ACME-1', 4, { identifier: 'ACME-9', priority: 1 }),
+    node('ACME-2', 1, { identifier: 'ACME-8', priority: 4 }),
+    node('ACME-3', 0, null),
+  ]
+  await withPlannedAdapter(
+    ACME,
+    async (adapter) => {
+      const result = await adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES })
+      assert.deepEqual(
+        result.map((c) => [c.identifier, c.priority, c.effectivePriority]),
+        [
+          ['ACME-1', 4, 1],
+          ['ACME-2', 1, 1],
+          ['ACME-3', 0, 0],
+        ],
+      )
+    },
+    { nodes },
+  )
+})
+
+test('selectPlanned returns candidates in ranking order, earliest scheduled project first', async () => {
+  const node = (identifier, startDate) => ({
+    identifier,
+    priority: 1,
+    project: startDate === null ? null : { startDate, targetDate: null },
+    labels: { nodes: [] },
+    attachments: { nodes: [] },
+  })
+  const nodes = [node('ACME-1', null), node('ACME-2', '2026-11-16'), node('ACME-3', '2026-11-02')]
+  await withPlannedAdapter(
+    ACME,
+    async (adapter) => {
+      const result = await adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES })
+      assert.deepEqual(
+        result.map((c) => c.identifier),
+        ['ACME-3', 'ACME-2', 'ACME-1'],
+      )
     },
     { nodes },
   )

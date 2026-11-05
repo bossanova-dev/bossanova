@@ -94,6 +94,7 @@ if [ -n "$UNTAGGED" ]; then
   echo "Commits still missing [#$PR_NUMBER]; rerun PR-number finalization before readying the PR." >&2
   exit 1
 fi
+# ci-request: skip PR readied immediately after push; ready event starts CI
 git push --force-with-lease origin "$SESSION_BRANCH" >&2
 # Compare against the ref the explicit push above just updated, never @{u}: a branch whose
 # upstream is still the base (origin/main) would fail this check after a successful push.

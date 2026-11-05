@@ -19,7 +19,8 @@
           "state": "pending",
           "reason": "ticket-not-in-review"
         }
-      }
+      },
+      "remote": [3550, 3551]
     },
     "secondary": {
       "scannedAt": "2026-10-24T00:00:00.000Z",

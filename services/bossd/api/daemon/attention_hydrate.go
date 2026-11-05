@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -31,6 +34,7 @@ type attentionCache struct {
 	mu        sync.Mutex
 	factories map[string]factoryAttention
 	questions map[string]questionAttention
+	blockers  blockerCache
 }
 type questionAttention struct {
 	text    string
@@ -162,6 +166,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		in.ProgressPhase = s.phaseForChats(d.chats, served)
 	}
 	s.hydrateRepairAttention(ctx, p, d, &in)
+	in.BlockerTallies, in.BlockerFiles = s.attentionBlockers(p, d, in)
 	p.Attention = attention.Compute(in)
 	p.Attention.ShouldShowDisplayLabel = p.Attention.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && displaystatus.FixShowsLabel(p)
 	if !session.CanResumeSessionRun(row) || (s.lifecycle != nil && !s.lifecycle.RunResumeAvailable(ctx, row, d.chats)) {
@@ -403,7 +408,7 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 		return fix("blocked:"+row.State.String(), sentence, since)
 	}
 	_, stalled := s.repairLease.StalledAt(row.ID)
-	if row.LastRepairAttemptCount >= 5 && alertstate.RepairAlertCurrent(session.RepairAlertFacts(row, d.display, stalled)) {
+	if row.LastRepairAttemptCount >= repairExhaustedAttempts && alertstate.RepairAlertCurrent(session.RepairAlertFacts(row, d.display, stalled)) {
 		return fix("repair-exhausted", "Automatic repair exhausted its attempts", since)
 	}
 	recovered := alertstate.WedgeRecovery{LastAgentActivityAt: protoTime(p.LastAgentActivityAt), PRDone: p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED || p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED}
@@ -434,10 +439,12 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 }
 
 func (s *Server) hydrateRepairAttention(ctx context.Context, p *pb.Session, d attentionDeps, in *attention.Input) {
-	// Share one authoritative repository read across conflict FIX and repair ownership.
-	if p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT && s.repos != nil {
+	// Share one authoritative repository read across conflict FIX, conflict
+	// rebase and armed repair ownership.
+	if (p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT || repairMayArm(d)) && s.repos != nil {
 		d.repo, _ = s.repos.Get(ctx, d.row.RepoID)
 	}
+	in.RepairOwned = s.repairOwned(p, d)
 	in.Fix = s.attentionFix(ctx, p, d, in.StateSince, in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING)
 	if in.Fix != nil || !conflictRebaseOwned(d) {
 		return
@@ -447,19 +454,69 @@ func (s *Server) hydrateRepairAttention(ctx context.Context, p *pb.Session, d at
 	// conflict once it takes a live lease, not merely because repair is enabled.
 	// Until then the existing conflict FIX is truthful, rather than promising
 	// a rebase that may never run. A new head is eligible again immediately.
-	if !s.repairLease.Active(d.row.ID) && d.row.LastRepairHeadSHA == d.display.HeadSHA &&
-		d.display.HeadSHA != "" && conflictRepairAttemptFinished(d.row) {
+	if !s.repairLease.Active(d.row.ID) && repairAttemptFinishedOn(d.row, d.display) {
 		in.Fix = &attention.FixFact{AlertKey: "merge-conflict", Sentence: "Merge conflict", Since: in.StateSince}
 		return
 	}
 	in.IsRebasing = true
 }
 
-// conflictRepairAttemptFinished mirrors the repair plugin's completion gate:
-// runner failures and incomplete interactive chats are still retryable on the
-// same input, so those outcomes cannot hand the conflict back to the operator.
-func conflictRepairAttemptFinished(row *models.Session) bool {
-	return row.LastRepairDisplayStatus == int32(pb.DisplayStatus_DISPLAY_STATUS_CONFLICT) &&
+// repairExhaustedAttempts is the consecutive failed repair attempts after which
+// automatic repair has given up on a PR: its FIX reads "repair exhausted" and
+// nothing arms another attempt.
+const repairExhaustedAttempts = 5
+
+// repairOwned reports whether automatic repair runs on the session's PR, or is
+// armed to (repairArmed): a live repair lease or a repair the display reports.
+// attention.Compute moves a fault repair owns from FIX to in progress.
+func (s *Server) repairOwned(p *pb.Session, d attentionDeps) bool {
+	if s.repairLease.Active(d.row.ID) || p.GetDisplayIsRepairing() || d.display != nil && d.display.IsRepairing {
+		return true
+	}
+	return s.repairArmed(d)
+}
+
+// repairArmed reports whether the repair plugin will take the PR on its next
+// trigger: repairMayArm holds, the repository allows automatic repair and no
+// stalled lease is recorded.
+func (s *Server) repairArmed(d attentionDeps) bool {
+	if !repairMayArm(d) || d.repo == nil || !d.repo.CanAutoRepair {
+		return false
+	}
+	_, stalled := s.repairLease.StalledAt(d.row.ID)
+	return !stalled
+}
+
+// repairMayArm is repairArmed's session half, checked before the repository
+// read: a failing or changes-requested PR, which are the plugin's repair
+// triggers besides a conflict (IsRebasing covers that), on a session it
+// repairs in a state it acts on, with attempts left, no refusal recorded and
+// no finished attempt on this head and status. The plugin skips that repeated
+// input; a moved base or new review feedback can unlock it, but display
+// snapshots carry neither, so such a retry owns the PR once it takes a lease.
+func repairMayArm(d attentionDeps) bool {
+	e := d.display
+	return e != nil && (e.Status == vcs.DisplayStatusFailing || e.Status == vcs.DisplayStatusRejected) &&
+		d.row.PRNumber != nil && !d.row.IsVerifyOnly && repairArmsOn(d.row.State) &&
+		d.row.LastRepairAttemptCount < repairExhaustedAttempts && d.row.LastRepairBlockedAt == nil &&
+		!repairAttemptFinishedOn(d.row, e)
+}
+
+// repairArmsOn mirrors bossd-plugin-repair's isRepairableState for a failing
+// or changes-requested PR, which excludes Finalizing; the plugin is a separate
+// module, so the set is duplicated.
+func repairArmsOn(state machine.State) bool {
+	return state != machine.Finalizing && repairActsOn(state)
+}
+
+// repairAttemptFinishedOn reports whether the last repair attempt acted on the
+// display's head and status and finished, mirroring the repair plugin's
+// duplicate-input gate: runner failures and incomplete interactive chats are
+// still retryable on the same input, so those outcomes do not count.
+// vcs.DisplayStatus and the recorded proto status share their numbering.
+func repairAttemptFinishedOn(row *models.Session, e *status.DisplayEntry) bool {
+	return e.HeadSHA != "" && row.LastRepairHeadSHA == e.HeadSHA &&
+		vcs.DisplayStatus(row.LastRepairDisplayStatus) == e.Status &&
 		row.LastRepairRunnerError == "" &&
 		!strings.Contains(row.LastRepairExitError, "interactive chat did not report completion") &&
 		!strings.Contains(row.LastRepairExitError, "agent went idle without completing")
@@ -499,24 +556,216 @@ func (s *Server) attentionVerifyAdmission(repoID string, prNumber int, head stri
 	return attention.Admission{State: state, Reason: answer.Reason, Rule: answer.Rule}
 }
 
+// readVerifyAdmission is loadVerifyAdmission for attention, where an
+// unreadable file only leaves admission unknown.
 func (s *Server) readVerifyAdmission(ctx context.Context, repoID, path string) (string, verifyadmission.Snapshot) {
 	if s.repos == nil {
 		return "", verifyadmission.Snapshot{}
 	}
-	if path == "" {
-		repo, err := s.repos.Get(ctx, repoID)
-		if err != nil || repo == nil || repo.LocalPath == "" {
-			return "", verifyadmission.Snapshot{}
-		}
-		path, err = verifyadmission.Path(ctx, repo.LocalPath)
-		if err != nil {
-			s.logger.Debug().Err(err).Str("repo_id", repoID).Msg("resolve verify admission path")
-			return "", verifyadmission.Snapshot{}
-		}
-	}
-	snapshot, err := verifyadmission.Read(path)
+	path, snapshot, err := s.loadVerifyAdmission(ctx, repoID, path)
 	if err != nil {
 		s.logger.Debug().Err(err).Str("repo_id", repoID).Msg("read verify admission")
 	}
 	return path, snapshot
+}
+
+// loadVerifyAdmission reads repoID's verify admission file at path, resolving
+// the path from the repository's checkout when it is empty. A missing file is
+// an empty snapshot; an unresolvable path or an unreadable, unparseable or
+// unsupported file is an error, so a caller can tell "could not look" from
+// "nothing recorded".
+func (s *Server) loadVerifyAdmission(ctx context.Context, repoID, path string) (string, verifyadmission.Snapshot, error) {
+	if path == "" {
+		if s.repos == nil {
+			return "", verifyadmission.Snapshot{}, errors.New("no repository store")
+		}
+		repo, err := s.repos.Get(ctx, repoID)
+		if err != nil {
+			return "", verifyadmission.Snapshot{}, fmt.Errorf("get repository: %w", err)
+		}
+		if repo == nil || repo.LocalPath == "" {
+			return "", verifyadmission.Snapshot{}, errors.New("repository has no local path")
+		}
+		if path, err = verifyadmission.Path(ctx, repo.LocalPath); err != nil {
+			return "", verifyadmission.Snapshot{}, err
+		}
+	}
+	snapshot, err := verifyadmission.Read(path)
+	return path, snapshot, err
+}
+
+// blockerRetryBackoff is how long a failed blockers read waits before a later
+// hydrate may read the same session's head again.
+const blockerRetryBackoff = 30 * time.Second
+
+// blockerAbsentTTL is how long an absent blockers file is served as no
+// blockers. Absent means verify has not posted for the head yet, and it may
+// park the same head later, so the empty entry expires and is read again.
+const blockerAbsentTTL = 2 * time.Minute
+
+// blockerCache holds, per session, the standing verify blockers bossd last
+// read for one PR head. Hydrate serves an entry only for the head the display
+// tracker holds and never waits on a read: a miss starts at most one
+// background read per session. An absent blockers file caches as no blockers
+// for blockerAbsentTTL; an unreadable file or a failed read is not cached and
+// waits blockerRetryBackoff.
+type blockerCache struct {
+	mu       sync.Mutex
+	entries  map[string]blockerEntry
+	inFlight map[string]bool
+	failures map[string]blockerFailure
+	// now and refreshed are test seams: the clock the backoff reads, and a
+	// receiver for each background read's done channel.
+	now       func() time.Time
+	refreshed func(<-chan struct{})
+}
+
+type blockerEntry struct {
+	head    string
+	tallies []attention.BlockerTally
+	files   []string
+	// readAt is when the read behind the entry started; an older read never
+	// replaces it. expiresAt, when set, ends an absent entry.
+	readAt    time.Time
+	expiresAt time.Time
+}
+
+func (e blockerEntry) servable(head string, now time.Time) bool {
+	return strings.EqualFold(e.head, head) && (e.expiresAt.IsZero() || now.Before(e.expiresAt))
+}
+
+type blockerFailure struct {
+	head    string
+	retryAt time.Time
+}
+
+func (c *blockerCache) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+// attentionBlockers returns the blocker tallies and files hydrate serves for
+// the session's displayed head. On a miss for a candidate it starts the
+// session's one background read and serves none until that read lands.
+func (s *Server) attentionBlockers(p *pb.Session, d attentionDeps, in attention.Input) ([]attention.BlockerTally, []string) {
+	c := &s.attentionCache.blockers
+	id := d.row.ID
+	candidate := s.blockerCandidate(p, d, in)
+	c.mu.Lock()
+	if !candidate {
+		delete(c.entries, id)
+		delete(c.failures, id)
+		c.mu.Unlock()
+		return nil, nil
+	}
+	head := d.display.HeadSHA
+	if e, ok := c.entries[id]; ok && e.servable(head, c.clock()) {
+		c.mu.Unlock()
+		return e.tallies, e.files
+	}
+	f, failed := c.failures[id]
+	if c.inFlight[id] || failed && strings.EqualFold(f.head, head) && c.clock().Before(f.retryAt) {
+		c.mu.Unlock()
+		return nil, nil
+	}
+	if c.inFlight == nil {
+		c.inFlight = make(map[string]bool)
+	}
+	c.inFlight[id] = true
+	refreshed := c.refreshed
+	c.mu.Unlock()
+	// The list must not wait, so only the test seam joins done; the read
+	// itself ends within domain.VerifyVerbTimeout.
+	done := safego.Go(s.logger, func() { s.refreshBlockers(id, head) })
+	if refreshed != nil {
+		refreshed(done)
+	}
+	return nil, nil
+}
+
+// blockerCandidate reports whether a session's blockers are worth a read: an
+// open PR at a known head with a verify park, a live repair lease, a repair
+// the display reports, or a recorded repair attempt. Other sessions, and a
+// server wired without verify verbs, never read.
+func (s *Server) blockerCandidate(p *pb.Session, d attentionDeps, in attention.Input) bool {
+	e := d.display
+	if s.newVerifyVerbs == nil && s.verifyVerbsFactory == nil || e == nil || e.HeadSHA == "" || d.row.PRNumber == nil || !in.HasPR || in.PRState != attention.PRStateOpen {
+		return false
+	}
+	return len(e.ParkCodes()) > 0 || s.repairLease.Active(d.row.ID) || p.GetDisplayIsRepairing() || d.row.LastRepairAttemptCount > 0
+}
+
+// refreshBlockers is the background read attentionBlockers starts: the verify
+// bridge's blockers verb for head, bounded by domain.VerifyVerbTimeout. A read
+// that fails, or panics, frees the session for a retry after the backoff.
+func (s *Server) refreshBlockers(id, head string) {
+	c := &s.attentionCache.blockers
+	failed := true
+	defer func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		delete(c.inFlight, id)
+		if failed {
+			if c.failures == nil {
+				c.failures = make(map[string]blockerFailure)
+			}
+			c.failures[id] = blockerFailure{head: head, retryAt: c.clock().Add(blockerRetryBackoff)}
+		}
+	}()
+	readAt := c.clock()
+	ctx, cancel := context.WithTimeout(context.Background(), domain.VerifyVerbTimeout)
+	defer cancel()
+	result, err := s.readSessionBlockers(ctx, id, head)
+	if err != nil || !blockerOutcomeCacheable(result.Outcome) {
+		s.logger.Debug().Err(err).Str("session", id).Str("outcome", result.Outcome).Msg("attention blockers: read failed; retrying after backoff")
+		return
+	}
+	failed = false
+	s.recordBlockers(id, head, readAt, result)
+}
+
+func (s *Server) readSessionBlockers(ctx context.Context, id, head string) (domain.VerifyBlockers, error) {
+	target, env, err := s.verifyTarget(ctx, id, false)
+	if err != nil {
+		return domain.VerifyBlockers{}, err
+	}
+	return s.verifyVerbsFor(env).Blockers(ctx, target, head)
+}
+
+// blockerOutcomeCacheable reports whether a blockers read answered for the
+// head. Unreadable is a failed comments or permission read, so it retries.
+func blockerOutcomeCacheable(outcome string) bool {
+	return outcome == "absent" || outcome == "written"
+}
+
+// recordBlockers caches a blockers read for head that started at readAt,
+// unless the displayed head has moved since, when the entry could never be
+// served, or a read that started later already filled the entry.
+func (s *Server) recordBlockers(id, head string, readAt time.Time, result domain.VerifyBlockers) {
+	if !blockerOutcomeCacheable(result.Outcome) || !strings.EqualFold(s.displayedPRHead(id), head) {
+		return
+	}
+	blockers := make([]attention.Blocker, 0, len(result.Blockers))
+	for _, b := range result.Blockers {
+		blockers = append(blockers, attention.Blocker{Kind: b.Kind, Severity: b.Severity, File: b.File})
+	}
+	entry := blockerEntry{head: head, readAt: readAt}
+	if result.Outcome == "written" {
+		entry.tallies, entry.files = attention.BlockerTallies(blockers)
+	} else {
+		entry.expiresAt = readAt.Add(blockerAbsentTTL)
+	}
+	c := &s.attentionCache.blockers
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if prev, ok := c.entries[id]; ok && strings.EqualFold(prev.head, head) && prev.readAt.After(readAt) {
+		return
+	}
+	if c.entries == nil {
+		c.entries = make(map[string]blockerEntry)
+	}
+	c.entries[id] = entry
+	delete(c.failures, id)
 }

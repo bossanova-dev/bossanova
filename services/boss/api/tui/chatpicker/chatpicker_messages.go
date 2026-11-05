@@ -49,6 +49,9 @@ type chatTitlesBackfilledMsg struct {
 
 // RefreshMsg carries refreshed session + daemon statuses for polling.
 type RefreshMsg struct {
+	Chats                []*pb.AgentChat
+	ChatsListed          bool
+	ChatsGen             uint64
 	Session              *pb.Session
 	DaemonStatuses       map[string]string
 	DaemonLastOutput     map[string]time.Time

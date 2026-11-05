@@ -76,18 +76,22 @@ type Model struct {
 	showOpenPorts bool
 	session       *pb.Session
 	chats         []*pb.AgentChat
-	chatRows      []chatPickerRow
-	showEarlier   bool
-	chatLabels    map[string]string
-	tableRows     chatTableRows
-	table         ui.Table
-	spinner       spinner.Model
-	loading       bool
-	err           error
-	cancel        bool
-	merged        bool
-	width         int
-	height        int
+	// Local writes invalidate poll reads captured before they settled. A rename
+	// also blocks matching-generation reads until its RPC has completed.
+	chatsGen       uint64
+	renameInFlight int
+	chatRows       []chatPickerRow
+	showEarlier    bool
+	chatLabels     map[string]string
+	tableRows      chatTableRows
+	table          ui.Table
+	spinner        spinner.Model
+	loading        bool
+	err            error
+	cancel         bool
+	merged         bool
+	width          int
+	height         int
 
 	// optimisticArchiveLatch is a short-lived local latch set the moment a
 	// TUI-initiated merge succeeds (MergeResultMsg) on an archive-after-merge

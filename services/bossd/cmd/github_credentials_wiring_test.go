@@ -15,6 +15,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 
+	server "github.com/recurser/bossd/api/daemon"
 	"github.com/recurser/bossd/internal/adapter/github"
 	"github.com/recurser/bossd/internal/ghtoken"
 )
@@ -189,5 +190,26 @@ func TestGitHubProviderRunsReadsWithTheMintedToken(t *testing.T) {
 	}
 	if got := os.Getenv("GH_TOKEN"); got != "operator-token" {
 		t.Fatalf("daemon GH_TOKEN = %q after the call, want it unchanged", got)
+	}
+}
+
+// TestSetGitHubCredentialReporterKeepsNilAnInterfaceNil proves a nil source
+// leaves the server's reporter a nil interface, not a typed nil the handler
+// would call, and that a real source reaches the Config field wire_daemon
+// hands server.New.
+func TestSetGitHubCredentialReporterKeepsNilAnInterfaceNil(t *testing.T) {
+	t.Parallel()
+	var cfg server.Config
+	setGitHubCredentialReporter(&cfg, nil)
+	if cfg.GitHubCredentials != nil || cfg.GitHubReadCredentials != nil {
+		t.Fatalf("GitHubCredentials = %#v after a nil source, want a nil interface", cfg.GitHubCredentials)
+	}
+	src := ghtoken.New(ghtoken.Config{})
+	setGitHubCredentialReporter(&cfg, src)
+	if cfg.GitHubReadCredentials != src {
+		t.Fatal("read credential source not wired")
+	}
+	if got, ok := cfg.GitHubCredentials.(*ghtoken.Source); !ok || got != src {
+		t.Fatalf("GitHubCredentials = %#v, want src itself", cfg.GitHubCredentials)
 	}
 }

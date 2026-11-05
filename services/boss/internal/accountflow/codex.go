@@ -22,6 +22,7 @@ type CodexOptions struct {
 	Prompter Prompter
 	Client   AgentAccountClient
 	CodexBin string                 // default "codex"
+	BinEnv   []string               // extra environment required by the resolved binary
 	HomeDir  func() (string, error) // default: 0700 os.MkdirTemp CODEX_HOME
 	Timeout  time.Duration          // device-flow deadline, default 10m
 	Label    string
@@ -379,7 +380,7 @@ type codexResult struct {
 // codexCapture spawns the device-auth login, surfaces the URL+code the first
 // time both parse, waits for exit under the deadline, then reads auth.json.
 func codexCapture(ctx context.Context, o CodexOptions, dir string) ([]byte, error) {
-	proc, err := o.Exec.Start(ctx, o.CodexBin, []string{"login", "--device-auth"}, []string{"CODEX_HOME=" + dir})
+	proc, err := o.Exec.Start(ctx, o.CodexBin, []string{"login", "--device-auth"}, append([]string{"CODEX_HOME=" + dir}, o.BinEnv...))
 	if err != nil {
 		return nil, err
 	}

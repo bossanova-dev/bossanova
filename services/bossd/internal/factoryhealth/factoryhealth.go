@@ -54,9 +54,12 @@ type Facts struct {
 	Unreadable                          []string
 	DaemonVersion, SkillsVersion        string
 	DaemonOutdated                      bool
+	// RemotePRs are admitted PRs this host's verify sweep left to another
+	// machine's session.
+	RemotePRs []int
 }
 
-var codeOrder = []string{"second-model-off", "verify-cron-failing", "publishing-off", "verify-backlog", "daemon-outdated", "health-partial"}
+var codeOrder = []string{"second-model-off", "verify-cron-failing", "publishing-off", "verify-backlog", "remote-sessions", "daemon-outdated", "health-partial"}
 var notePattern = regexp.MustCompile(`^second-model review unavailable: ([^ ]+) ([^ ]+) since ([^, ]+)`)
 var recoveredPattern = regexp.MustCompile(`^second-model review recovered: ([^ ]+) ran again on host `)
 var safeToken = regexp.MustCompile(`^[a-z0-9_.-]{1,40}$`)
@@ -82,6 +85,9 @@ func Compute(f Facts, now time.Time) []Problem {
 		problems = append(problems, Problem{Code: "publishing-off", Text: "Evidence publishing off: no upload credential on this host"})
 	}
 	if p, ok := backlogProblem(f.Verifying, now); ok {
+		problems = append(problems, p)
+	}
+	if p, ok := remoteProblem(f.RemotePRs); ok {
 		problems = append(problems, p)
 	}
 	if f.DaemonOutdated {
@@ -181,6 +187,28 @@ func backlogProblem(heads []VerifyingHead, now time.Time) (Problem, bool) {
 		return Problem{}, false
 	}
 	return Problem{Code: "verify-backlog", Text: fmt.Sprintf("%d PR(s) waiting for verify over an hour (oldest #%d)", count, oldest.PR), StartedAt: oldest.StartedAt}, true
+}
+
+// maxRemoteListed bounds the PR numbers a remote-sessions problem names.
+const maxRemoteListed = 5
+
+func remoteProblem(prs []int) (Problem, bool) {
+	prs = slices.Compact(slices.Sorted(slices.Values(prs)))
+	if len(prs) == 0 {
+		return Problem{}, false
+	}
+	listed := make([]string, 0, maxRemoteListed+1)
+	for _, pr := range prs[:min(len(prs), maxRemoteListed)] {
+		listed = append(listed, fmt.Sprintf("#%d", pr))
+	}
+	if len(prs) > maxRemoteListed {
+		listed = append(listed, "…")
+	}
+	noun := "PRs"
+	if len(prs) == 1 {
+		noun = "PR"
+	}
+	return Problem{Code: "remote-sessions", Text: fmt.Sprintf("%d %s skipped here: session on another machine (%s)", len(prs), noun, strings.Join(listed, ", "))}, true
 }
 
 func truncate(text string, limit int) string {

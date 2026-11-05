@@ -391,7 +391,7 @@ const (
 )
 
 // accountHealthCellFor renders the HEALTH label for a, refusing green whenever
-// the last credential check did not pass.
+// credential sharing is blocked or the last credential check did not pass.
 //
 // Health and the credential check are two sources feeding one indicator, and
 // the fold has to take both: health is written by several writers (usage caps,
@@ -417,6 +417,9 @@ const (
 func accountHealthCellFor(a *pb.AgentAccount, health string) string {
 	if health != "ok" {
 		return accountHealthCell(health)
+	}
+	if a.GetCredentialSyncBlockReason() != "" {
+		return ui.StyleStatusWarning.Render(health + healthVetoUnprovenMark)
 	}
 	switch accountCheckSeverity(a) {
 	case checkSeverityInvalid:

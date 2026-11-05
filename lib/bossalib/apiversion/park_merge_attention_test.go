@@ -74,7 +74,7 @@ func TestParkMergeAttention_OlderPinsGetApproveAndSendBackBack(t *testing.T) {
 					if !proto.Equal(resp.GetSession(), func() *pb.Session {
 						want := source
 						if reg.Newer(V20261101, v) {
-							want = downconvertProofAttentionSession(want)
+							want = downconvertProofAttentionSession(downconvertStatusPhraseSession(want))
 						}
 						if reg.Newer(V20261031, v) {
 							want = downconvertParkVerdictSentence(want)

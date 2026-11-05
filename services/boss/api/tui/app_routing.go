@@ -365,6 +365,7 @@ func (a *App) newHomeModel() HomeModel {
 	// warning or resurrect the guest cloud promo while auth remains paused.
 	home.NeedsRelogin = a.home.NeedsRelogin
 	home.ReloginReason = a.home.ReloginReason
+	home.RetainCredentialDeviceReadiness(a.home)
 	// Preserve focus state and any pending question so a rebuild between the
 	// notification and the user's click doesn't drop the auto-open (BOS-459).
 	home.Focused = a.focused

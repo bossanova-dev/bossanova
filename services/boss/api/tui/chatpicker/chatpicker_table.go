@@ -63,7 +63,7 @@ func (m *Model) buildTableRowsWithSelection(selected *pb.AgentChat, toggleSelect
 			continue
 		}
 		label := m.detailChatStatus(chat)
-		if label == "" {
+		if label == "" || m.stuckCallback(chat) {
 			label = m.statusDetail(chat)
 		}
 		if label == "" {
@@ -162,33 +162,30 @@ func (m Model) statusDetail(chat *pb.AgentChat) string {
 	case ui.StatusWorking:
 		return m.daemonPhases[id]
 	case ui.StatusWaiting:
-		if m.chatWait(id) != waitProgress {
-			return ""
-		}
 		cb := m.statusCallback(chat)
-		if cb == nil {
-			return ""
-		}
-		label := attention.CallbackWaitLabel(attention.CallbackWait{Trigger: cb.GetTrigger()}, attention.ChecksUnknown)
-		if m.isOwnPRReason(callbackReason(cb)) {
-			label = attention.ChatWaitLabel(cb.GetTrigger(), m.session.GetAttention())
-		}
-		if reach := m.callbackWaitReach(cb); !reach.Reachable {
-			if m.anotherChatWorking(id) {
+		var label string
+		if blocker, stuck := m.stuckWait(chat); stuck {
+			label = "stuck: " + string(blocker)
+			if blocker == "failing" {
+				label = "stuck: red checks"
+			}
+		} else {
+			if m.chatWait(id) != waitProgress || cb == nil {
+				return ""
+			}
+			label = attention.CallbackWaitLabel(attention.CallbackWait{Trigger: cb.GetTrigger()}, attention.ChecksUnknown)
+			if m.isOwnPRReason(callbackReason(cb)) {
+				label = attention.ChatWaitLabel(cb.GetTrigger(), m.session.GetAttention())
+			}
+			if reach := m.callbackWaitReach(cb); !reach.Reachable {
 				label = "awaiting repair"
 				if reach.Owner == "person" {
 					label = "awaiting ready"
 				}
-			} else {
-				blocker := string(reach.Blocker)
-				if blocker == "failing" {
-					blocker = "red checks"
-				}
-				label = "stuck: " + blocker
 			}
-		}
-		if label != "" && !m.isOwnPRReason(callbackReason(cb)) {
-			label += " " + m.prRef(cb)
+			if label != "" && !m.isOwnPRReason(callbackReason(cb)) {
+				label += " " + m.prRef(cb)
+			}
 		}
 		return label
 	}

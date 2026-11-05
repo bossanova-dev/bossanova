@@ -524,8 +524,8 @@ func daemonDoctorSince(when, now time.Time) string {
 	return elapsed.Truncate(time.Second).String()
 }
 
-// daemonDoctorMaxFieldLen bounds any daemon-supplied string this command
-// renders. The daemon is not hostile, but it is a separate process whose
+// daemonDoctorMaxFieldLen bounds descriptive daemon-supplied fields this command
+// renders. Recovery commands retain their full length. The daemon is a separate process whose
 // fields reach an operator's terminal verbatim, and a value long enough to
 // scroll the diagnosis off the screen destroys the diagnostic just as
 // effectively as a wrong one would.
@@ -558,6 +558,15 @@ const daemonDoctorMaxFieldLen = 120
 // per-check shape doctor's readers scan for, and an embedded escape sequence
 // that repaints the terminal around the verdict.
 func sanitizeDaemonDoctorField(s string) string {
+	out := sanitizeDaemonDoctorLine(s)
+	if utf8.RuneCountInString(out) > daemonDoctorMaxFieldLen {
+		out = strings.TrimSpace(string([]rune(out)[:daemonDoctorMaxFieldLen])) + "…"
+	}
+	return out
+}
+
+// sanitizeDaemonDoctorLine removes terminal controls without shortening commands.
+func sanitizeDaemonDoctorLine(s string) string {
 	var b strings.Builder
 	space := false
 	for _, r := range s {
@@ -574,11 +583,7 @@ func sanitizeDaemonDoctorField(s string) string {
 		space = false
 		b.WriteRune(r)
 	}
-	out := strings.TrimSpace(b.String())
-	if utf8.RuneCountInString(out) > daemonDoctorMaxFieldLen {
-		out = strings.TrimSpace(string([]rune(out)[:daemonDoctorMaxFieldLen])) + "…"
-	}
-	return out
+	return strings.TrimSpace(b.String())
 }
 
 // daemonMetadataForDoctor resolves the recorded daemon state the same way the
@@ -829,7 +834,9 @@ func daemonWatchdogNotLoadedRemediation() string {
 }
 
 // reportDaemonAuthState prints the live-auth section and reports whether it
-// found an unhealthy state and whether the fix is a login.
+// found an unhealthy state and whether the fix is a login. It also hands back
+// the response it rendered (nil on any probe error) so the GitHub credential
+// section reuses this one probe instead of asking the daemon twice.
 //
 // The FAIL discriminator is `relogin_reason set OR auth_failing_since set`,
 // and both halves are load-bearing:
@@ -848,7 +855,7 @@ func daemonWatchdogNotLoadedRemediation() string {
 // neither a reason nor a clock is exactly what a deliberate sign-out looks
 // like; rendering that as a red FAIL would fire the check on every logout and
 // teach operators to ignore it.
-func (deps *Group) reportDaemonAuthState(ctx context.Context, out io.Writer, cmd *cobra.Command) (unhealthy bool, loginRemediation bool) {
+func (deps *Group) reportDaemonAuthState(ctx context.Context, out io.Writer, cmd *cobra.Command) (unhealthy bool, loginRemediation bool, resp *pb.GetAuthStateResponse) {
 	// Derived from the caller's context, not from Background: doctor is a
 	// subcommand, and a probe that ignores cancellation keeps a Ctrl-C'd
 	// command alive for its whole timeout waiting on the daemon it was about
@@ -868,7 +875,7 @@ func (deps *Group) reportDaemonAuthState(ctx context.Context, out io.Writer, cmd
 	switch {
 	case err != nil && daemonAuthCheckUnsupported(err):
 		_, _ = fmt.Fprintln(out, "daemon auth: unknown — this daemon predates the check; upgrade it and run 'boss daemon restart'")
-		return false, false
+		return false, false, nil
 	case err != nil:
 		// Could-not-evaluate is its own outcome, not a pass. Say so rather
 		// than printing nothing, which would leave the section looking
@@ -887,12 +894,12 @@ func (deps *Group) reportDaemonAuthState(ctx context.Context, out io.Writer, cmd
 		// login remedy for a stopped daemon.
 		_, _ = fmt.Fprintf(out, "daemon auth: unknown — could not reach the daemon (%s)\n",
 			sanitizeDaemonDoctorField(err.Error()))
-		return false, false
+		return false, false, nil
 	}
 
 	if !state.GetUpstreamConfigured() {
 		_, _ = fmt.Fprintln(out, "daemon auth: not configured (local-only daemon)")
-		return false, false
+		return false, false, state
 	}
 
 	now := time.Now()
@@ -936,7 +943,7 @@ func (deps *Group) reportDaemonAuthState(ctx context.Context, out io.Writer, cmd
 			// login, so nothing else in the system will ever prompt for one.
 			_, _ = fmt.Fprintln(out, "  the daemon has not flagged itself as needing a login, so nothing will prompt for one")
 		}
-		return true, true
+		return true, true, state
 	}
 
 	if state.GetNeedsLogin() {
@@ -949,12 +956,12 @@ func (deps *Group) reportDaemonAuthState(ctx context.Context, out io.Writer, cmd
 		// itself rather than through the Remediation block, which is reserved
 		// for states that set the unhealthy exit status.
 		_, _ = fmt.Fprintln(out, "daemon auth: signed out — run 'boss login' to sign in again")
-		return false, false
+		return false, false, state
 	}
 
 	_, _ = fmt.Fprintf(out, "daemon auth: signed in — last successful registration: %s (stream connected: %t)\n",
 		registered, state.GetUpstreamConnected())
-	return false, false
+	return false, false, state
 }
 
 // daemonSpawnRemediation names which remedy a spawn-history verdict calls for.
@@ -1480,7 +1487,9 @@ func (deps *Group) runDaemonDoctor(cmd *cobra.Command) error {
 	// launchd, and putting the call after that return would make the whole
 	// check silently unreachable on Linux — the platform most bossd instances
 	// that talk to an orchestrator actually run on.
-	authUnhealthy, authRemediation := deps.reportDaemonAuthState(cmd.Context(), out, cmd)
+	authUnhealthy, authRemediation, authResp := deps.reportDaemonAuthState(cmd.Context(), out, cmd)
+	reportDaemonGitHubCredentials(out, authResp, time.Now())
+	credentialDevicesUnhealthy := deps.reportDaemonCredentialDevices(cmd.Context(), out, cmd)
 	// Also above the macOS early return, and for the same reason: a daemon
 	// running outside its service manager is not a macOS concept.
 	// platformGetStatus fills PID on launchd and on systemd alike, so the check
@@ -1554,7 +1563,7 @@ func (deps *Group) runDaemonDoctor(cmd *cobra.Command) error {
 			}
 			return errDaemonDoctorUnhealthy
 		}
-		return nil
+		return daemonDoctorResult(credentialDevicesUnhealthy)
 	}
 	// unhealthyNonAuth is kept separate from authUnhealthy because they have
 	// different remedies. Folding an auth wedge into the same flag would print
@@ -1823,7 +1832,11 @@ func (deps *Group) runDaemonDoctor(cmd *cobra.Command) error {
 	// remedy and once to decide the exit status. A verdict threaded into only
 	// the first prints the remedy and still exits 0 — a doctor run that
 	// instructs recovery while asserting health.
-	if unhealthyNonAuth || authUnhealthy || modeUnhealthy || revisionUnhealthy {
+	return daemonDoctorResult(unhealthyNonAuth || authUnhealthy || credentialDevicesUnhealthy || modeUnhealthy || revisionUnhealthy)
+}
+
+func daemonDoctorResult(unhealthy bool) error {
+	if unhealthy {
 		return errDaemonDoctorUnhealthy
 	}
 	return nil

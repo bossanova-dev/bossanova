@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +22,12 @@ type Snapshot struct {
 }
 
 type scope struct {
-	PRs map[string]entry `json:"prs"`
+	ScannedAt string           `json:"scannedAt"`
+	PRs       map[string]entry `json:"prs"`
+	// Remote lists the PRs the scan skipped because their live session is on
+	// another machine. Nil means the writer recorded no list (an older writer,
+	// or a scope no trustworthy full scan has reached), which is not "none".
+	Remote *[]int `json:"remote,omitempty"`
 }
 
 type entry struct {
@@ -113,6 +119,47 @@ func (s Snapshot) Lookup(prNumber int, headSHA string) Answer {
 		return excluded
 	}
 	return Answer{}
+}
+
+// RemotePRs returns, ascending, the PRs the newest scan with a remote list
+// left to another machine's session while admitting them. Scopes without a
+// list or a parseable scannedAt are ignored, and a tie on scannedAt goes to
+// the lexically smallest scope key. A remote PR the scan did not admit is
+// still being built or is not ready for verify, so it is not reported. Nil
+// when no scope qualifies or the version is unsupported.
+func (s Snapshot) RemotePRs() []int {
+	if s.Version != 1 {
+		return nil
+	}
+	var (
+		newestKey string
+		newestAt  time.Time
+		found     bool
+	)
+	for key, sc := range s.Scopes {
+		if sc.Remote == nil {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339, sc.ScannedAt)
+		if err != nil {
+			continue
+		}
+		if !found || at.After(newestAt) || (at.Equal(newestAt) && key < newestKey) {
+			newestKey, newestAt, found = key, at, true
+		}
+	}
+	if !found {
+		return nil
+	}
+	newest := s.Scopes[newestKey]
+	var out []int
+	for _, pr := range *newest.Remote {
+		if e, ok := newest.PRs[strconv.Itoa(pr)]; ok && e.State == StateAdmitted && !slices.Contains(out, pr) {
+			out = append(out, pr)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Path resolves the admission file shared by all worktrees of repoPath.

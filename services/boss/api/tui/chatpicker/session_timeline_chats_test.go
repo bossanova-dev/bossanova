@@ -3,6 +3,7 @@ package chatpicker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -310,22 +311,192 @@ func TestChatPickerTimelineLabelOnlyRefetchKeepsSteps_ChatPicker_AC214701(t *tes
 	}
 }
 
-func TestChatPickerTimelineExternalRenameRefetchesOnce_ChatPicker_AC214702(t *testing.T) {
+// pickerPollCmd drives the actual tick handler, leaving the scheduled next tick
+// unexecuted. The caller may delay the returned RPC command to exercise races.
+func pickerPollCmd(t *testing.T, m Model) (Model, tea.Cmd) {
+	t.Helper()
+	model, cmd := m.Update(tickMsg{})
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatal("tick did not dispatch refresh and next tick")
+	}
+	return model.(Model), batch[0]
+}
+
+func TestChatPickerTimelinePollPicksUpExternalRename_ChatPicker_AC214702_AC229301(t *testing.T) {
 	c := &timelineClient{}
 	m := labelTimelinePicker(t, c)
+	c.session = m.session
 	before := c.calls
-	poll := func(title string) {
-		model, cmd := m.Update(labelTimelineChats(title))
-		m = applyTimelineCmd(model.(Model), cmd)
-	}
 	c.steps = labelTimelineSteps("build: from cli")
-	poll("build: from cli")
-	poll("build: from cli")
+	for range 2 {
+		c.chats = labelTimelineChats("build: from cli").Chats
+		var poll tea.Cmd
+		m, poll = pickerPollCmd(t, m)
+		model, fetch := m.Update(poll())
+		m = model.(Model)
+		if block := stripANSI(m.timelineBlock()); !strings.Contains(block, "verify") {
+			t.Fatalf("poll collapsed the shown timeline: %s", block)
+		}
+		m = applyTimelineCmd(m, fetch)
+		if m.selectedChat().GetAgentSessionId() != "build" || !strings.Contains(stripANSI(m.table.View()), "build: from cli") {
+			t.Fatal("poll lost the selection or kept the old row title")
+		}
+	}
 	if c.calls != before+1 {
 		t.Fatalf("external rename fetched %d times over two polls, want 1", c.calls-before)
 	}
 	if block := stripANSI(m.timelineBlock()); !strings.Contains(block, "build: from cli") || strings.Contains(block, "build: old") {
 		t.Fatalf("timeline kept the old label after the poll:\n%s", block)
+	}
+}
+
+func TestChatPickerPollMembershipKeepsSelection_ChatPicker_AC212801_AC229302(t *testing.T) {
+	c := &timelineClient{}
+	m := labelTimelinePicker(t, c)
+	c.session = m.session
+	newer := &pb.AgentChat{AgentSessionId: "new", Title: "automation", CreatedAt: timestamppb.New(time.Unix(200, 0))}
+	older := &pb.AgentChat{AgentSessionId: "older", Title: "earlier", CreatedAt: timestamppb.New(time.Unix(50, 0))}
+	poll := func(chats []*pb.AgentChat) {
+		c.chats = chats
+		var cmd tea.Cmd
+		m, cmd = pickerPollCmd(t, m)
+		model, fetch := m.Update(cmd())
+		m = applyTimelineCmd(model.(Model), fetch)
+	}
+	m.highlightID = "new" // A poll must not retarget to the caller's highlight.
+	c.steps = append(labelTimelineSteps("build: old"), &pb.TimelineStep{Title: "automation"})
+	poll(append(labelTimelineChats("build: old").Chats, newer, older))
+	if len(m.chats) != 3 || m.chats[0].GetAgentSessionId() != "new" || m.selectedChat().GetAgentSessionId() != "build" {
+		t.Fatalf("new chat moved the cursor or was not sorted: selected=%s chats=%v", m.selectedChat().GetAgentSessionId(), m.chats)
+	}
+	if block := stripANSI(m.timelineBlock()); !strings.Contains(block, "automation") {
+		t.Fatalf("new chat missing from timeline: %s", block)
+	}
+	poll([]*pb.AgentChat{older, newer})
+	if len(m.chats) != 2 || m.selectedChat() == nil || m.table.Cursor() >= len(m.chatRows) {
+		t.Fatal("selected external deletion left the cursor outside the list")
+	}
+	poll([]*pb.AgentChat{newer})
+	poll([]*pb.AgentChat{})
+	if len(m.chats) != 0 || len(m.table.Rows()) != 0 {
+		t.Fatal("last external deletion left a row on screen")
+	}
+}
+
+func TestChatPickerPollKeepsSelectedBuildVisible_ChatPicker_AC229302(t *testing.T) {
+	for _, highlight := range []string{"", "new"} {
+		t.Run("highlight="+highlight, func(t *testing.T) {
+			c := &timelineClient{}
+			m := labelTimelinePicker(t, c)
+			c.session = m.session
+			selected := m.chats[0]
+			selected.Role = pb.ChatRole_CHAT_ROLE_BUILD
+			older := &pb.AgentChat{AgentSessionId: "older", Title: "earlier build", Role: pb.ChatRole_CHAT_ROLE_BUILD, CreatedAt: timestamppb.New(time.Unix(50, 0))}
+			newer := &pb.AgentChat{AgentSessionId: "new", Title: "new build", Role: pb.ChatRole_CHAT_ROLE_BUILD, CreatedAt: timestamppb.New(time.Unix(200, 0))}
+			m.chats = append(m.chats, older)
+			m.daemonStatuses = map[string]string{}
+			m.highlightID = highlight
+			m.buildTableRows()
+			if m.SelectedChatID() != selected.GetAgentSessionId() || len(m.table.Rows()) != 2 {
+				t.Fatal("fixture did not select the newer of two idle builds")
+			}
+			c.chats = []*pb.AgentChat{newer, selected, older}
+			for range 2 {
+				var poll tea.Cmd
+				m, poll = pickerPollCmd(t, m)
+				model, fetch := m.Update(poll())
+				m = applyTimelineCmd(model.(Model), fetch)
+				m.buildTableRows()
+				if m.SelectedChatID() != selected.GetAgentSessionId() {
+					t.Fatalf("new build hid the selected build: selected=%q", m.SelectedChatID())
+				}
+			}
+		})
+	}
+}
+
+func TestChatPickerPollCannotRevertInlineRename_ChatPicker_AC214701_AC229303(t *testing.T) {
+	c := &timelineClient{}
+	m := labelTimelinePicker(t, c)
+	c.session = m.session
+	c.chats = labelTimelineChats("build: old").Chats
+	m, beforeRename := pickerPollCmd(t, m)
+	m, rename := renameThroughKeys(t, m, "build: renamed")
+	staleBeforeRename := beforeRename()
+	m, duringRename := pickerPollCmd(t, m)
+	staleDuringRename := duringRename()
+	for _, stale := range []tea.Msg{staleBeforeRename, staleDuringRename} {
+		model, fetch := m.Update(stale)
+		m = applyTimelineCmd(model.(Model), fetch)
+		if m.chats[0].GetTitle() != "build: renamed" {
+			t.Fatal("in-flight poll reverted the optimistic title")
+		}
+	}
+	c.steps = labelTimelineSteps("build: renamed")
+	model, fetch := m.Update(rename())
+	m = applyTimelineCmd(model.(Model), fetch)
+	for _, stale := range []tea.Msg{staleBeforeRename, staleDuringRename} {
+		model, fetch = m.Update(stale)
+		m = applyTimelineCmd(model.(Model), fetch)
+		if m.chats[0].GetTitle() != "build: renamed" || !strings.Contains(stripANSI(m.timelineBlock()), "build: renamed") {
+			t.Fatal("late poll reverted the settled rename or timeline label")
+		}
+	}
+	c.chats = labelTimelineChats("build: later cli").Chats
+	c.steps = labelTimelineSteps("build: later cli")
+	m, fresh := pickerPollCmd(t, m)
+	model, fetch = m.Update(fresh())
+	m = applyTimelineCmd(model.(Model), fetch)
+	if m.chats[0].GetTitle() != "build: later cli" || !strings.Contains(stripANSI(m.timelineBlock()), "build: later cli") {
+		t.Fatal("fresh external rename did not replace the settled inline title")
+	}
+}
+
+func TestChatPickerPollFailedReadAndOpenLoad(t *testing.T) {
+	for _, loading := range []bool{false, true} {
+		t.Run(fmt.Sprint("loading=", loading), func(t *testing.T) {
+			c := &timelineClient{}
+			m := labelTimelinePicker(t, c)
+			m.loading = loading
+			if loading {
+				c.chats = labelTimelineChats("should not land").Chats
+			}
+			c.session = &pb.Session{Id: "s", Title: "updated session", PrDisplayHeadSha: "abc"}
+			c.statuses = []*pb.ChatStatusEntry{{AgentSessionId: "build", Status: pb.ChatStatus_CHAT_STATUS_IDLE}}
+			cursor := m.table.Cursor()
+			m, poll := pickerPollCmd(t, m)
+			model, _ := m.Update(poll())
+			m = model.(Model)
+			if m.session.GetTitle() != "updated session" || m.daemonStatuses["build"] != ui.StatusIdle {
+				t.Fatal("chat read suppressed session or status refresh")
+			}
+			if m.chats[0].GetTitle() != "build: old" || m.table.Cursor() != cursor || m.err != nil || m.loading != loading {
+				t.Fatal("failed read or loading poll changed chat list, cursor, error or loading state")
+			}
+		})
+	}
+}
+
+func TestChatPickerPollCannotResurrectDeletedChat(t *testing.T) {
+	c := &timelineClient{}
+	m := labelTimelinePicker(t, c)
+	c.session = m.session
+	c.chats = labelTimelineChats("build: old").Chats
+	m.deletingAgentSessionID = "build"
+	m, poll := pickerPollCmd(t, m)
+	stale := poll()
+	model, _ := m.Update(stale)
+	m = model.(Model)
+	if len(m.chats) != 1 || m.deletingAgentSessionID != "build" {
+		t.Fatal("poll interfered with pending deletion")
+	}
+	model, _ = m.Update(chatDeletedMsg{agentSessionID: "build"})
+	m = model.(Model)
+	model, _ = m.Update(stale)
+	m = model.(Model)
+	if len(m.chats) != 0 || len(m.table.Rows()) != 0 {
+		t.Fatal("late poll resurrected the deleted chat")
 	}
 }
 

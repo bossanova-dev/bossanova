@@ -45,9 +45,6 @@ func (c *timelineClient) GetSessionTimeline(context.Context, string) ([]*pb.Time
 	return c.steps, c.err
 }
 
-func (c *timelineClient) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
-	return nil, errors.New("unneeded")
-}
 func (c *timelineClient) GetChatTranscript(_ context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
 	c.target = req.GetAgentSessionId()
 	if c.question != "" {

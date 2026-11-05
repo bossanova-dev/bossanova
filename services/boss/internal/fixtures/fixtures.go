@@ -1897,7 +1897,7 @@ func AttentionSessions() []*pb.Session {
 	}
 	sentences := []string{
 		"Security change: verify gate rules (how PRs get merged)", "",
-		"Resumed 3 times since 23:16; each attempt lost its Claude login",
+		"Automatic repair exhausted its attempts",
 		"Which deployment should receive the update?",
 		"Security change: billing settings",
 		"Database migration",
@@ -1914,7 +1914,7 @@ func AttentionSessions() []*pb.Session {
 			displayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED
 			label, intent = "✓ merged", pb.DisplayIntent_DISPLAY_INTENT_MUTED
 		case pb.AttentionKind_ATTENTION_KIND_FIX:
-			a.AlertKey = "login-delta"
+			a.AlertKey = "repair-exhausted"
 			label, intent = "⨯ failing", pb.DisplayIntent_DISPLAY_INTENT_DANGER
 			a.Actions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_RESUME, pb.AttentionAction_ATTENTION_ACTION_DISMISS, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT}
 		case pb.AttentionKind_ATTENTION_KIND_QUESTION:
@@ -1927,10 +1927,10 @@ func AttentionSessions() []*pb.Session {
 		case pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS:
 			a.ProgressLabel = "building"
 			if i == 8 {
-				a.ProgressLabel = "checking 4/9"
+				a.ProgressLabel = "checking 12/14"
 			}
 		}
 		out = append(out, attentionSession(i, a, label, intent, displayStatus))
 	}
-	return withConfidenceParks(out)
+	return withServedStatus(withConfidenceParks(out))
 }

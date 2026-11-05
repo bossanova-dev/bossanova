@@ -57,7 +57,7 @@ func RenderBanner(active View, opts BannerOpts) string {
 				title = prLink + " " + title
 			}
 		}
-		displayStatus := RenderDisplayStatus(opts.Session, opts.Spinner)
+		displayStatus := SessionStatusText(opts.Session, opts.Spinner)
 		if opts.Archiving {
 			displayStatus = RenderArchivingStatus(opts.Spinner)
 		}

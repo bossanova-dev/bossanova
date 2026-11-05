@@ -387,24 +387,24 @@ func TestSelectableRejectsAuthInvalidButAcceptsHealthy(t *testing.T) {
 	benched := mkAcct("benched", 1, ok, active, nil, tp(0))
 	benched.AuthCheck = domain.AuthCheck{Outcome: domain.AuthCheckOutcomeAuthInvalid}
 
-	if !Selectable(good) {
+	if !Selectable(good, nil) {
 		t.Error("Selectable(good) = false, want true")
 	}
-	if Selectable(benched) {
+	if Selectable(benched, nil) {
 		t.Error("Selectable(auth-invalid) = true, want false")
 	}
 	now := base
-	if !BindableNow(good, now) {
+	if !BindableNow(good, now, nil) {
 		t.Error("BindableNow(good) = false, want true")
 	}
-	if BindableNow(benched, now) {
+	if BindableNow(benched, now, nil) {
 		t.Error("BindableNow(auth-invalid) = true, want false")
 	}
 	cooling := mkAcct("cooling", 2, ok, active, tp(2*time.Hour), tp(0))
-	if !Selectable(cooling) {
+	if !Selectable(cooling, nil) {
 		t.Error("Selectable(cooling) = false: cooling is bindable-later, still selectable")
 	}
-	if BindableNow(cooling, now) {
+	if BindableNow(cooling, now, nil) {
 		t.Error("BindableNow(cooling) = true, want false")
 	}
 }

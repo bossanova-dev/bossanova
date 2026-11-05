@@ -40,6 +40,20 @@ function world({ comments = [], failNotes = false, failPermission = false, statu
   const writes = []
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
   const read = (command, args) => {
+    if (command === 'boss' && args[0] === 'pr' && args[1] === 'state')
+      return ok({
+        head_sha: HEAD,
+        checks: status
+          ? [
+              {
+                name: status.context,
+                status: status.state === 'pending' ? 'in_progress' : 'completed',
+                conclusion: status.state === 'success' ? 'success' : 'failure',
+                description: status.description ?? '',
+              },
+            ]
+          : [],
+      })
     if (command === 'boss' && args[0] === 'ls') return ok({ sessions: [{ id: 's1', pr_url: URL }] })
     if (command === 'boss' && args[0] === 'show')
       return ok({ session: { repo_can_auto_repair: true, last_repair: null } })

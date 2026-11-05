@@ -7,9 +7,10 @@
 //
 //	{"at": <unix seconds>, "label": "<attribution>", "quota": "core"|"graphql", "identity": "<credential>"}
 //
-// with an "outcome" field only on an attempt that was refused without
-// contacting GitHub ("breaker" or "floor"); a line without one is a sent call,
-// appended with O_APPEND in a single write, so several processes, including
+// with an "outcome" field on a free conditional response ("not_modified") or
+// an attempt refused without contacting GitHub ("breaker" or "floor"); a line
+// without one is a billed call. Each line is appended with O_APPEND in a
+// single write, so several processes, including
 // non-Go gate and agent shims, can append to the same bucket without a lock.
 package ghusage
 
@@ -64,14 +65,14 @@ const (
 	LabelPRWait = "daemon:pr-wait"
 )
 
-// Outcomes of a metered attempt. A record with no outcome, or OutcomeSent, is
-// a call sent to GitHub; the others are attempts refused without contacting
-// it: by the rate-limit breaker while a quota is paused, or by the background
-// quota floor.
+// Outcomes of a metered attempt. No outcome, or OutcomeSent, means a billed
+// call. OutcomeNotModified is a free conditional response; OutcomeBreaker and
+// OutcomeFloor are attempts refused without contacting GitHub.
 const (
-	OutcomeSent    = "sent"
-	OutcomeBreaker = "breaker"
-	OutcomeFloor   = "floor"
+	OutcomeNotModified = "not_modified"
+	OutcomeSent        = "sent"
+	OutcomeBreaker     = "breaker"
+	OutcomeFloor       = "floor"
 )
 
 // DefaultWindow is the report window when the caller names none.
@@ -93,8 +94,8 @@ const bucketLayout = "2006010215"
 
 const bucketExt = ".jsonl"
 
-// Record is one ledger line: one GitHub call, or one refused attempt when
-// Outcome is set.
+// Record is one ledger line: a billed call, a free conditional response, or
+// a refused attempt, distinguished by Outcome.
 type Record struct {
 	At    int64  `json:"at"`
 	Label string `json:"label"`

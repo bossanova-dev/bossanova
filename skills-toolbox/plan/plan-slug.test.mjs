@@ -18,3 +18,23 @@ test('issueSlug collapses runs of non-alphanumerics and trims edges', () => {
 test('issueSlug leaves an already-uppercase id unchanged', () => {
   assert.equal(issueSlug('XYZ-9', 'Ship the thing!'), 'XYZ-9-ship-the-thing')
 })
+
+test('issueSlug rejects missing, wrong-typed, and blank arguments', () => {
+  for (const args of [
+    [{ id: 'BOS-1', title: 'x' }],
+    ['Some title'],
+    [],
+    [1, 'Valid title'],
+    ['BOS-1', 1],
+    ['', 'Valid title'],
+    ['   ', 'Valid title'],
+    ['BOS-1', ''],
+    ['BOS-1', '   '],
+  ]) {
+    assert.throws(() => issueSlug(...args), TypeError)
+  }
+})
+
+test('issueSlug preserves a non-blank title that slugs to nothing', () => {
+  assert.equal(issueSlug('BOS-1', '!!!'), 'BOS-1-')
+})

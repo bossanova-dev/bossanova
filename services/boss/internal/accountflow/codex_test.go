@@ -67,11 +67,14 @@ func TestRunCodexAdd(t *testing.T) {
 		pr := &fakePrompter{}
 		cl := &fakeAccountClient{}
 		err := RunCodexAdd(context.Background(), CodexOptions{
-			Exec: ex, Prompter: pr, Client: cl, Priority: 3,
+			Exec: ex, Prompter: pr, Client: cl, Priority: 3, BinEnv: []string{"PATH=/service"},
 			HomeDir: func() (string, error) { return dir, nil },
 		})
 		if err != nil {
 			t.Fatalf("RunCodexAdd: %v", err)
+		}
+		if len(ex.extraEnv) != 2 || ex.extraEnv[1] != "PATH=/service" || !strings.HasPrefix(ex.extraEnv[0], "CODEX_HOME=") {
+			t.Fatalf("extraEnv = %v", ex.extraEnv)
 		}
 		tr := pr.transcript()
 		urlIdx := strings.Index(tr, "https://auth.openai.com/codex/device")

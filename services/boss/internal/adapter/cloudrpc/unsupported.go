@@ -43,3 +43,8 @@ func (c *RemoteClient) ListSessionPRBlockers(context.Context, string) (*pb.ListS
 func (c *RemoteClient) FollowUpSessionPRNotes(context.Context, string, []string, bool, bool) (*pb.VerifyFollowUpResult, error) {
 	return nil, errLocalOnly("FollowUpSessionPRNotes")
 }
+
+// GetGitHubReadCredential exposes a secret on the local socket only.
+func (c *RemoteClient) GetGitHubReadCredential(context.Context, *pb.GetGitHubReadCredentialRequest) (*pb.GetGitHubReadCredentialResponse, error) {
+	return nil, errLocalOnly("GitHub read credential")
+}

@@ -77,7 +77,7 @@ func (s *Server) ListAgentAccounts(ctx context.Context, req *connect.Request[pb.
 	}
 	out := make([]*pb.AgentAccount, 0, len(accounts))
 	for _, a := range accounts {
-		out = append(out, accountToProto(a))
+		out = append(out, accountToProto(a, s.credentialDevices.Readiness()))
 	}
 	return connect.NewResponse(&pb.ListAgentAccountsResponse{
 		Accounts:     out,
@@ -168,6 +168,8 @@ func (s *Server) AddAgentAccount(ctx context.Context, req *connect.Request[pb.Ad
 	}
 
 	credential := normalizeCredentialBlobForSave(provider, msg.Credential)
+	// Derivation may call Anthropic, so it runs before any account lock.
+	identity := s.deriveAccountIdentity(ctx, provider, label, credential)
 	s.addAccountMu.Lock()
 	defer s.addAccountMu.Unlock()
 
@@ -198,10 +200,10 @@ func (s *Server) AddAgentAccount(ctx context.Context, req *connect.Request[pb.Ad
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
 	}
 
-	s.recordAccountIdentity(ctx, account, credential)
+	s.recordAccountIdentity(ctx, account, identity)
 	s.publishAccountCredential(ctx, account)
 	s.publishAgentAccountsChanged()
-	return connect.NewResponse(&pb.AddAgentAccountResponse{Account: accountToProto(account)}), nil
+	return connect.NewResponse(&pb.AddAgentAccountResponse{Account: accountToProto(account, s.credentialDevices.Readiness())}), nil
 }
 
 func (s *Server) rejectDuplicateCredential(ctx context.Context, provider string, credential []byte, excludeAccountID string) error {
@@ -250,13 +252,15 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("account credential store not configured"))
 	}
 	credential := normalizeCredentialBlobForSave(string(account.Provider), msg.GetCredential())
+	// Derivation may call Anthropic, so it runs before any account lock.
+	identity := s.deriveAccountIdentity(ctx, string(account.Provider), account.Label, credential)
 	s.addAccountMu.Lock()
 	defer s.addAccountMu.Unlock()
 
 	if err := s.rejectDuplicateCredential(ctx, string(account.Provider), credential, id); err != nil {
 		return nil, err
 	}
-	if err := s.saveRefreshedCredential(ctx, account, credential); err != nil {
+	if err := s.saveRefreshedCredential(ctx, account, credential, identity); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
 	}
 	// The credential just changed on disk, but any session that already failed
@@ -284,14 +288,14 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 				s.deleteRefreshedCredentialOnNotFound(id, err)
 				return nil, err
 			}
-			testResp.Msg.Account = accountToProto(account)
+			testResp.Msg.Account = accountToProto(account, s.credentialDevices.Readiness())
 		} else if !smokeIndeterminate {
 			account, err := s.failAccountHealth(ctx, id)
 			if err != nil {
 				s.deleteRefreshedCredentialOnNotFound(id, err)
 				return nil, err
 			}
-			testResp.Msg.Account = accountToProto(account)
+			testResp.Msg.Account = accountToProto(account, s.credentialDevices.Readiness())
 		}
 		s.publishAccountCredential(ctx, account)
 		s.publishAgentAccountsChanged()
@@ -309,7 +313,7 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 	s.publishAccountCredential(ctx, account)
 	s.publishAgentAccountsChanged()
 	return connect.NewResponse(&pb.RefreshAgentAccountResponse{
-		Account: accountToProto(account),
+		Account: accountToProto(account, s.credentialDevices.Readiness()),
 		Detail:  "credential refreshed",
 	}), nil
 }
@@ -343,13 +347,13 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 // committed inside the closure, so a clear failure must not fail the RPC.
 // Nothing it reaches re-enters this lock — MarkAuthCheckCleared is a bare account-row
 // UPDATE — which matters because the lock is not reentrant.
-func (s *Server) saveRefreshedCredential(ctx context.Context, account *domain.AgentAccount, credential []byte) error {
+func (s *Server) saveRefreshedCredential(ctx context.Context, account *domain.AgentAccount, credential []byte, identity domain.AgentAccountIdentity) error {
 	id := account.ID
 	save := func() error {
 		if err := s.accountCreds.Save(id, credential); err != nil {
 			return err
 		}
-		s.recordAccountIdentity(ctx, account, credential)
+		s.recordAccountIdentity(ctx, account, identity)
 		s.clearAuthCheckAfterRefresh(ctx, id)
 		return nil
 	}
@@ -459,6 +463,12 @@ func (s *Server) UpdateAgentAccount(ctx context.Context, req *connect.Request[pb
 		params.AllowedModels = &allowed
 	}
 
+	var previousLabel string
+	if params.Label != nil {
+		if before, getErr := s.accounts.Get(ctx, msg.Id); getErr == nil {
+			previousLabel = before.Label
+		}
+	}
 	account, err := s.accounts.Update(ctx, msg.Id, params)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -466,8 +476,11 @@ func (s *Server) UpdateAgentAccount(ctx context.Context, req *connect.Request[pb
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update account: %w", err))
 	}
+	if params.Label != nil {
+		s.relabelAccountIdentity(ctx, account, previousLabel)
+	}
 	s.publishAgentAccountsChanged()
-	return connect.NewResponse(&pb.UpdateAgentAccountResponse{Account: accountToProto(account)}), nil
+	return connect.NewResponse(&pb.UpdateAgentAccountResponse{Account: accountToProto(account, s.credentialDevices.Readiness())}), nil
 }
 
 // RemoveAgentAccount purges every trace of an account, most-sensitive artifact first:
@@ -656,7 +669,7 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 	}
 	s.publishAgentAccountsChanged()
 	return connect.NewResponse(&pb.TestAgentAccountResponse{
-		Account:      accountToProto(account),
+		Account:      accountToProto(account, s.credentialDevices.Readiness()),
 		LiveSmokeRan: liveSmokeRan,
 		Detail:       respDetail,
 	}), nil
@@ -803,15 +816,43 @@ func validAccountStatus(s string) bool {
 	}
 }
 
+// deriveAccountIdentity may make a network call of up to a few seconds for
+// Claude, so callers run it before taking addAccountMu or a credential lock.
+// Every failure yields the none identity.
+func (s *Server) deriveAccountIdentity(ctx context.Context, provider, label string, credential []byte) domain.AgentAccountIdentity {
+	return account.DeriveIdentity(ctx, provider, label, credential, s.claudeOrganizations)
+}
+
+// relabelAccountIdentity re-derives a Claude identity after a rename. The
+// normalized label is part of the Claude digest, so keeping the old digest
+// would let a different seat that later takes the old label link into this
+// account's row. Any failure records none: the account stops identity linking
+// rather than linking under a label it no longer has. No lock is held here, so
+// the organization lookup cannot stall another account RPC.
+func (s *Server) relabelAccountIdentity(ctx context.Context, a *domain.AgentAccount, previousLabel string) {
+	if a.Provider != domain.AgentAccountProviderClaude || account.LabelsMatch(previousLabel, a.Label) {
+		return
+	}
+	// The label has already committed, so a caller that goes away mid-lookup
+	// must not leave the old-label digest behind.
+	ctx = context.WithoutCancel(ctx)
+	var credential []byte
+	if s.accountCreds != nil {
+		if blob, err := s.accountCreds.Load(a.ID); err == nil {
+			credential = blob
+		}
+	}
+	s.recordAccountIdentity(ctx, a, s.deriveAccountIdentity(ctx, string(a.Provider), a.Label, credential))
+}
+
 // recordAccountIdentity follows a successful credential save. Failure remains
 // best-effort: the credential is already durable, so the RPC must succeed.
-func (s *Server) recordAccountIdentity(ctx context.Context, a *domain.AgentAccount, credential []byte) {
+func (s *Server) recordAccountIdentity(ctx context.Context, a *domain.AgentAccount, identity domain.AgentAccountIdentity) {
 	writer, ok := s.accounts.(accountIdentityWriter)
 	if !ok {
 		s.logger.Warn().Str("account_id", a.ID).Msg("account identity recording unavailable")
 		return
 	}
-	identity := account.DeriveIdentity(string(a.Provider), credential)
 	if err := writer.SetIdentity(ctx, a.ID, identity); err != nil {
 		s.logger.Warn().Err(err).Str("account_id", a.ID).Msg("could not record account identity")
 		return

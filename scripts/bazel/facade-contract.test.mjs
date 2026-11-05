@@ -53,7 +53,7 @@ test('test-bossd delegates to bazel //services/bossd/... + the bossd ledger step
   assert.match(out, /gate-cache\.mjs run --site test-bossd/)
   assert.match(
     out,
-    /test --test_output=errors\s+(?:\$\{BOSS_GATE_BAZEL_FLAGS\}\s+)?(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\/\/services\/bossd\/\.\.\./,
+    /test --test_output=errors\s+(?:\$\{BOSS_GATE_BAZEL_FLAGS\}\s+)?(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\$targets/,
   )
   assert.match(out, /run-ledger\.mjs --module services\/bossd --disposition default-run/)
 })
@@ -144,7 +144,7 @@ test('optional-module guard: mcp-gateway present here yields its bazel line', ()
   assert.match(out, /gate-cache\.mjs run --site test-mcp-gateway/)
   assert.match(
     out,
-    /test --test_output=errors\s+(?:\$\{BOSS_GATE_BAZEL_FLAGS\}\s+)?(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\/\/services\/mcp-gateway\/\.\.\./,
+    /test --test_output=errors\s+(?:\$\{BOSS_GATE_BAZEL_FLAGS\}\s+)?(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\$targets/,
   )
 })
 
@@ -300,3 +300,122 @@ for (const flags of ['', '--local_resources=cpu=5 --local_test_jobs=5']) {
     }
   })
 }
+
+for (const [scope, code, pattern, passes] of [
+  ['./internal/session', '0', '//services/bossd/internal/session:all', true],
+  [undefined, '0', '//services/bossd/...', true],
+  ['github.com/x/y', '0', '//services/bossd/...', true],
+  ['./internal/session', '4', '//services/bossd/internal/session:all', true],
+  [undefined, '4', '//services/bossd/...', false],
+]) {
+  test(`module scope ${scope ?? 'unset'} with Bazel exit ${code} (real exec)`, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'facade-scope-'))
+    const log = path.join(dir, 'bazel.log')
+    const env = {
+      ...process.env,
+      GO_TEST_PACKAGES: scope,
+      RACE: '',
+      MAKEFLAGS: '',
+      BOSS_GATE_FORCE_UNCACHED: '1',
+      BOSS_GATE_BAZEL_FLAGS: '',
+      LEDGER_DRY_RUN: '1',
+      BOSS_GATE_STAMP_DIR: path.join(dir, 'stamps'),
+      FAKE_BAZEL_LOG: log,
+      FAKE_BAZEL_EXIT: code,
+    }
+    try {
+      const run = () =>
+        execFileSync('make', [`BAZEL=${fakeBazel}`, 'test-bossd'], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env,
+        })
+      if (passes) {
+        const out = run()
+        if (scope === './internal/session') assert.match(out, /no ledger rows match/)
+      } else assert.throws(run)
+      const args = fs.readFileSync(log, 'utf8').trim().split(/\s+/)
+      assert.ok(args.includes(pattern), args.join(' '))
+      if (pattern !== '//services/bossd/...') assert.ok(!args.includes('//services/bossd/...'))
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+}
+
+test('every module recipe maps the root package scope (real exec)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'facade-modules-'))
+  const log = path.join(dir, 'bazel.log')
+  try {
+    for (const [target, module] of [
+      ['bossalib', 'lib/bossalib'],
+      ['boss', 'services/boss'],
+      ['bossd', 'services/bossd'],
+      ['mcp', 'services/mcp'],
+      ['mcp-gateway', 'services/mcp-gateway'],
+      ['bosso', 'services/bosso'],
+      ['claude', 'plugins/bossd-plugin-claude'],
+    ]) {
+      fs.writeFileSync(log, '')
+      execFileSync('make', [`BAZEL=${fakeBazel}`, `test-${target}`], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          GO_TEST_PACKAGES: '.',
+          RACE: '',
+          MAKEFLAGS: '',
+          BOSS_GATE_FORCE_UNCACHED: '1',
+          LEDGER_DRY_RUN: '1',
+          BOSS_GATE_STAMP_DIR: path.join(dir, 'stamps'),
+          FAKE_BAZEL_LOG: log,
+          FAKE_BAZEL_EXIT: '0',
+        },
+      })
+      assert.ok(
+        fs.readFileSync(log, 'utf8').trim().split(/\s+/).includes(`//${module}:all`),
+        module,
+      )
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('a failed or empty scope helper widens the module (real exec)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'facade-helper-'))
+  const log = path.join(dir, 'bazel.log')
+  const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'"
+  try {
+    for (const code of [0, 1]) {
+      fs.writeFileSync(
+        path.join(dir, 'node'),
+        `#!/bin/sh\nif [ "$1" = scripts/bazel/scope-targets.mjs ]; then exit ${code}; fi\nexec ${quote(process.execPath)} "$@"\n`,
+        { mode: 0o755 },
+      )
+      fs.writeFileSync(log, '')
+      execFileSync('make', [`BAZEL=${fakeBazel}`, 'test-bossd'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          PATH: `${dir}:${process.env.PATH}`,
+          GO_TEST_PACKAGES: './internal/session',
+          RACE: '',
+          MAKEFLAGS: '',
+          BOSS_GATE_FORCE_UNCACHED: '1',
+          LEDGER_DRY_RUN: '1',
+          BOSS_GATE_STAMP_DIR: path.join(dir, 'stamps'),
+          FAKE_BAZEL_LOG: log,
+          FAKE_BAZEL_EXIT: '0',
+        },
+      })
+      assert.ok(fs.readFileSync(log, 'utf8').trim().split(/\s+/).includes('//services/bossd/...'))
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})

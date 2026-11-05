@@ -117,6 +117,7 @@ lint:
 	node guards/docs-summary.mjs
 	node guards/docs-paths.mjs
 	@node guards/check-skill-shell.mjs
+	@node guards/check-ci-request-sites.mjs
 	@node guards/check-skill-node-fences.mjs
 	@node guards/check-dispatch-contract.mjs
 	@node guards/check-docs-mcp-props.mjs

@@ -64,7 +64,7 @@ This normally runs in the PR's own session, in its verify chat (role `verify`). 
 
 Report `owner` and `waitingOn` from `rearm` output, for example “waiting on repair: conflict”.
 Wherever this skill rearms, a result carrying `retry` means judge again from **Judge** instead of
-stopping, passing `--attempt <attempt+1>` to the next `rearm`. `fallback: gate` means report
+stopping; the helper counts retries per head and chat. `fallback: gate` means report
 “waiting on verify: <waitingOn> (retries exhausted; the cron gate re-judges)” and stop.
 
 After each judge, when `findingNotes` is non-empty, write that JSON array to a run-temp file, and
@@ -205,6 +205,8 @@ report it, never as "nothing to do".
 - Never post a status for a head you did not judge, and never merge outside `merge`.
 
 ## References
+
+- `references/area-caps.md` — automatic area caps after High escapes and the operator clear verb.
 
 - `references/cron-gate.md` — the verify cron job: schedule, prompt, gate command, and what its exit
   codes mean.

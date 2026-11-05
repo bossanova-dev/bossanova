@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "actionable_errors.go",
         "background_floor.go",
+        "conditional.go",
         "identity.go",
         "issue.go",
         "pr_comments.go",
@@ -32,6 +33,7 @@ go_test(
     name = "github_test",
     srcs = [
         "background_floor_test.go",
+        "conditional_test.go",
         "identity_test.go",
         "issue_test.go",
         "pr_comments_test.go",

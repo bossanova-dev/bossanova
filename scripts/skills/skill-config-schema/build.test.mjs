@@ -102,28 +102,12 @@ test('retro upstream accepts exactly one closed destination shape', () => {
   }
 })
 
-test('planning park action accepts both modes and rejects malformed or unknown settings', () => {
-  for (const planDefaults of [
-    {},
-    { predictedVerifyPark: 'needs-human' },
-    { predictedVerifyPark: 'rank-last' },
-  ]) {
-    assert.doesNotThrow(() =>
-      skillConfig.validateConfig({ ...skillConfig.DEFAULT_CONFIG, planDefaults }, 'test'),
-    )
-  }
-  for (const planDefaults of [
-    { predictedVerifyPark: 'skip' },
-    { predictedVerifyPark: true },
-    { predictedVerifyPark: null },
-    { predictedVerifyPark: 'rank-last', extra: true },
-    null,
-    [],
-    'needs-human',
-  ]) {
-    assert.throws(
-      () => skillConfig.validateConfig({ ...skillConfig.DEFAULT_CONFIG, planDefaults }, 'test'),
-      /planDefaults/,
-    )
-  }
+test('the retired planDefaults block warns and is ignored instead of selecting needs-human', (t) => {
+  const warnings = []
+  t.mock.method(console, 'warn', (message) => warnings.push(message))
+  const planDefaults = { predictedVerifyPark: 'needs-human' }
+  assert.doesNotThrow(() =>
+    skillConfig.validateConfig({ ...skillConfig.DEFAULT_CONFIG, planDefaults }, 'test'),
+  )
+  assert.ok(warnings.some((w) => w.includes('planDefaults is not a known key; ignored')))
 })

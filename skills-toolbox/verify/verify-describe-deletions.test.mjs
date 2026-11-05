@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 
-import { describeDeletions, exportedNames, MAX_SEARCHES } from './verify-describe-deletions.mjs'
+import {
+  describeDeletions,
+  exportedNames,
+  MAX_SEARCHES,
+  staleImporter,
+} from './verify-describe-deletions.mjs'
 import { envelopeFor, gitFixture, runDescriberScript } from './verify-git-fixture.mjs'
 
 const MODULE = new URL('./verify-describe-deletions.mjs', import.meta.url)
@@ -288,4 +294,263 @@ test('exportedNames reads JS/TS, Go and Python export forms', () => {
   assert.deepEqual(exportedNames('py', 'def _private():'), [])
   assert.deepEqual(exportedNames('py', '    def method(self):'), [])
   assert.deepEqual(exportedNames('py', 'class Widget:'), ['Widget'])
+})
+
+test('moved JS exports distinguish reachable imports from incidental mentions', (t) => {
+  const cases = [
+    [
+      "import { value } from '../lib/new.js'\nimport { keep } from '../lib/old.js'\nvalue + keep\n",
+      false,
+    ],
+    ["const old = 'old'\nconst value = 1\n", false],
+    ["import * as old from '../lib/old.js'\nold.value\n", true],
+    ["import {\n value,\n} from '../lib/old.js'\n", true],
+    ["const value = require('../lib/old.js').value\nvalue()\n", true],
+    ["require('../lib/old.js').value()\n", true],
+    ["const keep = require('../lib/old.js').keep\nvalue()\n", false],
+    ["import {\n value } from '../lib/old.js'\n", true],
+    ["const {\n value } = require('../lib/old.js')\n", true],
+    ["import * as ns\n from '../lib/old.js'\nns.value()\n", true],
+    ["import\n * as ns from '../lib/old.js'\nns.value()\n", true],
+    ["const { value = 1 } = require('../lib/old.js')\n", true],
+    ["const {\n value = 1 } = require('../lib/old.js')\n", true],
+    ["const { keep = value } = require('../lib/old.js')\n", false],
+  ]
+  for (const declaration of [
+    "import * as ns from '../lib/old.js'",
+    "const ns = require('../lib/old.js')",
+  ]) {
+    for (const usage of [
+      'ns?.value',
+      "ns['value']",
+      'ns?.["value"]',
+      'const { value } = ns',
+      'const { value: local = 0 } = ns',
+      '({ value } = ns)',
+      'const { value } = ns;',
+      'const { value } = ns, other = 0',
+    ])
+      cases.push([`${declaration}\n${usage}\n`, true])
+    for (const usage of [
+      "ns['keep']; value",
+      'ns?.keep; value',
+      'const { keep = value } = ns',
+      'const { value } = nsOther',
+      'const { value } = ns.sub',
+      'const { value } = ns.default',
+      'const { value } = ns . sub',
+      "const { value } = ns['sub']",
+      'const { value } = ns ["sub"]',
+      'const { value } = ns?.sub',
+      "const { value } = ns?.['sub']",
+      "otherns['value']",
+    ])
+      cases.push([`${declaration}\n${usage}\n`, false])
+  }
+  for (const [source, breaking] of cases) {
+    const result = describe(
+      change(
+        t,
+        {
+          'lib/old.js': 'export const value = 1\nexport const keep = 2\n',
+          'app/main.js': source,
+        },
+        {
+          files: {
+            'lib/old.js': 'export const keep = 2\n',
+            'lib/new.js': '// moved from old.js\nexport const value = 1\n',
+          },
+        },
+      ),
+    )
+    assert.equal(result.breaking, breaking, source)
+    if (breaking) assert.ok(result.items.some((item) => item.includes('app/main.js')))
+    assert.ok(result.items.every((item) => !item.includes('lib/new.js')))
+  }
+})
+
+test('embedded JS importers retain stale references without treating prose as imports', (t) => {
+  for (const extension of ['mdx', 'vue', 'svelte', 'html', 'unknown']) {
+    for (const [source, breaking] of [
+      ["import { value } from '../lib/old.js'\nvalue\n", true],
+      ["import value from '../lib/old.js'\nvalue()\n", true],
+      ["import value from '../lib/new.js'\n// old\nvalue()\n", false],
+      ["import { value } from '../lib/new.js'\nimport { keep } from '../lib/old.js'\n", false],
+      ['The old value is documented here.\n', false],
+    ]) {
+      const file = `app/main.${extension}`
+      const result = describe(
+        change(
+          t,
+          {
+            'lib/old.js': 'export const value = 1\nexport const keep = 2\n',
+            [file]: source,
+          },
+          {
+            files: {
+              'lib/old.js': 'export const keep = 2\n',
+              'lib/new.js': 'export const value = 1\n',
+            },
+          },
+        ),
+      )
+      assert.equal(result.breaking, breaking, `${extension}: ${source}`)
+      if (breaking) assert.ok(result.items.some((item) => item.includes(file)))
+    }
+  }
+})
+
+test('Python from-package imports can bind the old module', (t) => {
+  for (const [source, breaking] of [
+    ['from pkg import old\nold.helper()\n', true],
+    ['from pkg import old as legacy\nlegacy.helper()\n', true],
+    ['from . import old\nold.helper()\n', true],
+    ['from . import old as legacy\nlegacy.helper()\n', true],
+    ['from pkg import old\nold.stay()\nhelper()\n', false],
+    ['from other import old\nold.helper()\n', true],
+    ['from ..other import old\nold.helper()\n', false],
+  ]) {
+    const result = describe(
+      change(
+        t,
+        {
+          'pkg/old.py': 'def helper():\n    return 1\ndef stay():\n    return 2\n',
+          'pkg/main.py': source,
+        },
+        {
+          files: {
+            'pkg/old.py': 'def stay():\n    return 2\n',
+            'pkg/new.py': 'def helper():\n    return 1\n',
+          },
+        },
+      ),
+    )
+    assert.equal(result.breaking, breaking, source)
+    if (breaking) assert.ok(result.items.some((item) => item.includes('pkg/main.py')))
+  }
+})
+
+test('moved Go exports require a use through the old package', (t) => {
+  for (const qualifier of ['newpkg', 'old']) {
+    const result = describe(
+      change(
+        t,
+        {
+          'old/a.go': 'package old\nfunc Value() {}\nfunc Keep() {}\n',
+          'app/main.go': `package main\nimport (\n "example.com/m/old"\n "example.com/m/newpkg"\n)\nfunc main() { ${qualifier}.Value(); old.Keep() }\n`,
+        },
+        {
+          files: {
+            'old/a.go': 'package old\nfunc Keep() {}\n',
+            'newpkg/a.go': 'package newpkg\nfunc Value() {}\n',
+          },
+        },
+      ),
+    )
+    assert.equal(result.breaking, qualifier === 'old')
+    if (qualifier === 'old') assert.ok(result.items.some((item) => item.includes('app/main.go')))
+  }
+})
+
+test('moved Python exports distinguish migrated named imports', (t) => {
+  for (const [source, breaking] of [
+    ['from pkg.a import helper\nfrom pkg.a import stay\n', true],
+    ['from pkg.b import helper\nfrom pkg.a import stay\n', false],
+    ['from pkg.a import helper; helper()\n', true],
+    ['from pkg.a import stay, \\\n helper\n', true],
+    ['from pkg.b import stay, \\\n helper\n', false],
+  ]) {
+    const result = describe(
+      change(
+        t,
+        {
+          'pkg/a.py': 'def helper():\n    return 1\ndef stay():\n    return 2\n',
+          'app/main.py': source,
+        },
+        {
+          files: {
+            'pkg/a.py': 'def stay():\n    return 2\n',
+            'pkg/b.py': 'def helper():\n    return 1\n',
+          },
+        },
+      ),
+    )
+    assert.equal(result.breaking, breaking, source)
+    if (breaking) assert.ok(result.items.some((item) => item.includes('app/main.py')))
+  }
+})
+
+test('each moved export spends exactly one search', (t) => {
+  const names = ['one', 'two', 'three']
+  const definitions = names.map((name) => `export const ${name} = 1\n`).join('')
+  const fixture = change(
+    t,
+    {
+      'lib/old.js': definitions + 'export const keep = 1\n',
+      'app/main.js': "import { one, two, three } from '../lib/old.js'\n",
+    },
+    { files: { 'lib/old.js': 'export const keep = 1\n', 'lib/new.js': definitions } },
+  )
+  let searches = 0
+  const result = describeDeletions(
+    envelopeFor(fixture.repo.dir, fixture.base, fixture.head, 'other'),
+    {
+      cwd: fixture.repo.dir,
+      run(command, args, options) {
+        if (command === 'git' && args[0] === 'grep') searches += 1
+        return spawnSync(command, args, options)
+      },
+    },
+  )
+  assert.equal(result.breaking, true)
+  assert.equal(searches, names.length)
+})
+
+test('stale importer recognizers cover named, qualified and ambiguous bindings', () => {
+  const cases = [
+    ['js', "import type { value as local } from '../lib/old.js'", true],
+    ['js', "export { value as renamed } from '../lib/old.js'", true],
+    ['js', "const { value: local } = require('../lib/old.js')", true],
+    ['js', "const ns = require('../lib/old.js'); ns.value", true],
+    ['js', "const value = require('../lib/old.js').value; value()", true],
+    ['js', "require('../lib/old.js').value()", true],
+    ['js', "value } from '../lib/old.js'", true],
+    ['js', "value } = require('../lib/old.js')", true],
+    ['js', "import ns from '../lib/old.js'; ns.value", true],
+    ['js', "import ns from '../lib/old.js'; ns.keep; value", false],
+    ['js', "import { keep } from '../lib/old.js'; value", false],
+    ['js', "import '../lib/old.js'; value", false],
+    ['js', "export * from '../lib/old.js'; value", true],
+    ['js', "const lazy = import('../lib/old.js'); value", true],
+    ['js', "} = require('../lib/old.js'); value", true],
+    ['js', "import { value } from '../else/old.js'", false],
+    ['js', "import { value } from '@alias/old'", true],
+    ['js', "import $old from '../lib/old.js'; $old.value", true],
+    ['go', 'import legacy "example.com/m/old"; legacy.value', true],
+    ['go', 'import legacy "example.com/m/old"; old.value', false],
+    ['go', 'import . "example.com/m/old"; value', true],
+    ['go', 'import _ "example.com/m/old"; value', false],
+    ['py', 'from pkg.old import value as local', true],
+    ['py', 'from pkg.old import value; value()', true],
+    ['py', 'from pkg.old import keep, \\', true],
+    ['py', 'from pkg.new import keep, \\', false],
+    ['py', 'from pkg.old import keep; value', false],
+    ['py', 'from pkg.old import (', true],
+    ['py', 'from pkg.old import *', true],
+    ['py', 'import pkg.old as legacy; legacy.value', true],
+    ['py', 'import pkg.old; pkg.old.value', true],
+    ['py', 'from ..lib.old import value', true],
+    ['py', 'from .old import value', false],
+  ]
+  for (const [lang, line, expected] of cases) {
+    assert.equal(
+      staleImporter(lang, 'app/main.js', [line], { key: 'value', movedFrom: 'lib/old' }),
+      expected,
+      line,
+    )
+  }
+  assert.equal(
+    staleImporter('go', 'lib/old/sibling.go', ['value()'], { key: 'value', movedFrom: 'lib/old' }),
+    true,
+  )
 })

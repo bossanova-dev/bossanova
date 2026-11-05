@@ -133,7 +133,9 @@ func MaxUtilization(u5h, u7d float64) float64 {
 // and not benched by durable credential-verification state. It is the exported
 // form of the engine's own predicate, so binding-validation surfaces outside
 // this package share it instead of re-deriving eligibility and drifting.
-func Selectable(a *domain.AgentAccount) bool { return isSelectable(a) }
+func Selectable(a *domain.AgentAccount, gate func(*domain.AgentAccount) string) bool {
+	return isSelectable(a, gate)
+}
 
 // BindableNow reports whether an account may be bound to a session right now:
 // Selectable, and not inside a cooldown window at the given instant.
@@ -142,8 +144,8 @@ func Selectable(a *domain.AgentAccount) bool { return isSelectable(a) }
 // switch) need this stricter form because they must refuse BEFORE mutating a
 // session — a spawn-time refusal arrives after the chat has already been
 // stopped and rebound.
-func BindableNow(a *domain.AgentAccount, now time.Time) bool {
-	if !Selectable(a) {
+func BindableNow(a *domain.AgentAccount, now time.Time, gate func(*domain.AgentAccount) string) bool {
+	if !Selectable(a, gate) {
 		return false
 	}
 	return a.CooldownUntil == nil || !a.CooldownUntil.After(now)

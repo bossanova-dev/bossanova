@@ -19,13 +19,22 @@ description: >
 # group on `github.event.pull_request.head.sha` with cancel-in-progress off, so the
 # second same-SHA run queues until the first concludes and this probe then sees it.
 #
-# Only a prior `pull_request` run counts. A feature-push run of the same workflow
+# By default only a prior `pull_request` run counts. Feature-ready callers may
+# also inherit a dispatched run by setting events explicitly. A feature-push run of the same workflow
 # on the same commit ran the feature tier (affected targets, no release gates), so
 # its success says nothing about the release jobs this probe would skip.
 
+inputs:
+  events:
+    description: Comma-separated event names whose successful runs can be inherited
+    default: pull_request
+
 outputs:
+  run-url:
+    description: URL of the successful run being inherited
+    value: ${{ steps.probe.outputs.run-url }}
   skip:
-    description: "'true' when a prior successful pull_request run of this workflow exists for this commit"
+    description: "'true' when a prior successful matching run of this workflow exists for this commit"
     value: ${{ steps.probe.outputs.skip }}
 
 runs:
@@ -42,6 +51,7 @@ runs:
         HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         WORKFLOW_NAME: ${{ github.workflow }}
         RUN_ID: ${{ github.run_id }}
+        EVENTS: ${{ inputs.events }}
         REPO: ${{ github.repository }}
       run: |
         # Deliberately NOT `set -e`: this gate must FAIL SAFE. Any API hiccup,
@@ -49,18 +59,35 @@ runs:
         # run the tests — never to skip=true, which would silently drop coverage.
         set -uo pipefail
 
-        count=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" 2>/dev/null \
-          | jq --arg name "${WORKFLOW_NAME}" --argjson rid "${RUN_ID}" \
-               '[.workflow_runs[]? | select(.name == $name and .event == "pull_request" and .conclusion == "success" and .id != $rid)] | length' \
-               2>/dev/null) || count=""
+        candidates=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" 2>/dev/null \
+          | jq -r --arg name "${WORKFLOW_NAME}" --argjson rid "${RUN_ID}" --arg events "${EVENTS}" \
+               '.workflow_runs[]? | select(.name == $name and (.event as $event | $events | split(",") | index($event)) != null and .conclusion == "success" and .id != $rid) | [.id, .html_url, .event] | @tsv' \
+               2>/dev/null) || candidates=""
 
-        case "${count}" in
-          ''|*[!0-9]*) count=0 ;;
-        esac
+        inherited=""
+        while IFS=$'\t' read -r candidate url event; do
+          [[ "$candidate" =~ ^[0-9]+$ ]] || continue
+          # Expanded feature inheritance must not trust the successful conclusion
+          # of a draft run whose heavy jobs were all skipped. The release default
+          # retains its existing workflow-success contract.
+          if [ "$EVENTS" != pull_request ]; then
+            # A PR-less manual dispatch tests the bare head. Only a successful
+            # merge checkout can make a dispatch prove the PR merge result.
+            worked=$(gh api "repos/${REPO}/actions/runs/${candidate}/jobs?per_page=100" 2>/dev/null \
+              | jq --arg event "$event" '[.jobs[]? | select(.conclusion == "success")
+                  | select(.name as $name | ["go-test", "go-ledger", "sqlc", "go-lint", "scripts", "web", "web-e2e", "real-stack"] | index($name))
+                  | select($event != "workflow_dispatch" or any(.steps[]?;
+                      .name == "Run ./.github/actions/checkout-pr-merge" and .conclusion == "success"))] | length' 2>/dev/null) || worked=0
+            [[ "$worked" =~ ^[0-9]+$ ]] && [ "$worked" -gt 0 ] || continue
+          fi
+          inherited="$url"
+          break
+        done <<< "$candidates"
 
-        if [ "${count}" -gt 0 ]; then
+        if [[ "$inherited" == "https://github.com/${REPO}/actions/runs/"* ]]; then
+          echo "run-url=$inherited" >> "$GITHUB_OUTPUT"
           echo "skip=true" >> "$GITHUB_OUTPUT"
-          echo "::notice::${WORKFLOW_NAME} already succeeded on ${HEAD_SHA} (${count} prior run(s)); skipping the heavy jobs — the earlier run's checks are already attached to this commit."
+          echo "::notice::${WORKFLOW_NAME} already succeeded on ${HEAD_SHA} ($inherited); skipping the heavy jobs — the earlier run's checks are already attached to this commit."
         else
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "No prior successful ${WORKFLOW_NAME} run for ${HEAD_SHA}; running in full."

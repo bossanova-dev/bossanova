@@ -79,10 +79,13 @@ func (s *Server) ListSessionPRBlockers(ctx context.Context, req *connect.Request
 		response.Reason = "head-unknown"
 		return connect.NewResponse(response), nil
 	}
+	readAt := s.attentionCache.blockers.clock()
 	result, err := s.verifyVerbsFor(env).Blockers(runCtx, target, head)
 	if err != nil {
 		return nil, s.verifyBridgeError("blockers", target, err)
 	}
+	// The same read the session list serves its blocker tallies from.
+	s.recordBlockers(req.Msg.GetId(), head, readAt, result)
 	switch result.Outcome {
 	case "absent":
 		response.Reason = "no-blockers"

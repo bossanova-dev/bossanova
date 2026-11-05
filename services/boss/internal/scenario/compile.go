@@ -130,13 +130,13 @@ func Compile(doc Document) (Plan, []Problem) {
 		checkJSON, _ := json.Marshal(checkRows)
 		row.CheckSnapshots = append(row.CheckSnapshots, SeedCheck{PolledAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), RawJSON: string(checkJSON), HeadSHA: snapshotHead, ComputedStatus: int32(snapshotDisplayStatus(pr, checks))})
 		restMergeability, _ := json.Marshal(map[string]any{"mergeable": pr.Mergeable, "mergeable_state": "clean", "rebaseable": true})
-		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n}, Stdout: string(restMergeability)})
-		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n + "/reviews?per_page=100", "--paginate"}, Stdout: "[]"})
+		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n, "-i"}, Stdout: string(restMergeability)})
+		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n + "/reviews?per_page=100", "-i"}, Stdout: "[]"})
 		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"pr", "view", n, "--repo", s.Repo, "--json", "state,mergeable,mergeStateStatus,isDraft,title,body,headRefName,baseRefName,headRefOid,isCrossRepository,reviewDecision,reviews"}, Stdout: string(view)}, realstack.GHResponse{Args: []string{"pr", "checks", n, "--repo", s.Repo, "--json", "name,state,workflow,description"}, Stdout: string(checkJSON)})
 	}
 	p.GH = append(p.GH, heldMergeResponses(doc)...)
 	for _, r := range doc.Repos {
-		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + r.Key, "--jq", "{m:.allow_merge_commit,s:.allow_squash_merge,r:.allow_rebase_merge}"}, Stdout: `{"m":true,"s":true,"r":true}`})
+		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + r.Key, "-i"}, Stdout: `{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}`})
 		data, _ := json.Marshal(lists[r.Key])
 		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"pr", "list", "--repo", r.Key, "--state", "open", "--json", "number,title,headRefName,state,author", "--limit", "300"}, Stdout: string(data)})
 	}

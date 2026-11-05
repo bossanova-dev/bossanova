@@ -31,7 +31,7 @@ func TestRunClaudeAdd(t *testing.T) {
 		ex := &fakeExec{proc: newScriptedProc([]string{"Open https://claude.com/oauth and approve", tok}, nil)}
 		pr := &fakePrompter{confirms: []bool{true}, answers: []string{"", ""}}
 		cl := &fakeAccountClient{}
-		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Exec: ex, Prompter: pr, Client: cl}); err != nil {
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Exec: ex, Prompter: pr, Client: cl, BinEnv: []string{"PATH=/service"}}); err != nil {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
@@ -44,7 +44,7 @@ func TestRunClaudeAdd(t *testing.T) {
 		if string(req.GetCredential()) != tok {
 			t.Fatalf("credential blob = %q, want token", req.GetCredential())
 		}
-		if len(ex.extraEnv) == 0 || !strings.HasPrefix(ex.extraEnv[0], "CLAUDE_CONFIG_DIR=") {
+		if len(ex.extraEnv) != 2 || ex.extraEnv[1] != "PATH=/service" || !strings.HasPrefix(ex.extraEnv[0], "CLAUDE_CONFIG_DIR=") {
 			t.Fatalf("extraEnv = %v, want CLAUDE_CONFIG_DIR= prefix", ex.extraEnv)
 		}
 		if strings.Contains(pr.transcript(), tok) {

@@ -93,7 +93,8 @@ func (w *daemonWiring) wireDaemon() {
 		RotationEngine:          w.rotationEngine,
 		Resolver:                w.accountResolver,
 		AccountCredentials:      w.accountCreds,
-		AgentAccountsChanged:    func() { w.streamBus.Publish(upstream.StreamEvent{AgentAccounts: &upstream.AgentAccountsEvent{}}) },
+		ClaudeOrganizations:     w.claudeOrganizations,
+		AgentAccountsChanged:    w.publishAgentAccountsChanged,
 		AccountSmokeRunner:      w.accountSmokeHook,
 		UsageProbe:              w.accountUsageProbe,
 		AccountMaterializations: w.accountMaterializations,
@@ -166,6 +167,7 @@ func (w *daemonWiring) wireDaemon() {
 		EndpointReader: sessionPortsTracker,
 		ProtectedRoots: w.startupProtectedRoots,
 	}
+	setGitHubCredentialReporter(&daemonConfig, w.githubCredentials)
 	w.srv = server.New(daemonConfig)
 	w.srv.SetRequiredChecks(w.checkPolicy)
 	if w.opts.onVerifyJobSeamsWired != nil {
@@ -260,4 +262,10 @@ func (w *daemonWiring) wireDaemon() {
 	// now. Bound before any stream runs, so no upload can outrun it.
 	w.chatUploads.setServer(w.srv)
 
+}
+
+// publishAgentAccountsChanged invalidates the upstream account inventory so
+// bosso sees local account changes, including newly derived identities.
+func (w *daemonWiring) publishAgentAccountsChanged() {
+	w.streamBus.Publish(upstream.StreamEvent{AgentAccounts: &upstream.AgentAccountsEvent{}})
 }

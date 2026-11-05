@@ -4370,6 +4370,36 @@ test('verifyDefaults.requireGreenBase is an opt-in boolean', () => {
   )
 })
 
+test('ci.request accepts workflow files and rejects malformed workflow configuration', () => {
+  for (const request of [
+    { workflows: ['heavy.yml', 'scripts.yaml'] },
+    { workflows: [], coverageJobs: { 'heavy.yml': ['test'] } },
+    {},
+  ]) {
+    assert.doesNotThrow(() =>
+      validateConfig(mergeConfig(DEFAULT_CONFIG, { ci: { request } }), 'test'),
+    )
+  }
+  for (const request of [
+    { coverageJobs: { 'heavy.yml': [] } },
+    { coverageJobs: { 'heavy.yml': [''] } },
+    { coverageJobs: { 'heavy.yml': 'test' } },
+    { workflows: ['../heavy.yml'] },
+    { workflows: ['heavy.txt'] },
+    { workflows: [''] },
+    { workflows: 'heavy.yml' },
+    { workflows: [1] },
+    [],
+    'heavy.yml',
+    { unknown: true },
+  ]) {
+    assert.throws(
+      () => validateConfig(mergeConfig(DEFAULT_CONFIG, { ci: { request } }), 'test'),
+      /ci\.request/,
+    )
+  }
+})
+
 test('ci.required is parsed onto the verify policy and validated by the schema', () => {
   assert.deepEqual(verifyPolicyFromConfigText('{}', 'test').requiredChecks, {
     checks: [],

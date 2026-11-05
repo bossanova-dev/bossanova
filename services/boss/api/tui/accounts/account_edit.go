@@ -535,6 +535,12 @@ func accountDetailRows(a *pb.AgentAccount, now time.Time, sync syncRegistry) []u
 
 	rows := make([]ui.KeyValue, 0, len(baseRows)+len(u.GetModelWindows())+2)
 	rows = append(rows, baseRows...)
+	if reason := a.GetCredentialSyncBlockReason(); reason != "" {
+		rows = append(rows, ui.KeyValue{
+			Key:   "Credential sharing",
+			Value: "blocked: " + maskTestError(reason) + " · run boss account devices status",
+		})
+	}
 	for _, window := range visibleModelWindows(u) {
 		rows = append(rows, ui.KeyValue{Key: "Usage " + window.GetModelName(), Value: accountUsageWindowDetail(u, window.GetUtil(), window.GetResetsAt(), now)})
 	}

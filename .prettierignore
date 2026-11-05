@@ -49,3 +49,9 @@ lib/bossalib/kit/projectconfig/schema/boss-project.schema.json
 # Go owns the byte-compared cross-language park verdict fixture.
 lib/bossalib/attention/testdata/park_verdicts.json
 lib/bossalib/attention/testdata/park_asks.json
+lib/bossalib/attention/testdata/confidence_sentences.json
+lib/bossalib/attention/testdata/row_status.json
+
+# The roadmap folder is written by the ls-roadmap CLI: `render` rewrites the page and model and
+# `apply` rewrites roadmap.json keys, so prettier would fight the next run.
+docs/roadmap/

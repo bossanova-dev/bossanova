@@ -1001,3 +1001,7 @@ Verify parks carry `confidence_level`, up to three `asks`, the current head's
 in place of `ATTENTION_ACTION_VIDEO`. The legacy `evidence_url` and `park_codes`
 remain available. Older pins receive the four new fields cleared, with VIDEO in
 PROOF's place when an evidence URL exists and neither action otherwise.
+
+Every attention also carries `status_phrase`, the row's STATUS words (at most 22
+display cells, never cut with an ellipsis), and `status_detail`, its detail
+line, empty when the row has nothing more to say. Older pins receive both cleared.

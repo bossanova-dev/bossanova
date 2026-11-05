@@ -71,12 +71,17 @@ func CallbackWaitLabel(w CallbackWait, checks ChecksState) string {
 	}
 }
 
-// ChatWaitLabel uses the daemon's PR facts for an own-PR callback wait.
+// ChatWaitLabel uses the daemon's PR facts for an own-PR callback wait: the
+// served status phrase the session row shows ("checks 12/14"), or the progress
+// label from a daemon that serves no phrase.
 func ChatWaitLabel(trigger string, served *pb.SessionAttention) string {
 	label := served.GetProgressLabel()
 	callback := IsCallbackWaitLabel(label)
 	chatDerived := callback || slices.Contains(knownPhases, label) || slices.Contains([]string{"working", "idle", "stopped"}, label)
 	if served.GetKind() == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS && label != "" && !chatDerived {
+		if phrase := served.GetStatusPhrase(); phrase != "" {
+			return phrase
+		}
 		return label
 	}
 	checks := ChecksUnknown

@@ -1,6 +1,10 @@
 package displaystatus
 
-import pb "github.com/recurser/bossalib/gen/bossanova/v1"
+import (
+	"strings"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+)
 
 // WaitChecks is the check state relevant to whether an armed wake can fire.
 type WaitChecks int
@@ -22,6 +26,24 @@ type WaitPR struct {
 
 // WaitBlocker names the action preventing an armed wake from firing.
 type WaitBlocker string
+
+// StuckWaitAlertKey identifies the blocker and head of a stuck-wait FIX.
+func StuckWaitAlertKey(blocker WaitBlocker, head string) string {
+	return "stuck-wait:" + string(blocker) + ":" + head
+}
+
+// StuckWaitBlocker reads a blocker from a stuck-wait FIX alert key.
+func StuckWaitBlocker(alertKey string) (WaitBlocker, bool) {
+	rest, ok := strings.CutPrefix(alertKey, "stuck-wait:")
+	if !ok {
+		return "", false
+	}
+	blocker, _, ok := strings.Cut(rest, ":")
+	if !ok || blocker == "" {
+		return "", false
+	}
+	return WaitBlocker(blocker), true
+}
 
 // WaitReach describes whether the current PR can satisfy a wake without intervention.
 type WaitReach struct {

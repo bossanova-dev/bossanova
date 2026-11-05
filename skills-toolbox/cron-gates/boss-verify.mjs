@@ -56,6 +56,7 @@ import { configuredTrackerName, trackerCredentialGap } from '../tracker/adapter.
 import { isMainModule } from '../main-module.mjs'
 import { SELECTION_FLAGS } from '../selection.mjs'
 import { parseSweepArgs, summaryLine, sweep } from '../verify/verify-route.mjs'
+import { prepareAreaCaps } from '../verify/verify-area-caps-refresh.mjs'
 
 const PREFIX = 'boss-verify gate'
 // gatecmd classifies EX_UNAVAILABLE as could-not-evaluate, so bossd retries this head.
@@ -124,6 +125,8 @@ export function evaluateBossVerifyGate({ argv = [], env = process.env, deps = {}
     return { exitCode: failureExit, lines: [`${PREFIX}: ${error.message}`] }
   }
   let result
+  /** @type {{health?:string,wait?:string}} */
+  let refresh = {}
   try {
     result = sweep(
       {
@@ -131,12 +134,21 @@ export function evaluateBossVerifyGate({ argv = [], env = process.env, deps = {}
         ...(eventPrUrl ? { eventPrUrl } : { skipUnchanged: true }),
         ...(env.BOSS_WEBHOOKS_HEALTHY === '1' ? { safetyNetMs: safetyNetMinutes * 60_000 } : {}),
       },
-      { ...deps, env, trackerName },
+      {
+        ...deps,
+        env,
+        trackerName,
+        prepare: () => {
+          refresh = prepareAreaCaps({ ...deps, env })
+          return refresh.wait
+        },
+      },
     )
   } catch (error) {
     return { exitCode: failureExit, lines: [`${PREFIX}: ${error?.message ?? String(error)}`] }
   }
   const lines = result.records.map((r) => r.line)
+  if (refresh?.health) lines.push(`${PREFIX}: health: ${refresh.health}`)
   if (result.idle) lines.push(`${PREFIX}: idle: ${result.idle}`)
   if (result.unchanged) lines.push(`${PREFIX}: unchanged since the last quiet tick`)
   if (result.fleetUnreadable)

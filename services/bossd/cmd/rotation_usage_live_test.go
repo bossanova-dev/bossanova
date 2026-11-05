@@ -49,7 +49,7 @@ func TestRotationSelectionUsesLiveUsageAfterCacheWriteFailure_Accounts_AC10(t *t
 			}
 			failing := &failingRotationUsageStore{SQLiteAgentAccountStore: store}
 			prober := &fakeDecisionUsageCache{probeSnapByID: map[string]domain.UsageSnapshot{accounts[1].ID: {Util5h: .60, Util7d: .30, Reset5h: &reset, Reset7d: &weeklyA, FetchedAt: &now}, accounts[2].ID: {Util5h: .10, Util7d: .40, Reset5h: &reset, Reset7d: &weeklyB, FetchedAt: &now}}}
-			sig := cacheUsageProbeForRotationSignal(ctx, zerolog.Nop(), prober, failing, rotation.Signal{Provider: "claude", CappedAccountID: accounts[0].ID, Kind: rotation.UsageLimited, RotationCapable: true})
+			sig := cacheUsageProbeForRotationSignal(ctx, zerolog.Nop(), prober, failing, nil, rotation.Signal{Provider: "claude", CappedAccountID: accounts[0].ID, Kind: rotation.UsageLimited, RotationCapable: true})
 			eng := rotation.NewEngine(failing)
 			var chosen *domain.AgentAccount
 			var err error
@@ -82,7 +82,7 @@ func TestRotationSelectionUsesLiveUsageAfterCacheWriteFailure_Accounts_AC10(t *t
 
 func TestCacheUsageProbeForRotationSignalWithoutCandidates(t *testing.T) {
 	cache := &fakeDecisionUsageCache{}
-	sig := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, rotation.Signal{
+	sig := cacheUsageProbeForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, nil, rotation.Signal{
 		Provider: "claude", Kind: rotation.UsageLimited, RotationCapable: true,
 	})
 	if sig.CandidateUsage != nil {

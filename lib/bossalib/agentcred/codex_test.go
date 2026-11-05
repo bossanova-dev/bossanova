@@ -134,6 +134,39 @@ func TestValidateCodexAuthJSON(t *testing.T) {
 	}
 }
 
+func TestValidateCodexAuthJSONPreservesJSONError(t *testing.T) {
+	tests := []struct {
+		name       string
+		data       string
+		wantSyntax bool
+	}{
+		{name: "syntax error", data: `{not json`, wantSyntax: true},
+		{name: "field type error", data: `{"tokens":{"access_token":42}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ValidateCodexAuthJSON([]byte(tt.data))
+			if !errors.Is(err, ErrCodexAuthMalformed) {
+				t.Fatalf("got %v, want ErrCodexAuthMalformed", err)
+			}
+			if tt.wantSyntax {
+				var syntaxErr *json.SyntaxError
+				if !errors.As(err, &syntaxErr) {
+					t.Fatalf("got %v, want wrapped *json.SyntaxError", err)
+				}
+			} else {
+				var typeErr *json.UnmarshalTypeError
+				if !errors.As(err, &typeErr) {
+					t.Fatalf("got %v, want wrapped *json.UnmarshalTypeError", err)
+				}
+				if typeErr.Field != "tokens.access_token" {
+					t.Fatalf("error field = %q, want tokens.access_token", typeErr.Field)
+				}
+			}
+		})
+	}
+}
+
 func TestCodexAccountStoreJSON(t *testing.T) {
 	blob, err := CodexAgentAccountStoreJSON(CodexAuth{
 		AccessToken: "at", RefreshToken: "rt", IDToken: "it", AccountID: "acc",

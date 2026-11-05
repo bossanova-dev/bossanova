@@ -8,6 +8,7 @@ import (
 	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/chatlabel"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/domain"
 )
@@ -39,7 +40,7 @@ func (s *Server) stuckWaitFix(ctx context.Context, p *pb.Session, d attentionDep
 	if chosen == nil {
 		return nil
 	}
-	title := chats[chosen.TargetChatID].Title
+	title := stuckWaitChatLabels(d.chats, p.GetTitle())[chosen.TargetChatID]
 	if title == "" {
 		title = "verify"
 	}
@@ -52,7 +53,7 @@ func (s *Server) stuckWaitFix(ctx context.Context, p *pb.Session, d attentionDep
 	if d.display != nil {
 		head = d.display.HeadSHA
 	}
-	return &attention.FixFact{AlertKey: "stuck-wait:" + string(blocker) + ":" + head, ChatID: chosen.TargetChatID, Since: since, Sentence: title + " waits on a wake that cannot fire: " + clause}
+	return &attention.FixFact{AlertKey: displaystatus.StuckWaitAlertKey(blocker, head), ChatID: chosen.TargetChatID, Since: since, Sentence: title + " waits on a wake that cannot fire: " + clause}
 }
 
 func stuckWaitCallback(callbacks []*domain.GitHubCallback, chats map[string]*domain.AgentChat, pr displaystatus.WaitPR, now time.Time) (*domain.GitHubCallback, displaystatus.WaitBlocker, time.Time) {
@@ -93,4 +94,27 @@ func waitBlockerRank(blocker displaystatus.WaitBlocker) int {
 	default:
 		return 2
 	}
+}
+
+func stuckWaitChatLabels(chats []*domain.AgentChat, sessionTitle string) map[string]string {
+	labels := make([]chatlabel.Chat, 0, len(chats))
+	for _, chat := range chats {
+		if chat == nil {
+			continue
+		}
+		var role chatlabel.Role
+		switch chat.Role {
+		case domain.AgentChatRoleBuild:
+			role = chatlabel.RoleBuild
+		case domain.AgentChatRoleVerify:
+			role = chatlabel.RoleVerify
+		case domain.AgentChatRoleRepair:
+			role = chatlabel.RoleRepair
+		case domain.AgentChatRoleOperator:
+			role = chatlabel.RoleOperator
+		case domain.AgentChatRoleUnknown:
+		}
+		labels = append(labels, chatlabel.Chat{ID: chat.AgentSessionID, Role: role, Title: chat.Title, CreatedAt: chat.CreatedAt})
+	}
+	return chatlabel.Labels(labels, sessionTitle)
 }

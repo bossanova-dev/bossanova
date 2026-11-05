@@ -91,21 +91,11 @@ func (m Model) neededQuestion() string {
 	if question == "" {
 		return ""
 	}
-	return question + whatWouldRaise(m.session.GetAttention())
-}
-
-// whatWouldRaise lists a leveled verify park's lowered-by reasons, in served
-// order, under a heading, the way blockedParkNeeded lists open items. A park
-// without a level or reasons adds nothing.
-func whatWouldRaise(a *pb.SessionAttention) string {
-	if a.GetConfidenceLevel() == pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED || len(a.GetLoweredBy()) == 0 {
-		return ""
+	a := m.session.GetAttention()
+	if sentence := attention.ConfidenceSentence(a.GetConfidenceLevel(), a.GetLoweredBy()); sentence != "" {
+		return question + "\n\n" + sentence
 	}
-	lines := []string{"", "What would raise this:"}
-	for _, reason := range a.GetLoweredBy() {
-		lines = append(lines, "  • "+reason)
-	}
-	return strings.Join(lines, "\n")
+	return question
 }
 
 func (m Model) neededAsk() string {

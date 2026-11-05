@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/credsync"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/status"
@@ -552,23 +553,24 @@ func noteToProto(n *domain.Note) *pb.Note {
 // accountToProto converts a domain Account to its protobuf representation.
 // It maps METADATA ONLY — the credential blob is never a field on either side
 // (locked decision D3) and is never read here.
-func accountToProto(a *domain.AgentAccount) *pb.AgentAccount {
+func accountToProto(a *domain.AgentAccount, readiness credsync.Readiness) *pb.AgentAccount {
 	p := &pb.AgentAccount{
-		Identity:                &pb.AgentAccountIdentity{Kind: string(a.Identity.Kind), Digest: a.Identity.Digest, IsConfident: a.Identity.IsConfident()},
-		Id:                      a.ID,
-		SyncedAgentAccountId:    a.SyncedAgentAccountID,
-		SyncVersion:             a.SyncVersion,
-		SyncedCredentialVersion: a.SyncedCredentialVersion,
-		Provider:                string(a.Provider),
-		Label:                   a.Label,
-		Status:                  string(a.Status),
-		Priority:                clampInt32(a.Priority),
-		Health:                  string(a.Health),
-		Tier:                    a.Tier,
-		AllowedModels:           a.AllowedModels,
-		LastTestError:           a.LastTestError,
-		CreatedAt:               timestamppb.New(a.CreatedAt),
-		UpdatedAt:               timestamppb.New(a.UpdatedAt),
+		CredentialSyncBlockReason: readiness.AgentAccountBlockReason(a),
+		Identity:                  &pb.AgentAccountIdentity{Kind: string(a.Identity.Kind), Digest: a.Identity.Digest, IsConfident: a.Identity.IsConfident()},
+		Id:                        a.ID,
+		SyncedAgentAccountId:      a.SyncedAgentAccountID,
+		SyncVersion:               a.SyncVersion,
+		SyncedCredentialVersion:   a.SyncedCredentialVersion,
+		Provider:                  string(a.Provider),
+		Label:                     a.Label,
+		Status:                    string(a.Status),
+		Priority:                  clampInt32(a.Priority),
+		Health:                    string(a.Health),
+		Tier:                      a.Tier,
+		AllowedModels:             a.AllowedModels,
+		LastTestError:             a.LastTestError,
+		CreatedAt:                 timestamppb.New(a.CreatedAt),
+		UpdatedAt:                 timestamppb.New(a.UpdatedAt),
 	}
 	if a.CooldownUntil != nil {
 		p.CooldownUntil = timestamppb.New(*a.CooldownUntil)
@@ -774,4 +776,6 @@ func protoToTimestamp(ts *timestamppb.Timestamp) *time.Time {
 }
 
 // AgentAccountMetadata projects an account for inventory using the RPC's metadata-only shape.
-func AgentAccountMetadata(a *domain.AgentAccount) *pb.AgentAccount { return accountToProto(a) }
+func AgentAccountMetadata(a *domain.AgentAccount, readiness credsync.Readiness) *pb.AgentAccount {
+	return accountToProto(a, readiness)
+}

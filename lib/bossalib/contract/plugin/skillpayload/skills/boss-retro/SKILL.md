@@ -81,6 +81,7 @@ its default cap bounds completed promises. Report `problems` and leave them unto
 If the augmented notes and the due promises are both empty, report nothing to retro, print
 `retro-outcomes-report.mjs render <outcomes.json>` when the report exists, run phase 7,
 and teardown.
+Before that empty exit, run `retro/retro-escape-config-pr.mjs open --outcomes <outcomes.json>` (add `--dry-run` in preview mode) and report its proposals and outcomes; a failure never stops the run.
 
 ## 2. Theme — one awaited dispatch
 
@@ -174,6 +175,7 @@ with its class counts in the preview and phase 6 report.
 In dry-run mode, print `retro-run.mjs preview <remedy-route.json> --path-aliases <aliases>` including `forward` and `flagged`.
 Print `retro-outcomes-report.mjs render <outcomes.json>` when the report exists; a render failure
 is reported without stopping.
+Run `retro/retro-escape-config-pr.mjs open --outcomes <outcomes.json> --dry-run` and print its proposals and skips, reporting failures without stopping.
 For each admitted refile, print `retro-notes.mjs refile-describe <follow-through.json> <key>`.
 Report enforced/unconfirmed follow-through without updating markers. Teardown; no attachment,
 recording, note mutation or tracker write. Preview includes rendered `## Codify as` and `## Cleanup`.
@@ -246,6 +248,7 @@ After successful retirement, call `guidance-audit.mjs --record --run-id <runId>`
 optional config, then `retro-run.mjs record-run --run-id <runId> --classes <class-report.json>`. Report recording failures.
 Add `--outcomes <outcomes.json>` to `record-run` only when the report exists and is readable,
 and print `retro-outcomes-report.mjs render <outcomes.json>` when available, reporting render failures without stopping.
+Run `retro/retro-escape-config-pr.mjs open --outcomes <outcomes.json>` and report `opened`, `existing`, `deferred`, `skipped` and `failures`, reporting failures without stopping.
 Report forwarded and failed themes from `forward-result.json` when present, flagged counts from `remedy-route.json`,
 and the class report (also persisted as state `lastReport`), mode, parent/child ids, helper counts, the `merge-verdicts` coverage object, deferred and
 unconfirmed work, collector statuses,

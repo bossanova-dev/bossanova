@@ -11,8 +11,8 @@ import (
 // New constructs the account commands with command-scoped client and target
 // resolution. syncedRegistry reaches the hosted synced-account registry for
 // `ls --json`; nil reports every synced account's sync_state as unknown.
-func New(factory cliutil.ClientFactory[Client], syncedRegistry SyncedRegistryFactory, remoteURL, hostDestination func(*cobra.Command) string) *cobra.Command {
-	g := &group{newClient: factory, syncedRegistry: syncedRegistry, remoteURL: remoteURL, hostDestination: hostDestination}
+func New(factory cliutil.ClientFactory[Client], syncedRegistry SyncedRegistryFactory, remoteURL, hostDestination func(*cobra.Command) string, servicePath func() string) *cobra.Command {
+	g := &group{newClient: factory, syncedRegistry: syncedRegistry, remoteURL: remoteURL, hostDestination: hostDestination, servicePath: servicePath}
 	account := &cobra.Command{
 		Use:   "account",
 		Short: "Manage agent accounts (credential registry)",
@@ -44,6 +44,7 @@ func New(factory cliutil.ClientFactory[Client], syncedRegistry SyncedRegistryFac
 	add.Flags().String("credential-file", "", "Read the credential from a file (or '-' for stdin); preferred over --token")
 	// Interactive registration (claude setup-token walkthrough / codex device flow).
 	add.Flags().Bool("token-stdin", false, "claude only: read the setup token from stdin instead of running the walkthrough")
+	add.Flags().String("codex-bin", "", "codex only: path to the codex CLI; default: this shell’s PATH, then the daemon’s service PATH")
 	add.Flags().Duration("timeout", 10*time.Minute, "Deadline for an interactive registration walkthrough")
 
 	refresh := &cobra.Command{
@@ -88,6 +89,7 @@ func New(factory cliutil.ClientFactory[Client], syncedRegistry SyncedRegistryFac
 			return g.runAccountReauth(cmd, args[0])
 		},
 	}
+	reauth.Flags().String("codex-bin", "", "codex only: path to the codex CLI; default: this shell’s PATH, then the daemon’s service PATH")
 	reauth.Flags().Duration("timeout", 10*time.Minute, "Deadline for the interactive device login")
 
 	account.AddCommand(

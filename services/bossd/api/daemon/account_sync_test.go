@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/recurser/bossd/internal/credsync"
 	"github.com/recurser/bossd/internal/domain"
 )
 
@@ -34,7 +35,7 @@ func TestRefreshedCredentialPublicationCanInstallConflictWinner(t *testing.T) {
 			return creds.Save(local, []byte("remote-winner"))
 		})
 	}
-	if err := srv.saveRefreshedCredential(context.Background(), account, []byte("replacement")); err != nil {
+	if err := srv.saveRefreshedCredential(context.Background(), account, []byte("replacement"), domain.AgentAccountIdentity{Kind: domain.AgentAccountIdentityKindNone}); err != nil {
 		t.Fatal(err)
 	}
 	if published != 1 {
@@ -47,7 +48,7 @@ func TestRefreshedCredentialPublicationCanInstallConflictWinner(t *testing.T) {
 }
 
 func TestAccountToProtoSyncMetadata(t *testing.T) {
-	a := accountToProto(&domain.AgentAccount{ID: "local", SyncedAgentAccountID: "synced", SyncVersion: 23})
+	a := accountToProto(&domain.AgentAccount{ID: "local", SyncedAgentAccountID: "synced", SyncVersion: 23}, credsync.Readiness{})
 	if a.GetSyncedAgentAccountId() != "synced" || a.GetSyncVersion() != 23 {
 		t.Fatalf("account=%+v", a)
 	}

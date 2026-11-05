@@ -266,3 +266,52 @@ test('a fix describing an example affected run does not blame the example PR', (
     0,
   )
 })
+
+test('only an unapproved verified success on the merge head records High', () => {
+  for (const [state, description, oid, expected] of [
+    ['SUCCESS', 'verified', 'abc', 'high'],
+    ['SUCCESS', 'verified (approved)', 'abc', null],
+    ['PENDING', 'verified', 'abc', null],
+    ['SUCCESS', 'human-review:ui', 'abc', null],
+    ['SUCCESS', 'verified', 'different-head', null],
+    [null, null, 'abc', null],
+  ]) {
+    const record = escapeRecord({
+      repo: 'a/b',
+      fix,
+      tracedAt: '2026-10-03',
+      link: {
+        ...links('fixes #10')[0],
+        original: {
+          ...original,
+          commits: {
+            nodes: [
+              {
+                commit: {
+                  oid,
+                  status: {
+                    contexts: state
+                      ? [
+                          {
+                            context: 'boss/verify',
+                            state,
+                            description,
+                          },
+                        ]
+                      : [],
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    })
+    assert.equal(record.levelAtMerge, expected)
+    assert.deepEqual(parseEscapeComment(renderEscapeComment(record)), record)
+    assert.equal(
+      parseEscapeComment(renderEscapeComment({ ...record, levelAtMerge: 'moderate' })),
+      null,
+    )
+  }
+})

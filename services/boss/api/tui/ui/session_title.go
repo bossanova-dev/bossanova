@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -30,8 +31,12 @@ func ShortSessionTitle(title, trackerID string) string {
 	return strings.TrimRightFunc(string(window), unicode.IsSpace) + "…"
 }
 
-// SessionListTitle composes a tracker's ID and a shortened display title for a row.
-func SessionListTitle(sess *pb.Session) string {
+// sessionListIDGap separates the tracker-ID column from the title.
+const sessionListIDGap = "  "
+
+// SessionListTitle composes a tracker's ID and a shortened display title for a
+// row, padding the ID to idWidth so titles on one board start in one column.
+func SessionListTitle(sess *pb.Session, idWidth int) string {
 	title := sess.GetTitle()
 	if title == "" {
 		title = sess.GetBranchName()
@@ -44,7 +49,16 @@ func SessionListTitle(sess *pb.Session) string {
 	if short == "" {
 		return id
 	}
-	return id + " · " + short
+	return id + strings.Repeat(" ", max(0, idWidth-utf8.RuneCountInString(id))) + sessionListIDGap + short
+}
+
+// SessionListIDWidth is the widest tracker ID among sessions, in runes.
+func SessionListIDWidth(sessions []*pb.Session) int {
+	width := 0
+	for _, sess := range sessions {
+		width = max(width, utf8.RuneCountInString(sess.GetTrackerId()))
+	}
+	return width
 }
 
 // trackerTitleToken prefers bracketed tokens for full titles, and also accepts
@@ -54,7 +68,7 @@ func trackerTitleToken(title, trackerID string) (int, string) {
 	if idx := strings.Index(title, target); idx >= 0 {
 		return idx, target
 	}
-	if title == trackerID || strings.HasPrefix(title, trackerID+" · ") {
+	if title == trackerID || strings.HasPrefix(title, trackerID+sessionListIDGap) {
 		return 0, trackerID
 	}
 	return -1, ""

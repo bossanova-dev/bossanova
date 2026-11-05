@@ -57,8 +57,8 @@ func TestGateOptionsMetersGateGHCallsUnderTheCronLabel_GitHubUsage_AC220401(t *t
 		t.Fatalf("Read: %v", err)
 	}
 	want := []ghusage.Count{
-		{Label: "cron:bs-verify", Quota: ghusage.QuotaCore, Calls: 1},
-		{Label: "cron:bs-verify", Quota: ghusage.QuotaGraphQL, Calls: 1},
+		{Label: "cron:bs-verify", Quota: ghusage.QuotaCore, Identity: ghusage.IdentityUser, Calls: 1},
+		{Label: "cron:bs-verify", Quota: ghusage.QuotaGraphQL, Identity: ghusage.IdentityUser, Calls: 1},
 	}
 	if !reflect.DeepEqual(usage.Counts, want) {
 		t.Fatalf("ledger = %+v, want %+v", usage.Counts, want)

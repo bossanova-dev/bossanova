@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -508,8 +509,8 @@ func TestGHMetersEverySentCall(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 	want := []ghusage.Count{
-		{Label: ghusage.LabelFinalize, Quota: ghusage.QuotaCore, Calls: int64(restCalls)},
-		{Label: ghusage.LabelUnattributed, Quota: ghusage.QuotaGraphQL, Calls: 1, BreakerSkips: 2},
+		{Label: ghusage.LabelFinalize, Quota: ghusage.QuotaCore, Identity: ghusage.IdentityUser, Calls: int64(restCalls)},
+		{Label: ghusage.LabelUnattributed, Quota: ghusage.QuotaGraphQL, Identity: ghusage.IdentityUser, Calls: 1, BreakerSkips: 2},
 	}
 	if restCalls == 1 {
 		// Equal calls sort by skips: the refused GraphQL row comes first.
@@ -517,5 +518,44 @@ func TestGHMetersEverySentCall(t *testing.T) {
 	}
 	if !reflect.DeepEqual(usage.Counts, want) {
 		t.Fatalf("ledger = %+v, want %+v", usage.Counts, want)
+	}
+}
+
+func TestRepeatReadOfUnchangedPRRecordsNotModified_GitHubUsage_AC230701(t *testing.T) {
+	clock := newFakeClock()
+	ledger := ghusage.New(t.TempDir(), zerolog.Nop(), ghusage.WithNow(clock.Now))
+	coreCalls := 0
+	p := New(zerolog.Nop(), WithNowFunc(clock.Now), WithUsageRecorder(ledger), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		if isPRView(args) {
+			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false,"title":"unchanged","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"APPROVED"}`, nil
+		}
+		if len(args) > 1 && args[1] == "repos/o/r/pulls/7" {
+			coreCalls++
+			if coreCalls == 1 {
+				return "HTTP/2.0 200 OK\nETag: \"unchanged\"\n\n{\"mergeable\":true,\"rebaseable\":true}", nil
+			}
+			if !strings.Contains(strings.Join(args, " "), "-H If-None-Match: \"unchanged\"") {
+				t.Fatalf("repeat args %v", args)
+			}
+			return "", &ghError{stdout: "HTTP/2.0 304 Not Modified\n\n", stderr: "gh: HTTP 304", err: errors.New("exit status 1")}
+		}
+		return "", fmt.Errorf("unexpected call %v", args)
+	}))
+	ctx := ghusage.WithLabel(context.Background(), ghusage.LabelFinalize)
+	first, err := p.GetPRStatus(ctx, "o/r", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.GetPRStatus(ctx, "o/r", 7)
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatalf("repeat result %v %v", second, err)
+	}
+	usage, err := ledger.Read(clock.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ghusage.Count{{Label: ghusage.LabelFinalize, Quota: quotaGraphQL, Identity: ghusage.IdentityUser, Calls: 2}, {Label: ghusage.LabelFinalize, Quota: quotaCore, Identity: ghusage.IdentityUser, Calls: 1, NotModified: 1}}
+	if !reflect.DeepEqual(usage.Counts, want) {
+		t.Fatalf("usage %+v, want %+v", usage.Counts, want)
 	}
 }

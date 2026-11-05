@@ -85,7 +85,7 @@ func TestCandidateUsageReusesFreshSnapshot_Accounts_AC15(t *testing.T) {
 			now := time.Now()
 			fetched := now.Add(-age)
 			cache := &fakeDecisionUsageCache{accounts: []*domain.AgentAccount{{ID: "candidate", Provider: domain.AgentAccountProviderClaude, Status: domain.AgentAccountStatusActive, Health: domain.AgentAccountHealthOK, Usage: &domain.UsageSnapshot{FetchedAt: &fetched, Util5h: .2}}}, probeSnap: domain.UsageSnapshot{FetchedAt: &now, Util5h: .4}}
-			usage := probeCandidateUsageForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, rotation.Signal{Provider: "claude"})
+			usage := probeCandidateUsageForRotationSignal(context.Background(), zerolog.Nop(), cache, cache, nil, rotation.Signal{Provider: "claude"})
 			wantCalls := 1
 			wantUtil := .4
 			if age < probeThrottleFloor {

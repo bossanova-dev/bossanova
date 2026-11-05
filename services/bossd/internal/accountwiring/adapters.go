@@ -159,11 +159,28 @@ type credentialGenerationStore interface {
 
 // --- Registry adapter -----------------------------------------------------
 
-type registryAdapter struct{ store AgentAccountStore }
+type registryAdapter struct {
+	store              AgentAccountStore
+	credentialSyncGate func(*domain.AgentAccount) string
+}
+
+// RegistryOption configures the registry's live metadata projection.
+type RegistryOption func(*registryAdapter)
+
+// WithCredentialSyncGate projects daemon readiness without persisting it.
+func WithCredentialSyncGate(gate func(*domain.AgentAccount) string) RegistryOption {
+	return func(a *registryAdapter) { a.credentialSyncGate = gate }
+}
 
 // NewRegistry adapts an AgentAccountStore to account.Registry. A nil store yields a
 // registry that reports no accounts (the resolver then degrades to account 0).
-func NewRegistry(store AgentAccountStore) account.Registry { return &registryAdapter{store: store} }
+func NewRegistry(store AgentAccountStore, opts ...RegistryOption) account.Registry {
+	a := &registryAdapter{store: store}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
+}
 
 func (a *registryAdapter) List(ctx context.Context) ([]account.Meta, error) {
 	if a.store == nil {
@@ -175,7 +192,7 @@ func (a *registryAdapter) List(ctx context.Context) ([]account.Meta, error) {
 	}
 	out := make([]account.Meta, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, toMeta(r))
+		out = append(out, a.toMeta(r))
 	}
 	return out, nil
 }
@@ -191,7 +208,15 @@ func (a *registryAdapter) Get(ctx context.Context, id string) (account.Meta, boo
 		}
 		return account.Meta{}, false, err
 	}
-	return toMeta(r), true, nil
+	return a.toMeta(r), true, nil
+}
+
+func (a *registryAdapter) toMeta(row *domain.AgentAccount) account.Meta {
+	m := toMeta(row)
+	if a.credentialSyncGate != nil {
+		m.CredentialSyncBlocked = a.credentialSyncGate(row)
+	}
+	return m
 }
 
 func (a *registryAdapter) TouchLastUsed(ctx context.Context, id string, at time.Time) error {

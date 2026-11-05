@@ -5,10 +5,12 @@ go_library(
     srcs = [
         "alertkeys.go",
         "attention.go",
+        "blocker_tallies.go",
         "callback_wait.go",
         "confidence.go",
         "review_ask.go",
         "rotation.go",
+        "row_status.go",
         "templates.go",
         "verdict.go",
     ],
@@ -26,7 +28,9 @@ go_test(
     srcs = [
         "alertkeys_test.go",
         "attention_test.go",
+        "blocker_tallies_test.go",
         "callback_wait_test.go",
+        "confidence_sentence_test.go",
         "confidence_test.go",
         "park_asks_test.go",
         "park_code_words_test.go",
@@ -34,6 +38,7 @@ go_test(
         "park_verdicts_test.go",
         "partial_marker_test.go",
         "review_ask_test.go",
+        "row_status_test.go",
         "verdict_test.go",
         "verified_not_merged_test.go",
         "verify_hold_test.go",
@@ -48,4 +53,7 @@ go_test(
     ],
 )
 
-exports_files(["testdata/park_asks.json"])
+exports_files([
+    "testdata/park_asks.json",
+    "testdata/row_status.json",
+])

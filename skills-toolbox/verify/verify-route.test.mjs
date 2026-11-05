@@ -1244,7 +1244,7 @@ test('local-sessions-only: no live PR session here means no discovery and no Git
     const w = world({ sessions, rateLimit: { core: { limit: 5000, remaining: 5000 } } })
     const r = sweep(LOCAL, w.deps())
     assert.deepEqual(
-      w.calls.map((c) => [c.cmd, c.args[0]]),
+      w.calls.filter((c) => c.cmd !== 'git').map((c) => [c.cmd, c.args[0]]),
       [[BOSS, 'ls']],
     )
     assert.equal(r.idle, 'no session on this machine has a PR')
@@ -2099,6 +2099,67 @@ test('sweep persists admission via injected fs; event scans update only their PR
   const stored = JSON.parse(readFileSync(file)).scopes[key].prs
   assert.equal(stored[1].state, 'admitted')
   assert.equal(stored[2].state, 'excluded')
+})
+
+test('a shared full sweep stores its remote-session skips; an event or unreadable fleet keeps them', () => {
+  const dir = tempDir('sweep-admission-remote-')
+  const file = join(dir, 'verify-admission.json')
+  const deps = (extra = {}) => ({
+    readProjectConfig: sharedConfig,
+    stateFile: join(dir, 'sweep-state.json'),
+    ...extra,
+  })
+  const admission = [1, 2, 3].map((pr) => ({
+    pr,
+    head: sha(pr),
+    state: 'admitted',
+    reason: 'ticket',
+  }))
+  const remote = () => JSON.parse(readFileSync(file)).scopes[sweepScopeKey({ shared: true })].remote
+  const scan = (options, opts) =>
+    sweep(
+      options,
+      world({
+        candidates: [1, 2, 3].map((pr) => candidate(pr)),
+        admission,
+        verdicts: { 1: { verdict: 'extensions-required' } },
+        ...opts,
+      }).deps(deps()),
+    )
+  scan(
+    { dryRun: false },
+    { fleetSessions: [3, 2].map((pr) => ({ id: `remote-${pr}`, pr_url: url(pr) })) },
+  )
+  assert.deepEqual(remote(), [2, 3])
+  scan({ eventPrUrl: url(1) }, { fleetSessions: [] })
+  assert.deepEqual(remote(), [2, 3])
+  scan({}, { fleetResult: { ok: false, error: 'offline' } })
+  assert.deepEqual(remote(), [2, 3])
+  scan({}, { fleetSessions: [] })
+  assert.deepEqual(remote(), [])
+})
+
+test('a local-only sweep with no PR here withdraws its remote list and keeps admission', () => {
+  const dir = tempDir('sweep-admission-local-remote-')
+  const file = join(dir, 'verify-admission.json')
+  const deps = { stateFile: join(dir, 'sweep-state.json') }
+  const stored = () => JSON.parse(readFileSync(file)).scopes[sweepScopeKey(LOCAL)]
+  sweep(
+    LOCAL,
+    world({
+      candidates: [candidate(3)],
+      admission: [1, 3].map((pr) => ({ pr, head: sha(pr), state: 'admitted', reason: 'ticket' })),
+      skipped: [{ ticket: 'BOS-1', pr: 1, reason: 'remote-session' }],
+      sessions: [liveRow(3)],
+    }).deps(deps),
+  )
+  assert.deepEqual(stored().remote, [1])
+  sweep({ ...LOCAL, dryRun: true }, world({ sessions: [] }).deps(deps))
+  assert.deepEqual(stored().remote, [1])
+  const r = sweep(LOCAL, world({ sessions: [] }).deps(deps))
+  assert.equal(r.idle, 'no session on this machine has a PR')
+  assert.equal(stored().remote, undefined)
+  assert.deepEqual(Object.keys(stored().prs).sort(), ['1', '3'])
 })
 
 test('sweep dry-run, failed discovery and unchanged tick leave admission untouched', () => {

@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "ghusage.go",
         "ledger.go",
+        "readroute.go",
+        "readroute_graphql.go",
         "shim.go",
     ],
     importpath = "github.com/recurser/bossd/internal/ghusage",
@@ -16,6 +18,7 @@ go_test(
     name = "ghusage_test",
     srcs = [
         "ledger_test.go",
+        "readroute_test.go",
         "shim_test.go",
     ],
     embed = [":ghusage"],

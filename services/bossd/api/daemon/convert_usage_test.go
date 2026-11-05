@@ -5,6 +5,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/credsync"
 	"github.com/recurser/bossd/internal/domain"
 	goproto "google.golang.org/protobuf/proto"
 )
@@ -34,7 +35,7 @@ func TestAccountToProto_UsageSnapshotRoundTrip_Accounts_AC5(t *testing.T) {
 		},
 	}
 
-	got := accountToProto(account)
+	got := accountToProto(account, credsync.Readiness{})
 	if got.Usage == nil {
 		t.Fatal("Usage = nil, want populated")
 	}

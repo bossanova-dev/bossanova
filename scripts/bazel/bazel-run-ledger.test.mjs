@@ -84,6 +84,60 @@ test('empty selection (module with no rows) prints a note and exits 0', () => {
   assert.match(out, /no ledger rows/i)
 })
 
+test('--targets selects exact packages, recursive packages and unions in the CLI', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-ledger-scope-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const packages = ['fixture', 'fixture/a', 'fixture/a/child', 'fixture/ab', 'other/a']
+  const rows = packages.map((pkg, i) => ({
+    label: `//${pkg}:pkg_test`,
+    module: pkg.startsWith('fixture') ? 'fixture' : 'other',
+    command: `echo selected-${i}`,
+    disposition: 'default-run',
+  }))
+  const ledgerFile = path.join(dir, 'ledger.json')
+  fs.writeFileSync(ledgerFile, JSON.stringify(rows))
+  const env = { RUN_LEDGER_FILE: ledgerFile }
+  const args = ['--disposition', 'default-run', '--module', 'fixture', '--print']
+  for (const [targets, indexes] of [
+    ['//fixture/a:all', [1]],
+    ['//fixture/a/...', [1, 2]],
+    ['//fixture/...', [0, 1, 2, 3]],
+    ['//fixture:all //fixture/ab:all', [0, 3]],
+    ['//fixture/missing:all', []],
+  ]) {
+    const out = run([...args, '--targets', targets], env)
+    assert.deepEqual(
+      out
+        .trim()
+        .split('\n')
+        .filter((line) => line.startsWith('echo selected-')),
+      indexes.map((i) => `echo selected-${i}`),
+      targets,
+    )
+  }
+  assert.equal(
+    run(args, env),
+    'echo selected-0\necho selected-1\necho selected-2\necho selected-3\n',
+  )
+})
+
+test('label matcher respects package boundaries and includes recursive roots', async () => {
+  const { matchesTargets } = await import('./run-ledger.mjs')
+  for (const [label, patterns, expected] of [
+    ['//fixture/a:test', ['//fixture/a:all'], true],
+    ['//fixture/a/child:test', ['//fixture/a:all'], false],
+    ['//fixture/ab:test', ['//fixture/a/...'], false],
+    ['//fixture/a:test', ['//fixture/a/...'], true],
+    ['//fixture/a/child:test', ['//fixture/a/...'], true],
+    ['//fixture:test', ['//fixture/...'], true],
+    ['//fixture-extra:test', ['//fixture/...'], false],
+    ['//fixture/a:test', ['//other:all', '//fixture/a:all'], true],
+    ['//fixture/a:test', [], false],
+  ]) {
+    assert.equal(matchesTargets(label, patterns), expected, `${label} in ${patterns.join(' ')}`)
+  }
+})
+
 // Retry contract: a row whose label is in the quarantine runs up to 3 times and reports FLAKY
 // when a retry passes; an unlisted row still stops on its first failure. Driven for real against
 // fixture rows whose command fails until a counter file reaches a threshold.

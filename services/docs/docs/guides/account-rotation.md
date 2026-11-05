@@ -446,6 +446,11 @@ chat='"reauthenticate account <account-id>"'
 cli="boss account reauth <account-id>"
 />
 
+When run through a non-login SSH command, `reauth` and `account add` fall back to
+the daemon's service PATH if the provider CLI is absent from the shell's PATH.
+For Codex, override the lookup with `--codex-bin /absolute/path/to/codex` on
+`boss account reauth <account-id>` or `boss account add codex`.
+
 **Refresh** when you already hold a replacement credential. `boss account refresh`
 always writes one, so it needs `--token` or `--credential-file`
 (`--credential-file -` reads stdin); it will not run without one:

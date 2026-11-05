@@ -25,6 +25,7 @@ go_test(
     name = "account_test",
     srcs = [
         "binding_test.go",
+        "credential_sync_test.go",
         "identity_test.go",
         "injection_test.go",
         "out_of_service_test.go",

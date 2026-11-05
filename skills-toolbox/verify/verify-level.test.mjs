@@ -73,6 +73,10 @@ test('proof, policy, size, and missing collectors affect confidence', () => {
   ])
   assert.equal(levelFacts({ ...facts, range: { kind: 'delta' } }).size, undefined)
 })
+test('size-only Low labels retain the changed-line count', () => {
+  const result = confidence(levelFacts({ ...facts, changedLines: 2140 }))
+  assert.equal(levelLabel(result), 'low: 2,140 lines')
+})
 test('park levels include parks from older callers', () => {
   assert.equal(parkLevel({ codes: ['human-review:ui'], label: '' }), 'moderate')
   assert.equal(parkLevel({ codes: ['human-review:ui'], label: 'low: UI' }), 'low')

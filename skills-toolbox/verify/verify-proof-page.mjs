@@ -4,7 +4,13 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { isMainModule } from '../main-module.mjs'
 import { parkVerdict } from './verify-park-note.mjs'
-import { validateProof, checkProofUrl, LEVELS, MAX_TEXT_CHARS } from './verify-proof.mjs'
+import {
+  validateProof,
+  checkProofUrl,
+  LEVELS,
+  CONFIDENCE_NOT_COMPUTED,
+  MAX_TEXT_CHARS,
+} from './verify-proof.mjs'
 
 export const MAX_EXCERPT_LINES = 30
 export const MAX_LINE_CHARS = 200
@@ -25,7 +31,8 @@ export const LEVEL_GUIDANCE = Object.freeze({
  * @typedef {{proof: Proof, asks?: Record<string, {diff?: string, plan?: string}>, rates?: Record<string, {fixed: number, total: number}>, timeline?: {at: string, text: string}[], afterMerge?: string[], filesUrl?: string, verdict?: {codes: string[], label?: string}}} PageInput
  * @typedef {{label: string, lines: string[], total: number, remaining: number}} Excerpt
  * @typedef {{label: string, items: string[], excerpts: Excerpt[], media: {kind: string, url: string, caption: string, inline: boolean, poster?: string}[]}} Ask
- * @typedef {{title: string, bullets: string[], folded?: boolean, asks?: Ask[], state?: 'known'|'unknown', source?: string}} Section
+ * @typedef {{label: string, items: string[]}} List
+ * @typedef {{title: string, bullets: string[], folded?: boolean, asks?: Ask[], lists?: List[], state?: 'known'|'unknown', source?: string}} Section
  */
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 const object = (value) =>
@@ -169,6 +176,20 @@ const destination = (value) =>
     /[()<>"'`\\]/g,
     (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
   )
+/** `m:ss` for a chapter offset. @param {number} ms */
+const clock = (ms) => {
+  const total = Math.floor(ms / 1000)
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+/** A claim's bullet followed by its proof status.
+ * @param {string} bullet @param {import('./verify-proof.mjs').ProofClaim | undefined} claim */
+function claimLine(bullet, claim) {
+  if (!claim) return bullet
+  if (claim.proof === 'test') return `${bullet} — proven by test ${claim.test} (${claim.path})`
+  if (claim.proof === 'clip')
+    return `${bullet} — proven by clip: ${claim.chapter}${claim.atMs === undefined ? '' : ` (${clock(claim.atMs)})`}`
+  return `${bullet} — unproven${claim.note ? `: ${claim.note}` : ''}`
+}
 /** @param {unknown} value */
 export function proofView(value) {
   const result = validatePageInput(value)
@@ -176,10 +197,15 @@ export function proofView(value) {
   const input = result.input
   const { proof } = input
   const level = proof.confidence.level
+  const computed = !proof.confidence.loweredBy.some(
+    (reason) => reason.code === CONFIDENCE_NOT_COMPUTED,
+  )
   const display =
     level === 'cannot-assess' ? 'Cannot assess' : level[0].toUpperCase() + level.slice(1)
-  const headline = `Confidence: ${display} — ${LEVEL_GUIDANCE[level]}`
-  const rate = input.rates?.[level]
+  const headline = computed
+    ? `Confidence: ${display} — ${LEVEL_GUIDANCE[level]}`
+    : 'Confidence: not computed yet'
+  const rate = computed ? input.rates?.[level] : undefined
   /** @type {Section[]} */
   const sections = [
     {
@@ -196,7 +222,11 @@ export function proofView(value) {
     {
       title: 'What it does',
       state: proof.whatItDoes.source === 'unknown' ? 'unknown' : 'known',
-      bullets: proof.whatItDoes.bullets.length ? [...proof.whatItDoes.bullets] : ['intent unknown'],
+      bullets: proof.whatItDoes.bullets.length
+        ? proof.whatItDoes.bullets.map((bullet, i) =>
+            claimLine(bullet, proof.whatItDoes.claims?.[i]),
+          )
+        : ['intent unknown'],
       ...(proof.whatItDoes.source === 'unknown'
         ? {}
         : {
@@ -204,16 +234,21 @@ export function proofView(value) {
           }),
     },
   ]
-  if (level !== 'high')
-    sections.push({
-      title: 'Why not high',
-      bullets: [
-        ...proof.confidence.loweredBy.map((reason) => reason.text),
-        ...(proof.review?.blockers.map(
-          (blocker) => `${blocker.title}${blocker.where ? ` (${blocker.where})` : ''}`,
-        ) || []),
-      ],
-    })
+  const lists = proof.areas
+    .filter((area) => area.unmentioned?.length)
+    .map((area) => ({ label: area.label || area.name, items: [...(area.unmentioned ?? [])] }))
+  if (lists.length) sections.push({ title: 'Not in the description', bullets: [], lists })
+  if (level !== 'high') {
+    const bullets = [
+      ...proof.confidence.loweredBy
+        .filter((reason) => reason.code !== CONFIDENCE_NOT_COMPUTED)
+        .map((reason) => reason.text),
+      ...(proof.review?.blockers.map(
+        (blocker) => `${blocker.title}${blocker.where ? ` (${blocker.where})` : ''}`,
+      ) || []),
+    ]
+    if (bullets.length) sections.push({ title: 'Why not high', bullets })
+  }
   const pageOrigin = proof.page ? new URL(proof.page).origin : null
   const asks = proof.confidence.asks.map((name) => {
     const area = /** @type {import('./verify-proof.mjs').ProofArea} */ (
@@ -279,7 +314,19 @@ export function proofView(value) {
   const verdict = input.verdict
     ? (parkVerdict(input.verdict.codes, { label: input.verdict.label })?.sentence ?? null)
     : null
-  return { level, headline, verdict, page: proof.page, filesUrl: input.filesUrl, sections }
+  const healthStrip = proof.health.length
+    ? proof.health.map((reason) => reason.text).join(' · ')
+    : null
+  return {
+    level,
+    computed,
+    headline,
+    verdict,
+    healthStrip,
+    page: proof.page,
+    filesUrl: input.filesUrl,
+    sections,
+  }
 }
 const STYLE = `:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:60rem;margin:2rem auto;padding:0 1rem;background:#fff;color:#222}h1{font-size:1.6rem}h2{font-size:1.25rem}pre{overflow:auto;padding:1rem;background:#f3f3f3}img,video{max-width:100%}details{margin:1rem 0}summary{cursor:pointer;font-weight:600}li{margin:.3rem 0}a{color:#1659b8}@media(prefers-color-scheme:dark){body{background:#171717;color:#eee}pre{background:#282828}a{color:#95bdff}}`
 /** @param {unknown} input */
@@ -294,6 +341,9 @@ export function renderProofHtml(input) {
       const content =
         bullets(section.bullets) +
         (section.source ? `<p>${escapeHtml(section.source)}</p>` : '') +
+        (section.lists || [])
+          .map((list) => `<h3>${escapeHtml(list.label)}</h3>${bullets(list.items)}`)
+          .join('') +
         (section.asks || [])
           .map(
             (ask) =>
@@ -306,7 +356,7 @@ export function renderProofHtml(input) {
     })
     .join('')
   const hash = createHash('sha256').update(STYLE).digest('base64')
-  return `<!doctype html><html lang="en"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-${hash}'; img-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proof</title><style>${STYLE}</style></head><body><main>${view.verdict ? `<h1>${escapeHtml(view.verdict)}</h1>` : ''}${sections}</main></body></html>`
+  return `<!doctype html><html lang="en"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-${hash}'; img-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proof</title><style>${STYLE}</style></head><body><main>${view.healthStrip ? `<p><strong>Factory health:</strong> ${escapeHtml(view.healthStrip)}</p>` : ''}${view.verdict ? `<h1>${escapeHtml(view.verdict)}</h1>` : ''}${sections}</main></body></html>`
 }
 /** @param {unknown} input */
 export function renderProofComment(input) {
@@ -324,6 +374,9 @@ export function renderProofComment(input) {
         const content = [
           bullets(section.bullets),
           ...(section.source ? [markdown(section.source)] : []),
+          ...(section.lists || []).map(
+            (list) => `### ${markdown(list.label)}\n\n${bullets(list.items)}`,
+          ),
           ...(section.asks || []).map((ask) =>
             [
               `### ${markdown(ask.label)}`,
@@ -352,7 +405,8 @@ export function renderProofComment(input) {
           : `## ${markdown(section.title)}\n\n${content}`
       })
       .join('\n\n')
-    return `<details>\n<summary>${markdown(view.verdict ?? view.headline)}</summary>\n\n${view.page ? `[Full page](${destination(view.page)})\n\n` : ''}${sections}\n\n</details>`
+    const strip = view.healthStrip ? `**Factory health:** ${markdown(view.healthStrip)}\n\n` : ''
+    return `${strip}<details>\n<summary>${markdown(view.verdict ?? view.headline)}</summary>\n\n${view.page ? `[Full page](${destination(view.page)})\n\n` : ''}${sections}\n\n</details>`
   }
   let output = render()
   for (const excerpt of [...excerpts].reverse()) {

@@ -242,6 +242,27 @@ function permissionRead(permission) {
 const isPrFilesRead = (c) =>
   c.command === 'gh' && c.args[0] === 'api' && /^repos\/o\/r\/pulls\/\d+\/files\b/.test(c.args[1])
 
+function daemonEnvelope(view, statuses = []) {
+  const latest = new Map()
+  for (const s of statuses) if (!latest.has(s.context)) latest.set(s.context, s)
+  return {
+    head_sha: view.headRefOid,
+    checks: [
+      ...(view.statusCheckRollup ?? []).map((c) => ({
+        name: c.name ?? c.context,
+        status: c.status?.toLowerCase(),
+        conclusion: c.conclusion?.toLowerCase(),
+      })),
+      ...[...latest.values()].map((s) => ({
+        name: s.context,
+        status: s.state === 'pending' ? 'in_progress' : 'completed',
+        conclusion: s.state === 'success' ? 'success' : 'failure',
+        description: s.description ?? '',
+      })),
+    ],
+  }
+}
+
 // A scripted world behind one fake reader. Every call is recorded; statuses posted through
 // `gh api --method POST …/statuses/<sha>` are prepended to that SHA's list, so read-backs are real.
 function world(opts = {}) {
@@ -302,8 +323,8 @@ function world(opts = {}) {
     reviewWritesFail: opts.reviewWritesFail ?? false,
     calls: [],
   }
-  w.read = (command, args, { json } = {}) => {
-    w.calls.push({ command, args: [...args] })
+  w.read = (command, args, { json, env } = {}) => {
+    w.calls.push({ command, args: [...args], ...(env ? { env } : {}) })
     const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
     const fail = (error = 'exit-1') => ({ ok: false, error, exit: 1, output: '' })
     if (command === 'gh' && args[0] === 'pr' && args[1] === 'view') {
@@ -442,6 +463,12 @@ function world(opts = {}) {
       if (path.includes(`commits/${BASE}/status`)) return ok({ statuses: w.base.statuses })
       return fail()
     }
+    if (command === 'boss' && args[0] === 'pr' && args[1] === 'state') {
+      if (opts.prStateRead !== undefined) return opts.prStateRead
+      if (w.pr === null || w.statusReadFails)
+        return { ...fail(), output: '{"error":{"code":"UNKNOWN"}}' }
+      return ok(daemonEnvelope(w.pr, w.statuses[w.pr.headRefOid]))
+    }
     if (command === 'boss' && args[0] === 'ls') return ok({ sessions: w.sessions })
     if (command === 'boss' && args[0] === 'show') {
       if (w.show === null) return fail()
@@ -533,9 +560,21 @@ function fakeAdapter({
   }
 }
 
+function memoryRetryStore() {
+  const records = new Map()
+  return {
+    read: (key) => records.get(key),
+    write: (key, value) => {
+      records.set(key, value)
+      return true
+    },
+  }
+}
+
 function deps(w, extra = {}) {
   return {
     read: w.read,
+    retryStore: memoryRetryStore(),
     readSizeBaseline: () => ({ ok: true, thresholds: { p90: 100, p99: 200 } }),
     now: () => NOW,
     randomToken: () => 'feedf00d',
@@ -3487,6 +3526,62 @@ test('merge with no session row posts no notice on a head that is not ready to m
   assert.deepEqual(unread.mutating(), [])
 })
 
+test('merge reads fresh daemon status before the head-pinned merge without reading gh statuses', async () => {
+  const w = world({
+    statuses: verified(),
+    prAfterMerge: prView({ state: 'MERGED', mergeCommit: { oid: MERGED_SHA } }),
+  })
+  const r = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(w))
+  assert.equal(r.merged, true)
+  assert.deepEqual(
+    w.calls.filter((c) => c.command === 'boss' && c.args[0] === 'pr').map((c) => c.args),
+    [['pr', 'state', '7', '--repo', REPO, '--json', '--fresh']],
+  )
+  assert.equal(
+    w.calls.some((c) => c.args[1]?.includes('/statuses?')),
+    false,
+  )
+  assert.equal(w.calls.filter((c) => c.command === 'boss' && c.args[0] === 'merge').length, 1)
+})
+
+test('merge refuses a moved daemon head or quota error without a gh statuses retry', async () => {
+  for (const [prStateRead, verdict, reason] of [
+    [{ ok: true, payload: { head_sha: OTHER, checks: [] }, exit: 0 }, 'reverify', 'head-moved'],
+    [
+      { ok: false, payload: { error: { code: 'RESOURCE_EXHAUSTED' } }, exit: 1 },
+      'wait',
+      'status-unreadable',
+    ],
+  ]) {
+    const w = world({ statuses: verified(), prStateRead })
+    const r = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(w))
+    assert.deepEqual([r.merged, r.verdict, r.reason], [false, verdict, reason])
+    assert.equal(
+      w.calls.some((c) => c.args[1]?.includes('/statuses?')),
+      false,
+    )
+    assert.deepEqual(w.mutating(), [])
+  }
+})
+
+test('merge labels the gh statuses fallback when no daemon answers', async () => {
+  const w = world({
+    statuses: verified(),
+    prAfterMerge: prView({ state: 'MERGED', mergeCommit: { oid: MERGED_SHA } }),
+    prStateRead: {
+      ok: false,
+      payload: { error: { code: 'UNAVAILABLE' } },
+      exit: 1,
+    },
+  })
+  const r = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(w))
+  assert.equal(r.merged, true)
+  assert.deepEqual(
+    w.calls.filter((c) => c.args[1]?.includes('/statuses?')).map((c) => c.env),
+    [{ BOSS_GH_USAGE_LABEL: 'fallback:verify-gate' }],
+  )
+})
+
 test('merge re-checks eligibility and the verified status before merging', async () => {
   const blocked = world({ statuses: verified(), pr: { mergeStateStatus: 'BLOCKED' } })
   const r1 = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(blocked))
@@ -4421,6 +4516,12 @@ function candidateWorld(opts = {}) {
     const fail = () => ({ ok: false, error: 'exit-1', exit: 1, output: '' })
     if (command === 'boss' && args[0] === 'ls')
       return opts.sessions === undefined ? fail() : ok({ sessions: opts.sessions })
+    if (command === 'boss' && args[0] === 'pr' && args[1] === 'state') {
+      const n = Number(args[2])
+      const pr = prs.find((p) => p.number === n)
+      if (!pr || opts.viewFails?.includes(n)) return ok({ error: { code: 'UNKNOWN' } })
+      return ok(daemonEnvelope({ ...pr, statusCheckRollup: opts.rollups?.[n] ?? green }))
+    }
     if (command !== 'gh') return fail()
     if (args[0] === 'repo') return ok({ nameWithOwner: REPO })
     if (isOpenPrsRead(command, args)) {
@@ -4808,7 +4909,7 @@ test('candidates: excluded URLs skip parked, retry and ticketless PRs before the
     { ticket: null, pr: 5, reason: 'remote-session' },
   ])
   assert.deepEqual(
-    w.calls.filter((c) => !isOpenPrsRead(c.command, c.args) && c.command !== 'boss'),
+    w.calls.filter((c) => c.command === 'gh' && !isOpenPrsRead(c.command, c.args)),
     [],
   )
   assert.equal(
@@ -4986,10 +5087,11 @@ test('candidates: a PR the batch cannot stand for reads its own status and rollu
       name,
     )
     assert.deepEqual(
-      rollupViews(w).map((c) => c.args[2]),
+      w.calls.filter((c) => c.command === 'boss' && c.args[0] === 'pr').map((c) => c.args[2]),
       [String(gapped)],
       name,
     )
+    assert.deepEqual(rollupViews(w), [], name)
   }
   // The fallback keeps today's failure paths: an unreadable statuses or rollup read on that PR.
   const failed = await candidates(
@@ -6173,6 +6275,26 @@ test('readFailureDetail redacts every GitHub token shape and leaves a commit SHA
     [`{"head": "${hex}", "base": "${hex}"}`, `{"head": "${hex}", "base": "${hex}"}`],
   ])
     assert.equal(readFailureDetail('gh', { error: 'exit-1', stderr }), `gh: ${want}`, stderr)
+})
+
+test('command readers pass fallback usage labels while preserving the process environment', async () => {
+  let spawned
+  commandReader({
+    spawn: (command, args, opts) => {
+      spawned = opts
+      return { status: 0, stdout: '{}' }
+    },
+  })('gh', [], { json: true, env: { BOSS_GH_USAGE_LABEL: 'fallback:verify-gate' } })
+  assert.deepEqual(spawned.env, { ...process.env, BOSS_GH_USAGE_LABEL: 'fallback:verify-gate' })
+  const opts = { json: true, env: { BOSS_GH_USAGE_LABEL: 'fallback:verify-gate' } }
+  const args = [
+    '-e',
+    'console.log(JSON.stringify({label:process.env.BOSS_GH_USAGE_LABEL,path:process.env.PATH}))',
+  ]
+  for (const reader of [commandReader(), asyncCommandReader()]) {
+    const r = await reader(process.execPath, args, opts)
+    assert.deepEqual(r.payload, { label: 'fallback:verify-gate', path: process.env.PATH })
+  }
 })
 
 test("commandReader keeps a failed command's stderr, so a refusal can say why", () => {
@@ -8867,8 +8989,8 @@ test('candidates: a quiet tick with admitted, settled PRs ends after the batched
   assert.equal(again.unchanged, true)
   assert.deepEqual(
     quiet.calls.map((c) => (isOpenPrsRead(c.command, c.args) ? 'graphql' : c.command)),
-    ['graphql'],
-    'one batched read and nothing else',
+    ['graphql', 'git'],
+    'one batched read plus the local cap state lookup',
   )
   const relabelled = (labels) =>
     candidates(
@@ -10902,4 +11024,192 @@ test('missing changed-file evidence cannot persist an empty assessment or replac
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
+})
+test('judge reads local cap state and caps only matching module heads', async () => {
+  const cap = {
+    key: 'other:src',
+    label: 'src',
+    cappedAt: iso(86400000),
+    escapes: [
+      { original: 1, fix: 3, fixMergedAt: iso(86400000) },
+      { original: 2, fix: 4, fixMergedAt: iso(2 * 86400000) },
+    ],
+  }
+  for (const [diff, expected] of [
+    [['src/a.go'], 'human'],
+    [['lib/b.go'], 'pass'],
+  ]) {
+    const w = world({ diff })
+    const read = (command, args, options) =>
+      command === 'git' && args[1] === '--git-common-dir'
+        ? { ok: true, output: '/fixture/git' }
+        : w.read(command, args, options)
+    const capFs = {
+      readFileSync: () => JSON.stringify({ v: 1, repo: REPO, refreshedAt: iso(0), caps: [cap] }),
+    }
+    const result = await judge({ pr: 7, repo: REPO }, deps(w, { read, capFs }))
+    assert.equal(result.verdict, expected)
+    assert.equal(
+      result.policyFingerprint,
+      policyFingerprint(null, [], { root: TRUSTED, capKeys: [cap.key] }),
+    )
+    assert.equal(result.confidence.level, expected === 'human' ? 'moderate' : 'high')
+  }
+})
+
+test('clearing area caps invalidates quiet ticks and reconsiders cap-only standing parks', async () => {
+  const cap = {
+    key: 'other:src',
+    label: 'src',
+    cappedAt: iso(1000),
+    escapes: [
+      { original: 1, fix: 3, fixMergedAt: iso(1000) },
+      { original: 2, fix: 4, fixMergedAt: iso(1000) },
+    ],
+  }
+  let caps = [cap]
+  let refreshedAt = iso(0)
+  const capFs = { readFileSync: () => JSON.stringify({ v: 1, repo: REPO, refreshedAt, caps }) }
+  const recorded = policyFingerprint(null, [], { root: TRUSTED, capKeys: [cap.key] })
+  const scan = async (quietFingerprint) => {
+    const w = sweepWorld({
+      statuses: [parkStatus('needs human: always-human-path'), receipt()],
+      comments: [operatorComment(policyMarker(HEAD, recorded))],
+    })
+    const d = sweepDeps(w)
+    const originalRead = d.read
+    d.read = (command, args, options) =>
+      command === 'git' && args[1] === '--git-common-dir'
+        ? { ok: true, output: '/fixture/git' }
+        : originalRead(command, args, options)
+    d.capFs = capFs
+    return candidates({ repo: REPO, quietFingerprint }, d)
+  }
+  const first = await scan()
+  assert.ok(first.skipped.some((skip) => skip.reason === 'parked'))
+  refreshedAt = iso(100)
+  assert.equal(
+    (await scan(first.fingerprint)).unchanged,
+    true,
+    'refresh alone keeps the tick quiet',
+  )
+  caps = []
+  const cleared = await scan(first.fingerprint)
+  assert.notEqual(cleared.unchanged, true)
+  assert.deepEqual(
+    cleared.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'policy-changed']],
+  )
+})
+
+for (const attempt of [undefined, 1]) {
+  test(`rearm owns the retry budget with caller attempt ${attempt} @sessions.AC229401`, async () => {
+    const w = world({ pr: { mergeStateStatus: 'UNKNOWN' } })
+    const s = sleeper()
+    const io = deps(w, { sleep: s.sleep })
+    const wait = {
+      pr: 7,
+      chat: 'chat-1',
+      repo: REPO,
+      verdict: 'wait',
+      reason: 'merge-state-unknown',
+      attempt,
+    }
+    for (let n = 1; n <= VERIFY_RETRY_ATTEMPTS; n++) {
+      const result = await rearm(wait, io)
+      assert.equal(result.wake, 'retry')
+      assert.equal(result.retry.attempt, n)
+    }
+    const exhausted = await rearm(wait, io)
+    assert.equal(exhausted.fallback, 'gate')
+    assert.equal(exhausted.armed, false)
+    assert.deepEqual(exhausted.writes, [])
+    assert.equal(s.calls.length, VERIFY_RETRY_ATTEMPTS)
+    assert.equal(w.mutating().length, 0)
+    w.pr.headRefOid = OTHER
+    assert.equal((await rearm(wait, io)).retry.attempt, 1)
+  })
+}
+
+test('rearm fails closed before sleeping on unavailable retry state @sessions.AC229401', async () => {
+  for (const retryStore of [
+    { read: () => null, write: () => false },
+    {
+      read: () => {
+        throw new Error('unreadable')
+      },
+      write: () => true,
+    },
+    {
+      read: () => null,
+      write: () => {
+        throw new Error('unwritable')
+      },
+    },
+  ]) {
+    const s = sleeper()
+    const result = await rearm(
+      { pr: 7, chat: 'chat-1', repo: REPO, reason: 'merge-state-unknown' },
+      deps(world(), { retryStore, sleep: s.sleep }),
+    )
+    assert.equal(result.fallback, 'gate')
+    assert.equal(result.why, 'retry-state-unavailable')
+    assert.equal(result.armed, false)
+    assert.deepEqual(s.calls, [])
+  }
+})
+
+test('rearm dry runs derive the attempt without spending it; higher floors shorten retries @sessions.AC229401', async () => {
+  const s = sleeper()
+  const io = deps(world(), { sleep: s.sleep })
+  const wait = { pr: 7, chat: 'chat-1', repo: REPO, reason: 'merge-state-unknown' }
+  assert.equal((await rearm({ ...wait, attempt: 2 }, io)).retry.attempt, 2)
+  for (let n = 0; n < 2; n++)
+    assert.equal((await rearm({ ...wait, dryRun: true }, io)).retry.attempt, 3)
+  assert.equal((await rearm(wait, io)).retry.attempt, 3)
+  assert.equal((await rearm(wait, io)).fallback, 'gate')
+  assert.equal(s.calls.length, 2)
+})
+
+test('callback and closed waits never touch retry state @sessions.AC229401', async () => {
+  const retryStore = {
+    read: () => assert.fail('retry read'),
+    write: () => assert.fail('retry write'),
+  }
+  for (const [reason, pr, extra] of [
+    ['ci-not-green-on-head', { statusCheckRollup: red }, { headRuns: redRuns }],
+    ['merge-state-dirty', { mergeStateStatus: 'DIRTY' }, {}],
+    ['pr-draft', { isDraft: true }, {}],
+    ['pr-not-open', { state: 'CLOSED' }, {}],
+  ]) {
+    const result = await rearm(
+      { pr: 7, chat: 'chat-1', repo: REPO, reason },
+      deps(world({ pr, ...extra }), { retryStore }),
+    )
+    assert.equal(result.wake, reason === 'pr-not-open' ? 'none' : 'callback')
+  }
+})
+
+test('unreadable PR reads share a budget and a stale floor above one cannot reset it @sessions.AC229401', async () => {
+  const w = world()
+  w.pr = null
+  const s = sleeper()
+  const io = deps(w, { sleep: s.sleep })
+  const wait = { pr: 7, chat: 'chat-1', repo: REPO, attempt: 2 }
+  assert.equal((await rearm(wait, io)).retry.attempt, 2)
+  assert.equal((await rearm(wait, io)).retry.attempt, 3)
+  assert.equal((await rearm(wait, io)).fallback, 'gate')
+  assert.equal(s.calls.length, 2)
+})
+
+test('an interrupted sleep still spends its retry @sessions.AC229401', async () => {
+  const io = deps(world(), {
+    sleep: () => {
+      throw new Error('interrupted')
+    },
+  })
+  const wait = { pr: 7, chat: 'chat-1', repo: REPO, reason: 'merge-state-unknown' }
+  await assert.rejects(rearm(wait, io), /interrupted/)
+  const resumed = await rearm({ ...wait, dryRun: true }, io)
+  assert.equal(resumed.retry.attempt, 2)
 })

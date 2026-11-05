@@ -101,7 +101,7 @@ func TestAttentionStuckWaitInvariantGrid(t *testing.T) {
 			for _, checks := range []string{"pending", "green", "failing"} {
 				for _, state := range []string{"open", "merged", "closed"} {
 					for _, actor := range []string{"none", "working", "lease", "triggered"} {
-						for _, wakes := range []string{"", "merged", "checks_passed_ready", "checks_passed_ready merged"} {
+						for _, wakes := range []string{"", "merged", "checks_passed_ready", "checks_passed_ready merged", "checks_passed", "checks_passed merged"} {
 							name := fmt.Sprintf("draft=%t/conflict=%t/%s/%s/%s/wakes=%s", draft, conflict, checks, state, actor, wakes)
 							t.Run(name, func(t *testing.T) {
 								display := vcs.DisplayInfo{Status: vcs.DisplayStatusChecking, Mergeable: &yes, HeadSHA: "head"}
@@ -128,7 +128,15 @@ func TestAttentionStuckWaitInvariantGrid(t *testing.T) {
 									display.Status = vcs.DisplayStatusClosed
 								}
 								got := listStuckAttention(t, stuckWaitServer(t, display, actor, wakes))
-								want := state == "open" && actor == "none" && wakes == "checks_passed_ready" && (draft || conflict || checks == "failing")
+								want := false
+								if state == "open" && actor == "none" {
+									switch wakes {
+									case "checks_passed_ready":
+										want = draft || conflict || checks == "failing"
+									case "checks_passed":
+										want = checks == "failing" || conflict
+									}
+								}
 								stuck := got.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && strings.HasPrefix(got.GetAlertKey(), "stuck-wait:")
 								if stuck != want {
 									t.Fatalf("attention = %v; want stuck=%t", got, want)
@@ -174,5 +182,25 @@ func TestAttentionStuckWaitGreenDraftObservedBaseline(t *testing.T) {
 	got := listStuckAttention(t, s)
 	if strings.HasPrefix(got.GetAlertKey(), "stuck-wait:") {
 		t.Fatalf("deliverable transition marked stuck: %v", got)
+	}
+}
+
+func TestAttentionStuckWaitOrdinal_Sessions_AC219901(t *testing.T) {
+	for _, tt := range []struct{ target, label string }{{"verify-chat", "verify 2"}, {"older", "verify"}} {
+		t.Run(tt.label, func(t *testing.T) {
+			no := false
+			s := stuckWaitServer(t, vcs.DisplayInfo{Status: vcs.DisplayStatusConflict, Mergeable: &no}, "none", "checks_passed_ready")
+			store := s.agentChats.(*listSessionsAgentChatStoreFake)
+			newer := store.chats["stuck-session"][0]
+			newer.Title, newer.Role, newer.CreatedAt = "verify", domain.AgentChatRoleVerify, time.Now()
+			older := &domain.AgentChat{ID: "older-row", SessionID: "stuck-session", AgentSessionID: "older", Title: "verify", Role: domain.AgentChatRoleVerify, CreatedAt: newer.CreatedAt.Add(-time.Hour)}
+			store.chats["stuck-session"] = []*domain.AgentChat{newer, older}
+			s.githubCallbacks.(*stuckWaitCallbacks).rows[0].TargetChatID = tt.target
+			s.chatStatus.SetWaiting(tt.target, "awaiting checks_passed_ready on acme/app#3795")
+			got := listStuckAttention(t, s)
+			if !strings.HasPrefix(got.GetSentence(), tt.label+" waits on a wake that cannot fire:") {
+				t.Fatalf("attention = %v", got)
+			}
+		})
 	}
 }

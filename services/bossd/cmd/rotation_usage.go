@@ -350,13 +350,14 @@ func cacheUsageProbeForRotationSignal(
 	logger zerolog.Logger,
 	prober any,
 	recorder usageSnapshotRecorder,
+	gate func(*domain.AgentAccount) string,
 	sig rotation.Signal,
 ) rotation.Signal {
 	if sig.Kind != rotation.UsageLimited {
 		return sig
 	}
 	sig.CandidateProbeRequired = true
-	sig.CandidateUsage = probeCandidateUsageForRotationSignal(ctx, logger, prober, recorder, sig)
+	sig.CandidateUsage = probeCandidateUsageForRotationSignal(ctx, logger, prober, recorder, gate, sig)
 	return sig
 }
 
@@ -369,6 +370,7 @@ func probeCandidateUsageForRotationSignal(
 	logger zerolog.Logger,
 	prober any,
 	recorder usageSnapshotRecorder,
+	gate func(*domain.AgentAccount) string,
 	sig rotation.Signal,
 ) map[string]domain.UsageSnapshot {
 	if sig.Provider == "" {
@@ -397,7 +399,7 @@ func probeCandidateUsageForRotationSignal(
 		// through to its unguarded list-order branch, so probing MORE widely
 		// than the engine selects is the safe direction and probing less is
 		// not.
-		if !rotation.BindableNow(acct, now) {
+		if !rotation.BindableNow(acct, now, gate) {
 			continue
 		}
 		sawCandidate = true

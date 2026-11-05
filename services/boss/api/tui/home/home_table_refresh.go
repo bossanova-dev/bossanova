@@ -17,6 +17,7 @@ const spinnerProbe = "\ue000"
 type homeTableLayout struct {
 	statusVisible                         bool
 	statusWidth                           int
+	trackerIDWidth                        int
 	source                                []*pb.Session
 	query                                 string
 	sessions                              []*pb.Session
@@ -83,7 +84,7 @@ func (l *homeTableLayout) normalizedCursor(row, previous int) int {
 
 func (h Model) primaryRow(sess *pb.Session, _ int, selected bool) table.Row {
 	repo := sess.GetRepoDisplayName()
-	title := ui.SessionListTitle(sess)
+	title := ui.SessionListTitle(sess, h.layout.trackerIDWidth)
 	name, pr := ui.RenderTrackerLink(sess, title), "-"
 	if sess.PrNumber != nil {
 		pr = ui.RenderPRLink(sess)

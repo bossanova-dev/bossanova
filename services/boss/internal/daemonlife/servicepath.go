@@ -161,3 +161,12 @@ func LookPathIn(pathValue, name string) (string, bool) {
 	}
 	return "", false
 }
+
+// EffectiveServiceEnvPath returns the installed service PATH when readable,
+// otherwise the PATH that the next daemon restart will install.
+func EffectiveServiceEnvPath() string {
+	if installed, ok := InstalledServiceEnvPath(); ok {
+		return installed
+	}
+	return ServiceEnvPath()
+}

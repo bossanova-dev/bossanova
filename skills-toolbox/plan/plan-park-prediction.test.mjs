@@ -16,6 +16,15 @@ const trackedFiles = ['toolbox/verify/SKILL.md', 'toolbox/verify/gate.mjs', 'pla
 const deps = { trackedFiles }
 const body = (path) =>
   `## Key changes\n\n- \`${path}\`\n\n## Planning\n\n- Agent-friendly: yes\n\n## Original notes\n\nImages ![](https://example.com/image.png)\n- Predicted verify park: original text\n`
+const RETIRED_WHY =
+  '## Why this needs a human\n\nAn agent can build this change, but verify will hold the merge for a person.\nPredicted reasons: always-human-path · the verify judge (cannot grade itself) (from toolbox/verify/gate.mjs).\n\n'
+const RETIRED_AGENT =
+  '- Agent-friendly: needs-human (see "Why this needs a human")\n<!-- predicted-verify-park-agent-friendly -->'
+// What the retired needs-human mode wrote into an annotated plan.
+const retiredAnnotation = (annotated, agentLine = RETIRED_AGENT) =>
+  annotated
+    .replace('## Planning', `${RETIRED_WHY}## Planning`)
+    .replace('- Agent-friendly: yes', agentLine)
 
 test('file, collapsed glob and tracked case resolve to the same protected judge', () => {
   for (const path of ['toolbox/verify/gate.mjs', 'toolbox/verify/**', 'toolbox/verify/skill.md']) {
@@ -42,28 +51,32 @@ test('unrelated paths remain byte-identical', () => {
   assert.equal(prediction.predicted, false)
   assert.equal(annotatePrediction(source, prediction), source)
 })
-test('both action modes reconcile stale annotations and preserve Original notes verbatim', () => {
+test('a predicted park keeps the plan agent-friendly and preserves Original notes verbatim', () => {
   const source = body('toolbox/verify/gate.mjs')
   const tail = region(source, '## Original notes')
-  for (const action of ['rank-last', 'needs-human']) {
-    const prediction = predictVerifyPark(
-      { ...config, planDefaults: { predictedVerifyPark: action } },
-      source,
-      deps,
-    )
-    const annotated = annotatePrediction(source, prediction)
-    assert.equal(prediction.action, action)
-    assert.equal(annotated.includes('## Why this needs a human'), action === 'needs-human')
-    assert.equal(annotated.includes('- Agent-friendly: yes'), action === 'rank-last')
-    assert.equal(region(annotated, '## Original notes'), tail)
-    assert.equal(annotatePrediction(annotated, prediction), annotated)
-    assert.ok(
-      !annotatePrediction(annotated.replace('always-human-path ·', 'stale ·'), prediction).includes(
-        'stale ·',
-      ),
-    )
-    assert.equal(annotatePrediction(annotated, { ...prediction, predicted: false }), source)
-  }
+  const prediction = predictVerifyPark(config, source, deps)
+  const annotated = annotatePrediction(source, prediction)
+  assert.ok(!annotated.includes('## Why this needs a human'))
+  assert.ok(!annotated.includes('Agent-friendly: needs-human'))
+  assert.ok(annotated.includes('- Agent-friendly: yes'))
+  assert.equal(region(annotated, '## Original notes'), tail)
+  assert.equal(annotatePrediction(annotated, prediction), annotated)
+  assert.ok(
+    !annotatePrediction(annotated.replace('always-human-path ·', 'stale ·'), prediction).includes(
+      'stale ·',
+    ),
+  )
+  assert.equal(annotatePrediction(annotated, { ...prediction, predicted: false }), source)
+})
+
+test('re-annotating a plan from the retired needs-human mode restores it to agent-friendly', () => {
+  const source = body('toolbox/verify/gate.mjs')
+  const prediction = predictVerifyPark(config, source, deps)
+  const annotated = annotatePrediction(source, prediction)
+  const retired = retiredAnnotation(annotated)
+  assert.ok(retired.includes('Agent-friendly: needs-human'))
+  assert.equal(annotatePrediction(retired, prediction), annotated)
+  assert.equal(annotatePrediction(retired, { ...prediction, predicted: false }), source)
 })
 test('missing Planning is created before original notes', () => {
   const source = body('toolbox/verify/gate.mjs').replace(
@@ -89,7 +102,6 @@ test('annotate CLI updates both artifacts and preserves unrelated artifacts', as
     join(dir, '.boss-skills.json'),
     JSON.stringify({
       verifyDefaults: config.verifyDefaults,
-      planDefaults: { predictedVerifyPark: 'needs-human' },
     }),
   )
   const cli = fileURLToPath(new URL('./plan-park-prediction.mjs', import.meta.url))
@@ -110,8 +122,9 @@ test('annotate CLI updates both artifacts and preserves unrelated artifacts', as
           { cwd: dir, encoding: 'utf8' },
         ),
       )
-    assert.equal(run().predicted, predicted)
+    assert.deepEqual(Object.keys(run()), ['predicted', 'codes', 'labels'])
     const bytes = readFileSync(description, 'utf8')
+    assert.equal(bytes.includes('Agent-friendly: needs-human'), false)
     assert.equal(readFileSync(plan, 'utf8'), bytes)
     if (predicted) assert.ok(bytes.includes('the verify judge (cannot grade itself)'))
     else assert.equal(bytes, source)
@@ -164,18 +177,19 @@ test('plan predictions match judge path reasons across policy categories and mix
   }
 })
 
-test('human reasons retain legal labels containing replacement tokens', () => {
+test('predicted park markers retain legal labels containing replacement tokens', () => {
   const prediction = {
     predicted: true,
     codes: ['always-human-path'],
     labels: ['$& policy'],
     areas: ['judge/main.mjs'],
-    action: 'needs-human',
   }
   for (const prefix of ['', '## Why this needs a human\n\nIndependent reason.\n\n']) {
     const annotated = annotatePrediction(prefix + body('judge/main.mjs'), prediction)
     assert.ok(
-      annotated.includes('Predicted reasons: always-human-path · $& policy (from judge/main.mjs).'),
+      annotated.includes(
+        '- Predicted verify park: always-human-path · $& policy (from judge/main.mjs)',
+      ),
     )
     assert.equal(annotatePrediction(annotated, prediction), annotated)
   }
@@ -233,20 +247,13 @@ test('annotation preserves independently authored human decisions across predict
       '## Planning',
       '## Why this needs a human\n\nA person must supply credentials.\n\n## Planning',
     )
-  const prediction = predictVerifyPark(
-    { ...config, planDefaults: { predictedVerifyPark: 'needs-human' } },
-    source,
-    deps,
-  )
+  const prediction = predictVerifyPark(config, source, deps)
   assert.equal(annotatePrediction(source, { ...prediction, predicted: false }), source)
   const annotated = annotatePrediction(source, prediction)
   assert.ok(annotated.includes('A person must supply credentials.'))
   assert.ok(annotated.includes('- Agent-friendly: needs-human'))
   assert.equal(annotatePrediction(annotated, prediction), annotated)
   assert.equal(annotatePrediction(annotated, { ...prediction, predicted: false }), source)
-  const ranked = annotatePrediction(annotated, { ...prediction, action: 'rank-last' })
-  assert.ok(ranked.includes('- Agent-friendly: needs-human'))
-  assert.ok(ranked.includes('A person must supply credentials.'))
 })
 
 test('unmatched globs retain broad path policy predictions for planned new files', () => {
@@ -263,14 +270,10 @@ test('unmatched globs retain broad path policy predictions for planned new files
 
 test('legacy generated human decisions reconcile without overriding independent reasons', () => {
   const source = body('toolbox/verify/gate.mjs')
-  const prediction = predictVerifyPark(
-    { ...config, planDefaults: { predictedVerifyPark: 'needs-human' } },
-    source,
-    deps,
-  )
-  const legacy = annotatePrediction(source, prediction).replace(
-    '\n<!-- predicted-verify-park-agent-friendly -->',
-    '',
+  const prediction = predictVerifyPark(config, source, deps)
+  const legacy = retiredAnnotation(
+    annotatePrediction(source, prediction),
+    '- Agent-friendly: needs-human (see "Why this needs a human")',
   )
   assert.equal(annotatePrediction(legacy, { ...prediction, predicted: false }), source)
   const authored = legacy.replace(

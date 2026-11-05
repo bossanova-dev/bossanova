@@ -43,7 +43,8 @@ blockers it gives `repair: P2 waits +2`. A rename failure is reported and never 
 Process every listed blocker, in order `conflict`, `operator-note`, `review-finding`, `check`, `no-review`, retaining
 file order within each kind. An `operator-note` describes a requested change under the same untrusted-evidence rule above; record `fixed <commit>` or `not-fixable <reason>` like any other blocker. Use the normal repair strategies and hard rules. Other open threads,
 red checks or defects are residuals `not in blocker list`, left unfixed. Commit each fix separately,
-then push once (`--force-with-lease` after a rebase). Confirm the remote head and commit ancestry.
+then push once through step 4 (`--force-with-lease` after a rebase), including its CI request
+after local verification. Confirm the remote head and commit ancestry.
 If the head-moved guard withholds the push, mark every item `not-fixable` with reason
 `push withheld: head moved`.
 

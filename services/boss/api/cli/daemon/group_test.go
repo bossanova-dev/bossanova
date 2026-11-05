@@ -15,6 +15,9 @@ import (
 
 func newTestGroup() *Group {
 	deps := New(nil)
+	deps.credentialDeviceStatus = func(context.Context) (*pb.GetAgentCredentialDeviceStatusResponse, error) {
+		return &pb.GetAgentCredentialDeviceStatusResponse{}, nil
+	}
 	deps.daemonObserveLaunchAgentJob = func() daemon.LaunchAgentJob {
 		return daemon.LaunchAgentJob{State: daemon.LaunchAgentJobNotApplicable}
 	}
@@ -117,4 +120,8 @@ func TestSupervisionExposesOnlyAnEstablishedUnsupervisedVerdict(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (authStateFake) GetAgentCredentialDeviceStatus(context.Context) (*pb.GetAgentCredentialDeviceStatusResponse, error) {
+	return &pb.GetAgentCredentialDeviceStatusResponse{}, nil
 }

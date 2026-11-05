@@ -29,6 +29,7 @@ import {
   buildReport,
   renderReport,
   outcomeCounts,
+  areaCaps,
 } from './retro-outcomes.mjs'
 
 const at = (minutes = 0) => new Date(Date.UTC(2026, 9, 7, 0, minutes)).toISOString()
@@ -420,4 +421,103 @@ test('escape and rate read failures remain isolated and preserve their reasons a
     assert.ok(rendered.includes(failure.reason))
     assert.equal(outcomeCounts({ sections }).sections.laterFixRates.count, undefined)
   }
+})
+
+const capWindow = { start: '2026-10-25T00:00:00.000Z', end: '2026-11-01T00:00:00.000Z' }
+const episode = (key, cappedAt, clear) => ({
+  key,
+  label: key,
+  cappedAt,
+  escapes: [
+    { original: 3752, fix: 3759, fixMergedAt: cappedAt },
+    { original: 3714, fix: 3760, fixMergedAt: '2026-10-01T00:00:00.000Z' },
+  ],
+  ...(clear ? { clearedAt: clear[0], clearedBy: 'operator', reason: clear[1] } : {}),
+})
+const capEpisodes = () => [
+  episode('cleared-inside', '2026-10-20T00:00:00.000Z', [
+    '2026-10-28T00:00:00.000Z',
+    'fixed\nthe guard',
+  ]),
+  episode('standing', '2026-09-01T00:00:00.000Z'),
+  episode('cleared-before', '2026-10-01T00:00:00.000Z', ['2026-10-24T23:59:59.000Z', 'old']),
+  episode('capped-after', '2026-11-02T00:00:00.000Z'),
+  episode('cleared-after', '2026-10-30T00:00:00.000Z', ['2026-11-03T00:00:00.000Z', 'later']),
+  episode('also-standing', '2026-10-26T00:00:00.000Z'),
+]
+
+test('area caps keep episodes overlapping the window, active or cleared', () => {
+  const section = areaCaps(capEpisodes(), capWindow)
+  assert.equal(section.status, 'ok')
+  const byKey = Object.fromEntries(section.rows.map((row) => [row.key, row]))
+  assert.equal(byKey['cleared-before'], undefined)
+  assert.equal(byKey['capped-after'], undefined)
+  assert.equal(byKey['cleared-inside'].state, 'cleared')
+  assert.equal(byKey['cleared-inside'].clearedAt, '2026-10-28T00:00:00.000Z')
+  assert.equal(byKey['cleared-inside'].clearedBy, 'operator')
+  assert.equal(byKey['cleared-inside'].reason, 'fixed\nthe guard')
+  assert.equal(byKey.standing.state, 'active')
+  assert.equal(byKey['cleared-after'].state, 'active')
+  assert.equal(byKey['cleared-after'].clearedBy, undefined)
+  assert.deepEqual(byKey.standing.escapes, [
+    { original: 3752, fix: 3759 },
+    { original: 3714, fix: 3760 },
+  ])
+  assert.equal(section.active, 3)
+})
+
+test('area caps order active first, newest cap first, and leave input untouched', () => {
+  const input = capEpisodes()
+  const snapshot = structuredClone(input)
+  const rows = areaCaps(input, capWindow).rows
+  assert.deepEqual(input, snapshot)
+  assert.deepEqual(
+    rows.map((row) => row.key),
+    ['cleared-after', 'also-standing', 'standing', 'cleared-inside'],
+  )
+  assert.deepEqual(areaCaps([...input].reverse(), capWindow).rows, rows)
+  const failure = { status: 'failed', reason: 'caps-failed' }
+  assert.equal(areaCaps(failure, capWindow), failure)
+})
+
+test('area caps render one line per episode with state, escapes and clear attribution', () => {
+  const report = buildReport({
+    window: capWindow,
+    sections: { areaCaps: areaCaps(capEpisodes(), capWindow) },
+  })
+  const lines = renderReport(report).split('\n')
+  const heading = lines.indexOf('### Area caps')
+  assert.ok(heading > 0)
+  const rows = lines.slice(heading + 2).filter((line) => line.startsWith('- '))
+  assert.equal(rows.length, 4)
+  const cleared = rows.find((line) => line.includes('cleared-inside'))
+  for (const fragment of [
+    '2026-10-28T00:00:00.000Z',
+    'operator',
+    'fixed the guard',
+    '#3752',
+    '#3759',
+    '#3714',
+    '#3760',
+  ])
+    assert.ok(cleared.includes(fragment), fragment)
+  const standing = rows.find((line) => line.includes('- standing'))
+  assert.ok(standing.includes('active'))
+  assert.ok(!standing.includes('operator'))
+  const failed = renderReport(
+    buildReport({
+      window: capWindow,
+      sections: { areaCaps: { status: 'failed', reason: 'caps-missing' } },
+    }),
+  )
+  assert.ok(failed.includes('caps-missing'))
+  const counts = outcomeCounts({
+    window: capWindow,
+    sections: {
+      areaCaps: areaCaps(capEpisodes(), capWindow),
+      mergesWithoutVerdict: { status: 'ok', rows: [{}, {}] },
+    },
+  })
+  assert.deepEqual(counts.sections.areaCaps, { status: 'ok', count: 4, active: 3 })
+  assert.deepEqual(counts.sections.mergesWithoutVerdict, { status: 'ok', count: 2 })
 })

@@ -109,7 +109,7 @@ func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, a
 			return "", connect.NewError(connect.CodeInvalidArgument,
 				fmt.Errorf("account %q is provider %q but session agent is %q", id, acct.Provider, agentName))
 		}
-		if err := checkAccountEligible(id, acct); err != nil {
+		if err := s.checkAccountEligible(id, acct); err != nil {
 			return "", err
 		}
 		return id, nil
@@ -196,7 +196,7 @@ func (s *Server) policyAccountEligibility(ctx context.Context, id string) error 
 			Msg("account: could not read the policy-selected account for eligibility; keeping the binding")
 		return nil
 	}
-	return accountEligibilityReason(id, acct)
+	return s.accountEligibilityReason(id, acct)
 }
 
 // resolveAccountLabel resolves requested as a provider-scoped account label
@@ -220,7 +220,7 @@ func (s *Server) resolveAccountLabel(ctx context.Context, requested, agentName s
 	}
 	switch len(matches) {
 	case 1:
-		if err := checkAccountEligible(requested, matches[0]); err != nil {
+		if err := s.checkAccountEligible(requested, matches[0]); err != nil {
 			return "", err
 		}
 		return matches[0].ID, nil
@@ -266,8 +266,8 @@ func (s *Server) findAccountLabelProvider(ctx context.Context, requested, agentN
 // The auth-invalid case gets its own message: it is not a status, health, or
 // cooldown problem, and the operator action it calls for is re-authenticating
 // the account, which the generic wording would not tell them.
-func checkAccountEligible(requested string, acct *domain.AgentAccount) error {
-	if err := accountEligibilityReason(requested, acct); err != nil {
+func (s *Server) checkAccountEligible(requested string, acct *domain.AgentAccount) error {
+	if err := s.accountEligibilityReason(requested, acct); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return nil
@@ -277,14 +277,21 @@ func checkAccountEligible(requested string, acct *domain.AgentAccount) error {
 // a plain error naming the skip class. The policy path needs the bare reason so
 // it can wrap it in its own code and its own sentence without embedding a
 // second "invalid_argument:" prefix in the operator-facing message.
-func accountEligibilityReason(requested string, acct *domain.AgentAccount) error {
+func (s *Server) accountEligibilityReason(requested string, acct *domain.AgentAccount) error {
 	if acct.IsAuthInvalid() {
 		return fmt.Errorf("account %q failed its last credential verification; re-authenticate it before binding", requested)
 	}
-	if !rotation.BindableNow(bindEligibilityView(acct), time.Now()) {
+	if reason := s.credentialSyncBlockReason(acct); reason != "" {
+		return fmt.Errorf("account %q is blocked by credential-sharing readiness %s", requested, reason)
+	}
+	if !rotation.BindableNow(bindEligibilityView(acct), time.Now(), s.credentialSyncBlockReason) {
 		return fmt.Errorf("account %q is not eligible (status/health/cooldown)", requested)
 	}
 	return nil
+}
+
+func (s *Server) credentialSyncBlockReason(acct *domain.AgentAccount) string {
+	return s.credentialDevices.Readiness().AgentAccountBlockReason(acct)
 }
 
 // bindEligibilityView is the account rotation.BindableNow is asked about: acct

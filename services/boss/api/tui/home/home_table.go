@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/api/tui/ui"
 	"github.com/recurser/boss/internal/domain/display"
+	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/displaystatus"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -26,9 +27,10 @@ const homeTableBlockPadding = 1
 
 const homeStatusWidth = 16
 
-// homeStatusMaxWidth caps how far a verify park's confidence cell widens the
-// STATUS column; a longer cell ends in "…".
-const homeStatusMaxWidth = 32
+// homePhraseStatusWidth is the STATUS text width of a board that serves status
+// phrases: the phrase budget plus the spinner an IN PROGRESS phrase leads
+// with, so no phrase ends in "…".
+var homePhraseStatusWidth = attention.StatusPhraseMaxWidth + ansi.StringWidth(ui.NewStatusSpinner().View())
 
 // tableAvailWidth returns the rendered columns the session table may occupy —
 // the terminal width less renderSessionTable's block padding on either side.
@@ -91,7 +93,7 @@ func (h *Model) BuildTableRows() {
 	}
 	sessions := h.BoardSessions()
 	h.Filter.SetCounts(len(sessions), len(h.Sessions))
-	h.layout = &homeTableLayout{source: h.Sessions, query: h.Filter.Query(), sessions: sessions, sessionRows: make(map[string]int), statusWidth: homeStatusColumnWidth(sessions)}
+	h.layout = &homeTableLayout{source: h.Sessions, query: h.Filter.Query(), sessions: sessions, sessionRows: make(map[string]int), statusWidth: homeStatusColumnWidth(sessions), trackerIDWidth: ui.SessionListIDWidth(sessions)}
 	h.warningCells = nil
 	grouped, sectioned := h.hasAttentionBoard(), h.showsSections()
 	if len(sessions) == 0 {
@@ -180,46 +182,7 @@ func (h *Model) BuildTableRows() {
 			h.layout.animatedRows = append(h.layout.animatedRows, rowIndex)
 		}
 
-		// The session's verified machine-local HTTP endpoints (BOS-474) sit
-		// directly under the session they belong to and ABOVE any warning rows,
-		// so the ":port" links read as part of the session rather than as part
-		// of the warning block. Non-selectable, like the warning rows — the row
-		// exists exactly when hasEndpointRow says so, which is the same
-		// predicate sessionSubRowCount uses, so every cursor/height helper
-		// agrees with what is actually emitted here.
-		if h.hasEndpointRow(sess) {
-			rows = append(rows, project(table.Row{"", "", ui.RenderSessionEndpoints(sess), "", ""}))
-		}
-		if sess.GetAttention() != nil {
-			// The list shows no sentence; details and notifications do.
-			continue
-		}
-		// Why a session is parked on an external event (BOS-668). Informational,
-		// not a warning, so it is styled with the info color and sits above the
-		// warning block. Same emit-and-count discipline as the
-		// endpoint row: the predicate here is waitingHintLine != "", which is
-		// exactly what sessionSubRowCount counts.
-		if waitingHint := ui.WaitingHintLine(h.sessionWaitingReason(sess), ui.WaitingBadgeSuperseded(sess)); waitingHint != "" {
-			rows = append(rows, project(table.Row{"", "", ui.StyleStatusInfo.Render(waitingHint), "", ""}))
-		}
-		// Warning sub-rows. The style is resolved PER HINT through the shared
-		// BOS-855 gate, which folds in both reasons a hint goes recessive: the
-		// merged/closed fade (BOS-246 — Part A clears the reason at the source, so
-		// that half only paints the brief window before the next poll reconciles
-		// the session) and a demotable hint on a row whose composite is a
-		// live-activity label. selectedSessionWarningBlock calls the same helper,
-		// so the list and the detail view cannot disagree.
-		for hintIndex, hint := range ui.SessionWarningHints(sess) {
-			if h.layout.warningRows == nil {
-				h.layout.warningRows = make(map[int]homeWarningRow)
-				h.warningCells = make(map[int]string)
-			}
-			row := len(rows)
-			cell := ui.WarningHintStyle(sess, hint).Render(hint.Text)
-			h.layout.warningRows[row] = homeWarningRow{sessionIndex: i, hintIndex: hintIndex}
-			h.warningCells[row] = cell
-			rows = append(rows, project(table.Row{"", "", cell, "", ""}))
-		}
+		rows = h.appendSubRows(rows, i, sess)
 	}
 
 	h.layout.recordRows(len(rows))
@@ -227,6 +190,58 @@ func (h *Model) BuildTableRows() {
 	h.Table.SetWidth(ui.ColumnsWidth(cols))
 	h.Table.SetHeight(h.TableHeight())
 	h.normalizeTableCursor(cursor)
+}
+
+// appendSubRows appends session i's non-selectable rows under its primary row,
+// exactly the rows ui.SessionSubRowCount counts.
+func (h *Model) appendSubRows(rows []table.Row, i int, sess *pb.Session) []table.Row {
+	// The session's verified machine-local HTTP endpoints (BOS-474) sit
+	// directly under the session they belong to and ABOVE any warning rows,
+	// so the ":port" links read as part of the session rather than as part
+	// of the warning block. Non-selectable, like the warning rows — the row
+	// exists exactly when hasEndpointRow says so, which is the same
+	// predicate sessionSubRowCount uses, so every cursor/height helper
+	// agrees with what is actually emitted here.
+	if h.hasEndpointRow(sess) {
+		rows = append(rows, h.layout.project(table.Row{"", "", ui.RenderSessionEndpoints(sess), "", ""}))
+	}
+	if sess.GetAttention() != nil {
+		// The served status detail sits on one dim line under the title,
+		// cut to the NAME column; it is counted by SessionSubRowCount and
+		// never widens NAME. The list shows no sentence; details and
+		// notifications do.
+		if detail := ui.SessionStatusDetail(sess); detail != "" {
+			rows = append(rows, h.layout.project(table.Row{"", "", ui.StyleSubtle.Render(detail), "", ""}))
+		}
+		return rows
+	}
+	// Why a session is parked on an external event (BOS-668). Informational,
+	// not a warning, so it is styled with the info color and sits above the
+	// warning block. Same emit-and-count discipline as the
+	// endpoint row: the predicate here is waitingHintLine != "", which is
+	// exactly what sessionSubRowCount counts.
+	if waitingHint := ui.WaitingHintLine(h.sessionWaitingReason(sess), ui.WaitingBadgeSuperseded(sess)); waitingHint != "" {
+		rows = append(rows, h.layout.project(table.Row{"", "", ui.StyleStatusInfo.Render(waitingHint), "", ""}))
+	}
+	// Warning sub-rows. The style is resolved PER HINT through the shared
+	// BOS-855 gate, which folds in both reasons a hint goes recessive: the
+	// merged/closed fade (BOS-246 — Part A clears the reason at the source, so
+	// that half only paints the brief window before the next poll reconciles
+	// the session) and a demotable hint on a row whose composite is a
+	// live-activity label. selectedSessionWarningBlock calls the same helper,
+	// so the list and the detail view cannot disagree.
+	for hintIndex, hint := range ui.SessionWarningHints(sess) {
+		if h.layout.warningRows == nil {
+			h.layout.warningRows = make(map[int]homeWarningRow)
+			h.warningCells = make(map[int]string)
+		}
+		row := len(rows)
+		cell := ui.WarningHintStyle(sess, hint).Render(hint.Text)
+		h.layout.warningRows[row] = homeWarningRow{sessionIndex: i, hintIndex: hintIndex}
+		h.warningCells[row] = cell
+		rows = append(rows, h.layout.project(table.Row{"", "", cell, "", ""}))
+	}
+	return rows
 }
 
 // tableHeight returns the height to pass to table.SetHeight.

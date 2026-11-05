@@ -11,6 +11,7 @@ go_library(
     importpath = "github.com/recurser/boss/internal/fixtures",
     visibility = ["//services/boss:__subpackages__"],
     deps = [
+        "//lib/bossalib/attention",
         "//lib/bossalib/contract/plugin/statusdetect",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",

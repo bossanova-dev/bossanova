@@ -52,15 +52,17 @@ esac
 // shimScript is the generated gh wrapper. It classifies the call with the
 // rule quotaFor applies to the daemon's own calls (`gh api <path>` other than
 // graphql spends core, every other networked command graphql), skips the
-// commands that make no quota-spending call, appends one ledger line, and
-// then execs the real gh with its arguments, stdin, stdout, stderr and exit
-// status untouched. The record runs in a subshell with its errors discarded,
+// commands that make no quota-spending call, and asks the trusted helper to
+// route reads onto an installation token. It appends one ledger line, then
+// execs the real gh with its arguments, stdin, stdout, stderr and exit status
+// untouched. The record runs in a subshell with its errors discarded,
 // so a ledger that cannot be written never stops the real call.
 const shimScript = `#!/bin/sh
 ` + shimMarker + `
-# then runs the real gh unchanged. Do not edit; it is rewritten on restart.
+# routes eligible reads onto an installation token. Do not edit; rewritten on restart.
 real=${` + EnvReal + `:-@REAL@}
 dir=${` + EnvDir + `:-@DIR@}
+helper=@BOSS@
 quota=graphql
 case "${1-}" in
 api)
@@ -72,11 +74,39 @@ api)
 	;;
 '' | --version | version | help | --help | -h | completion | config | alias | auth) quota= ;;
 esac
+identity=user
+if [ -n "$quota" ] && [ -n "$helper" ] && [ -x "$helper" ]; then
+	case "${1-}" in
+	api | pr | run)
+		cred=$("$helper" __gh-read-credential -- "$@" </dev/null 2>/dev/null) || cred=
+		case "$cred" in
+		*' '*)
+			id=${cred%% *}
+			tok=${cred#* }
+			# Enumerate ASCII so locale collation cannot admit other characters.
+			case "$id" in
+			'' | *[!0123456789]*) ;;
+			*)
+				case "$tok" in
+				'' | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_]*) ;;
+				*)
+					identity=installation:$id
+					unset GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+					GH_TOKEN=$tok; export GH_TOKEN
+					;;
+				esac
+				;;
+			esac
+			;;
+		esac
+		;;
+	esac
+fi
 if [ -n "$quota" ]; then
 	(
 		umask 077
 		stamp=$(date -u '+%s %Y%m%d%H') || exit 0
-		printf '{"at":%s,"label":"%s","quota":"%s","identity":"user"}\n' "${stamp% *}" "${` + EnvLabel + `-}" "$quota" >>"$dir/${stamp#* }` + bucketExt + `"
+		printf '{"at":%s,"label":"%s","quota":"%s","identity":"%s"}\n' "${stamp% *}" "${` + EnvLabel + `-}" "$quota" "$identity" >>"$dir/${stamp#* }` + bucketExt + `"
 	) 2>/dev/null
 fi
 exec "$real" "$@"
@@ -96,11 +126,33 @@ type Shim struct {
 	basePath  string
 }
 
+type shimOptions struct {
+	readCredentialHelper string
+}
+
+// ShimOption configures the generated gh wrapper.
+type ShimOption func(*shimOptions)
+
+// WithReadCredentialHelper embeds a trusted boss executable in the wrapper.
+// Only absolute paths to executable regular files are accepted. Callers must
+// resolve the trusted binary themselves; the wrapper has no environment override.
+func WithReadCredentialHelper(bossBin string) ShimOption {
+	return func(opts *shimOptions) {
+		if !filepath.IsAbs(bossBin) {
+			return
+		}
+		info, err := os.Stat(bossBin)
+		if err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+			opts.readCredentialHelper = bossBin
+		}
+	}
+}
+
 // InstallShim writes the gh wrapper to <ledgerDir>/bin/gh, replacing any
 // previous one atomically. pathEnv is the PATH the real gh is resolved on and
 // the PATH Env puts the wrapper in front of. When no gh resolves it removes a
 // stale wrapper and returns nil: metering degrades, gh behaviour does not.
-func InstallShim(ledgerDir, pathEnv string) (*Shim, error) {
+func InstallShim(ledgerDir, pathEnv string, opts ...ShimOption) (*Shim, error) {
 	binDir := filepath.Join(ledgerDir, shimDirName)
 	shimPath := filepath.Join(binDir, "gh")
 	basePath := withoutDir(pathEnv, binDir)
@@ -114,7 +166,11 @@ func InstallShim(ledgerDir, pathEnv string) (*Shim, error) {
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create gh wrapper dir: %w", err)
 	}
-	script := strings.NewReplacer("@REAL@", shellQuote(real), "@DIR@", shellQuote(ledgerDir)).Replace(shimScript)
+	var options shimOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+	script := strings.NewReplacer("@REAL@", shellQuote(real), "@DIR@", shellQuote(ledgerDir), "@BOSS@", shellQuote(options.readCredentialHelper)).Replace(shimScript)
 	if err := writeFileAtomic(shimPath, script, 0o700); err != nil {
 		return nil, fmt.Errorf("write gh wrapper: %w", err)
 	}

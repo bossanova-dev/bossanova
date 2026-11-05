@@ -357,6 +357,13 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 			a := s.GetAttention()
 			return a.GetConfidenceLevel() == pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED && len(a.GetAsks()) == 0 && a.GetProofUrl() == "" && len(a.GetLoweredBy()) == 0 && slices.Equal(a.GetActions(), []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_VIDEO})
 		})
+	case StatusPhraseChange:
+		return sessionProbes(func() *pb.Session {
+			return &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "repairing", StatusPhrase: "repairing 1 P2", StatusDetail: "in a.go"}}
+		}, func(s *pb.Session) bool {
+			a := s.GetAttention()
+			return a.GetStatusPhrase() == "" && a.GetStatusDetail() == "" && a.GetProgressLabel() == "repairing"
+		})
 	case ParkVerdictSentenceChange:
 		return sessionProbes(noReceiptParkSession, func(s *pb.Session) bool {
 			return s.GetAttention().GetSentence() == "No review of the latest commit" && s.GetAttention().GetParkLabel() == ""
@@ -479,6 +486,10 @@ func sessionResponse(procedure string, sess *pb.Session) (any, func(any) *pb.Ses
 		return &pb.ProxyOperatorMergeSessionResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyOperatorMergeSessionResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
 		return &pb.ProxyLinkSessionPRResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyLinkSessionPRResponse).GetSession() }
+	case bossanovav1connect.OrchestratorServiceProxyListReviewQueueProcedure:
+		return &pb.ProxyListReviewQueueResponse{Rows: []*pb.ReviewQueueRow{{Session: sess}}}, func(msg any) *pb.Session {
+			return msg.(*pb.ProxyListReviewQueueResponse).GetRows()[0].GetSession()
+		}
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
 		return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{sess}}, func(msg any) *pb.Session { return msg.(*pb.ProxyListSessionsResponse).GetSessions()[0] }
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure:

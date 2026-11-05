@@ -1,7 +1,7 @@
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { sweepScopeKey } from '../verify/verify-route.mjs'
 import { spawnSync } from 'node:child_process'
 
@@ -30,10 +30,15 @@ function world({
   fingerprint,
   admission,
 } = {}) {
-  const w = { calls: [], spawns: [], merges: {}, clock: 0 }
+  const commonDir = tempDir('verify-caps-common-')
+  const capState = join(commonDir, 'boss-verify', 'area-caps.json')
+  mkdirSync(join(commonDir, 'boss-verify'))
+  writeFileSync(capState, JSON.stringify({ refreshedAt: new Date(0).toISOString() }))
+  const w = { calls: [], spawns: [], merges: {}, clock: 0, capState }
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
   w.run = (cmd, args) => {
     w.calls.push({ cmd, args: [...args] })
+    if (cmd === 'git' && args[0] === 'rev-parse') return { ok: true, output: commonDir }
     if (cmd === NODE) {
       const verb = args[1]
       const pr = Number(args[args.indexOf('--pr') + 1])
@@ -458,6 +463,7 @@ test('healthy env enables safety net by default, only 1 enables it and zero minu
     )
     const w = world({ candidates: [], fingerprint: 'a'.repeat(64) })
     w.clock = 1000
+    if (skips) rmSync(w.capState)
     const result = evaluateBossVerifyGate({
       argv,
       env: { ...ENV, BOSS_WEBHOOKS_HEALTHY: healthy },
@@ -470,6 +476,8 @@ test('healthy env enables safety net by default, only 1 enables it and zero minu
         /^boss-verify gate: idle: webhooks deliver; next safety-net sweep after /,
       )
       assert.deepEqual(w.calls, [])
+      assert.equal(w.spawns.length, 0)
+      assert.throws(() => readFileSync(w.capState, 'utf8'), { code: 'ENOENT' })
     } else {
       assert.ok(result.lines[0].includes('unchanged'))
       assert.ok(w.calls.some((c) => c.args[1] === 'candidates'))
@@ -588,4 +596,64 @@ test('event discovery without admission evidence remains retryable; a known excl
   assert.equal(settled.exitCode, 1)
   assert.match(settled.lines[0], /not-admitted:bot/)
   assert.equal(excluded.writes().length, 0)
+})
+
+test('a completed sweep detaches a stale or missing cap refresh only once per interval', () => {
+  for (const missing of [false, true]) {
+    const w = world({ candidates: [] })
+    w.clock = 6 * 60 * 60 * 1000
+    if (missing) rmSync(w.capState)
+    const first = gate(w)
+    assert.equal(first.exitCode, 1)
+    assert.equal(w.spawns.length, 1)
+    assert.match(w.spawns[0].args[0], /verify-area-caps-sync\.mjs$/)
+    assert.equal(w.spawns[0].args[1], 'refresh')
+    assert.equal(w.spawns[0].options.detached, true)
+    assert.equal(w.spawns[0].options.stdio[0], 'ignore')
+    assert.equal(
+      JSON.parse(readFileSync(w.capState, 'utf8')).refreshStartedAt,
+      new Date(w.clock).toISOString(),
+    )
+    gate(w)
+    assert.equal(w.spawns.length, 1)
+  }
+})
+
+test('cap refresh does not launch on dry run, quota-low or local-session idle ticks', () => {
+  for (const mode of ['dry', 'quota', 'local']) {
+    const w = world({ candidates: [] })
+    rmSync(w.capState)
+    if (mode === 'quota') {
+      const run = w.deps.run
+      w.deps.run = (cmd, args, options) =>
+        cmd === 'gh' && args[1] === 'rate_limit'
+          ? { ok: true, payload: { resources: { core: { limit: 5000, remaining: 1 } } } }
+          : run(cmd, args, options)
+    }
+    gate(w, mode === 'dry' ? ['--dry-run'] : mode === 'local' ? ['--local-sessions-only'] : [])
+    assert.equal(w.spawns.length, 0)
+    assert.throws(() => readFileSync(w.capState, 'utf8'), { code: 'ENOENT' })
+  }
+})
+
+test('resuming local sessions waits for stale cap refresh before discovery or merging', () => {
+  const w = world({
+    sessions: [{ id: 'local', pr_url: 'https://github.com/o/r/pull/1', status: 'running' }],
+  })
+  w.clock = 25 * 60 * 60 * 1000
+  const first = gate(w, ['--local-sessions-only'])
+  assert.ok(first.lines.some((line) => line.includes('area caps refresh pending')))
+  assert.equal(
+    w.calls.some((call) => call.args[1] === 'candidates'),
+    false,
+  )
+  assert.equal(w.writes().length, 0)
+  assert.equal(w.spawns.length, 1)
+  // A completed refresh makes the next tick use the newly available snapshot.
+  writeFileSync(w.capState, JSON.stringify({ refreshedAt: new Date(w.clock).toISOString() }))
+  gate(w, ['--local-sessions-only'])
+  assert.deepEqual(
+    w.writes().map((call) => call.args[1]),
+    ['post', 'merge'],
+  )
 })

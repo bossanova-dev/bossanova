@@ -36,6 +36,9 @@ rate_limit` (which costs nothing). While the core or GraphQL quota has under a q
 reads nothing more, prints `idle: GitHub <core|graphql> quota low (…)` and exits `1`.
 
 Discovery reads every open PR's head, `boss/verify` status and CI in one GraphQL query per 100 PRs.
+A gap row's CI and the pre-merge `boss/verify` read use the daemon (`boss pr state`, fresh before a
+merge), falling back to `gh` with the `fallback:` usage prefix and `verify-gate` source only when no daemon answers; a daemon
+answering `RESOURCE_EXHAUSTED` is an unknown read, never a `gh` retry.
 After a quiet tick (nothing to judge, only standing parks, live claims, red or unsettled CI,
 verified heads and merge retries that waited without writing), the gate stores that tick's
 fingerprint in `<git common dir>/boss-verify/sweep-state.json`. While the next tick's PRs, review
@@ -81,7 +84,7 @@ boss-verify gate: merged=1 parked=1 dispatched=2 skipped=1 deferred=1
 | Exit | Meaning                                                                                                                                                                                                   |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `1`  | Nothing to do, or every candidate handled. The run is recorded `gated` and **no session starts** — the normal outcome.                                                                                    |
-| `1`  | Fail closed: a missing configured tracker credential (`LINEAR_API_KEY` for Linear; the host's `gh` login for GitHub), an unreadable config, a failed tracker read or `gh pr list`, or a refused argument. |
+| `1`  | Fail closed: a missing configured tracker credential (`LINEAR_API_KEY` for Linear; the host's `gh` login for GitHub), an unreadable config, a failed tracker read or open-PR read, or a refused argument. |
 | `1`  | `--dry-run`, always: it writes and dispatches nothing and prints the routes it would take.                                                                                                                |
 | `0`  | `undispatchable:` — a candidate needed the `boss` CLI and it was unreachable from the gate. Cron starts the `/boss-verify` sweep.                                                                         |
 

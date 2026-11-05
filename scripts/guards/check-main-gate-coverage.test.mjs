@@ -38,11 +38,6 @@ const intentionallyBranchIgnored = new Map([
     'test-warehouse.yml',
     'pinned because warehouse dbt inputs are PR-scoped; the models run hourly from production, not main',
   ],
-  ['test-web-real-stack.yml', 'pinned because the real-stack suite reruns on every release PR'],
-  [
-    'test-web.yml',
-    'pinned because web inputs are PR-scoped and the full web tier is rerun on release PRs',
-  ],
 ])
 
 function readWorkflows() {

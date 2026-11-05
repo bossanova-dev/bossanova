@@ -22,11 +22,13 @@ export { withSkillSourceRewriteLock } from './skill-source-rewrite-lock.mjs'
 export const VENDOR_MAP = {
   'boss-retro': [
     'verify/verify-escapes-trace.mjs',
+    'verify/verify-area-caps-sync.mjs',
     'boss-binary.mjs',
     'bs-dispatch-await.mjs',
     'bs-run-sentinel.mjs',
     'cron-gates/boss-retro.mjs',
     'retro/guidance-audit.mjs',
+    'retro/retro-escape-config-pr.mjs',
     'plan-attachment.mjs',
     'retro/retro-classes.mjs',
     'retro/retro-notes.mjs',
@@ -51,6 +53,7 @@ export const VENDOR_MAP = {
     'skill-config.mjs',
   ],
   'boss-build': [
+    'ci/ci-request.mjs',
     'build/blocker-verdict.mjs',
     'build/acceptance-retry.mjs',
     'base-drift.mjs',
@@ -161,6 +164,7 @@ export const VENDOR_MAP = {
     'tracker/cli.mjs',
   ],
   'boss-repair': [
+    'ci/ci-request.mjs',
     'bs-dispatch-await.mjs',
     'bs-record-notes.mjs',
     'repair/bs-repair-derivations.mjs',
@@ -184,6 +188,7 @@ export const VENDOR_MAP = {
     'worktree-sync.mjs',
   ],
   'boss-finalize': [
+    'ci/ci-request.mjs',
     'finalize/draft-guard.mjs',
     'bs-dispatch-await.mjs',
     'ci-wait.mjs',
@@ -204,9 +209,11 @@ export const VENDOR_MAP = {
     'verify/verify-session.mjs',
     'verify/verify-review.mjs',
     'verify/verify-route.mjs',
+    'verify/verify-area-caps-sync.mjs',
     'verify/verify-confidence.mjs',
     'verify/verify-size-baseline.mjs',
     'verify/verify-areas.mjs',
+    'verify/verify-claims.mjs',
     'verify/verify-describe.mjs',
     // The built-in proof-describe extensions run these directly; no toolbox module imports them.
     'verify/verify-describe-dependencies.mjs',

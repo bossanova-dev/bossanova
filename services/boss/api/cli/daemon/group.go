@@ -27,6 +27,7 @@ type Group struct {
 	bossRevisionDriftCheckoutRoot     func() string
 	bossRevisionDriftProbe            func(ctx context.Context) revisiondrift.Drift
 	bossdFileRevisionDriftProbe       func(ctx context.Context) revisiondrift.Drift
+	credentialDeviceStatus            func(context.Context) (*pb.GetAgentCredentialDeviceStatusResponse, error)
 	daemonAuthStateProbe              func(ctx context.Context) (*pb.GetAuthStateResponse, error)
 	daemonConsoleOwnerUID             func() (int, error)
 	daemonCurrentUID                  func() int
@@ -197,9 +198,10 @@ func defaultGroup() *Group {
 	return deps
 }
 
-// Client is the local daemon authentication surface read by doctor.
+// Client is the local daemon diagnostic surface read by doctor.
 type Client interface {
 	GetAuthState(context.Context) (*pb.GetAuthStateResponse, error)
+	GetAgentCredentialDeviceStatus(context.Context) (*pb.GetAgentCredentialDeviceStatusResponse, error)
 }
 
 func New(factory cliutil.ClientFactory[Client]) *Group {

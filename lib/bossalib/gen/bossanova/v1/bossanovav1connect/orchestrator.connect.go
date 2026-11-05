@@ -58,6 +58,9 @@ const (
 	// OrchestratorServiceProxyGetSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyGetSession RPC.
 	OrchestratorServiceProxyGetSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyGetSession"
+	// OrchestratorServiceProxyListReviewQueueProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListReviewQueue RPC.
+	OrchestratorServiceProxyListReviewQueueProcedure = "/bossanova.v1.OrchestratorService/ProxyListReviewQueue"
 	// OrchestratorServiceProxyAttachSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyAttachSession RPC.
 	OrchestratorServiceProxyAttachSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyAttachSession"
@@ -514,6 +517,9 @@ type OrchestratorServiceClient interface {
 	// Deprecated: do not use.
 	ProxyListSessionsAcrossOrganizations(context.Context, *connect.Request[v1.ProxyListSessionsAcrossOrganizationsRequest]) (*connect.Response[v1.ProxyListSessionsAcrossOrganizationsResponse], error)
 	ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error)
+	// ProxyListReviewQueue lists the PRs of one repository, by origin URL, that
+	// verify has parked for a person, with per-level header counts.
+	ProxyListReviewQueue(context.Context, *connect.Request[v1.ProxyListReviewQueueRequest]) (*connect.Response[v1.ProxyListReviewQueueResponse], error)
 	ProxyAttachSession(context.Context, *connect.Request[v1.ProxyAttachSessionRequest]) (*connect.ServerStreamForClient[v1.ProxyAttachSessionResponse], error)
 	// Creates a new session on a chosen daemon, streaming setup output as it
 	// runs and terminating with the created Session or an in-band error.
@@ -1063,6 +1069,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceProxyGetSessionProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetSession")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListReviewQueue: connect.NewClient[v1.ProxyListReviewQueueRequest, v1.ProxyListReviewQueueResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListReviewQueueProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListReviewQueue")),
 			connect.WithClientOptions(opts...),
 		),
 		proxyAttachSession: connect.NewClient[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse](
@@ -1930,6 +1942,7 @@ type orchestratorServiceClient struct {
 	proxyListSessions                      *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
 	proxyListSessionsAcrossOrganizations   *connect.Client[v1.ProxyListSessionsAcrossOrganizationsRequest, v1.ProxyListSessionsAcrossOrganizationsResponse]
 	proxyGetSession                        *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
+	proxyListReviewQueue                   *connect.Client[v1.ProxyListReviewQueueRequest, v1.ProxyListReviewQueueResponse]
 	proxyAttachSession                     *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
 	proxyCreateSession                     *connect.Client[v1.ProxyCreateSessionRequest, v1.ProxyCreateSessionResponse]
 	proxyStopSession                       *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
@@ -2115,6 +2128,11 @@ func (c *orchestratorServiceClient) ProxyListSessionsAcrossOrganizations(ctx con
 // ProxyGetSession calls bossanova.v1.OrchestratorService.ProxyGetSession.
 func (c *orchestratorServiceClient) ProxyGetSession(ctx context.Context, req *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error) {
 	return c.proxyGetSession.CallUnary(ctx, req)
+}
+
+// ProxyListReviewQueue calls bossanova.v1.OrchestratorService.ProxyListReviewQueue.
+func (c *orchestratorServiceClient) ProxyListReviewQueue(ctx context.Context, req *connect.Request[v1.ProxyListReviewQueueRequest]) (*connect.Response[v1.ProxyListReviewQueueResponse], error) {
+	return c.proxyListReviewQueue.CallUnary(ctx, req)
 }
 
 // ProxyAttachSession calls bossanova.v1.OrchestratorService.ProxyAttachSession.
@@ -2861,6 +2879,9 @@ type OrchestratorServiceHandler interface {
 	// Deprecated: do not use.
 	ProxyListSessionsAcrossOrganizations(context.Context, *connect.Request[v1.ProxyListSessionsAcrossOrganizationsRequest]) (*connect.Response[v1.ProxyListSessionsAcrossOrganizationsResponse], error)
 	ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error)
+	// ProxyListReviewQueue lists the PRs of one repository, by origin URL, that
+	// verify has parked for a person, with per-level header counts.
+	ProxyListReviewQueue(context.Context, *connect.Request[v1.ProxyListReviewQueueRequest]) (*connect.Response[v1.ProxyListReviewQueueResponse], error)
 	ProxyAttachSession(context.Context, *connect.Request[v1.ProxyAttachSessionRequest], *connect.ServerStream[v1.ProxyAttachSessionResponse]) error
 	// Creates a new session on a chosen daemon, streaming setup output as it
 	// runs and terminating with the created Session or an in-band error.
@@ -3406,6 +3427,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceProxyGetSessionProcedure,
 		svc.ProxyGetSession,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListReviewQueueHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListReviewQueueProcedure,
+		svc.ProxyListReviewQueue,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListReviewQueue")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyAttachSessionHandler := connect.NewServerStreamHandler(
@@ -4278,6 +4305,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyListSessionsAcrossOrganizationsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyGetSessionProcedure:
 			orchestratorServiceProxyGetSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListReviewQueueProcedure:
+			orchestratorServiceProxyListReviewQueueHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyAttachSessionProcedure:
 			orchestratorServiceProxyAttachSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyCreateSessionProcedure:
@@ -4601,6 +4630,10 @@ func (UnimplementedOrchestratorServiceHandler) ProxyListSessionsAcrossOrganizati
 
 func (UnimplementedOrchestratorServiceHandler) ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyGetSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListReviewQueue(context.Context, *connect.Request[v1.ProxyListReviewQueueRequest]) (*connect.Response[v1.ProxyListReviewQueueResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListReviewQueue is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyAttachSession(context.Context, *connect.Request[v1.ProxyAttachSessionRequest], *connect.ServerStream[v1.ProxyAttachSessionResponse]) error {

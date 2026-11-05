@@ -1,0 +1,224 @@
+[
+  {
+    "level": "CONFIDENCE_LEVEL_UNSPECIFIED",
+    "loweredBy": null,
+    "sentence": ""
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_UNSPECIFIED",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this."
+    ],
+    "sentence": ""
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_UNSPECIFIED",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this.",
+      "The review did not run. Rerunning it would raise this.",
+      "Evidence is missing. Collecting it would raise this."
+    ],
+    "sentence": ""
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_UNSPECIFIED",
+    "loweredBy": [
+      "CI failed. Resolving it would raise this."
+    ],
+    "sentence": ""
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_UNSPECIFIED",
+    "loweredBy": [
+      "",
+      "  Évidence is missing. Collecting it would raise this.  ",
+      " "
+    ],
+    "sentence": ""
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_HIGH",
+    "loweredBy": null,
+    "sentence": "High."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_HIGH",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this."
+    ],
+    "sentence": "High: changes Infrastructure. Reviewing this area would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_HIGH",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this.",
+      "The review did not run. Rerunning it would raise this.",
+      "Evidence is missing. Collecting it would raise this."
+    ],
+    "sentence": "High: changes Infrastructure. Reviewing this area would raise this. The review did not run. Rerunning it would raise this. Evidence is missing. Collecting it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_HIGH",
+    "loweredBy": [
+      "CI failed. Resolving it would raise this."
+    ],
+    "sentence": "High: CI failed. Resolving it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_HIGH",
+    "loweredBy": [
+      "",
+      "  Évidence is missing. Collecting it would raise this.  ",
+      " "
+    ],
+    "sentence": "High: évidence is missing. Collecting it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_MODERATE",
+    "loweredBy": null,
+    "sentence": "Moderate."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_MODERATE",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this."
+    ],
+    "sentence": "Moderate: changes Infrastructure. Reviewing this area would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_MODERATE",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this.",
+      "The review did not run. Rerunning it would raise this.",
+      "Evidence is missing. Collecting it would raise this."
+    ],
+    "sentence": "Moderate: changes Infrastructure. Reviewing this area would raise this. The review did not run. Rerunning it would raise this. Evidence is missing. Collecting it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_MODERATE",
+    "loweredBy": [
+      "CI failed. Resolving it would raise this."
+    ],
+    "sentence": "Moderate: CI failed. Resolving it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_MODERATE",
+    "loweredBy": [
+      "",
+      "  Évidence is missing. Collecting it would raise this.  ",
+      " "
+    ],
+    "sentence": "Moderate: évidence is missing. Collecting it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_LOW",
+    "loweredBy": null,
+    "sentence": "Low."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_LOW",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this."
+    ],
+    "sentence": "Low: changes Infrastructure. Reviewing this area would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_LOW",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this.",
+      "The review did not run. Rerunning it would raise this.",
+      "Evidence is missing. Collecting it would raise this."
+    ],
+    "sentence": "Low: changes Infrastructure. Reviewing this area would raise this. The review did not run. Rerunning it would raise this. Evidence is missing. Collecting it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_LOW",
+    "loweredBy": [
+      "CI failed. Resolving it would raise this."
+    ],
+    "sentence": "Low: CI failed. Resolving it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_LOW",
+    "loweredBy": [
+      "",
+      "  Évidence is missing. Collecting it would raise this.  ",
+      " "
+    ],
+    "sentence": "Low: évidence is missing. Collecting it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_BLOCKED",
+    "loweredBy": null,
+    "sentence": "Blocked."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_BLOCKED",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this."
+    ],
+    "sentence": "Blocked: changes Infrastructure. Reviewing this area would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_BLOCKED",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this.",
+      "The review did not run. Rerunning it would raise this.",
+      "Evidence is missing. Collecting it would raise this."
+    ],
+    "sentence": "Blocked: changes Infrastructure. Reviewing this area would raise this. The review did not run. Rerunning it would raise this. Evidence is missing. Collecting it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_BLOCKED",
+    "loweredBy": [
+      "CI failed. Resolving it would raise this."
+    ],
+    "sentence": "Blocked: CI failed. Resolving it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_BLOCKED",
+    "loweredBy": [
+      "",
+      "  Évidence is missing. Collecting it would raise this.  ",
+      " "
+    ],
+    "sentence": "Blocked: évidence is missing. Collecting it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_CANNOT_ASSESS",
+    "loweredBy": null,
+    "sentence": "Cannot assess."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_CANNOT_ASSESS",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this."
+    ],
+    "sentence": "Cannot assess: changes Infrastructure. Reviewing this area would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_CANNOT_ASSESS",
+    "loweredBy": [
+      "Changes Infrastructure. Reviewing this area would raise this.",
+      "The review did not run. Rerunning it would raise this.",
+      "Evidence is missing. Collecting it would raise this."
+    ],
+    "sentence": "Cannot assess: changes Infrastructure. Reviewing this area would raise this. The review did not run. Rerunning it would raise this. Evidence is missing. Collecting it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_CANNOT_ASSESS",
+    "loweredBy": [
+      "CI failed. Resolving it would raise this."
+    ],
+    "sentence": "Cannot assess: CI failed. Resolving it would raise this."
+  },
+  {
+    "level": "CONFIDENCE_LEVEL_CANNOT_ASSESS",
+    "loweredBy": [
+      "",
+      "  Évidence is missing. Collecting it would raise this.  ",
+      " "
+    ],
+    "sentence": "Cannot assess: évidence is missing. Collecting it would raise this."
+  }
+]

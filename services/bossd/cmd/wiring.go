@@ -19,6 +19,7 @@ import (
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/adapter/accountcred"
+	"github.com/recurser/bossd/internal/adapter/anthropicorg"
 	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/adapter/github"
 	"github.com/recurser/bossd/internal/adapter/proofenvkeyring"
@@ -61,6 +62,7 @@ type daemonWiring struct {
 	accountCredMaintenance         *accountwiring.CredentialMaintainer
 	accountSync                    *account.SyncApplier
 	accountCreds                   *accountcred.Store
+	claudeOrganizations            *anthropicorg.Resolver
 	accountMaterializations        server.AgentAccountMaterializations
 	accountMaterializer            account.Materializer
 	accountResolver                *account.Resolver

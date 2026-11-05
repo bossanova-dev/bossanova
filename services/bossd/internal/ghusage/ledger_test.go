@@ -35,9 +35,9 @@ func TestRecordThenReadRoundTrip(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 	want := []Count{
-		{Label: LabelFinalize, Quota: QuotaGraphQL, Calls: 2},
-		{Label: LabelPRPoller, Quota: QuotaCore, Calls: 1},
-		{Label: LabelUnattributed, Quota: QuotaCore, Calls: 1},
+		{Label: LabelFinalize, Quota: QuotaGraphQL, Identity: IdentityUser, Calls: 2},
+		{Label: LabelPRPoller, Quota: QuotaCore, Identity: IdentityUser, Calls: 1},
+		{Label: LabelUnattributed, Quota: QuotaCore, Identity: IdentityUser, Calls: 1},
 	}
 	if !reflect.DeepEqual(got.Counts, want) {
 		t.Fatalf("Counts = %+v, want %+v", got.Counts, want)
@@ -61,7 +61,7 @@ func TestReadExcludesRecordsOutsideTheWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	want := []Count{{Label: "recent", Quota: QuotaCore, Calls: 1}}
+	want := []Count{{Label: "recent", Quota: QuotaCore, Identity: IdentityUser, Calls: 1}}
 	if !reflect.DeepEqual(got.Counts, want) {
 		t.Fatalf("Counts = %+v, want %+v", got.Counts, want)
 	}
@@ -85,7 +85,7 @@ func TestReadMergesBothHourBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	want := []Count{{Label: LabelRepair, Quota: QuotaGraphQL, Calls: 2}}
+	want := []Count{{Label: LabelRepair, Quota: QuotaGraphQL, Identity: IdentityUser, Calls: 2}}
 	if !reflect.DeepEqual(got.Counts, want) {
 		t.Fatalf("Counts = %+v, want %+v", got.Counts, want)
 	}
@@ -121,8 +121,8 @@ func TestReadSkipsLinesThatDoNotParse(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 	want := []Count{
-		{Label: "after", Quota: QuotaCore, Calls: 1},
-		{Label: "before", Quota: QuotaCore, Calls: 1},
+		{Label: "after", Quota: QuotaCore, Identity: IdentityUser, Calls: 1},
+		{Label: "before", Quota: QuotaCore, Identity: IdentityUser, Calls: 1},
 	}
 	if !reflect.DeepEqual(got.Counts, want) {
 		t.Fatalf("Counts = %+v, want %+v", got.Counts, want)
@@ -181,7 +181,7 @@ func TestPruneRemovesOnlyStaleBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []Count{{Label: "x", Quota: QuotaCore, Calls: 3}}; !reflect.DeepEqual(got.Counts, want) {
+	if want := []Count{{Label: "x", Quota: QuotaCore, Identity: IdentityUser, Calls: 3}}; !reflect.DeepEqual(got.Counts, want) {
 		t.Fatalf("after prune, a MaxWindow read = %+v, want %+v", got.Counts, want)
 	}
 }
@@ -316,10 +316,10 @@ func TestReadCountsCallsAndSkipsPerLabel(t *testing.T) {
 	}
 	want := []Count{
 		// Equal calls sort by skips: the refused poller before the cron.
-		{Label: LabelPRPoller, Quota: QuotaGraphQL, Calls: 2, BreakerSkips: 1, FloorSkips: 1},
-		{Label: "cron:x", Quota: QuotaCore, Calls: 2},
-		{Label: LabelDisplayPoller, Quota: QuotaGraphQL, FloorSkips: 2},
-		{Label: LabelCallbacks, Quota: QuotaCore, BreakerSkips: 1},
+		{Label: LabelPRPoller, Quota: QuotaGraphQL, Identity: IdentityUser, Calls: 2, BreakerSkips: 1, FloorSkips: 1},
+		{Label: "cron:x", Quota: QuotaCore, Identity: IdentityUser, Calls: 2},
+		{Label: LabelDisplayPoller, Quota: QuotaGraphQL, Identity: IdentityUser, FloorSkips: 2},
+		{Label: LabelCallbacks, Quota: QuotaCore, Identity: IdentityUser, BreakerSkips: 1},
 	}
 	if !reflect.DeepEqual(got.Counts, want) {
 		t.Fatalf("Counts = %+v, want %+v", got.Counts, want)
@@ -327,7 +327,7 @@ func TestReadCountsCallsAndSkipsPerLabel(t *testing.T) {
 }
 
 // TestSentRecordBytesCarryNoOutcome pins that a sent call's line keeps the
-// format the gh shim also writes, and only a skip carries an outcome.
+// format the gh shim also writes, while a skip carries its outcome.
 func TestSentRecordBytesCarryNoOutcome(t *testing.T) {
 	now := base
 	l := newTestLedger(t, &now)
@@ -388,4 +388,74 @@ func TestRecordWithoutIdentityReadsAsUser(t *testing.T) {
 	if !ok || rec.Identity != IdentityUser {
 		t.Fatalf("legacy record = %+v (ok %t), want identity %q", rec, ok, IdentityUser)
 	}
+}
+
+// TestReadSplitsCountsByIdentity_GitHubUsage_AC230601 pins that one label and
+// quota spent on several identities reads as one count per identity, that a
+// record with no identity (the gh shim before it stamped one, or any line
+// written before identities existed) counts as the user login, and that equal
+// counts sort by identity so the report is stable.
+func TestReadSplitsCountsByIdentity_GitHubUsage_AC230601(t *testing.T) {
+	now := base
+	l := newTestLedger(t, &now)
+	install7 := InstallationIdentity(7)
+	install12 := InstallationIdentity(12)
+	l.Record(LabelPRState, QuotaGraphQL, install7)
+	l.Record(LabelPRState, QuotaGraphQL, install7)
+	l.Record(LabelPRState, QuotaGraphQL, install7)
+	l.Record(LabelPRState, QuotaGraphQL, IdentityUser)
+	l.RecordSkip(LabelPRState, QuotaGraphQL, install7, OutcomeBreaker)
+	l.Record(LabelCallbacks, QuotaCore, install12)
+	l.Record(LabelCallbacks, QuotaCore, IdentityUser)
+	path := filepath.Join(l.dir, bucketName(now))
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An identity-less line for the same label and quota as the user row.
+	if _, err := fmt.Fprintf(f, "{\"at\":%d,\"label\":%q,\"quota\":\"graphql\"}\n", now.Unix(), LabelPRState); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	got, err := l.Read(now, time.Hour)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	want := []Count{
+		{Label: LabelPRState, Quota: QuotaGraphQL, Identity: install7, Calls: 3, BreakerSkips: 1},
+		{Label: LabelPRState, Quota: QuotaGraphQL, Identity: IdentityUser, Calls: 2},
+		// Equal calls, skips, label and quota: installation:12 sorts before user.
+		{Label: LabelCallbacks, Quota: QuotaCore, Identity: install12, Calls: 1},
+		{Label: LabelCallbacks, Quota: QuotaCore, Identity: IdentityUser, Calls: 1},
+	}
+	if !reflect.DeepEqual(got.Counts, want) {
+		t.Fatalf("Counts = %+v, want %+v", got.Counts, want)
+	}
+}
+
+func TestNotModifiedIsFreeAndKeepsIdentity_GitHubUsage_AC230701(t *testing.T) {
+	now := base
+	l := newTestLedger(t, &now)
+	identity := InstallationIdentity(7)
+	l.Record(LabelPRPoller, QuotaCore, identity)
+	l.RecordNotModified(LabelPRPoller, QuotaCore, identity)
+	l.RecordNotModified("only-free", QuotaCore, "")
+	recs := bucketRecords(t, l.dir, now)
+	if len(recs) != 3 || recs[1].Outcome != OutcomeNotModified || recs[1].Identity != identity {
+		t.Fatalf("records = %+v, want not-modified outcome and installation identity", recs)
+	}
+	got, err := l.Read(now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Count{
+		{Label: LabelPRPoller, Quota: QuotaCore, Identity: identity, Calls: 1, NotModified: 1},
+		{Label: "only-free", Quota: QuotaCore, Identity: IdentityUser, NotModified: 1},
+	}
+	if !reflect.DeepEqual(got.Counts, want) {
+		t.Fatalf("Counts = %+v, want %+v", got.Counts, want)
+	}
+	var nilLedger *Ledger
+	nilLedger.RecordNotModified("", QuotaCore, "")
 }

@@ -9,6 +9,8 @@ import {
   applyResolution,
   assertEffectiveSelection,
   describeEmptyScan,
+  effectivePriority,
+  rankCandidates,
   effectiveSelection,
   gateSelectionFlags,
   isNarrowed,
@@ -749,4 +751,47 @@ test('split-args agrees with splitArgs in-process', () => {
 
 test('every stage is a known selection stage', () => {
   assert.deepEqual(SELECTION_STAGES, ['plan', 'build', 'epic', 'verify', 'retro', 'release'])
+})
+
+test('effectivePriority lifts a ticket to a more urgent parent and never lowers it', () => {
+  const [URGENT, HIGH, MEDIUM, LOW, NONE] = [1, 2, 3, 4, 0]
+  assert.equal(effectivePriority(LOW, URGENT), URGENT)
+  assert.equal(effectivePriority(NONE, HIGH), HIGH)
+  assert.equal(effectivePriority(URGENT, LOW), URGENT)
+  assert.equal(effectivePriority(HIGH, NONE), HIGH)
+  assert.equal(effectivePriority(MEDIUM, MEDIUM), MEDIUM)
+  assert.equal(effectivePriority(LOW, undefined), LOW)
+})
+
+test('rankCandidates puts the earliest scheduled project first within a priority, undated work last', () => {
+  const project = (startDate, targetDate) => ({ startDate, targetDate })
+  const ticket = (identifier, priority, more = {}) => ({
+    identifier,
+    priority,
+    createdAt: '2026-10-01',
+    ...more,
+  })
+  const ranked = rankCandidates([
+    ticket('misc', 1, { project: project(null, null), estimate: 1 }),
+    ticket('later', 1, { project: project('2026-11-16', '2026-11-27'), estimate: 1 }),
+    ticket('due-later', 1, { project: project('2026-11-02', '2026-11-13') }),
+    ticket('big', 1, { project: project('2026-11-02', '2026-11-06'), estimate: 5 }),
+    ticket('small', 1, { project: project('2026-11-02', '2026-11-06'), estimate: 2 }),
+    ticket('old', 1, {
+      project: project('2026-11-02', '2026-11-06'),
+      estimate: 2,
+      createdAt: '2026-09-01',
+    }),
+    ticket('no-project', 1),
+    ticket('lifted', 4, {
+      parent: { identifier: 'EPIC', priority: 1 },
+      project: project('2026-12-01', null),
+    }),
+    ticket('high', 2, { project: project('2026-10-01', '2026-10-02') }),
+  ])
+  assert.deepEqual(
+    ranked.map((c) => c.identifier),
+    ['old', 'small', 'big', 'due-later', 'later', 'lifted', 'misc', 'no-project', 'high'],
+  )
+  assert.equal(ranked.find((c) => c.identifier === 'lifted').effectivePriority, 1)
 })

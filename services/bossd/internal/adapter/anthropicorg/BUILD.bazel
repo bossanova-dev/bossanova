@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "anthropicorg",
+    srcs = ["resolver.go"],
+    importpath = "github.com/recurser/bossd/internal/adapter/anthropicorg",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = ["@com_github_rs_zerolog//:zerolog"],
+)
+
+go_test(
+    name = "anthropicorg_test",
+    srcs = ["resolver_test.go"],
+    embed = [":anthropicorg"],
+    deps = ["@com_github_rs_zerolog//:zerolog"],
+)

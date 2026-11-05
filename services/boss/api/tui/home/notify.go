@@ -23,14 +23,15 @@ type NotifyRequest struct {
 // directly from an escape sequence (OSC 9 / OSC 777). A terminal-emitted
 // notification is attributed to the terminal itself, so clicking it focuses
 // the terminal — unlike osascript, whose banner opens Script Editor. The
-// markers we key on (GHOSTTY_RESOURCES_DIR, ITERM_SESSION_ID, WEZTERM_PANE)
-// survive a tmux/ssh wrap, so we can still identify the outer terminal when
+// markers we key on (GHOSTTY_RESOURCES_DIR, REX_SESSION, ITERM_SESSION_ID,
+// WEZTERM_PANE) survive a tmux/ssh wrap, so we can still identify the outer terminal when
 // multiplexed and wrap the sequence in tmux's passthrough envelope.
 type notifyEnv struct {
 	term            string
 	termProgram     string
 	tmux            string
 	ghosttyResource string
+	rexSession      string
 	itermSession    string
 	weztermPane     string
 }
@@ -41,6 +42,7 @@ func currentNotifyEnv() notifyEnv {
 		termProgram:     os.Getenv("TERM_PROGRAM"),
 		tmux:            os.Getenv("TMUX"),
 		ghosttyResource: os.Getenv("GHOSTTY_RESOURCES_DIR"),
+		rexSession:      os.Getenv("REX_SESSION"),
 		itermSession:    os.Getenv("ITERM_SESSION_ID"),
 		weztermPane:     os.Getenv("WEZTERM_PANE"),
 	}
@@ -62,6 +64,9 @@ func (e notifyEnv) outerTerminal() string {
 	switch {
 	case e.ghosttyResource != "" || e.termProgram == "ghostty" || e.term == "xterm-ghostty":
 		return "ghostty"
+	case e.rexSession != "" || e.termProgram == "rex":
+		// Rex embeds libghostty and raises OSC 9/777 as desktop notifications.
+		return "rex"
 	case e.weztermPane != "" || e.termProgram == "WezTerm":
 		return "wezterm"
 	case e.itermSession != "" || e.termProgram == "iTerm.app":
@@ -73,7 +78,7 @@ func (e notifyEnv) outerTerminal() string {
 
 // oscNotificationSequence builds the escape sequence that makes the controlling
 // terminal raise a desktop notification, plus whether the current terminal
-// supports it. Ghostty and WezTerm take rxvt-style OSC 777 (title + body);
+// supports it. Ghostty, Rex and WezTerm take rxvt-style OSC 777 (title + body);
 // iTerm2 takes iTerm/ConEmu-style OSC 9 (body only, so the title is folded in).
 // When multiplexed under tmux the sequence is wrapped in a passthrough envelope.
 func oscNotificationSequence(e notifyEnv, req NotifyRequest) (string, bool) {
@@ -85,7 +90,7 @@ func oscNotificationSequence(e notifyEnv, req NotifyRequest) (string, bool) {
 
 	var seq string
 	switch e.outerTerminal() {
-	case "ghostty", "wezterm":
+	case "ghostty", "rex", "wezterm":
 		// OSC 777 ; notify ; <title> ; <body> BEL
 		seq = fmt.Sprintf("\x1b]777;notify;%s;%s\a", title, body)
 	case "iterm":

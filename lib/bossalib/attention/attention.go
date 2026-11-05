@@ -159,6 +159,10 @@ type Input struct {
 	// IsRebasing means the PR conflicts with its base and the repair plugin will
 	// rebase it (bossd decides).
 	IsRebasing bool
+	// RepairOwned means automatic repair is running on the PR or armed to run
+	// on it (bossd decides). A repairable fault it owns reads in progress,
+	// RepairingLabel, rather than a FIX.
+	RepairOwned bool
 
 	// ProgressPhase is one of planning, building, reviewing, verifying.
 	ProgressPhase string
@@ -184,6 +188,11 @@ type Input struct {
 	// the verify park's note recorded it for the current head. Only a park
 	// with ParkCodeLedgerOpen reads it.
 	OpenItems []string
+
+	// BlockerTallies and BlockerFiles are the current head's standing verify
+	// blockers as BlockerTallies groups them; every kind carries them.
+	BlockerTallies []BlockerTally
+	BlockerFiles   []string
 }
 
 // NeedsYou reports whether kind needs the operator.
@@ -217,21 +226,26 @@ const VerifyMergeGrace = 30 * time.Minute
 // its kind.
 func Compute(in Input) *pb.SessionAttention {
 	att := computeKind(in)
+	att.BlockerTallies = blockerTalliesProto(in.BlockerTallies)
+	att.BlockerFiles = slices.Clone(in.BlockerFiles)
 	if in.HasTrackerLink {
 		att.Actions = append(att.Actions, pb.AttentionAction_ATTENTION_ACTION_TRACKER)
 	}
+	att.StatusPhrase, att.StatusDetail = RowStatus(in, att)
 	return att
 }
 
 func computeKind(in Input) *pb.SessionAttention {
-	if in.Fix != nil && (in.DismissedAlertKey == "" || in.Fix.AlertKey != in.DismissedAlertKey) {
+	codes := parkCodesFor(in)
+	code, parked := decidingParkCode(codes)
+	alertTaken, parkTaken := repairTakes(in, codes)
+	if fixActive(in) && !alertTaken {
 		return computeFix(in)
 	}
 	if in.QuestionChatID != "" || strings.TrimSpace(in.QuestionText) != "" {
 		return computeQuestion(in)
 	}
-	codes := parkCodesFor(in)
-	if code, ok := decidingParkCode(codes); ok {
+	if parked && !parkTaken {
 		return computePark(in, codes, code)
 	}
 	// Every code left here is a waiting code; a parked PR is not the
@@ -259,11 +273,46 @@ func computeKind(in Input) *pb.SessionAttention {
 			Since: timestamp(in.StateSince),
 		}
 	}
+	label := progressLabel(in, codes)
+	if alertTaken || parkTaken {
+		label = RepairingLabel
+	}
 	return &pb.SessionAttention{
 		Kind:          pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-		ProgressLabel: progressLabel(in, codes),
+		ProgressLabel: label,
 		Since:         timestamp(in.StateSince),
 	}
+}
+
+// fixActive reports a fix fact the operator has not dismissed.
+func fixActive(in Input) bool {
+	return in.Fix != nil && (in.DismissedAlertKey == "" || in.Fix.AlertKey != in.DismissedAlertKey)
+}
+
+// repairTakes reports whether automatic repair owns the session's fault, so
+// it reads in progress, RepairingLabel, instead of a FIX: alertTaken for a
+// failed repair it retries, parkTaken for a blocked verify park whose deciding
+// code is a known one repair can resolve. A run that is blocked, lost or gave
+// up resuming, an authentication wedge, a merge conflict, a wait no wake will
+// reach and exhausted repair stay FIX, as do a partial build, a ticket
+// admission hold and a code this version does not recognise.
+//
+// No dated apiversion bump, and why: Session.attention reaches the boss TUI,
+// which stamps its built Current but can point at a remote daemon of another
+// version, and the web through bosso, which is version-skewed. Both render an
+// unknown progress label as live work, which "repairing" is. A down-convert
+// restoring the FIX would re-show a NEEDS YOU row whose repair is running, the
+// defect this corrects, so none is wanted. See
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+func repairTakes(in Input, codes []string) (alertTaken, parkTaken bool) {
+	if !in.RepairOwned || !in.HasPR || in.PRState != PRStateOpen {
+		return false, false
+	}
+	alertTaken = fixActive(in) && in.Fix.AlertKey == RepairFailedAlertKey
+	code, parked := decidingParkCode(codes)
+	info, known := knownParkCodes[code]
+	parkTaken = parked && known && !info.signOff && !slices.Contains(codes, "repair-exhausted") && code != ParkCodePartial && !IsAdmissionHoldCode(code)
+	return alertTaken, parkTaken
 }
 
 // parkCodesFor surfaces an incomplete build before verify records its park.

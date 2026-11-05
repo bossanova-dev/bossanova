@@ -35,6 +35,20 @@ func TestOSCNotificationSequence(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name:   "rex via REX_SESSION uses OSC 777",
+			env:    notifyEnv{term: "xterm-256color", rexSession: "session:01a19f88"},
+			req:    req,
+			want:   "\x1b]777;notify;Bossanova;MV Plans needs your input\a",
+			wantOK: true,
+		},
+		{
+			name:   "rex via TERM_PROGRAM uses OSC 777",
+			env:    notifyEnv{term: "xterm-256color", termProgram: "rex"},
+			req:    req,
+			want:   "\x1b]777;notify;Bossanova;MV Plans needs your input\a",
+			wantOK: true,
+		},
+		{
 			name:   "wezterm uses OSC 777",
 			env:    notifyEnv{weztermPane: "0"},
 			req:    req,

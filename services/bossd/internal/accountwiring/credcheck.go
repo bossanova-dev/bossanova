@@ -70,11 +70,7 @@ const (
 	// authFailureCredentialSuperseded reports that the ambient codex login
 	// holds the same refresh token bossd stores, so two holders share one chain
 	// and the next rotation by either invalidates the other (BOS-1175,
-	// BOS-2239). That shared chain only arises from copying an auth.json
-	// between the ambient home and bossd's. A DIFFERENT refresh token for the
-	// same account is a separate grant (a terminal `codex login`) that the
-	// provider refreshes independently, and it raises no class at all. The
-	// wire literal predates that narrowing and is kept as-is.
+	// BOS-2239). A different token is a separate grant and raises nothing.
 	//
 	// It is the one class that qualifies a HEALTHY outcome rather than a
 	// failing one, and it deliberately does NOT change eligibility. The stored
@@ -1068,8 +1064,7 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (domain.Aut
 }
 
 // withSupersededClass qualifies a HEALTHY verdict with the superseded class
-// when the ambient codex login shares bossd's refresh chain (the same refresh
-// token), so the next rotation by either holder signs the other out.
+// when the ambient codex login holds bossd's own refresh token (a shared chain).
 //
 // The outcome is left alone on purpose. auth_invalid is the single outcome that
 // removes an account from both selection tiers, and a shared refresh chain is
@@ -1082,23 +1077,15 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (domain.Aut
 // already carries the provider's own class, and that class is strictly more
 // actionable — "the provider refused this credential" tells an operator to
 // reauthenticate now, where "the refresh chain is shared" tells them to do it
-// before the next rotation. The provider's answer must never be overwritten
-// by ours.
+// eventually. The provider's answer must never be overwritten by ours.
 //
-// Every other ambient state contributes no class at all. A separate grant (a
-// terminal `codex login` for the same account, holding its own refresh token)
-// is refreshed by the provider independently of bossd's chain, so it is not a
-// hazard. Every not-evaluable case, including an ambient login belonging to a
-// DIFFERENT account, says nothing either, so the ordinary two-account setup
-// produces no signal rather than a benign-looking one.
+// A separate grant (a terminal `codex login` with its own refresh token) and a
+// not-evaluable state, including another account's login, contribute no class.
 //
-// No dated API version for the BOS-2239 narrowing. Clients read this class
-// through ListAccounts and render it the same way for every version; only the
-// daemon-host observation that triggers it moved, which no response carries,
-// so no transform could restore the old emission. Clients pinned before
-// V20260913 already receive it blanked. See the AuthCheck.failure_class
-// comment in proto/bossanova/v1/models.proto and
-// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+// No dated API version for this BOS-2239 narrowing: clients render the class
+// alike at every version and no response carries the ambient state a transform
+// would need (see AuthCheck.failure_class in proto/bossanova/v1/models.proto and
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
 func withSupersededClass(
 	outcome domain.AuthCheckOutcome,
 	failureClass string,
@@ -1149,12 +1136,9 @@ func withSupersededClass(
 // PRECEDENCE against the BOS-1175 superseded class. Both signals say "the
 // refresh chain is suspect", and they can hold at once. The superseded class
 // wins: it is a DIRECT observation that a second holder shares the stored
-// refresh token, while this outcome is an INFERENCE from the access token's expiry,
-// and it carries the more urgent remedy (`boss account reauth` now, rather
-// than eventually). So a shared-chain run returns ordinary health here and lets
-// withSupersededClass qualify it, instead of reporting the weaker inference and
-// losing the stronger observation. A separate grant is no observation about
-// bossd's chain at all, so it must not suppress the inference.
+// refresh token, while this outcome is an INFERENCE from token expiry. So a
+// shared-chain run returns health for withSupersededClass to qualify; a
+// separate grant observes nothing about bossd's chain and suppresses nothing.
 func classifyCleanVerification(res SmokeResult) (domain.AuthCheckOutcome, string) {
 	if res.AmbientAuth == credmaterialize.AmbientAuthSharedChain {
 		return domain.AuthCheckOutcomeHealthy, ""

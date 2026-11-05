@@ -3013,12 +3013,84 @@ test('classifyCheckCommand resolves make goals and path operands only when absen
     rmSync(tmp, { recursive: true, force: true })
   }
 
+  assert.deepEqual(classifyCheckCommand('make test-boss test-bossd lint test'), {
+    blocking: [],
+    advisory: [],
+  })
   assert.deepEqual(classifyCheckCommand('make target-that-does-not-exist-bos1239').blocking, [])
   assert.ok(
     classifyCheckCommand('make target-that-does-not-exist-bos1239').advisory.some(
       (finding) => finding.code === 'make-goal-unresolved',
     ),
   )
+})
+
+test('classifyCheckCommand follows literal make includes and preserves undecidable goals', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'skill-config-includes-'))
+  try {
+    mkdirSync(join(tmp, 'mk'))
+    mkdirSync(join(tmp, 'sub'))
+    const root = join(tmp, 'Makefile')
+    const options = { cwd: tmp, env: process.env }
+    const classify = (command) => classifyCheckCommand(command, options)
+    const closed = () => {
+      assert.equal(classify('make absent').blocking[0]?.code, 'make-goal-undefined')
+    }
+    const open = () => {
+      const result = classify('make absent')
+      assert.deepEqual(result.blocking, [])
+      assert.equal(result.advisory[0]?.code, 'make-goal-unresolved')
+    }
+    writeFileSync(root, 'include mk/a.mk\n-include mk/b.mk\n')
+    writeFileSync(join(tmp, 'mk/a.mk'), 'from-include:\n.PHONY: phony-included\n')
+    writeFileSync(join(tmp, 'mk/b.mk'), 'from-dash-include:\ninclude mk/c.mk\n')
+    writeFileSync(join(tmp, 'mk/c.mk'), 'nested:\n')
+    assert.deepEqual(classify('make from-include phony-included from-dash-include nested'), {
+      blocking: [],
+      advisory: [],
+    })
+    closed()
+
+    writeFileSync(root, 'sinclude mk/a.mk\n')
+    assert.deepEqual(classify('make from-include'), { blocking: [], advisory: [] })
+    closed()
+    writeFileSync(join(tmp, 'mk/a.mk'), 'from-include:\ninclude mk/c.mk\n')
+    writeFileSync(join(tmp, 'mk/c.mk'), 'nested:\ninclude mk/a.mk\n')
+    assert.deepEqual(classify('make from-include nested'), { blocking: [], advisory: [] })
+    closed()
+
+    for (const directive of [
+      'include $(DIR)/x.mk',
+      'include ${DIR}/x.mk',
+      'include mk/*.mk',
+      'include mk/?.mk',
+      'include mk/[ab].mk',
+      'include mk/missing.mk',
+      '-include mk/missing.mk',
+      'sinclude mk/missing.mk',
+    ]) {
+      writeFileSync(root, `${directive}\n`)
+      open()
+    }
+    for (const fragment of ['%:\n', '$(eval generated:)\n']) {
+      writeFileSync(root, 'include mk/a.mk\n')
+      writeFileSync(join(tmp, 'mk/a.mk'), fragment)
+      open()
+    }
+
+    writeFileSync(join(tmp, 'sub/Makefile'), 'include inc.mk\n')
+    writeFileSync(join(tmp, 'sub/inc.mk'), 'in-sub:\n')
+    assert.deepEqual(classify('make -C sub in-sub'), { blocking: [], advisory: [] })
+    writeFileSync(root, 'include inc.mk\n')
+    open()
+    writeFileSync(root, `include ${join(tmp, 'sub/inc.mk')}\n`)
+    assert.deepEqual(classify('make in-sub'), { blocking: [], advisory: [] })
+    closed()
+    writeFileSync(root, 'defined:\n\tinclude nothing.mk\n')
+    closed()
+  } finally {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+  }
 })
 
 // A negated check command is legitimate: `! grep -q needle file` is the natural way to assert a

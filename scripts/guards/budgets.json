@@ -283,7 +283,7 @@
       "skills-toolbox/plan/plan-writeback-verify.mjs": 1083,
       "skills-toolbox/pr-check-state.mjs": 1177,
       "skills-toolbox/retro/retro-notes.mjs": 1349,
-      "skills-toolbox/skill-config.mjs": 3864,
+      "skills-toolbox/skill-config.mjs": 3883,
       "skills-toolbox/tracker/cli.mjs": 1256,
       "skills-toolbox/tracker/linear.mjs": 1125,
       "skills-toolbox/verify/verify-gate.mjs": 4675,

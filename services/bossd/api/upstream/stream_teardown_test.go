@@ -189,7 +189,8 @@ func teardownTestClient(
 	t.Helper()
 	stores := emptySnapshotStores{}
 	return NewStreamClient(StreamClientConfig{
-		Opener: opener,
+		CloudControl: fixedCloudControl("full"),
+		Opener:       opener,
 		Stores: StreamStores{
 			Sessions: stores,
 			Chats:    stores,

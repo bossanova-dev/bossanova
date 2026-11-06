@@ -80,9 +80,10 @@ func TestStreamClient_OnHandshakeFiresPerSuccessfulHandshake(t *testing.T) {
 	opener := &handshakeOpener{}
 	hookCh := make(chan struct{}, 8)
 	c := NewStreamClient(StreamClientConfig{
-		Opener: opener,
-		Events: NewStreamBus(zerolog.Nop()),
-		Logger: zerolog.Nop(),
+		CloudControl: fixedCloudControl("full"),
+		Opener:       opener,
+		Events:       NewStreamBus(zerolog.Nop()),
+		Logger:       zerolog.Nop(),
 		OnHandshake: func() {
 			select {
 			case hookCh <- struct{}{}:

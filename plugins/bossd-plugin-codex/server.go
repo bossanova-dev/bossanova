@@ -388,6 +388,9 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	// message unsubmitted. The `tui.` key outranks a top-level
 	// `disable_paste_burst` in codex's config resolution.
 	args = append(args, "-c", "tui.disable_paste_burst=true")
+	// Codex's startup update dialog defaults to "Update now", so the Enter bossd
+	// sends with the first prompt runs a global reinstall instead of the session.
+	args = append(args, "-c", "check_for_update_on_startup=false")
 	args = appendCompanionShellEnv(args, req.GetIsClaudeProxyEnabled())
 	// Pre-trust the worktree only when bossd says the local user trusts the
 	// repo (BOS-1562). Codex project trust is the only gate on a repo's

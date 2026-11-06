@@ -20,8 +20,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// fakeTerminalStream is a hand-rolled bidi stream the tests drive. The
-// reader pulls from `recv` (closed → EOF), the writer pushes to `sent`,
+// fakeTerminalStream reads from recv (closed → EOF), writes to sent,
 // and `recvErr` lets a test inject a non-EOF failure to drive the
 // reconnect path.
 type fakeTerminalStream struct {
@@ -131,7 +130,6 @@ func (o *fakeTerminalOpener) currentStream() *fakeTerminalStream {
 	return o.streams[len(o.streams)-1]
 }
 
-// fakeChatLookup implements the chatLookup interface for tests.
 type fakeChatLookup struct {
 	rows map[string]chatRow
 	err  error
@@ -366,6 +364,7 @@ func newTestHarnessWithWakeTimeout(t *testing.T, wakeTimeout time.Duration) *tes
 	cmdRec := &recordingCmdFactory{clients: []string{testTmuxClientName}}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(cmdRec.factory))
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		CloudControl:  fixedCloudControl("full"),
 		Opener:        opener,
 		Chats:         chats,
 		TmuxClient:    tmuxClient,
@@ -382,8 +381,7 @@ func newTestHarnessWithWakeTimeout(t *testing.T, wakeTimeout time.Duration) *tes
 	}
 }
 
-// runClient launches client.Run on its own goroutine and returns a stop
-// func that cancels and waits.
+// runClient launches Run and returns a stop function that cancels and waits.
 func runClient(t *testing.T, c *TerminalStreamClient) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1222,9 +1220,10 @@ func TestTerminalStreamClient_NilTmuxClientPanics(t *testing.T) {
 		}
 	}()
 	_ = NewTerminalStreamClient(TerminalStreamClientConfig{
-		Opener: &fakeTerminalOpener{},
-		Chats:  &fakeChatLookup{},
-		Logger: zerolog.Nop(),
+		CloudControl: fixedCloudControl("full"),
+		Opener:       &fakeTerminalOpener{},
+		Chats:        &fakeChatLookup{},
+		Logger:       zerolog.Nop(),
 		// TmuxClient deliberately omitted.
 	})
 }
@@ -1415,6 +1414,7 @@ func boundedTeardownClient(t *testing.T, opener terminalStreamOpener) (*Terminal
 	health := NewTerminalHealth()
 	logs := &syncBuffer{}
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		CloudControl:      fixedCloudControl("full"),
 		Opener:            opener,
 		Chats:             &fakeChatLookup{},
 		TmuxClient:        tmux.NewClient(tmux.WithCommandFactory((&recordingCmdFactory{}).factory)),

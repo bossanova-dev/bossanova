@@ -52,7 +52,7 @@ func TestDispatch_NotifiesPRWaitsAfterEachInvalidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &orderLog{}
-			dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).
+			dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).WithCloudControl(fixedCloudControl("full")).
 				WithPRPoller(orderedPRPoller{log}).
 				WithBaseMoves(orderedBaseMoves{log, []int{7}}).
 				WithPRWaiters(orderedWaitNotifier{log})

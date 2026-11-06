@@ -33,7 +33,8 @@ func newerBossoCommand(t *testing.T, cmdID string) *pb.OrchestratorCommand {
 }
 
 func TestDispatchCommand_UnknownCommandAnswersUnimplemented(t *testing.T) {
-	client := NewStreamClient(StreamClientConfig{Hostname: "mac-mini", Logger: zerolog.Nop()})
+	client := NewStreamClient(StreamClientConfig{
+		CloudControl: fixedCloudControl("full"), Hostname: "mac-mini", Logger: zerolog.Nop()})
 	ev := client.dispatchCommand(context.Background(), newerBossoCommand(t, "c-u"), make(chan *pb.DaemonEvent, 4))
 	res := ev.GetResult()
 	if res == nil {

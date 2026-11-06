@@ -43,7 +43,7 @@ func TestOrchestratorCommandAccess(t *testing.T) {
 		{"cron", &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_CreateCronJob{}}, AccessControl, true},
 		{"trigger", &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_LaunchTriggerSession{}}, AccessControl, true},
 		{"broadcast", &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_Broadcast{}}, AccessControl, true},
-		{"webhook", &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_Webhook{}}, AccessControl, true},
+		{"webhook", &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_Webhook{}}, AccessHousekeeping, true},
 		{"transcript", &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_GetChatTranscript{}}, AccessObserve, true},
 		{"repos", &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_ListRepos{}}, AccessObserve, true},
 		{"credential", &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_AgentCredentialAvailable{}}, AccessHousekeeping, true},

@@ -64,10 +64,11 @@ func (f *fakeInterestReader) SnapshotCallbackInterests(_ context.Context) ([]*pb
 // the stream / event / token plumbing.
 func newTestClient(stores StreamStores) *StreamClient {
 	return NewStreamClient(StreamClientConfig{
-		DaemonID: "daemon-1",
-		Hostname: "test-host",
-		Stores:   stores,
-		Logger:   zerolog.Nop(),
+		CloudControl: fixedCloudControl("full"),
+		DaemonID:     "daemon-1",
+		Hostname:     "test-host",
+		Stores:       stores,
+		Logger:       zerolog.Nop(),
 	})
 }
 

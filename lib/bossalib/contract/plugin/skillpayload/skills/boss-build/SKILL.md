@@ -406,6 +406,33 @@ if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
 fi
 test -n "${BOSS_BUILD_TOOLBOX:-}" || { echo "BLOCKED: boss-build toolbox not found"; exit 1; }
 TOKEN="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-token)"
+LEASE_STATUS=0
+LEASE_JSON="$(node "$BOSS_BUILD_TOOLBOX/issue-lease.mjs" acquire --scope build --issue '<TICKET-ID>' --token "$TOKEN")" || LEASE_STATUS=$?
+```
+
+Use the selected ticket id for `<TICKET-ID>`. Before `readComments`, posting a claim or moving state,
+route on `LEASE_STATUS`:
+
+- `0` (`acquired`) — continue with the comment claim below; both existing claim paths stay unchanged.
+- `3` (`held`) — post nothing and move no state. Take the next candidate as for `LOST`, with no
+  claim comment to delete. A named ticket, including an epic hand-off, stops `NO_CHANGE`, quoting
+  the peer's `expiresAt` from `LEASE_JSON` (say unavailable when the helper has no expiry).
+- `4` (`unavailable`) — record `LEASE_JSON.reason` in the run report and continue with the existing
+  comment claim. Hosts without a daemon, older installs and service outages take this fallback.
+- Anything else ⇒ `BLOCKED: issue lease`.
+
+Keep the default 7200 s TTL and do not renew: after the claim moves the ticket to `.inProgress`,
+planned selection no longer sees it. The lease adds a first ownership signal; it does not replace
+comment arbitration. Release it best-effort whenever this run gives the ticket back:
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/issue-lease.mjs" release --scope build --issue '<TICKET-ID>' --token "$TOKEN" || true
+```
+
+Use that release on `LOST`, before every `NO_WINNER` retry, the Step 6 nothing-built path, and every
+Step 12 terminal path. Release only this run's token, never the peer's.
+
+```bash
 BODY="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-comment --token "$TOKEN" --session-id "${BOSS_SESSION_ID:-}")" || { echo "BLOCKED: claim body"; exit 1; }
 ```
 
@@ -425,9 +452,9 @@ node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comment
 ```
 
 - exit 0 (WON) — contended path: wait ~10 s and re-confirm with fresh liveness; proceed if still 0.
-- exit 3 (LOST) — delete your claim, leave the state alone, take the next candidate; none ⇒
+- exit 3 (LOST) — delete your claim, release your issue lease, leave the state alone, take the next candidate; none ⇒
   `NO_CHANGE`.
-- exit 4 (NO_WINNER) — delete your claim and repeat Step 3 once; again ⇒ `NO_CHANGE`.
+- exit 4 (NO_WINNER) — delete your claim, release your issue lease and repeat Step 3 once; again ⇒ `NO_CHANGE`.
 - anything else ⇒ `BLOCKED: claim`.
 
 Once WON on Step 2's `approve` route, run `node "$BOSS_BUILD_TOOLBOX/build/named-admission.mjs" apply "$ISSUE_JSON"`
@@ -551,7 +578,8 @@ node "$BOSS_BUILD_TOOLBOX/worktree-state.mjs" --base "$REVIEW_BASE" \
   --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 ```
 
-`clean` ⇒ nothing was built: restore the entry state, delete the claim, Step 12 `NO_CHANGE`.
+`clean` ⇒ nothing was built: restore the entry state, delete the claim, release your issue lease,
+Step 12 `NO_CHANGE`.
 `unknown` ⇒ `BLOCKED`. `dirty` ⇒ commit what this run touched (path-scoped) so the review sees it.
 Whenever `worktree-state.mjs` returns `unknown`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger evidence-unknown --where "boss-build worktree-state"` (never fatal).
 
@@ -910,6 +938,9 @@ Every route that took the lock ends here, `foreign` included. Decide `OUTCOME` f
 may change it.
 
 - Delete this run's claim comment if it still exists.
+- If Step 3 generated `TOKEN` for a resolved ticket, release its issue lease on every terminal path:
+  `node "$BOSS_BUILD_TOOLBOX/issue-lease.mjs" release --scope build --issue '<TICKET-ID>' --token "$TOKEN" || true`.
+  Use that ticket's id; this is best-effort and never fatal, including after a successful build.
 - On `NO_CHANGE` for a resolved ticket: restore the entry state with `moveState` unless another
   runner owns the ticket or the state is not one this run produced, and leave exactly one short
   breadcrumb comment naming the branch that fired and why (update it on a repeat; no transcripts,

@@ -37,7 +37,8 @@ func TestApplySharedUsagePreservesReading_Accounts_AC15(t *testing.T) {
 	reset := fetched.Add(time.Hour)
 	until := fetched.Add(6 * time.Minute)
 	capture := &sharedUsageCapture{}
-	client := NewStreamClient(StreamClientConfig{UsageShare: capture, UsageRecorder: capture, Logger: zerolog.Nop()})
+	client := NewStreamClient(StreamClientConfig{
+		CloudControl: fixedCloudControl("full"), UsageShare: capture, UsageRecorder: capture, Logger: zerolog.Nop()})
 	command := &pb.OrchestratorCommand{CommandId: "shared", Cmd: &pb.OrchestratorCommand_ApplyAgentAccountUsage{ApplyAgentAccountUsage: &pb.ApplyAgentAccountUsageCommand{
 		LocalAgentAccountId: "local", IsUsagePoller: true, ThrottledUntilAt: timestamppb.New(until),
 		Usage: &pb.UsageSnapshot{Util_5H: .4, Util_7D: .7, Reset_5H: timestamppb.New(reset), Status: "active", PlanTier: "max", FetchedAt: timestamppb.New(fetched), ModelWindows: []*pb.UsageModelWindow{{ModelName: "sonnet", Util: .8, ResetsAt: timestamppb.New(reset)}}},
@@ -57,7 +58,8 @@ func TestApplySharedUsagePreservesReading_Accounts_AC15(t *testing.T) {
 
 func TestApplySharedUsageRoleOnlyAndStoreFailure_Accounts_AC15(t *testing.T) {
 	capture := &sharedUsageCapture{}
-	client := NewStreamClient(StreamClientConfig{UsageShare: capture, UsageRecorder: capture, Logger: zerolog.Nop()})
+	client := NewStreamClient(StreamClientConfig{
+		CloudControl: fixedCloudControl("full"), UsageShare: capture, UsageRecorder: capture, Logger: zerolog.Nop()})
 	req := &pb.ApplyAgentAccountUsageCommand{LocalAgentAccountId: "local"}
 	if !client.dispatchApplyAgentAccountUsage(context.Background(), "role", req).GetResult().GetOk() || capture.calls != 0 {
 		t.Fatal("role-only update wrote a snapshot")
@@ -71,7 +73,8 @@ func TestApplySharedUsageRoleOnlyAndStoreFailure_Accounts_AC15(t *testing.T) {
 
 func TestForwardSharedUsageReport_Accounts_AC15(t *testing.T) {
 	report := &pb.AgentAccountUsageReport{LocalAgentAccountId: "local", Usage: &pb.UsageSnapshot{FetchedAt: timestamppb.New(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))}, ThrottledUntilAt: timestamppb.New(time.Date(2026, 1, 2, 1, 0, 0, 0, time.UTC))}
-	client := NewStreamClient(StreamClientConfig{Logger: zerolog.Nop()})
+	client := NewStreamClient(StreamClientConfig{
+		CloudControl: fixedCloudControl("full"), Logger: zerolog.Nop()})
 	outbound := make(chan *pb.DaemonEvent, 1)
 	client.forwardEvent(context.Background(), StreamEvent{AgentAccountUsageReport: report}, outbound, nil)
 	select {

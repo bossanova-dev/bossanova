@@ -280,6 +280,18 @@ const (
 	// OrchestratorServiceGetOrganizationNoteQuotaProcedure is the fully-qualified name of the
 	// OrchestratorService's GetOrganizationNoteQuota RPC.
 	OrchestratorServiceGetOrganizationNoteQuotaProcedure = "/bossanova.v1.OrchestratorService/GetOrganizationNoteQuota"
+	// OrchestratorServiceRegisterViewerDeviceProcedure is the fully-qualified name of the
+	// OrchestratorService's RegisterViewerDevice RPC.
+	OrchestratorServiceRegisterViewerDeviceProcedure = "/bossanova.v1.OrchestratorService/RegisterViewerDevice"
+	// OrchestratorServiceListViewerDevicesProcedure is the fully-qualified name of the
+	// OrchestratorService's ListViewerDevices RPC.
+	OrchestratorServiceListViewerDevicesProcedure = "/bossanova.v1.OrchestratorService/ListViewerDevices"
+	// OrchestratorServiceDeleteViewerDeviceProcedure is the fully-qualified name of the
+	// OrchestratorService's DeleteViewerDevice RPC.
+	OrchestratorServiceDeleteViewerDeviceProcedure = "/bossanova.v1.OrchestratorService/DeleteViewerDevice"
+	// OrchestratorServiceListViewerDeviceRequestsProcedure is the fully-qualified name of the
+	// OrchestratorService's ListViewerDeviceRequests RPC.
+	OrchestratorServiceListViewerDeviceRequestsProcedure = "/bossanova.v1.OrchestratorService/ListViewerDeviceRequests"
 	// OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure is the fully-qualified name of
 	// the OrchestratorService's RequestAgentCredentialDeviceEnrollment RPC.
 	OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure = "/bossanova.v1.OrchestratorService/RequestAgentCredentialDeviceEnrollment"
@@ -717,6 +729,14 @@ type OrchestratorServiceClient interface {
 	// without consuming any of it. Same membership and entitlement rules as the
 	// other organization-note RPCs.
 	GetOrganizationNoteQuota(context.Context, *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error)
+	// Registers public viewer key material; registration grants no local approval.
+	RegisterViewerDevice(context.Context, *connect.Request[v1.RegisterViewerDeviceRequest]) (*connect.Response[v1.RegisterViewerDeviceResponse], error)
+	// Lists the authenticated user's viewer devices.
+	ListViewerDevices(context.Context, *connect.Request[v1.ListViewerDevicesRequest]) (*connect.Response[v1.ListViewerDevicesResponse], error)
+	// Forgets a registry entry; this does not revoke any daemon-local approval.
+	DeleteViewerDevice(context.Context, *connect.Request[v1.DeleteViewerDeviceRequest]) (*connect.Response[v1.DeleteViewerDeviceResponse], error)
+	// Lists viewer requests for the authenticated daemon's owner.
+	ListViewerDeviceRequests(context.Context, *connect.Request[v1.ListViewerDeviceRequestsRequest]) (*connect.Response[v1.ListViewerDeviceRequestsResponse], error)
 	// RequestAgentCredentialDeviceEnrollment manages daemon credential encryption enrollment.
 	RequestAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RequestAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RequestAgentCredentialDeviceEnrollmentResponse], error)
 	// ListAgentCredentialDevices manages daemon credential encryption enrollment.
@@ -1527,6 +1547,30 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationNoteQuota")),
 			connect.WithClientOptions(opts...),
 		),
+		registerViewerDevice: connect.NewClient[v1.RegisterViewerDeviceRequest, v1.RegisterViewerDeviceResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRegisterViewerDeviceProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RegisterViewerDevice")),
+			connect.WithClientOptions(opts...),
+		),
+		listViewerDevices: connect.NewClient[v1.ListViewerDevicesRequest, v1.ListViewerDevicesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListViewerDevicesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListViewerDevices")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteViewerDevice: connect.NewClient[v1.DeleteViewerDeviceRequest, v1.DeleteViewerDeviceResponse](
+			httpClient,
+			baseURL+OrchestratorServiceDeleteViewerDeviceProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("DeleteViewerDevice")),
+			connect.WithClientOptions(opts...),
+		),
+		listViewerDeviceRequests: connect.NewClient[v1.ListViewerDeviceRequestsRequest, v1.ListViewerDeviceRequestsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListViewerDeviceRequestsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListViewerDeviceRequests")),
+			connect.WithClientOptions(opts...),
+		),
 		requestAgentCredentialDeviceEnrollment: connect.NewClient[v1.RequestAgentCredentialDeviceEnrollmentRequest, v1.RequestAgentCredentialDeviceEnrollmentResponse](
 			httpClient,
 			baseURL+OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure,
@@ -2040,6 +2084,10 @@ type orchestratorServiceClient struct {
 	updateOrganizationNote                 *connect.Client[v1.UpdateOrganizationNoteRequest, v1.UpdateOrganizationNoteResponse]
 	deleteOrganizationNote                 *connect.Client[v1.DeleteOrganizationNoteRequest, v1.DeleteOrganizationNoteResponse]
 	getOrganizationNoteQuota               *connect.Client[v1.GetOrganizationNoteQuotaRequest, v1.GetOrganizationNoteQuotaResponse]
+	registerViewerDevice                   *connect.Client[v1.RegisterViewerDeviceRequest, v1.RegisterViewerDeviceResponse]
+	listViewerDevices                      *connect.Client[v1.ListViewerDevicesRequest, v1.ListViewerDevicesResponse]
+	deleteViewerDevice                     *connect.Client[v1.DeleteViewerDeviceRequest, v1.DeleteViewerDeviceResponse]
+	listViewerDeviceRequests               *connect.Client[v1.ListViewerDeviceRequestsRequest, v1.ListViewerDeviceRequestsResponse]
 	requestAgentCredentialDeviceEnrollment *connect.Client[v1.RequestAgentCredentialDeviceEnrollmentRequest, v1.RequestAgentCredentialDeviceEnrollmentResponse]
 	listAgentCredentialDevices             *connect.Client[v1.ListAgentCredentialDevicesRequest, v1.ListAgentCredentialDevicesResponse]
 	approveAgentCredentialDevice           *connect.Client[v1.ApproveAgentCredentialDeviceRequest, v1.ApproveAgentCredentialDeviceResponse]
@@ -2525,6 +2573,26 @@ func (c *orchestratorServiceClient) DeleteOrganizationNote(ctx context.Context, 
 // GetOrganizationNoteQuota calls bossanova.v1.OrchestratorService.GetOrganizationNoteQuota.
 func (c *orchestratorServiceClient) GetOrganizationNoteQuota(ctx context.Context, req *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error) {
 	return c.getOrganizationNoteQuota.CallUnary(ctx, req)
+}
+
+// RegisterViewerDevice calls bossanova.v1.OrchestratorService.RegisterViewerDevice.
+func (c *orchestratorServiceClient) RegisterViewerDevice(ctx context.Context, req *connect.Request[v1.RegisterViewerDeviceRequest]) (*connect.Response[v1.RegisterViewerDeviceResponse], error) {
+	return c.registerViewerDevice.CallUnary(ctx, req)
+}
+
+// ListViewerDevices calls bossanova.v1.OrchestratorService.ListViewerDevices.
+func (c *orchestratorServiceClient) ListViewerDevices(ctx context.Context, req *connect.Request[v1.ListViewerDevicesRequest]) (*connect.Response[v1.ListViewerDevicesResponse], error) {
+	return c.listViewerDevices.CallUnary(ctx, req)
+}
+
+// DeleteViewerDevice calls bossanova.v1.OrchestratorService.DeleteViewerDevice.
+func (c *orchestratorServiceClient) DeleteViewerDevice(ctx context.Context, req *connect.Request[v1.DeleteViewerDeviceRequest]) (*connect.Response[v1.DeleteViewerDeviceResponse], error) {
+	return c.deleteViewerDevice.CallUnary(ctx, req)
+}
+
+// ListViewerDeviceRequests calls bossanova.v1.OrchestratorService.ListViewerDeviceRequests.
+func (c *orchestratorServiceClient) ListViewerDeviceRequests(ctx context.Context, req *connect.Request[v1.ListViewerDeviceRequestsRequest]) (*connect.Response[v1.ListViewerDeviceRequestsResponse], error) {
+	return c.listViewerDeviceRequests.CallUnary(ctx, req)
 }
 
 // RequestAgentCredentialDeviceEnrollment calls
@@ -3109,6 +3177,14 @@ type OrchestratorServiceHandler interface {
 	// without consuming any of it. Same membership and entitlement rules as the
 	// other organization-note RPCs.
 	GetOrganizationNoteQuota(context.Context, *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error)
+	// Registers public viewer key material; registration grants no local approval.
+	RegisterViewerDevice(context.Context, *connect.Request[v1.RegisterViewerDeviceRequest]) (*connect.Response[v1.RegisterViewerDeviceResponse], error)
+	// Lists the authenticated user's viewer devices.
+	ListViewerDevices(context.Context, *connect.Request[v1.ListViewerDevicesRequest]) (*connect.Response[v1.ListViewerDevicesResponse], error)
+	// Forgets a registry entry; this does not revoke any daemon-local approval.
+	DeleteViewerDevice(context.Context, *connect.Request[v1.DeleteViewerDeviceRequest]) (*connect.Response[v1.DeleteViewerDeviceResponse], error)
+	// Lists viewer requests for the authenticated daemon's owner.
+	ListViewerDeviceRequests(context.Context, *connect.Request[v1.ListViewerDeviceRequestsRequest]) (*connect.Response[v1.ListViewerDeviceRequestsResponse], error)
 	// RequestAgentCredentialDeviceEnrollment manages daemon credential encryption enrollment.
 	RequestAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RequestAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RequestAgentCredentialDeviceEnrollmentResponse], error)
 	// ListAgentCredentialDevices manages daemon credential encryption enrollment.
@@ -3915,6 +3991,30 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationNoteQuota")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceRegisterViewerDeviceHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRegisterViewerDeviceProcedure,
+		svc.RegisterViewerDevice,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RegisterViewerDevice")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListViewerDevicesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListViewerDevicesProcedure,
+		svc.ListViewerDevices,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListViewerDevices")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceDeleteViewerDeviceHandler := connect.NewUnaryHandler(
+		OrchestratorServiceDeleteViewerDeviceProcedure,
+		svc.DeleteViewerDevice,
+		connect.WithSchema(orchestratorServiceMethods.ByName("DeleteViewerDevice")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListViewerDeviceRequestsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListViewerDeviceRequestsProcedure,
+		svc.ListViewerDeviceRequests,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListViewerDeviceRequests")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceRequestAgentCredentialDeviceEnrollmentHandler := connect.NewUnaryHandler(
 		OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure,
 		svc.RequestAgentCredentialDeviceEnrollment,
@@ -4507,6 +4607,14 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceDeleteOrganizationNoteHandler.ServeHTTP(w, r)
 		case OrchestratorServiceGetOrganizationNoteQuotaProcedure:
 			orchestratorServiceGetOrganizationNoteQuotaHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRegisterViewerDeviceProcedure:
+			orchestratorServiceRegisterViewerDeviceHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListViewerDevicesProcedure:
+			orchestratorServiceListViewerDevicesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceDeleteViewerDeviceProcedure:
+			orchestratorServiceDeleteViewerDeviceHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListViewerDeviceRequestsProcedure:
+			orchestratorServiceListViewerDeviceRequestsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure:
 			orchestratorServiceRequestAgentCredentialDeviceEnrollmentHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListAgentCredentialDevicesProcedure:
@@ -4984,6 +5092,22 @@ func (UnimplementedOrchestratorServiceHandler) DeleteOrganizationNote(context.Co
 
 func (UnimplementedOrchestratorServiceHandler) GetOrganizationNoteQuota(context.Context, *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetOrganizationNoteQuota is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RegisterViewerDevice(context.Context, *connect.Request[v1.RegisterViewerDeviceRequest]) (*connect.Response[v1.RegisterViewerDeviceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RegisterViewerDevice is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListViewerDevices(context.Context, *connect.Request[v1.ListViewerDevicesRequest]) (*connect.Response[v1.ListViewerDevicesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListViewerDevices is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) DeleteViewerDevice(context.Context, *connect.Request[v1.DeleteViewerDeviceRequest]) (*connect.Response[v1.DeleteViewerDeviceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DeleteViewerDevice is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListViewerDeviceRequests(context.Context, *connect.Request[v1.ListViewerDeviceRequestsRequest]) (*connect.Response[v1.ListViewerDeviceRequestsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListViewerDeviceRequests is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) RequestAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RequestAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RequestAgentCredentialDeviceEnrollmentResponse], error) {

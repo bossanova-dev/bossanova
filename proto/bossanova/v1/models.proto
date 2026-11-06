@@ -1662,3 +1662,12 @@ message ReleaseTrackerIssueLeaseRequest {
 message ReleaseTrackerIssueLeaseResponse {
   bool is_released = 1;
 }
+
+// A browser viewer key registered as a request, never evidence of local approval.
+message ViewerDevice {
+  string id = 1;
+  bytes public_key = 2;
+  string label = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp last_requested_at = 5;
+}

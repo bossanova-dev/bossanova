@@ -25,6 +25,7 @@ go_library(
 go_test(
     name = "tmux_test",
     srcs = [
+        "attach_read_only_test.go",
         "attach_test.go",
         "bracketed_paste_test.go",
         "intconv_test.go",

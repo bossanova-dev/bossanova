@@ -5,9 +5,8 @@
 // The web app and the marketing site both import the price from one module,
 // lib/web-helpers/src/pricing.ts (`@bossanova/web-helpers/pricing`), so the
 // module graph already keeps the two apps from declaring different prices —
-// there is only one declaration. What the module graph cannot enforce is
-// everything that does not import it, and that is this gate's job. It enforces
-// three things:
+// there is only one declaration. This gate covers text outside the module
+// graph and enforces three things:
 //
 //   1. Routing. The surfaces that RENDER a price import the declaration rather
 //      than re-typing it. A render surface containing a price literal at all is
@@ -216,6 +215,7 @@ const SCAN_EXTENSIONS = new Set([
   '.css',
   '.html',
   '.bazel',
+  '.json',
 ])
 
 /**

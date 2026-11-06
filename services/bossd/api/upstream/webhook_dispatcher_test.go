@@ -119,7 +119,7 @@ func (f *commentsOnlyReviewProvider) GetReviewInlineComments(_ context.Context, 
 
 func TestWebhookDispatcherRoutesPRPullRequestEvent(t *testing.T) {
 	refresher := &fakePRRefresher{}
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop())
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -145,7 +145,7 @@ func TestDispatch_PayloadEmitsRealtimeEvent(t *testing.T) {
 
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
-	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err = dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -181,7 +181,7 @@ func TestDispatch_PayloadPREmitsRealtimeWithoutEnvelopePR(t *testing.T) {
 
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
-	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err = dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -214,7 +214,7 @@ func TestDispatch_PayloadPRMismatchSkipsRealtimeAndRefreshesEnvelopePR(t *testin
 
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
-	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err = dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -244,7 +244,7 @@ func TestDispatch_PayloadDoesNotEmitWhenRepoOriginURLMissing(t *testing.T) {
 
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
-	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err = dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:   "pull_request",
@@ -269,7 +269,7 @@ func TestDispatch_PayloadDoesNotEmitWhenRefresherMissing(t *testing.T) {
 	}
 
 	emitter := &fakeEmitter{}
-	dispatcher := NewWebhookDispatcherWithEmitter(nil, emitter, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitter(nil, emitter, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err = dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -288,7 +288,7 @@ func TestDispatch_PayloadDoesNotEmitWhenRefresherMissing(t *testing.T) {
 func TestDispatch_PayloadParseFailureStillRefreshes(t *testing.T) {
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
-	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -315,7 +315,7 @@ func TestDispatch_EmitterFailureStillRefreshes(t *testing.T) {
 
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{err: errors.New("emit failed")}
-	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitter(refresher, emitter, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err = dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -345,7 +345,7 @@ func TestDispatch_ReviewSubmittedFetchesCommentsWhenPayloadBodyEmpty(t *testing.
 	reviews := &fakeReviewCommentProvider{
 		inlineComments: []vcs.ReviewComment{{Body: "inline fix", State: vcs.ReviewStateChangesRequested}},
 	}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -391,7 +391,7 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewPromotesFromFetchedComments(t
 		blockingAuthors: map[string]bool{"chatgpt-codex-connector[bot]": true},
 	}
 	var logs strings.Builder
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs))
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs)).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -454,7 +454,7 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewNotPromotedWhenAuthorHasNoBlo
 		blockingAuthors: map[string]bool{},
 	}
 	var logs strings.Builder
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs))
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs)).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -511,7 +511,7 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewNotPromotedWhenThreadsUnverif
 		blockingErr: fmt.Errorf("%w: GraphQL thread query failed", vcs.ErrReviewThreadsUnverified),
 	}
 	var logs strings.Builder
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs))
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs)).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -563,7 +563,7 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewNotPromotedWithoutFreshnessCa
 		}},
 	}
 	var logs strings.Builder
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs))
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs)).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -604,7 +604,7 @@ func TestDispatch_ReviewSubmittedNativeChangesRequestedSkipsFreshnessQuery(t *te
 		// native CHANGES_REQUESTED must never be suppressible.
 		blockingAuthors: map[string]bool{},
 	}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -673,7 +673,7 @@ func TestDispatch_ReviewSubmittedNonCandidateReviewsSkipFreshnessQuery(t *testin
 				inlineComments:  tc.inlineComments,
 				blockingAuthors: map[string]bool{tc.author: true},
 			}
-			dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+			dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 			err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 				EventType:     "pull_request_review",
@@ -716,7 +716,7 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewIgnoresStalePRComments(t *tes
 			State:  vcs.ReviewStateChangesRequested,
 		}},
 	}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -760,7 +760,7 @@ func TestDispatch_ReviewSubmittedCommentedHumanReviewStaysCommentedWithInlineFee
 			State:  vcs.ReviewStateChangesRequested,
 		}},
 	}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -807,7 +807,7 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewStaysCommentedWhenNoActionabl
 			State:  vcs.ReviewStateCommented,
 		}},
 	}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -850,7 +850,7 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewWithBenignBodyStaysCommented(
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
 	reviews := &fakeReviewCommentProvider{}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -884,7 +884,7 @@ func TestDispatch_ReviewSubmittedMergesSummaryAndInlineComments(t *testing.T) {
 	reviews := &fakeReviewCommentProvider{
 		inlineComments: []vcs.ReviewComment{{Body: "inline fix", State: vcs.ReviewStateChangesRequested}},
 	}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err = dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -919,7 +919,7 @@ func TestDispatch_ReviewSubmittedSkipsRealtimeWhenCommentFetchFails(t *testing.T
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
 	reviews := &fakeReviewCommentProvider{inlineErr: errors.New("review comments unavailable")}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -940,7 +940,7 @@ func TestDispatch_ReviewSubmittedSkipsRealtimeWhenCommentFetchFails(t *testing.T
 
 func TestDispatch_BackwardCompatibleWithoutEmitter(t *testing.T) {
 	refresher := &fakePRRefresher{}
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop())
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -974,7 +974,7 @@ func TestWebhookDispatcherSkipsEventsWithoutPR(t *testing.T) {
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					log := &orderLog{}
-					dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).
+					dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).WithCloudControl(fixedCloudControl("full")).
 						WithPRPoller(orderedPRPoller{log})
 					if inv := tc.invalidator(log); inv != nil {
 						dispatcher = dispatcher.WithReadInvalidator(inv)
@@ -999,7 +999,7 @@ func TestWebhookDispatcherSkipsEventsWithoutPR(t *testing.T) {
 func TestWebhookDispatcherWarnsWhenNoPRNumber(t *testing.T) {
 	refresher := &fakePRRefresher{}
 	var logs strings.Builder
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.New(&logs))
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.New(&logs)).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -1023,7 +1023,7 @@ func TestWebhookDispatcherWarnsWhenNoPRNumber(t *testing.T) {
 func TestWebhookDispatcherDebugsNonPREventWithoutPRNumber(t *testing.T) {
 	refresher := &fakePRRefresher{}
 	var logs strings.Builder
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.New(&logs))
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.New(&logs)).WithCloudControl(fixedCloudControl("full"))
 
 	// check_suite/check_run fire on non-PR refs (e.g. CI on the default
 	// branch) and legitimately resolve to no PR number. Those must not
@@ -1050,7 +1050,7 @@ func TestWebhookDispatcherDebugsNonPREventWithoutPRNumber(t *testing.T) {
 func TestWebhookDispatcherSurfacesRefreshError(t *testing.T) {
 	refreshErr := errors.New("refresh failed")
 	refresher := &fakePRRefresher{err: refreshErr}
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop())
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -1066,7 +1066,7 @@ func TestWebhookDispatcherSurfacesRefreshError(t *testing.T) {
 }
 
 func TestWebhookDispatcherRejectsNilEvent(t *testing.T) {
-	dispatcher := NewWebhookDispatcher(&fakePRRefresher{}, zerolog.Nop())
+	dispatcher := NewWebhookDispatcher(&fakePRRefresher{}, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	if err := dispatcher.Dispatch(context.Background(), nil); err == nil {
 		t.Fatal("Dispatch returned nil error, want error")
@@ -1075,7 +1075,7 @@ func TestWebhookDispatcherRejectsNilEvent(t *testing.T) {
 
 func TestWebhookDispatcherRejectsPREventWithoutRepoOriginURL(t *testing.T) {
 	refresher := &fakePRRefresher{}
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop())
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:   "pull_request",
@@ -1090,7 +1090,7 @@ func TestWebhookDispatcherRejectsPREventWithoutRepoOriginURL(t *testing.T) {
 }
 
 func TestWebhookDispatcherRejectsPREventWithNilRefresher(t *testing.T) {
-	dispatcher := NewWebhookDispatcher(nil, zerolog.Nop())
+	dispatcher := NewWebhookDispatcher(nil, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request",
@@ -1153,7 +1153,7 @@ func TestDispatch_EvaluatorRunsDetachedOffAckPath(t *testing.T) {
 		release:  make(chan struct{}),
 		finished: make(chan struct{}),
 	}
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithEvaluator(ev)
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithEvaluator(ev).WithCloudControl(fixedCloudControl("full"))
 	hook, waitEval := captureEvalDone(t)
 	dispatcher.evalDoneHook = hook
 
@@ -1189,7 +1189,7 @@ func TestDispatch_EvaluatorRunsDetachedOffAckPath(t *testing.T) {
 
 func TestDispatch_NoEvaluatorSkipsEvaluation(t *testing.T) {
 	refresher := &fakePRRefresher{}
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop())
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 	called := false
 	dispatcher.evalDoneHook = func(<-chan struct{}) { called = true }
 
@@ -1213,7 +1213,7 @@ func TestDispatch_NonGitHubOriginSkipsEvaluation(t *testing.T) {
 		release:  make(chan struct{}),
 		finished: make(chan struct{}),
 	}
-	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithEvaluator(ev)
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.Nop()).WithEvaluator(ev).WithCloudControl(fixedCloudControl("full"))
 	called := false
 	dispatcher.evalDoneHook = func(<-chan struct{}) { called = true }
 
@@ -1279,7 +1279,7 @@ func TestDispatch_InvalidatesCacheThenPollsPR(t *testing.T) {
 	const origin = "https://github.com/owner/repo"
 	log := &orderLog{}
 	health := NewWebhookHealth(func() (time.Time, bool) { return time.Now().Add(-time.Hour), true })
-	dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).
+	dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).WithCloudControl(fixedCloudControl("full")).
 		WithReadInvalidator(orderedRepoInvalidator{orderedInvalidator{log}}).
 		WithPRPoller(orderedPRPoller{log}).
 		WithWebhookHealth(health)
@@ -1324,7 +1324,7 @@ func TestDispatch_UntrustedReviewEmitsNoRealtimeEvent(t *testing.T) {
 	reviews := &fakeReviewCommentProvider{
 		inlineComments: []vcs.ReviewComment{{Body: "inline fix", State: vcs.ReviewStateChangesRequested}},
 	}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(&fakePRRefresher{}, emitter, reviews, zerolog.Nop())
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(&fakePRRefresher{}, emitter, reviews, zerolog.Nop()).WithCloudControl(fixedCloudControl("full"))
 
 	if err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -1356,7 +1356,7 @@ func (n *verifyNotifier) Notify(_ context.Context, _ *pb.WebhookEvent, pr int) {
 
 func TestWebhookDispatcherVerifyDoesNotWaitForGate(t *testing.T) {
 	notifier := &verifyNotifier{calls: make(chan int, 1), gateStarted: make(chan struct{}), release: make(chan struct{})}
-	dispatcher := NewWebhookDispatcher(&fakePRRefresher{}, zerolog.Nop()).WithVerifyEvents(notifier)
+	dispatcher := NewWebhookDispatcher(&fakePRRefresher{}, zerolog.Nop()).WithVerifyEvents(notifier).WithCloudControl(fixedCloudControl("full"))
 	returned := make(chan error, 1)
 	dispatchDone := safego.Go(zerolog.Nop(), func() {
 		returned <- dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
@@ -1427,7 +1427,7 @@ func TestDispatch_PushNotesBaseMove(t *testing.T) {
 			log := &orderLog{}
 			moves := &recordingBaseMoves{prs: []int{7, 9}}
 			evaluator := &blockingEvaluator{started: make(chan struct{})}
-			dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).
+			dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).WithCloudControl(fixedCloudControl("full")).
 				WithReadInvalidator(orderedInvalidator{log}).
 				WithPRPoller(orderedPRPoller{log}).
 				WithEvaluator(evaluator).

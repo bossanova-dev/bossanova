@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/daemoncaps"
 	"github.com/recurser/bossalib/kit/safego"
 )
@@ -43,6 +44,11 @@ func (c *StreamClient) dispatchCommand(
 		return nil
 	}
 	cmdID := cmd.GetCommandId()
+	access, classified := daemoncaps.OrchestratorCommandAccess(cmd)
+	if (!classified || access == daemoncaps.AccessControl) && cloudControlMode(c.cloudControl) != config.CloudControlFull {
+		c.logger.Info().Str("command_id", cmdID).Str("command_type", fmt.Sprintf("%T", cmd.GetCmd())).Msg("cloud control refused")
+		return commandErrCode(cmdID, c.cloudControlRefusal(), pb.CommandResult_ERROR_CODE_CLOUD_CONTROL_DISABLED)
+	}
 
 	switch cmd.GetCmd().(type) {
 	case *pb.OrchestratorCommand_ApplyAgentAccountUsage:
@@ -1064,14 +1070,15 @@ func (c *StreamClient) dispatchListAccounts(ctx context.Context, cmdID string, r
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
+	shouldRefresh := req.GetShouldRefresh() && cloudControlMode(c.cloudControl) == config.CloudControlFull
 	handlerCtx := ctx
 	cancel := func() {}
-	if req.GetShouldRefresh() {
+	if shouldRefresh {
 		handlerCtx, cancel = context.WithTimeout(ctx, listAccountsRefreshDeadline)
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
 		defer cancel()
-		out, err := c.commandHandler.ListAgentAccounts(handlerCtx, req.GetProvider(), req.GetShouldRefresh())
+		out, err := c.commandHandler.ListAgentAccounts(handlerCtx, req.GetProvider(), shouldRefresh)
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}

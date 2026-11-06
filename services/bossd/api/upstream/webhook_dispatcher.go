@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/rs/zerolog"
@@ -99,6 +100,7 @@ const prPollTimeout = 2 * time.Minute
 
 // WebhookDispatcher routes PR-scoped webhook events to the display poller.
 type WebhookDispatcher struct {
+	cloudControl   CloudControlPolicy
 	refresher      PRRefresher
 	emitter        SessionEventEmitter
 	reviewComments ReviewCommentProvider
@@ -132,6 +134,13 @@ func NewWebhookDispatcherWithEmitterAndReviewComments(refresher PRRefresher, emi
 		reviewComments: reviewComments,
 		logger:         logger,
 	}
+}
+
+// WithCloudControl attaches the local policy. A missing policy treats webhooks
+// only as hints for authoritative reads, never as session input.
+func (d *WebhookDispatcher) WithCloudControl(policy CloudControlPolicy) *WebhookDispatcher {
+	d.cloudControl = policy
+	return d
 }
 
 // WithEvaluator attaches a CallbackEvaluator invoked for the affected PR after a
@@ -210,15 +219,25 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 	if d.refresher == nil {
 		return fmt.Errorf("webhook dispatcher refresher not wired")
 	}
-	// Any delivery — PR-scoped or not — proves webhooks reach this daemon for
-	// the repo.
+	hintMode := cloudControlMode(d.cloudControl) != config.CloudControlFull
+	if hintMode && ev.GetPullRequest() <= 0 {
+		d.logger.Debug().Str("event_type", ev.GetEventType()).
+			Str("repo_origin_url", ev.GetRepoOriginUrl()).
+			Msg("webhook hint without envelope PR; skipping dispatch")
+		return nil
+	}
+	// Ignored hints cannot keep PR state current, so they must not slow polling.
+	// Full-mode deliveries still prove the pipe even without an envelope PR.
 	d.health.RecordDelivery(ev.GetRepoOriginUrl())
-	if ev.GetEventType() == "push" {
+	if !hintMode && ev.GetEventType() == "push" {
 		d.dispatchPush(ctx, ev)
 		return nil
 	}
 
-	payloadPR := d.maybeEmitRealtime(ctx, ev)
+	var payloadPR int
+	if !hintMode {
+		payloadPR = d.maybeEmitRealtime(ctx, ev)
+	}
 
 	prNumber := int(ev.PullRequest)
 	if prNumber == 0 {
@@ -263,7 +282,9 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 	// acknowledgement path. Returns immediately; failures are logged in the
 	// background goroutine.
 	d.evaluateCallbacks(ctx, ev.GetRepoOriginUrl(), prNumber)
-	if d.verifyEvents != nil {
+	// Verify classifies actions and review/comment content from the payload.
+	// In hint mode leave it to its authoritative cron safety net instead.
+	if d.verifyEvents != nil && !hintMode {
 		d.verifyEvents.Notify(ctx, ev, prNumber)
 	}
 

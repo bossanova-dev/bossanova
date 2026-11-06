@@ -80,7 +80,8 @@ func TestStreamClientOpenStreamStopsWhenAuthNeedsLogin(t *testing.T) {
 	opener := &blockingDaemonOpener{stream: stream}
 	stores := emptySnapshotStores{}
 	client := NewStreamClient(StreamClientConfig{
-		Opener: opener,
+		CloudControl: fixedCloudControl("full"),
+		Opener:       opener,
 		Stores: StreamStores{
 			Sessions: stores,
 			Chats:    stores,
@@ -136,7 +137,8 @@ func TestStreamClientOpenStreamStopsWhenRefreshErrorNeedsReconnect(t *testing.T)
 	opener := &blockingDaemonOpener{stream: stream}
 	stores := emptySnapshotStores{}
 	client := NewStreamClient(StreamClientConfig{
-		Opener: opener,
+		CloudControl: fixedCloudControl("full"),
+		Opener:       opener,
 		Stores: StreamStores{
 			Sessions: stores,
 			Chats:    stores,
@@ -226,7 +228,8 @@ func TestStreamClientRunPausesWithoutStreamErrorOnLogout(t *testing.T) {
 	metrics := &countingStreamMetrics{}
 	logs := &syncBuffer{}
 	client := NewStreamClient(StreamClientConfig{
-		Opener: opener,
+		CloudControl: fixedCloudControl("full"),
+		Opener:       opener,
 		Stores: StreamStores{
 			Sessions: stores,
 			Chats:    stores,
@@ -319,7 +322,8 @@ func TestStreamClientRunPausesWithoutStreamErrorOnRefreshRelogin(t *testing.T) {
 				refreshFn: func(_ context.Context) (string, error) { return "", refreshErr },
 			}
 			client := NewStreamClient(StreamClientConfig{
-				Opener: &blockingDaemonOpener{stream: stream},
+				CloudControl: fixedCloudControl("full"),
+				Opener:       &blockingDaemonOpener{stream: stream},
 				Stores: StreamStores{
 					Sessions: stores,
 					Chats:    stores,
@@ -442,9 +446,10 @@ func TestTerminalStreamClientOpenStreamStopsWhenAuthNeedsLogin(t *testing.T) {
 	authState := NewAuthState()
 	stream := newBlockingTerminalStream()
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
-		Opener:     &blockingTerminalOpener{stream: stream},
-		AuthState:  authState,
-		TmuxClient: &tmux.Client{},
+		CloudControl: fixedCloudControl("full"),
+		Opener:       &blockingTerminalOpener{stream: stream},
+		AuthState:    authState,
+		TmuxClient:   &tmux.Client{},
 	})
 
 	errCh := make(chan error, 1)
@@ -484,10 +489,11 @@ func TestTerminalStreamClientRunPausesWithoutReconnectWarningOnLogout(t *testing
 	stream := newBlockingTerminalStream()
 	logs := &syncBuffer{}
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
-		Opener:     &blockingTerminalOpener{stream: stream},
-		AuthState:  authState,
-		TmuxClient: &tmux.Client{},
-		Logger:     zerolog.New(logs),
+		CloudControl: fixedCloudControl("full"),
+		Opener:       &blockingTerminalOpener{stream: stream},
+		AuthState:    authState,
+		TmuxClient:   &tmux.Client{},
+		Logger:       zerolog.New(logs),
 	})
 
 	runCtx, runCancel := context.WithCancel(context.Background())
@@ -541,8 +547,9 @@ func TestTerminalStreamClientRunPausesWithoutReconnectWarningOnLogout(t *testing
 func TestTerminalStreamClientOpenStreamAllowsNilAuthState(t *testing.T) {
 	stream := newBlockingTerminalStream()
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
-		Opener:     &blockingTerminalOpener{stream: stream},
-		TmuxClient: &tmux.Client{},
+		CloudControl: fixedCloudControl("full"),
+		Opener:       &blockingTerminalOpener{stream: stream},
+		TmuxClient:   &tmux.Client{},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -710,6 +717,7 @@ func TestTerminalStreamClientOpenStreamClosesAttachSpawnedDuringLogout(t *testin
 	factory := newLogoutDuringAttachFactory(authState)
 	tmuxName := "boss-rep-chat-spawn-logout"
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		CloudControl:  fixedCloudControl("full"),
 		Opener:        &delayedCancelTerminalOpener{stream: stream},
 		AuthState:     authState,
 		TmuxClient:    &tmux.Client{},
@@ -775,6 +783,7 @@ func TestTerminalStreamClientOpenStreamClosesActiveAttachBeforeCancelWhenAuthNee
 	factory := newCloseOrderAttachFactory()
 	tmuxName := "boss-rep-chat-logout"
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		CloudControl:  fixedCloudControl("full"),
 		Opener:        &delayedCancelTerminalOpener{stream: stream},
 		AuthState:     authState,
 		TmuxClient:    &tmux.Client{},
@@ -947,6 +956,7 @@ func TestTerminalStreamClientOpenStreamLogoutCancelsBeforeWaitingForBlockedAttac
 	factory := newBlockedPumpAttachFactory()
 	tmuxName := "boss-rep-chat-stalled"
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		CloudControl:  fixedCloudControl("full"),
 		Opener:        &stalledWriterTerminalOpener{stream: stream},
 		AuthState:     authState,
 		TmuxClient:    &tmux.Client{},
@@ -1031,6 +1041,7 @@ func TestTerminalStreamClientOpenStreamClosesAttachBeforeCancelOnBoundedPath(t *
 	clock := newFakeClock()
 	tmuxName := "boss-rep-chat-bounded"
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		CloudControl:  fixedCloudControl("full"),
 		Opener:        &fixedTerminalOpener{stream: stream},
 		AuthState:     authState,
 		TmuxClient:    &tmux.Client{},

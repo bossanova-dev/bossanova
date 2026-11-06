@@ -138,6 +138,7 @@ func TestNoCredentialsPauseMessage(t *testing.T) {
 // without any of the stream plumbing.
 func newRefresherClient(clock *clocktest.Clock, tp TokenProvider) *StreamClient {
 	return NewStreamClient(StreamClientConfig{
+		CloudControl:     fixedCloudControl("full"),
 		TokenProvider:    tp,
 		Logger:           zerolog.Nop(),
 		Clock:            clock,
@@ -197,6 +198,7 @@ func TestTokenRefresh_BeforeExpiry_EmitsRefreshEvent(t *testing.T) {
 // every tick becomes eligible and the token rotates continuously.
 func TestTokenRefresh_DefaultCadenceLeavesRoomForRetries(t *testing.T) {
 	client := NewStreamClient(StreamClientConfig{
+		CloudControl:  fixedCloudControl("full"),
 		TokenProvider: &fakeTokenProvider{},
 		Logger:        zerolog.Nop(),
 	})
@@ -222,6 +224,7 @@ func TestTokenRefresh_DefaultThresholdDoesNotRefreshWellBeforeExpiry(t *testing.
 		refreshFn: func(_ context.Context) (string, error) { return "new", nil },
 	}
 	client := NewStreamClient(StreamClientConfig{
+		CloudControl:    fixedCloudControl("full"),
 		TokenProvider:   tp,
 		Logger:          zerolog.Nop(),
 		Clock:           clock,
@@ -361,6 +364,7 @@ func TestTokenRefresh_TerminalReloginErrorMarksAuthStateBeforeReturning(t *testi
 			}
 			authState := NewAuthState()
 			client := NewStreamClient(StreamClientConfig{
+				CloudControl:     fixedCloudControl("full"),
 				TokenProvider:    tp,
 				AuthState:        authState,
 				Logger:           zerolog.Nop(),
@@ -415,6 +419,7 @@ func TestTokenRefresh_TransientFailureDoesNotMarkAuthState(t *testing.T) {
 	}
 	authState := NewAuthState()
 	client := NewStreamClient(StreamClientConfig{
+		CloudControl:     fixedCloudControl("full"),
 		TokenProvider:    tp,
 		AuthState:        authState,
 		Logger:           zerolog.Nop(),
@@ -602,6 +607,7 @@ func TestTokenRefresh_ZeroExpiryWithReloginReasonWarnsOnce(t *testing.T) {
 	clock := newFakeClock()
 	tp := &markedTokenProvider{reason: reloginReasonRefreshTokenRejected}
 	client := NewStreamClient(StreamClientConfig{
+		CloudControl:    fixedCloudControl("full"),
 		TokenProvider:   tp,
 		Logger:          zerolog.New(&logs),
 		Clock:           clock,
@@ -640,6 +646,7 @@ func TestTokenRefresh_ZeroExpiryWithoutReloginReasonStaysSilent(t *testing.T) {
 	clock := newFakeClock()
 	tp := &fakeTokenProvider{token: "static-dev-token"} // expiresAt stays zero
 	client := NewStreamClient(StreamClientConfig{
+		CloudControl:    fixedCloudControl("full"),
 		TokenProvider:   tp,
 		Logger:          zerolog.New(&logs).Level(zerolog.DebugLevel),
 		Clock:           clock,

@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
@@ -389,6 +390,7 @@ func TestUpdateSettings_PerAgentConfigRoundTrip(t *testing.T) {
 func TestUpdateSettings_RoundTripPersistsAndMatchesSaveTo(t *testing.T) {
 	worktree := t.TempDir()
 	path := seedSettings(t, config.Settings{
+		CloudControl:        "full",
 		WorktreeBaseDir:     worktree,
 		PollIntervalSeconds: 30,
 		DefaultAgent:        "claude",
@@ -407,6 +409,14 @@ func TestUpdateSettings_RoundTripPersistsAndMatchesSaveTo(t *testing.T) {
 	loaded, err := config.LoadFrom(path)
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
+	}
+	if loaded.CloudControl != "full" {
+		t.Fatalf("cloud_control lost: %q", loaded.CloudControl)
+	}
+	for _, msg := range []interface{ ProtoReflect() protoreflect.Message }{&pb.GlobalSettings{}, &pb.UpdateSettingsRequest{}} {
+		if msg.ProtoReflect().Descriptor().Fields().ByName("cloud_control") != nil {
+			t.Fatal("cloud_control exposed remotely")
+		}
 	}
 	golden := filepath.Join(t.TempDir(), "golden.json")
 	if err := config.SaveTo(golden, loaded); err != nil {

@@ -18,6 +18,7 @@ import (
 func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, error) {
 	snap := &pb.DaemonSnapshot{
 		DaemonId:               c.daemonID,
+		CloudControl:           cloudControlProto(c.cloudControl),
 		Hostname:               c.hostname,
 		SupportedCommandFields: daemoncaps.StreamCommands(),
 	}

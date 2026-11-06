@@ -157,6 +157,7 @@ go_test(
         "finalize_pr_readied_test.go",
         "finalize_publish_test.go",
         "finalize_quota_resume_test.go",
+        "finalize_setup_residue_test.go",
         "finalize_test.go",
         "finalize_title_test.go",
         "finalize_usage_label_test.go",

@@ -4,6 +4,7 @@ go_library(
     name = "config",
     srcs = [
         "binaries.go",
+        "cloud_control.go",
         "config.go",
         "displayhostname.go",
         "displayhostname_darwin.go",
@@ -32,6 +33,7 @@ go_test(
         "appdatadir_test.go",
         "binaries_test.go",
         "childenv_test.go",
+        "cloud_control_test.go",
         "config_guard_test.go",
         "config_test.go",
         "displayhostname_test.go",

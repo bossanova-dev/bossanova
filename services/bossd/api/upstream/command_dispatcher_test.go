@@ -1005,6 +1005,7 @@ func newDispatcherClient(
 	attacher SessionAttacher,
 ) *StreamClient {
 	return NewStreamClient(StreamClientConfig{
+		CloudControl:   fixedCloudControl("full"),
 		CommandHandler: handler,
 		Webhooks:       webhooks,
 		Attacher:       attacher,
@@ -1016,8 +1017,9 @@ func newDispatcherClient(
 // for the CreateSession streaming tests.
 func newDispatcherClientWithCreator(creator SessionCreator) *StreamClient {
 	return NewStreamClient(StreamClientConfig{
-		Creator: creator,
-		Logger:  zerolog.Nop(),
+		CloudControl: fixedCloudControl("full"),
+		Creator:      creator,
+		Logger:       zerolog.Nop(),
 	})
 }
 
@@ -1452,6 +1454,7 @@ func (f *fakeTransferHandler) Cancel(_ context.Context, _ *pb.TransferCancel) er
 // the non-transfer cases so they stay diff-minimal.
 func newDispatcherClientWithTransfer(transfer TransferHandler) *StreamClient {
 	return NewStreamClient(StreamClientConfig{
+		CloudControl:    fixedCloudControl("full"),
 		TransferHandler: transfer,
 		Logger:          zerolog.Nop(),
 	})

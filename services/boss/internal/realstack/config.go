@@ -34,6 +34,7 @@ func settings(home, socket, stub string, port int) map[string]any {
 	return map[string]any{
 		"worktree_base_dir": filepath.Join(home, "worktrees"), "app_data_dir": filepath.Join(home, "data"), "socket_path": socket,
 		"providers_acknowledged": true,
+		"cloud_control":          "full",
 		"plugins":                []map[string]any{{"name": "stub", "path": stub, "enabled": true}},
 		"managed_accounts":       map[string]any{"failover_proxy_port": port},
 	}

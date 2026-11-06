@@ -213,6 +213,7 @@ func newUploadHarness(t *testing.T, uploads UploadManager) *testHarness {
 	factory := newFakeAttachFactory()
 	cmdRec := &recordingCmdFactory{}
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		CloudControl:  fixedCloudControl("full"),
 		Opener:        opener,
 		Chats:         chats,
 		TmuxClient:    tmux.NewClient(tmux.WithCommandFactory(cmdRec.factory)),

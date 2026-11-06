@@ -2882,14 +2882,20 @@ func (m *Manager) EmptyCommit(ctx context.Context, worktreePath, message string)
 	return nil
 }
 
-// Status runs `git status --porcelain` in the worktree. runGit already trims
-// trailing whitespace, so empty output indicates a clean tree.
+// Status runs `git status --porcelain` in the worktree; empty output indicates
+// a clean tree. runGit trims the whole output, which would strip the leading
+// space of a first " M path" line and shift every "XY path" slice by one, so
+// --branch puts a "## ..." header first to absorb the trim, and it is dropped.
 func (m *Manager) Status(ctx context.Context, worktreePath string) (string, error) {
-	out, err := runGit(ctx, worktreePath, "status", "--porcelain")
+	out, err := runGit(ctx, worktreePath, "status", "--porcelain", "--branch")
 	if err != nil {
 		return "", fmt.Errorf("git status: %w", err)
 	}
-	return out, nil
+	if !strings.HasPrefix(out, "## ") {
+		return "", fmt.Errorf("git status: missing branch header in %q", out)
+	}
+	_, entries, _ := strings.Cut(out, "\n")
+	return entries, nil
 }
 
 func (m *Manager) LatestCommitSubject(ctx context.Context, worktreePath string) (string, error) {
@@ -4763,37 +4769,6 @@ func (w setupTailLogWriter) Write(p []byte) (int, error) {
 		Str("output", strings.TrimRight(string(p), "\n")).
 		Msg("setup script output")
 	return len(p), nil
-}
-
-// setupRunOpts names the per-call-site inputs of runAndLogSetup.
-type setupRunOpts struct {
-	Op       string    // "create" | "resurrect" | "create_from_existing_branch"; tags the log event
-	RepoPath string    // main repo path
-	Worktree string    // worktree the script runs in
-	Branch   string    // branch checked out there; log context only
-	Script   *string   // the stored setup_script value; nil or blank means "no setup step"
-	Output   io.Writer // caller's live stream; nil falls back to os.Stderr inside setupscript
-}
-
-// runAndLogSetup runs the repo's configured setup script (when there is one)
-// and records the run in the daemon log. All three setup call sites go through
-// it, so the "is there a script" guard, the log sink, the timing and the log
-// event cannot drift apart between create, resurrect, and
-// create-from-existing-branch.
-//
-// The returned duration is the caller's wall-clock (parse + exec) — what
-// CreateResult.SetupScriptDuration reports — and is zero when no script ran.
-// The error is the setup failure, which every call site treats as non-fatal;
-// it is already logged here.
-func (m *Manager) runAndLogSetup(ctx context.Context, opts setupRunOpts) (time.Duration, error) {
-	if opts.Script == nil || strings.TrimSpace(*opts.Script) == "" {
-		return 0, nil
-	}
-	started := time.Now()
-	runDuration, err := runSetupScript(ctx, opts.RepoPath, opts.Worktree, *opts.Script, m.LoginShell,
-		opts.Output, setupTailLogWriter{logger: m.logger, worktree: opts.Worktree})
-	m.logSetupScriptRun(opts.Op, opts.Worktree, opts.Branch, runDuration, err)
-	return time.Since(started), err
 }
 
 // logSetupScriptRun records the setup script's own measured run time in the

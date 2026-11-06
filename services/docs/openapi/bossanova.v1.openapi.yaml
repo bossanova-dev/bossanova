@@ -658,6 +658,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.DeleteTriggerResponse'
+  /bossanova.v1.OrchestratorService/DeleteViewerDevice:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: DeleteViewerDevice
+      description: Forgets a registry entry; this does not revoke any daemon-local approval.
+      operationId: bossanova.v1.OrchestratorService.DeleteViewerDevice
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.DeleteViewerDeviceRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.DeleteViewerDeviceResponse'
   /bossanova.v1.OrchestratorService/DeleteWebhookConfig:
     post:
       tags:
@@ -2054,6 +2090,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListTriggersResponse'
+  /bossanova.v1.OrchestratorService/ListViewerDeviceRequests:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListViewerDeviceRequests
+      description: Lists viewer requests for the authenticated daemon's owner.
+      operationId: bossanova.v1.OrchestratorService.ListViewerDeviceRequests
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListViewerDeviceRequestsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListViewerDeviceRequestsResponse'
+  /bossanova.v1.OrchestratorService/ListViewerDevices:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListViewerDevices
+      description: Lists the authenticated user's viewer devices.
+      operationId: bossanova.v1.OrchestratorService.ListViewerDevices
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListViewerDevicesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListViewerDevicesResponse'
   /bossanova.v1.OrchestratorService/ListWebhookConfigs:
     post:
       tags:
@@ -4670,6 +4778,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.RegisterDaemonResponse'
+  /bossanova.v1.OrchestratorService/RegisterViewerDevice:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RegisterViewerDevice
+      description: Registers public viewer key material; registration grants no local approval.
+      operationId: bossanova.v1.OrchestratorService.RegisterViewerDevice
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RegisterViewerDeviceRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RegisterViewerDeviceResponse'
   /bossanova.v1.OrchestratorService/ReleaseAgentCredentialRefreshLease:
     post:
       tags:
@@ -10028,6 +10172,11 @@ components:
           type: string
           title: organization_id
           description: Organization whose daemon inventory read produced this row.
+        identityPublicKey:
+          type: string
+          title: identity_public_key
+          format: byte
+          description: Public signing identity, included only for the calling user's own daemons.
       title: DaemonInfo
       additionalProperties: false
     bossanova.v1.DaemonOffline:
@@ -10399,6 +10548,18 @@ components:
     bossanova.v1.DeleteTriggerResponse:
       type: object
       title: DeleteTriggerResponse
+      additionalProperties: false
+    bossanova.v1.DeleteViewerDeviceRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteViewerDeviceRequest
+      additionalProperties: false
+    bossanova.v1.DeleteViewerDeviceResponse:
+      type: object
+      title: DeleteViewerDeviceResponse
       additionalProperties: false
     bossanova.v1.DeleteWebhookConfigRequest:
       type: object
@@ -14112,6 +14273,34 @@ components:
             $ref: '#/components/schemas/bossanova.v1.Trigger'
           title: triggers
       title: ListTriggersResponse
+      additionalProperties: false
+    bossanova.v1.ListViewerDeviceRequestsRequest:
+      type: object
+      title: ListViewerDeviceRequestsRequest
+      additionalProperties: false
+    bossanova.v1.ListViewerDeviceRequestsResponse:
+      type: object
+      properties:
+        viewerDevices:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ViewerDevice'
+          title: viewer_devices
+      title: ListViewerDeviceRequestsResponse
+      additionalProperties: false
+    bossanova.v1.ListViewerDevicesRequest:
+      type: object
+      title: ListViewerDevicesRequest
+      additionalProperties: false
+    bossanova.v1.ListViewerDevicesResponse:
+      type: object
+      properties:
+        viewerDevices:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ViewerDevice'
+          title: viewer_devices
+      title: ListViewerDevicesResponse
       additionalProperties: false
     bossanova.v1.ListWebhookConfigsRequest:
       type: object
@@ -19481,6 +19670,27 @@ components:
           title: repo
           $ref: '#/components/schemas/bossanova.v1.Repo'
       title: RegisterRepoResponse
+      additionalProperties: false
+    bossanova.v1.RegisterViewerDeviceRequest:
+      type: object
+      properties:
+        publicKey:
+          type: string
+          title: public_key
+          format: byte
+        label:
+          type: string
+          title: label
+      title: RegisterViewerDeviceRequest
+      additionalProperties: false
+      description: Public registry material only; daemon-local approval is never stored here.
+    bossanova.v1.RegisterViewerDeviceResponse:
+      type: object
+      properties:
+        viewerDevice:
+          title: viewer_device
+          $ref: '#/components/schemas/bossanova.v1.ViewerDevice'
+      title: RegisterViewerDeviceResponse
       additionalProperties: false
     bossanova.v1.ReleaseAgentCredentialRefreshLeaseRequest:
       type: object
@@ -25728,6 +25938,28 @@ components:
       title: VerifyNoteFollowUp
       additionalProperties: false
       description: VerifyNoteFollowUp reports the tracker write and comment link for one verify note.
+    bossanova.v1.ViewerDevice:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        publicKey:
+          type: string
+          title: public_key
+          format: byte
+        label:
+          type: string
+          title: label
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        lastRequestedAt:
+          title: last_requested_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: ViewerDevice
+      additionalProperties: false
+      description: A browser viewer key registered as a request, never evidence of local approval.
     bossanova.v1.WaitAgentRunHostRequest:
       type: object
       properties:

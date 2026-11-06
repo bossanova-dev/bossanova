@@ -120,13 +120,14 @@ func TestBossd_StartsStreamAfterRegister(t *testing.T) {
 	}
 
 	streamClient := NewStreamClient(StreamClientConfig{
-		Client:    client,
-		AuthToken: sessionToken,
-		DaemonID:  "daemon-wiring-test",
-		Hostname:  "test-host",
-		Stores:    stores,
-		Events:    NewStreamBus(zerolog.Nop()),
-		Logger:    zerolog.Nop(),
+		CloudControl: fixedCloudControl("full"),
+		Client:       client,
+		AuthToken:    sessionToken,
+		DaemonID:     "daemon-wiring-test",
+		Hostname:     "test-host",
+		Stores:       stores,
+		Events:       NewStreamBus(zerolog.Nop()),
+		Logger:       zerolog.Nop(),
 	})
 
 	runCtx, runCancel := context.WithCancel(context.Background())

@@ -476,6 +476,14 @@ test('markdown beside the JSON is scanned too, not only the JSON', () => {
   assert.match(result.failures.join('\n'), /curated\/notes\/README\.md:1: \$68/)
 })
 
+test('JSON source data is scanned for stale prices while neutral fixtures pass', () => {
+  const file = 'services/web/src/testdata/vector.json'
+  assert.equal(check({ [file]: '{"ciphertext":"0123"}\n' }).ok, true)
+  const result = check({ [file]: '{"description":"$68/month"}\n' })
+  assert.equal(result.ok, false)
+  assert.match(result.failures.join('\n'), /vector\.json:1: \$68/)
+})
+
 test('a file type neither scanned nor ignored fails, rather than being skipped', () => {
   // SCAN_EXTENSIONS is an allowlist, so it could never announce the file type
   // it was missing: a `pricing.yml` holding the price was skipped by the walk,

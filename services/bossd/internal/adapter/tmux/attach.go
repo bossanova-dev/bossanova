@@ -34,6 +34,8 @@ var ErrAttachClosed = errors.New("tmux attach closed")
 
 // AttachConfig configures a new TerminalAttach.
 type AttachConfig struct {
+	// ReadOnly prevents input and excludes this viewer from pane sizing.
+	ReadOnly bool
 	// AttachID is the bosso-generated UUID. Currently used only for logging.
 	AttachID string
 
@@ -150,17 +152,26 @@ func NewTerminalAttach(ctx context.Context, cfg AttachConfig) (*TerminalAttach, 
 		cmdFactory = exec.CommandContext
 	}
 	cols := cfg.Cols
+	if cfg.ReadOnly {
+		cols = 0
+	}
 	if cols == 0 {
 		cols = 80
 	}
 	rows := cfg.Rows
+	if cfg.ReadOnly {
+		rows = 0
+	}
 	if rows == 0 {
 		rows = 24
 	}
 
 	// Configure session-level multi-client options BEFORE spawning the PTY.
-	if err := cfg.TmuxClient.SetAttachOptions(ctx, cfg.SessionName); err != nil {
-		return nil, fmt.Errorf("set tmux attach options: %w", err)
+	if !cfg.ReadOnly {
+		if err := cfg.TmuxClient.SetAttachOptions(ctx, cfg.SessionName); err != nil {
+			return nil, fmt.Errorf("set tmux attach options: %w", err)
+		}
+
 	}
 
 	// Bind the child to a derived context so caller cancellation terminates
@@ -174,7 +185,11 @@ func NewTerminalAttach(ctx context.Context, cfg AttachConfig) (*TerminalAttach, 
 	// services/boss/internal/daemonlife/launchd.go. tmux <= 3.6 assumed UTF-8 when
 	// the locale was absent; 3.7 stopped, so an unlocalised client renders every
 	// multibyte glyph as "_" and box drawing as ACS escapes (BOS-658).
-	cmd := cmdFactory(cmdCtx, "tmux", "-u", "attach", "-t", cfg.SessionName)
+	args := []string{"-u", "attach", "-t", cfg.SessionName}
+	if cfg.ReadOnly {
+		args = append(args, "-f", "read-only,ignore-size")
+	}
+	cmd := cmdFactory(cmdCtx, "tmux", args...)
 	// tmux needs a usable TERM to initialise its terminal driver. CI runners
 	// (GitHub Actions etc.) often leave TERM unset or set it to "dumb", which
 	// causes `tmux attach` to exit immediately with "open terminal failed".

@@ -39,6 +39,7 @@ func newForwarderClient(t *testing.T, events EventSource, window time.Duration) 
 		window = 10 * time.Millisecond
 	}
 	return NewStreamClient(StreamClientConfig{
+		CloudControl:   fixedCloudControl("full"),
 		Events:         events,
 		Logger:         zerolog.Nop(),
 		CoalesceWindow: window,
@@ -127,7 +128,8 @@ func TestSubscribeDeltas_SessionUpdatedEvent_EmitsSessionDeltaUpdated(t *testing
 func TestForwardEvent_SessionDeltaSequence(t *testing.T) {
 	clock := newFakeClock()
 	seed := uint64(clock.Now().UnixNano())
-	client := NewStreamClient(StreamClientConfig{Clock: clock, Logger: zerolog.Nop()})
+	client := NewStreamClient(StreamClientConfig{
+		CloudControl: fixedCloudControl("full"), Clock: clock, Logger: zerolog.Nop()})
 	var previous uint64
 	// A new outbound channel models a reconnect without replacing the client.
 	for i, kind := range []pb.SessionDelta_Kind{pb.SessionDelta_KIND_CREATED, pb.SessionDelta_KIND_UPDATED, pb.SessionDelta_KIND_DELETED} {
@@ -332,6 +334,7 @@ func TestForwardEventEgressBroadcastNeverLogsMessageBody(t *testing.T) {
 	}}}
 
 	client := NewStreamClient(StreamClientConfig{
+		CloudControl:   fixedCloudControl("full"),
 		Events:         src,
 		Logger:         logger,
 		CoalesceWindow: 10 * time.Millisecond,

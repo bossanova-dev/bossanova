@@ -809,6 +809,7 @@ func (noopMetrics) IncStreamError(_ error) {}
 type ReRegisterFunc func(ctx context.Context) (sessionToken string, err error)
 
 type StreamClient struct {
+	cloudControl     CloudControlPolicy
 	opener           streamOpener
 	stores           StreamStores
 	events           EventSource
@@ -1048,6 +1049,7 @@ func (c *StreamClient) resetAuthFailureLocked() {
 // StreamClientConfig bundles the constructor inputs. Pointer fields are
 // optional; leaving them nil picks a sensible default.
 type StreamClientConfig struct {
+	CloudControl CloudControlPolicy
 	// Opener is the live ConnectRPC client. If nil, the client will be
 	// built from Client + AuthToken at construction time.
 	Opener    streamOpener
@@ -1061,11 +1063,9 @@ type StreamClientConfig struct {
 	// supply their own Opener can ignore this field.
 	SessionToken *SessionTokenHolder
 
-	// Identity.
 	DaemonID string
 	Hostname string
 
-	// Data sources.
 	Stores        StreamStores
 	Events        EventSource
 	TokenProvider TokenProvider
@@ -1168,6 +1168,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		refreshThreshold = defaultRefreshThreshold
 	}
 	client := &StreamClient{
+		cloudControl:     cfg.CloudControl,
 		opener:           opener,
 		reconnectCh:      make(chan struct{}, 1),
 		stores:           cfg.Stores,

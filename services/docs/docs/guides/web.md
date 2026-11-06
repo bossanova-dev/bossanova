@@ -60,6 +60,7 @@ above:
 | Route                       | View           | What it shows                                                                         |
 | --------------------------- | -------------- | ------------------------------------------------------------------------------------- |
 | `/`                         | Sessions list  | Every active session across every paired daemon, with live PR / CI status.            |
+| `/review/:repo`             | Review queue   | PRs waiting for a person, confidence counts, sort controls and links to proof pages.  |
 | `/sessions/:id`             | Session detail | A single session: worktree, PR, recent commits, plugin activity, current task.        |
 | `/sessions/:sid/chats/:cid` | Chat terminal  | Live agent terminal for chat `cid` in session `sid`. Streams output, accepts keys.    |
 | `/daemons`                  | Daemons list   | Machines registered to your account. One row per `daemon_id` from your settings file. |

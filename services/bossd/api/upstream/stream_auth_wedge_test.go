@@ -490,9 +490,10 @@ func TestStreamAuthWedgeHandshakeResetsStateMachine(t *testing.T) {
 // has not had one.
 func TestStreamAuthWedgeAuthSnapshotHealthyBeforeAnyFailure(t *testing.T) {
 	c := NewStreamClient(StreamClientConfig{
-		Opener: newWedgeOpener(),
-		Events: NewStreamBus(zerolog.Nop()),
-		Logger: zerolog.Nop(),
+		CloudControl: fixedCloudControl("full"),
+		Opener:       newWedgeOpener(),
+		Events:       NewStreamBus(zerolog.Nop()),
+		Logger:       zerolog.Nop(),
 	})
 	snap := c.AuthSnapshot()
 	if !snap.AuthFailingSince.IsZero() {
@@ -747,9 +748,10 @@ func TestStreamAuthWedgeBoundsWarnsOnPostHandshakeRejection(t *testing.T) {
 // reported as ongoing.
 func TestStreamAuthWedgeUpstreamTrafficClearsTheWedge(t *testing.T) {
 	c := NewStreamClient(StreamClientConfig{
-		Opener: newWedgeOpener(),
-		Events: NewStreamBus(zerolog.Nop()),
-		Logger: zerolog.Nop(),
+		CloudControl: fixedCloudControl("full"),
+		Opener:       newWedgeOpener(),
+		Events:       NewStreamBus(zerolog.Nop()),
+		Logger:       zerolog.Nop(),
 	})
 	if note := c.noteAuthFailure(); !note.First {
 		t.Fatal("seeding the wedge did not register as a first failure")
@@ -948,10 +950,11 @@ func TestStreamAuthSustainedStreamClearsTheWedge(t *testing.T) {
 	newClient := func() (*StreamClient, *clocktest.Clock) {
 		clock := newFakeClock()
 		return NewStreamClient(StreamClientConfig{
-			Opener: newWedgeOpener(),
-			Events: NewStreamBus(zerolog.Nop()),
-			Clock:  clock,
-			Logger: zerolog.Nop(),
+			CloudControl: fixedCloudControl("full"),
+			Opener:       newWedgeOpener(),
+			Events:       NewStreamBus(zerolog.Nop()),
+			Clock:        clock,
+			Logger:       zerolog.Nop(),
 		}), clock
 	}
 

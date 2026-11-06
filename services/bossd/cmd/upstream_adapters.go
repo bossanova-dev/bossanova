@@ -12,6 +12,7 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/rs/zerolog"
 
 	server "github.com/recurser/bossd/api/daemon"
@@ -138,6 +139,7 @@ func runSnapshotPublisher(
 	reRegister func(context.Context) (string, error),
 	closeIdle func(),
 	interval time.Duration,
+	policy upstream.CloudControlPolicy,
 	logger zerolog.Logger,
 ) {
 	// attempt sends one snapshot with the given bearer token and returns the
@@ -163,7 +165,7 @@ func runSnapshotPublisher(
 		}
 		pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		snap, err := buildSnapshotForPublish(pubCtx, stores, daemonID, hostname)
+		snap, err := buildSnapshotForPublish(pubCtx, stores, daemonID, hostname, policy)
 		if err != nil {
 			logger.Warn().Err(err).Msg("snapshot publisher: build snapshot")
 			return
@@ -248,10 +250,14 @@ func setGitHubCredentialReporter(cfg *server.Config, src *ghtoken.Source) {
 	}
 }
 
-func buildSnapshotForPublish(ctx context.Context, stores upstream.StreamStores, daemonID, hostname string) (*bossanovav1.DaemonSnapshot, error) {
+func buildSnapshotForPublish(ctx context.Context, stores upstream.StreamStores, daemonID, hostname string, policy upstream.CloudControlPolicy) (*bossanovav1.DaemonSnapshot, error) {
 	snap := &bossanovav1.DaemonSnapshot{
-		DaemonId: daemonID,
-		Hostname: hostname,
+		DaemonId:     daemonID,
+		Hostname:     hostname,
+		CloudControl: bossanovav1.CloudControl_CLOUD_CONTROL_READ_ONLY,
+	}
+	if policy != nil && policy.Mode() == config.CloudControlFull {
+		snap.CloudControl = bossanovav1.CloudControl_CLOUD_CONTROL_FULL
 	}
 	if stores.Repos != nil {
 		repos, err := stores.Repos.SnapshotRepoIDs(ctx)

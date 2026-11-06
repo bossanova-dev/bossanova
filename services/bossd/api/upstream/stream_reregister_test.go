@@ -128,6 +128,7 @@ func TestStreamClient_ReRegistersOnStaleSessionToken(t *testing.T) {
 	}
 
 	streamClient := NewStreamClient(StreamClientConfig{
+		CloudControl: fixedCloudControl("full"),
 		Client:       client,
 		AuthToken:    "jwt",
 		SessionToken: NewSessionTokenHolder("stale-token-that-bosso-does-not-know"), // deliberately wrong

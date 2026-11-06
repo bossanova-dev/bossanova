@@ -482,7 +482,9 @@ func (w *daemonWiring) wireUpstream() {
 		w.ghProvider.SetWebhookHealth(webhookHealth)
 		w.prWaits.SetWebhookHealth(webhookHealth)
 		w.webhookEvidence = webhookHealth
+		cloudControl := upstream.NewCloudControlPolicy(log.Logger)
 		w.streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
+			CloudControl: cloudControl,
 			Client:       client,
 			AuthToken:    authToken,          // WorkOS JWT → Authorization header
 			SessionToken: sessionTokenHolder, // daemon token → X-Daemon-Token header
@@ -502,6 +504,7 @@ func (w *daemonWiring) wireUpstream() {
 			UsageShare:     w.usageShare,
 			UsageRecorder:  w.accounts,
 			Webhooks: upstream.NewWebhookDispatcherWithEmitterAndReviewComments(w.displayPoller, emitter, w.ghProvider, log.Logger).
+				WithCloudControl(cloudControl).
 				WithEvaluator(w.callbackEvaluator).
 				WithVerifyEvents(verifyevent.New(w.repos, w.cronJobs, w.callbackEvaluator, proofenvkeyring.New(log.Logger), log.Logger).WithGHUsage(w.ghUsageShim)).
 				WithReadInvalidator(w.ghProvider).
@@ -550,7 +553,7 @@ func (w *daemonWiring) wireUpstream() {
 					Statuses:      snapshotStatuses,
 					Interests:     snapshotInterests,
 					AgentAccounts: snapshotAgentAccounts,
-				}, cfg.DaemonID, cfg.Hostname, reRegister, closeIdle, interval, log.Logger)
+				}, cfg.DaemonID, cfg.Hostname, reRegister, closeIdle, interval, cloudControl, log.Logger)
 			}
 		}
 
@@ -623,6 +626,7 @@ func (w *daemonWiring) wireUpstream() {
 		// pause fans out to both streams. Idle until bosso pushes the
 		// first attach.
 		w.terminalStreamClient = upstream.NewTerminalStreamClient(upstream.TerminalStreamClientConfig{
+			CloudControl:  cloudControl,
 			Client:        client,
 			AuthToken:     authToken,
 			SessionToken:  sessionTokenHolder,
@@ -630,7 +634,7 @@ func (w *daemonWiring) wireUpstream() {
 			AuthState:     authState,
 			TmuxClient:    w.tmuxClient,
 			AttachFactory: func(ctx context.Context, cfg upstream.AttachConfig) (upstream.TerminalAttach, error) {
-				return tmux.NewTerminalAttach(ctx, tmux.AttachConfig{AttachID: cfg.AttachID, SessionName: cfg.SessionName, Cols: cfg.Cols, Rows: cfg.Rows, Logger: cfg.Logger, TmuxClient: w.tmuxClient})
+				return tmux.NewTerminalAttach(ctx, tmux.AttachConfig{ReadOnly: cfg.ReadOnly, AttachID: cfg.AttachID, SessionName: cfg.SessionName, Cols: cfg.Cols, Rows: cfg.Rows, Logger: cfg.Logger, TmuxClient: w.tmuxClient})
 			},
 			Chats: upstream.NewChatStoreLookup(w.agentChats),
 			// BOS-661: the streamed chat-upload receiver. Nil when the

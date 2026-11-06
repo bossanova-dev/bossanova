@@ -182,6 +182,7 @@ func TestWebhookLane_FullQueueNacksWithoutBlocking(t *testing.T) {
 func TestDispatchCommand_Webhook_EmitsAck(t *testing.T) {
 	gate := newGatedWebhookDispatcher(false)
 	client := newDispatcherClient(nil, gate, nil)
+	client.cloudControl = nil // Missing local policy is read-only; webhook hints still dispatch.
 	out := make(chan *pb.DaemonEvent, 4)
 	ctx := startTestWebhookLane(t, client, out)
 	if ev := client.dispatchCommand(ctx, webhookCmd("c-5"), out); ev != nil {

@@ -40,7 +40,7 @@ func TestDispatch_PushInvalidatesRepoBeforeBaseMoves(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &orderLog{}
-			dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).
+			dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).WithCloudControl(fixedCloudControl("full")).
 				WithReadInvalidator(orderedRepoInvalidator{orderedInvalidator{log}}).
 				WithPRPoller(orderedPRPoller{log}).
 				WithBaseMoves(orderedBaseMoves{log, tc.prs})

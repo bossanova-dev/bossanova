@@ -674,3 +674,16 @@ Webhook behavior:
   and PR.
 - The polling fallback backs off for 5 minutes on repositories that recently
   delivered webhooks.
+
+## Cloud control
+
+`cloud_control` selects the cloud's authority on this machine. The default is `read-only`:
+viewing remains available, while commands that change local state, terminal input and uploads
+are refused. Terminal viewers cannot resize the operator's pane, and account lists do not refresh
+provider credentials. Set `"cloud_control": "full"` in the local `settings.json` to allow control.
+Only the exact lowercase `full`, with surrounding whitespace allowed, enables control; missing,
+empty and unknown values resolve to `read-only`.
+
+This setting is local only. Remote settings calls and MCP cannot read or change it, and an
+`UpdateSettings` save preserves its value. Local edits take effect on the next control decision
+without restarting bossd. An unreadable settings file fails closed to `read-only`.

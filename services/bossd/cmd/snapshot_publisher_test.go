@@ -60,7 +60,7 @@ func TestRunSnapshotPublisher_SelfHealsOnAuthRejection(t *testing.T) {
 	}
 
 	runSnapshotPublisher(cancelledCtx(), client, holder, upstream.StreamStores{},
-		"daemon-1", "host-1", reReg, nil, time.Hour, zerolog.Nop())
+		"daemon-1", "host-1", reReg, nil, time.Hour, nil, zerolog.Nop())
 
 	if len(client.tokens) != 2 {
 		t.Fatalf("expected 2 publish attempts (fail + retry), got %d: %v", len(client.tokens), client.tokens)
@@ -81,7 +81,7 @@ func TestRunSnapshotPublisher_NoReRegisterOnSuccess(t *testing.T) {
 	client := &fakePublishClient{}
 
 	runSnapshotPublisher(cancelledCtx(), client, holder, upstream.StreamStores{},
-		"daemon-1", "host-1", reReg, nil, time.Hour, zerolog.Nop())
+		"daemon-1", "host-1", reReg, nil, time.Hour, nil, zerolog.Nop())
 
 	if reRegCalled {
 		t.Error("reRegister must not be called on a successful publish")
@@ -105,7 +105,7 @@ func TestRunSnapshotPublisher_NoReRegisterOnNonAuthError(t *testing.T) {
 	}
 
 	runSnapshotPublisher(cancelledCtx(), client, holder, upstream.StreamStores{},
-		"daemon-1", "host-1", reReg, nil, time.Hour, zerolog.Nop())
+		"daemon-1", "host-1", reReg, nil, time.Hour, nil, zerolog.Nop())
 
 	if reRegCalled {
 		t.Error("reRegister must not be called on a non-auth error")
@@ -131,7 +131,7 @@ func TestRunSnapshotPublisher_DoesNotOverwriteConcurrentTokenRotation(t *testing
 	}
 
 	runSnapshotPublisher(cancelledCtx(), client, holder, upstream.StreamStores{},
-		"daemon-1", "host-1", reReg, nil, time.Hour, zerolog.Nop())
+		"daemon-1", "host-1", reReg, nil, time.Hour, nil, zerolog.Nop())
 
 	if len(client.tokens) != 2 {
 		t.Fatalf("expected 2 publish attempts (fail + retry), got %d: %v", len(client.tokens), client.tokens)

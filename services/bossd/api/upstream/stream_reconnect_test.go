@@ -46,10 +46,11 @@ func TestStreamClient_ReconnectWakesRunLoopFromBackoff(t *testing.T) {
 	clock := newFakeClock()
 	opener := &countingOpener{openCh: make(chan struct{}, 8)}
 	c := NewStreamClient(StreamClientConfig{
-		Opener: opener,
-		Events: NewStreamBus(zerolog.Nop()),
-		Clock:  clock,
-		Logger: zerolog.Nop(),
+		CloudControl: fixedCloudControl("full"),
+		Opener:       opener,
+		Events:       NewStreamBus(zerolog.Nop()),
+		Clock:        clock,
+		Logger:       zerolog.Nop(),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -112,9 +113,10 @@ func TestStreamClient_ReconnectIsNonBlockingAndCoalesced(t *testing.T) {
 	t.Parallel()
 
 	c := NewStreamClient(StreamClientConfig{
-		Opener: &countingOpener{openCh: make(chan struct{}, 1)},
-		Events: NewStreamBus(zerolog.Nop()),
-		Logger: zerolog.Nop(),
+		CloudControl: fixedCloudControl("full"),
+		Opener:       &countingOpener{openCh: make(chan struct{}, 1)},
+		Events:       NewStreamBus(zerolog.Nop()),
+		Logger:       zerolog.Nop(),
 	})
 
 	done := make(chan struct{})

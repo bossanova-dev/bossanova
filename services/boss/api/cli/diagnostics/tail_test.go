@@ -214,83 +214,63 @@ func TestTailFollowDoesNotDuplicateRecordsAppendedAfterSnapshot(t *testing.T) {
 }
 
 func TestTailFollowPreservesReplacementRotatedBeforeReopen(t *testing.T) {
-	writeLogs(t, map[string]string{"bossd": `{"message":"backlog"}` + "\n"})
-	path := bossalog.Path("bossd")
-	logs := filepath.Dir(path)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	var out bytes.Buffer
-	err := followSources(ctx, serviceSources([]string{"bossd"}), 10, func(rec logtail.Record) error {
-		if err := logtail.FormatPretty(&out, rec); err != nil {
-			return err
-		}
-		if rec.Message == "second replacement" {
-			cancel()
-		}
-		return nil
-	}, func() {
-		if err := os.Rename(path, filepath.Join(logs, "bossd-2026-08-04T20-44-47.080.log")); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(`{"message":"first replacement"}`+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(path, filepath.Join(logs, "bossd-2026-08-04T20-44-48.080.log")); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(`{"message":"second replacement"}`+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, message := range []string{"backlog", "first replacement", "second replacement"} {
-		if got := strings.Count(out.String(), message); got != 1 {
-			t.Fatalf("%q appeared %d times: %q", message, got, out.String())
-		}
-	}
-}
-
-func TestTailFollowPreservesReplacementAfterPartialSnapshotRotates(t *testing.T) {
-	writeLogs(t, map[string]string{"bossd": `{"message":"partial`})
-	path := bossalog.Path("bossd")
-	logs := filepath.Dir(path)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	var out bytes.Buffer
-	err := followSources(ctx, serviceSources([]string{"bossd"}), 10, func(rec logtail.Record) error {
-		if err := logtail.FormatPretty(&out, rec); err != nil {
-			return err
-		}
-		if rec.Message == "second replacement" {
-			cancel()
-		}
-		return nil
-	}, func() {
-		if err := os.Rename(path, filepath.Join(logs, "bossd-2026-08-04T20-44-47.080.log")); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(`{"message":"first replacement"}`+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(path, filepath.Join(logs, "bossd-2026-08-04T20-44-48.080.log")); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(`{"message":"second replacement"}`+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out.String(), "partial") {
-		t.Fatalf("partial snapshot appeared in output: %q", out.String())
-	}
-	for _, message := range []string{"first replacement", "second replacement"} {
-		if got := strings.Count(out.String(), message); got != 1 {
-			t.Fatalf("%q appeared %d times: %q", message, got, out.String())
-		}
+	for _, tc := range []struct {
+		name     string
+		snapshot string
+		messages []string
+	}{
+		{
+			name:     "complete snapshot",
+			snapshot: `{"message":"backlog"}` + "\n",
+			messages: []string{"backlog", "first replacement", "second replacement"},
+		},
+		{
+			name:     "partial snapshot",
+			snapshot: `{"message":"partial`,
+			messages: []string{"first replacement", "second replacement"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeLogs(t, map[string]string{"bossd": tc.snapshot})
+			path := bossalog.Path("bossd")
+			logs := filepath.Dir(path)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			var out bytes.Buffer
+			err := followSources(ctx, serviceSources([]string{"bossd"}), 10, func(rec logtail.Record) error {
+				if err := logtail.FormatPretty(&out, rec); err != nil {
+					return err
+				}
+				if rec.Message == "second replacement" {
+					cancel()
+				}
+				return nil
+			}, func() {
+				if err := os.Rename(path, filepath.Join(logs, "bossd-2026-08-04T20-44-47.080.log")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{"message":"first replacement"}`+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(path, filepath.Join(logs, "bossd-2026-08-04T20-44-48.080.log")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{"message":"second replacement"}`+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(out.String(), "partial") {
+				t.Fatalf("partial snapshot appeared in output: %q", out.String())
+			}
+			for _, message := range tc.messages {
+				if got := strings.Count(out.String(), message); got != 1 {
+					t.Fatalf("%q appeared %d times: %q", message, got, out.String())
+				}
+			}
+		})
 	}
 }
 

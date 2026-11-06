@@ -1,5 +1,39 @@
 # Claim And Eligibility
 
+## Issue Lease Before Comment Arbitration
+
+After Step 3 generates `TOKEN`, acquire the selected ticket's lease before `readComments`, posting
+`$BODY` or moving tracker state:
+
+```bash
+LEASE_STATUS=0
+LEASE_JSON="$(node "$BOSS_BUILD_TOOLBOX/issue-lease.mjs" acquire --scope build --issue '<TICKET-ID>' --token "$TOKEN")" || LEASE_STATUS=$?
+```
+
+Substitute the selected ticket id. Exit `0` (`acquired`) proceeds to the existing comment claim.
+Exit `3` (`held`) means a live peer is starting it: post nothing, move no state and take the next
+candidate as for `LOST`, with no comment to delete. A named ticket, including one handed over by
+an epic run, stops `NO_CHANGE`, quoting the peer's `expiresAt` from `LEASE_JSON`; disclose when no
+expiry is available. Exit `4` (`unavailable`) records `LEASE_JSON.reason` in the run report and
+continues with the comment claim unchanged, including on hosts without a daemon, older installs
+and service outages. Any other exit stops `BLOCKED: issue lease`.
+
+The lease is the first claim signal, before the local worktree and comment probes are evaluated
+for arbitration below. It adds protection across machines; it does not replace either comment
+claim path or change their waits, re-reads or liveness evidence. Keep the default 7200 s TTL with
+no renewal: once the ticket moves to `.inProgress`, planned selection no longer sees it.
+
+Whenever giving the ticket back, release only this run's token, best-effort and never fatal:
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/issue-lease.mjs" release --scope build --issue '<TICKET-ID>' --token "$TOKEN" || true
+```
+
+Release on claim `LOST`, before every `NO_WINNER` retry, on Step 6's `clean` nothing-built path, and
+on every Step 12 terminal path, including success. Skip release if Step 3 never generated a token
+for a selected ticket. Releasing a peer-held or unavailable lease with this run's token is safe;
+never release the peer's token.
+
 ## Probe-First Contract
 
 Contention is pay-as-you-go: probe for it before paying for arbitration ceremony. Two probes have
@@ -180,7 +214,7 @@ implementation begins:
 - an in-progress tracker state;
 - a draft PR on the session branch.
 
-Those bootstrap artifacts carry no claim weight. The claim decision is based on the claim comment
+Those bootstrap artifacts carry no claim weight. After the issue-lease gate, the comment claim decision is based on the claim comment
 set plus peer-liveness evidence. The worktree lock corroborates local ownership only; it is not the
 cross-worktree arbiter. General rule: in-progress with no claim comment is a dead run's residue, not
 a live peer.

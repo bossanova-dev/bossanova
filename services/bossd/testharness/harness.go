@@ -298,7 +298,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	merged := mergeSessionEvents(realtimeCtx, pollerEvents, webhookEventCh)
 	emitter := session.NewSessionEventEmitter(&harnessLookup{sessions: sessions, repos: repos}, webhookEventCh, logger)
 	displayPoller := session.NewDisplayPoller(sessions, repos, realtimeProvider, display, time.Hour, logger)
-	webhookDispatcher := upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, realtimeProvider, logger)
+	webhookDispatcher := upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, realtimeProvider, logger).WithCloudControl(realtimeCloudControl{})
 	_ = safego.Go(logger, func() { realtimeDispatcher.Run(realtimeCtx, merged) })
 
 	// Run's immediate start-up poll must observe the empty pre-seed world,

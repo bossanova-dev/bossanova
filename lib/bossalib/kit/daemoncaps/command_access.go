@@ -36,11 +36,12 @@ func (a CommandAccess) String() string {
 var terminalOneof = (&pb.TerminalClientMessage{}).ProtoReflect().Descriptor().Oneofs().ByName("msg")
 
 var commandAccess = accessTable(commandOneof, map[protoreflect.Name]CommandAccess{
-	"stop":                             AccessControl,
-	"pause":                            AccessControl,
-	"resume":                           AccessControl,
-	"transfer":                         AccessControl,
-	"webhook":                          AccessControl,
+	"stop":     AccessControl,
+	"pause":    AccessControl,
+	"resume":   AccessControl,
+	"transfer": AccessControl,
+	// Read-only dispatch discards payloads and only triggers authoritative re-reads.
+	"webhook":                          AccessHousekeeping,
 	"attach":                           AccessObserve,
 	"transfer_confirmed":               AccessControl,
 	"transfer_cancel":                  AccessControl,

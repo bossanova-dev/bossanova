@@ -184,6 +184,7 @@ go_test(
         "rotation_usage_share_test.go",
         "rotation_wiring_test.go",
         "shutdown_wait_test.go",
+        "snapshot_cloud_control_test.go",
         "snapshot_fallback_test.go",
         "snapshot_publisher_test.go",
         "startup_diagnostics_test.go",

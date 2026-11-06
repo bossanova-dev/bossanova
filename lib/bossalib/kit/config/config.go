@@ -1109,10 +1109,8 @@ type Settings struct {
 	// running daemon — `boss daemon status`'s `supervision:` line is the
 	// separate, unrelated question of who owns the live process (BOS-1183).
 	//
-	// Empty (the key absent from a fresh settings.json, and from every
-	// settings.json written before BOS-1184) means "launch-agent": the per-user
-	// LaunchAgent in the gui/<uid> Aqua domain that has always been bossd's
-	// only substrate, so the default path stays byte-identical to today.
+	// Empty, including files predating BOS-1184, means "launch-agent": the per-user
+	// LaunchAgent in the gui/<uid> Aqua domain, preserving the existing substrate.
 	//
 	// The other recognised value, "unattended", is for a multi-user host where
 	// fast user switching backgrounds the daemon's user: a backgrounded Aqua
@@ -1122,12 +1120,14 @@ type Settings struct {
 	// selecting it fails closed rather than falling back — see
 	// daemon.ResolveSupervisionMode, which owns every reading of this string.
 	//
-	// It is a raw string rather than the typed daemon.SupervisionMode for the
-	// same reason SubagentDispatchGrant below is: an unknown value round-trips
-	// through settings.json untouched instead of being silently rewritten.
+	// Like SubagentDispatchGrant, this raw string preserves unknown values in
+	// settings.json instead of silently rewriting them to a typed mode.
 	// Unlike that key this one resolves FAIL-CLOSED, because its fallback is
 	// the substrate an operator selects a mode to escape.
 	DaemonSupervisionMode string `json:"daemon_supervision_mode,omitempty"`
+	// CloudControl is changed only by the local operator, never by UpdateSettings,
+	// MCP or stream commands. Keep the raw string to preserve unknown values.
+	CloudControl string `json:"cloud_control,omitempty"`
 	// SubagentDispatchGrant selects which boss-managed chats receive the bounded
 	// subagent-dispatch grant in their appended system prompt. It is a raw
 	// string rather than the typed SubagentDispatchGrant so an unknown value

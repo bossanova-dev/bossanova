@@ -30,6 +30,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog"
 )
@@ -314,6 +315,7 @@ type TerminalRefresher interface {
 }
 
 type AttachConfig struct {
+	ReadOnly    bool
 	AttachID    string
 	SessionName string
 	Cols, Rows  uint32
@@ -392,6 +394,7 @@ func (a *chatStoreAdapter) GetByAgentSessionID(ctx context.Context, agentSession
 //     at any moment and starting the connect from cold would add latency
 //     to the first attach.
 type TerminalStreamClient struct {
+	cloudControl  CloudControlPolicy
 	opener        terminalStreamOpener
 	authState     *AuthState
 	tmuxClient    TerminalRefresher
@@ -460,8 +463,9 @@ type TerminalStreamClient struct {
 // the channel returned by safego.Go — closed once the pump goroutine has
 // fully exited (including its panic-recovery log path).
 type activeAttach struct {
-	id          string
-	sessionName string
+	inputRefused sync.Once
+	id           string
+	sessionName  string
 	// chatID is the chat this attach is bound to. Recorded so a
 	// BOS-661 upload resolves its target chat from the attach registry
 	// instead of trusting an id off the wire.
@@ -473,6 +477,7 @@ type activeAttach struct {
 
 // TerminalStreamClientConfig bundles the constructor inputs.
 type TerminalStreamClientConfig struct {
+	CloudControl CloudControlPolicy
 	// Opener is the live ConnectRPC client wrapper. If nil, an opener is
 	// built from Client + AuthToken + SessionToken at construction time.
 	Opener    terminalStreamOpener
@@ -605,6 +610,7 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 		readyTimeoutBudget = terminalReadyTimeoutBudget
 	}
 	return &TerminalStreamClient{
+		cloudControl:       cfg.CloudControl,
 		opener:             opener,
 		authState:          cfg.AuthState,
 		tmuxClient:         cfg.TmuxClient,
@@ -1025,6 +1031,9 @@ func (c *TerminalStreamClient) runReader(ctx context.Context, stream terminalBid
 // attach_ids on input/resize/close are logged and dropped (forward-compat
 // with future commands).
 func (c *TerminalStreamClient) handleClientMessage(ctx context.Context, msg *pb.TerminalClientMessage, outbound chan<- *pb.TerminalServerMessage, sess *terminalStreamSession) {
+	if c.refuseTerminalControl(ctx, msg, outbound) {
+		return
+	}
 	switch m := msg.GetMsg().(type) {
 	case *pb.TerminalClientMessage_Attach:
 		c.handleAttach(ctx, m.Attach, outbound)
@@ -1105,7 +1114,12 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	if row.TmuxSessionName != nil {
 		sessionName = *row.TmuxSessionName
 	}
+	readOnly := cloudControlMode(c.cloudControl) != config.CloudControlFull
 	wakeNotice := ""
+	if sessionName == "" && readOnly {
+		c.sendExited(ctx, outbound, attachID, "cloud control is read-only; cannot wake chat")
+		return
+	}
 	if sessionName == "" {
 		// BOS-885: a cleared pane pointer means the chat was torn down, not
 		// that it is dead — the TUI recreates the pane on attach, and the web
@@ -1124,12 +1138,17 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 		}
 	}
 
+	cols, rows := cmd.GetCols(), cmd.GetRows()
+	if readOnly {
+		cols, rows = 0, 0
+	}
 	attachCtx, cancel := context.WithCancel(ctx)
 	attach, err := c.attachFactory(attachCtx, AttachConfig{
+		ReadOnly:    readOnly,
 		AttachID:    attachID,
 		SessionName: sessionName,
-		Cols:        cmd.GetCols(),
-		Rows:        cmd.GetRows(),
+		Cols:        cols,
+		Rows:        rows,
 		Logger:      c.logger,
 	})
 	if err != nil {
@@ -1417,33 +1436,6 @@ func (c *TerminalStreamClient) fireRefreshClient(ctx context.Context, sessionNam
 			c.logger.Warn().Err(err).Str("session", sessionName).Msg("tmux refresh-client failed after lost-bytes RESYNC")
 		}
 	})
-}
-
-// handleInput routes a TerminalInputCommand to the matching attach. Drops
-// silently if the attach_id is unknown — bosso may have reordered messages
-// past a Close, or the attach exited on the daemon side before the input
-// landed.
-func (c *TerminalStreamClient) handleInput(cmd *pb.TerminalInputCommand) {
-	state := c.lookupAttach(cmd.GetAttachId())
-	if state == nil {
-		c.logger.Debug().Str("attach_id", cmd.GetAttachId()).Msg("terminal stream: input for unknown attach; dropping")
-		return
-	}
-	if err := state.attach.Input(cmd.GetData()); err != nil {
-		c.logger.Debug().Err(err).Str("attach_id", cmd.GetAttachId()).Msg("terminal stream: input write failed")
-	}
-}
-
-// handleResize routes a TerminalResizeCommand to the matching attach.
-func (c *TerminalStreamClient) handleResize(cmd *pb.TerminalResizeCommand) {
-	state := c.lookupAttach(cmd.GetAttachId())
-	if state == nil {
-		c.logger.Debug().Str("attach_id", cmd.GetAttachId()).Msg("terminal stream: resize for unknown attach; dropping")
-		return
-	}
-	if err := state.attach.Resize(cmd.GetCols(), cmd.GetRows()); err != nil {
-		c.logger.Debug().Err(err).Str("attach_id", cmd.GetAttachId()).Msg("terminal stream: resize failed")
-	}
 }
 
 // handleClose tears down the matching attach. The TerminalAttach's own

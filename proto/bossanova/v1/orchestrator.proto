@@ -563,6 +563,30 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
     option (bossanova.v1.permission) = "organization_notes:read";
   }
+  // Registers public viewer key material; registration grants no local approval.
+  rpc RegisterViewerDevice(RegisterViewerDeviceRequest) returns (RegisterViewerDeviceResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  // Lists the authenticated user's viewer devices.
+  rpc ListViewerDevices(ListViewerDevicesRequest) returns (ListViewerDevicesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:read";
+  }
+  // Forgets a registry entry; this does not revoke any daemon-local approval.
+  rpc DeleteViewerDevice(DeleteViewerDeviceRequest) returns (DeleteViewerDeviceResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  // Lists viewer requests for the authenticated daemon's owner.
+  rpc ListViewerDeviceRequests(ListViewerDeviceRequestsRequest) returns (ListViewerDeviceRequestsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
   // RequestAgentCredentialDeviceEnrollment manages daemon credential encryption enrollment.
   rpc RequestAgentCredentialDeviceEnrollment(RequestAgentCredentialDeviceEnrollmentRequest) returns (RequestAgentCredentialDeviceEnrollmentResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
@@ -1227,6 +1251,8 @@ message DaemonInfo {
   bool online = 6;
   // Organization whose daemon inventory read produced this row.
   string organization_id = 7;
+  // Public signing identity, included only for the calling user's own daemons.
+  bytes identity_public_key = 8;
 }
 
 // DaemonRef is the minimal identity needed to filter sessions served by a
@@ -3748,3 +3774,16 @@ message ProxySendBackToRepairResponse {
   string comment_url = 3;
   bool is_auto_repair_enabled = 4;
 }
+
+// Public registry material only; daemon-local approval is never stored here.
+message RegisterViewerDeviceRequest {
+  bytes public_key = 1;
+  string label = 2;
+}
+message RegisterViewerDeviceResponse { ViewerDevice viewer_device = 1; }
+message ListViewerDevicesRequest {}
+message ListViewerDevicesResponse { repeated ViewerDevice viewer_devices = 1; }
+message DeleteViewerDeviceRequest { string id = 1; }
+message DeleteViewerDeviceResponse {}
+message ListViewerDeviceRequestsRequest {}
+message ListViewerDeviceRequestsResponse { repeated ViewerDevice viewer_devices = 1; }

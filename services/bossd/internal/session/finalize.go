@@ -502,6 +502,11 @@ var bossdManagedWorktreeFiles = []string{
 
 func (l *Lifecycle) managedDirtyPaths(ctx context.Context, session *models.Session, warnMsg string) []string {
 	managedPaths := append([]string(nil), bossdManagedWorktreeFiles...)
+	// Tracked files the repo's setup script rewrote and nobody touched since
+	// are setup output: counting them made every unattended run of a repo whose
+	// setup rewrites a lockfile end Blocked (or, before tracked edits were
+	// refused, open an empty draft PR).
+	managedPaths = append(managedPaths, gitpkg.SetupResidue(session.WorktreePath)...)
 	client, err := l.agentClientFor(session)
 	if err != nil {
 		return managedPaths

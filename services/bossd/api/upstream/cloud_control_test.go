@@ -3,13 +3,16 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/daemoncaps"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -43,7 +46,7 @@ func TestCloudControl_DefaultRefusesEveryControlArm_Sessions_AC210201(t *testing
 }
 
 func TestCloudControl_ModeChangesAndObserve_Sessions_AC210202_AC210204(t *testing.T) {
-	for _, mode := range []config.CloudControlMode{config.CloudControlReadOnly, config.CloudControlFull} {
+	for _, mode := range []config.CloudControlMode{config.CloudControlReadOnly, config.CloudControlFull, config.CloudControlPrivate} {
 		t.Run(string(mode), func(t *testing.T) {
 			handler := &fakeCommandHandler{session: &pb.Session{Id: "s"}}
 			client := newDispatcherClient(handler, nil, nil)
@@ -65,6 +68,9 @@ func TestCloudControl_ModeChangesAndObserve_Sessions_AC210202_AC210204(t *testin
 				t.Fatal(err)
 			}
 			want := pb.CloudControl_CLOUD_CONTROL_READ_ONLY
+			if mode == config.CloudControlPrivate {
+				want = pb.CloudControl_CLOUD_CONTROL_PRIVATE
+			}
 			if mode == config.CloudControlFull {
 				want = pb.CloudControl_CLOUD_CONTROL_FULL
 			}
@@ -139,6 +145,100 @@ func TestCloudControl_LocalPolicyReloadsAndFailsClosed(t *testing.T) {
 	}
 	if policy.Mode() != config.CloudControlReadOnly {
 		t.Fatal("unreadable settings allowed control")
+	}
+}
+
+func TestCloudControl_ExistingTerminalOutputRespectsPrivate(t *testing.T) {
+	for _, initial := range []string{"read-only", "full"} {
+		for _, queued := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/queued=%t", initial, queued), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					path := filepath.Join(t.TempDir(), "settings.json")
+					t.Setenv("BOSS_SETTINGS_PATH", path)
+					setMode := func(mode string) {
+						t.Helper()
+						if err := config.SaveTo(path, config.Settings{CloudControl: mode}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					setMode(initial)
+					h := newTestHarness(t)
+					h.client.cloudControl = NewCloudControlPolicy(zerolog.Nop())
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					out := make(chan *pb.TerminalServerMessage, 8)
+					h.client.handleAttach(ctx, &pb.TerminalAttachCommand{AttachId: "viewer", ChatId: "claude-1"}, out)
+					t.Cleanup(h.client.closeAllAttaches)
+					attach := h.factory.attaches["viewer"]
+					state := h.client.lookupAttach("viewer")
+					if attach == nil || state == nil {
+						t.Fatal("attachment did not start")
+					}
+					// The writer case queues multiple frames while sharing is enabled;
+					// the pump case encounters new private content with no writer running.
+					if queued {
+						attach.output <- &pb.TerminalDataChunk{AttachId: "viewer", Data: []byte("queued content")}
+						synctest.Wait()
+						out <- &pb.TerminalServerMessage{Msg: &pb.TerminalServerMessage_Pong{Pong: &pb.TerminalPong{Seq: 1}}}
+						attach.output <- &pb.TerminalDataChunk{AttachId: "viewer", Data: []byte("more queued content")}
+						synctest.Wait()
+						if len(out) != 3 {
+							t.Fatalf("queued frames = %d", len(out))
+						}
+					}
+					setMode("private")
+					if !queued {
+						attach.output <- &pb.TerminalDataChunk{AttachId: "viewer", Data: []byte("private content")}
+						synctest.Wait()
+						if !attach.closed.Load() {
+							t.Fatal("private output left the attach alive")
+						}
+						// Re-enabling sharing cannot revive the terminal whose bytes were lost.
+						setMode(initial)
+					}
+					stream := newFakeTerminalStream()
+					stream.sent = make(chan *pb.TerminalServerMessage)
+					writerDone := safego.Go(zerolog.Nop(), func() { h.client.runWriter(ctx, stream, out) })
+					defer func() { cancel(); <-writerDone }()
+					synctest.Wait()
+					if !attach.closed.Load() {
+						t.Fatal("queued private output left the attach alive")
+					}
+					select {
+					case <-state.done:
+					default:
+						t.Fatal("revoked attach pump did not finish")
+					}
+					if queued {
+						// Resume while the writer is paused on housekeeping, with another
+						// old chunk still queued behind it. That chunk must stay suppressed.
+						setMode(initial)
+						if msg := <-stream.sent; msg.GetPong() == nil {
+							t.Fatalf("housekeeping = %v", msg)
+						}
+					}
+					exit := (<-stream.sent).GetExited()
+					if exit.GetAttachId() != "viewer" || exit.GetReason() != "cloud control is private on this machine" || exit.GetExitCode() != -1 {
+						t.Fatalf("revoked terminal exit = %v", exit)
+					}
+					if h.client.lookupAttach("viewer") != nil {
+						t.Fatal("revoked attach remains registered")
+					}
+					setMode(initial)
+					h.client.handleAttach(ctx, &pb.TerminalAttachCommand{AttachId: "reopened", ChatId: "claude-1"}, out)
+					fresh := h.factory.attaches["reopened"]
+					if fresh == nil {
+						t.Fatal("fresh attachment did not start")
+					}
+					fresh.output <- &pb.TerminalDataChunk{AttachId: "reopened", Data: []byte("fresh screen")}
+					synctest.Wait()
+					data := (<-stream.sent).GetData()
+					if data.GetAttachId() != "reopened" || string(data.GetData()) != "fresh screen" {
+						t.Fatalf("reopened output = %v", data)
+					}
+				})
+			})
+		}
 	}
 }
 
@@ -251,5 +351,62 @@ func TestCloudControl_ReadOnlyObserveAndHousekeeping(t *testing.T) {
 	}
 	if handler.listReposCalls.Load() != 1 || handler.transcriptSession != "s" {
 		t.Fatal("observation did not reach handler")
+	}
+}
+
+func TestCloudControl_PrivateRefusesContentBeforeHandlers(t *testing.T) {
+	// No handlers are wired: a content refusal must happen before dispatch.
+	client := NewStreamClient(StreamClientConfig{Logger: zerolog.Nop(), Hostname: "private-host", CloudControl: fixedCloudControl(config.CloudControlPrivate)})
+	for _, name := range []protoreflect.Name{"attach", "get_chat_transcript", "get_note", "list_notes", "list_cron_jobs", "get_cron_job", "list_github_callbacks", "list_tracker_issues", "send_chat_message"} {
+		t.Run(string(name), func(t *testing.T) {
+			cmd := &pb.OrchestratorCommand{CommandId: "private-refusal"}
+			field := cmd.ProtoReflect().Descriptor().Oneofs().ByName("cmd").Fields().ByName(name)
+			cmd.ProtoReflect().Set(field, cmd.ProtoReflect().NewField(field))
+			result := client.dispatchCommand(context.Background(), cmd, nil).GetResult()
+			wantText := daemoncaps.CloudControlPrivateText("private-host")
+			if name == "send_chat_message" {
+				wantText = client.cloudControlRefusal()
+			}
+			if result.GetOk() || result.GetErrorCode() != pb.CommandResult_ERROR_CODE_CLOUD_CONTROL_DISABLED || result.GetError() != wantText {
+				t.Fatalf("refusal = %v, want disabled with %q", result, wantText)
+			}
+		})
+	}
+}
+
+func TestCloudControl_PrivateAnswersMetadata(t *testing.T) {
+	handler := &fakeCommandHandler{sessionStatusesResult: &pb.GetSessionStatusesResponse{}}
+	client := newDispatcherClient(handler, nil, nil)
+	client.cloudControl = fixedCloudControl(config.CloudControlPrivate)
+	out := make(chan *pb.DaemonEvent, 4)
+	for _, name := range []protoreflect.Name{"list_repos", "list_chats", "get_session_statuses"} {
+		cmd := &pb.OrchestratorCommand{}
+		field := cmd.ProtoReflect().Descriptor().Oneofs().ByName("cmd").Fields().ByName(name)
+		cmd.ProtoReflect().Set(field, cmd.ProtoReflect().NewField(field))
+		event := client.dispatchCommand(context.Background(), cmd, out)
+		if event == nil {
+			event = recvEvent(t, out)
+		}
+		if !event.GetResult().GetOk() {
+			t.Errorf("metadata %s = %v", name, event)
+		}
+	}
+}
+
+func TestCloudControl_PrivateTerminalAttachBeforeLookup(t *testing.T) {
+	h := newTestHarness(t)
+	h.client.cloudControl = fixedCloudControl(config.CloudControlPrivate)
+	h.client.chats = nil // Any lookup would panic, before the factory can spawn tmux.
+	out := make(chan *pb.TerminalServerMessage, 2)
+	h.client.handleClientMessage(context.Background(), &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{AttachId: "private", ChatId: "claude-1"}}}, out, nil)
+	if len(out) != 1 {
+		t.Fatalf("got %d frames, want one refusal", len(out))
+	}
+	exited := (<-out).GetExited()
+	if exited.GetAttachId() != "private" || exited.GetReason() != "cloud control is private on this machine" {
+		t.Fatalf("attach refusal = %v", exited)
+	}
+	if h.factory.lastConfig().AttachID != "" {
+		t.Fatal("private attach spawned tmux")
 	}
 }

@@ -592,6 +592,13 @@ message Session {
   int32 pr_added_line_count = 84;
   int32 pr_deleted_line_count = 85;
   int32 pr_changed_file_count = 86;
+
+  // Current PR head's non-legacy proof record digest (sha256:<64 hex>), or empty.
+  // Read-only input for the web review screen's action pins, for every attention
+  // kind. No dated API bump or transform: this is additive and older clients
+  // ignore the unknown field without changing their existing behavior. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  string pr_proof_digest = 87;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

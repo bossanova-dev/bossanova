@@ -60,6 +60,9 @@ type UploadManager = uploadManager
 // the client can only ever upload into the chat it is already attached to.
 func (c *TerminalStreamClient) handleUploadStart(ctx context.Context, cmd *pb.TerminalUploadStart, outbound chan<- *pb.TerminalServerMessage) {
 	attachID, uploadID := cmd.GetAttachId(), cmd.GetUploadId()
+	if c.refuseSealedUpload(ctx, outbound, attachID, uploadID) {
+		return
+	}
 	if c.uploads == nil {
 		c.failUpload(ctx, outbound, attachID, uploadID, "upload: not supported by this daemon", false)
 		return
@@ -88,6 +91,9 @@ func (c *TerminalStreamClient) handleUploadStart(ctx context.Context, cmd *pb.Te
 // comment; this ordering is the backpressure contract.
 func (c *TerminalStreamClient) handleUploadChunk(ctx context.Context, cmd *pb.TerminalUploadChunk, outbound chan<- *pb.TerminalServerMessage) {
 	attachID, uploadID := cmd.GetAttachId(), cmd.GetUploadId()
+	if c.refuseSealedUpload(ctx, outbound, attachID, uploadID) {
+		return
+	}
 	if c.uploads == nil {
 		c.failUpload(ctx, outbound, attachID, uploadID, "upload: not supported by this daemon", false)
 		return
@@ -131,6 +137,9 @@ func (c *TerminalStreamClient) handleUploadChunk(ctx context.Context, cmd *pb.Te
 // limits.
 func (c *TerminalStreamClient) handleUploadFinish(ctx context.Context, cmd *pb.TerminalUploadFinish, outbound chan<- *pb.TerminalServerMessage, sess *terminalStreamSession) {
 	attachID, uploadID := cmd.GetAttachId(), cmd.GetUploadId()
+	if c.refuseSealedUpload(ctx, outbound, attachID, uploadID) {
+		return
+	}
 	if c.uploads == nil {
 		c.failUpload(ctx, outbound, attachID, uploadID, "upload: not supported by this daemon", false)
 		return

@@ -148,6 +148,7 @@ export const VENDOR_MAP = {
     'plan/plan-epic-phase25.mjs',
     'plan/plan-image-guard.mjs',
     'plan/plan-park-prediction.mjs',
+    'plan/plan-fold-section.mjs',
     'plan/plan-run-guards.mjs',
     'plan/plan-issue-guards.mjs',
     'plan/plan-scratch-paths.mjs',

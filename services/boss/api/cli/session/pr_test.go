@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/recurser/boss/internal/adapter/rpcerror"
 
 	"github.com/recurser/boss/internal/domain/rpc"
@@ -124,6 +126,46 @@ func TestResolvePRSession(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+}
+
+func TestResolvePRSessionArchives_Sessions_AC229503_AC229504(t *testing.T) {
+	archived := func(id, origin string, seconds int64) *pb.Session {
+		s := prSession(id, 7, origin, "")
+		s.ArchivedAt = &timestamppb.Timestamp{Seconds: seconds}
+		return s
+	}
+	for _, tc := range []struct {
+		name             string
+		sessions         []*pb.Session
+		repo, want, hint string
+	}{
+		{name: "live with several archived", sessions: []*pb.Session{archived("old", originA, 1), prSession("live", 7, originA, ""), archived("new", originA, 2)}, want: "live"},
+		{name: "repository case normalization", sessions: []*pb.Session{archived("old", "https://github.com/ACME/APP", 1), prSession("live", 7, originA, "")}, want: "live"},
+		{name: "cross repository before live preference", sessions: []*pb.Session{prSession("live", 7, originA, ""), archived("old", originB, 1)}, hint: "--repo owner/repo"},
+		{name: "filter live repository", sessions: []*pb.Session{prSession("live", 7, originA, ""), archived("old", originB, 1)}, repo: "ACME/APP", want: "live"},
+		{name: "filter archived repository", sessions: []*pb.Session{prSession("live", 7, originA, ""), archived("old", originB, 1)}, repo: "other/app", want: "old"},
+		{name: "latest archived", sessions: []*pb.Session{archived("old", originA, 1), archived("new", originA, 2)}, want: "new"},
+		{name: "archive nanoseconds", sessions: []*pb.Session{archived("z", originA, 2), {Id: "a", PrNumber: new(int32(7)), RepoOriginUrl: originA, ArchivedAt: &timestamppb.Timestamp{Seconds: 2, Nanos: 1}}}, want: "a"},
+		{name: "archive tie greater id", sessions: []*pb.Session{archived("z", originA, 2), archived("a", originA, 2)}, want: "z"},
+		{name: "missing slug same repo", sessions: []*pb.Session{{Id: "old", PrNumber: new(int32(7)), RepoId: "r1", ArchivedAt: &timestamppb.Timestamp{Seconds: 1}}, {Id: "live", PrNumber: new(int32(7)), RepoId: "r1"}}, want: "live"},
+		{name: "missing slug distinct repos", sessions: []*pb.Session{{Id: "old", PrNumber: new(int32(7)), RepoId: "r1", ArchivedAt: &timestamppb.Timestamp{Seconds: 1}}, {Id: "live", PrNumber: new(int32(7)), RepoId: "r2"}}, hint: "--repo owner/repo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _, err := resolvePRSessionWithArchived(t.Context(), &prFake{sessions: tc.sessions}, 7, tc.repo, true)
+			if tc.hint != "" {
+				if cliutil.ErrorCodeFor(err) != cliutil.CodeAmbiguousPR || !strings.Contains(err.Error(), tc.hint) {
+					t.Fatalf("err=%v", err)
+				}
+				for _, s := range tc.sessions {
+					if !strings.Contains(err.Error(), s.GetId()) {
+						t.Fatalf("missing id: %v", err)
+					}
+				}
+			} else if err != nil || got.GetId() != tc.want {
+				t.Fatalf("got=%v err=%v want=%s", got, err, tc.want)
+			}
+		})
+	}
 }
 
 func TestParsePRNumber(t *testing.T) {

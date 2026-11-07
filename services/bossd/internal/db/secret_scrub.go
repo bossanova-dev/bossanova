@@ -6,22 +6,24 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/rs/zerolog"
+
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 )
 
 // ScrubFreedSecretPages removes stale copies of moved repo keys from the
 // database file and its WAL when requested. Call at startup before stores or
 // workers exist. A failure leaves a request for the next start.
-func ScrubFreedSecretPages(ctx context.Context, sqlDB *sql.DB) (ran bool, err error) {
+func ScrubFreedSecretPages(ctx context.Context, sqlDB *sql.DB, logger zerolog.Logger) (ran bool, err error) {
 	conn, err := sqlDB.Conn(ctx)
 	if err != nil {
 		return false, fmt.Errorf("open secret scrub connection: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
-	return scrubFreedSecretPages(ctx, conn)
+	return scrubFreedSecretPages(ctx, conn, logger)
 }
 
-func scrubFreedSecretPages(ctx context.Context, conn sqlcgen.DBTX) (ran bool, err error) {
+func scrubFreedSecretPages(ctx context.Context, conn sqlcgen.DBTX, logger zerolog.Logger) (ran bool, err error) {
 	q := sqlcgen.New(conn)
 	requested, err := q.CountRepoSecretScrubs(ctx)
 	if err != nil {
@@ -30,6 +32,7 @@ func scrubFreedSecretPages(ctx context.Context, conn sqlcgen.DBTX) (ran bool, er
 	if requested == 0 {
 		return false, nil
 	}
+	logger.Info().Msg("scrubbing freed database pages after the repo key move; one-time")
 	defer func() {
 		_, restoreErr := conn.ExecContext(context.WithoutCancel(ctx), `PRAGMA secure_delete = FAST`)
 		if restoreErr != nil {

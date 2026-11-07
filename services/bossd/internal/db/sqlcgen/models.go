@@ -407,6 +407,14 @@ type TriggerLaunch struct {
 	AcceptedSessionID *string
 }
 
+type ViewerDeviceApproval struct {
+	ViewerDeviceID string
+	PublicKey      []byte
+	Label          string
+	ApprovedAt     string
+	CreatedAt      string
+}
+
 type Workflow struct {
 	ID             string
 	SessionID      string

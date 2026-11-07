@@ -99,6 +99,7 @@ func (a *App) handleWindowSize(msg tea.WindowSizeMsg) {
 	a.repoList.SetSize(msg.Width, msg.Height)
 	a.repoSettings.SetWidth(msg.Width)
 	a.trash.SetSize(msg.Width, msg.Height)
+	a.reviewQueue.SetSize(msg.Width, msg.Height)
 	a.chatPicker.SetSize(msg.Width, msg.Height)
 	a.settings.SetWidth(msg.Width)
 	a.generalSettings.SetWidth(msg.Width)

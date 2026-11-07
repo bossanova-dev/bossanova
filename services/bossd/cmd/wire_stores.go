@@ -47,7 +47,6 @@ func (w *daemonWiring) wireStores() error {
 		err             error
 		tmuxDaemonIDErr error
 	)
-	w.setupLogging(os.Getenv, os.Stderr)
 
 	// startupProtectedRoots is the symlink-resolved protected-root list the
 	// startup diagnostic derived. It is handed to the server so the RepairDoctor
@@ -185,8 +184,7 @@ func (w *daemonWiring) wireStores() error {
 
 	{
 		started := time.Now()
-		log.Info().Msg("scrubbing freed database pages after the repo key move; one-time")
-		ran, err := db.ScrubFreedSecretPages(context.Background(), database)
+		ran, err := db.ScrubFreedSecretPages(context.Background(), database, log.Logger)
 		if err != nil {
 			log.Warn().Err(err).Msg("scrubbing freed database pages failed; retrying on next start")
 		} else if ran {
@@ -198,6 +196,8 @@ func (w *daemonWiring) wireStores() error {
 
 	// These constructors only wrap the connection; allocate every store here
 	// so later wiring stages consume stores without carrying a SQL handle.
+	w.viewerApprovalStore = db.NewViewerDeviceApprovalStore(database)
+	w.viewerApprovals = server.NewViewerApprovals(w.viewerApprovalStore, nil, nil, nil)
 	w.checkSnapshots = db.NewCheckSnapshotStore(database)
 	w.pendingTrackerMerges = db.NewPendingTrackerMergeStore(database)
 	w.proxyTokens = db.NewProxyTokenStore(database)

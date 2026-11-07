@@ -90,11 +90,6 @@ func TestAppChromeHeightCountsTheToast(t *testing.T) {
 // default state. A view that leaked MouseModeCellMotion here would turn mouse
 // reporting on for a whole screen that has no hit testing.
 func TestAppViewMouseModeIsOffOutsideForms(t *testing.T) {
-	// Every View constant. Kept explicit rather than derived so a new screen has
-	// to be classified by a human; `TestViewGeneralSettingsIsHighestViewValue`
-	// pins that ViewGeneralSettings stays last, so the length check below makes
-	// the table mechanically complete.
-	//
 	// seed gives a view a real sub-model where NewApp leaves a zero value that
 	// renders nothing — an empty view would assert MouseModeNone vacuously.
 	all := []struct {
@@ -128,10 +123,11 @@ func TestAppViewMouseModeIsOffOutsideForms(t *testing.T) {
 		{name: "ViewAgentAccountEdit", view: ui.ViewAgentAccountEdit},
 		{name: "ViewAgentAccountRegister", view: ui.ViewAgentAccountRegister},
 		{name: "ViewGeneralSettings", view: ui.ViewGeneralSettings},
+		{name: "ViewReviewQueue", view: ui.ViewReviewQueue},
 	}
-	if got := len(all); ui.View(got-1) != ui.ViewGeneralSettings {
+	if got := len(all); ui.View(got-1) != ui.ViewReviewQueue {
 		t.Fatalf("this table lists %d views but the highest View constant is %d; "+
-			"a new screen was added without classifying its MouseMode", got, ui.ViewGeneralSettings)
+			"a new screen was added without classifying its MouseMode", got, ui.ViewReviewQueue)
 	}
 
 	for _, tt := range all {

@@ -38,6 +38,7 @@ var allViewConstants = []struct {
 	{ViewAgentAccountEdit, "ViewAgentAccountEdit"},
 	{ViewAgentAccountRegister, "ViewAgentAccountRegister"},
 	{ViewGeneralSettings, "ViewGeneralSettings"},
+	{ViewReviewQueue, "ViewReviewQueue"},
 }
 
 // TestAllViewConstantsAreListed makes allViewConstants a trustworthy stand-in

@@ -50,6 +50,7 @@ go_library(
         "//services/boss/api/cli/skills",
         "//services/boss/api/cli/trash",
         "//services/boss/api/cli/trigger",
+        "//services/boss/api/cli/viewer",
         "//services/boss/api/cli/webhook",
         "//services/boss/api/tui",
         "//services/boss/api/tui/home",
@@ -100,6 +101,7 @@ go_test(
         "startup_test.go",
         "telemetry_test.go",
         "testmain_test.go",
+        "viewer_wiring_test.go",
     ],
     embed = [":boss_lib"],
     # keep: skill/upgrade tests go-build the boss binary and install plugins via a

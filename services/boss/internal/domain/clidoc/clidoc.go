@@ -65,6 +65,7 @@ var GroupOrder = []GroupSpec{
 	{ID: "notes", Title: "Notes", ReadWhen: "Recording or harvesting durable repo-scoped notes"},
 	{ID: "lease", Title: "Tracker Issue Leases", ReadWhen: "Taking or releasing a tracker issue lease before starting work"},
 	{ID: "webhook", Title: "Session Webhooks", ReadWhen: "Registering, testing or inspecting an outbound session webhook (Bossanova Cloud)"},
+	{ID: "viewer", Title: "Viewer Devices", ReadWhen: "Approving or revoking local viewer device access"},
 	{ID: "account", Title: "Account Management", ReadWhen: "Adding, testing, rotating or switching a provider account"},
 	{ID: "trash", Title: "Trash Management", ReadWhen: "Resurrecting an archived session or emptying the trash"},
 	{ID: "daemon", Title: "Daemon Management", ReadWhen: "Starting, stopping or inspecting bossd"},

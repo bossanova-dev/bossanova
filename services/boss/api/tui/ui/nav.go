@@ -38,6 +38,8 @@ const (
 	// Settings hub (BOS-511). Appended at the END of the const block so existing
 	// iota values do not shift.
 	ViewGeneralSettings
+	// ViewReviewQueue is appended at the END to preserve existing view values.
+	ViewReviewQueue
 )
 
 // switchViewMsg requests the app to switch to a different view.

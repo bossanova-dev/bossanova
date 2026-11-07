@@ -69,6 +69,7 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
+	viewerApprovals    *ViewerApprovals
 	credentialDevices  *CredentialDeviceService
 	trackerIssueLeases trackerIssueLeases
 
@@ -350,6 +351,7 @@ var (
 type Config struct {
 	Callers CallerAuthority
 
+	ViewerApprovals   *ViewerApprovals
 	CredentialDevices *CredentialDeviceService
 	// TrackerIssueLeaseUpstream and its rotating daemon token are nil in local-only mode.
 	TrackerIssueLeaseUpstream     TrackerIssueLeaseUpstream
@@ -701,6 +703,7 @@ func New(cfg Config) *Server {
 		agentAccountsChanged:    cfg.AgentAccountsChanged,
 		credentialPublisher:     cfg.CredentialPublisher,
 		credentialDevices:       cfg.CredentialDevices,
+		viewerApprovals:         cfg.ViewerApprovals,
 		trackerIssueLeases:      trackerIssueLeases{entries: make(map[trackerIssueLeaseKey]trackerIssueLeaseEntry), now: cfg.TrackerIssueLeaseNow, upstream: cfg.TrackerIssueLeaseUpstream, sessionToken: cfg.TrackerIssueLeaseSessionToken},
 		accountSmoke:            cfg.AccountSmokeRunner,
 		usageProbe:              cfg.UsageProbe,

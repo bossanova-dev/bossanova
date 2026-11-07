@@ -1126,7 +1126,7 @@ type Settings struct {
 	// the substrate an operator selects a mode to escape.
 	DaemonSupervisionMode string `json:"daemon_supervision_mode,omitempty"`
 	// CloudControl is changed only by the local operator, never by UpdateSettings,
-	// MCP or stream commands. Keep the raw string to preserve unknown values.
+	// MCP or stream commands. Raw values: read-only (default), private, full or unknown.
 	CloudControl string `json:"cloud_control,omitempty"`
 	// SubagentDispatchGrant selects which boss-managed chats receive the bounded
 	// subagent-dispatch grant in their appended system prompt. It is a raw

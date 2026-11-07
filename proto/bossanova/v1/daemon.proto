@@ -340,6 +340,15 @@ service DaemonService {
   // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
   rpc ReleaseTrackerIssueLease(ReleaseTrackerIssueLeaseRequest) returns (ReleaseTrackerIssueLeaseResponse);
 
+  // Viewer approvals are local-socket only and never part of OrchestratorCommand.
+  rpc GetViewerDeviceStatus(GetViewerDeviceStatusRequest) returns (GetViewerDeviceStatusResponse);
+  // Local list differs from the hosted registry list and contains no raw keys.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc ListViewerDevices(ListLocalViewerDevicesRequest) returns (ListLocalViewerDevicesResponse);
+  rpc ApproveViewerDevice(ApproveViewerDeviceRequest) returns (ApproveViewerDeviceResponse);
+  rpc RevokeViewerDevice(RevokeViewerDeviceRequest) returns (RevokeViewerDeviceResponse);
+
   // --- Accounts (BOS-157 rotation registry) ---
 
   // Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.
@@ -2982,3 +2991,25 @@ message GetGitHubReadCredentialResponse {
   // installation on success; otherwise a stable fallback reason.
   string reason = 3;
 }
+
+message GetViewerDeviceStatusRequest {}
+message GetViewerDeviceStatusResponse {
+  string daemon_fingerprint = 1;
+  bool is_available = 2;
+}
+message LocalViewerDevice {
+  string viewer_device_id = 1;
+  string label = 2;
+  string fingerprint = 3;
+  bool is_approved = 4;
+  google.protobuf.Timestamp approved_at = 5;
+}
+message ListLocalViewerDevicesRequest {}
+message ListLocalViewerDevicesResponse { repeated LocalViewerDevice devices = 1; }
+message ApproveViewerDeviceRequest {
+  string viewer_device_id = 1;
+  string fingerprint = 2;
+}
+message ApproveViewerDeviceResponse {}
+message RevokeViewerDeviceRequest { string viewer_device_id = 1; }
+message RevokeViewerDeviceResponse {}

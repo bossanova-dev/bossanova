@@ -19,7 +19,23 @@ const raw = (number, labels = ['boss:todo']) => ({
   createdAt: '2026-01-01',
   url: `https://github.com/acme/tasks/issues/${number}`,
 })
-function harness(rows = []) {
+// The rank-facts GraphQL answer: every aliased candidate, with `facts[number]` when given.
+const rankFactsAnswer = (args, facts = {}) => {
+  const query = args[args.indexOf('-f') + 1]
+  const numbers = [...query.matchAll(/i(\d+): issue\(number: \d+\)/g)].map((match) => match[1])
+  return {
+    data: {
+      repository: Object.fromEntries(
+        numbers.map((number) => [
+          `i${number}`,
+          facts[number] ?? { milestone: null, parent: null, blocking: { nodes: [] } },
+        ]),
+      ),
+    },
+  }
+}
+const isGraphql = (args) => args[0] === 'api' && args[1] === 'graphql'
+function harness(rows = [], facts = {}) {
   const calls = []
   const spawn = (cmd, args, options) => {
     calls.push({ cmd, args, options })
@@ -30,6 +46,7 @@ function harness(rows = []) {
       )
     else if (args[0] === 'issue' && args[1] === 'list') output = rows
     else if (args[0] === 'api' && args[1] === 'user') output = { login: 'alice' }
+    else if (isGraphql(args)) output = rankFactsAnswer(args, facts)
     else throw new Error(`unexpected ${args.join(' ')}`)
     return { status: 0, stdout: JSON.stringify(output) }
   }
@@ -107,6 +124,68 @@ test('selection sends AND labels and applies disjunction, exclusions, identity a
   )
 })
 
+test('GitHub candidates rank by epic chain, milestone deadline and the work they block', async () => {
+  const issue = (number, labels, more = {}) => ({
+    number,
+    url: `https://github.com/acme/tasks/issues/${number}`,
+    state: 'OPEN',
+    repository: { nameWithOwner: 'acme/tasks' },
+    labels: { nodes: labels.map((name) => ({ name })) },
+    milestone: null,
+    ...more,
+  })
+  const { adapter, calls } = harness(
+    [
+      raw(1, ['boss:todo', 'boss:priority-2']),
+      raw(2, ['boss:todo', 'boss:priority-4']),
+      raw(3, ['boss:todo', 'boss:priority-4']),
+      raw(4, ['boss:todo', 'boss:priority-2']),
+    ],
+    {
+      2: {
+        milestone: null,
+        parent: issue(9, ['epic'], { parent: issue(8, ['boss:priority-1']) }),
+        blocking: { nodes: [] },
+      },
+      3: { milestone: null, parent: null, blocking: { nodes: [issue(7, ['boss:priority-1'])] } },
+      4: { milestone: { dueOn: '2026-11-20T00:00:00Z' }, parent: null, blocking: { nodes: [] } },
+    },
+  )
+  const ranked = await adapter.selectPlanned({ state: 'boss:todo', requireLabels: [] })
+  assert.deepEqual(
+    ranked.map((row) => [row.id, row.rank.tier, row.rank.tierFrom, row.rank.deadline]),
+    [
+      ['GH-3', 1, 'blocks GH-7', null],
+      ['GH-2', 1, 'epic GH-8', null],
+      ['GH-4', 2, 'own', '2026-11-20'],
+      ['GH-1', 2, 'own', null],
+    ],
+  )
+  assert.equal(calls.filter((call) => isGraphql(call.args)).length, 1, 'one batched facts read')
+  assert.equal(await adapter.hasWork({ state: 'boss:todo', requireLabels: [] }), true)
+  assert.equal(
+    calls.filter((call) => isGraphql(call.args)).length,
+    1,
+    'the cron gate reads no rank facts',
+  )
+})
+
+test('an unreadable rank-facts answer stops selection instead of ranking without facts', async () => {
+  const adapter = createGithubAdapter({
+    config,
+    spawn: (_cmd, args) => ({
+      status: 0,
+      stdout: JSON.stringify(
+        args[0] === 'label' ? [{ name: 'boss:todo' }] : isGraphql(args) ? { data: {} } : [raw(1)],
+      ),
+    }),
+  })
+  await assert.rejects(
+    adapter.selectPlanned({ state: 'boss:todo', requireLabels: [] }),
+    /rank facts unreadable/,
+  )
+})
+
 test('logical operation argument names match the reference adapter', () => {
   const { adapter } = harness()
   const linear = createLinearAdapter({ apiKey: 'unused' })
@@ -170,8 +249,9 @@ test('configured repository pins every transport host despite inherited GH_HOST'
               : options.env.GH_HOST
         assert.equal(effectiveHost, host)
         calls.push(args[0])
-        const output =
-          args[0] === 'api'
+        const output = isGraphql(args)
+          ? rankFactsAnswer(args)
+          : args[0] === 'api'
             ? { login: 'alice' }
             : args[0] === 'label'
               ? [{ name: 'boss:todo' }, { name: 'needs-human' }]
@@ -188,7 +268,7 @@ test('configured repository pins every transport host despite inherited GH_HOST'
       )[0].id,
       'GH-1',
     )
-    assert.deepEqual(calls, ['label', 'api', 'issue'])
+    assert.deepEqual(calls, ['label', 'api', 'issue', 'api'])
   }
 })
 
@@ -307,7 +387,13 @@ test('selection accepts only the configured repository as team', async () => {
       config: { trackerConfig: { github: { repository } } },
       spawn: (_cmd, args) => ({
         status: 0,
-        stdout: JSON.stringify(args[0] === 'label' ? [{ name: 'boss:todo' }] : [raw(1)]),
+        stdout: JSON.stringify(
+          args[0] === 'label'
+            ? [{ name: 'boss:todo' }]
+            : isGraphql(args)
+              ? rankFactsAnswer(args)
+              : [raw(1)],
+        ),
       }),
     })
     const query = { state: 'boss:todo', selection: {}, excludeLabels: ['absent'] }

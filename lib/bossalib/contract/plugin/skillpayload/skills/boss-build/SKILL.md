@@ -341,13 +341,10 @@ and 8).
   non-empty, stop `NO_CHANGE` quoting its stderr; never fall back to the unfiltered call. With no
   selection in effect, fall back to the `selectPlanned` operation descriptor (resolved team,
   planned state, limit 250); its nodes have no `blockerVerdict` and are treated as `unknown`.
-  Keep `agent-build` tickets, with or without a plan attachment, drop `needs-human`, then rank
-  candidates whose active `## Planning` section (before `## Original notes`) carries a
-  `- Predicted verify park:` line after all candidates without that active marker. Ignore
-  markers in Original notes or any other section. Within each group keep `list-planned`'s order
-  (`effectivePriority`, a parent epic's when more urgent; earliest project start, then target date,
-  undated last; lowest estimate; oldest); rank descriptor-fallback nodes by priority, estimate, age.
-  Named tickets are unaffected. Walk the ranking: for
+  Keep `agent-build` tickets, with or without a plan attachment, and drop `needs-human`.
+  `list-planned`'s order is the build order (each node's `rank` says why); never re-rank it, and
+  no plan marker, estimate or predicted park changes it. Walk descriptor-fallback nodes by
+  priority (None last), then oldest. Walk the ranking: for
   every candidate whose `blockerVerdict` is not `unblocked`, run
   `node "$BOSS_BUILD_TOOLBOX/build/blocker-verdict.mjs" --mode selection --id <id>`.
   Use its verdict: completed/canceled or merged blockers clear; a blocker in the configured
@@ -361,7 +358,9 @@ and 8).
   candidate, read its `getIssue` payload and take the first non-epic with something to build from
   (`build-source` does not exit 3). None ⇒ run the helper with `--mode selection`, each walked `--id` and `--summary`;
   stop `NO_CHANGE` quoting its top gating blockers (id, state, PR and dependents held), or the
-  helper failure when unreadable.
+  helper failure when unreadable. Print one selection line: the pick with its `rank` (`tierFrom`,
+  `deadlineFrom`, leverage) and up to three higher-ranked candidates walked past, each with why
+  (blocked by `<ID>` and its state or PR, epic, nothing to build from).
 
 `agent-question` never blocks selection. Build the option the plan chose for each open question
 (when it recorded none, decide per Rule 1) and pass each to Step 7.3 as a `plan-question` candidate

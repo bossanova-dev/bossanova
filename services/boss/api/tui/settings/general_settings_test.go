@@ -1080,7 +1080,7 @@ func TestGeneralSettings_EnumRowCycles(t *testing.T) {
 	m := NewGeneralSettingsModel(stub, context.Background(), nil)
 
 	for i, row := range m.rows {
-		if row.Kind == settingsRowKindEnum {
+		if row.Kind == settingsRowKindEnum && row.Plugin == "codex" {
 			m.cursor = i
 			break
 		}

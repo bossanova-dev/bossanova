@@ -26,6 +26,13 @@ const row = (number, stage, extra = [], state = 'OPEN') => ({
   createdAt: '2026-01-01',
   url: `https://github.com/acme/tasks/issues/${number}`,
 })
+// The rank-facts GraphQL answer with neutral facts for every aliased candidate.
+const neutralRankFacts = (args) => {
+  const query = args[args.indexOf('-f') + 1]
+  const aliases = [...query.matchAll(/(i\d+): issue\(/g)].map((match) => match[1])
+  const neutral = { milestone: null, parent: null, blocking: { nodes: [] } }
+  return { data: { repository: Object.fromEntries(aliases.map((alias) => [alias, neutral])) } }
+}
 function fixture({ rows = [], repositoryLabels = labels, blockers = {}, failure } = {}) {
   const calls = []
   const spawn = (_command, args) => {
@@ -41,6 +48,8 @@ function fixture({ rows = [], repositoryLabels = labels, blockers = {}, failure 
           item.state === 'OPEN' &&
           required.every((name) => item.labels.some((label) => label.name === name)),
       )
+    } else if (args[0] === 'api' && args[1] === 'graphql') {
+      output = neutralRankFacts(args)
     } else if (args[0] === 'api') {
       const number = args[1].split('/')[4]
       const edges = blockers[number] ?? []

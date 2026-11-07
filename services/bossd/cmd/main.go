@@ -208,44 +208,45 @@ type runOpts struct {
 }
 
 func run(opts runOpts) error {
+	started := time.Now()
 	w := &daemonWiring{opts: opts}
 	defer w.close()
-	if err := w.wireStores(); err != nil {
+	w.setupLogging(os.Getenv, os.Stderr)
+	timer := startupPhaseTimer{logger: log.Logger, started: started, slowAfter: startupPhaseSlowAfter}
+	if err := timer.phase("stores", w.wireStores); err != nil {
 		return err
 	}
 	if w.alreadyRunning {
 		return nil
 	}
-	if err := w.wireSessionInfrastructure(); err != nil {
-		return err
+	for _, phase := range []struct {
+		name string
+		run  func() error
+	}{
+		{"session_infrastructure", w.wireSessionInfrastructure},
+		{"plugins", w.wirePlugins},
+		{"accounts", startupVoidPhase(w.wireAccounts)},
+		{"lifecycle", startupVoidPhase(w.wireLifecycle)},
+		{"rotation", startupVoidPhase(w.wireRotation)},
+		{"shutdown_tracking", startupVoidPhase(w.wireShutdownTracking)},
+		{"repair_plugin", w.wireRepairPlugin},
+		{"task_workers", startupVoidPhase(w.wireTaskWorkers)},
+		{"stream_observers", startupVoidPhase(w.wireStreamObservers)},
+		{"chat_uploads", startupVoidPhase(w.wireChatUploads)},
+		{"upstream", startupVoidPhase(w.wireUpstream)},
+		{"daemon", startupVoidPhase(w.wireDaemon)},
+		{"delivery_workers", startupVoidPhase(w.wireDeliveryWorkers)},
+		{"hooks", w.wireHooks},
+		{"proxy", startupVoidPhase(w.wireProxy)},
+		{"bootstrap", w.wireBootstrap},
+		{"background_workers", startupVoidPhase(w.wireBackgroundWorkers)},
+		{"serving", w.wireServing},
+	} {
+		if err := timer.phase(phase.name, phase.run); err != nil {
+			return err
+		}
 	}
-	if err := w.wirePlugins(); err != nil {
-		return err
-	}
-	w.wireAccounts()
-	w.wireLifecycle()
-	w.wireRotation()
-	w.wireShutdownTracking()
-	if err := w.wireRepairPlugin(); err != nil {
-		return err
-	}
-	w.wireTaskWorkers()
-	w.wireStreamObservers()
-	w.wireChatUploads()
-	w.wireUpstream()
-	w.wireDaemon()
-	w.wireDeliveryWorkers()
-	if err := w.wireHooks(); err != nil {
-		return err
-	}
-	w.wireProxy()
-	if err := w.wireBootstrap(); err != nil {
-		return err
-	}
-	w.wireBackgroundWorkers()
-	if err := w.wireServing(); err != nil {
-		return err
-	}
+	timer.ready()
 	return w.wireShutdown()
 }
 

@@ -129,6 +129,8 @@ type daemonWiring struct {
 	noteSyncWorker                 *notesync.Worker
 	notes                          *db.SQLiteNoteStore
 	orchestrator                   *taskorchestrator.Orchestrator
+	viewerApprovals                *server.ViewerApprovals
+	viewerApprovalStore            *db.ViewerDeviceApprovalStore
 	credentialDevices              *server.CredentialDeviceService
 	trackerIssueLeaseUpstream      server.TrackerIssueLeaseUpstream
 	trackerIssueLeaseSessionToken  func() string

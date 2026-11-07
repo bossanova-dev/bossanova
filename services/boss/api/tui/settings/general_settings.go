@@ -25,7 +25,7 @@ type settingsRowKind int
 const (
 	settingsRowKindBool             settingsRowKind = iota // checkbox toggle (plugin Bool config)
 	settingsRowKindString                                  // text input (plugin String config)
-	settingsRowKindEnum                                    // cycle picker (plugin Enum config)
+	settingsRowKindEnum                                    // cycle picker (built-in or plugin Enum config)
 	settingsRowKindWorktree                                // built-in worktree base directory
 	settingsRowKindPollInterval                            // built-in poll interval seconds
 	settingsRowKindDefaultAgent                            // cycle picker over enabled agents
@@ -89,12 +89,13 @@ type GeneralSettingsModel struct {
 	// tests pin the field directly for deterministic rendering.
 	hostname string
 
-	width            int
-	mcpToken         string
-	mcpTokenRevealed bool
-	confirmMCPRotate bool
-	rotatingMCPToken bool
-	mcpTokenNotice   string
+	width               int
+	mcpToken            string
+	mcpTokenRevealed    bool
+	confirmMCPRotate    bool
+	confirmCloudControl bool
+	rotatingMCPToken    bool
+	mcpTokenNotice      string
 }
 
 // unknownHostname stands in for a name we cannot render. It is PURELY a render
@@ -390,6 +391,7 @@ func (m *GeneralSettingsModel) rebuildRows() {
 		settingsRow{Kind: settingsRowKindNotifications, Label: "Enable desktop notifications for questions"},
 		settingsRow{Kind: settingsRowKindDisplayOpenPorts, Label: "Display open ports"},
 		settingsRow{Kind: settingsRowKindMCPToken, Label: "MCP HTTP token"},
+		settingsRow{Kind: settingsRowKindEnum, Key: "cloud_control", Label: "Cloud control", Allowed: []string{"private", "read-only", "full"}},
 	)
 
 	// Default agent picker — only meaningful when >1 agent is enabled.
@@ -494,6 +496,9 @@ func (m GeneralSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.rotatingMCPToken {
 		return m, nil
 	}
+	if m.confirmCloudControl {
+		return m.updateCloudControlConfirm(msg), nil
+	}
 	if m.confirmMCPRotate {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			switch key.String() {
@@ -535,6 +540,8 @@ func (m GeneralSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].Kind == settingsRowKindMCPToken {
 				m.confirmMCPRotate = true
 			}
+		case "left", "right":
+			return m.cycleCloudControlArrow(msg.String()), nil
 		case "enter", "space", " ":
 			return m.activateRow()
 		}
@@ -654,15 +661,7 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 			m.rebuildRows()
 		}
 	case settingsRowKindEnum:
-		// Cycle to the next allowed value.
-		if len(row.Allowed) == 0 {
-			return m, nil
-		}
-		current := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
-		next := nextEnumValue(row.Allowed, current)
-		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
-			return config.SetPluginConfigEnum(settings, row.Plugin, row.Key, next, row.Allowed)
-		})
+		m = m.cycleEnumRow(row)
 	case settingsRowKindString:
 		m.editingRow = m.cursor
 		m.stringInput.SetValue(config.PluginConfigString(&m.settings, row.Plugin, row.Key))
@@ -740,6 +739,21 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 		})
 	}
 	return m, nil
+}
+
+func (m GeneralSettingsModel) cycleEnumRow(row settingsRow) GeneralSettingsModel {
+	if row.Plugin == "" && row.Key == "cloud_control" {
+		return m.cycleCloudControl(1)
+	}
+	if len(row.Allowed) == 0 {
+		return m
+	}
+	current := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
+	next := nextEnumValue(row.Allowed, current)
+	m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+		return config.SetPluginConfigEnum(settings, row.Plugin, row.Key, next, row.Allowed)
+	})
+	return m
 }
 
 // nextEnumValue returns the value after current in allowed, wrapping
@@ -909,6 +923,14 @@ func (m GeneralSettingsModel) Cancelled() bool { return m.cancel }
 
 func (m GeneralSettingsModel) View() tea.View {
 	var b strings.Builder
+	if m.confirmCloudControl {
+		b.WriteString(ui.StyleTitle.Render("Allow cloud control?"))
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Width(m.width).Render("Anyone who can act as you in Boss Cloud can then drive agents on this machine."))
+		b.WriteString("\n")
+		b.WriteString(ui.ActionBarWidth(m.width, []string{"[y/enter] confirm", "[n/esc] cancel"}))
+		return tea.NewView(b.String())
+	}
 	if m.confirmMCPRotate {
 		b.WriteString(ui.StyleTitle.Render("Rotate MCP HTTP token?"))
 		b.WriteString("\n\n")
@@ -945,6 +967,8 @@ func (m GeneralSettingsModel) View() tea.View {
 	}
 	if !editing && m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].Kind == settingsRowKindMCPToken {
 		b.WriteString(ui.ActionBarWidth(m.width, []string{"[enter] reveal/hide", "[r]otate", "[esc] back"}))
+	} else if !editing && m.cloudControlSelected() {
+		b.WriteString(ui.ActionBarWidth(m.width, []string{"[left/right] choose", "[enter/space] next", "[esc] back"}))
 	} else if editing {
 		b.WriteString(ui.ActionBarWidth(m.width, []string{"[enter] save", "[esc] cancel"}))
 	} else {

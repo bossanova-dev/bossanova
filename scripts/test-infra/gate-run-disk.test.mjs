@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto'
 import { setTimeout } from 'node:timers/promises'
 
 const runner = fileURLToPath(new URL('../gate-run.mjs', import.meta.url))
-function fixture(t, mode, body = '', heldLock = false, markerFailure = '') {
+function fixture(t, mode, body = '', heldLock = false, markerFailure = '', diagnostics = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-disk-test-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
   const cache = path.join(dir, 'cache')
@@ -33,13 +33,16 @@ function fixture(t, mode, body = '', heldLock = false, markerFailure = '') {
     preload,
     `import fs from 'node:fs'; fs.statfsSync = () => ({bsize: 1, bavail: ${heldLock ? `fs.existsSync(${JSON.stringify(recovered)}) ? 100 * 1024 ** 3 : 1` : mode === 'restore' ? `fs.existsSync(${JSON.stringify(old)}) ? 1 : 100 * 1024 ** 3` : mode === 'refuse' ? '1' : mode === 'midrun' ? `fs.existsSync(${JSON.stringify(depleted)}) ? 1 : 100 * 1024 ** 3` : '100 * 1024 ** 3'}});`,
   )
-  if (markerFailure) {
+  if (markerFailure || diagnostics.files?.length || diagnostics.log) {
     fs.appendFileSync(
       preload,
       `
 const write = fs.writeFileSync;
 const writeLog = fs.writeSync;
 fs.writeSync = (fd, content, ...args) => {
+  if (${JSON.stringify(diagnostics.log ?? false)} && String(content).startsWith('gate-run ')) {
+    throw Object.assign(new Error('injected diagnostic log ENOSPC'), {code: 'ENOSPC'});
+  }
   if (${JSON.stringify(markerFailure)} === 'reclaim log' &&
       String(content).startsWith('gate-run preflight:')) {
     throw Object.assign(new Error('injected log ENOSPC'), {code: 'ENOSPC'});
@@ -55,12 +58,16 @@ fs.mkdirSync = (dir, ...args) => {
   return mkdir(dir, ...args);
 };
 fs.writeFileSync = (file, content, ...args) => {
+  if (${JSON.stringify(diagnostics.files ?? [])}.some(name => String(file).includes('/' + name + '.'))) {
+    write(file, '', ...args);
+    throw Object.assign(new Error('injected diagnostic ENOSPC'), {code: 'ENOSPC'});
+  }
   if (${JSON.stringify(markerFailure)} === 'reclaim lock candidate' && reclaimLock(file)) {
     // A full volume can allocate the inode and then fail the write.
     write(file, '', ...args);
     throw Object.assign(new Error('injected lock candidate ENOSPC'), {code: 'ENOSPC'});
   }
-  if (String(file).includes('/preflight.') &&
+  if (${JSON.stringify(Boolean(markerFailure))} && String(file).includes('/preflight.') &&
       (${JSON.stringify(markerFailure)} === 'starting reclaim' ||
        String(content).includes(${JSON.stringify(markerFailure)}))) {
     throw Object.assign(new Error('injected marker ENOSPC'), {code: 'ENOSPC'});
@@ -177,6 +184,65 @@ test('mid-run disk exhaustion reclaims once and preserves the failed result', (t
   assert.ok(disk.reclaimedBytes > 0)
   assert.equal(disk.atExit.length, 1)
   assert.match(result.stdout, /\ndisk: /)
+})
+
+test('load diagnostic ENOSPC preserves post-child disk recovery', (t) => {
+  const f = fixture(
+    t,
+    'midrun',
+    `require('fs').writeFileSync(DEPLETED, '1'); console.error('No space left on device'); process.exit(1)`,
+    false,
+    '',
+    { files: ['load.json'] },
+  )
+  const result = f.wait()
+  assert.equal(result.status, 75, result.stdout + result.stderr)
+  assert.match(result.stdout, /^GATE ENVIRONMENT FAILURE/)
+  assert.match(result.stdout, /kind: disk-exhaustion/)
+  assert.equal(fs.existsSync(f.old), false)
+  assert.ok(JSON.parse(fs.readFileSync(path.join(f.run, 'disk.json'))).reclaimedBytes > 0)
+  assert.equal(
+    fs.readdirSync(f.run).some((name) => name.startsWith('load.json')),
+    false,
+  )
+})
+
+test('load diagnostic ENOSPC preserves a passing child status', (t) => {
+  const f = fixture(t, 'disabled', '', false, '', { files: ['load.json'] })
+  const result = f.wait()
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /^GATE PASSED/)
+  assert.equal(fs.readFileSync(path.join(f.run, 'status'), 'utf8').trim(), '0')
+  assert.equal(
+    fs.readdirSync(f.run).some((name) => name.startsWith('load.json')),
+    false,
+  )
+})
+
+test('admission diagnostic ENOSPC still reclaims and launches the child', (t) => {
+  const f = fixture(t, 'restore', '', false, '', { files: ['admission.json'] })
+  const result = f.wait()
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /^GATE PASSED/)
+  assert.equal(fs.existsSync(f.old), false)
+  assert.equal(fs.existsSync(f.marker), true)
+})
+
+test('diagnostic file and log ENOSPC preserves the child failure status', (t) => {
+  const f = fixture(
+    t,
+    'midrun',
+    `require('fs').writeFileSync(DEPLETED, '1'); console.error('No space left on device'); process.exit(1)`,
+    false,
+    '',
+    { files: ['load.json', 'disk.json'], log: true },
+  )
+  const result = f.wait()
+  assert.equal(result.status, 75, result.stdout + result.stderr)
+  assert.match(result.stdout, /^GATE ENVIRONMENT FAILURE/)
+  assert.match(result.stdout, /kind: disk-exhaustion/)
+  assert.equal(fs.readFileSync(path.join(f.run, 'status'), 'utf8').trim(), '1')
+  assert.equal(fs.existsSync(f.old), false)
 })
 
 for (const phase of ['starting reclaim', 'sizing Go cache', 'evicting Go cache', 'reclaim log']) {

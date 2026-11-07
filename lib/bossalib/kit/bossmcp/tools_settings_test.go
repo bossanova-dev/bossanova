@@ -145,3 +145,34 @@ func TestSettingsTools_ReadOnlyMode(t *testing.T) {
 		t.Errorf("update_settings must NOT be registered in read-only mode")
 	}
 }
+
+func TestUpdateSettingsSchemaExcludesCloudControl(t *testing.T) {
+	cs := newConnectedClient(t, &fakeBackend{}, Options{})
+	tools, err := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "update_settings" {
+			continue
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatal(err)
+		}
+		if len(schema.Properties) == 0 {
+			t.Fatal("settings input schema is empty")
+		}
+		if _, ok := schema.Properties["cloud_control"]; ok {
+			t.Fatal("cloud control must remain local only")
+		}
+		return
+	}
+	t.Fatal("update_settings tool missing")
+}

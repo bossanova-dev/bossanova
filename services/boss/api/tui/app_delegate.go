@@ -3,6 +3,8 @@ package tui
 import (
 	"cmp"
 
+	"github.com/recurser/boss/api/tui/reviewqueue"
+
 	"github.com/recurser/boss/api/tui/accounts"
 	"github.com/recurser/boss/api/tui/attach"
 	"github.com/recurser/boss/api/tui/repos"
@@ -60,6 +62,11 @@ func (a App) delegateToActiveView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updateRepoSettings(msg)
 	case ui.ViewSessionSettings:
 		return a.updateSessionSettings(msg)
+	case ui.ViewReviewQueue:
+		var cmd tea.Cmd
+		a.reviewQueue, cmd = a.reviewQueue.Update(msg)
+		a.reviewQueueSort = a.reviewQueue.Order()
+		return a, cmd
 	case ui.ViewTrash:
 		return a.updateTrash(msg)
 	case ui.ViewSettings:
@@ -309,6 +316,11 @@ func (a *App) clearRetainedReloginAfterVerifiedLogin() {
 }
 
 func (a App) updateBugReport(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if a.bugReport.PreviousView() == ui.ViewReviewQueue && reviewqueue.IsAsyncMsg(msg) {
+		var cmd tea.Cmd
+		a.reviewQueue, cmd = a.reviewQueue.Update(msg)
+		return a, cmd
+	}
 	cmd := updateSub(&a.bugReport, msg)
 	if a.bugReport.Cancelled() || a.bugReport.Done() {
 		// Restore the prior view without recreating it so existing state

@@ -4,6 +4,7 @@ go_library(
     name = "daemoncaps",
     srcs = [
         "capabilities.go",
+        "cloud_control.go",
         "command_access.go",
         "stream_commands.go",
     ],

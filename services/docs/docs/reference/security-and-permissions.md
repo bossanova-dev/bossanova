@@ -33,6 +33,15 @@ If you want a hardened version of this story (containers, ephemeral
 VMs, scoped credentials) it is not in the box today. The pieces below
 are the levers that exist.
 
+## Cloud control
+
+Cloud control defaults to read-only on each machine. The local operator enables full control
+with `boss settings --cloud-control full` or Settings → General → **Allow cloud control** in the
+TUI, where enabling requires confirmation. Anyone acting as you in Boss Cloud then has permission to
+drive agents on this machine. Disable it with `boss settings --cloud-control read-only` or
+uncheck the row. Changes take effect without restarting bossd; remote settings and MCP cannot
+change this choice. See [Cloud control settings](settings.md#cloud-control).
+
 ## Repository trust
 
 Repository trust means the local user trusts the repository's own committed

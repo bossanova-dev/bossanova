@@ -21,6 +21,7 @@ import {
   VERDICT_FINDINGS,
   formatAuditNote,
   identTokens,
+  normalizeText,
   pathTokens,
   postRebaseAudit,
   unquoteGitPath,
@@ -499,4 +500,172 @@ test('token extraction and path unquoting', () => {
   ])
   assert.equal(unquoteGitPath('"b/caf\\303\\251 x\\tz.txt"'), 'b/café x\tz.txt')
   assert.equal(unquoteGitPath('b/plain.txt'), 'b/plain.txt')
+})
+
+// Resolve a real conflict while keeping an unrelated branch edit, so git retains the commit.
+function resolvedAddition({
+  initial = 'original\n',
+  branch,
+  baseSide = 'base rewrite\n',
+  resolved,
+}) {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'source.txt': initial, 'notes.txt': 'before\n' },
+    branch: [{ message: 'branch change', files: { 'source.txt': branch, 'notes.txt': 'after\n' } }],
+    baseSide: [{ message: 'base change', files: { 'source.txt': baseSide } }],
+  })
+  assert.notEqual(git(dir, ['rebase', 'main'], { allowFail: true }).status, 0)
+  writeFiles(dir, { 'source.txt': resolved })
+  git(dir, ['add', 'source.txt'])
+  git(dir, ['rebase', '--continue'])
+  return audit(dir, preRebaseHead)
+}
+
+test('prettier reflow keeps a wrapped call and its punctuation', () => {
+  const report = resolvedAddition({
+    branch: 'const total = computeTotal(\nalpha,\nbeta,\ngamma,\n)\n',
+    resolved: 'const total = computeTotal(alpha, beta, gamma)\n',
+  })
+  assert.deepEqual(report.lostAdditions, [])
+  const reverse = resolvedAddition({
+    branch: 'const total = computeTotal(alpha, beta, gamma)\n',
+    resolved: 'const total = computeTotal(\nalpha,\nbeta,\ngamma,\n)\n',
+  })
+  assert.deepEqual(reverse.lostAdditions, [])
+})
+
+test('collapse keeps a hunk of short destructure fragments', () => {
+  const report = resolvedAddition({
+    branch: 'const render = ({\nchildren,\nerror,\n}: PropsWithChildren<Props>) => {\n}\n',
+    baseSide: 'const render = ({ base }: PropsWithChildren<Props>) => {\n}\n',
+    resolved: 'const render = ({ children, error }: PropsWithChildren<Props>) => {\n}\n',
+  })
+  assert.deepEqual(report.lostAdditions, [])
+})
+
+test('union on one line keeps whole word tokens from the branch', () => {
+  const report = resolvedAddition({
+    initial: 'usage: tool [build]\n',
+    branch: 'usage: tool [build|lint]\n',
+    baseSide: 'usage: tool [build|test]\n',
+    resolved: 'usage: tool [build|lint|test]\n',
+  })
+  assert.deepEqual(report.lostAdditions, [])
+})
+
+test('mixed hunk reports only its dropped line', () => {
+  const report = resolvedAddition({
+    branch: 'alphaContribution()\nbetaContribution()\ngammaContribution()\ndroppedContribution()\n',
+    resolved: 'alphaContribution(); betaContribution(); gammaContribution()\n',
+  })
+  assert.deepEqual(report.lostAdditions, [
+    { path: 'source.txt', lines: ['droppedContribution()'], count: 1 },
+  ])
+})
+
+test('short-line guard does not find return x inside return xs', () => {
+  const report = resolvedAddition({ branch: 'return x\n', resolved: 'return xs\n' })
+  assert.deepEqual(report.lostAdditions, [{ path: 'source.txt', lines: ['return x'], count: 1 }])
+})
+
+test('normalizeText ignores whitespace and trailing commas', () => {
+  assert.equal(normalizeText(' alpha \t + beta\n'), 'alpha+beta')
+  assert.equal(normalizeText('call(\nfirst,\nsecond,\n)'), normalizeText('call(first, second)'))
+  assert.equal(normalizeText('[one,] {two,}'), '[one]{two}')
+  assert.equal(normalizeText(''), '')
+})
+
+function baseMovedFilter(predicate) {
+  const branchQuery = 'SELECT * FROM orders o WHERE active\nAND o.archived_at IS NULL\n'
+  const { dir, preRebaseHead } = makeRepo({
+    initial: {
+      'store/report.sql': 'SELECT * FROM orders o WHERE active\n',
+      'notes.txt': 'before\n',
+    },
+    branch: [
+      {
+        message: 'filter reports',
+        files: { 'store/report.sql': branchQuery + branchQuery, 'notes.txt': 'after\n' },
+      },
+    ],
+    baseSide: [
+      {
+        message: 'share scoped reports',
+        files: {
+          'store/report.sql': 'SELECT * FROM scoped_orders\n',
+          'store/scope.sql': `SELECT * FROM orders o WHERE active\n${predicate}\n`,
+        },
+      },
+    ],
+  })
+  assert.notEqual(git(dir, ['rebase', 'main'], { allowFail: true }).status, 0)
+  git(dir, ['checkout', '--ours', 'store/report.sql'])
+  git(dir, ['add', 'store/report.sql'])
+  git(dir, ['rebase', '--continue'])
+  return audit(dir, preRebaseHead)
+}
+
+test('base-moved filter with identical text is adopted in another file', () => {
+  assert.deepEqual(baseMovedFilter('AND o.archived_at IS NULL').lostAdditions, [])
+})
+
+test('base-moved filter with a different alias remains a textual loss', () => {
+  const report = baseMovedFilter('AND orders.archived_at IS NULL')
+  assert.deepEqual(report.lostAdditions, [
+    {
+      path: 'store/report.sql',
+      lines: ['AND o.archived_at IS NULL', 'AND o.archived_at IS NULL'],
+      count: 2,
+    },
+  ])
+})
+
+test('unrelated sibling deletion leaves no suspects or relocations', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: {
+      'web/cards/OldCard.tsx': 'export const OldCard = true\n',
+      'web/cards/index.ts': "import { OldCard } from './OldCard'\n",
+      'web/cards/keep.ts': 'export const keep = true\n',
+    },
+    branch: [
+      {
+        message: 'add another card',
+        files: {
+          'web/cards/NewCard.tsx': 'export const NewCard = true\n',
+          'web/cards/new.ts': "import { NewCard } from './NewCard'\n",
+        },
+      },
+    ],
+    baseSide: [
+      {
+        message: 'remove old card',
+        files: {
+          'web/cards/OldCard.tsx': null,
+          'web/cards/index.ts': 'export {}\n',
+        },
+      },
+    ],
+  })
+  rebaseClean(dir)
+  const report = audit(dir, preRebaseHead)
+  assert.deepEqual(report.conventionSuspects, [])
+  assert.deepEqual(report.baseRelocations, [])
+  assert.equal(report.verdict, VERDICT_CLEAN)
+})
+
+test('whole-directory deletion still reports a sibling relocation', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'legacy/only.txt': 'original\n', 'keep.txt': 'keep\n' },
+    branch: [{ message: 'add legacy file', files: { 'legacy/extra.txt': 'extra\n' } }],
+    baseSide: [{ message: 'retire directory', files: { 'legacy/only.txt': null } }],
+  })
+  rebaseClean(dir)
+  assert.deepEqual(audit(dir, preRebaseHead).baseRelocations, [
+    {
+      from: 'legacy/only.txt',
+      to: null,
+      status: 'deleted',
+      branchPaths: ['legacy/extra.txt'],
+    },
+  ])
 })

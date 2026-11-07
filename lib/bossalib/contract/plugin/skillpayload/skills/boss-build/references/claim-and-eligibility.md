@@ -192,12 +192,18 @@ worker given the same flags scan identically: the planned state, AND the `agentB
 `needs-human`, AND every non-empty selection slot (labels, assignees, creators, projects; include
 and exclude; flag over `stages.build` over the shared block, per slot), ANDed with the configured
 team (else `--team`); window 250. An exclude keeps a ticket with no assignee, creator or project.
-Each returned candidate carries `identifier`, `title`, `priority`, `estimate`, `createdAt`, `state`,
-`labels` as plain names and `attachments` as a plain array — the inputs Step 2's ranking reads
-directly — plus `blockerVerdict` (`blocked`, `unblocked`, or `unknown`) and `openBlockers` (open
-blocker identifiers, populated only for `blocked`). Raw `inverseRelations` are omitted.
+Candidates come in build order, ranked in code (`toolbox/rank-work.mjs`) from tracker facts only:
+tier (the most urgent of the ticket's priority, every ancestor epic's, its project's, and every open
+ticket or project it transitively blocks), then deadline (the earliest of the same sources' due and
+target dates, and a blocked project's start), then whether its project has started, then how much
+open work it unblocks, then the tracker's manual order, then age. Estimate and predicted parks are
+never keys. Each candidate carries `identifier`, `title`, `priority`, `estimate`, `createdAt`,
+`state`, `labels` as plain names, `attachments` as a plain array and `rank` (`tier`, `tierFrom`,
+`deadline`, `deadlineFrom`, `scheduled`, `leverage`), plus `blockerVerdict` (`blocked`,
+`unblocked`, or `unknown`) and `openBlockers` (open blocker identifiers, populated only for
+`blocked`). Raw `relations` and `inverseRelations` are omitted.
 
-The rank rule, verdict-based blocker check, something-to-build-from check and epic-parent skip
+The verdict-based blocker check, something-to-build-from check and epic-parent skip
 apply on both filtered and unfiltered routes. An exit-0 empty list never triggers descriptor fallback.
 
 ## Claim Signals

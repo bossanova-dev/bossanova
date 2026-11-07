@@ -125,6 +125,8 @@ func (h Model) handleActionKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	case "n":
 		model, cmd := h.handleNewSessionKey()
 		return model, cmd, true
+	case "w":
+		return h, func() tea.Msg { return ui.SwitchViewMsg{View: ui.ViewReviewQueue, ReturnView: ui.ViewHome} }, true
 	case "s":
 		return h, func() tea.Msg { return ui.SwitchViewMsg{View: ui.ViewSettings} }, true
 	case "l":

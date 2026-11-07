@@ -745,42 +745,6 @@ type SessionCreator interface {
 	Create(ctx context.Context, cmd *pb.CreateSessionCommand, commandID string) (<-chan *pb.SessionCreateChunk, error)
 }
 
-// SessionSnapshotReader returns the slim projection of every active
-// session the daemon currently knows about. Built to take the *pb.Session
-// directly so the snapshot path never touches models.Session — that
-// conversion happens once in the adapter, not per-field here.
-type SessionSnapshotReader interface {
-	SnapshotSessions(ctx context.Context) ([]*pb.Session, error)
-}
-
-// ChatSnapshotReader returns the AgentChat metadata projection (no
-// transcripts — just the preview). Kept separate from SessionSnapshot so
-// the two calls can run in parallel if that ever becomes a hotspot.
-type ChatSnapshotReader interface {
-	SnapshotChats(ctx context.Context) ([]*pb.AgentChatMetadata, error)
-}
-
-// RepoSnapshotReader lists the repos the daemon is currently managing.
-// Snapshot uses the IDs only; the full Repo proto isn't sent up.
-type RepoSnapshotReader interface {
-	SnapshotRepoIDs(ctx context.Context) ([]string, error)
-}
-
-// StatusSnapshotReader returns the current ChatStatusEntry set from the
-// in-memory chat-status tracker.
-type StatusSnapshotReader interface {
-	SnapshotStatuses(ctx context.Context) ([]*pb.ChatStatusEntry, error)
-}
-
-// CallbackInterestReader returns the daemon's complete current GitHub
-// callback-interest set (distinct repo_origin_url + pr_number over every
-// non-terminal callback). Carried on the DaemonSnapshot so bosso can reconcile
-// callback interests atomically on every (re)connect. The bossd wiring adapts
-// callback.DeriveInterests.
-type CallbackInterestReader interface {
-	SnapshotCallbackInterests(ctx context.Context) ([]*pb.CallbackInterest, error)
-}
-
 // Metrics is an optional sink for stream-level counters. The production
 // wiring lands in a later task; callers that don't care can pass nil.
 type Metrics interface {
@@ -809,7 +773,11 @@ func (noopMetrics) IncStreamError(_ error) {}
 type ReRegisterFunc func(ctx context.Context) (sessionToken string, err error)
 
 type StreamClient struct {
+	terminalSealingSupported bool
+
 	cloudControl     CloudControlPolicy
+	sessionAttachMu  sync.Mutex
+	sessionAttaches  map[string]*sessionAttachState
 	opener           streamOpener
 	stores           StreamStores
 	events           EventSource
@@ -1049,7 +1017,9 @@ func (c *StreamClient) resetAuthFailureLocked() {
 // StreamClientConfig bundles the constructor inputs. Pointer fields are
 // optional; leaving them nil picks a sensible default.
 type StreamClientConfig struct {
-	CloudControl CloudControlPolicy
+	// TerminalSealingSupported is a presentation hint, never an authorization input.
+	TerminalSealingSupported bool
+	CloudControl             CloudControlPolicy
 	// Opener is the live ConnectRPC client. If nil, the client will be
 	// built from Client + AuthToken at construction time.
 	Opener    streamOpener
@@ -1168,7 +1138,9 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		refreshThreshold = defaultRefreshThreshold
 	}
 	client := &StreamClient{
-		cloudControl:     cfg.CloudControl,
+		cloudControl:             cfg.CloudControl,
+		terminalSealingSupported: cfg.TerminalSealingSupported,
+
 		opener:           opener,
 		reconnectCh:      make(chan struct{}, 1),
 		stores:           cfg.Stores,
@@ -1518,28 +1490,20 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	readErr := c.runCommandReader(streamCtx, stream, outbound)
 	readCtxErr := streamCtx.Err()
 
-	// Tear down in the reverse order we started. The ordering here is
-	// load-bearing: outbound may only be closed once every goroutine that
-	// can send on it has been joined, and the writer — its sole consumer —
-	// is joined after the close. Closing first does not merely risk losing
-	// an event; it leaves each producer free to reach its own
-	// `case outbound <- ev` on a closed channel, which panics on sight
-	// however that select's `<-ctx.Done()` case happens to be ordered
-	// (BOS-1274). So: cancel, then join the joinable producers — the
-	// cancelable async commands, the webhook lane, the delta forwarder and
-	// the token refresher — and only then close.
+	// Cancel and join producers before closing outbound (BOS-1274): a
+	// canceled select can still choose a send and panic on a closed channel.
+	// Join the writer after closing outbound. Producers include async commands,
+	// attach pumps, the webhook lane, delta forwarder and token refresher.
 	//
-	// Known gap: cancelAndWaitAsyncCommands joins only dispatchSwitchAccount.
-	// runAsyncCommand and the attach/create chunk pumps discard their safego
-	// done channels, so one still in flight can reach its own
-	// `case outbound <- ev` after this close. Registering them is the
-	// remaining half of this fix.
+	// Known gap: runAsyncCommand and create pumps still discard their done
+	// channels; cancelAndWaitAsyncCommands joins only dispatchSwitchAccount.
 	//
 	// Every producer's send selects on <-ctx.Done() too, and cancel() runs
 	// first, so the joins cannot wedge behind a stalled writer. A producer
 	// added without that case would hang this teardown instead.
 	cancel()
 	c.cancelAndWaitAsyncCommands()
+	c.cancelAndWaitSessionAttaches()
 	c.joinWebhookLane()
 	<-forwarderDone
 	<-refresherDone
@@ -1561,6 +1525,9 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 
 	close(outbound)
 	<-writerDone
+	c.sessionAttachMu.Lock()
+	c.sessionAttaches = nil
+	c.sessionAttachMu.Unlock()
 
 	if refreshErr != nil {
 		return refreshErr
@@ -1582,6 +1549,9 @@ func (c *StreamClient) runWriter(ctx context.Context, stream bidirectionalStream
 		case ev, ok := <-outbound:
 			if !ok {
 				return
+			}
+			if chunk := ev.GetAttachChunk(); chunk != nil && !c.allowSessionAttach(chunk.GetCommandId()) {
+				continue
 			}
 			if err := stream.Send(ev); err != nil {
 				c.logger.Debug().Err(err).Msg("stream send failed, writer exiting")

@@ -15,7 +15,11 @@ async function withRoot(t) {
 }
 async function cachePath(root) {
   const [parent] = await readdir(root)
-  return join(root, parent, 'size-baseline-owner-repo.json')
+  const entries = (await readdir(join(root, parent))).filter((name) =>
+    /^size-baseline-.+\.json$/.test(name),
+  )
+  assert.equal(entries.length, 1)
+  return join(root, parent, entries[0])
 }
 
 test('fetch computes thresholds in a private cache and fresh reads avoid gh', async (t) => {
@@ -68,6 +72,59 @@ test('expired cache refetches and a failed fetch uses stale cache', async (t) =>
   assert.equal(first.stale, false)
 })
 
+for (const stale of [false, true]) {
+  test(`repositories whose names collide under hyphen joining keep separate ${stale ? 'stale' : 'fresh'} caches`, async (t) => {
+    const cacheRoot = await withRoot(t)
+    const repositories = [
+      { repo: 'foo-bar/baz', now: 1000, payload: history, p90: 90, p99: 99 },
+      {
+        repo: 'foo/bar-baz',
+        now: 1100,
+        payload: history.map((row) => ({ ...row, additions: row.additions + 100 })),
+        p90: 190,
+        p99: 199,
+      },
+    ]
+    for (const { repo, now, payload, p90, p99 } of repositories) {
+      const first = readSizeBaseline({
+        read: () => ({ ok: true, payload }),
+        repo,
+        now,
+        cacheRoot,
+      })
+      assert.deepEqual(first, {
+        ok: true,
+        thresholds: { p90, p99, sample: 100 },
+        sample: 100,
+        fetchedAt: now,
+        stale: false,
+      })
+    }
+    let calls = 0
+    const read = () => {
+      calls++
+      return failed()
+    }
+    for (const { repo, now, p90, p99 } of repositories) {
+      const cached = readSizeBaseline({
+        read,
+        repo,
+        now: stale ? 3000 : 1200,
+        ttlMs: 1000,
+        cacheRoot,
+      })
+      assert.deepEqual(cached, {
+        ok: true,
+        thresholds: { p90, p99, sample: 100 },
+        sample: 100,
+        fetchedAt: now,
+        stale,
+      })
+    }
+    assert.equal(calls, stale ? 2 : 0)
+  })
+}
+
 test('fresh evidence survives a cache destination that cannot be replaced', async (t) => {
   const cacheRoot = await withRoot(t)
   const options = { repo: 'owner/repo', cacheRoot, read: () => ({ ok: true, payload: history }) }
@@ -80,7 +137,10 @@ test('fresh evidence survives a cache destination that cannot be replaced', asyn
 
   assert.deepEqual(fresh, { ...expected, fetchedAt: 2000 })
   const parent = join(cacheRoot, (await readdir(cacheRoot))[0])
-  assert.deepEqual(await readdir(parent), ['size-baseline-owner-repo.json'])
+  assert.deepEqual(
+    (await readdir(parent)).map((name) => join(parent, name)),
+    [path],
+  )
 })
 
 test('corrupt, mismatched and malformed cache data cannot supply evidence', async (t) => {

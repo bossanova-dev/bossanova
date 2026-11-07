@@ -6,6 +6,7 @@ import (
 	"net/url"
 
 	"github.com/recurser/boss/api/tui/attach"
+	"github.com/recurser/boss/api/tui/home"
 	"github.com/recurser/boss/internal/attachprocess"
 
 	"github.com/recurser/boss/api/tui/chatpicker"
@@ -73,6 +74,13 @@ func (a App) handleSwitchView(msg ui.SwitchViewMsg) (tea.Model, tea.Cmd) {
 		a.sessionSettings = settings.NewSessionSettingsModel(a.client, a.ctx, msg.SessionID)
 		a.sessionSettings.SetWidth(a.width)
 		return a, a.sessionSettings.Init()
+	case ui.ViewReviewQueue:
+		a.reviewQueue = NewReviewQueueModel(a.client, a.ctx, home.OpenURLFunc)
+		a.reviewQueue.SetTelemetry(a.telemetry)
+		a.reviewQueue.SetReturnView(msg.ReturnView)
+		a.reviewQueue.SetSize(a.width, a.height)
+		a.reviewQueue.SetOrder(a.reviewQueueSort)
+		return a, a.reviewQueue.Init()
 	case ui.ViewTrash:
 		a.trash = NewTrashModel(a.client, a.ctx)
 		a.trash.SetTelemetry(a.telemetry)

@@ -36,6 +36,8 @@ func (a App) renderActiveView() tea.View {
 		v = a.repoSettings.View()
 	case ui.ViewSessionSettings:
 		v = a.sessionSettings.View()
+	case ui.ViewReviewQueue:
+		v = a.reviewQueue.View()
 	case ui.ViewTrash:
 		v = a.trash.View()
 	case ui.ViewSettings:
@@ -81,6 +83,8 @@ func (a App) bannerOpts() bannerOpts {
 		opts.line1 = "Repositories"
 	case ui.ViewTrash:
 		opts.line1 = "Archived Sessions"
+	case ui.ViewReviewQueue:
+		opts.line1 = "Review Queue"
 	case ui.ViewSettings:
 		opts.line1 = "Settings"
 	case ui.ViewGeneralSettings:
@@ -154,6 +158,7 @@ func (a *App) reserveHeight(n int) {
 	a.repoAdd.SetHeight(shrink(a.repoAdd.Height()))
 	a.repoList.SetHeight(shrink(a.repoList.Height()))
 	a.trash.SetHeight(shrink(a.trash.Height()))
+	a.reviewQueue.SetHeight(shrink(a.reviewQueue.Height()))
 	a.attach.SetHeight(shrink(a.attach.Height()))
 	a.cronList.SetHeight(shrink(a.cronList.Height()))
 	a.cronForm.SetHeight(shrink(a.cronForm.Height()))
@@ -193,6 +198,7 @@ func (a *App) applyReservedTableHeights() {
 	setReservedTableHeight(a.newSession.IssueTable(), a.newSession.IssueTableHeight())
 	setReservedTableHeight(a.repoList.Table(), a.repoList.TableHeight())
 	setReservedTableHeight(a.trash.Table(), a.trash.TableHeight())
+	setReservedTableHeight(a.reviewQueue.Table(), a.reviewQueue.TableHeight())
 	setReservedTableHeight(a.cronList.Table(), a.cronList.TableHeight())
 	setReservedTableHeight(a.accountsList.Table(), a.accountsList.TableHeight())
 }

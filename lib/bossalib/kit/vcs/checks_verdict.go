@@ -381,7 +381,21 @@ func parseNeedsHuman(description string) (reason, label string, ok bool) {
 	}
 	rest = strings.TrimPrefix(strings.TrimSpace(rest), ":")
 	if codes, text, found := strings.Cut(rest, verifyParkLabelSeparator); found {
-		return strings.TrimSpace(codes), strings.TrimSpace(text), true
+		return expandParkCodes(codes), strings.TrimSpace(text), true
 	}
-	return strings.TrimSpace(rest), "", true
+	return expandParkCodes(rest), "", true
+}
+
+// Oversized verify descriptions abbreviate human-review: as + without dropping codes.
+// Decode at the status boundary so every attention and approval consumer sees canonical codes.
+// apiversion-skip: this new status encoding has no historical response to restore;
+// older daemons keep their generic unknown-code fallback. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+func expandParkCodes(raw string) string {
+	codes := strings.Split(strings.TrimSpace(raw), ",")
+	for i, code := range codes {
+		if suffix, ok := strings.CutPrefix(strings.TrimSpace(code), "+"); ok {
+			codes[i] = "human-review:" + suffix
+		}
+	}
+	return strings.Join(codes, ",")
 }

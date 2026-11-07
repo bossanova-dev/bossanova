@@ -20,6 +20,7 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		DaemonId:                   c.daemonID,
 		IsTerminalSealingSupported: c.terminalSealingSupported,
 		CloudControl:               cloudControlProto(c.cloudControl),
+		HasCloudControlUpdates:     true,
 		Hostname:                   c.hostname,
 		SupportedCommandFields:     daemoncaps.StreamCommands(),
 	}

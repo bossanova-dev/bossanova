@@ -574,25 +574,33 @@ function readJSON(file) {
 }
 
 /**
- * The repo's root-level entries from `git ls-tree -z HEAD`: `dirs` (trees and submodules) are module
+ * The repo's committed entries: `dirs` (root trees and submodules) are module
  * roots, `files` (blobs) are root files. Split because a root FILE needs no extension to be an area
  * and an unmarked mention of one is reported rather than dropped (`extractKeyChangeAreas`
- * `rootFiles`), while a directory keeps the module-root rules.
+ * `rootFiles`), while a directory keeps the module-root rules. `knownFiles` includes nested blobs
+ * so shared extensionless files can establish an advisory relation.
  */
 export function listRepoRootEntries(cwd = process.cwd()) {
-  const out = execFileSync('git', ['ls-tree', '-z', 'HEAD'], { cwd, encoding: 'utf8' })
+  const out = execFileSync('git', ['ls-tree', '-r', '-t', '-z', 'HEAD'], {
+    cwd,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  })
   const dirs = []
   const files = []
+  const knownFiles = []
   for (const record of out.split('\0')) {
     const tab = record.indexOf('\t')
     if (tab === -1) continue
     const type = record.slice(0, tab).split(' ')[1]
     const name = record.slice(tab + 1)
     if (name === '') continue
+    if (type === 'blob') knownFiles.push(name)
+    if (name.includes('/')) continue
     if (type === 'blob') files.push(name)
     else dirs.push(name)
   }
-  return { dirs, files }
+  return { dirs, files, knownFiles }
 }
 
 const FETCH_CANDIDATES_REMEDY =
@@ -615,7 +623,7 @@ function candidateRowDefect(row) {
  * `stateScope: 'override'` — fetch-candidates marks every row so when `--state` narrowed the scan.
  *
  * @param {{payload: unknown, rows: unknown, subjectId: string, config: object,
- *   rootEntries: {dirs: string[], files: string[]}}} input
+ *   rootEntries: {dirs: string[], files: string[], knownFiles?: string[]}}} input
  * @returns {{status: 'refused', refusals: {code: string, message: string}[]} |
  *   {status: 'defects', defects: {code: string, id: string, remedy: string}[]} |
  *   {status: 'ok', result: object, verdict: object, subject: object}}
@@ -674,6 +682,8 @@ export function runDependencyScan({ payload, rows, subjectId, config, rootEntrie
 
   const input = withScanDefaults(config, { ...payload, subject, candidates: rows })
   input.moduleRoots = [...new Set([...input.moduleRoots, ...rootEntries.dirs])]
+  input.rootFiles = rootEntries.files
+  input.knownFiles = rootEntries.knownFiles ?? rootEntries.files
   const validated = validateDependencyScanInput(input)
   if (!validated.ok) return { status: 'defects', defects: validated.defects }
 

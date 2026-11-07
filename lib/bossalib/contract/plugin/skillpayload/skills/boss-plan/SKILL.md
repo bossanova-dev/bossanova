@@ -78,7 +78,7 @@ BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.
 | Is the description a plan description?       | `node plan-contract-guard.mjs --description … --plan …`                               |
 | Have referenced tickets moved since recon?   | `node plan-run-guards.mjs premises …`                                                 |
 | Which tickets does this conflict with?       | `planDependencyEdges` in `plan-deps-lib.mjs` (Phase 4 step 5)                         |
-| Did the description land as written?         | `node plan-writeback-verify.mjs --intended … --stored …`                              |
+| Did the description land as written?         | `node plan-writeback-verify.mjs --intended … --stored … --read-receipt …`             |
 | What scratch names may I use?                | `node plan-scratch-paths.mjs families`                                                |
 | Is a tracker failure safe to retry?          | `node tracker/cli.mjs classify-outcome --observed "<err>" --operation read\|write`    |
 | Plan an epic's `agent-plan` children?        | `node plan-child-fanout.mjs route …` (`references/child-fanout.md`)                   |
@@ -515,6 +515,10 @@ Then:
    `classify-outcome` calls `indeterminate`: read the issue back before any retry. If the read-back
    shows it did not land and the one retry fails the same way, split it: save everything except
    labels, then the merged labels in a labels-only write, and name the split in the run report.
+   The save response can echo the pre-write issue; it is never evidence of what landed. Step 5's
+   settled read-back supplies that evidence. After the description save, copy `image-guard-new.md`
+   to `image-guard-final.md`: that file always holds the bytes of the run's last description save,
+   including when step 4(f) is skipped.
 4. **Link dependencies** — I/O only; `plan-deps-lib.mjs` decides every edge:
 
    a. Fetch candidates (planned, in-progress, in-review, plus every related id):
@@ -557,8 +561,23 @@ Then:
    dependency notes and questions in the run report and save any added `agent-question` label
    without a description. Otherwise, only when `verdict.recordToDescription` is true or the second
    premise pass changed the text:
-   read the stored description back into `image-guard-final.md`, re-read premise states, run the
-   second pass:
+   on the direct-read route, settle the stored description into `image-guard-base.md` first:
+
+   ```bash
+   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+   BASE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-base.md"
+   NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md"
+   ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"
+   READ_RECEIPT=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.read-receipt.json"
+   node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description --id "<PHASE-1-ISSUE-UUID>" --out-file "$BASE" --expect-file "$NEW" --stale-file "$ORIG" >"$READ_RECEIPT" || exit "$?"
+   ```
+
+   Check the receipt UUID and `settled`. If false, never edit or save from this read: take the same
+   labels-only branch as `writePlan` above, retain dependency notes and questions in the run report,
+   and name the read lag there. Leave `image-guard-final.md` holding step 3's saved bytes. If true,
+   copy `image-guard-base.md` to `image-guard-final.md`, re-read premise states and run the second
+   pass below. On the run-wide `getIssue` fallback, byte-copy its stored description into the same
+   base and final files without a receipt, as before:
 
    ```bash
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
@@ -582,18 +601,26 @@ Then:
    node "$BOSS_PLAN_TOOLBOX/plan/plan-section-append.mjs" --file "$FINAL" --heading "Open Questions" --item "<question>"
    ```
 
-   Save `$FINAL` with `write-description` (plus labels if `agent-question` was added).
+   Save `$FINAL` with `write-description` (plus labels if `agent-question` was added). Record whether
+   this second description save happened; only then is `image-guard-base.md` the stale input for step 5.
    The description and the attachment then legitimately differ at `## Planning`.
 
 5. **Verify the write-back, once, after the final description save.** Skip this entire step on a
    tracker declaring `writePlan`: the plan-readback contract and image checks in
    `references/plan-storage.md` verify the stored plan instead. Otherwise, `image-guard-final.md` must
-   hold the exact bytes of that save; read the stored description into `image-guard-stored.md`:
+   hold the exact bytes of that save. On the direct-read route use the settled read below; set
+   `WB_STALE` to `image-guard-base.md` only when step 4(f) made a description save, otherwise to
+   `image-guard-orig.md`. On the `getIssue` fallback byte-copy into `image-guard-stored.md` and run
+   the verifier without `--read-receipt` (do not reuse an earlier receipt):
 
    ```bash
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    WB_FINAL=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md"; WB_STORED=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-stored.md"
-   if ! node "$BOSS_PLAN_TOOLBOX/plan/plan-writeback-verify.mjs" --intended "$WB_FINAL" --stored "$WB_STORED"; then
+   WB_STALE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md" # use image-guard-base.md after a second description save
+   READ_RECEIPT=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.read-receipt.json"
+   node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description --id "<PHASE-1-ISSUE-UUID>" --out-file "$WB_STORED" --expect-file "$WB_FINAL" --stale-file "$WB_STALE" >"$READ_RECEIPT" || exit "$?"
+   # Check the receipt id against the Phase 1 UUID before verifying.
+   if ! node "$BOSS_PLAN_TOOLBOX/plan/plan-writeback-verify.mjs" --intended "$WB_FINAL" --stored "$WB_STORED" --read-receipt "$READ_RECEIPT"; then
      echo "write-back verification failed (verdict above) — the description is ALREADY stored; do NOT rewrite it" >&2
      exit 1
    fi
@@ -601,7 +628,9 @@ Then:
    ```
 
    `byte-exact` / `normalized-equivalent` pass. `unattributed` passes but keeps the scratch and names
-   the line in the report. `drift` fails: keep the scratch and **do not** rewrite the description.
+   the line in the report. `drift` and `unsettled` fail: keep the scratch and **do not** rewrite the
+   description. `unsettled` means the write is unconfirmed after the read budget, not content drift;
+   record `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger evidence-unknown --where "boss-plan write-back read lag"` (never fatal).
    No verdict (a read failure) fails too.
    When write-back verification prints no verdict, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger evidence-unknown --where "boss-plan write-back verification"` (never fatal).
 

@@ -173,3 +173,8 @@ func ObserveCommandFields() []int32 {
 	slices.Sort(fields)
 	return fields
 }
+
+// CloudControlDisabledText tells the operator how to enable cloud control locally.
+func CloudControlDisabledText(hostname string) string {
+	return fmt.Sprintf("cloud control is read-only on %s; set `cloud_control` to `full` in that machine's local settings.json to allow it", hostname)
+}

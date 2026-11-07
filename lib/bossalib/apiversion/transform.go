@@ -697,6 +697,7 @@ func ProductionChanges() *Changes {
 		ProofAttentionChange{},
 		StatusPhraseChange{},
 		CandidateHoldLabelChange{},
+		CloudControlDisabledCodeChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())

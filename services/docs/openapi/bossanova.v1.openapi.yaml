@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-11-02'
+  version: '2026-11-03'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -10193,6 +10193,10 @@ components:
           title: identity_public_key
           format: byte
           description: Public signing identity, included only for the calling user's own daemons.
+        cloudControl:
+          title: cloud_control
+          description: Advertised mode for UX; the daemon enforces its local policy.
+          $ref: '#/components/schemas/bossanova.v1.CloudControl'
       title: DaemonInfo
       additionalProperties: false
     bossanova.v1.DaemonOffline:
@@ -10325,6 +10329,15 @@ components:
           type: boolean
           title: is_terminal_sealing_supported
           description: Presentation hint only; enforcement remains local.
+        hasCloudControlUpdates:
+          type: boolean
+          title: has_cloud_control_updates
+          description: |-
+            True when this daemon re-sends DaemonSnapshot whenever its local
+             cloud_control mode changes. Only then is cloud_control fresh enough for
+             bosso to refuse a control command without forwarding it. False on daemons
+             that advertise the mode only at connect; bosso forwards every command to
+             those, so a local opt-in still takes effect on the next command.
       title: DaemonSnapshot
       additionalProperties: false
       description: |-

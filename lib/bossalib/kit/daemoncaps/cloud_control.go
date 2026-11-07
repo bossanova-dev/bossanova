@@ -81,6 +81,18 @@ func CloudControlAllows(mode pb.CloudControl, cmd *pb.OrchestratorCommand) bool 
 	return cloudControlAllows(mode, access, ok, OrchestratorCommandCarriesContent(cmd))
 }
 
+// CloudControlRefusesControl reports whether mode refuses cmd because cmd is
+// control (or unclassified, which the daemon treats as control). bosso uses it
+// to answer such a command itself with CloudControlDisabledText; content
+// refusals under private mode are left to the daemon.
+func CloudControlRefusesControl(mode pb.CloudControl, cmd *pb.OrchestratorCommand) bool {
+	if mode != pb.CloudControl_CLOUD_CONTROL_READ_ONLY && mode != pb.CloudControl_CLOUD_CONTROL_PRIVATE {
+		return false
+	}
+	access, ok := OrchestratorCommandAccess(cmd)
+	return !ok || access == AccessControl
+}
+
 // CloudControlAllowsTerminal is the terminal equivalent of CloudControlAllows.
 func CloudControlAllowsTerminal(mode pb.CloudControl, msg *pb.TerminalClientMessage) bool {
 	access, ok := TerminalMessageAccess(msg)

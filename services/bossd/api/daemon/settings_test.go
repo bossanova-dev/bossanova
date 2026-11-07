@@ -391,6 +391,7 @@ func TestUpdateSettings_RoundTripPersistsAndMatchesSaveTo(t *testing.T) {
 	worktree := t.TempDir()
 	path := seedSettings(t, config.Settings{
 		CloudControl:        "full",
+		CloudControlRepos:   []config.CloudControlRepoGrant{{Host: "github.com", RepoID: 42, Name: "acme/repo", Checkout: worktree, Mode: "future-mode"}},
 		WorktreeBaseDir:     worktree,
 		PollIntervalSeconds: 30,
 		DefaultAgent:        "claude",
@@ -413,7 +414,13 @@ func TestUpdateSettings_RoundTripPersistsAndMatchesSaveTo(t *testing.T) {
 	if loaded.CloudControl != "full" {
 		t.Fatalf("cloud_control lost: %q", loaded.CloudControl)
 	}
+	if len(loaded.CloudControlRepos) != 1 || loaded.CloudControlRepos[0] != (config.CloudControlRepoGrant{Host: "github.com", RepoID: 42, Name: "acme/repo", Checkout: worktree, Mode: "future-mode"}) {
+		t.Fatalf("cloud_control_repos lost: %+v", loaded.CloudControlRepos)
+	}
 	for _, msg := range []interface{ ProtoReflect() protoreflect.Message }{&pb.GlobalSettings{}, &pb.UpdateSettingsRequest{}} {
+		if msg.ProtoReflect().Descriptor().Fields().ByName("cloud_control_repos") != nil {
+			t.Fatal("cloud_control_repos exposed remotely")
+		}
 		if msg.ProtoReflect().Descriptor().Fields().ByName("cloud_control") != nil {
 			t.Fatal("cloud_control exposed remotely")
 		}

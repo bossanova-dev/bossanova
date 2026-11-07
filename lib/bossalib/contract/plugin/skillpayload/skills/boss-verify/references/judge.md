@@ -37,3 +37,5 @@ characters and a non-empty single-line reason of at most 200 characters. Use onl
 keys. You may add areas only: you cannot remove an ask, raise a level, change a state or edit a
 describer item. The gate validates every addition and appends it after deterministic areas.
 Return only the output file path to the caller.
+
+The gate drops areas whose paths are all under the repo’s `neverReview` globs, so the judge need not flag them.

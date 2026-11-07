@@ -624,6 +624,12 @@ test('VERIFY_DESCRIPTIONS is frozen and carries the BOS-1382 prefixes', () => {
     'human-review:database',
     'human-review:security',
     'human-review:ui',
+    'human-review:policy',
+    'human-review:judge',
+    'human-review:api-contract',
+    'human-review:infra',
+    'human-review:asks',
+    'human-review:size',
     'human-review:unproven',
   ])
   assert.equal(HUMAN_REVIEW_REASON_PREFIX, 'human-review:')
@@ -1267,7 +1273,7 @@ test('judge policy surface: a config or verify-extension edit hits every categor
   const r1 = await judge({ pr: 7, repo: REPO }, deps(edit))
   assert.equal(r1.verdict, 'human')
   assert.equal(r1.facts.policySurfaceHit, true)
-  assert.equal(r1.reason, 'always-human-path')
+  assert.equal(r1.reason, 'human-review:asks')
 
   const unconfigured = world({ diff: ['.boss-skills.json'], baseConfig: policyText({}) })
   assert.equal((await judge({ pr: 7, repo: REPO }, deps(unconfigured))).verdict, 'human')
@@ -1330,7 +1336,7 @@ test('judge parks one status naming every hit category, in HUMAN_REASONS order',
   assert.deepEqual(r.reasons, ['human-review:database', 'human-review:ui'])
 
   const surface = world({ diff: ['.boss-skills.json'], baseConfig })
-  assert.equal((await judge({ pr: 7, repo: REPO }, deps(surface))).reason, 'always-human-path')
+  assert.equal((await judge({ pr: 7, repo: REPO }, deps(surface))).reason, 'human-review:asks')
 })
 
 test('judge: one waiver of the parked set passes, including a mirrored always-human-path', async () => {
@@ -1405,24 +1411,24 @@ test('the worst-case judged set description fits the commit-status limit', () =>
   const description = needsHumanDescription(parseHumanReasonList(worst).join(','))
   assert.equal(description.length, 137)
   assert.ok(description.length <= DESCRIPTION_LIMIT)
-  // The widest set an extension run can park: a malfunction plus every path code and category. A
-  // malfunction park never carries human-merge, which joins only a state park or a settled one.
-  const withExtensions = HUMAN_REASONS.filter(
-    (c) =>
-      ![
-        'no-receipt',
-        'partial-build',
-        'human-merge',
-        'verify-post-failed',
-        'cannot-assess',
-      ].includes(c),
-  )
-    .filter(
-      (c) =>
-        !['repair-exhausted', 'no-session', 'worktree-diverged', 'worktree-unsynced'].includes(c),
-    )
-    .join(',')
-  assert.ok(needsHumanDescription(withExtensions).length <= DESCRIPTION_LIMIT)
+  const expanded = [
+    ...worst.filter((code) => !code.startsWith('human-review:')),
+    ...HUMAN_REASONS.filter((code) => code.startsWith('human-review:')),
+  ]
+  const compact = needsHumanDescription(parseHumanReasonList(expanded).join(','))
+  assert.ok(compact.length <= DESCRIPTION_LIMIT)
+  assert.deepEqual(parseParkDescription(compact).codes, parseHumanReasonList(expanded))
+  // Computed codes remain intact in single and representative mixed sets.
+  for (const codes of [
+    ['human-review:judge'],
+    ['human-review:api-contract', 'human-review:infra'],
+    ['human-review:policy', 'human-review:asks'],
+    ['human-review:size'],
+  ]) {
+    const description = needsHumanDescription(codes.join(','))
+    assert.ok(description.length <= DESCRIPTION_LIMIT)
+    assert.deepEqual(parseParkDescription(description).codes, codes)
+  }
 })
 
 test('post refuses a human set whose description would exceed the commit-status limit', async () => {
@@ -2490,7 +2496,7 @@ test('judge: changing a declared applicability script is a policy-surface hit un
   )
   assert.equal(r.facts.policySurfaceHit, true)
   assert.equal(r.verdict, 'human')
-  assert.equal(r.reason, 'always-human-path')
+  assert.equal(r.reason, 'human-review:asks')
 
   const unconfigured = world({ diff: [GATED.applies], baseConfig: policyText({}) })
   const r2 = await judge(
@@ -2646,7 +2652,7 @@ test('judge after an approval: a .boss-skills.json push parks every category', a
   })
   const r = await judge({ pr: 7, repo: REPO }, deps(w))
   assert.equal(r.verdict, 'human')
-  assert.equal(r.reason, 'always-human-path')
+  assert.equal(r.reason, 'human-review:asks')
   assert.equal(r.facts.policySurfaceHit, true)
   assert.equal(r.facts.range.kind, 'delta')
 })
@@ -3981,23 +3987,15 @@ test('needsHumanDescription appends the label after the separator and never trun
   assert.equal(Array.from(long).length, DESCRIPTION_LIMIT)
   assert.ok(long.startsWith(`needs human: ${codes} · x`))
   assert.ok(long.endsWith('…'))
-  // The widest judged set leaves room for a single label character plus the ellipsis at most.
-  // human-merge never joins it: it parks with the state codes or with unproven, never both.
-  const worst = parseHumanReasonList(
-    HUMAN_REASONS.filter(
-      (c) =>
-        ![
-          'repair-exhausted',
-          'no-session',
-          'extension-failed',
-          'cannot-assess',
-          'worktree-diverged',
-          'worktree-unsynced',
-          'human-merge',
-          'verify-post-failed',
-        ].includes(c),
-    ),
-  ).join(',')
+  const worst = parseHumanReasonList([
+    'no-receipt',
+    'always-human-path',
+    'partial-build',
+    'human-review:database',
+    'human-review:security',
+    'human-review:ui',
+    'human-review:unproven',
+  ]).join(',')
   const crowded = needsHumanDescription(worst, 'verify gate rules')
   assert.ok(Array.from(crowded).length <= DESCRIPTION_LIMIT)
   assert.ok(crowded.startsWith(`needs human: ${worst}`), 'codes are intact')
@@ -9014,7 +9012,7 @@ test('post: a park on a policy-admitted PR stands on its status and writes no tr
   assert.deepEqual([r.posted, r.trackerWrites, r.why], [true, 'none', 'no-ticket'])
   assert.deepEqual(
     w.statusPosts().map((s) => s.description),
-    ['needs human: no-receipt'],
+    [needsHumanDescription('no-receipt', 'moderate: latest commit not reviewed')],
   )
   // An attachment claim still keeps the tracker path, as without a policy.
   const claimed = ticketlessWorld({
@@ -9085,7 +9083,7 @@ const humanPark = (extra = {}) => ({
 const greenOrLegacyPark = (state) => ({
   context: 'boss/verify',
   state,
-  description: 'needs human: no-receipt',
+  description: needsHumanDescription('no-receipt', 'moderate: latest commit not reviewed'),
   updated_at: iso(1000),
 })
 
@@ -9094,7 +9092,11 @@ test('post: a park posts success with its description and the park note as its t
   const r = await post(humanPark(), deps(w))
   assert.deepEqual([r.posted, r.parkNote], [true, 'posted'])
   assert.deepEqual(w.statusPosts(), [
-    { state: 'success', description: 'needs human: no-receipt', target: NOTE_URL },
+    {
+      state: 'success',
+      description: needsHumanDescription('no-receipt', 'moderate: latest commit not reviewed'),
+      target: NOTE_URL,
+    },
   ])
   assert.equal(parkNotes(w)[0].html_url, NOTE_URL)
 
@@ -9103,7 +9105,11 @@ test('post: a park posts success with its description and the park note as its t
   const untargeted = await post(humanPark(), deps(refused))
   assert.deepEqual([untargeted.posted, untargeted.parkNote], [true, 'failed'])
   assert.deepEqual(refused.statusPosts(), [
-    { state: 'success', description: 'needs human: no-receipt', target: undefined },
+    {
+      state: 'success',
+      description: needsHumanDescription('no-receipt', 'moderate: latest commit not reviewed'),
+      target: undefined,
+    },
   ])
 })
 
@@ -9117,7 +9123,11 @@ test('post: a standing green park is already posted; a legacy pending one turns 
   const reposted = await post(humanPark(), deps(legacy))
   assert.deepEqual([reposted.posted, reposted.skipped], [true, undefined])
   assert.deepEqual(legacy.statusPosts(), [
-    { state: 'success', description: 'needs human: no-receipt', target: NOTE_URL },
+    {
+      state: 'success',
+      description: needsHumanDescription('no-receipt', 'moderate: latest commit not reviewed'),
+      target: NOTE_URL,
+    },
   ])
 })
 
@@ -10801,7 +10811,7 @@ test('judge exposes legacy deprecations and neverReview cannot quiet policy edit
   const baseConfig = policyText({ humanReview: { ui: ['web/**'] }, neverReview: ['**'] })
   const r = await judge({ pr: 1 }, deps(world({ baseConfig, diff: ['.boss-skills.json'] })))
   assert.equal(r.verdict, 'human')
-  assert.deepEqual(r.reasons, ['always-human-path'])
+  assert.deepEqual(r.reasons, ['human-review:asks'])
   assert.equal(r.policyDeprecations.length, 1)
   assert.match(r.policyDeprecations[0], /humanReview.*deprecated/)
   const empty = await judge({ pr: 1 }, deps(world()))
@@ -11031,7 +11041,7 @@ test('judge additions persist through trusted per-head records and keep a standi
     const judged = await rawJudge({ pr: 7, judgeAreas: file }, deps(w))
     assert.equal(judged.verdict, 'human')
     assert.equal(judged.confidence.level, 'moderate')
-    assert.ok(judged.reasons.includes('always-human-path'))
+    assert.deepEqual(judged.reasons, ['human-review:judge'])
     assert.ok(judged.judgeRecord)
     const posted = await post(
       {
@@ -11062,7 +11072,7 @@ test('judge additions persist through trusted per-head records and keep a standi
     w.statuses[HEAD].unshift({
       context: 'boss/verify',
       state: 'success',
-      description: needsHumanDescription('always-human-path'),
+      description: needsHumanDescription('human-review:judge'),
       updated_at: iso(1),
     })
     const standing = await rawJudge({ pr: 7 }, deps(w))
@@ -11073,6 +11083,7 @@ test('judge additions persist through trusted per-head records and keep a standi
     assert.equal(later.verdict, 'human', 'a fresh empty pass cannot retract a recorded addition')
     const untrusted = world({ comments: [w.comments.at(-1)], permissions: { operator: 'read' } })
     assert.equal((await rawJudge({ pr: 7 }, deps(untrusted))).verdict, 'judge-required')
+    w.statuses[HEAD] = w.statuses[HEAD].filter((status) => status.context !== 'boss/verify')
     approving(w, 'always-human-path')
     const approved = await rawJudge({ pr: 7 }, deps(w))
     assert.equal(approved.verdict, 'pass')
@@ -11411,4 +11422,93 @@ test('an interrupted sleep still spends its retry @sessions.AC229401', async () 
   await assert.rejects(rearm(wait, io), /interrupted/)
   const resumed = await rearm({ ...wait, dryRun: true }, io)
   assert.equal(resumed.retry.attempt, 2)
+})
+
+test('split judge waivers preserve the legacy umbrella without waiving protected paths', () => {
+  const area = {
+    area: 'judge:access',
+    label: 'Access',
+    paths: ['src/a.go'],
+    defaultAsk: 'always',
+    source: 'judge',
+    reason: 'Checks removed',
+  }
+  assert.deepEqual(rawDecideVerdict(greenFacts({ judgeAreas: [area] })).reasons, [
+    'human-review:judge',
+  ])
+  assert.equal(
+    rawDecideVerdict(greenFacts({ judgeAreas: [area], waive: 'always-human-path' })).verdict,
+    'pass',
+  )
+  assert.deepEqual(
+    rawDecideVerdict(
+      greenFacts({
+        judgeAreas: [],
+        areas: [
+          { area: 'config:Protected', label: 'Protected', defaultAsk: 'always', source: 'config' },
+        ],
+        review: { alwaysReview: [{ name: 'Protected', parkCode: 'always-human-path' }] },
+        waive: 'human-review:judge',
+      }),
+    ).reasons,
+    ['always-human-path'],
+  )
+})
+
+test('neverReview suppresses four persisted judge asks without lowering confidence', async () => {
+  const record = Buffer.from(
+    JSON.stringify(
+      ['One', 'Two', 'Three', 'Four'].map((label) => ({
+        label,
+        path: 'docs/x.md',
+        reason: 'Review docs',
+      })),
+    ),
+  ).toString('base64url')
+  const w = world({
+    baseConfig: JSON.stringify({ verifyDefaults: { neverReview: ['docs/**'] } }),
+    diff: ['docs/x.md'],
+    comments: [
+      {
+        id: 1,
+        user: { login: 'operator' },
+        author_association: 'MEMBER',
+        created_at: iso(1),
+        body: `<!-- boss-judge-record head=${HEAD} areas=${record} -->`,
+      },
+    ],
+  })
+  const result = await rawJudge({ pr: 7 }, deps(w))
+  assert.equal(result.verdict, 'pass')
+  assert.equal(result.confidence.level, 'high')
+  assert.deepEqual(result.confidence.asks, [])
+})
+
+test('post publishes broad computed-code sets without losing their approval codes', async () => {
+  const w = world()
+  const codes = [
+    'human-review:database',
+    'human-review:security',
+    'human-review:ui',
+    'human-review:judge',
+    'human-review:api-contract',
+    'human-review:infra',
+    'human-review:asks',
+  ]
+  const description = needsHumanDescription(codes.join(','), 'low: many areas')
+  assert.ok(description.length <= DESCRIPTION_LIMIT)
+  assert.deepEqual(parseParkDescription(description).codes, codes)
+  const result = await post(
+    { pr: 7, head: HEAD, verdict: 'human', reason: codes.join(','), repo: REPO },
+    deps(w),
+  )
+  assert.equal(result.posted, true)
+  assert.deepEqual(parseParkDescription(w.statusPosts()[0].description).codes, codes)
+  const approved = approving(world(), codes.join(','))
+  approved.statuses[HEAD][0].description = description
+  const verdict = await judge({ pr: 7, repo: REPO, waive: codes.join(',') }, deps(approved))
+  assert.equal(verdict.verdict, 'pass')
+  assert.equal(verdict.reason, 'approved')
+  assert.equal(parseHumanReasonList('+unknown'), null)
+  assert.equal(parseHumanReasonList('+always-human-path'), null)
 })

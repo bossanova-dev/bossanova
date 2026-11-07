@@ -37,6 +37,12 @@ var humanReasonsOrder = []string{
 	"human-review:database",
 	"human-review:security",
 	"human-review:ui",
+	"human-review:policy",
+	"human-review:judge",
+	"human-review:api-contract",
+	"human-review:infra",
+	"human-review:asks",
+	"human-review:size",
 	"human-review:unproven",
 }
 
@@ -349,6 +355,47 @@ var knownParkCodes = map[string]parkCodeInfo{
 		category:            "database migration",
 		signOff:             true,
 		plain:               "a database migration for a person to review",
+	},
+	// No dated apiversion bump for these computed review codes: Session.attention
+	// reaches version-skewed TUI and web clients. Older clients render unknown
+	// codes with the generic blocked sentence, which truthfully describes the
+	// hold for a person. There is no older answer to restore. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	"human-review:policy": {
+		hasDecidingPriority: true,
+		category:            "merge policy",
+		signOff:             true,
+		plain:               "the repo's merge policy holds this change for a person",
+	},
+	"human-review:judge": {
+		hasDecidingPriority: true,
+		category:            "verify judge",
+		signOff:             true,
+		plain:               "the verify judge flagged a risk for a person to review",
+	},
+	"human-review:api-contract": {
+		hasDecidingPriority: true,
+		category:            "API contract",
+		signOff:             true,
+		plain:               "an API contract change for a person to review",
+	},
+	"human-review:infra": {
+		hasDecidingPriority: true,
+		category:            "infrastructure",
+		signOff:             true,
+		plain:               "an infrastructure change for a person to review",
+	},
+	"human-review:asks": {
+		hasDecidingPriority: true,
+		category:            "review area",
+		signOff:             true,
+		plain:               "a change in an area verify asks a person to review",
+	},
+	"human-review:size": {
+		hasDecidingPriority: true,
+		category:            "change size",
+		signOff:             true,
+		plain:               "the change is larger than most merged PRs here",
 	},
 	"human-review:unproven": {
 		hasDecidingPriority: true,

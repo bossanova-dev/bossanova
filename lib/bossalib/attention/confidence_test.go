@@ -46,6 +46,37 @@ func TestParkLevelSharedFixture(t *testing.T) {
 	}
 }
 
+func TestParkLevelSignOffCodes(t *testing.T) {
+	codes := []string{
+		"human-review:policy", "human-review:judge", "human-review:api-contract",
+		"human-review:infra", "human-review:asks", "human-review:size",
+	}
+	for _, code := range codes {
+		t.Run(code, func(t *testing.T) {
+			if got := ParkLevel([]string{code}, ""); got != pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE {
+				t.Fatalf("sign-off level = %v, want moderate", got)
+			}
+		})
+	}
+	if got := ParkLevel(codes, ""); got != pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE {
+		t.Errorf("combined sign-off level = %v, want moderate", got)
+	}
+	for _, other := range []string{"partial-build", "future-code"} {
+		mixed := append(append([]string(nil), codes...), other)
+		if got := ParkLevel(mixed, ""); got != pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED {
+			t.Errorf("mixed with %s level = %v, want unspecified", other, got)
+		}
+	}
+	for code, info := range knownParkCodes {
+		if !info.signOff {
+			continue
+		}
+		if got := ParkLevel([]string{code}, ""); got != pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE {
+			t.Errorf("registered sign-off %s level = %v, want moderate", code, got)
+		}
+	}
+}
+
 func TestLabelAsks(t *testing.T) {
 	for _, tc := range []struct {
 		label string

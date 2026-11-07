@@ -124,13 +124,15 @@ When `writePlan` is absent, use the attachment protocol before any issue update:
    branch. Delete only on a confirmed-unreadable read — never on a transport error, which would
    destroy a healthy artifact.
 6. **Supersede stale duplicate plan attachments only after verified read-back.** After the
-   read-back succeeds, write a **single fresh** attachment list (the tracker's issue read, as
+   read-back succeeds, write a **fresh** attachment list (the tracker's issue read, as
    returned) to `.linear-plans/run-<RUN-SCRATCH-ID>/<RUN-ISSUE-ID>.attachment-list-<n>.json`.
    After the toolbox preamble, run `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" supersede <that file>
 --issue <ISSUE-ID> --keep <finalized-id> --just-finalized`. This run just finalized that id, which
    is knowledge no field on the attachment payload carries. On exit 0, delete each `supersede[].id`
-   with `deletePlanAttachment`, logging and reporting its `title`; `keep-not-listed` means no deletes:
-   report it in the completion report and continue. Exit 2 with the usage-error token is a caller
+   with `deletePlanAttachment`, logging and reporting its `title`. On `keep-not-listed`, delete
+   nothing: wait about 10 seconds, re-read the issue into the next `attachment-list-<n>.json` and
+   rerun `supersede`, up to two additional reads. Delete only from a fresh list containing the
+   finalized id. If it still says `keep-not-listed`, report it in the completion report and continue. Exit 2 with the usage-error token is a caller
    error: fix the invocation and re-run, never take the SAFE branch. Exit 1 is a **failed supersede
    list** and takes the SAFE branch: no plan metadata/state write, no deletes from stale state,
    and no rollback of the verified publish. Code callers use the export from
@@ -221,9 +223,9 @@ node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description --id "<PHASE-1-ISSUE-
 ```
 
 The run reads three times, each into its own declared scratch file: Phase 2 step 2 into
-`<ISSUE-ID>.image-guard-orig.md` (the snapshot), Phase 4 step 5(f) into
-`<ISSUE-ID>.image-guard-final.md` (the base the second save is edited from, in place, and the
-`--intended` input step 6 then reads), and Phase 4 step 6 into `<ISSUE-ID>.image-guard-stored.md`
+`<ISSUE-ID>.image-guard-orig.md` (the snapshot), Phase 4 step 4(f) into
+`<ISSUE-ID>.image-guard-base.md` (the settled base copied to `image-guard-final.md` before editing
+for a second save), and Phase 4 step 5 into `<ISSUE-ID>.image-guard-stored.md`
 (the `--stored` input). All three sit under `.linear-plans/run-<RUN-SCRATCH-ID>/`.
 
 The bytes are written to a temporary sibling that is renamed onto `--out-file`, so the only
@@ -240,6 +242,18 @@ On success the verb exits 0 and prints one JSON line:
   pass `--allow-empty-original`; a zero byte count alone is not.
 - `id` and `identifier` — the issue that actually answered.
 
+With `--expect-file <path>` or `--stale-file <path>`, read-description polls every 5000 ms until
+stored bytes equal the expected bytes or differ from stale bytes. The files are read once before
+any tracker request; a no-op save settles when expect and stale bytes are equal. `--settle-ms <n>`
+is a positive integer budget (default 120000, maximum 300000), valid only with a comparison file.
+The receipt additionally contains `settled`, `attempts` and `elapsedMs`. Budget exhaustion still
+writes the last read and exits 0 with `settled: false`; transport errors are never retried here.
+Capture the receipt in `<ISSUE-ID>.read-receipt.json`. Step 4(f) skips its second description save
+on an unsettled receipt. Step 5 passes the receipt to `plan-writeback-verify.mjs --read-receipt` so
+unconfirmed bytes report `unsettled` instead of `drift` or `unattributed`; byte-exact and declared
+normalized equivalence still pass. With no comparison files the original four receipt keys and
+single-read behavior are unchanged. Unreadable comparison files are usage errors (exit 64).
+
 **Identity — the receipt `id` must be the Phase 1 UUID.** Pass the issue **UUID** from the Phase 1
 `getIssue` result as `--id`, never the human identifier, and treat a receipt whose `id` differs as a
 failed read. The direct read authenticates with the environment's API key, which may belong to a
@@ -249,7 +263,7 @@ collide.
 
 **Route — chosen once per run.** Phase 2 step 2 decides the route for the whole run:
 
-- Exit 0 there: every later read this run (5(f), step 6) uses `read-description` too, and a later
+- Exit 0 there: every later read this run (4(f), step 5) uses `read-description` too, and a later
   exit 2 **fails that step** — it is never a per-site fallback. The direct read returns upload URLs
   unsigned while the tracker adapter's `getIssue` operation returns them signed, so a run that mixed
   the two would compare two different byte forms and could report drift on a correct write.

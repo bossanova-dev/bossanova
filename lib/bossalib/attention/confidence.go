@@ -20,7 +20,7 @@ type Proof struct {
 }
 
 // ParkLevel mirrors verify's parkLevel: an explicit label wins, then inability
-// to assess, then a park composed entirely of path sign-off codes.
+// to assess, then a park composed entirely of sign-off codes.
 func ParkLevel(codes []string, label string) pb.ConfidenceLevel {
 	switch {
 	case strings.HasPrefix(label, "moderate:"):
@@ -35,9 +35,7 @@ func ParkLevel(codes []string, label string) pb.ConfidenceLevel {
 		return pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED
 	}
 	for _, code := range codes {
-		switch code {
-		case "always-human-path", "human-review:database", "human-review:security", "human-review:ui", "human-review:unproven":
-		default:
+		if !knownParkCodes[code].signOff {
 			return pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED
 		}
 	}

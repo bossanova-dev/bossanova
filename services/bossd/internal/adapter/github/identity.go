@@ -59,6 +59,7 @@ const (
 // missing from it runs on the user's login; TestEveryProviderMethodHasARoute
 // fails on one.
 var methodRoutes = map[string]route{
+	"GetRepositoryIdentity":     routeRead,
 	"GetPRStatus":               routeRead,
 	"GetCheckResults":           routeRead,
 	"GetCheckSet":               routeRead,

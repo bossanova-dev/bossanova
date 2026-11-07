@@ -19,12 +19,13 @@ The first pass runs after the secret gate and before image parity: `--annotate` 
 description artifact and `$PLAN_FILE`, so the image guard copies annotated bytes and every later
 gate checks the text that will be saved. The orchestrator never hand-appends drift lines.
 
-Before composing step 5(f), read the stored description into `image-guard-final`, re-read the
+Before composing step 4(f), settle the stored description into `image-guard-base` and copy it to
+`image-guard-final` only when settled (otherwise take the labels-only branch); re-read the
 premise ids and overwrite the same `premise-states` file. Reconcile that read-back, then save when
 the dependency verdict requests recording or reconciliation changed its bytes. Keep the annotated
 read-back as the save's intended bytes; fetching it again would discard the second pass. This
 also catches a resolved premise, whose old annotations must be removed. Do not re-annotate the
-attachment: step 5(f) already legitimately diverges from it. Step 6 verifies this final save.
+attachment: step 4(f) already legitimately diverges from it. Step 5 verifies this final save.
 The dependency scan needs no earlier premise verdict: it fetches its own candidate states fresh.
 
 A Phase 1 selection payload, idempotence precheck or any state seen before the drafter returned
@@ -42,7 +43,7 @@ lines land directly after the last Planning bullet with no intervening blank lin
 
 `premise-limit`, `premise-unresolved` and `unreadable-input` write no annotation files. On the
 first pass these take the SAFE branch before tracker writeback. On the second pass the first save
-already exists: stop further writes and retain scratch. Run mandatory step 6 against step 4's
+already exists: stop further writes and retain scratch. Run mandatory step 5 against step 3's
 intended bytes, report its verdict and the premise error, then exit non-zero. Never claim no write
 occurred or verify the read-back as its own intended bytes. `ok` and `premise-drift` reconcile every named file; drift never aborts.
 

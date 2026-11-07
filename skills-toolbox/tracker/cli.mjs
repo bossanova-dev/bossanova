@@ -59,10 +59,12 @@
 //     writeDescription is an OPTIONAL operation: an adapter that does not declare it exits 2
 //     with a diagnostic naming the missing capability and NOTHING on stdout, so the caller
 //     falls back to sending the description inline on its existing save.
-//   node tracker/cli.mjs read-description --id <issueId> --out-file <path>
+//   node tracker/cli.mjs read-description --id <issueId> --out-file <path> [--expect-file <path>] [--stale-file <path>] [--settle-ms <n>]
 //     -> writes the issue's STORED description bytes to --out-file and prints one receipt line:
 //        {"bytes":<stat(2) size of --out-file>,"outcome":"stored-description-written"|
 //        "stored-description-empty","id":<resolved issue id>,"identifier":<resolved identifier>}
+//     With comparison files, polls until expect matches or stale differs, adding settled, attempts
+//     and elapsedMs to the receipt (even when the budget expires). Without them, makes one read.
 //     The read half of write-description: a gate that compares the tracker's stored description
 //     reads a file CODE wrote from the tracker's response, never one the model retyped from a
 //     tool result. The bytes go to a temp sibling renamed onto --out-file, so a failed read or
@@ -110,6 +112,7 @@
 // liveness evidence forfeits claims whose owners are provably inactive.
 
 import crypto from 'node:crypto'
+import { runReadDescription } from './read-description.mjs'
 import { loadClaimComments } from '../linear-claim.mjs'
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -227,7 +230,7 @@ capabilities:
   create-issue --title <t> --body-file <path> --state-role <role> [--label-role <role>]... [--label <name>]... [--parent <id>] [--project <id>]
       Emit an MCP descriptor or execute createIssue using configured team and roles.
 
-  read-description --id <issueId> --out-file <path>
+  read-description --id <issueId> --out-file <path> [--expect-file <path>] [--stale-file <path>] [--settle-ms <n>]
       Write the issue's stored description bytes to <path> (atomically) and print
       {"bytes":...,"outcome":...,"id":...,"identifier":...}. A read failure exits 2
       and a usage error exits 64, both with no stdout.
@@ -591,121 +594,6 @@ async function runFetchCandidates(rest, { write, errWrite, env, resolveAdapter, 
   )
   return 0
 }
-const READ_DESCRIPTION_FLAGS = new Set(['id', 'out-file'])
-const READ_DESCRIPTION_FALLBACK =
-  "fall back to the tracker adapter's getIssue operation (MCP) byte-copy"
-
-// read-description's own closed flag parser. The shared `parseFlags` pairs tokens blindly, so a
-// valueless `--out-file` would swallow the next flag as its path; this one refuses an unknown,
-// repeated or valueless flag and an empty value, and requires both flags.
-function parseReadDescriptionFlags(rest) {
-  const flags = {}
-  for (let i = 0; i < rest.length; i += 2) {
-    const token = rest[i]
-    const name = typeof token === 'string' && token.startsWith('--') ? token.slice(2) : null
-    if (!name || !READ_DESCRIPTION_FLAGS.has(name)) {
-      return { error: `unknown flag ${JSON.stringify(token)}` }
-    }
-    if (name in flags) return { error: `--${name} given more than once` }
-    const value = rest[i + 1]
-    if (typeof value !== 'string' || value.trim() === '' || value.startsWith('--')) {
-      return { error: `--${name} requires a non-empty value` }
-    }
-    flags[name] = value
-  }
-  for (const name of READ_DESCRIPTION_FLAGS) {
-    if (!(name in flags)) return { error: `--${name} is required` }
-  }
-  return { flags }
-}
-
-async function runReadDescription(rest, { write, errWrite, env, resolveAdapter }) {
-  const fail = (message, code = 2) => {
-    errWrite(`read-description: ${oneLine(message)}\n`)
-    return code
-  }
-  const parsed = parseReadDescriptionFlags(rest)
-  if (parsed.error) {
-    return fail(
-      `usage: ${parsed.error}; expected read-description --id <issueId> --out-file <path>`,
-      EX_USAGE,
-    )
-  }
-  const { id, 'out-file': outFile } = parsed.flags
-  let adapter
-  try {
-    adapter = resolveAdapter({ env })
-  } catch (err) {
-    return fail(`could not resolve the tracker adapter: ${err?.message ?? err}`)
-  }
-  if (typeof adapter?.readDescription !== 'function') {
-    return fail(
-      `resolved tracker adapter has no readDescription capability; ${READ_DESCRIPTION_FALLBACK}`,
-    )
-  }
-  // Checked BEFORE the read, so a write that cannot land never spends a tracker request.
-  const parent = path.dirname(path.resolve(outFile))
-  if (!existsSync(parent) || !statSync(parent).isDirectory()) {
-    return fail(`--out-file parent directory ${parent} does not exist`)
-  }
-  let result
-  try {
-    result = await adapter.readDescription(id)
-  } catch (err) {
-    const message = String(err?.message ?? err)
-    if (err?.code === TRACKER_CREDENTIALS_MISSING) {
-      return fail(
-        `tracker credential missing (${message}), so the stored description cannot be read directly; ${READ_DESCRIPTION_FALLBACK}`,
-      )
-    }
-    return fail(`readDescription failed: ${message}`)
-  }
-  if (
-    !result ||
-    typeof result !== 'object' ||
-    typeof result.id !== 'string' ||
-    typeof result.identifier !== 'string' ||
-    typeof result.description !== 'string'
-  ) {
-    return fail(
-      'readDescription returned an unreadable result (need string id, identifier, description)',
-    )
-  }
-  const { description } = result
-  // A lone surrogate would be written as U+FFFD, so the file would silently differ from the stored
-  // description it attests to. Refuse rather than write a lossy copy.
-  if (!description.isWellFormed()) {
-    return fail(
-      'the stored description is not well-formed UTF-16, so it cannot be written verbatim',
-    )
-  }
-  const target = path.resolve(outFile)
-  const temp = path.join(
-    parent,
-    `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
-  )
-  let bytes
-  try {
-    // Written verbatim: Linear stores descriptions without a trailing newline, and appending one
-    // would make every byte-compare against this file report drift on a correct write.
-    writeFileSync(temp, description, { encoding: 'utf8', flag: 'wx' })
-    renameSync(temp, target)
-    bytes = statSync(target).size
-  } catch (err) {
-    rmSync(temp, { force: true })
-    return fail(`could not write --out-file ${outFile}: ${err?.message ?? err}`)
-  }
-  write(
-    JSON.stringify({
-      bytes,
-      outcome: description === '' ? 'stored-description-empty' : 'stored-description-written',
-      id: result.id,
-      identifier: result.identifier,
-    }) + '\n',
-  )
-  return 0
-}
-
 // Both verbs use closed parsers: misspelled flags must not silently broaden a read
 // or drop a requested issue field. Only label flags are repeatable.
 function parseRetroFlags(rest, allowed, required, repeated = new Set()) {
@@ -932,7 +820,8 @@ function supportsClaimScope(adapter, scope, errWrite) {
  * Dispatch a tracker capability; asynchronous verbs return a Promise of the exit code.
  * @param {string[]} argv
  * @param {{write?: (s: string) => void, errWrite?: (s: string) => void, env?: object,
- *   resolveAdapter?: typeof resolveTrackerAdapter, loadConfig?: () => object}} [io]
+ *   resolveAdapter?: typeof resolveTrackerAdapter, loadConfig?: () => object,
+ *   sleep?: (ms: number) => Promise<void>, now?: () => number}} [io]
  * @returns {number | Promise<number>}
  */
 export function runCli(
@@ -943,6 +832,8 @@ export function runCli(
     env = process.env,
     resolveAdapter = resolveTrackerAdapter,
     loadConfig = () => loadSkillConfig(),
+    sleep,
+    now,
   } = {},
 ) {
   const [cmd, ...rest] = argv
@@ -1178,7 +1069,7 @@ export function runCli(
   if (cmd === 'create-issue')
     return runCreateIssue(rest, { write, errWrite, env, resolveAdapter, loadConfig })
   if (cmd === 'read-description') {
-    return runReadDescription(rest, { write, errWrite, env, resolveAdapter })
+    return runReadDescription(rest, { write, errWrite, env, resolveAdapter, sleep, now })
   }
   if (cmd === 'fetch-candidates') {
     return runFetchCandidates(rest, { write, errWrite, env, resolveAdapter, loadConfig })

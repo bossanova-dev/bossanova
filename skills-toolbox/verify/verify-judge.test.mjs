@@ -240,3 +240,33 @@ test('record unions preserve more than one dispatch limit of additions', () => {
   assert.equal(areas.length, 16)
   assert.equal(judgeAreasFor([...records, encodeJudgeRecord([])], { headSha, files }).length, 16)
 })
+
+test('neverReview filters persisted judge paths only when every rename side is omitted', () => {
+  const docs = { ...entry, path: 'docs/x.md' }
+  const record = Buffer.from(JSON.stringify([docs])).toString('base64url')
+  const context = { headSha, files: [{ path: docs.path }], neverReview: ['docs/**'] }
+  assert.deepEqual(judgeAreasFor([record], context), [])
+  assert.equal(judgeAreasFor([record], { ...context, neverReview: [] }).length, 1)
+  assert.equal(judgeAreasFor([record], { headSha, files: context.files }).length, 1)
+  for (const file of [
+    { path: docs.path, previousPath: 'src/x.md' },
+    { filename: docs.path, previous_filename: 'src/x.md' },
+    { path: 'src/x.md', previousPath: docs.path },
+  ])
+    assert.equal(judgeAreasFor([record], { ...context, files: [file] }).length, 1)
+  assert.equal(
+    judgeAreasFor([Buffer.from(JSON.stringify([entry])).toString('base64url')], {
+      headSha,
+      files,
+      neverReview: ['docs/**'],
+    }).length,
+    1,
+  )
+  assert.deepEqual(
+    judgeAreasFor([record], {
+      ...context,
+      files: [{ path: docs.path, previousPath: 'docs/old.md' }],
+    }),
+    [],
+  )
+})

@@ -95,9 +95,10 @@ func (g *tokenGH) reset() {
 
 // routedInvocations calls every exported Provider method that may run gh.
 var routedInvocations = map[string]func(context.Context, *Provider){
-	"GetPRStatus":     func(ctx context.Context, p *Provider) { _, _ = p.GetPRStatus(ctx, testOrigin, 7) },
-	"GetCheckResults": func(ctx context.Context, p *Provider) { _, _ = p.GetCheckResults(ctx, testOrigin, 7) },
-	"GetCheckSet":     func(ctx context.Context, p *Provider) { _, _ = p.GetCheckSet(ctx, testOrigin, 7) },
+	"GetRepositoryIdentity": func(ctx context.Context, p *Provider) { _, _, _ = p.GetRepositoryIdentity(ctx, testOrigin) },
+	"GetPRStatus":           func(ctx context.Context, p *Provider) { _, _ = p.GetPRStatus(ctx, testOrigin, 7) },
+	"GetCheckResults":       func(ctx context.Context, p *Provider) { _, _ = p.GetCheckResults(ctx, testOrigin, 7) },
+	"GetCheckSet":           func(ctx context.Context, p *Provider) { _, _ = p.GetCheckSet(ctx, testOrigin, 7) },
 	"GetReviewComments": func(ctx context.Context, p *Provider) {
 		_, _ = p.GetReviewComments(ctx, testOrigin, 7)
 	},

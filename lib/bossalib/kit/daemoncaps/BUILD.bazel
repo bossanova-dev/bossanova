@@ -21,6 +21,7 @@ go_test(
     name = "daemoncaps_test",
     srcs = [
         "capabilities_test.go",
+        "cloud_control_refusal_test.go",
         "command_access_test.go",
         "stream_commands_test.go",
     ],

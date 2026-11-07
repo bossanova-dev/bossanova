@@ -278,6 +278,7 @@ func TestClassifyVerify(t *testing.T) {
 		wantLabel  string
 	}{
 		{name: "no checks", wantKind: VerifyPhaseNone},
+		{name: "compact sign-off codes", checks: []CheckResult{pending("needs human: +database,+security,+ui,+judge,+api-contract,+infra,+asks · low")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "human-review:database,human-review:security,human-review:ui,human-review:judge,human-review:api-contract,human-review:infra,human-review:asks", wantLabel: "low"},
 		{name: "verifying claim", checks: []CheckResult{pending("verifying… 3f2a")}, wantKind: VerifyPhaseVerifying},
 		{name: "waiting unclaimed head", checks: []CheckResult{pending("waiting: checks-pending")}, wantKind: VerifyPhaseWaiting, wantReason: "checks-pending"},
 		{name: "waiting reason is trimmed", checks: []CheckResult{pending("waiting:   merge-state-unknown  ")}, wantKind: VerifyPhaseWaiting, wantReason: "merge-state-unknown"},

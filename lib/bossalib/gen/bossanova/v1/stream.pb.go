@@ -2089,8 +2089,14 @@ type DaemonSnapshot struct {
 	CloudControl CloudControl `protobuf:"varint,10,opt,name=cloud_control,json=cloudControl,proto3,enum=bossanova.v1.CloudControl" json:"cloud_control,omitempty"`
 	// Presentation hint only; enforcement remains local.
 	IsTerminalSealingSupported bool `protobuf:"varint,11,opt,name=is_terminal_sealing_supported,json=isTerminalSealingSupported,proto3" json:"is_terminal_sealing_supported,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// True when this daemon re-sends DaemonSnapshot whenever its local
+	// cloud_control mode changes. Only then is cloud_control fresh enough for
+	// bosso to refuse a control command without forwarding it. False on daemons
+	// that advertise the mode only at connect; bosso forwards every command to
+	// those, so a local opt-in still takes effect on the next command.
+	HasCloudControlUpdates bool `protobuf:"varint,12,opt,name=has_cloud_control_updates,json=hasCloudControlUpdates,proto3" json:"has_cloud_control_updates,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *DaemonSnapshot) Reset() {
@@ -2196,6 +2202,13 @@ func (x *DaemonSnapshot) GetCloudControl() CloudControl {
 func (x *DaemonSnapshot) GetIsTerminalSealingSupported() bool {
 	if x != nil {
 		return x.IsTerminalSealingSupported
+	}
+	return false
+}
+
+func (x *DaemonSnapshot) GetHasCloudControlUpdates() bool {
+	if x != nil {
+		return x.HasCloudControlUpdates
 	}
 	return false
 }
@@ -10681,7 +10694,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x03cmd\".\n" +
 	"\rCommandCancel\x12\x1d\n" +
 	"\n" +
-	"command_id\x18\x01 \x01(\tR\tcommandId\"\xd9\x04\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\"\x94\x05\n" +
 	"\x0eDaemonSnapshot\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x19\n" +
@@ -10694,7 +10707,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0eagent_accounts\x18\t \x03(\v2\x1a.bossanova.v1.AgentAccountR\ragentAccounts\x12?\n" +
 	"\rcloud_control\x18\n" +
 	" \x01(\x0e2\x1a.bossanova.v1.CloudControlR\fcloudControl\x12A\n" +
-	"\x1dis_terminal_sealing_supported\x18\v \x01(\bR\x1aisTerminalSealingSupported\"W\n" +
+	"\x1dis_terminal_sealing_supported\x18\v \x01(\bR\x1aisTerminalSealingSupported\x129\n" +
+	"\x19has_cloud_control_updates\x18\f \x01(\bR\x16hasCloudControlUpdates\"W\n" +
 	"\x10CallbackInterest\x12&\n" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12\x1b\n" +
 	"\tpr_number\x18\x02 \x01(\x05R\bprNumber\"S\n" +

@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "repoidentity",
+    srcs = ["verifier.go"],
+    importpath = "github.com/recurser/bossd/internal/repoidentity",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/vcs",
+        "//services/bossd/internal/domain",
+        "@org_golang_x_sync//singleflight",
+    ],
+)
+
+go_test(
+    name = "repoidentity_test",
+    srcs = ["verifier_test.go"],
+    embed = [":repoidentity"],
+    deps = ["//lib/bossalib/models"],
+)

@@ -69,6 +69,7 @@ var ReleasedVersions = []Version{
 	"2026-09-30", // V20260930 — caller head pin for PR merges.
 	"2026-10-31", // V20261031 — ParkVerdictSentenceChange.
 	"2026-11-01", // V20261101 — ProofAttentionChange and StatusPhraseChange.
+	"2026-11-02", // V20261102 — CandidateHoldLabelChange.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

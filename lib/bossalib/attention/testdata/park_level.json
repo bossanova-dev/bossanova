@@ -24,6 +24,42 @@
     "level": "moderate"
   },
   {
+    "name": "human-review:policy",
+    "codes": ["human-review:policy"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-review:judge",
+    "codes": ["human-review:judge"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-review:api-contract",
+    "codes": ["human-review:api-contract"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-review:infra",
+    "codes": ["human-review:infra"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-review:asks",
+    "codes": ["human-review:asks"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
+    "name": "human-review:size",
+    "codes": ["human-review:size"],
+    "label": "",
+    "level": "moderate"
+  },
+  {
     "name": "human-review:unproven",
     "codes": ["human-review:unproven"],
     "label": "",
@@ -45,13 +81,13 @@
     "name": "human-merge only",
     "codes": ["human-merge"],
     "label": "",
-    "level": null
+    "level": "moderate"
   },
   {
     "name": "no-receipt only",
     "codes": ["no-receipt"],
     "label": "",
-    "level": null
+    "level": "moderate"
   },
   {
     "name": "partial-build only",
@@ -75,7 +111,7 @@
     "name": "mixed path and merge",
     "codes": ["human-review:ui", "human-merge"],
     "label": "",
-    "level": null
+    "level": "moderate"
   },
   {
     "name": "mixed path and unknown",
@@ -111,7 +147,7 @@
     "name": "high label with merge",
     "codes": ["human-merge"],
     "label": "high: Review evidence",
-    "level": null
+    "level": "moderate"
   },
   {
     "name": "high label path fallback",

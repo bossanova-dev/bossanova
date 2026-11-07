@@ -1125,9 +1125,9 @@ type Settings struct {
 	// Unlike that key this one resolves FAIL-CLOSED, because its fallback is
 	// the substrate an operator selects a mode to escape.
 	DaemonSupervisionMode string `json:"daemon_supervision_mode,omitempty"`
-	// CloudControl is changed only by the local operator, never by UpdateSettings,
-	// MCP or stream commands. Raw values: read-only (default), private, full or unknown.
-	CloudControl string `json:"cloud_control,omitempty"`
+	// CloudControl and CloudControlRepos are local-operator-only; raw unknown modes round-trip.
+	CloudControl      string                  `json:"cloud_control,omitempty"`
+	CloudControlRepos []CloudControlRepoGrant `json:"cloud_control_repos,omitempty"`
 	// SubagentDispatchGrant selects which boss-managed chats receive the bounded
 	// subagent-dispatch grant in their appended system prompt. It is a raw
 	// string rather than the typed SubagentDispatchGrant so an unknown value

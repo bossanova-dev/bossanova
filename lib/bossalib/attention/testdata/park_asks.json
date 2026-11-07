@@ -45,6 +45,54 @@
   },
   {
     "codes": [
+      "human-review:api-contract"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "API contract"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:api-contract"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:asks"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "review area"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:asks"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
       "human-review:database"
     ],
     "label": "",
@@ -69,6 +117,78 @@
   },
   {
     "codes": [
+      "human-review:infra"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "infrastructure"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:infra"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:judge"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "verify judge"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:judge"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:policy"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "merge policy"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:policy"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
       "human-review:security"
     ],
     "label": "",
@@ -82,6 +202,30 @@
   {
     "codes": [
       "human-review:security"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:size"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "head": "abc123456789",
+    "question": "Approve these on head abc1234:",
+    "items": [
+      "change size"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:size"
     ],
     "label": "the verify judge (cannot grade itself)",
     "evidenceUrl": "",

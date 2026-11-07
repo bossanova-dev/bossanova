@@ -97,7 +97,7 @@ function classify(over = {}) {
     subject: subject(),
     candidate: candidate(),
     // A same FILE on both sides. An overlap never blocks: it is a non-blocking
-    // `file-overlap` (or `directory-overlap`) relation. Blocking edges need a
+    // `file-overlap` relation. Blocking edges need a
     // `logicalDependency` verdict, which the tests that exercise them pass.
     subjectAreas: ['app/api/x.go'],
     candidateAreas: ['app/api/x.go'],
@@ -1436,14 +1436,14 @@ test('a candidate in a non-schedulable state is not a valid blocker', () => {
 test('epic children re-enter at rung 1, and the depth cap stops a parent/child cycle', () => {
   const parent = {
     ...candidate({ id: 'uuid-p', identifier: 'TCK-P', labels: ['Epic'] }),
-    areas: ['app/api'],
+    areas: ['app/api/x.go'],
   }
   const child = {
     ...candidate({ id: 'uuid-c', identifier: 'TCK-C', priority: 1 }),
-    areas: ['app/api'],
+    areas: ['app/api/x.go'],
   }
   const expanded = planDependencyEdges({
-    subject: { ...subject({ priority: 3 }), areas: ['app/api'] },
+    subject: { ...subject({ priority: 3 }), areas: ['app/api/x.go'] },
     candidates: [parent],
     childrenByParentId: { 'uuid-p': [child] },
     stateRoles: STATE_ROLES,
@@ -1466,7 +1466,7 @@ test('epic children re-enter at rung 1, and the depth cap stops a parent/child c
 
   // The same parent with its children WITHHELD is the case the flag exists for.
   const unexpanded = planDependencyEdges({
-    subject: { ...subject(), areas: ['app/api'] },
+    subject: { ...subject(), areas: ['app/api/x.go'] },
     candidates: [parent],
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
@@ -1482,7 +1482,7 @@ test('epic children re-enter at rung 1, and the depth cap stops a parent/child c
   // answered, not re-asked: flagging it would send the caller back for a list it
   // already produced, and step 5(d) would never settle "no active children".
   const childless = planDependencyEdges({
-    subject: { ...subject(), areas: ['app/api'] },
+    subject: { ...subject(), areas: ['app/api/x.go'] },
     candidates: [parent],
     childrenByParentId: { 'uuid-p': [] },
     stateRoles: STATE_ROLES,
@@ -1497,10 +1497,10 @@ test('epic children re-enter at rung 1, and the depth cap stops a parent/child c
   // A child that is itself epic-labelled, with the cap set to one level.
   const epicChild = {
     ...candidate({ id: 'uuid-e', identifier: 'TCK-E', labels: ['Epic'] }),
-    areas: ['app/api'],
+    areas: ['app/api/x.go'],
   }
   const capped = planDependencyEdges({
-    subject: { ...subject(), areas: ['app/api'] },
+    subject: { ...subject(), areas: ['app/api/x.go'] },
     candidates: [parent],
     childrenByParentId: { 'uuid-p': [epicChild], 'uuid-e': [parent] },
     maxExpansionDepth: 1,
@@ -1529,7 +1529,6 @@ test('BOS-1705: same-parent siblings reach file and directory overlap and logica
     const own = { ...subject({ [parentField]: 'uuid-epic' }), areas: ['app/api/x.go'] }
     for (const [areas, logical, reason, edge, write] of [
       [['app/api/x.go'], null, 'file-overlap', 'relatedTo', null],
-      [['app/api'], null, 'directory-overlap', 'relatedTo', null],
       [
         ['app/api/x.go'],
         { direction: 'blockedBy' },
@@ -1552,6 +1551,13 @@ test('BOS-1705: same-parent siblings reach file and directory overlap and logica
       assert.equal(r.compared, 1)
       if (!logical) assert.equal(r.notes[0].reason, reason)
     }
+    const containment = planDependencyEdges({
+      subject: own,
+      candidates: [{ ...candidate({ [parentField]: 'uuid-epic' }), areas: ['app/api'] }],
+      stateRoles: STATE_ROLES,
+    })
+    assert.equal(containment.edges.length, 0)
+    assert.equal(containment.skipped[0].reason, 'directory-overlap')
     const started = planDependencyEdges({
       subject: own,
       candidates: [
@@ -1754,8 +1760,8 @@ test('an arealess SUBJECT warns, rather than reporting a clean no-dependencies r
   // edge and stays silent, so the warning tracks the missing areas and nothing else.
   const withAreas = planDependencyEdges({
     subject: subject(),
-    subjectAreas: ['app/api'],
-    candidates: [candidate({ id: 'a', identifier: 'TCK-A', priority: 1, areas: ['app/api'] })],
+    subjectAreas: ['app/api/x.go'],
+    candidates: [candidate({ id: 'a', identifier: 'TCK-A', priority: 1, areas: ['app/api/x.go'] })],
     stateRoles: STATE_ROLES,
   })
   assert.equal(withAreas.edges.length, 1)
@@ -1960,16 +1966,16 @@ test('a declared id absent from the fetched candidate set is reported, never dro
 
 test('a candidate that is both declared and overlapping produces exactly one edge', () => {
   const result = planDependencyEdges({
-    subject: { ...subject({ priority: 3 }), areas: ['app/api'] },
+    subject: { ...subject({ priority: 3 }), areas: ['app/api/x.go'] },
     candidates: [
-      { ...candidate({ priority: 1 }), areas: ['app/api'] },
+      { ...candidate({ priority: 1 }), areas: ['app/api/x.go'] },
       // The same issue arriving again under its uuid rather than its identifier.
       {
         id: 'uuid-candidate',
         priority: 1,
         createdAt: '2026-01-02T00:00:00.000Z',
         stateName: 'Planned',
-        areas: ['app/api'],
+        areas: ['app/api/x.go'],
       },
     ],
     declaredRelatedIds: ['uuid-candidate'],
@@ -2017,14 +2023,23 @@ test('an empty candidate set reports could-not-evaluate, not a clean pass', () =
 test('edges are ordered by candidate identifier regardless of input order', () => {
   const build = (order) =>
     planDependencyEdges({
-      subject: { ...subject({ priority: 3 }), areas: ['app/api'] },
+      subject: { ...subject({ priority: 3 }), areas: ['app/api/x.go'] },
       candidates: order,
       stateRoles: STATE_ROLES,
       epicLabel: 'Epic',
     }).edges.map((edge) => edge.identifier)
-  const a = { ...candidate({ id: 'uuid-a', identifier: 'TCK-A', priority: 1 }), areas: ['app/api'] }
-  const b = { ...candidate({ id: 'uuid-b', identifier: 'TCK-B', priority: 1 }), areas: ['app/api'] }
-  const c = { ...candidate({ id: 'uuid-c', identifier: 'TCK-C', priority: 1 }), areas: ['app/api'] }
+  const a = {
+    ...candidate({ id: 'uuid-a', identifier: 'TCK-A', priority: 1 }),
+    areas: ['app/api/x.go'],
+  }
+  const b = {
+    ...candidate({ id: 'uuid-b', identifier: 'TCK-B', priority: 1 }),
+    areas: ['app/api/x.go'],
+  }
+  const c = {
+    ...candidate({ id: 'uuid-c', identifier: 'TCK-C', priority: 1 }),
+    areas: ['app/api/x.go'],
+  }
   assert.deepEqual(build([a, b, c]), ['TCK-A', 'TCK-B', 'TCK-C'])
   assert.deepEqual(
     build([c, a, b]),
@@ -2174,11 +2189,11 @@ test('a declared id that expansion resolves is not ALSO reported unresolved', ()
     id: 'uuid-child',
     identifier: 'TCK-C',
     priority: 1,
-    areas: ['app/api'],
+    areas: ['app/api/x.go'],
   })
   const expanded = planDependencyEdges({
     subject: subject(),
-    subjectAreas: ['app/api'],
+    subjectAreas: ['app/api/x.go'],
     candidates: [parent],
     declaredRelatedIds: ['TCK-C'],
     childrenByParentId: { 'uuid-parent': [child] },
@@ -2193,7 +2208,7 @@ test('a declared id that expansion resolves is not ALSO reported unresolved', ()
   )
   const unexpanded = planDependencyEdges({
     subject: subject(),
-    subjectAreas: ['app/api'],
+    subjectAreas: ['app/api/x.go'],
     candidates: [parent],
     declaredRelatedIds: ['TCK-C'],
     stateRoles: STATE_ROLES,
@@ -2534,7 +2549,7 @@ test('BOS-1327 shared: every classifier result carries a shared array', () => {
   assert.deepEqual(overlapping.shared, ['app/api/x.go'])
   assert.equal(overlapping.edge, 'relatedTo')
   for (const row of [
-    classify({ subjectAreas: ['app/api'], candidateAreas: ['app/web'] }),
+    classify({ subjectAreas: ['app/api/x.go'], candidateAreas: ['app/web'] }),
     classify({ subject: subject({ labels: ['Epic'] }) }),
     classify({ candidate: candidate({ id: 'uuid-subject', identifier: 'TCK-1' }) }),
     classify({ candidate: candidate({ labels: ['Epic'] }) }),
@@ -2543,9 +2558,9 @@ test('BOS-1327 shared: every classifier result carries a shared array', () => {
     assert.deepEqual(row.shared, [], `${row.reason} must still carry shared: []`)
   }
   const set = planDependencyEdges({
-    subject: { ...subject({ epicParentId: 'uuid-epic' }), areas: ['app/api'] },
+    subject: { ...subject({ epicParentId: 'uuid-epic' }), areas: ['app/api/x.go'] },
     candidates: [
-      { ...candidate({ priority: 1 }), areas: ['app/api'] },
+      { ...candidate({ priority: 1 }), areas: ['app/api/x.go'] },
       { ...candidate({ id: 'uuid-s', identifier: 'TCK-S' }), epicParentId: 'uuid-epic' },
     ],
     declaredRelatedIds: ['TCK-99'],
@@ -2555,7 +2570,7 @@ test('BOS-1327 shared: every classifier result carries a shared array', () => {
   for (const entry of [...set.edges, ...set.skipped]) {
     assert.ok(Array.isArray(entry.shared), `${entry.reason} record must carry a shared array`)
   }
-  assert.deepEqual(set.edges[0].shared, ['app/api'])
+  assert.deepEqual(set.edges[0].shared, ['app/api/x.go'])
 })
 
 test('BOS-1327 no-candidate-areas: an all-arealess candidate set could not evaluate', () => {
@@ -2926,7 +2941,7 @@ test('BOS-1337 fileShared: only a same FILE is file-shared; containment is share
   assert.deepEqual(wide, { overlap: false, shared: [], fileShared: [] })
 })
 
-test('containment reports the containing area in both orders and in the note', () => {
+test('containment reports the containing area in both orders without a note', () => {
   for (const [subjectAreas, candidateAreas] of [
     [['app/api/new.go'], ['app/api']],
     [['app/api'], ['app/api/new.go']],
@@ -2938,8 +2953,7 @@ test('containment reports the containing area in both orders and in the note', (
     })
     const row = classify({ subjectAreas, candidateAreas })
     assert.equal(row.reason, 'directory-overlap')
-    assert.ok(row.note.text.includes('(shared: app/api)'))
-    assert.ok(!row.note.text.includes('new.go'))
+    assert.equal(row.note, null)
   }
 })
 
@@ -2973,7 +2987,7 @@ test('mixed overlap preserves same-file evidence alongside the containing direct
   assert.deepEqual(row.shared, ['app/api/x.go', 'app/web'])
 })
 
-test('BOS-1337 directory-overlap: a directory-only pair is relatedTo in every direction', () => {
+test('BOS-1337 directory-overlap: a directory-only pair relates nothing in every direction', () => {
   const prose = areas(
     '## Planning\n\n- Contract: v1\n\nThe callback dispatcher in services/boss drops the retry when the chat closes.\n',
     { moduleRoots: ['services'] },
@@ -2994,12 +3008,11 @@ test('BOS-1337 directory-overlap: a directory-only pair is relatedTo in every di
       'services/bosso/internal/server',
     ],
     ['prose fallback', ['services/boss/cmd/x.go'], prose.areas, 'services/boss'],
-    ['extensionless file', ['Makefile'], ['Makefile'], 'makefile'],
   ]) {
     const row = classify({ subjectAreas, candidateAreas })
-    assert.equal(row.edge, 'relatedTo', label)
+    assert.equal(row.edge, 'none', label)
     assert.equal(row.reason, 'directory-overlap', label)
-    assert.equal(row.basis, 'overlap', label)
+    assert.equal(row.basis, null, label)
     assert.equal(row.write, null, label)
     assert.equal(row.question, null, `${label}: never reaches orientation`)
     assert.deepEqual(row.shared, [shared], label)
@@ -3014,11 +3027,7 @@ test('BOS-1337 directory-overlap: a directory-only pair is relatedTo in every di
         )
       }
     }
-    assert.equal(row.note.severity, 'info', label)
-    assert.equal(row.note.destination, 'planning', label)
-    assert.equal(row.note.reason, 'directory-overlap', label)
-    assert.ok(row.note.text.includes(`(shared: ${shared})`), `${label}: the note names shared`)
-    assert.ok(row.note.text.includes('TCK-1') && row.note.text.includes('TCK-2'), label)
+    assert.equal(row.note, null, label)
   }
   // Non-vacuity: the same file named on both sides is a different reason, still non-blocking.
   const sameFile = classify({
@@ -3038,8 +3047,8 @@ test('BOS-1337 directory-overlap: cleared state and a logical basis both take pr
   })
   assert.equal(
     cleared.reason,
-    'candidate-cleared',
-    'rung 4 still drops a cleared candidate quietly',
+    'directory-overlap',
+    'containment never establishes a basis for rung 4',
   )
   assert.equal(cleared.note, null)
   const logical = classify({
@@ -3051,27 +3060,28 @@ test('BOS-1337 directory-overlap: cleared state and a logical basis both take pr
   })
   assert.equal(logical.reason, 'oriented-by-logical', 'a logical basis is untouched')
   assert.deepEqual(logical.write, { id: 'uuid-subject', blockedBy: ['uuid-candidate'] })
-  // The relation still needs both ids: an id-less side stops it, as it stops a blocking write.
+  // Containment never reaches the id guard because it establishes no basis.
   const idless = classify({
     candidate: { priority: 3, stateName: 'Planned', stateType: 'unstarted', labels: [] },
     subjectAreas: ['app/api'],
     candidateAreas: ['app/api/x.go'],
   })
-  assert.equal(idless.reason, 'unidentifiable-issue')
+  assert.equal(idless.reason, 'directory-overlap')
   assert.equal(idless.edge, 'none')
 })
 
-test('BOS-1337 set level: a directory-only pair lands in edges as a related-only verdict', () => {
+test('BOS-1337 set level: a directory-only pair is skipped with no dependencies', () => {
   const result = planDependencyEdges({
     subject: { ...subject(), areas: ['app/api/x.go'] },
     candidates: [{ ...candidate(), areas: ['app/api'] }],
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
   })
-  assert.equal(result.edges.length, 1)
-  assert.equal(result.edges[0].reason, 'directory-overlap')
+  assert.equal(result.edges.length, 0)
+  assert.equal(result.skipped[0].reason, 'directory-overlap')
+  assert.deepEqual(result.notes, [])
   assert.equal(result.questions.length, 0)
-  assert.equal(dependencyScanVerdict(result).verdict, 'related-only')
+  assert.equal(dependencyScanVerdict(result).verdict, 'no-dependencies')
 })
 
 // ---------------------------------------------------------------------------
@@ -3085,7 +3095,7 @@ test('BOS-1337 set level: a directory-only pair lands in edges as a related-only
 // in the commit — never delete one to make the table pass.
 const EXTRACTOR_CONTROL_CORPUS = [
   {
-    name: 'prose fallback: a slashed directory in a sentence is an area (U2 makes it relatedTo)',
+    name: 'prose fallback: a slashed directory in a sentence is an area (containment relates nothing)',
     description:
       '## Planning\n\n- Contract: v1\n\nThe callback dispatcher in services/boss drops the retry when the chat closes.\n',
     moduleRoots: ['services'],
@@ -3572,4 +3582,60 @@ test('BOS-1362: a known root file is an area when marked or a split lead, unreso
     unresolved: [],
     referenced: [],
   })
+})
+
+test('BOS-2371: glob and mirror containment cannot relate tickets; exact mirror files can', () => {
+  const glob = areas(planBody('- `services/api/**/eom_*_test.go`'), { moduleRoots: ['services'] })
+  assert.deepEqual(glob.areas, ['services/api'])
+  for (const [subjectAreas, candidateAreas] of [
+    [glob.areas, ['services/api/internal/service/x.go']],
+    [['.codex/skills'], ['.codex/skills/foo/SKILL.md']],
+    [['services/api'], ['services/api']],
+  ]) {
+    const row = classify({ subjectAreas, candidateAreas })
+    assert.equal(row.edge, 'none')
+    assert.equal(row.basis, null)
+    assert.equal(row.note, null)
+    assert.equal(row.write, null)
+  }
+  const row = classify({
+    subjectAreas: ['.codex/skills/foo/SKILL.md'],
+    candidateAreas: ['.codex/skills/foo/SKILL.md'],
+  })
+  assert.equal(row.reason, 'file-overlap')
+  assert.equal(row.edge, 'relatedTo')
+})
+
+test('BOS-2371: known root files establish same-file overlap after normalization', () => {
+  assert.deepEqual(
+    areasOverlap(['Makefile'], ['Makefile'], { knownFiles: ['Makefile'] }).fileShared,
+    ['makefile'],
+  )
+  const input = { subjectAreas: ['Makefile'], candidateAreas: ['Makefile'] }
+  assert.equal(classify(input).edge, 'none')
+  assert.equal(classify({ ...input, rootFiles: ['Makefile'] }).reason, 'file-overlap')
+  const result = planDependencyEdges({
+    subject: { ...subject(), areas: ['Makefile'] },
+    candidates: [{ ...candidate(), areas: ['Makefile'] }],
+    rootFiles: ['Makefile'],
+    stateRoles: STATE_ROLES,
+  })
+  assert.equal(result.edges[0].reason, 'file-overlap')
+})
+
+test('BOS-2371: verify-only declarations are references while a mode flag still edits', () => {
+  for (const body of [
+    '- `services/x/a.go` (verify-only): confirm the guard holds',
+    '- `services/x/a.go`: verify-only',
+  ]) {
+    const row = areas(planBody(body), { moduleRoots: ['services'] })
+    assert.deepEqual(row.areas, [])
+    assert.deepEqual(row.referenced, ['services/x/a.go'])
+  }
+  assert.deepEqual(
+    areas(planBody('- `services/x/a.go`: add a verify-only mode flag'), {
+      moduleRoots: ['services'],
+    }).areas,
+    ['services/x/a.go'],
+  )
 })

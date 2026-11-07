@@ -1999,6 +1999,33 @@ test('deps: the usage line names the verb, and --subject is required', () => {
   assert.match(res.stderr, /deps <deps-in\.json> <candidates\.json> --subject <ISSUE-ID>/)
 })
 
+test('deps: nested extensionless files relate only tickets naming that same file', () => {
+  const dir = depsRepo()
+  mkdirSync(path.join(dir, 'app', 'nested'), { recursive: true })
+  writeFileSync(path.join(dir, 'app', 'nested', 'Makefile'), 'all:\n')
+  assert.equal(gitIn(dir, 'add', '.').status, 0)
+  assert.equal(gitIn(dir, 'commit', '-q', '-m', 'nested makefile').status, 0)
+  for (const [candidatePath, expectedEdges] of [
+    ['app/nested/Makefile', 1],
+    ['app/nested', 0],
+    ['app/nested/other', 0],
+  ]) {
+    const res = runDeps(dir, {
+      rows: [
+        depsRow({ description: depsDescription(['- `app/nested/Makefile`: edit']) }),
+        depsCandidate({ description: depsDescription([`- \`${candidatePath}\`: edit`]) }),
+      ],
+    })
+    assert.equal(res.status, 0, res.stderr)
+    const result = JSON.parse(res.stdout)
+    assert.equal(result.edges.length, expectedEdges, candidatePath)
+    if (expectedEdges) {
+      assert.equal(result.edges[0].reason, 'file-overlap')
+      assert.equal(result.edges[0].edge, 'relatedTo')
+    }
+  }
+})
+
 test('listRepoRootEntries splits root blobs from trees', () => {
   const dir = depsRepo()
   const entries = listRepoRootEntries(dir)

@@ -297,6 +297,20 @@ export const PLAN_SCRATCH_FAMILIES = [
     '^SEG\\.image-guard-new\\.md$',
   ),
   fam(
+    'image-guard-base',
+    '<ISSUE-ID>.image-guard-base.md',
+    'the settled stored description used as the base of a second description save',
+    ({ issueId }) => `${issueId}.image-guard-base.md`,
+    '^SEG\\.image-guard-base\\.md$',
+  ),
+  fam(
+    'read-receipt',
+    '<ISSUE-ID>.read-receipt.json',
+    'the receipt of the latest settle-aware description read',
+    ({ issueId }) => `${issueId}.read-receipt.json`,
+    '^SEG\\.read-receipt\\.json$',
+  ),
+  fam(
     'image-guard-final',
     '<ISSUE-ID>.image-guard-final.md',
     "the exact bytes of the run's final description save, the write-back check's intended input",

@@ -800,6 +800,7 @@ type StreamClient struct {
 	coalesceWindow   time.Duration
 	refreshInterval  time.Duration
 	refreshThreshold time.Duration
+	cloudControlPoll time.Duration
 
 	// sessionDeltaSeq survives reconnects and distinguishes repeated transitions.
 	sessionDeltaSeq atomic.Uint64
@@ -1093,6 +1094,9 @@ type StreamClientConfig struct {
 	// RefreshInterval is how often the token refresher wakes. Zero picks
 	// 60s (decision #2).
 	RefreshInterval time.Duration
+	// CloudControlPollInterval is how often the stream re-reads the local
+	// cloud_control mode. Zero picks defaultCloudControlPollInterval.
+	CloudControlPollInterval time.Duration
 	// RefreshThreshold is how much headroom we keep before expiry before
 	// forcing a refresh. Zero picks 60s.
 	RefreshThreshold time.Duration
@@ -1164,6 +1168,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		coalesceWindow:   window,
 		refreshInterval:  refreshInterval,
 		refreshThreshold: refreshThreshold,
+		cloudControlPoll: cfg.CloudControlPollInterval,
 	}
 	client.sessionDeltaSeq.Store(uint64(clock.Now().UnixNano()))
 	return client
@@ -1465,9 +1470,13 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 		c.runWriter(streamCtx, stream, outbound)
 	})
 
-	// 3. Delta forwarder.
+	// 3. Delta forwarder, and the cloud-control watcher that re-sends the
+	//    snapshot when the operator changes the mode locally.
 	forwarderDone := safego.Go(c.logger, func() {
 		c.subscribeDeltas(streamCtx, outbound)
+	})
+	cloudControlDone := safego.Go(c.logger, func() {
+		c.watchCloudControl(streamCtx, snap.GetCloudControl(), outbound)
 	})
 
 	// 4. Token refresher. Drives outbound on refresh; returning an error
@@ -1506,6 +1515,7 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	c.cancelAndWaitSessionAttaches()
 	c.joinWebhookLane()
 	<-forwarderDone
+	<-cloudControlDone
 	<-refresherDone
 
 	// Drain the refresh error channel so its error takes precedence

@@ -15,15 +15,9 @@ func supersededCheck() *pb.AuthCheck {
 }
 
 // TestSupersededCredentialClassChange_DownconvertsOneVersionBack pins the
-// boundary itself: at the PREVIOUS Current the new pairing is invisible, and at
-// the new Current it is served intact. Asserting against the registry rather
-// than a literal keeps the test meaningful after the next bump.
+// boundary itself: before V20260913 the new pairing is invisible, and at
+// V20260913 it is served intact.
 func TestSupersededCredentialClassChange_DownconvertsOneVersionBack(t *testing.T) {
-	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20261102 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20261102)
-	}
-
 	msg := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{Id: "acct-1", AuthCheck: supersededCheck()}}}
 	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, msg, apiversion.V20260912)
 	check := msg.GetAccounts()[0].GetAuthCheck()

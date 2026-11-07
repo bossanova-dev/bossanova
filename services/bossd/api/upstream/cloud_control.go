@@ -1,7 +1,6 @@
 package upstream
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 
@@ -70,5 +69,5 @@ func (c *StreamClient) cloudControlCommandRefusal(mode pb.CloudControl, cmd *pb.
 }
 
 func (c *StreamClient) cloudControlRefusal() string {
-	return fmt.Sprintf("cloud control is read-only on %s; set `cloud_control` to `full` in that machine's local settings.json to allow it", c.hostname)
+	return daemoncaps.CloudControlDisabledText(c.hostname)
 }

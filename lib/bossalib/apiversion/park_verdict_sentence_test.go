@@ -54,6 +54,8 @@ func TestParkVerdictSentenceFixtureCompatibility_Sessions_AC215002(t *testing.T)
 				if r.Label != "" {
 					want += ": " + r.Label
 				}
+			case "human-review:policy", "human-review:judge", "human-review:api-contract", "human-review:infra", "human-review:asks", "human-review:size":
+				want = "Needs a sign-off"
 			case "ledger-open":
 				want = "The PR checklist has open items"
 				if r.OpenItems == 1 {

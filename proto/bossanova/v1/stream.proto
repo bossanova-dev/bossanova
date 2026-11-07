@@ -293,6 +293,12 @@ message DaemonSnapshot {
   CloudControl cloud_control = 10;
   // Presentation hint only; enforcement remains local.
   bool is_terminal_sealing_supported = 11;
+  // True when this daemon re-sends DaemonSnapshot whenever its local
+  // cloud_control mode changes. Only then is cloud_control fresh enough for
+  // bosso to refuse a control command without forwarding it. False on daemons
+  // that advertise the mode only at connect; bosso forwards every command to
+  // those, so a local opt-in still takes effect on the next command.
+  bool has_cloud_control_updates = 12;
 }
 
 // CallbackInterest advertises that a daemon holds one or more active GitHub

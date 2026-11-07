@@ -6,6 +6,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "apiversion",
     srcs = [
+        "cloud_control_disabled.go",
         "daemon_lacks_command.go",
         "github_app_unavailable.go",
         "interceptor.go",
@@ -43,6 +44,7 @@ go_test(
         "blocked_park_attention_test.go",
         "candidate_hold_label_test.go",
         "changelogversion_test.go",
+        "cloud_control_disabled_test.go",
         "daemon_lacks_command_test.go",
         "dead_bootstrap_attention_test.go",
         "ended_block_hint_test.go",

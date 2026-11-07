@@ -50,12 +50,18 @@ const (
 // reviewAreaNouns are the short nouns a sign-off park code names its review
 // area with when the park serves no asks.
 var reviewAreaNouns = map[string]string{
-	"human-review:ui":       "UI",
-	"human-review:security": "security",
-	"human-review:database": "database",
-	"human-review:unproven": "unproven checks",
-	"always-human-path":     "protected path",
-	"no-receipt":            "latest commit",
+	"human-review:ui":           "UI",
+	"human-review:security":     "security",
+	"human-review:database":     "database",
+	"human-review:policy":       "merge policy",
+	"human-review:judge":        "verify judge",
+	"human-review:api-contract": "API contract",
+	"human-review:infra":        "infrastructure",
+	"human-review:asks":         "review area",
+	"human-review:size":         "change size",
+	"human-review:unproven":     "unproven checks",
+	"always-human-path":         "protected path",
+	"no-receipt":                "latest commit",
 }
 
 // RowStatus is the row's STATUS phrase and its optional detail line for att,

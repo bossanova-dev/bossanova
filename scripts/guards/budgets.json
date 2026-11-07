@@ -278,11 +278,11 @@
       "skills-toolbox/plan/plan-epic-lib.mjs": 1040,
       "skills-toolbox/plan/plan-image-guard.mjs": 1413,
       "skills-toolbox/plan/plan-run-guards.mjs": 1182,
-      "skills-toolbox/plan/plan-writeback-verify.mjs": 1083,
+      "skills-toolbox/plan/plan-writeback-verify.mjs": 1101,
       "skills-toolbox/pr-check-state.mjs": 1177,
       "skills-toolbox/retro/retro-notes.mjs": 1349,
       "skills-toolbox/skill-config.mjs": 3883,
-      "skills-toolbox/tracker/cli.mjs": 1240,
+      "skills-toolbox/tracker/cli.mjs": 1131,
       "skills-toolbox/tracker/linear.mjs": 1125,
       "skills-toolbox/verify/verify-gate.mjs": 4675,
       "skills-toolbox/verify/verify-route.mjs": 1158

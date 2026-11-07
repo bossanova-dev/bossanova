@@ -678,6 +678,10 @@ const V20261101 Version = "2026-11-01"
 // instead of "needs In Review". Older pins keep their previous labels.
 const V20261102 Version = "2026-11-02"
 
+// V20261103 ships CloudControlDisabledCodeChange: read-only daemon refusals
+// return FailedPrecondition; older pins retain Aborted.
+const V20261103 Version = "2026-11-03"
+
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions. The slice is ordered oldest→newest and its last member is Current
 // (the newest behavior). At most one trailing member is unreleased: every
@@ -747,8 +751,9 @@ func DefaultRegistry() *Registry {
 			V20261031,
 			V20261101,
 			V20261102,
+			V20261103,
 		},
-		V20261102,
+		V20261103,
 		Baseline,
 	)
 	if err != nil {
@@ -902,4 +907,10 @@ func IsMemberOrganizationCloudAccess(ctx context.Context) bool {
 // outputs and cannot supply a request field an older client cannot send.
 func IsMergeHeadRequired(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260930, "IsMergeHeadRequired")
+}
+
+// IsCloudControlPrecondition reports whether streaming handlers use the new
+// read-only refusal code; streaming errors bypass the compatibility transform.
+func IsCloudControlPrecondition(ctx context.Context) bool {
+	return gateAtLeast(ctx, V20261103, "IsCloudControlPrecondition")
 }

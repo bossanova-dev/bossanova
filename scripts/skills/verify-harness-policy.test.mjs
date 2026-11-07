@@ -1,7 +1,7 @@
 // The repo's verify policy parks visual changes, migrations, authentication, billing,
 // credentials and API contracts, plus infrastructure, CI and the verify judge itself.
 // The evidence harness and ordinary skill markdown remain unparked. Policy-surface edits
-// still park every category because they control the judge and its extension dispatch.
+// still ask for review because they control the judge and its extension dispatch.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -33,7 +33,7 @@ const POLICY_SURFACE_PATHS = [
   '.codex/skills/boss-verify-evidence/SKILL.md',
 ]
 const CONTROL_PATH = 'services/bossd/internal/session/tmux_chat.go'
-const ALL_CATEGORIES = ['always-human-path']
+const POLICY_REASONS = ['human-review:asks']
 
 for (const changes of [0, 2, undefined]) {
   test(`area mapping preserves UI rename changes ${changes} without a patch`, () => {
@@ -61,13 +61,13 @@ const SAMPLE_PATHS = [
   ['services/web/src/shared/ui/Button.test.tsx', ['human-review:ui']],
   ['services/web/src/lib/x.ts', []],
   ['lib/ui-tokens/index.css', ['human-review:ui']],
-  ['lib/ui-tokens/package.json', ['always-human-path']],
+  ['lib/ui-tokens/package.json', ['human-review:asks']],
   ['services/web/index.html', ['human-review:ui']],
   ['services/web/public/_headers', []],
   ['services/marketing/src/pages/index.astro', ['human-review:ui']],
   ['services/marketing/public/_redirects', []],
   ['services/docs/docs/intro.md', ['human-review:ui']],
-  ['services/docs/package.json', ['always-human-path']],
+  ['services/docs/package.json', ['human-review:asks']],
   ['services/docs/styles/BossanovaProse/BannedWords.yml', ['human-review:ui']],
   ['services/boss/api/tui/home/home_view.go', ['human-review:ui']],
   ['services/bosso/internal/auth/x.go', ['human-review:security']],
@@ -76,7 +76,7 @@ const SAMPLE_PATHS = [
   ['.github/workflows/ci.yml', ['always-human-path']],
   ['infra/environments/main.tf', ['always-human-path']],
   ['services/bossd/internal/db/session_store.go', []],
-  ['.claude/skills/boss-build-ce/SKILL.md', ['always-human-path']],
+  ['.claude/skills/boss-build-ce/SKILL.md', ['human-review:asks']],
   ['docs/skills/factory.md', []],
   ['services/bosso/api/orchestrator/agentaccounts/credentials.go', ['human-review:security']],
   ['services/bossd/internal/devicekey/devicekey.go', ['human-review:security']],
@@ -88,7 +88,7 @@ const SAMPLE_PATHS = [
     'lib/bossalib/contract/plugin/skillpayload/skills/boss-verify/toolbox/verify/verify-gate.mjs',
     ['always-human-path'],
   ],
-  ['.claude/settings.json', ['always-human-path']],
+  ['.claude/settings.json', ['human-review:asks']],
 ]
 
 // Facts for a head that passes every other gate: open, ready, CI settled and green on the head,
@@ -195,19 +195,19 @@ test('harness edits mixed with ordinary changes ask for review', () => {
 
 // The gate counts the policy surface while the base policy is configured.
 for (const path of POLICY_SURFACE_PATHS) {
-  test(`a PR touching ${path} still parks for every category`, () => {
+  test(`a PR touching ${path} still asks for review`, () => {
     const facts = factsFor([path])
     assert.equal(facts.policySurfaceHit, true)
     const r = decideVerdict(facts)
     assert.equal(r.verdict, 'human')
-    assert.deepEqual(r.reasons, ALL_CATEGORIES)
+    assert.deepEqual(r.reasons, POLICY_REASONS)
   })
 }
 
 test('a policy-surface edit mixed with harness edits still parks', () => {
   const r = decideVerdict(factsFor([HARNESS_PATHS[0], POLICY_SURFACE_PATHS[1]]))
   assert.equal(r.verdict, 'human')
-  assert.deepEqual(r.reasons, ALL_CATEGORIES)
+  assert.deepEqual(r.reasons, POLICY_REASONS)
 })
 
 test('a PR outside the review paths and the policy surface passes', () => {

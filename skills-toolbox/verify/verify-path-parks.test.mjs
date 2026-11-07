@@ -47,3 +47,10 @@ test('empty policy does not park its surface; applicability scripts do with a po
     true,
   )
 })
+
+test('an infrastructure-only prediction names infrastructure', () => {
+  assert.deepEqual(
+    predictPathParks(['infra/main.tf'], { review: reviewPolicyFromBlock(null) }).codes,
+    ['human-review:infra'],
+  )
+})

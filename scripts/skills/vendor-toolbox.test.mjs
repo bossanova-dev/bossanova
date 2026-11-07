@@ -729,6 +729,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       // vendors. An installed tree carrying the gate without it is an import that cannot RESOLVE.
       'tracker/outcome.mjs',
       'tracker/preflight.mjs',
+      'tracker/read-description.mjs',
+      'tracker/settle-read.mjs',
       'verify/verify-contract.mjs',
       'verify/verify-describe.mjs',
       'verify/verify-proof.mjs',

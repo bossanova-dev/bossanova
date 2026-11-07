@@ -32,7 +32,7 @@ test('a matching module cap lowers High and leads its label, reason and park ban
   assert.match(lead[0], /services\/a.*2026-10-29/)
   assert.match(lead[0], /#1.*#3/)
   assert.match(lead[0], /clear --area other:services\/a --reason/)
-  assert.deepEqual(legacyCodes(result), ['always-human-path'])
+  assert.deepEqual(legacyCodes(result), ['human-review:asks'])
   assert.equal(
     levelConfidence({
       ...gate,

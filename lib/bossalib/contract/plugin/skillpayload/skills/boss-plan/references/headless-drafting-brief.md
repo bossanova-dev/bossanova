@@ -192,6 +192,8 @@ orchestrator does). Template:
 
 - `<repo-relative path>`: <what>
 
+Name each file the change edits, including the exact mirror path (for example `.codex/skills/<name>/SKILL.md`); a directory or glob entry relates no tickets.
+
 ## Why this needs a human
 
 - <needs-human only: the specific blocker(s) that put this beyond an autonomous agent. Omit this entire `## Why this needs a human` heading when the plan is build-ready (`Agent-friendly: yes`).>

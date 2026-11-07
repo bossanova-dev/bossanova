@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-11-02**. The engineering procedure for adding a new
+The current version is **2026-11-03**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/structure/contracts.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/structure/contracts.md)).
 
@@ -1006,7 +1006,7 @@ Every attention also carries `status_phrase`, the row's STATUS words (at most 22
 display cells, never cut with an ellipsis), and `status_detail`, its detail
 line, empty when the row has nothing more to say. Older pins receive both cleared.
 
-### 2026-11-02 — Candidate hold labels (Current)
+### 2026-11-02 — Candidate hold labels
 
 A green PR whose head verify admitted but set aside at its candidate step reads
 a hold label naming why: `CI red to verify`, `CI unsettled`, or `verify unread`
@@ -1014,3 +1014,14 @@ when a candidate read failed. A ticket-line PR no verify scan decided reads
 `not scanned`. Older pins receive `queued` for the three candidate holds and
 `needs In Review` for `not scanned`, in both `progress_label` and
 `status_phrase`.
+
+### 2026-11-03 — Read-only cloud control (Current)
+
+Commands refused by a daemon's read-only cloud control policy return
+`failed_precondition` with the machine's local opt-in instructions. Older pins
+retain `aborted` for these refusals, including session creation streams. Other
+precondition failures keep their existing codes. Commands reach the daemon's
+current local policy even when its advertised snapshot mode is stale.
+
+`ListDaemons` adds `cloud_control` to daemon inventory rows. An unspecified value
+means the connected daemon or ownership publisher predates the advertisement.

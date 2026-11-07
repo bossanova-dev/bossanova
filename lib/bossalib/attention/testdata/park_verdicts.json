@@ -71,6 +71,62 @@
   },
   {
     "codes": [
+      "human-review:api-contract"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "an API contract change for a person to review",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · an API contract change for a person to review"
+  },
+  {
+    "codes": [
+      "human-review:api-contract"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
+      "human-review:asks"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "a change in an area verify asks a person to review",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · a change in an area verify asks a person to review"
+  },
+  {
+    "codes": [
+      "human-review:asks"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
       "human-review:database"
     ],
     "label": "",
@@ -99,6 +155,90 @@
   },
   {
     "codes": [
+      "human-review:infra"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "an infrastructure change for a person to review",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · an infrastructure change for a person to review"
+  },
+  {
+    "codes": [
+      "human-review:infra"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
+      "human-review:judge"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "the verify judge flagged a risk for a person to review",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · the verify judge flagged a risk for a person to review"
+  },
+  {
+    "codes": [
+      "human-review:judge"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
+      "human-review:policy"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "the repo's merge policy holds this change for a person",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · the repo's merge policy holds this change for a person"
+  },
+  {
+    "codes": [
+      "human-review:policy"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
       "human-review:security"
     ],
     "label": "",
@@ -114,6 +254,34 @@
   {
     "codes": [
       "human-review:security"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
+      "human-review:size"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "the change is larger than most merged PRs here",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · the change is larger than most merged PRs here"
+  },
+  {
+    "codes": [
+      "human-review:size"
     ],
     "label": "the verify judge (cannot grade itself)",
     "evidenceUrl": "",

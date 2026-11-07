@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { AREAS } from './verify-areas.mjs'
 import { confidence } from './verify-confidence.mjs'
 import { levelFacts, legacyCodes, levelLabel, parkLevel, levelNoteLead } from './verify-level.mjs'
 
@@ -67,7 +68,7 @@ test('proof, policy, size, and missing collectors affect confidence', () => {
   assert.equal(confidence(levelFacts({ ...facts, policySurfaceHit: true })).level, 'moderate')
   const large = confidence(levelFacts({ ...facts, changedLines: 201 }))
   assert.equal(large.level, 'low')
-  assert.deepEqual(legacyCodes(large), ['always-human-path'])
+  assert.deepEqual(legacyCodes(large), ['human-review:size'])
   assert.deepEqual(legacyCodes(confidence(levelFacts({ ...facts, changedPaths: null }))), [
     'cannot-assess',
   ])
@@ -123,9 +124,39 @@ test('judge additions ask for review with their grounded file and reason', () =>
   }
   const result = confidence(levelFacts(facts, { judgeAreas: [area] }))
   assert.equal(result.level, 'moderate')
-  assert.deepEqual(legacyCodes(result), ['always-human-path'])
+  assert.deepEqual(legacyCodes(result), ['human-review:judge'])
   assert.ok(levelLabel(result).includes(area.label))
   assert.ok(
     result.reasons.some((reason) => reason.includes(area.paths[0]) && reason.includes(area.reason)),
   )
+})
+
+test('asks identify their source, including builtins unwrapped from caps', () => {
+  const rows = [
+    ['api-contract', 'builtin', 'human-review:api-contract'],
+    ['infra', 'builtin', 'human-review:infra'],
+    ['agent-rules', 'builtin', 'human-review:asks'],
+    ['dependencies', 'builtin', 'human-review:asks'],
+    ['verify-policy', 'builtin', 'human-review:asks'],
+    ['config:Protected', 'config', 'always-human-path'],
+    ['extension:always-human-path', 'extension', 'always-human-path'],
+    ['api-contract', 'cap', 'human-review:api-contract'],
+  ]
+  for (const [area, source, code] of rows) {
+    const result = { level: 'moderate', asks: [{ area, source, cap: { key: area } }] }
+    assert.deepEqual(
+      legacyCodes(result, { alwaysReview: [{ name: 'Protected', parkCode: 'always-human-path' }] }),
+      [code],
+      area,
+    )
+  }
+  for (const { area, label } of AREAS.filter(
+    ({ area }) => !['housekeeping', 'other'].includes(area),
+  )) {
+    const result = confidence(
+      levelFacts({ ...facts, areas: [{ area, label, defaultAsk: 'always', source: 'builtin' }] }),
+    )
+    assert.ok(!legacyCodes(result).includes('always-human-path'), area)
+    assert.ok(legacyCodes(result).length > 0, area)
+  }
 })

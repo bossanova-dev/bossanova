@@ -1253,6 +1253,8 @@ message DaemonInfo {
   string organization_id = 7;
   // Public signing identity, included only for the calling user's own daemons.
   bytes identity_public_key = 8;
+  // Advertised mode for UX; the daemon enforces its local policy.
+  CloudControl cloud_control = 9;
 }
 
 // DaemonRef is the minimal identity needed to filter sessions served by a

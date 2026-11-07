@@ -680,10 +680,33 @@ Webhook behavior:
 `cloud_control` selects the cloud's authority on this machine. The default is `read-only`:
 viewing remains available, while commands that change local state, terminal input and uploads
 are refused. Terminal viewers cannot resize the operator's pane, and account lists do not refresh
-provider credentials. Set `"cloud_control": "full"` in the local `settings.json` to allow control.
-Only the exact lowercase `full`, with surrounding whitespace allowed, enables control; missing,
-empty and unknown values resolve to `read-only`.
+provider credentials. Change the mode locally with:
+
+```sh
+boss settings --cloud-control private
+boss settings --cloud-control full
+boss settings --cloud-control read-only
+boss settings
+```
+
+The summary reports the resolved mode, including the default or an unrecognised stored value.
+In the TUI, open Settings → General → **Cloud control**. The selector cycles through `private`,
+`read-only` and `full` with Enter or Space; Left and Right choose the previous or next value.
+Only selecting `full` requires confirmation: anyone acting as you in Boss Cloud has permission to drive
+agents on this machine. Cancelling keeps the previous value. Choosing `private` or `read-only`
+saves immediately. Both controls persist your explicit choice in `settings.json`; no restart is needed.
+The web keeps a chat preview it already has until that chat next changes.
+
+Choose `private` through either local control, or set `"cloud_control": "private"` in the local
+`settings.json`, to keep content-bearing observe
+commands and terminal attach on this machine. Metadata lists and statuses remain available, while
+transcripts, notes, cron and callback prompts, tracker issue descriptions and terminal output are
+refused. Outbound session/chat metadata is still sent; this setting does not yet trim titles or output
+previews in events.
+
+Only the exact lowercase `full` and `private`, with surrounding whitespace allowed, select those
+modes; missing, empty and unknown values resolve to `read-only`.
 
 This setting is local only. Remote settings calls and MCP cannot read or change it, and an
-`UpdateSettings` save preserves its value. Local edits take effect on the next control decision
+`UpdateSettings` save preserves its value. Local edits take effect on the next command decision
 without restarting bossd. An unreadable settings file fails closed to `read-only`.

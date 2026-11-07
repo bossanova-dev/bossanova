@@ -33,6 +33,7 @@ func (g *Group) SettingsCmd() *cobra.Command {
 	cmd.Flags().String("default-agent", "", "Set the default agent plugin (e.g. claude, opencode)")
 	cmd.Flags().Int("poll-interval", 0, "Set poll interval in seconds (0 = default)")
 	cmd.Flags().String("daemon-name", "", "Set the daemon display name (blank resets to the machine hostname; restart the daemon to apply)")
+	cmd.Flags().String("cloud-control", "", "Cloud control: private, read-only or full (takes effect immediately; no restart needed)")
 	return cmd
 }
 func (g *Group) ConfigCmd() *cobra.Command {
@@ -64,6 +65,42 @@ func settingsDaemonNameLine(s config.Settings, hostname string) string {
 	}
 	return daemonName
 }
+func settingsCloudControlLine(raw string) string {
+	mode := config.ResolveCloudControl(raw)
+	switch strings.TrimSpace(raw) {
+	case "":
+		return string(mode) + " (default)"
+	case string(config.CloudControlPrivate), string(config.CloudControlFull), string(config.CloudControlReadOnly):
+		return string(mode)
+	default:
+		return fmt.Sprintf("%s (unrecognised value %q)", mode, raw)
+	}
+}
+func applyCloudControlFlag(cmd *cobra.Command, s *config.Settings) error {
+	if cmd.Flags().Changed("cloud-control") {
+		v, _ := cmd.Flags().GetString("cloud-control")
+		if v != string(config.CloudControlPrivate) && v != string(config.CloudControlFull) && v != string(config.CloudControlReadOnly) {
+			return fmt.Errorf("cloud-control must be private, read-only or full")
+		}
+		s.CloudControl = v
+	}
+
+	return nil
+}
+
+func printCloudControlWarning(cmd *cobra.Command, s config.Settings) {
+	if !cmd.Flags().Changed("cloud-control") {
+		return
+	}
+	switch config.ResolveCloudControl(s.CloudControl) {
+	case config.CloudControlFull:
+		fmt.Println("Anyone who can act as you in Boss Cloud can then drive agents on this machine.")
+	case config.CloudControlPrivate:
+		fmt.Println("The web app will show sessions on this machine but not their transcripts, terminals, notes, cron prompts or callback prompts.")
+	case config.CloudControlReadOnly:
+	}
+}
+
 func runSettings(cmd *cobra.Command) error {
 	s, err := config.Load()
 	if err != nil {
@@ -80,7 +117,8 @@ func runSettings(cmd *cobra.Command) error {
 		cmd.Flags().Changed("worktree-dir") ||
 		cmd.Flags().Changed("default-agent") ||
 		cmd.Flags().Changed("poll-interval") ||
-		cmd.Flags().Changed("daemon-name")
+		cmd.Flags().Changed("daemon-name") ||
+		cmd.Flags().Changed("cloud-control")
 
 	if !anyChanged {
 		fmt.Printf("  Skip permissions: %v\n", config.PluginConfigBool(&s, "claude", "dangerously_skip_permissions"))
@@ -95,6 +133,7 @@ func runSettings(cmd *cobra.Command) error {
 		fmt.Printf("  Poll interval:    %s seconds\n", interval)
 		hostname, _ := os.Hostname()
 		fmt.Printf("  Daemon name:      %s\n", settingsDaemonNameLine(s, hostname))
+		fmt.Printf("  Cloud control:    %s\n", settingsCloudControlLine(s.CloudControl))
 		return nil
 	}
 
@@ -152,11 +191,16 @@ func runSettings(cmd *cobra.Command) error {
 		s.DaemonName = strings.TrimSpace(v)
 	}
 
+	if err := applyCloudControlFlag(cmd, &s); err != nil {
+		return err
+	}
+
 	if err := config.Save(s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
 
 	fmt.Println("Settings updated.")
+	printCloudControlWarning(cmd, s)
 	if daemonNameChanged {
 		// bossd reads daemon_name only at startup, which is why the TUI row
 		// carries a restart hint on every render.

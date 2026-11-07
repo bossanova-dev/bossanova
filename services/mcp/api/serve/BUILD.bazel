@@ -22,6 +22,7 @@ go_test(
         "contract_test.go",
         "drift_test.go",
         "serve_test.go",
+        "viewer_local_only_test.go",
     ],
     embed = [":serve"],
     deps = [

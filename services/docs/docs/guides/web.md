@@ -126,3 +126,24 @@ Mouse users can hover to highlight a row and click to run it.
 
 The launcher is excluded on the chat-terminal route so that keystrokes
 pass through to the agent session uninterrupted.
+
+## Review screen
+
+Open `/review/<owner>/<name>/<pr>?head=<40-hex-sha>` as a Bossanova Cloud user to review boss's stored PR record. The owner and name are the GitHub repository slug. A supplied head pins the link to that commit; a different current head disables actions and offers a link to the current record.
+
+The screen offers approve and merge, send to repair with a note, and close, each after confirmation. Close abandons the boss session and leaves the GitHub PR open. Proof-page generators link to this route using their manifest's repository slug, PR number and head.
+
+## Encrypt the web terminal
+
+Open **Settings → Terminal encryption**, edit the browser label and choose **Set up this browser**.
+Your private key stays in this browser. Copy the fingerprint and run the displayed
+`boss viewer approve <id> --fingerprint <fingerprint>` command on each of your machines.
+Compare the daemon fingerprint printed by the command with the page, then confirm that they match.
+If a machine identity changes, check it before forgetting the old pin and confirming the replacement.
+
+Pairing prepares terminal encryption; encrypted terminal transport is not available yet.
+A browser without IndexedDB, X25519 or Ed25519 support cannot pair.
+
+**Forget this browser** removes the registry request, browser keys and machine pins. Run
+`boss viewer revoke <id>` on each machine too: deleting the registry request cannot revoke a local
+approval. Clearing browser storage loses the keys; set up the browser again and revoke its old id.

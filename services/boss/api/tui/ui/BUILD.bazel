@@ -27,6 +27,7 @@ go_library(
         "session_title.go",
         "status.go",
         "status_attention.go",
+        "status_confidence.go",
         "status_phrase.go",
         "subscription.go",
         "table.go",

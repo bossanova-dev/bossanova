@@ -25,6 +25,7 @@ go_library(
         "sessions.sql.go",
         "task_mappings.sql.go",
         "trigger_launches.sql.go",
+        "viewer_device_approvals.sql.go",
         "workflows.sql.go",
     ],
     importpath = "github.com/recurser/bossd/internal/db/sqlcgen",

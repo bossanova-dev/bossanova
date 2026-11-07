@@ -6804,6 +6804,21 @@ components:
           $ref: '#/components/schemas/bossanova.v1.VerifyApproveResult'
       title: ApproveSessionPRResponse
       additionalProperties: false
+    bossanova.v1.ApproveViewerDeviceRequest:
+      type: object
+      properties:
+        viewerDeviceId:
+          type: string
+          title: viewer_device_id
+        fingerprint:
+          type: string
+          title: fingerprint
+      title: ApproveViewerDeviceRequest
+      additionalProperties: false
+    bossanova.v1.ApproveViewerDeviceResponse:
+      type: object
+      title: ApproveViewerDeviceResponse
+      additionalProperties: false
     bossanova.v1.ArchiveSessionCommand:
       type: object
       properties:
@@ -8073,6 +8088,7 @@ components:
         - CLOUD_CONTROL_UNSPECIFIED
         - CLOUD_CONTROL_READ_ONLY
         - CLOUD_CONTROL_FULL
+        - CLOUD_CONTROL_PRIVATE
       description: CloudControl is the daemon's locally configured cloud control mode.
     bossanova.v1.CloudTrialEligibility:
       type: string
@@ -10305,6 +10321,10 @@ components:
           title: cloud_control
           description: Presentation only; the daemon enforces its locally configured mode.
           $ref: '#/components/schemas/bossanova.v1.CloudControl'
+        isTerminalSealingSupported:
+          type: boolean
+          title: is_terminal_sealing_supported
+          description: Presentation hint only; enforcement remains local.
       title: DaemonSnapshot
       additionalProperties: false
       description: |-
@@ -12188,6 +12208,21 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Trigger'
       title: GetTriggerResponse
       additionalProperties: false
+    bossanova.v1.GetViewerDeviceStatusRequest:
+      type: object
+      title: GetViewerDeviceStatusRequest
+      additionalProperties: false
+    bossanova.v1.GetViewerDeviceStatusResponse:
+      type: object
+      properties:
+        daemonFingerprint:
+          type: string
+          title: daemon_fingerprint
+        isAvailable:
+          type: boolean
+          title: is_available
+      title: GetViewerDeviceStatusResponse
+      additionalProperties: false
     bossanova.v1.GetWorkflowStatusRequest:
       type: object
       properties:
@@ -13580,6 +13615,20 @@ components:
           description: relative to work_dir
       title: ListIgnoredDirtyFilesResponse
       additionalProperties: false
+    bossanova.v1.ListLocalViewerDevicesRequest:
+      type: object
+      title: ListLocalViewerDevicesRequest
+      additionalProperties: false
+    bossanova.v1.ListLocalViewerDevicesResponse:
+      type: object
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.LocalViewerDevice'
+          title: devices
+      title: ListLocalViewerDevicesResponse
+      additionalProperties: false
     bossanova.v1.ListNotesCommand:
       type: object
       properties:
@@ -14315,6 +14364,26 @@ components:
             $ref: '#/components/schemas/bossanova.v1.WebhookConfig'
           title: configs
       title: ListWebhookConfigsResponse
+      additionalProperties: false
+    bossanova.v1.LocalViewerDevice:
+      type: object
+      properties:
+        viewerDeviceId:
+          type: string
+          title: viewer_device_id
+        label:
+          type: string
+          title: label
+        fingerprint:
+          type: string
+          title: fingerprint
+        isApproved:
+          type: boolean
+          title: is_approved
+        approvedAt:
+          title: approved_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: LocalViewerDevice
       additionalProperties: false
     bossanova.v1.MCPServerReport:
       type: object
@@ -20612,6 +20681,18 @@ components:
       type: object
       title: RevokeAgentCredentialDeviceResponse
       additionalProperties: false
+    bossanova.v1.RevokeViewerDeviceRequest:
+      type: object
+      properties:
+        viewerDeviceId:
+          type: string
+          title: viewer_device_id
+      title: RevokeViewerDeviceRequest
+      additionalProperties: false
+    bossanova.v1.RevokeViewerDeviceResponse:
+      type: object
+      title: RevokeViewerDeviceResponse
+      additionalProperties: false
     bossanova.v1.RollAgentCredentialKeyRequest:
       type: object
       properties:
@@ -21919,6 +22000,15 @@ components:
           type: integer
           title: pr_changed_file_count
           format: int32
+        prProofDigest:
+          type: string
+          title: pr_proof_digest
+          description: |-
+            Current PR head's non-legacy proof record digest (sha256:<64 hex>), or empty.
+             Read-only input for the web review screen's action pins, for every attention
+             kind. No dated API bump or transform: this is additive and older clients
+             ignore the unknown field without changing their existing behavior. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -23484,6 +23574,10 @@ components:
         rows:
           type: integer
           title: rows
+        viewerDeviceId:
+          type: string
+          title: viewer_device_id
+          description: Empty preserves plaintext; otherwise requires local device approval.
       title: TerminalAttachCommand
       additionalProperties: false
       description: |-
@@ -23491,6 +23585,8 @@ components:
          Asks the daemon to spawn a new tmux attach PTY for the given chat. The
          attach_id is bosso-generated (UUID); the daemon uses it to multiplex
          subsequent input/resize/close commands and to tag outbound data chunks.
+         Additive opt-in protocol; existing plaintext clients retain their behavior.
+         See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
     bossanova.v1.TerminalAttachExited:
       type: object
       properties:
@@ -23633,7 +23729,7 @@ components:
           type: string
           title: data
           format: byte
-          description: Raw PTY output incl. VT escape codes (opaque — ready for E2E).
+          description: PTY output, or authenticated ciphertext when is_sealed.
         lost:
           type: boolean
           title: lost
@@ -23642,6 +23738,15 @@ components:
              slow consumer. The browser MUST treat this as a RESYNC signal: the
              daemon will follow up with `tmux refresh-client` so all attached
              clients redraw fresh state.
+        isSealed:
+          type: boolean
+          title: is_sealed
+        frameCounter:
+          type:
+            - integer
+            - string
+          title: frame_counter
+          format: int64
       title: TerminalDataChunk
       additionalProperties: false
       description: |-
@@ -23658,14 +23763,21 @@ components:
           type: string
           title: data
           format: byte
-          description: Raw PTY input (opaque — ready for E2E later).
+          description: Plaintext PTY input, or authenticated ciphertext when is_sealed.
+        isSealed:
+          type: boolean
+          title: is_sealed
+        frameCounter:
+          type:
+            - integer
+            - string
+          title: frame_counter
+          format: int64
       title: TerminalInputCommand
       additionalProperties: false
       description: |-
-        TerminalInputCommand: bosso → daemon. Raw bytes typed by the browser
-         client to be written to the PTY stdin. Payload is opaque to bosso so a
-         future libsodium framing layer can swap in without changing the wire
-         shape.
+        TerminalInputCommand: bosso → daemon. Payloads on sealed attaches are
+         authenticated ciphertext, opaque to the relay.
     bossanova.v1.TerminalPing:
       type: object
       properties:
@@ -23728,6 +23840,28 @@ components:
         TerminalResizeCommand: bosso → daemon. Forwarded from the browser when
          the xterm viewport size changes. Daemon applies the new size to the PTY
          (and tmux propagates to all attached clients per the window-size policy).
+    bossanova.v1.TerminalSealedKey:
+      type: object
+      properties:
+        attachId:
+          type: string
+          title: attach_id
+        box:
+          type: string
+          title: box
+          format: byte
+        signature:
+          type: string
+          title: signature
+          format: byte
+      title: TerminalSealedKey
+      additionalProperties: false
+      description: |-
+        TerminalServerMessage is the daemon → bosso envelope on the new RPC.
+         Despite the name, this is the gRPC REQUEST stream type (bossd is the
+         gRPC client and initiates the stream). Unknown oneof cases are logged
+         and skipped by bosso for forward compatibility.
+         Signed HPKE attach key; sent before any data on a sealed attach.
     bossanova.v1.TerminalServerMessage:
       type: object
       oneOf:
@@ -23757,6 +23891,14 @@ components:
             - pong
         - type: object
           properties:
+            sealedKey:
+              title: sealed_key
+              $ref: '#/components/schemas/bossanova.v1.TerminalSealedKey'
+          title: sealed_key
+          required:
+            - sealedKey
+        - type: object
+          properties:
             uploadAck:
               title: upload_ack
               description: BOS-661 chat file upload.
@@ -23774,11 +23916,6 @@ components:
             - uploadResult
       title: TerminalServerMessage
       additionalProperties: false
-      description: |-
-        TerminalServerMessage is the daemon → bosso envelope on the new RPC.
-         Despite the name, this is the gRPC REQUEST stream type (bossd is the
-         gRPC client and initiates the stream). Unknown oneof cases are logged
-         and skipped by bosso for forward compatibility.
     bossanova.v1.TerminalUploadAck:
       type: object
       properties:

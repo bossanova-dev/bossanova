@@ -31,6 +31,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/daemoncaps"
 	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog"
 )
@@ -394,6 +395,7 @@ func (a *chatStoreAdapter) GetByAgentSessionID(ctx context.Context, agentSession
 //     at any moment and starting the connect from cold would add latency
 //     to the first attach.
 type TerminalStreamClient struct {
+	sealing       TerminalSealingConfig
 	cloudControl  CloudControlPolicy
 	opener        terminalStreamOpener
 	authState     *AuthState
@@ -463,9 +465,13 @@ type TerminalStreamClient struct {
 // the channel returned by safego.Go — closed once the pump goroutine has
 // fully exited (including its panic-recovery log path).
 type activeAttach struct {
-	inputRefused sync.Once
-	id           string
-	sessionName  string
+	seal          *terminalSeal
+	wakeNotice    string
+	inputRefused  sync.Once
+	outputRefused atomic.Bool
+	outputStopped chan struct{}
+	id            string
+	sessionName   string
 	// chatID is the chat this attach is bound to. Recorded so a
 	// BOS-661 upload resolves its target chat from the attach registry
 	// instead of trusting an id off the wire.
@@ -477,6 +483,7 @@ type activeAttach struct {
 
 // TerminalStreamClientConfig bundles the constructor inputs.
 type TerminalStreamClientConfig struct {
+	Sealing      TerminalSealingConfig
 	CloudControl CloudControlPolicy
 	// Opener is the live ConnectRPC client wrapper. If nil, an opener is
 	// built from Client + AuthToken + SessionToken at construction time.
@@ -621,6 +628,7 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 		logger:             cfg.Logger.With().Str("component", "terminal-stream-client").Logger(),
 		clock:              clock,
 		attaches:           make(map[string]*activeAttach),
+		sealing:            cfg.Sealing,
 		health:             cfg.Health,
 		reRegister:         cfg.ReRegister,
 		closeIdle:          cfg.CloseIdle,
@@ -977,25 +985,6 @@ func (c *TerminalStreamClient) closeAttachesThenCancelOnNeedsLogin(ctx context.C
 	})
 }
 
-// runWriter drains outbound onto the stream. Returns when outbound is
-// closed (the openStream teardown path) or stream.Send fails.
-func (c *TerminalStreamClient) runWriter(ctx context.Context, stream terminalBidiStream, outbound <-chan *pb.TerminalServerMessage) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg, ok := <-outbound:
-			if !ok {
-				return
-			}
-			if err := stream.Send(msg); err != nil {
-				c.logger.Debug().Err(err).Msg("terminal stream send failed; writer exiting")
-				return
-			}
-		}
-	}
-}
-
 // runReader blocks on stream.Receive and dispatches each inbound command.
 // Returns when Receive errors so the outer loop can reconnect.
 func (c *TerminalStreamClient) runReader(ctx context.Context, stream terminalBidiStream, outbound chan<- *pb.TerminalServerMessage, sess *terminalStreamSession) error {
@@ -1077,6 +1066,10 @@ func (c *TerminalStreamClient) handleClientMessage(ctx context.Context, msg *pb.
 // bosso as TerminalAttachExited so the browser can surface a clean error.
 func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.TerminalAttachCommand, outbound chan<- *pb.TerminalServerMessage) {
 	attachID := cmd.GetAttachId()
+	if cmd.GetViewerDeviceId() == "" && !daemoncaps.CloudControlAllowsTerminal(cloudControlProto(c.cloudControl), &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Attach{Attach: cmd}}) {
+		c.sendExited(ctx, outbound, attachID, "cloud control is private on this machine")
+		return
+	}
 	if attachID == "" {
 		c.logger.Warn().Msg("terminal stream: attach with empty attach_id; dropping")
 		return
@@ -1095,6 +1088,17 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 	c.mu.Unlock()
 
+	seal, sealedKey, sealReason := c.prepareSeal(ctx, cmd)
+	if sealReason != "" {
+		c.sendExited(ctx, outbound, attachID, sealReason)
+		return
+	}
+	sealOwned := seal != nil
+	defer func() {
+		if sealOwned {
+			seal.destroy()
+		}
+	}()
 	row, err := c.chats.GetByAgentSessionID(ctx, chatID)
 	if err != nil {
 		// Wire-side `Reason` MUST be a fixed string. The full error stays
@@ -1159,13 +1163,17 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 
 	state := &activeAttach{
-		id:          attachID,
-		sessionName: sessionName,
-		chatID:      chatID,
-		attach:      attach,
-		cancel:      cancel,
+		seal:          seal,
+		wakeNotice:    wakeNotice,
+		id:            attachID,
+		outputStopped: make(chan struct{}),
+		sessionName:   sessionName,
+		chatID:        chatID,
+		attach:        attach,
+		cancel:        cancel,
 	}
 
+	sealOwned = false
 	pumpStart := make(chan struct{})
 	// safego.Go gives us panic recovery + a done channel for the teardown
 	// path; assign done before publishing state so logout teardown can never
@@ -1199,12 +1207,11 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 	c.attaches[attachID] = state
 	c.mu.Unlock()
-	// BOS-885 D2: a wake that degraded to a fresh pane cost the user their
-	// conversation context, so say why rather than letting them read the empty
-	// pane as a bug. Emitted before the pump is released so the notice can
-	// never be interleaved into the middle of the PTY's own output.
-	if wakeNotice != "" {
-		c.sendWakeNotice(ctx, outbound, attachID, wakeNotice)
+	if !c.publishSealedKey(ctx, state, outbound, sealedKey) {
+		close(pumpStart)
+		<-state.done
+		c.sendExited(ctx, outbound, attachID, state.seal.failureReason())
+		return
 	}
 	close(pumpStart)
 }
@@ -1326,21 +1333,6 @@ func wakeFailureReason(err error) string {
 	}
 }
 
-// sendWakeNotice writes a one-line degraded-resume notice into the attach's
-// own data stream. TerminalDataChunk is forwarded verbatim by bosso to the
-// browser socket, so this reaches the user through the terminal view that is
-// already open — no new proto arm, no new UI surface (BOS-885 D3).
-func (c *TerminalStreamClient) sendWakeNotice(ctx context.Context, outbound chan<- *pb.TerminalServerMessage, attachID, reason string) {
-	c.logger.Info().Str("attach_id", attachID).Str("reason", reason).
-		Msg("terminal stream: attach woke chat with a fresh pane")
-	line := fmt.Sprintf("\r\n[boss] previous conversation could not be resumed (%s); starting a fresh agent.\r\n", sanitizeWakeReason(reason))
-	c.sendServerMessage(ctx, outbound, &pb.TerminalServerMessage{
-		Msg: &pb.TerminalServerMessage_Data{
-			Data: &pb.TerminalDataChunk{AttachId: attachID, Data: []byte(line)},
-		},
-	})
-}
-
 // sanitizeWakeReason strips anything that could steer the browser's terminal
 // emulator and bounds the length. Wake reasons are enumerated snake_case
 // tokens today and wake errors are short authored sentences, so this is
@@ -1359,65 +1351,6 @@ func sanitizeWakeReason(reason string) string {
 		return string(clean[:maxWakeReasonRunes]) + "…"
 	}
 	return string(clean)
-}
-
-// runAttachPump fans Output() and Exited() onto the per-stream outbound
-// channel. Owns the per-attach lifecycle: it removes the attach from the
-// map before returning so the writer can quiesce. The done channel
-// (closed by safego.Go after this function returns) is what
-// closeAllAttaches joins on for shutdown.
-func (c *TerminalStreamClient) runAttachPump(ctx context.Context, state *activeAttach, outbound chan<- *pb.TerminalServerMessage) {
-	defer func() {
-		c.mu.Lock()
-		// Only remove if still ours — handleClose may have already swapped
-		// us out and closed the attach.
-		if existing, ok := c.attaches[state.id]; ok && existing == state {
-			delete(c.attaches, state.id)
-		}
-		c.mu.Unlock()
-		// BOS-661: this attach is gone, so any partial upload it owns is
-		// unfinishable — drop the bytes rather than leave them on disk
-		// until the janitor. One call covers every way an attach dies: a
-		// browser close, a PTY exit, and stream teardown all end here.
-		c.cancelAttachUploads(state.id)
-	}()
-
-	output := state.attach.Output()
-	exited := state.attach.Exited()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case chunk, ok := <-output:
-			if !ok {
-				// Output closed → wait for Exited (which the
-				// TerminalAttach guarantees fires after Output is
-				// closed) and forward it.
-				select {
-				case ev, ok := <-exited:
-					if !ok {
-						return
-					}
-					c.sendServerMessage(ctx, outbound, &pb.TerminalServerMessage{
-						Msg: &pb.TerminalServerMessage_Exited{Exited: ev},
-					})
-				case <-ctx.Done():
-				}
-				return
-			}
-			if chunk.GetLost() {
-				// Fire and forget — RefreshClient is best-effort. A
-				// failure here just means the outer terminals don't
-				// repaint immediately; the next user keypress will
-				// likely trigger a redraw.
-				c.fireRefreshClient(ctx, state.sessionName)
-			}
-			c.sendServerMessage(ctx, outbound, &pb.TerminalServerMessage{
-				Msg: &pb.TerminalServerMessage_Data{Data: chunk},
-			})
-		}
-	}
 }
 
 // fireRefreshClient invokes tmux.Client.RefreshClient in a separate

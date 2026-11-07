@@ -3023,8 +3023,14 @@ type Session struct {
 	PrAddedLineCount   int32 `protobuf:"varint,84,opt,name=pr_added_line_count,json=prAddedLineCount,proto3" json:"pr_added_line_count,omitempty"`
 	PrDeletedLineCount int32 `protobuf:"varint,85,opt,name=pr_deleted_line_count,json=prDeletedLineCount,proto3" json:"pr_deleted_line_count,omitempty"`
 	PrChangedFileCount int32 `protobuf:"varint,86,opt,name=pr_changed_file_count,json=prChangedFileCount,proto3" json:"pr_changed_file_count,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Current PR head's non-legacy proof record digest (sha256:<64 hex>), or empty.
+	// Read-only input for the web review screen's action pins, for every attention
+	// kind. No dated API bump or transform: this is additive and older clients
+	// ignore the unknown field without changing their existing behavior. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	PrProofDigest string `protobuf:"bytes,87,opt,name=pr_proof_digest,json=prProofDigest,proto3" json:"pr_proof_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -3657,6 +3663,13 @@ func (x *Session) GetPrChangedFileCount() int32 {
 		return x.PrChangedFileCount
 	}
 	return 0
+}
+
+func (x *Session) GetPrProofDigest() string {
+	if x != nil {
+		return x.PrProofDigest
+	}
+	return ""
 }
 
 // FixAttempt represents a fix attempt within a session.
@@ -8523,7 +8536,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\r_setup_script\"4\n" +
 	"\fHTTPEndpoint\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\"\xac&\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"\xd4&\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -8623,7 +8636,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x17merged_confidence_level\x18S \x01(\x0e2\x1d.bossanova.v1.ConfidenceLevelR\x15mergedConfidenceLevel\x12-\n" +
 	"\x13pr_added_line_count\x18T \x01(\x05R\x10prAddedLineCount\x121\n" +
 	"\x15pr_deleted_line_count\x18U \x01(\x05R\x12prDeletedLineCount\x121\n" +
-	"\x15pr_changed_file_count\x18V \x01(\x05R\x12prChangedFileCountB\x13\n" +
+	"\x15pr_changed_file_count\x18V \x01(\x05R\x12prChangedFileCount\x12&\n" +
+	"\x0fpr_proof_digest\x18W \x01(\tR\rprProofDigestB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

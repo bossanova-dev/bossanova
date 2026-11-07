@@ -89,22 +89,19 @@ dispatched as an awaited subagent (no human gating).
    ```
 
    On a missing file or non-zero exit, record `extension <name>: skipped (<reason>)` and continue —
-   never abort the run. For a valid envelope, fold the `plan-reviewer` `items`
+   never abort the run. For a valid envelope, fold an item supplying a whole contract section by
+   body file into both artifacts with `node "$BOSS_PLAN_TOOLBOX/plan/plan-fold-section.mjs" fold --heading <heading> --body-file <file> --plan <planPath> --description <descriptionSummary.path>`;
+   it places the section by contract order and edits the description on disk, so no separate
+   metadata refresh is needed. Fold other `plan-reviewer` `items`
    (`{ severity, section, title, detail }`) into the drafting agent's quality pass, and route
    genuinely-controversial forks into `## Open Questions` (which also drives the `agent-question`
    label per Phase 3). The orchestrator owns any edit to the plan file; extensions only produce
    findings.
 
-   **Recompute the Phase 4 metadata after folding.** Phase 2's drafting subagent returns
-   `descriptionSummary`/`openQuestions` **before** this phase runs, and Phase 4 derives the Linear
-   `description` and the `agent-question` label from that returned metadata — so a folded extension
-   finding that changes the plan file would otherwise upload a plan whose `## Open Questions` (or
-   other description-contract section) disagrees with the saved Linear description and labels. When a
-   fold edits the plan file, update the returned metadata to match **before** Phase 4: append any new
-   controversial fork to `openQuestions` (a now-non-empty list adds the `agent-question` label) and
-   refresh the affected `## …` section(s) of `descriptionSummary` so the uploaded file, the Linear
-   description, and the labels stay byte-consistent. A fold that only touches the drafting quality
-   pass without changing a description-contract section needs no metadata change.
+   **Recompute open questions after folding.** Phase 2's drafting subagent returns `openQuestions`
+   before this phase runs. Append any new controversial fork to that list before Phase 4 so a
+   now-non-empty list adds the `agent-question` label and the labels agree with the plan and saved
+   description.
 
 Extensions are read-only and non-fatal by contract: a missing, malformed, erroring, or timed-out
 extension is a recorded skip, never an abort. See

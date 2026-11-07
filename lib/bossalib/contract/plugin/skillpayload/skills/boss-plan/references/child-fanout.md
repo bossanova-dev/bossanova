@@ -61,7 +61,7 @@ node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait "<RUN_DIR>" "<RUN_ID>" chil
   --dispatched-at "$(cat "<RUN_DIR>/child-<CHILD-ID>.dispatched-at")" --budget 25000 --while-live
 ```
 
-Route on its exit code with the `headless-dispatch.md` table: `98` or a harness kill ⇒ back to `next`;
+Route on its exit code with the `headless-dispatch.md` table: `98`, `95` or a harness kill ⇒ back to `next`;
 `2` ⇒ fix the call; `0` / `96` / `97` ⇒ settle. A child's returned object can also arrive at any tool
 boundary — settle that child then. A dispatch tool error with no sentinel is a **transport** death: run the **Settle** check below
 first (the child's Phase 4 may have landed before the transport died) and record `planned` on `noop`;

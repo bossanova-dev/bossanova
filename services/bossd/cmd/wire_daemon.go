@@ -49,6 +49,7 @@ func (w *daemonWiring) wireDaemon() {
 	daemonConfig := server.Config{
 		Callers:                       w.callerAuthority(),
 		CredentialDevices:             w.credentialDevices,
+		ViewerApprovals:               w.viewerApprovals,
 		TrackerIssueLeaseUpstream:     w.trackerIssueLeaseUpstream,
 		TrackerIssueLeaseSessionToken: w.trackerIssueLeaseSessionToken,
 		CredentialPublisher: func(ctx context.Context, syncedID, localID string) error {

@@ -18,6 +18,7 @@ import (
 	"github.com/recurser/boss/api/cli/plugins"
 	"github.com/recurser/boss/api/cli/skills"
 	"github.com/recurser/boss/api/cli/trash"
+	"github.com/recurser/boss/api/cli/viewer"
 
 	"github.com/recurser/boss/api/cli/broadcast"
 	"github.com/recurser/boss/api/cli/callback"
@@ -287,6 +288,12 @@ func rootCmdWithGroups(g *skills.Group, daemonGroup daemonCommands) *cobra.Comma
 	}))
 	addGrouped("webhook", webhook.New(func(cmd *cobra.Command) (webhook.Client, error) {
 		return settingscli.NewCloudRemote(cmd, webhook.ErrNotLoggedIn)
+	}))
+	addGrouped("viewer", viewer.New(func(cmd *cobra.Command) (viewer.Client, error) {
+		if remote := remoteURL(cmd); remote != "" {
+			return nil, fmt.Errorf("boss viewer manages approvals only on the local daemon; drop --remote %s", remote)
+		}
+		return newDaemonClient(cmd)
 	}))
 	addGrouped("account", account.New(func(cmd *cobra.Command) (account.Client, error) {
 		if remote := remoteURL(cmd); remote != "" {

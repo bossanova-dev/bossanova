@@ -37,6 +37,7 @@ go_test(
         "cloud_gate_test.go",
         "config_init_test.go",
         "helpers_test.go",
+        "settings_cloud_control_test.go",
         "settings_daemon_name_test.go",
         "settings_rotation_test.go",
     ],

@@ -196,6 +196,7 @@ func TestHandleSwitchViewConstructsEveryRoutableView(t *testing.T) {
 		ui.ViewRepoAdd:              func(a App) bool { return a.repoAdd.Width() == width },
 		ui.ViewRepoList:             func(a App) bool { return a.repoList.Width() == width },
 		ui.ViewRepoSettings:         func(a App) bool { return a.repoSettings.Width() == width },
+		ui.ViewReviewQueue:          func(a App) bool { return a.reviewQueue.Width() == width },
 		ui.ViewTrash:                func(a App) bool { return a.trash.Width() == width },
 		ui.ViewSettings:             func(a App) bool { return a.settings.Width() == width },
 		ui.ViewSessionSettings:      func(a App) bool { return a.sessionSettings.Width() == width },

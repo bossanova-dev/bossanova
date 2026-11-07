@@ -433,6 +433,7 @@ func (w *daemonWiring) wireUpstream() {
 		// rejected, reRegister fires, and the holder is populated.
 		sessionTokenHolder = upstream.NewSessionTokenHolder(sessionToken)
 		w.wireCredentialDistribution(cfg, client, sessionTokenHolder, identityKey, authToken)
+		w.wireViewerApprovals(httpClient, cfg.OrchestratorURL, sessionTokenHolder.Get, identityKey)
 		// Shared auth state: when the stored refresh token can no longer
 		// be exchanged — WorkOS rejected it, or the exchange outcome could
 		// never be confirmed (BOS-659) — the opener flips this to
@@ -483,13 +484,15 @@ func (w *daemonWiring) wireUpstream() {
 		w.prWaits.SetWebhookHealth(webhookHealth)
 		w.webhookEvidence = webhookHealth
 		cloudControl := upstream.NewCloudControlPolicy(log.Logger)
+		terminalSealing := upstream.TerminalSealingConfig{DaemonID: cfg.DaemonID, IdentityKey: identityKey, Approvals: w.viewerApprovals}
 		w.streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
-			CloudControl: cloudControl,
-			Client:       client,
-			AuthToken:    authToken,          // WorkOS JWT → Authorization header
-			SessionToken: sessionTokenHolder, // daemon token → X-Daemon-Token header
-			DaemonID:     cfg.DaemonID,
-			Hostname:     cfg.Hostname,
+			CloudControl:             cloudControl,
+			TerminalSealingSupported: terminalSealing.IsAvailable(),
+			Client:                   client,
+			AuthToken:                authToken,          // WorkOS JWT → Authorization header
+			SessionToken:             sessionTokenHolder, // daemon token → X-Daemon-Token header
+			DaemonID:                 cfg.DaemonID,
+			Hostname:                 cfg.Hostname,
 			Stores: upstream.StreamStores{
 				Sessions:      snapshotSessions,
 				Chats:         snapshotChats,
@@ -627,6 +630,7 @@ func (w *daemonWiring) wireUpstream() {
 		// first attach.
 		w.terminalStreamClient = upstream.NewTerminalStreamClient(upstream.TerminalStreamClientConfig{
 			CloudControl:  cloudControl,
+			Sealing:       terminalSealing,
 			Client:        client,
 			AuthToken:     authToken,
 			SessionToken:  sessionTokenHolder,

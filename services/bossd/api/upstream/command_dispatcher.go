@@ -44,10 +44,10 @@ func (c *StreamClient) dispatchCommand(
 		return nil
 	}
 	cmdID := cmd.GetCommandId()
-	access, classified := daemoncaps.OrchestratorCommandAccess(cmd)
-	if (!classified || access == daemoncaps.AccessControl) && cloudControlMode(c.cloudControl) != config.CloudControlFull {
+	mode := cloudControlProto(c.cloudControl)
+	if !daemoncaps.CloudControlAllows(mode, cmd) {
 		c.logger.Info().Str("command_id", cmdID).Str("command_type", fmt.Sprintf("%T", cmd.GetCmd())).Msg("cloud control refused")
-		return commandErrCode(cmdID, c.cloudControlRefusal(), pb.CommandResult_ERROR_CODE_CLOUD_CONTROL_DISABLED)
+		return commandErrCode(cmdID, c.cloudControlCommandRefusal(mode, cmd), pb.CommandResult_ERROR_CODE_CLOUD_CONTROL_DISABLED)
 	}
 
 	switch cmd.GetCmd().(type) {
@@ -413,20 +413,36 @@ func (c *StreamClient) dispatchAttach(
 		return commandErr(cmdID, "attach: session_id required")
 	}
 
-	ch, err := c.attacher.Attach(ctx, sessionID, cmdID)
+	attachCtx, cancel := context.WithCancel(ctx)
+	ch, err := c.attacher.Attach(attachCtx, sessionID, cmdID)
 	if err != nil {
+		cancel()
 		return commandErr(cmdID, fmt.Sprintf("attach: %v", err))
 	}
+	state := &sessionAttachState{cancel: cancel, done: make(chan struct{})}
+	c.sessionAttachMu.Lock()
+	if c.sessionAttaches == nil {
+		c.sessionAttaches = make(map[string]*sessionAttachState)
+	}
+	c.sessionAttaches[cmdID] = state
+	c.sessionAttachMu.Unlock()
 
-	// Run the chunk pump in its own goroutine so the command reader
-	// can keep processing subsequent commands while this attach
-	// streams.
 	safego.Go(c.logger, func() {
-		for chunk := range ch {
+		defer close(state.done)
+		defer cancel()
+		for {
 			select {
-			case <-ctx.Done():
+			case <-attachCtx.Done():
 				return
-			case outbound <- &pb.DaemonEvent{Event: &pb.DaemonEvent_AttachChunk{AttachChunk: chunk}}:
+			case chunk, ok := <-ch:
+				if !ok || !c.allowSessionAttach(cmdID) {
+					return
+				}
+				select {
+				case <-attachCtx.Done():
+					return
+				case outbound <- &pb.DaemonEvent{Event: &pb.DaemonEvent_AttachChunk{AttachChunk: chunk}}:
+				}
 			}
 		}
 	})

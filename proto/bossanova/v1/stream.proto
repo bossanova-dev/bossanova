@@ -260,6 +260,8 @@ enum CloudControl {
   CLOUD_CONTROL_UNSPECIFIED = 0;
   CLOUD_CONTROL_READ_ONLY = 1;
   CLOUD_CONTROL_FULL = 2;
+  // Metadata observe commands only; content-bearing observe commands and terminal attach are refused.
+  CLOUD_CONTROL_PRIVATE = 3;
 }
 
 // DaemonSnapshot is the required first event on every stream connect. It
@@ -289,6 +291,8 @@ message DaemonSnapshot {
   repeated AgentAccount agent_accounts = 9;
   // Presentation only; the daemon enforces its locally configured mode.
   CloudControl cloud_control = 10;
+  // Presentation hint only; enforcement remains local.
+  bool is_terminal_sealing_supported = 11;
 }
 
 // CallbackInterest advertises that a daemon holds one or more active GitHub
@@ -1458,6 +1462,8 @@ message BroadcastCommand {
 // Asks the daemon to spawn a new tmux attach PTY for the given chat. The
 // attach_id is bosso-generated (UUID); the daemon uses it to multiplex
 // subsequent input/resize/close commands and to tag outbound data chunks.
+// Additive opt-in protocol; existing plaintext clients retain their behavior.
+// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
 message TerminalAttachCommand {
   // bosso-generated UUID. The daemon does NOT pick routing keys.
   string attach_id = 1;
@@ -1465,16 +1471,18 @@ message TerminalAttachCommand {
   // Initial PTY size from the browser (xterm.js).
   uint32 cols = 3;
   uint32 rows = 4;
+  // Empty preserves plaintext; otherwise requires local device approval.
+  string viewer_device_id = 5;
 }
 
-// TerminalInputCommand: bosso → daemon. Raw bytes typed by the browser
-// client to be written to the PTY stdin. Payload is opaque to bosso so a
-// future libsodium framing layer can swap in without changing the wire
-// shape.
+// TerminalInputCommand: bosso → daemon. Payloads on sealed attaches are
+// authenticated ciphertext, opaque to the relay.
 message TerminalInputCommand {
   string attach_id = 1;
-  // Raw PTY input (opaque — ready for E2E later).
+  // Plaintext PTY input, or authenticated ciphertext when is_sealed.
   bytes data = 2;
+  bool is_sealed = 3;
+  uint64 frame_counter = 4;
 }
 
 // TerminalResizeCommand: bosso → daemon. Forwarded from the browser when
@@ -1587,13 +1595,15 @@ message TerminalDataChunk {
   // Monotonic per attach. Reserved for a future delta-replay upgrade; not
   // currently used by the consumer beyond debug logging.
   uint64 seq = 2;
-  // Raw PTY output incl. VT escape codes (opaque — ready for E2E).
+  // PTY output, or authenticated ciphertext when is_sealed.
   bytes data = 3;
   // True when the daemon's per-attach ringbuffer dropped bytes due to a
   // slow consumer. The browser MUST treat this as a RESYNC signal: the
   // daemon will follow up with `tmux refresh-client` so all attached
   // clients redraw fresh state.
   bool lost = 4;
+  bool is_sealed = 5;
+  uint64 frame_counter = 6;
 }
 
 // TerminalAttachExited: daemon → bosso. Carried inside
@@ -1655,6 +1665,13 @@ message TerminalClientMessage {
 // Despite the name, this is the gRPC REQUEST stream type (bossd is the
 // gRPC client and initiates the stream). Unknown oneof cases are logged
 // and skipped by bosso for forward compatibility.
+// Signed HPKE attach key; sent before any data on a sealed attach.
+message TerminalSealedKey {
+  string attach_id = 1;
+  bytes box = 2;
+  bytes signature = 3;
+}
+
 message TerminalServerMessage {
   oneof msg {
     TerminalDataChunk data = 1;
@@ -1663,6 +1680,7 @@ message TerminalServerMessage {
     // BOS-661 chat file upload.
     TerminalUploadAck upload_ack = 4;
     TerminalUploadResult upload_result = 5;
+    TerminalSealedKey sealed_key = 6;
   }
 }
 

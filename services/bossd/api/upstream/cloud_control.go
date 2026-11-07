@@ -7,6 +7,7 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/daemoncaps"
 	"github.com/rs/zerolog"
 )
 
@@ -36,24 +37,36 @@ func (p *LocalCloudControlPolicy) Mode() config.CloudControlMode {
 		return config.CloudControlReadOnly
 	}
 	raw := strings.TrimSpace(settings.CloudControl)
-	if raw != "" && raw != string(config.CloudControlReadOnly) && raw != string(config.CloudControlFull) {
+	if raw != "" && raw != string(config.CloudControlReadOnly) && raw != string(config.CloudControlFull) && raw != string(config.CloudControlPrivate) {
 		p.unknownOnce.Do(func() { p.logger.Warn().Msg("unknown cloud control setting; using read-only") })
 	}
 	return config.ResolveCloudControl(raw)
 }
 
 func cloudControlMode(policy CloudControlPolicy) config.CloudControlMode {
-	if policy != nil && policy.Mode() == config.CloudControlFull {
-		return config.CloudControlFull
+	if policy != nil {
+		return config.ResolveCloudControl(string(policy.Mode()))
 	}
 	return config.CloudControlReadOnly
 }
 
 func cloudControlProto(policy CloudControlPolicy) pb.CloudControl {
-	if cloudControlMode(policy) == config.CloudControlFull {
+	switch cloudControlMode(policy) {
+	case config.CloudControlFull:
 		return pb.CloudControl_CLOUD_CONTROL_FULL
+	case config.CloudControlPrivate:
+		return pb.CloudControl_CLOUD_CONTROL_PRIVATE
+	default:
+		return pb.CloudControl_CLOUD_CONTROL_READ_ONLY
 	}
-	return pb.CloudControl_CLOUD_CONTROL_READ_ONLY
+}
+
+func (c *StreamClient) cloudControlCommandRefusal(mode pb.CloudControl, cmd *pb.OrchestratorCommand) string {
+	access, classified := daemoncaps.OrchestratorCommandAccess(cmd)
+	if mode == pb.CloudControl_CLOUD_CONTROL_PRIVATE && classified && access == daemoncaps.AccessObserve && daemoncaps.OrchestratorCommandCarriesContent(cmd) {
+		return daemoncaps.CloudControlPrivateText(c.hostname)
+	}
+	return c.cloudControlRefusal()
 }
 
 func (c *StreamClient) cloudControlRefusal() string {

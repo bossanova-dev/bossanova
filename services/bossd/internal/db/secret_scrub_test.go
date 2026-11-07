@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossd/internal/adapter/reposecrets"
 	"github.com/recurser/bossd/internal/adapter/reposecrets/reposecretstest"
@@ -108,7 +111,7 @@ func TestScrubAfterMoveRemovesFreedKeyCopies(t *testing.T) {
 		t.Fatalf("move = %d, %v", moved, err)
 	}
 	assertScrubRequests(t, db, 1)
-	ran, err := ScrubFreedSecretPages(ctx, db)
+	ran, err := ScrubFreedSecretPages(ctx, db, zerolog.Nop())
 	if err != nil || !ran {
 		t.Fatalf("scrub = %v, %v", ran, err)
 	}
@@ -143,7 +146,7 @@ func TestScrubAfterKeyUpdateClearingPlaintext(t *testing.T) {
 		t.Fatal("plaintext columns not cleared")
 	}
 	assertScrubRequests(t, db, 1)
-	if ran, err := ScrubFreedSecretPages(ctx, db); err != nil || !ran {
+	if ran, err := ScrubFreedSecretPages(ctx, db, zerolog.Nop()); err != nil || !ran {
 		t.Fatalf("scrub = %v, %v", ran, err)
 	}
 	assertRawKeyMarkers(t, path, linear, sentry, false)
@@ -159,8 +162,12 @@ func TestScrubNoRequestIsNoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ran, err := ScrubFreedSecretPages(context.Background(), db); err != nil || ran {
+	var logs bytes.Buffer
+	if ran, err := ScrubFreedSecretPages(context.Background(), db, zerolog.New(&logs)); err != nil || ran {
 		t.Fatalf("scrub = %v, %v", ran, err)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("no-request scrub logged: %s", logs.String())
 	}
 	after, err := os.Stat(path)
 	if err != nil {
@@ -185,8 +192,22 @@ func TestScrubKeepsColumnStorageFallback(t *testing.T) {
 	if err := sqlcgen.New(db).RecordRepoSecretScrub(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if ran, err := ScrubFreedSecretPages(ctx, db); err != nil || !ran {
+	var logs bytes.Buffer
+	if ran, err := ScrubFreedSecretPages(ctx, db, zerolog.New(&logs)); err != nil || !ran {
 		t.Fatalf("scrub = %v, %v", ran, err)
+	}
+	entries := bytes.Split(bytes.TrimSpace(logs.Bytes()), []byte("\n"))
+	if len(entries) != 1 {
+		t.Fatalf("scrub log entries = %d, want 1", len(entries))
+	}
+	var entry struct {
+		Level string `json:"level"`
+	}
+	if err := json.Unmarshal(entries[0], &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Level != "info" {
+		t.Fatalf("scrub log level = %q, want info", entry.Level)
 	}
 	l, s, flag := rawRepoSecretColumns(t, db, repo.ID)
 	if l != linear || s != sentry || flag != 0 {
@@ -256,7 +277,7 @@ func TestScrubRetriesBusyCheckpoint(t *testing.T) {
 					_ = blocked.reader.Close()
 				}
 			}()
-			ran, err := scrubFreedSecretPages(ctx, blocked)
+			ran, err := scrubFreedSecretPages(ctx, blocked, zerolog.Nop())
 			if err == nil || !strings.Contains(err.Error(), "checkpoint busy") || ran {
 				t.Fatalf("scrub = %v, %v; want busy error", ran, err)
 			}
@@ -275,7 +296,7 @@ func TestScrubRetriesBusyCheckpoint(t *testing.T) {
 				t.Fatal(err)
 			}
 			blocked.reader = nil
-			if ran, err := ScrubFreedSecretPages(ctx, db); err != nil || !ran {
+			if ran, err := ScrubFreedSecretPages(ctx, db, zerolog.Nop()); err != nil || !ran {
 				t.Fatalf("retry scrub = %v, %v", ran, err)
 			}
 			assertScrubRequests(t, db, 0)

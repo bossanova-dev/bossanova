@@ -208,3 +208,82 @@ func TestPrFollowUpUnsupportedClient(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestPrFollowUpSelectedSession_Sessions_AC229501_AC229504(t *testing.T) {
+	for _, archivedOnly := range []bool{false, true} {
+		f := newPRFollowUpFake()
+		f.sessions[0].ArchivedAt = &timestamppb.Timestamp{Seconds: 1}
+		selected := prSession("selected", 7, originA, "")
+		if archivedOnly {
+			selected.ArchivedAt = &timestamppb.Timestamp{Seconds: 2}
+		}
+		f.sessions = append(f.sessions, selected)
+		f.result = &pb.VerifyFollowUpResult{IsOk: true, Comment: "current"}
+		cmd, out := prTestCmd(true)
+		if err := prFollowUp(t.Context(), cmd, f, prOptions{pr: 7, asJSON: true}, nil, true); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(f.log, []string{"list", "follow-up:selected"}) {
+			t.Fatalf("calls=%v", f.log)
+		}
+		var body prFollowUpJSON
+		if err := json.Unmarshal(out.Bytes(), &body); err != nil || body.SessionID != "selected" {
+			t.Fatalf("envelope=%s err=%v", out.String(), err)
+		}
+	}
+}
+
+func TestPrVerbsAmbiguousLive_Sessions_AC229502(t *testing.T) {
+	for _, repo := range []string{"", "acme/app"} {
+		for _, verb := range []string{"follow-up", "approve", "accept"} {
+			t.Run(verb+repo, func(t *testing.T) {
+				f := newPRFollowUpFake()
+				f.sessions = append(f.sessions, prSession("s-b", 7, originA, ""))
+				cmd, _ := prTestCmd(false)
+				opts := prOptions{pr: 7, repo: repo}
+				var err error
+				accept := &acceptCallerFake{prFake: f.prFake}
+				switch verb {
+				case "follow-up":
+					err = prFollowUp(t.Context(), cmd, f, opts, nil, true)
+				case "approve":
+					err = prApprove(t.Context(), cmd, f, opts)
+				case "accept":
+					err = prAccept(t.Context(), cmd, accept, opts, "review:012345abcdef", "reason")
+				}
+				if cliutil.ErrorCodeFor(err) != cliutil.CodeAmbiguousPR {
+					t.Fatalf("err=%v", err)
+				}
+				for _, want := range []string{"s-a", "s-b", "boss archive", "re-run"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("missing %q: %v", want, err)
+					}
+				}
+				if strings.Contains(err.Error(), "boss show") || strings.Contains(err.Error(), "--repo") {
+					t.Fatalf("unhelpful hint: %v", err)
+				}
+				if !reflect.DeepEqual(f.log, []string{"list"}) || accept.req != nil {
+					t.Fatalf("verb ran: log=%v req=%v", f.log, accept.req)
+				}
+			})
+		}
+	}
+}
+
+func TestPrLiveVerbsArchivedOnly(t *testing.T) {
+	f := newPRFollowUpFake()
+	f.sessions[0].ArchivedAt = timestamppb.Now()
+	cmd, _ := prTestCmd(false)
+	accept := &acceptCallerFake{prFake: f.prFake}
+	for _, err := range []error{
+		prApprove(t.Context(), cmd, f, prOptions{pr: 7}),
+		prAccept(t.Context(), cmd, accept, prOptions{pr: 7}, "review:012345abcdef", "reason"),
+	} {
+		if cliutil.ErrorCodeFor(err) != cliutil.CodeNotFound {
+			t.Fatalf("err=%v", err)
+		}
+	}
+	if len(f.verbs) != 0 || accept.req != nil {
+		t.Fatalf("verb ran: approve=%v accept=%v", f.verbs, accept.req)
+	}
+}

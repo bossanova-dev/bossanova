@@ -116,22 +116,7 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 		}
 		line = valueLine(val)
 	case settingsRowKindEnum:
-		val := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
-		if val == "" && len(row.Allowed) > 0 {
-			if row.Default != "" {
-				val = row.Default + " (default)"
-			} else {
-				// When Allowed[0] is the empty string the plugin advertises ""
-				// as the explicit "use plugin default" sentinel; render it as a
-				// named reset state so the row reads cleanly.
-				if row.Allowed[0] == "" {
-					val = "use the CLI default"
-				} else {
-					val = row.Allowed[0] + " (default)"
-				}
-			}
-		}
-		line = valueLine(val)
+		line = valueLine(m.enumRowValue(row))
 	case settingsRowKindWorktree:
 		line = valueLine(m.settings.WorktreeBaseDir)
 	case settingsRowKindPollInterval:
@@ -196,4 +181,26 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 
 	b.WriteString(ui.RenderFieldRow(focused, line))
 	b.WriteString("\n")
+}
+
+func (m GeneralSettingsModel) enumRowValue(row settingsRow) string {
+	if row.Plugin == "" && row.Key == "cloud_control" {
+		return string(config.ResolveCloudControl(m.settings.CloudControl)) + " (no restart needed; existing web chat previews remain until that chat next changes)"
+	}
+	val := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
+	if val == "" && len(row.Allowed) > 0 {
+		if row.Default != "" {
+			val = row.Default + " (default)"
+		} else {
+			// When Allowed[0] is the empty string the plugin advertises ""
+			// as the explicit "use plugin default" sentinel; render it as a
+			// named reset state so the row reads cleanly.
+			if row.Allowed[0] == "" {
+				val = "use the CLI default"
+			} else {
+				val = row.Allowed[0] + " (default)"
+			}
+		}
+	}
+	return val
 }

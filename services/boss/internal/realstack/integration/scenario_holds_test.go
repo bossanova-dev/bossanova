@@ -136,19 +136,6 @@ func exerciseScenarioHolds(t *testing.T, stack *realstack.Stack, doc scenario.Do
 	if !reflect.DeepEqual(served, want) {
 		t.Fatalf("served held inputs: %v want %v", served, want)
 	}
-	// The merged fixture may already be auto-archived when the daemon polls it.
-	listed, err := stack.Client().ListSessions(ctx, realstackrpc.Request(&pb.ListSessionsRequest{IncludeArchived: true}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	intents := map[string]pb.DisplayIntent{}
-	for _, row := range listed.Msg.Sessions {
-		for key, id := range keys.Sessions {
-			if row.Id == id {
-				intents[key] = row.DisplayIntent
-			}
-		}
-	}
 	wantIntents := map[string]pb.DisplayIntent{
 		"blocked-merging":    pb.DisplayIntent_DISPLAY_INTENT_INFO,
 		"orphaned-merging":   pb.DisplayIntent_DISPLAY_INTENT_INFO,
@@ -158,9 +145,9 @@ func exerciseScenarioHolds(t *testing.T, stack *realstack.Stack, doc scenario.Do
 		"merged":             pb.DisplayIntent_DISPLAY_INTENT_MUTED,
 		"closed":             pb.DisplayIntent_DISPLAY_INTENT_MUTED,
 	}
-	if !reflect.DeepEqual(intents, wantIntents) {
-		t.Fatalf("ListSessions display intents: %v want %v", intents, wantIntents)
-	}
+	// Terminal-PR rows are recomputed after the display poller's first pass following
+	// the restart, so wait for their intents while the operation holds remain active.
+	awaitDisplayIntents(ctx, t, stack, keys.Sessions, wantIntents)
 	if release := scenario.ReleaseOperations(ctx, stack.Home(), nil); !release.OK {
 		t.Fatal(release.Problems)
 	}
@@ -193,4 +180,40 @@ func exerciseScenarioHolds(t *testing.T, stack *realstack.Stack, doc scenario.Do
 	}
 	t.Logf("held inputs reproducible: %v; released merges and completed deferred archive", served)
 	return served
+}
+
+func awaitDisplayIntents(ctx context.Context, t *testing.T, stack *realstack.Stack, sessions map[string]string, want map[string]pb.DisplayIntent) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	var intents map[string]pb.DisplayIntent
+	var labels map[string]string
+	for {
+		// The merged fixture may already have been auto-archived by the poller.
+		listed, err := stack.Client().ListSessions(ctx, realstackrpc.Request(&pb.ListSessionsRequest{IncludeArchived: true}))
+		if err == nil {
+			intents = map[string]pb.DisplayIntent{}
+			labels = map[string]string{}
+			for _, row := range listed.Msg.Sessions {
+				for key, id := range sessions {
+					if row.Id == id {
+						intents[key] = row.DisplayIntent
+						labels[key] = row.DisplayLabel
+					}
+				}
+			}
+			if reflect.DeepEqual(intents, want) {
+				return
+			}
+		} else if ctx.Err() == nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("ListSessions display intents did not settle: %v; labels: %v; want %v: %v\n%s", intents, labels, want, ctx.Err(), stack.LogTail())
+		case <-ticker.C:
+		}
+	}
 }

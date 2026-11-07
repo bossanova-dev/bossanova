@@ -7,8 +7,13 @@ import (
 	"github.com/recurser/boss/api/tui/cron"
 	"github.com/recurser/boss/api/tui/login"
 	"github.com/recurser/boss/api/tui/onboarding"
+	"github.com/recurser/boss/api/tui/reviewqueue"
 	"github.com/recurser/boss/api/tui/trash"
 )
+
+type ReviewQueueModel = reviewqueue.Model
+
+var NewReviewQueueModel = reviewqueue.NewModel
 
 type TrashModel = trash.Model
 

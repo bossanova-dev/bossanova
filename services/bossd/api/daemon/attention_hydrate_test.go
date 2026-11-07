@@ -58,6 +58,71 @@ func TestSessionAttention_UnknownSession(t *testing.T) {
 	}
 }
 
+func TestAttentionProofDigest_CurrentHeadAcrossReadSurfaces(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("c", 64)
+	for _, state := range []struct {
+		name   string
+		status vcs.DisplayStatus
+		kind   pb.AttentionKind
+	}{
+		{"review", vcs.DisplayStatusNeedsHuman, pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{"merge", vcs.DisplayStatusPassing, pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{"fix", vcs.DisplayStatusFailing, pb.AttentionKind_ATTENTION_KIND_FIX},
+		{"in progress", vcs.DisplayStatusChecking, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
+	} {
+		for _, proof := range []struct {
+			name   string
+			record *evidence.ProofRecord
+			want   string
+		}{
+			{"current", &evidence.ProofRecord{Head: strings.ToUpper(timelineHead), Digest: digest}, digest},
+			{"older head", &evidence.ProofRecord{Head: strings.Repeat("b", 40), Digest: digest}, ""},
+			{"legacy", &evidence.ProofRecord{Head: timelineHead, Digest: digest, Legacy: true}, ""},
+			{"no digest", &evidence.ProofRecord{Head: timelineHead}, ""},
+			{"no record", nil, ""},
+		} {
+			t.Run(state.name+"/"+proof.name, func(t *testing.T) {
+				n := 1
+				row := &models.Session{ID: "s", RepoID: "r", State: machine.ReadyForReview, PRNumber: &n}
+				if state.kind == pb.AttentionKind_ATTENTION_KIND_FIX {
+					row.State = machine.Blocked
+				}
+				tracker := status.NewDisplayTracker()
+				info := vcs.DisplayInfo{Status: state.status, VerifyReason: "human-review:database", HeadSHA: timelineHead, HasFailures: state.status == vcs.DisplayStatusFailing}
+				if state.status == vcs.DisplayStatusPassing {
+					mergeable := true
+					info.Mergeable = &mergeable
+				}
+				tracker.Set(row.ID, info)
+				s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
+				if state.kind == pb.AttentionKind_ATTENTION_KIND_MERGE {
+					s.checkSnapshots = &fakeCheckSnapshotStore{snaps: []db.CheckSnapshot{{HeadSHA: timelineHead, RawJSON: checksJSON(t, greenCI(2, ""))}}}
+				}
+				s.evidence = stubEvidence{}
+				if proof.record != nil {
+					s.evidence = attentionProofEvidence{record: *proof.record}
+				}
+				listed, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.sessions = &sessionStoreFake{sess: row}
+				fetched, err := s.GetSession(t.Context(), connect.NewRequest(&pb.GetSessionRequest{Id: row.ID}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				streamed := &pb.Session{Id: row.ID, PrProofDigest: "stale"}
+				s.HydrateAttentionForStream(t.Context(), streamed)
+				for _, got := range []*pb.Session{onlySession(t, listed.Msg.Sessions), fetched.Msg.Session, streamed} {
+					if got.GetAttention().GetKind() != state.kind || got.GetPrProofDigest() != proof.want {
+						t.Fatalf("attention=%v digest=%q; want kind=%v digest=%q", got.GetAttention(), got.GetPrProofDigest(), state.kind, proof.want)
+					}
+				}
+			})
+		}
+	}
+}
+
 // TestAttentionListParkCases serves a sign-off park as a REVIEW whose merge
 // records the approval and a blocked park as a FIX that never offers a merge,
 // with the open checklist items its park note recorded.

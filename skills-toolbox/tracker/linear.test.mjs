@@ -992,16 +992,20 @@ test('resolveSelection returns the resolved selection with one lookup, or none w
   })
 })
 
-test('the list query selects every field the Step 2 eligibility walk reads', () => {
+test('the list query selects every field the Step 2 eligibility walk and rankWork read', () => {
   for (const field of [
     'identifier',
     'title',
     'priority',
+    'prioritySortOrder',
     'estimate',
+    'dueDate',
     'createdAt',
     /state\s*\{\s*name\s+type\s*\}/,
-    /parent\s*\{\s*identifier\s+priority\s*\}/,
-    /project\s*\{\s*startDate\s+targetDate\s*\}/,
+    /parent\s*\{\s*identifier\s+priority\s+dueDate\s+parent\s*\{/,
+    /project\s*\{\s*id\s+name\s+priority\s+prioritySortOrder\s+startDate\s+targetDate\s+status\s*\{\s*type\s*\}/,
+    /relatedAnchorType\s+relatedProject\s*\{/,
+    /relations\(first:\s*50\)\s*\{\s*nodes\s*\{\s*type\s+relatedIssue\s*\{/,
     /labels\s*\{\s*nodes\s*\{\s*name\s*\}\s*\}/,
     /attachments\s*\{\s*nodes\s*\{\s*id\s+title\s+url\s+createdAt\s*\}\s*\}/,
   ]) {
@@ -1058,52 +1062,34 @@ test('selectPlanned flattens labels to names and attachments to a plain array', 
   )
 })
 
-test("selectPlanned ranks each candidate at its parent epic's priority when that is more urgent", async () => {
-  const node = (identifier, priority, parent) => ({
+test('selectPlanned orders candidates by rankWork and reports each rank', async () => {
+  const node = (identifier, priority, more = {}) => ({
     identifier,
     priority,
-    parent,
     labels: { nodes: [] },
     attachments: { nodes: [] },
+    ...more,
   })
   const nodes = [
-    node('ACME-1', 4, { identifier: 'ACME-9', priority: 1 }),
-    node('ACME-2', 1, { identifier: 'ACME-8', priority: 4 }),
-    node('ACME-3', 0, null),
+    node('ACME-1', 2, { project: { id: 'p-later', startDate: '2099-01-05', targetDate: null } }),
+    node('ACME-2', 4, {
+      parent: { identifier: 'ACME-8', priority: 4, parent: { identifier: 'ACME-9', priority: 1 } },
+    }),
+    node('ACME-3', 2, { project: { id: 'p-now', startDate: '2000-01-03', targetDate: null } }),
+    node('ACME-4', 0, null),
   ]
   await withPlannedAdapter(
     ACME,
     async (adapter) => {
       const result = await adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES })
       assert.deepEqual(
-        result.map((c) => [c.identifier, c.priority, c.effectivePriority]),
+        result.map((c) => [c.identifier, c.rank.tier, c.rank.tierFrom, c.rank.scheduled]),
         [
-          ['ACME-1', 4, 1],
-          ['ACME-2', 1, 1],
-          ['ACME-3', 0, 0],
+          ['ACME-2', 1, 'epic ACME-9', true],
+          ['ACME-3', 2, 'own', true],
+          ['ACME-1', 2, 'own', false],
+          ['ACME-4', 0, 'own', true],
         ],
-      )
-    },
-    { nodes },
-  )
-})
-
-test('selectPlanned returns candidates in ranking order, earliest scheduled project first', async () => {
-  const node = (identifier, startDate) => ({
-    identifier,
-    priority: 1,
-    project: startDate === null ? null : { startDate, targetDate: null },
-    labels: { nodes: [] },
-    attachments: { nodes: [] },
-  })
-  const nodes = [node('ACME-1', null), node('ACME-2', '2026-11-16'), node('ACME-3', '2026-11-02')]
-  await withPlannedAdapter(
-    ACME,
-    async (adapter) => {
-      const result = await adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES })
-      assert.deepEqual(
-        result.map((c) => c.identifier),
-        ['ACME-3', 'ACME-2', 'ACME-1'],
       )
     },
     { nodes },

@@ -391,7 +391,7 @@ func (h Model) renderNoReposEmptyState() string {
 	// No repos configured - guide the new user straight to adding their
 	// first repository (the primary action), rather than sending them to
 	// Settings. The [s]ettings key still works as a hidden escape hatch.
-	nav := []string{"[enter] add repository"}
+	nav := []string{"[enter] add repository", "[w]aiting"}
 	// Suppress the [l]ogout action while the logout confirmation is
 	// showing so the empty state doesn't display the control and its
 	// confirmation prompt at once (mirrors the session-list view).
@@ -415,7 +415,7 @@ func (h Model) renderNoReposEmptyState() string {
 func (h Model) renderNoSessionsEmptyState() string {
 	// Repos exist but no sessions - show simplified guidance
 	left := []string{"[n]ew session"}
-	nav := []string{"[s]ettings"}
+	nav := []string{"[s]ettings", "[w]aiting"}
 	// Suppress the [l]ogout action while the logout confirmation is
 	// showing so the empty state doesn't display the control and its
 	// confirmation prompt at once (mirrors the session-list view).
@@ -563,7 +563,7 @@ func (h Model) SessionTableFooterActions() (left, nav, quit []string) {
 	} else if len(h.BoardSessions()) > 0 {
 		left = append(left, "[/] search")
 	}
-	nav = []string{"[s]ettings"}
+	nav = []string{"[s]ettings", "[w]aiting"}
 	if la := h.loginAction(); la != "" {
 		nav = append(nav, la)
 	}

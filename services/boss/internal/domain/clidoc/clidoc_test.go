@@ -55,6 +55,7 @@ func TestGroupOrderReadWhenHintsArePinned(t *testing.T) {
 		"notes":       "Recording or harvesting durable repo-scoped notes",
 		"lease":       "Taking or releasing a tracker issue lease before starting work",
 		"webhook":     "Registering, testing or inspecting an outbound session webhook (Bossanova Cloud)",
+		"viewer":      "Approving or revoking local viewer device access",
 		"account":     "Adding, testing, rotating or switching a provider account",
 		"trash":       "Resurrecting an archived session or emptying the trash",
 		"daemon":      "Starting, stopping or inspecting bossd",

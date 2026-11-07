@@ -89,6 +89,7 @@ func (s *Server) HydrateAttentionForStream(ctx context.Context, p *pb.Session) {
 // and streamSessionHydrator.Hydrate; it never writes the legacy display fields.
 // The additive field already has its compatibility transform (SessionAttentionChange).
 func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentionDeps) {
+	p.PrProofDigest = ""
 	row := d.row
 	if row == nil {
 		return
@@ -98,6 +99,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		in.StateSince = *row.StateEnteredAt
 	}
 	if e := d.display; e != nil {
+		p.PrProofDigest = s.proofDigest(row.ID, e.HeadSHA)
 		var checks []vcs.CheckResult
 		if s.checkSnapshots != nil {
 			if snaps, err := s.checkSnapshots.ListBySession(ctx, row.ID, 1); err == nil && len(snaps) > 0 && snaps[0].HeadSHA == e.HeadSHA {
@@ -797,4 +799,15 @@ func (s *Server) recordBlockers(id, head string, readAt time.Time, result domain
 	}
 	c.entries[id] = entry
 	delete(c.failures, id)
+}
+
+func (s *Server) proofDigest(sessionID, head string) string {
+	if s.evidence == nil || head == "" {
+		return ""
+	}
+	proof, ok := s.evidence.Proof(sessionID, head)
+	if !ok || proof.Legacy || !strings.EqualFold(proof.Head, head) {
+		return ""
+	}
+	return proof.Digest
 }

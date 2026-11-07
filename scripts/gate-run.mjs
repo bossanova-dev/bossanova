@@ -78,6 +78,14 @@ function writeFileAtomic(file, content) {
   fs.renameSync(tmp, file)
 }
 
+function logBestEffort(logFd, line) {
+  try {
+    fs.writeSync(logFd, line)
+  } catch {
+    // Diagnostic logging must not interrupt recovery or authoritative status writes.
+  }
+}
+
 function logPath(runDir) {
   return path.join(runDir, 'log')
 }
@@ -301,7 +309,7 @@ function positiveEnv(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback
 }
 
-function loadSampler(load, phase, runDir) {
+function loadSampler(load, phase, runDir, logFd) {
   let count = 0
   let sum = 0
   let peak = 0
@@ -321,7 +329,16 @@ function loadSampler(load, phase, runDir) {
       peak,
       mean: sum / count,
     }
-    writeFileAtomic(path.join(runDir, 'load.json'), JSON.stringify(load))
+    try {
+      writeFileAtomic(path.join(runDir, 'load.json'), JSON.stringify(load))
+    } catch (error) {
+      try {
+        fs.rmSync(path.join(runDir, `load.json.${process.pid}.tmp`), { force: true })
+      } catch {
+        // Cleanup is best effort on the same exhausted filesystem.
+      }
+      logBestEffort(logFd, `gate-run load unavailable: ${error.message}\n`)
+    }
   }
 }
 
@@ -509,31 +526,37 @@ async function supervise(args) {
       onWait: (holders, pool, ahead) =>
         writeFileAtomic(path.join(runDir, 'queued'), JSON.stringify({ pool, holders, ahead })),
     })
-    const { slots, pool, waitedMs, heldByAtAdmission, inherited } = admission
-    writeFileAtomic(
-      path.join(runDir, 'admission.json'),
-      JSON.stringify({
-        pool,
-        gateClass: gateClass(command),
-        slots,
-        waitedMs,
-        heldByAtAdmission,
-        inherited,
-        bazelFlags: gateBazelEnv(admission).BOSS_GATE_BAZEL_FLAGS,
-      }),
-    )
   } catch (error) {
     admissionFailed = true
-    fs.writeSync(logFd, `${error.message}\n`)
+    logBestEffort(logFd, `${error.message}\n`)
   } finally {
     fs.rmSync(path.join(runDir, 'queued'), { force: true })
+  }
+  if (admission) {
+    try {
+      const { slots, pool, waitedMs, heldByAtAdmission, inherited } = admission
+      writeFileAtomic(
+        path.join(runDir, 'admission.json'),
+        JSON.stringify({
+          pool,
+          gateClass: gateClass(command),
+          slots,
+          waitedMs,
+          heldByAtAdmission,
+          inherited,
+          bazelFlags: gateBazelEnv(admission).BOSS_GATE_BAZEL_FLAGS,
+        }),
+      )
+    } catch (error) {
+      logBestEffort(logFd, `gate-run admission unavailable: ${error.message}\n`)
+    }
   }
   try {
     if (!admissionFailed) disk = diskPreflight(logFd, runDir, command.join(' '))
   } catch (error) {
-    fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
+    logBestEffort(logFd, `gate-run preflight unavailable: ${error.message}\n`)
   }
-  const finishGateLoad = loadSampler(load, 'gate', runDir)
+  const finishGateLoad = loadSampler(load, 'gate', runDir, logFd)
   const original =
     wasStopped(runDir) || interruptedSignal
       ? { exit: 128 + (os.constants.signals[interruptedSignal ?? 'SIGTERM'] ?? 15) }
@@ -552,7 +575,7 @@ async function supervise(args) {
       }
     }
   } catch (error) {
-    fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
+    logBestEffort(logFd, `gate-run preflight unavailable: ${error.message}\n`)
   }
   try {
     if (
@@ -569,7 +592,7 @@ async function supervise(args) {
       const maxTargets = positiveEnv('BOSS_GATE_ISOLATE_MAX_TARGETS', 6)
       const record = { targets, unattributed, results: [], maxTargets, budgetExhausted: false }
       if (targets.length > 0 && targets.length <= maxTargets) {
-        const finishIsolationLoad = loadSampler(load, 'isolation', runDir)
+        const finishIsolationLoad = loadSampler(load, 'isolation', runDir, logFd)
         try {
           const deadline = Date.now() + positiveEnv('BOSS_GATE_ISOLATE_BUDGET_MS', 1800000)
           fs.mkdirSync(path.join(runDir, 'isolation'))
@@ -607,7 +630,7 @@ async function supervise(args) {
       writeFileAtomic(path.join(runDir, 'isolation.json'), JSON.stringify(record))
     }
   } catch (err) {
-    fs.writeSync(logFd, `gate-run isolation unavailable: ${err.message}\n`)
+    logBestEffort(logFd, `gate-run isolation unavailable: ${err.message}\n`)
   } finally {
     try {
       if (disk) {
@@ -615,7 +638,7 @@ async function supervise(args) {
         writeFileAtomic(path.join(runDir, 'disk.json'), JSON.stringify(disk.record))
       }
     } catch (error) {
-      fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
+      logBestEffort(logFd, `gate-run preflight unavailable: ${error.message}\n`)
     }
     releaseGateSlot(admission)
     fs.closeSync(logFd)

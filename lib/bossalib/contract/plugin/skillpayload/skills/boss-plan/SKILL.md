@@ -277,7 +277,7 @@ plan in its own context and returns only a path and bounded metadata.
    exits 0. It returns only `planPath`, `labels`, `agentBuild`, `estimate`, `priority`,
    `openQuestions`, `descriptionSummary: {path}` and any `siblings` — never plan text. Hold it: write `$RUN_DIR/draft.dispatched-at`
    before each attempt and re-arm `node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait` while it
-   exits 98: Claude Code uses `--budget 590000` with Bash tool `timeout: 600000` (budget below tool
+   exits 98 or 95: Claude Code uses `--budget 590000` with Bash tool `timeout: 600000` (budget below tool
    timeout); harnesses unable to raise it omit `--budget`.
    [`references/headless-dispatch.md`](references/headless-dispatch.md) owns the hold and failure rules.
 
@@ -437,8 +437,8 @@ Non-zero ⇒ no writes. Drift is annotated (`- Premise drift: …`) and named in
 **Predict verify parks.** Before the secret, image and contract gates, run
 `node "$BOSS_PLAN_TOOLBOX/plan/plan-park-prediction.mjs" annotate --description .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md --plan "$PLAN_FILE" --json`.
 It annotates both artifacts and prints `{predicted, codes, labels}`. A prediction never changes the
-exposure label: the marker lets boss-build rank the ticket last, and Phase 6 names the predicted
-codes and labels. All following gates see these final annotated bytes.
+exposure label or build order: the marker is information for people, and Phase 6 names the
+predicted codes and labels. All following gates see these final annotated bytes.
 
 **Secret gate (mandatory).** `node "${BOSS_PLAN_TOOLBOX:?}/plan-secret-scan.mjs" "$PLAN_FILE" <the
 description artifact>` — exit 1: redact the named lines and re-run; exit 2: fail closed. A clean scan

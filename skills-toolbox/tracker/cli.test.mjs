@@ -1037,6 +1037,29 @@ for (const verb of ['list-planned', 'list-unplanned']) {
   })
 }
 
+test('list-planned keeps the adapter order and each rank, and drops raw relations', async () => {
+  const rank = (tier) => ({
+    tier,
+    tierFrom: 'own',
+    deadline: null,
+    deadlineFrom: null,
+    scheduled: true,
+    leverage: 0,
+  })
+  const nodes = [
+    { identifier: 'DEMO-2', rank: rank(1), relations: { nodes: [{ type: 'blocks' }] } },
+    { identifier: 'DEMO-1', rank: rank(3) },
+  ]
+  const { code, out } = await listStage('list-planned', [], {
+    adapter: { selectPlanned: async () => nodes },
+  })
+  assert.equal(code, 0)
+  assert.deepEqual(JSON.parse(out), [
+    { identifier: 'DEMO-2', rank: rank(1), blockerVerdict: 'unknown', openBlockers: [] },
+    { identifier: 'DEMO-1', rank: rank(3), blockerVerdict: 'unknown', openBlockers: [] },
+  ])
+})
+
 test('list-unplanned ignores a build-only selection block', async () => {
   const { code, calls } = await listStage('list-unplanned', [], {
     config: plannedCliConfig({ stages: { build: { labels: { exclude: ['website'] } } } }),

@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"context"
-
 	"github.com/recurser/boss/api/tui/accounts"
 	"github.com/recurser/boss/api/tui/attach"
 	"github.com/recurser/boss/api/tui/bugreport"
@@ -12,9 +10,9 @@ import (
 	"github.com/recurser/boss/api/tui/login"
 	"github.com/recurser/boss/api/tui/newsession"
 	"github.com/recurser/boss/api/tui/repos"
+	"github.com/recurser/boss/api/tui/reviewqueue"
 	"github.com/recurser/boss/api/tui/settings"
 	"github.com/recurser/boss/api/tui/trash"
-	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // Client composes the contracts of the screens constructed by App.
@@ -36,5 +34,5 @@ type Client interface {
 	settings.GeneralClient
 	settings.SessionClient
 	trash.Client
-	ListRepos(context.Context) ([]*pb.Repo, error)
+	reviewqueue.Client
 }

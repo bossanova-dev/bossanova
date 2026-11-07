@@ -17,10 +17,11 @@ import (
 // StreamStores interfaces (wired in T3.7).
 func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, error) {
 	snap := &pb.DaemonSnapshot{
-		DaemonId:               c.daemonID,
-		CloudControl:           cloudControlProto(c.cloudControl),
-		Hostname:               c.hostname,
-		SupportedCommandFields: daemoncaps.StreamCommands(),
+		DaemonId:                   c.daemonID,
+		IsTerminalSealingSupported: c.terminalSealingSupported,
+		CloudControl:               cloudControlProto(c.cloudControl),
+		Hostname:                   c.hostname,
+		SupportedCommandFields:     daemoncaps.StreamCommands(),
 	}
 
 	if c.stores.Repos != nil {
@@ -36,7 +37,10 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		if err != nil {
 			return nil, fmt.Errorf("snapshot sessions: %w", err)
 		}
-		snap.Sessions = sessions
+		snap.Sessions = make([]*pb.Session, len(sessions))
+		for i, session := range sessions {
+			snap.Sessions[i] = redactSessionForCloud(session, snap.CloudControl)
+		}
 	}
 
 	if c.stores.Chats != nil {
@@ -44,7 +48,10 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		if err != nil {
 			return nil, fmt.Errorf("snapshot chats: %w", err)
 		}
-		snap.Chats = chats
+		snap.Chats = make([]*pb.AgentChatMetadata, len(chats))
+		for i, chat := range chats {
+			snap.Chats[i] = redactChatForCloud(chat, snap.CloudControl)
+		}
 	}
 
 	if c.stores.Statuses != nil {
@@ -102,4 +109,40 @@ type StreamStores struct {
 	Statuses      StatusSnapshotReader
 	Interests     CallbackInterestReader
 	AgentAccounts AgentAccountSnapshotReader
+}
+
+// SessionSnapshotReader returns the slim projection of every active
+// session the daemon currently knows about. Built to take the *pb.Session
+// directly so the snapshot path never touches models.Session — that
+// conversion happens once in the adapter, not per-field here.
+type SessionSnapshotReader interface {
+	SnapshotSessions(ctx context.Context) ([]*pb.Session, error)
+}
+
+// ChatSnapshotReader returns the AgentChat metadata projection (no
+// transcripts — just the preview). Kept separate from SessionSnapshot so
+// the two calls can run in parallel if that ever becomes a hotspot.
+type ChatSnapshotReader interface {
+	SnapshotChats(ctx context.Context) ([]*pb.AgentChatMetadata, error)
+}
+
+// RepoSnapshotReader lists the repos the daemon is currently managing.
+// Snapshot uses the IDs only; the full Repo proto isn't sent up.
+type RepoSnapshotReader interface {
+	SnapshotRepoIDs(ctx context.Context) ([]string, error)
+}
+
+// StatusSnapshotReader returns the current ChatStatusEntry set from the
+// in-memory chat-status tracker.
+type StatusSnapshotReader interface {
+	SnapshotStatuses(ctx context.Context) ([]*pb.ChatStatusEntry, error)
+}
+
+// CallbackInterestReader returns the daemon's complete current GitHub
+// callback-interest set (distinct repo_origin_url + pr_number over every
+// non-terminal callback). Carried on the DaemonSnapshot so bosso can reconcile
+// callback interests atomically on every (re)connect. The bossd wiring adapts
+// callback.DeriveInterests.
+type CallbackInterestReader interface {
+	SnapshotCallbackInterests(ctx context.Context) ([]*pb.CallbackInterest, error)
 }

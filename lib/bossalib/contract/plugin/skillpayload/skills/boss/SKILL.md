@@ -43,6 +43,7 @@ syntax, arguments or flags from an index row.
 | `references/notes.md`       | Recording or harvesting durable repo-scoped notes                                |
 | `references/lease.md`       | Taking or releasing a tracker issue lease before starting work                   |
 | `references/webhook.md`     | Registering, testing or inspecting an outbound session webhook (Bossanova Cloud) |
+| `references/viewer.md`      | Approving or revoking local viewer device access                                 |
 | `references/account.md`     | Adding, testing, rotating or switching a provider account                        |
 | `references/trash.md`       | Resurrecting an archived session or emptying the trash                           |
 | `references/daemon.md`      | Starting, stopping or inspecting bossd                                           |

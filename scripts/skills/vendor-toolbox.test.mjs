@@ -692,6 +692,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'plan-attachment.mjs',
       'pr-check-state.mjs',
       'epic/progress-comment.mjs',
+      // rank-work.mjs orders tracker/linear.mjs and tracker/github.mjs candidates.
+      'rank-work.mjs',
       'epic/epic-cli.mjs',
       // selection.mjs (BOS-1378) is imported by skill-config.mjs, linear-gate-lib.mjs and
       // tracker/cli.mjs, so it ships wherever they do or the installed toolbox cannot load.
@@ -714,11 +716,13 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/github-marked.mjs',
       'tracker/github-plan-verbs.mjs',
       'tracker/github-plan.mjs',
+      'tracker/github-rank-facts.mjs',
       'tracker/github-relations-preflight.mjs',
       'tracker/github-relations.mjs',
       'tracker/github-verbs.mjs',
       'tracker/github.mjs',
       'tracker/linear-issue-create.mjs',
+      'tracker/linear-rank-facts.mjs',
       'tracker/linear.mjs',
       'tracker/operation-runner.mjs',
       // tracker/outcome.mjs (BOS-1282) is imported by linear-gate-lib.mjs, which this core already

@@ -36,6 +36,7 @@ go_library(
         "store.go",
         "task_mapping_store.go",
         "trigger_launch_store.go",
+        "viewer_device_approvals.go",
         "workflow_store.go",
     ],
     importpath = "github.com/recurser/bossd/internal/db",
@@ -126,6 +127,7 @@ go_test(
         "sqlite_pool_test.go",
         "task_mapping_store_test.go",
         "trigger_launch_store_test.go",
+        "viewer_device_approvals_test.go",
         "workflow_store_test.go",
     ],
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller

@@ -97,7 +97,10 @@ func parsePRNumber(arg string) (int, error) {
 
 // resolvePRSession finds the one live session whose PR is pr, narrowed to repo
 // (owner/repo, case-insensitive) when given. It returns the session and its
-// repo slug, which the `--json` envelope reports.
+// repo slug, which the `--json` envelope reports. Cross-repository matches always
+// refuse; same-repository ambiguity advises archiving the stale live session.
+// With archived sessions included, prefer the sole live session, or the latest
+// archive (greater id breaks ties) when none are live.
 func resolvePRSession(ctx context.Context, c prSessionLister, pr int, repo string) (*pb.Session, string, error) {
 	return resolvePRSessionWithArchived(ctx, c, pr, repo, false)
 }
@@ -128,6 +131,10 @@ func resolvePRSessionWithArchived(ctx context.Context, c prSessionLister, pr int
 		s := matches[0]
 		return s, strings.ToLower(vcs.RepoSlug(s.GetRepoOriginUrl())), nil
 	}
+	selected, hint := pickPRSession(matches)
+	if selected != nil {
+		return selected, strings.ToLower(vcs.RepoSlug(selected.GetRepoOriginUrl())), nil
+	}
 	described := make([]string, 0, len(matches))
 	for _, s := range matches {
 		slug := vcs.RepoSlug(s.GetRepoOriginUrl())
@@ -136,11 +143,42 @@ func resolvePRSessionWithArchived(ctx context.Context, c prSessionLister, pr int
 		}
 		described = append(described, fmt.Sprintf("%s (%s)", s.GetId(), slug))
 	}
-	hint := "; pass --repo owner/repo"
-	if repo != "" {
-		hint = "; name the session directly with `boss show`"
-	}
 	return nil, "", cliutil.CodedError(cliutil.CodeAmbiguousPR, fmt.Errorf("PR #%d%s matches %d sessions: %s%s", pr, where, len(matches), strings.Join(described, ", "), hint))
+}
+
+func pickPRSession(matches []*pb.Session) (*pb.Session, string) {
+	repos := make(map[string]bool)
+	for _, s := range matches {
+		key := strings.ToLower(vcs.RepoSlug(s.GetRepoOriginUrl()))
+		if key == "" {
+			key = s.GetRepoId()
+		}
+		repos[key] = true
+	}
+	if len(repos) > 1 {
+		return nil, "; pass --repo owner/repo"
+	}
+	var live, latest *pb.Session
+	liveCount := 0
+	for _, s := range matches {
+		if s.GetArchivedAt() == nil {
+			live = s
+			liveCount++
+			continue
+		}
+		if latest == nil || s.GetArchivedAt().AsTime().After(latest.GetArchivedAt().AsTime()) ||
+			(s.GetArchivedAt().AsTime().Equal(latest.GetArchivedAt().AsTime()) && s.GetId() > latest.GetId()) {
+			latest = s
+		}
+	}
+	switch liveCount {
+	case 0:
+		return latest, ""
+	case 1:
+		return live, ""
+	default:
+		return nil, "; archive the stale session with `boss archive <id>` and re-run"
+	}
 }
 
 // prApproveResultJSON is the approve outcome in the `--json` envelope; its tags

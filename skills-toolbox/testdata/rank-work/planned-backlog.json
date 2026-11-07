@@ -1,0 +1,3361 @@
+[
+  {
+    "identifier": "ACME-1",
+    "title": "Ticket ACME-1",
+    "priority": 3,
+    "prioritySortOrder": -1921809,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-06T12:20:36.485Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-2", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-3", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-4", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-4",
+    "title": "Ticket ACME-4",
+    "priority": 3,
+    "prioritySortOrder": -1921891,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-06T12:20:03.706Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-2", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-1", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-5",
+    "title": "Ticket ACME-5",
+    "priority": 3,
+    "prioritySortOrder": -1915900,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-06T04:25:15.622Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": null,
+    "project": {
+      "id": "project-2",
+      "name": "Project 2",
+      "priority": 3,
+      "prioritySortOrder": -0.00158,
+      "startDate": "2027-03-01",
+      "targetDate": "2027-03-05",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-6",
+    "title": "Ticket ACME-6",
+    "priority": 4,
+    "prioritySortOrder": -1886759,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-05T08:23:47.994Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-7", "priority": 4, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-3",
+      "name": "Project 3",
+      "priority": 4,
+      "prioritySortOrder": -11517,
+      "startDate": "2027-06-14",
+      "targetDate": "2027-06-30",
+      "status": { "type": "planned" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-8", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-9", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-10", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-9",
+    "title": "Ticket ACME-9",
+    "priority": 4,
+    "prioritySortOrder": -1886822,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-05T07:51:39.920Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-11", "priority": 4, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-3",
+      "name": "Project 3",
+      "priority": 4,
+      "prioritySortOrder": -11517,
+      "startDate": "2027-06-14",
+      "targetDate": "2027-06-30",
+      "status": { "type": "planned" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-6", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-12", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-12",
+    "title": "Ticket ACME-12",
+    "priority": 4,
+    "prioritySortOrder": -1886797,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-05T07:51:24.084Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-11", "priority": 4, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-3",
+      "name": "Project 3",
+      "priority": 4,
+      "prioritySortOrder": -11517,
+      "startDate": "2027-06-14",
+      "targetDate": "2027-06-30",
+      "status": { "type": "planned" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-9", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-13", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-14", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-13",
+    "title": "Ticket ACME-13",
+    "priority": 4,
+    "prioritySortOrder": -1886664,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-05T07:51:04.913Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-11", "priority": 4, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-3",
+      "name": "Project 3",
+      "priority": 4,
+      "prioritySortOrder": -11517,
+      "startDate": "2027-06-14",
+      "targetDate": "2027-06-30",
+      "status": { "type": "planned" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-12", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-15", "state": { "type": "started", "name": "In Review" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-14", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-14",
+    "title": "Ticket ACME-14",
+    "priority": 4,
+    "prioritySortOrder": -1886704,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-05T07:50:48.403Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-11", "priority": 4, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-3",
+      "name": "Project 3",
+      "priority": 4,
+      "prioritySortOrder": -11517,
+      "startDate": "2027-06-14",
+      "targetDate": "2027-06-30",
+      "status": { "type": "planned" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-12", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-13", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-16",
+    "title": "Ticket ACME-16",
+    "priority": 4,
+    "prioritySortOrder": -1882907,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-05T05:12:41.707Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": null,
+    "project": null,
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-17",
+    "title": "Ticket ACME-17",
+    "priority": 1,
+    "prioritySortOrder": -1880048,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-05T04:27:27.970Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": null,
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-19", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-20", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-21", "state": { "type": "completed", "name": "Done" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-22",
+    "title": "Ticket ACME-22",
+    "priority": 1,
+    "prioritySortOrder": -1880071,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-05T04:27:27.300Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": null,
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-20", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-19", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-20",
+    "title": "Ticket ACME-20",
+    "priority": 1,
+    "prioritySortOrder": -1879993,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-05T04:27:26.541Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": null,
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-17", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-22", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-23", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-19", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-24",
+    "title": "Ticket ACME-24",
+    "priority": 3,
+    "prioritySortOrder": -1877258,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-05T03:37:36.928Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-25", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-4",
+      "name": "Project 4",
+      "priority": 3,
+      "prioritySortOrder": -12463,
+      "startDate": "2027-01-11",
+      "targetDate": "2027-01-22",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-26",
+    "title": "Ticket ACME-26",
+    "priority": 2,
+    "prioritySortOrder": -1877155,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-05T03:37:30.106Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": null,
+    "project": {
+      "id": "project-5",
+      "name": "Project 5",
+      "priority": 2,
+      "prioritySortOrder": -14418,
+      "startDate": "2026-11-16",
+      "targetDate": "2026-11-27",
+      "status": { "type": "planned" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-27", "state": { "type": "backlog" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-8",
+    "title": "Ticket ACME-8",
+    "priority": 1,
+    "prioritySortOrder": -1876225,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-05T03:36:02.306Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": null,
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-6", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-28", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-29",
+    "title": "Ticket ACME-29",
+    "priority": 4,
+    "prioritySortOrder": -1840532,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-03T14:24:23.993Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-30", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-31", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-32", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-31",
+    "title": "Ticket ACME-31",
+    "priority": 3,
+    "prioritySortOrder": -1840625,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T14:23:09.865Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-30", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-29", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-32", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-33", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-33",
+    "title": "Ticket ACME-33",
+    "priority": 3,
+    "prioritySortOrder": -1840561,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T14:21:46.952Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-30", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-31", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-32", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-32",
+    "title": "Ticket ACME-32",
+    "priority": 3,
+    "prioritySortOrder": -1840679,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T14:20:06.752Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-30", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-29", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-31", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-33", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-34",
+    "title": "Ticket ACME-34",
+    "priority": 1,
+    "prioritySortOrder": -1835680,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T08:00:07.192Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-35", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-6",
+      "name": "Project 6",
+      "priority": 1,
+      "prioritySortOrder": -9537,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-13",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-36", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-37", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-38", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-39", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-40", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-41",
+    "title": "Ticket ACME-41",
+    "priority": 3,
+    "prioritySortOrder": -1833444,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T05:55:20.275Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": null,
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-42",
+    "title": "Ticket ACME-42",
+    "priority": 2,
+    "prioritySortOrder": -1833636,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-03T05:42:59.580Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": null,
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-43",
+    "title": "Ticket ACME-43",
+    "priority": 1,
+    "prioritySortOrder": -1831504,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T04:56:53.388Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-35", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-6",
+      "name": "Project 6",
+      "priority": 1,
+      "prioritySortOrder": -9537,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-13",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-36", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-44", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-45", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-46",
+    "title": "Ticket ACME-46",
+    "priority": 3,
+    "prioritySortOrder": -1831554,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T02:53:22.631Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-47", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-48", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-49", "state": { "type": "started", "name": "In Review" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-50", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-51",
+    "title": "Ticket ACME-51",
+    "priority": 3,
+    "prioritySortOrder": -1830712,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-03T02:28:45.909Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-47", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-49", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-48",
+    "title": "Ticket ACME-48",
+    "priority": 3,
+    "prioritySortOrder": -1830573,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T02:28:30.389Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-47", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-46", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-50", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-52", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-49", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-53",
+    "title": "Ticket ACME-53",
+    "priority": 3,
+    "prioritySortOrder": -1823707,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T01:14:41.135Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": null,
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-54",
+    "title": "Ticket ACME-54",
+    "priority": 3,
+    "prioritySortOrder": -1822668,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-03T00:35:43.648Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": null,
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-55",
+    "title": "Ticket ACME-55",
+    "priority": 3,
+    "prioritySortOrder": -1814626,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T20:22:09.533Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-56", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-8",
+      "name": "Project 8",
+      "priority": 3,
+      "prioritySortOrder": -40652,
+      "startDate": "2027-03-08",
+      "targetDate": "2027-03-26",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-57", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-58", "state": { "type": "started", "name": "In Review" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-59", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-60",
+    "title": "Ticket ACME-60",
+    "priority": 3,
+    "prioritySortOrder": -1814704,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T18:54:45.434Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-61", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-8",
+      "name": "Project 8",
+      "priority": 3,
+      "prioritySortOrder": -40652,
+      "startDate": "2027-03-08",
+      "targetDate": "2027-03-26",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-62", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-63", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-63",
+    "title": "Ticket ACME-63",
+    "priority": 3,
+    "prioritySortOrder": -1814608,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T18:54:35.685Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-61", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-8",
+      "name": "Project 8",
+      "priority": 3,
+      "prioritySortOrder": -40652,
+      "startDate": "2027-03-08",
+      "targetDate": "2027-03-26",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-60", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-64", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-65", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-62", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-62",
+    "title": "Ticket ACME-62",
+    "priority": 3,
+    "prioritySortOrder": -1814577,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-02T18:54:22.305Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-61", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-8",
+      "name": "Project 8",
+      "priority": 3,
+      "prioritySortOrder": -40652,
+      "startDate": "2027-03-08",
+      "targetDate": "2027-03-26",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-60", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-63", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-65", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-66",
+    "title": "Ticket ACME-66",
+    "priority": 3,
+    "prioritySortOrder": -1814713,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-02T18:25:52.105Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-61", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-8",
+      "name": "Project 8",
+      "priority": 3,
+      "prioritySortOrder": -40652,
+      "startDate": "2027-03-08",
+      "targetDate": "2027-03-26",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-64", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-57",
+    "title": "Ticket ACME-57",
+    "priority": 3,
+    "prioritySortOrder": -1814600,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T17:51:34.912Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-56", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-8",
+      "name": "Project 8",
+      "priority": 3,
+      "prioritySortOrder": -40652,
+      "startDate": "2027-03-08",
+      "targetDate": "2027-03-26",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-58", "state": { "type": "started", "name": "In Review" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-55", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-59", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-59",
+    "title": "Ticket ACME-59",
+    "priority": 3,
+    "prioritySortOrder": -1814733,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T17:51:19.910Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-56", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-8",
+      "name": "Project 8",
+      "priority": 3,
+      "prioritySortOrder": -40652,
+      "startDate": "2027-03-08",
+      "targetDate": "2027-03-26",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-55", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-57", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-58", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-67",
+    "title": "Ticket ACME-67",
+    "priority": 4,
+    "prioritySortOrder": -1814609,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-02T15:20:49.242Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-47", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-52",
+    "title": "Ticket ACME-52",
+    "priority": 4,
+    "prioritySortOrder": -1814669,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T15:20:37.739Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-47", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-48", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-49", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-50",
+    "title": "Ticket ACME-50",
+    "priority": 3,
+    "prioritySortOrder": -1814592,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-02T15:20:17.961Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-47", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-46", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-48", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-49", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-68",
+    "title": "Ticket ACME-68",
+    "priority": 1,
+    "prioritySortOrder": -1810649,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T14:21:43.880Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-9",
+      "name": "Project 9",
+      "priority": 1,
+      "prioritySortOrder": -15366,
+      "startDate": "2026-11-16",
+      "targetDate": "2026-11-27",
+      "status": { "type": "planned" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-69", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-70", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-71",
+    "title": "Ticket ACME-71",
+    "priority": 1,
+    "prioritySortOrder": -1810666,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-02T14:21:29.368Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-9",
+      "name": "Project 9",
+      "priority": 1,
+      "prioritySortOrder": -15366,
+      "startDate": "2026-11-16",
+      "targetDate": "2026-11-27",
+      "status": { "type": "planned" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-69", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-70", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-72",
+    "title": "Ticket ACME-72",
+    "priority": 1,
+    "prioritySortOrder": -1810649,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T14:12:36.169Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-73", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-10",
+      "name": "Project 10",
+      "priority": 1,
+      "prioritySortOrder": -7450,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-06",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-74", "state": { "type": "completed", "name": "Done" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-75", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-76",
+    "title": "Ticket ACME-76",
+    "priority": 1,
+    "prioritySortOrder": -1810647,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T14:11:24.607Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-73", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-10",
+      "name": "Project 10",
+      "priority": 1,
+      "prioritySortOrder": -7450,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-06",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-74", "state": { "type": "completed", "name": "Done" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-77",
+    "title": "Ticket ACME-77",
+    "priority": 1,
+    "prioritySortOrder": -1810684,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-02T14:10:13.929Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-73", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-10",
+      "name": "Project 10",
+      "priority": 1,
+      "prioritySortOrder": -7450,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-06",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-74", "state": { "type": "completed", "name": "Done" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-78",
+    "title": "Ticket ACME-78",
+    "priority": 1,
+    "prioritySortOrder": -1810806,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T14:09:02.211Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-73", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-10",
+      "name": "Project 10",
+      "priority": 1,
+      "prioritySortOrder": -7450,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-06",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-74", "state": { "type": "completed", "name": "Done" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-79",
+    "title": "Ticket ACME-79",
+    "priority": 1,
+    "prioritySortOrder": -1810673,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T13:57:02.022Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-9",
+      "name": "Project 9",
+      "priority": 1,
+      "prioritySortOrder": -15366,
+      "startDate": "2026-11-16",
+      "targetDate": "2026-11-27",
+      "status": { "type": "planned" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-69", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-80", "state": { "type": "completed", "name": "Done" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-23",
+    "title": "Ticket ACME-23",
+    "priority": 1,
+    "prioritySortOrder": -1810636,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T13:56:47.518Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-9",
+      "name": "Project 9",
+      "priority": 1,
+      "prioritySortOrder": -15366,
+      "startDate": "2026-11-16",
+      "targetDate": "2026-11-27",
+      "status": { "type": "planned" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-20", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-19", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-69", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-64",
+    "title": "Ticket ACME-64",
+    "priority": 3,
+    "prioritySortOrder": -1806786,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T12:42:29.729Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-61", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-8",
+      "name": "Project 8",
+      "priority": 3,
+      "prioritySortOrder": -40652,
+      "startDate": "2027-03-08",
+      "targetDate": "2027-03-26",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-63", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-66", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-65", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-70",
+    "title": "Ticket ACME-70",
+    "priority": 1,
+    "prioritySortOrder": -1806748,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T12:40:26.105Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-9",
+      "name": "Project 9",
+      "priority": 1,
+      "prioritySortOrder": -15366,
+      "startDate": "2026-11-16",
+      "targetDate": "2026-11-27",
+      "status": { "type": "planned" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-68", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-71", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-69", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-69",
+    "title": "Ticket ACME-69",
+    "priority": 1,
+    "prioritySortOrder": -1806678,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T12:40:10.429Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-9",
+      "name": "Project 9",
+      "priority": 1,
+      "prioritySortOrder": -15366,
+      "startDate": "2026-11-16",
+      "targetDate": "2026-11-27",
+      "status": { "type": "planned" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-68", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-71", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-79", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-23", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-81", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-19", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-70", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-82",
+    "title": "Ticket ACME-82",
+    "priority": 3,
+    "prioritySortOrder": -1803824,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-02T07:39:07.145Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": null,
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-83", "state": { "type": "completed", "name": "Done" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-84",
+    "title": "Ticket ACME-84",
+    "priority": 4,
+    "prioritySortOrder": -1792660,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-02T03:08:32.361Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": null,
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-85",
+    "title": "Ticket ACME-85",
+    "priority": 3,
+    "prioritySortOrder": -1760908,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-01T23:17:19.610Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-86", "priority": 0, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-87",
+    "title": "Ticket ACME-87",
+    "priority": 2,
+    "prioritySortOrder": -1760783,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-01T23:14:56.584Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-86", "priority": 0, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-88",
+    "title": "Ticket ACME-88",
+    "priority": 3,
+    "prioritySortOrder": -1760748,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-11-01T23:14:22.698Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-86", "priority": 0, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-89",
+    "title": "Ticket ACME-89",
+    "priority": 3,
+    "prioritySortOrder": -1760853,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-11-01T23:13:12.913Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-86", "priority": 0, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-7",
+      "name": "Project 7",
+      "priority": 0,
+      "prioritySortOrder": -2582,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-90",
+    "title": "Ticket ACME-90",
+    "priority": 4,
+    "prioritySortOrder": -1759765,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-10-30T16:19:42.598Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-91", "priority": 4, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-92", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-93",
+    "title": "Ticket ACME-93",
+    "priority": 3,
+    "prioritySortOrder": -1759868,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T14:55:40.009Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-94", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-95", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-96",
+    "title": "Ticket ACME-96",
+    "priority": 3,
+    "prioritySortOrder": -1759772,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-10-30T14:42:29.218Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-97", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-98", "state": { "type": "started", "name": "In Review" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-99", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-99",
+    "title": "Ticket ACME-99",
+    "priority": 3,
+    "prioritySortOrder": -1759820,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T14:41:39.923Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-97", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-96", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-100", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-101", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-102",
+    "title": "Ticket ACME-102",
+    "priority": 3,
+    "prioritySortOrder": -1759880,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-10-30T14:40:46.001Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-97", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-103", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-100",
+    "title": "Ticket ACME-100",
+    "priority": 3,
+    "prioritySortOrder": -1759831,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T14:39:45.466Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-97", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-99", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-104", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-104",
+    "title": "Ticket ACME-104",
+    "priority": 3,
+    "prioritySortOrder": -1759721,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T14:39:01.058Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-97", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-100", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-98", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-105",
+    "title": "Ticket ACME-105",
+    "priority": 3,
+    "prioritySortOrder": -1759748,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-10-30T14:38:13.823Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-97", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-98", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-103",
+    "title": "Ticket ACME-103",
+    "priority": 3,
+    "prioritySortOrder": -1759891,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T14:37:29.209Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-97", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-102", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-98", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-106",
+    "title": "Ticket ACME-106",
+    "priority": 3,
+    "prioritySortOrder": -1759862,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-10-30T10:50:03.497Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-107", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-108", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-109", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-110",
+    "title": "Ticket ACME-110",
+    "priority": 3,
+    "prioritySortOrder": -1759867,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T10:50:01.196Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-107", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-108", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-109", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-108",
+    "title": "Ticket ACME-108",
+    "priority": 3,
+    "prioritySortOrder": -1759783,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T10:49:58.667Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-107", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-106", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-110", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-111", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-112",
+    "title": "Ticket ACME-112",
+    "priority": 3,
+    "prioritySortOrder": -1759907,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T10:49:56.530Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-107", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-111", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-113",
+    "title": "Ticket ACME-113",
+    "priority": 3,
+    "prioritySortOrder": -1759836,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T10:21:22.661Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-114", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-115", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-116",
+    "title": "Ticket ACME-116",
+    "priority": 2,
+    "prioritySortOrder": -1759783,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:59:50.797Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-117", "priority": 2, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-11",
+      "name": "Project 11",
+      "priority": 2,
+      "prioritySortOrder": -18400,
+      "startDate": "2026-11-30",
+      "targetDate": "2026-12-11",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-118", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-119", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-118",
+    "title": "Ticket ACME-118",
+    "priority": 2,
+    "prioritySortOrder": -1759733,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:59:26.525Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-117", "priority": 2, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-11",
+      "name": "Project 11",
+      "priority": 2,
+      "prioritySortOrder": -18400,
+      "startDate": "2026-11-30",
+      "targetDate": "2026-12-11",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-116", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-120", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-121",
+    "title": "Ticket ACME-121",
+    "priority": 2,
+    "prioritySortOrder": -1759765,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:59:17.498Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-117", "priority": 2, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-11",
+      "name": "Project 11",
+      "priority": 2,
+      "prioritySortOrder": -18400,
+      "startDate": "2026-11-30",
+      "targetDate": "2026-12-11",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-122", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-123", "state": { "type": "completed", "name": "Done" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-120", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-120",
+    "title": "Ticket ACME-120",
+    "priority": 2,
+    "prioritySortOrder": -1759828,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:59:12.079Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-117", "priority": 2, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-11",
+      "name": "Project 11",
+      "priority": 2,
+      "prioritySortOrder": -18400,
+      "startDate": "2026-11-30",
+      "targetDate": "2026-12-11",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-118", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-121", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-119", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-40",
+    "title": "Ticket ACME-40",
+    "priority": 1,
+    "prioritySortOrder": -1759735,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:46:09.831Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-35", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-6",
+      "name": "Project 6",
+      "priority": 1,
+      "prioritySortOrder": -9537,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-13",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-34", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-39", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-45", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-38", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-37", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-37",
+    "title": "Ticket ACME-37",
+    "priority": 1,
+    "prioritySortOrder": -1759741,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:44:49.443Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-35", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-6",
+      "name": "Project 6",
+      "priority": 1,
+      "prioritySortOrder": -9537,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-13",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-34", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-40", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-36", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-39", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-38", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-44", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-44",
+    "title": "Ticket ACME-44",
+    "priority": 1,
+    "prioritySortOrder": -1759858,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:43:26.673Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-35", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-6",
+      "name": "Project 6",
+      "priority": 1,
+      "prioritySortOrder": -9537,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-13",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-37", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-39", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-38", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-43", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-36", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-38",
+    "title": "Ticket ACME-38",
+    "priority": 1,
+    "prioritySortOrder": -1759836,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:42:11.315Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-35", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-6",
+      "name": "Project 6",
+      "priority": 1,
+      "prioritySortOrder": -9537,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-13",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-34", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-37", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-44", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-40", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-39", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-36", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-36",
+    "title": "Ticket ACME-36",
+    "priority": 1,
+    "prioritySortOrder": -1759717,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:40:52.488Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-35", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-6",
+      "name": "Project 6",
+      "priority": 1,
+      "prioritySortOrder": -9537,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-13",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-34", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-37", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-44", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-38", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-43", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-39", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-39",
+    "title": "Ticket ACME-39",
+    "priority": 1,
+    "prioritySortOrder": -1759767,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:38:13.478Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-35", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-6",
+      "name": "Project 6",
+      "priority": 1,
+      "prioritySortOrder": -9537,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-13",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-34", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-40", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-37", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-44", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-38", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-36", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-45", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-45",
+    "title": "Ticket ACME-45",
+    "priority": 1,
+    "prioritySortOrder": -1759838,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-30T06:29:20.575Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-35", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-6",
+      "name": "Project 6",
+      "priority": 1,
+      "prioritySortOrder": -9537,
+      "startDate": "2026-11-02",
+      "targetDate": "2026-11-13",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-43", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-124", "state": { "type": "started" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-40", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-39", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-125", "state": { "type": "completed", "name": "Done" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-126",
+    "title": "Ticket ACME-126",
+    "priority": 3,
+    "prioritySortOrder": -1747847,
+    "estimate": 5,
+    "dueDate": null,
+    "createdAt": "2026-10-29T08:23:54.636Z",
+    "labels": { "nodes": [{ "name": "agent-build" }, { "name": "agent-question" }] },
+    "parent": { "identifier": "ACME-127", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-19",
+    "title": "Ticket ACME-19",
+    "priority": 1,
+    "prioritySortOrder": -1715461,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-28T14:24:36.849Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-18", "priority": 1, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-9",
+      "name": "Project 9",
+      "priority": 1,
+      "prioritySortOrder": -15366,
+      "startDate": "2026-11-16",
+      "targetDate": "2026-11-27",
+      "status": { "type": "planned" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-17", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-22", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-20", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-23", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-69", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-128",
+    "title": "Ticket ACME-128",
+    "priority": 3,
+    "prioritySortOrder": -1715618,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-28T14:22:57.898Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-25", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-4",
+      "name": "Project 4",
+      "priority": 3,
+      "prioritySortOrder": -12463,
+      "startDate": "2027-01-11",
+      "targetDate": "2027-01-22",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": {
+            "identifier": "ACME-129",
+            "state": { "type": "started", "name": "In Progress" }
+          }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-80", "state": { "type": "completed", "name": "Done" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-130",
+    "title": "Ticket ACME-130",
+    "priority": 3,
+    "prioritySortOrder": -1648866,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-10-27T02:26:43.344Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-131", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-132", "state": { "type": "started", "name": "In Review" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-133", "state": { "type": "started", "name": "In Review" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-134", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-135", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-135",
+    "title": "Ticket ACME-135",
+    "priority": 3,
+    "prioritySortOrder": -1648871,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-10-27T02:25:42.620Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-131", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-130", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-136", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-134",
+    "title": "Ticket ACME-134",
+    "priority": 3,
+    "prioritySortOrder": -1648822,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-27T02:24:44.214Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-131", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-130", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-136", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-136",
+    "title": "Ticket ACME-136",
+    "priority": 3,
+    "prioritySortOrder": -1648848,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-27T02:23:40.391Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-131", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-135", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-134", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-132", "state": { "type": "started", "name": "In Review" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-137",
+    "title": "Ticket ACME-137",
+    "priority": 3,
+    "prioritySortOrder": -1615774,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-22T15:53:32.457Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-138", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-139", "state": { "type": "canceled", "name": "Canceled" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-140",
+    "title": "Ticket ACME-140",
+    "priority": 3,
+    "prioritySortOrder": -1589066,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-10-22T05:25:50.466Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-141", "priority": 3, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-12",
+      "name": "Project 12",
+      "priority": 3,
+      "prioritySortOrder": -28793,
+      "startDate": "2027-02-22",
+      "targetDate": "2027-02-26",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-142", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-143",
+    "title": "Ticket ACME-143",
+    "priority": 2,
+    "prioritySortOrder": -1560589,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-10-19T17:56:06.794Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-144", "priority": 2, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-13",
+      "name": "Project 13",
+      "priority": 2,
+      "prioritySortOrder": -20494,
+      "startDate": "2026-12-21",
+      "targetDate": "2027-01-01",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-145", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-146",
+    "title": "Ticket ACME-146",
+    "priority": 2,
+    "prioritySortOrder": -1560637,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-19T17:55:07.910Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-144", "priority": 2, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-13",
+      "name": "Project 13",
+      "priority": 2,
+      "prioritySortOrder": -20494,
+      "startDate": "2026-12-21",
+      "targetDate": "2027-01-01",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-145", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-147",
+    "title": "Ticket ACME-147",
+    "priority": 2,
+    "prioritySortOrder": -1560660,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-19T17:54:08.778Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-144", "priority": 2, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-13",
+      "name": "Project 13",
+      "priority": 2,
+      "prioritySortOrder": -20494,
+      "startDate": "2026-12-21",
+      "targetDate": "2027-01-01",
+      "status": { "type": "started" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-145", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-145",
+    "title": "Ticket ACME-145",
+    "priority": 2,
+    "prioritySortOrder": -1560670,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-19T17:53:00.930Z",
+    "labels": { "nodes": [{ "name": "agent-question" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-144", "priority": 2, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-13",
+      "name": "Project 13",
+      "priority": 2,
+      "prioritySortOrder": -20494,
+      "startDate": "2026-12-21",
+      "targetDate": "2027-01-01",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-143", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-146", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-147", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-148", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-148",
+    "title": "Ticket ACME-148",
+    "priority": 2,
+    "prioritySortOrder": -1560631,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-10-19T17:51:40.037Z",
+    "labels": { "nodes": [{ "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-144", "priority": 2, "dueDate": null, "parent": null },
+    "project": {
+      "id": "project-13",
+      "name": "Project 13",
+      "priority": 2,
+      "prioritySortOrder": -20494,
+      "startDate": "2026-12-21",
+      "targetDate": "2027-01-01",
+      "status": { "type": "started" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-145", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": {
+            "identifier": "ACME-149",
+            "state": { "type": "unstarted", "name": "Unplanned" }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-150",
+    "title": "Ticket ACME-150",
+    "priority": 3,
+    "prioritySortOrder": -1289141,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-09-10T13:10:28.811Z",
+    "labels": {
+      "nodes": [{ "name": "agent-question" }, { "name": "needs-human" }, { "name": "agent-build" }]
+    },
+    "parent": { "identifier": "ACME-151", "priority": 4, "dueDate": "2026-11-13", "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-152", "state": { "type": "completed", "name": "Done" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-153", "state": { "type": "unstarted", "name": "Todo" } }
+        },
+        {
+          "type": "blocks",
+          "issue": { "identifier": "ACME-154", "state": { "type": "unstarted", "name": "Todo" } }
+        }
+      ]
+    }
+  },
+  {
+    "identifier": "ACME-153",
+    "title": "Ticket ACME-153",
+    "priority": 3,
+    "prioritySortOrder": -1289115,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-09-10T13:10:22.495Z",
+    "labels": { "nodes": [{ "name": "needs-human" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-151", "priority": 4, "dueDate": "2026-11-13", "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-150", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-154",
+    "title": "Ticket ACME-154",
+    "priority": 3,
+    "prioritySortOrder": -1289039,
+    "estimate": 3,
+    "dueDate": null,
+    "createdAt": "2026-09-10T13:10:16.949Z",
+    "labels": { "nodes": [{ "name": "needs-human" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-151", "priority": 4, "dueDate": "2026-11-13", "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-150", "state": { "type": "unstarted" } }
+        },
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-153", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "identifier": "ACME-155",
+    "title": "Ticket ACME-155",
+    "priority": 3,
+    "prioritySortOrder": -1289172,
+    "estimate": 2,
+    "dueDate": null,
+    "createdAt": "2026-09-10T13:10:09.312Z",
+    "labels": { "nodes": [{ "name": "needs-human" }, { "name": "agent-build" }] },
+    "parent": { "identifier": "ACME-151", "priority": 4, "dueDate": "2026-11-13", "parent": null },
+    "project": {
+      "id": "project-1",
+      "name": "Project 1",
+      "priority": 0,
+      "prioritySortOrder": -43518,
+      "startDate": null,
+      "targetDate": null,
+      "status": { "type": "backlog" }
+    },
+    "relations": {
+      "nodes": [
+        {
+          "type": "blocks",
+          "relatedIssue": { "identifier": "ACME-154", "state": { "type": "unstarted" } }
+        }
+      ]
+    },
+    "inverseRelations": { "nodes": [] }
+  }
+]

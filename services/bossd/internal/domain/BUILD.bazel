@@ -41,6 +41,7 @@ go_library(
         "trigger_launch.go",
         "upstream_errors.go",
         "verify.go",
+        "viewer_device.go",
         "workflow.go",
         "worktree.go",
     ],

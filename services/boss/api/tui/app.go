@@ -27,6 +27,7 @@ import (
 	"github.com/recurser/boss/internal/auth"
 
 	bosspty "github.com/recurser/boss/internal/pty"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/telemetry"
 )
@@ -59,6 +60,8 @@ type App struct {
 	repoList          repos.RepoListModel
 	repoSettings      repos.RepoSettingsModel
 	sessionSettings   settings.SessionSettingsModel
+	reviewQueue       ReviewQueueModel
+	reviewQueueSort   pb.ReviewQueueSort
 	trash             TrashModel
 	settings          settings.Model
 	generalSettings   settings.GeneralSettingsModel
@@ -470,6 +473,8 @@ func (a *App) backKeyAliasEligible() bool {
 		return false
 	case ui.ViewNewSession:
 		return !a.newSession.TextEntryActive()
+	case ui.ViewReviewQueue:
+		return !a.reviewQueue.TextEntryActive()
 	case ui.ViewTrash:
 		return !a.trash.TextEntryActive()
 	case ui.ViewRepoAdd:

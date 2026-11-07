@@ -15,7 +15,6 @@ import {
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_WAIT_BUDGET_MS,
   DEFAULT_RETURN_GRACE_MS,
-  DEFAULT_RETURN_SLICE_MS,
   DISPATCH_AWAIT_RESULTS,
   HEARTBEAT_ABSENT,
   HEARTBEAT_LIVE,
@@ -943,10 +942,18 @@ function fakeTime(start = Date.now()) {
 
 test('wait: budget, interval and exit codes are fixed and distinct', () => {
   assert.equal(DEFAULT_WAIT_BUDGET_MS, 110_000, 'must stay under the 120 s default Bash timeout')
-  assert.deepEqual(WAIT_EXIT_CODES, { completed: 0, 'timed-out': 96, abandoned: 97, budget: 98 })
-  assert.equal(new Set(Object.values(WAIT_EXIT_CODES)).size, 4)
+  assert.deepEqual(WAIT_EXIT_CODES, {
+    completed: 0,
+    'timed-out': 96,
+    abandoned: 97,
+    budget: 98,
+    'awaiting-return': 95,
+  })
+  assert.equal(new Set(Object.values(WAIT_EXIT_CODES)).size, 5)
   assert.equal(waitExitCode({ outcome: 'completed' }), 0)
-  assert.equal(waitExitCode({ outcome: 'budget', held: 'heartbeat-live' }), 98)
+  assert.equal(waitExitCode({ outcome: 'budget' }), 98)
+  assert.equal(waitExitCode({ outcome: 'awaiting-return' }), 95)
+  assert.equal(waitExitCode({ outcome: 'unknown' }), 98)
 })
 
 test('wait: completed on a landed sentinel — exit 0 and one JSON line carrying waitedMs', () => {
@@ -1015,7 +1022,7 @@ test('wait: a never-upgraded provisional seed exits 98 at budget (caller re-arms
   assert.equal(result.held, undefined)
 })
 
-test('wait --while-live holds a completed sentinel while the heartbeat is live (exit 98, held)', () => {
+test('wait --while-live holds a completed sentinel while the heartbeat is live (exit 95, held)', () => {
   const ctx = context()
   writeSentinel(ctx, 'review', 'clean', { provisional: false })
   const hb = join(ctx.dir, 'review.heartbeat')
@@ -1029,7 +1036,9 @@ test('wait --while-live holds a completed sentinel while the heartbeat is live (
     '--interval',
     '10',
   ])
-  assert.equal(res.status, 98)
+  assert.equal(res.status, 95)
+  assert.equal(res.stdout.split('\n').length, 1, 'exactly one stdout line')
+  assert.equal(res.json.outcome, 'awaiting-return')
   assert.equal(res.json.status, COMPLETED)
   assert.equal(res.json.held, 'awaiting-return')
 })
@@ -1062,7 +1071,6 @@ test('awaitDispatch --while-live releases the hold when the worker stops beating
     heartbeatPath: hb,
     whileLive: true,
     budgetMs: 10 * DEFAULT_OPEN_DISPATCH_STALE_MS,
-    returnSliceMs: 10 * DEFAULT_OPEN_DISPATCH_STALE_MS,
     intervalMs: 60_000,
     now: clock.now,
     sleep: clock.sleep,
@@ -1073,50 +1081,54 @@ test('awaitDispatch --while-live releases the hold when the worker stops beating
   assert.ok(result.waitedMs < DEFAULT_OPEN_DISPATCH_STALE_MS)
 })
 
-for (const budgetMs of [DEFAULT_WAIT_BUDGET_MS, 590_000]) {
-  test(`awaitDispatch --while-live bounds post-verdict re-arms with budget ${budgetMs}`, async () => {
-    const ctx = context()
-    const clock = fakeTime(1_700_000_000_000)
-    const startedAt = clock.now()
-    const hb = join(ctx.dir, 'review.heartbeat')
-    touchHeartbeat(hb, { now: startedAt })
-    let verdictAt
-    let result
-    do {
-      const callStart = clock.now()
-      result = await awaitDispatch(ctx, 'review', {
-        dispatchedAt: startedAt,
-        heartbeatPath: hb,
-        whileLive: true,
-        budgetMs,
-        now: clock.now,
-        sleep: async (ms) => {
-          await clock.sleep(ms)
-          if (verdictAt === undefined) {
-            verdictAt = clock.now()
-            writeSentinel(ctx, 'review', 'clean', {})
-            const landing = new Date(verdictAt)
-            utimesSync(ctx.sentinelPath('review'), landing, landing)
-          }
-        },
-      })
-      assert.ok(
-        clock.now() - Math.max(callStart, verdictAt) <= DEFAULT_RETURN_SLICE_MS,
-        'every post-verdict call returns within one slice',
-      )
-      if (result.outcome === 'budget') {
-        assert.equal(waitExitCode(result), 98)
-        assert.equal(result.held, 'awaiting-return')
-        assert.ok(callStart < verdictAt + DEFAULT_RETURN_GRACE_MS)
+test('awaitDispatch --while-live settles a verdict that lands mid-call in one long hold', async () => {
+  const ctx = context()
+  const clock = fakeTime(1_700_000_000_000)
+  const startedAt = clock.now()
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb, { now: startedAt })
+  let verdictAt
+  const result = await awaitDispatch(ctx, 'review', {
+    dispatchedAt: startedAt,
+    heartbeatPath: hb,
+    whileLive: true,
+    budgetMs: 590_000,
+    now: clock.now,
+    sleep: async (ms) => {
+      await clock.sleep(ms)
+      if (verdictAt === undefined) {
+        verdictAt = clock.now()
+        writeSentinel(ctx, 'review', 'clean', {})
+        const landing = new Date(verdictAt)
+        utimesSync(ctx.sentinelPath('review'), landing, landing)
       }
-    } while (result.outcome === 'budget')
-    assert.equal(result.outcome, 'completed')
-    assert.equal(result.released, 'return-grace')
-    assert.equal(waitExitCode(result), 0)
-    assert.ok(clock.now() - verdictAt >= DEFAULT_RETURN_GRACE_MS)
-    assert.ok(clock.now() - verdictAt < DEFAULT_RETURN_GRACE_MS + DEFAULT_RETURN_SLICE_MS)
+    },
   })
-}
+  assert.equal(result.outcome, 'completed')
+  assert.equal(result.released, 'return-grace')
+  assert.equal(waitExitCode(result), 0)
+  assert.equal(clock.now() - verdictAt, DEFAULT_RETURN_GRACE_MS)
+})
+
+test('awaitDispatch --while-live spends its whole budget when the return grace is further away', async () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'clean', {})
+  const verdictAt = statSync(ctx.sentinelPath('review')).mtimeMs
+  const clock = fakeTime(verdictAt + 1_000)
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb, { now: verdictAt })
+  const result = await awaitDispatch(ctx, 'review', {
+    heartbeatPath: hb,
+    whileLive: true,
+    now: clock.now,
+    sleep: clock.sleep,
+  })
+  assert.equal(result.outcome, 'awaiting-return')
+  assert.equal(result.held, 'awaiting-return')
+  assert.equal(waitExitCode(result), 95)
+  assert.equal(result.waitedMs, DEFAULT_WAIT_BUDGET_MS)
+  assert.equal(clock.now(), verdictAt + 1_000 + DEFAULT_WAIT_BUDGET_MS)
+})
 
 test('awaitDispatch --while-live spans a five-minute heartbeat gap with a long budget', async () => {
   const ctx = context()
@@ -1169,12 +1181,15 @@ test('awaitDispatch --while-live post-verdict beats keep the hold until one grac
       },
     })
     if (clock.now() < lastBeatAt + DEFAULT_RETURN_GRACE_MS) {
-      assert.equal(result.outcome, 'budget')
+      assert.equal(result.outcome, 'awaiting-return')
       assert.equal(result.held, 'awaiting-return')
+      assert.equal(waitExitCode(result), 95)
+      assert.equal(result.waitedMs, DEFAULT_WAIT_BUDGET_MS)
     }
-  } while (result.outcome === 'budget')
+  } while (result.outcome === 'awaiting-return')
   assert.equal(result.outcome, 'completed')
   assert.equal(result.released, 'return-grace')
+  assert.equal(waitExitCode(result), 0)
   assert.equal(clock.now(), lastBeatAt + DEFAULT_RETURN_GRACE_MS)
 })
 
@@ -1388,7 +1403,7 @@ test('wait never writes the heartbeat it reads: bytes and mtime unchanged', () =
     '--interval',
     '10',
   ])
-  assert.equal(res.status, 98, 'the wait consulted the heartbeat (held on it)')
+  assert.equal(res.status, 95, 'the wait consulted the heartbeat (held on it)')
   assert.equal(readFileSync(hb, 'utf8'), bytes)
   assert.equal(statSync(hb).mtimeMs, mtimeMs)
 })

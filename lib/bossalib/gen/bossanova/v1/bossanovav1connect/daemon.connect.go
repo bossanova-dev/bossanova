@@ -275,6 +275,18 @@ const (
 	// DaemonServiceReleaseTrackerIssueLeaseProcedure is the fully-qualified name of the DaemonService's
 	// ReleaseTrackerIssueLease RPC.
 	DaemonServiceReleaseTrackerIssueLeaseProcedure = "/bossanova.v1.DaemonService/ReleaseTrackerIssueLease"
+	// DaemonServiceGetViewerDeviceStatusProcedure is the fully-qualified name of the DaemonService's
+	// GetViewerDeviceStatus RPC.
+	DaemonServiceGetViewerDeviceStatusProcedure = "/bossanova.v1.DaemonService/GetViewerDeviceStatus"
+	// DaemonServiceListViewerDevicesProcedure is the fully-qualified name of the DaemonService's
+	// ListViewerDevices RPC.
+	DaemonServiceListViewerDevicesProcedure = "/bossanova.v1.DaemonService/ListViewerDevices"
+	// DaemonServiceApproveViewerDeviceProcedure is the fully-qualified name of the DaemonService's
+	// ApproveViewerDevice RPC.
+	DaemonServiceApproveViewerDeviceProcedure = "/bossanova.v1.DaemonService/ApproveViewerDevice"
+	// DaemonServiceRevokeViewerDeviceProcedure is the fully-qualified name of the DaemonService's
+	// RevokeViewerDevice RPC.
+	DaemonServiceRevokeViewerDeviceProcedure = "/bossanova.v1.DaemonService/RevokeViewerDevice"
 	// DaemonServiceGetAgentCredentialDeviceStatusProcedure is the fully-qualified name of the
 	// DaemonService's GetAgentCredentialDeviceStatus RPC.
 	DaemonServiceGetAgentCredentialDeviceStatusProcedure = "/bossanova.v1.DaemonService/GetAgentCredentialDeviceStatus"
@@ -631,6 +643,14 @@ type DaemonServiceClient interface {
 	// its organization lease as well. Upstream errors never trigger a local acquire.
 	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	ReleaseTrackerIssueLease(context.Context, *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error)
+	// Viewer approvals are local-socket only and never part of OrchestratorCommand.
+	GetViewerDeviceStatus(context.Context, *connect.Request[v1.GetViewerDeviceStatusRequest]) (*connect.Response[v1.GetViewerDeviceStatusResponse], error)
+	// Local list differs from the hosted registry list and contains no raw keys.
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+	ListViewerDevices(context.Context, *connect.Request[v1.ListLocalViewerDevicesRequest]) (*connect.Response[v1.ListLocalViewerDevicesResponse], error)
+	ApproveViewerDevice(context.Context, *connect.Request[v1.ApproveViewerDeviceRequest]) (*connect.Response[v1.ApproveViewerDeviceResponse], error)
+	RevokeViewerDevice(context.Context, *connect.Request[v1.RevokeViewerDeviceRequest]) (*connect.Response[v1.RevokeViewerDeviceResponse], error)
 	// Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.
 	GetAgentCredentialDeviceStatus(context.Context, *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error)
 	RenewAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RenewAgentCredentialDeviceEnrollmentResponse], error)
@@ -1241,6 +1261,30 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ReleaseTrackerIssueLease")),
 			connect.WithClientOptions(opts...),
 		),
+		getViewerDeviceStatus: connect.NewClient[v1.GetViewerDeviceStatusRequest, v1.GetViewerDeviceStatusResponse](
+			httpClient,
+			baseURL+DaemonServiceGetViewerDeviceStatusProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetViewerDeviceStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		listViewerDevices: connect.NewClient[v1.ListLocalViewerDevicesRequest, v1.ListLocalViewerDevicesResponse](
+			httpClient,
+			baseURL+DaemonServiceListViewerDevicesProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListViewerDevices")),
+			connect.WithClientOptions(opts...),
+		),
+		approveViewerDevice: connect.NewClient[v1.ApproveViewerDeviceRequest, v1.ApproveViewerDeviceResponse](
+			httpClient,
+			baseURL+DaemonServiceApproveViewerDeviceProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ApproveViewerDevice")),
+			connect.WithClientOptions(opts...),
+		),
+		revokeViewerDevice: connect.NewClient[v1.RevokeViewerDeviceRequest, v1.RevokeViewerDeviceResponse](
+			httpClient,
+			baseURL+DaemonServiceRevokeViewerDeviceProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RevokeViewerDevice")),
+			connect.WithClientOptions(opts...),
+		),
 		getAgentCredentialDeviceStatus: connect.NewClient[v1.GetAgentCredentialDeviceStatusRequest, v1.GetAgentCredentialDeviceStatusResponse](
 			httpClient,
 			baseURL+DaemonServiceGetAgentCredentialDeviceStatusProcedure,
@@ -1478,6 +1522,10 @@ type daemonServiceClient struct {
 	deleteBroadcastSubscription          *connect.Client[v1.DeleteBroadcastSubscriptionRequest, v1.DeleteBroadcastSubscriptionResponse]
 	acquireTrackerIssueLease             *connect.Client[v1.AcquireTrackerIssueLeaseRequest, v1.AcquireTrackerIssueLeaseResponse]
 	releaseTrackerIssueLease             *connect.Client[v1.ReleaseTrackerIssueLeaseRequest, v1.ReleaseTrackerIssueLeaseResponse]
+	getViewerDeviceStatus                *connect.Client[v1.GetViewerDeviceStatusRequest, v1.GetViewerDeviceStatusResponse]
+	listViewerDevices                    *connect.Client[v1.ListLocalViewerDevicesRequest, v1.ListLocalViewerDevicesResponse]
+	approveViewerDevice                  *connect.Client[v1.ApproveViewerDeviceRequest, v1.ApproveViewerDeviceResponse]
+	revokeViewerDevice                   *connect.Client[v1.RevokeViewerDeviceRequest, v1.RevokeViewerDeviceResponse]
 	getAgentCredentialDeviceStatus       *connect.Client[v1.GetAgentCredentialDeviceStatusRequest, v1.GetAgentCredentialDeviceStatusResponse]
 	renewAgentCredentialDeviceEnrollment *connect.Client[v1.RenewAgentCredentialDeviceEnrollmentRequest, v1.RenewAgentCredentialDeviceEnrollmentResponse]
 	listAgentCredentialDevices           *connect.Client[v1.ListAgentCredentialDevicesRequest, v1.ListAgentCredentialDevicesResponse]
@@ -1915,6 +1963,26 @@ func (c *daemonServiceClient) ReleaseTrackerIssueLease(ctx context.Context, req 
 	return c.releaseTrackerIssueLease.CallUnary(ctx, req)
 }
 
+// GetViewerDeviceStatus calls bossanova.v1.DaemonService.GetViewerDeviceStatus.
+func (c *daemonServiceClient) GetViewerDeviceStatus(ctx context.Context, req *connect.Request[v1.GetViewerDeviceStatusRequest]) (*connect.Response[v1.GetViewerDeviceStatusResponse], error) {
+	return c.getViewerDeviceStatus.CallUnary(ctx, req)
+}
+
+// ListViewerDevices calls bossanova.v1.DaemonService.ListViewerDevices.
+func (c *daemonServiceClient) ListViewerDevices(ctx context.Context, req *connect.Request[v1.ListLocalViewerDevicesRequest]) (*connect.Response[v1.ListLocalViewerDevicesResponse], error) {
+	return c.listViewerDevices.CallUnary(ctx, req)
+}
+
+// ApproveViewerDevice calls bossanova.v1.DaemonService.ApproveViewerDevice.
+func (c *daemonServiceClient) ApproveViewerDevice(ctx context.Context, req *connect.Request[v1.ApproveViewerDeviceRequest]) (*connect.Response[v1.ApproveViewerDeviceResponse], error) {
+	return c.approveViewerDevice.CallUnary(ctx, req)
+}
+
+// RevokeViewerDevice calls bossanova.v1.DaemonService.RevokeViewerDevice.
+func (c *daemonServiceClient) RevokeViewerDevice(ctx context.Context, req *connect.Request[v1.RevokeViewerDeviceRequest]) (*connect.Response[v1.RevokeViewerDeviceResponse], error) {
+	return c.revokeViewerDevice.CallUnary(ctx, req)
+}
+
 // GetAgentCredentialDeviceStatus calls bossanova.v1.DaemonService.GetAgentCredentialDeviceStatus.
 func (c *daemonServiceClient) GetAgentCredentialDeviceStatus(ctx context.Context, req *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error) {
 	return c.getAgentCredentialDeviceStatus.CallUnary(ctx, req)
@@ -2320,6 +2388,14 @@ type DaemonServiceHandler interface {
 	// its organization lease as well. Upstream errors never trigger a local acquire.
 	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	ReleaseTrackerIssueLease(context.Context, *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error)
+	// Viewer approvals are local-socket only and never part of OrchestratorCommand.
+	GetViewerDeviceStatus(context.Context, *connect.Request[v1.GetViewerDeviceStatusRequest]) (*connect.Response[v1.GetViewerDeviceStatusResponse], error)
+	// Local list differs from the hosted registry list and contains no raw keys.
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+	ListViewerDevices(context.Context, *connect.Request[v1.ListLocalViewerDevicesRequest]) (*connect.Response[v1.ListLocalViewerDevicesResponse], error)
+	ApproveViewerDevice(context.Context, *connect.Request[v1.ApproveViewerDeviceRequest]) (*connect.Response[v1.ApproveViewerDeviceResponse], error)
+	RevokeViewerDevice(context.Context, *connect.Request[v1.RevokeViewerDeviceRequest]) (*connect.Response[v1.RevokeViewerDeviceResponse], error)
 	// Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.
 	GetAgentCredentialDeviceStatus(context.Context, *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error)
 	RenewAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RenewAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RenewAgentCredentialDeviceEnrollmentResponse], error)
@@ -2926,6 +3002,30 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ReleaseTrackerIssueLease")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetViewerDeviceStatusHandler := connect.NewUnaryHandler(
+		DaemonServiceGetViewerDeviceStatusProcedure,
+		svc.GetViewerDeviceStatus,
+		connect.WithSchema(daemonServiceMethods.ByName("GetViewerDeviceStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListViewerDevicesHandler := connect.NewUnaryHandler(
+		DaemonServiceListViewerDevicesProcedure,
+		svc.ListViewerDevices,
+		connect.WithSchema(daemonServiceMethods.ByName("ListViewerDevices")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceApproveViewerDeviceHandler := connect.NewUnaryHandler(
+		DaemonServiceApproveViewerDeviceProcedure,
+		svc.ApproveViewerDevice,
+		connect.WithSchema(daemonServiceMethods.ByName("ApproveViewerDevice")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceRevokeViewerDeviceHandler := connect.NewUnaryHandler(
+		DaemonServiceRevokeViewerDeviceProcedure,
+		svc.RevokeViewerDevice,
+		connect.WithSchema(daemonServiceMethods.ByName("RevokeViewerDevice")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceGetAgentCredentialDeviceStatusHandler := connect.NewUnaryHandler(
 		DaemonServiceGetAgentCredentialDeviceStatusProcedure,
 		svc.GetAgentCredentialDeviceStatus,
@@ -3242,6 +3342,14 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceAcquireTrackerIssueLeaseHandler.ServeHTTP(w, r)
 		case DaemonServiceReleaseTrackerIssueLeaseProcedure:
 			daemonServiceReleaseTrackerIssueLeaseHandler.ServeHTTP(w, r)
+		case DaemonServiceGetViewerDeviceStatusProcedure:
+			daemonServiceGetViewerDeviceStatusHandler.ServeHTTP(w, r)
+		case DaemonServiceListViewerDevicesProcedure:
+			daemonServiceListViewerDevicesHandler.ServeHTTP(w, r)
+		case DaemonServiceApproveViewerDeviceProcedure:
+			daemonServiceApproveViewerDeviceHandler.ServeHTTP(w, r)
+		case DaemonServiceRevokeViewerDeviceProcedure:
+			daemonServiceRevokeViewerDeviceHandler.ServeHTTP(w, r)
 		case DaemonServiceGetAgentCredentialDeviceStatusProcedure:
 			daemonServiceGetAgentCredentialDeviceStatusHandler.ServeHTTP(w, r)
 		case DaemonServiceRenewAgentCredentialDeviceEnrollmentProcedure:
@@ -3627,6 +3735,22 @@ func (UnimplementedDaemonServiceHandler) AcquireTrackerIssueLease(context.Contex
 
 func (UnimplementedDaemonServiceHandler) ReleaseTrackerIssueLease(context.Context, *connect.Request[v1.ReleaseTrackerIssueLeaseRequest]) (*connect.Response[v1.ReleaseTrackerIssueLeaseResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ReleaseTrackerIssueLease is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetViewerDeviceStatus(context.Context, *connect.Request[v1.GetViewerDeviceStatusRequest]) (*connect.Response[v1.GetViewerDeviceStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetViewerDeviceStatus is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListViewerDevices(context.Context, *connect.Request[v1.ListLocalViewerDevicesRequest]) (*connect.Response[v1.ListLocalViewerDevicesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListViewerDevices is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ApproveViewerDevice(context.Context, *connect.Request[v1.ApproveViewerDeviceRequest]) (*connect.Response[v1.ApproveViewerDeviceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ApproveViewerDevice is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) RevokeViewerDevice(context.Context, *connect.Request[v1.RevokeViewerDeviceRequest]) (*connect.Response[v1.RevokeViewerDeviceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RevokeViewerDevice is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetAgentCredentialDeviceStatus(context.Context, *connect.Request[v1.GetAgentCredentialDeviceStatusRequest]) (*connect.Response[v1.GetAgentCredentialDeviceStatusResponse], error) {

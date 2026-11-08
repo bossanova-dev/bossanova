@@ -578,3 +578,33 @@ test('hostile factory health text stays one escaped line', () => {
   assert.ok(!first.includes('[x](https://evil.example)'))
   assert.ok(!/<!-- boss-/.test(first))
 })
+
+test('API change class leads asking and checked area facts in both outputs', () => {
+  for (const ask of [true, false]) {
+    for (const change of [undefined, 'additive', 'breaking']) {
+      const input = fixture()
+      Object.assign(input.proof.areas[0], {
+        name: 'api-contract',
+        label: 'API contract',
+        ask,
+        ...(change ? { change, changeReasons: ['field removed', 'type changed'] } : {}),
+      })
+      input.proof.confidence.asks = ask ? ['api-contract'] : []
+      input.asks = {}
+      input.proof = withDigest(input.proof)
+      const view = proofView(input)
+      const section = view.sections.find((s) => s.title === (ask ? 'Asks' : 'Checked for you'))
+      const items = ask ? section.asks[0].items : section.bullets
+      const expected =
+        change === 'breaking'
+          ? 'API change: breaking — field removed; type changed'
+          : 'API change: additive'
+      if (change) assert.ok(items.indexOf(expected) < items.indexOf('Inspect result'))
+      for (const render of [renderProofHtml, renderProofComment]) {
+        const output = render(input)
+        assert.equal(output.includes('API change:'), !!change)
+        if (change) assert.ok(output.includes(expected))
+      }
+    }
+  }
+})

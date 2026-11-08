@@ -16,7 +16,9 @@ var agentChatRoleProto = map[domain.AgentChatRole]pb.ChatRole{
 }
 
 // agentChatRoleFromProto maps the wire enum onto a role. An enum value this
-// binary does not know reads as the unknown role.
+// binary does not know reads as the unknown role. COORDINATOR is deliberately
+// absent: only an operator may create a coordinator chat, so a plugin that
+// names it starts a chat of the unknown role, which holds no grant.
 func agentChatRoleFromProto(p pb.ChatRole) domain.AgentChatRole {
 	for role, wire := range agentChatRoleProto {
 		if wire == p {

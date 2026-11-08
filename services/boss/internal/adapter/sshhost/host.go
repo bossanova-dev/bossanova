@@ -8,6 +8,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/recurser/bossalib/contract/daemon/callerorigin"
+
 	"github.com/recurser/boss/api/tui/home"
 
 	"github.com/recurser/boss/api/tui/ui"
@@ -87,6 +89,9 @@ type hostConnection struct {
 	destination string
 	tunnel      hostTunnel
 	token       string
+	// origin is the caller this process asserts to the remote daemon on every
+	// call, so a forwarded call carries no more authority than its origin.
+	origin callerorigin.Assertion
 }
 
 // The process holds at most one --host transport; run() tears it down on exit
@@ -150,7 +155,8 @@ func NewClient(cmd *cobra.Command, host string) (*daemonrpc.LocalClient, error) 
 	if err != nil {
 		return nil, hostError(host, err)
 	}
-	registerHostConnection(&hostConnection{destination: host, tunnel: tunnel, token: token})
+	origin := localOrigin(baseCtx)
+	registerHostConnection(&hostConnection{destination: host, tunnel: tunnel, token: token, origin: origin})
 	// A tunnel that drops *after* startup surfaces on the home screen's
 	// daemon-down view, not the startup wait, so the home screen needs the
 	// destination to say "Reconnecting to <host>" instead of telling the user
@@ -171,7 +177,7 @@ func NewClient(cmd *cobra.Command, host string) (*daemonrpc.LocalClient, error) 
 	// the supervisor has unwound is telling the user to keep waiting for a
 	// reconnect nobody is attempting.
 	ui.SetHostSupervisorRunning(hostSupervisorRunning)
-	return daemonrpc.NewLocalWithToken(tunnel.LocalSocket(), token), nil
+	return daemonrpc.NewForwarded(tunnel.LocalSocket(), token, origin), nil
 }
 
 // hostError prefixes a remotehost failure with the flag and destination that
@@ -391,7 +397,7 @@ func WaitForDaemon(host string, origErr error) (*daemonrpc.LocalClient, error) {
 	if err := showHostReconnectWait(host, hostReconnectDetail(tunnelFailureReason(conn.tunnel)), conn.tunnel.Healthy); err != nil {
 		return nil, err
 	}
-	return daemonrpc.NewLocalWithToken(conn.tunnel.LocalSocket(), conn.token), nil
+	return daemonrpc.NewForwarded(conn.tunnel.LocalSocket(), conn.token, conn.origin), nil
 }
 
 // hostReconnectFallbackDetail is what the reconnect screen says when the

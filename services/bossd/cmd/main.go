@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/session"
 
 	"github.com/recurser/bossalib/daemonstate"
 	"github.com/recurser/bossalib/kit/buildinfo"
@@ -174,7 +175,8 @@ type runOpts struct {
 
 	// startupPRReconcile overrides the first PR-association reconcile pass so a
 	// test can hold it open. Nil uses PRAssociationResolver.Reconcile.
-	startupPRReconcile func(context.Context) (int64, error)
+	startupPRReconcile       func(context.Context) (int64, error)
+	startupWorktreeReconcile func(context.Context) (session.UnrecordedWorktreeReport, error)
 
 	// shutdownGoroutineBudget overrides the tracked-goroutine join's 10s upper
 	// bound when positive, so a test can reach its forced-exit branch in

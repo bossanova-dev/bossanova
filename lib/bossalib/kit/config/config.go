@@ -1128,14 +1128,14 @@ type Settings struct {
 	// CloudControl and CloudControlRepos are local-operator-only; raw unknown modes round-trip.
 	CloudControl      string                  `json:"cloud_control,omitempty"`
 	CloudControlRepos []CloudControlRepoGrant `json:"cloud_control_repos,omitempty"`
-	// SubagentDispatchGrant selects which boss-managed chats receive the bounded
-	// subagent-dispatch grant in their appended system prompt. It is a raw
-	// string rather than the typed SubagentDispatchGrant so an unknown value
-	// round-trips through settings.json untouched instead of being rewritten;
-	// parseSubagentDispatchGrant is the only place a value becomes a mode.
-	// Empty (the key absent from a fresh settings.json) means the shipped
-	// default, "always".
-	SubagentDispatchGrant string `json:"subagent_dispatch_grant,omitempty"`
+	// SubagentDispatchGrant selects which chats get the bounded subagent-dispatch
+	// prompt grant (empty: "always"); CoordinatorApprovalGrant selects whether a
+	// coordinator chat may approve verify parks and merge (empty: "on"). Both are
+	// raw strings rather than their typed modes so an unknown value round-trips
+	// through settings.json untouched; parseSubagentDispatchGrant and
+	// parseCoordinatorApprovalGrant are the only places a value becomes a mode.
+	SubagentDispatchGrant    string `json:"subagent_dispatch_grant,omitempty"`
+	CoordinatorApprovalGrant string `json:"coordinator_approval_grant,omitempty"`
 }
 
 // UnmarshalJSON accepts the managed_accounts block and, for backward

@@ -10,6 +10,7 @@ import {
   lowerLevelProofs,
   lintOffenders,
   unprovenCriteria,
+  proofsVerdict,
 } from './feature-coverage.mjs'
 
 const features = [
@@ -243,4 +244,16 @@ test('feature coverage refuses a legacy feature file that grows past its ceiling
     assert.equal(result.status, 1, verb)
     assert.match(result.stderr, /jobs\.md: legacy-criterion-added: scheduled-jobs\.AC2 .*next-id/)
   }
+})
+
+test('shared proofs verdict identifies missing proofs and stale baseline entries', (t) => {
+  const root = fixture(t)
+  assert.equal(run(root, 'proofs', '--update').status, 0)
+  assert.deepEqual(proofsVerdict(root), { newViolations: [], staleEntries: [], failures: [] })
+  writeFileSync(path.join(root, file), "test('layout', { tag: '@layout' }, () => {})")
+  assert.deepEqual(proofsVerdict(root).newViolations, ['scheduled-jobs.AC1'])
+  assert.equal(run(root, 'proofs', '--update').status, 0)
+  writeFileSync(path.join(root, file), "test('list', { tag: '@scheduled-jobs.AC1' }, () => {})")
+  assert.deepEqual(proofsVerdict(root).staleEntries, ['scheduled-jobs.AC1'])
+  assert.equal(proofsVerdict(root).failures.length, 1)
 })

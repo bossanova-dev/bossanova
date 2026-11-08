@@ -12,8 +12,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// trackerClient stores metadata for a session's linked tracker issue.
+type trackerClient interface {
+	SetSessionTracker(context.Context, string, string) (*pb.Session, error)
+	SetSessionTrackerRank(context.Context, string, string, *pb.TrackerRank) (*pb.Session, error)
+}
+
 // Client is the daemon surface consumed by the session commands.
 type Client interface {
+	trackerClient
 	ListRepos(context.Context) ([]*pb.Repo, error)
 	CreateSession(context.Context, *pb.CreateSessionRequest) (rpc.CreateSessionStream, error)
 	GetSession(context.Context, string, rpc.SessionReadOptions) (*pb.Session, error)
@@ -25,7 +32,6 @@ type Client interface {
 	AcceptSessionPRBlocker(context.Context, *pb.AcceptSessionPRBlockerRequest) (*pb.AcceptSessionPRBlockerResponse, error)
 	UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error)
 	LinkSessionPR(context.Context, string, string) (*pb.LinkSessionPRResponse, error)
-	SetSessionTracker(context.Context, string, string) (*pb.Session, error)
 	RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error)
 	ArchiveSession(context.Context, *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error)
 	ListChats(context.Context, string) ([]*pb.AgentChat, error)

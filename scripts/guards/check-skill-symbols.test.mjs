@@ -346,11 +346,13 @@ test('checkSkillSymbols reports each finding with its file, line and kind', () =
       "state: `stateName(config, 'shipped')`",
       'call `missingExport(x)`',
       'run `node toolbox/cli.mjs walk`',
+      'scan `$BOSS_BUILD_TOOLBOX/missing.mjs`',
     ].join('\n'),
   })
   const { findings, scanned, modules } = checkSkillSymbols(root, {
     config: FIXTURE_CONFIG,
     requireRoleForms: false,
+    requireToolboxPaths: false,
     requireToolboxOwnerPin: false,
   })
   assert.equal(scanned, 1)
@@ -361,6 +363,7 @@ test('checkSkillSymbols reports each finding with its file, line and kind', () =
       { line: 1, kind: 'role-unconfigured' },
       { line: 2, kind: 'export-unknown' },
       { line: 3, kind: 'verb-unknown' },
+      { line: 4, kind: 'toolbox-path-missing' },
     ],
   )
   assert.ok(
@@ -387,6 +390,7 @@ test('export citations are scoped to skills that own a vendored toolbox', () => 
     checkSkillSymbols(owning, {
       config: FIXTURE_CONFIG,
       requireRoleForms: false,
+      requireToolboxPaths: false,
       requireToolboxOwnerPin: false,
     }).findings.length,
     1,
@@ -401,6 +405,7 @@ test('export citations are scoped to skills that own a vendored toolbox', () => 
     checkSkillSymbols(foreign, {
       config: FIXTURE_CONFIG,
       requireRoleForms: false,
+      requireToolboxPaths: false,
       requireToolboxOwnerPin: false,
     }).findings,
     [],
@@ -442,15 +447,18 @@ test('checkSkillSymbols reports drift between the discovered owners and the pin'
     )
 
   assert.deepEqual(
-    checkSkillSymbols(withEveryPinnedOwner(), { config: FIXTURE_CONFIG, requireRoleForms: false })
-      .findings,
+    checkSkillSymbols(withEveryPinnedOwner(), {
+      config: FIXTURE_CONFIG,
+      requireRoleForms: false,
+      requireToolboxPaths: false,
+    }).findings,
     [],
     'a tree matching the pin exactly is clean',
   )
 
   const added = checkSkillSymbols(
     withEveryPinnedOwner({ '.claude/skills/brand-new-skill/toolbox/cli.mjs': 'export {}\n' }),
-    { config: FIXTURE_CONFIG, requireRoleForms: false },
+    { config: FIXTURE_CONFIG, requireRoleForms: false, requireToolboxPaths: false },
   ).findings
   assert.deepEqual(
     added.map((f) => f.kind),
@@ -463,6 +471,7 @@ test('checkSkillSymbols reports drift between the discovered owners and the pin'
   const narrowed = checkSkillSymbols(makeRepo({ 'keep.md': '#\n' }), {
     config: FIXTURE_CONFIG,
     requireRoleForms: false,
+    requireToolboxPaths: false,
   }).findings
   assert.deepEqual(
     narrowed.map((f) => f.kind),
@@ -485,7 +494,11 @@ test('checkSkillSymbols is clean on prose that names only real symbols', () => {
       'run `node toolbox/cli.mjs run`',
     ].join('\n'),
   })
-  const result = checkSkillSymbols(root, { config: FIXTURE_CONFIG, requireToolboxOwnerPin: false })
+  const result = checkSkillSymbols(root, {
+    config: FIXTURE_CONFIG,
+    requireToolboxOwnerPin: false,
+    requireToolboxPaths: false,
+  })
   assert.deepEqual(result.findings, [])
   assert.deepEqual(result.roleForms, { A: 2, B: 2 })
 })
@@ -501,6 +514,7 @@ test('checkSkillSymbols reports a vacuous check 1 when a role form goes unpopula
   const formA = checkSkillSymbols(withOnlyFormA, {
     config: FIXTURE_CONFIG,
     requireToolboxOwnerPin: false,
+    requireToolboxPaths: false,
   })
   assert.deepEqual(
     formA.findings.map((f) => [f.kind, f.detail.includes('form B')]),
@@ -520,10 +534,77 @@ test('checkSkillSymbols reports a vacuous check 1 when a role form goes unpopula
   const result = checkSkillSymbols(rewrapped, {
     config: FIXTURE_CONFIG,
     requireToolboxOwnerPin: false,
+    requireToolboxPaths: false,
   })
   assert.equal(result.roleForms.B, 0)
   assert.deepEqual(
     result.findings.map((f) => f.kind),
     ['role-check-vacuous'],
+  )
+})
+
+const pathDeps = { config: FIXTURE_CONFIG, requireRoleForms: false, requireToolboxOwnerPin: false }
+const payloadPlan = 'lib/bossalib/contract/plugin/skillpayload/skills/boss-plan'
+
+test('toolbox paths resolve all variable spellings across roots and name missing relative paths', () => {
+  const root = makeRepo({
+    [`${payloadPlan}/toolbox/plan/scan.mjs`]: 'export {}',
+    '.claude/skills/extension/SKILL.md': [
+      '$BOSS_PLAN_TOOLBOX/plan/scan.mjs',
+      '${BOSS_PLAN_TOOLBOX}/plan/scan.mjs',
+      '${BOSS_PLAN_TOOLBOX:?}/plan/scan.mjs',
+      '${BOSS_PLAN_TOOLBOX:-x}/plan/scan.mjs',
+      '${BOSS_PLAN_TOOLBOX:?}/scan.mjs',
+      '$BOSS_OTHER_TOOLBOX/absent.sh',
+    ].join('\n'),
+  })
+  const result = checkSkillSymbols(root, pathDeps)
+  assert.deepEqual(
+    result.findings.map(({ file, line, kind }) => ({ file, line, kind })),
+    [{ file: '.claude/skills/extension/SKILL.md', line: 5, kind: 'toolbox-path-missing' }],
+  )
+  assert.match(result.findings[0].detail, /scan\.mjs.*plan\/scan\.mjs/)
+  // Breaking each spelling independently must remain visible, rather than allowing a
+  // partial extractor to pass because another spelling populated the vacuity floor.
+  for (const spelling of [
+    '$BOSS_PLAN_TOOLBOX',
+    '${BOSS_PLAN_TOOLBOX}',
+    '${BOSS_PLAN_TOOLBOX:?}',
+    '${BOSS_PLAN_TOOLBOX:-x}',
+  ]) {
+    const broken = makeRepo({
+      [`${payloadPlan}/toolbox/plan/scan.mjs`]: 'export {}',
+      '.claude/skills/extension/SKILL.md': `${spelling}/absent.mjs`,
+    })
+    assert.deepEqual(
+      checkSkillSymbols(broken, pathDeps).findings.map((f) => f.kind),
+      ['toolbox-path-missing'],
+    )
+  }
+})
+
+test('toolbox table paths are checked only for owners and only inside inline table code', () => {
+  const prose = '| helper | `node scan.mjs` |\nnode scripts/example.mjs\n'
+  const root = makeRepo({
+    [`${payloadPlan}/toolbox/plan/scan.mjs`]: 'export {}',
+    [`${payloadPlan}/SKILL.md`]: prose,
+    '.claude/skills/extension/SKILL.md': prose,
+  })
+  const findings = checkSkillSymbols(root, { ...pathDeps, requireToolboxPaths: false }).findings
+  assert.deepEqual(
+    findings.map(({ file, line, kind }) => ({ file, line, kind })),
+    [{ file: `${payloadPlan}/SKILL.md`, line: 1, kind: 'toolbox-path-missing' }],
+  )
+})
+
+test('toolbox path check fails closed with zero variable citations and supports explicit fixture opt-out', () => {
+  const root = makeRepo({ '.claude/skills/plain/SKILL.md': '# no paths' })
+  assert.deepEqual(
+    checkSkillSymbols(root, pathDeps).findings.map((f) => f.kind),
+    ['toolbox-path-check-vacuous'],
+  )
+  assert.deepEqual(
+    checkSkillSymbols(root, { ...pathDeps, requireToolboxPaths: false }).findings,
+    [],
   )
 })

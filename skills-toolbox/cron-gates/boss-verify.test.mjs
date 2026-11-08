@@ -580,6 +580,42 @@ test('event runs leave failed, deferred and undispatchable heads eligible', () =
   assert.equal(gate(config, [], env).exitCode, 69)
 })
 
+test('a judge timeout dispatches to the verify chat, or defers until a later run re-judges', () => {
+  const env = { ...ENV, BOSS_VERIFY_EVENT_PR_URL: 'https://github.com/o/r/pull/1' }
+  const timingOut = (opts) => {
+    const w = world(opts)
+    const run = w.deps.run
+    w.deps.run = (cmd, args) =>
+      cmd === NODE && args[1] === 'judge'
+        ? { ok: false, error: 'ETIMEDOUT', exit: null, output: '' }
+        : run(cmd, args)
+    return w
+  }
+  const session = { sessions: [{ id: 's1', pr_url: 'https://github.com/o/r/pull/1' }] }
+  const live = timingOut(session)
+  const dispatched = gate(live, [], env)
+  assert.match(
+    dispatched.lines[0],
+    /^#1 dispatched: existing-verify-chat \(judge failed: ETIMEDOUT\)/,
+  )
+  assert.ok(
+    live.calls.some((c) => c.cmd === BOSS && c.args.slice(0, 3).join(' ') === 'chat send chat-v'),
+  )
+  assert.equal(dispatched.exitCode, 1, 'the dispatched head is settled')
+
+  const orphan = timingOut()
+  const deferred = gate(orphan, [], env)
+  assert.match(deferred.lines[0], /^#1 deferred: judge failed \(ETIMEDOUT\)/)
+  assert.match(deferred.lines.at(-1), /skipped=0 deferred=1$/)
+  assert.equal(deferred.exitCode, 69, 'the deferred head stays eligible')
+  assert.deepEqual(orphan.writes(), [])
+
+  const next = world()
+  const tick = gate(next)
+  assert.ok(next.calls.some((c) => c.cmd === NODE && c.args[1] === 'judge'))
+  assert.equal(tick.lines[0], `#1 merged ${sha(900)}`)
+})
+
 test('event discovery without admission evidence remains retryable; a known exclusion settles', () => {
   const env = { ...ENV, BOSS_VERIFY_EVENT_PR_URL: 'https://github.com/o/r/pull/1' }
   const unknown = world({ candidates: [] })

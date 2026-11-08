@@ -244,12 +244,28 @@ test('two concurrent gates use distinct warm slot caches without serializing', a
   }
   fs.writeFileSync(
     path.join(f.dir, 'golangci-lint'),
-    fs.readFileSync(path.join(f.dir, 'golangci-lint'), 'utf8').replace(',0,0,80)', ',0,0,500)'),
+    fs.readFileSync(path.join(f.dir, 'golangci-lint'), 'utf8').replace(
+      'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,80)',
+      `const deadline = Date.now() + 10000
+while (fs.readFileSync(process.env.EVENTS, 'utf8').trim().split('\\n').map(JSON.parse).filter(e => e.kind === 'start').length < 2) {
+  if (Date.now() > deadline) throw new Error('second linter never reached the rendezvous')
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10)
+}`,
+    ),
   )
-  const children = Array.from({ length: 2 }, () =>
+  // A slow second startup must still overlap: finishing is conditional on both starts.
+  const children = Array.from({ length: 2 }, (_, index) =>
     spawn(
       process.execPath,
-      [runGate, '--', process.execPath, '--input-type=module', '-e', lintSource],
+      [
+        runGate,
+        '--',
+        process.execPath,
+        '--input-type=module',
+        '-e',
+        (index ? 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1500);' : '') +
+          lintSource,
+      ],
       { env: f.env, stdio: ['ignore', 'pipe', 'pipe'] },
     ),
   )

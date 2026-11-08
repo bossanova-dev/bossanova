@@ -4,12 +4,11 @@
 // bounded batch of them, and get agent work into each PR's own boss session. Both the cron gate
 // (cron-gates/boss-verify.mjs) and `/boss-verify` with no argument run this same `sweep`.
 //
-//   sweep [--dry-run] [--batch N] [--budget-ms MS] [--local-sessions-only] [selection flags]
-//
 // prints one JSON line per PR, then `{"summary": {...}}`. Per candidate it runs verify-gate's
 // zero-token `judge`, then:
 //
-//   wait                 nothing, except over an expired claim: claim, then post --verdict wait
+//   judge failed         claim and route into a live session here, which judges unbudgeted;
+//                        otherwise `deferred`, writing nothing, so a later run re-judges
 //   human / blocked      post --verdict human / blocked --blockers <file>
 //   pass                 post --verdict pass, then hand the merge to a detached
 //                        `verify-gate merge` (needs `boss`); under an admission tier, a non-fork PR
@@ -71,6 +70,7 @@ import {
 } from '../stage-chain.mjs'
 import { SELECTION_FLAGS, parseSelectionFlags } from '../selection.mjs'
 import { REMOTE_SESSION_REASON } from './verify-vocabulary.mjs'
+import { liveSessionsFor, rankRefreshNeedsRetry, refreshRanks } from './verify-rank.mjs'
 import { eventWasSettled, tickWasQuiet } from './verify-settlement.mjs'
 
 export { tickWasQuiet } from './verify-settlement.mjs'
@@ -80,6 +80,10 @@ export const DEFAULT_BATCH = 3
 export const CALL_TIMEOUT_MS = 15_000
 // A new PR is not started with less than this left on the deadline.
 export const START_FLOOR_MS = 15_000
+// An event judges one PR, so its judge may run up to this long, but never into the last
+// JUDGE_DISPATCH_RESERVE_MS: a judge that fails still leaves time to hand the head to its verify chat.
+export const EVENT_JUDGE_TIMEOUT_MS = 2 * CALL_TIMEOUT_MS
+export const JUDGE_DISPATCH_RESERVE_MS = 10_000
 // Each handed-off merge still open when polling stops gets one read-only observation bounded by
 // this; polling stops while that much per open merge is left, so every observation ends in budget.
 export const OBSERVE_TIMEOUT_MS = 5_000
@@ -326,12 +330,7 @@ function sendVerify(run, boss, chatId, message, timeoutMs) {
   }
 }
 
-// The live rows bound to a PR URL, newest first.
-export function liveSessionsFor(sessions, url) {
-  return (Array.isArray(sessions) ? sessions : [])
-    .filter((row) => text(url) && row?.pr_url === url && !text(row?.archived_at) && text(row?.id))
-    .sort((a, b) => String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? '')))
-}
+export { liveSessionsFor } from './verify-rank.mjs'
 
 /**
  * Get `/boss-verify <pr> --claim <token>` into the PR's session. Returns `{route, ok, note?, log?,
@@ -500,6 +499,8 @@ export function sweep(options = {}, deps = {}) {
   // The unchanged-tick state, for an opted-in tick that writes. A dry run never touches it.
   const eventPrUrl = options.eventPrUrl
   const eventPr = eventPrUrl ? Number(eventPrUrl.split('/').pop()) : null
+  const stretch = () => Math.min(EVENT_JUDGE_TIMEOUT_MS, remaining() - JUDGE_DISPATCH_RESERVE_MS)
+  const judgeTimeout = () => Math.max(timeout(), eventPrUrl ? stretch() : 0)
   const persist = options.skipUnchanged === true && !eventPrUrl && !dryRun
   const fs = deps.fs ?? FS
   // Only shared repositories need a fleet read. A malformed present config must not
@@ -670,10 +671,21 @@ export function sweep(options = {}, deps = {}) {
       skipped: (found.payload.skipped ?? []).filter((s) => s.pr === eventPr),
     }
   }
-  // Nothing changed since the last quiet tick: its entry stands, and nothing is judged.
+  const rankOptions = {
+    eventPrUrl,
+    dispatchable,
+    run,
+    boss: resolved.path,
+    timeout,
+    remaining,
+    startFloor: START_FLOOR_MS,
+    dryRun,
+  }
   if (persist && found.payload.unchanged === true) {
-    touchQuietEntry(statePath(), scopeKey, now(), wakeAtOf(found.payload), fs)
-    return nothing({ unchanged: true })
+    const ranks = refreshRanks(found.payload.ranks, rankOptions)
+    if (rankRefreshNeedsRetry(ranks)) forget()
+    else touchQuietEntry(statePath(), scopeKey, now(), wakeAtOf(found.payload), fs)
+    return nothing({ unchanged: true, ...ranks })
   }
 
   const records = []
@@ -696,6 +708,38 @@ export function sweep(options = {}, deps = {}) {
       record(pr, 'skipped', `skipped: unknown:sessions (${d.why})`, extra)
     }
     return false
+  }
+
+  // Claim the head, then route `/boss-verify <pr> --claim <token>` into the PR's session.
+  const spawn = deps.spawn ?? nodeSpawn
+  const dispatch = (c, head, why) => {
+    acted++
+    const repoArgs = text(c.repo) ? ['--repo', c.repo] : []
+    const expired = c.claim === 'stale'
+    const claimed = takeOverExpiredClaim(gate, { pr: c.pr, head, repoArgs, dry, expired })
+    if (!claimed.won) return record(c.pr, 'skipped', 'skipped: claim lost')
+    const routed = routeCandidate(
+      { ...c, token: claimed.token, headSha: head },
+      {
+        run,
+        boss: resolved.path,
+        sessions: dispatchState.sessions,
+        dryRun,
+        timeout,
+        repoDir: text(env.REPO_DIR) ? env.REPO_DIR : cwd,
+        trackerSource: routedTrackerSource(),
+        spawnDetached: (cmd, args) =>
+          spawnDetached(cmd, args, { env, cwd, logDir, now }, { spawn }),
+      },
+    )
+    const { route, note, log, argv } = routed
+    const detail = [why, note, log ? `log ${log}` : ''].filter(Boolean).join('; ')
+    if (!routed.ok)
+      return record(c.pr, 'skipped', `dispatch-unknown: ${route} (${routed.why ?? 'failed'})`, {
+        route,
+      })
+    const line = `dispatched: ${route}${detail ? ` (${detail})` : ''}${dryRun ? ' (dry-run)' : ''}`
+    record(c.pr, 'dispatched', line, { route, ...(dryRun && argv ? { argv } : {}) })
   }
 
   const skippedRemote = Array.isArray(found.payload.skipped) ? found.payload.skipped : []
@@ -798,15 +842,19 @@ export function sweep(options = {}, deps = {}) {
       continue
     }
     const repoArgs = text(c.repo) ? ['--repo', c.repo] : []
-    const judged = gate([
-      'judge',
-      '--pr',
-      String(pr),
-      ...repoArgs,
-      ...(text(c.waive) ? ['--waive', c.waive] : []),
-    ])
+    const judged = gate(
+      ['judge', '--pr', String(pr), ...repoArgs, ...(text(c.waive) ? ['--waive', c.waive] : [])],
+      judgeTimeout(),
+    )
     if (!judged.ok) {
-      record(pr, 'skipped', `skipped: judge failed (${judged.error})`)
+      // A failed judge says nothing about the head: its live session judges it, else it stays a
+      // candidate. Nothing is claimed for a head no session will take.
+      const d = dispatchable()
+      const why = d.ok ? 'no live session' : d.why
+      if (d.ok && liveSessionsFor(d.sessions, c.url).length > 0)
+        dispatch(c, c.headSha, `judge failed: ${judged.error}`)
+      else if (d.unreachable) needBoss(pr)
+      else record(pr, 'deferred', `deferred: judge failed (${judged.error}), ${why}`)
       continue
     }
     const j = judged.payload
@@ -957,65 +1005,17 @@ export function sweep(options = {}, deps = {}) {
         continue
       }
       if (!needBoss(pr)) continue
-      acted++
-      const expired = c.claim === 'stale'
-      const claimed = takeOverExpiredClaim(gate, { pr, head, repoArgs, dry, expired })
-      if (!claimed.won) {
-        record(pr, 'skipped', 'skipped: claim lost')
-        continue
-      }
-      const routed = routeCandidate(
-        {
-          pr,
-          url: c.url,
-          ticket: c.ticket,
-          token: claimed.token,
-          headSha: head,
-          waive: c.waive,
-          class: c.class,
-          repairOptIn: c.repairOptIn,
-        },
-        {
-          run,
-          boss: resolved.path,
-          sessions: dispatchState.sessions,
-          dryRun,
-          timeout,
-          repoDir: text(env.REPO_DIR) ? env.REPO_DIR : cwd,
-          trackerSource: routedTrackerSource(),
-          spawnDetached: (cmd, args) =>
-            spawnDetached(
-              cmd,
-              args,
-              { env, cwd, logDir: deps.logDir ?? tmpdir(), now },
-              { spawn: deps.spawn ?? nodeSpawn },
-            ),
-        },
-      )
-      const detail = [routed.note, routed.log ? `log ${routed.log}` : ''].filter(Boolean).join('; ')
-      if (routed.ok)
-        record(
-          pr,
-          'dispatched',
-          `dispatched: ${routed.route}${detail ? ` (${detail})` : ''}${suffix}`,
-          {
-            route: routed.route,
-            ...(dryRun && routed.argv ? { argv: routed.argv } : {}),
-          },
-        )
-      else
-        record(pr, 'skipped', `dispatch-unknown: ${routed.route} (${routed.why ?? 'failed'})`, {
-          route: routed.route,
-        })
+      dispatch(c, head)
       continue
     }
     record(pr, 'skipped', `skipped: unexpected verdict ${j.verdict}`)
   }
 
   settleMerges(pending, records, { readFile, sleep, remaining, gate })
-
+  const ranks = refreshRanks(found.payload.ranks, rankOptions)
+  const rankRetry = rankRefreshNeedsRetry(ranks)
   if (persist || (eventPrUrl && !dryRun)) {
-    if (!fleetUnreadable && tickWasQuiet(found.payload, records, undispatchable)) {
+    if (!fleetUnreadable && !rankRetry && tickWasQuiet(found.payload, records, undispatchable)) {
       if (persist)
         storeQuietFingerprint(
           statePath(),
@@ -1031,6 +1031,7 @@ export function sweep(options = {}, deps = {}) {
   for (const r of records) summary[r.outcome]++
   return {
     records,
+    ...ranks,
     summary,
     undispatchable,
     dryRun,
@@ -1146,7 +1147,7 @@ if (isMainModule(import.meta.url)) {
     if (result.undispatchable)
       process.stdout.write(`${JSON.stringify({ undispatchable: result.undispatchable })}\n`)
     process.stdout.write(
-      `${JSON.stringify({ summary: result.summary, dryRun: result.dryRun, ...(result.unchanged ? { unchanged: true } : {}) })}\n`,
+      `${JSON.stringify({ summary: result.summary, rankRefreshes: result.rankRefreshes ?? [], ...(result.unreadable ? { unreadable: result.unreadable } : {}), dryRun: result.dryRun, ...(result.unchanged ? { unchanged: true } : {}) })}\n`,
     )
   } catch (error) {
     process.stderr.write(

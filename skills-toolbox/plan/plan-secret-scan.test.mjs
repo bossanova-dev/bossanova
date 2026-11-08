@@ -155,3 +155,18 @@ test('a 1 MB file with no newlines scans quickly (bounded quantifiers)', () => {
   const ms = Number(process.hrtime.bigint() - started) / 1e6
   assert.ok(ms < 2000, `scan took ${ms}ms`)
 })
+
+test('CLI ends with exactly one positive verdict for clean, redact and fail-closed exits', () => {
+  for (const [files, code, verdict] of [
+    [[write('verdict-clean.md', 'safe plan')], 0, 'clean'],
+    [[write('verdict-hit.md', SHAPES.linear[0])], 1, 'redact'],
+    [[path.join(dir, 'verdict-missing.md')], 2, 'fail-closed'],
+    [[], 2, 'fail-closed'],
+  ]) {
+    const result = cli(...files)
+    assert.equal(result.code, code)
+    const lines = result.out.trimEnd().split('\n')
+    assert.equal(lines.at(-1), `plan-secret-scan: verdict=${verdict}`)
+    assert.equal(lines.filter((line) => line.startsWith('plan-secret-scan: verdict=')).length, 1)
+  }
+})

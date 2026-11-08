@@ -697,6 +697,7 @@ session ever being created.
 
 | Subcommand                                              | Description                                                                                     |
 | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `boss chat delete <chat-id>`                            | Stop a chat's agent pane and remove the chat from its session; refuses a session id             |
 | `boss chat new <session-id>`                            | Start a new live chat inside an existing session (clean context, same worktree and branch)      |
 | `boss chat rename <session-id\|chat-id> <new-title...>` | Rename a chat; the trailing words are joined into the new title                                 |
 | `boss chat send <session-id\|chat-id> <msg>`            | Deliver a follow-up message to a running chat; wakes a sleeping chat by default                 |

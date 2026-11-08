@@ -20,7 +20,8 @@ description artifact and `$PLAN_FILE`, so the image guard copies annotated bytes
 gate checks the text that will be saved. The orchestrator never hand-appends drift lines.
 
 Before composing step 4(f), settle the stored description into `image-guard-base` and copy it to
-`image-guard-final` only when settled (otherwise take the labels-only branch); re-read the
+`image-guard-final` only when settled (otherwise take the labels-only branch); retain the base
+for `write-description --base-file`, then re-read the
 premise ids and overwrite the same `premise-states` file. Reconcile that read-back, then save when
 the dependency verdict requests recording or reconciliation changed its bytes. Keep the annotated
 read-back as the save's intended bytes; fetching it again would discard the second pass. This

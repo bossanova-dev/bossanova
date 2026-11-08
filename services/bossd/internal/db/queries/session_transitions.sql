@@ -163,3 +163,16 @@ WHERE id = sqlc.arg(id)
 SELECT CAST(run_dropped_at AS TEXT) AS observed FROM sessions
 WHERE id = sqlc.arg(id)
   AND run_dropped_agent_session_id = sqlc.narg(agent_id);
+
+-- name: UpdateSessionTrackerRank :execresult
+UPDATE sessions
+SET tracker_rank_tier = sqlc.arg(tracker_rank_tier),
+    tracker_rank_tier_source = sqlc.arg(tracker_rank_tier_source),
+    tracker_rank_deadline_on = sqlc.arg(tracker_rank_deadline_on),
+    tracker_rank_deadline_source = sqlc.arg(tracker_rank_deadline_source),
+    is_tracker_rank_scheduled = sqlc.arg(is_tracker_rank_scheduled),
+    tracker_rank_unblocked_ticket_count = sqlc.arg(tracker_rank_unblocked_ticket_count),
+    tracker_ranked_at = sqlc.arg(tracker_ranked_at),
+    updated_at = sqlc.arg(now)
+WHERE id = sqlc.arg(id) AND tracker_id = sqlc.arg(expected_tracker_id)
+  AND tracker_url IS sqlc.narg(expected_tracker_url);

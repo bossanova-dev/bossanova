@@ -738,3 +738,23 @@ test('reviewAreas joins rename names before policy matching and keeps a partitio
     'src/new.go',
   ])
 })
+
+test('dbt SQL falls through migrations only beneath proven project roots', () => {
+  const files = [
+    'services/warehouse/models/x.sql',
+    'db/schema.sql',
+    'services/warehouse/tests/x.sql',
+    'services/warehouse-other/x.sql',
+  ]
+  const areas = detectAreas(files, { dbtRoots: ['services/warehouse'] })
+  assert.deepEqual(areas.find((a) => a.area === 'migrations').paths, [
+    'db/schema.sql',
+    'services/warehouse-other/x.sql',
+  ])
+  assert.deepEqual(areas.find((a) => a.area === 'housekeeping').paths, [
+    'services/warehouse/tests/x.sql',
+  ])
+  assert.deepEqual(areas.find((a) => a.area === 'other').paths, ['services/warehouse/models/x.sql'])
+  assert.equal(detectAreas(files).find((a) => a.area === 'migrations').paths.length, 4)
+  assert.equal(detectAreas(['migrations/x.sql'], { dbtRoots: ['.'] })[0].area, 'other')
+})

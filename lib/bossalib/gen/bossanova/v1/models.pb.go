@@ -1196,6 +1196,9 @@ const (
 	ReviewQueueSort_REVIEW_QUEUE_SORT_OLDEST          ReviewQueueSort = 3
 	// Smallest known PR first, unknown sizes last.
 	ReviewQueueSort_REVIEW_QUEUE_SORT_SMALLEST ReviewQueueSort = 4
+	// Highest tracker tier first (1 Urgent through 4 Low, then 0 None), then
+	// earliest deadline (undated last), then most tickets unblocked. Unranked last.
+	ReviewQueueSort_REVIEW_QUEUE_SORT_PRIORITY ReviewQueueSort = 5
 )
 
 // Enum value maps for ReviewQueueSort.
@@ -1206,6 +1209,7 @@ var (
 		2: "REVIEW_QUEUE_SORT_LEAST_CONFIDENT",
 		3: "REVIEW_QUEUE_SORT_OLDEST",
 		4: "REVIEW_QUEUE_SORT_SMALLEST",
+		5: "REVIEW_QUEUE_SORT_PRIORITY",
 	}
 	ReviewQueueSort_value = map[string]int32{
 		"REVIEW_QUEUE_SORT_UNSPECIFIED":     0,
@@ -1213,6 +1217,7 @@ var (
 		"REVIEW_QUEUE_SORT_LEAST_CONFIDENT": 2,
 		"REVIEW_QUEUE_SORT_OLDEST":          3,
 		"REVIEW_QUEUE_SORT_SMALLEST":        4,
+		"REVIEW_QUEUE_SORT_PRIORITY":        5,
 	}
 )
 
@@ -1522,8 +1527,8 @@ func (ChatStatus) EnumDescriptor() ([]byte, []int) {
 }
 
 // ChatRole is the purpose a chat was created for. Automation may replace an
-// idle BUILD, REPAIR or VERIFY chat; it never replaces an OPERATOR chat or a
-// legacy UNSPECIFIED one.
+// idle BUILD, REPAIR or VERIFY chat; it never replaces an OPERATOR or
+// COORDINATOR chat or a legacy UNSPECIFIED one.
 type ChatRole int32
 
 const (
@@ -1532,6 +1537,9 @@ const (
 	ChatRole_CHAT_ROLE_REPAIR      ChatRole = 2 // the repair plugin's chat
 	ChatRole_CHAT_ROLE_VERIFY      ChatRole = 3 // the verify stage's chat
 	ChatRole_CHAT_ROLE_OPERATOR    ChatRole = 4 // a chat a person opened, or one started on their behalf
+	// an orchestrating chat the operator started; bossd may grant it verify
+	// approval and operator merge (settings key coordinator_approval_grant)
+	ChatRole_CHAT_ROLE_COORDINATOR ChatRole = 5
 )
 
 // Enum value maps for ChatRole.
@@ -1542,6 +1550,7 @@ var (
 		2: "CHAT_ROLE_REPAIR",
 		3: "CHAT_ROLE_VERIFY",
 		4: "CHAT_ROLE_OPERATOR",
+		5: "CHAT_ROLE_COORDINATOR",
 	}
 	ChatRole_value = map[string]int32{
 		"CHAT_ROLE_UNSPECIFIED": 0,
@@ -1549,6 +1558,7 @@ var (
 		"CHAT_ROLE_REPAIR":      2,
 		"CHAT_ROLE_VERIFY":      3,
 		"CHAT_ROLE_OPERATOR":    4,
+		"CHAT_ROLE_COORDINATOR": 5,
 	}
 )
 
@@ -2792,8 +2802,12 @@ type Session struct {
 	// Whether the session has an active Claude Code chat process (heartbeat-tracked).
 	HasActiveChat bool `protobuf:"varint,28,opt,name=has_active_chat,json=hasActiveChat,proto3" json:"has_active_chat,omitempty"`
 	// External issue tracker fields (eg. Linear, Jira).
-	TrackerId  *string `protobuf:"bytes,29,opt,name=tracker_id,json=trackerId,proto3,oneof" json:"tracker_id,omitempty"`    // External issue ID (eg. "FRE-1176")
-	TrackerUrl *string `protobuf:"bytes,30,opt,name=tracker_url,json=trackerUrl,proto3,oneof" json:"tracker_url,omitempty"` // URL to issue in external tracker
+	TrackerId *string `protobuf:"bytes,29,opt,name=tracker_id,json=trackerId,proto3,oneof" json:"tracker_id,omitempty"` // External issue ID (eg. "FRE-1176")
+	// Additive optional metadata; existing behavior is unchanged. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
+	// Unset when no rank was ever recorded (an unranked session).
+	TrackerRank *TrackerRank `protobuf:"bytes,88,opt,name=tracker_rank,json=trackerRank,proto3,oneof" json:"tracker_rank,omitempty"`
+	TrackerUrl  *string      `protobuf:"bytes,30,opt,name=tracker_url,json=trackerUrl,proto3,oneof" json:"tracker_url,omitempty"` // URL to issue in external tracker
 	// tmux session name for persistent terminal sessions.
 	TmuxSessionName *string `protobuf:"bytes,31,opt,name=tmux_session_name,json=tmuxSessionName,proto3,oneof" json:"tmux_session_name,omitempty"`
 	// Head commit SHA of the PR, used by repair plugin to skip duplicate repairs.
@@ -3327,6 +3341,13 @@ func (x *Session) GetTrackerId() string {
 		return *x.TrackerId
 	}
 	return ""
+}
+
+func (x *Session) GetTrackerRank() *TrackerRank {
+	if x != nil {
+		return x.TrackerRank
+	}
+	return nil
 }
 
 func (x *Session) GetTrackerUrl() string {
@@ -8461,6 +8482,101 @@ func (x *ViewerDevice) GetLastRequestedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// TrackerRank records build-order rank from tracker facts.
+type TrackerRank struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Priority: 1 Urgent through 4 Low; 0 None (least urgent).
+	Tier       int32  `protobuf:"varint,1,opt,name=tier,proto3" json:"tier,omitempty"`
+	TierSource string `protobuf:"bytes,2,opt,name=tier_source,json=tierSource,proto3" json:"tier_source,omitempty"`
+	// Earliest inherited calendar deadline; unset when undated.
+	DeadlineOn           *string                `protobuf:"bytes,3,opt,name=deadline_on,json=deadlineOn,proto3,oneof" json:"deadline_on,omitempty"`
+	DeadlineSource       string                 `protobuf:"bytes,4,opt,name=deadline_source,json=deadlineSource,proto3" json:"deadline_source,omitempty"`
+	IsScheduled          bool                   `protobuf:"varint,5,opt,name=is_scheduled,json=isScheduled,proto3" json:"is_scheduled,omitempty"`
+	UnblockedTicketCount int32                  `protobuf:"varint,6,opt,name=unblocked_ticket_count,json=unblockedTicketCount,proto3" json:"unblocked_ticket_count,omitempty"`
+	RankedAt             *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=ranked_at,json=rankedAt,proto3" json:"ranked_at,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *TrackerRank) Reset() {
+	*x = TrackerRank{}
+	mi := &file_bossanova_v1_models_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TrackerRank) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TrackerRank) ProtoMessage() {}
+
+func (x *TrackerRank) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_models_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TrackerRank.ProtoReflect.Descriptor instead.
+func (*TrackerRank) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *TrackerRank) GetTier() int32 {
+	if x != nil {
+		return x.Tier
+	}
+	return 0
+}
+
+func (x *TrackerRank) GetTierSource() string {
+	if x != nil {
+		return x.TierSource
+	}
+	return ""
+}
+
+func (x *TrackerRank) GetDeadlineOn() string {
+	if x != nil && x.DeadlineOn != nil {
+		return *x.DeadlineOn
+	}
+	return ""
+}
+
+func (x *TrackerRank) GetDeadlineSource() string {
+	if x != nil {
+		return x.DeadlineSource
+	}
+	return ""
+}
+
+func (x *TrackerRank) GetIsScheduled() bool {
+	if x != nil {
+		return x.IsScheduled
+	}
+	return false
+}
+
+func (x *TrackerRank) GetUnblockedTicketCount() int32 {
+	if x != nil {
+		return x.UnblockedTicketCount
+	}
+	return 0
+}
+
+func (x *TrackerRank) GetRankedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RankedAt
+	}
+	return nil
+}
+
 var File_bossanova_v1_models_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_models_proto_rawDesc = "" +
@@ -8536,7 +8652,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\r_setup_script\"4\n" +
 	"\fHTTPEndpoint\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\"\xd4&\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"\xa8'\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -8582,11 +8698,12 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x19workflow_display_max_legs\x18\x1b \x01(\x05R\x16workflowDisplayMaxLegs\x12&\n" +
 	"\x0fhas_active_chat\x18\x1c \x01(\bR\rhasActiveChat\x12\"\n" +
 	"\n" +
-	"tracker_id\x18\x1d \x01(\tH\tR\ttrackerId\x88\x01\x01\x12$\n" +
-	"\vtracker_url\x18\x1e \x01(\tH\n" +
-	"R\n" +
+	"tracker_id\x18\x1d \x01(\tH\tR\ttrackerId\x88\x01\x01\x12A\n" +
+	"\ftracker_rank\x18X \x01(\v2\x19.bossanova.v1.TrackerRankH\n" +
+	"R\vtrackerRank\x88\x01\x01\x12$\n" +
+	"\vtracker_url\x18\x1e \x01(\tH\vR\n" +
 	"trackerUrl\x88\x01\x01\x12/\n" +
-	"\x11tmux_session_name\x18\x1f \x01(\tH\vR\x0ftmuxSessionName\x88\x01\x01\x12-\n" +
+	"\x11tmux_session_name\x18\x1f \x01(\tH\fR\x0ftmuxSessionName\x88\x01\x01\x12-\n" +
 	"\x13pr_display_head_sha\x18  \x01(\tR\x10prDisplayHeadSha\x12#\n" +
 	"\rdisplay_label\x18! \x01(\tR\fdisplayLabel\x12B\n" +
 	"\x0edisplay_intent\x18\" \x01(\x0e2\x1b.bossanova.v1.DisplayIntentR\rdisplayIntent\x12'\n" +
@@ -8595,13 +8712,13 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x11transferring_from\x18% \x01(\tR\x10transferringFrom\x12\x1d\n" +
 	"\n" +
 	"agent_name\x18& \x01(\tR\tagentName\x12T\n" +
-	"\x16last_repair_started_at\x18' \x01(\v2\x1a.google.protobuf.TimestampH\fR\x13lastRepairStartedAt\x88\x01\x01\x127\n" +
+	"\x16last_repair_started_at\x18' \x01(\v2\x1a.google.protobuf.TimestampH\rR\x13lastRepairStartedAt\x88\x01\x01\x127\n" +
 	"\x18last_repair_runner_error\x18( \x01(\tR\x15lastRepairRunnerError\x123\n" +
 	"\x16last_repair_exit_error\x18) \x01(\tR\x13lastRepairExitError\x129\n" +
 	"\x19last_repair_attempt_count\x18* \x01(\x05R\x16lastRepairAttemptCount\x12/\n" +
 	"\x14last_repair_head_sha\x18, \x01(\tR\x11lastRepairHeadSha\x12X\n" +
 	"\x1alast_repair_display_status\x18- \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\x17lastRepairDisplayStatus\x12R\n" +
-	"\x15last_chat_activity_at\x18+ \x01(\v2\x1a.google.protobuf.TimestampH\rR\x12lastChatActivityAt\x88\x01\x01\x12&\n" +
+	"\x15last_chat_activity_at\x18+ \x01(\v2\x1a.google.protobuf.TimestampH\x0eR\x12lastChatActivityAt\x88\x01\x01\x12&\n" +
 	"\x0frepo_origin_url\x18. \x01(\tR\rrepoOriginUrl\x12C\n" +
 	"\x1elast_repair_review_fingerprint\x18/ \x01(\tR\x1blastRepairReviewFingerprint\x12,\n" +
 	"\x12display_setting_up\x180 \x01(\bR\x10displaySettingUp\x12/\n" +
@@ -8609,22 +8726,22 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\vsetup_error\x182 \x01(\tR\n" +
 	"setupError\x12;\n" +
 	"\x1alast_repair_blocked_reason\x183 \x01(\tR\x17lastRepairBlockedReason\x12T\n" +
-	"\x16last_repair_blocked_at\x184 \x01(\v2\x1a.google.protobuf.TimestampH\x0eR\x13lastRepairBlockedAt\x88\x01\x01\x12#\n" +
+	"\x16last_repair_blocked_at\x184 \x01(\v2\x1a.google.protobuf.TimestampH\x0fR\x13lastRepairBlockedAt\x88\x01\x01\x12#\n" +
 	"\rrepair_active\x185 \x01(\bR\frepairActive\x12&\n" +
-	"\fpr_mergeable\x186 \x01(\bH\x0fR\vprMergeable\x88\x01\x01\x129\n" +
+	"\fpr_mergeable\x186 \x01(\bH\x10R\vprMergeable\x88\x01\x01\x129\n" +
 	"\vmerge_block\x187 \x01(\v2\x18.bossanova.v1.MergeBlockR\n" +
 	"mergeBlock\x12T\n" +
-	"\x16last_agent_activity_at\x188 \x01(\v2\x1a.google.protobuf.TimestampH\x10R\x13lastAgentActivityAt\x88\x01\x01\x12\"\n" +
+	"\x16last_agent_activity_at\x188 \x01(\v2\x1a.google.protobuf.TimestampH\x11R\x13lastAgentActivityAt\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"account_id\x189 \x01(\tH\x11R\taccountId\x88\x01\x01\x12(\n" +
-	"\raccount_label\x18: \x01(\tH\x12R\faccountLabel\x88\x01\x01\x12D\n" +
+	"account_id\x189 \x01(\tH\x12R\taccountId\x88\x01\x01\x12(\n" +
+	"\raccount_label\x18: \x01(\tH\x13R\faccountLabel\x88\x01\x01\x12D\n" +
 	"\x0frotation_events\x18; \x03(\v2\x1b.bossanova.v1.RotationEventR\x0erotationEvents\x12'\n" +
 	"\x0fdisplay_merging\x18< \x01(\bR\x0edisplayMerging\x12U\n" +
 	"(repo_should_archive_sessions_after_merge\x18= \x01(\bR#repoShouldArchiveSessionsAfterMerge\x12'\n" +
 	"\x0farchive_pending\x18> \x01(\bR\x0earchivePending\x12A\n" +
 	"\x0ehttp_endpoints\x18? \x03(\v2\x1a.bossanova.v1.HTTPEndpointR\rhttpEndpoints\x12K\n" +
-	"\x11repair_stalled_at\x18@ \x01(\v2\x1a.google.protobuf.TimestampH\x13R\x0frepairStalledAt\x88\x01\x01\x12 \n" +
-	"\tlist_rank\x18J \x01(\x03H\x14R\blistRank\x88\x01\x01\x12,\n" +
+	"\x11repair_stalled_at\x18@ \x01(\v2\x1a.google.protobuf.TimestampH\x14R\x0frepairStalledAt\x88\x01\x01\x12 \n" +
+	"\tlist_rank\x18J \x01(\x03H\x15R\blistRank\x88\x01\x01\x12,\n" +
 	"\x12is_waiting_demoted\x18K \x01(\bR\x10isWaitingDemoted\x12*\n" +
 	"\x11has_build_receipt\x18L \x01(\bR\x0fhasBuildReceipt\x121\n" +
 	"\x15is_ready_over_waiting\x18M \x01(\bR\x12isReadyOverWaiting\x12<\n" +
@@ -8648,7 +8765,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0f_blocked_reasonB\x0e\n" +
 	"\f_archived_atB\x13\n" +
 	"\x11_attention_statusB\r\n" +
-	"\v_tracker_idB\x0e\n" +
+	"\v_tracker_idB\x0f\n" +
+	"\r_tracker_rankB\x0e\n" +
 	"\f_tracker_urlB\x14\n" +
 	"\x12_tmux_session_nameB\x19\n" +
 	"\x17_last_repair_started_atB\x18\n" +
@@ -9115,7 +9233,18 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x05label\x18\x03 \x01(\tR\x05label\x129\n" +
 	"\n" +
 	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12F\n" +
-	"\x11last_requested_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x0flastRequestedAt*\xef\x03\n" +
+	"\x11last_requested_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x0flastRequestedAt\"\xb3\x02\n" +
+	"\vTrackerRank\x12\x12\n" +
+	"\x04tier\x18\x01 \x01(\x05R\x04tier\x12\x1f\n" +
+	"\vtier_source\x18\x02 \x01(\tR\n" +
+	"tierSource\x12$\n" +
+	"\vdeadline_on\x18\x03 \x01(\tH\x00R\n" +
+	"deadlineOn\x88\x01\x01\x12'\n" +
+	"\x0fdeadline_source\x18\x04 \x01(\tR\x0edeadlineSource\x12!\n" +
+	"\fis_scheduled\x18\x05 \x01(\bR\visScheduled\x124\n" +
+	"\x16unblocked_ticket_count\x18\x06 \x01(\x05R\x14unblockedTicketCount\x127\n" +
+	"\tranked_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\brankedAtB\x0e\n" +
+	"\f_deadline_on*\xef\x03\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fSESSION_STATE_CREATING_WORKTREE\x10\x01\x12 \n" +
@@ -9260,13 +9389,14 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x19CONFIDENCE_LEVEL_MODERATE\x10\x02\x12\x18\n" +
 	"\x14CONFIDENCE_LEVEL_LOW\x10\x03\x12\x1c\n" +
 	"\x18CONFIDENCE_LEVEL_BLOCKED\x10\x04\x12\"\n" +
-	"\x1eCONFIDENCE_LEVEL_CANNOT_ASSESS\x10\x05*\xbf\x01\n" +
+	"\x1eCONFIDENCE_LEVEL_CANNOT_ASSESS\x10\x05*\xdf\x01\n" +
 	"\x0fReviewQueueSort\x12!\n" +
 	"\x1dREVIEW_QUEUE_SORT_UNSPECIFIED\x10\x00\x12$\n" +
 	" REVIEW_QUEUE_SORT_MOST_CONFIDENT\x10\x01\x12%\n" +
 	"!REVIEW_QUEUE_SORT_LEAST_CONFIDENT\x10\x02\x12\x1c\n" +
 	"\x18REVIEW_QUEUE_SORT_OLDEST\x10\x03\x12\x1e\n" +
-	"\x1aREVIEW_QUEUE_SORT_SMALLEST\x10\x04*\x9d\x03\n" +
+	"\x1aREVIEW_QUEUE_SORT_SMALLEST\x10\x04\x12\x1e\n" +
+	"\x1aREVIEW_QUEUE_SORT_PRIORITY\x10\x05*\x9d\x03\n" +
 	"\rDisplayStatus\x12\x1e\n" +
 	"\x1aDISPLAY_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13DISPLAY_STATUS_IDLE\x10\x01\x12\x1b\n" +
@@ -9307,13 +9437,14 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13CHAT_STATUS_STOPPED\x10\x03\x12\x18\n" +
 	"\x14CHAT_STATUS_QUESTION\x10\x04\x12\x17\n" +
 	"\x13CHAT_STATUS_LIMITED\x10\x05\x12\x17\n" +
-	"\x13CHAT_STATUS_WAITING\x10\x06*~\n" +
+	"\x13CHAT_STATUS_WAITING\x10\x06*\x99\x01\n" +
 	"\bChatRole\x12\x19\n" +
 	"\x15CHAT_ROLE_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fCHAT_ROLE_BUILD\x10\x01\x12\x14\n" +
 	"\x10CHAT_ROLE_REPAIR\x10\x02\x12\x14\n" +
 	"\x10CHAT_ROLE_VERIFY\x10\x03\x12\x16\n" +
-	"\x12CHAT_ROLE_OPERATOR\x10\x04*\xba\x01\n" +
+	"\x12CHAT_ROLE_OPERATOR\x10\x04\x12\x19\n" +
+	"\x15CHAT_ROLE_COORDINATOR\x10\x05*\xba\x01\n" +
 	"\rCronJobStatus\x12\x1f\n" +
 	"\x1bCRON_JOB_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14CRON_JOB_STATUS_IDLE\x10\x01\x12\x1b\n" +
@@ -9376,7 +9507,7 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 33)
-var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 61)
+var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 62)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),                            // 0: bossanova.v1.SessionState
 	(SessionEvent)(0),                            // 1: bossanova.v1.SessionEvent
@@ -9472,139 +9603,142 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*ReleaseTrackerIssueLeaseRequest)(nil),      // 91: bossanova.v1.ReleaseTrackerIssueLeaseRequest
 	(*ReleaseTrackerIssueLeaseResponse)(nil),     // 92: bossanova.v1.ReleaseTrackerIssueLeaseResponse
 	(*ViewerDevice)(nil),                         // 93: bossanova.v1.ViewerDevice
-	(*timestamppb.Timestamp)(nil),                // 94: google.protobuf.Timestamp
+	(*TrackerRank)(nil),                          // 94: bossanova.v1.TrackerRank
+	(*timestamppb.Timestamp)(nil),                // 95: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
 	2,   // 0: bossanova.v1.RotationEvent.trigger:type_name -> bossanova.v1.RotationTrigger
-	94,  // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
+	95,  // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
 	3,   // 2: bossanova.v1.RotationEvent.outcome:type_name -> bossanova.v1.RotationOutcome
-	94,  // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
-	94,  // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	94,  // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	95,  // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	12,  // 6: bossanova.v1.SecretUpdate.action:type_name -> bossanova.v1.SecretAction
 	11,  // 7: bossanova.v1.RepoSettings.merge_strategy:type_name -> bossanova.v1.MergeStrategy
-	94,  // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
+	95,  // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
 	0,   // 9: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	6,   // 10: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
 	6,   // 11: bossanova.v1.Session.last_check_state_observed:type_name -> bossanova.v1.ChecksOverall
-	94,  // 12: bossanova.v1.Session.last_check_state_at:type_name -> google.protobuf.Timestamp
-	94,  // 13: bossanova.v1.Session.state_entered_at:type_name -> google.protobuf.Timestamp
-	94,  // 14: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	94,  // 15: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	94,  // 16: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	95,  // 12: bossanova.v1.Session.last_check_state_at:type_name -> google.protobuf.Timestamp
+	95,  // 13: bossanova.v1.Session.state_entered_at:type_name -> google.protobuf.Timestamp
+	95,  // 14: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	95,  // 15: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 16: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	19,  // 17: bossanova.v1.Session.display_status:type_name -> bossanova.v1.DisplayStatus
 	54,  // 18: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
 	20,  // 19: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
-	13,  // 20: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
-	94,  // 21: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
-	19,  // 22: bossanova.v1.Session.last_repair_display_status:type_name -> bossanova.v1.DisplayStatus
-	94,  // 23: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	94,  // 24: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
-	59,  // 25: bossanova.v1.Session.merge_block:type_name -> bossanova.v1.MergeBlock
-	94,  // 26: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
-	33,  // 27: bossanova.v1.Session.rotation_events:type_name -> bossanova.v1.RotationEvent
-	37,  // 28: bossanova.v1.Session.http_endpoints:type_name -> bossanova.v1.HTTPEndpoint
-	94,  // 29: bossanova.v1.Session.repair_stalled_at:type_name -> google.protobuf.Timestamp
-	55,  // 30: bossanova.v1.Session.attention:type_name -> bossanova.v1.SessionAttention
-	17,  // 31: bossanova.v1.Session.merged_confidence_level:type_name -> bossanova.v1.ConfidenceLevel
-	9,   // 32: bossanova.v1.FixAttempt.trigger:type_name -> bossanova.v1.FixAttemptTrigger
-	10,  // 33: bossanova.v1.FixAttempt.result:type_name -> bossanova.v1.FixAttemptResult
-	94,  // 34: bossanova.v1.FixAttempt.created_at:type_name -> google.protobuf.Timestamp
-	94,  // 35: bossanova.v1.FixAttempt.updated_at:type_name -> google.protobuf.Timestamp
-	7,   // 36: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
-	4,   // 37: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
-	5,   // 38: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
-	8,   // 39: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
-	7,   // 40: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
-	48,  // 41: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
-	49,  // 42: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
-	50,  // 43: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
-	51,  // 44: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
-	52,  // 45: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
-	53,  // 46: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
-	41,  // 47: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
-	42,  // 48: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
-	14,  // 49: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	94,  // 50: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
-	15,  // 51: bossanova.v1.SessionAttention.kind:type_name -> bossanova.v1.AttentionKind
-	16,  // 52: bossanova.v1.SessionAttention.actions:type_name -> bossanova.v1.AttentionAction
-	94,  // 53: bossanova.v1.SessionAttention.since:type_name -> google.protobuf.Timestamp
-	17,  // 54: bossanova.v1.SessionAttention.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
-	56,  // 55: bossanova.v1.SessionAttention.blocker_tallies:type_name -> bossanova.v1.BlockerTally
-	38,  // 56: bossanova.v1.ReviewQueueRow.session:type_name -> bossanova.v1.Session
-	17,  // 57: bossanova.v1.ReviewQueueRow.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
-	17,  // 58: bossanova.v1.ReviewQueueLevelCount.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
-	32,  // 59: bossanova.v1.MergeBlock.gate:type_name -> bossanova.v1.MergeBlock.Gate
-	19,  // 60: bossanova.v1.MergeBlock.display_status:type_name -> bossanova.v1.DisplayStatus
-	94,  // 61: bossanova.v1.AgentChat.created_at:type_name -> google.protobuf.Timestamp
-	23,  // 62: bossanova.v1.AgentChat.role:type_name -> bossanova.v1.ChatRole
-	94,  // 63: bossanova.v1.AgentChat.reclaimed_at:type_name -> google.protobuf.Timestamp
-	94,  // 64: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
-	94,  // 65: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
-	94,  // 66: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
-	94,  // 67: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
-	24,  // 68: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
-	25,  // 69: bossanova.v1.CronJob.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
-	94,  // 70: bossanova.v1.GitHubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
-	94,  // 71: bossanova.v1.GitHubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
-	94,  // 72: bossanova.v1.GitHubCallback.triggered_at:type_name -> google.protobuf.Timestamp
-	94,  // 73: bossanova.v1.GitHubCallback.delivered_at:type_name -> google.protobuf.Timestamp
-	94,  // 74: bossanova.v1.GitHubCallback.expires_at:type_name -> google.protobuf.Timestamp
-	94,  // 75: bossanova.v1.GitHubCallback.created_at:type_name -> google.protobuf.Timestamp
-	94,  // 76: bossanova.v1.GitHubCallback.updated_at:type_name -> google.protobuf.Timestamp
-	94,  // 77: bossanova.v1.AgentAccount.cooldown_until:type_name -> google.protobuf.Timestamp
-	94,  // 78: bossanova.v1.AgentAccount.last_used_at:type_name -> google.protobuf.Timestamp
-	94,  // 79: bossanova.v1.AgentAccount.last_test_ok_at:type_name -> google.protobuf.Timestamp
-	94,  // 80: bossanova.v1.AgentAccount.created_at:type_name -> google.protobuf.Timestamp
-	94,  // 81: bossanova.v1.AgentAccount.updated_at:type_name -> google.protobuf.Timestamp
-	67,  // 82: bossanova.v1.AgentAccount.usage:type_name -> bossanova.v1.UsageSnapshot
-	65,  // 83: bossanova.v1.AgentAccount.auth_check:type_name -> bossanova.v1.AuthCheck
-	64,  // 84: bossanova.v1.AgentAccount.identity:type_name -> bossanova.v1.AgentAccountIdentity
-	94,  // 85: bossanova.v1.AuthCheck.checked_at:type_name -> google.protobuf.Timestamp
-	94,  // 86: bossanova.v1.AuthCheck.next_retry_at:type_name -> google.protobuf.Timestamp
-	94,  // 87: bossanova.v1.UsageModelWindow.resets_at:type_name -> google.protobuf.Timestamp
-	94,  // 88: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
-	94,  // 89: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
-	94,  // 90: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
-	66,  // 91: bossanova.v1.UsageSnapshot.model_windows:type_name -> bossanova.v1.UsageModelWindow
-	71,  // 92: bossanova.v1.Trigger.http:type_name -> bossanova.v1.HTTPTriggerConfig
-	72,  // 93: bossanova.v1.Trigger.github:type_name -> bossanova.v1.GitHubTriggerConfig
-	73,  // 94: bossanova.v1.Trigger.launch:type_name -> bossanova.v1.TriggerLaunchSettings
-	74,  // 95: bossanova.v1.Trigger.placement:type_name -> bossanova.v1.TriggerPlacement
-	27,  // 96: bossanova.v1.Trigger.concurrency_policy:type_name -> bossanova.v1.TriggerConcurrencyPolicy
-	75,  // 97: bossanova.v1.Trigger.filters:type_name -> bossanova.v1.TriggerFilter
-	77,  // 98: bossanova.v1.Trigger.last_invocation:type_name -> bossanova.v1.TriggerInvocationSummary
-	94,  // 99: bossanova.v1.Trigger.created_at:type_name -> google.protobuf.Timestamp
-	94,  // 100: bossanova.v1.Trigger.updated_at:type_name -> google.protobuf.Timestamp
-	70,  // 101: bossanova.v1.Trigger.gate:type_name -> bossanova.v1.TriggerGate
-	26,  // 102: bossanova.v1.TriggerPlacement.mode:type_name -> bossanova.v1.TriggerPlacementMode
-	28,  // 103: bossanova.v1.TriggerFilter.operator:type_name -> bossanova.v1.TriggerFilterOperator
-	29,  // 104: bossanova.v1.TriggerInvocation.status:type_name -> bossanova.v1.TriggerInvocationStatus
-	94,  // 105: bossanova.v1.TriggerInvocation.received_at:type_name -> google.protobuf.Timestamp
-	94,  // 106: bossanova.v1.TriggerInvocation.decided_at:type_name -> google.protobuf.Timestamp
-	94,  // 107: bossanova.v1.TriggerInvocation.launched_at:type_name -> google.protobuf.Timestamp
-	29,  // 108: bossanova.v1.TriggerInvocationSummary.status:type_name -> bossanova.v1.TriggerInvocationStatus
-	94,  // 109: bossanova.v1.TriggerInvocationSummary.received_at:type_name -> google.protobuf.Timestamp
-	79,  // 110: bossanova.v1.TriggerCatalog.types:type_name -> bossanova.v1.TriggerTypeSpec
-	80,  // 111: bossanova.v1.TriggerTypeSpec.event_types:type_name -> bossanova.v1.TriggerEventTypeSpec
-	81,  // 112: bossanova.v1.TriggerTypeSpec.filter_fields:type_name -> bossanova.v1.TriggerFilterFieldSpec
-	28,  // 113: bossanova.v1.TriggerFilterFieldSpec.operators:type_name -> bossanova.v1.TriggerFilterOperator
-	94,  // 114: bossanova.v1.AgentCredentialDevice.requested_at:type_name -> google.protobuf.Timestamp
-	94,  // 115: bossanova.v1.AgentCredentialDevice.expires_at:type_name -> google.protobuf.Timestamp
-	94,  // 116: bossanova.v1.AgentCredentialDevice.approved_at:type_name -> google.protobuf.Timestamp
-	94,  // 117: bossanova.v1.AgentCredentialDevice.revoked_at:type_name -> google.protobuf.Timestamp
-	82,  // 118: bossanova.v1.ListAgentCredentialDevicesResponse.devices:type_name -> bossanova.v1.AgentCredentialDevice
-	30,  // 119: bossanova.v1.AcquireTrackerIssueLeaseRequest.purpose:type_name -> bossanova.v1.TrackerIssueLeasePurpose
-	94,  // 120: bossanova.v1.AcquireTrackerIssueLeaseResponse.expires_at:type_name -> google.protobuf.Timestamp
-	31,  // 121: bossanova.v1.AcquireTrackerIssueLeaseResponse.scope:type_name -> bossanova.v1.TrackerIssueLeaseScope
-	30,  // 122: bossanova.v1.ReleaseTrackerIssueLeaseRequest.purpose:type_name -> bossanova.v1.TrackerIssueLeasePurpose
-	94,  // 123: bossanova.v1.ViewerDevice.created_at:type_name -> google.protobuf.Timestamp
-	94,  // 124: bossanova.v1.ViewerDevice.last_requested_at:type_name -> google.protobuf.Timestamp
-	125, // [125:125] is the sub-list for method output_type
-	125, // [125:125] is the sub-list for method input_type
-	125, // [125:125] is the sub-list for extension type_name
-	125, // [125:125] is the sub-list for extension extendee
-	0,   // [0:125] is the sub-list for field type_name
+	94,  // 20: bossanova.v1.Session.tracker_rank:type_name -> bossanova.v1.TrackerRank
+	13,  // 21: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
+	95,  // 22: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
+	19,  // 23: bossanova.v1.Session.last_repair_display_status:type_name -> bossanova.v1.DisplayStatus
+	95,  // 24: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	95,  // 25: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
+	59,  // 26: bossanova.v1.Session.merge_block:type_name -> bossanova.v1.MergeBlock
+	95,  // 27: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
+	33,  // 28: bossanova.v1.Session.rotation_events:type_name -> bossanova.v1.RotationEvent
+	37,  // 29: bossanova.v1.Session.http_endpoints:type_name -> bossanova.v1.HTTPEndpoint
+	95,  // 30: bossanova.v1.Session.repair_stalled_at:type_name -> google.protobuf.Timestamp
+	55,  // 31: bossanova.v1.Session.attention:type_name -> bossanova.v1.SessionAttention
+	17,  // 32: bossanova.v1.Session.merged_confidence_level:type_name -> bossanova.v1.ConfidenceLevel
+	9,   // 33: bossanova.v1.FixAttempt.trigger:type_name -> bossanova.v1.FixAttemptTrigger
+	10,  // 34: bossanova.v1.FixAttempt.result:type_name -> bossanova.v1.FixAttemptResult
+	95,  // 35: bossanova.v1.FixAttempt.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 36: bossanova.v1.FixAttempt.updated_at:type_name -> google.protobuf.Timestamp
+	7,   // 37: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
+	4,   // 38: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
+	5,   // 39: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
+	8,   // 40: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
+	7,   // 41: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
+	48,  // 42: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
+	49,  // 43: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
+	50,  // 44: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
+	51,  // 45: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
+	52,  // 46: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
+	53,  // 47: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
+	41,  // 48: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
+	42,  // 49: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
+	14,  // 50: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
+	95,  // 51: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	15,  // 52: bossanova.v1.SessionAttention.kind:type_name -> bossanova.v1.AttentionKind
+	16,  // 53: bossanova.v1.SessionAttention.actions:type_name -> bossanova.v1.AttentionAction
+	95,  // 54: bossanova.v1.SessionAttention.since:type_name -> google.protobuf.Timestamp
+	17,  // 55: bossanova.v1.SessionAttention.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
+	56,  // 56: bossanova.v1.SessionAttention.blocker_tallies:type_name -> bossanova.v1.BlockerTally
+	38,  // 57: bossanova.v1.ReviewQueueRow.session:type_name -> bossanova.v1.Session
+	17,  // 58: bossanova.v1.ReviewQueueRow.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
+	17,  // 59: bossanova.v1.ReviewQueueLevelCount.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
+	32,  // 60: bossanova.v1.MergeBlock.gate:type_name -> bossanova.v1.MergeBlock.Gate
+	19,  // 61: bossanova.v1.MergeBlock.display_status:type_name -> bossanova.v1.DisplayStatus
+	95,  // 62: bossanova.v1.AgentChat.created_at:type_name -> google.protobuf.Timestamp
+	23,  // 63: bossanova.v1.AgentChat.role:type_name -> bossanova.v1.ChatRole
+	95,  // 64: bossanova.v1.AgentChat.reclaimed_at:type_name -> google.protobuf.Timestamp
+	95,  // 65: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
+	95,  // 66: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
+	95,  // 67: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 68: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
+	24,  // 69: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
+	25,  // 70: bossanova.v1.CronJob.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
+	95,  // 71: bossanova.v1.GitHubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
+	95,  // 72: bossanova.v1.GitHubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
+	95,  // 73: bossanova.v1.GitHubCallback.triggered_at:type_name -> google.protobuf.Timestamp
+	95,  // 74: bossanova.v1.GitHubCallback.delivered_at:type_name -> google.protobuf.Timestamp
+	95,  // 75: bossanova.v1.GitHubCallback.expires_at:type_name -> google.protobuf.Timestamp
+	95,  // 76: bossanova.v1.GitHubCallback.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 77: bossanova.v1.GitHubCallback.updated_at:type_name -> google.protobuf.Timestamp
+	95,  // 78: bossanova.v1.AgentAccount.cooldown_until:type_name -> google.protobuf.Timestamp
+	95,  // 79: bossanova.v1.AgentAccount.last_used_at:type_name -> google.protobuf.Timestamp
+	95,  // 80: bossanova.v1.AgentAccount.last_test_ok_at:type_name -> google.protobuf.Timestamp
+	95,  // 81: bossanova.v1.AgentAccount.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 82: bossanova.v1.AgentAccount.updated_at:type_name -> google.protobuf.Timestamp
+	67,  // 83: bossanova.v1.AgentAccount.usage:type_name -> bossanova.v1.UsageSnapshot
+	65,  // 84: bossanova.v1.AgentAccount.auth_check:type_name -> bossanova.v1.AuthCheck
+	64,  // 85: bossanova.v1.AgentAccount.identity:type_name -> bossanova.v1.AgentAccountIdentity
+	95,  // 86: bossanova.v1.AuthCheck.checked_at:type_name -> google.protobuf.Timestamp
+	95,  // 87: bossanova.v1.AuthCheck.next_retry_at:type_name -> google.protobuf.Timestamp
+	95,  // 88: bossanova.v1.UsageModelWindow.resets_at:type_name -> google.protobuf.Timestamp
+	95,  // 89: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
+	95,  // 90: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
+	95,  // 91: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
+	66,  // 92: bossanova.v1.UsageSnapshot.model_windows:type_name -> bossanova.v1.UsageModelWindow
+	71,  // 93: bossanova.v1.Trigger.http:type_name -> bossanova.v1.HTTPTriggerConfig
+	72,  // 94: bossanova.v1.Trigger.github:type_name -> bossanova.v1.GitHubTriggerConfig
+	73,  // 95: bossanova.v1.Trigger.launch:type_name -> bossanova.v1.TriggerLaunchSettings
+	74,  // 96: bossanova.v1.Trigger.placement:type_name -> bossanova.v1.TriggerPlacement
+	27,  // 97: bossanova.v1.Trigger.concurrency_policy:type_name -> bossanova.v1.TriggerConcurrencyPolicy
+	75,  // 98: bossanova.v1.Trigger.filters:type_name -> bossanova.v1.TriggerFilter
+	77,  // 99: bossanova.v1.Trigger.last_invocation:type_name -> bossanova.v1.TriggerInvocationSummary
+	95,  // 100: bossanova.v1.Trigger.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 101: bossanova.v1.Trigger.updated_at:type_name -> google.protobuf.Timestamp
+	70,  // 102: bossanova.v1.Trigger.gate:type_name -> bossanova.v1.TriggerGate
+	26,  // 103: bossanova.v1.TriggerPlacement.mode:type_name -> bossanova.v1.TriggerPlacementMode
+	28,  // 104: bossanova.v1.TriggerFilter.operator:type_name -> bossanova.v1.TriggerFilterOperator
+	29,  // 105: bossanova.v1.TriggerInvocation.status:type_name -> bossanova.v1.TriggerInvocationStatus
+	95,  // 106: bossanova.v1.TriggerInvocation.received_at:type_name -> google.protobuf.Timestamp
+	95,  // 107: bossanova.v1.TriggerInvocation.decided_at:type_name -> google.protobuf.Timestamp
+	95,  // 108: bossanova.v1.TriggerInvocation.launched_at:type_name -> google.protobuf.Timestamp
+	29,  // 109: bossanova.v1.TriggerInvocationSummary.status:type_name -> bossanova.v1.TriggerInvocationStatus
+	95,  // 110: bossanova.v1.TriggerInvocationSummary.received_at:type_name -> google.protobuf.Timestamp
+	79,  // 111: bossanova.v1.TriggerCatalog.types:type_name -> bossanova.v1.TriggerTypeSpec
+	80,  // 112: bossanova.v1.TriggerTypeSpec.event_types:type_name -> bossanova.v1.TriggerEventTypeSpec
+	81,  // 113: bossanova.v1.TriggerTypeSpec.filter_fields:type_name -> bossanova.v1.TriggerFilterFieldSpec
+	28,  // 114: bossanova.v1.TriggerFilterFieldSpec.operators:type_name -> bossanova.v1.TriggerFilterOperator
+	95,  // 115: bossanova.v1.AgentCredentialDevice.requested_at:type_name -> google.protobuf.Timestamp
+	95,  // 116: bossanova.v1.AgentCredentialDevice.expires_at:type_name -> google.protobuf.Timestamp
+	95,  // 117: bossanova.v1.AgentCredentialDevice.approved_at:type_name -> google.protobuf.Timestamp
+	95,  // 118: bossanova.v1.AgentCredentialDevice.revoked_at:type_name -> google.protobuf.Timestamp
+	82,  // 119: bossanova.v1.ListAgentCredentialDevicesResponse.devices:type_name -> bossanova.v1.AgentCredentialDevice
+	30,  // 120: bossanova.v1.AcquireTrackerIssueLeaseRequest.purpose:type_name -> bossanova.v1.TrackerIssueLeasePurpose
+	95,  // 121: bossanova.v1.AcquireTrackerIssueLeaseResponse.expires_at:type_name -> google.protobuf.Timestamp
+	31,  // 122: bossanova.v1.AcquireTrackerIssueLeaseResponse.scope:type_name -> bossanova.v1.TrackerIssueLeaseScope
+	30,  // 123: bossanova.v1.ReleaseTrackerIssueLeaseRequest.purpose:type_name -> bossanova.v1.TrackerIssueLeasePurpose
+	95,  // 124: bossanova.v1.ViewerDevice.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 125: bossanova.v1.ViewerDevice.last_requested_at:type_name -> google.protobuf.Timestamp
+	95,  // 126: bossanova.v1.TrackerRank.ranked_at:type_name -> google.protobuf.Timestamp
+	127, // [127:127] is the sub-list for method output_type
+	127, // [127:127] is the sub-list for method input_type
+	127, // [127:127] is the sub-list for extension type_name
+	127, // [127:127] is the sub-list for extension extendee
+	0,   // [0:127] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }
@@ -9634,13 +9768,14 @@ func file_bossanova_v1_models_proto_init() {
 		(*Trigger_Github)(nil),
 	}
 	file_bossanova_v1_models_proto_msgTypes[40].OneofWrappers = []any{}
+	file_bossanova_v1_models_proto_msgTypes[61].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
 			NumEnums:      33,
-			NumMessages:   61,
+			NumMessages:   62,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

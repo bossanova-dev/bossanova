@@ -164,6 +164,51 @@ test('terminal workflow failures without attached job checks block older green c
   }
 })
 
+test('a run a newer run of the same workflow cancelled does not block a release', (t) => {
+  const f = fixture(t)
+  const sha = f.commit()
+  const early = '2026-11-07T02:02:31Z',
+    late = '2026-11-07T02:06:47Z'
+  const job = (name, suite, conclusion, at) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    started_at: at,
+    completed_at: at,
+    check_suite: { id: suite },
+    app: { slug: 'github-actions' },
+  })
+  const workflow = (id, workflowId, suite, conclusion, at) => ({
+    id,
+    name: `wf ${workflowId}`,
+    workflow_id: workflowId,
+    check_suite_id: suite,
+    head_sha: sha,
+    status: 'completed',
+    conclusion,
+    run_started_at: at,
+    created_at: at,
+  })
+  // A push and a second trigger seconds apart: the second run's concurrency group cancelled the first.
+  f.checks.set(sha, {
+    runs: [job('go-test', 11, 'cancelled', early), job('go-test', 12, 'success', late)],
+    workflows: [workflow(1, 7, 11, 'cancelled', early), workflow(2, 7, 12, 'success', late)],
+  })
+  assert.equal(pendingReleases(f).environments[0].verdict, 'ready')
+  // Same-named jobs of two workflows are two checks: an older failure in one stays red.
+  f.checks.set(sha, {
+    runs: [job('dedup', 11, 'failure', early), job('dedup', 22, 'success', late)],
+    workflows: [workflow(1, 7, 11, 'failure', early), workflow(2, 8, 22, 'success', late)],
+  })
+  assert.equal(pendingReleases(f).environments[0].verdict, 'ci-red')
+  // A check run no workflow run attributes keeps the severity merge.
+  f.checks.set(sha, {
+    runs: [job('go-test', 11, 'cancelled', early), job('go-test', 12, 'success', late)],
+    workflows: [workflow(2, 7, 12, 'success', late)],
+  })
+  assert.equal(pendingReleases(f).environments[0].verdict, 'ci-red')
+})
+
 test('stale tag release records cannot regress the current released point', (t) => {
   const f = fixture(t)
   const older = f.commit()

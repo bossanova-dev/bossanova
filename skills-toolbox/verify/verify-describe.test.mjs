@@ -7,6 +7,7 @@ import { MAX_ITEMS, MAX_TEXT_CHARS } from './verify-proof.mjs'
 import { Readable } from 'node:stream'
 import { validateResult } from '../skill-extensions.mjs'
 import {
+  foldChange,
   boundDescription,
   describerMain,
   refineDescription,
@@ -262,4 +263,34 @@ test('describerMain reads the envelope from stdin and rejects flags', async () =
   await assert.rejects(
     describerMain(() => ({}), { argv: ['--fast'], stdin: Readable.from([]), stdout }),
   )
+})
+
+test('schema change facts fold failures and breaking descriptions monotonically', () => {
+  const input = { ...area('never'), change: 'additive', changeReasons: ['schema additive'] }
+  const failing = { area: input.area, extension: 'failed-tool', ok: false, reason: 'exit:1' }
+  const broken = describeAreas([input], [failing]).areas[0]
+  assert.equal(broken.change, 'breaking')
+  assert.equal(broken.defaultAsk, 'never')
+  assert.ok(
+    broken.changeReasons.some((text) => text.includes('failed-tool') && text.includes('failed')),
+  )
+  const outcome = {
+    area: input.area,
+    extension: 'describe-test',
+    ok: true,
+    description: { ...valid(), breaking: true },
+  }
+  assert.equal(describeAreas([input], [outcome]).areas[0].change, 'breaking')
+  assert.equal(describeAreas([{ ...input, change: 'breaking' }], []).areas[0].change, 'breaking')
+  assert.equal('change' in describeAreas([area()], [outcome]).areas[0], false)
+})
+
+test('foldChange can only strengthen a computed change', () => {
+  for (const change of ['additive', 'breaking'])
+    for (const breaking of [false, true])
+      for (const failed of [false, true])
+        assert.equal(
+          foldChange(change, { breaking, failed }),
+          change === 'breaking' || breaking || failed ? 'breaking' : 'additive',
+        )
 })

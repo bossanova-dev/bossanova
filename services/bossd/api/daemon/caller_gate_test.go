@@ -122,10 +122,10 @@ func TestCallerGateRoleGrant(t *testing.T) {
 	a := &gateAuthority{principal: p}
 	i := &callerInterceptor{authority: a, grants: domain.CallerGrants{{Kind: p.Kind, Role: p.Role}: {domain.CapabilityVerifyApprove}}}
 	ctx := a.ConnContext(context.Background(), nil)
-	if err := i.check(ctx, bossanovav1connect.DaemonServiceApproveSessionPRProcedure); err != nil {
+	if _, err := i.check(ctx, bossanovav1connect.DaemonServiceApproveSessionPRProcedure, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := i.check(ctx, bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure); connect.CodeOf(err) != connect.CodePermissionDenied {
+	if _, err := i.check(ctx, bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure, nil, nil); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatalf("grant exceeded scope: %v", err)
 	}
 }

@@ -148,6 +148,8 @@ type Lifecycle struct {
 	telemetry      libtelemetry.Client
 
 	launchProcessSnapshot func(context.Context) ([]byte, error)
+	unrecordedProcesses   WorktreeCurrentPaths
+	unrecordedPanes       WorktreeCurrentPaths
 
 	// branchResolver, when set, lets the finalize attach path match PRs
 	// against the worktree's live branch (the agent may have switched

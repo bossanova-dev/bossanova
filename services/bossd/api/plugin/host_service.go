@@ -947,6 +947,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			}
 
 			pbSess := &bossanovav1.Session{
+				TrackerRank:                 models.TrackerRankToProto(sess.TrackerRank),
 				Id:                          sess.ID,
 				BlockedReason:               sess.BlockedReason,
 				RepoId:                      sess.RepoID,

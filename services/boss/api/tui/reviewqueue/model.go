@@ -71,7 +71,7 @@ type Model struct {
 
 // NewModel creates a queue with an injected URL opener.
 func NewModel(c Client, ctx context.Context, openURL func(string) error) Model {
-	return Model{generation: &queueGeneration{}, client: c, ctx: ctx, openURL: openURL, focused: true, loading: true, fetching: true, lastPoll: time.Now(), order: pb.ReviewQueueSort_REVIEW_QUEUE_SORT_MOST_CONFIDENT, table: ui.NewBossTable(nil, nil, 0)}
+	return Model{generation: &queueGeneration{}, client: c, ctx: ctx, openURL: openURL, focused: true, loading: true, fetching: true, lastPoll: time.Now(), order: pb.ReviewQueueSort_REVIEW_QUEUE_SORT_PRIORITY, table: ui.NewBossTable(nil, nil, 0)}
 }
 func (m *Model) SetTelemetry(c telemetry.Client) { m.telemetry = c }
 func (m *Model) SetSize(w, h int)                { m.width = w; m.height = h; m.buildTable() }

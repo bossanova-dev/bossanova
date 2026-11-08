@@ -1,3 +1,6 @@
+import { LIST_PLANNED_QUERY, LIST_PLAN_CANDIDATES_QUERY } from './linear-planned-query.mjs'
+export { LIST_PLANNED_QUERY } from './linear-planned-query.mjs'
+import { linearReadClaimComments, linearReadIssueState } from './linear-settle-reads.mjs'
 // Linear adapter: executable tracker reads and gates plus MCP operation descriptors.
 
 import { linearRequest, resolveLinearSelectionRefs, runLinearGate } from '../linear-gate-lib.mjs'
@@ -9,9 +12,7 @@ import {
   selectionResolutionRefs,
 } from '../selection.mjs'
 import { rankWork } from '../rank-work.mjs'
-import { RANK_FACTS_SELECTION } from './linear-rank-facts.mjs'
 import {
-  BLOCKER_RELATIONS_SELECTION,
   readBlockers,
   runUnblockedGate,
   extractBlockers,
@@ -129,26 +130,6 @@ export async function linearSelectMarked({
   throw new Error(`Linear marker scan exceeded ${maxPages} pages — dedupe snapshot incomplete`)
 }
 
-// The candidate read behind the OPTIONAL executable `selectPlanned` capability: the fields Step 2's
-// eligibility walk reads plus the rank facts rankWork orders by (linear-rank-facts.mjs).
-export const LIST_PLANNED_QUERY = `
-  query ListPlanned($first: Int!, $filter: IssueFilter!) {
-    issues(first: $first, filter: $filter) {
-      nodes {
-        identifier
-        title
-        estimate
-        createdAt
-        state { name type }
-        ${RANK_FACTS_SELECTION}
-        labels { nodes { name } }
-        attachments { nodes { id title url createdAt } }
-        ${BLOCKER_RELATIONS_SELECTION}
-      }
-    }
-  }
-`
-
 const SELECT_PLANNED_MAX_LIMIT = 250
 // The closed set of query keys `selectPlanned` knows how to put on the wire — the
 // `stageSelectionQuery` shape plus `limit` and `team`. `team` scopes the read to one team when the
@@ -161,6 +142,7 @@ const SELECT_PLANNED_KEYS = new Set([
   'excludeLabels',
   'limit',
   'team',
+  'planClaims',
 ])
 // The selection-path query keys the two gates accept (`stageSelectionQuery`'s shape, plus an
 // optional team, defaulting to the configured team). Presence of any of the first three routes a
@@ -387,6 +369,7 @@ export async function linearSelectPlanned({
   requireLabels,
   excludeLabels,
   limit = SELECT_PLANNED_MAX_LIMIT,
+  planClaims = false,
 }) {
   if (typeof state !== 'string' || state.trim() === '') {
     throw new Error(
@@ -422,7 +405,7 @@ export async function linearSelectPlanned({
   })
   const data = await linearRequest({
     apiKey,
-    query: LIST_PLANNED_QUERY,
+    query: planClaims ? LIST_PLAN_CANDIDATES_QUERY : LIST_PLANNED_QUERY,
     variables: { first: limit, filter },
     fetchImpl,
     endpoint,
@@ -433,11 +416,17 @@ export async function linearSelectPlanned({
       'tracker/linear selectPlanned: the issues payload cannot be evaluated (issues.nodes is not an array), so "no candidates" cannot be distinguished from "no answer"',
     )
   }
+  if (planClaims && nodes.some((node) => !Array.isArray(node?.comments?.nodes))) {
+    throw new Error('tracker/linear selectPlanned: unreadable plan claim comments')
+  }
   return rankWork(
     nodes.map((node) => ({
-      ...node,
+      ...Object.fromEntries(
+        Object.entries(node).filter(([key]) => !planClaims || key !== 'comments'),
+      ),
       labels: (issueLabels(node ?? {}) ?? []).filter(Boolean),
       attachments: connectionNodes(node?.attachments),
+      ...(planClaims ? { planClaimComments: connectionNodes(node?.comments) } : {}),
     })),
   )
 }
@@ -903,15 +892,15 @@ export function buildLinearOperationMap(mcpServer) {
       tool: `mcp__${mcpServer}__save_issue`,
       summary: '{id, relatedTo: [ids]} -> add a non-blocking related edge',
     },
-    // The argument key `description` is load-bearing, not decoration: tracker/cli.mjs's
-    // write-description verb builds its descriptor `args` around it, so a summary that
-    // named some other key would emit a save the tracker accepts and that changes nothing.
+    // Argument names are the descriptor contract; verify stored bytes after either save.
     writeDescription: {
       tool: `mcp__${mcpServer}__save_issue`,
-      summary:
-        '{id, description} -> replace the issue description wholesale with bytes read from a ' +
-        'file (the already-gated body); the argument is inline-only, so executing it re-emits ' +
-        'those bytes and the stored description must be read back to confirm what landed',
+      summary: '{id, description} -> replace from a file; read back stored bytes',
+    },
+    // Anchors match exactly once; callers bound the atomic patch to 50 operations.
+    patchDescription: {
+      tool: `mcp__${mcpServer}__save_issue`,
+      summary: '{id, patch} -> atomically apply anchored description operations',
     },
     // `size` carries a UNIT, because the unit is the contract: it is the file's BYTE count,
     // measured on the exact file about to be PUT. A character count, or a count taken from the
@@ -1060,6 +1049,7 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
     isUnblocked: (issue) => isUnblocked(issue),
     blockerVerdict,
     claimScopes: ['build', 'plan'],
+    planClaimSelection: true,
     formatClaimComment,
     resolveClaim: (comments, myToken, options = null) =>
       resolveClaimVerdict(comments, myToken, options),
@@ -1073,7 +1063,8 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
           `tracker/linear selectPlanned: unknown selection key(s) ${unknown.map((key) => JSON.stringify(key)).join(', ')}; refusing to drop a clause the caller asked for`,
         )
       }
-      const { state, selection, requireLabels, excludeLabels, limit, team } = query ?? {}
+      const { state, selection, requireLabels, excludeLabels, limit, team, planClaims } =
+        query ?? {}
       return linearSelectPlanned({
         apiKey,
         fetchImpl,
@@ -1084,8 +1075,12 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
         requireLabels,
         excludeLabels,
         limit,
+        planClaims,
       })
     },
+    readClaimComments: (issueId) =>
+      linearReadClaimComments({ apiKey, fetchImpl, endpoint, issueId }),
+    readIssueState: (issueId) => linearReadIssueState({ apiKey, fetchImpl, endpoint, issueId }),
     readDescription: (issueId) => linearReadDescription({ apiKey, fetchImpl, endpoint, issueId }),
     selectMarked: (query = {}) => {
       const allowed = new Set(['markerPrefix', 'updatedAfter', 'maxPages'])

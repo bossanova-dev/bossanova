@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { pathParkFacts } from './verify-path-parks.mjs'
 import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
@@ -581,6 +582,8 @@ function deps(w, extra = {}) {
     randomToken: () => 'feedf00d',
     discover: () => ({ extensions: [], skipped: [] }),
     trustedTree: () => ({ ok: true, root: TRUSTED }),
+    // Synthetic SHAs have no local trees; real-git facts are covered by verify-tree-facts.test.mjs.
+    treeAreaFacts: pathParkFacts,
     loadConfig: () => ({}),
     adapter: fakeAdapter(),
     exists: () => false,
@@ -1076,6 +1079,44 @@ test("judge parks boss-build's PARTIAL marker, in the body or the title, as part
     const r = await judge({ pr: 7, repo: REPO }, deps(world({ pr })))
     assert.deepEqual([r.verdict, r.reason], ['human', 'partial-build'], JSON.stringify(pr))
   }
+})
+
+// recurser/bossanova#4104: a push and a `gh pr ready` seconds apart start two runs of each workflow
+// on one head; the second cancels the first and passes. The head is green, not blocked on the
+// cancelled runs.
+test('judge passes a head whose cancelled runs a newer passing run of the same check replaced', async () => {
+  const run = (name, conclusion, startedAt, completedAt) => ({
+    __typename: 'CheckRun',
+    name,
+    workflowName: 'bazel (test + lint)',
+    status: 'COMPLETED',
+    conclusion,
+    startedAt,
+    completedAt,
+  })
+  const statusCheckRollup = ['go-test', 'go-lint', 'go-ledger'].flatMap((name) => [
+    run(name, 'SUCCESS', '2026-11-07T02:06:47Z', '2026-11-07T02:12:43Z'),
+    run(name, 'CANCELLED', '2026-11-07T02:02:31Z', '2026-11-07T02:05:52Z'),
+  ])
+  const r = await judge({ pr: 7, repo: REPO }, deps(world({ pr: { statusCheckRollup } })))
+  assert.deepEqual([r.verdict, r.reason], ['pass', 'verified'])
+
+  const newerFailure = statusCheckRollup.map((node) => ({
+    ...node,
+    conclusion: node.conclusion === 'SUCCESS' ? 'FAILURE' : 'SUCCESS',
+  }))
+  const red = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ pr: { statusCheckRollup: newerFailure } })),
+  )
+  assert.equal(red.verdict, 'blocked')
+  assert.deepEqual(
+    red.blockers
+      .filter((b) => b.kind === 'check')
+      .map((b) => b.id)
+      .sort(),
+    ['check:go-ledger', 'check:go-lint', 'check:go-test'],
+  )
 })
 
 test('judge passes a body with no checklist sections, unchecked boxes or "do not merge" prose', async () => {
@@ -4640,7 +4681,10 @@ test('candidates: the selection matrix pins state to inReview, requires the buil
 
 test('candidates: a clean head is a candidate with its PR, head, repo and claim none', async () => {
   const w = candidateWorld()
-  const { fingerprint, skippable, admission, ...r } = await candidates({ repo: REPO }, candDeps(w))
+  const { fingerprint, skippable, admission, ranks, ...r } = await candidates(
+    { repo: REPO },
+    candDeps(w),
+  )
   assert.match(fingerprint, /^[0-9a-f]{64}$/)
   assert.equal(skippable, true)
   assert.deepEqual(r, {
@@ -5645,6 +5689,7 @@ test('candidates --quiet-fingerprint: a matching tick ends after the batched rea
     skipped: [],
     mergeRetries: [],
     unchanged: true,
+    ranks: [],
     fingerprint: full.fingerprint,
   })
   const gh = w.calls.filter((c) => c.command === 'gh')
@@ -6903,6 +6948,52 @@ test('approve --for-merge on an unparked head records an approval that waives no
     deps(world({ statuses: verified() })),
   )
   assert.equal(plain.reason, 'no-standing-park')
+})
+
+test('an approval under the coordinator grant names the chat and still waives the park', async () => {
+  const w = world({ statuses: parkedHuman('partial-build') })
+  const env = {
+    BOSS_APPROVER_KIND: 'agent-chat',
+    BOSS_APPROVER_ROLE: 'coordinator',
+    BOSS_APPROVER_CHAT: 'chat-coord',
+    BOSS_APPROVER_SESSION: 'sess-coord',
+    BOSS_APPROVER_FORWARDED_FROM: 'laptop',
+  }
+  const r = await approve({ pr: 7, repo: REPO }, deps(w, { env }))
+  assert.equal(r.approved, true)
+  const [body] = commentBodies(w)
+  const lines = body.split('\n\n')
+  assert.match(lines[0], /coordinator chat `chat-coord` \(session `sess-coord`\)/)
+  assert.match(lines[0], /coordinator approval grant/)
+  assert.equal(
+    lines.at(-1),
+    approveMarker(HEAD, ['partial-build']),
+    'the approve marker stays last',
+  )
+  const [entry] = operatorMarkers(w.comments).filter((m) => m.kind === 'approve')
+  assert.deepEqual(entry.approver, {
+    kind: 'agent-chat',
+    role: 'coordinator',
+    chat: 'chat-coord',
+    session: 'sess-coord',
+    forwardedFrom: 'laptop',
+  })
+  const operator = operatorDecision(operatorMarkers(w.comments), HEAD)
+  assert.deepEqual(
+    classifyApproval({ prState: 'OPEN', status: parkedHuman('partial-build')[0], operator }),
+    { approval: 'policy-park-approved', waive: 'partial-build', via: 'operator-approved' },
+  )
+})
+
+test('an approval from a direct toolbox run carries no approver line', async () => {
+  const w = world({ statuses: parkedHuman('partial-build') })
+  const r = await approve({ pr: 7, repo: REPO }, deps(w, { env: {} }))
+  assert.equal(r.approved, true)
+  const [body] = commentBodies(w)
+  assert.ok(body.startsWith('**Approved by the operator**'))
+  assert.ok(!body.includes('boss-approver'))
+  const [entry] = operatorMarkers(w.comments).filter((m) => m.kind === 'approve')
+  assert.equal(entry.approver, undefined)
 })
 
 test('approve --for-merge refuses a non-writer, and a park raised before the post, posting nothing', async () => {
@@ -11511,4 +11602,82 @@ test('post publishes broad computed-code sets without losing their approval code
   assert.equal(verdict.reason, 'approved')
   assert.equal(parseHumanReasonList('+unknown'), null)
   assert.equal(parseHumanReasonList('+always-human-path'), null)
+})
+
+test('judge publishes tree facts and excludes proven dbt models from database asks', async () => {
+  const model = 'warehouse/models/x.sql'
+  const facts = {
+    dbtRoots: ['warehouse'],
+    policySurfaceHit: false,
+    areas: [
+      {
+        area: 'other',
+        label: 'Other changes',
+        paths: [model],
+        defaultAsk: 'never',
+        source: 'builtin',
+      },
+    ],
+  }
+  const result = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ diff: [model] }), { treeAreaFacts: () => facts }),
+  )
+  assert.equal(result.verdict, 'pass')
+  assert.ok(!(result.reasons ?? []).includes('human-review:database'))
+  assert.ok(!result.facts.areas.some((area) => area.area === 'migrations'))
+  const api = {
+    area: 'api-contract',
+    label: 'API contract',
+    paths: ['schema.gql'],
+    defaultAsk: 'always',
+    source: 'builtin',
+    change: 'additive',
+    changeReasons: ['Query.field added'],
+  }
+  const changed = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ diff: ['schema.gql'] }), {
+      treeAreaFacts: () => ({ ...facts, dbtRoots: [], areas: [api] }),
+    }),
+  )
+  assert.equal(changed.verdict, 'human')
+  assert.equal(changed.facts.areas[0].change, 'additive')
+  assert.deepEqual(changed.facts.areas[0].changeReasons, ['Query.field added'])
+  assert.equal(changed.facts.areas[0].defaultAsk, 'always')
+})
+
+test('recording proof survives the extension record and approval re-judge', () => {
+  const recording = {
+    ...passResult,
+    evidence: [{ kind: 'recording', ref: 'https://example.test/video' }],
+  }
+  const facts = greenFacts({
+    judgeAreas: [],
+    changedPaths: ['src/Button.tsx'],
+    areas: [{ area: 'ui', label: 'UI', defaultAsk: 'unless-proven' }],
+    extensions: [EXT],
+    extensionResults: [{ extension: EXT.name, result: recording }],
+  })
+  assert.equal(decideVerdict(facts).verdict, 'pass')
+  const agg = aggregateExtensions(facts.extensionResults, [EXT])
+  const record = extensionRecord(agg)
+  assert.equal(record, `${EXT.name}:recorded`)
+  const parsed = parseExtensionRecord(record)
+  assert.equal(parsed[0].outcome, 'recorded')
+  const reused = decideVerdict({
+    ...facts,
+    extensionResults: undefined,
+    extensionRecord: parsed,
+    waive: ['human-review:security'],
+  })
+  assert.equal(reused.verdict, 'pass')
+  assert.equal(reused.extensions.outcomes[0].recorded, true)
+  assert.equal(
+    decideVerdict({
+      ...facts,
+      extensionResults: [{ extension: EXT.name, result: passResult }],
+    }).reasons.includes('human-review:ui'),
+    true,
+  )
 })

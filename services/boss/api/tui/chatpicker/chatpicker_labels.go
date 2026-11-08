@@ -18,7 +18,7 @@ func (m *Model) refreshChatLabels() {
 			role = chatlabel.RoleVerify
 		case pb.ChatRole_CHAT_ROLE_REPAIR:
 			role = chatlabel.RoleRepair
-		case pb.ChatRole_CHAT_ROLE_OPERATOR:
+		case pb.ChatRole_CHAT_ROLE_OPERATOR, pb.ChatRole_CHAT_ROLE_COORDINATOR:
 			role = chatlabel.RoleOperator
 		}
 		chats[i] = chatlabel.Chat{ID: chat.GetAgentSessionId(), Role: role, Title: chat.GetTitle(), CreatedAt: chat.GetCreatedAt().AsTime()}

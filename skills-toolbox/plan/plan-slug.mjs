@@ -1,10 +1,9 @@
-// plan-slug — pure, dependency-free slug helper for boss-plan's plan-file path.
-//
-// A plan file is named `<ISSUE-ID>-<hyphenated-title>.md`. The id is upcased and
-// the title is lowercased, with every run of non-alphanumeric characters folded
-// to a single hyphen and leading/trailing hyphens trimmed. Keeping this pure and
-// import-free lets it ship in the published skill toolbox and be shared by the
-// repo-local publish path without pulling in any storage dependency.
+// Plan naming for boss-plan's plan-file path. issueSlug returns the whole
+// `<ID>-<title-slug>` stem; the CLI composes it through the declared scratch family.
+import { readFileSync } from 'node:fs'
+import { parseArgs } from 'node:util'
+import { isMainModule } from '../main-module.mjs'
+import { planScratchPath } from './plan-scratch-paths.mjs'
 
 /**
  * Return the whole plan-file stem `<ID>-<title-slug>`, already prefixed with the id.
@@ -27,9 +26,70 @@ export function issueSlug(id, title) {
       `issueSlug(id, title): title must be a non-blank string; received ${typeof title}`,
     )
   }
-  const titleSlug = title
+  return `${id.toUpperCase()}-${titleSlug(title)}`
+}
+
+/** @param {string} title */
+export function titleSlug(title) {
+  if (typeof title !== 'string' || !title.trim()) {
+    throw new TypeError('titleSlug(title): title must be a non-blank string')
+  }
+  return title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-  return `${id.toUpperCase()}-${titleSlug}`
 }
+
+function main() {
+  let values
+  try {
+    const { positionals, values: parsed } = parseArgs({
+      allowPositionals: true,
+      options: {
+        'run-id': { type: 'string' },
+        'issue-json': { type: 'string' },
+        id: { type: 'string' },
+        title: { type: 'string' },
+      },
+    })
+    const [cmd] = positionals
+    if (cmd !== 'plan-path' || positionals.length !== 1) throw new Error('expected plan-path')
+    const fromFile = parsed['issue-json'] !== undefined
+    const direct = parsed.id !== undefined || parsed.title !== undefined
+    if (
+      parsed['run-id'] === undefined ||
+      fromFile === direct ||
+      (direct && (parsed.id === undefined || parsed.title === undefined))
+    ) {
+      throw new Error('provide --run-id and either --issue-json or --id with --title')
+    }
+    values = parsed
+  } catch (error) {
+    process.stderr.write(`${String(error.message).replace(/[\r\n]+/g, ' ')}\n`)
+    return 64
+  }
+  try {
+    let id = values.id
+    let title = values.title
+    if (values['issue-json'] !== undefined) {
+      const issue = JSON.parse(readFileSync(values['issue-json'], 'utf8'))
+      id =
+        typeof issue?.identifier === 'string' && issue.identifier.trim()
+          ? issue.identifier
+          : issue?.id
+      title = issue?.title
+    }
+    issueSlug(id, title)
+    const path = planScratchPath(values['run-id'], 'plan', {
+      issueId: id.toUpperCase(),
+      slug: titleSlug(title),
+    })
+    process.stdout.write(`${path}\n`)
+    return 0
+  } catch (error) {
+    process.stderr.write(`${String(error.message).replace(/[\r\n]+/g, ' ')}\n`)
+    return 1
+  }
+}
+
+if (isMainModule(import.meta.url)) process.exitCode = main()

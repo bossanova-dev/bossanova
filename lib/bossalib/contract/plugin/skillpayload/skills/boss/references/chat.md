@@ -6,6 +6,22 @@
 
 Interact with session chats headlessly
 
+### `boss chat delete <chat-id> [flags]`
+
+Delete a chat: stop its agent pane and remove it from its session
+
+Deletes one chat by its agent_session_id (the chat-id printed by `boss chat new --json`): the daemon stops the chat's agent pane and removes the chat from its session. The session, its worktree and its other chats are untouched. Unlike the other chat commands it refuses a session id, so a mistyped id cannot stop a session's primary agent; list a session's chats with `boss chats <session-id>`. Deleting a chat that is already gone succeeds. --json prints {agent_session_id, deleted}.
+
+**Flags:**
+
+- `--json` — Emit the outcome as a machine-readable JSON envelope
+
+```bash
+boss chat delete <chat-id>
+# Close a chat on another machine's daemon
+boss --host build-host chat delete <chat-id> --json
+```
+
 ### `boss chat new <session-id> [flags]`
 
 Start a new live chat inside an existing session
@@ -16,7 +32,7 @@ Starts a brand-new live chat inside an existing session, reusing that session's 
 
 - `--agent` — Agent plugin to run (empty inherits the session's agent)
 - `--json` — Emit the new chat as a machine-readable JSON envelope
-- `--role` — Purpose of the new chat: operator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator one (default: operator)
+- `--role` — Purpose of the new chat: operator, coordinator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator or coordinator one. Only the operator may create a coordinator chat; unless coordinator_approval_grant is off, it may approve verify parks and merge (default: operator)
 - `--title` — Title for the new chat
 
 ```bash

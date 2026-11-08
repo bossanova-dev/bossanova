@@ -29,9 +29,12 @@ func TestHomeWaitingOpensReviewQueueAndReturnsWithOrder(t *testing.T) {
 	if a.activeView != ui.ViewReviewQueue || a.reviewQueue.Width() != 120 {
 		t.Fatalf("queue not constructed at screen width")
 	}
+	if a.reviewQueue.Order() != pb.ReviewQueueSort_REVIEW_QUEUE_SORT_PRIORITY {
+		t.Fatal("first open did not default to priority")
+	}
 	model, _ = a.Update(keyPress('o'))
 	a = model.(App)
-	if a.reviewQueueSort != pb.ReviewQueueSort_REVIEW_QUEUE_SORT_LEAST_CONFIDENT {
+	if a.reviewQueueSort != pb.ReviewQueueSort_REVIEW_QUEUE_SORT_MOST_CONFIDENT {
 		t.Fatal("order not retained by App")
 	}
 	model, cmd = a.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
@@ -46,7 +49,7 @@ func TestHomeWaitingOpensReviewQueueAndReturnsWithOrder(t *testing.T) {
 	}
 	model, _ = a.Update(switchMsg)
 	a = model.(App)
-	if a.reviewQueue.Order() != pb.ReviewQueueSort_REVIEW_QUEUE_SORT_LEAST_CONFIDENT {
+	if a.reviewQueue.Order() != pb.ReviewQueueSort_REVIEW_QUEUE_SORT_MOST_CONFIDENT {
 		t.Fatal("reopening lost chosen order")
 	}
 }

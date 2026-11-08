@@ -495,9 +495,15 @@ func (l *Lifecycle) assertPRHasDiffBeforeMarkReady(ctx context.Context, cur *mod
 // shared excludesFile per worktree; this filter is the in-process
 // belt-and-suspenders so a regression there can't re-introduce the
 // pr_failed → Blocked failure observed for "do nothing" cron runs.
+//
+// go.work.sum is not bossd's, but any `go` command in a workspace rewrites it, and
+// its churn is never part of a run's work (skills-toolbox/worktree-sync.mjs lists it
+// as incidental too). Counting it blocked runs whose PR was already pushed and
+// verified.
 var bossdManagedWorktreeFiles = []string{
 	".claude/settings.local.json",
 	".claude/scheduled_tasks.lock",
+	"go.work.sum",
 }
 
 func (l *Lifecycle) managedDirtyPaths(ctx context.Context, session *models.Session, warnMsg string) []string {

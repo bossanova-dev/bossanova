@@ -55,6 +55,7 @@ func (g *Group) SessionCmd() *cobra.Command {
 		},
 	})
 	cmd.AddCommand(g.sessionSetTrackerCmd())
+	cmd.AddCommand(g.sessionSetRankCmd())
 	refreshPR := &cobra.Command{
 		Use:   "refresh-pr [session-id]",
 		Short: "Refresh one session's cached pull request status",

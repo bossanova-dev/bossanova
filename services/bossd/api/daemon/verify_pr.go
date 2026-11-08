@@ -48,11 +48,35 @@ func (s *Server) ApproveSessionPR(ctx context.Context, req *connect.Request[pb.A
 	if err != nil {
 		return nil, err
 	}
-	r, err := s.verifyVerbsFor(env).Approve(ctx, target, nil)
+	approver := approverOf(ctx)
+	r, err := s.verifyVerbsFor(withApprover(env, approver)).Approve(ctx, target, nil)
+	s.logApproval(req.Msg.GetId(), target.PR, approver, r, err)
 	if err != nil {
 		return nil, s.verifyBridgeError("approve", target, err)
 	}
 	return connect.NewResponse(&pb.ApproveSessionPRResponse{Result: approveResultProto(r)}), nil
+}
+
+// logApproval records who asked for an approval and how it ended. Under the
+// coordinator grant the line names the chat and its session.
+func (s *Server) logApproval(id string, pr int, approver domain.CallerPrincipal, r domain.VerifyApproveResult, err error) {
+	outcome := "not approved"
+	switch {
+	case err != nil:
+		outcome = "refused"
+	case r.DryRun || r.Planned:
+		outcome = "planned"
+	case r.Approved:
+		outcome = "approved"
+	}
+	ev := logApprover(s.logger.Info().Str("session", id).Int("pr", pr).Str("outcome", outcome), approver)
+	if err != nil {
+		ev = ev.Err(err)
+	}
+	if r.ApprovalURL != "" {
+		ev = ev.Str("approval_url", r.ApprovalURL)
+	}
+	ev.Msg("verify approval finished")
 }
 
 func approveResultProto(r domain.VerifyApproveResult) *pb.VerifyApproveResult {
@@ -106,8 +130,9 @@ func (s *Server) OperatorMergeSession(ctx context.Context, req *connect.Request[
 	budget := s.mergeBudget()
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget.total)
 	defer cancel()
-	resp, pr, err := s.operatorMerge(runCtx, req.Msg, pin, budget)
-	s.logOperatorMergeOutcome(req.Msg.GetId(), pr, ctx.Err() != nil, resp, err)
+	approver := approverOf(ctx)
+	resp, pr, err := s.operatorMerge(runCtx, req.Msg, pin, budget, approver)
+	s.logOperatorMergeOutcome(req.Msg.GetId(), pr, ctx.Err() != nil, resp, err, approver)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +141,7 @@ func (s *Server) OperatorMergeSession(ctx context.Context, req *connect.Request[
 
 // operatorMerge is OperatorMergeSession on its detached context. It also
 // returns the session's PR once known, for the outcome log.
-func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSessionRequest, pin string, budget operatorMergeBudget) (*pb.OperatorMergeSessionResponse, int, error) {
+func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSessionRequest, pin string, budget operatorMergeBudget, approver domain.CallerPrincipal) (*pb.OperatorMergeSessionResponse, int, error) {
 	id := req.GetId()
 	// An archive waits until the merge is over: the approval runs in the
 	// session worktree, and the merge can archive the session, which removes
@@ -136,7 +161,7 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 	if s.displayTracker != nil {
 		defer s.displayTracker.HoldMerging(id)()
 	}
-	verbs := s.verifyVerbsFor(env)
+	verbs := s.verifyVerbsFor(withApprover(env, approver))
 	resp := &pb.OperatorMergeSessionResponse{}
 	verified, err := s.operatorMergeGate(ctx, id, target.PR, pin)
 	if err != nil {
@@ -177,7 +202,7 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 
 // logOperatorMergeOutcome records how an operator merge ended, so the outcome
 // of one the operator left before it answered is still on record.
-func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, resp *pb.OperatorMergeSessionResponse, err error) {
+func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, resp *pb.OperatorMergeSessionResponse, err error, approver domain.CallerPrincipal) {
 	outcome := "not approved"
 	switch {
 	case err != nil:
@@ -185,7 +210,7 @@ func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, r
 	case resp.GetIsMerged():
 		outcome = "merged"
 	}
-	ev := s.logger.Info().Str("session", id).Int("pr", pr).Str("outcome", outcome).Bool("operator_left", operatorLeft)
+	ev := logApprover(s.logger.Info().Str("session", id).Int("pr", pr).Str("outcome", outcome).Bool("operator_left", operatorLeft), approver)
 	if err != nil {
 		ev = ev.Err(err)
 	}

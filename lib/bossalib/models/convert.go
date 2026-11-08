@@ -1,6 +1,9 @@
 package models
 
-import pb "github.com/recurser/bossalib/gen/bossanova/v1"
+import (
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
 
 // CronJobConcurrencyPolicyToProto maps a stored concurrency policy onto the
 // wire enum. Anything outside the known set maps to SKIP, never UNSPECIFIED,
@@ -27,5 +30,17 @@ func CronJobConcurrencyPolicyFromProto(p pb.CronJobConcurrencyPolicy) CronJobCon
 		return CronJobConcurrencyPolicyAllowConcurrent
 	default:
 		return CronJobConcurrencyPolicySkip
+	}
+}
+
+// TrackerRankToProto maps a stored tracker rank to the wire, preserving absence.
+func TrackerRankToProto(rank *TrackerRank) *pb.TrackerRank {
+	if rank == nil {
+		return nil
+	}
+	return &pb.TrackerRank{
+		Tier: rank.Tier, TierSource: rank.TierSource, DeadlineOn: rank.DeadlineOn,
+		DeadlineSource: rank.DeadlineSource, IsScheduled: rank.IsScheduled,
+		UnblockedTicketCount: rank.UnblockedTicketCount, RankedAt: timestamppb.New(rank.RankedAt),
 	}
 }

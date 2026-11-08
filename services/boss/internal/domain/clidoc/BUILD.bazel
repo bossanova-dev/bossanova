@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "clidoc.go",
         "registry.go",
+        "registry_chat.go",
     ],
     importpath = "github.com/recurser/boss/internal/domain/clidoc",
     visibility = ["//visibility:public"],

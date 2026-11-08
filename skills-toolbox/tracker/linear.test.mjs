@@ -2058,3 +2058,30 @@ test('Linear adapter carries selection descriptions and configured review state 
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
 })
+
+test('planClaims adds filtered comments without changing the build query', async () => {
+  const comments = [{ id: 'c1', body: 'bs-plan-claim:abc', createdAt: '2026-11-08T12:00:00Z' }]
+  const { impl, calls } = fakeFetch([{ identifier: 'APP-1', comments: { nodes: comments } }])
+  const rows = await linearSelectPlanned({
+    apiKey: 'k',
+    fetchImpl: impl,
+    team: 'Acme',
+    state: 'Unplanned',
+    planClaims: true,
+  })
+  assert.deepEqual(rows[0].planClaimComments, comments)
+  assert.equal(Object.hasOwn(rows[0], 'comments'), false)
+  assert.match(
+    calls[0].body.query,
+    /comments\(first: 50, filter: \{ body: \{ contains: "bs-plan-claim:" \} \}\)/,
+  )
+  const build = await linearSelectPlanned({
+    apiKey: 'k',
+    fetchImpl: impl,
+    team: 'Acme',
+    state: 'Planned',
+  })
+  assert.equal(calls[1].body.query, LIST_PLANNED_QUERY)
+  assert.equal(Object.hasOwn(build[0], 'planClaimComments'), false)
+  assert.equal(createLinearAdapter({ apiKey: 'k', fetchImpl: impl }).planClaimSelection, true)
+})

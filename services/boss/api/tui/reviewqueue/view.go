@@ -16,6 +16,8 @@ const tableBlockPadding = 1
 
 func (m Model) orderLabel() string {
 	switch m.order {
+	case pb.ReviewQueueSort_REVIEW_QUEUE_SORT_PRIORITY:
+		return "priority"
 	case pb.ReviewQueueSort_REVIEW_QUEUE_SORT_LEAST_CONFIDENT:
 		return "least confident"
 	case pb.ReviewQueueSort_REVIEW_QUEUE_SORT_SMALLEST:

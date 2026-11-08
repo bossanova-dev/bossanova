@@ -300,7 +300,8 @@ Use only when Phase 4 reaches Tier 3. Work these review dimensions yourself and 
 into the plan: scope challenge, architecture, code quality, tests, performance, and outside-voice.
 Follow the resident **## Phase 3 — Plan requirements** section in SKILL.md plus the shared drafting
 details in `references/headless-drafting-brief.md` **Step 5** and **Step 7** (plan-body requirements
-and the description summary template). Write to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md` and stop after
+and the description summary template). Compute `PLAN_PATH` with the `plan-slug.mjs plan-path` verb from SKILL.md Phase 2 step 1,
+using this run id and the precheck issue payload. Write to that path and stop after
 saving the plan file. Do not continue into subagent-driven-development or executing-plans.
 
 **Preserve `## Original notes` VERBATIM** (all interactive tiers). When composing

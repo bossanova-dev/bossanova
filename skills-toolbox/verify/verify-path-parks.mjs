@@ -28,7 +28,7 @@ export function policySurfaceHits(
   )
 }
 
-export function levelAreasFor(files, policy) {
+export function levelAreasFor(files, policy, options = {}) {
   return reviewAreas(
     files.map((file) =>
       typeof file === 'string'
@@ -42,6 +42,7 @@ export function levelAreasFor(files, policy) {
           },
     ),
     policy.review,
+    options,
   )
 }
 
@@ -50,7 +51,7 @@ export function pathParkFacts(files, policy, options = {}) {
     typeof file === 'string' ? [file] : [file.filename, file.previous_filename].filter(Boolean),
   )
   return {
-    areas: levelAreasFor(files, policy).areas,
+    areas: levelAreasFor(files, policy, options).areas,
     policySurfaceHit: policyNonEmpty(policy) && policySurfaceHits(paths, options).length > 0,
   }
 }

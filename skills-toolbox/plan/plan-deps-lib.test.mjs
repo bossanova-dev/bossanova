@@ -15,7 +15,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DEFAULT_CONFIG, stateRolesFor } from '../skill-config.mjs'
+import { fileURLToPath } from 'node:url'
+
+import { DEFAULT_CONFIG, loadSkillConfig, stateRolesFor } from '../skill-config.mjs'
 import { BLOCKER_CLEARED_STATE_TYPES } from '../linear-deps-lib.mjs'
 import { buildGraph, readyTickets } from '../epic/dag-scheduler.mjs'
 import {
@@ -1902,6 +1904,7 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
   // produce them — they are emitted by `planDependencyEdges` over the whole
   // candidate set — and each is pinned by its own test below.
   const SET_LEVEL_REASONS = [
+    'hot-overlap',
     'declared-related-unresolved',
     'no-candidates-compared',
     'no-subject-areas',
@@ -3638,4 +3641,151 @@ test('BOS-2371: verify-only declarations are references while a mode flag still 
     }).areas,
     ['services/x/a.go'],
   )
+})
+
+function hotOverlapInput(over = {}) {
+  return {
+    subject: subject({ areas: ['app/registry.json', 'app/api/x.go'] }),
+    candidates: Array.from({ length: 5 }, (_, index) =>
+      candidate({
+        id: `uuid-${index + 2}`,
+        identifier: `TCK-${index + 2}`,
+        areas: ['app/registry.json'],
+      }),
+    ),
+    stateRoles: STATE_ROLES,
+    ...over,
+  }
+}
+
+test('hot overlap demotes only-hot edges and aggregates their planning notes', () => {
+  const input = hotOverlapInput()
+  input.candidates[0].areas.push('app/api/x.go')
+  const result = planDependencyEdges(input)
+  assert.deepEqual(
+    result.edges.map((row) => row.identifier),
+    ['TCK-2'],
+  )
+  assert.deepEqual(
+    result.skipped.map((row) => row.identifier),
+    ['TCK-3', 'TCK-4', 'TCK-5', 'TCK-6'],
+  )
+  for (const row of result.skipped) {
+    assert.equal(row.reason, 'hot-overlap')
+    assert.equal(row.edge, 'none')
+    assert.equal(row.basis, 'overlap')
+    assert.deepEqual(row.shared, ['app/registry.json'])
+    assert.equal(row.note, null)
+    assert.equal(row.expandChildren, false)
+  }
+  assert.equal(result.notes.filter((row) => row.reason === 'file-overlap').length, 1)
+  const hot = result.notes.filter((row) => row.reason === 'hot-overlap')
+  assert.equal(hot.length, 1)
+  assert.equal(hot[0].severity, 'info')
+  assert.equal(hot[0].destination, 'planning')
+  assert.match(hot[0].text, /app\/registry\.json.*5.*TCK-2, TCK-3, TCK-4, TCK-5, TCK-6/)
+  assert.equal(planDependencyEdges({ ...input, maxOverlapFanOut: 10 }).edges.length, 5)
+})
+
+test('hot overlap uses a strict positive-integer cap with a default of three', () => {
+  const input = hotOverlapInput()
+  const atCap = planDependencyEdges({ ...input, candidates: input.candidates.slice(0, 3) })
+  assert.equal(atCap.edges.length, 3)
+  assert.equal(
+    atCap.notes.some((row) => row.reason === 'hot-overlap'),
+    false,
+  )
+  assert.equal(
+    planDependencyEdges({ ...input, candidates: input.candidates.slice(0, 3), maxOverlapFanOut: 1 })
+      .edges.length,
+    0,
+  )
+  for (const maxOverlapFanOut of [undefined, null, 0, -1, 1.5, '10', NaN, Infinity]) {
+    const result = planDependencyEdges({ ...input, maxOverlapFanOut })
+    assert.equal(result.edges.length, 0, String(maxOverlapFanOut))
+    assert.equal(result.notes.length, 1)
+    assert.equal(result.notes[0].reason, 'hot-overlap')
+    assert.equal(dependencyScanVerdict(result).recordToDescription, true)
+  }
+  assert.equal(DEPENDENCY_REASONS.includes('hot-overlap'), true)
+  assert.equal(COULD_NOT_EVALUATE_REASONS.includes('hot-overlap'), false)
+})
+
+test('hot overlap leaves logical writes and directory-only skips unchanged', () => {
+  const input = hotOverlapInput()
+  input.candidates.push(
+    candidate({ id: 'uuid-logical', identifier: 'TCK-7', areas: ['app/registry.json'] }),
+  )
+  const result = planDependencyEdges({ ...input, logicalDependencies: { 'TCK-7': true } })
+  assert.equal(result.edges.length, 1)
+  assert.equal(result.edges[0].identifier, 'TCK-7')
+  assert.equal(result.edges[0].basis, 'logical')
+  assert.ok(result.edges[0].write)
+  assert.equal(result.skipped.length, 5)
+  const directory = planDependencyEdges(
+    hotOverlapInput({
+      subject: subject({ areas: ['app/api'] }),
+      candidates: input.candidates
+        .slice(0, 4)
+        .map((row, index) => ({ ...row, areas: [`app/api/${index}.go`] })),
+    }),
+  )
+  assert.equal(directory.edges.length, 0)
+  assert.equal(directory.skipped.length, 4)
+  assert.ok(directory.skipped.every((row) => row.reason === 'directory-overlap'))
+  assert.deepEqual(directory.notes, [])
+})
+
+test('hot overlap output is independent of candidate order and sorts hot regions', () => {
+  const input = hotOverlapInput({ subject: subject({ areas: ['app/z.json', 'app/a.json'] }) })
+  input.candidates.forEach((row) => {
+    row.areas = ['app/z.json', 'app/a.json']
+  })
+  const result = planDependencyEdges(input)
+  assert.deepEqual(
+    result.notes.map((row) => row.candidate),
+    ['app/a.json', 'app/z.json'],
+  )
+  const shuffled = planDependencyEdges({
+    ...input,
+    candidates: [
+      input.candidates[3],
+      input.candidates[1],
+      input.candidates[4],
+      input.candidates[0],
+      input.candidates[2],
+    ],
+  })
+  for (const key of ['edges', 'skipped', 'notes'])
+    assert.equal(JSON.stringify(result[key]), JSON.stringify(shuffled[key]))
+})
+
+test('repository wide paths suppress generated overlap while skill sources still relate', () => {
+  const config = loadSkillConfig({ cwd: fileURLToPath(new URL('../../', import.meta.url)) })
+  const options = withScanDefaults(config, {})
+  const cores = [
+    'boss-build',
+    'boss-epic',
+    'boss-finalize',
+    'boss-plan',
+    'boss-release',
+    'boss-repair',
+    'boss-retro',
+    'boss-review',
+    'boss-verify',
+  ]
+  const paths = [
+    'docs/skills/README.md',
+    'docs/features/sessions.md',
+    ...cores.map(
+      (core) => `lib/bossalib/contract/plugin/skillpayload/skills/${core}/toolbox/helper.mjs`,
+    ),
+    'scripts/skills/vendor-toolbox.mjs',
+    'scripts/guards/registry/overlap.mjs',
+    'services/bossd/cmd/main.go',
+    'proto/bossanova/v1/daemon.proto',
+  ]
+  for (const area of paths) assert.equal(areasOverlap([area], [area], options).overlap, false, area)
+  const source = 'lib/bossalib/contract/plugin/skillpayload/skills/boss-build/SKILL.md'
+  assert.equal(areasOverlap([source], [source], options).overlap, true)
 })

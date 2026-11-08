@@ -6,6 +6,7 @@
 // file, through the verbs below. The stated `status` is never trusted: it is recomputed from the
 // findings, and a contradiction is corrected and warned about.
 //
+//   attach-acceptance <verdict> <acceptance.json> validates and attaches criterion evidence
 //   validate  <file>                         exit 0 valid, 2 invalid (errors on stderr)
 //   status    <file>                         prints pass|blocked|error; exit 2 when unreadable
 //   render    <file> [--pr-section|--report] markdown; the report's first line is <!-- bs-review -->
@@ -57,6 +58,26 @@ export function validateVerdict(input) {
   } else {
     if (!sha(verdict.base)) errors.push('base must be a commit sha')
     if (!sha(verdict.head)) errors.push('head must be a commit sha')
+  }
+
+  if (verdict.acceptance !== undefined) {
+    const a = verdict.acceptance
+    if (!isObject(a)) errors.push('acceptance must be an object')
+    else {
+      for (const key of ['head', 'tree'])
+        if (!sha(a[key])) errors.push(`acceptance.${key} must be a sha`)
+      if (!Array.isArray(a.criteria)) errors.push('acceptance.criteria must be an array')
+      else
+        a.criteria.forEach((criterion, index) => {
+          const at = `acceptance.criteria[${index}]`
+          if (!isObject(criterion)) errors.push(`${at} must be an object`)
+          else {
+            if (!text(criterion.id)) errors.push(`${at}.id must be a non-empty string`)
+            if (!['met', 'unmet', 'unchecked'].includes(criterion.result))
+              errors.push(`${at}.result must be met|unmet|unchecked`)
+          }
+        })
+    }
   }
 
   if (verdict.findings === undefined && verdict.status === 'error') verdict.findings = []
@@ -279,6 +300,9 @@ export function mergeVerdicts(results) {
     findings,
     fixPass,
     secondModel,
+    ...([...verdicts].reverse().find((v) => v.acceptance)?.acceptance
+      ? { acceptance: [...verdicts].reverse().find((v) => v.acceptance).acceptance }
+      : {}),
   }
   return { ...merged, status: merged.findings.some(isBlocking) ? 'blocked' : 'pass' }
 }
@@ -431,6 +455,22 @@ export function renderReport(result) {
     `Fix pass: ${v.fixPass?.ran ? `ran; delta re-reviewed from \`${short(v.fixPass.deltaBase)}\`` : 'not run'}.`,
     '',
   )
+  if (v.acceptance) {
+    const a = v.acceptance
+    lines.push(
+      '### Acceptance certification',
+      '',
+      `Head: \`${short(a.head)}\`${a.reused ? ' (reused)' : ''}.`,
+      '',
+      '| Criterion | Result | Check | Head |',
+      '| --- | --- | --- | --- |',
+      ...a.criteria.map(
+        (c) =>
+          `| ${oneLine(c.id)} | ${c.result} | ${oneLine(c.check || 'no check').replace(/\|/g, '\\|')} | ${short(a.head)} |`,
+      ),
+      '',
+    )
+  }
   const section = (heading, list, render) => {
     if (!list.length) return
     lines.push(`### ${heading}`, ...list.map(render), '')
@@ -474,7 +514,7 @@ export function followUpCandidates(result) {
 }
 
 export const USAGE =
-  'usage: review-verdict.mjs validate|status|followups|resolvable <file> | render <file> [--pr-section|--report] | merge --out <file> <file>... | pool --root <dir> --out <file> --note <file>'
+  'usage: review-verdict.mjs attach-acceptance <verdict> <acceptance.json> | validate|status|followups|resolvable <file> | render <file> [--pr-section|--report] | merge --out <file> <file>... | pool --root <dir> --out <file> --note <file>'
 
 function readVerdict(fs, file) {
   try {
@@ -516,6 +556,27 @@ export function main(argv, deps = {}) {
     return readError
       ? { status: 'error', warnings: [], errors: [readError], verdict: null }
       : verdictStatus(input)
+  }
+  if (command === 'attach-acceptance') {
+    if (!file || extra.length !== 1 || Object.keys(parsed.values).length) return 2
+    const result = load(file)
+    const acceptance = readVerdict(fs, extra[0])
+    if (result.status === 'error' || acceptance.readError) {
+      stderr(`review-verdict: ${acceptance.readError || 'cannot attach to an error verdict'}\n`)
+      return 2
+    }
+    const checked = validateVerdict({ ...result.verdict, acceptance: acceptance.input })
+    if (!checked.ok) {
+      stderr(`review-verdict: ${checked.errors.join('; ')}\n`)
+      return 2
+    }
+    try {
+      fs.writeFileSync(file, `${JSON.stringify(checked.verdict, null, 2)}\n`)
+    } catch (error) {
+      stderr(`review-verdict: ${error.message}\n`)
+      return 2
+    }
+    return 0
   }
   if (command === 'pool') {
     const { root, out, note } = parsed.values

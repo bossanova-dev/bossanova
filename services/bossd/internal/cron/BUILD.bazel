@@ -35,6 +35,7 @@ go_test(
         "quota_floor_test.go",
         "scheduler_test.go",
         "tick_test.go",
+        "tracker_rank_fake_test.go",
     ],
     embed = [":cron"],
     deps = [

@@ -10,7 +10,7 @@ import (
 	queue "github.com/recurser/bossalib/reviewqueue"
 )
 
-var orders = []pb.ReviewQueueSort{pb.ReviewQueueSort_REVIEW_QUEUE_SORT_MOST_CONFIDENT, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_LEAST_CONFIDENT, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_SMALLEST, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_OLDEST}
+var orders = []pb.ReviewQueueSort{pb.ReviewQueueSort_REVIEW_QUEUE_SORT_PRIORITY, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_MOST_CONFIDENT, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_LEAST_CONFIDENT, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_SMALLEST, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_OLDEST}
 
 func (m Model) key(k tea.KeyMsg) (Model, tea.Cmd) {
 	row := m.selected()

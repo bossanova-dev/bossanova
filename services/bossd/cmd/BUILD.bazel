@@ -57,6 +57,7 @@ go_library(
         "wire_task_workers.go",
         "wire_upstream.go",
         "wiring.go",
+        "worktree_reconcile.go",
     ],
     importpath = "github.com/recurser/bossd/cmd",
     visibility = ["//visibility:private"],
@@ -197,6 +198,7 @@ go_test(
         "usage_refresh_test.go",
         "viewer_approvals_test.go",
         "waiting_sweep_test.go",
+        "worktree_reconcile_test.go",
     ],
     embed = [":cmd_lib"],
     deps = [

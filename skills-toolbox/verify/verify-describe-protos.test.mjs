@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
-import { describeProtos, findBuf } from './verify-describe-protos.mjs'
+import { compareProtoModules, describeProtos, findBuf } from './verify-describe-protos.mjs'
 import { envelopeFor, gitFixture, runDescriberScript } from './verify-git-fixture.mjs'
 
 const MODULE = new URL('./verify-describe-protos.mjs', import.meta.url)
@@ -145,4 +146,43 @@ test('an area without proto files has nothing to check', (t) => {
     { cwd: repo.dir },
   )
   assert.deepEqual(result, { items: [], breaking: false })
+})
+
+test('shared proto comparisons expose checked and unchecked module facts', (t) => {
+  const { repo, envelope } = protoChange(t)
+  const absent = compareProtoModules(envelope, { cwd: repo.dir, env: { PATH: '' } })
+  assert.equal(absent[0].state, 'unchecked')
+  const buf = fakeBuf(t, scratch(t), { stdout: violation, status: 100 })
+  const broken = compareProtoModules(envelope, { cwd: repo.dir, env: { BUF: buf.bin } })
+  assert.equal(broken[0].state, 'breaking')
+  assert.equal(broken[0].violations.length, 1)
+})
+
+test('a root proto module added to an existing repository is new', (t) => {
+  const repo = gitFixture(t)
+  repo.write({ README: 'base' })
+  const baseSha = repo.commit('base')
+  repo.write({ 'buf.yaml': 'version: v1', 'api.proto': 'syntax = "proto3"; message A {}' })
+  const headSha = repo.commit('head')
+  const { bin } = fakeBuf(t, scratch(t))
+  const compared = compareProtoModules(
+    { area: { paths: ['api.proto'] }, baseSha, headSha },
+    { cwd: repo.dir, env: { BUF: bin } },
+  )
+  assert.equal(compared[0].state, 'new')
+})
+
+test('failed extraction of an existing base proto module is unchecked', (t) => {
+  const { repo, envelope } = protoChange(t)
+  const { bin } = fakeBuf(t, scratch(t))
+  for (const failed of ['archive', 'tar']) {
+    const run = (command, args, options) =>
+      (failed === 'archive' && command === 'git' && args[0] === 'archive') ||
+      (failed === 'tar' && command === 'tar')
+        ? { status: 1, stdout: '' }
+        : spawnSync(command, args, options)
+    const options = { cwd: repo.dir, env: { BUF: bin }, run }
+    assert.equal(compareProtoModules(envelope, options)[0].state, 'unchecked', failed)
+    assert.equal(describeProtos(envelope, options).breaking, false, failed)
+  }
 })

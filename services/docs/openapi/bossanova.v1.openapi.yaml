@@ -7649,6 +7649,15 @@ components:
       description: |-
         CallbackInterestSet is a daemon's complete current callback-interest set,
          carried on the DaemonEvent stream to refresh interests while connected.
+    bossanova.v1.CallerKind:
+      type: string
+      title: CallerKind
+      enum:
+        - CALLER_KIND_UNSPECIFIED
+        - CALLER_KIND_OPERATOR
+        - CALLER_KIND_AGENT_CHAT
+        - CALLER_KIND_DAEMON_CHILD
+      description: CallerKind is the provenance bossd attests for a socket caller.
     bossanova.v1.CancelWorkflowRequest:
       type: object
       properties:
@@ -7722,10 +7731,11 @@ components:
         - CHAT_ROLE_REPAIR
         - CHAT_ROLE_VERIFY
         - CHAT_ROLE_OPERATOR
+        - CHAT_ROLE_COORDINATOR
       description: |-
         ChatRole is the purpose a chat was created for. Automation may replace an
-         idle BUILD, REPAIR or VERIFY chat; it never replaces an OPERATOR chat or a
-         legacy UNSPECIFIED one.
+         idle BUILD, REPAIR or VERIFY chat; it never replaces an OPERATOR or
+         COORDINATOR chat or a legacy UNSPECIFIED one.
     bossanova.v1.ChatStatus:
       type: string
       title: ChatStatus
@@ -10622,6 +10632,28 @@ components:
     bossanova.v1.DeliverVCSEventResponse:
       type: object
       title: DeliverVCSEventResponse
+      additionalProperties: false
+    bossanova.v1.DescribeCallerRequest:
+      type: object
+      title: DescribeCallerRequest
+      additionalProperties: false
+    bossanova.v1.DescribeCallerResponse:
+      type: object
+      properties:
+        kind:
+          title: kind
+          $ref: '#/components/schemas/bossanova.v1.CallerKind'
+        agentSessionId:
+          type: string
+          title: agent_session_id
+          description: The chat, its session and its role; set only for an agent chat.
+        sessionId:
+          type: string
+          title: session_id
+        role:
+          title: role
+          $ref: '#/components/schemas/bossanova.v1.ChatRole'
+      title: DescribeCallerResponse
       additionalProperties: false
     bossanova.v1.DescribeChatLaunchRequest:
       type: object
@@ -20640,6 +20672,7 @@ components:
         - REVIEW_QUEUE_SORT_LEAST_CONFIDENT
         - REVIEW_QUEUE_SORT_OLDEST
         - REVIEW_QUEUE_SORT_SMALLEST
+        - REVIEW_QUEUE_SORT_PRIORITY
       description: ReviewQueueSort orders the review queue. UNSPECIFIED is MOST_CONFIDENT.
     bossanova.v1.ReviewState:
       type: string
@@ -21617,6 +21650,15 @@ components:
             - "null"
           title: tracker_id
           description: External issue tracker fields (eg. Linear, Jira). External issue ID (eg. "FRE-1176")
+        trackerRank:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.TrackerRank'
+            - type: "null"
+          title: tracker_rank
+          description: |-
+            Additive optional metadata; existing behavior is unchanged. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
+             Unset when no rank was ever recorded (an unranked session).
         trackerUrl:
           type:
             - string
@@ -22768,6 +22810,28 @@ components:
           title: mapping
           $ref: '#/components/schemas/bossanova.v1.RepoOrganizationMapping'
       title: SetRepoOrganizationResponse
+      additionalProperties: false
+    bossanova.v1.SetSessionTrackerRankRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        trackerId:
+          type: string
+          title: tracker_id
+        trackerRank:
+          title: tracker_rank
+          $ref: '#/components/schemas/bossanova.v1.TrackerRank'
+      title: SetSessionTrackerRankRequest
+      additionalProperties: false
+    bossanova.v1.SetSessionTrackerRankResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: SetSessionTrackerRankResponse
       additionalProperties: false
     bossanova.v1.SetSessionTrackerRequest:
       type: object
@@ -24247,6 +24311,39 @@ components:
         - TRACKER_ISSUE_LEASE_SCOPE_ORGANIZATION
         - TRACKER_ISSUE_LEASE_SCOPE_DAEMON
       description: TrackerIssueLeaseScope identifies the coordinator that arbitrates a lease.
+    bossanova.v1.TrackerRank:
+      type: object
+      properties:
+        tier:
+          type: integer
+          title: tier
+          format: int32
+          description: 'Priority: 1 Urgent through 4 Low; 0 None (least urgent).'
+        tierSource:
+          type: string
+          title: tier_source
+        deadlineOn:
+          type:
+            - string
+            - "null"
+          title: deadline_on
+          description: Earliest inherited calendar deadline; unset when undated.
+        deadlineSource:
+          type: string
+          title: deadline_source
+        isScheduled:
+          type: boolean
+          title: is_scheduled
+        unblockedTicketCount:
+          type: integer
+          title: unblocked_ticket_count
+          format: int32
+        rankedAt:
+          title: ranked_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: TrackerRank
+      additionalProperties: false
+      description: TrackerRank records build-order rank from tracker facts.
     bossanova.v1.TranscriptExistsRequest:
       type: object
       properties:

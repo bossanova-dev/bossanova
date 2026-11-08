@@ -19,6 +19,7 @@ go_test(
     srcs = [
         "audit_test.go",
         "build_test.go",
+        "priority_test.go",
     ],
     embed = [":reviewqueue"],
     deps = [

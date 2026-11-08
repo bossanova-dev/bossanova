@@ -461,3 +461,47 @@ func (q *Queries) UpdateSessionStateConditionalFrom(ctx context.Context, arg Upd
 	}
 	return q.db.ExecContext(ctx, query, queryParams...)
 }
+
+const updateSessionTrackerRank = `-- name: UpdateSessionTrackerRank :execresult
+UPDATE sessions
+SET tracker_rank_tier = ?1,
+    tracker_rank_tier_source = ?2,
+    tracker_rank_deadline_on = ?3,
+    tracker_rank_deadline_source = ?4,
+    is_tracker_rank_scheduled = ?5,
+    tracker_rank_unblocked_ticket_count = ?6,
+    tracker_ranked_at = ?7,
+    updated_at = ?8
+WHERE id = ?9 AND tracker_id = ?10
+  AND tracker_url IS ?11
+`
+
+type UpdateSessionTrackerRankParams struct {
+	TrackerRankTier                 *int64
+	TrackerRankTierSource           *string
+	TrackerRankDeadlineOn           *string
+	TrackerRankDeadlineSource       *string
+	IsTrackerRankScheduled          bool
+	TrackerRankUnblockedTicketCount *int64
+	TrackerRankedAt                 *string
+	Now                             string
+	ID                              string
+	ExpectedTrackerID               *string
+	ExpectedTrackerUrl              *string
+}
+
+func (q *Queries) UpdateSessionTrackerRank(ctx context.Context, arg UpdateSessionTrackerRankParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, updateSessionTrackerRank,
+		arg.TrackerRankTier,
+		arg.TrackerRankTierSource,
+		arg.TrackerRankDeadlineOn,
+		arg.TrackerRankDeadlineSource,
+		arg.IsTrackerRankScheduled,
+		arg.TrackerRankUnblockedTicketCount,
+		arg.TrackerRankedAt,
+		arg.Now,
+		arg.ID,
+		arg.ExpectedTrackerID,
+		arg.ExpectedTrackerUrl,
+	)
+}

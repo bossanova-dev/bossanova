@@ -156,3 +156,72 @@ for (const [label, relativePath] of ENTRY_POINTS) {
     assert.match(result.stderr, /boss-plan gate:.*(?:argument|flag|option)/i)
   })
 }
+
+test('claim-aware gate skips fully claimed queues and admits an unclaimed candidate', async () => {
+  const claim = { body: `bs-plan-claim:${'a'.repeat(32)}`, createdAt: new Date().toISOString() }
+  for (const unclaimed of [false, true]) {
+    const tracker = {
+      planClaimSelection: true,
+      hasWork: async () => true,
+      selectPlanned: async (query) => {
+        assert.equal(query.team, 'Demo')
+        assert.equal(query.planClaims, true)
+        return [
+          { identifier: 'APP-1', planClaimComments: [claim] },
+          ...(unclaimed ? [{ identifier: 'APP-2', planClaimComments: [] }] : []),
+        ]
+      },
+    }
+    const result = await evaluateBossPlanGate({ config: configWith(), tracker })
+    assert.equal(result.hasWork, unclaimed)
+    if (!unclaimed)
+      assert.match(
+        result.reason,
+        /every matching Unplanned candidate \(1\) holds a live peer plan claim/,
+      )
+  }
+})
+test('empty queues and teamless Linear configs keep the cheap gate answer', async () => {
+  for (const hasWork of [false, true]) {
+    const tracker = {
+      tracker: 'linear',
+      planClaimSelection: true,
+      hasWork: async () => hasWork,
+      selectPlanned: async () => {
+        throw new Error('should not read')
+      },
+    }
+    const result = await evaluateBossPlanGate({
+      config: {
+        adapters: { tracker: 'linear' },
+        trackerConfig: {
+          linear: {
+            states: { unplanned: 'Unplanned' },
+            labels: { agentPlan: 'agent-plan', needsHuman: 'needs-human' },
+          },
+        },
+      },
+      tracker,
+    })
+    assert.equal(result.hasWork, hasWork)
+  }
+})
+
+test('a full claimed batch preserves existence when a free issue may be beyond the cap', async () => {
+  const claim = { body: `bs-plan-claim:${'a'.repeat(32)}`, createdAt: new Date().toISOString() }
+  for (const count of [249, 250, 251]) {
+    const backlog = Array.from({ length: count }, (_, index) => ({
+      identifier: `APP-${index + 1}`,
+      planClaimComments: index === 250 ? [] : [claim],
+    }))
+    const result = await evaluateBossPlanGate({
+      config: configWith(),
+      tracker: {
+        planClaimSelection: true,
+        hasWork: async () => backlog.length > 0,
+        selectPlanned: async ({ limit }) => backlog.slice(0, limit),
+      },
+    })
+    assert.equal(result.hasWork, count >= 250)
+  }
+})

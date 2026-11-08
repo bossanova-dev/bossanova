@@ -132,3 +132,12 @@ test('shell expansions remain manual even inside double quotes', (t) => {
   const result = check('## Premises\n- [ ] Expansion — check: `grep -F "$NEEDLE" old.mjs`')
   assert.equal(result.items.find((i) => i.source === 'premise').kind, 'not-evaluated')
 })
+
+test('evaluates a count premise followed by trailing prose', (t) => {
+  const { check } = fixture(t)
+  const result = check(
+    "## Premises\n- [ ] Has 1 match — check: `grep -c -F currentSymbol old.mjs` (it's counted)",
+  )
+  assert.equal(result.items.find((item) => item.source === 'premise').kind, 'confirmed')
+  assert.equal(result.verdict, 'current')
+})

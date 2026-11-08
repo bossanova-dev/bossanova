@@ -11,9 +11,11 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/vcs"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -29,7 +31,11 @@ func (s *Server) RefreshSessionPR(ctx context.Context, req *connect.Request[pb.R
 	refreshCtx, cancel := context.WithTimeout(ctx, refreshSessionPRTimeout)
 	defer cancel()
 
-	if err := s.refreshSessionPRDisplay(refreshCtx, repo, sess, prNumber); err != nil {
+	prStatus, checkSet, err := s.refreshSessionPRSnapshot(refreshCtx, repo, sess, prNumber)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.releaseHandedOffBlock(ctx, sess, prStatus, checkSet); err != nil {
 		return nil, err
 	}
 
@@ -132,19 +138,26 @@ func (s *Server) sessionByPRNumber(ctx context.Context, prNumber int) (*models.S
 }
 
 func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo, sess *models.Session, prNumber int) error {
+	_, _, err := s.refreshSessionPRSnapshot(ctx, repo, sess, prNumber)
+	return err
+}
+
+// refreshSessionPRSnapshot re-reads the PR into the display tracker and returns
+// the PR status and check set it read.
+func (s *Server) refreshSessionPRSnapshot(ctx context.Context, repo *models.Repo, sess *models.Session, prNumber int) (*vcs.PRStatus, vcs.CheckSet, error) {
 	if s.provider == nil {
-		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("refresh session PR: VCS provider is unavailable"))
+		return nil, vcs.CheckSet{}, connect.NewError(connect.CodeUnavailable, fmt.Errorf("refresh session PR: VCS provider is unavailable"))
 	}
 	if s.displayTracker == nil {
-		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("refresh session PR: display tracker is unavailable"))
+		return nil, vcs.CheckSet{}, connect.NewError(connect.CodeUnavailable, fmt.Errorf("refresh session PR: display tracker is unavailable"))
 	}
 
 	prStatus, err := s.provider.GetPRStatus(ctx, repo.OriginURL, prNumber)
 	if err != nil {
-		return providerRefreshError(ctx, "PR status", err)
+		return nil, vcs.CheckSet{}, providerRefreshError(ctx, "PR status", err)
 	}
 	if prStatus == nil {
-		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("refresh session PR: provider returned no PR status"))
+		return nil, vcs.CheckSet{}, connect.NewError(connect.CodeUnavailable, fmt.Errorf("refresh session PR: provider returned no PR status"))
 	}
 
 	var checkSet vcs.CheckSet
@@ -152,12 +165,12 @@ func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo,
 	if prStatus.State != vcs.PRStateMerged && prStatus.State != vcs.PRStateClosed {
 		checkSet, err = vcs.ReadCheckSet(ctx, s.provider, repo.OriginURL, prNumber)
 		if err != nil {
-			return providerRefreshError(ctx, "check results", err)
+			return nil, vcs.CheckSet{}, providerRefreshError(ctx, "check results", err)
 		}
 		if !prStatus.Draft {
 			reviews, err = s.provider.GetReviewComments(ctx, repo.OriginURL, prNumber)
 			if err != nil {
-				return providerRefreshError(ctx, "review comments", err)
+				return nil, vcs.CheckSet{}, providerRefreshError(ctx, "review comments", err)
 			}
 		}
 	}
@@ -174,6 +187,80 @@ func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo,
 	info.DeletedLineCount = prStatus.DeletedLineCount
 	info.ChangedFileCount = prStatus.ChangedFileCount
 	s.displayTracker.Set(sess.ID, info)
+	return prStatus, checkSet, nil
+}
+
+// handedOffPR reports whether the PR shows a finished build hand-off on its
+// current head: open, out of draft, a boss/build success receipt and a
+// boss/verify status in any state. The check set is read on the head, so a
+// receipt or verify status left on an earlier head does not count.
+func handedOffPR(prStatus *vcs.PRStatus, checkSet vcs.CheckSet) bool {
+	if prStatus == nil || prStatus.State != vcs.PRStateOpen || prStatus.Draft || !checkSet.HasBuildReceipt {
+		return false
+	}
+	for _, c := range checkSet.Checks {
+		if c.Name == vcs.VerifyStatusContext {
+			return true
+		}
+	}
+	return false
+}
+
+// handOffEvents walk a Blocked session with a PR to ReadyForReview, the state
+// finalize gives a handed-off PR. The machine has no direct edge from Blocked,
+// so the walk is Unblock (to AwaitingChecks), ChecksPassed (to GreenDraft) and
+// PlanComplete (out of draft, to ReadyForReview). Leaving Blocked clears the
+// block reason and attempt count.
+var handOffEvents = []machine.Event{machine.Unblock, machine.ChecksPassed, machine.PlanComplete}
+
+// releaseHandedOffBlock moves a Blocked session whose PR shows a finished
+// hand-off (handedOffPR) to ReadyForReview and clears its block metadata. A
+// later bossd pass, such as a finalize that failed on incidental worktree
+// churn, can block a session after its build handed the PR off, and nothing
+// else clears that block while the PR stays open. Any other session, and a
+// Blocked one whose PR lacks the evidence, is left exactly as it is.
+//
+// Blocked released the PR and branch, so the release runs under the
+// start-path lock and is skipped when another live session has taken them.
+func (s *Server) releaseHandedOffBlock(ctx context.Context, sess *models.Session, prStatus *vcs.PRStatus, checkSet vcs.CheckSet) error {
+	if sess.State != machine.Blocked || !handedOffPR(prStatus, checkSet) {
+		return nil
+	}
+	fresh, release, err := session.AcquireRevival(ctx, s.sessions, sess, session.RevivalLockTimeout, func(f *models.Session) bool {
+		return f.State == machine.Blocked
+	})
+	if err != nil {
+		s.logger.Warn().Err(err).Str("session", sess.ID).Msg("refresh session PR: handed-off PR, but the block was not released")
+		return nil
+	}
+	defer release()
+
+	sctx := &machine.SessionContext{AttemptCount: fresh.AttemptCount, MaxAttempts: machine.MaxAttempts, HasPR: true}
+	if fresh.BlockedReason != nil {
+		sctx.BlockedReason = *fresh.BlockedReason
+	}
+	sm := machine.NewWithContext(machine.Blocked, sctx)
+	for _, event := range handOffEvents {
+		if err := sm.FireCtx(ctx, event); err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("release handed-off block: fire %v: %w", event, err))
+		}
+	}
+
+	state := int(sm.State())
+	attempts := sm.Context().AttemptCount
+	var clearReason, clearHeadSHA *string
+	if _, err := s.sessions.Update(ctx, fresh.ID, domain.UpdateSessionParams{
+		State:              &state,
+		AttemptCount:       &attempts,
+		BlockedReason:      &clearReason,
+		LastAttemptHeadSHA: &clearHeadSHA,
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("release handed-off block: %w", err))
+	}
+	s.logger.Info().
+		Str("session", fresh.ID).
+		Str("new_state", sm.State().String()).
+		Msg("refresh session PR: handed-off PR released a stale block")
 	return nil
 }
 

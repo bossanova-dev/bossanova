@@ -14,7 +14,7 @@
 // `make codex-skills-check` — scanning it would double-report every finding), and
 // each skill's `toolbox/` subdirectory (vendored `.mjs`, not prose).
 //
-// Three checks:
+// Four checks:
 //   1. tracker role citations  — `labelName(config, 'agentBuild')` and friends,
 //      resolved through loadSkillConfig + adapterFor/trackerConfigFor (NOT a
 //      hard-coded `linear` branch), plus the bidirectional taxonomy assertion that
@@ -25,6 +25,9 @@
 //      constants.
 //   3. helper CLI verbs — `node <path>.mjs <verb>`, resolved by basename union against
 //      each helper's own dispatch.
+//
+//   4. toolbox path citations — variable paths across both roots and relative node
+//      paths in toolbox-owning skills’ helper tables resolve to vendored files.
 //
 // WHAT THIS GATE DELIBERATELY DOES NOT CHECK — and the measured cost of adding it.
 // Read the numbers before "just checking everything": a gate that produces false
@@ -58,7 +61,9 @@
 //     would false-positive on `m.isConfiguredForPlanning(c)` in an inline `node -e`.
 //   * Unused documented return values (`target.repo`) — a reachability question, not
 //     a does-this-symbol-exist question.
-//   * Cited-path existence — the sibling prose-path gate owns it.
+//   * Bare node paths outside tables: 53 citations, 29 misses, including 14
+//     legitimate repo paths. Rejected; toolbox-relative paths are owned here,
+//     while repository paths remain the sibling prose-path gate’s responsibility.
 //   * Go, SQL, shell and MCP-tool identifiers, and non-camelCase single-word exports.
 
 import fs from 'node:fs'
@@ -455,6 +460,64 @@ export function checkVerbCitations(citations, verbIndex) {
 }
 
 // ---------------------------------------------------------------------------
+// Check 4 — toolbox path citations
+// ---------------------------------------------------------------------------
+
+function toolboxPathCitations(contents, ownSkill) {
+  const citations = []
+  contents.split('\n').forEach((text, index) => {
+    const variables =
+      /\$(?:\{(BOSS_[A-Z0-9_]+_TOOLBOX)(?::[?-][^}]*?)?\}|(BOSS_[A-Z0-9_]+_TOOLBOX))\/([^\s"'`<>]+?\.(?:mjs|sh))\b/g
+    for (const match of text.matchAll(variables)) {
+      const variable = match[1] ?? match[2]
+      const skill = variable.slice(5, -8).toLowerCase().replaceAll('_', '-')
+      citations.push({
+        line: index + 1,
+        skill: `boss-${skill}`,
+        relative: match[3],
+        variable: true,
+      })
+    }
+    if (!text.startsWith('|') || !ownSkill) return
+    for (const span of text.matchAll(INLINE_CODE)) {
+      for (const match of span[1].matchAll(/\bnode\s+([A-Za-z0-9_.-][^\s"'`$<>]*?\.mjs)\b/g)) {
+        citations.push({ line: index + 1, skill: ownSkill, relative: match[1], variable: false })
+      }
+    }
+  })
+  return citations
+}
+
+function checkToolboxPaths(repoRoot, citations, owners, deps) {
+  const fsImpl = deps.fs || fs
+  const findings = []
+  for (const { line, skill, relative } of citations) {
+    if (!owners.has(skill)) continue
+    const roots = SKILL_ROOTS.map((root) => path.join(repoRoot, root, skill, 'toolbox'))
+    if (roots.some((root) => fsImpl.existsSync(path.join(root, relative)))) continue
+    const alternatives = []
+    const walk = (dir, root) => {
+      for (const entry of fsImpl.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) walk(full, root)
+        else if (entry.name === path.posix.basename(relative))
+          alternatives.push(toPosix(path.relative(root, full)))
+      }
+    }
+    for (const root of roots) if (fsImpl.existsSync(root)) walk(root, root)
+    const hint = alternatives.length
+      ? `; found at ${[...new Set(alternatives)].sort().join(', ')}`
+      : ''
+    findings.push({
+      line,
+      kind: 'toolbox-path-missing',
+      detail: `${skill}/toolbox/${relative} does not exist${hint}`,
+    })
+  }
+  return findings
+}
+
+// ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
@@ -496,6 +559,7 @@ export function checkSkillSymbols(repoRoot, deps = {}) {
   const findings = []
   const roleForms = { A: 0, B: 0 }
   let scanned = 0
+  let toolboxVariablePaths = 0
 
   for (const root of SKILL_ROOTS) {
     const full = path.join(repoRoot, root)
@@ -524,7 +588,20 @@ export function checkSkillSymbols(repoRoot, deps = {}) {
       }
 
       checkVerbCitations(extractVerbCitations(contents), verbIndex).forEach(record)
+      const ownSkill = skillNameFor(relative)
+      const paths = toolboxPathCitations(contents, toolboxOwners.has(ownSkill) ? ownSkill : null)
+      toolboxVariablePaths += paths.filter((citation) => citation.variable).length
+      checkToolboxPaths(repoRoot, paths, toolboxOwners, deps).forEach(record)
     }
+  }
+
+  if (toolboxVariablePaths === 0 && deps.requireToolboxPaths !== false) {
+    findings.push({
+      file: SKILL_ROOTS.join(', '),
+      line: 0,
+      kind: 'toolbox-path-check-vacuous',
+      detail: 'check 4 extracted zero variable-form toolbox path citations across the skill tree',
+    })
   }
 
   // Vacuity floor for check 1. Both role forms are extracted line-scoped, so an

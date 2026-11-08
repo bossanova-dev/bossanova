@@ -8,12 +8,14 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/recurser/bossd/api/upstream"
+	"github.com/recurser/bossd/internal/adapter/sessionports"
 	"github.com/recurser/bossd/internal/session"
 )
 
 func (w *daemonWiring) wireLifecycle() {
 	w.lifecycle = session.NewLifecycle(w.sessions, w.repos, w.agentChats, w.cronJobs, w.worktrees, w.agentRunner, w.tmuxClient, w.ghProvider, log.Logger)
 	w.lifecycle.SetTelemetry(w.telemetryClient)
+	w.lifecycle.SetUnrecordedWorktreePaths(sessionports.WorktreeProcessPaths{}, w.tmuxClient)
 	// The lifecycle constructor defaults to a hermetic no-op proof env resolver
 	// (keeps unit tests off the OS keyring); the daemon must inject the real
 	// keyring-backed resolver so proof credentials reach managed session spawns.

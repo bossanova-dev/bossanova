@@ -557,3 +557,21 @@ test('loadClaimComments and verdict accept file and inline arrays and envelopes'
   writeFileSync(invalidFile, 'null')
   assert.throws(() => loadClaimComments(invalidFile), /--comments .*envelope/)
 })
+
+test('live plan claim selection uses arbitration age and ignores other scopes', async () => {
+  const { liveClaimWinner, hasLivePlanClaim, formatClaimComment } =
+    await import('./linear-claim.mjs')
+  const now = '2026-11-08T12:00:00Z'
+  for (const [createdAt, scope, expected] of [
+    ['2026-11-08T11:00:00Z', 'plan', true],
+    ['2026-11-08T10:00:00Z', 'plan', true],
+    ['2026-11-08T09:59:59Z', 'plan', false],
+    ['2026-11-08T11:00:00Z', 'build', false],
+  ]) {
+    const token = 'a'.repeat(32)
+    const comments = [{ body: formatClaimComment(token, null, { scope }), createdAt }]
+    assert.equal(hasLivePlanClaim(comments, { now }), expected)
+    assert.equal(liveClaimWinner(comments, { scope: 'plan', now }), expected ? token : null)
+  }
+  assert.equal(hasLivePlanClaim([{ body: 'ordinary comment' }], { now }), false)
+})

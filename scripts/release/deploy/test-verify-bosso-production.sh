@@ -13,6 +13,7 @@ export CURL_LOG
 export GO_LOG
 export GCLOUD_LOG
 export SECRET_KEY_LOG
+export ROOT_DIR
 
 cleanup() {
   rm -rf "${TMP_DIR}"
@@ -153,7 +154,8 @@ chmod +x "${TMP_DIR}/curl"
 cat >"${TMP_DIR}/go" <<'FAKE_GO'
 #!/usr/bin/env bash
 set -euo pipefail
-echo "go $*" >>"${GO_LOG}"
+echo "${PWD}: go $*" >>"${GO_LOG}"
+[ "${PWD}" = "${ROOT_DIR}/services/bossd" ] || { echo "probe ran outside services/bossd" >&2; exit 1; }
 
 if [ "$#" -eq 4 ] && [ "$1" = "run" ] && [ "$2" = "./cmd/streamprobe" ] && [ "$3" = "-url" ]; then
   case "$4" in
@@ -335,5 +337,51 @@ fi
 grep -Fq "trails the built client version" <<<"${OUTPUT}" \
   || fail "trailing-API-version failure did not explain the skew: ${OUTPUT}"
 unset APIVERSION_TRAILING
+
+# Exercise the make entry point from outside the repository without an image override.
+unset EXPECTED_IMAGE_REF IMAGE_REF
+export OVERLAY_REF=HEAD
+OVERLAY_PATH=infra/kustomize/overlays/staging/kustomization.yml
+OVERLAY_CONTENT="$(git -C "${ROOT_DIR}" show "HEAD:${OVERLAY_PATH}")"
+OVERLAY_NAME="$(sed -n 's/^ *- name: \(.*\)$/\1/p' <<<"${OVERLAY_CONTENT}" | sed -n '1p')"
+OVERLAY_TAG="$(sed -n "s/^ *newTag: ['\"]\([^'\"]*\)['\"]  # bosso$/\1/p" <<<"${OVERLAY_CONTENT}")"
+[ -n "${OVERLAY_NAME}" ] && [ -n "${OVERLAY_TAG}" ] || fail "could not read HEAD staging image fixture"
+export DEPLOYED_IMAGE_REF="${OVERLAY_NAME}:${OVERLAY_TAG}"
+: >"${GO_LOG}"
+OUTPUT="$(cd "${TMP_DIR}" && make -C "${ROOT_DIR}" verify-staging 2>&1)" \
+  || fail "make verify-staging failed unexpectedly: ${OUTPUT}"
+for probe in streamprobe apiversioncheck; do
+  grep -Fxq "${ROOT_DIR}/services/bossd: go run ./cmd/${probe} -url https://orchestrator-staging.bossanova.dev" "${GO_LOG}" \
+    || fail "make did not run ${probe} in services/bossd"
+done
+grep -Fq "(from HEAD:${OVERLAY_PATH})" <<<"${OUTPUT}" || fail "default image source missing: ${OUTPUT}"
+
+export DEPLOYED_IMAGE_REF="${OVERLAY_NAME}:different-tag"
+if OUTPUT="$(cd "${TMP_DIR}" && make -C "${ROOT_DIR}" verify-staging 2>&1)"; then
+  fail "make verify-staging passed with a mismatched default image"
+fi
+grep -Fq "deployed image mismatch" <<<"${OUTPUT}" || fail "default mismatch missing: ${OUTPUT}"
+grep -Fq "HEAD:${OVERLAY_PATH}" <<<"${OUTPUT}" || fail "default mismatch source missing: ${OUTPUT}"
+
+export EXPECTED_IMAGE_REF="${DEPLOYED_IMAGE_REF}"
+OUTPUT="$(cd "${TMP_DIR}" && make -C "${ROOT_DIR}" verify-staging 2>&1)" \
+  || fail "explicit override did not win over the overlay: ${OUTPUT}"
+grep -Fq '(from EXPECTED_IMAGE_REF)' <<<"${OUTPUT}" || fail "override source missing: ${OUTPUT}"
+
+unset EXPECTED_IMAGE_REF
+export OVERLAY_REF=refs/heads/does-not-exist-bos-2399
+set +e
+OUTPUT="$("${ROOT_DIR}/scripts/release/deploy/verify-bosso-staging.sh" 2>&1)"
+status=$?
+set -e
+[ "${status}" -eq 2 ] || fail "unreadable overlay returned ${status}, expected 2: ${OUTPUT}"
+for expected in "${OVERLAY_REF}" "${OVERLAY_PATH}" EXPECTED_IMAGE_REF; do
+  grep -Fq "${expected}" <<<"${OUTPUT}" || fail "unreadable overlay did not name ${expected}: ${OUTPUT}"
+done
+
+# Every probe, including those in the existing cases, must run in the bossd module.
+if grep -vF "${ROOT_DIR}/services/bossd: go " "${GO_LOG}"; then
+  fail "probe ran outside services/bossd"
+fi
 
 echo "PASS: verify-bosso-production fake integration"

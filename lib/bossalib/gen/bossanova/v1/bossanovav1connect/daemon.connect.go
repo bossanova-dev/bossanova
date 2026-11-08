@@ -37,6 +37,9 @@ const (
 	// DaemonServiceResolveContextProcedure is the fully-qualified name of the DaemonService's
 	// ResolveContext RPC.
 	DaemonServiceResolveContextProcedure = "/bossanova.v1.DaemonService/ResolveContext"
+	// DaemonServiceDescribeCallerProcedure is the fully-qualified name of the DaemonService's
+	// DescribeCaller RPC.
+	DaemonServiceDescribeCallerProcedure = "/bossanova.v1.DaemonService/DescribeCaller"
 	// DaemonServiceUploadEvidenceProcedure is the fully-qualified name of the DaemonService's
 	// UploadEvidence RPC.
 	DaemonServiceUploadEvidenceProcedure = "/bossanova.v1.DaemonService/UploadEvidence"
@@ -141,6 +144,9 @@ const (
 	// DaemonServiceSetSessionTrackerProcedure is the fully-qualified name of the DaemonService's
 	// SetSessionTracker RPC.
 	DaemonServiceSetSessionTrackerProcedure = "/bossanova.v1.DaemonService/SetSessionTracker"
+	// DaemonServiceSetSessionTrackerRankProcedure is the fully-qualified name of the DaemonService's
+	// SetSessionTrackerRank RPC.
+	DaemonServiceSetSessionTrackerRankProcedure = "/bossanova.v1.DaemonService/SetSessionTrackerRank"
 	// DaemonServiceRefreshSessionPRProcedure is the fully-qualified name of the DaemonService's
 	// RefreshSessionPR RPC.
 	DaemonServiceRefreshSessionPRProcedure = "/bossanova.v1.DaemonService/RefreshSessionPR"
@@ -368,6 +374,11 @@ const (
 type DaemonServiceClient interface {
 	// Context resolution
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
+	// DescribeCaller returns the principal bossd attributes to this connection
+	// from kernel process ancestry. A boss CLI that forwards a call to another
+	// host's daemon (`boss --host`) asserts it there, where it can only lower
+	// that call's authority.
+	DescribeCaller(context.Context, *connect.Request[v1.DescribeCallerRequest]) (*connect.Response[v1.DescribeCallerResponse], error)
 	// Upload finished evidence through daemon-held credentials.
 	UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error)
 	// GetFactoryHealth reads host-local factory problems for one repository.
@@ -453,6 +464,8 @@ type DaemonServiceClient interface {
 	// SetSessionTracker links a session to a tracker issue, resolved against the
 	// repo's own tracker. It overwrites an existing link (the correction path).
 	SetSessionTracker(context.Context, *connect.Request[v1.SetSessionTrackerRequest]) (*connect.Response[v1.SetSessionTrackerResponse], error)
+	// Stores rank only while the session is linked to the named tracker issue.
+	SetSessionTrackerRank(context.Context, *connect.Request[v1.SetSessionTrackerRankRequest]) (*connect.Response[v1.SetSessionTrackerRankResponse], error)
 	// RefreshSessionPR fetches one linked PR from the VCS provider immediately,
 	// updates the daemon's cached/display PR state, and returns the refreshed
 	// session snapshot. It accepts a session id, a PR number, or both.
@@ -775,6 +788,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ResolveContext")),
 			connect.WithClientOptions(opts...),
 		),
+		describeCaller: connect.NewClient[v1.DescribeCallerRequest, v1.DescribeCallerResponse](
+			httpClient,
+			baseURL+DaemonServiceDescribeCallerProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DescribeCaller")),
+			connect.WithClientOptions(opts...),
+		),
 		uploadEvidence: connect.NewClient[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse](
 			httpClient,
 			baseURL+DaemonServiceUploadEvidenceProcedure,
@@ -983,6 +1002,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceSetSessionTrackerProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("SetSessionTracker")),
+			connect.WithClientOptions(opts...),
+		),
+		setSessionTrackerRank: connect.NewClient[v1.SetSessionTrackerRankRequest, v1.SetSessionTrackerRankResponse](
+			httpClient,
+			baseURL+DaemonServiceSetSessionTrackerRankProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SetSessionTrackerRank")),
 			connect.WithClientOptions(opts...),
 		),
 		refreshSessionPR: connect.NewClient[v1.RefreshSessionPRRequest, v1.RefreshSessionPRResponse](
@@ -1441,6 +1466,7 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 // daemonServiceClient implements DaemonServiceClient.
 type daemonServiceClient struct {
 	resolveContext                       *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
+	describeCaller                       *connect.Client[v1.DescribeCallerRequest, v1.DescribeCallerResponse]
 	uploadEvidence                       *connect.Client[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse]
 	getFactoryHealth                     *connect.Client[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse]
 	validateRepoPath                     *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
@@ -1476,6 +1502,7 @@ type daemonServiceClient struct {
 	updateSession                        *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
 	linkSessionPR                        *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
 	setSessionTracker                    *connect.Client[v1.SetSessionTrackerRequest, v1.SetSessionTrackerResponse]
+	setSessionTrackerRank                *connect.Client[v1.SetSessionTrackerRankRequest, v1.SetSessionTrackerRankResponse]
 	refreshSessionPR                     *connect.Client[v1.RefreshSessionPRRequest, v1.RefreshSessionPRResponse]
 	switchSessionAgentAccount            *connect.Client[v1.SwitchSessionAgentAccountRequest, v1.SwitchSessionAgentAccountResponse]
 	archiveSession                       *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
@@ -1556,6 +1583,11 @@ type daemonServiceClient struct {
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
 func (c *daemonServiceClient) ResolveContext(ctx context.Context, req *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error) {
 	return c.resolveContext.CallUnary(ctx, req)
+}
+
+// DescribeCaller calls bossanova.v1.DaemonService.DescribeCaller.
+func (c *daemonServiceClient) DescribeCaller(ctx context.Context, req *connect.Request[v1.DescribeCallerRequest]) (*connect.Response[v1.DescribeCallerResponse], error) {
+	return c.describeCaller.CallUnary(ctx, req)
 }
 
 // UploadEvidence calls bossanova.v1.DaemonService.UploadEvidence.
@@ -1731,6 +1763,11 @@ func (c *daemonServiceClient) LinkSessionPR(ctx context.Context, req *connect.Re
 // SetSessionTracker calls bossanova.v1.DaemonService.SetSessionTracker.
 func (c *daemonServiceClient) SetSessionTracker(ctx context.Context, req *connect.Request[v1.SetSessionTrackerRequest]) (*connect.Response[v1.SetSessionTrackerResponse], error) {
 	return c.setSessionTracker.CallUnary(ctx, req)
+}
+
+// SetSessionTrackerRank calls bossanova.v1.DaemonService.SetSessionTrackerRank.
+func (c *daemonServiceClient) SetSessionTrackerRank(ctx context.Context, req *connect.Request[v1.SetSessionTrackerRankRequest]) (*connect.Response[v1.SetSessionTrackerRankResponse], error) {
+	return c.setSessionTrackerRank.CallUnary(ctx, req)
 }
 
 // RefreshSessionPR calls bossanova.v1.DaemonService.RefreshSessionPR.
@@ -2113,6 +2150,11 @@ func (c *daemonServiceClient) UpdateSettings(ctx context.Context, req *connect.R
 type DaemonServiceHandler interface {
 	// Context resolution
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
+	// DescribeCaller returns the principal bossd attributes to this connection
+	// from kernel process ancestry. A boss CLI that forwards a call to another
+	// host's daemon (`boss --host`) asserts it there, where it can only lower
+	// that call's authority.
+	DescribeCaller(context.Context, *connect.Request[v1.DescribeCallerRequest]) (*connect.Response[v1.DescribeCallerResponse], error)
 	// Upload finished evidence through daemon-held credentials.
 	UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error)
 	// GetFactoryHealth reads host-local factory problems for one repository.
@@ -2198,6 +2240,8 @@ type DaemonServiceHandler interface {
 	// SetSessionTracker links a session to a tracker issue, resolved against the
 	// repo's own tracker. It overwrites an existing link (the correction path).
 	SetSessionTracker(context.Context, *connect.Request[v1.SetSessionTrackerRequest]) (*connect.Response[v1.SetSessionTrackerResponse], error)
+	// Stores rank only while the session is linked to the named tracker issue.
+	SetSessionTrackerRank(context.Context, *connect.Request[v1.SetSessionTrackerRankRequest]) (*connect.Response[v1.SetSessionTrackerRankResponse], error)
 	// RefreshSessionPR fetches one linked PR from the VCS provider immediately,
 	// updates the daemon's cached/display PR state, and returns the refreshed
 	// session snapshot. It accepts a session id, a PR number, or both.
@@ -2516,6 +2560,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ResolveContext")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceDescribeCallerHandler := connect.NewUnaryHandler(
+		DaemonServiceDescribeCallerProcedure,
+		svc.DescribeCaller,
+		connect.WithSchema(daemonServiceMethods.ByName("DescribeCaller")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceUploadEvidenceHandler := connect.NewUnaryHandler(
 		DaemonServiceUploadEvidenceProcedure,
 		svc.UploadEvidence,
@@ -2724,6 +2774,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceSetSessionTrackerProcedure,
 		svc.SetSessionTracker,
 		connect.WithSchema(daemonServiceMethods.ByName("SetSessionTracker")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceSetSessionTrackerRankHandler := connect.NewUnaryHandler(
+		DaemonServiceSetSessionTrackerRankProcedure,
+		svc.SetSessionTrackerRank,
+		connect.WithSchema(daemonServiceMethods.ByName("SetSessionTrackerRank")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceRefreshSessionPRHandler := connect.NewUnaryHandler(
@@ -3180,6 +3236,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		switch r.URL.Path {
 		case DaemonServiceResolveContextProcedure:
 			daemonServiceResolveContextHandler.ServeHTTP(w, r)
+		case DaemonServiceDescribeCallerProcedure:
+			daemonServiceDescribeCallerHandler.ServeHTTP(w, r)
 		case DaemonServiceUploadEvidenceProcedure:
 			daemonServiceUploadEvidenceHandler.ServeHTTP(w, r)
 		case DaemonServiceGetFactoryHealthProcedure:
@@ -3250,6 +3308,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceLinkSessionPRHandler.ServeHTTP(w, r)
 		case DaemonServiceSetSessionTrackerProcedure:
 			daemonServiceSetSessionTrackerHandler.ServeHTTP(w, r)
+		case DaemonServiceSetSessionTrackerRankProcedure:
+			daemonServiceSetSessionTrackerRankHandler.ServeHTTP(w, r)
 		case DaemonServiceRefreshSessionPRProcedure:
 			daemonServiceRefreshSessionPRHandler.ServeHTTP(w, r)
 		case DaemonServiceSwitchSessionAgentAccountProcedure:
@@ -3413,6 +3473,10 @@ func (UnimplementedDaemonServiceHandler) ResolveContext(context.Context, *connec
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ResolveContext is not implemented"))
 }
 
+func (UnimplementedDaemonServiceHandler) DescribeCaller(context.Context, *connect.Request[v1.DescribeCallerRequest]) (*connect.Response[v1.DescribeCallerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DescribeCaller is not implemented"))
+}
+
 func (UnimplementedDaemonServiceHandler) UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UploadEvidence is not implemented"))
 }
@@ -3551,6 +3615,10 @@ func (UnimplementedDaemonServiceHandler) LinkSessionPR(context.Context, *connect
 
 func (UnimplementedDaemonServiceHandler) SetSessionTracker(context.Context, *connect.Request[v1.SetSessionTrackerRequest]) (*connect.Response[v1.SetSessionTrackerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SetSessionTracker is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) SetSessionTrackerRank(context.Context, *connect.Request[v1.SetSessionTrackerRankRequest]) (*connect.Response[v1.SetSessionTrackerRankResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SetSessionTrackerRank is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) RefreshSessionPR(context.Context, *connect.Request[v1.RefreshSessionPRRequest]) (*connect.Response[v1.RefreshSessionPRResponse], error) {

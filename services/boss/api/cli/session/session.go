@@ -942,7 +942,7 @@ func linkSessionPR(cmd *cobra.Command, c sessionPRLinker, sessionID, prRef strin
 // finishedSessionNote explains why a PR command left a closed or merged
 // session as it was, and how to bring it back; it is empty for a live session.
 // Only linking an open PR reopens one. refreshed marks refresh-pr, which never
-// changes the session state.
+// reopens a closed or merged session.
 func finishedSessionNote(sess *pb.Session, refreshed bool) string {
 	var state string
 	switch sess.GetState() {

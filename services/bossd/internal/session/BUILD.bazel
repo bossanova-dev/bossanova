@@ -67,6 +67,7 @@ go_library(
         "tracker_line.go",
         "tracker_link.go",
         "turn_error.go",
+        "unrecorded_worktree.go",
         "webhook_polling.go",
     ],
     importpath = "github.com/recurser/bossd/internal/session",
@@ -210,7 +211,9 @@ go_test(
         "tmux_chat_trust_test.go",
         "tracker_line_test.go",
         "tracker_link_test.go",
+        "tracker_rank_fake_test.go",
         "turn_error_test.go",
+        "unrecorded_worktree_test.go",
         "webhook_polling_test.go",
     ],
     data = glob(["testdata/**"]) + glob(

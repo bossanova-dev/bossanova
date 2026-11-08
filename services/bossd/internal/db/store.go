@@ -120,8 +120,23 @@ type UpdateSessionParams = domain.UpdateSessionParams
 // issuing a follow-up Get per session.
 type SessionWithRepo = domain.SessionWithRepo
 
+// sessionTrackerStore guards metadata writes with the session's current link.
+type sessionTrackerStore interface {
+	// SetTrackerRank writes only while the linked ticket matches expectedTrackerID.
+	SetTrackerRank(ctx context.Context, id, expectedTrackerID string, expectedTrackerURL *string, rank models.TrackerRank) (bool, error)
+	// SetTrackerIfUnlinked writes tracker_id and tracker_url only while the
+	// session is still active, is not a quick chat (is_quick_chat is set by an
+	// Update after the row is created), has no tracker_url, and still carries
+	// expectedTrackerID ("" for none): the compare-and-set the automatic
+	// tracker linker uses so a manual SetSessionTracker that commits after the
+	// linker's read is never overwritten. Returns true if exactly one row was
+	// linked; false means the row changed (or is gone) and nothing was written.
+	SetTrackerIfUnlinked(ctx context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error)
+}
+
 // SessionStore defines the interface for session persistence.
 type SessionStore interface {
+	sessionTrackerStore
 	Create(ctx context.Context, params CreateSessionParams) (*models.Session, error)
 	Get(ctx context.Context, id string) (*models.Session, error)
 	List(ctx context.Context, repoID string) ([]*models.Session, error)
@@ -154,14 +169,7 @@ type SessionStore interface {
 	// exactly one row transitioned; false if the row was already past the
 	// expected state (duplicate event or stale transition).
 	UpdateStateConditional(ctx context.Context, id string, newState, expectedState int) (bool, error)
-	// SetTrackerIfUnlinked writes tracker_id and tracker_url only while the
-	// session is still active, is not a quick chat (is_quick_chat is set by an
-	// Update after the row is created), has no tracker_url, and still carries
-	// expectedTrackerID ("" for none): the compare-and-set the automatic
-	// tracker linker uses so a manual SetSessionTracker that commits after the
-	// linker's read is never overwritten. Returns true if exactly one row was
-	// linked; false means the row changed (or is gone) and nothing was written.
-	SetTrackerIfUnlinked(ctx context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error)
+
 	// UpdateStateConditionalFrom transitions the session to newState only when
 	// its current state is one of expectedStates. From-set variant of
 	// UpdateStateConditional backing the broadened stranded-cron reap

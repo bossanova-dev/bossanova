@@ -54,6 +54,7 @@ go_test(
         "tmux_poller_test.go",
         "tmux_reaper_test.go",
         "tmux_terminal_observer_test.go",
+        "tracker_rank_fake_test.go",
         "tracker_test.go",
         "turn_start_test.go",
         "waiting_test.go",

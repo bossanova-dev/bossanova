@@ -15,7 +15,8 @@ the plan file, the description artifact and the sentinel. Only the epic path wri
   description, written before you were dispatched. It is the only source for `## Original notes`:
   copy from it, add nothing, and never re-read the tracker description (signed upload URLs rotate).
   It may be empty.
-- `PLAN_PATH` — where the plan goes: `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md`.
+- `PLAN_PATH` — the path the orchestrator computed with `plan-slug.mjs plan-path`. Use it exactly as given; never rebuild it.
+- `team` — the tracker team resolved in Phase 0; pass it to every team-scoped read.
 - `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID` — the run-file sentinel you write your outcome to. `RUN_DIR` is
   under `$TMPDIR` and is not where scratch goes.
 - `<RUN-SCRATCH-ID>` — every local file you write goes in `.linear-plans/run-<RUN-SCRATCH-ID>/`,
@@ -90,6 +91,27 @@ priority, otherwise rank against the planned backlog.
 - **Recon reads code, never executes test suites.** Test selection is settled by reading. Only a
   scope question reading cannot settle may use the tier's targeted-run allowance, wrapped in `beat`.
   Batch independent reads into one Bash call with its leading heartbeat.
+- **Check in-flight work** before fixing the design. Snapshot open PRs once into this run's scratch,
+  fetch candidate tickets (a read, allowed on the single-ticket path), and use
+  `plan-open-prs.mjs overlap` to compare the draft's Key changes paths before they have a description:
+
+  ```bash
+  OPEN_PRS=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.open-prs.json"
+  CANDIDATES=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json"
+  # Stays on gh: the daemon has no open-PR list with changed files.
+  node "$BOSS_PLAN_TOOLBOX/plan/plan-open-prs.mjs" fetch --out-file "$OPEN_PRS"
+  node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" fetch-candidates --out-file "$CANDIDATES" --team <team> --id <ISSUE-ID>
+  if [ -f "$OPEN_PRS" ]; then
+    node "$BOSS_PLAN_TOOLBOX/plan/plan-open-prs.mjs" overlap --open-prs "$OPEN_PRS" --subject <ISSUE-ID> --paths "<draft-paths-comma-separated>" --candidates "$CANDIDATES"
+  fi
+  ```
+
+  Read each overlapping PR's diff (`gh pr diff <number>`, restricted to the shared files), design
+  against that in-flight shape or name the conflict, and list every overlapping PR and ticket in
+  the plan's risks, whichever drafting tier writes it. A failed fetch records
+  `- Open-PR overlap: could not evaluate (<reason>)` under `## Planning` and drafting continues;
+  it never means no overlap. Phase 4 reuses this snapshot. Record truncation warnings as-is.
+
 - **Confirm upstream contracts exist** in the merged tree (a field, column, method, config key,
   another ticket's output). Absent ⇒ bring it into scope or depend on the ticket that delivers it. A
   Done ticket is not proof its code landed.
@@ -159,7 +181,9 @@ checks it). Some things help the implementer and the guards:
   the build publishes it as a non-gating PR section, so it never holds the merge it waits on.
 - **Premises** the plan rests on, written the same way (`- [ ] <fact> — check: `<command>``, at most
   one marked `(central)`). A `path:line` citation is repo-relative and carries a backticked token
-  from that line, so it can be re-checked.
+  from that line, so it can be re-checked. A premise about a file an overlapping PR or in-flight
+  ticket changes checks a symbol or structural fact (an exported function, flag or table), never
+  an incidental literal line that work may delete.
 - When the ticket names a pattern that may recur, list the other sites you found and say which you
   fix and why.
 - **Proof**: what evidence would show the change works (test output, or — for UI — the screens or

@@ -349,6 +349,48 @@ func (s *refreshPRSessionStore) ListWithRepo(context.Context, string) ([]*db.Ses
 	return rows, nil
 }
 
+func (s *refreshPRSessionStore) ListByRepoAndPR(_ context.Context, repoID string, pr int) ([]*db.SessionWithRepo, error) {
+	var rows []*db.SessionWithRepo
+	for _, sess := range s.sessions {
+		if sess.RepoID == repoID && sess.PRNumber != nil && *sess.PRNumber == pr {
+			rows = append(rows, &db.SessionWithRepo{Session: sess})
+		}
+	}
+	return rows, nil
+}
+
+func (s *refreshPRSessionStore) ListActiveWithRepo(_ context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+	var rows []*db.SessionWithRepo
+	for _, sess := range s.sessions {
+		if sess.RepoID == repoID && sess.ArchivedAt == nil {
+			rows = append(rows, &db.SessionWithRepo{Session: sess})
+		}
+	}
+	return rows, nil
+}
+
+// Update applies the fields a block release writes, so a test reads the
+// persisted row back rather than the call.
+func (s *refreshPRSessionStore) Update(ctx context.Context, id string, params domain.UpdateSessionParams) (*models.Session, error) {
+	sess, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if params.State != nil {
+		sess.State = machine.State(*params.State)
+	}
+	if params.BlockedReason != nil {
+		sess.BlockedReason = *params.BlockedReason
+	}
+	if params.AttemptCount != nil {
+		sess.AttemptCount = *params.AttemptCount
+	}
+	if params.LastAttemptHeadSHA != nil {
+		sess.LastAttemptHeadSHA = *params.LastAttemptHeadSHA
+	}
+	return sess, nil
+}
+
 func (s *refreshPRSessionStore) ListActive(context.Context, string) ([]*models.Session, error) {
 	rows := make([]*models.Session, 0, len(s.sessions))
 	for _, sess := range s.sessions {
@@ -538,5 +580,139 @@ func TestRefreshSessionPRHeldDraft_Sessions_AC160(t *testing.T) {
 				t.Fatalf("checks=%d reviews=%d", provider.checkCalls, provider.reviewCalls)
 			}
 		})
+	}
+}
+
+// headReceiptProvider serves a boss/build receipt only for the heads it was
+// posted on, the way GitHub scopes a commit status to one SHA.
+type headReceiptProvider struct {
+	*refreshPRProvider
+	receiptHeads map[string]bool
+}
+
+func (p *headReceiptProvider) GetCheckSet(ctx context.Context, repo string, pr int) (vcs.CheckSet, error) {
+	checks, err := p.GetCheckResults(ctx, repo, pr)
+	receipt := p.receiptHeads[p.prStatus.HeadSHA]
+	return vcs.CheckSet{Checks: checks, HasBuildReceipt: receipt, BuildReceiptSeen: receipt}, err
+}
+
+func blockedHandOffSession() *models.Session {
+	sess := refreshPRSession()
+	sess.State = machine.Blocked
+	sess.BlockedReason = strPtr("pr_failed: worktree has uncommitted tracked changes")
+	sess.AttemptCount = 2
+	sess.LastAttemptHeadSHA = strPtr("head")
+	return sess
+}
+
+func handOffProvider(verify vcs.CheckResult) *headReceiptProvider {
+	return &headReceiptProvider{
+		refreshPRProvider: &refreshPRProvider{
+			prStatus: &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true), MergeStateStatus: vcs.MergeStateStatusClean, HeadSHA: "head"},
+			checks: []vcs.CheckResult{
+				{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess)},
+				verify,
+			},
+		},
+		receiptHeads: map[string]bool{"head": true},
+	}
+}
+
+var (
+	verifyParked  = vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: "needs human: always-human-path"}
+	verifyPassed  = vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess), Description: "verified"}
+	verifyWaiting = vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: "waiting: merge-state-unknown"}
+)
+
+// A build that handed its PR off (receipt and verify outcome on the head) and
+// was blocked afterwards by a later finalize pass leaves Blocked on refresh,
+// for the state finalize gives a handed-off PR, with its stale reason gone.
+func TestRefreshSessionPRReleasesHandedOffBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		verify vcs.CheckResult
+	}{
+		{"verify parked", verifyParked},
+		{"verify passed", verifyPassed},
+		{"verify waiting", verifyWaiting},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := blockedHandOffSession()
+			srv := newRefreshPRServer(status.NewDisplayTracker(), handOffProvider(tc.verify), sess)
+
+			resp, err := srv.RefreshSessionPR(context.Background(), connect.NewRequest(&pb.RefreshSessionPRRequest{Id: strPtr(sess.ID)}))
+			if err != nil {
+				t.Fatalf("RefreshSessionPR: %v", err)
+			}
+			if got := resp.Msg.GetSession().GetState(); got != pb.SessionState_SESSION_STATE_READY_FOR_REVIEW {
+				t.Fatalf("wire state = %v, want READY_FOR_REVIEW", got)
+			}
+			if resp.Msg.GetSession().BlockedReason != nil {
+				t.Fatalf("wire blocked_reason = %q, want cleared", resp.Msg.GetSession().GetBlockedReason())
+			}
+			if sess.State != machine.ReadyForReview || sess.BlockedReason != nil || sess.AttemptCount != 0 || sess.LastAttemptHeadSHA != nil {
+				t.Fatalf("persisted row = state:%v reason:%v attempts:%d head:%v, want ready_for_review with block metadata cleared",
+					sess.State, sess.BlockedReason, sess.AttemptCount, sess.LastAttemptHeadSHA)
+			}
+		})
+	}
+}
+
+// Every refresh that lacks the full hand-off evidence leaves Blocked exactly
+// as it was.
+func TestRefreshSessionPRKeepsBlockWithoutHandOff(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*headReceiptProvider, *[]*models.Session)
+	}{
+		{"draft PR", func(p *headReceiptProvider, _ *[]*models.Session) { p.prStatus.Draft = true }},
+		{"no receipt", func(p *headReceiptProvider, _ *[]*models.Session) { p.receiptHeads = nil }},
+		{"receipt on an older head", func(p *headReceiptProvider, _ *[]*models.Session) {
+			p.receiptHeads = map[string]bool{"old-head": true}
+			p.prStatus.HeadSHA = "new-head"
+		}},
+		{"no verify outcome", func(p *headReceiptProvider, _ *[]*models.Session) { p.checks = p.checks[:1] }},
+		{"closed PR", func(p *headReceiptProvider, _ *[]*models.Session) { p.prStatus.State = vcs.PRStateClosed }},
+		{"another live session holds the PR", func(_ *headReceiptProvider, rows *[]*models.Session) {
+			rival := refreshPRSession()
+			rival.ID = "rival"
+			rival.State = machine.AwaitingChecks
+			*rows = append(*rows, rival)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := blockedHandOffSession()
+			provider := handOffProvider(verifyParked)
+			rows := []*models.Session{sess}
+			tc.setup(provider, &rows)
+			srv := newRefreshPRServer(status.NewDisplayTracker(), provider, rows...)
+
+			resp, err := srv.RefreshSessionPR(context.Background(), connect.NewRequest(&pb.RefreshSessionPRRequest{Id: strPtr(sess.ID)}))
+			if err != nil {
+				t.Fatalf("RefreshSessionPR: %v", err)
+			}
+			if got := resp.Msg.GetSession().GetState(); got != pb.SessionState_SESSION_STATE_BLOCKED {
+				t.Fatalf("wire state = %v, want BLOCKED", got)
+			}
+			if sess.State != machine.Blocked || sess.BlockedReason == nil || *sess.BlockedReason != "pr_failed: worktree has uncommitted tracked changes" || sess.AttemptCount != 2 || sess.LastAttemptHeadSHA == nil {
+				t.Fatalf("persisted row = state:%v reason:%v attempts:%d head:%v, want the block untouched",
+					sess.State, sess.BlockedReason, sess.AttemptCount, sess.LastAttemptHeadSHA)
+			}
+		})
+	}
+}
+
+// Only a Blocked session is released: a live session with the same evidence
+// keeps its state.
+func TestRefreshSessionPRLeavesUnblockedStateAlone(t *testing.T) {
+	sess := refreshPRSession()
+	sess.State = machine.GreenDraft
+	srv := newRefreshPRServer(status.NewDisplayTracker(), handOffProvider(verifyParked), sess)
+
+	if _, err := srv.RefreshSessionPR(context.Background(), connect.NewRequest(&pb.RefreshSessionPRRequest{Id: strPtr(sess.ID)})); err != nil {
+		t.Fatalf("RefreshSessionPR: %v", err)
+	}
+	if sess.State != machine.GreenDraft {
+		t.Fatalf("state = %v, want green_draft", sess.State)
 	}
 }

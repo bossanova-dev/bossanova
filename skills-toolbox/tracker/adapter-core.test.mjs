@@ -99,6 +99,8 @@ test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does 
     'blockerVerdict',
     'resolveSelection',
     'readDescription',
+    'readClaimComments',
+    'readIssueState',
     'selectMarked',
     'selectCandidates',
     'applyIssueWrites',
@@ -154,6 +156,7 @@ test('optional operations — attachment AND adapter-discretion — validate onl
     'createLabel',
     'appendRelatedTo',
     'writeDescription',
+    'patchDescription',
     'listTeams',
     'createIssue',
     'writeSourceNotes',
@@ -242,6 +245,17 @@ test('a DECLARED writeDescription is validated as strictly as a required op (BOS
       `expected a throw for writeDescription summary = ${JSON.stringify(blank)}`,
     )
   }
+})
+
+test('patchDescription is optional but a declared unusable tool is rejected', () => {
+  const map = validOperationMap()
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
+  assert.ok(!REQUIRED_TRACKER_OPERATIONS.includes('patchDescription'))
+  map.patchDescription = { tool: ' ', summary: '{id, patch} -> saved' }
+  assert.throws(
+    () => assertConforms(stubAdapterWithOperationMap(map)),
+    /patchDescription missing tool/,
+  )
 })
 
 test('TRACKER_STATE_ROLES pins the roles the skills consume by name (BOS-524)', () => {
@@ -775,4 +789,20 @@ test('applyIssueCreate is optional but must be callable when present', () => {
   assert.throws(() => assertConforms(adapter), /applyIssueCreate/)
   adapter.applyIssueCreate = async () => ({ ok: true, outcome: 'ok' })
   assert.doesNotThrow(() => assertConforms(adapter))
+})
+
+test('settling reads are optional and callable when declared', () => {
+  for (const name of ['readClaimComments', 'readIssueState']) {
+    assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(validOperationMap())))
+    assert.doesNotThrow(() =>
+      assertConforms({
+        ...stubAdapterWithOperationMap(validOperationMap()),
+        [name]: async () => ({}),
+      }),
+    )
+    assert.throws(
+      () => assertConforms({ ...stubAdapterWithOperationMap(validOperationMap()), [name]: true }),
+      /must be a function/,
+    )
+  }
 })

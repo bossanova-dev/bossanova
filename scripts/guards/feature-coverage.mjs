@@ -263,9 +263,9 @@ export function renderCoveragePage(features, proofs) {
   return lines.join('\n')
 }
 
-function collect(root, record, features) {
+function collect(root, record, features, files) {
   const proofs = []
-  for (const file of scannedFiles(root, record.scans)) {
+  for (const file of scannedFiles(root, record.scans, { tracked: files })) {
     if (!fs.existsSync(path.join(root, file))) continue
     const source = fs.readFileSync(path.join(root, file), 'utf8')
     if (file.startsWith('services/boss/e2e/') && file.endsWith('_test.go'))
@@ -281,6 +281,30 @@ function collect(root, record, features) {
   }
   return proofs
 }
+/**
+ * The criterion-proofs-kept verdict shared by lint and checkout readiness.
+ * @param {string} root
+ * @param {{files?: string[]}} options
+ * @returns {{newViolations: string[], staleEntries: string[], failures: string[]}}
+ */
+export function proofsVerdict(root, { files } = {}) {
+  try {
+    const { map, failures } = loadCheckedMap(root)
+    if (failures.length) return { newViolations: [], staleEntries: [], failures }
+    const proofs = collect(root, proofsRecord, map.features, files)
+    const baseline = readBaseline(root, proofsRecord.baseline)
+    const comparison = compareBaseline({
+      baselinePath: proofsRecord.baseline,
+      entries: baseline.entries,
+      offenders: unprovenCriteria(map.features, proofs),
+      remedy: 'restore an automated proof or explicitly baseline the unproven criterion',
+    })
+    return { ...comparison, failures: [...baseline.errors, ...comparison.failures] }
+  } catch (error) {
+    return { newViolations: [], staleEntries: [], failures: [error.message] }
+  }
+}
+
 async function main() {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
@@ -299,6 +323,13 @@ async function main() {
   )
     throw new Error('usage: feature-coverage.mjs lint|proofs --check|--update; page')
   const root = path.resolve(values.root)
+  if (verb === 'proofs' && values.check) {
+    const { failures } = proofsVerdict(root)
+    for (const failure of failures) console.error(failure)
+    if (failures.length) process.exitCode = 1
+    else console.log('feature-coverage proofs: PASS')
+    return
+  }
   const { map, failures: mapFailures } = loadCheckedMap(root)
   if (mapFailures.length) throw new Error(mapFailures.join('\n'))
   const record = verb === 'lint' ? lintRecord : proofsRecord

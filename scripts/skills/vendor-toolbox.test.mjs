@@ -674,6 +674,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'callback/boss.mjs',
       'callback/ci-watch.mjs',
       'callback/epic-target.mjs',
+      'check-command-shell.mjs',
       // ci/pr-state-envelope.mjs is imported by pr-check-state.mjs for `classify --pr-state`.
       'ci/pr-state-envelope.mjs',
       // ci/required-checks.mjs (BOS-2231) is imported by pr-check-state.mjs and skill-config.mjs.
@@ -700,6 +701,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'selection.mjs',
       'session/adapter.mjs',
       'session/boss.mjs',
+      // skill-extensions.mjs imports the orchestrate roles' result contract and script marker.
+      'session/orchestrate-contract.mjs',
       'skill-config-validate.generated.mjs',
       'skill-config.mjs',
       'skill-extensions.mjs',
@@ -707,6 +710,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/adapter.mjs',
       'tracker/blocker-clearance.mjs',
       'tracker/cli.mjs',
+      'tracker/description-patch.mjs',
       'tracker/github-comment.mjs',
       'tracker/github-config.mjs',
       'tracker/github-description.mjs',
@@ -722,15 +726,20 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/github-verbs.mjs',
       'tracker/github.mjs',
       'tracker/linear-issue-create.mjs',
+      'tracker/linear-planned-query.mjs',
       'tracker/linear-rank-facts.mjs',
+      'tracker/linear-settle-reads.mjs',
       'tracker/linear.mjs',
       'tracker/operation-runner.mjs',
       // tracker/outcome.mjs (BOS-1282) is imported by linear-gate-lib.mjs, which this core already
       // vendors. An installed tree carrying the gate without it is an import that cannot RESOLVE.
       'tracker/outcome.mjs',
+      'tracker/plan-candidates.mjs',
       'tracker/preflight.mjs',
       'tracker/read-description.mjs',
       'tracker/settle-read.mjs',
+      'tracker/settle-verbs.mjs',
+      'tracker/write-description.mjs',
       'verify/verify-contract.mjs',
       'verify/verify-describe.mjs',
       'verify/verify-proof.mjs',

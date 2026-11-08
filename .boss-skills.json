@@ -89,7 +89,23 @@
       "services",
       "skills-toolbox"
     ],
-    "repoWideTokens": ["docs/skills/README.md"],
+    "repoWideTokens": [
+      "docs/skills/README.md",
+      "docs/features",
+      "lib/bossalib/contract/plugin/skillpayload/skills/boss-build/toolbox",
+      "lib/bossalib/contract/plugin/skillpayload/skills/boss-epic/toolbox",
+      "lib/bossalib/contract/plugin/skillpayload/skills/boss-finalize/toolbox",
+      "lib/bossalib/contract/plugin/skillpayload/skills/boss-plan/toolbox",
+      "lib/bossalib/contract/plugin/skillpayload/skills/boss-release/toolbox",
+      "lib/bossalib/contract/plugin/skillpayload/skills/boss-repair/toolbox",
+      "lib/bossalib/contract/plugin/skillpayload/skills/boss-retro/toolbox",
+      "lib/bossalib/contract/plugin/skillpayload/skills/boss-review/toolbox",
+      "lib/bossalib/contract/plugin/skillpayload/skills/boss-verify/toolbox",
+      "scripts/skills/vendor-toolbox.mjs",
+      "scripts/guards/registry",
+      "services/bossd/cmd/main.go",
+      "proto/bossanova/v1/daemon.proto"
+    ],
     "areaAliases": {}
   },
   "retro": {

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { rankWork } from './rank-work.mjs'
+import { compareRank, rankWork } from './rank-work.mjs'
 
 const TODAY = '2026-11-07'
 const [URGENT, HIGH, MEDIUM, LOW, NONE] = [1, 2, 3, 4, 0]
@@ -273,4 +273,33 @@ test('on the list a build once picked a Low ticket from, no Low or Medium work o
     unblocked.findIndex((n) => n.identifier === 'ACME-92') > lastUrgent,
     'the Low ticket that run claimed ranks after every unblocked Urgent one',
   )
+})
+
+test('the shared list-planned candidate fixture carries its producer rank unchanged', () => {
+  const nodes = fixture('list-planned-failing-run.json')
+  const candidate = nodes[0]
+  assert.deepEqual(rankOf(nodes, candidate.identifier), candidate.rank)
+})
+
+const rank = (extra = {}) => ({
+  tier: 3,
+  tierFrom: 'own',
+  deadline: null,
+  deadlineFrom: null,
+  scheduled: true,
+  leverage: 0,
+  ...extra,
+})
+
+test('shared rank comparator uses urgency, deadline, schedule and leverage in order', () => {
+  for (const [a, b] of [
+    [rank({ tier: 1 }), rank({ tier: 0 })],
+    [rank({ deadline: '2026-01-01' }), rank()],
+    [rank(), rank({ scheduled: false })],
+    [rank({ leverage: 2 }), rank()],
+  ]) {
+    assert.ok(compareRank(a, b) < 0)
+    assert.ok(compareRank(b, a) > 0)
+  }
+  assert.equal(compareRank(rank(), rank()), 0)
 })

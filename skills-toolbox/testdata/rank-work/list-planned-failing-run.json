@@ -1,6 +1,14 @@
 [
   {
     "identifier": "ACME-77",
+    "rank": {
+      "tier": 1,
+      "tierFrom": "own",
+      "deadline": "2026-11-06",
+      "deadlineFrom": "project",
+      "scheduled": true,
+      "leverage": 0
+    },
     "title": "Ticket ACME-77",
     "priority": 1,
     "estimate": 2,

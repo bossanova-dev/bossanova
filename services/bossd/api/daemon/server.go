@@ -269,6 +269,7 @@ type Server struct {
 	listener              net.Listener
 	srv                   *http.Server
 	callers               CallerAuthority
+	callerGrants          domain.CallerGrants
 	agentLogsDir          string
 	// protectedRoots is the symlink-resolved protected-root list the startup
 	// diagnostic derived (BOS-725). The doctor check unions it with its own
@@ -350,6 +351,9 @@ var (
 // Config holds all dependencies for creating a new Server.
 type Config struct {
 	Callers CallerAuthority
+	// CallerGrants extends operator capabilities to chat roles at the socket
+	// caller gate (the coordinator approval grant); nil grants nothing.
+	CallerGrants domain.CallerGrants
 
 	ViewerApprovals   *ViewerApprovals
 	CredentialDevices *CredentialDeviceService
@@ -667,6 +671,7 @@ func New(cfg Config) *Server {
 	srv := &Server{
 		chatTmux:              cfg.ChatTmux,
 		callers:               cfg.Callers,
+		callerGrants:          cfg.CallerGrants,
 		protectedRootsProbe:   cfg.ProtectedRootsProbe,
 		verifyVerbsFactory:    cfg.NewVerifyVerbs,
 		environmentOverlay:    cfg.EnvironmentOverlay,
@@ -893,7 +898,7 @@ func (s *Server) Listen(socketPath string) error {
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(s, connect.WithInterceptors(
 		socketauth.NewServerInterceptor(token),
-		NewCallerInterceptor(s.callers, nil),
+		NewCallerInterceptor(s.callers, s.callerGrants),
 		errortrack.Interceptor(),
 	))
 	mux.Handle(path, withStreamingWriteDeadlineOverride(handler))

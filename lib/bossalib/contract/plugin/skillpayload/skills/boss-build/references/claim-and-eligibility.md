@@ -54,7 +54,7 @@ shell that runs `claim-verdict`. The flag is stated affirmatively and only here,
 including a separate shell that lost the variable — is the contended path, whose missing-evidence
 guard then hard-errors. Do not invert this into a `CONTENDED` flag: that spelling fails open, and a
 contended run that loses the variable would arbitrate with no liveness evidence at all. Post the
-claim, **re-read the comments**, run
+claim, **re-read the comments** with `read-claim-comments --id <issue-uuid> --until-claim "$TOKEN" --out-file <run-scratch-comments-file>`, run
 `claim-verdict` once on that post-post set, and skip the liveness-evidence snippet below along with
 both timed waits (the 20s inline wait that otherwise sits between the post and the verdict, and the
 post-`WON` ~10s re-confirm). The fast path drops the waits, never the re-read. `--liveness` is
@@ -77,7 +77,10 @@ tracker's read-after-write lag for the other's comment. The timed waits bought t
 that lag — that is the whole trade, and it is a bounded window, not a proof of absence. Reject the
 fast path if you reject the trade.
 
-Two things bound the residual. A re-read that misses even our own claim yields exit 4, whose
+The settle proves only this run's own claim is visible, never that peer claims are visible;
+the fast-path trade is unchanged.
+
+Two things bound the residual. An own claim invisible for the whole settle budget yields exit 4, whose
 handling is delete-and-retry-once, then stop `NO_CHANGE` — the visibility-lag case that touches our
 own comment fails closed. And the fast path is only ever entered from a clean `ACQUIRED` on the
 worktree mutex, so a same-worktree peer is already excluded before the claim is written.
@@ -86,7 +89,7 @@ worktree mutex, so a same-worktree peer is already excluded before the claim is 
 ceremony unchanged, in this order: the pre-post `readComments`, liveness evidence
 gathered **before** the post, the pre-post `claim-verdict --liveness`, the post, the 20s inline wait
 after the post, the re-read, `claim-verdict --liveness`, the post-`WON` ~10s timed confirm with a
-fresh liveness snapshot, and stale-claim cleanup — with malformed evidence a hard error throughout.
+fresh liveness snapshot and another `read-claim-comments --until-claim "$TOKEN"` read, and stale-claim cleanup — with malformed evidence a hard error throughout.
 The pre-post verdict is evidenced too: unevidenced it forfeits nothing, so a crashed prior run's
 older claim wins it and the run stops `NO_CHANGE` — losing exactly the `TOOK_OVER_STALE` resume the
 contended path exists to serve. Do not weaken the contended
@@ -308,7 +311,7 @@ On the MCP transport, build the same payload shape from `list_sessions`: each kn
 Feed the gathered evidence to `claim-verdict` in the tracker CLI's documented form:
 
 ```bash
-node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comments "$COMMENTS_JSON" --liveness "$BOSS_CLAIM_LIVENESS_JSON"
+node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comments "$COMMENTS_FILE" --liveness "$BOSS_CLAIM_LIVENESS_JSON"
 ```
 
 The liveness object is adapter-owned claim evidence, normally including `now`, `inactiveAfterMs`, and a `sessions` map keyed by claim owner session id with each known owner's `last_agent_activity_at` / `lastAgentActivityAt`. Malformed evidence is a hard error on the contended path: stop the run rather than falling back to first-writer-wins without liveness.
@@ -317,6 +320,8 @@ A claim whose owner is provably inactive beyond the window is forfeit. A claim w
 
 An explicitly named ticket may override a claim it can prove stale, matching the existing explicit-ID override for `blockedBy` (and, with `--approve`, `needs-human`). It must delete the stale claim comment it overrides, then post its own claim before proceeding. An explicit ID may not override a claim whose owner is live or unknown; that path still stops `NO_CHANGE`.
 
-After an explicit-ID run wins because liveness forfeited an older claim, delete each overridden stale claim comment before proceeding. Use the re-read `COMMENTS_JSON`: parse claim comments with their comment ids, match only comments whose `owner:<sessionId>` has a known `sessions[sessionId].lastAgentActivityAt` where `Date.parse(now) - Date.parse(lastAgentActivityAt) > inactiveAfterMs`, and delete only stale claims that would otherwise sort ahead of this run's token. If a stale override candidate lacks a comment id, stop `BLOCKED` rather than leaving a superseded claim behind. After deletion, re-read comments, rebuild `BOSS_CLAIM_LIVENESS_JSON`, and rerun `claim-verdict`. Never delete live or unknown-owner claims.
+After an explicit-ID run wins because liveness forfeited an older claim, delete each overridden stale claim comment before proceeding. Use the re-read array in `COMMENTS_FILE`: parse claim comments with their comment ids, match only comments whose `owner:<sessionId>` has a known `sessions[sessionId].lastAgentActivityAt` where `Date.parse(now) - Date.parse(lastAgentActivityAt) > inactiveAfterMs`, and delete only stale claims that would otherwise sort ahead of this run's token. If a stale override candidate lacks a comment id, stop `BLOCKED` rather than leaving a superseded claim behind. After deletion, re-read comments with `read-claim-comments --until-claim "$TOKEN"`, adding `--until-absent <deleted-id>` for every deleted id, rebuild `BOSS_CLAIM_LIVENESS_JSON`, and rerun `claim-verdict`. Never delete live or unknown-owner claims.
+
+After the contended 20 s wait, use `read-claim-comments --id <issue-uuid> --until-claim "$TOKEN" --out-file <run-scratch-comments-file>` before arbitration; the post-`WON` ~10 s re-confirm uses the same settled read. On exit 2, use one `readComments` operation and save its array to that scratch file. Retain `ownClaimId` from the read, never from the write echo. Feed that file to `claim-verdict --comments`. On exit-4 retries, both the pre-post probe and post-post read also pass `--until-absent <deleted-id>` for each deleted prior claim.
 
 Keep the double-confirm pass and the existing `LOST` behavior intact on the contended path. This changes which claims survive arbitration, not what happens after the verdict.

@@ -1474,3 +1474,7 @@ func TestCreateSessionLogsAFailedLockAcquireOnTheOrchestratorPath(t *testing.T) 
 func (*mockSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
 	return nil
 }
+
+func (m *mockSessionStore) SetTrackerRank(context.Context, string, string, *string, models.TrackerRank) (bool, error) {
+	return false, nil
+}

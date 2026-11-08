@@ -245,6 +245,67 @@ test('judgeCiOnHead filters check-run envelopes and paginated pages', () => {
   assert.equal(single.green, true)
 })
 
+test('judgeCiOnHead reads REST check runs by the newest run of each workflow’s job', () => {
+  const checkRun = (name, suite, conclusion, at) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    started_at: at,
+    completed_at: at,
+    check_suite: { id: suite },
+  })
+  const workflowRun = (id, workflowId, suite, conclusion, at) => ({
+    id,
+    workflow_id: workflowId,
+    check_suite_id: suite,
+    head_sha: HEAD,
+    name: `wf ${workflowId}`,
+    status: 'completed',
+    conclusion,
+    run_started_at: at,
+  })
+  const early = '2026-11-07T02:02:31Z',
+    late = '2026-11-07T02:06:47Z'
+  const superseded = judgeCiOnHead({
+    headSHA: HEAD,
+    observedSHA: HEAD,
+    checkRuns: [
+      {
+        total_count: 2,
+        check_runs: [
+          checkRun('go-test', 11, 'cancelled', early),
+          checkRun('go-test', 12, 'success', late),
+        ],
+      },
+    ],
+    workflowRuns: [
+      {
+        total_count: 2,
+        workflow_runs: [
+          workflowRun(1, 7, 11, 'cancelled', early),
+          workflowRun(2, 7, 12, 'success', late),
+        ],
+      },
+    ],
+  })
+  assert.equal(superseded.green, true)
+  const separate = judgeCiOnHead({
+    headSHA: HEAD,
+    observedSHA: HEAD,
+    checkRuns: {
+      check_runs: [checkRun('dedup', 11, 'failure', early), checkRun('dedup', 22, 'success', late)],
+    },
+    workflowRuns: {
+      workflow_runs: [
+        workflowRun(1, 7, 11, 'failure', early),
+        workflowRun(2, 8, 22, 'success', late),
+      ],
+    },
+  })
+  assert.equal(separate.green, false)
+  assert.equal(separate.verdict.state, 'failing')
+})
+
 test('judgeCiOnHead: a pending non-boss check is unsettled', () => {
   const result = judgeCiOnHead({
     headSHA: HEAD,

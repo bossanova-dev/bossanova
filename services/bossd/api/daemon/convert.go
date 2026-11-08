@@ -234,6 +234,7 @@ func SessionToProto(s *models.Session) *pb.Session {
 	if s.TrackerID != nil {
 		p.TrackerId = protoStringPtr(s.TrackerID)
 	}
+	p.TrackerRank = models.TrackerRankToProto(s.TrackerRank)
 	if s.TrackerURL != nil {
 		p.TrackerUrl = protoStringPtr(s.TrackerURL)
 	}

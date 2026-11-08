@@ -50,7 +50,7 @@ Load the config once — `loadSkillConfig({cwd})` (synchronous, options object) 
 `trackerConfigFor(config)` gives the tracker server, team (else the run's resolved team, Phase 0),
 workspace (never a project filter) and the state roles `unplanned`, `planned`, `inProgress`, `inReview`. Reach the tracker only through the
 resolved adapter. A blocker counts as cleared only when its state type is completed or canceled
-(`plan-deps-lib.mjs`); boss-build will not start a ticket with an uncleared blocker.
+(`plan/plan-deps-lib.mjs`); boss-build will not start a ticket with an uncleared blocker.
 
 Each capability is an operation in the resolved adapter's map. `tracker/cli.mjs operations` lists
 its transport. An `mcp` operation is the named tool, called through `resolvedServer`; a `command`
@@ -69,19 +69,19 @@ BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.
 | Question                                     | Ask                                                                                   |
 | -------------------------------------------- | ------------------------------------------------------------------------------------- |
 | Is this repo configured for planning?        | `resolveTrackerTeam` → `isConfiguredForPlanning(config, {team})` (`skill-config.mjs`) |
-| Is the ticket already planned?               | `node plan-run-guards.mjs idempotence <payload> --selected-id <id>`                   |
+| Is the ticket already planned?               | `node plan/plan-run-guards.mjs idempotence <payload> --selected-id <id>`              |
 | Read / write the description exactly         | `node tracker/cli.mjs read-description \| write-description …`                        |
 | Upload / read / delete the plan attachment   | [`references/plan-storage.md`](references/plan-storage.md)                            |
-| Normalise the drafter's metadata             | `node plan-run-guards.mjs adopt-metadata <file> <json>`                               |
-| Did a secret slip in?                        | `node plan-secret-scan.mjs <files>`                                                   |
-| Did the reporter's images and notes survive? | `node plan-image-guard.mjs …`                                                         |
-| Is the description a plan description?       | `node plan-contract-guard.mjs --description … --plan …`                               |
-| Have referenced tickets moved since recon?   | `node plan-run-guards.mjs premises …`                                                 |
-| Which tickets does this conflict with?       | `planDependencyEdges` in `plan-deps-lib.mjs` (Phase 4 step 5)                         |
-| Did the description land as written?         | `node plan-writeback-verify.mjs --intended … --stored … --read-receipt …`             |
-| What scratch names may I use?                | `node plan-scratch-paths.mjs families`                                                |
+| Normalise the drafter's metadata             | `node plan/plan-run-guards.mjs adopt-metadata <file> <json>`                          |
+| Did a secret slip in?                        | `node plan/plan-secret-scan.mjs <files>`                                              |
+| Did the reporter's images and notes survive? | `node plan/plan-image-guard.mjs …`                                                    |
+| Is the description a plan description?       | `node plan/plan-contract-guard.mjs --description … --plan …`                          |
+| Have referenced tickets moved since recon?   | `node plan/plan-run-guards.mjs premises …`                                            |
+| Which tickets does this conflict with?       | `planDependencyEdges` in `plan/plan-deps-lib.mjs` (Phase 4 step 5)                    |
+| Did the description land as written?         | `node plan/plan-writeback-verify.mjs --intended … --stored … --read-receipt …`        |
+| What scratch names may I use?                | `node plan/plan-scratch-paths.mjs families`                                           |
 | Is a tracker failure safe to retry?          | `node tracker/cli.mjs classify-outcome --observed "<err>" --operation read\|write`    |
-| Plan an epic's `agent-plan` children?        | `node plan-child-fanout.mjs route …` (`references/child-fanout.md`)                   |
+| Plan an epic's `agent-plan` children?        | `node plan/plan-child-fanout.mjs route …` (`references/child-fanout.md`)              |
 
 ## Rules
 
@@ -202,7 +202,9 @@ First report the phase: `node "$BOSS_PLAN_TOOLBOX/stage-chain.mjs" phase plannin
   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" list-unplanned --team <team> <selectionArgs>`,
   whether or not a selection is configured. Selection flags take precedence over the plan-stage
   entry, then shared keys; another stage's entry (for example `stages.build`) never applies. The
-  verb requires `agent-plan` and excludes `needs-human`. A non-zero exit stops the run quoting its
+  verb requires `agent-plan` and excludes `needs-human`. It already excludes candidates holding a
+  live peer plan claim and names each exclusion on stderr. The tracker claim is the only peer
+  signal: never inspect peer run scratch or `boss ls` to choose a head. A non-zero exit stops the run quoting its
   stderr; never read the unplanned list through another path. The output is unordered: rank by
   priority (Urgent first, None last), then oldest. Interactive confirms with the user (plan / skip /
   pick another / cancel); headless takes the head. An empty queue reports and stops.
@@ -257,7 +259,7 @@ plan in its own context and returns only a path and bounded metadata.
    RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
    test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing" >&2; exit 1; }
    DISPATCH_FAILURE="dispatch-failure"
-   PLAN_PATH=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md"   # compute the slug with plan-slug.mjs issueSlug
+   PLAN_PATH="$(node "$BOSS_PLAN_TOOLBOX/plan/plan-slug.mjs" plan-path --run-id "<RUN-SCRATCH-ID>" --issue-json ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json")" || exit 1
    RUN="$(node "$RUN_SENTINEL" make-ctx boss-plan)"
    RUN_ID="${RUN%%$'\t'*}"; RUN_DIR="${RUN#*$'\t'}"
    RUN_SCRATCH=".linear-plans/run-<RUN-SCRATCH-ID>"   # Phase 0's directory; NOT $RUN_DIR, NOT $RUN_ID
@@ -272,7 +274,8 @@ plan in its own context and returns only a path and bounded metadata.
 
 3. Dispatch a `general-purpose` subagent on the orchestrator's model (planning is judgement). Pass
    the **path** `references/headless-drafting-brief.md`, the ticket id and title, the snapshot path,
-   `PLAN_PATH`, `RUN_SCRATCH`, `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`, and `allowSiblingSplit: true` when
+   `PLAN_PATH`, `RUN_SCRATCH`, Phase 0's resolved tracker `team`,
+   `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`, and `allowSiblingSplit: true` when
    the issue has a parent and `tracker/cli.mjs operations --require createIssue,appendDependency`
    exits 0. It returns only `planPath`, `labels`, `agentBuild`, `estimate`, `priority`,
    `openQuestions`, `descriptionSummary: {path}` and any `siblings` — never plan text. Hold it: write `$RUN_DIR/draft.dispatched-at`
@@ -401,8 +404,8 @@ interactive, a human confirms the shape first.
 
 The drafting brief ([`references/headless-drafting-brief.md`](references/headless-drafting-brief.md)
 Steps 5 and 7) is the single drafting spec for both modes — plan body and description template. The
-plan lives at `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md` (slug from
-`plan-slug.mjs` `issueSlug`). Every query-bearing upload URL in it is query-stripped. Headless open
+plan lives at `PLAN_PATH`, the `plan-slug.mjs plan-path` output
+(`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md`, where `<slug>` is the hyphenated title). Every query-bearing upload URL in it is query-stripped. Headless open
 questions are only genuinely controversial forks; a non-empty list adds `agent-question` and an
 `## Open Questions` section. Config-first helpers take `(config, description)`:
 `validatePlanDescription`, `parseAcceptanceCriteria`, `parsePremises`, `validateVerifyOnlyEvidence`,
@@ -411,7 +414,8 @@ questions are only genuinely controversial forks; a non-empty list adds `agent-q
 ## Phase 3.5 — Extension plan reviewers
 
 Run any repo-local `boss-plan-*` extensions with `discover --core boss-plan --role plan-reviewer`
-over the draft (additive, non-fatal, a no-op when none are installed) —
+over the draft (additive, non-fatal, a no-op when none are installed), holding each dispatch in-turn
+with `bs-dispatch-await.mjs wait --leg-deadline` per
 [`references/extension-reviewers.md`](references/extension-reviewers.md).
 
 ## Phase 4 — Gate, attach, write back
@@ -440,12 +444,28 @@ It annotates both artifacts and prints `{predicted, codes, labels}`. A predictio
 exposure label or build order: the marker is information for people, and Phase 6 names the
 predicted codes and labels. All following gates see these final annotated bytes.
 
-**Secret gate (mandatory).** `node "${BOSS_PLAN_TOOLBOX:?}/plan-secret-scan.mjs" "$PLAN_FILE" <the
-description artifact>` — exit 1: redact the named lines and re-run; exit 2: fail closed. A clean scan
-is a floor, not a pass: then read the whole plan (especially `## Original notes`) yourself and redact
-anything credential- or PII-shaped in every persisted artifact. Credential query values in external
-image URLs become `token=REDACTED`; a signed `uploads.linear.app` URL loses its signature query and
-keeps its asset path.
+**Secret gate (mandatory).**
+
+```bash
+BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+SECRET_SCANNER="$BOSS_PLAN_TOOLBOX/plan/plan-secret-scan.mjs"
+test -f "$SECRET_SCANNER" || { echo "BLOCKED: secret scanner missing — run 'boss skills install'" >&2; exit 1; }
+DESCRIPTION_ARTIFACT=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"
+SCAN_STATUS=0
+SCAN_OUTPUT="$(node "$SECRET_SCANNER" "$PLAN_FILE" "$DESCRIPTION_ARTIFACT")" || SCAN_STATUS=$?
+printf '%s\n' "$SCAN_OUTPUT"
+SCAN_VERDICT="$(printf '%s\n' "$SCAN_OUTPUT" | tail -n 1)"
+case "$SCAN_STATUS:$SCAN_VERDICT" in
+  '0:plan-secret-scan: verdict=clean') ;; # Continue to the judgement read below.
+  '1:plan-secret-scan: verdict=redact') echo "Redact the named lines and re-run the secret gate." >&2; exit 1 ;;
+  *) echo "BLOCKED: secret scan failed closed (missing or mismatched verdict)." >&2; exit 1 ;;
+esac
+```
+
+A clean scan is a floor, not a pass: then read the whole plan (especially `## Original notes`)
+yourself and redact anything credential- or PII-shaped in every persisted artifact. Credential query
+values in external image URLs become `token=REDACTED`; a signed `uploads.linear.app` URL loses its
+signature query and keeps its asset path.
 
 **Image and notes gates.** Copy the description artifact to `image-guard-new.md`, write
 `attachment-guard-orig.md` from the snapshot with only the mandatory redactions and signature
@@ -507,29 +527,44 @@ Then:
 3. **Save** in one tracker write. On a tracker declaring `writePlan`, save only labels, estimate,
    priority and the planned state; never call `write-description` or use an inline description
    fallback. On other trackers, save the description from
-   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id <ISSUE-ID> --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md`
-   (execute the `{tool, args}` it emits for `descriptor-emitted`; for `operation-executed`,
+   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id <ISSUE-ID> --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md --base-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`
+   (execute the `{tool, args}` it emits for `descriptor-emitted`, regardless of `mode`; for `operation-executed`,
    use `result` without another write; fall back to an inline
    description only when stderr names a missing `writeDescription` op), plus labels, estimate,
    priority and the planned state. A rejected estimate: retry without it and warn. A failure
-   `classify-outcome` calls `indeterminate`: read the issue back before any retry. If the read-back
-   shows it did not land and the one retry fails the same way, split it: save everything except
+   `classify-outcome` calls `indeterminate`, or an anchored patch rejected as missing or non-unique:
+   read the issue back before any retry; if it did not land, retry once without `--base-file`.
+   If that retry fails the same way, split it: save everything except
    labels, then the merged labels in a labels-only write, and name the split in the run report.
    The save response can echo the pre-write issue; it is never evidence of what landed. Step 5's
    settled read-back supplies that evidence. After the description save, copy `image-guard-new.md`
    to `image-guard-final.md`: that file always holds the bytes of the run's last description save,
    including when step 4(f) is skipped.
-4. **Link dependencies** — I/O only; `plan-deps-lib.mjs` decides every edge:
+4. **Link dependencies** — I/O only; `plan/plan-deps-lib.mjs` decides every edge:
 
    a. Fetch candidates (planned, in-progress, in-review, plus every related id):
    `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --team <team> --id <ISSUE-ID> --id <related id>…`.
    Read only the receipt and `jq -r '.[] | [.identifier, .title, .stateName] | @tsv'`; a
-   non-zero exit means _could not evaluate_.
+   non-zero exit means _could not evaluate_. Reuse the drafter's open-PR snapshot when present;
+   otherwise run `plan-open-prs.mjs fetch` once:
+
+   ```bash
+   OPEN_PRS=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.open-prs.json"
+   # Stays on gh: the daemon has no open-PR list with changed files.
+   if [ ! -f "$OPEN_PRS" ]; then
+     node "$BOSS_PLAN_TOOLBOX/plan/plan-open-prs.mjs" fetch --out-file "$OPEN_PRS"
+   fi
+   ```
+
+   A failed fetch records `- Open-PR overlap: could not evaluate (<reason>)` under `## Planning`;
+   continue the independent ticket scan without `--open-prs`.
    b. Judge real logical dependencies yourself, with direction: `logicalDependencies[<id>] =
 {direction: 'blockedBy' | 'blocks', note}`. Only these verdicts create blocking edges. File
    overlap is computed for you from each ticket's `## Key changes` (pass paths verbatim, never
    coarsened) and becomes a non-blocking `relatedTo` link — touching the same files is a rebase
-   risk, not a prerequisite.
+   risk, not a prerequisite. Overlap only on regions shared with more than the fan-out cap
+   (default three candidates) collapses into one `hot-overlap` planning note per region instead
+   of relations.
    c. Write the scan input to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json`
    (`declaredRelatedIds`, `logicalDependencies`, optional `childrenByParentId`, plus any
    `moduleRoots`/`repoWideTokens`/`areaAliases` overrides — no `subject`) and classify:
@@ -538,7 +573,9 @@ Then:
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    DEPS_IN=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json"
    CANDIDATES=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json"
-   node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" deps "$DEPS_IN" "$CANDIDATES" --subject <ISSUE-ID>
+   OPEN_PRS=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.open-prs.json"
+   set --; if [ -f "$OPEN_PRS" ]; then set -- --open-prs "$OPEN_PRS"; fi
+   node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" deps "$DEPS_IN" "$CANDIDATES" --subject <ISSUE-ID> "$@"
    # Remove the consumed scan input.
    rm -f "$DEPS_IN"
    ```
@@ -546,9 +583,11 @@ Then:
    Read the stderr line (`subjectAreas`, unresolved tokens, verdict) before writing anything.
    d. Act on the result: write each `edge.write` with `appendDependency` (append-only); `relatedTo`
    edges with `appendRelatedTo` when the adapter has it, else a `## Planning` note; `notes` under
-   `## Planning`; `questions` under `## Open Questions` plus `agent-question`. A `skipped` entry
+   their declared destination (`planning` → `## Planning`, `risks` → `## Risks`); `questions` under `## Open Questions` plus `agent-question`. A `skipped` entry
    with `expandChildren` true — add its children as `--id` and re-run (at most twice, excluding
-   parents already expanded). `no-candidates` is a clean result: record nothing.
+   parents already expanded). An `open-pr-ticket-unfetched` skip adds its id as `--id` and re-runs
+   fetch-candidates plus deps once, reusing the snapshot. Record `open-pr-overlap` notes at their
+   destination and `open-prs-truncated` warnings as-is. `no-candidates` is a clean result: record nothing.
    `could-not-evaluate` is reported as such, never as "no dependencies"; an unresolved area is
    code-marked or declared in `moduleRoots` and re-run.
    e. Before each blocking write, read both tickets' relations and skip a write that would form a
@@ -582,6 +621,7 @@ Then:
    ```bash
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    PREMISES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json"; LIVE_STATES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premise-states.json"
+   BASE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-base.md"
    FINAL=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md"
    PREMISE_BEFORE="$(shasum -a 256 "$FINAL")" || exit 1
    PREMISE_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" premises "$PREMISES_FILE" "$LIVE_STATES_FILE" --annotate .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md 2>&1)"
@@ -601,7 +641,8 @@ Then:
    node "$BOSS_PLAN_TOOLBOX/plan/plan-section-append.mjs" --file "$FINAL" --heading "Open Questions" --item "<question>"
    ```
 
-   Save `$FINAL` with `write-description` (plus labels if `agent-question` was added). Record whether
+   Save the edited `$FINAL` with `write-description --body-file "$FINAL" --base-file "$BASE"`
+   (plus labels if `agent-question` was added), using step 3's read-before-retry rule on rejection. Record whether
    this second description save happened; only then is `image-guard-base.md` the stale input for step 5.
    The description and the attachment then legitimately differ at `## Planning`.
 

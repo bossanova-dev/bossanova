@@ -15,14 +15,14 @@ are in [references/briefs.md](references/briefs.md).
 
 **Inputs** (all optional; a standalone run supplies none):
 
-| Input           | Meaning                                                                             |
-| --------------- | ----------------------------------------------------------------------------------- |
-| `BASE`          | ref to diff against (default: merge-base with the remote default branch)            |
-| `HEAD`          | ref to review (default: `HEAD`)                                                     |
-| `PLAN_FILE`     | the plan or ticket the change implements — intent only, never a checklist           |
-| `PRIOR_VERDICT` | previous pooled verdict; optional input for resolving earlier non-blocking findings |
-| `OUT_DIR`       | where the verdict and report go (default: a fresh temp dir)                         |
-| `--fix`         | run the one fix pass below; without it the review is report-only (the default)      |
+| Input           | Meaning                                                                                                                         |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `BASE`          | ref to diff against (default: merge-base with the remote default branch)                                                        |
+| `HEAD`          | ref to review (default: `HEAD`)                                                                                                 |
+| `PLAN_FILE`     | the plan or ticket the change implements — intent for finders; acceptance criteria certified mechanically by the certify helper |
+| `PRIOR_VERDICT` | previous pooled verdict; optional input for resolving earlier non-blocking findings                                             |
+| `OUT_DIR`       | where the verdict and report go (default: a fresh temp dir)                                                                     |
+| `--fix`         | run the one fix pass below; without it the review is report-only (the default)                                                  |
 
 **Outputs:**
 
@@ -31,14 +31,16 @@ are in [references/briefs.md](references/briefs.md).
   the contract. `status` is `pass`, `blocked` or `error`; each finding carries `id`, `severity`
   (`P0`–`P3`), `introduced`, `file`, `line`, `title`, `evidence`, `source`, `verified`, `fixed` and,
   once fixed, `fixCommit`; plus `fixPass {ran, deltaBase?}`, `secondModel {ran, agent?, reason?}`
-  and optional top-level `resolves` (earlier finding refs confirmed gone). Pooling adds each
+  and optional top-level `acceptance` (head/tree-bound criterion certification, owned by the helper)
+  and `resolves` (earlier finding refs confirmed gone). Pooling adds each
   finding's `ref` (`<pass>.<member>:<id>`) and, when resolved later, `resolvedBy` (`<pass>.<member>`).
 - `$OUT_DIR/review-report.md` — `review-verdict.mjs render --report`; its first line is
   `<!-- bs-review -->` so a caller can upsert it as a PR comment.
 - A last line `boss-review: <status> <path to review-verdict.json>`.
 
 A repo can replace this skill entirely (`review.skill` in `.boss-skills.json`); the replacement
-receives the same inputs and must write the same verdict file.
+receives the same inputs and must write the same verdict file. It may omit `acceptance`;
+boss-build certifies fresh when no reusable block exists.
 
 ## Helpers
 
@@ -47,15 +49,17 @@ BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolb
 if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
 ```
 
-| Question                                        | Ask                                                                                    |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Is this verdict well-formed?                    | `node review-verdict.mjs validate <file>` (exit 0 / 2)                                 |
-| What do the findings decide?                    | `node review-verdict.mjs status <file>` → `pass` \| `blocked` \| `error`               |
-| Which earlier findings can be resolved?         | `node review-verdict.mjs resolvable <file>` → JSON candidates (exit 0 / 2)             |
-| Report / PR sections                            | `node review-verdict.mjs render <file> --report` \| `--pr-section`                     |
-| Is the other agent's CLI usable?                | `node review/codex-review.mjs probe` / `node review/claude-review.mjs probe` → `ready` |
-| Run the second model over a range               | `node review/<agent>-review.mjs run --base <sha> --head <sha>`                         |
-| Is the second model on? Hang guard, soft budget | `reviewSecondModel`, `reviewTimeDefaults` in `skill-config.mjs`                        |
+| Question                                        | Ask                                                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Certify the plan criterion checks               | `node build/acceptance-retry.mjs certify --plan <path> --base <remote/branch> --out <file>` |
+| Attach criterion evidence                       | `node review-verdict.mjs attach-acceptance <verdict> <file>`                                |
+| Is this verdict well-formed?                    | `node review-verdict.mjs validate <file>` (exit 0 / 2)                                      |
+| What do the findings decide?                    | `node review-verdict.mjs status <file>` → `pass` \| `blocked` \| `error`                    |
+| Which earlier findings can be resolved?         | `node review-verdict.mjs resolvable <file>` → JSON candidates (exit 0 / 2)                  |
+| Report / PR sections                            | `node review-verdict.mjs render <file> --report` \| `--pr-section`                          |
+| Is the other agent's CLI usable?                | `node review/codex-review.mjs probe` / `node review/claude-review.mjs probe` → `ready`      |
+| Run the second model over a range               | `node review/<agent>-review.mjs run --base <sha> --head <sha>`                              |
+| Is the second model on? Hang guard, soft budget | `reviewSecondModel`, `reviewTimeDefaults` in `skill-config.mjs`                             |
 
 ## Rules
 
@@ -65,8 +69,9 @@ if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skill
    host cannot dispatch at all, run each pass yourself, one at a time, and say so in the report.
 2. **The first line of every finder and verifier prompt is `[bs-reviewer-dispatch]`**, alone on its
    line — an inert marker cost telemetry counts.
-3. **Read, don't run.** Finders and verifiers read code; the review runs no test suites. Only the
-   fixer runs tests, and only the targeted ones for what it touched.
+3. **Run only declared checks.** Finders and verifiers read code. The fixer runs only targeted
+   tests for what it touched. The review itself runs only the plan's declared criterion checks,
+   through the certify helper; never ad hoc test commands.
 4. **Only verified findings exist.** An unverified candidate is dropped, not downgraded. Never write
    `status` by judgement: `review-verdict.mjs status` recomputes it from the findings.
 5. **Blocking is narrow:** verified, introduced by this change, P0 or P1, not fixed. Everything else
@@ -88,6 +93,11 @@ BASE_SHA="$(git rev-parse "$BASE")" || exit 1
 [ -n "${OUT_DIR:-}" ] || REVIEW_STANDALONE=1   # a caller that supplies OUT_DIR records health itself
 OUT_DIR="${OUT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/boss-review.XXXXXX")}"
 mkdir -p "$OUT_DIR"
+CERTIFY_DEADLINE_MS="$(node --input-type=module -e '
+  import { pathToFileURL } from "node:url"
+  const { loadSkillConfig, reviewTimeDefaults } = await import(pathToFileURL(process.argv[1]+"/skill-config.mjs").href)
+  console.log(Date.now() + Math.floor(reviewTimeDefaults(loadSkillConfig()).hangGuardMs / 2))
+' "$BOSS_REVIEW_TOOLBOX")"
 git diff --stat "$BASE_SHA...$HEAD_SHA"
 ```
 
@@ -141,10 +151,26 @@ Write `$OUT_DIR/review-verdict.json` (`version: 1`, `base`, `head`, the findings
 
 ```bash
 node "$BOSS_REVIEW_TOOLBOX/review-verdict.mjs" validate "$OUT_DIR/review-verdict.json" || echo "verdict invalid: fix the file it names"
+if [ -n "${PLAN_FILE:-}" ]; then
+  CERTIFY_BASE="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+  node "$BOSS_REVIEW_TOOLBOX/build/acceptance-retry.mjs" certify --plan "$PLAN_FILE" --base "${CERTIFY_BASE:-origin/main}" --out "$OUT_DIR/acceptance.json" --deadline-ms "$CERTIFY_DEADLINE_MS"
+  CERTIFY_HEAD="$(node -e 'const fs=require("node:fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).head)' "$OUT_DIR/acceptance.json")"
+  if [ "$CERTIFY_HEAD" = "$HEAD_SHA" ]; then
+    node "$BOSS_REVIEW_TOOLBOX/review-verdict.mjs" attach-acceptance "$OUT_DIR/review-verdict.json" "$OUT_DIR/acceptance.json"
+  else
+    echo "Acceptance certification skipped: requested review head differs from the checkout head."
+  fi
+fi
 node "$BOSS_REVIEW_TOOLBOX/review-verdict.mjs" render "$OUT_DIR/review-verdict.json" --report >"$OUT_DIR/review-report.md"
 STATUS="$(node "$BOSS_REVIEW_TOOLBOX/review-verdict.mjs" status "$OUT_DIR/review-verdict.json")"
 if [ -n "${REVIEW_STANDALONE:-}" ]; then node "$BOSS_REVIEW_TOOLBOX/review/second-model-health.mjs" record "$OUT_DIR/review-verdict.json"; fi
 ```
+
+Certification uses the remote default branch, never `BASE`/`BASE_SHA` (which may be a merge-base).
+The absolute certification deadline is initialized once at review entry and shared by the initial
+and post-fix passes; review and fix time also consume that budget. It never changes `STATUS`. When the checkout differs from the requested head, omit the block and
+record that certification was skipped in the report. Step 5 repeats certification at the fixed head
+when it redoes Step 4.
 
 An invalid verdict is repaired (the errors name what is wrong), never shipped. If the review could
 not produce findings at all — every finder failed — write `{"version":1,"status":"error","error":"<why>"}`.

@@ -14,6 +14,9 @@ const (
 	AgentChatRoleRepair   AgentChatRole = "repair"
 	AgentChatRoleVerify   AgentChatRole = "verify"
 	AgentChatRoleOperator AgentChatRole = "operator"
+	// AgentChatRoleCoordinator is an orchestrating chat the operator started.
+	// Only an operator may create one; the coordinator approval grant names it.
+	AgentChatRoleCoordinator AgentChatRole = "coordinator"
 )
 
 // ParseAgentChatRole maps a stored or wire spelling onto a role. Anything it
@@ -21,7 +24,7 @@ const (
 // is treated with the caution owed to a legacy row rather than rejected.
 func ParseAgentChatRole(s string) AgentChatRole {
 	switch r := AgentChatRole(s); r {
-	case AgentChatRoleBuild, AgentChatRoleRepair, AgentChatRoleVerify, AgentChatRoleOperator:
+	case AgentChatRoleBuild, AgentChatRoleRepair, AgentChatRoleVerify, AgentChatRoleOperator, AgentChatRoleCoordinator:
 		return r
 	case AgentChatRoleUnknown:
 		return AgentChatRoleUnknown
@@ -31,12 +34,13 @@ func ParseAgentChatRole(s string) AgentChatRole {
 
 // IsAgentOwned reports whether automation owns the chat: no operator is
 // expected to be reading or typing into it, so automation may replace it once
-// it has gone idle. Operator and unknown chats are never agent-owned.
+// it has gone idle. Operator, coordinator and unknown chats are never
+// agent-owned.
 func (r AgentChatRole) IsAgentOwned() bool {
 	switch r {
 	case AgentChatRoleBuild, AgentChatRoleRepair, AgentChatRoleVerify:
 		return true
-	case AgentChatRoleOperator, AgentChatRoleUnknown:
+	case AgentChatRoleOperator, AgentChatRoleCoordinator, AgentChatRoleUnknown:
 		return false
 	}
 	return false

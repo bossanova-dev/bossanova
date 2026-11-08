@@ -716,7 +716,7 @@ func (m *repairMonitor) sweepExistingSessions(ctx context.Context) {
 	}
 
 	// Second pass: evaluate each session for repair.
-	for _, sess := range resp.GetSessions() {
+	for _, sess := range sessionsInRankOrder(resp.GetSessions()) {
 		m.maybeRepair(sess.GetId(), sess.GetDisplayStatus(), sess.GetDisplayHasFailures())
 	}
 

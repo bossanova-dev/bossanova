@@ -48,6 +48,7 @@ UPDATE sessions SET
  pr_url = CASE WHEN CAST(sqlc.arg(set_pr_url) AS BOOLEAN) THEN sqlc.narg(pr_url) ELSE pr_url END,
  tracker_id = CASE WHEN CAST(sqlc.arg(set_tracker_id) AS BOOLEAN) THEN sqlc.narg(tracker_id) ELSE tracker_id END,
  tracker_url = CASE WHEN CAST(sqlc.arg(set_tracker_url) AS BOOLEAN) THEN sqlc.narg(tracker_url) ELSE tracker_url END,
+ tracker_ranked_at = CASE WHEN (CAST(sqlc.arg(set_tracker_id) AS BOOLEAN) AND tracker_id IS NOT sqlc.narg(tracker_id)) OR (CAST(sqlc.arg(set_tracker_url) AS BOOLEAN) AND tracker_url IS NOT sqlc.narg(tracker_url)) THEN NULL ELSE tracker_ranked_at END,
  tmux_session_name = CASE WHEN CAST(sqlc.arg(set_tmux_session_name) AS BOOLEAN) THEN sqlc.narg(tmux_session_name) ELSE tmux_session_name END,
  last_check_state = COALESCE(sqlc.narg(last_check_state), last_check_state),
  last_check_state_head_sha = CASE WHEN CAST(sqlc.arg(set_last_check_state_head_sha) AS BOOLEAN) THEN sqlc.narg(last_check_state_head_sha) ELSE last_check_state_head_sha END,

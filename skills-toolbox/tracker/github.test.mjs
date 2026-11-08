@@ -410,3 +410,35 @@ test('selection accepts only the configured repository as team', async () => {
       )
   }
 })
+
+test('planClaims reads paginated comments only for surviving candidates', async () => {
+  const calls = []
+  const spawn = (cmd, args) => {
+    calls.push(args)
+    let output
+    if (args[0] === 'label') output = [{ name: 'boss:todo' }]
+    else if (args[0] === 'issue') output = [raw(1), raw(2)]
+    else if (isGraphql(args)) output = rankFactsAnswer(args)
+    else if (args[1] === 'repos/acme/tasks/issues/1/comments')
+      output = [
+        [
+          { id: 1, body: 'ordinary', created_at: '2026-11-08' },
+          { id: 2, body: `bs-plan-claim:${'a'.repeat(32)}`, created_at: '2026-11-08' },
+        ],
+      ]
+    else throw new Error(`unexpected ${args.join(' ')}`)
+    return { status: 0, stdout: JSON.stringify(output) }
+  }
+  const adapter = createGithubAdapter({ config, spawn })
+  const rows = await adapter.selectPlanned({ state: 'boss:todo', limit: 1, planClaims: true })
+  assert.equal(adapter.planClaimSelection, true)
+  assert.equal(rows.length, 1)
+  assert.deepEqual(rows[0].planClaimComments, [
+    { id: 2, body: `bs-plan-claim:${'a'.repeat(32)}`, createdAt: '2026-11-08' },
+  ])
+  assert.ok(calls.some((args) => args.includes('--paginate') && args.includes('--slurp')))
+  await assert.rejects(
+    adapter.selectPlanned({ state: 'boss:todo', unknown: true }),
+    /unsupported query key/,
+  )
+})

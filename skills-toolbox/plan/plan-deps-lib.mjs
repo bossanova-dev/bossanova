@@ -152,6 +152,7 @@ export const DEPENDENCY_REASONS = Object.freeze([
   // Write guard — an established edge whose write intent cannot name both sides.
   'unidentifiable-issue',
   // Set-level outcomes.
+  'hot-overlap',
   'declared-related-unresolved',
   'no-candidates-compared',
   'no-subject-areas',
@@ -208,6 +209,9 @@ const DEFAULT_REPO_WIDE_TOKENS = Object.freeze([
   // constraint, so keep the token for compatibility across repositories.
   'docs/plans',
 ])
+
+// A real merge-order neighbour set is small; higher fan-out signals a hot registry.
+const DEFAULT_MAX_OVERLAP_FAN_OUT = 3
 
 // The state roles a candidate must occupy to be a valid blocker. Cleared
 // candidates are admitted separately (rung 4 has something to say about them);
@@ -1391,6 +1395,46 @@ function compareByKey(a, b) {
   return 0
 }
 
+/** Partition overlap edges without changing logical writes or individual records. */
+function demoteHotOverlaps(records, cap) {
+  const regions = new Map()
+  for (const record of records) {
+    if (record.basis !== 'overlap') continue
+    for (const region of record.shared) {
+      if (!regions.has(region)) regions.set(region, new Set())
+      regions.get(region).add(issueLabel(record))
+    }
+  }
+  const hot = new Map([...regions].filter(([, candidates]) => candidates.size > cap))
+  const edges = []
+  const skipped = []
+  for (const record of records) {
+    if (record.basis === 'overlap' && record.shared.every((region) => hot.has(region))) {
+      skipped.push({
+        ...record,
+        edge: 'none',
+        reason: 'hot-overlap',
+        note: null,
+        expandChildren: false,
+      })
+    } else {
+      edges.push(record)
+    }
+  }
+  const notes = [...hot]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([region, candidates]) =>
+      note(
+        'info',
+        'planning',
+        region,
+        'hot-overlap',
+        `\`${region}\` is shared with ${candidates.size} open tickets (${[...candidates].sort().join(', ')}), so overlap on it alone is recorded as rebase surface, not as ${candidates.size} relations; declare it in \`repoWideTokens\` if it is always hot.`,
+      ),
+    )
+  return { edges, skipped, notes }
+}
+
 function epicParentKey(issue) {
   return text(issue?.epicParentId ?? issue?.parentId)
     .trim()
@@ -1425,6 +1469,7 @@ function epicParentKey(issue) {
  *   (`expansion: 'in-set'`), and comparing nothing is a clean empty backlog rather
  *   than a `no-candidates-compared` warning. Absent/false keeps the conservative
  *   behaviour for a hand-built set.
+ * @param {number} [input.maxOverlapFanOut] positive-integer region fan-out cap; invalid values default to 3
  * @param {string[]} [input.knownFiles] known committed files, including nested extensionless names
  * @returns {{edges: object[], skipped: object[], notes: object[], questions: object[], compared: number,
  *   candidatesWithoutAreas: number, candidateSetComplete: boolean}}
@@ -1522,7 +1567,7 @@ export function planDependencyEdges(input = {}) {
     }
   }
 
-  const edges = []
+  let edges = []
   let compared = 0
   const comparedReasons = []
   // Candidates beyond rung-1 identity rejections, and how many contributed no area.
@@ -1649,9 +1694,17 @@ export function planDependencyEdges(input = {}) {
   }
 
   reconcileDeclared()
+  const cap =
+    Number.isInteger(input.maxOverlapFanOut) && input.maxOverlapFanOut > 0
+      ? input.maxOverlapFanOut
+      : DEFAULT_MAX_OVERLAP_FAN_OUT
+  const hotOverlaps = demoteHotOverlaps(edges, cap)
+  edges = hotOverlaps.edges
+  skipped.push(...hotOverlaps.skipped)
   edges.sort(compareByKey)
   skipped.sort(compareByKey)
   const notes = [...edges, ...skipped].map((entry) => entry.note).filter(Boolean)
+  notes.push(...hotOverlaps.notes)
   const questions = [...edges, ...skipped].map((entry) => entry.question).filter(Boolean)
   if (compared === 0) {
     // A complete candidate set that held nothing but the subject is an empty

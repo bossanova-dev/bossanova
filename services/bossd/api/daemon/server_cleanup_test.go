@@ -542,3 +542,7 @@ func (m *cleanupWorktreeManager) RebaseOntoBaseAndPush(context.Context, string, 
 func (*cleanupSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
 	return nil
 }
+
+func (s *cleanupSessionStore) SetTrackerRank(context.Context, string, string, *string, models.TrackerRank) (bool, error) {
+	return false, nil
+}

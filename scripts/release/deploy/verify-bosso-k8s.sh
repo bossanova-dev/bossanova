@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+
 ENVIRONMENT="${ENVIRONMENT:-production}"
 case "${ENVIRONMENT}" in
   staging)
@@ -65,10 +67,40 @@ decode_base64() {
   printf '%s' "${encoded}" | base64 -D 2>/dev/null
 }
 
+overlay_image_ref() {
+  awk '
+    /^[[:space:]]*- name: / { name = $3 }
+    /^[[:space:]]*newTag: ["\047][^"\047]+["\047]  # bosso$/ {
+      count++
+      tag = $2
+      gsub(/["\047]/, "", tag)
+      image = name ":" tag
+      if (name == "") invalid = 1
+    }
+    END {
+      if (count != 1 || invalid) exit 1
+      print image
+    }
+  '
+}
+
+EXPECTED_IMAGE_SOURCE=EXPECTED_IMAGE_REF
 if [ -z "${EXPECTED_IMAGE_REF}" ]; then
-  echo "EXPECTED_IMAGE_REF or IMAGE_REF is required for ${ENVIRONMENT} verification" >&2
-  exit 2
+  OVERLAY_PATH="infra/kustomize/overlays/${ENVIRONMENT}/kustomization.yml"
+  if [ -z "${OVERLAY_REF:-}" ]; then
+    if git -C "${ROOT_DIR}" rev-parse --verify --quiet "refs/heads/${ENVIRONMENT}" >/dev/null; then
+      OVERLAY_REF="refs/heads/${ENVIRONMENT}"
+    else
+      OVERLAY_REF="origin/${ENVIRONMENT}"
+    fi
+  fi
+  EXPECTED_IMAGE_SOURCE="${OVERLAY_REF}:${OVERLAY_PATH}"
+  if ! EXPECTED_IMAGE_REF="$(git -C "${ROOT_DIR}" show "${EXPECTED_IMAGE_SOURCE}" | overlay_image_ref)"; then
+    echo "Cannot resolve exactly one bosso image pin from ${EXPECTED_IMAGE_SOURCE}; EXPECTED_IMAGE_REF overrides the default" >&2
+    exit 2
+  fi
 fi
+echo "Expected bs-bosso image: ${EXPECTED_IMAGE_REF} (from ${EXPECTED_IMAGE_SOURCE})"
 
 echo "Checking Kubernetes objects in namespace ${NAMESPACE}"
 kubectl get namespace "${NAMESPACE}"
@@ -84,7 +116,7 @@ DEPLOYED_IMAGE_REF="$(
     -o jsonpath='{.spec.template.spec.containers[?(@.name=="bosso")].image}'
 )"
 if [ "${DEPLOYED_IMAGE_REF}" != "${EXPECTED_IMAGE_REF}" ]; then
-  echo "deployed image mismatch: expected ${EXPECTED_IMAGE_REF}, got ${DEPLOYED_IMAGE_REF}" >&2
+  echo "deployed image mismatch: expected ${EXPECTED_IMAGE_REF} (from ${EXPECTED_IMAGE_SOURCE}), got ${DEPLOYED_IMAGE_REF}" >&2
   exit 1
 fi
 
@@ -120,7 +152,7 @@ curl -fsS --connect-timeout "${CURL_CONNECT_TIMEOUT}" --max-time "${CURL_MAX_TIM
 echo
 
 echo "Checking streaming transport duplex (streamprobe)"
-(cd services/bossd && go run ./cmd/streamprobe -url "${BASE_URL}")
+(cd "${ROOT_DIR}/services/bossd" && go run ./cmd/streamprobe -url "${BASE_URL}")
 
 # Deploy-ordering gate (BOS-241): the freshly-deployed server must support the
 # API version this build's first-party clients request. apiversioncheck sends a
@@ -128,7 +160,7 @@ echo "Checking streaming transport duplex (streamprobe)"
 # server's supported-max trails the built client Current — so production can
 # never be released trailing the versions in circulation. See docs/structure/contracts.md.
 echo "Checking API version support (server must not trail built clients)"
-(cd services/bossd && go run ./cmd/apiversioncheck -url "${BASE_URL}")
+(cd "${ROOT_DIR}/services/bossd" && go run ./cmd/apiversioncheck -url "${BASE_URL}")
 
 echo "Checking NEG endpoint attachment"
 if gcloud compute network-endpoint-groups describe "bs-bosso-neg-${ENVIRONMENT}" \
@@ -163,7 +195,7 @@ if [ "${MANUAL_CHECKS_CONFIRMED}" != "true" ]; then
 Automated checks passed, but manual ${ENVIRONMENT} checks are not recorded.
 Complete every manual required check above, then rerun with:
 
-  ENVIRONMENT=${ENVIRONMENT} MANUAL_CHECKS_CONFIRMED=true scripts/release/deploy/verify-bosso-k8s.sh
+  MANUAL_CHECKS_CONFIRMED=true make verify-${ENVIRONMENT}
 
 Refusing success until manual checks are confirmed.
 INSTRUCTIONS

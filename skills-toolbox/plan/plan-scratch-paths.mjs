@@ -160,6 +160,13 @@ export const PLAN_SCRATCH_FAMILIES = [
     '^SEG\\.candidates\\.json$',
   ),
   fam(
+    'open-prs',
+    '<ISSUE-ID>.open-prs.json',
+    'the open-PR snapshot with changed files that recon and the dependency scan compare against',
+    ({ issueId }) => `${issueId}.open-prs.json`,
+    '^SEG\\.open-prs\\.json$',
+  ),
+  fam(
     'write-description-descriptor',
     '<ISSUE-ID>.write-description.json',
     'the descriptor the tracker write-description verb emits, read for its explicit outcome',
@@ -299,7 +306,7 @@ export const PLAN_SCRATCH_FAMILIES = [
   fam(
     'image-guard-base',
     '<ISSUE-ID>.image-guard-base.md',
-    'the settled stored description used as the base of a second description save',
+    'the stored description read before editing the second save, the write-description --base-file',
     ({ issueId }) => `${issueId}.image-guard-base.md`,
     '^SEG\\.image-guard-base\\.md$',
   ),
@@ -361,6 +368,13 @@ export const PLAN_SCRATCH_FAMILIES = [
   ),
   // Extension envelopes use declared names so run cleanup and TTL reap cover them.
   // role is the extension's marker role; name is its descriptor name.
+  fam(
+    'extension-heartbeat',
+    '<ISSUE-ID>.ext-<role>-<name>.heartbeat.json',
+    'the liveness artifact one dispatched extension touches while working',
+    ({ issueId, role, name }) => `${issueId}.ext-${role}-${name}.heartbeat.json`,
+    '^SEG\\.ext-SEG-SEG\\.heartbeat\\.json$',
+  ),
   fam(
     'extension-out',
     '<ISSUE-ID>.ext-<role>-<name>.json',
@@ -430,8 +444,20 @@ export function planScratchPath(runId, family, parts = {}, root = PLAN_SCRATCH_R
         `declare it in PLAN_SCRATCH_FAMILIES rather than inventing a name`,
     )
   }
-  const basename = declared.basename(parts)
-  if (basename.includes('undefined') || basename.includes('/')) {
+  const basename = declared.basename(
+    new Proxy(parts, {
+      get(target, key) {
+        const value = Reflect.get(target, key)
+        if (value === undefined) {
+          throw new Error(
+            `plan-scratch-paths: family ${family} produced an unusable basename: missing ${String(key)}`,
+          )
+        }
+        return value
+      },
+    }),
+  )
+  if (basename.includes('/')) {
     throw new Error(
       `plan-scratch-paths: family ${family} produced an unusable basename ${JSON.stringify(basename)}`,
     )

@@ -71,7 +71,7 @@ func NewLocalWithToken(socketPath, token string) *LocalClient {
 
 // newLocalClient is the shared construction body for NewLocal and
 // NewLocalWithToken; only where the token comes from differs between them.
-func newLocalClient(socketPath, token string) *LocalClient {
+func newLocalClient(socketPath, token string, extra ...connect.Interceptor) *LocalClient {
 	// Timeout is deliberately left unset. http.Client.Timeout covers the entire
 	// response body read, and this same client serves the only two streaming
 	// RPCs on DaemonService (CreateSession and AttachSession) — a wall-clock
@@ -102,10 +102,7 @@ func newLocalClient(socketPath, token string) *LocalClient {
 	// empty string) still builds the client — the RPC then fails with
 	// CodeUnauthenticated, which errMapInterceptor turns into an actionable
 	// message.
-	interceptors := []connect.Interceptor{
-		errMapInterceptor{},
-		deadlineInterceptor{socketPath: socketPath},
-	}
+	interceptors := append([]connect.Interceptor{errMapInterceptor{}, deadlineInterceptor{socketPath: socketPath}}, extra...)
 	if token != "" {
 		interceptors = append(interceptors, socketauth.NewClientInterceptor(token))
 	}

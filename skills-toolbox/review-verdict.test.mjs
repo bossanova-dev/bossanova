@@ -697,3 +697,58 @@ test('review notes fold separately from unapplied P2 findings without holding th
   assert.doesNotMatch(pr.get('unapplied review findings').join('\n'), /P3/)
   assert.match(reviewVerdict.renderReport(result), /2 unapplied, 1 notes\./)
 })
+
+test('acceptance validates independently of review status and survives latest-block pooling', () => {
+  const acceptance = {
+    head: HEAD,
+    tree: BASE,
+    criteria: [{ id: 'AC1', result: 'unmet', check: 'false' }],
+  }
+  const first = verdict([], { acceptance })
+  assert.equal(reviewVerdict.validateVerdict(first).ok, true)
+  assert.equal(verdictStatus(first).status, 'pass')
+  for (const key of ['head', 'tree']) {
+    const bad = structuredClone(first)
+    delete bad.acceptance[key]
+    assert.match(reviewVerdict.validateVerdict(bad).errors.join(' '), new RegExp(key))
+  }
+  const bad = structuredClone(first)
+  bad.acceptance.criteria[0].result = 'pass'
+  assert.match(reviewVerdict.validateVerdict(bad).errors.join(' '), /result/)
+  const second = verdict([], { acceptance: { ...acceptance, tree: HEAD } })
+  for (const [last, expected] of [
+    [second, HEAD],
+    [verdict(), BASE],
+  ]) {
+    const inputs = [first, last].map(verdictStatus)
+    assert.equal(reviewVerdict.mergeVerdicts(inputs).acceptance.tree, expected)
+    assert.equal(
+      reviewVerdict.poolVerdicts(inputs.map((result, i) => ({ pass: i + 1, member: 1, result })))
+        .verdict.acceptance.tree,
+      expected,
+    )
+  }
+  assert.match(reviewVerdict.renderReport(verdictStatus(first)), /### Acceptance certification/)
+  assert.doesNotMatch(
+    reviewVerdict.renderReport(verdictStatus(verdict())),
+    /### Acceptance certification/,
+  )
+})
+
+test('attach-acceptance validates before changing the verdict', () => {
+  const acceptance = { head: HEAD, tree: BASE, criteria: [{ id: 'AC1', result: 'met' }] }
+  const files = { ...withVerdict(verdict()), '/a.json': JSON.stringify(acceptance) }
+  assert.equal(run(['attach-acceptance', '/v.json', '/a.json'], files).code, 0)
+  assert.deepEqual(JSON.parse(files['/v.json']).acceptance, acceptance)
+  for (const v of [verdict(), { version: 1, status: 'error', error: 'review failed' }]) {
+    const untouched = withVerdict(v)
+    const before = untouched['/v.json']
+    assert.equal(run(['attach-acceptance', '/v.json', '/missing'], untouched).code, 2)
+    assert.equal(untouched['/v.json'], before)
+    untouched['/a.json'] = JSON.stringify(acceptance)
+    if (v.status === 'error') {
+      assert.equal(run(['attach-acceptance', '/v.json', '/a.json'], untouched).code, 2)
+      assert.equal(untouched['/v.json'], before)
+    }
+  }
+})

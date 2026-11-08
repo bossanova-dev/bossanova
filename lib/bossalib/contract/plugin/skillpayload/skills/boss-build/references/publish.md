@@ -21,6 +21,8 @@ contains one.
 Tracker issue: <url>
 
 ## Premise discharge
+- Open PRs: #N <file|directory> <shared files> — planned|held|recorded; include truncation warnings,
+  or `could not evaluate open PRs (<reason>)`.
 - <the plan's central premise and the evidence it still holds — or the departure: what the premise
   was, the evidence against it, and what the build did instead>
 

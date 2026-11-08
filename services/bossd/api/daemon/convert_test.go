@@ -1707,3 +1707,7 @@ func TestHydrateVerifyAttention(t *testing.T) {
 func (*fakeSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
 	return nil
 }
+
+func (f *fakeSessionStore) SetTrackerRank(context.Context, string, string, *string, models.TrackerRank) (bool, error) {
+	return false, nil
+}

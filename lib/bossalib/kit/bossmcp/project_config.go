@@ -317,7 +317,14 @@ func planLocalProjectConfig(ctx context.Context, backend Backend, cfg *projectco
 			checkout = rc.GetRepo().GetLocalPath()
 		}
 	}
-	home, _ := userHomeDir()
+	home, err := userHomeDir()
+	if err != nil {
+		if idx, _ := projectconfig.MatchDaemon(cfg.Daemons, identity); idx >= 0 {
+			if path := cfg.Daemons[idx].Path; path != nil && strings.HasPrefix(*path, "~/") {
+				return nil, fmt.Errorf("resolve home directory for daemon %q path: %w", cfg.Daemons[idx].Name, err)
+			}
+		}
+	}
 	opts := projectconfig.LocalOptions{
 		Daemon:           identity,
 		CheckoutPath:     checkout,

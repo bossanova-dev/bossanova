@@ -763,6 +763,7 @@ func sessionFromRow(row sqlcgen.Session) *domain.Session {
 		PRReadiedAt:                 optionalTextTime(row.PrReadiedAt),
 		PRURL:                       row.PrUrl,
 		TrackerID:                   row.TrackerID,
+		TrackerRank:                 trackerRankFromRow(row),
 		TrackerURL:                  row.TrackerUrl,
 		TmuxSessionName:             row.TmuxSessionName,
 		LastCheckStateHeadSHA:       row.LastCheckStateHeadSha,

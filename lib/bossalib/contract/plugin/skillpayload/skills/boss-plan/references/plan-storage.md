@@ -162,17 +162,17 @@ The write follows the adapter's declared transport. `write-description` reads an
 body. For an MCP operation it prints a `{tool, args}` record for you to execute through the
 tracker's own interface, with no raw API call. For a command operation it performs the write and
 prints `outcome: operation-executed` with its `result`; do not make another write.
-The MCP descriptor fixes **which** bytes are sent (the gated file) and their measured size. It does
-**not** keep them out of your context: on a tracker
-whose save takes the description only inline (Linear `save_issue`), executing the descriptor
-re-emits those bytes through you as the tool argument. What measures whether they survived that
-round trip is the Phase 4 step 6 write-back check (`plan-writeback-verify.mjs`), which compares the
-tracker's stored description with the gated file:
+With `--base-file` and a declared `patchDescription` operation, the descriptor carries only an
+anchored delta computed from the code-written stored description. The helper simulates every
+operation and proves the result equals the body file before emitting it. Otherwise it emits the
+full replacement. The Phase 4 step 5 write-back check (`plan-writeback-verify.mjs`) remains the
+authority on what landed:
 
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md"
-node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id "<ISSUE-ID>" --body-file "$NEW"
+BASE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"
+node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id "<ISSUE-ID>" --body-file "$NEW" --base-file "$BASE"
 ```
 
 `$NEW` is deliberately the same file every Phase 4 gate read, not a fresh copy of it: a second
@@ -182,13 +182,24 @@ On success the verb exits 0 and prints one JSON line. Branch on `outcome`: `oper
 means the write already ran and `result` is its answer; continue to the same read-back verification
 below. `descriptor-emitted` means execute the MCP descriptor described here:
 
-- `tool` — the adapter's `writeDescription` tool name. Execute `{tool, args}` as the description of
+- `tool` — the adapter's `patchDescription` or `writeDescription` tool name. Execute `{tool, args}` as the description of
   the single tracker save; the remaining metadata fields ride the same save.
-- `args.description` — the file's bytes, verbatim, including its trailing newline.
+- `args.patch` — the anchored delta in `mode: patch`; execute the returned operations unchanged.
+- `args.description` — the file's bytes, verbatim, in `mode: replace`.
+- `mode` — informational: `patch` or `replace`; always execute the returned `{tool, args}`.
+- `patchBytes` — the serialized patch's byte count, present in patch mode.
+- `patchFallback` — why a supplied base could not produce a patch (absent capability, unsafe or
+  uneconomical delta); replacement mode still sends the intended body.
 - `bytes` — the body's size **measured on disk** with `stat(2)`, not counted from a decoded string, so
   a multi-byte body reports its true size. Report this number; never substitute one you derived.
 - `outcome` — `descriptor-emitted`. Branch on this, not on the exit status alone: an explicit success
   token is what stops a write that changed nothing from reading as a write that landed.
+
+Use the Phase 2 `image-guard-orig.md` snapshot as the first save's base. For the second save,
+read into `image-guard-base.md`, copy to `image-guard-final.md`, and edit only the final file.
+If an anchored patch is rejected as missing or non-unique, read the issue back before retrying
+once without `--base-file`. A failed or invalid UTF-8 base is a caller error to fix, never a
+reason to silently retry a replacement.
 
 Every failure exits 2, writes a one-line reason to **stderr** and **nothing to stdout**, so a caller
 that pipes stdout can never mistake an error for a descriptor. The failures split in two, and the

@@ -110,7 +110,7 @@ func stuckWaitChatLabels(chats []*domain.AgentChat, sessionTitle string) map[str
 			role = chatlabel.RoleVerify
 		case domain.AgentChatRoleRepair:
 			role = chatlabel.RoleRepair
-		case domain.AgentChatRoleOperator:
+		case domain.AgentChatRoleOperator, domain.AgentChatRoleCoordinator:
 			role = chatlabel.RoleOperator
 		case domain.AgentChatRoleUnknown:
 		}

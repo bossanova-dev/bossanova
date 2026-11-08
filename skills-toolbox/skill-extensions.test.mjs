@@ -667,9 +667,16 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     '  role: proof-publish',
     '  publish: /abs/publish.mjs',
   ])
+  writeSkill(root, 'bs-review-badscript', [
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: orchestrate-classify',
+    '  script: ../outside.mjs',
+  ])
   const emitted = new Set()
   for (const { core, role, mode } of [
     { core: 'bs-review', role: 'plan-reviewer' },
+    { core: 'bs-review', role: 'orchestrate-classify' },
     { core: 'bs-review', role: 'release' },
     { core: 'bs-review', role: 'proof-describe' },
     { core: 'bs-review', role: 'proof-publish' },
@@ -733,6 +740,7 @@ test('exactly the non-extension and mode-not-declared skips are classified delib
     'invalid-modes',
     'invalid-publish',
     'invalid-release-marker',
+    'invalid-script',
     'malformed-frontmatter',
     'missing-marker',
     'mode-not-declared',
@@ -906,6 +914,7 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
   // BOS-1396: eleven → ten; completion folds into verify (boss-build's Step 12 verify fast path).
   // BOS-1507: ten → eleven; maintenance is boss-retro's post-report upkeep role.
   // eleven → ten: lens and round retire with boss-review's lens map and round extensions.
+  // The three orchestrate roles extend the orchestrator: prose rulings, row overrides, round checks.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
     'draft',
@@ -913,6 +922,9 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
     'maintenance',
     'methodology',
     'notes',
+    'orchestrate-classify',
+    'orchestrate-round',
+    'orchestrate-rules',
     'plan-reviewer',
     'promote',
     'proof-describe',
@@ -927,9 +939,15 @@ test('the merged role table is the single source for discovery and validation', 
   // The invariant that replaces the two hand-maintained literals: every role in the table declares a
   // non-empty result schema, and ROLE_SCHEMAS is exactly its projection. A role added to
   // EXTENSION_ROLES with no `keys` fails here rather than surfacing as an empty schema that
-  // validates everything.
+  // validates everything. An `instructions` role returns nothing, so no result validates for it.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), Object.keys(EXTENSION_ROLES).sort())
   for (const [role, spec] of Object.entries(EXTENSION_ROLES)) {
+    if (spec.kind === 'instructions') {
+      assert.deepEqual(spec.keys, [], role)
+      const result = { ok: true, extension: 'x', role, items: [] }
+      assert.equal(validateResult(result, role).ok, false, `${role}: a result must not validate`)
+      continue
+    }
     assert.ok(['items', 'fields'].includes(spec.kind), `${role}: unknown result kind ${spec.kind}`)
     assert.ok(
       Array.isArray(spec.keys) && spec.keys.length > 0,
@@ -2200,4 +2218,101 @@ test('proof-publish validateResult requires a closed https result', () => {
     { ok: true, extension: 'host', role: 'proof-publish' },
   ])
     assert.equal(validateResult(bad, 'proof-publish').ok, false, JSON.stringify(bad))
+})
+
+test('orchestrate roles: rules are discovered as prose, script roles carry their script', () => {
+  const root = scratchRoot()
+  try {
+    const marker = (role, ...extra) => [
+      'x-boss-extension:',
+      '  extends: bs-orchestrate',
+      `  role: ${role}`,
+      ...extra,
+    ]
+    const rulesDir = writeSkill(root, 'bs-orchestrate-house', marker('orchestrate-rules'))
+    const classifyDir = writeSkill(
+      root,
+      'bs-orchestrate-triage',
+      marker('orchestrate-classify', '  script: ./bin/classify.mjs'),
+    )
+    writeSkill(root, 'bs-orchestrate-audit', marker('orchestrate-round', '  script: check.mjs'))
+    const discover = (role) =>
+      discoverExtensions({ root, core: 'bs-orchestrate', role, builtinDir: null })
+
+    const rules = discover('orchestrate-rules')
+    assert.deepEqual(rules.skipped, [])
+    assert.deepEqual(
+      rules.extensions.map(({ name, dir, role }) => ({ name, dir, role })),
+      [{ name: 'bs-orchestrate-house', dir: rulesDir, role: 'orchestrate-rules' }],
+    )
+    assert.equal(rules.extensions[0].script, undefined)
+
+    const classify = discover('orchestrate-classify')
+    assert.deepEqual(classify.skipped, [])
+    assert.equal(classify.extensions[0].dir, classifyDir)
+    assert.equal(classify.extensions[0].script, 'bin/classify.mjs')
+    assert.equal(discover('orchestrate-round').extensions[0].script, 'check.mjs')
+
+    for (const [name, role, line] of [
+      ['bs-orchestrate-abs', 'orchestrate-classify', '  script: /etc/classify.mjs'],
+      ['bs-orchestrate-parent', 'orchestrate-round', '  script: ../check.mjs'],
+      ['bs-orchestrate-none', 'orchestrate-round', '  order: 5'],
+    ]) {
+      writeSkill(root, name, marker(role, line))
+      const skip = discover(role).skipped.find((entry) => entry.name === name)
+      assert.equal(skip?.code, 'invalid-script', name)
+      assert.equal(skip.deliberate, false, name)
+      assert.ok(!discover(role).extensions.some((entry) => entry.name === name), name)
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('orchestrate result validation', () => {
+  const header = (role) => ({ ok: true, extension: 'bs-orchestrate-x', role })
+  assert.equal(validateResult(header('orchestrate-rules'), 'orchestrate-rules').ok, false)
+
+  const override = { host: 'local', session: 's1', action: 'hold-release', why: 'freeze' }
+  const classify = (overrides) =>
+    validateResult({ ...header('orchestrate-classify'), overrides }, 'orchestrate-classify')
+  assert.equal(classify([]).ok, true)
+  assert.equal(classify([override, { ...override, next: 'boss chat new s1' }]).ok, true)
+  for (const bad of [
+    undefined,
+    [{ ...override, action: 'Hold Release' }],
+    [{ ...override, why: '' }],
+    [{ ...override, why: 'two\nlines' }],
+    [{ ...override, session: undefined }],
+    [{ ...override, next: 3 }],
+    [{ ...override, extra: true }],
+    ['local/s1'],
+  ])
+    assert.equal(classify(bad).ok, false, JSON.stringify(bad))
+
+  const round = (items) =>
+    validateResult({ ...header('orchestrate-round'), items }, 'orchestrate-round')
+  assert.equal(round([]).ok, true)
+  assert.equal(round([{ title: 'Daemon behind', detail: 'host b runs 1.2' }]).ok, true)
+  assert.equal(round([{ title: 'Daemon behind', detail: '' }]).ok, false)
+  assert.equal(round([{ title: 'Daemon behind' }]).ok, false)
+})
+
+test('only a valid pass citing recording evidence is recorded', () => {
+  const recording = { kind: 'recording', ref: 'https://example.test/video' }
+  assert.equal(
+    classifyVerifyOutcome({ result: verifyResult({ evidence: [recording] }) }).recorded,
+    true,
+  )
+  assert.equal(classifyVerifyOutcome({ result: verifyResult() }).recorded, undefined)
+  assert.equal(
+    classifyVerifyOutcome({
+      result: verifyResult({ verdict: 'human', reason: 'human-review:ui', evidence: [recording] }),
+    }).recorded,
+    undefined,
+  )
+  assert.equal(
+    classifyVerifyOutcome({ result: verifyResult({ ok: false, evidence: [recording] }) }).recorded,
+    undefined,
+  )
 })

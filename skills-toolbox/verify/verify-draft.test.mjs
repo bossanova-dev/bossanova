@@ -12,6 +12,7 @@ import {
   withDraftMarker,
   fileRecovery,
 } from './verify-draft.mjs'
+import { encodeOutcomesTrailer } from './verify-blockers.mjs'
 
 const head = 'a'.repeat(40)
 const marker = `boss-verify draft ${head}`
@@ -35,9 +36,14 @@ function world(overrides = {}) {
     let payload
     if (args[0] === 'pr' && args[1] === 'ready') return { ok: values.ready !== false }
     if (args[0] === 'pr') payload = values.pr
-    else if (args[1].includes('/statuses')) payload = values.statuses
+    else if (args[1] === 'graphql') payload = values.timeline
+    else if (args[1].includes('/statuses'))
+      payload = values.statusBySha?.[args[1].match(/commits\/([a-f0-9]{40})/)[1]] ?? values.statuses
     else if (args[1].includes('/comments?')) payload = values.comments
-    else if (args[1].includes('/permission')) payload = values.permission
+    else if (args[1].includes('/permission'))
+      payload =
+        values.permissionByLogin?.[decodeURIComponent(args[1].split('/').at(-2))] ??
+        values.permission
     else throw new Error(`Unexpected ${command}: ${args}`)
     return payload === null
       ? { ok: false, output: '' }
@@ -131,6 +137,94 @@ test('ready preserves human drafts, stale or untrusted markers, parks and non-dr
   ]) {
     const w = world(overrides)
     assert.deepEqual(await main(args, w), { outcome, ...(reason ? { reason } : {}) })
+    assert.equal(
+      w.calls.some((c) => c[1] === 'ready'),
+      false,
+    )
+  }
+})
+
+// The #4093 shape: verify sent back `sendBack` and drafted the PR; a repair pushed `repaired`
+// without readying it and posted outcomes; a later repair starts from `repaired`, which has no
+// verify status, and pushes `pushed`.
+const sendBack = head
+const repaired = 'c'.repeat(40)
+const pushed = 'd'.repeat(40)
+const outcomes = (from, to, login = 'writer') => ({
+  body: `### Repair blocker outcomes\n\n${encodeOutcomesTrailer({
+    version: 1,
+    blockersHead: from,
+    pushedHead: to,
+    outcomes: [{ id: 'B1', outcome: 'fixed', commit: to }],
+  })}`,
+  user: { login },
+  created_at: '2026-11-06T11:36:19Z',
+})
+const event = (__typename, createdAt) => ({ __typename, createdAt })
+const timeline = (...nodes) => ({
+  data: { repository: { pullRequest: { timelineItems: { nodes } } } },
+})
+function chainWorld(overrides = {}) {
+  return world({
+    pr: { state: 'OPEN', isDraft: true, headRefOid: pushed },
+    localHead: pushed,
+    statusBySha: {
+      [repaired]: [],
+      [sendBack]: [{ context: 'boss/verify', state: 'failure', description: 'blocked: 4 P2' }],
+    },
+    comments: [
+      [
+        {
+          body: `### Verification found 4 blocker(s)\n${marker}\n${headMarker}`,
+          user: { login: 'writer' },
+          created_at: '2026-11-06T09:25:43Z',
+        },
+        outcomes(sendBack, repaired),
+      ],
+    ],
+    timeline: timeline(
+      event('ReadyForReviewEvent', '2026-11-06T08:42:43Z'),
+      event('ConvertToDraftEvent', '2026-11-06T09:25:45Z'),
+    ),
+    ...overrides,
+  })
+}
+const chainArgs = [...args.slice(0, -1), repaired]
+
+test('ready owns verify draft through writer repair outcomes from a send-back head', async () => {
+  const w = chainWorld()
+  assert.deepEqual(await main(chainArgs, w), { outcome: 'readied' })
+  assert.deepEqual(w.calls.at(-1), ['pr', 'ready', '7', '--repo', 'o/r'])
+
+  const hop = 'e'.repeat(40)
+  const twoHops = chainWorld({
+    statusBySha: { ...w.values.statusBySha, [hop]: [] },
+    comments: [[...w.values.comments[0], outcomes(repaired, hop)]],
+  })
+  assert.deepEqual(await main([...args.slice(0, -1), hop], twoHops), { outcome: 'readied' })
+})
+
+test('ready keeps a chained draft a person re-drafted or an untrusted hop links', async () => {
+  for (const [overrides, expected] of [
+    [
+      {
+        timeline: timeline(
+          event('ReadyForReviewEvent', '2026-11-06T12:00:00Z'),
+          event('ConvertToDraftEvent', '2026-11-06T12:05:00Z'),
+        ),
+      },
+      { outcome: 'not-verify-drafted', reason: 'redrafted' },
+    ],
+    [
+      { permissionByLogin: { outsider: { permission: 'read' } } },
+      { outcome: 'not-verify-drafted', reason: 'no-send-back' },
+    ],
+    [{ timeline: null }, { outcome: 'unreadable' }],
+  ]) {
+    const w = chainWorld(overrides)
+    if (overrides.permissionByLogin)
+      w.values.comments = [[w.values.comments[0][0], outcomes(sendBack, repaired, 'outsider')]]
+    assert.deepEqual(await main(chainArgs, w), expected)
     assert.equal(
       w.calls.some((c) => c[1] === 'ready'),
       false,

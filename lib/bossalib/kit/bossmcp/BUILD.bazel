@@ -39,6 +39,7 @@ go_test(
     srcs = [
         "fake_backend_test.go",
         "manifest_test.go",
+        "project_config_home_test.go",
         "project_config_test.go",
         "tools_account_test.go",
         "tools_broadcast_test.go",

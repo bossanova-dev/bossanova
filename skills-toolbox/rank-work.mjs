@@ -142,6 +142,16 @@ function rankOf(node, { byId, projectsById, today }) {
   }
 }
 
+/** Compare shared tracker rank facts, leaving node-level tie breakers to the caller. */
+export function compareRank(a, b) {
+  return (
+    urgency(a.tier) - urgency(b.tier) ||
+    ascending(a.deadline, b.deadline) ||
+    Number(b.scheduled) - Number(a.scheduled) ||
+    b.leverage - a.leverage
+  )
+}
+
 const todayUtc = () => new Date().toISOString().slice(0, 10)
 
 /**
@@ -167,10 +177,7 @@ export function rankWork(nodes, { today = todayUtc() } = {}) {
   }))
   return ranked.sort(
     (a, b) =>
-      urgency(a.rank.tier) - urgency(b.rank.tier) ||
-      ascending(a.rank.deadline, b.rank.deadline) ||
-      Number(b.rank.scheduled) - Number(a.rank.scheduled) ||
-      b.rank.leverage - a.rank.leverage ||
+      compareRank(a.rank, b.rank) ||
       ascending(a.project?.prioritySortOrder, b.project?.prioritySortOrder) ||
       ascending(a.prioritySortOrder, b.prioritySortOrder) ||
       ascending(a.createdAt, b.createdAt),

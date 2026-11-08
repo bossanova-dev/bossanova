@@ -1,5 +1,5 @@
 // Package reviewqueue builds the review queue: the PRs verify has parked for a
-// person, ranked by confidence level or age, with per-level header counts.
+// person, ranked by tracker priority, confidence level or age, with per-level header counts.
 //
 // bossd and bosso serve the same queue from this one rule set, and clients may
 // reuse Sort to merge queues across repositories. The builder never mutates the
@@ -55,7 +55,8 @@ func Build(sessions []*pb.Session, sort pb.ReviewQueueSort, now time.Time) ([]*p
 // the requested sort, with a total tie-break: the
 // oldest park, then the normalized origin URL, then the PR number, then the
 // session id. UNSPECIFIED sorts as MOST_CONFIDENT, and rows without a level sort
-// last under both confidence sorts.
+// last under both confidence sorts. PRIORITY orders tracker tier, deadline and
+// tickets unblocked, with unranked sessions after ranked ones.
 func Sort(rows []*pb.ReviewQueueRow, sort pb.ReviewQueueSort) {
 	slices.SortStableFunc(rows, func(left, right *pb.ReviewQueueRow) int {
 		if order := compareAudit(left, right); order != 0 {
@@ -134,6 +135,8 @@ var confidenceRank = map[pb.ConfidenceLevel]int{
 
 func compareBySort(left, right *pb.ReviewQueueRow, sort pb.ReviewQueueSort) int {
 	switch sort {
+	case pb.ReviewQueueSort_REVIEW_QUEUE_SORT_PRIORITY:
+		return CompareTrackerRank(left.GetSession().GetTrackerRank(), right.GetSession().GetTrackerRank())
 	case pb.ReviewQueueSort_REVIEW_QUEUE_SORT_SMALLEST:
 		l, r := left.GetSession(), right.GetSession()
 		lKnown, rKnown := l.GetPrChangedFileCount() > 0, r.GetPrChangedFileCount() > 0
@@ -198,4 +201,35 @@ func compareTieBreak(left, right *pb.ReviewQueueRow) int {
 		cmp.Compare(leftSession.GetPrNumber(), rightSession.GetPrNumber()),
 		strings.Compare(leftSession.GetId(), rightSession.GetId()),
 	)
+}
+
+// CompareTrackerRank is the shared rank order used by the review queue and the
+// repair sweep: tier, earliest deadline, then most tickets unblocked. Nil is last.
+func CompareTrackerRank(left, right *pb.TrackerRank) int {
+	switch {
+	case left == nil && right == nil:
+		return 0
+	case left == nil:
+		return 1
+	case right == nil:
+		return -1
+	}
+	if order := cmp.Compare(trackerTier(left.GetTier()), trackerTier(right.GetTier())); order != 0 {
+		return order
+	}
+	leftDate, rightDate := left.GetDeadlineOn(), right.GetDeadlineOn()
+	switch {
+	case leftDate == "" && rightDate != "":
+		return 1
+	case leftDate != "" && rightDate == "":
+		return -1
+	}
+	return cmp.Or(strings.Compare(leftDate, rightDate), cmp.Compare(right.GetUnblockedTicketCount(), left.GetUnblockedTicketCount()))
+}
+
+func trackerTier(tier int32) int32 {
+	if tier < 1 || tier > 4 {
+		return 5
+	}
+	return tier
 }

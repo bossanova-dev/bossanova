@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/domain"
 )
 
@@ -23,6 +24,7 @@ type sessionReader interface {
 }
 
 type sessionWriter interface {
+	SetTrackerRank(context.Context, string, string, *string, models.TrackerRank) (bool, error)
 	Create(context.Context, domain.CreateSessionParams) (*domain.Session, error)
 	Update(context.Context, string, domain.UpdateSessionParams) (*domain.Session, error)
 	Delete(context.Context, string) error

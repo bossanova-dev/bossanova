@@ -18,7 +18,12 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import {
+  listRepoRootEntries,
+  openPullRequestOverlaps,
+  openPrsFromArgs,
+  validateOpenPrsSnapshot,
+} from './plan-open-prs.mjs'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 import {
@@ -573,35 +578,7 @@ function readJSON(file) {
   return JSON.parse(readFileSync(file, 'utf8'))
 }
 
-/**
- * The repo's committed entries: `dirs` (root trees and submodules) are module
- * roots, `files` (blobs) are root files. Split because a root FILE needs no extension to be an area
- * and an unmarked mention of one is reported rather than dropped (`extractKeyChangeAreas`
- * `rootFiles`), while a directory keeps the module-root rules. `knownFiles` includes nested blobs
- * so shared extensionless files can establish an advisory relation.
- */
-export function listRepoRootEntries(cwd = process.cwd()) {
-  const out = execFileSync('git', ['ls-tree', '-r', '-t', '-z', 'HEAD'], {
-    cwd,
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-  })
-  const dirs = []
-  const files = []
-  const knownFiles = []
-  for (const record of out.split('\0')) {
-    const tab = record.indexOf('\t')
-    if (tab === -1) continue
-    const type = record.slice(0, tab).split(' ')[1]
-    const name = record.slice(tab + 1)
-    if (name === '') continue
-    if (type === 'blob') knownFiles.push(name)
-    if (name.includes('/')) continue
-    if (type === 'blob') files.push(name)
-    else dirs.push(name)
-  }
-  return { dirs, files, knownFiles }
-}
+export { listRepoRootEntries } from './plan-open-prs.mjs'
 
 const FETCH_CANDIDATES_REMEDY =
   'write the candidates file with `tracker/cli.mjs fetch-candidates --out-file <file> --id <ISSUE-ID>`'
@@ -623,13 +600,19 @@ function candidateRowDefect(row) {
  * `stateScope: 'override'` — fetch-candidates marks every row so when `--state` narrowed the scan.
  *
  * @param {{payload: unknown, rows: unknown, subjectId: string, config: object,
- *   rootEntries: {dirs: string[], files: string[], knownFiles?: string[]}}} input
+ *   rootEntries: {dirs: string[], files: string[], knownFiles?: string[]}, openPullRequests?: object}} input
  * @returns {{status: 'refused', refusals: {code: string, message: string}[]} |
  *   {status: 'defects', defects: {code: string, id: string, remedy: string}[]} |
  *   {status: 'ok', result: object, verdict: object, subject: object}}
- *   `subject` is the subject's `extractKeyChangeAreas` result.
  */
-export function runDependencyScan({ payload, rows, subjectId, config, rootEntries }) {
+export function runDependencyScan({
+  payload,
+  rows,
+  subjectId,
+  config,
+  rootEntries,
+  openPullRequests,
+}) {
   const refusals = []
   const refuse = (code, message) => refusals.push({ code, message })
   if (!plainObject(payload)) {
@@ -657,6 +640,11 @@ export function runDependencyScan({ payload, rows, subjectId, config, rootEntrie
         `the candidates file is not fetch-candidates output (${defect}); ${FETCH_CANDIDATES_REMEDY}`,
       )
     }
+  }
+  if (openPullRequests !== undefined) {
+    const defect = validateOpenPrsSnapshot(openPullRequests)
+    if (defect)
+      refuse('open-prs-not-plan-open-prs', `${defect}; write it with plan-open-prs.mjs fetch`)
   }
   if (refusals.length > 0) return { status: 'refused', refusals }
 
@@ -695,11 +683,26 @@ export function runDependencyScan({ payload, rows, subjectId, config, rootEntrie
   const subjectScan = areasOf(subject)
   input.subjectAreas = subjectScan.areas
   input.subjectUnresolvedAreas = subjectScan.unresolved
-  input.candidates = rows.map((row) => ({ ...row, areas: areasOf(row).areas }))
-  // Complete only when the fetch scanned the default states: a `--state` override is marked on
-  // every row, and a narrowed set must reach could-not-evaluate rather than a clean verdict.
+  const prs =
+    openPullRequests === undefined
+      ? null
+      : openPullRequestOverlaps({
+          subjectIdentifier: subject.identifier || subject.id,
+          subjectAreas: subjectScan.areas,
+          snapshot: openPullRequests,
+          candidateIdentifiers: rows.map((row) => row.identifier || row.id),
+          overlapOptions: input,
+        })
+  input.candidates = rows.map((row) => ({
+    ...row,
+    areas: [...areasOf(row).areas, ...(prs?.foldIn[row.identifier || row.id] ?? [])],
+  }))
   input.candidateSetComplete = !rows.some((row) => row.stateScope === 'override')
   const result = planDependencyEdges(input)
+  if (prs) {
+    result.notes.push(...prs.notes)
+    result.skipped.push(...prs.skipped)
+  }
   return { status: 'ok', result, verdict: dependencyScanVerdict(result), subject: subjectScan }
 }
 
@@ -1017,6 +1020,7 @@ function runGuardVerb(argv) {
       const subjectId = parseSubjectFlag(argv)
       const scan = runDependencyScan({
         payload: readJSON(first),
+        openPullRequests: openPrsFromArgs(argv.slice(3)),
         rows: readJSON(second),
         subjectId,
         config: loadSkillConfig({ cwd: process.cwd() }),
@@ -1131,7 +1135,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-token <t> --comments <file|json>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID>\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-token <t> --comments <file|json>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID> [--open-prs <file>]\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

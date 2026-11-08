@@ -2435,6 +2435,7 @@ func TestFinalizeSession_HookConfigOnly_DeletedNoChanges(t *testing.T) {
 		{"hook_config_among_blank_lines", "\n?? .claude/settings.local.json\n\n"},
 		{"scheduled_tasks_lock_alone", "?? .claude/scheduled_tasks.lock\n"},
 		{"hook_config_and_scheduled_tasks_lock", "?? .claude/settings.local.json\n?? .claude/scheduled_tasks.lock\n"},
+		{"incidental_go_work_sum", " M go.work.sum\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

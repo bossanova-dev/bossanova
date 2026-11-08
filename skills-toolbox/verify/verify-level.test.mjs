@@ -3,7 +3,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { AREAS } from './verify-areas.mjs'
 import { confidence } from './verify-confidence.mjs'
-import { levelFacts, legacyCodes, levelLabel, parkLevel, levelNoteLead } from './verify-level.mjs'
+import {
+  levelFacts,
+  levelConfidence,
+  legacyCodes,
+  levelLabel,
+  parkLevel,
+  levelNoteLead,
+} from './verify-level.mjs'
 
 const facts = {
   changedPaths: [],
@@ -159,4 +166,24 @@ test('asks identify their source, including builtins unwrapped from caps', () =>
     assert.ok(!legacyCodes(result).includes('always-human-path'), area)
     assert.ok(legacyCodes(result).length > 0, area)
   }
+})
+
+test('level facts compute UI proof from head CI, changed-test coverage, and extension outcomes', () => {
+  const gate = {
+    ...facts,
+    changedPaths: ['src/Button.tsx'],
+    areas: [{ area: 'ui', label: 'UI', defaultAsk: 'unless-proven' }],
+    uiTests: { covered: true },
+    ci: { green: true },
+  }
+  assert.equal(levelFacts(gate).proof.ui, 'tests')
+  assert.equal(levelConfidence(gate).asks.length, 0)
+  assert.equal(levelConfidence({ ...gate, ci: { green: false } }).asks[0].area, 'ui')
+  assert.equal(
+    levelFacts(
+      { ...gate, ci: { green: false } },
+      { outcomes: [{ outcome: 'ok', verdict: 'pass', recorded: true }] },
+    ).proof.ui,
+    'recording',
+  )
 })

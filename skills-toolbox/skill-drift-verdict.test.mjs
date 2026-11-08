@@ -745,6 +745,7 @@ function vendoredCopy(core) {
     'skill-drift-verdict.mjs',
     'main-module.mjs',
     'skill-extensions.mjs',
+    'session/orchestrate-contract.mjs',
     'verify/verify-contract.mjs',
     'verify/verify-describe.mjs',
     'verify/verify-proof.mjs',

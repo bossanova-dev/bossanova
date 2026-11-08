@@ -2122,3 +2122,22 @@ test('plan-file rechecks report non-blocking citation and premise drift', () => 
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
+
+test('resolves delimited and compound shell checks through the plan guard', () => {
+  const description = [
+    '## Premises',
+    "- [ ] Unchanged — check: `git diff --quiet HEAD -- f` (it's untouched)",
+    '- [ ] Exists — check: `test -f f` (see `g`)',
+    "- [ ] Count — check: `grep -c 'x' f` → 1",
+    '- [ ] Subshell — check: `(cd services && test -d x)`',
+    '## Acceptance criteria',
+    '- [ ] (verify-only) Loop — check: `for f in a; do grep -qw x "$f"; done`',
+  ].join('\n')
+  assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description).violations, [])
+  const broken = description.replace('(cd services && test -d x)', '(nonexistent-cmd-zz)')
+  assert.ok(
+    checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, broken).violations.some(
+      (v) => v.code === 'vacuous-premise-command-command-unresolvable',
+    ),
+  )
+})

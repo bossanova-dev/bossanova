@@ -108,6 +108,7 @@ type Session struct {
 	PRNumber                *int
 	PRURL                   *string
 	TrackerID               *string
+	TrackerRank             *TrackerRank
 	TrackerURL              *string
 	TmuxSessionName         *string
 	LastCheckState          machine.CheckState

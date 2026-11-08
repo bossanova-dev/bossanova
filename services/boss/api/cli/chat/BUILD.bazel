@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "chat",
-    srcs = ["chat.go"],
+    srcs = [
+        "chat.go",
+        "chat_delete.go",
+    ],
     importpath = "github.com/recurser/boss/api/cli/chat",
     visibility = ["//visibility:public"],
     deps = [
@@ -21,6 +24,7 @@ go_test(
     name = "chat_test",
     srcs = [
         "chat_action_client_test.go",
+        "chat_delete_test.go",
         "chat_new_command_test.go",
         "chat_role_test.go",
         "chat_test.go",

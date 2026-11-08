@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { loadSkillConfig, validateLocalVerification } from '../skill-config.mjs'
-import { classify, retry } from './acceptance-retry.mjs'
+import { certify, classify, retry } from './acceptance-retry.mjs'
 
 // Producer shapes from services/boss/api/cli/skills/skill_sync.go: the downgrade
 // lead, next action, inline drift line and gate rows are the public signal.
@@ -194,5 +194,146 @@ test('CLI fails closed on unreadable input and rejects invalid arguments', (t) =
     const result = spawnSync(process.execPath, [helper, ...args], { encoding: 'utf8' })
     assert.equal(result.status, status, result.stderr)
     if (status === 3) assert.equal(JSON.parse(result.stdout).verdict, 'no-retry')
+  }
+})
+
+const planText = `## Acceptance criteria
+- [ ] passes — check: \`printf passed\`
+- [ ] fails — check: \`exit 7\`
+- [ ] needs a human
+- [ ] (verify-only) runnable — check: \`true\`
+\`\`\`md
+- [ ] fenced — check: \`false\`
+\`\`\`
+## Original notes
+- [ ] history — check: \`false\`
+`
+function certificationFixture(t, text = planText) {
+  const { repo, root } = fixture(t)
+  const plan = join(root, 'plan.md')
+  writeFileSync(plan, text)
+  return { repo, root, plan, base: 'origin/main', out: join(root, 'acceptance.json') }
+}
+
+test('certify reports every active criterion and valid evidence with real commands', async (t) => {
+  const opts = certificationFixture(t)
+  const result = await certify(opts)
+  assert.deepEqual(
+    result.criteria.map((c) => [c.id, c.result]),
+    [
+      ['AC1', 'met'],
+      ['AC2', 'unmet'],
+      ['AC3', 'unchecked'],
+      ['AC4', 'met'],
+    ],
+  )
+  assert.equal(result.criteria[1].exit, 7)
+  assert.equal(result.criteria[2].reason, 'no-check')
+  assert.equal(result.criteria[3].verifyOnly, true)
+  for (const c of result.criteria.filter((c) => c.result === 'met'))
+    assert.equal(
+      validateLocalVerification(loadSkillConfig(), `## Local verification\n- ${c.evidence}\n`).ok,
+      true,
+    )
+  assert.equal(readFileSync(result.criteria[0].outputFile, 'utf8'), 'passed')
+})
+
+for (const retried of ['pass', 'fail'])
+  test(`certify folds retry ${retried} into the criterion`, async (t) => {
+    const opts = certificationFixture(t, '## Acceptance criteria\n- [ ] check — check: `false`\n')
+    const result = await certify({
+      ...opts,
+      classify: () => ({ verdict: 'rebase-retry' }),
+      retry: async () => ({
+        result: retried,
+        reason: 'retry result',
+        evidence: 'rebased-retry: `false` → pass in scratch',
+      }),
+    })
+    assert.equal(result.criteria[0].result, retried === 'pass' ? 'met' : 'unmet')
+    assert.equal(result.criteria[0].retried, true)
+    assert.equal(result.criteria[0].reason, 'retry result')
+  })
+
+test('certify honours timeout, output cap and overall budget', async (t) => {
+  const opts = certificationFixture(t)
+  let clock = 0
+  const report = await certify({
+    ...opts,
+    budgetMs: 10,
+    now: () => clock,
+    execute: async ({ outputFile }) => {
+      writeFileSync(outputFile, 'x'.repeat(4000))
+      clock = 10
+      return { status: null, timedOut: true }
+    },
+  })
+  assert.equal(report.criteria[0].result, 'unmet')
+  assert.equal(report.criteria[0].timedOut, true)
+  assert.ok(Buffer.byteLength(report.criteria[0].tail) <= 1500)
+  assert.equal(readFileSync(report.criteria[0].outputFile, 'utf8').length, 4000)
+  assert.deepEqual(
+    report.criteria.slice(1).map((c) => c.reason),
+    ['budget-spent', 'no-check', 'budget-spent'],
+  )
+})
+
+test('certification passes share an absolute deadline', async (t) => {
+  const opts = certificationFixture(t, '## Acceptance criteria\n- [ ] check — check: `true`\n')
+  let clock = 100
+  const timeouts = []
+  const execute = async ({ outputFile, timeoutMs }) => {
+    timeouts.push(timeoutMs)
+    writeFileSync(outputFile, 'passed')
+    clock += 6
+    return { status: 0 }
+  }
+  const shared = { ...opts, deadlineMs: 110, budgetMs: 100, now: () => clock, execute }
+  assert.equal((await certify(shared)).criteria[0].result, 'met')
+  assert.equal((await certify(shared)).criteria[0].result, 'met')
+  const expired = await certify(shared)
+  assert.equal(expired.criteria[0].result, 'unchecked')
+  assert.equal(expired.criteria[0].reason, 'budget-spent')
+  assert.deepEqual(timeouts, [10, 4])
+})
+
+test('certify reuses only matching trees and criteria, including message-only amendments', async (t) => {
+  const opts = certificationFixture(t)
+  const a = await certify(opts)
+  const reuse = join(opts.root, 'verdict.json')
+  writeFileSync(reuse, JSON.stringify({ acceptance: a }))
+  const mustNotRun = async () => {
+    assert.fail('reused certification ran a command')
+  }
+  assert.equal((await certify({ ...opts, reuse, execute: mustNotRun })).reused, true)
+  git(opts.repo, 'commit', '--amend', '-m', 'new message')
+  assert.equal((await certify({ ...opts, reuse, execute: mustNotRun })).reused, true)
+  writeFileSync(join(opts.repo, 'feature.txt'), 'new tree')
+  git(opts.repo, 'add', 'feature.txt')
+  git(opts.repo, 'commit', '-m', 'changed tree')
+  assert.equal((await certify({ ...opts, reuse })).reused, undefined)
+  writeFileSync(
+    reuse,
+    JSON.stringify({ acceptance: { ...a, tree: git(opts.repo, 'rev-parse', 'HEAD^{tree}') } }),
+  )
+  writeFileSync(opts.plan, '## Acceptance criteria\n- [ ] changed — check: `true`\n')
+  assert.equal((await certify({ ...opts, reuse })).reused, undefined)
+})
+
+test('certify CLI rejects missing plans and malformed bases without output, and accepts empty plans', (t) => {
+  const opts = certificationFixture(t, '# No criteria\n')
+  for (const [plan, base, status] of [
+    [join(opts.root, 'missing'), 'origin/main', 2],
+    [opts.plan, 'main', 2],
+    [opts.plan, 'origin/main', 0],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [helper, 'certify', '--plan', plan, '--base', base, '--repo', opts.repo, '--out', opts.out],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, status, result.stderr)
+    if (status === 2) assert.equal(existsSync(opts.out), false)
+    else assert.deepEqual(JSON.parse(readFileSync(opts.out, 'utf8')).criteria, [])
   }
 })

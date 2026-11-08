@@ -328,6 +328,10 @@ message Session {
 
   // External issue tracker fields (eg. Linear, Jira).
   optional string tracker_id = 29;   // External issue ID (eg. "FRE-1176")
+  // Additive optional metadata; existing behavior is unchanged. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
+  // Unset when no rank was ever recorded (an unranked session).
+  optional TrackerRank tracker_rank = 88;
   optional string tracker_url = 30;  // URL to issue in external tracker
 
   // tmux session name for persistent terminal sessions.
@@ -917,6 +921,9 @@ enum ReviewQueueSort {
   REVIEW_QUEUE_SORT_OLDEST = 3;
   // Smallest known PR first, unknown sizes last.
   REVIEW_QUEUE_SORT_SMALLEST = 4;
+  // Highest tracker tier first (1 Urgent through 4 Low, then 0 None), then
+  // earliest deadline (undated last), then most tickets unblocked. Unranked last.
+  REVIEW_QUEUE_SORT_PRIORITY = 5;
 }
 
 // ReviewQueueRow is one PR parked by verify for a person.
@@ -1051,14 +1058,17 @@ message AgentChat {
 }
 
 // ChatRole is the purpose a chat was created for. Automation may replace an
-// idle BUILD, REPAIR or VERIFY chat; it never replaces an OPERATOR chat or a
-// legacy UNSPECIFIED one.
+// idle BUILD, REPAIR or VERIFY chat; it never replaces an OPERATOR or
+// COORDINATOR chat or a legacy UNSPECIFIED one.
 enum ChatRole {
   CHAT_ROLE_UNSPECIFIED = 0;
   CHAT_ROLE_BUILD       = 1; // an unattended run's own chat (cron, detached, epic child)
   CHAT_ROLE_REPAIR      = 2; // the repair plugin's chat
   CHAT_ROLE_VERIFY      = 3; // the verify stage's chat
   CHAT_ROLE_OPERATOR    = 4; // a chat a person opened, or one started on their behalf
+  // an orchestrating chat the operator started; bossd may grant it verify
+  // approval and operator merge (settings key coordinator_approval_grant)
+  CHAT_ROLE_COORDINATOR = 5;
 }
 
 // CronJobStatus is the derived run-status for a cron job, computed from
@@ -1677,4 +1687,17 @@ message ViewerDevice {
   string label = 3;
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp last_requested_at = 5;
+}
+
+// TrackerRank records build-order rank from tracker facts.
+message TrackerRank {
+  // Priority: 1 Urgent through 4 Low; 0 None (least urgent).
+  int32 tier = 1;
+  string tier_source = 2;
+  // Earliest inherited calendar deadline; unset when undated.
+  optional string deadline_on = 3;
+  string deadline_source = 4;
+  bool is_scheduled = 5;
+  int32 unblocked_ticket_count = 6;
+  google.protobuf.Timestamp ranked_at = 7;
 }

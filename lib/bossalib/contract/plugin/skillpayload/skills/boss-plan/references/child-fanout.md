@@ -101,7 +101,8 @@ dispatched. Never call `AskUserQuestion`.
 
 **Inputs:** `CHILD-ID`, its title and UUID; your scratch directory
 `.linear-plans/run-<CHILD-SCRATCH-ID>/` — use `<CHILD-SCRATCH-ID>` wherever the brief or SKILL.md says
-`<RUN-SCRATCH-ID>` and `CHILD-ID` wherever they say `<ISSUE-ID>`; the snapshot path; `PLAN_PATH`;
+`<RUN-SCRATCH-ID>` and `CHILD-ID` wherever they say `<ISSUE-ID>`; the snapshot path; `PLAN_PATH`, computed with `plan-slug.mjs plan-path` from the child run id
+and precheck payload (use exactly as given);
 `RUN_SENTINEL` / `RUN_DIR` / `RUN_ID` and your sentinel name `child-<CHILD-ID>`; `parentId`;
 `siblingIds`; `earlierSiblings`; `plannedSiblings`.
 

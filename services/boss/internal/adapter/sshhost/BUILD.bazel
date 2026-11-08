@@ -8,10 +8,13 @@ go_library(
         "hostattach_prod.go",
         "hostwait_e2e.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
         "hostwait_prod.go",
+        "origin.go",
     ],
     importpath = "github.com/recurser/boss/internal/adapter/sshhost",
     visibility = ["//services/boss:__subpackages__"],
     deps = [
+        "//lib/bossalib/contract/daemon/callerorigin",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//services/boss/api/tui/home",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/adapter/daemonrpc",
@@ -40,9 +43,14 @@ go_test(
 
 go_test(
     name = "sshhost_test",
-    srcs = ["host_test.go"],
+    srcs = [
+        "host_test.go",
+        "origin_test.go",
+    ],
     embed = [":sshhost"],
     deps = [
+        "//lib/bossalib/contract/daemon/callerorigin",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//services/boss/internal/preflight",
         "//services/boss/internal/remotehost",
         "@com_github_spf13_cobra//:cobra",

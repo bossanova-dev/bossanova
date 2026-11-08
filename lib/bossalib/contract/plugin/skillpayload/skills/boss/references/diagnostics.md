@@ -174,6 +174,14 @@ Refresh one session's cached pull request status
 
 - `--pr` — Pull request number to refresh (default: 0)
 
+### `boss session set-rank <session-id> <issue-id> [flags]`
+
+Store a linked ticket's tracker rank (local daemon only)
+
+**Flags:**
+
+- `--rank-json` — Rank JSON from list-planned, or - for stdin
+
 ### `boss session set-tracker <session-id> <issue-id>`
 
 Link a session to a tracker issue (sets or corrects the link)

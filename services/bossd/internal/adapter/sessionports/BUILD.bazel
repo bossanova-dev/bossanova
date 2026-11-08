@@ -27,6 +27,7 @@ go_library(
         "sources.go",
         "tracker.go",
         "types.go",
+        "worktreepaths.go",
     ],
     importpath = "github.com/recurser/bossd/internal/adapter/sessionports",
     visibility = ["//services/bossd:__subpackages__"],
@@ -61,6 +62,7 @@ go_test(
         "procstat_test.go",
         "roots_test.go",
         "tracker_test.go",
+        "worktreepaths_test.go",
     ],
     embed = [":sessionports"],
     deps = [

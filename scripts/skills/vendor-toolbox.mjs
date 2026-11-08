@@ -46,6 +46,7 @@ export const VENDOR_MAP = {
     'stage-chain.mjs',
   ],
   'boss-review': [
+    'build/acceptance-retry.mjs',
     'review/claude-review.mjs',
     'review/codex-review.mjs',
     'review/second-model-health.mjs',
@@ -77,6 +78,7 @@ export const VENDOR_MAP = {
     'linear-deps-lib.mjs',
     'linear-gate-lib.mjs',
     'build/named-admission.mjs',
+    'build/open-pr-hold.mjs',
     'notes-record.mjs',
     'build/open-pr-limit.mjs',
     'plan-attachment.mjs',
@@ -132,6 +134,7 @@ export const VENDOR_MAP = {
     'tracker/preflight.mjs',
   ],
   'boss-plan': [
+    'plan/plan-open-prs.mjs',
     'issue-lease.mjs',
     'plan/boss-plan-env.sh',
     'bs-dispatch-await.mjs',

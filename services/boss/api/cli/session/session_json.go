@@ -47,12 +47,13 @@ type sessionJSON struct {
 	Effort string `json:"effort"`
 	// PrNumber is null rather than 0 for a session with no PR, so a caller can
 	// tell "no PR yet" from a hypothetical PR #0.
-	PrNumber  *int32  `json:"pr_number"`
-	PrURL     string  `json:"pr_url"`
-	Branch    string  `json:"branch"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-	TrackerID *string `json:"tracker_id"`
+	PrNumber    *int32           `json:"pr_number"`
+	PrURL       string           `json:"pr_url"`
+	Branch      string           `json:"branch"`
+	CreatedAt   string           `json:"created_at"`
+	UpdatedAt   string           `json:"updated_at"`
+	TrackerID   *string          `json:"tracker_id"`
+	TrackerRank *trackerRankJSON `json:"trackerRank,omitempty"`
 	// LastAgentActivityAt is empty when no agent output/activity has been
 	// observed, matching the absent timestamp rendering used by CreatedAt.
 	//
@@ -137,6 +138,7 @@ func newSessionRowJSON(s *pb.Session) sessionJSON {
 		CreatedAt:           cliutil.Rfc3339OrEmpty(s.GetCreatedAt()),
 		UpdatedAt:           cliutil.Rfc3339OrEmpty(s.GetUpdatedAt()),
 		LastAgentActivityAt: cliutil.Rfc3339OrEmpty(s.GetLastAgentActivityAt()),
+		TrackerRank:         trackerRankForJSON(s.GetTrackerRank()),
 	}
 	if s.PrNumber != nil {
 		pr := s.GetPrNumber()

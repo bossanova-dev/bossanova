@@ -655,3 +655,17 @@ test('rejects claims that break the record rules', () => {
   })
   assert.deepEqual(p.validateProof(empty).errors, [])
 })
+
+test('optional API change facts validate without changing older records', () => {
+  assert.equal(p.validateProof(fixture()).ok, true)
+  for (const change of ['additive', 'breaking']) {
+    assert.equal(
+      p.validateProof(
+        changed((x) => Object.assign(x.areas[0], { change, changeReasons: ['field added'] })),
+      ).ok,
+      true,
+    )
+  }
+  for (const fields of [{ change: 'unknown' }, { changeReasons: 'bad' }])
+    assert.equal(p.validateProof(changed((x) => Object.assign(x.areas[0], fields))).ok, false)
+})

@@ -18,6 +18,8 @@ import { parsePostOptions } from './verify-gate.mjs'
 import {
   CALL_TIMEOUT_MS,
   DEFAULT_BATCH,
+  EVENT_JUDGE_TIMEOUT_MS,
+  JUDGE_DISPATCH_RESERVE_MS,
   discoveryLimit,
   DEFAULT_BUDGET_MS,
   OBSERVE_TIMEOUT_MS,
@@ -110,6 +112,7 @@ function world(opts = {}) {
             mergeRetries: [],
             unchanged: true,
             fingerprint: opts.fingerprint,
+            ...(opts.ranks ? { ranks: opts.ranks } : {}),
           })
         return ok({
           candidates: (opts.candidates ?? [candidate(1)]).filter(
@@ -132,9 +135,11 @@ function world(opts = {}) {
           ...(opts.mergeRetries === undefined ? {} : { mergeRetries: opts.mergeRetries }),
           ...(opts.admission ? { admission: opts.admission } : {}),
           ...tick,
+          ...(opts.ranks ? { ranks: opts.ranks } : {}),
         })
       }
       if (verb === 'judge') {
+        if (opts.judgeFails) return fail(opts.judgeFails, { exit: null })
         const v = verdicts[pr] ?? { verdict: 'pass', reason: 'verified' }
         return ok({ headSha: sha(pr), ...v })
       }
@@ -166,6 +171,8 @@ function world(opts = {}) {
         if (opts.lsResult) return opts.lsResult
         return ok({ sessions: opts.sessions ?? [] })
       }
+      if (args[0] === 'session' && args[1] === 'set-rank')
+        return opts.rankFails ? fail('rank-write-failed') : ok({})
       if (args[0] === 'chats') return ok({ chats: opts.chats?.[args[2]] ?? [] })
       if (args[0] === 'chat' && args[1] === 'new')
         return ok({ chat: { agent_session_id: 'chat-new', session_id: args[2], title: 'verify' } })
@@ -2690,4 +2697,323 @@ test('judge-required claims and routes the head into its verify session', () => 
   const claimIndex = w.calls.findIndex((c) => c.cmd === NODE && c.args[1] === 'post')
   assert.ok(claimIndex < w.calls.indexOf(send))
   assert.deepEqual(lines(r), ['#1 dispatched: existing-verify-chat'])
+})
+
+// ---------------------------------------------------------------------------
+// A failed or timed-out judge never strands a PR.
+
+const LIVE_SESSION = {
+  sessions: [{ id: 's1', pr_url: url(1), updated_at: '2026-10-01T00:00:00Z' }],
+  chats: { s1: [{ agent_session_id: 'chat-v', title: 'Verify' }] },
+}
+
+for (const event of [false, true]) {
+  test(`a judge timeout${event ? ' on an event' : ''} claims and dispatches the head to its verify chat`, () => {
+    const w = world({ judgeFails: 'ETIMEDOUT', ...LIVE_SESSION })
+    const r = sweep(event ? { eventPrUrl: url(1) } : {}, w.deps())
+    assert.deepEqual(
+      w.posts().map((v) => v[v.indexOf('--verdict') + 1]),
+      ['claim'],
+      'the claim is the only post',
+    )
+    const claim = w.posts()[0]
+    assert.equal(claim[claim.indexOf('--head') + 1], sha(1), 'the claim binds the discovered head')
+    const send = w.calls.find((c) => c.args[0] === 'chat' && c.args[1] === 'send')
+    assert.deepEqual(send.args, [
+      'chat',
+      'send',
+      'chat-v',
+      '/boss-verify 1 --claim tok-1',
+      '--json',
+    ])
+    assert.equal(w.mergeSpawns().length, 0)
+    assert.equal(w.spawns.length, 0, 'no new session is started')
+    assert.deepEqual(
+      r.records.map((x) => x.outcome),
+      ['dispatched'],
+    )
+    assert.match(lines(r)[0], /^#1 dispatched: existing-verify-chat \(judge failed: ETIMEDOUT\)$/)
+    if (event) assert.equal(r.eventSettled, true)
+  })
+}
+
+test('a judge timeout whose session has no idle verify chat opens one and dispatches there', () => {
+  const w = world({ judgeFails: 'ETIMEDOUT', ...LIVE_SESSION, chats: { s1: [] } })
+  const r = sweep({}, w.deps())
+  const boss = w.calls.filter((c) => c.cmd === BOSS && c.args[0] === 'chat').map((c) => c.args[1])
+  assert.deepEqual(boss, ['new', 'send'])
+  assert.deepEqual(
+    r.records.map((x) => x.outcome),
+    ['dispatched'],
+  )
+})
+
+for (const [name, opts] of [
+  ['no live session', {}],
+  [
+    'an unreadable session list',
+    { lsResult: { ok: false, error: 'exit-1', exit: 1, payload: {} } },
+  ],
+  ['a session on another PR', { sessions: [{ id: 's9', pr_url: url(9) }] }],
+]) {
+  test(`a judge timeout with ${name} defers the head without claiming it, and the next tick re-judges`, () => {
+    const w = world({ judgeFails: 'ETIMEDOUT', ...opts })
+    const r = sweep({}, w.deps())
+    assert.deepEqual(w.mutating(), [], 'no claim, post or chat send')
+    assert.equal(w.spawns.length, 0, 'no new session is started')
+    assert.deepEqual(
+      r.records.map((x) => x.outcome),
+      ['deferred'],
+    )
+    assert.match(lines(r)[0], /^#1 deferred: judge failed \(ETIMEDOUT\)/)
+    assert.equal(
+      sweep({ eventPrUrl: url(1) }, world({ judgeFails: 'ETIMEDOUT', ...opts }).deps())
+        .eventSettled,
+      false,
+    )
+
+    const next = world()
+    assert.deepEqual(lines(sweep({}, next.deps())), [`#1 merged ${sha(901)}`])
+    assert.ok(
+      next.verbs().some((v) => v[0] === 'judge'),
+      'the next tick judges the head again',
+    )
+  })
+}
+
+test('a judge timeout with boss unreachable defers as undispatchable', () => {
+  const w = world({ judgeFails: 'ETIMEDOUT', boss: { ok: false, path: null, reason: 'no boss' } })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(w.mutating(), [])
+  assert.deepEqual(
+    r.records.map((x) => x.outcome),
+    ['deferred'],
+  )
+  assert.equal(r.undispatchable, 'no boss')
+})
+
+test('a judge timeout whose claim is lost routes nothing', () => {
+  const w = world({ judgeFails: 'ETIMEDOUT', ...LIVE_SESSION, claimLost: [1] })
+  const r = sweep({}, w.deps())
+  assert.equal(
+    w.calls.some((c) => c.args[0] === 'chat'),
+    false,
+  )
+  assert.deepEqual(lines(r), ['#1 skipped: claim lost'])
+})
+
+test('a judge timeout on a dry run plans the dispatch without writing', () => {
+  const w = world({ judgeFails: 'ETIMEDOUT', ...LIVE_SESSION })
+  const r = sweep({ dryRun: true }, w.deps())
+  assert.deepEqual(w.mutating(), [])
+  assert.deepEqual(
+    r.records.map((x) => x.outcome),
+    ['dispatched'],
+  )
+})
+
+test('an event judge gets the stretched allotment and still leaves the dispatch its reserve', () => {
+  const budgetMs = 45_000
+  const w = world({ ...LIVE_SESSION })
+  sweep({ budgetMs, eventPrUrl: url(1) }, w.deps())
+  const judge = w.calls.find((c) => c.cmd === NODE && c.args[1] === 'judge')
+  assert.equal(judge.timeoutMs, EVENT_JUDGE_TIMEOUT_MS)
+  assert.ok(EVENT_JUDGE_TIMEOUT_MS > CALL_TIMEOUT_MS)
+
+  // Discovery that leaves little room: the judge stops short of the dispatch reserve, never below
+  // the per-call allotment a cron judge gets.
+  const slow = world({ ...LIVE_SESSION, judgeFails: 'ETIMEDOUT', ticks: { candidates: 15_000 } })
+  const r = sweep({ budgetMs, eventPrUrl: url(1) }, slow.deps())
+  const stretched = slow.calls.find((c) => c.cmd === NODE && c.args[1] === 'judge')
+  assert.equal(stretched.timeoutMs, budgetMs - 15_000 - JUDGE_DISPATCH_RESERVE_MS)
+  assert.deepEqual(
+    r.records.map((x) => x.outcome),
+    ['dispatched'],
+  )
+
+  const cron = world({ ...LIVE_SESSION })
+  sweep({ budgetMs }, cron.deps())
+  assert.equal(
+    cron.calls.find((c) => c.cmd === NODE && c.args[1] === 'judge').timeoutMs,
+    CALL_TIMEOUT_MS,
+  )
+})
+
+test('a slow discovery and a judge that times out at its allotment still leave the dispatch its reserve', () => {
+  const budgetMs = 45_000
+  const allotment = budgetMs - 15_000 - JUDGE_DISPATCH_RESERVE_MS
+  const w = world({
+    ...LIVE_SESSION,
+    judgeFails: 'ETIMEDOUT',
+    ticks: { candidates: 15_000, judge: allotment },
+  })
+  const r = sweep({ budgetMs, eventPrUrl: url(1) }, w.deps())
+  assert.deepEqual(
+    r.records.map((x) => x.outcome),
+    ['dispatched'],
+  )
+  const afterJudge = w.calls.slice(w.calls.findIndex((c) => c.args[1] === 'judge') + 1)
+  assert.deepEqual(
+    afterJudge.slice(0, 4).map((c) => (c.cmd === NODE ? c.args[1] : c.args.slice(0, 2).join(' '))),
+    ['ls --json', 'post', 'chats --json', 'chat send'],
+  )
+  assert.ok(afterJudge.every((c) => c.timeoutMs >= JUDGE_DISPATCH_RESERVE_MS))
+})
+
+const freshRank = {
+  tier: 1,
+  tierFrom: 'own',
+  deadline: null,
+  deadlineFrom: null,
+  scheduled: true,
+  leverage: 0,
+}
+const rankSession = {
+  id: 'rank-session',
+  tracker_id: 'BOS-1',
+  trackerRank: {
+    tier: 1,
+    tierSource: 'own',
+    deadlineSource: '',
+    isScheduled: true,
+    unblockedTicketCount: 0,
+    rankedAt: 'then',
+  },
+}
+const rankFacts = [{ pr: 1, ticket: 'BOS-1', url: url(1), rank: freshRank }]
+const rankCalls = (w) => w.calls.filter((c) => c.cmd === BOSS && c.args[1] === 'set-rank')
+
+test('sweep refreshes only a changed stored rank; dry-run reports its argv without writing', () => {
+  for (const [trackerRank, dryRun, expected] of [
+    [rankSession.trackerRank, false, null],
+    [undefined, false, 'refreshed'],
+    [undefined, true, 'dry-run'],
+  ]) {
+    const w = world({
+      candidates: [],
+      ranks: rankFacts,
+      sessions: [{ ...rankSession, trackerRank }],
+    })
+    const result = sweep({ dryRun }, w.deps())
+    assert.deepEqual(result.records, [])
+    assert.equal(result.rankRefreshes.length, expected ? 1 : 0)
+    if (expected) assert.equal(result.rankRefreshes[0].outcome, expected)
+    assert.equal(rankCalls(w).length, expected === 'refreshed' ? 1 : 0)
+    const argv = expected === 'dry-run' ? result.rankRefreshes[0].argv : rankCalls(w)[0]?.args
+    if (expected) {
+      assert.deepEqual(argv.slice(0, -1), [
+        'session',
+        'set-rank',
+        'rank-session',
+        'BOS-1',
+        '--rank-json',
+      ])
+      assert.deepEqual(JSON.parse(argv.at(-1)), freshRank)
+    }
+  }
+})
+
+test('failed refresh preserves PR verdicts and invalidates the quiet tick for retry', () => {
+  const file = stateIn(stateDir())
+  const w = world({
+    candidates: [],
+    ranks: rankFacts,
+    sessions: [{ ...rankSession, trackerRank: undefined }],
+    rankFails: true,
+    fingerprint: FP,
+  })
+  const result = sweep({ skipUnchanged: true }, w.deps({ stateFile: file }))
+  assert.deepEqual(result.records, [])
+  assert.equal(result.rankRefreshes[0].outcome, 'failed')
+  assert.equal(readQuietFingerprint(file, sweepScopeKey({ shared: false })), null)
+})
+
+test('slow failing rank writes cannot starve candidate processing on repeated full scans', () => {
+  const file = stateIn(stateDir())
+  for (let tick = 0; tick < 2; tick++) {
+    const w = world({
+      candidates: [candidate(1)],
+      ranks: rankFacts,
+      sessions: ['first', 'second'].map((id) => ({ ...rankSession, id, trackerRank: undefined })),
+      verdicts: { 1: { verdict: 'human', reason: 'needs-human' } },
+      fingerprint: FP,
+      ticks: { candidates: 1000 },
+      rankFails: true,
+    })
+    const deps = w.deps({ stateFile: file })
+    const run = deps.run
+    deps.run = (cmd, args, options) => {
+      const result = run(cmd, args, options)
+      if (cmd === BOSS && args[1] === 'set-rank') w.clock += options.timeoutMs
+      return result
+    }
+    const result = sweep({ skipUnchanged: true, budgetMs: 45_000 }, deps)
+    assert.equal(result.records[0].outcome, 'parked')
+    assert.equal(w.posts().filter((args) => args.includes('human')).length, 1)
+    assert.deepEqual(
+      result.rankRefreshes.map((row) => row.outcome),
+      ['failed', 'failed'],
+    )
+    assert.equal(w.clock - T0, 31_000)
+    assert.equal(storedFp(file), null)
+  }
+})
+
+test('rank refresh respects event scope, unavailable sessions and remaining budget', () => {
+  const event = world({
+    candidates: [],
+    ranks: rankFacts,
+    sessions: [{ ...rankSession, trackerRank: undefined }],
+  })
+  assert.deepEqual(sweep({ eventPrUrl: url(2) }, event.deps()).rankRefreshes, [])
+  assert.equal(rankCalls(event).length, 0)
+  const unavailable = world({
+    candidates: [],
+    ranks: rankFacts,
+    lsResult: { ok: false, error: 'offline' },
+  })
+  const unreadable = sweep({}, unavailable.deps())
+  assert.equal(unreadable.refreshed, 0)
+  assert.match(unreadable.unreadable, /boss ls/)
+  const deferred = world({
+    candidates: [],
+    ranks: rankFacts,
+    sessions: [{ ...rankSession, trackerRank: undefined }],
+  })
+  assert.equal(
+    sweep({ budgetMs: START_FLOOR_MS - 1 }, deferred.deps()).rankRefreshes[0].outcome,
+    'deferred',
+  )
+  assert.equal(rankCalls(deferred).length, 0)
+})
+
+test('quiet ticks reconcile later session-only rank changes and newly linked sessions', () => {
+  const file = stateIn(stateDir())
+  const tick = (sessions, rankFails = false) => {
+    const w = world({ candidates: [], ranks: rankFacts, sessions, fingerprint: FP, rankFails })
+    return { w, result: sweep(SKIP, w.deps({ stateFile: file })) }
+  }
+  tick([rankSession])
+  for (const sessions of [
+    [{ ...rankSession, trackerRank: { ...rankSession.trackerRank, tier: 4 } }],
+    [rankSession, { ...rankSession, id: 'new-session', trackerRank: undefined }],
+  ]) {
+    const { w, result } = tick(sessions)
+    assert.equal(result.unchanged, true)
+    assert.equal(rankCalls(w).length, 1)
+    assert.equal(rankCalls(w)[0].args[2], sessions.at(-1).id)
+    assert.deepEqual(JSON.parse(rankCalls(w)[0].args.at(-1)), freshRank)
+    assert.deepEqual(result.records, [])
+    assert.deepEqual(
+      w.verbs().map((args) => args[0]),
+      ['candidates'],
+    )
+    assert.equal(storedFp(file), FP)
+  }
+  const steady = tick([rankSession])
+  assert.equal(steady.result.unchanged, true)
+  assert.equal(rankCalls(steady.w).length, 0)
+  const failed = tick([{ ...rankSession, trackerRank: undefined }], true)
+  assert.equal(failed.result.rankRefreshes[0].outcome, 'failed')
+  assert.equal(storedFp(file), null)
 })

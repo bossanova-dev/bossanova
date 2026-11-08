@@ -16,6 +16,8 @@ func TestQueueCrossRepositorySortAndCounts_Sessions_AC209301(t *testing.T) {
 	low := queueRow("low", pb.ConfidenceLevel_CONFIDENCE_LEVEL_LOW, 2, 30)
 	moderate := queueRow("moderate", pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE, 8, 10)
 	blocked := queueRow("blocked", pb.ConfidenceLevel_CONFIDENCE_LEVEL_BLOCKED, 4, 20)
+	low.Session.TrackerRank = &pb.TrackerRank{Tier: 1}
+	moderate.Session.TrackerRank = &pb.TrackerRank{Tier: 4}
 	c := &queueScreenClient{repos: []*pb.Repo{{Id: "one", OriginUrl: "https://github.com/test/one"}, {Id: "two", OriginUrl: "https://github.com/test/two"}, {Id: "local"}}, responses: map[string]*pb.ListReviewQueueResponse{
 		"one": {Rows: []*pb.ReviewQueueRow{low, blocked}, LevelCounts: []*pb.ReviewQueueLevelCount{{ConfidenceLevel: pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH, SessionCount: 2}, {ConfidenceLevel: pb.ConfidenceLevel_CONFIDENCE_LEVEL_LOW, SessionCount: 1}}},
 		"two": {Rows: []*pb.ReviewQueueRow{moderate}, LevelCounts: []*pb.ReviewQueueLevelCount{{ConfidenceLevel: pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH, SessionCount: 3}, {ConfidenceLevel: pb.ConfidenceLevel_CONFIDENCE_LEVEL_BLOCKED, SessionCount: 4}, {ConfidenceLevel: pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE, SessionCount: 6}}}}}
@@ -27,10 +29,17 @@ func TestQueueCrossRepositorySortAndCounts_Sessions_AC209301(t *testing.T) {
 	if !strings.Contains(m.header(), "merging now 5 · in repair 4 · need you 6 · deep review 1") {
 		t.Fatalf("counts: %s", m.header())
 	}
+	if m.Order() != pb.ReviewQueueSort_REVIEW_QUEUE_SORT_PRIORITY || !strings.Contains(m.header(), "order: priority") {
+		t.Fatalf("default order: %s", m.header())
+	}
+	labels := []string{"priority", "most confident", "least confident", "smallest", "oldest", "priority"}
 	m.table.SetCursor(1)
 	selected := m.selected().GetSession().GetId()
-	wants := [][]string{{"moderate", "low", "blocked"}, {"blocked", "low", "moderate"}, {"low", "blocked", "moderate"}, {"moderate", "blocked", "low"}, {"moderate", "low", "blocked"}}
+	wants := [][]string{{"low", "moderate", "blocked"}, {"moderate", "low", "blocked"}, {"blocked", "low", "moderate"}, {"low", "blocked", "moderate"}, {"moderate", "blocked", "low"}, {"low", "moderate", "blocked"}}
 	for i, want := range wants {
+		if !strings.Contains(m.header(), "order: "+labels[i]) {
+			t.Errorf("cycle %d header: %s", i, m.header())
+		}
 		got := []string{}
 		for _, r := range m.rows {
 			got = append(got, r.GetSession().GetId())
@@ -152,6 +161,7 @@ func TestQueueRefreshPreservesSelectedPR(t *testing.T) {
 	m := queueModel(&queueScreenClient{}, a, b)
 	m.table.SetCursor(1)
 	replacement := queueRow("b", pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH, 1, 20)
+	replacement.Session.TrackerRank = &pb.TrackerRank{Tier: 1}
 	m = queueUpdate(m, LoadedMsg{Rows: []*pb.ReviewQueueRow{a, replacement}})
 	if m.selected().GetSession().GetId() != "b" || m.table.Cursor() != 0 {
 		t.Fatalf("refresh lost selection: cursor=%d selected=%v", m.table.Cursor(), m.selected())

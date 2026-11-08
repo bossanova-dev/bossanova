@@ -63,22 +63,23 @@ are configured via environment variables. See
 
 ## Top-level fields
 
-| Field                     | Type   | Default                     | Description                                                                                                                                                              |
-| ------------------------- | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `worktree_base_dir`       | string | `~/.bossanova/worktrees`    | Directory where per-session git worktrees are created. Auto-created on load.                                                                                             |
-| `app_data_dir`            | string | platform default            | Absolute directory for local daemon data: `bossd.db`, `bossd.lock`, profile plugin discovery, and default socket placement.                                              |
-| `socket_path`             | string | derived from data directory | Absolute path to the local `bossd` Unix-domain socket. If unset and `app_data_dir` is set, defaults to `app_data_dir/bossd.sock`.                                        |
-| `default_agent`           | string | `claude`                    | Name of the default agent plugin used for new sessions.                                                                                                                  |
-| `skills_declined`         | bool   | `false`                     | Set after the user declines the one-time skills install prompt so it's not shown again.                                                                                  |
-| `daemon_name`             | string | machine hostname            | Display name this daemon advertises in the web daemon picker. Set with `boss settings --daemon-name`; blank resets to the machine hostname. Restart the daemon to apply. |
-| `poll_interval_seconds`   | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                                                                 |
-| `plugins`                 | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                                                         |
-| `repair`                  | object | defaults below              | Repair plugin configuration.                                                                                                                                             |
-| `tmux_delivery`           | object | defaults below              | Composer-readiness deadlines for message delivery into an agent pane. See [`tmux_delivery` fields](#tmux_delivery-fields).                                               |
-| `notes`                   | object | defaults below              | Note retention: how long notes are kept and how many each repo holds. See [`notes` fields](#notes-fields).                                                               |
-| `proof_upload`            | object | absent                      | Destination of the built-in verify evidence uploader. See [`proof_upload` fields](#proof_upload-fields).                                                                 |
-| `daemon_path_extra`       | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                                                  |
-| `subagent_dispatch_grant` | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below.                         |
+| Field                        | Type   | Default                     | Description                                                                                                                                                              |
+| ---------------------------- | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `worktree_base_dir`          | string | `~/.bossanova/worktrees`    | Directory where per-session git worktrees are created. Auto-created on load.                                                                                             |
+| `app_data_dir`               | string | platform default            | Absolute directory for local daemon data: `bossd.db`, `bossd.lock`, profile plugin discovery, and default socket placement.                                              |
+| `socket_path`                | string | derived from data directory | Absolute path to the local `bossd` Unix-domain socket. If unset and `app_data_dir` is set, defaults to `app_data_dir/bossd.sock`.                                        |
+| `default_agent`              | string | `claude`                    | Name of the default agent plugin used for new sessions.                                                                                                                  |
+| `skills_declined`            | bool   | `false`                     | Set after the user declines the one-time skills install prompt so it's not shown again.                                                                                  |
+| `daemon_name`                | string | machine hostname            | Display name this daemon advertises in the web daemon picker. Set with `boss settings --daemon-name`; blank resets to the machine hostname. Restart the daemon to apply. |
+| `poll_interval_seconds`      | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                                                                 |
+| `plugins`                    | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                                                         |
+| `repair`                     | object | defaults below              | Repair plugin configuration.                                                                                                                                             |
+| `tmux_delivery`              | object | defaults below              | Composer-readiness deadlines for message delivery into an agent pane. See [`tmux_delivery` fields](#tmux_delivery-fields).                                               |
+| `notes`                      | object | defaults below              | Note retention: how long notes are kept and how many each repo holds. See [`notes` fields](#notes-fields).                                                               |
+| `proof_upload`               | object | absent                      | Destination of the built-in verify evidence uploader. See [`proof_upload` fields](#proof_upload-fields).                                                                 |
+| `daemon_path_extra`          | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                                                  |
+| `subagent_dispatch_grant`    | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below.                         |
+| `coordinator_approval_grant` | string | `on`                        | Whether a coordinator chat is allowed to approve verify parks and merge. See [`coordinator_approval_grant`](#coordinator_approval_grant) below.                          |
 
 ## Daemon PATH
 
@@ -403,6 +404,45 @@ The setting is read when a chat is **spawned**, so a change takes effect for
 chats started afterwards. Chats already running keep the grant they were
 launched with; start a new chat (or wake a sleeping one, which re-spawns it)
 to pick up the change.
+
+## `coordinator_approval_grant`
+
+Approving a parked PR (`boss pr approve`) and an operator merge are the
+operator's call: `bossd` refuses both from any agent chat. The one exception is
+a **coordinator** chat, an orchestrating chat you start yourself with
+`boss chat new --role coordinator`. By default a coordinator chat is allowed to approve a
+verify park and run an operator merge, so an orchestrator you set going
+lands work without waiting on you. It gains nothing else: accepting a blocker
+and filing verify follow-ups stay yours, and no other chat role gains anything.
+
+Only you create coordinator chats: `bossd` refuses `--role coordinator` from
+inside any agent chat, so no chat promotes another.
+
+Every approval or merge a coordinator makes names it. The approval record on
+the PR says which chat and session approved it, and `bossd`'s log line carries
+the chat id (`caller_agent_session_id`) and session id (`caller_session_id`).
+
+| Value | Effect                                                                |
+| ----- | --------------------------------------------------------------------- |
+| `on`  | **Default.** Coordinator chats approve verify parks and merge.        |
+| `off` | Opt out. No chat approves or merges; only you do, from your terminal. |
+
+```json
+{
+  "coordinator_approval_grant": "off"
+}
+```
+
+The key is absent from a fresh `settings.json` and behaves as `on`. An
+unrecognised value is treated as `off`, and `bossd` logs a warning naming it:
+the only reason to set the key is to change the default, so a typo must not
+leave the grant in place. Edit this key in `settings.json` directly; it is not
+in the boss settings form. `bossd` reads it at startup, so run
+`boss daemon restart` after changing it.
+
+The same rules hold across `boss --host`. A call forwarded from another machine
+carries the identity of whoever made it there: your own terminal stays you, a
+coordinator chat keeps its grant, and any other agent chat is refused.
 
 ## Development profile
 

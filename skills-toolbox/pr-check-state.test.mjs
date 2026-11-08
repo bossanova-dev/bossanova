@@ -271,6 +271,249 @@ test('classifyChecks — a FAILURE never hides behind a same-named SUCCESS', () 
   assert.equal(verdict.state, CHECK_STATES.FAILING)
 })
 
+// recurser/bossanova#4104: the `synchronize` push started a run of each workflow, `gh pr ready`
+// started a second whose concurrency group cancelled the first, and the second passed. The rollup
+// carries both runs of every job on the one head SHA. `gh` writes an unset time as the zero time.
+const UNSET = '0001-01-01T00:00:00Z'
+const rollupRun = (name, workflowName, conclusion, startedAt, completedAt) => ({
+  __typename: 'CheckRun',
+  name,
+  workflowName,
+  status: conclusion === '' ? 'IN_PROGRESS' : 'COMPLETED',
+  conclusion,
+  startedAt,
+  completedAt,
+})
+const BAZEL = 'bazel (test + lint)'
+const cancelledThenPassed = [
+  ['go-test', BAZEL, 'SUCCESS'],
+  ['go-lint', BAZEL, 'SUCCESS'],
+  ['go-ledger', BAZEL, 'SUCCESS'],
+  ['scripts', 'scripts', 'SUCCESS'],
+  ['Notify on nightly failure', 'scripts', 'SKIPPED'],
+].flatMap(([name, workflow, second]) => [
+  rollupRun(name, workflow, second, '2026-11-07T02:06:47Z', '2026-11-07T02:12:43Z'),
+  rollupRun(name, workflow, 'CANCELLED', '2026-11-07T02:02:31Z', '2026-11-07T02:05:52Z'),
+])
+
+test('classifyChecks — a run cancelled by a newer run of the same check reads by the newer run', () => {
+  for (const nodes of [cancelledThenPassed, [...cancelledThenPassed].reverse()]) {
+    const verdict = classifyChecks({
+      headSHA: 'abc123',
+      observedSHA: 'abc123',
+      rollup: { statusCheckRollup: nodes },
+    })
+    assert.equal(verdict.state, CHECK_STATES.GREEN)
+    assert.equal(verdict.failed, 0)
+  }
+})
+
+test('classifyChecks — a newer FAILURE of the same check beats an older SUCCESS', () => {
+  for (const [older, newer] of [
+    ['SUCCESS', 'FAILURE'],
+    ['SUCCESS', 'CANCELLED'],
+  ]) {
+    const nodes = [
+      rollupRun('go-test', BAZEL, older, '2026-11-07T02:02:31Z', '2026-11-07T02:05:52Z'),
+      rollupRun('go-test', BAZEL, newer, '2026-11-07T02:06:47Z', '2026-11-07T02:12:43Z'),
+    ]
+    for (const rollup of [nodes, [...nodes].reverse()]) {
+      assert.equal(classifyChecks({ rollup }).state, CHECK_STATES.FAILING, `${older} → ${newer}`)
+    }
+  }
+})
+
+test('classifyChecks — a rerun still in progress holds an older pass at pending', () => {
+  const rollup = [
+    rollupRun('scripts', 'scripts', '', '2026-11-07T08:50:45Z', UNSET),
+    rollupRun('scripts', 'scripts', 'SUCCESS', '2026-11-07T02:06:50Z', '2026-11-07T02:16:53Z'),
+  ]
+  assert.equal(classifyChecks({ rollup }).state, CHECK_STATES.PENDING)
+  const cancelled = [rollup[0], { ...rollup[1], conclusion: 'CANCELLED' }]
+  assert.equal(classifyChecks({ rollup: cancelled }).state, CHECK_STATES.PENDING)
+})
+
+test('classifyChecks — same-named jobs of different workflows never replace each other', () => {
+  const rollup = [
+    rollupRun('dedup', BAZEL, 'FAILURE', '2026-11-07T02:02:31Z', '2026-11-07T02:05:52Z'),
+    rollupRun('dedup', 'web (test)', 'SUCCESS', '2026-11-07T02:06:47Z', '2026-11-07T02:12:43Z'),
+  ]
+  assert.equal(classifyChecks({ rollup }).state, CHECK_STATES.FAILING)
+})
+
+test('classifyChecks — without ordering evidence the more severe reading still wins', () => {
+  // No times on either run: nothing says which is newer.
+  const untimed = [
+    { name: 'go-test', workflowName: BAZEL, status: 'COMPLETED', conclusion: 'SUCCESS' },
+    { name: 'go-test', workflowName: BAZEL, status: 'COMPLETED', conclusion: 'CANCELLED' },
+  ]
+  for (const rollup of [untimed, [...untimed].reverse()]) {
+    assert.equal(classifyChecks({ rollup }).state, CHECK_STATES.FAILING)
+  }
+  // Two sources read the same check: an older cancelled run in one reading is not outvoted by
+  // a newer pass in another.
+  const verdict = classifyChecks({
+    rollup: [
+      rollupRun('go-test', BAZEL, 'SUCCESS', '2026-11-07T02:06:47Z', '2026-11-07T02:12:43Z'),
+    ],
+    buckets: [bucketRow('go-test', 'CANCELLED', 'cancel')],
+  })
+  assert.equal(verdict.state, CHECK_STATES.FAILING)
+  // REST check-runs carry no workflow, so two same-named runs may be different workflows' jobs.
+  const restRuns = {
+    check_runs: [
+      {
+        name: 'dedup',
+        status: 'completed',
+        conclusion: 'failure',
+        started_at: '2026-11-07T02:02:31Z',
+      },
+      {
+        name: 'dedup',
+        status: 'completed',
+        conclusion: 'success',
+        started_at: '2026-11-07T02:06:47Z',
+      },
+    ],
+  }
+  assert.equal(classifyChecks({ checkRuns: restRuns }).state, CHECK_STATES.FAILING)
+})
+
+test('classifyChecks — SHA-keyed check runs that name their workflow read by the newest run', () => {
+  const checkRuns = {
+    check_runs: [
+      {
+        name: 'go-test',
+        workflow_id: 7,
+        status: 'completed',
+        conclusion: 'success',
+        started_at: '2026-11-07T02:07:03Z',
+        completed_at: '2026-11-07T02:12:43Z',
+      },
+      {
+        name: 'go-test',
+        workflow_id: 7,
+        status: 'completed',
+        conclusion: 'cancelled',
+        started_at: '2026-11-07T02:02:31Z',
+        completed_at: '2026-11-07T02:05:52Z',
+      },
+    ],
+  }
+  assert.equal(classifyChecks({ checkRuns }).state, CHECK_STATES.GREEN)
+})
+
+// Plain REST check runs name no workflow; each one's `check_suite.id` is the `check_suite_id` of
+// one REST workflow run on that SHA, and that run names its `workflow_id`.
+const restCheckRun = (name, suite, conclusion, startedAt) => ({
+  name,
+  status: 'completed',
+  conclusion,
+  started_at: startedAt,
+  completed_at: startedAt,
+  check_suite: { id: suite },
+  app: { slug: 'github-actions' },
+})
+const restWorkflowRun = (id, workflowId, suite, conclusion, startedAt) => ({
+  id,
+  name: `workflow ${workflowId}`,
+  workflow_id: workflowId,
+  check_suite_id: suite,
+  head_sha: 'abc123',
+  status: 'completed',
+  conclusion,
+  run_started_at: startedAt,
+})
+const EARLY = '2026-11-07T02:02:31Z'
+const LATE = '2026-11-07T02:06:47Z'
+
+test('classifyChecks — REST check runs read by the newest run of their workflow’s job', () => {
+  const workflowRuns = {
+    total_count: 2,
+    workflow_runs: [
+      restWorkflowRun(1, 7, 101, 'cancelled', EARLY),
+      restWorkflowRun(2, 7, 102, 'success', LATE),
+    ],
+  }
+  const runs = [
+    restCheckRun('go-test', 101, 'cancelled', EARLY),
+    restCheckRun('go-test', 102, 'success', LATE),
+  ]
+  for (const check_runs of [runs, [...runs].reverse()]) {
+    const verdict = classifyChecks({
+      headSHA: 'abc123',
+      observedSHA: 'abc123',
+      checkRuns: [{ total_count: 2, check_runs }],
+      workflowRuns: [workflowRuns],
+    })
+    assert.equal(verdict.state, CHECK_STATES.GREEN)
+    assert.equal(verdict.failed, 0)
+  }
+})
+
+test('classifyChecks — same-named REST jobs of different workflows stay separate', () => {
+  const verdict = classifyChecks({
+    checkRuns: {
+      check_runs: [
+        restCheckRun('dedup', 101, 'failure', EARLY),
+        restCheckRun('dedup', 202, 'success', LATE),
+      ],
+    },
+    workflowRuns: {
+      workflow_runs: [
+        restWorkflowRun(1, 7, 101, 'failure', EARLY),
+        restWorkflowRun(2, 8, 202, 'success', LATE),
+      ],
+    },
+  })
+  assert.equal(verdict.state, CHECK_STATES.FAILING)
+})
+
+test('classifyChecks — a REST check run whose workflow cannot be read merges by severity', () => {
+  const checkRuns = {
+    check_runs: [
+      restCheckRun('go-test', 101, 'cancelled', EARLY),
+      restCheckRun('go-test', 102, 'success', LATE),
+    ],
+  }
+  // No runs read, a run list missing the cancelled run's suite, and a suite with no workflow id.
+  for (const workflowRuns of [
+    null,
+    { workflow_runs: [restWorkflowRun(2, 7, 102, 'success', LATE)] },
+    {
+      workflow_runs: [
+        { ...restWorkflowRun(1, 7, 101, 'cancelled', EARLY), workflow_id: null },
+        restWorkflowRun(2, 7, 102, 'success', LATE),
+      ],
+    },
+  ]) {
+    assert.equal(classifyChecks({ checkRuns, workflowRuns }).state, CHECK_STATES.FAILING)
+  }
+})
+
+test('classifyChecks — a commit status reads by its newest state', () => {
+  const rollup = [
+    {
+      __typename: 'StatusContext',
+      context: 'tf',
+      state: 'SUCCESS',
+      startedAt: '2026-11-07T02:06:00Z',
+    },
+    {
+      __typename: 'StatusContext',
+      context: 'tf',
+      state: 'ERROR',
+      startedAt: '2026-11-07T02:02:45Z',
+    },
+  ]
+  assert.equal(classifyChecks({ rollup }).state, CHECK_STATES.GREEN)
+  const reversed = [
+    { ...rollup[0], state: 'ERROR' },
+    { ...rollup[1], state: 'SUCCESS' },
+  ]
+  assert.equal(classifyChecks({ rollup: reversed }).state, CHECK_STATES.FAILING)
+})
+
 // AC 7 — the three fail-closed shapes.
 test('classifyChecks — an unreadable read is unknown/unreadable and not green', () => {
   const verdict = classifyChecks({
@@ -1375,6 +1618,43 @@ test('CLI classify — reads payload files and prints one JSON line', () => {
   assert.deepEqual(parsed.absent, ['web-e2e'])
   assert.equal(parsed.green, false)
   assert.equal(parsed.provesGreen, false)
+})
+
+test('CLI classify — attributes REST check runs to workflows through --workflow-runs', () => {
+  const dir = tempDir('pr-check-state-')
+  const checksPath = path.join(dir, 'checks.json')
+  const runsPath = path.join(dir, 'runs.json')
+  writeFileSync(
+    checksPath,
+    JSON.stringify([
+      {
+        total_count: 2,
+        check_runs: [
+          restCheckRun('go-test', 101, 'cancelled', EARLY),
+          restCheckRun('go-test', 102, 'success', LATE),
+        ],
+      },
+    ]),
+  )
+  writeFileSync(
+    runsPath,
+    JSON.stringify([
+      {
+        total_count: 2,
+        workflow_runs: [
+          restWorkflowRun(1, 7, 101, 'cancelled', EARLY),
+          restWorkflowRun(2, 7, 102, 'success', LATE),
+        ],
+      },
+    ]),
+  )
+  const args = ['classify', '--head-sha', 'abc123', '--observed-sha', 'abc123']
+  const attributed = runCli([...args, '--check-runs', checksPath, '--workflow-runs', runsPath])
+  assert.equal(attributed.status, 0, attributed.stderr)
+  assert.equal(JSON.parse(attributed.stdout).state, CHECK_STATES.GREEN)
+  const bare = runCli([...args, '--check-runs', checksPath])
+  assert.equal(bare.status, 0, bare.stderr)
+  assert.equal(JSON.parse(bare.stdout).state, CHECK_STATES.FAILING)
 })
 
 test('CLI classify — reads a rollup from stdin', () => {

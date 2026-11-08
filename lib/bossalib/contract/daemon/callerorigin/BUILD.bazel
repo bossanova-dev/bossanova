@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "callerorigin",
+    srcs = ["callerorigin.go"],
+    importpath = "github.com/recurser/bossalib/contract/daemon/callerorigin",
+    visibility = ["//visibility:public"],
+    deps = ["@com_connectrpc_connect//:connect"],
+)
+
+go_test(
+    name = "callerorigin_test",
+    srcs = ["callerorigin_test.go"],
+    embed = [":callerorigin"],
+)

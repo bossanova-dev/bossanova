@@ -47,6 +47,7 @@ func (m PreparedWorktreeMarker) validate() error {
 
 func preparedGitOutput(ctx context.Context, path string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, args...)...)
+	cmd.WaitDelay = time.Second
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git %v in %s: %w", args, path, err)

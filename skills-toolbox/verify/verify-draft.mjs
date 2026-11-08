@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from '
 import { dirname } from 'node:path'
 import { setTimeout as pause } from 'node:timers/promises'
 import { isMainModule } from '../main-module.mjs'
-import { blockedComment, findingsComment } from './verify-blockers.mjs'
+import { blockedComment, findingsComment, parseOutcomesTrailer } from './verify-blockers.mjs'
 import { acceptedLines } from './verify-accept.mjs'
 import { VERIFY_CONTEXT, VERIFY_DESCRIPTIONS, isSendBack } from './verify-vocabulary.mjs'
 
@@ -84,6 +84,84 @@ export function fileRecovery(path) {
   }
 }
 
+const UNREADABLE = Symbol('unreadable')
+const MAX_OUTCOME_HOPS = 20
+const TRANSITIONS = ['ReadyForReviewEvent', 'ConvertToDraftEvent']
+const DRAFT_HISTORY_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(last: 2, itemTypes: [READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT]) {
+        nodes { __typename ... on ReadyForReviewEvent { createdAt } ... on ConvertToDraftEvent { createdAt } }
+      }
+    }
+  }
+}`
+
+// Walks posted repair outcomes from a pushed head back to its blockers head, trusting only
+// writer-authored hops, until a head carries a verify status. Returns that head when the status
+// is a send-back, null when the chain ends elsewhere, or UNREADABLE.
+function sendBackThroughOutcomes(startSha, comments, writer, statusOf) {
+  const links = comments.flatMap((comment) => {
+    const file = parseOutcomesTrailer(comment.body)
+    if (!file) return []
+    return [{ comment, from: file.blockersHead.toLowerCase(), to: file.pushedHead.toLowerCase() }]
+  })
+  const seen = new Set([startSha])
+  let frontier = [startSha]
+  for (let hop = 0; hop < MAX_OUTCOME_HOPS && frontier.length > 0; hop++) {
+    const next = []
+    for (const link of links) {
+      if (!frontier.includes(link.to) || seen.has(link.from)) continue
+      const trust = writer(link.comment)
+      if (trust === null) return UNREADABLE
+      if (!trust) continue
+      seen.add(link.from)
+      const status = statusOf(link.from)
+      if (status === UNREADABLE) return UNREADABLE
+      if (!status) next.push(link.from)
+      else if (status.state === 'failure' && isSendBack(status.description))
+        return { sha: link.from, status }
+    }
+    frontier = next
+  }
+  return null
+}
+
+// Verify still holds the draft when the only ready/draft transition since its latest marker
+// comment is one convert to draft. A later ready-and-redraft pair is a person's hold. null when
+// the timeline cannot be read.
+function verifyHoldsDraft(read, repo, pr, markedAt) {
+  const [owner, name] = repo.split('/')
+  const r = read(
+    'gh',
+    [
+      'api',
+      'graphql',
+      '-f',
+      `query=${DRAFT_HISTORY_QUERY}`,
+      '-f',
+      `owner=${owner}`,
+      '-f',
+      `name=${name}`,
+      '-F',
+      `number=${pr}`,
+    ],
+    { json: true },
+  )
+  const nodes = r.payload?.data?.repository?.pullRequest?.timelineItems?.nodes
+  if (!r.ok || r.payload?.errors?.length || !Array.isArray(nodes) || nodes.length > 2) return null
+  const times = nodes.map((node) => Date.parse(node?.createdAt))
+  if (
+    nodes.some((node, i) => !TRANSITIONS.includes(node?.__typename) || !Number.isFinite(times[i]))
+  )
+    return null
+  return (
+    nodes.at(-1)?.__typename === 'ConvertToDraftEvent' &&
+    times.at(-1) >= markedAt &&
+    (nodes.length < 2 || times[0] < markedAt)
+  )
+}
+
 export async function runReady(options, deps, helpers) {
   const { readPr, readStatus, repoFor, commandReader, canWrite, commentsReadCall } = helpers
   const read = deps.read ?? commandReader(deps)
@@ -116,7 +194,8 @@ export async function runReady(options, deps, helpers) {
     ) {
       // START_SHA identifies the PR head this repair captured before its push, even
       // when a rebase rewrites ancestry. The checkpoint selects evidence to re-read;
-      // only the original GitHub status, marker and writer permission grant ownership.
+      // only the original GitHub status, marker and writer permission grant ownership, with
+      // writer-authored repair outcomes linking a later start head back to that status.
       startSha = saved.startSha
     }
     if (!options.dryRun)
@@ -141,29 +220,62 @@ export async function runReady(options, deps, helpers) {
   if (view.payload.state !== 'OPEN') return no('no-send-back')
   if (!view.payload.isDraft) return { outcome: 'not-draft' }
   if (view.payload.headRefOid !== target) return unreadable()
-  const result = readStatus(read, startSha, repo, VERIFY_CONTEXT)
-  if (result.verdict === 'unknown') return unreadable()
-  const status = result.contexts?.[VERIFY_CONTEXT]
-  if (status?.state !== 'failure' || !isSendBack(status.description)) return no('no-send-back')
+  const statusOf = (sha) => {
+    const result = readStatus(read, sha, repo, VERIFY_CONTEXT)
+    return result.verdict === 'unknown' ? UNREADABLE : (result.contexts?.[VERIFY_CONTEXT] ?? null)
+  }
+  const direct = statusOf(startSha)
+  if (direct === UNREADABLE) return unreadable()
+  const readComments = () => {
+    const r = read(...commentsReadCall(repo, options.pr))
+    if (!r.ok || !Array.isArray(r.payload) || r.payload.some((p) => !Array.isArray(p))) return null
+    const list = r.payload.flat()
+    return list.every((c) => typeof c?.body === 'string') ? list : null
+  }
+  const writers = new Map()
+  const writer = (comment) => {
+    const login = comment.user?.login
+    if (typeof login !== 'string' || !login) return null
+    if (!writers.has(login)) writers.set(login, canWrite(read, repo, login))
+    return writers.get(login)
+  }
+  // A repair that starts from a head verify never judged inherits the hold of the send-back its
+  // writer-authored outcomes chain reaches, but only while verify's own draft is the latest one.
+  let comments = null
+  let owner = { sha: startSha, status: direct, chained: false }
+  if (!direct) {
+    comments = readComments()
+    if (!comments) return unreadable()
+    const reached = sendBackThroughOutcomes(startSha, comments, writer, statusOf)
+    if (reached === UNREADABLE) return unreadable()
+    if (!reached) return no('no-send-back')
+    owner = { ...reached, chained: true }
+  }
+  const { status } = owner
+  if (status.state !== 'failure' || !isSendBack(status.description)) return no('no-send-back')
   if (status.description.endsWith(VERIFY_DESCRIPTIONS.defectParkedSuffix)) return no('parked')
-  const comments = read(...commentsReadCall(repo, options.pr))
-  if (
-    !comments.ok ||
-    !Array.isArray(comments.payload) ||
-    comments.payload.some((p) => !Array.isArray(p))
-  )
-    return unreadable()
+  comments ??= readComments()
+  if (!comments) return unreadable()
   let trusted = false
-  for (const comment of comments.payload.flat()) {
-    if (typeof comment?.body !== 'string') return unreadable()
-    if (!hasDraftMarker(comment.body, startSha) || !hasLine(comment.body, headMarker(startSha)))
+  let markedAt = -Infinity
+  for (const comment of comments) {
+    if (!hasDraftMarker(comment.body, owner.sha) || !hasLine(comment.body, headMarker(owner.sha)))
       continue
-    if (typeof comment.user?.login !== 'string' || !comment.user.login) return unreadable()
-    const writer = canWrite(read, repo, comment.user.login)
-    if (writer === null) return unreadable()
-    trusted ||= writer
+    const trust = writer(comment)
+    if (trust === null) return unreadable()
+    if (!trust) continue
+    trusted = true
+    if (!owner.chained) continue
+    const at = Date.parse(comment.created_at)
+    if (!Number.isFinite(at)) return unreadable()
+    markedAt = Math.max(markedAt, at)
   }
   if (!trusted) return no('no-marker')
+  if (owner.chained) {
+    const held = verifyHoldsDraft(read, repo, options.pr, markedAt)
+    if (held === null) return unreadable()
+    if (!held) return no('redrafted')
+  }
   if (options.dryRun) return { outcome: 'planned' }
   return {
     outcome: read('gh', ['pr', 'ready', String(options.pr), '--repo', repo]).ok

@@ -29,6 +29,7 @@ type Client interface {
 	RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.AgentChat, error)
 	GetChatTranscript(context.Context, *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
 	GetChatStatuses(context.Context, string) ([]*pb.ChatStatusEntry, error)
+	DeleteChat(context.Context, string, pb.DeleteChatRequest_DeletionReason) error
 }
 
 type group struct{ newClient cliutil.ClientFactory[Client] }
@@ -80,7 +81,7 @@ func (g *group) chatCmd() *cobra.Command {
 		},
 	}
 	newChat.Flags().String("title", "", "Title for the new chat")
-	newChat.Flags().String("role", "operator", "Purpose of the new chat: operator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator one")
+	newChat.Flags().String("role", "operator", "Purpose of the new chat: operator, coordinator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator or coordinator one. Only the operator may create a coordinator chat; unless coordinator_approval_grant is off, it may approve verify parks and merge")
 	newChat.Flags().String("agent", "", "Agent plugin to run (empty inherits the session's agent)")
 	newChat.Flags().Bool(cliutil.JSONFlagName, false, "Emit the new chat as a machine-readable JSON envelope")
 
@@ -124,7 +125,7 @@ func (g *group) chatCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newChat, send, show, wait, rename)
+	cmd.AddCommand(newChat, send, show, wait, rename, g.chatDeleteCmd())
 	return cmd
 }
 
@@ -318,7 +319,7 @@ func (g *group) runChatNew(cmd *cobra.Command, sessionID string) error {
 func parseChatRole(name string) (pb.ChatRole, error) {
 	role, ok := pb.ChatRole_value["CHAT_ROLE_"+strings.ToUpper(strings.TrimSpace(name))]
 	if !ok || pb.ChatRole(role) == pb.ChatRole_CHAT_ROLE_UNSPECIFIED {
-		return pb.ChatRole_CHAT_ROLE_UNSPECIFIED, fmt.Errorf("unknown --role %q: want operator, build, repair or verify", name)
+		return pb.ChatRole_CHAT_ROLE_UNSPECIFIED, fmt.Errorf("unknown --role %q: want operator, coordinator, build, repair or verify", name)
 	}
 	return pb.ChatRole(role), nil
 }

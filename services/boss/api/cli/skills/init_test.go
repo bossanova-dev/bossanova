@@ -52,11 +52,11 @@ func fakeNode(t *testing.T, body string) {
 	t.Setenv("PATH", dir)
 }
 
-// TestInit is the fixture-repo matrix: the five repo shapes the command has to
+// TestInit_BossInit_AC237201 is the fixture-repo matrix: the five repo shapes the command has to
 // handle. Each asserts exit zero, that the config was written, that it carries
 // nothing detection did not produce, that it still validates the way the real
 // consumer validates it, and that the report names the build system.
-func TestInit(t *testing.T) {
+func TestInit_BossInit_AC237201(t *testing.T) {
 	g := newTestGroup()
 
 	cases := []struct {

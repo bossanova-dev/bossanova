@@ -12,6 +12,11 @@ import "google/protobuf/timestamp.proto";
 service DaemonService {
   // Context resolution
   rpc ResolveContext(ResolveContextRequest) returns (ResolveContextResponse);
+  // DescribeCaller returns the principal bossd attributes to this connection
+  // from kernel process ancestry. A boss CLI that forwards a call to another
+  // host's daemon (`boss --host`) asserts it there, where it can only lower
+  // that call's authority.
+  rpc DescribeCaller(DescribeCallerRequest) returns (DescribeCallerResponse);
 
   // Upload finished evidence through daemon-held credentials.
   rpc UploadEvidence(UploadEvidenceRequest) returns (UploadEvidenceResponse);
@@ -101,6 +106,9 @@ service DaemonService {
   // SetSessionTracker links a session to a tracker issue, resolved against the
   // repo's own tracker. It overwrites an existing link (the correction path).
   rpc SetSessionTracker(SetSessionTrackerRequest) returns (SetSessionTrackerResponse);
+
+  // Stores rank only while the session is linked to the named tracker issue.
+  rpc SetSessionTrackerRank(SetSessionTrackerRankRequest) returns (SetSessionTrackerRankResponse);
   // RefreshSessionPR fetches one linked PR from the VCS provider immediately,
   // updates the daemon's cached/display PR state, and returns the refreshed
   // session snapshot. It accepts a session id, a PR number, or both.
@@ -482,6 +490,24 @@ service DaemonService {
 }
 
 // --- Context Resolution ---
+
+message DescribeCallerRequest {}
+
+// CallerKind is the provenance bossd attests for a socket caller.
+enum CallerKind {
+  CALLER_KIND_UNSPECIFIED  = 0; // unattested: bossd could not attribute the caller
+  CALLER_KIND_OPERATOR     = 1;
+  CALLER_KIND_AGENT_CHAT   = 2; // a process inside a managed chat's tmux session
+  CALLER_KIND_DAEMON_CHILD = 3;
+}
+
+message DescribeCallerResponse {
+  CallerKind kind = 1;
+  // The chat, its session and its role; set only for an agent chat.
+  string agent_session_id = 2;
+  string session_id = 3;
+  ChatRole role = 4;
+}
 
 message ResolveContextRequest {
   // Working directory to resolve. If empty, uses daemon's cwd.
@@ -3013,3 +3039,13 @@ message ApproveViewerDeviceRequest {
 message ApproveViewerDeviceResponse {}
 message RevokeViewerDeviceRequest { string viewer_device_id = 1; }
 message RevokeViewerDeviceResponse {}
+
+message SetSessionTrackerRankRequest {
+  string id = 1;
+  string tracker_id = 2;
+  TrackerRank tracker_rank = 3;
+}
+
+message SetSessionTrackerRankResponse {
+  Session session = 1;
+}

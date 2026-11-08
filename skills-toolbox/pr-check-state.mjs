@@ -223,51 +223,106 @@ function sameWorkflow(reading, run) {
 // handed to `--checks` used to read `state` only, drop a CheckRun's `conclusion`, and classify
 // `unclassified` — a green set reported as unknown purely because of which flag carried it.
 export function normalizeRollup(payload) {
-  return asArray(payload)
-    .map((node) => ({
-      name: nameOf(node),
-      status: node?.status ?? '',
-      conclusion: node?.conclusion ?? node?.state ?? '',
-      bucket: node?.bucket ?? '',
-      workflow: workflowOf(node),
-      workflowId: workflowIdOf(node),
-      source: 'rollup',
-    }))
-    .filter((entry) => entry.name !== '')
+  return readEntries(payload, 'rollup', (node) => node?.conclusion ?? node?.state ?? '')
 }
 
 // normalizeBuckets reads a `gh pr checks --json name,state,bucket` payload. The bucket view cannot
 // separate a gate that ran and passed from one that never attached — that is what the two-SHA
 // comparison below is for — but it IS the payload that resolves a null-shaped rollup node.
 export function normalizeBuckets(payload) {
-  return asArray(payload)
-    .map((node) => ({
-      name: nameOf(node),
-      status: node?.status ?? '',
-      conclusion: node?.state ?? node?.conclusion ?? '',
-      bucket: node?.bucket ?? '',
-      workflow: workflowOf(node),
-      workflowId: workflowIdOf(node),
-      source: 'buckets',
-    }))
-    .filter((entry) => entry.name !== '')
+  return readEntries(payload, 'buckets', (node) => node?.state ?? node?.conclusion ?? '')
 }
 
 // normalizeCheckRuns reads a `gh api repos/{owner}/{repo}/commits/{sha}/check-runs` payload. This is
 // the only one of the three keyed to an explicit SHA, which is what makes it the authority on which
 // contexts attached to that SHA at all.
 export function normalizeCheckRuns(payload) {
-  return asArray(payload)
-    .map((node) => ({
-      name: nameOf(node),
-      status: node?.status ?? '',
-      conclusion: node?.conclusion ?? node?.state ?? '',
-      bucket: node?.bucket ?? '',
-      workflow: workflowOf(node),
-      workflowId: workflowIdOf(node),
-      source: 'check-runs',
-    }))
-    .filter((entry) => entry.name !== '')
+  return readEntries(payload, 'check-runs', (node) => node?.conclusion ?? node?.state ?? '')
+}
+
+// attributeCheckRuns names each REST check run's workflow so `newestPerCheck` can order its runs. A
+// `check-runs` row names none, but its `check_suite.id` is the `check_suite_id` of one REST
+// `actions/runs?head_sha=` run, which names its `workflow_id`: one runs read per SHA attributes
+// every row. A row whose suite no run names stays as it was and merges by severity (fail closed).
+function attributeCheckRuns(checkRuns, workflowRuns) {
+  const workflows = new Map()
+  for (const run of asArray(workflowRuns)) {
+    const workflowId = workflowIdOf(run)
+    if (run?.check_suite_id != null && workflowId !== '')
+      workflows.set(String(run.check_suite_id), workflowId)
+  }
+  if (workflows.size === 0) return checkRuns
+  return asArray(checkRuns).map((node) => {
+    const workflowId = workflows.get(String(node?.check_suite?.id ?? ''))
+    if (workflowId === undefined || workflowIdOf(node) || workflowOf(node)) return node
+    return { ...node, workflowId }
+  })
+}
+
+// readEntries reads one source. Entries carry their run's times, so a run a newer run of the same
+// check replaced drops out (`newestPerCheck`) before `mergeEntries` weighs sources by severity.
+function readEntries(payload, source, conclusionOf) {
+  const readings = asArray(payload)
+    .map((node) => {
+      const entry = {
+        name: nameOf(node),
+        status: node?.status ?? '',
+        conclusion: conclusionOf(node),
+        bucket: node?.bucket ?? '',
+        workflow: workflowOf(node),
+        workflowId: workflowIdOf(node),
+        startedAt: timestampOf(node, ['startedAt', 'started_at', 'createdAt', 'created_at']),
+        completedAt: timestampOf(node, ['completedAt', 'completed_at']),
+        source,
+      }
+      return { entry, check: checkOf(node, entry), at: runTime(entry) }
+    })
+    .filter(({ entry }) => entry.name !== '')
+  return newestPerCheck(readings)
+}
+
+// Epoch ms, or null. `gh` writes an unset time (a running check's `completedAt`) as the zero time
+// `0001-01-01T00:00:00Z`; read as a time, it would sort a running rerun before the run it replaced.
+function instantOf(value) {
+  const ms = epochMs(value)
+  return ms !== null && ms > 0 ? ms : null
+}
+
+// The first of `keys` that holds a real time, as the payload spelled it; '' when none does.
+function timestampOf(node, keys) {
+  for (const key of keys) {
+    if (instantOf(node?.[key]) !== null) return node[key]
+  }
+  return ''
+}
+
+function runTime(entry) {
+  return instantOf(entry.startedAt) ?? instantOf(entry.completedAt)
+}
+
+// Which check a reading reports on, when the reading says: a job of one named workflow, or a commit
+// status context. '' otherwise: a bare REST check run names no workflow, and two workflows may each
+// define a job of the same name, so same-named runs are no evidence of one check.
+function checkOf(node, entry) {
+  const workflow = entry.workflowId || entry.workflow
+  if (workflow) return `run\u0000${workflow}\u0000${entry.name}`
+  const isStatus = node?.__typename === 'StatusContext' || (Boolean(node?.context) && !node?.name)
+  return isStatus ? `status\u0000${entry.name}` : ''
+}
+
+// One source's readings less every run a newer run of the same check replaced. A push and a `gh pr
+// ready` seconds apart start two runs whose concurrency group cancels the first; that run must not
+// outvote its replacement, while a newer failure still beats an older pass. A reading with no check
+// or no time is no ordering evidence, so it stays for `mergeEntries` severity, as do tied runs.
+function newestPerCheck(readings) {
+  const newest = new Map()
+  for (const { check, at } of readings) {
+    if (check === '' || at === null) continue
+    if (!newest.has(check) || at > newest.get(check)) newest.set(check, at)
+  }
+  return readings
+    .filter(({ check, at }) => check === '' || at === null || at >= newest.get(check))
+    .map(({ entry }) => entry)
 }
 
 // The `gh run list` default `--limit`-style cap the shipped recipes pass. A bare run list holding
@@ -312,7 +367,7 @@ export function normalizeWorkflowRuns(payload, headSHA = '') {
 
 // mergeEntries folds every payload into one name → classification map. Reading order is
 // rollup, then the SHA-keyed check runs, then the buckets; severity decides the winner, so the
-// order only settles ties between equally severe readings.
+// order only settles ties between equally severe readings. Runs replaced within one source are gone.
 function mergeEntries(sources) {
   const merged = new Map()
   for (const entry of sources) {
@@ -569,7 +624,7 @@ export function classifyChecks(options) {
   const head = partitionProvenance([
     ...mergeEntries([
       ...normalizeRollup(rollup),
-      ...normalizeCheckRuns(checkRuns),
+      ...normalizeCheckRuns(attributeCheckRuns(checkRuns, workflowRuns)),
       ...normalizeBuckets(buckets),
     ]).values(),
   ])

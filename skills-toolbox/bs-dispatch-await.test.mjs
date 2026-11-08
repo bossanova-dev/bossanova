@@ -48,8 +48,8 @@ import { DEFAULT_CONFIG, reviewTimeDefaults } from './skill-config.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-dispatch-await.mjs', import.meta.url))
 
-function runCli(args = []) {
-  const res = spawnSync(process.execPath, [scriptPath, ...args], { encoding: 'utf8' })
+function runCli(args = [], env = process.env) {
+  const res = spawnSync(process.execPath, [scriptPath, ...args], { encoding: 'utf8', env })
   return { stdout: res.stdout.trim(), stderr: res.stderr.trim(), status: res.status }
 }
 
@@ -1406,4 +1406,82 @@ test('wait never writes the heartbeat it reads: bytes and mtime unchanged', () =
   assert.equal(res.status, 95, 'the wait consulted the heartbeat (held on it)')
   assert.equal(readFileSync(hb, 'utf8'), bytes)
   assert.equal(statSync(hb).mtimeMs, mtimeMs)
+})
+
+test('wait --leg-deadline bounds a leg even with a live heartbeat', () => {
+  for (const live of [false, true]) {
+    const ctx = context()
+    const hb = join(ctx.dir, 'extension.heartbeat')
+    if (live) touchHeartbeat(hb)
+    const res = runCli(
+      [
+        'wait',
+        ctx.dir,
+        ctx.runId,
+        'extension',
+        '--dispatched-at',
+        `${Date.now() - 1000}`,
+        '--leg-deadline',
+        '--heartbeat',
+        hb,
+        '--while-live',
+      ],
+      { ...process.env, BOSS_SKILL_EXTENSION_TIMEOUT_MS: '1' },
+    )
+    assert.equal(res.status, 96, res.stderr)
+    assert.equal(JSON.parse(res.stdout).status, TIMED_OUT)
+  }
+})
+
+test('wait --leg-deadline admits a terminal sentinel before its deadline', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'extension', 'ok', {})
+  const res = runCli(
+    [
+      'wait',
+      ctx.dir,
+      ctx.runId,
+      'extension',
+      '--leg-deadline',
+      '--dispatched-at',
+      `${Date.now() - 1}`,
+    ],
+    { ...process.env, BOSS_SKILL_EXTENSION_TIMEOUT_MS: '600000' },
+  )
+  assert.equal(res.status, 0, res.stderr)
+  assert.equal(JSON.parse(res.stdout).status, COMPLETED)
+})
+
+test('wait --leg-deadline refuses missing clock, explicit deadline and invalid env cap', () => {
+  const ctx = context()
+  const clock = ['--dispatched-at', `${Date.now() - 1000}`]
+  for (const [flags, cap] of [
+    [[], '300000'],
+    [[...clock, '--deadline', `${Date.now() + 1000}`], '300000'],
+    [clock, '5s'],
+  ]) {
+    const res = runCli(['wait', ctx.dir, ctx.runId, 'extension', '--leg-deadline', ...flags], {
+      ...process.env,
+      BOSS_SKILL_EXTENSION_TIMEOUT_MS: cap,
+    })
+    assert.equal(res.status, 2, res.stderr)
+    assert.equal(res.stdout, '')
+  }
+})
+
+test('awaitDispatch completes a mid-wait sentinel within the extension leg cap', async () => {
+  const ctx = context()
+  const clock = fakeTime()
+  const dispatchedAt = clock.now() - 1
+  const result = await awaitDispatch(ctx, 'extension', {
+    dispatchedAt,
+    deadlineAt: dispatchedAt + legTimeoutMsFromEnv({ BOSS_SKILL_EXTENSION_TIMEOUT_MS: '600000' }),
+    now: clock.now,
+    sleep: async (ms) => {
+      writeSentinel(ctx, 'extension', 'ok', {})
+      await clock.sleep(ms)
+    },
+  })
+  assert.equal(waitExitCode(result), 0)
+  assert.equal(clock.sleeps.length, 1)
 })

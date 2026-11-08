@@ -13,8 +13,7 @@ node "$BOSS_PLAN_TOOLBOX/issue-lease.mjs" acquire --scope plan --issue "<ISSUE-I
 
 - Exit 0 (`acquired`): retain the lease for the whole planning run; continue to the comment claim.
 - Exit 3 (`held`): post nothing. Treat this as `LOST` with no comment to delete: headless sweeps
-  try the next ranked head within the existing three-head cap; named-ticket or interactive runs
-  report the peer.
+  end `noop`; named-ticket or interactive runs report the peer.
 - Exit 4 (`unavailable`): record its reason in the run report and continue to the comment claim.
 - Exit 2: correct the usage error or abort closed; never treat it as graceful degradation.
 
@@ -29,8 +28,9 @@ Post that body through `writeComment`, retaining both token and returned comment
 
 - Exit 0 (`WON`): continue. Plan claims older than two hours forfeit automatically without a
   session-liveness lookup; younger claims arbitrate in the adapter's claim order: earliest `createdAt` then token, or lowest comment id on trackers whose `created_at` is too coarse, such as GitHub.
-- Exit 3 (`LOST`): release your own comment. Headless sweeps try the next ranked head, at most
-  three heads per run, then end `noop`. Interactive or named-ticket runs report the peer; only
+- Exit 3 (`LOST`): release your own comment. Headless sweeps end `noop`. Selection already
+  skipped claimed heads, so losing means a peer claimed the same head concurrently; the next
+  scheduled run selects the next available head. Interactive or named-ticket runs report the peer; only
   an explicit interactive confirmation permits continuing unclaimed.
 - Exit 4 (`NO_WINNER`): release and retry claiming once; a repeat ends `noop`.
 - Exit 2 naming an unsupported `claimScopes` plan capability: warn, continue unclaimed and omit
@@ -74,3 +74,9 @@ Release the claim, invoke `guard-discard` for the draft through the current run-
 remove only this run's scratch, make no planning write, and finish `noop` through Phase 6/7.
 Exit 2 is unreadable or usage input: correct it or stop closed, release and report the error;
 never continue with an unevaluated recheck. An attachment present at selection is not a peer write.
+
+The cron gate suppresses fully claimed queues only when its candidate batch is below the 250-row
+limit. A full batch leaves the earlier existence answer intact because unclaimed work may lie
+beyond it. This conservative case may start a planner that finds no candidate in its bounded
+window; it does not prove the whole backlog is claimed. The worker retains its normal bounded
+selection and claim arbitration.

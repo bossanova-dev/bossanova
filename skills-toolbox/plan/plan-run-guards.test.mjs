@@ -2227,3 +2227,88 @@ test('plan claim helpers agree on the same file or inline comments value', () =>
     }
   }
 })
+
+const depsPrs = (over = {}) => ({
+  listTruncated: false,
+  pullRequests: [
+    {
+      number: 12,
+      url: 'https://example.invalid/pull/12',
+      title: '[TCK-2] Change',
+      headRefName: 'build',
+      isDraft: false,
+      ticketIds: ['TCK-2'],
+      files: ['app/api/x.go'],
+      filesTruncated: false,
+      ...over,
+    },
+  ],
+})
+
+test('deps: open PR files make a no-areas candidate comparable through the existing ladder', () => {
+  const input = {
+    payload: {},
+    rows: [depsRow(), depsCandidate({ description: '' })],
+    subjectId: 'TCK-1',
+    config: { ...DEFAULT_CONFIG, ...DEPS_CONFIG },
+    rootEntries: { dirs: ['app'], files: [] },
+  }
+  const before = runDependencyScan(input)
+  assert.equal(before.result.edges.length, 0)
+  const result = runDependencyScan({ ...input, openPullRequests: depsPrs() })
+  assert.equal(result.status, 'ok')
+  assert.deepEqual(
+    result.result.edges.map((row) => [row.identifier, row.reason, row.edge]),
+    [['TCK-2', 'file-overlap', 'relatedTo']],
+  )
+  assert.equal(result.result.candidatesWithoutAreas, 0)
+  assert.ok(
+    result.result.notes.some(
+      (row) => row.reason === 'open-pr-overlap' && row.destination === 'planning',
+    ),
+  )
+  assert.equal(
+    runDependencyScan({
+      ...input,
+      openPullRequests: depsPrs(),
+      rows: [
+        depsRow(),
+        depsCandidate({ description: '', stateName: 'Done', stateType: 'completed' }),
+      ],
+    }).result.edges.length,
+    0,
+  )
+  assert.equal(JSON.stringify(runDependencyScan(input)), JSON.stringify(before))
+})
+
+test('deps CLI consumes a snapshot, preserves stdout without it, and refuses invalid files by name', () => {
+  const dir = depsRepo()
+  const rows = [depsRow(), depsCandidate({ description: '' })]
+  const baseline = runDeps(dir, { rows })
+  const prsFile = path.join(dir, 'open-prs.json')
+  const args = [
+    GUARD,
+    'deps',
+    path.join(dir, 'deps-in.json'),
+    path.join(dir, 'candidates.json'),
+    '--subject',
+    'TCK-1',
+    '--open-prs',
+    prsFile,
+  ]
+  const invoke = () => spawnSync(process.execPath, args, { cwd: dir, encoding: 'utf8' })
+  const missing = invoke()
+  assert.equal(missing.status, 1)
+  assert.match(missing.stderr, /open-prs-not-plan-open-prs/)
+  assert.ok(missing.stderr.includes(prsFile))
+  assert.match(missing.stderr, /plan-open-prs.mjs fetch/)
+  for (const bytes of ['bad JSON', '{}']) {
+    writeFileSync(prsFile, bytes)
+    assert.match(invoke().stderr, /open-prs-not-plan-open-prs/)
+  }
+  writeFileSync(prsFile, JSON.stringify(depsPrs()))
+  const withPrs = invoke()
+  assert.equal(withPrs.status, 0, withPrs.stderr)
+  assert.equal(JSON.parse(withPrs.stdout).edges[0].reason, 'file-overlap')
+  assert.equal(runDeps(dir, { rows }).stdout, baseline.stdout)
+})

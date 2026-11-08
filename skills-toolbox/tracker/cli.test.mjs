@@ -2490,3 +2490,38 @@ test('claim-verdict rejects a null comments file before claim arbitration', (t) 
   assert.equal(code, 2)
   assert.match(err, /--comments .*envelope/)
 })
+
+test('list-unplanned excludes claimed candidates with diagnostics and fails closed on broken capability', async () => {
+  const claim = { body: `bs-plan-claim:${'a'.repeat(32)}`, createdAt: new Date().toISOString() }
+  let query
+  const adapter = {
+    planClaimSelection: true,
+    selectPlanned: async (q) => {
+      query = q
+      return [
+        { identifier: 'APP-1', planClaimComments: [claim] },
+        { identifier: 'APP-2', planClaimComments: [] },
+      ]
+    },
+  }
+  const result = await listStage('list-unplanned', [], { adapter })
+  assert.equal(result.code, 0)
+  assert.deepEqual(
+    JSON.parse(result.out).map((row) => row.identifier),
+    ['APP-2'],
+  )
+  assert.match(result.err, /excluded APP-1 \(live peer plan claim, 0m old\)/)
+  assert.equal(query.planClaims, true)
+  const build = await listStage('list-planned', [], { adapter })
+  assert.equal(build.code, 0)
+  assert.equal(Object.hasOwn(query, 'planClaims'), false)
+  const broken = await listStage('list-unplanned', [], {
+    adapter: { planClaimSelection: true, selectPlanned: async () => [{}] },
+  })
+  assert.equal(broken.code, 2)
+  assert.equal(broken.out, '')
+  const legacy = await listStage('list-unplanned', [], { result: [{ identifier: 'APP-3' }] })
+  assert.equal(legacy.code, 0)
+  assert.equal(JSON.parse(legacy.out).length, 1)
+  assert.match(legacy.err, /does not declare planClaimSelection/)
+})

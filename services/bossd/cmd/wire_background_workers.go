@@ -12,6 +12,7 @@ import (
 )
 
 func (w *daemonWiring) wireBackgroundWorkers() {
+	w.trackedGo("unrecorded-worktree-reconcile", w.runWorktreeReconcile)
 	// Re-derive Claude account identities off the startup path: each lookup is
 	// a network call to Anthropic, and daemon startup never waits on it.
 	w.trackedGo("claude-identity-backfill", func() {

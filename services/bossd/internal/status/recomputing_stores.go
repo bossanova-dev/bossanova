@@ -11,9 +11,16 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 )
 
+// sessionTrackerStore forwards guarded tracker metadata writes.
+type sessionTrackerStore interface {
+	SetTrackerRank(context.Context, string, string, *string, models.TrackerRank) (bool, error)
+	SetTrackerIfUnlinked(ctx context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error)
+}
+
 // SessionStore is the persistence surface forwarded by the session decorator.
 // Optional atomic operations are kept in separate capability interfaces below.
 type SessionStore interface {
+	sessionTrackerStore
 	Create(ctx context.Context, params db.CreateSessionParams) (*models.Session, error)
 	Get(ctx context.Context, id string) (*models.Session, error)
 	List(ctx context.Context, repoID string) ([]*models.Session, error)
@@ -28,7 +35,6 @@ type SessionStore interface {
 	Update(ctx context.Context, id string, params db.UpdateSessionParams) (*models.Session, error)
 	SetListRanks(ctx context.Context, ranks map[string]*int64) (int, error)
 	UpdateStateConditional(ctx context.Context, id string, newState, expectedState int) (bool, error)
-	SetTrackerIfUnlinked(ctx context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error)
 	UpdateStateConditionalFrom(ctx context.Context, id string, newState int, expectedStates []int) (bool, error)
 	MarkArchived(ctx context.Context, id string) error
 	SetResurrectedState(ctx context.Context, id string, newState int) (bool, error)

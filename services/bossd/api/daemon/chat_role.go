@@ -13,6 +13,8 @@ var agentChatRoleProto = map[domain.AgentChatRole]pb.ChatRole{
 	domain.AgentChatRoleRepair:   pb.ChatRole_CHAT_ROLE_REPAIR,
 	domain.AgentChatRoleVerify:   pb.ChatRole_CHAT_ROLE_VERIFY,
 	domain.AgentChatRoleOperator: pb.ChatRole_CHAT_ROLE_OPERATOR,
+	// Creating a coordinator chat is gated at the caller gate (requiredCapability).
+	domain.AgentChatRoleCoordinator: pb.ChatRole_CHAT_ROLE_COORDINATOR,
 }
 
 // AgentChatRoleToProto maps a role onto the wire enum.

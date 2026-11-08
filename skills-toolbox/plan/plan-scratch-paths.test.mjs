@@ -64,6 +64,49 @@ test('planScratchPath refuses a family whose template parts were not supplied', 
   assert.throws(() => planScratchPath('r1', 'precheck', {}), /unusable basename/)
 })
 
+test('scratch paths accept literal undefined text while rejecting missing consumed parts', () => {
+  const parts = {
+    issueId: 'ABC-1',
+    slug: 'handle-undefined-values',
+    parentId: 'ABC-9',
+    key: 'undefined',
+    childId: 'ABC-2',
+    n: '1',
+    role: 'plan-reviewer',
+    name: 'undefined-check',
+  }
+  for (const family of PLAN_SCRATCH_FAMILIES) {
+    const path = planScratchPath('r1', family.family, parts)
+    assert.equal(path.split('/').length, 3)
+    const consumed = new Set()
+    family.basename(
+      new Proxy(parts, {
+        get(target, key) {
+          consumed.add(key)
+          return target[key]
+        },
+      }),
+    )
+    for (const key of consumed) {
+      const missing = { ...parts }
+      delete missing[key]
+      assert.throws(() => planScratchPath('r1', family.family, missing), /unusable basename/)
+      assert.throws(
+        () => planScratchPath('r1', family.family, { ...parts, [key]: undefined }),
+        /unusable basename/,
+      )
+      assert.throws(
+        () => planScratchPath('r1', family.family, { ...parts, [key]: 'a/b' }),
+        /unusable basename/,
+      )
+    }
+  }
+  assert.equal(
+    planScratchPath('r1', 'plan', parts),
+    '.linear-plans/run-r1/ABC-1-handle-undefined-values.md',
+  )
+})
+
 test('every declared family round-trips: its own template resolves back to it', () => {
   for (const family of PLAN_SCRATCH_FAMILIES) {
     const token = `${PLAN_SCRATCH_ROOT}/run-<RUN-SCRATCH-ID>/${family.template}`
@@ -408,6 +451,7 @@ test('BOS-1965: extension envelopes have run-scoped paths distinct per extension
   for (const [family, suffix] of [
     ['extension-out', 'json'],
     ['extension-tmp', 'tmp'],
+    ['extension-heartbeat', 'heartbeat.json'],
   ]) {
     const path = planScratchPath('r1', family, parts)
     assert.equal(
@@ -424,6 +468,7 @@ test('BOS-1965: extension output and temporary tokens classify without overlap',
   for (const [family, suffix] of [
     ['extension-out', 'json'],
     ['extension-tmp', 'tmp'],
+    ['extension-heartbeat', 'heartbeat.json'],
   ]) {
     for (const token of [
       `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.ext-plan-reviewer-<name>.${suffix}`,
@@ -435,7 +480,7 @@ test('BOS-1965: extension output and temporary tokens classify without overlap',
 })
 
 test('BOS-1965: extension paths refuse missing role or name', () => {
-  for (const family of ['extension-out', 'extension-tmp']) {
+  for (const family of ['extension-out', 'extension-tmp', 'extension-heartbeat']) {
     for (const parts of [
       { issueId: 'BOS-1', name: 'x' },
       { issueId: 'BOS-1', role: 'plan-reviewer' },
@@ -447,7 +492,7 @@ test('BOS-1965: extension paths refuse missing role or name', () => {
 
 test('BOS-1965: CLI builds extension paths and lists both families', () => {
   const cli = fileURLToPath(new URL('./plan-scratch-paths.mjs', import.meta.url))
-  for (const family of ['extension-out', 'extension-tmp']) {
+  for (const family of ['extension-out', 'extension-tmp', 'extension-heartbeat']) {
     const result = spawnSync(
       process.execPath,
       [cli, 'path', 'r1', family, 'issueId=BOS-1', 'role=plan-reviewer', 'name=x'],
@@ -471,6 +516,7 @@ test('BOS-1965: CLI builds extension paths and lists both families', () => {
     .map((line) => line.split('\t')[0])
   assert.ok(keys.includes('extension-out'))
   assert.ok(keys.includes('extension-tmp'))
+  assert.ok(keys.includes('extension-heartbeat'))
 })
 
 test('plan scratch stays untracked until ensuring its self-ignoring root', () => {
@@ -529,4 +575,17 @@ test('precreation child drafts have distinct declared names', () => {
       assert.deepEqual(planScratchToken(`.linear-plans/run-r1/${name}`).families, [family])
   }
   assert.equal(planScratchToken('.linear-plans/run-r1/<ISSUE-ID>.child-desc-<slug>.md').ok, false)
+})
+
+test('open-prs scratch family admits only its issue snapshot filename', () => {
+  assert.equal(
+    planScratchPath('r1', 'open-prs', { issueId: 'ABC-1' }),
+    '.linear-plans/run-r1/ABC-1.open-prs.json',
+  )
+  assert.deepEqual(planScratchToken('.linear-plans/run-r1/ABC-1.open-prs.json').families, [
+    'open-prs',
+  ])
+  for (const name of ['ABC-1.open-prs.md', 'ABC-1.open-prs.extra.json', 'ABC-1.other.json']) {
+    assert.equal(planScratchToken(`.linear-plans/run-r1/${name}`).ok, false)
+  }
 })

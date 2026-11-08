@@ -120,7 +120,8 @@ for (const [name, options, selection, expected] of [
     assert.equal(result.status, 0, result.stderr)
     assert.equal(decision.hasWork, expected)
     assert.equal(decision.hasWork, result.rows.length > 0)
-    assert.deepEqual(listArgs(gate.calls), listArgs(scan.calls))
+    assert.ok(listArgs(gate.calls).length > 0)
+    for (const args of listArgs(gate.calls)) assert.deepEqual([args], listArgs(scan.calls))
   })
 
 for (const [name, options, expected] of [

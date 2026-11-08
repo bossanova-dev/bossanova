@@ -295,3 +295,7 @@ func TestLivenessChecker_AgentForSessionNil(t *testing.T) {
 func (*mockSessionStoreLiveness) SetDismissedAlert(context.Context, string, string, time.Time) error {
 	return nil
 }
+
+func (m *mockSessionStoreLiveness) SetTrackerRank(context.Context, string, string, *string, models.TrackerRank) (bool, error) {
+	return false, nil
+}

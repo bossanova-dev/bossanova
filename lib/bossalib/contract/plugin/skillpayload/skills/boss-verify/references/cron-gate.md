@@ -64,10 +64,13 @@ Unlike the other cron gates, this one does the work itself, because a cron fire 
 session and verify work belongs in each PR's **existing** session. It judges each candidate with the
 zero-token `judge`, posts and merges mechanically when no `verify` extension is installed, and
 otherwise routes `/boss-verify <pr> --claim <token>` into the PR's session (its `verify` chat, a new
-`verify` chat, or a detached `boss new --pr <n>` session for a PR with none). It never waits for a
-dispatched verify. Merges are handed off to a detached process and settled within the budget; a
-merge still in flight at the deadline prints `#N dispatched: merge in flight (log …)` and finishes
-on its own. Each PR gets one line in the gate output, then a summary:
+`verify` chat, or a detached `boss new --pr <n>` session for a PR with none). A judge that fails or
+times out routes the head the same way when the PR has a live session here, where `/boss-verify`
+judges it without the gate's budget; with none it prints `#N deferred: judge failed (…)` and writes
+nothing, so a later run judges it again. An event's judge may take up to 30 s while 10 s of the
+budget stay for that hand-off. It never waits for a dispatched verify. Merges are handed off to a
+detached process and settled within the budget; a merge still in flight at the deadline prints
+`#N dispatched: merge in flight (log …)` and finishes on its own. Each PR gets one line in the gate output, then a summary:
 
 ```
 #41 merged <sha>

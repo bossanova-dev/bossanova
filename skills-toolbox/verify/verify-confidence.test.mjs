@@ -82,7 +82,7 @@ test('missing or unreadable evidence is cannot-assess, never high', () => {
 })
 
 test('area policy asks even on short circuit, deduplicates and uses UI proof', () => {
-  for (const ui of ['unproven', 'none', undefined]) {
+  for (const ui of ['none', undefined]) {
     const result = confidence({
       ...base(),
       areas: [area('ui', 'unless-proven'), area('ui', 'always'), area('other', 'never')],
@@ -92,11 +92,11 @@ test('area policy asks even on short circuit, deduplicates and uses UI proof', (
     assert.deepEqual(result.asks, [{ area: 'ui', label: 'ui', source: 'builtin' }])
   }
   assert.equal(
-    confidence({ ...base(), areas: [area('ui', 'unless-proven')], proof: { ui: 'proven' } }).level,
+    confidence({ ...base(), areas: [area('ui', 'unless-proven')], proof: { ui: 'tests' } }).level,
     'high',
   )
   assert.equal(
-    confidence({ ...base(), areas: [area('migrations')], proof: { ui: 'proven' } }).asks.length,
+    confidence({ ...base(), areas: [area('migrations')], proof: { ui: 'tests' } }).asks.length,
     1,
   )
   assert.equal(confidence({ areas: [area()] }).asks.length, 1)
@@ -242,7 +242,7 @@ test('fresh-claim schema changes ask through the real area policy', () => {
   ]
   const policy = { alwaysReview: [], neverReview: [] }
   const { areas } = reviewAreas(files, policy)
-  const facts = { ...base(), areas, proof: { ui: 'proven' } }
+  const facts = { ...base(), areas, proof: { ui: 'tests' } }
   assert.equal(confidence(facts).level, 'moderate')
   assert.ok(confidence(facts).asks.some((a) => a.area === 'api-contract'))
   assert.equal(
@@ -272,11 +272,11 @@ test('backtest pins the later-fix rate of every confidence outcome', () => {
       size: size(row.changedLines, fixture.thresholds),
       proof: {
         ui: row.unprovenUi
-          ? 'unproven'
+          ? 'none'
           : row.areas.some((entry) => entry.area === 'ui')
-            ? 'proven'
+            ? 'tests'
             : 'none',
-        behavior: row.unprovenBehavior ? 'unproven' : 'none',
+        behavior: row.unprovenBehavior ? 'none' : 'none',
       },
       secondModel: { ran: row.secondModelRan },
     })
@@ -298,4 +298,16 @@ test('backtest pins the later-fix rate of every confidence outcome', () => {
     'Confidence rule changed its historical outcomes. Old and new tables:\n' +
       JSON.stringify({ old: expected, new: table }, null, 2),
   )
+})
+
+test('both UI proof kinds lift only the unless-proven ask and unproven cap', () => {
+  for (const ui of ['tests', 'recording']) {
+    const result = confidence({ ...base(), areas: [area('ui', 'unless-proven')], proof: { ui } })
+    assert.equal(result.level, 'high')
+    assert.deepEqual(result.asks, [])
+    assert.deepEqual(result.loweredBy, [])
+    const always = confidence({ ...base(), areas: [area('ui', 'always')], proof: { ui } })
+    assert.equal(always.asks.length, 1)
+    assert.equal(always.loweredBy.includes('unproven'), false)
+  }
 })

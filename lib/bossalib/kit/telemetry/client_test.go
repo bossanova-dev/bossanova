@@ -60,6 +60,7 @@ func (f *fakePostHogClient) EvaluateFlags(posthog.EvaluateFlagsPayload) (*postho
 }
 func (f *fakePostHogClient) ReloadFeatureFlags() error                       { return nil }
 func (f *fakePostHogClient) GetFeatureFlags() ([]posthog.FeatureFlag, error) { return nil, nil }
+func (f *fakePostHogClient) Emails() posthog.Emails                          { return nil }
 
 func TestPostHogClientCloseLogsOnlyOnError(t *testing.T) {
 	captureLog := func(closeErr error) string {

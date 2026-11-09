@@ -80,6 +80,11 @@ func (l *Lifecycle) ResumeOrphanedHeadlessRuns(ctx context.Context) (resumed int
 		if session.AgentSessionID == nil || *session.AgentSessionID == "" {
 			continue
 		}
+		// A live chat pane means the run never died; a resume would start a
+		// second agent beside it. RestoreLiveOrphans reattaches such a session.
+		if l.hasLiveChatPane(ctx, session.ID) {
+			continue
+		}
 		if l.resumeOrphanedRun(ctx, claimStore, session) {
 			resumed++
 		}

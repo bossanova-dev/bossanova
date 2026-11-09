@@ -589,3 +589,17 @@ test('open-prs scratch family admits only its issue snapshot filename', () => {
     assert.equal(planScratchToken(`.linear-plans/run-r1/${name}`).ok, false)
   }
 })
+
+test('families declares a persistent premise report for writeback verification', () => {
+  assert.equal(
+    planScratchPath('r1', 'premise-report', { issueId: 'ABC-1' }),
+    '.linear-plans/run-r1/ABC-1.premise-report.json',
+  )
+  const cli = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('./plan-scratch-paths.mjs', import.meta.url)), 'families'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(cli.status, 0, cli.stderr)
+  assert.match(cli.stdout, /^premise-report\t<ISSUE-ID>\.premise-report\.json\t/m)
+})

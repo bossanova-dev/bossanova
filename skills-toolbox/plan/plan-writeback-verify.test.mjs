@@ -2041,3 +2041,221 @@ test('writeback rejects removal of brackets from unmatched destination fragments
     assert.notEqual(result.exitCode, 0)
   }
 })
+
+const measuredReshapings = [
+  [
+    'table-cell-padding-collapse',
+    '| a    | b |\n| --- | --- |\n|x|y|',
+    '| a | b |\n| --- | --- |\n| x | y |',
+    [
+      ['| a | b |\n| --- | --- |', '| a |\n| --- | --- |'],
+      ['| a | b |\n| --- | --- |', '| a | c |\n| --- | --- |'],
+      ['| a\\|b | c |\n| --- | --- |', '| a | b | c |\n| --- | --- |'],
+      ['| a    | b |', '| a | b |'],
+      ['| a | b |\n| --- | --- |', '| a | b |\n| -- | -- |'],
+      ['|a|b|\n| --- | --- |', 'a|b\n| --- | --- |'],
+    ],
+  ],
+  [
+    'bare-reference-autolinking',
+    'ABC-12 https://x/y README.md:12',
+    '[ABC-12](<https://tracker.example/issue/ABC-12/slug>) [https://x/y](<https://x/y>) [README.md:12](http://README.md:12)',
+    [
+      ['t', '[t](https://x)'],
+      ['ABC-12', '[ABC-12](https://tracker.example/issue/ABC-123)'],
+      ['x.md', '![x.md](http://x.md)'],
+      ['![https://x](<https://x>)', '![https://x](https://x)'],
+      ['\\[https://x](<https://x>)', '\\[https://x](https://x)'],
+      ['x.md', '[**x.md**](http://x.md)'],
+      ['x.md', '[x.md]: http://x.md'],
+      ['x.md', '\\[x.md](http://x.md)'],
+    ],
+  ],
+  [
+    'code-span-bold-unwrapping',
+    '**`x`**',
+    '`x`',
+    [
+      ['**`x`**', '*`x`*'],
+      ['***`x`***', '`x`'],
+      ['__`x`__', '`x`'],
+      ['**`x` y**', '`x` y'],
+      ['**`x` `y`**', '`x` `y`'],
+    ],
+  ],
+]
+
+for (const [id, intended, stored, nearMisses] of measuredReshapings) {
+  const ids = new Set([id])
+  const canon = (text) => normalizeDescription(text, ids)
+  test(`${id}: measured pair, idempotence and declared-only end-to-end`, () => {
+    assert.equal(canon(intended), canon(stored))
+    assert.equal(canon(canon(intended)), canon(intended))
+    const a = description({ sections: { '## Approach': intended } })
+    const b = description({ sections: { '## Approach': stored } })
+    assert.equal(verify(a, b, ids).verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+    assertNotCertifiedEquivalent(
+      verify(a, b, new Set([...ALL_TRANSFORMS].filter((other) => other !== id))),
+    )
+  })
+  test(`${id}: near misses preserve meaningful differences`, () => {
+    for (const [a, b] of nearMisses) assert.notEqual(canon(a), canon(b), `${a} / ${b}`)
+    for (const wrap of [
+      (s) => '```\n' + s + '\n```',
+      (s) =>
+        s
+          .split('\n')
+          .map((line) => '    ' + line)
+          .join('\n'),
+    ]) {
+      assert.notEqual(canon(wrap(intended)), canon(wrap(stored)))
+    }
+  })
+}
+
+test('new transforms preserve verbatim blocks and upload identities', () => {
+  for (const [, a, b] of measuredReshapings) {
+    assert.equal(
+      verify(description({ notes: a }), description({ notes: b })).verdict,
+      WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT,
+    )
+  }
+  const a = description({ sections: { '## Approach': UPLOAD } })
+  const b = description({ sections: { '## Approach': `[${UPLOAD}](<${UPLOAD}>)` } })
+  assert.equal(verify(a, b).verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+})
+
+test('autolinking: angle URL in a table and plain self labels agree; literal spans stay distinct', () => {
+  const canon = (text) => normalizeDescription(text, new Set(['bare-reference-autolinking']))
+  for (const [a, b] of [
+    ['| https://x/y |', '| <https://x/y> |'],
+    ['README.md', '[README.md](https://README.md)'],
+    ['https://x/y', '[https://x/y](https://x/y)'],
+  ])
+    assert.equal(canon(a), canon(b))
+  assert.notEqual(canon('`x.md`'), canon('`[x.md](http://x.md)`'))
+})
+
+test('bold code unwrapping: merge split emphasis first and recognize multi-backtick spans', () => {
+  assert.equal(
+    normalizeDescription('**a **`b`** c**', ALL_TRANSFORMS),
+    normalizeDescription('**a `b` c**', ALL_TRANSFORMS),
+  )
+  assert.equal(
+    normalizeDescription('**``x`y``**', new Set(['code-span-bold-unwrapping'])),
+    '``x`y``',
+  )
+})
+
+test('table padding: an escaped-only header is literal and delimiter-shaped body cells are padded', () => {
+  const ids = new Set(['table-cell-padding-collapse'])
+  const canon = (s) => normalizeDescription(s, ids)
+  assert.notEqual(canon('a\\|b   \n| --- | --- |'), canon('a\\|b\n| --- | --- |'))
+  assert.equal(canon('|a|b|\n| --- | --- |\n|-|-|'), canon('| a | b |\n| --- | --- |\n| - | - |'))
+})
+
+test('autolinking: titled and nested-label links stay literal', () => {
+  const canon = (s) => normalizeDescription(s, new Set(['bare-reference-autolinking']))
+  assert.notEqual(
+    canon('[https://x](<https://x> "title")'),
+    canon('[https://x](https://x "title")'),
+  )
+  assert.notEqual(canon('[outer[x.md](http://x.md)]'), canon('[outerx.md]'))
+})
+
+test('autolinking: balanced destinations and task checkboxes preserve link boundaries', () => {
+  const canon = (text) => normalizeDescription(text, new Set(['bare-reference-autolinking']))
+  for (const url of ['https://x/a(b)', 'https://x/a(b(c))', 'https://x/a']) {
+    for (const prefix of ['', '- [ ] ', '- [x] ', '- [X] ']) {
+      assert.equal(canon(`${prefix}[${url}](${url})`), `${prefix}${url}`)
+      assert.equal(canon(`${prefix}[${url}](<${url}>)`), `${prefix}${url}`)
+    }
+  }
+  for (const literal of [
+    '[https://x/a(b)](https://x/a(b)',
+    '[https://x/a(b)](https://x/a(b) "title")',
+    '![https://x/a(b)](https://x/a(b))',
+    '\\[https://x/a(b)](https://x/a(b))',
+  ])
+    assert.equal(canon(literal), literal)
+})
+
+test('autolinking: task checkbox does not consume the next self link', () => {
+  const ids = new Set(['bare-reference-autolinking'])
+  assert.equal(normalizeDescription('- [ ] [https://x](https://x)', ids), '- [ ] https://x')
+})
+
+test('bold code unwrapping: literal non-flanking stars stay distinct', () => {
+  const canon = (text) => normalizeDescription(text, new Set(['code-span-bold-unwrapping']))
+  for (const text of [
+    'a**`x`**',
+    '**`x`**b',
+    'a**`x`**b',
+    'é**`x`**',
+    '**`x`**🙂',
+    '𐐀**`x`**',
+    '**`x`**𐐀',
+  ]) {
+    assert.equal(canon(text), text)
+    assert.notEqual(canon(text), text.replaceAll('**', ''))
+  }
+  for (const text of ['(**`x`**)', '“**`x`**”', '$**`x`**+', ' **`x`** ', '𐄀**`x`**𐄀']) {
+    assert.equal(canon(text), text.replaceAll('**', ''))
+  }
+})
+
+test('autolinking: every reference shape works with either destination spelling in prose and cells', () => {
+  const ids = new Set(['bare-reference-autolinking'])
+  for (const [label, destination] of [
+    ['ABC-12', 'https://tracker.example/issue/ABC-12/slug'],
+    ['https://x/a(b)', 'https://x/a(b)'],
+    ['README.md:12', 'http://README.md:12'],
+  ]) {
+    for (const target of [destination, `<${destination}>`]) {
+      for (const wrap of [(s) => s, (s) => `| ref |\n| --- |\n| ${s} |`]) {
+        const a = wrap(label)
+        const b = wrap(`[${label}](${target})`)
+        assert.equal(normalizeDescription(a, ids), normalizeDescription(b, ids))
+        assert.equal(normalizeDescription(normalizeDescription(b, ids), ids), a)
+        assert.equal(
+          verify(description({ notes: a }), description({ notes: b }), ids).verdict,
+          WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT,
+        )
+      }
+    }
+  }
+})
+
+test('table padding: interior spaces and inline code remain content', () => {
+  const ids = new Set(['table-cell-padding-collapse'])
+  const canon = (s) => normalizeDescription(s, ids)
+  assert.equal(canon('|  `a  b`   | c  d |\n| --- | --- |'), '| `a  b` | c  d |\n| --- | --- |')
+  assert.notEqual(canon('| a  b | c |\n| --- | --- |'), canon('| a b | c |\n| --- | --- |'))
+})
+
+test('table padding: header position wins over delimiter-shaped cell text', () => {
+  const canon = (s) => normalizeDescription(s, new Set(['table-cell-padding-collapse']))
+  assert.equal(
+    canon('| ---    | --- |\n| --- | --- |\n|a|b|'),
+    canon('| --- | --- |\n| --- | --- |\n| a | b |'),
+  )
+  assert.notEqual(canon('| h |\n| ---   |'), canon('| h |\n| --- |'))
+})
+
+test('table padding: consecutive delimiter-shaped body rows stay in the active table', () => {
+  const canon = (s) => normalizeDescription(s, new Set(['table-cell-padding-collapse']))
+  const padded = '| H | V |\n| --- | --- |\n| ---   | ---   |\n| ---   | ---   |'
+  const stored = '| H | V |\n| --- | --- |\n| --- | --- |\n| --- | --- |'
+  assert.equal(canon(padded), stored)
+  assert.equal(canon(`${padded}\n\n${padded}`), `${stored}\n\n${stored}`)
+  assert.notEqual(canon('| H | V |\n| ---   | ---   |'), canon('| H | V |\n| --- | --- |'))
+})
+
+test('table padding: code span bytes survive pipes and following list items', () => {
+  const canon = (s) => normalizeDescription(s, new Set(['table-cell-padding-collapse']))
+  for (const row of ['- `a  |  b`', '| `a  |  b` |', '| ``a  |  b`` |']) {
+    const text = '| h |\n| --- |\n' + row
+    assert.notEqual(canon(text), canon(text.replace('a  |  b', 'a | b')))
+  }
+  assert.notEqual(canon('| h |\n| --- |\n- a   | b'), canon('| h |\n| --- |\n- a | b'))
+})

@@ -2908,6 +2908,40 @@ test('post claim loses to a later token, and a lost claim abandons the terminal 
   assert.equal(w.statusPosts().length, before, 'an abandoned run posts nothing')
 })
 
+test('post claim --release re-posts the park beneath only its own claim', async () => {
+  const park = {
+    context: 'boss/verify',
+    state: 'success',
+    description: 'needs human: human-review:ui',
+    target_url: 'https://github.com/o/r/pull/7#issuecomment-1',
+    updated_at: iso(60_000),
+  }
+  const claim = (token) => ({
+    context: 'boss/verify',
+    state: 'pending',
+    description: `verifying… ${token}`,
+    updated_at: iso(1000),
+  })
+  const release = (statuses) => {
+    const w = world({ statuses: [...statuses, receipt()] })
+    const opts = { pr: 7, head: HEAD, verdict: 'claim', release: true, token: 'feedf00d' }
+    return post({ ...opts, repo: REPO }, deps(w)).then((r) => [r, w.statusPosts()])
+  }
+  const [mine, posted] = await release([claim('feedf00d'), park])
+  assert.equal(mine.released, true)
+  assert.deepEqual(posted, [
+    { state: 'success', description: park.description, target: park.target_url },
+  ])
+  const [foreign, none] = await release([claim('cafe0001'), park])
+  assert.deepEqual([foreign.released, foreign.reason, none], [false, 'not-mine', []])
+  const [bare, kept] = await release([claim('feedf00d')])
+  assert.deepEqual([bare.released, bare.reason, kept], [false, 'no-park', []])
+  await assert.rejects(
+    post({ pr: 7, head: HEAD, verdict: 'claim', release: true, repo: REPO }, deps(world())),
+    UsageError,
+  )
+})
+
 test('post claim takes over a stale claim with a note but not a fresh foreign one', async () => {
   const stale = world({
     statuses: [
@@ -7847,6 +7881,32 @@ test('an unmarked legacy park is re-judged once, left standing, and skipped on t
   assert.equal(w.mutating().length, before)
 })
 
+test('a park posted without --policy records the base policy, so the next sweep skips it', async () => {
+  const w = sweepWorld({
+    statuses: [parkStatus('needs human: human-review:ui · web UI'), receipt()],
+    baseConfig: policyText({ humanReview: { ui: [{ glob: 'web/**', label: 'web UI' }] } }),
+    diff: ['web/a.tsx'],
+  })
+  const d = sweepDeps(w)
+  const first = await candidates({ repo: REPO }, d)
+  assert.deepEqual(
+    first.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'unrecorded']],
+  )
+  const j = await judged(w, d)
+  const posted = await parkPost({ ...j, policyFingerprint: undefined }, d)
+  assert.equal(posted.policyRecord, 'posted')
+  assert.equal(
+    policyComments(w)[0]?.body.trim().split('\n').at(-1),
+    policyMarker(HEAD, j.policyFingerprint),
+  )
+  const second = await candidates({ repo: REPO }, d)
+  assert.deepEqual(
+    second.skipped.map((x) => [x.pr, x.reason]),
+    [[7, 'parked']],
+  )
+})
+
 test('a park raised by an extension stands while it is installed and is released once it is removed', async () => {
   const record = `${EXT.name}:pass,${OTHER_EXT.name}:${SECURITY}`
   const parkedWorld = () =>
@@ -9135,7 +9195,8 @@ test('post: one park note per head, left alone while it holds and rewritten in p
 
   const again = await human()
   assert.deepEqual([again.skipped, again.parkNote], ['already-posted', 'current'])
-  assert.equal(w.comments.length, 1, 'the standing note is the only comment')
+  assert.equal(policyComments(w).length, 1, 'the park records its policy once')
+  assert.equal(w.comments.length, 2, 'beside it, the standing note is the only comment')
 
   w.pr.body = openBody.replace('partial: 2/5', 'partial: 3/5')
   const edited = await human()
@@ -9451,7 +9512,9 @@ test("post rewrites only a park note verify itself wrote, and posts fresh beside
       deps(w),
     )
     const patched = w.calls.some((c) => c.args[0] === 'api' && c.args[2] === 'PATCH')
-    return [r.parkNote, patched, w.comments[0].body === before, w.comments.length]
+    // The policy record a park leaves beside its note is not a park note.
+    const notes = w.comments.length - policyComments(w).length
+    return [r.parkNote, patched, w.comments[0].body === before, notes]
   }
   assert.deepEqual(await run({ login: 'operator' }), ['updated', true, false, 1])
   assert.deepEqual(await run({ login: 'collaborator' }), ['posted', false, true, 2])

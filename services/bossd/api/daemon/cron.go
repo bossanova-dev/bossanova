@@ -292,6 +292,12 @@ func (s *Server) DeleteCronJob(ctx context.Context, req *connect.Request[pb.Dele
 	if strings.TrimSpace(req.Msg.Id) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
+	if domain.IsCloudCommand(ctx) {
+		if _, err := s.cronJobs.Get(ctx, req.Msg.Id); err != nil {
+			return nil, connect.NewError(connect.CodePermissionDenied, err)
+		}
+	}
+
 	s.cronScheduler.RemoveJob(req.Msg.Id)
 	if err := s.cronJobs.Delete(ctx, req.Msg.Id); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -308,6 +314,12 @@ func (s *Server) RunCronJobNow(ctx context.Context, req *connect.Request[pb.RunC
 	if strings.TrimSpace(req.Msg.Id) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
+	if domain.IsCloudCommand(ctx) {
+		if _, err := s.cronJobs.Get(ctx, req.Msg.Id); err != nil {
+			return nil, connect.NewError(connect.CodePermissionDenied, err)
+		}
+	}
+
 	sess, skipped, err := s.cronScheduler.RunNow(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("run cron job now: %w", err))

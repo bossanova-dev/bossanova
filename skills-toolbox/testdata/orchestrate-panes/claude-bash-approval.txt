@@ -1,0 +1,15 @@
+⏺ I'll clear the stale build output before the rebuild.
+
+[?25l[2K╭─────────────────────────────────────────────────────────╮
+│ [1mBash command[0m                                            │
+│                                                         │
+│   rm -rf "$BUILD_DIR"/                                   │
+│   Remove stale build artifacts                           │
+│                                                         │
+│ [33mDangerous rm operation on possibly-empty variable path[0m  │
+│                                                         │
+│ Do you want to proceed?                                  │
+│ [7m❯ 1. Yes[0m                                             │
+│   2. No, and tell Claude what to do differently (esc)     │
+╰─────────────────────────────────────────────────────────╯
+  Esc to cancel · Tab to amend

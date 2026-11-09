@@ -866,7 +866,7 @@ func TestDispatch_GetChatTranscript_TypedError(t *testing.T) {
 	out := make(chan *pb.DaemonEvent, 1)
 	client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
 		CommandId: "ct2",
-		Cmd:       &pb.OrchestratorCommand_GetChatTranscript{GetChatTranscript: &pb.GetChatTranscriptCommand{AgentSessionId: "a"}},
+		Cmd:       &pb.OrchestratorCommand_GetChatTranscript{GetChatTranscript: &pb.GetChatTranscriptCommand{SessionId: "s1", AgentSessionId: "a"}},
 	}, out)
 
 	ev := recvEvent(t, out)
@@ -1006,6 +1006,7 @@ func newDispatcherClient(
 ) *StreamClient {
 	return NewStreamClient(StreamClientConfig{
 		CloudControl:   fixedCloudControl("full"),
+		TargetObjects:  dispatcherTargetFixture{},
 		CommandHandler: handler,
 		Webhooks:       webhooks,
 		Attacher:       attacher,
@@ -1017,9 +1018,10 @@ func newDispatcherClient(
 // for the CreateSession streaming tests.
 func newDispatcherClientWithCreator(creator SessionCreator) *StreamClient {
 	return NewStreamClient(StreamClientConfig{
-		CloudControl: fixedCloudControl("full"),
-		Creator:      creator,
-		Logger:       zerolog.Nop(),
+		CloudControl:  fixedCloudControl("full"),
+		TargetObjects: dispatcherTargetFixture{},
+		Creator:       creator,
+		Logger:        zerolog.Nop(),
 	})
 }
 
@@ -1455,6 +1457,7 @@ func (f *fakeTransferHandler) Cancel(_ context.Context, _ *pb.TransferCancel) er
 func newDispatcherClientWithTransfer(transfer TransferHandler) *StreamClient {
 	return NewStreamClient(StreamClientConfig{
 		CloudControl:    fixedCloudControl("full"),
+		TargetObjects:   dispatcherTargetFixture{},
 		TransferHandler: transfer,
 		Logger:          zerolog.Nop(),
 	})
@@ -2858,11 +2861,11 @@ func TestDispatchCommand_NoteCommands_HandlerNotWired(t *testing.T) {
 		name string
 		cmd  *pb.OrchestratorCommand
 	}{
-		{"create", &pb.OrchestratorCommand{CommandId: "w1", Cmd: &pb.OrchestratorCommand_CreateNote{CreateNote: &pb.CreateNoteCommand{}}}},
-		{"get", &pb.OrchestratorCommand{CommandId: "w2", Cmd: &pb.OrchestratorCommand_GetNote{GetNote: &pb.GetNoteCommand{}}}},
+		{"create", &pb.OrchestratorCommand{CommandId: "w1", Cmd: &pb.OrchestratorCommand_CreateNote{CreateNote: &pb.CreateNoteCommand{RepoId: "fixture"}}}},
+		{"get", &pb.OrchestratorCommand{CommandId: "w2", Cmd: &pb.OrchestratorCommand_GetNote{GetNote: &pb.GetNoteCommand{Id: "fixture"}}}},
 		{"list", &pb.OrchestratorCommand{CommandId: "w3", Cmd: &pb.OrchestratorCommand_ListNotes{ListNotes: &pb.ListNotesCommand{}}}},
-		{"update", &pb.OrchestratorCommand{CommandId: "w4", Cmd: &pb.OrchestratorCommand_UpdateNote{UpdateNote: &pb.UpdateNoteCommand{}}}},
-		{"delete", &pb.OrchestratorCommand{CommandId: "w5", Cmd: &pb.OrchestratorCommand_DeleteNote{DeleteNote: &pb.DeleteNoteCommand{}}}},
+		{"update", &pb.OrchestratorCommand{CommandId: "w4", Cmd: &pb.OrchestratorCommand_UpdateNote{UpdateNote: &pb.UpdateNoteCommand{Id: "fixture"}}}},
+		{"delete", &pb.OrchestratorCommand{CommandId: "w5", Cmd: &pb.OrchestratorCommand_DeleteNote{DeleteNote: &pb.DeleteNoteCommand{Id: "fixture"}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3295,4 +3298,19 @@ func TestDispatchCommand_OperatorMergeSession(t *testing.T) {
 			t.Fatalf("result = %v", result)
 		}
 	})
+}
+
+// Dispatcher mechanics tests use one registered repository; ownership failures
+// are exercised separately with concrete target rows in command_target_test.
+type dispatcherTargetFixture struct{ repoID string }
+
+func (f dispatcherTargetFixture) GetTarget(context.Context, string, string) (CommandTargetObject, error) {
+	id := f.repoID
+	if id == "" {
+		id = "fixture"
+	}
+	return CommandTargetObject{RepoID: id}, nil
+}
+func (dispatcherTargetFixture) ListTargetRepos(context.Context) ([]CommandTargetObject, error) {
+	return []CommandTargetObject{{RepoID: "fixture"}}, nil
 }

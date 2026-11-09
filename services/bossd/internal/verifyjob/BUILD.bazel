@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "verifyjob",
     srcs = [
+        "admission.go",
         "checker.go",
         "quota_floor.go",
     ],
@@ -17,6 +18,7 @@ go_library(
 go_test(
     name = "verifyjob_test",
     srcs = [
+        "admission_test.go",
         "checker_test.go",
         "quota_floor_test.go",
     ],

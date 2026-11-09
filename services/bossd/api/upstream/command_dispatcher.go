@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/daemoncaps"
 	"github.com/recurser/bossalib/kit/safego"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // listAccountsRefreshDeadline is deliberately daemon-local: bosso's command
@@ -44,10 +45,10 @@ func (c *StreamClient) dispatchCommand(
 		return nil
 	}
 	cmdID := cmd.GetCommandId()
-	mode := cloudControlProto(c.cloudControl)
-	if !daemoncaps.CloudControlAllows(mode, cmd) {
-		c.logger.Info().Str("command_id", cmdID).Str("command_type", fmt.Sprintf("%T", cmd.GetCmd())).Msg("cloud control refused")
-		return commandErrCode(cmdID, c.cloudControlCommandRefusal(mode, cmd), pb.CommandResult_ERROR_CODE_CLOUD_CONTROL_DISABLED)
+	var refused *pb.DaemonEvent
+	ctx, refused = c.authorizeCommand(ctx, cmd)
+	if refused != nil {
+		return refused
 	}
 
 	switch cmd.GetCmd().(type) {
@@ -864,6 +865,9 @@ func classifyAttentionCommandError(err error) pb.CommandResult_ErrorCode {
 }
 
 func classifyCommandError(err error) pb.CommandResult_ErrorCode {
+	if errors.Is(err, domain.ErrCloudTarget) {
+		return pb.CommandResult_ERROR_CODE_CLOUD_CONTROL_DISABLED
+	}
 	switch connect.CodeOf(err) {
 	case connect.CodeNotFound:
 		return pb.CommandResult_ERROR_CODE_NOT_FOUND
@@ -968,7 +972,12 @@ func (c *StreamClient) runAsyncCommand(
 	build func() *pb.DaemonEvent,
 ) *pb.DaemonEvent {
 	safego.Go(c.logger, func() {
-		ev := build()
+		var ev *pb.DaemonEvent
+		if err := assertCommandTarget(ctx); err != nil {
+			ev = commandErrCode(commandIDFromContext(ctx), err.Error(), pb.CommandResult_ERROR_CODE_CLOUD_CONTROL_DISABLED)
+		} else {
+			ev = build()
+		}
 		if ev == nil {
 			return
 		}
@@ -1013,7 +1022,12 @@ func (c *StreamClient) runCancelableAsyncCommand(
 			c.asyncMu.Unlock()
 			cancel()
 		}()
-		ev := build(commandCtx)
+		var ev *pb.DaemonEvent
+		if err := assertCommandTarget(commandCtx); err != nil {
+			ev = commandErrCode(cmdID, err.Error(), pb.CommandResult_ERROR_CODE_CLOUD_CONTROL_DISABLED)
+		} else {
+			ev = build(commandCtx)
+		}
 		if ev == nil {
 			return
 		}

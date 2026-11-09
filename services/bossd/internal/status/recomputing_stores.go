@@ -61,6 +61,10 @@ type OrphanHeadlessRunStore interface {
 	MarkHeadlessRunOrphaned(ctx context.Context, id, reason string) (bool, error)
 }
 
+type OrphanReattachStore interface {
+	MarkOrphanReattached(ctx context.Context, id, reason string, newState int) (bool, error)
+}
+
 type UnarchivedOrphanClaimStore interface {
 	MarkUnarchivedOrphanClaimed(ctx context.Context, id, reason string) (bool, error)
 }
@@ -402,6 +406,22 @@ func (s *RecomputingSessionStore) MarkHeadlessRunOrphaned(ctx context.Context, i
 		// ImplementingPlan -> Orphaned: an `errored` outcome that never passes
 		// through Update. Read back rather than asserted, so the notification
 		// cannot drift from the store's SQL.
+		s.notifyPersistedState(ctx, id)
+	}
+	return advanced, err
+}
+
+// MarkOrphanReattached delegates the false-orphan recovery write and, when it
+// wins, recomputes display state and reports the Orphaned -> newState
+// transition, which the CAS pins as a real state change.
+func (s *RecomputingSessionStore) MarkOrphanReattached(ctx context.Context, id, reason string, newState int) (bool, error) {
+	inner, ok := s.SessionStore.(OrphanReattachStore)
+	if !ok {
+		return false, fmt.Errorf("session store does not support atomic orphan reattach")
+	}
+	advanced, err := inner.MarkOrphanReattached(ctx, id, reason, newState)
+	if err == nil && advanced {
+		_ = s.recomputer.Recompute(ctx, id)
 		s.notifyPersistedState(ctx, id)
 	}
 	return advanced, err

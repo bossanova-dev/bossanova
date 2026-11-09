@@ -717,23 +717,28 @@ Webhook behavior:
 
 ## Cloud control
 
-`cloud_control` selects the cloud's authority on this machine. The default is `read-only`:
-viewing remains available, while commands that change local state, terminal input and uploads
-are refused. Terminal viewers cannot resize the operator's pane, and account lists do not refresh
-provider credentials. Change the mode locally with:
+`cloud_control` selects the cloud's authority on this machine. The default is `full`: Boss Cloud
+shows sessions and also starts, steers and types into them. Under `read-only`, viewing remains
+available, while commands that change local state, terminal input and uploads are refused.
+Terminal viewers cannot resize the operator's pane, and account lists do not refresh provider
+credentials. An unrecognised value resolves to `read-only`. Change the mode locally with:
 
 ```sh
 boss settings --cloud-control private
 boss settings --cloud-control full
 boss settings --cloud-control read-only
+boss settings --cloud-control default
+boss settings --cloud-control-repo acme/oss=read-only
+boss settings --cloud-control-repo acme/oss=default
+boss settings --cloud-control-owner github.com/acme=read-only
 boss settings
 ```
 
 The summary reports the resolved mode, including the default or an unrecognised stored value.
-In the TUI, open Settings → General → **Cloud control**. The selector cycles through `private`,
+In the TUI, open Settings → General → **Cloud control**. The selector cycles through `default`, `private`,
 `read-only` and `full` with Enter or Space; Left and Right choose the previous or next value.
-Only selecting `full` requires confirmation: anyone acting as you in Boss Cloud has permission to drive
-agents on this machine. Cancelling keeps the previous value. Choosing `private` or `read-only`
+Selecting `full`, or `default`, which is also full, requires confirmation: anyone acting as you in
+Boss Cloud has permission to drive agents on this machine. Cancelling keeps the previous value. Choosing `private` or `read-only`
 saves immediately. Both controls persist your explicit choice in `settings.json`; no restart is needed.
 The web keeps a chat preview it already has until that chat next changes.
 
@@ -744,8 +749,25 @@ transcripts, notes, cron and callback prompts, tracker issue descriptions and te
 refused. Outbound session/chat metadata is still sent; this setting does not yet trim titles or output
 previews in events.
 
-Only the exact lowercase `full` and `private`, with surrounding whitespace allowed, select those
-modes; missing, empty and unknown values resolve to `read-only`.
+Use `default` to clear the explicit machine-wide mode, which returns the machine to `full`. The per-repo section in the CLI summary
+and TUI lists registered repositories grouped by their local `host/owner`, with effective modes
+and their source. Select a repository by its origin, display name or checkout path.
+Repeat `--cloud-control-repo` or `--cloud-control-owner` for multiple edits. An owner edit writes
+one identity-bound grant for each currently registered repository; it creates no wildcard and
+does not apply to future registrations. A repository `=default` removes its grants.
+
+GitHub full grants require an identity verified by the local daemon. If verification is unavailable,
+retry later; narrowing to read-only or private remains available. A stale identity binding is
+shown as “grant not verified: narrowing only”. Remote settings, MCP and the cloud command stream
+cannot inspect or edit these grants.
+
+Full access runs shell commands as you and reaches every other repository on this machine.
+Use a separate OS user per organization when they need different trust. The CLI prints this
+warning and the TUI confirms it before granting full control to a repository or owner group.
+
+A missing or empty value resolves to `full`. Otherwise only the exact lowercase `full`, `private`
+and `read-only`, with surrounding whitespace allowed, select those modes; any other value
+resolves to `read-only`.
 
 This setting is local only. Remote settings calls and MCP cannot read or change it, and an
 `UpdateSettings` save preserves its value. Local edits take effect on the next command decision

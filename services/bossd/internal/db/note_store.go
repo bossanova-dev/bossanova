@@ -337,7 +337,14 @@ func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (
 }
 
 func (s *SQLiteNoteStore) Get(ctx context.Context, id string) (*domain.Note, error) {
-	return getNote(ctx, s.db, id)
+	note, err := getNote(ctx, s.db, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := domain.AssertCloudTarget(ctx, "note", id, note.RepoID); err != nil {
+		return nil, err
+	}
+	return note, nil
 }
 
 func (s *SQLiteNoteStore) List(ctx context.Context, filter ListNotesFilter) ([]*domain.Note, error) {

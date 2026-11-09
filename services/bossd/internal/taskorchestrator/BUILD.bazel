@@ -59,6 +59,7 @@ go_test(
         "//services/bossd/internal/domain",
         "//services/bossd/internal/plugin",
         "//services/bossd/internal/session",
+        "//services/bossd/internal/verifyjob",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

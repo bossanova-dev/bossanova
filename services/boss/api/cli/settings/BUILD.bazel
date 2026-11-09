@@ -39,6 +39,7 @@ go_test(
         "helpers_test.go",
         "settings_cloud_control_test.go",
         "settings_daemon_name_test.go",
+        "settings_repo_cloud_control_test.go",
         "settings_rotation_test.go",
     ],
     embed = [":settings"],

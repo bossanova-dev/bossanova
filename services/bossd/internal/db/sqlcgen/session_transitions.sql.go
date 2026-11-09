@@ -276,6 +276,36 @@ func (q *Queries) UpdateSessionOrphanHeadlessRun(ctx context.Context, arg Update
 	)
 }
 
+const updateSessionReattachOrphan = `-- name: UpdateSessionReattachOrphan :execresult
+UPDATE sessions
+SET state = CAST(?1 AS INTEGER),
+    state_entered_at = CASE WHEN state != CAST(?1 AS INTEGER) THEN ?2 ELSE state_entered_at END,
+    blocked_reason = NULL,
+    updated_at = ?2
+WHERE id = ?3
+  AND state = CAST(?4 AS INTEGER)
+  AND archived_at IS NULL
+  AND blocked_reason = ?5
+`
+
+type UpdateSessionReattachOrphanParams struct {
+	NewState      int64
+	Now           string
+	ID            string
+	OrphanedState int64
+	Reason        *string
+}
+
+func (q *Queries) UpdateSessionReattachOrphan(ctx context.Context, arg UpdateSessionReattachOrphanParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, updateSessionReattachOrphan,
+		arg.NewState,
+		arg.Now,
+		arg.ID,
+		arg.OrphanedState,
+		arg.Reason,
+	)
+}
+
 const updateSessionReleaseOrphanResumeClaim = `-- name: UpdateSessionReleaseOrphanResumeClaim :execresult
 UPDATE sessions
 SET state = CAST(?1 AS INTEGER),

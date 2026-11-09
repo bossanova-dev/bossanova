@@ -1,0 +1,14 @@
+⏺ The old release branch still has two unmerged commits.
+
+────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Branch
+
+Do you want to delete the release-1.4 branch now?
+
+❯ 1. Yes
+     Delete it locally and on origin.
+  2. No
+     Keep it for now.
+  3. Type something.
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

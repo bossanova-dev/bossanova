@@ -1125,6 +1125,18 @@ func TestStreamAuthAdapterAuthStateToleratesNilReceiver(t *testing.T) {
 	}
 }
 
+func TestStreamAuthAdapterReportsUpstreamOriginWithoutSecrets(t *testing.T) {
+	for _, raw := range []string{
+		"https://orchestrator-staging.bossanova.dev",
+		"https://user:secret@orchestrator-staging.bossanova.dev/private?token=secret#fragment",
+	} {
+		adapter := &streamAuthAdapter{orchestratorURL: raw}
+		if got := adapter.AuthState(context.Background()).UpstreamOrigin; got != "https://orchestrator-staging.bossanova.dev" {
+			t.Errorf("UpstreamOrigin = %q, want staging origin", got)
+		}
+	}
+}
+
 // TestStreamAuthAdapterAuthStateReadsLiveSources is the positive half: the
 // nil-receiver guard must not have turned the reporter into a stub that always
 // answers "nothing known".

@@ -78,7 +78,10 @@ test('the scan covers vendored toolbox sources of published cores only', () => {
 
 test('the canonical identity scan follows new transitive toolbox imports', () => {
   const files = Object.fromEntries(
-    [...new Set(Object.values(VENDOR_MAP).flat())].map((file) => [`skills-toolbox/${file}`, '']),
+    [...new Set(Object.values(VENDOR_MAP).flat())].map((file) => [
+      `skills-toolbox/${file.endsWith('/') ? `${file}fixture.sh` : file}`,
+      '',
+    ]),
   )
   const root = fixture({
     ...files,
@@ -87,6 +90,7 @@ test('the canonical identity scan follows new transitive toolbox imports', () =>
     'skills-toolbox/new-leaf.mjs': '// BOS-1289\nexport const value = 1\n',
   })
   const sources = publishedSources(root)
+  assert.deepEqual(sources.get('skills-toolbox/plan/run-steps/fixture.sh'), ['boss-plan'])
   assert.deepEqual(sources.get('skills-toolbox/new-leaf.mjs'), ['boss-plan'])
   const { failures } = checkPublishedCoreIdentity({
     repoRoot: root,

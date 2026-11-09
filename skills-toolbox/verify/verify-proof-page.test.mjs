@@ -608,3 +608,41 @@ test('API change class leads asking and checked area facts in both outputs', () 
     }
   }
 })
+
+test('review links require the displayed head and safe HTTPS destinations', () => {
+  const input = fixture()
+  const url = `https://review.example/review?head=${input.proof.head}`
+  assert.equal(validatePageInput({ ...input, reviewUrl: url }).ok, true)
+  for (const reviewUrl of [
+    url.replace('https:', 'http:'),
+    url.replace('review.example', 'user@review.example'),
+    'https://review.example/',
+    url.replace(input.proof.head, 'c'.repeat(40)),
+  ]) {
+    assert.equal(validatePageInput({ ...input, reviewUrl }).ok, false)
+  }
+})
+
+test('review links render once with escaped destinations and leave absent output unchanged', () => {
+  const input = fixture()
+  const reviewUrl = `https://review.example/review?head=${input.proof.head}&note="'><tag>(x)`
+  const html = renderProofHtml({ ...input, reviewUrl })
+  const comment = renderProofComment({ ...input, reviewUrl })
+  assert.equal((html.match(/Review this head/g) || []).length, 1)
+  assert.equal((comment.match(/Review this head/g) || []).length, 1)
+  assert.ok(html.includes('&amp;note=&quot;&#39;&gt;&lt;tag&gt;(x)'))
+  assert.ok(comment.includes('%22%27%3E%3Ctag%3E%28x%29'))
+  assert.ok(!html.includes('<tag>'))
+  assert.ok(!comment.includes('<tag>'))
+  for (const render of [renderProofHtml, renderProofComment]) {
+    const linked = render({
+      ...input,
+      reviewUrl: `https://review.example/?head=${input.proof.head}`,
+    })
+    const absent = render(input)
+    const stripped = linked
+      .replace(/<p><a href="[^"]+">Review this head<\/a><\/p>/, '')
+      .replace(/\[Review this head\]\([^\n]+\)\n\n/, '')
+    assert.equal(stripped, absent)
+  }
+})

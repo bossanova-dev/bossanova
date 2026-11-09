@@ -17,7 +17,7 @@ import { withSkillSourceRewriteLock } from './skill-source-rewrite-lock.mjs'
 
 export { withSkillSourceRewriteLock } from './skill-source-rewrite-lock.mjs'
 
-// Each skill declares helpers invoked by path (including shell/dynamic loads).
+// Each skill declares file or trailing-slash directory roots (including shell/dynamic loads).
 // Relative ESM dependencies are discovered by expandImportClosure before copying.
 export const VENDOR_MAP = {
   'boss-retro': [
@@ -137,6 +137,8 @@ export const VENDOR_MAP = {
     'plan/plan-open-prs.mjs',
     'issue-lease.mjs',
     'plan/boss-plan-env.sh',
+    'plan/boss-plan-run.sh',
+    'plan/run-steps/',
     'bs-dispatch-await.mjs',
     'bs-record-notes.mjs',
     'bs-run-sentinel.mjs',
@@ -274,7 +276,10 @@ export function expandImportClosure(sourceRoot, roots) {
       walk(relative(sourceRoot, join(dirname(absolute), spec)))
     }
   }
-  for (const file of roots) walk(file)
+  const files = roots.flatMap((root) =>
+    root.endsWith('/') ? copiedFiles(join(sourceRoot, root), root) : [root],
+  )
+  for (const file of files.sort()) walk(file)
   return [...seen].sort()
 }
 

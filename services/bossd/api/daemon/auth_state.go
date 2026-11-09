@@ -39,6 +39,8 @@ type AuthStateReporter interface {
 // upstream package's adapter does not have to import the generated protobuf
 // types just to answer a diagnostic.
 type DaemonAuthState struct {
+	// UpstreamOrigin identifies this daemon's Cloud environment without secrets.
+	UpstreamOrigin string
 	// NeedsLogin is the daemon's own "I have parked until someone runs
 	// `boss login`" flag. It is NOT a fault signal on its own — it is the
 	// correct, expected state right after a deliberate `boss logout`.
@@ -112,6 +114,7 @@ func (s *Server) upstreamAuthState(ctx context.Context) *bossanovav1.GetAuthStat
 	state := s.authStateReporter.AuthState(ctx)
 	resp := &bossanovav1.GetAuthStateResponse{
 		UpstreamConfigured: true,
+		UpstreamOrigin:     state.UpstreamOrigin,
 		NeedsLogin:         state.NeedsLogin,
 		ReloginReason:      state.ReloginReason,
 		UpstreamConnected:  state.Connected,

@@ -569,6 +569,28 @@ func TestOrphanIsOnlyFromImplementingPlan(t *testing.T) {
 	}
 }
 
+// TestReattachReturnsOrphanedToImplementingPlan pins the false-orphan recovery:
+// a run whose chat pane turned out to be live goes back to ImplementingPlan.
+func TestReattachReturnsOrphanedToImplementingPlan(t *testing.T) {
+	m := New(Orphaned)
+	if err := m.Fire(Reattach); err != nil {
+		t.Fatalf("Fire(Reattach) from Orphaned: %v", err)
+	}
+	assertState(t, m, ImplementingPlan)
+}
+
+// TestReattachIsOnlyFromOrphaned keeps Reattach from reviving any other state.
+func TestReattachIsOnlyFromOrphaned(t *testing.T) {
+	for _, s := range AllStates() {
+		if s == Orphaned {
+			continue
+		}
+		if New(s).CanFire(Reattach) {
+			t.Errorf("Reattach must not be permitted from %s", s)
+		}
+	}
+}
+
 // TestOrphanedPRClosedGoesToClosed confirms Orphaned is terminal but still
 // closes out when its PR is closed, mirroring the other terminal states.
 func TestOrphanedPRClosedGoesToClosed(t *testing.T) {

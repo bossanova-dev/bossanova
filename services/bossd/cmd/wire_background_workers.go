@@ -183,6 +183,8 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 	// any resume that could not happen at Bootstrap (agent plugin not yet ready,
 	// transient StartByAgent error). Default OFF — ResumeOrphanedHeadlessRuns is a
 	// no-op unless AutoResumeOrphans is opted in. Reuses the park-sweep cadence.
+	// Each tick first reattaches false orphans, whose chat pane is live, always
+	// on: the run never died, so the fix starts nothing.
 	w.trackedGo("orphaned-run-resume-sweep", func() {
 		ticker := time.NewTicker(w.settings.ManagedAccounts.ParkSweepInterval())
 		defer ticker.Stop()
@@ -191,9 +193,7 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 			case <-w.pollerCtx.Done():
 				return
 			case <-ticker.C:
-				if n := w.lifecycle.ResumeOrphanedHeadlessRuns(w.pollerCtx); n > 0 {
-					log.Info().Int("count", n).Msg("orphan-resume sweep: resumed orphaned headless runs")
-				}
+				w.sweepOrphanedRuns()
 			}
 		}
 	})
@@ -337,5 +337,16 @@ func (w *daemonWiring) reconcileTrackerLinks() {
 		log.Warn().Err(err).Msg("periodic tracker tags: failed")
 	} else if n > 0 {
 		log.Info().Int64("count", n).Msg("periodic tracker tags: checked linked PRs")
+	}
+}
+
+// sweepOrphanedRuns reattaches false orphans, whose chat pane is live, and only
+// then auto-resumes the real ones, so a resume never starts a second agent.
+func (w *daemonWiring) sweepOrphanedRuns() {
+	if n := w.lifecycle.RestoreLiveOrphans(w.pollerCtx); n > 0 {
+		log.Info().Int("count", n).Msg("orphan reattach sweep: reattached orphans with a live chat pane")
+	}
+	if n := w.lifecycle.ResumeOrphanedHeadlessRuns(w.pollerCtx); n > 0 {
+		log.Info().Int("count", n).Msg("orphan-resume sweep: resumed orphaned headless runs")
 	}
 }

@@ -325,6 +325,7 @@ func TestLaunchTriggerSession(t *testing.T) {
 	t.Run("creates one unattended session and returns its id", func(t *testing.T) {
 		fx := newTriggerFixture(t, &fakeTriggerCreator{sessionID: "sess-1"})
 		client := newDispatcherClient(&CommandHandlerAdapter{Triggers: fx.launcher}, nil, nil)
+		client.targetObjects = dispatcherTargetFixture{repoID: fx.repoID}
 		out := make(chan *pb.DaemonEvent, 4)
 
 		if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
@@ -621,6 +622,7 @@ func TestLaunchTriggerSessionErrors(t *testing.T) {
 	t.Run("unknown repo origin is not found", func(t *testing.T) {
 		fx := newTriggerFixture(t, &fakeTriggerCreator{sessionID: "never"})
 		client := newDispatcherClient(&CommandHandlerAdapter{Triggers: fx.launcher}, nil, nil)
+		client.targetObjects = dispatcherTargetFixture{repoID: fx.repoID}
 		out := make(chan *pb.DaemonEvent, 4)
 		cmd := triggerCmd("inv-unknown")
 		cmd.RepoOriginUrl = "https://github.com/acme/elsewhere.git"
@@ -647,6 +649,7 @@ func TestLaunchTriggerSessionErrors(t *testing.T) {
 		creator := &fakeTriggerCreator{sessionID: "sess-f", err: errors.New("worktree setup failed")}
 		fx := newTriggerFixture(t, creator)
 		client := newDispatcherClient(&CommandHandlerAdapter{Triggers: fx.launcher}, nil, nil)
+		client.targetObjects = dispatcherTargetFixture{repoID: fx.repoID}
 		out := make(chan *pb.DaemonEvent, 4)
 		client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
 			CommandId: "c-fail",

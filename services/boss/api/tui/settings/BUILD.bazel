@@ -9,6 +9,7 @@ go_library(
         "general_settings_cloud_control.go",
         "general_settings_proof.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
         "general_settings_proof_disabled.go",
+        "general_settings_repo_cloud.go",
         "general_settings_rows.go",
         "routing.go",
         "session_settings.go",
@@ -40,6 +41,7 @@ go_test(
         "cloudpromo_test.go",
         "general_settings_alignment_test.go",
         "general_settings_cloud_control_test.go",
+        "general_settings_repo_cloud_test.go",
         "general_settings_test.go",
         "session_settings_test.go",
         "settings_test.go",

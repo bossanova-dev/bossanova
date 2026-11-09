@@ -37,6 +37,17 @@ WHERE id = sqlc.arg(id)
   AND archived_at IS NULL
   AND blocked_reason = sqlc.arg(reason);
 
+-- name: UpdateSessionReattachOrphan :execresult
+UPDATE sessions
+SET state = CAST(sqlc.arg(new_state) AS INTEGER),
+    state_entered_at = CASE WHEN state != CAST(sqlc.arg(new_state) AS INTEGER) THEN sqlc.arg(now) ELSE state_entered_at END,
+    blocked_reason = NULL,
+    updated_at = sqlc.arg(now)
+WHERE id = sqlc.arg(id)
+  AND state = CAST(sqlc.arg(orphaned_state) AS INTEGER)
+  AND archived_at IS NULL
+  AND blocked_reason = sqlc.arg(reason);
+
 -- name: UpdateSessionResurrectToState :execresult
 UPDATE sessions
 SET archived_at = NULL,

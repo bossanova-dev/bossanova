@@ -237,6 +237,13 @@ type OrphanHeadlessRunStore interface {
 	MarkHeadlessRunOrphaned(ctx context.Context, id, reason string) (bool, error)
 }
 
+// OrphanReattachStore returns a false orphan to newState: an unarchived
+// Orphaned row with the expected daemon-restart marker, whose run turned out to
+// be live. The marker is cleared in the same write.
+type OrphanReattachStore interface {
+	MarkOrphanReattached(ctx context.Context, id, reason string, newState int) (bool, error)
+}
+
 // UnarchivedOrphanClaimStore atomically claims an unarchived Orphaned session
 // with its expected daemon-restart marker for auto-resume, allowing an archive
 // or marker change to win over a stale sweep snapshot.

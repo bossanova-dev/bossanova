@@ -32,6 +32,8 @@ func (s *Server) nudgeNoteSync() {
 // callback handlers use — and everything else Internal.
 func noteError(op string, err error) *connect.Error {
 	switch {
+	case errors.Is(err, domain.ErrCloudTarget):
+		return connect.NewError(connect.CodePermissionDenied, err)
 	case errors.Is(err, domain.ErrNoteInvalid):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, domain.ErrNotFound):
@@ -138,6 +140,12 @@ func (s *Server) UpdateNote(ctx context.Context, req *connect.Request[pb.UpdateN
 	}
 	msg := req.Msg
 
+	if domain.IsCloudCommand(ctx) {
+		if _, err := store.Get(ctx, msg.Id); err != nil {
+			return nil, noteError("get note", err)
+		}
+	}
+
 	params := domain.UpdateNoteParams{ID: msg.Id, Body: msg.Body}
 	if msg.Tags != nil {
 		// Non-nil, possibly empty: the store treats a non-nil slice as a
@@ -168,6 +176,12 @@ func (s *Server) DeleteNote(ctx context.Context, req *connect.Request[pb.DeleteN
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
+	if domain.IsCloudCommand(ctx) {
+		if _, err := store.Get(ctx, id); err != nil {
+			return nil, noteError("get note", err)
+		}
+	}
+
 	if err := store.Delete(ctx, id); err != nil {
 		return nil, noteError("delete note", err)
 	}

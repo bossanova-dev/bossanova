@@ -24,11 +24,14 @@ where you sit inside it.
 5. **Review.** Reviewers comment as they normally would. If the repo
    has `auto-address-reviews` enabled, the daemon dispatches a
    follow-up session to address review feedback automatically.
-6. **Merge.** In repositories with an enabled verify-stage cron job,
-   verify or a person merges Dependabot PRs; the daemon repairs them
-   but never auto-merges them. In other repositories, Dependabot PRs
-   auto-merge once checks pass when `auto-merge-dependabot` is enabled
-   (the default for new repos). A repair that turns a PR green and
+6. **Merge.** Dependabot PRs auto-merge once checks pass when
+   `auto-merge-dependabot` is enabled (the default for new repos). The
+   one exception is a repository with an enabled verify-stage cron job
+   whose verify admission policy admits bot PRs
+   (`verifyDefaults.admission.bot.admit` in `.boss-skills.json`): there
+   verify or a person merges them, and the daemon repairs them but never
+   auto-merges them. A verify cron without bot admission never looks at
+   Dependabot PRs, so the daemon keeps merging them. A repair that turns a PR green and
    mergeable returns its repair slot within one Dependabot poll once
    its repair lease ends. Other PRs follow the repository's verify or
    manual merge path.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -14,6 +16,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/plugin"
+	"github.com/recurser/bossd/internal/verifyjob"
 )
 
 type handoffLease bool
@@ -22,7 +25,7 @@ func (l handoffLease) Active(string) bool { return bool(l) }
 
 type handoffFactory struct{ enabled bool }
 
-func (c *handoffFactory) IsFactoryRepo(context.Context, string) bool { return c.enabled }
+func (c *handoffFactory) OwnsBotMerges(context.Context, string, string) bool { return c.enabled }
 
 func handoffFixture(t *testing.T) (*Orchestrator, *domain.TaskMapping, *pb.TaskItem, repoInfo, *atomic.Int32) {
 	t.Helper()
@@ -50,7 +53,7 @@ func TestGreenRepairHandoff_Sessions_AC125_AC126(t *testing.T) {
 		t.Run(map[bool]string{false: "non-verify", true: "verify"}[factory], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				o, m, task, repo, merges := handoffFixture(t)
-				repo.isFactory = factory
+				repo.verifyOwnsMerge = factory
 				var archives atomic.Int32
 				o.SetSessionArchiver(SessionArchiverFunc(func(context.Context, string) error { archives.Add(1); return nil }), nil)
 				queued := 0
@@ -104,7 +107,7 @@ func TestGreenRepairLeaseActive(t *testing.T) {
 	for _, factory := range []bool{false, true} {
 		synctest.Test(t, func(t *testing.T) {
 			o, m, task, repo, merges := handoffFixture(t)
-			repo.isFactory = factory
+			repo.verifyOwnsMerge = factory
 			o.SetRepairActivity(handoffLease(true))
 			o.processTask(context.Background(), task, repo, "dependabot")
 			synctest.Wait()
@@ -119,7 +122,7 @@ func TestVerifyRepoMappings_Sessions_AC126(t *testing.T) {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				o, m, task, repo, merges := handoffFixture(t)
-				repo.isFactory = true
+				repo.verifyOwnsMerge = true
 				m.Status = status
 				m.SessionID = nil
 				before := m.UpdatedAt
@@ -133,7 +136,7 @@ func TestVerifyRepoMappings_Sessions_AC126(t *testing.T) {
 	}
 	synctest.Test(t, func(t *testing.T) {
 		o, _, task, repo, merges := handoffFixture(t)
-		repo.isFactory = true
+		repo.verifyOwnsMerge = true
 		o.taskMappings.(*mockTaskMappingStore).mappings = map[string]*domain.TaskMapping{}
 		o.processTask(context.Background(), task, repo, "dependabot")
 		o.routeTask(context.Background(), task, repo, "dependabot")
@@ -177,7 +180,7 @@ func TestDependabotSetupScript(t *testing.T) {
 	for _, factory := range []bool{false, true} {
 		for _, rebase := range []bool{false, true} {
 			o, m, task, repo, _ := handoffFixture(t)
-			repo.isFactory = factory
+			repo.verifyOwnsMerge = factory
 			task.Action = pb.TaskAction_TASK_ACTION_CREATE_SESSION
 			if rebase {
 				task = rebaseRepairTask(task, repo, errors.New("rebase refused"))
@@ -218,4 +221,43 @@ func TestVerifyRepoFlip(t *testing.T) {
 			t.Fatal("disabled verify job did not restore direct merge on next poll")
 		}
 	})
+}
+
+type verifyCronStore struct{}
+
+func (verifyCronStore) ListByRepo(context.Context, string) ([]*domain.CronJob, error) {
+	return []*domain.CronJob{{IsEnabled: true, Prompt: "/boss-verify"}}, nil
+}
+
+// A verify cron alone must not stop Dependabot auto-merge: verify takes a bot PR only when the
+// repo's admission policy admits bots, so without it the daemon stays the merge owner.
+func TestVerifyRepoMergeOwnerFollowsBotAdmission(t *testing.T) {
+	for _, tt := range []struct {
+		name, config string
+		wantMerges   int32
+	}{
+		{"no bot admission", "", 1},
+		{"bots admitted", `{"verifyDefaults":{"admission":{"bot":{"admit":true,"merge":"auto"}}}}`, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.config != "" {
+				if err := os.WriteFile(filepath.Join(dir, ".boss-skills.json"), []byte(tt.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			synctest.Test(t, func(t *testing.T) {
+				o, _, task, _, merges := handoffFixture(t)
+				o.SetFactoryRepoChecker(verifyjob.New(verifyCronStore{}))
+				o.repos = &mockRepoStore{repos: []*models.Repo{{ID: "r", LocalPath: dir, CanAutoMergeDependabot: true}}}
+				src := &mockTaskSource{name: "dependabot", pollFn: func(context.Context, string) ([]*pb.TaskItem, error) { return []*pb.TaskItem{task}, nil }}
+				o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{src}}
+				o.poll(context.Background())
+				synctest.Wait()
+				if got := merges.Load(); got != tt.wantMerges {
+					t.Fatalf("daemon merges = %d, want %d", got, tt.wantMerges)
+				}
+			})
+		})
+	}
 }

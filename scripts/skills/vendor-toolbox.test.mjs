@@ -926,6 +926,22 @@ test('expandImportClosure follows relative ESM imports transitively and terminat
   }
 })
 
+test('directory roots expand sorted files before following their imports', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'vt-directory-closure-'))
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }))
+  mkdirSync(join(root, 'steps/nested'), { recursive: true })
+  writeFileSync(join(root, 'steps/z.sh'), 'echo z\n')
+  writeFileSync(join(root, 'steps/nested/a.mjs'), "import '../../dependency.mjs'\n")
+  writeFileSync(join(root, 'steps/data.json'), '{}\n')
+  writeFileSync(join(root, 'dependency.mjs'), 'export const value = 1\n')
+  assert.deepEqual(expandImportClosure(root, ['steps/', 'steps/z.sh']), [
+    'dependency.mjs',
+    'steps/data.json',
+    'steps/nested/a.mjs',
+    'steps/z.sh',
+  ])
+})
+
 test('each notes-consuming core vendors the extension helper', () => {
   for (const core of ['boss-build', 'boss-plan', 'boss-epic', 'boss-repair']) {
     assert.ok(VENDORED_FILES[core].includes('skill-extensions.mjs'), core)
@@ -1045,6 +1061,51 @@ test('vendorToolbox copies bytes and --check detects drift', () => {
   assert.equal(existsSync(obsolete), false)
   assert.equal(vendorToolbox({ sourceRoot, skillsRoot, check: true }).changed, false)
   rmSync(root, { recursive: true, force: true })
+})
+
+test('vendorToolbox copies directory roots, detects drift and prunes retired source files', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'vt-directory-'))
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }))
+  const sourceRoot = join(root, 'skills-toolbox')
+  const skillsRoot = join(root, 'skills')
+  for (const file of ALL_SOURCES) {
+    mkdirSync(dirname(join(sourceRoot, file)), { recursive: true })
+    writeFileSync(join(sourceRoot, file), '')
+  }
+  const step = 'plan/run-steps/fixture.sh'
+  const nested = 'plan/run-steps/nested/fixture.json'
+  mkdirSync(dirname(join(sourceRoot, nested)), { recursive: true })
+  writeFileSync(join(sourceRoot, step), 'echo fixture\n')
+  chmodSync(join(sourceRoot, step), 0o755)
+  writeFileSync(join(sourceRoot, nested), '{}\n')
+  const options = { sourceRoot, skillsRoot }
+  vendorToolbox({ ...options, check: false })
+  const toolbox = join(skillsRoot, 'boss-plan/toolbox')
+  assert.equal(readFileSync(join(toolbox, step), 'utf8'), 'echo fixture\n')
+  assert.equal(statSync(join(toolbox, step)).mode & 0o777, 0o755)
+  assert.equal(readFileSync(join(toolbox, nested), 'utf8'), '{}\n')
+  assert.equal(vendorToolbox({ ...options, check: true }).changed, false)
+
+  rmSync(join(toolbox, step))
+  const extra = 'plan/run-steps/unexpected.sh'
+  writeFileSync(join(toolbox, extra), 'extra\n')
+  const drift = vendorToolbox({ ...options, check: true })
+  assert.ok(drift.differences.includes(`missing: boss-plan/toolbox/${step}`))
+  assert.ok(drift.differences.includes(`unexpected: boss-plan/toolbox/${extra}`))
+  assert.equal(existsSync(join(toolbox, step)), false)
+  assert.equal(existsSync(join(toolbox, extra)), true)
+  vendorToolbox({ ...options, check: false })
+  assert.equal(existsSync(join(toolbox, extra)), false)
+
+  rmSync(join(sourceRoot, nested))
+  assert.ok(
+    vendorToolbox({ ...options, check: true }).differences.includes(
+      `unexpected: boss-plan/toolbox/${nested}`,
+    ),
+  )
+  vendorToolbox({ ...options, check: false })
+  assert.equal(existsSync(join(toolbox, nested)), false)
+  assert.equal(vendorToolbox({ ...options, check: true }).changed, false)
 })
 
 test('vendorToolbox picks up a root dependency’s new transitive import without a map edit', () => {

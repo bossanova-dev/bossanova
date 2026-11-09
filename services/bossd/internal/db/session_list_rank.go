@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // SetListRanks writes sessions.list_rank for the named sessions in a single
@@ -41,6 +42,17 @@ func (s *SQLiteSessionStore) SetListRanks(ctx context.Context, ranks map[string]
 	updated := 0
 	queries := sqlcgen.New(tx)
 	for _, id := range ids {
+		// A sparse-gap respace can write siblings outside the moved session's
+		// repo. Recheck each stored owner in this transaction before committing.
+		if domain.IsCloudCommand(ctx) {
+			row, err := queries.GetSession(ctx, id)
+			if err != nil {
+				return 0, fmt.Errorf("load session rank target %s: %w", id, err)
+			}
+			if err := domain.AssertCloudTarget(ctx, "session", id, row.RepoID); err != nil {
+				return 0, err
+			}
+		}
 		n, err := queries.SetSessionListRank(ctx, sqlcgen.SetSessionListRankParams{ID: id, ListRank: ranks[id]})
 		if err != nil {
 			return 0, fmt.Errorf("set session list rank %s: %w", id, err)

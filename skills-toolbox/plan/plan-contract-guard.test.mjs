@@ -24,6 +24,7 @@ import {
   hasUnterminatedFence,
   isContractOrdered,
   lineSpanningEmphasis,
+  listNestedTables,
   linesOutsideFences,
   parseContractGuardArgs,
   placeholderResidue,
@@ -2140,4 +2141,79 @@ test('resolves delimited and compound shell checks through the plan guard', () =
       (v) => v.code === 'vacuous-premise-command-command-unresolvable',
     ),
   )
+})
+
+describe('list-nested table guard', () => {
+  const withSummary = (body) =>
+    conformant().replace(
+      '## Summary\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      `## Summary\n\n${body}`,
+    )
+  const table = '| a | b |\n| --- | --- |\n| c | d |'
+
+  for (const body of [
+    `- item\n\n${table}`,
+    `- item\n${table}`,
+    '- | a | b |\n  ordinary continuation',
+    `\`\`\`md\n- item\n  | a | b |\n  | --- | --- |\n\`\`\``,
+    '- item\n  | a | b |\n  ---',
+    '- item\n\n      | a | b |\n      | --- | --- |',
+    '1. item\n\n       | a | b |\n       | --- | --- |',
+    ...['# Heading', '### Heading', '---', '***', '_ _ _', '- - -'].map(
+      (boundary) => `- item\n${boundary}\n  | a | b |\n  | --- | --- |`,
+    ),
+  ]) {
+    test(`leaves safe or literal construct alone: ${JSON.stringify(body)}`, () => {
+      assert.deepEqual(listNestedTables(DEFAULT_CONFIG, withSummary(body)), [])
+      assert.equal(checkPlanContract({ description: withSummary(body) }).ok, true)
+    })
+  }
+
+  test('does not scan the copied terminal section', () => {
+    const description = conformant() + `\n- item\n  | a | b |\n  | --- | --- |\n`
+    assert.deepEqual(listNestedTables(DEFAULT_CONFIG, description), [])
+    assert.equal(checkPlanContract({ description }).ok, true)
+  })
+
+  for (const body of [
+    '- | a | b |\n  | --- | --- |',
+    '- item\n  | a | b |\n  | --- | --- |',
+    '- item\n\n  | a | b |\n  | :--- | ---: |',
+    '1. item\n   | a | b |\n   | --- | --- |',
+    '-     item\n  | a | b |\n  | --- | --- |',
+    '  + item\n    | a | b |\n    | --- | --- |',
+    '- item\n  ### Nested heading\n  | a | b |\n  | --- | --- |',
+    '- item\n  ***\n  | a | b |\n  | --- | --- |',
+  ]) {
+    test(`blocks destructive nested table: ${JSON.stringify(body)}`, () => {
+      const description = withSummary(body)
+      const findings = listNestedTables(DEFAULT_CONFIG, description)
+      assert.equal(findings.length, 1)
+      assert.equal(findings[0].line, body.split('\n').findIndex((line) => line.includes('|')) + 3)
+      const result = checkPlanContract({ description })
+      assert.equal(result.ok, false)
+      assert.deepEqual(
+        result.blocking.map((entry) => entry.code),
+        ['list-nested-table'],
+      )
+    })
+  }
+
+  test('epic-parent descriptions use the same blocking guard', () => {
+    const description = epicParentConformant().replace(
+      'Substantive epic overview prose, long enough to clear the byte floor.',
+      '- item\n  | a | b |\n  | --- | --- |',
+    )
+    const result = checkPlanContract({ description, mode: 'epic-parent' })
+    assert.equal(result.ok, false)
+    assert.ok(result.blocking.some((entry) => entry.code === 'list-nested-table'))
+  })
+
+  test('CLI refuses the nested table before writing', () => {
+    const file = path.join(tempDir('nested-table-guard-'), 'description.md')
+    writeFileSync(file, withSummary('- item\n  | a | b |\n  | --- | --- |'))
+    const result = spawnSync(process.execPath, [GUARD, '--description', file], { encoding: 'utf8' })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /\[list-nested-table\]/)
+  })
 })

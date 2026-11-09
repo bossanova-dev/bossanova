@@ -146,6 +146,8 @@ function world(opts = {}) {
       if (verb === 'post') {
         const verdict = flag('verdict')
         const dry = rest.includes('--dry-run')
+        if (verdict === 'claim' && rest.includes('--release'))
+          return ok({ released: opts.parkBeneath === true })
         if (verdict === 'claim') {
           const lost = opts.claimLost?.includes(pr)
           return ok({ ...(dry ? { dryRun: true } : {}), won: !lost, token: 'tok-1' })
@@ -2778,6 +2780,46 @@ for (const [name, opts] of [
       next.verbs().some((v) => v[0] === 'judge'),
       'the next tick judges the head again',
     )
+  })
+}
+
+for (const rejudge of ['unrecorded', 'policy-changed', 'codes-unknown', 'cannot-assess']) {
+  test(`a judge timeout re-judging a standing park (${rejudge}) neither claims nor dispatches`, () => {
+    const w = world({
+      judgeFails: 'ETIMEDOUT',
+      ...LIVE_SESSION,
+      candidates: [candidate(1, { rejudge })],
+    })
+    const r = sweep({}, w.deps())
+    assert.deepEqual(w.mutating(), [], 'no claim, post or chat send')
+    assert.equal(w.spawns.length, 0, 'no new session is started')
+    assert.deepEqual(lines(r), [`#1 deferred: judge failed (ETIMEDOUT), park stands (${rejudge})`])
+  })
+}
+
+for (const parkBeneath of [true, false]) {
+  test(`a failed dispatch withdraws its claim${parkBeneath ? ', restoring the park beneath' : ''}`, () => {
+    const w = world({
+      judgeFails: 'ETIMEDOUT',
+      sendTimesOut: true,
+      parkBeneath,
+      ...LIVE_SESSION,
+    })
+    const r = sweep({}, w.deps())
+    const claims = w.posts().filter((v) => v[v.indexOf('--verdict') + 1] === 'claim')
+    assert.deepEqual(
+      claims.map((v) => [
+        v.includes('--release'),
+        v.includes('--token') ? v.at(v.indexOf('--token') + 1) : null,
+      ]),
+      [
+        [false, null],
+        [true, 'tok-1'],
+      ],
+    )
+    assert.deepEqual(lines(r), [
+      `#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT${parkBeneath ? '; park restored' : ''})`,
+    ])
   })
 }
 

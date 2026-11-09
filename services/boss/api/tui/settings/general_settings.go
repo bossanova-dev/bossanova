@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/recurser/boss/internal/domain/rpc"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 
 	"charm.land/bubbles/v2/textinput"
 	"github.com/recurser/boss/api/tui/ui"
@@ -41,6 +42,8 @@ const (
 	settingsRowKindDisplayOpenPorts                        // built-in open-port display toggle
 	settingsRowKindDaemonName                              // built-in daemon display name override
 	settingsRowKindMCPToken                                // transient MCP HTTP credential
+	settingsRowKindRepoCloud                               // editable repository grant
+	settingsRowKindOwnerCloud                              // editable group of repository grants
 )
 
 // daemonRestartHint is appended to the daemon name row so the delayed effect
@@ -50,13 +53,14 @@ const daemonRestartHint = "restart daemon to apply"
 // settingsRow is a single addressable line in the settings TUI. Header
 // rows have IsHeader=true and are skipped during cursor navigation.
 type settingsRow struct {
-	Kind     settingsRowKind
-	Plugin   string   // plugin name for plugin-config rows
-	Key      string   // setting key for plugin-config rows
-	Label    string   // text shown to the user
-	Allowed  []string // for enum rows
-	Default  string
-	IsHeader bool // header rows are non-interactive
+	Kind      settingsRowKind
+	Plugin    string   // plugin name for plugin-config rows
+	Key       string   // setting key for plugin-config rows
+	Label     string   // text shown to the user
+	Allowed   []string // for enum rows
+	Default   string
+	IsHeader  bool // header rows are non-interactive
+	RepoIndex int  // repository index for cloud grant rows
 }
 
 // GeneralSettingsModel renders both the built-in global settings and a
@@ -70,13 +74,15 @@ type GeneralSettingsModel struct {
 	tokens MCPTokenManager
 	ctx    context.Context
 
-	settings   config.Settings
-	agents     []rpc.AgentInfo
-	rows       []settingsRow
-	cursor     int
-	cancel     bool
-	err        error
-	editingRow int // index into rows; -1 = not editing
+	repoCloudControls   []*pb.RepoCloudControl
+	cloudControlTargets []int
+	settings            config.Settings
+	agents              []rpc.AgentInfo
+	rows                []settingsRow
+	cursor              int
+	cancel              bool
+	err                 error
+	editingRow          int // index into rows; -1 = not editing
 
 	worktreeDirInput  textinput.Model
 	pollIntervalInput textinput.Model
@@ -94,6 +100,9 @@ type GeneralSettingsModel struct {
 	mcpTokenRevealed    bool
 	confirmMCPRotate    bool
 	confirmCloudControl bool
+	// cloudControlPending is the machine-wide value saved when the full-control
+	// confirmation is accepted: "full", or "" for the default, which is also full.
+	cloudControlPending string
 	rotatingMCPToken    bool
 	mcpTokenNotice      string
 }
@@ -184,6 +193,7 @@ func newGeneralSettingsModelWith(c GeneralClient, ctx context.Context, machineHo
 			}
 		}
 	}
+	m.loadRepoCloudControls()
 	m.agents = mergeAvailableAgentInfos(m.settings, m.agents)
 
 	m.rebuildRows()
@@ -391,8 +401,10 @@ func (m *GeneralSettingsModel) rebuildRows() {
 		settingsRow{Kind: settingsRowKindNotifications, Label: "Enable desktop notifications for questions"},
 		settingsRow{Kind: settingsRowKindDisplayOpenPorts, Label: "Display open ports"},
 		settingsRow{Kind: settingsRowKindMCPToken, Label: "MCP HTTP token"},
-		settingsRow{Kind: settingsRowKindEnum, Key: "cloud_control", Label: "Cloud control", Allowed: []string{"private", "read-only", "full"}},
+		settingsRow{Kind: settingsRowKindEnum, Key: "cloud_control", Label: "Cloud control", Allowed: []string{"default", "private", "read-only", "full"}},
 	)
+
+	m.appendRepoCloudRows()
 
 	// Default agent picker — only meaningful when >1 agent is enabled.
 	enabledAgents := enabledAgentNames(m.settings, m.agents)
@@ -609,6 +621,7 @@ func (m GeneralSettingsModel) persistSettingsWithRollback(mutate func(*config.Se
 	saved := cloneGeneralSettings(m.settings)
 	if err := mutate(&m.settings); err != nil {
 		m.err = err
+		m.settings = saved
 		return m
 	}
 	if !m.persistSettings() {
@@ -624,6 +637,8 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 	}
 	row := m.rows[m.cursor]
 	switch row.Kind {
+	case settingsRowKindRepoCloud, settingsRowKindOwnerCloud:
+		return m.cycleRepoCloudControl(1), nil
 	case settingsRowKindMCPToken:
 		m.mcpTokenRevealed = !m.mcpTokenRevealed
 	case settingsRowKindAgentHeader, settingsRowKindTracingHeader:
@@ -926,7 +941,7 @@ func (m GeneralSettingsModel) View() tea.View {
 	if m.confirmCloudControl {
 		b.WriteString(ui.StyleTitle.Render("Allow cloud control?"))
 		b.WriteString("\n\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Width(m.width).Render("Anyone who can act as you in Boss Cloud can then drive agents on this machine."))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Width(m.width).Render(config.FullCloudControlWarning))
 		b.WriteString("\n")
 		b.WriteString(ui.ActionBarWidth(m.width, []string{"[y/enter] confirm", "[n/esc] cancel"}))
 		return tea.NewView(b.String())

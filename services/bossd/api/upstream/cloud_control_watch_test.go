@@ -78,3 +78,7 @@ func TestWatchCloudControlResnapshotsOnLocalChange(t *testing.T) {
 		<-done
 	})
 }
+
+func (p *switchableCloudControl) RepoMode(context.Context, string) (config.CloudControlMode, config.CloudControlSource) {
+	return p.Mode(), config.CloudControlSourceMachine
+}

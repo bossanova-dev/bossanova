@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "binaries.go",
         "cloud_control.go",
+        "cloud_control_edit.go",
         "config.go",
         "coordinator_approval_grant.go",
         "displayhostname.go",
@@ -34,6 +35,7 @@ go_test(
         "appdatadir_test.go",
         "binaries_test.go",
         "childenv_test.go",
+        "cloud_control_edit_test.go",
         "cloud_control_test.go",
         "config_guard_test.go",
         "config_test.go",

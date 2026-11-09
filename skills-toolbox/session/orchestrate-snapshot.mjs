@@ -3,31 +3,39 @@
 // One read-only snapshot of every boss session on the given daemons (this machine and any SSH
 // hosts), classified into the next orchestrating action, with the in-session command that takes
 // it. The orchestrate skill acts on its output. It writes nothing but its own grace state.
-// `gate` is the cron gate for an unattended worker round (exit 0 work, 1 none, 69 unknown).
 //
 // Every fact comes from the daemon that owns the session — `boss show`, `boss chats` and
 // `boss pr state`, which reads through bossd's webhook-invalidated GitHub cache — in one round
 // trip per host, so an orchestrating loop does not spend the GitHub quota. Only a draft PR whose
-// verify chat waits on it costs one `gh` timeline read.
+// verify chat waits on it costs one `gh` timeline read. The same round trip reads the host's
+// `repair-residual` notes, which a repair records when it stops on a red it found on the base.
 //
-//   node orchestrate-snapshot.mjs collect [--host <ssh-host>]... [--no-local] [--unattended] [--json]
-//        [--respect-owners]
+//   node orchestrate-snapshot.mjs collect [--host <ssh-host>]... [--no-local] [--json]
 //        [--boss <local boss>] [--remote-boss <boss on hosts>] [--remote-path <PATH on hosts>]
 //        [--root <repo>] [--core <skill name>] [--state <grace state file>]
-//   node orchestrate-snapshot.mjs gate [the collect options] [--tag <queue tag>] [--repo <repo-id>]
-//        [--queue-host <ssh-host>]
-//   node orchestrate-snapshot.mjs pane --chat <chat-id> [--host <ssh-host>] [--lines 40]
+//   node orchestrate-snapshot.mjs pane --chat <chat-id> [--host <ssh-host>] [--lines 40] [--approve]
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import { isMainModule } from '../main-module.mjs'
 import { discoverExtensions, validateResult } from '../skill-extensions.mjs'
-import { claimTargets, readCrons } from './orchestrate-owners.mjs'
-import { QUEUE_TAG, bossRunner, gateVerdict, notesClient } from './orchestrate-queue.mjs'
+import { DEFAULT_STATE_DIR, holdRows, readOutage } from './orchestrate-outage.mjs'
+import { paneVerb } from './orchestrate-pane.mjs'
+import { printTable } from './orchestrate-table.mjs'
+import {
+  CRON_FINALIZE_WAIT,
+  cronTurnEndedFor,
+  isCronRun,
+  isDependabotPr,
+  isInfraRed,
+  isLive,
+  questionChats,
+  stalledChat,
+} from './orchestrate-signals.mjs'
 
 const MINUTE = 60 * 1000
 const STALL_AFTER = 45 * MINUTE
@@ -107,29 +115,86 @@ export function failingChecks(pr) {
 /**
  * Failing checks shared by two or more open PRs of one repo: one upstream cause. The orchestrator
  * elects one session to fix it (the smallest, fastest change, preferably one that can auto-merge)
- * and tells the others to hold, then rebase once the fix merges.
+ * and tells the others to hold, then rebase once the fix merges. A group is `inherited` when a
+ * member's repair already recorded the red as one found on the base (`residual`).
  */
 export function sharedReds(rows) {
   const groups = new Map()
   for (const row of rows) {
     for (const check of row.failing ?? []) {
       const key = `${row.repo}\u0000${check}`
-      if (!groups.has(key)) groups.set(key, { repo: row.repo, check, prs: [] })
-      groups
-        .get(key)
-        .prs.push({ pr: row.pr, session: row.session, host: row.host, action: row.action })
+      if (!groups.has(key))
+        groups.set(key, { repo: row.repo, check, inherited: false, infra: false, prs: [] })
+      const group = groups.get(key)
+      const residual = row.residual?.id ?? ''
+      if (residual) group.inherited = true
+      if (row.infra) group.infra = true
+      group.prs.push({
+        pr: row.pr,
+        session: row.session,
+        host: row.host,
+        action: row.action,
+        ...(residual ? { residual } : {}),
+      })
     }
   }
   return [...groups.values()].filter((group) => group.prs.length >= 2)
 }
 
-function isLive(chat) {
-  return chat.spinner_present === true || chat.status === 'WORKING'
+// The tag a repair puts on the durable note it records when it stops short (boss-repair's
+// RESIDUAL_NOTE_TAG); a stop on a red found on the base is one of them.
+export const RESIDUAL_TAG = 'repair-residual'
+const PR_REFERENCE = /(?:\bPR\s*#|\/pull\/)(\d+)\b/gi
+
+/** The residual notes that name this session: recorded by it, or citing its PR in its repo. */
+export function residualsFor(session, prNumber, residuals = []) {
+  const cites = (body) =>
+    prNumber != null &&
+    [...String(body ?? '').matchAll(PR_REFERENCE)].some((match) => Number(match[1]) === prNumber)
+  return residuals.filter(
+    (note) =>
+      note.session_id === session.id ||
+      (note.repo_id && note.repo_id === session.repo_id && cites(note.body)),
+  )
 }
 
-// bossd's own repair workflow runs outside any chat pane, so only the session's repair_active
-// flag shows it. A flag older than this is a run that never cleared it, not a repair in progress.
+/**
+ * The newest residual that records an inherited red on a check failing now (`failing`) and still
+ * stands, or null. Residuals also record declined review findings and defects found on the base, so
+ * one counts only when it names a failing check. A repair that bossd started after the note was
+ * written, and that recorded no newer residual, supersedes it.
+ */
+export function openResidual(session, residuals = [], failing = []) {
+  const since = Date.parse(session.last_repair?.started_at ?? '')
+  const checks = failing.map((name) => name.toLowerCase())
+  const standing = residuals.filter((note) => {
+    const body = String(note.body ?? '')
+    const at = Date.parse(note.created_at ?? '')
+    if (!INHERITED_RED.test(body)) return false
+    if (!checks.some((check) => body.toLowerCase().includes(check))) return false
+    return Number.isNaN(since) || (!Number.isNaN(at) && at >= since)
+  })
+  standing.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+  return standing[0] ?? null
+}
+
+/** A residual's first non-empty line, as one short line for `why`. */
+export function residualSummary(note) {
+  const line =
+    String(note.body ?? '')
+      .split('\n')
+      .map((text) => text.trim())
+      .find(Boolean) ?? ''
+  // gate-region-ok: a display cap on one summary line, not a section window.
+  return line.replace(/\s+/g, ' ').slice(0, 160)
+}
+
+// bossd's repair workflow sets the session's repair_active flag and runs in a repair-role chat
+// that goes idle when the repair ends, while the flag can lag behind. A flag older than this is a
+// run that never cleared it, not a repair in progress.
 const REPAIR_FRESH = 2 * 60 * MINUTE
+// How long a flagged repair may run before its repair-role chat appears.
+const REPAIR_STARTUP = 10 * MINUTE
 
 // Repair and verify are launched by the factory itself (auto-repair, verify crons and events), so a
 // conflict, red check or missing verify first waits this long for that automation before the
@@ -163,13 +228,29 @@ export function applyGrace(rows, seen, now, unreadHosts = []) {
   return rows
 }
 
-/** When bossd's repair workflow is running on the session now, the time it started; else ''. */
-export function daemonRepairSince(session, now) {
+/**
+ * When bossd's repair workflow is running on the session now, the time it started; else ''. The
+ * flag alone is not enough: once a repair-role chat created at or after the start exists, the
+ * newest one decides, and an idle one means the repair finished. Before that chat appears the
+ * flag counts only for REPAIR_STARTUP.
+ */
+export function daemonRepairSince(session, chats, now) {
   if (session.repair_active !== true) return ''
   const started = session.last_repair?.started_at ?? ''
   const at = Date.parse(started)
-  return !Number.isNaN(at) && now - at <= REPAIR_FRESH ? started : ''
+  if (Number.isNaN(at) || now - at > REPAIR_FRESH) return ''
+  const created = (chat) => Date.parse(chat.created_at ?? '')
+  const repairChats = chats
+    .filter((chat) => chat.role === 'repair' && created(chat) >= at)
+    .sort((a, b) => created(b) - created(a))
+  if (!repairChats.length) return now - at <= REPAIR_STARTUP ? started : ''
+  return isLive(repairChats[0]) ? started : ''
 }
+
+// The verdicts a stuck chat replaces: the ones that would otherwise send nothing, or only read
+// the pane. A PR already handed off (ready, with a build receipt) is the factory's to verify, so
+// its idle chats are finished, not stuck.
+const NUDGEABLE = new Set(['ok', 'stalled', 'wait-ci', 'waiting'])
 
 function waitingOnReady(chat) {
   return /checks_passed_ready/.test(chat.waiting_reason ?? '')
@@ -188,16 +269,49 @@ function verifyPassed(pr) {
 
 /**
  * The next orchestrating action for one session. `pr` is `boss pr state --json` for the session's
- * PR (null when it has none), plus `draftHold` when a timeline was read.
+ * PR (null when it has none), plus `draftHold` when a timeline was read. `residual` is the
+ * session's open inherited-red residual note (`openResidual`), or null. `cronJob` is the cron job
+ * whose latest run the session is (`boss cron ls`), or null.
  */
-export function classifySession({ session, chats = [], pr = null, now = Date.now() }) {
+export function classifySession({
+  session,
+  chats = [],
+  pr = null,
+  residual = null,
+  cronJob = null,
+  now = Date.now(),
+}) {
+  if (TERMINAL_STATES.has(session.state) || session.archived_at)
+    return { action: 'skip', why: 'terminal' }
+  if (pr && pr.state !== 'open')
+    return { action: 'stale-session', why: `PR is ${pr.state || 'unreadable'}` }
+  const asking = questionChats(chats)
+  if (asking.length) {
+    const more = asking.length > 1 ? ` (+${asking.length - 1} more)` : ''
+    return {
+      action: 'question-chat',
+      why: `chat ${asking[0].agent_session_id} shows a dialog${more}`,
+      chat: asking[0].agent_session_id,
+    }
+  }
+  const progress = classifyProgress({ session, chats, pr, residual, cronJob, now })
+  const handedOff = Boolean(pr && !pr.is_draft && pr.has_build_receipt)
+  const stuck = NUDGEABLE.has(progress.action) && !handedOff ? stalledChat(chats, now) : null
+  if (!stuck) return progress
+  return {
+    action: 'stalled-chat',
+    why: `newest chat idle ${stuck.idleMinutes}m with nothing armed to wake it (${progress.why})`,
+    chat: stuck.chat.agent_session_id,
+  }
+}
+
+function classifyProgress({ session, chats, pr, residual, cronJob, now }) {
   const verdict = (action, why) => ({ action, why })
-  if (TERMINAL_STATES.has(session.state) || session.archived_at) return verdict('skip', 'terminal')
   const live = chats.filter(isLive)
   const working = (why) => verdict('working', `${why}; ${live.length} live chat(s)`)
-  if (pr && pr.state !== 'open')
-    return verdict('stale-session', `PR is ${pr.state || 'unreadable'}`)
-  const repairing = daemonRepairSince(session, now)
+  const repairing = daemonRepairSince(session, chats, now)
+  const inherited = () =>
+    verdict('upstream-red', `repair residual ${residual.id}: ${residualSummary(residual)}`)
   if (repairing) return verdict('working', `bossd repair running since ${repairing}`)
   const phase = pr?.verify_phase ?? { kind: '', reason: '', label: '' }
   // A run can block after its PR was already handed off (a later finalize pass tripping on
@@ -209,12 +323,20 @@ export function classifySession({ session, chats = [], pr = null, now = Date.now
   if (session.state === 'BLOCKED' && !handedOff) {
     if (live.length) return working('blocked')
     const reason = session.blocked_reason || 'no reason recorded'
+    if (isInfraRed(reason)) return { action: 'waive-cap', why: reason, cause: 'infra' }
     if (INHERITED_RED.test(reason)) return verdict('upstream-red', reason)
+    if (residual) return inherited()
     const cap = /\bcap\b|re-review|retries exhausted|budget/i.test(reason)
     return verdict(cap ? 'waive-cap' : 'unblock', reason)
   }
   if (!pr) {
     if (live.length) return working('no PR yet')
+    const ended = isCronRun(session, cronJob) ? cronTurnEndedFor(chats, now) : null
+    if (ended !== null && ended < CRON_FINALIZE_WAIT)
+      return verdict(
+        'finalizing',
+        `cron run ended its turn ${Math.floor(ended / MINUTE)}m ago with no PR; bossd finalizes it`,
+      )
     return idleFor(session, now) > STALL_AFTER
       ? verdict('stalled', 'no PR, no live chat, no recent activity')
       : verdict('ok', 'recently active')
@@ -225,7 +347,8 @@ export function classifySession({ session, chats = [], pr = null, now = Date.now
   }
   if (checks.state === 'failing') {
     const why = `${checks.failed_count ?? '?'} failing check(s)`
-    return live.length ? working(why) : verdict('repair', why)
+    if (live.length) return working(why)
+    return residual ? inherited() : verdict('repair', why)
   }
   if (pr.is_draft) {
     if (live.length) return working('draft')
@@ -259,6 +382,11 @@ export function classifySession({ session, chats = [], pr = null, now = Date.now
   if (live.length) return working(phase.kind ? `verify ${phase.kind}` : 'in flight')
   if (checks.state === 'pending')
     return verdict('wait-ci', `${checks.pending_count ?? '?'} check(s) pending`)
+  if (isDependabotPr(pr, session))
+    return verdict(
+      'dependabot',
+      'dependabot PR: its sweep and auto-merge own it, never boss/verify',
+    )
   if (phase.kind === 'verifying' || phase.kind === 'waiting') {
     return idleFor(session, now) > STALL_AFTER
       ? verdict(
@@ -272,15 +400,32 @@ export function classifySession({ session, chats = [], pr = null, now = Date.now
 
 /**
  * The in-session command that takes `action`, or '' when there is nothing to send. Orchestration
- * never creates a session: it opens a chat inside the session that owns the PR.
+ * never creates a session: it opens a chat inside the session that owns the PR. `chat` names the
+ * chat a `question-chat` or `stalled-chat` row is about; `cause: 'infra'` marks an infrastructure
+ * red behind a `waive-cap`.
+ * @param {{ action: string, why: string, chat?: string, cause?: string }} verdict
+ * @param {{ host: string, session: any, pr?: number }} context
  */
-export function remedy({ action, why }, { host, session, pr }) {
+export function remedy({ action, why, chat: chatId, cause }, { host, session, pr }) {
   const boss = host ? `boss --host ${host}` : 'boss'
   const skill = (name) => (session.agent === 'codex' ? `$${name}` : `/${name}`)
+  const quote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`
+  const send = (id, message) => `${boss} chat send --json ${id || '<chat-id>'} ${quote(message)}`
   const chat = (role, message) =>
-    `${boss} chat new ${session.id} --role ${role} --title '${role}: orchestrator' --json  # then: ${boss} chat send <chat-id> '${message}'`
+    `${boss} chat new ${session.id} --role ${role} --title '${role}: orchestrator' --json  # then: ${send('', message)}`
+  const pane = (flag) =>
+    `node ${SNAPSHOT_SCRIPT} pane --chat ${chatId || '<chat-id>'}${host ? ` --host ${host}` : ''}${flag}`
   switch (action) {
+    case 'question-chat':
+      return `${pane('')}  # permission prompt: ${pane(' --approve')}  # no dialog left: ${send(chatId, STALE_DIALOG)}`
+    case 'stalled-chat':
+      return send(chatId, NUDGE)
     case 'waive-cap':
+      if (cause === 'infra')
+        return chat(
+          'repair',
+          `Operator: this red is infrastructure, not your change (${why}), so the cap is waived. Rerun the failed jobs (gh run rerun <run-id> --failed), and once CI is green finish the boss-build hand-off.`,
+        )
       return chat(
         'repair',
         `Operator waives the cap (${why}). Run ${skill('boss-repair')}, a fresh review, then the boss-build hand-off.`,
@@ -290,7 +435,7 @@ export function remedy({ action, why }, { host, session, pr }) {
     case 'upstream-red':
       return chat(
         'repair',
-        `Operator: do not stop on the inherited red (${why}). Fix the upstream cause as its own commit (or a small PR against main), get CI green, then finish the boss-build hand-off.`,
+        `Operator: do not stop on the inherited red (${why}). If another session already owns the fix, hold, then rebase onto the base branch once it merges. Otherwise fix the cause on the base yourself as its own commit (or a small PR against the base branch), get CI green, then finish the boss-build hand-off.`,
       )
     case 'refresh-park':
       return chat(
@@ -306,32 +451,37 @@ export function remedy({ action, why }, { host, session, pr }) {
   }
 }
 
+const SNAPSHOT_SCRIPT = fileURLToPath(import.meta.url)
+const NUDGE =
+  'Operator: this session is still in progress, but you went idle with nothing armed to wake you. Re-check your state (branch, PR, checks, review) and continue toward the hand-off now. Never wait on a monitor or a background sleep.'
+const STALE_DIALOG =
+  'Operator: the dialog you showed was answered or dismissed. Re-check your state and continue toward the hand-off.'
+
 // Runs on the daemon's machine (over SSH for a remote host) so one round trip lists everything.
-// argv: boss, then the mode: `full` (every fact), `pr` (the session list and PR state only), or
-// `detail` followed by the session ids to read in full.
+// argv: boss. Prints { sessions, residuals, errors }; `residuals` are the host's repair-residual
+// notes across every repo (`--repo ""`, since the notes list defaults to the current repo). A
+// session that is a cron job's latest run carries that job as `cron`.
 const DAEMON_DUMP = `
 const { execFile } = require('node:child_process')
 const boss = process.argv[2] || 'boss'
-const mode = process.argv[3] || 'full'
-const only = new Set(process.argv.slice(4))
 const run = (args) => new Promise((resolve, reject) =>
   execFile(boss, args, { encoding: 'utf8', maxBuffer: 64 << 20, timeout: 90000 }, (err, out) =>
     err ? reject(err) : resolve(JSON.parse(out))))
+const settle = (p) => p.then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }))
 const TERMINAL = new Set(['CLOSED', 'MERGED', 'ARCHIVED'])
+// The cron job whose latest run each session is, from one cron list.
+const cronBySession = new Map()
 async function one(s) {
   const entry = { session: s, chats: [], pr: null }
   if (TERMINAL.has(s.state)) return entry
+  const cron = cronBySession.get(s.id)
+  if (cron) entry.cron = cron
   const ref = /github\\.com\\/([^/]+\\/[^/]+)\\/pull\\/(\\d+)/.exec(s.pr_url || '')
   // Sequential per session and few workers: a burst of parallel calls makes bossd drop connections.
-  const settle = (p) => p.then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }))
   const pr = await settle(ref ? run(['pr', 'state', ref[2], '--repo', ref[1], '--json']) : Promise.resolve(null))
   if (pr.status === 'fulfilled') entry.pr = pr.value
   else entry.errors = [...(entry.errors ?? []), 'pr state: ' + String(pr.reason.message).slice(0, 160)]
   if (ref) entry.repo = ref[1]
-  if (mode === 'pr') {
-    entry.prOnly = true
-    return entry
-  }
   const chats = await settle(run(['chats', '--json', s.id]))
   const shown = await settle(run(['show', '--json', s.id]))
   if (chats.status === 'fulfilled') entry.chats = chats.value.chats ?? []
@@ -340,13 +490,28 @@ async function one(s) {
   return entry
 }
 ;(async () => {
+  const errors = []
+  const crons = await settle(run(['cron', 'ls', '--json']))
+  if (crons.status === 'fulfilled') {
+    const jobs = Array.isArray(crons.value) ? crons.value : (crons.value.jobs ?? [])
+    for (const job of jobs) {
+      if (job.last_run_session_id) cronBySession.set(job.last_run_session_id, { id: job.id, name: job.name })
+    }
+  } else errors.push('cron jobs: ' + String(crons.reason.message).slice(0, 160))
   const listed = await run(['ls', '--json'])
-  const queue = [...(listed.sessions ?? listed)].filter((s) => mode !== 'detail' || only.has(s.id))
+  const queue = [...(listed.sessions ?? listed)]
   const out = []
   await Promise.all(Array.from({ length: 4 }, async () => {
     while (queue.length) out.push(await one(queue.shift()))
   }))
-  process.stdout.write(JSON.stringify(out))
+  const notes = await settle(run(['notes', 'ls', '--tag', '${RESIDUAL_TAG}', '--repo', '', '--json']))
+  let residuals = []
+  if (notes.status === 'fulfilled') {
+    const list = Array.isArray(notes.value) ? notes.value : (notes.value.notes ?? [])
+    residuals = list.map((n) => ({ id: n.id, repo_id: n.repo_id, session_id: n.session_id,
+      created_at: n.created_at, body: String(n.body ?? '').slice(0, 4000) }))
+  } else errors.push('residual notes: ' + String(notes.reason.message).slice(0, 160))
+  process.stdout.write(JSON.stringify({ sessions: out, residuals, errors }))
 })().catch((e) => { process.stderr.write(String(e.message)); process.exit(1) })
 `
 
@@ -357,55 +522,18 @@ export const DEFAULT_REMOTE_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/b
 /**
  * @param {string} host
  * @param {{ bossBin: string, remoteBoss: string, remotePath: string }} where
- * @param {{ mode?: 'full' | 'pr' | 'detail', ids?: string[] }} [scope]
  */
-function dumpDaemon(host, { bossBin, remoteBoss, remotePath }, { mode = 'full', ids = [] } = {}) {
+function dumpDaemon(host, { bossBin, remoteBoss, remotePath }) {
   /** @type {import('node:child_process').ExecFileSyncOptionsWithStringEncoding} */
   const opts = { input: DAEMON_DUMP, encoding: 'utf8', maxBuffer: 64 << 20 }
-  const scope = [mode, ...ids]
   const raw = host
     ? execFileSync(
         'ssh',
-        [
-          '-o',
-          'BatchMode=yes',
-          host,
-          'env',
-          `PATH=${remotePath}`,
-          'node',
-          '-',
-          remoteBoss,
-          ...scope,
-        ],
+        ['-o', 'BatchMode=yes', host, 'env', `PATH=${remotePath}`, 'node', '-', remoteBoss],
         opts,
       )
-    : execFileSync('node', ['-', bossBin, ...scope], opts)
+    : execFileSync('node', ['-', bossBin], opts)
   return JSON.parse(raw)
-}
-
-// Outcomes the PR state alone settles, whatever the session's chats say; none of them is
-// agent-movable.
-const SETTLED_BY_PR = new Set(['awaiting-operator', 'done', 'stale-session', 'skip'])
-
-/**
- * The quick read a cron gate can afford: the session list and PR state for every session, then
- * chats and `boss show` only for the sessions whose PR state does not settle them. A full read of a
- * busy daemon takes longer than a gate may run.
- */
-function quickEntries(host, where, dump, now) {
-  const entries = dump(host, where, { mode: 'pr' })
-  const settled = (entry) =>
-    SETTLED_BY_PR.has(
-      classifySession({ session: entry.session, chats: [], pr: entry.pr, now }).action,
-    )
-  const open = entries.filter((entry) => (entry.errors ?? []).length || !settled(entry))
-  if (!open.length) return entries
-  const detailed = new Map(
-    dump(host, where, { mode: 'detail', ids: open.map((entry) => entry.session.id) }).map(
-      (entry) => [entry.session.id, entry],
-    ),
-  )
-  return entries.map((entry) => detailed.get(entry.session.id) ?? entry)
 }
 
 const TIMELINE_QUERY = `query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){
@@ -590,40 +718,33 @@ export function collect({
   root = process.cwd(),
   core = ORCHESTRATE_CORE,
   dump = dumpDaemon,
-  crons = readCrons,
-  unattended = false,
-  respectOwners = false,
   timeoutMs = EXTENSION_SCRIPT_TIMEOUT_MS,
   seen = null,
-  quick = false,
+  // Where the outage record lives; null reads none.
+  stateDir = null,
 }) {
   const where = { bossBin, remoteBoss, remotePath }
-  const claimed = claimTargets({
-    targets: [
-      ...(local ? [{ host: '', label: 'local' }] : []),
-      ...hosts.map((host) => ({ host, label: host })),
-    ],
-    unattended,
-    crons,
-    where,
-    core,
-    respectOwners,
-  })
+  const targets = [
+    ...(local ? [{ host: '', label: 'local' }] : []),
+    ...hosts.map((host) => ({ host, label: host })),
+  ]
   const rows = []
-  const errors = [...claimed.errors]
+  const errors = []
   // Hosts whose daemon could not be read this round: nothing about their sessions is known.
-  const unread = [...claimed.unread]
+  const unread = []
   // What `remedy` needs to rebuild a row's `next` after an extension changes its action.
   const remedyContext = new Map()
-  for (const target of claimed.mine) {
-    let entries
+  for (const target of targets) {
+    let read
     try {
-      entries = quick ? quickEntries(target.host, where, dump, now) : dump(target.host, where)
+      read = dump(target.host, where)
     } catch (error) {
       errors.push(`${target.label}: ${String(error.message).split('\n')[0]}`)
       unread.push(target.label)
       continue
     }
+    const { sessions: entries, residuals = [] } = read
+    for (const error of read.errors ?? []) errors.push(`${target.label}: ${error}`)
     for (const entry of entries) {
       const { session, chats } = entry
       const pr = entry.pr
@@ -644,7 +765,11 @@ export function collect({
           )
         }
       }
-      const verdict = classifySession({ session, chats, pr, now })
+      const terminal = TERMINAL_STATES.has(session.state) || Boolean(session.archived_at)
+      const residual = terminal
+        ? null
+        : openResidual(session, residualsFor(session, pr?.pr_number, residuals), failingChecks(pr))
+      const verdict = classifySession({ session, chats, pr, residual, cronJob: entry.cron, now })
       rows.push({
         host: target.label,
         session: session.id,
@@ -661,9 +786,18 @@ export function collect({
           status: chat.status,
           waiting: chat.waiting_reason || '',
           live: isLive(chat),
+          lastOutputAt: chat.last_substantive_output_at || chat.last_output_at || '',
         })),
         failing: failingChecks(pr),
+        // Evidence that the red is infrastructure, from what the round already read.
+        infra: isInfraRed(
+          [session.blocked_reason, residual?.body]
+            .concat((pr?.checks ?? []).filter((c) => FAILED_CONCLUSIONS.has(c.conclusion)))
+            .map((item) => (typeof item === 'object' && item ? item.description : item) ?? '')
+            .join('\n'),
+        ),
         autoRepair: session.repo_can_auto_repair !== false,
+        ...(residual ? { residual: { id: residual.id, summary: residualSummary(residual) } } : {}),
         // A fact failed to read, so the row's action may be wrong.
         ...((entry.errors ?? []).length ? { unread: true } : {}),
         ...verdict,
@@ -676,9 +810,11 @@ export function collect({
       })
     }
   }
-  // The grace spans rounds, so it applies only when the caller carries `seen` between them. An
-  // owned daemon's clocks are its worker's, which may share this state file.
-  if (seen) applyGrace(rows, seen, now, [...unread, ...claimed.owners.map((owner) => owner.host)])
+  // The grace spans rounds, so it applies only when the caller carries `seen` between them.
+  if (seen) applyGrace(rows, seen, now, unread)
+  // An open outage record holds its sessions until it resumes.
+  const outage = stateDir ? readOutage(stateDir) : null
+  holdRows(rows, outage)
   const extensions = discoverOrchestrateExtensions({ root, core })
   const ledger = [...extensions.ledger]
   const nextFor = (row) => remedy(row, remedyContext.get(rowKey(row.host, row.session)))
@@ -707,9 +843,6 @@ export function collect({
     rows,
     errors,
     unread,
-    // With `respectOwners`, the daemons a worker cron owns: the attended chat reads their queues,
-    // never their rows. Empty otherwise.
-    owners: claimed.owners,
     sharedReds: shared,
     // The orchestrator reads each rules extension's SKILL.md and applies it every round.
     rules: extensions.rules.map(({ name, skillPath }) => ({ name, skillPath })),
@@ -718,33 +851,11 @@ export function collect({
     roundExtensions,
     ledger,
     seen: seen ?? {},
+    outage,
   }
 }
 
-export const DEFAULT_STATE = path.join(homedir(), '.cache', 'boss-orchestrate', 'seen.json')
-
-/**
- * The cron gate for an unattended worker round, following the cron-gate contract: exit 0 when a
- * readable row is agent-movable after the grace window and not already queued for the operator, or
- * when the operator queue needs syncing; 1 when there is nothing to do; 69 when it could not
- * evaluate. It takes the quick read, so an idle factory costs no agent tokens and the gate stays
- * inside the scheduler's timeout. `onSnapshot` receives the snapshot before the verdict (the CLI
- * saves the grace state there).
- * @param {Parameters<typeof collect>[0] & {
- *   client: { list: () => ReturnType<ReturnType<typeof notesClient>['list']> },
- *   onSnapshot?: (snapshot: ReturnType<typeof collect>) => void,
- * }} options
- */
-export function evaluateGate({ client, onSnapshot = () => {}, ...collectOptions }) {
-  try {
-    // The gate is the worker's own, so it keeps the worker's daemon.
-    const snapshot = collect({ ...collectOptions, quick: true, unattended: true })
-    onSnapshot(snapshot)
-    return gateVerdict({ snapshot, items: client.list() })
-  } catch (error) {
-    return { exit: 69, reason: `could not evaluate: ${String(error.message).split('\n')[0]}` }
-  }
-}
+export const DEFAULT_STATE = path.join(DEFAULT_STATE_DIR, 'seen.json')
 
 function readSeen(file) {
   try {
@@ -755,101 +866,6 @@ function readSeen(file) {
   }
 }
 
-function pane({ host, chat, lines, remotePath }) {
-  const script = `export PATH=${remotePath}
-t=$(tmux ls -F '#S' 2>/dev/null | grep -- "-${chat.slice(0, 8)}$" | head -1)
-[ -n "$t" ] || { echo "no tmux pane for chat ${chat}" >&2; exit 3; }
-echo "== $t $(tmux display -p -t "$t" '#{pane_current_path}')"
-tmux capture-pane -p -t "$t" -S -${lines * 3} | grep -v '^[[:space:]]*$' | tail -${lines}`
-  /** @type {import('node:child_process').ExecFileSyncOptionsWithStringEncoding} */
-  const opts = { input: script, encoding: 'utf8', stdio: ['pipe', 'inherit', 'inherit'] }
-  if (host) execFileSync('ssh', ['-o', 'BatchMode=yes', host, 'bash', '-s'], opts)
-  else execFileSync('bash', ['-s'], opts)
-}
-
-const ACTION_ORDER = [
-  'waive-cap',
-  'unblock',
-  'upstream-red',
-  'mark-ready',
-  'refresh-park',
-  'ask-operator',
-  'repair',
-  'verify',
-  'stalled',
-  'stale-session',
-  'grace',
-  'wait-ci',
-  'waiting',
-  'working',
-  'awaiting-operator',
-  'ok',
-  'done',
-  'skip',
-]
-
-function printTable({
-  rows,
-  errors,
-  owners = [],
-  sharedReds: shared = [],
-  rules = [],
-  operatorItems = [],
-  ledger = [],
-}) {
-  const sorted = rows
-    .filter((row) => row.action !== 'skip')
-    .sort((a, b) => ACTION_ORDER.indexOf(a.action) - ACTION_ORDER.indexOf(b.action))
-  const counts = {}
-  for (const row of sorted) counts[row.action] = (counts[row.action] ?? 0) + 1
-  const short = (row) =>
-    row.pr ? `${String(row.repo).split('/').pop()}#${row.pr}` : String(row.repo)
-  for (const row of sorted) {
-    if (row.action === 'done' || row.action === 'awaiting-operator') continue
-    process.stdout.write(
-      `${row.action.padEnd(13)} ${row.host.padEnd(7)} ${row.session} ${row.state.padEnd(18)} ${short(row)}\n` +
-        `    ${(row.title ?? '').slice(0, 90)}\n    why: ${row.why}\n` +
-        (row.classifiedBy ? `    classified by: ${row.classifiedBy}\n` : '') +
-        (row.next ? `    next: ${row.next}\n` : ''),
-    )
-  }
-  // Parked and done rows are re-judged every round; list them so a regression or a gap shows.
-  const list = (action) => sorted.filter((row) => row.action === action)
-  const awaiting = list('awaiting-operator')
-  if (awaiting.length) {
-    process.stdout.write(`\nwaiting on the operator (verified as far as policy allows):\n`)
-    for (const row of awaiting)
-      // gate-region-ok: a display cap on one reason line, not a section window.
-      process.stdout.write(`    ${short(row).padEnd(22)} ${row.why.slice(0, 100)}\n`)
-  }
-  const done = list('done')
-  if (done.length)
-    process.stdout.write(`\ndone (verified, ready for review): ${done.map(short).join(' ')}\n`)
-  for (const group of shared) {
-    const prs = group.prs.map((p) => `#${p.pr} (${p.session}, ${p.action})`).join(', ')
-    process.stdout.write(
-      `\nshared red: ${group.repo} check "${group.check}" fails on ${prs}; elect one fixer, hold the rest\n`,
-    )
-  }
-  if (operatorItems.length) {
-    process.stdout.write(`\nfrom extensions, for the operator:\n`)
-    for (const item of operatorItems)
-      process.stdout.write(`    ${item.title} (${item.extension})\n      ${item.detail}\n`)
-  }
-  for (const rule of rules) process.stdout.write(`\nrules: ${rule.name} ${rule.skillPath}\n`)
-  for (const { host, cron } of owners) {
-    const queue = host === 'local' ? 'here' : `with --queue-host ${host}`
-    process.stdout.write(`\nowned: ${host} by worker cron ${cron}; read its queue ${queue}\n`)
-  }
-  process.stdout.write(
-    `\nsummary: ${Object.entries(counts)
-      .map(([k, v]) => `${k}=${v}`)
-      .join(' ')}\n`,
-  )
-  for (const error of errors) process.stdout.write(`error: ${error}\n`)
-  for (const line of ledger) process.stdout.write(`${line}\n`)
-}
-
 function main(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -858,38 +874,31 @@ function main(argv) {
     options: {
       host: { type: 'string', multiple: true, default: [] },
       'no-local': { type: 'boolean', default: false },
-      // A worker round: keep this machine's daemon even though its worker cron owns it.
-      unattended: { type: 'boolean', default: false },
-      // Leave out each daemon whose own cron list runs an unattended worker (`owners`).
-      'respect-owners': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       chat: { type: 'string' },
       lines: { type: 'string', default: '40' },
+      approve: { type: 'boolean', default: false },
       boss: { type: 'string', default: process.env.BOSS_BIN || 'boss' },
       'remote-boss': { type: 'string', default: 'boss' },
       'remote-path': { type: 'string', default: DEFAULT_REMOTE_PATH },
       root: { type: 'string', default: process.cwd() },
       core: { type: 'string', default: ORCHESTRATE_CORE },
-      // Remembers when each repair/verify row was first seen, so the grace spans rounds. The cron
-      // gate and the worker it wakes run in different environments, so it lives under $HOME.
+      // Remembers when each repair/verify row was first seen, so the grace spans the attended
+      // chat's repeated collect rounds.
       state: { type: 'string', default: DEFAULT_STATE },
-      tag: { type: 'string', default: QUEUE_TAG },
-      repo: { type: 'string' },
-      'queue-host': { type: 'string' },
     },
   })
   const [command] = positionals
   const options = {
     hosts: values.host,
     local: !values['no-local'],
-    unattended: values.unattended,
-    respectOwners: values['respect-owners'],
     bossBin: values.boss,
     remoteBoss: values['remote-boss'],
     remotePath: values['remote-path'],
     root: values.root,
     core: values.core,
     seen: readSeen(values.state),
+    stateDir: path.dirname(values.state),
   }
   const saveSeen = (result) => {
     try {
@@ -906,41 +915,29 @@ function main(argv) {
     else printTable(result)
     return result.errors.length ? 2 : 0
   }
-  if (command === 'gate') {
-    const client = notesClient({
-      run: bossRunner(values.boss),
-      tag: values.tag,
-      repo: values.repo,
-      bossHost: values['queue-host'],
-    })
-    const { exit, reason } = evaluateGate({ ...options, client, onSnapshot: saveSeen })
-    process.stderr.write(`bs-orchestrate gate: ${reason}\n`)
-    return exit
-  }
   if (command === 'pane') {
     if (!values.chat) throw new Error('pane needs --chat <chat-id>')
-    pane({
+    return paneVerb({
       host: values.host[0] ?? '',
       chat: values.chat,
       lines: Number(values.lines),
       remotePath: values['remote-path'],
+      approve: values.approve,
     })
-    return 0
   }
   process.stderr.write(
-    'usage: orchestrate-snapshot.mjs collect|gate|pane [--host <ssh-host>]... [--no-local] [--json]\n',
+    'usage: orchestrate-snapshot.mjs collect|pane [--host <ssh-host>]... [--no-local] [--json]\n',
   )
   return 64
 }
 
-/** Runs one verb and returns its exit code. A repo-local gate wrapper calls it with its hosts. */
+/** Runs one verb and returns its exit code. */
 export function run(argv) {
   try {
     return main(argv)
   } catch (error) {
     process.stderr.write(`orchestrate-snapshot: ${String(error.message).split('\n')[0]}\n`)
-    // A gate that cannot parse its own arguments could not evaluate.
-    return argv[0] === 'gate' ? 69 : 1
+    return 1
   }
 }
 

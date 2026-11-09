@@ -58,6 +58,15 @@ func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSes
 	if err != nil {
 		return nil, fmt.Errorf("get agent_chat by agent_session_id: %w", notFound(err))
 	}
+	if domain.IsCloudCommand(ctx) {
+		parent, err := sqlcgen.New(s.db).GetSession(ctx, row.SessionID)
+		if err != nil {
+			return nil, domain.ErrCloudTarget
+		}
+		if err := domain.AssertCloudTarget(ctx, "chat", agentSessionID, parent.RepoID); err != nil {
+			return nil, err
+		}
+	}
 	return agentChatFromRow(row), nil
 }
 

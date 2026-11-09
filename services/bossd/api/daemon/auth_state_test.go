@@ -34,6 +34,7 @@ func TestGetAuthStateReportsReporterValuesVerbatim(t *testing.T) {
 	registeredAt := time.Date(2026, 8, 19, 9, 15, 0, 0, time.UTC)
 	reporter := &stubAuthStateReporter{state: DaemonAuthState{
 		NeedsLogin:       true,
+		UpstreamOrigin:   "https://orchestrator-staging.bossanova.dev",
 		ReloginReason:    "refresh_outcome_unknown",
 		LastRegisteredAt: registeredAt,
 		Connected:        false,
@@ -49,6 +50,9 @@ func TestGetAuthStateReportsReporterValuesVerbatim(t *testing.T) {
 		t.Fatalf("reporter called %d times, want 1", reporter.called)
 	}
 	msg := resp.Msg
+	if got := msg.GetUpstreamOrigin(); got != reporter.state.UpstreamOrigin {
+		t.Errorf("upstream_origin = %q, want %q", got, reporter.state.UpstreamOrigin)
+	}
 	if !msg.GetUpstreamConfigured() {
 		t.Error("upstream_configured = false, want true when a reporter is wired")
 	}

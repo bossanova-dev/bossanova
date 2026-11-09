@@ -24,7 +24,15 @@ function fakeLinter(file, linterVersion, builtWith) {
 // Keep the fixture PATH isolated from the host Go and golangci-lint.
 function fixture(
   t,
-  { localGo = 'go1.27.3', releaseGo = 'go1.27.0', toolchain, goToolchain, probeFails = false } = {},
+  {
+    localGo = 'go1.27.3',
+    releaseGo = 'go1.27.0',
+    toolchain,
+    goToolchain,
+    probeFails = false,
+    assetsDown = false,
+    proxyDown = false,
+  } = {},
 ) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ensure-golangci-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
@@ -46,6 +54,7 @@ function fixture(
       echo "$GOTOOLCHAIN"
     else echo "${localGo}"; fi ;;
   install*) echo "go $*" >> "${log}"
+    if [ "${proxyDown}" = "true" ]; then echo "proxy.golang.org: 503" >&2; exit 1; fi
     v=\${2##*@}
     printf '#!/bin/sh\\necho "golangci-lint has version %s built with ${localGo} from (unknown)"\\n' "$v" > "$GOBIN/golangci-lint"
     chmod +x "$GOBIN/golangci-lint" ;;
@@ -55,6 +64,7 @@ esac`,
     path.join(bin, 'curl'),
     `echo "curl $*" >> "${log}"
 cat > "$3" <<'EOF'
+if [ "${assetsDown}" = "true" ]; then echo "golangci/golangci-lint err http_download_curl received HTTP status 504" >&2; exit 1; fi
 printf '#!/bin/sh\\necho "golangci-lint has version %s built with ${releaseGo} from abc on 2026-10-16"\\n' "\${3#v}" > "$2/golangci-lint"
 chmod +x "$2/golangci-lint"
 EOF`,
@@ -156,4 +166,25 @@ test('check reports a failed toolchain probe distinctly', (t) => {
   assert.match(result.stderr, /go1\.28\.1/)
   assert.match(result.stderr, /GOTOOLCHAIN=local/)
   assert.match(result.stderr, /toolchain download unavailable/)
+})
+
+test('install builds the pinned version through the module proxy when release assets fail', (t) => {
+  const f = fixture(t, { assetsDown: true })
+  const result = f.run('install')
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(
+    f.calls(),
+    /^go install github\.com\/golangci\/golangci-lint\/v2\/cmd\/golangci-lint@v2\.15\.0$/m,
+  )
+  assert.match(f.installed(), /version v2\.15\.0 built with go1\.27\.3/)
+  assert.equal(f.run('check').status, 0)
+})
+
+test('install fails without a binary when both release assets and the module proxy fail', (t) => {
+  const f = fixture(t, { assetsDown: true, proxyDown: true })
+  const result = f.run('install')
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /HTTP status 504/)
+  assert.match(result.stderr, /proxy\.golang\.org: 503/)
+  assert.equal(fs.existsSync(path.join(f.gobin, 'golangci-lint')), false)
 })

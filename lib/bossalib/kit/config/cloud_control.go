@@ -17,11 +17,14 @@ const (
 	CloudControlFull CloudControlMode = "full"
 )
 
-// ResolveCloudControl fails closed. Only exact lowercase "full", after trimming
-// whitespace, enables control; unknown raw values survive settings round trips.
+// ResolveCloudControl maps the local setting to a mode. An absent or blank value
+// is full, the default for every install. Any other value that is not exactly
+// "private", "read-only" or "full" after trimming whitespace fails closed to
+// read-only, so a typo never widens authority; unknown raw values survive
+// settings round trips.
 func ResolveCloudControl(raw string) CloudControlMode {
 	switch CloudControlMode(strings.TrimSpace(raw)) {
-	case CloudControlFull:
+	case "", CloudControlFull:
 		return CloudControlFull
 	case CloudControlPrivate:
 		return CloudControlPrivate

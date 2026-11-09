@@ -74,6 +74,11 @@ const ALLOWLIST = [
     kind: 'historical-fixture',
     reason: 'byte-exact capture of a real approval menu; recorded input, not a dependency',
   },
+  {
+    path: 'skills-toolbox/testdata/orchestrate-panes/codex-approval.txt',
+    kind: 'historical-fixture',
+    reason: 'byte-exact copy of the real codex approval capture the orchestrator pane test parses',
+  },
 ]
 
 /**

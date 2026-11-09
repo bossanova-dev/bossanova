@@ -9,7 +9,9 @@ import {
   CANCELLED_TITLE,
   ask,
   cancel,
+  listQuestions,
   parseAnswer,
+  resolve,
   relayPrompt,
   run,
   validateQuestions,
@@ -184,7 +186,7 @@ test('ask drives the daemon on another host', () => {
     runBoss: boss.runBoss,
   })
   for (const call of boss.calls) assert.deepEqual(call.slice(0, 2), ['--host', 'build-host'])
-  assert.ok(boss.calls[0].includes('question: merges'))
+  assert.ok(boss.calls[0].includes('question: q1 · merges'))
 })
 
 test('ask closes the question chat when the relay prompt was not submitted', () => {
@@ -310,4 +312,60 @@ test('the CLI parses an answer from its argument', () => {
   })
   assert.equal(exit, 0)
   assert.deepEqual(JSON.parse(out.join('')), { id: 'q1', answers: { Alpha: 'B' } })
+})
+
+// A boss whose `chats --json` lists the orchestrator chat, two question chats and a repair chat.
+function sessionBoss() {
+  const calls = []
+  const runBoss = (/** @type {string[]} */ args) => {
+    calls.push(args)
+    if (args[0] === 'chats')
+      return JSON.stringify({
+        chats: [
+          { agent_session_id: ORCHESTRATOR, title: 'conductor', status: 'WORKING' },
+          { agent_session_id: 'qchat-a', title: 'question: q-4158 · merges', status: 'WAITING' },
+          { agent_session_id: 'qchat-b', title: 'question: q-12', status: 'IDLE' },
+          { agent_session_id: 'other', title: 'repair: question: not mine', status: 'IDLE' },
+        ],
+      })
+    if (args[0] === 'chat' && args[1] === 'delete')
+      return JSON.stringify({ agent_session_id: args[2], deleted: true })
+    throw new Error(`unexpected boss call ${args.join(' ')}`)
+  }
+  return { runBoss, calls }
+}
+
+test('ls lists only the question chats ask opened, with their question ids', () => {
+  const boss = sessionBoss()
+  assert.deepEqual(listQuestions({ session: 'sess-1', runBoss: boss.runBoss }), [
+    { chat: 'qchat-a', id: 'q-4158', status: 'WAITING' },
+    { chat: 'qchat-b', id: 'q-12', status: 'IDLE' },
+  ])
+})
+
+test('resolve reads the answer and closes exactly the question chat that asked it', () => {
+  const boss = sessionBoss()
+  const result = resolve({
+    message: 'ANSWER q-4158: {"bs #4158":"Merge it (Recommended)"}',
+    session: 'sess-1',
+    runBoss: boss.runBoss,
+  })
+  assert.deepEqual(result, {
+    id: 'q-4158',
+    answers: { 'bs #4158': 'Merge it (Recommended)' },
+    closed: ['qchat-a'],
+  })
+  const deletes = boss.calls.filter((c) => c[0] === 'chat' && c[1] === 'delete').map((c) => c[2])
+  assert.deepEqual(deletes, ['qchat-a'])
+})
+
+test('resolve still returns the answers when the question chat is already closed', () => {
+  const boss = sessionBoss()
+  const result = resolve({
+    message: 'ANSWER q-99: {"x":"A"}',
+    session: 'sess-1',
+    runBoss: boss.runBoss,
+  })
+  assert.deepEqual(result.closed, [])
+  assert.deepEqual(result.answers, { x: 'A' })
 })

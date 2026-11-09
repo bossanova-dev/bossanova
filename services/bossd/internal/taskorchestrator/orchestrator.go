@@ -240,13 +240,13 @@ func (o *Orchestrator) poll(ctx context.Context) {
 	for _, repo := range repos {
 		if repo.CanAutoMergeDependabot {
 			eligibleRepos = append(eligibleRepos, repoInfo{
-				id:            repo.ID,
-				isFactory:     o.factoryRepoChecker != nil && o.factoryRepoChecker.IsFactoryRepo(ctx, repo.ID),
-				displayName:   repo.DisplayName,
-				originURL:     repo.OriginURL,
-				localPath:     repo.LocalPath,
-				baseBranch:    repo.DefaultBaseBranch,
-				mergeStrategy: string(repo.MergeStrategy),
+				id:              repo.ID,
+				verifyOwnsMerge: o.factoryRepoChecker != nil && o.factoryRepoChecker.OwnsBotMerges(ctx, repo.ID, repo.LocalPath),
+				displayName:     repo.DisplayName,
+				originURL:       repo.OriginURL,
+				localPath:       repo.LocalPath,
+				baseBranch:      repo.DefaultBaseBranch,
+				mergeStrategy:   string(repo.MergeStrategy),
 			})
 		}
 	}
@@ -439,12 +439,12 @@ func (o *Orchestrator) handoffGreenRepair(ctx context.Context, task *bossanovav1
 			return true
 		}
 		o.releaseRepairSlot(ctx, repo.id, mapping.ID)
-		if !repo.isFactory {
+		if !repo.verifyOwnsMerge {
 			o.goWorker(func() { o.handleAutoMerge(withMergeLabel(ctx), task, repo, mapping) })
 			return true
 		}
 	}
-	if repo.isFactory {
+	if repo.verifyOwnsMerge {
 		o.logger.Debug().Str("reason", "verify-owns-merge").Str("external_id", task.GetExternalId()).Msg("verify owns dependabot merge")
 		return true
 	}
@@ -755,7 +755,7 @@ func taskMappingStatusToProto(s domain.TaskMappingStatus) bossanovav1.TaskItemSt
 func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	action := task.GetAction()
 	externalID := task.GetExternalId()
-	if repo.isFactory && pluginName == "dependabot" && action == bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE {
+	if repo.verifyOwnsMerge && pluginName == "dependabot" && action == bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE {
 		o.logger.Debug().Str("reason", "verify-owns-merge").Str("external_id", externalID).Msg("verify owns dependabot merge")
 		return
 	}
@@ -954,7 +954,7 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 		Detach:                        strings.TrimSpace(task.GetPlan()) != "",
 		BaseBranch:                    baseBranch,
 		HeadBranch:                    task.GetExistingBranch(),
-		SkipSetupScript:               isDependabotTask && !repo.isFactory,
+		SkipSetupScript:               isDependabotTask && !repo.verifyOwnsMerge,
 		PreventDuplicateActiveSession: isDependabotTask,
 	}
 
@@ -1135,11 +1135,11 @@ func parsePRNumberFromExternalID(externalID string) (int, error) {
 // repoInfo is a lightweight struct carrying the info needed to poll
 // a repo, avoiding passing the full models.Repo around.
 type repoInfo struct {
-	id            string
-	displayName   string
-	originURL     string
-	localPath     string
-	baseBranch    string
-	mergeStrategy string
-	isFactory     bool
+	id              string
+	displayName     string
+	originURL       string
+	localPath       string
+	baseBranch      string
+	mergeStrategy   string
+	verifyOwnsMerge bool
 }

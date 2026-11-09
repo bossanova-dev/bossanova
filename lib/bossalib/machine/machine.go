@@ -1,5 +1,5 @@
 // Package machine provides the session state machine for the Bossanova
-// session lifecycle. It defines 14 states, 18 event triggers, guards, and
+// session lifecycle. It defines 14 states, 19 event triggers, guards, and
 // actions using qmuntal/stateless.
 package machine
 
@@ -99,6 +99,11 @@ const (
 	// needs a different PR): the machine holds no PR facts, so that guard lives
 	// in Lifecycle.LinkPR.
 	PRLinked
+	// Reattach returns a false orphan to ImplementingPlan: the daemon-restart
+	// sweep marked the run Orphaned, but one of its chat panes is live. The
+	// caller owns that pane evidence (Lifecycle.RestoreLiveOrphans); the machine
+	// only owns the edge.
+	Reattach
 )
 
 // MaxAttempts is the default maximum number of fix attempts before blocking.
@@ -386,14 +391,15 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		Permit(PRLinked, AwaitingChecks)
 
 	// Orphaned is terminal: a daemon restart killed the headless run, so there is
-	// nothing to advance. The only outbound transitions mirror the other terminal
-	// states — a resolved PR moves it to Merged or Closed. Recording a factual
-	// merge on a terminal row is not the same as letting a bootstrap-only PR
-	// masquerade as green. Recovery is a deliberate human action (a fresh run),
-	// never an automatic Unblock/re-dispatch.
+	// nothing to advance. A resolved PR moves it to Merged or Closed, mirroring
+	// the other terminal states. Recording a factual merge on a terminal row is
+	// not the same as letting a bootstrap-only PR masquerade as green. Starting a
+	// fresh run is a deliberate human action, never an automatic Unblock. The one
+	// way back is Reattach, for a run that was never dead: a chat pane is live.
 	sm.Configure(Orphaned).
 		Permit(PRMerged, Merged).
-		Permit(PRClosed, Closed)
+		Permit(PRClosed, Closed).
+		Permit(Reattach, ImplementingPlan)
 
 	// Finalizing is entered from ImplementingPlan when the Stop hook fires.
 	// The detailed outcome is tracked out-of-band via cron_job.last_run_outcome.
@@ -516,6 +522,8 @@ func (e Event) String() string {
 		return "orphan"
 	case PRLinked:
 		return "pr_linked"
+	case Reattach:
+		return "reattach"
 	default:
 		return "unknown"
 	}

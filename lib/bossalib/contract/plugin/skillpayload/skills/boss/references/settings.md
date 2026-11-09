@@ -49,7 +49,9 @@ View or update global settings
 
 **Flags:**
 
-- `--cloud-control` — Cloud control: private, read-only or full (takes effect immediately; no restart needed)
+- `--cloud-control` — Cloud control: default, private, read-only or full (takes effect immediately; no restart needed)
+- `--cloud-control-owner` — Set each registered repo under <host/owner>=<default|private|read-only|full> (repeatable)
+- `--cloud-control-repo` — Set a registered repo grant: <origin, display name or checkout>=<default|private|read-only|full> (repeatable)
 - `--daemon-name` — Set the daemon display name (blank resets to the machine hostname; restart the daemon to apply)
 - `--default-agent` — Set the default agent plugin (e.g. claude, opencode)
 - `--managed-accounts` — Enable managed accounts (bossd credential rotation)

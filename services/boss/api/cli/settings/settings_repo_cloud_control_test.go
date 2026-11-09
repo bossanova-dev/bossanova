@@ -1,0 +1,195 @@
+package settings
+
+import (
+	"context"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
+)
+
+func Test_Settings_AC237901_MachineDefaultReset(t *testing.T) {
+	seedDaemonNameSettings(t)
+	s, _ := config.Load()
+	s.CloudControl = "full"
+	if err := config.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	cmd := New(Options{}).SettingsCmd()
+	cmd.SetArgs([]string{"--cloud-control", "default"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = config.Load()
+	if s.CloudControl != "" {
+		t.Fatalf("machine grant remains: %q", s.CloudControl)
+	}
+	out, err := executeRepoSettings(t, repoControlGroup())
+	if err != nil || !strings.Contains(out, "Cloud control:    full (default)") {
+		t.Fatalf("default summary: %s / %v", out, err)
+	}
+}
+
+type settingsRepoControlReader struct {
+	repos []*pb.RepoCloudControl
+	err   error
+}
+
+func (f settingsRepoControlReader) ListRepoCloudControls(context.Context) ([]*pb.RepoCloudControl, error) {
+	return f.repos, f.err
+}
+func repoControlGroup(repos ...*pb.RepoCloudControl) *Group {
+	return New(Options{NewRepoCloudControlReader: func(string) RepoCloudControlReader { return settingsRepoControlReader{repos: repos} }})
+}
+func registeredControlRepo(t *testing.T, name string, id int64) *pb.RepoCloudControl {
+	t.Helper()
+	return &pb.RepoCloudControl{Host: "github.com", Name: name, DisplayName: name, Checkout: t.TempDir(), ProviderRepoId: id, IsIdVerified: id > 0, OriginUrl: "git@github.com:" + name + ".git", EffectiveMode: "full", Source: "default"}
+}
+func executeRepoSettings(t *testing.T, g *Group, args ...string) (string, error) {
+	t.Helper()
+	cmd := g.SettingsCmd()
+	cmd.SetArgs(args)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	var err error
+	out := captureStdout(t, func() { err = cmd.Execute() })
+	return out, err
+}
+func Test_Settings_AC237901_RepoGrantSelectorsAndReset(t *testing.T) {
+	for _, selector := range []string{"name", "display", "origin", "path"} {
+		t.Run(selector, func(t *testing.T) {
+			seedDaemonNameSettings(t)
+			repo := registeredControlRepo(t, "acme/oss", 42)
+			repo.DisplayName = "Friendly OSS"
+			values := map[string]string{"name": repo.Name, "display": repo.DisplayName, "origin": repo.OriginUrl, "path": repo.Checkout}
+			g := repoControlGroup(repo)
+			if _, err := executeRepoSettings(t, g, "--cloud-control-repo", values[selector]+"=read-only"); err != nil {
+				t.Fatal(err)
+			}
+			s, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := config.CloudControlRepoGrant{Host: "github.com", RepoID: 42, Name: repo.Name, Checkout: repo.Checkout, Mode: "read-only"}
+			if len(s.CloudControlRepos) != 1 || s.CloudControlRepos[0] != want {
+				t.Fatalf("grants = %#v", s.CloudControlRepos)
+			}
+			if _, err := executeRepoSettings(t, g, "--cloud-control-repo", values[selector]+"=default"); err != nil {
+				t.Fatal(err)
+			}
+			s, _ = config.Load()
+			if len(s.CloudControlRepos) != 0 {
+				t.Fatalf("grants remain: %#v", s.CloudControlRepos)
+			}
+		})
+	}
+}
+func Test_Settings_AC237901_RepoIdentityRefusalAndAtomicWrites(t *testing.T) {
+	seedDaemonNameSettings(t)
+	verified := registeredControlRepo(t, "acme/oss", 42)
+	unknown := registeredControlRepo(t, "acme/new", 0)
+	g := repoControlGroup(verified, unknown)
+	for _, args := range [][]string{
+		{"--cloud-control-repo", "missing/repo=full"},
+		{"--cloud-control-repo", "acme/oss=private", "--cloud-control-repo", "acme/new=full"},
+		{"--cloud-control-owner", "github.com/acme=full"},
+		{"--cloud-control-repo", "acme/oss=invalid"},
+		{"--cloud-control-repo", "acme/oss"},
+	} {
+		if _, err := executeRepoSettings(t, g, args...); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+		s, _ := config.Load()
+		if len(s.CloudControlRepos) != 0 {
+			t.Fatalf("partially saved %v: %#v", args, s.CloudControlRepos)
+		}
+	}
+	if _, err := executeRepoSettings(t, g, "--cloud-control-repo", "acme/new=full"); err == nil || !strings.Contains(err.Error(), "can't verify") {
+		t.Fatalf("identity error: %v", err)
+	}
+	if _, err := executeRepoSettings(t, g, "--cloud-control-repo", "acme/new=read-only"); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := config.Load()
+	if len(s.CloudControlRepos) != 1 || s.CloudControlRepos[0].RepoID != 0 || s.CloudControlRepos[0].Mode != "read-only" {
+		t.Fatalf("narrow grant = %#v", s.CloudControlRepos)
+	}
+}
+func Test_Settings_AC237901_OwnerGrantsAndWarnings(t *testing.T) {
+	seedDaemonNameSettings(t)
+	first, second, other := registeredControlRepo(t, "acme/a", 1), registeredControlRepo(t, "acme/b", 2), registeredControlRepo(t, "other/c", 3)
+	g := repoControlGroup(first, second, other)
+	out, err := executeRepoSettings(t, g, "--cloud-control-owner", "github.com/acme=full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, config.FullCloudControlWarning) {
+		t.Fatalf("warnings missing: %s", out)
+	}
+	s, _ := config.Load()
+	if len(s.CloudControlRepos) != 2 {
+		t.Fatalf("grants = %#v", s.CloudControlRepos)
+	}
+	for _, grant := range s.CloudControlRepos {
+		if grant.Mode != "full" || !strings.HasPrefix(grant.Name, "acme/") || grant.RepoID == 0 {
+			t.Fatalf("grant = %#v", grant)
+		}
+	}
+	if _, err := executeRepoSettings(t, g, "--cloud-control-owner", "github.com/acme=default"); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = config.Load()
+	if len(s.CloudControlRepos) != 0 {
+		t.Fatalf("grants remain: %#v", s.CloudControlRepos)
+	}
+	for _, args := range [][]string{{"--cloud-control", "full"}, {"--cloud-control-repo", "acme/a=full"}} {
+		out, err := executeRepoSettings(t, g, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, config.FullCloudControlWarning) {
+			t.Fatalf("warnings missing: %s", out)
+		}
+	}
+}
+func Test_Settings_AC237901_GroupedRepoSummary(t *testing.T) {
+	seedDaemonNameSettings(t)
+	first, other := registeredControlRepo(t, "acme/a", 1), registeredControlRepo(t, "other/b", 2)
+	first.EffectiveMode = "private"
+	first.Source = "grant-narrowed"
+	first.HasUnverifiedGrant = true
+	out, err := executeRepoSettings(t, repoControlGroup(other, first))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Cloud control:    full (default)", "Cloud control per repo:", "github.com/acme", "acme/a: private (grant-narrowed)", "grant not verified: narrowing only", "github.com/other", "other/b: full (default)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("summary lacks %q: %s", want, out)
+		}
+	}
+	if strings.Index(out, "github.com/acme") > strings.Index(out, "github.com/other") {
+		t.Fatalf("groups not sorted: %s", out)
+	}
+}
+func TestSettingsRepoAmbiguityAndDaemonFailure(t *testing.T) {
+	seedDaemonNameSettings(t)
+	a, b := registeredControlRepo(t, "acme/a", 1), registeredControlRepo(t, "other/b", 2)
+	a.DisplayName = "Shared"
+	b.DisplayName = "Shared"
+	if _, err := executeRepoSettings(t, repoControlGroup(a, b), "--cloud-control-repo", "Shared=full"); err == nil {
+		t.Fatal("ambiguous selector accepted")
+	}
+	if _, err := executeRepoSettings(t, repoControlGroup(a, b), "--cloud-control-repo", a.Checkout+"=full"); err != nil {
+		t.Fatal(err)
+	}
+	g := New(Options{NewRepoCloudControlReader: func(string) RepoCloudControlReader { return settingsRepoControlReader{err: errors.New("unavailable")} }})
+	if _, err := executeRepoSettings(t, g, "--cloud-control-repo", "acme/a=full"); err == nil {
+		t.Fatal("daemon failure accepted")
+	}
+	if _, err := executeRepoSettings(t, g); err != nil {
+		t.Fatalf("machine settings must remain readable: %v", err)
+	}
+}

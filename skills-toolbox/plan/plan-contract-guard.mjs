@@ -187,6 +187,7 @@ function violation(code, message) {
 export const VIOLATION_CODES = [
   'duplicate-section',
   'line-spanning-emphasis',
+  'list-nested-table',
   'merged-list-item',
   'missing-sections',
   'not-a-description',
@@ -778,6 +779,96 @@ export function checkLineSpanningEmphasis(config, description, { mode = 'child-p
   )
 }
 
+/** Agent-authored table headers nested in a list; positions are 1-based. */
+export function listNestedTables(config, description, { mode = 'child-plan' } = {}) {
+  const text = String(description ?? '')
+  const rawLines = text.split('\n').map((line) => line.replace(/\r$/, ''))
+  const outside = new Set(scanFences(text).lines.map(({ index }) => index))
+  const contractSections = planSectionsForDescriptionMode(config, mode)
+  const terminalHeading = contractSections[contractSections.length - 1]?.heading
+  let limit = rawLines.length
+  for (let index = 0; index < rawLines.length; index += 1) {
+    if (
+      outside.has(index) &&
+      terminalHeading &&
+      markdownH2Heading(rawLines[index]) === terminalHeading
+    ) {
+      limit = index
+      break
+    }
+  }
+  const delimiterRow = /^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)*[ \t]*:?-+:?[ \t]*\|?[ \t]*$/
+  const indent = (line) => {
+    let column = 0
+    for (const char of line.match(/^[ \t]*/)[0]) {
+      column += char === '\t' ? 4 - (column % 4) : 1
+    }
+    return column
+  }
+  const findings = []
+  let contentColumns = []
+  let afterBlank = false
+  let indentedCode = false
+  for (let index = 0; index < limit; index += 1) {
+    if (!outside.has(index)) continue
+    const line = rawLines[index]
+    if (line.trim() === '') {
+      afterBlank = true
+      continue
+    }
+    // Indented code starts after a blank at four columns past the list content.
+    // Keep its following lines literal, including table-shaped samples.
+    if ((afterBlank || indentedCode) && indent(line) >= (contentColumns.at(-1) ?? 0) + 4) {
+      indentedCode = true
+      continue
+    }
+    indentedCode = false
+    // Headings and thematic breaks interrupt a list's lazy continuation even without a blank.
+    const interruptsList =
+      /^ {0,3}#{1,6}(?:[ \t]|$)/.test(line) ||
+      /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line)
+    if (interruptsList) {
+      contentColumns = contentColumns.filter((column) => indent(line) >= column)
+      afterBlank = false
+      continue
+    }
+    const marker = /^( {0,3})([-+*]|\d{1,9}[.)])([ \t]+)/.exec(line)
+    if (marker) {
+      const start = marker[1].length + marker[2].length
+      const padding = indent(' '.repeat(start) + marker[3]) - start
+      const column = start + (padding >= 5 ? 1 : padding)
+      contentColumns = contentColumns.filter((open) => open < column)
+      contentColumns.push(column)
+    } else if (afterBlank) {
+      contentColumns = contentColumns.filter((column) => indent(line) >= column)
+    }
+    afterBlank = false
+    const next = rawLines[index + 1]
+    if (
+      index + 1 >= limit ||
+      !outside.has(index + 1) ||
+      !line.includes('|') ||
+      !next.includes('|') ||
+      !delimiterRow.test(next)
+    )
+      continue
+    const headerIsItem = marker && line.slice(marker[0].length).startsWith('|')
+    if (headerIsItem || contentColumns.some((column) => indent(next) >= column)) {
+      findings.push({ line: index + 1 })
+    }
+  }
+  return findings
+}
+
+export function checkListNestedTable(config, description, { mode = 'child-plan' } = {}) {
+  return listNestedTables(config, description, { mode }).map(({ line }) =>
+    violation(
+      'list-nested-table',
+      `table at line ${line} is nested in a list — the tracker strips leading characters from every cell on each save; move the table out of the list (unindented, after a blank line) or rewrite it as a nested list`,
+    ),
+  )
+}
+
 export function checkSelfFalsifiedLiteralSearch(config, description) {
   return selfFalsifiedLiteralSearch(parseAcceptanceCriteria(config, description), description)
 }
@@ -1286,6 +1377,7 @@ export function checkPlanContract({
     )
   }
   violations.push(...checkLineSpanningEmphasis(config, description, { mode }))
+  violations.push(...checkListNestedTable(config, description, { mode }))
   violations.push(...checkSelfFalsifiedLiteralSearch(config, description))
   const citation = checkPlanCitations(config, description, {
     cwd: citationCwd,
@@ -1326,10 +1418,13 @@ export function checkPlanContract({
 
 /**
  * The violations that stop a write: the text is not a plan description at all, a required section
- * is missing, a template placeholder was never substituted, or the plan file is empty or truncated. Every other code is a quality
+ * is missing, a template placeholder was never substituted, or the plan file is empty or truncated.
+ * A list-nested table also blocks: it is the one construct the tracker destroys on save.
+ * Every other code is a quality
  * finding the CLI prints as a warning — the plan is still written.
  */
 export const BLOCKING_VIOLATION_CODES = new Set([
+  'list-nested-table',
   'missing-sections',
   'not-a-description',
   'placeholder-residue',

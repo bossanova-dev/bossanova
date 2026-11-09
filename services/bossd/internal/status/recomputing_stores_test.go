@@ -667,6 +667,32 @@ func TestRecomputingSessionStore_ObserverFiresForTheOrphanMarker(t *testing.T) {
 	}
 }
 
+// TestRecomputingSessionStore_ObserverFiresForAnOrphanReattach covers the
+// false-orphan recovery write, which also never passes through Update.
+func TestRecomputingSessionStore_ObserverFiresForAnOrphanReattach(t *testing.T) {
+	store, obs, id := newObservedSessionStore(t, machine.ImplementingPlan)
+	ctx := context.Background()
+	const reason = "daemon restart"
+	if advanced, err := store.MarkHeadlessRunOrphaned(ctx, id, reason); err != nil || !advanced {
+		t.Fatalf("orphan headless run = %v, %v", advanced, err)
+	}
+
+	advanced, err := store.MarkOrphanReattached(ctx, id, reason, int(machine.ImplementingPlan))
+	if err != nil || !advanced {
+		t.Fatalf("reattach = %v, %v; want true, nil", advanced, err)
+	}
+	if got := obs.seen(); len(got) != 2 || got[1] != machine.ImplementingPlan {
+		t.Fatalf("observed states = %v, want [%v %v]", got, machine.Orphaned, machine.ImplementingPlan)
+	}
+	read, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if read.State != machine.ImplementingPlan || read.BlockedReason != nil {
+		t.Fatalf("persisted state %v reason %v, want ImplementingPlan with no reason", read.State, read.BlockedReason)
+	}
+}
+
 // TestRecomputingSessionStore_ObserverErrorNeverFailsTheTransition is the
 // acceptance criterion in test form: a broadcast-send failure surfaces as an
 // observer error, and the session transition must still succeed and persist.

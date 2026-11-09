@@ -1,0 +1,10 @@
+> /boss what server am i using
+  You've hit your weekly limit · resets 9pm (Asia/Tokyo)
+
+What do you want to do?
+
+❯ 1. Stop and wait for limit to reset
+  2. Switch to usage credits
+  3. Upgrade your plan
+
+Enter to confirm · Esc to cancel

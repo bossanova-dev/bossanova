@@ -483,3 +483,19 @@ func TestNoteRPCs_UnconfiguredStoreIsUnavailable(t *testing.T) {
 		})
 	}
 }
+
+func TestCloudNoteReloadRejectsChangedOwnership_Notes_AC237801(t *testing.T) {
+	srv := newNoteServer(t)
+	note := mustCreateNoteRPC(t, srv, &pb.CreateNoteRequest{RepoId: "repo-b", Body: "protected"})
+	// The authorized snapshot was repo-a; the handler now sees repo-b in its
+	// own store. Neither editing nor deleting may act on the reloaded object.
+	ctx := domain.WithCloudTarget(context.Background(), domain.CloudTarget{"note:" + note.Id: "repo-a", "repo:repo-a": "repo-a"})
+	_, err := srv.UpdateNote(ctx, connect.NewRequest(&pb.UpdateNoteRequest{Id: note.Id, Body: strp("changed")}))
+	assertConnectCode(t, err, connect.CodePermissionDenied)
+	_, err = srv.DeleteNote(ctx, connect.NewRequest(&pb.DeleteNoteRequest{Id: note.Id}))
+	assertConnectCode(t, err, connect.CodePermissionDenied)
+	stored, err := srv.GetNote(context.Background(), connect.NewRequest(&pb.GetNoteRequest{Id: note.Id}))
+	if err != nil || stored.Msg.Note.Body != "protected" {
+		t.Fatalf("protected note changed: %v %v", stored, err)
+	}
+}

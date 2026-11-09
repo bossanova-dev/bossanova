@@ -12,7 +12,10 @@ import {
   collect,
   draftHold,
   failingChecks,
+  openResidual,
   remedy,
+  residualSummary,
+  residualsFor,
   sharedReds,
 } from './orchestrate-snapshot.mjs'
 
@@ -286,20 +289,27 @@ const scriptOf = (respond) =>
   `const envelope = JSON.parse(require('node:fs').readFileSync(0, 'utf8'))\n` +
   `process.stdout.write(JSON.stringify((${respond})(envelope)))\n`
 
+// The failing-checks PR state the residual and repair tests share.
+const failingPr = (over = {}) =>
+  prState({
+    check_verdict: { state: 'failing', failed_count: 1, pending_count: 0 },
+    checks: [{ name: 'lint', conclusion: 'failure' }],
+    ...over,
+  })
+
 // Two sessions on this machine: s1's PR is verified, s2's has failing checks and no live chat.
-const fakeDump = () => [
-  { session: session({ id: 's1' }), chats: [stoppedChat], pr: prState(), repo: 'acme/app' },
-  {
-    session: session({ id: 's2', agent: 'claude' }),
-    chats: [stoppedChat],
-    pr: prState({
-      pr_number: 13,
-      check_verdict: { state: 'failing', failed_count: 1, pending_count: 0 },
-      checks: [{ name: 'lint', conclusion: 'failure' }],
-    }),
-    repo: 'acme/app',
-  },
-]
+const fakeDump = () => ({
+  sessions: [
+    { session: session({ id: 's1' }), chats: [stoppedChat], pr: prState(), repo: 'acme/app' },
+    {
+      session: session({ id: 's2', agent: 'claude' }),
+      chats: [stoppedChat],
+      pr: failingPr({ pr_number: 13 }),
+      repo: 'acme/app',
+    },
+  ],
+  residuals: [],
+})
 const snapshot = (root, over = {}) =>
   collect({
     hosts: [],
@@ -308,7 +318,6 @@ const snapshot = (root, over = {}) =>
     now: NOW,
     root,
     dump: fakeDump,
-    crons: () => [],
     ...over,
   })
 
@@ -458,8 +467,113 @@ test('orchestrate-round items reach the operator list; rules extensions are list
 
 test('a conflict that bossd is already repairing is left to that repair', () => {
   const pr = prState({ merge_state_status: 'dirty', is_mergeable: false })
-  const s = { repair_active: true, last_repair: { started_at: '2026-11-07T08:50:00Z' } }
+  // Started moments ago: its repair chat has not appeared yet.
+  const s = { repair_active: true, last_repair: { started_at: '2026-11-07T08:55:00Z' } }
   assert.equal(classify(s, [stoppedChat], pr).action, 'working')
+  // Its repair chat is up and working.
+  const early = { repair_active: true, last_repair: { started_at: '2026-11-07T08:20:00Z' } }
+  const repairChat = { ...liveChat, role: 'repair', created_at: '2026-11-07T08:20:05Z' }
+  assert.equal(classify(early, [repairChat], pr).action, 'working')
+})
+
+test('a finished bossd repair whose flag lags routes the failing check on', () => {
+  const s = { repair_active: true, last_repair: { started_at: '2026-11-07T08:20:00Z' } }
+  const finished = {
+    ...idleChat,
+    role: 'repair',
+    title: 'repair: checks',
+    created_at: '2026-11-07T08:20:05Z',
+  }
+  // The idle repair chat created after the start means that repair finished.
+  assert.equal(classify(s, [finished], failingPr()).action, 'repair')
+  // With no repair chat at all, the flag counts only for the startup window.
+  assert.equal(classify(s, [stoppedChat], failingPr()).action, 'repair')
+})
+
+// A repair-residual note as `boss notes ls --tag repair-residual --json` lists it.
+const residualNote = (over = {}) => ({
+  id: 'n1',
+  repo_id: 'r1',
+  session_id: 's2',
+  created_at: '2026-11-07T08:40:00Z',
+  body: 'PR #13: lint fails on main too; inherited from the base, not this branch.\nDetails...',
+  ...over,
+})
+
+test('an open inherited-red residual turns a failing PR into an upstream fix', (t) => {
+  const dump = () => ({
+    ...fakeDump(),
+    residuals: [
+      residualNote(),
+      // A residual on another session that cites no PR of this one is not its.
+      residualNote({ id: 'n2', session_id: 'zz', body: 'PR #99: fails on main' }),
+    ],
+  })
+  const result = snapshot(extensionRoot(t, []), { dump })
+  const s2 = result.rows.find((row) => row.session === 's2')
+  assert.equal(s2.action, 'upstream-red')
+  assert.match(s2.why, /^repair residual n1: PR #13: lint fails on main too/)
+  assert.match(s2.next, /hold.*Otherwise fix the cause on the base yourself/)
+  assert.deepEqual(s2.residual, { id: 'n1', summary: residualSummary(residualNote()) })
+  assert.equal(result.rows.find((row) => row.session === 's1').action, 'done')
+})
+
+test('a residual names a session by its PR in the same repo, never another repo', () => {
+  const own = session({ id: 's2', repo_id: 'r1' })
+  const cited = residualNote({ session_id: 'other' })
+  assert.deepEqual(residualsFor(own, 13, [cited]), [cited])
+  assert.deepEqual(residualsFor(own, 13, [{ ...cited, repo_id: 'r2' }]), [])
+  assert.deepEqual(residualsFor(own, 14, [cited]), [])
+})
+
+test('a residual stops counting once superseded or declined, and yields to a live chat', () => {
+  const note = residualNote()
+  // A later bossd repair that recorded no newer residual supersedes it.
+  const later = { last_repair: { started_at: '2026-11-07T08:45:00Z' } }
+  assert.equal(openResidual(session(later), [note], ['lint']), null)
+  assert.equal(openResidual(session(), [note], ['lint']), note)
+  // It must name a check failing now: a defect found on the base, or another red, is not this one.
+  assert.equal(openResidual(session(), [note], ['api-tests']), null)
+  assert.equal(openResidual(session(), [note], []), null)
+  // A residual that records something other than a red on the base is not an upstream red.
+  const declined = residualNote({ body: 'PR #13: lint finding 2 declined: out of scope' })
+  assert.equal(openResidual(session(), [declined], ['lint']), null)
+  const residual = openResidual(session(), [note], ['lint'])
+  assert.ok(residual)
+  const verdict = classifySession({
+    session: session(),
+    chats: [liveChat],
+    pr: failingPr(),
+    residual,
+    now: NOW,
+  })
+  assert.equal(verdict.action, 'working')
+})
+
+test('residuals mark a shared red as inherited from the base', () => {
+  const row = (pr, sessionId, over = {}) => ({
+    repo: 'acme/app',
+    pr,
+    session: sessionId,
+    host: 'local',
+    action: 'repair',
+    failing: ['lint'],
+    ...over,
+  })
+  const [plain] = sharedReds([row(1, 'a'), row(2, 'b')])
+  assert.equal(plain.inherited, false)
+  const [group] = sharedReds([
+    row(1, 'a', { action: 'upstream-red', residual: { id: 'n1', summary: 'x' } }),
+    row(2, 'b'),
+  ])
+  assert.equal(group.inherited, true)
+  assert.deepEqual(
+    group.prs.map((p) => [p.pr, p.residual ?? '']),
+    [
+      [1, 'n1'],
+      [2, ''],
+    ],
+  )
 })
 
 test('a repair flag that never cleared does not hide a stalled conflict', () => {
@@ -505,4 +619,258 @@ test('a row that cleared restarts its grace if it comes back', () => {
   applyGrace([row()], seen, NOW)
   applyGrace([], seen, NOW + 5 * 60 * 1000)
   assert.equal(applyGrace([row()], seen, NOW + AUTOMATION_GRACE)[0].action, 'grace')
+})
+
+test('an unreachable host is reported and keeps its grace clocks across rounds', (t) => {
+  const down = (host) => {
+    if (host) throw new Error('ssh: connect to host build-host: Connection refused')
+    return fakeDump()
+  }
+  const seen = { 'build-host/s9/repair': NOW - 10 * 60 * 1000 }
+  const result = snapshot(extensionRoot(t, []), { hosts: ['build-host'], dump: down, seen })
+  assert.deepEqual(result.unread, ['build-host'])
+  assert.match(result.errors.join('\n'), /build-host: ssh: connect to host build-host/)
+  assert.ok('build-host/s9/repair' in result.seen)
+  // Once the host reads again and the row is gone, its clock goes too.
+  const back = snapshot(extensionRoot(t, []), {
+    hosts: ['build-host'],
+    dump: () => ({ sessions: [], residuals: [] }),
+    seen,
+  })
+  assert.deepEqual(back.unread, [])
+  assert.equal('build-host/s9/repair' in back.seen, false)
+})
+
+// A chat as `boss chats --json` lists it: idle, last output at 08:22.
+const chatRow = (over = {}) => ({
+  agent_session_id: 'c-new',
+  title: 'build',
+  role: 'build',
+  created_at: '2026-11-07T08:00:00Z',
+  status: 'IDLE',
+  spinner_present: false,
+  waiting_reason: '',
+  last_output_at: '2026-11-07T08:22:00Z',
+  last_substantive_output_at: '2026-11-07T08:22:00Z',
+  ...over,
+})
+const olderChat = chatRow({
+  agent_session_id: 'c-old',
+  created_at: '2026-11-07T06:00:00Z',
+  last_output_at: '2026-11-07T06:30:00Z',
+  last_substantive_output_at: '2026-11-07T06:30:00Z',
+})
+const building = { state: 'IMPLEMENTING_PLAN', last_agent_activity_at: '2026-11-07T08:50:00Z' }
+const unreceipted = prState({
+  has_build_receipt: false,
+  checks: [],
+  check_verdict: { state: 'pending', pending_count: 2 },
+})
+
+test('an in-progress session whose newest chat sat idle with nothing armed gets a nudge', () => {
+  for (const pr of [null, unreceipted]) {
+    const verdict = classify(building, [olderChat, chatRow()], pr)
+    assert.equal(verdict.action, 'stalled-chat', pr ? 'unreceipted PR' : 'no PR')
+    assert.equal(verdict.chat, 'c-new')
+    const next = remedy(verdict, { host: 'build-host', session: session(), pr: pr?.pr_number })
+    assert.match(next, /^boss --host build-host chat send --json c-new '/)
+    assert.match(next, /continue toward the hand-off/)
+    assert.match(next, /Never wait on a monitor/)
+  }
+})
+
+test('a working chat, an armed callback or a recent output is not a stuck chat', () => {
+  const working = chatRow({ status: 'WORKING', spinner_present: true })
+  assert.equal(classify(building, [olderChat, working], null).action, 'working')
+  // A live older chat counts too, even when the newest is idle.
+  const liveOld = { ...olderChat, status: 'WORKING' }
+  assert.equal(classify(building, [liveOld, chatRow()], null).action, 'working')
+  for (const armed of [
+    chatRow({ status: 'WAITING', waiting_reason: 'awaiting checks_passed on x/y#1' }),
+    chatRow({ waiting_reason: 'awaiting merged on x/y#1' }),
+  ])
+    assert.notEqual(classify(building, [olderChat, armed], null).action, 'stalled-chat')
+  // The operator's own conversation, such as an attended plan chat, waits on them.
+  for (const role of ['operator', 'coordinator'])
+    assert.notEqual(classify(building, [chatRow({ role })], null).action, 'stalled-chat', role)
+  // A chat held by a usage limit is not idle: a nudge cannot move it.
+  const limited = chatRow({ status: 'LIMITED' })
+  assert.notEqual(classify(building, [olderChat, limited], null).action, 'stalled-chat')
+  const recent = chatRow({
+    last_output_at: '2026-11-07T08:55:00Z',
+    last_substantive_output_at: '2026-11-07T08:55:00Z',
+  })
+  assert.equal(classify(building, [olderChat, recent], null).action, 'ok')
+})
+
+test('idle chats on a finished or operator-parked PR are not stuck', () => {
+  const quiet = [olderChat, chatRow()]
+  assert.equal(classify({}, quiet, prState()).action, 'done')
+  assert.equal(classify({}, quiet, prState(parked('human-review:ui'))).action, 'awaiting-operator')
+  // Handed off with checks still running: verify takes it from here.
+  const handedOff = prState({ checks: [], check_verdict: { state: 'pending', pending_count: 1 } })
+  assert.equal(classify({}, quiet, handedOff).action, 'wait-ci')
+  assert.equal(classify({ state: 'MERGED' }, quiet, null).action, 'skip')
+})
+
+test('a chat showing a dialog is read, then approved or nudged', () => {
+  const asking = chatRow({ agent_session_id: 'c-ask', status: 'QUESTION' })
+  // Even beside a working chat: the dialog holds its own chat until someone answers it.
+  const verdict = classify(building, [liveChat, asking], prState())
+  assert.equal(verdict.action, 'question-chat')
+  assert.equal(verdict.chat, 'c-ask')
+  const next = remedy(verdict, { host: 'build-host', session: session(), pr: 12 })
+  assert.match(next, /orchestrate-snapshot\.mjs pane --chat c-ask --host build-host /)
+  assert.match(next, /pane --chat c-ask --host build-host --approve/)
+  assert.match(next, /boss --host build-host chat send --json c-ask '/)
+  // The orchestrator's own question chats wait on the operator on purpose.
+  const own = chatRow({ status: 'QUESTION', title: 'question: q1 · release' })
+  assert.notEqual(classify(building, [liveChat, own], null).action, 'question-chat')
+})
+
+test('a run blocked on an infrastructure red has its cap waived and finishes the hand-off', () => {
+  for (const reason of [
+    'scripts CI exhausted five attempts downloading golangci-lint with HTTP 504',
+    'go-lint: curl: (22) The requested URL returned error: 502; curl exit code 22 after 3 retries',
+    'build-receipt: GitHub API returned 503 Service Unavailable',
+    'e2e job failed: The self-hosted runner lost communication with the server.',
+  ]) {
+    const verdict = classify({ state: 'BLOCKED', blocked_reason: reason }, [idleChat], unreceipted)
+    assert.equal(verdict.action, 'waive-cap', reason)
+    const next = remedy(verdict, { host: '', session: session({ agent: 'claude' }), pr: 12 })
+    assert.match(next, /infrastructure/, reason)
+    assert.match(next, /gh run rerun <run-id> --failed/, reason)
+    assert.match(next, /finish the boss-build hand-off/, reason)
+  }
+  // A cap on review rounds is still a plain cap, and a red from the base is still upstream.
+  const blocked = (reason) =>
+    classify({ state: 'BLOCKED', blocked_reason: reason }, [idleChat], unreceipted)
+  const cap = blocked('re-review cap')
+  assert.equal(cap.action, 'waive-cap')
+  assert.doesNotMatch(remedy(cap, { host: '', session: session(), pr: 12 }), /infrastructure/)
+  assert.equal(blocked('lint fails on main too').action, 'upstream-red')
+})
+
+test('a message quoting an apostrophe stays one shell argument', () => {
+  const next = remedy(
+    { action: 'waive-cap', why: "the runner's disk filled", cause: 'infra' },
+    { host: '', session: session(), pr: 1 },
+  )
+  assert.match(next, /runner'\\''s disk/)
+})
+
+test('an outage record holds its sessions and marks their shared red as infrastructure', (t) => {
+  const stateDir = tempDir('orchestrate-state-', t)
+  const infraPr = (pr_number) =>
+    failingPr({
+      pr_number,
+      checks: [{ name: 'lint', conclusion: 'failure', description: 'curl exit code 22: HTTP 504' }],
+    })
+  const dump = () => ({
+    sessions: [
+      { session: session({ id: 's1' }), chats: [stoppedChat], pr: infraPr(12), repo: 'acme/app' },
+      { session: session({ id: 's2' }), chats: [stoppedChat], pr: infraPr(13), repo: 'acme/app' },
+    ],
+    residuals: [],
+  })
+  const plain = snapshot(extensionRoot(t, []), { dump })
+  assert.equal(plain.sharedReds[0].infra, true)
+  assert.equal(plain.outage, null)
+  const outage = { reason: 'CI outage', since: 'x', crons: [], runs: [], probes: [] }
+  fs.writeFileSync(
+    path.join(stateDir, 'outage.json'),
+    JSON.stringify({ ...outage, sessions: [{ host: '', session: 's1' }] }),
+  )
+  const held = snapshot(extensionRoot(t, []), { dump, stateDir })
+  assert.deepEqual(
+    held.rows.map((row) => [row.session, row.action]),
+    [
+      ['s1', 'held'],
+      ['s2', 'repair'],
+    ],
+  )
+  assert.equal(held.outage.reason, 'CI outage')
+})
+
+// A cron fire's session before finalize: no PR, on its cron-<job>-<unix> branch.
+const cronRun = { ...building, branch: 'cron-bossanova-auto-build-1762500000' }
+const quietSince = (at) => chatRow({ last_output_at: at, last_substantive_output_at: at })
+
+test('a cron run that ended its turn with no PR is left for bossd to finalize, not nudged', () => {
+  // Linked by its cron job's last run, or by its branch alone.
+  for (const [s, cronJob] of [
+    [building, { id: 'cron-1', name: 'auto build' }],
+    [cronRun, null],
+  ]) {
+    const verdict = classifySession({
+      session: session(s),
+      chats: [olderChat, chatRow()],
+      pr: null,
+      cronJob,
+      now: NOW,
+    })
+    assert.equal(verdict.action, 'finalizing', cronJob ? 'cron link' : 'cron branch')
+    assert.equal(remedy(verdict, { host: '', session: session(s) }), '')
+  }
+  // Quiet past the session-level stall too: still bossd's within the finalize wait.
+  const quietHour = { ...cronRun, last_agent_activity_at: '2026-11-07T08:05:00Z' }
+  assert.equal(classify(quietHour, [quietSince('2026-11-07T08:05:00Z')], null).action, 'finalizing')
+})
+
+test('a cron run is still flagged when it is working, armed, or its finalize never came', () => {
+  assert.equal(classify(cronRun, [chatRow({ status: 'WORKING' })], null).action, 'working')
+  const armed = chatRow({ waiting_reason: 'awaiting merged on x/y#1' })
+  assert.notEqual(classify(cronRun, [armed], null).action, 'finalizing')
+  // An hour after its turn ended the run is still listed: bossd's finalize did not take it.
+  const stuck = classify(cronRun, [olderChat, quietSince('2026-11-07T07:50:00Z')], null)
+  assert.equal(stuck.action, 'stalled-chat')
+  // A build that is not a cron run and went idle mid-work is still nudged.
+  const named = { ...building, branch: 'bos-123-add-thing' }
+  assert.equal(classify(named, [olderChat, chatRow()], null).action, 'stalled-chat')
+})
+
+test('a dependabot PR is never routed to verify; any other ready PR without verify is', () => {
+  const unverified = { checks: [], has_build_receipt: false }
+  const bump = prState({ ...unverified, head_branch: 'dependabot/npm_and_yarn/vite-7.1.2' })
+  const verdict = classify({}, [stoppedChat], bump)
+  assert.equal(verdict.action, 'dependabot')
+  assert.equal(remedy(verdict, { host: '', session: session(), pr: 12 }), '')
+  // No grace clock either: nothing is waiting on the factory's verify.
+  const rows = [{ host: 'local', session: 's1', ...verdict }]
+  applyGrace(rows, {}, NOW)
+  assert.equal(rows[0].action, 'dependabot')
+  // The session's branch decides when the PR state carries no head branch.
+  const sessionBranch = { branch: 'dependabot/go_modules/x-1.2' }
+  assert.equal(classify(sessionBranch, [stoppedChat], prState(unverified)).action, 'dependabot')
+  const feature = prState({ ...unverified, head_branch: 'bos-123-add-thing' })
+  assert.equal(classify({}, [stoppedChat], feature).action, 'verify')
+})
+
+// A fake `boss` for the real daemon dump: its cron list names s1 as a job's latest run.
+const FAKE_BOSS = `#!/usr/bin/env node
+const [cmd, , id] = process.argv.slice(2)
+const chat = { agent_session_id: 'c-' + id, role: 'build', created_at: '2026-11-07T08:00:00Z',
+  status: 'IDLE', spinner_present: false, waiting_reason: '',
+  last_output_at: '2026-11-07T08:30:00Z', last_substantive_output_at: '2026-11-07T08:30:00Z' }
+const out = {
+  cron: [{ id: 'job-1', name: 'auto build', last_run_session_id: 's1' }],
+  ls: { sessions: [{ id: 's1', state: 'IMPLEMENTING_PLAN' }, { id: 's2', state: 'IMPLEMENTING_PLAN' }] },
+  chats: { chats: [chat] },
+  show: { session: { id, state: 'IMPLEMENTING_PLAN', branch: 'bos-1-' + id,
+    last_agent_activity_at: '2026-11-07T08:30:00Z' } },
+  notes: [],
+}[cmd]
+process.stdout.write(JSON.stringify(out))
+`
+
+test('the daemon dump links a cron job’s latest run, so only the other idle build is nudged', (t) => {
+  const dir = tempDir('orchestrate-boss-', t)
+  const boss = path.join(dir, 'boss')
+  fs.writeFileSync(boss, FAKE_BOSS, { mode: 0o755 })
+  const result = collect({ hosts: [], local: true, bossBin: boss, now: NOW, root: dir })
+  assert.deepEqual(result.errors, [])
+  assert.deepEqual(result.rows.map((row) => [row.session, row.action]).sort(), [
+    ['s1', 'finalizing'],
+    ['s2', 'stalled-chat'],
+  ])
 })

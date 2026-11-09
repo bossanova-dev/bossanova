@@ -96,12 +96,20 @@ func TestGeneralSettings_CloudControlCancel(t *testing.T) {
 	}
 }
 
-func TestGeneralSettings_CloudControlDisable(t *testing.T) {
+func TestGeneralSettings_CloudControlDefaultIsFullAndConfirms(t *testing.T) {
 	m := cloudControlModel(t, "full")
 	m = cloudControlKey(m, tea.KeyPressMsg{Code: ' ', Text: " "})
-	assertCloudControlSaved(t, m, "private")
-	if m.confirmCloudControl || !strings.Contains(m.View().Content, "private") {
-		t.Fatal("disable did not return directly to unchecked row")
+	assertCloudControlSaved(t, m, "full")
+	if !m.confirmCloudControl {
+		t.Fatal("choosing the full default did not request confirmation")
+	}
+	m = cloudControlKey(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	assertCloudControlSaved(t, m, "full")
+	m = cloudControlKey(m, tea.KeyPressMsg{Code: ' ', Text: " "})
+	m = cloudControlKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	assertCloudControlSaved(t, m, "")
+	if m.confirmCloudControl || !strings.Contains(m.View().Content, "full (default)") {
+		t.Fatal("confirmed default did not return to the full default row")
 	}
 }
 
@@ -127,7 +135,7 @@ func TestGeneralSettings_CloudControlSaveRollback(t *testing.T) {
 			}
 			t.Setenv("BOSS_SETTINGS_PATH", badPath)
 			m = cloudControlKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-			if raw == "read-only" {
+			if raw == "read-only" || raw == "full" {
 				m = cloudControlKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 			}
 			if m.err == nil || m.settings.CloudControl != raw {
@@ -165,7 +173,7 @@ func Test_Settings_AC218602_CloudControlNarrow(t *testing.T) {
 
 func TestGeneralSettings_CloudControlEnumOrder(t *testing.T) {
 	m := cloudControlModel(t, "private")
-	if !reflect.DeepEqual(m.rows[m.cursor].Allowed, []string{"private", "read-only", "full"}) {
+	if !reflect.DeepEqual(m.rows[m.cursor].Allowed, []string{"default", "private", "read-only", "full"}) {
 		t.Fatalf("cloud control choices = %v", m.rows[m.cursor].Allowed)
 	}
 	m = cloudControlKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -178,5 +186,10 @@ func TestGeneralSettings_CloudControlEnumOrder(t *testing.T) {
 	m = cloudControlKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	assertCloudControlSaved(t, m, "full")
 	m = cloudControlKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	assertCloudControlSaved(t, m, "private")
+	assertCloudControlSaved(t, m, "full")
+	if !m.confirmCloudControl {
+		t.Fatal("default did not request confirmation")
+	}
+	m = cloudControlKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	assertCloudControlSaved(t, m, "")
 }

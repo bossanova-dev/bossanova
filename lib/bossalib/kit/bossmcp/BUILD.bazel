@@ -41,6 +41,7 @@ go_test(
         "manifest_test.go",
         "project_config_home_test.go",
         "project_config_test.go",
+        "repo_cloud_control_test.go",
         "tools_account_test.go",
         "tools_broadcast_test.go",
         "tools_descriptions_test.go",

@@ -11347,6 +11347,12 @@ components:
              Unset when the daemon has no source or its report failed; set but empty
              when the daemon has no repos. Never carries a token.
           $ref: '#/components/schemas/bossanova.v1.GitHubCredentialReport'
+        upstreamOrigin:
+          type: string
+          title: upstream_origin
+          description: |-
+            Origin of this daemon's configured upstream, without credentials or path.
+             Daemon-local diagnostic only; absent on older daemons.
       title: GetAuthStateResponse
       additionalProperties: false
       description: |-
@@ -13948,6 +13954,21 @@ components:
             $ref: '#/components/schemas/bossanova.v1.InstalledPlugin'
           title: plugins
       title: ListPluginsResponse
+      additionalProperties: false
+    bossanova.v1.ListRepoCloudControlsRequest:
+      type: object
+      title: ListRepoCloudControlsRequest
+      additionalProperties: false
+      description: ListRepoCloudControlsRequest reads local identity-bound settings, without mutation.
+    bossanova.v1.ListRepoCloudControlsResponse:
+      type: object
+      properties:
+        repos:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.RepoCloudControl'
+          title: repos
+      title: ListRepoCloudControlsResponse
       additionalProperties: false
     bossanova.v1.ListRepoOrganizationsRequest:
       type: object
@@ -20164,6 +20185,44 @@ components:
       title: Repo
       additionalProperties: false
       description: Repo represents a registered Git repository.
+    bossanova.v1.RepoCloudControl:
+      type: object
+      properties:
+        displayName:
+          type: string
+          title: display_name
+        host:
+          type: string
+          title: host
+        checkout:
+          type: string
+          title: checkout
+        providerRepoId:
+          type:
+            - integer
+            - string
+          title: provider_repo_id
+          format: int64
+        isIdVerified:
+          type: boolean
+          title: is_id_verified
+        name:
+          type: string
+          title: name
+        originUrl:
+          type: string
+          title: origin_url
+        effectiveMode:
+          type: string
+          title: effective_mode
+        source:
+          type: string
+          title: source
+        hasUnverifiedGrant:
+          type: boolean
+          title: has_unverified_grant
+      title: RepoCloudControl
+      additionalProperties: false
     bossanova.v1.RepoOrganizationMapping:
       type: object
       properties:

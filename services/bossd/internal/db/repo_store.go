@@ -160,6 +160,9 @@ func (s *SQLiteRepoStore) Get(ctx context.Context, id string) (*domain.Repo, err
 	if err != nil {
 		return nil, err
 	}
+	if err := domain.AssertCloudTarget(ctx, "repo", id, r.ID); err != nil {
+		return nil, err
+	}
 	if hasKeyringSecrets {
 		s.hydrate(ctx, r)
 	}
@@ -192,6 +195,9 @@ func (s *SQLiteRepoStore) GetByOriginURL(ctx context.Context, originURL string) 
 	targetWebURL := vcs.NormalizeRepoURL(originURL)
 	if targetWebURL == "" {
 		if err == nil {
+			if err := domain.AssertCloudTarget(ctx, "repo", repo.ID, repo.ID); err != nil {
+				return nil, err
+			}
 			return repo, nil
 		}
 		return nil, notFound(sql.ErrNoRows)
@@ -214,9 +220,15 @@ func (s *SQLiteRepoStore) GetByOriginURL(ctx context.Context, originURL string) 
 	}
 	if match == nil {
 		if repo != nil {
+			if err := domain.AssertCloudTarget(ctx, "repo", repo.ID, repo.ID); err != nil {
+				return nil, err
+			}
 			return repo, nil
 		}
 		return nil, notFound(sql.ErrNoRows)
+	}
+	if err := domain.AssertCloudTarget(ctx, "repo", match.ID, match.ID); err != nil {
+		return nil, err
 	}
 	return match, nil
 }

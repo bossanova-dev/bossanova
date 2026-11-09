@@ -28,7 +28,7 @@ func (m GeneralSettingsModel) sectionKeyWidths() []int {
 			switch row.Kind { //nolint:exhaustive // only value rows contribute to the column
 			case settingsRowKindString, settingsRowKindEnum, settingsRowKindWorktree,
 				settingsRowKindPollInterval, settingsRowKindDefaultAgent, settingsRowKindPostHogToken,
-				settingsRowKindPostHogHost, settingsRowKindDaemonName, settingsRowKindMCPToken:
+				settingsRowKindPostHogHost, settingsRowKindDaemonName, settingsRowKindMCPToken, settingsRowKindRepoCloud, settingsRowKindOwnerCloud:
 				keys = append(keys, ui.KeyValue{Key: row.Label})
 			}
 		}
@@ -92,6 +92,8 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 	}
 	var line string
 	switch row.Kind { //nolint:exhaustive // header rows take an early return path in View
+	case settingsRowKindRepoCloud, settingsRowKindOwnerCloud:
+		line = valueLine(m.repoCloudRowValue(row))
 	case settingsRowKindMCPToken:
 		value := "(loading)"
 		if m.mcpToken != "" {
@@ -185,7 +187,11 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 
 func (m GeneralSettingsModel) enumRowValue(row settingsRow) string {
 	if row.Plugin == "" && row.Key == "cloud_control" {
-		return string(config.ResolveCloudControl(m.settings.CloudControl)) + " (no restart needed; existing web chat previews remain until that chat next changes)"
+		value := string(config.ResolveCloudControl(m.settings.CloudControl))
+		if m.settings.CloudControl == "" {
+			value += " (default)"
+		}
+		return value + " (no restart needed; existing web chat previews remain until that chat next changes)"
 	}
 	val := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
 	if val == "" && len(row.Allowed) > 0 {

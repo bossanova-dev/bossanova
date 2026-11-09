@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"strings"
 	"sync"
 
@@ -14,11 +15,19 @@ import (
 // A missing policy always means read-only.
 type CloudControlPolicy interface {
 	Mode() config.CloudControlMode
+	RepoMode(context.Context, string) (config.CloudControlMode, config.CloudControlSource)
+}
+
+// RepoIdentities supplies identities verified using local credentials.
+type RepoIdentities interface {
+	Identity(context.Context, string) (config.RepoIdentity, error)
 }
 
 // LocalCloudControlPolicy reads the operator-owned settings file.
 type LocalCloudControlPolicy struct {
 	logger         zerolog.Logger
+	RepoIdentities RepoIdentities
+	grantOnce      sync.Once
 	unknownOnce    sync.Once
 	unreadableOnce sync.Once
 }
@@ -29,17 +38,45 @@ func NewCloudControlPolicy(logger zerolog.Logger) *LocalCloudControlPolicy {
 	return &LocalCloudControlPolicy{logger: logger}
 }
 
-func (p *LocalCloudControlPolicy) Mode() config.CloudControlMode {
+func (p *LocalCloudControlPolicy) settings() (config.Settings, error) {
 	settings, err := config.Load()
 	if err != nil {
 		p.unreadableOnce.Do(func() { p.logger.Warn().Msg("cloud control settings unreadable; using read-only") })
-		return config.CloudControlReadOnly
+		return settings, err
 	}
 	raw := strings.TrimSpace(settings.CloudControl)
-	if raw != "" && raw != string(config.CloudControlReadOnly) && raw != string(config.CloudControlFull) && raw != string(config.CloudControlPrivate) {
+	if raw != "" && raw != "full" && raw != "read-only" && raw != "private" {
 		p.unknownOnce.Do(func() { p.logger.Warn().Msg("unknown cloud control setting; using read-only") })
 	}
-	return config.ResolveCloudControl(raw)
+	for _, grant := range settings.CloudControlRepos {
+		if grant.Mode != "full" && grant.Mode != "read-only" && grant.Mode != "private" {
+			p.grantOnce.Do(func() { p.logger.Warn().Msg("unparseable cloud control repo grant; using restrictive fallback") })
+		}
+	}
+	return settings, nil
+}
+
+func (p *LocalCloudControlPolicy) Mode() config.CloudControlMode {
+	settings, err := p.settings()
+	if err != nil {
+		return config.CloudControlReadOnly
+	}
+	return config.MachineCloudControl(settings)
+}
+
+func (p *LocalCloudControlPolicy) RepoMode(ctx context.Context, repoID string) (config.CloudControlMode, config.CloudControlSource) {
+	settings, err := p.settings()
+	if err != nil {
+		return config.CloudControlReadOnly, config.CloudControlSourceDefault
+	}
+	var id config.RepoIdentity
+	if len(settings.CloudControlRepos) > 0 && p.RepoIdentities != nil {
+		verified, err := p.RepoIdentities.Identity(ctx, repoID)
+		if err == nil {
+			id = verified
+		}
+	}
+	return config.ResolveRepoCloudControl(settings, id)
 }
 
 func cloudControlMode(policy CloudControlPolicy) config.CloudControlMode {
@@ -70,4 +107,22 @@ func (c *StreamClient) cloudControlCommandRefusal(mode pb.CloudControl, cmd *pb.
 
 func (c *StreamClient) cloudControlRefusal() string {
 	return daemoncaps.CloudControlDisabledText(c.hostname)
+}
+
+// UnscopedMode protects cross-repository content even for a restrictive grant
+// whose checkout is currently unregistered or unavailable.
+func (p *LocalCloudControlPolicy) UnscopedMode() config.CloudControlMode {
+	settings, err := p.settings()
+	if err != nil {
+		return config.CloudControlReadOnly
+	}
+	mode := config.MachineCloudControl(settings)
+	for _, grant := range settings.CloudControlRepos {
+		grantMode := config.ResolveCloudControl(grant.Mode)
+		if grant.Mode != string(grantMode) {
+			grantMode = config.CloudControlReadOnly
+		}
+		mode = restrictiveMode(mode, grantMode)
+	}
+	return mode
 }

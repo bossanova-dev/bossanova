@@ -21,8 +21,9 @@ type fixedCloudControl config.CloudControlMode
 
 func (p fixedCloudControl) Mode() config.CloudControlMode { return config.CloudControlMode(p) }
 
-func TestCloudControl_DefaultRefusesEveryControlArm_Sessions_AC210201(t *testing.T) {
+func TestCloudControl_ReadOnlyRefusesEveryControlArm_Sessions_AC210201(t *testing.T) {
 	client := NewStreamClient(StreamClientConfig{Logger: zerolog.Nop()})
+	client.cloudControl = fixedCloudControl(config.CloudControlReadOnly)
 	fields := (&pb.OrchestratorCommand{}).ProtoReflect().Descriptor().Oneofs().ByName("cmd").Fields()
 	for i := 0; i < fields.Len(); i++ {
 		field := fields.Get(i)
@@ -129,10 +130,10 @@ func TestCloudControl_LocalPolicyReloadsAndFailsClosed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	t.Setenv("BOSS_SETTINGS_PATH", path)
 	policy := NewCloudControlPolicy(zerolog.Nop())
-	if policy.Mode() != config.CloudControlReadOnly {
-		t.Fatal("missing settings allowed control")
+	if policy.Mode() != config.CloudControlFull {
+		t.Fatal("missing settings did not default to full")
 	}
-	for _, raw := range []string{"full", "read-only", "unexpected", "full"} {
+	for _, raw := range []string{"read-only", "", "unexpected", "full", " ", "private"} {
 		if err := config.SaveTo(path, config.Settings{CloudControl: raw}); err != nil {
 			t.Fatal(err)
 		}
@@ -335,7 +336,7 @@ func TestCloudControl_ReadOnlyObserveAndHousekeeping(t *testing.T) {
 	out := make(chan *pb.DaemonEvent, 4)
 	commands := []*pb.OrchestratorCommand{
 		{Cmd: &pb.OrchestratorCommand_ListRepos{ListRepos: &pb.ListReposCommand{}}},
-		{Cmd: &pb.OrchestratorCommand_GetChatTranscript{GetChatTranscript: &pb.GetChatTranscriptCommand{SessionId: "s"}}},
+		{Cmd: &pb.OrchestratorCommand_GetChatTranscript{GetChatTranscript: &pb.GetChatTranscriptCommand{SessionId: "s", AgentSessionId: "chat"}}},
 	}
 	for _, cmd := range commands {
 		event := client.dispatchCommand(context.Background(), cmd, out)
@@ -383,6 +384,9 @@ func TestCloudControl_PrivateAnswersMetadata(t *testing.T) {
 		cmd := &pb.OrchestratorCommand{}
 		field := cmd.ProtoReflect().Descriptor().Oneofs().ByName("cmd").Fields().ByName(name)
 		cmd.ProtoReflect().Set(field, cmd.ProtoReflect().NewField(field))
+		if name == "list_chats" {
+			cmd.GetListChats().SessionId = "s"
+		}
 		event := client.dispatchCommand(context.Background(), cmd, out)
 		if event == nil {
 			event = recvEvent(t, out)
@@ -409,4 +413,8 @@ func TestCloudControl_PrivateTerminalAttachBeforeLookup(t *testing.T) {
 	if h.factory.lastConfig().AttachID != "" {
 		t.Fatal("private attach spawned tmux")
 	}
+}
+
+func (p fixedCloudControl) RepoMode(context.Context, string) (config.CloudControlMode, config.CloudControlSource) {
+	return p.Mode(), config.CloudControlSourceMachine
 }

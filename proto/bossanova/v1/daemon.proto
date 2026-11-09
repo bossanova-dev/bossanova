@@ -481,6 +481,8 @@ service DaemonService {
   // (settings.json): the top-level worktree/poll/tracing knobs plus each
   // configured agent's enabled flag and dynamic config map.
   rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
+  // Local operator only: never expose through MCP or the upstream command stream.
+  rpc ListRepoCloudControls(ListRepoCloudControlsRequest) returns (ListRepoCloudControlsResponse);
 
   // UpdateSettings applies a partial update to global settings. Only the
   // optional scalar fields that are set are applied; per-agent updates upsert
@@ -1682,6 +1684,9 @@ message GetAuthStateResponse {
   // Unset when the daemon has no source or its report failed; set but empty
   // when the daemon has no repos. Never carries a token.
   GitHubCredentialReport github_credential_report = 7;
+  // Origin of this daemon's configured upstream, without credentials or path.
+  // Daemon-local diagnostic only; absent on older daemons.
+  string upstream_origin = 8;
 }
 
 // GitHubCredentialReport wraps the per-repo list so its presence tells "this
@@ -3048,4 +3053,22 @@ message SetSessionTrackerRankRequest {
 
 message SetSessionTrackerRankResponse {
   Session session = 1;
+}
+
+// ListRepoCloudControlsRequest reads local identity-bound settings, without mutation.
+message ListRepoCloudControlsRequest {}
+message ListRepoCloudControlsResponse {
+  repeated RepoCloudControl repos = 1;
+}
+message RepoCloudControl {
+  string display_name = 1;
+  string host = 2;
+  string checkout = 3;
+  int64 provider_repo_id = 4;
+  bool is_id_verified = 5;
+  string name = 6;
+  string origin_url = 7;
+  string effective_mode = 8;
+  string source = 9;
+  bool has_unverified_grant = 10;
 }

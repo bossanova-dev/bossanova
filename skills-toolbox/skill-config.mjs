@@ -332,6 +332,14 @@ export const NOTES_DEFAULT_SAMPLE_RATE = DEFAULT_CONFIG.notesDefaults.sampleRate
  * - `link-destination-angle-bracket-wrapping` — inline link and image destinations wrapped in
  *   angle brackets compare equal to bare destinations only when nonempty, without whitespace or
  *   angle brackets and with balanced parentheses. Code, autolinks and reference definitions stay.
+ * - `table-cell-padding-collapse` — trim only cell-edge padding in recognized table headers and
+ *   body rows, preserving cell text, escaped pipes, outer pipes and delimiter rows. Literal code stays.
+ * - `bare-reference-autolinking` — unwrap plain self-labelled URLs, domain/file citations and
+ *   identifiers linked through an exact URL path segment, e.g. ABC-12. Literal code stays. Accepted
+ *   residual: a deliberately authored domain or identifier link deleted by the tracker compares equal.
+ * - `code-span-bold-unwrapping` — remove maximal double-star bold around exactly one whole inline
+ *   code span; italic, bold-italic and code plus text stay distinct. Accepted residual: intentional
+ *   deletion of precisely this bold wrapper compares equal to the measured save reshaping.
  */
 export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
   'unordered-list-marker-substitution',
@@ -343,6 +351,9 @@ export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
   'block-boundary-blank-line-normalization',
   'backslash-escape-insertion',
   'link-destination-angle-bracket-wrapping',
+  'table-cell-padding-collapse',
+  'bare-reference-autolinking',
+  'code-span-bold-unwrapping',
 ])
 
 const DESCRIPTION_NORMALIZATION_TRANSFORM_SET = new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS)

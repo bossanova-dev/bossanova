@@ -775,6 +775,7 @@ type ReRegisterFunc func(ctx context.Context) (sessionToken string, err error)
 type StreamClient struct {
 	terminalSealingSupported bool
 
+	targetObjects    CommandTargetObjects
 	cloudControl     CloudControlPolicy
 	sessionAttachMu  sync.Mutex
 	sessionAttaches  map[string]*sessionAttachState
@@ -1020,6 +1021,7 @@ func (c *StreamClient) resetAuthFailureLocked() {
 type StreamClientConfig struct {
 	// TerminalSealingSupported is a presentation hint, never an authorization input.
 	TerminalSealingSupported bool
+	TargetObjects            CommandTargetObjects
 	CloudControl             CloudControlPolicy
 	// Opener is the live ConnectRPC client. If nil, the client will be
 	// built from Client + AuthToken at construction time.
@@ -1142,6 +1144,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		refreshThreshold = defaultRefreshThreshold
 	}
 	client := &StreamClient{
+		targetObjects:            cfg.TargetObjects,
 		cloudControl:             cfg.CloudControl,
 		terminalSealingSupported: cfg.TerminalSealingSupported,
 

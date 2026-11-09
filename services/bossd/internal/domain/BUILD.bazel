@@ -13,6 +13,7 @@ go_library(
         "caller.go",
         "chat_delivery.go",
         "check_snapshot.go",
+        "cloud_target.go",
         "cron_job.go",
         "daemon_params.go",
         "errors.go",

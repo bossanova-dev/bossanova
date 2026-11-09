@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -332,10 +333,11 @@ type authTokenReloader interface {
 }
 
 type streamAuthAdapter struct {
-	streamClient  streamReconnector
-	tokenProvider authTokenReloader
-	authState     *upstream.AuthState
-	logger        zerolog.Logger
+	orchestratorURL string
+	streamClient    streamReconnector
+	tokenProvider   authTokenReloader
+	authState       *upstream.AuthState
+	logger          zerolog.Logger
 	// streamAuth and sessionTokens back the read-only AuthState() reporter.
 	// Both are nil-tolerant: a local-only daemon never builds this adapter at
 	// all, and the login unit tests construct it without them.
@@ -563,6 +565,9 @@ func (a *streamAuthAdapter) AuthState(_ context.Context) server.DaemonAuthState 
 	// are wanted, neither is redundant.
 	if a == nil {
 		return state
+	}
+	if origin, err := url.Parse(a.orchestratorURL); err == nil && origin.Scheme != "" && origin.Host != "" {
+		state.UpstreamOrigin = origin.Scheme + "://" + origin.Host
 	}
 	if a.authState != nil {
 		state.NeedsLogin = a.authState.NeedsLogin()

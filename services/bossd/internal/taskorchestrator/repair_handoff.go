@@ -8,9 +8,10 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 )
 
-// FactoryRepoChecker identifies repositories whose verify job owns merging.
+// FactoryRepoChecker reports whether a repository's verify job owns its Dependabot merges: an
+// enabled verify job whose admission policy admits bot PRs. Otherwise the daemon merges them.
 type FactoryRepoChecker interface {
-	IsFactoryRepo(context.Context, string) bool
+	OwnsBotMerges(ctx context.Context, repoID, localPath string) bool
 }
 
 // RepairActivity reports whether the session currently holds a repair lease.

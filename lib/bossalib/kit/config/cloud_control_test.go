@@ -10,7 +10,7 @@ func TestResolveCloudControl(t *testing.T) {
 	for _, raw := range []string{"", "read-only", "full", " full ", "FULL", "yes", "private", " private ", "PRIVATE", "privat"} {
 		t.Run(raw, func(t *testing.T) {
 			want := CloudControlReadOnly
-			if raw == "full" || raw == " full " {
+			if raw == "" || raw == "full" || raw == " full " {
 				want = CloudControlFull
 			}
 			if raw == "private" || raw == " private " {
@@ -35,7 +35,8 @@ func TestResolveRepoCloudControl(t *testing.T) {
 		mode          CloudControlMode
 		source        CloudControlSource
 	}{
-		{"default", "", nil, id, CloudControlReadOnly, CloudControlSourceDefault},
+		{"default", "", nil, id, CloudControlFull, CloudControlSourceDefault},
+		{"explicit read-only", "read-only", nil, id, CloudControlReadOnly, CloudControlSourceMachine},
 		{"machine", "full", nil, id, CloudControlFull, CloudControlSourceMachine},
 		{"invalid machine", "FULL", nil, id, CloudControlReadOnly, CloudControlSourceMachine},
 		{"strict", "", []CloudControlRepoGrant{grant}, id, CloudControlFull, CloudControlSourceGrant},
@@ -58,7 +59,7 @@ func TestResolveRepoCloudControl(t *testing.T) {
 			id            RepoIdentity
 			mode          CloudControlMode
 			source        CloudControlSource
-		}{change, "", []CloudControlRepoGrant{grant}, altered, CloudControlReadOnly, CloudControlSourceDefault})
+		}{change, "read-only", []CloudControlRepoGrant{grant}, altered, CloudControlReadOnly, CloudControlSourceMachine})
 	}
 	for _, match := range []string{"name", "checkout", "id"} {
 		for _, mode := range []string{"read-only", "private", "unknown", " full "} {
@@ -103,7 +104,7 @@ func TestResolveRepoCloudControl(t *testing.T) {
 		g := CloudControlRepoGrant{Host: host, Checkout: checkout, Mode: "full"}
 		want, source := CloudControlFull, CloudControlSourceGrant
 		if host == "github.com" {
-			want, source = CloudControlReadOnly, CloudControlSourceDefault
+			want, source = CloudControlReadOnly, CloudControlSourceMachine
 		}
 		tests = append(tests, struct {
 			name, machine string
@@ -111,7 +112,7 @@ func TestResolveRepoCloudControl(t *testing.T) {
 			id            RepoIdentity
 			mode          CloudControlMode
 			source        CloudControlSource
-		}{"no provider " + host, "", []CloudControlRepoGrant{g}, local, want, source})
+		}{"no provider " + host, "read-only", []CloudControlRepoGrant{g}, local, want, source})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,12 +127,12 @@ func TestResolveRepoCloudControl(t *testing.T) {
 		t.Fatal(err)
 	}
 	grant.Checkout = link
-	if mode, _ := ResolveRepoCloudControl(Settings{CloudControlRepos: []CloudControlRepoGrant{grant}}, id); mode != CloudControlFull {
+	if mode, _ := ResolveRepoCloudControl(Settings{CloudControl: "read-only", CloudControlRepos: []CloudControlRepoGrant{grant}}, id); mode != CloudControlFull {
 		t.Fatalf("symlink: %s", mode)
 	}
 	grant.Checkout = filepath.Join(checkout, "missing")
 	id.LocalPath = grant.Checkout
-	if mode, _ := ResolveRepoCloudControl(Settings{CloudControlRepos: []CloudControlRepoGrant{grant}}, id); mode != CloudControlReadOnly {
+	if mode, _ := ResolveRepoCloudControl(Settings{CloudControl: "read-only", CloudControlRepos: []CloudControlRepoGrant{grant}}, id); mode != CloudControlReadOnly {
 		t.Fatalf("unresolvable path granted: %s", mode)
 	}
 }
@@ -149,7 +150,7 @@ func TestResolveRepoCloudControlStrictGrantModes(t *testing.T) {
 		{"unknown preserves private", "private", []string{"unknown"}, CloudControlPrivate, CloudControlSourceMachine},
 		{"whitespace is unknown", "private", []string{" private "}, CloudControlPrivate, CloudControlSourceMachine},
 		{"unknown narrows full", "full", []string{"unknown"}, CloudControlReadOnly, CloudControlSourceGrantNarrowed},
-		{"unknown preserves default", "", []string{"unknown"}, CloudControlReadOnly, CloudControlSourceDefault},
+		{"unknown narrows default full", "", []string{"unknown"}, CloudControlReadOnly, CloudControlSourceGrantNarrowed},
 		{"valid full overrides private", "private", []string{"full"}, CloudControlFull, CloudControlSourceGrant},
 		{"valid read-only overrides private", "private", []string{"read-only"}, CloudControlReadOnly, CloudControlSourceGrant},
 		{"unknown narrows valid full", "private", []string{"full", "unknown"}, CloudControlReadOnly, CloudControlSourceGrantNarrowed},

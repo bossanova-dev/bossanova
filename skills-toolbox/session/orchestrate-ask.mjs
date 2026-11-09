@@ -15,11 +15,11 @@
 //   node orchestrate-ask.mjs cancel --chat <question-chat-id>
 // `ask` and `cancel` take [--host <ssh-host>] [--boss <boss>].
 
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 
 import { isMainModule } from '../main-module.mjs'
-import { bossRunner } from './orchestrate-queue.mjs'
 
 /**
  * @typedef {{ label: string, description?: string }} QuestionOption
@@ -168,7 +168,8 @@ export function ask({
   if (!isText(session)) throw new Error('ask needs --session <the orchestrator’s own session>')
   if (!isText(replyTo)) throw new Error('ask needs --reply-to <the orchestrator chat id>')
   const boss = (/** @type {string[]} */ args) => runBoss([...onHost(host), 'chat', ...args])
-  const title = `question: ${topic || id}`
+  // The id leads the title, so `ls` and `resolve` can find this chat again from an ANSWER.
+  const title = `${QUESTION_TITLE_PREFIX}${id}${topic ? ` · ${topic}` : ''}`
   const created = JSON.parse(
     boss(['new', session, '--role', 'operator', '--title', title, '--agent', agent, '--json']),
   )
@@ -198,6 +199,39 @@ export function ask({
   return { chat, id }
 }
 
+export const QUESTION_TITLE_PREFIX = 'question: '
+
+/**
+ * The question chats open in `session`: the chats whose title `ask` gave them, with the question id
+ * read back from that title.
+ * @param {{ session: string, host?: string, runBoss: BossRunner }} options
+ * @returns {{ chat: string, id: string, status: string }[]}
+ */
+export function listQuestions({ session, host, runBoss }) {
+  if (!isText(session)) throw new Error('ls needs --session <the orchestrator’s own session>')
+  const listed = JSON.parse(runBoss([...onHost(host), 'chats', '--json', session]))
+  return (listed?.chats ?? [])
+    .filter((c) => typeof c?.title === 'string' && c.title.startsWith(QUESTION_TITLE_PREFIX))
+    .map((c) => ({
+      chat: c.agent_session_id,
+      id: c.title.slice(QUESTION_TITLE_PREFIX.length).split(' · ')[0].trim(),
+      status: c.status ?? '',
+    }))
+}
+
+/**
+ * Reads an ANSWER message and closes the question chat that asked it, so an answered question never
+ * leaves its chat open. Returns the answers even when no open chat matches (it may be closed already).
+ * @param {{ message: string, session: string, host?: string, runBoss: BossRunner }} options
+ */
+export function resolve({ message, session, host, runBoss }) {
+  const answer = parseAnswer(message)
+  const closed = listQuestions({ session, host, runBoss })
+    .filter((q) => q.id === answer.id)
+    .map((q) => cancel({ chat: q.chat, host, runBoss }))
+  return { ...answer, closed: closed.map((c) => c.chat) }
+}
+
 /** @param {unknown} error */
 const missingDeleteVerb = (error) => {
   const failure = /** @type {{ message?: unknown, stderr?: unknown }} */ (error ?? {})
@@ -222,6 +256,15 @@ export function cancel({ chat, host, runBoss }) {
   boss(['send', '--json', chat, CANCEL_INSTRUCTION])
   boss(['rename', chat, CANCELLED_TITLE])
   return { chat, closed: false, fallback: 'cancel instruction sent and chat renamed' }
+}
+
+/**
+ * Runs `boss` with `args` and returns its stdout.
+ * @param {string} bossBin
+ * @returns {BossRunner}
+ */
+function bossRunner(bossBin) {
+  return (args) => execFileSync(bossBin, args, { encoding: 'utf8', maxBuffer: 64 << 20 })
 }
 
 /**
@@ -269,11 +312,32 @@ function main(argv, io) {
     print(parseAnswer(values.message ?? readFileSync(0, 'utf8')))
     return 0
   }
+  if (command === 'ls') {
+    print(
+      listQuestions({
+        session: values.session ?? io.env.BOSS_SESSION_ID ?? '',
+        host: values.host,
+        runBoss,
+      }),
+    )
+    return 0
+  }
+  if (command === 'resolve') {
+    print(
+      resolve({
+        message: values.message ?? readFileSync(0, 'utf8'),
+        session: values.session ?? io.env.BOSS_SESSION_ID ?? '',
+        host: values.host,
+        runBoss,
+      }),
+    )
+    return 0
+  }
   if (command === 'cancel') {
     print(cancel({ chat: values.chat ?? '', host: values.host, runBoss }))
     return 0
   }
-  process.stderr.write('usage: orchestrate-ask.mjs ask|parse-answer|cancel [options]\n')
+  process.stderr.write('usage: orchestrate-ask.mjs ask|parse-answer|resolve|ls|cancel [options]\n')
   return 64
 }
 

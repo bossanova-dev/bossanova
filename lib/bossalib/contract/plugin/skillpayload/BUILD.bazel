@@ -12,6 +12,9 @@ go_library(
 
 go_test(
     name = "skillpayload_test",
-    srcs = ["skills_manifest_test.go"],
+    srcs = [
+        "skills_manifest_test.go",
+        "toolbox_refs_test.go",
+    ],
     embed = [":skillpayload"],
 )

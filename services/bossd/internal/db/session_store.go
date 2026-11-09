@@ -115,6 +115,28 @@ func (s *SQLiteSessionStore) MarkUnarchivedOrphanClaimed(ctx context.Context, id
 	return n == 1, nil
 }
 
+// MarkOrphanReattached moves an unarchived Orphaned row that still carries the
+// daemon-restart marker reason to newState and clears the marker, in one
+// conditional UPDATE. It is the false-orphan recovery write: the run was never
+// dead, so its agent session id is kept and no replacement is recorded.
+func (s *SQLiteSessionStore) MarkOrphanReattached(ctx context.Context, id, reason string, newState int) (bool, error) {
+	res, err := sqlcgen.New(s.db).UpdateSessionReattachOrphan(ctx, sqlcgen.UpdateSessionReattachOrphanParams{
+		NewState:      int64(newState),
+		Now:           sqlutil.TimeNow(),
+		ID:            id,
+		OrphanedState: int64(machine.Orphaned),
+		Reason:        &reason,
+	})
+	if err != nil {
+		return false, fmt.Errorf("reattach orphan: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
 // SetResurrectedState clears archived_at and installs the live state in ONE
 // conditional UPDATE: `SET archived_at = NULL, state = ? WHERE id = ? AND
 // archived_at IS NOT NULL`. ResurrectSession (session/lifecycle.go) is the only
@@ -330,7 +352,11 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, id string) (*models.Sessio
 	if err != nil {
 		return nil, notFound(err)
 	}
-	return sessionFromRow(row), nil
+	object := sessionFromRow(row)
+	if err := domain.AssertCloudTarget(ctx, "session", id, object.RepoID); err != nil {
+		return nil, err
+	}
+	return object, nil
 }
 
 func (s *SQLiteSessionStore) List(ctx context.Context, repoID string) ([]*models.Session, error) {

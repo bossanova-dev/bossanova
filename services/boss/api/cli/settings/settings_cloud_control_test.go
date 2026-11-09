@@ -72,7 +72,7 @@ func Test_Settings_AC210501_AC218601_CloudControlFlag(t *testing.T) {
 
 func TestSettingsCloudControlSummary(t *testing.T) {
 	for _, tc := range []struct{ raw, want string }{
-		{"", "read-only (default)"}, {"read-only", "read-only"}, {"private", "private"}, {"full", "full"},
+		{"", "full (default)"}, {"read-only", "read-only"}, {"private", "private"}, {"full", "full"},
 		{"future", `read-only (unrecognised value "future")`}, {" full ", "full"},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {

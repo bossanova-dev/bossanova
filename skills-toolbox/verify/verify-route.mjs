@@ -8,7 +8,7 @@
 // zero-token `judge`, then:
 //
 //   judge failed         claim and route into a live session here, which judges unbudgeted;
-//                        otherwise `deferred`, writing nothing, so a later run re-judges
+//                        a park re-judge or no session is `deferred`, writing nothing
 //   human / blocked      post --verdict human / blocked --blockers <file>
 //   pass                 post --verdict pass, then hand the merge to a detached
 //                        `verify-gate merge` (needs `boss`); under an admission tier, a non-fork PR
@@ -44,6 +44,7 @@ import {
 } from './verify-sweep-state.mjs'
 import {
   claimForVerdict,
+  releaseClaim,
   remoteOrphan,
   takeOverExpiredClaim,
   waitOverExpiredClaim,
@@ -334,7 +335,7 @@ export { liveSessionsFor } from './verify-rank.mjs'
 
 /**
  * Get `/boss-verify <pr> --claim <token>` into the PR's session. Returns `{route, ok, note?, log?,
- * why?}`; `ok: false` is `dispatch-unknown` (the claim goes stale and the next run re-routes).
+ * why?}`; `ok: false` is `dispatch-unknown` (the claim is withdrawn over a park, else goes stale).
  */
 export function routeCandidate(
   { pr, headSha, url, ticket, token, waive, class: cls, repairOptIn },
@@ -734,10 +735,11 @@ export function sweep(options = {}, deps = {}) {
     )
     const { route, note, log, argv } = routed
     const detail = [why, note, log ? `log ${log}` : ''].filter(Boolean).join('; ')
-    if (!routed.ok)
-      return record(c.pr, 'skipped', `dispatch-unknown: ${route} (${routed.why ?? 'failed'})`, {
-        route,
-      })
+    if (!routed.ok) {
+      const back = releaseClaim(gate, { pr: c.pr, head, token: claimed.token, repoArgs, dry })
+      const why = `${routed.why ?? 'failed'}${back ? '; park restored' : ''}`
+      return record(c.pr, 'skipped', `dispatch-unknown: ${route} (${why})`, { route })
+    }
     const line = `dispatched: ${route}${detail ? ` (${detail})` : ''}${dryRun ? ' (dry-run)' : ''}`
     record(c.pr, 'dispatched', line, { route, ...(dryRun && argv ? { argv } : {}) })
   }
@@ -848,9 +850,10 @@ export function sweep(options = {}, deps = {}) {
     )
     if (!judged.ok) {
       // A failed judge says nothing about the head: its live session judges it, else it stays a
-      // candidate. Nothing is claimed for a head no session will take.
-      const d = dispatchable()
-      const why = d.ok ? 'no live session' : d.why
+      // candidate. Nothing is claimed for a head no session will take, nor over a standing park
+      // this tick only re-judges: the park stands and the next tick judges it again.
+      const d = c.rejudge ? { ok: false } : dispatchable()
+      const why = c.rejudge ? `park stands (${c.rejudge})` : d.ok ? 'no live session' : d.why
       if (d.ok && liveSessionsFor(d.sessions, c.url).length > 0)
         dispatch(c, c.headSha, `judge failed: ${judged.error}`)
       else if (d.unreachable) needBoss(pr)

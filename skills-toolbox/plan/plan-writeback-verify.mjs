@@ -244,10 +244,208 @@ const unwrapLinkDestinations = (line) => {
   return out
 }
 
+const mapProseLines = (text, transform) => {
+  const lines = String(text).split('\n')
+  const literal = fencedLineMap(lines)
+  const code = indentedCodeMap(lines, literal)
+  return lines.map((line, i) => (literal[i] || code[i] ? line : transform(line))).join('\n')
+}
+
+const delimiterShaped = (line) =>
+  line.includes('|') && /^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)*[ \t]*:?-+:?[ \t]*\|?[ \t]*$/.test(line)
+
+const referenceLinkAt = (line, start) => {
+  if (line[start] !== '[') return null
+  let depth = 1
+  let end = start + 1
+  for (; end < line.length && depth > 0; end += 1) {
+    if (line[end] === '\\') end += 1
+    else if (line[end] === '[') depth += 1
+    else if (line[end] === ']') depth -= 1
+  }
+  if (depth !== 0) return null
+  const label = line.slice(start + 1, end - 1)
+  const labelEnd = end
+  if (line[end] !== '(') return { end, label, destination: null }
+  const destinationStart = ++end
+  const angled = line[end] === '<'
+  if (angled) {
+    const close = line.indexOf('>', end + 1)
+    if (close < 0) return { end: labelEnd, label, destination: null }
+    end = close + 1
+  }
+  depth = 1
+  for (; end < line.length && depth > 0; end += 1) {
+    if (line[end] === '\\') end += 1
+    else if (line[end] === '(') depth += 1
+    else if (line[end] === ')') depth -= 1
+  }
+  if (depth !== 0) return { end: labelEnd, label, destination: null }
+  const raw = line.slice(destinationStart, end - 1)
+  const destination = angled ? /^<([^<>\s]+)>$/.exec(raw)?.[1] : /^[^<>\s]+$/.exec(raw)?.[0]
+  return { end, label, destination }
+}
+
+const unwrapBareReferences = (line) => {
+  if (/^ {0,3}\[[^\]]+\]:/.test(line)) return line
+  let out = ''
+  for (let i = 0; i < line.length;) {
+    if (line[i] === '\\' || line[i] === '`') {
+      const end = line[i] === '`' ? inlineCodeEnd(line, i) : i + 2
+      const escapedLink = line[i] === '\\' && referenceLinkAt(line, i + 1)
+      const literalEnd = escapedLink ? escapedLink.end : end
+      out += line.slice(i, literalEnd)
+      i = literalEnd
+      continue
+    }
+    const link = referenceLinkAt(line, i)
+    if (link) {
+      const { label, destination } = link
+      let identifier = false
+      try {
+        const url = new URL(destination)
+        identifier =
+          /^https?:$/.test(url.protocol) &&
+          /^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]*$/.test(label) &&
+          url.pathname.split('/').includes(label)
+      } catch {
+        /* Not an absolute URL: cannot be an identifier autolink. */
+      }
+      // Side-agnostic: deletion of an authored domain/identifier link also compares equal.
+      const self = /^https?:\/\//.test(label) && destination === label
+      const domain =
+        /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+(?:[:/][^\s]*)?$/.test(label) &&
+        (destination === 'http://' + label || destination === 'https://' + label)
+      const plainLabel = /^[^\s\[\]<>`]+$/.test(label)
+      out +=
+        line[i - 1] !== '!' && plainLabel && (self || domain || identifier)
+          ? label
+          : line.slice(i, link.end)
+      i = link.end
+      continue
+    }
+    const angle = /^<(https?:\/\/[^<>\s]+)>/.exec(line.slice(i))
+    if (angle) {
+      out += angle[1]
+      i += angle[0].length
+      continue
+    }
+    out += line[i++]
+  }
+  return out
+}
+
+// Backticks are punctuation: CommonMark permits these delimiter runs only beside
+// whitespace, punctuation or a boundary on their outside edge.
+const codeBoldBoundary = (char) =>
+  char === '' || /[\s\p{P}\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/u.test(char)
+
+const unwrapBoldCode = (line) => {
+  let out = ''
+  for (let i = 0; i < line.length;) {
+    if (line[i] === '\\' || line[i] === '`') {
+      const end = line[i] === '`' ? inlineCodeEnd(line, i) : i + 2
+      out += line.slice(i, end)
+      i = end
+      continue
+    }
+    if (
+      !/[*_\\]/.test(line[i - 1] ?? '') &&
+      line.startsWith('**`', i) &&
+      codeBoldBoundary(Array.from(line.slice(Math.max(0, i - 2), i)).at(-1) ?? '')
+    ) {
+      const start = i + 2
+      const end = inlineCodeEnd(line, start)
+      const opening = /^`+/.exec(line.slice(start))[0].length
+      if (
+        end > start + opening &&
+        line.startsWith('**', end) &&
+        !/[*_]/.test(line[end + 2] ?? '') &&
+        codeBoldBoundary(Array.from(line.slice(end + 2, end + 4))[0] ?? '')
+      ) {
+        out += line.slice(start, end)
+        i = end + 2
+        continue
+      }
+    }
+    out += line[i++]
+  }
+  return out
+}
+
+const collapseTablePadding = (text) => {
+  const lines = String(text).split('\n')
+  const literal = fencedLineMap(lines)
+  const code = indentedCodeMap(lines, literal)
+  let body = false
+  let delimiterIndex = -1
+  return lines
+    .map((line, i) => {
+      if (
+        literal[i] ||
+        code[i] ||
+        !line.includes('|') ||
+        !line.trim() ||
+        /^[ \t]{0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/.test(line)
+      ) {
+        body = false
+        return line
+      }
+      if (i === delimiterIndex) return line
+      const header =
+        !body &&
+        /(?<!\\)(?:\\\\)*\|/.test(line) &&
+        i + 1 < lines.length &&
+        !literal[i + 1] &&
+        !code[i + 1] &&
+        delimiterShaped(lines[i + 1])
+      if (!header && !body) return line
+      if (header) delimiterIndex = i + 1
+      body = true
+      // GFM still treats an unescaped pipe inside code as a cell boundary. Padding
+      // that boundary would change literal code bytes, so keep that whole row literal.
+      for (let j = 0; j < line.length;) {
+        if (line[j] === '\\') {
+          j += 2
+          continue
+        }
+        if (line[j] !== '`') {
+          j += 1
+          continue
+        }
+        const end = inlineCodeEnd(line, j)
+        if (/(?<!\\)(?:\\\\)*\|/.test(line.slice(j, end))) return line
+        j = end
+      }
+      const indent = /^[ \t]*/.exec(line)[0]
+      const row = line.slice(indent.length)
+      const parts = []
+      let start = 0
+      for (let j = 0; j < row.length; j += 1) {
+        if (row[j] !== '|') continue
+        let slash = j - 1
+        while (slash >= 0 && row[slash] === '\\') slash -= 1
+        if ((j - slash - 1) % 2 !== 0) continue
+        parts.push(row.slice(start, j).replace(/^[ \t]+|[ \t]+$/g, ''))
+        start = j + 1
+      }
+      parts.push(row.slice(start).replace(/^[ \t]+|[ \t]+$/g, ''))
+      const leading = row.startsWith('|')
+      const trailing = parts.length > 1 && parts.at(-1) === '' && row.trimEnd().endsWith('|')
+      if (leading) parts.shift()
+      if (trailing) parts.pop()
+      return indent + (leading ? '| ' : '') + parts.join(' | ') + (trailing ? ' |' : '')
+    })
+    .join('\n')
+}
+
 // One canonicalizer per transform id in skill-config's closed vocabulary. Each maps BOTH spellings
 // of its transform onto one canonical form, so it can be applied to the intended and the stored side
 // alike without knowing which one the tracker reshaped. Each is idempotent.
 export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
+  'table-cell-padding-collapse': collapseTablePadding,
+  'bare-reference-autolinking': (text) => mapProseLines(text, unwrapBareReferences),
+  'code-span-bold-unwrapping': (text) => mapProseLines(text, unwrapBoldCode),
   // Escapes before `_`, `*`, `[`, `]`, `~`, `#` and backticks were measured in tracker writes, including a Next.js
   // dynamic-route path and a bracketed label. Other characters were not measured. The canonical
   // form DROPS the escaping backslash.
@@ -501,11 +699,6 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   // to canonicalize inside list items. A delimiter-shaped row inside an indented code block is a
   // known and accepted limitation of the rule, not a claim it handles.
   'table-delimiter-row-normalization': (text) => {
-    // Optional leading pipe, then cells of optional-colon + dashes + optional-colon separated by
-    // pipes, then an optional trailing pipe. Every repetition must consume a `|`, so the quantifier
-    // cannot backtrack quadratically on a long line.
-    const DELIMITER_ROW = /^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)*[ \t]*:?-+:?[ \t]*\|?[ \t]*$/
-    const delimiterShaped = (line) => line.includes('|') && DELIMITER_ROW.test(line)
     // Re-emit a RECOGNISED delimiter row in one canonical form: the row's own indentation, then
     // `| c1 | c2 | … |`, each cell `:?---:?` with its own colons. Only cell padding, outer pipes and
     // dash count are canonicalized — the cell count and every alignment colon pass through.
@@ -663,17 +856,21 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
  * object-literal key order. It is load-bearing: `backslash-escape-insertion` must run before the
  * emphasis and list-marker rules, because an escaped `\*` is not a delimiter to them — `x \* y`
  * canonicalizes to `x* y` only when the escape is dropped before the whitespace migration runs.
- * The rest follow the table. Checked at load against the table's ids, so it cannot omit one.
+ * Autolinks follow escape and destination cleanup, before emphasis. Bold-code unwrapping follows
+ * emphasis merging so split joints survive. Cell padding follows delimiter recognition. The rest follow the table. Checked at load against the table's ids, so it cannot omit one.
  */
 export const DESCRIPTION_TRANSFORM_ORDER = Object.freeze([
   'backslash-escape-insertion',
   'link-destination-angle-bracket-wrapping',
+  'bare-reference-autolinking',
   'unordered-list-marker-substitution',
   'emphasis-delimiter-whitespace-migration',
   'emphasis-span-restructuring',
+  'code-span-bold-unwrapping',
   'trailing-whitespace-trimming',
   'terminal-newline-trimming',
   'table-delimiter-row-normalization',
+  'table-cell-padding-collapse',
   'block-boundary-blank-line-normalization',
 ])
 

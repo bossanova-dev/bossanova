@@ -365,6 +365,9 @@ const (
 	// DaemonServiceGetSettingsProcedure is the fully-qualified name of the DaemonService's GetSettings
 	// RPC.
 	DaemonServiceGetSettingsProcedure = "/bossanova.v1.DaemonService/GetSettings"
+	// DaemonServiceListRepoCloudControlsProcedure is the fully-qualified name of the DaemonService's
+	// ListRepoCloudControls RPC.
+	DaemonServiceListRepoCloudControlsProcedure = "/bossanova.v1.DaemonService/ListRepoCloudControls"
 	// DaemonServiceUpdateSettingsProcedure is the fully-qualified name of the DaemonService's
 	// UpdateSettings RPC.
 	DaemonServiceUpdateSettingsProcedure = "/bossanova.v1.DaemonService/UpdateSettings"
@@ -764,6 +767,8 @@ type DaemonServiceClient interface {
 	// (settings.json): the top-level worktree/poll/tracing knobs plus each
 	// configured agent's enabled flag and dynamic config map.
 	GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error)
+	// Local operator only: never expose through MCP or the upstream command stream.
+	ListRepoCloudControls(context.Context, *connect.Request[v1.ListRepoCloudControlsRequest]) (*connect.Response[v1.ListRepoCloudControlsResponse], error)
 	// UpdateSettings applies a partial update to global settings. Only the
 	// optional scalar fields that are set are applied; per-agent updates upsert
 	// config keys (an empty value deletes the key). Validation mirrors the boss
@@ -1454,6 +1459,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("GetSettings")),
 			connect.WithClientOptions(opts...),
 		),
+		listRepoCloudControls: connect.NewClient[v1.ListRepoCloudControlsRequest, v1.ListRepoCloudControlsResponse](
+			httpClient,
+			baseURL+DaemonServiceListRepoCloudControlsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListRepoCloudControls")),
+			connect.WithClientOptions(opts...),
+		),
 		updateSettings: connect.NewClient[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse](
 			httpClient,
 			baseURL+DaemonServiceUpdateSettingsProcedure,
@@ -1577,6 +1588,7 @@ type daemonServiceClient struct {
 	listPlugins                          *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
 	getDaemonCapabilities                *connect.Client[v1.GetDaemonCapabilitiesRequest, v1.GetDaemonCapabilitiesResponse]
 	getSettings                          *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
+	listRepoCloudControls                *connect.Client[v1.ListRepoCloudControlsRequest, v1.ListRepoCloudControlsResponse]
 	updateSettings                       *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
 }
 
@@ -2141,6 +2153,11 @@ func (c *daemonServiceClient) GetSettings(ctx context.Context, req *connect.Requ
 	return c.getSettings.CallUnary(ctx, req)
 }
 
+// ListRepoCloudControls calls bossanova.v1.DaemonService.ListRepoCloudControls.
+func (c *daemonServiceClient) ListRepoCloudControls(ctx context.Context, req *connect.Request[v1.ListRepoCloudControlsRequest]) (*connect.Response[v1.ListRepoCloudControlsResponse], error) {
+	return c.listRepoCloudControls.CallUnary(ctx, req)
+}
+
 // UpdateSettings calls bossanova.v1.DaemonService.UpdateSettings.
 func (c *daemonServiceClient) UpdateSettings(ctx context.Context, req *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error) {
 	return c.updateSettings.CallUnary(ctx, req)
@@ -2540,6 +2557,8 @@ type DaemonServiceHandler interface {
 	// (settings.json): the top-level worktree/poll/tracing knobs plus each
 	// configured agent's enabled flag and dynamic config map.
 	GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error)
+	// Local operator only: never expose through MCP or the upstream command stream.
+	ListRepoCloudControls(context.Context, *connect.Request[v1.ListRepoCloudControlsRequest]) (*connect.Response[v1.ListRepoCloudControlsResponse], error)
 	// UpdateSettings applies a partial update to global settings. Only the
 	// optional scalar fields that are set are applied; per-agent updates upsert
 	// config keys (an empty value deletes the key). Validation mirrors the boss
@@ -3226,6 +3245,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("GetSettings")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceListRepoCloudControlsHandler := connect.NewUnaryHandler(
+		DaemonServiceListRepoCloudControlsProcedure,
+		svc.ListRepoCloudControls,
+		connect.WithSchema(daemonServiceMethods.ByName("ListRepoCloudControls")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceUpdateSettingsHandler := connect.NewUnaryHandler(
 		DaemonServiceUpdateSettingsProcedure,
 		svc.UpdateSettings,
@@ -3458,6 +3483,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceGetDaemonCapabilitiesHandler.ServeHTTP(w, r)
 		case DaemonServiceGetSettingsProcedure:
 			daemonServiceGetSettingsHandler.ServeHTTP(w, r)
+		case DaemonServiceListRepoCloudControlsProcedure:
+			daemonServiceListRepoCloudControlsHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateSettingsProcedure:
 			daemonServiceUpdateSettingsHandler.ServeHTTP(w, r)
 		default:
@@ -3915,6 +3942,10 @@ func (UnimplementedDaemonServiceHandler) GetDaemonCapabilities(context.Context, 
 
 func (UnimplementedDaemonServiceHandler) GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetSettings is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListRepoCloudControls(context.Context, *connect.Request[v1.ListRepoCloudControlsRequest]) (*connect.Response[v1.ListRepoCloudControlsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListRepoCloudControls is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error) {

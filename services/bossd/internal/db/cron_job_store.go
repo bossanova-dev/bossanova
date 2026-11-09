@@ -55,7 +55,11 @@ func (s *SQLiteCronJobStore) Get(ctx context.Context, id string) (*domain.CronJo
 	if err != nil {
 		return nil, notFound(err)
 	}
-	return cronJobFromRow(row), nil
+	object := cronJobFromRow(row)
+	if err := domain.AssertCloudTarget(ctx, "cron", id, object.RepoID); err != nil {
+		return nil, err
+	}
+	return object, nil
 }
 
 func (s *SQLiteCronJobStore) List(ctx context.Context) ([]*domain.CronJob, error) {

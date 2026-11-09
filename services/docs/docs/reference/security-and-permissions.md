@@ -35,11 +35,10 @@ are the levers that exist.
 
 ## Cloud control
 
-Cloud control defaults to read-only on each machine. The local operator enables full control
-with `boss settings --cloud-control full` or Settings → General → **Allow cloud control** in the
-TUI, where enabling requires confirmation. Anyone acting as you in Boss Cloud then has permission to
-drive agents on this machine. Disable it with `boss settings --cloud-control read-only` or
-uncheck the row. Changes take effect without restarting bossd; remote settings and MCP cannot
+Cloud control defaults to full on each machine: anyone acting as you in Boss Cloud has permission
+to drive agents on this machine. Limit it locally with `boss settings --cloud-control read-only`
+or `boss settings --cloud-control private`, or with Settings → General → **Cloud control** in the
+TUI. Choosing full or the default in the TUI requires confirmation. Changes take effect without restarting bossd; remote settings and MCP cannot
 change this choice. See [Cloud control settings](settings.md#cloud-control).
 
 ## Repository trust

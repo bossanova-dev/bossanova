@@ -552,7 +552,7 @@ func TestE2E_Dependabot_CreateSessionForMajorBump(t *testing.T) {
 // fixedVerifyRepo lets the full plugin boundary run with the repo's merge owner set.
 type fixedVerifyRepo bool
 
-func (c fixedVerifyRepo) IsFactoryRepo(context.Context, string) bool { return bool(c) }
+func (c fixedVerifyRepo) OwnsBotMerges(context.Context, string, string) bool { return bool(c) }
 
 func TestE2E_Dependabot_InProgressRepairHandoff_Sessions_AC125_AC126(t *testing.T) {
 	for _, factory := range []bool{false, true} {

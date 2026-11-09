@@ -1011,6 +1011,8 @@ func (l *Lifecycle) reArmSurvivingTmuxChats(ctx context.Context) {
 //   - only a session whose liveness DEFINITIVELY reports dead is swept. Unwired
 //     liveness, or a session still alive (an interactive run whose tmux pane
 //     survived the restart, or — defensively — a live process), is left untouched.
+//   - a session with a live chat pane (hasLiveChatPane) is never swept, whatever
+//     the verdict. RestoreLiveOrphans undoes an orphan whose pane comes back later.
 //
 // The ImplementingPlan→Orphaned move uses the atomic CAS as its idempotency
 // gate, mirroring the failed-headless-run block path, so a late completion
@@ -1048,6 +1050,10 @@ func (l *Lifecycle) sweepOrphanedHeadlessRuns(ctx context.Context) {
 		// interactive tmux pane that survived the restart), or a parked session
 		// (its pane deliberately reaped, chat row kept) leaves the row alone.
 		if l.liveness == nil || l.liveness.SessionLiveness(ctx, sess.ID) != LivenessDead {
+			continue
+		}
+		// A live chat pane outranks the verdict: the agent is still running there.
+		if l.hasLiveChatPane(ctx, sess.ID) {
 			continue
 		}
 		advanced, err := orphanStore.MarkHeadlessRunOrphaned(ctx, sess.ID, OrphanedHeadlessRunReason)

@@ -47,7 +47,7 @@ func TestCloudControl_ExistingSessionAttachRespectsPrivate(t *testing.T) {
 					}
 					setMode(initial)
 					attacher := &policySessionAttacher{}
-					client := NewStreamClient(StreamClientConfig{Logger: zerolog.Nop(), Attacher: attacher, CloudControl: NewCloudControlPolicy(zerolog.Nop())})
+					client := NewStreamClient(StreamClientConfig{TargetObjects: dispatcherTargetFixture{}, Logger: zerolog.Nop(), Attacher: attacher, CloudControl: NewCloudControlPolicy(zerolog.Nop())})
 					ctx, cancel := context.WithCancel(context.Background())
 					defer cancel()
 					defer client.cancelAndWaitSessionAttaches()

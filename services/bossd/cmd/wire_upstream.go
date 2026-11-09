@@ -26,6 +26,7 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/ghtoken"
 	"github.com/recurser/bossd/internal/notesync"
+	"github.com/recurser/bossd/internal/repoidentity"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
@@ -483,10 +484,13 @@ func (w *daemonWiring) wireUpstream() {
 		w.ghProvider.SetWebhookHealth(webhookHealth)
 		w.prWaits.SetWebhookHealth(webhookHealth)
 		w.webhookEvidence = webhookHealth
+		targets := upstreamTargets{repos: w.repos, sessions: w.sessions, chats: w.agentChats, cronJobs: w.cronJobs, notes: w.notes, callbacks: w.githubCallbacks, identities: repoidentity.New(w.ghProvider)}
 		cloudControl := upstream.NewCloudControlPolicy(log.Logger)
+		cloudControl.RepoIdentities = targets
 		terminalSealing := upstream.TerminalSealingConfig{DaemonID: cfg.DaemonID, IdentityKey: identityKey, Approvals: w.viewerApprovals}
 		w.streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
 			CloudControl:             cloudControl,
+			TargetObjects:            targets,
 			TerminalSealingSupported: terminalSealing.IsAvailable(),
 			Client:                   client,
 			AuthToken:                authToken,          // WorkOS JWT → Authorization header
@@ -591,10 +595,11 @@ func (w *daemonWiring) wireUpstream() {
 		w.ghProvider.SetInstallationTokens(installationTokenSource{src: w.githubCredentials})
 
 		authAdapter := &streamAuthAdapter{
-			streamClient:  w.streamClient,
-			tokenProvider: tokenProvider,
-			authState:     authState,
-			logger:        log.Logger,
+			orchestratorURL: cfg.OrchestratorURL,
+			streamClient:    w.streamClient,
+			tokenProvider:   tokenProvider,
+			authState:       authState,
+			logger:          log.Logger,
 			// Read-only sources for the GetAuthState diagnostic. The stream
 			// client owns the wedge clock; the holder owns "when did this
 			// process last successfully register".

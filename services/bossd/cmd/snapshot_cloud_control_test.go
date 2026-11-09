@@ -24,7 +24,7 @@ func TestSnapshotForPublishCloudControl(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := pb.CloudControl_CLOUD_CONTROL_READ_ONLY
-		if raw == "full" {
+		if raw == "" || raw == "full" {
 			want = pb.CloudControl_CLOUD_CONTROL_FULL
 		}
 		if snap.GetCloudControl() != want {

@@ -350,6 +350,7 @@ func TestTriggerGateTimeout(t *testing.T) {
 func TestRunTriggerGateDispatch(t *testing.T) {
 	fx := newGateFixture(t)
 	client := newDispatcherClient(&CommandHandlerAdapter{TriggerGates: fx.runner}, nil, nil)
+	client.targetObjects = dispatcherTargetFixture{repoID: fx.repoID}
 	out := make(chan *pb.DaemonEvent, 2)
 
 	client.handleCommand(context.Background(), &pb.OrchestratorCommand{

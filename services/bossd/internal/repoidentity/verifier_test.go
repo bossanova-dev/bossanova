@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/rs/zerolog"
 )
 
 type identityReaderFunc func(context.Context, string) (int64, string, error)
@@ -22,7 +23,7 @@ func TestIdentityExpiryAndFailures(t *testing.T) {
 	now := time.Now()
 	var calls int
 	var failure error
-	v := New(identityReaderFunc(func(context.Context, string) (int64, string, error) { calls++; return 42, "private", failure }))
+	v := New(identityReaderFunc(func(context.Context, string) (int64, string, error) { calls++; return 42, "private", failure }), zerolog.Nop())
 	v.now = func() time.Time { return now }
 	repo := models.Repo{OriginURL: "git@github.com:Acme/Repo.git", LocalPath: t.TempDir()}
 	first := v.Identity(context.Background(), repo)
@@ -57,7 +58,7 @@ func TestIdentityTimeout(t *testing.T) {
 		v := New(identityReaderFunc(func(ctx context.Context, _ string) (int64, string, error) {
 			<-ctx.Done()
 			return 42, "private", ctx.Err()
-		}))
+		}), zerolog.Nop())
 		if got := v.Identity(context.Background(), models.Repo{OriginURL: "https://github.com/o/r"}); got.IsIDVerified || got.ProviderRepoID != 0 {
 			t.Fatalf("timeout: %+v", got)
 		}
@@ -72,7 +73,7 @@ func TestIdentityCollapsesCanonicalOrigins(t *testing.T) {
 			calls.Add(1)
 			<-release
 			return 42, "private", nil
-		}))
+		}), zerolog.Nop())
 		var wg sync.WaitGroup
 		for i := range 12 {
 			wg.Go(func() {
@@ -90,6 +91,79 @@ func TestIdentityCollapsesCanonicalOrigins(t *testing.T) {
 		wg.Wait()
 		if calls.Load() != 1 {
 			t.Fatalf("reads: %d", calls.Load())
+		}
+	})
+}
+
+func TestIdentityWaitersAndBackgroundCache_Settings_AC242903(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		v := New(identityReaderFunc(func(ctx context.Context, _ string) (int64, string, error) {
+			calls.Add(1)
+			select {
+			case <-time.After(2 * time.Second):
+				return 42, "private", nil
+			case <-ctx.Done():
+				return 0, "", ctx.Err()
+			}
+		}), zerolog.Nop())
+		repo := models.Repo{OriginURL: "https://github.com/o/r"}
+		short, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		shortDone := make(chan bool, 1)
+		go func() { shortDone <- v.Identity(short, repo).IsIDVerified }()
+		synctest.Wait()
+		longDone := make(chan bool, 1)
+		go func() { longDone <- v.Identity(context.Background(), repo).IsIDVerified }()
+		synctest.Wait()
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case verified := <-shortDone:
+			if verified {
+				t.Fatal("expired caller verified")
+			}
+		default:
+			t.Fatal("short caller inherited flight deadline")
+		}
+		if short.Err() != context.DeadlineExceeded {
+			t.Fatal(short.Err())
+		}
+		if !<-longDone {
+			t.Fatal("long caller failed to receive identity")
+		}
+		if !v.Identity(context.Background(), repo).IsIDVerified || calls.Load() != 1 {
+			t.Fatalf("cache did not warm: reads=%d", calls.Load())
+		}
+	})
+}
+
+func TestIdentityAbandonedFlightWarmsCache(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		v := New(identityReaderFunc(func(ctx context.Context, _ string) (int64, string, error) {
+			calls.Add(1)
+			select {
+			case <-time.After(2 * time.Second):
+				return 42, "private", nil
+			case <-ctx.Done():
+				return 0, "", ctx.Err()
+			}
+		}), zerolog.Nop())
+		repo := models.Repo{OriginURL: "https://github.com/o/r"}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		started := time.Now()
+		if v.Identity(ctx, repo).IsIDVerified {
+			t.Fatal("expired caller verified")
+		}
+		if elapsed := time.Since(started); elapsed != time.Second {
+			t.Fatalf("caller elapsed %v", elapsed)
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if !v.Identity(context.Background(), repo).IsIDVerified || calls.Load() != 1 {
+			t.Fatalf("abandoned flight did not warm cache: reads=%d", calls.Load())
 		}
 	})
 }

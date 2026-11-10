@@ -45,6 +45,7 @@ go_test(
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/kit/safego",
         "//services/boss/internal/adapter/realstackrpc",
+        "//services/boss/internal/realstack",
         "@com_connectrpc_connect//:connect",
         "@com_github_rs_zerolog//:zerolog",
     ],

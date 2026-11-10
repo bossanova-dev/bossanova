@@ -3,11 +3,45 @@ package scenario
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/recurser/boss/internal/realstack"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+func TestRemapCompiledOpenPRLists(t *testing.T) {
+	doc := Document{Version: 1, Name: "remap", Repos: []Repo{{Key: "repo", DisplayName: "Repo"}, {Key: "owner/other", DisplayName: "Other"}}}
+	plan, problems := Compile(doc)
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	origins := map[string]string{"repo": "scenario/registered", "owner/other": "scenario/other"}
+	matched := 0
+	for _, response := range plan.GH {
+		before := slices.Clone(response.Args)
+		stdout := response.Stdout
+		remapOpenPRList(&response, origins)
+		if slices.Equal(before, response.Args) {
+			continue
+		}
+		matched++
+		if response.Stdout != stdout {
+			t.Fatal("remapping changed PR data")
+		}
+		valid := false
+		for _, origin := range origins {
+			valid = valid || slices.Equal(response.Args, realstack.OpenPRListResponse("https://github.com/"+origin+".git", "[]").Args)
+		}
+		if !valid {
+			t.Fatalf("fixture does not route to a registered origin: %v", response.Args)
+		}
+	}
+	if matched != len(origins) {
+		t.Fatalf("remapped %d lists, want %d", matched, len(origins))
+	}
+}
 
 func TestCompileInputsOnly(t *testing.T) {
 	d := Document{Version: 1, Name: "inputs", Repos: []Repo{{Key: "r", DisplayName: "Repo"}}, Sessions: []Session{{Key: "s", Repo: "r", Title: "Blocked", State: "BLOCKED", BlockedReason: "operator", PR: &PullRequest{Number: 1, State: "OPEN", Checks: "PASSED", Mergeable: true}, Chats: []Chat{{Key: "c", Title: "Chat"}}}}, Operations: []Operation{{Op: "holdMerge", Session: "s"}}}

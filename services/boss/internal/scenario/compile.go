@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -150,6 +151,15 @@ func replaceBranch(value string, branches map[string]string) string {
 		value = strings.ReplaceAll(value, `"headRefName":`+string(encoded), `"headRefName":`+string(replacement))
 	}
 	return value
+}
+
+func remapOpenPRList(response *realstack.GHResponse, origins map[string]string) {
+	for key, origin := range origins {
+		if slices.Equal(response.Args, realstack.OpenPRListResponse(key, "[]").Args) {
+			response.Args = realstack.OpenPRListResponse("https://github.com/"+origin+".git", "[]").Args
+			return
+		}
+	}
 }
 
 func replacePRHead(value string, branches, heads map[string]string) string {

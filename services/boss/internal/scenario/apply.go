@@ -203,6 +203,7 @@ func applyOffline(ctx context.Context, opts ApplyOptions, p Plan, st *applyState
 	}
 	for i := range p.GH {
 		response := &p.GH[i]
+		remapOpenPRList(response, st.Origins)
 		for j, arg := range response.Args {
 			if j > 0 && response.Args[j-1] == "--repo" {
 				response.Args[j] = st.Origins[arg]

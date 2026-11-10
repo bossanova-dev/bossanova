@@ -54,6 +54,30 @@ func TestFixtureResponses(t *testing.T) {
 	}
 }
 
+func TestOpenPRListResponseHost(t *testing.T) {
+	for _, tc := range []struct {
+		repo string
+		host string
+	}{
+		{"owner/repo", ""},
+		{"https://github.com/owner/repo.git", "github.com"},
+		{"git@git.example.com:owner/repo.git", "git.example.com"},
+	} {
+		t.Run(tc.repo, func(t *testing.T) {
+			open := realstack.OpenPRListResponse(tc.repo, `[{"number":42,"state":"OPEN"}]`)
+			args := append([]string(nil), realstack.OpenPRListResponse("owner/repo", "[]").Args...)
+			if tc.host != "" {
+				args = append(args, "--hostname", tc.host)
+			}
+			fixture := writeSpec(t, spec{Responses: []response{{Args: open.Args, Stdout: open.Stdout}}})
+			var stdout, stderr bytes.Buffer
+			if code := run(args, fixture, &stdout, &stderr); code != 0 || stdout.String() != open.Stdout {
+				t.Fatalf("host-routed request = (%d, %q, %q)", code, &stdout, &stderr)
+			}
+		})
+	}
+}
+
 func TestFixtureFailureResponse(t *testing.T) {
 	t.Parallel()
 	args := []string{"pr", "checks", "42"}

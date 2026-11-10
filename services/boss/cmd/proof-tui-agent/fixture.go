@@ -16,7 +16,6 @@ import (
 	"github.com/recurser/boss/internal/fixtures"
 	"github.com/recurser/boss/internal/realstack"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/kit/vcs"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -126,9 +125,6 @@ func (f *fixtureStack) addRepo(ctx context.Context, repo *pb.Repo) error {
 		return err
 	}
 	originFlag := registered.OriginUrl
-	if nwo := vcs.GitHubNWO(originFlag); nwo != "" {
-		originFlag = nwo
-	}
 	f.origins[repo.Id] = originFlag
 	f.gh = append(f.gh, realstack.OpenPRListResponse(originFlag, "[]"))
 	data, err := json.Marshal(map[string]any{"responses": f.gh})

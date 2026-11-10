@@ -107,6 +107,7 @@ type workerStore interface {
 type DeliveryWorker struct {
 	store        workerStore
 	deliverer    ChatDeliverer
+	cloudContext func(context.Context, string) (context.Context, error)
 	reconciler   reconciler
 	now          func() time.Time
 	logger       zerolog.Logger
@@ -119,8 +120,10 @@ type DeliveryWorker struct {
 // WorkerConfig configures a DeliveryWorker. Store and Deliverer are required;
 // the rest default.
 type WorkerConfig struct {
-	Store     workerStore
-	Deliverer ChatDeliverer
+	// CloudContext reauthorizes a frozen target on each queued cloud delivery.
+	CloudContext func(context.Context, string) (context.Context, error)
+	Store        workerStore
+	Deliverer    ChatDeliverer
 	// Reconciler is the standing-subscription sweep run every
 	// reconcileEveryTicks ticks. Optional: nil disables it, and only the daemon
 	// wires one.
@@ -157,6 +160,7 @@ func NewDeliveryWorker(cfg WorkerConfig) *DeliveryWorker {
 	return &DeliveryWorker{
 		store:        cfg.Store,
 		deliverer:    cfg.Deliverer,
+		cloudContext: cfg.CloudContext,
 		reconciler:   cfg.Reconciler,
 		now:          now,
 		logger:       cfg.Logger,
@@ -291,6 +295,19 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, b *domain.Broadcast, de
 				Msg("broadcast worker: acquire lease failed")
 		}
 		return
+	}
+
+	if b.IsCloudControlled {
+		if w.cloudContext == nil {
+			w.scheduleRetry(ctx, b, d, owner, domain.ErrCloudTarget)
+			return
+		}
+		deliveryCtx, err := w.cloudContext(ctx, d.TargetChatID)
+		if err != nil {
+			w.scheduleRetry(ctx, b, d, owner, err)
+			return
+		}
+		ctx = deliveryCtx
 	}
 
 	// The prompt is the only place the secret body appears; it is never logged.

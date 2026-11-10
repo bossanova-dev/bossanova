@@ -5,7 +5,10 @@ import (
 	"time"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/repoidentity"
 	"github.com/rs/zerolog/log"
 
 	"github.com/recurser/bossalib/kit/safego"
@@ -228,12 +231,16 @@ func (w *daemonWiring) wireDeliveryWorkers() {
 	// expires overdue subscriptions and fires any whose owning session already
 	// sits in a trigger state, covering both a transition made while the daemon
 	// was down and the startup bulk orphan advance that bypasses the hook.
+	broadcastTargets := upstreamTargets{repos: w.repos, sessions: w.sessions, chats: w.agentChats, identities: repoidentity.New(w.ghProvider)}
+	broadcastPolicy := upstream.NewCloudControlPolicy(log.Logger)
+	broadcastPolicy.RepoIdentities = broadcastTargets
 	broadcastWorker := broadcast.NewDeliveryWorker(broadcast.WorkerConfig{
-		Store:      w.broadcasts,
-		Deliverer:  broadcastDeliverer,
-		Reconciler: w.broadcastSubscriptionEvaluator,
-		Logger:     log.Logger,
-		Telemetry:  w.telemetryClient,
+		CloudContext: broadcastCloudContext(broadcastTargets, broadcastPolicy),
+		Store:        w.broadcasts,
+		Deliverer:    broadcastDeliverer,
+		Reconciler:   w.broadcastSubscriptionEvaluator,
+		Logger:       log.Logger,
+		Telemetry:    w.telemetryClient,
 	})
 	broadcastWorkerDone := safego.Go(log.Logger, func() { broadcastWorker.Run(w.pollerCtx) })
 	w.trackDone("broadcast-delivery-worker", broadcastWorkerDone)
@@ -278,5 +285,23 @@ func (w *daemonWiring) wireDeliveryWorkers() {
 			log.Warn().Err(err).Msg("startup broadcast subscription reconciliation failed")
 		}
 	})
+}
 
+func broadcastCloudContext(broadcastTargets upstreamTargets, broadcastPolicy *upstream.LocalCloudControlPolicy) func(context.Context, string) (context.Context, error) {
+	return func(ctx context.Context, chatID string) (context.Context, error) {
+		object, err := broadcastTargets.GetTarget(ctx, "chat", chatID)
+		if err != nil {
+			return ctx, domain.ErrCloudTarget
+		}
+		mode, _ := broadcastPolicy.RepoMode(ctx, object.RepoID)
+		if mode != config.CloudControlFull {
+			return ctx, domain.ErrCloudTarget
+		}
+		ctx = domain.WithCloudTarget(ctx, domain.CloudTarget{"chat:" + chatID: object.RepoID, "session:" + object.SessionID: object.RepoID, "repo:" + object.RepoID: object.RepoID})
+		ctx = domain.WithCloudRepoCheck(ctx, func(ctx context.Context, repoID string) bool {
+			mode, _ := broadcastPolicy.RepoMode(ctx, repoID)
+			return mode == config.CloudControlFull
+		})
+		return ctx, nil
+	}
 }

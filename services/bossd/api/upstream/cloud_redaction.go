@@ -8,30 +8,12 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-func redactSessionForCloud(s *pb.Session, mode pb.CloudControl) *pb.Session {
-	if s == nil || mode != pb.CloudControl_CLOUD_CONTROL_PRIVATE {
-		return s
-	}
-	redacted := proto.CloneOf(s)
-	redacted.Plan = ""
-	return redacted
-}
-
-func redactChatForCloud(c *pb.AgentChatMetadata, mode pb.CloudControl) *pb.AgentChatMetadata {
-	if c == nil || mode != pb.CloudControl_CLOUD_CONTROL_PRIVATE {
-		return c
-	}
-	redacted := proto.CloneOf(c)
-	redacted.LastMessagePreview = ""
-	return redacted
-}
-
-// cloudRedactor is scoped to one serialization, so a mixed snapshot resolves each
-// repository policy once and shares the session ownership projection with chats.
 type cloudRedactor struct {
-	client   *StreamClient
-	modes    map[string]pb.CloudControl
-	sessions map[string]string
+	client     *StreamClient
+	modes      map[string]pb.CloudControl
+	sessions   map[string]string
+	scope      []string
+	registered map[string]struct{}
 }
 
 func (c *StreamClient) newCloudRedactor() *cloudRedactor {
@@ -45,7 +27,11 @@ func (r *cloudRedactor) mode(ctx context.Context, repoID string) pb.CloudControl
 	if mode, ok := r.modes[repoID]; ok {
 		return mode
 	}
-	mode := cloudControlProto(r.client.cloudControl)
+	if !r.repoRegistered(ctx, repoID) {
+		r.modes[repoID] = pb.CloudControl_CLOUD_CONTROL_PRIVATE
+		return pb.CloudControl_CLOUD_CONTROL_PRIVATE
+	}
+	mode := pb.CloudControl_CLOUD_CONTROL_READ_ONLY
 	if r.client.cloudControl != nil {
 		resolved, _ := r.client.cloudControl.RepoMode(ctx, repoID)
 		mode = targetModeProto(resolved)
@@ -68,38 +54,23 @@ func (r *cloudRedactor) sessionRepo(ctx context.Context, id string) string {
 	return ""
 }
 
-// redactForCloud applies local ownership policy before any message leaves bossd,
-// including nested entries in command results. It never mutates store-owned data.
-func (r *cloudRedactor) redactForCloud(ctx context.Context, obj proto.Message) proto.Message {
-	if obj == nil {
-		return nil
+func (r *cloudRedactor) redactForCloud(ctx context.Context, obj proto.Message) {
+	if obj == nil || !obj.ProtoReflect().IsValid() {
+		return
+	}
+	if r.redactContent(ctx, obj) {
+		return
 	}
 	switch value := obj.(type) {
-	case *pb.Session:
-		r.sessions[value.GetId()] = value.GetRepoId()
-		return redactSessionForCloud(value, r.mode(ctx, value.GetRepoId()))
-	case *pb.AgentChatMetadata:
-		return redactChatForCloud(value, r.mode(ctx, r.sessionRepo(ctx, value.GetSessionId())))
 	case *pb.DaemonSnapshot:
+		if value.RepoIds != nil {
+			r.registerRepos(value.GetRepoIds())
+		}
 		for _, session := range value.GetSessions() {
 			r.sessions[session.GetId()] = session.GetRepoId()
 		}
-	case *pb.CronJob:
-		if r.mode(ctx, value.GetRepoId()) == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
-			redacted := proto.CloneOf(value)
-			redacted.Prompt = ""
-			redacted.GateCommand = ""
-			return redacted
-		}
-	case *pb.Note:
-		if r.mode(ctx, value.GetRepoId()) == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
-			redacted := proto.CloneOf(value)
-			redacted.Body = ""
-			return redacted
-		}
 	}
-	cloned := proto.Clone(obj)
-	msg := cloned.ProtoReflect()
+	msg := obj.ProtoReflect()
 	msg.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
 		if field.Message() == nil || field.IsMap() {
 			return true
@@ -107,12 +78,118 @@ func (r *cloudRedactor) redactForCloud(ctx context.Context, obj proto.Message) p
 		if field.IsList() {
 			list := value.List()
 			for i := 0; i < list.Len(); i++ {
-				list.Set(i, protoreflect.ValueOfMessage(r.redactForCloud(ctx, list.Get(i).Message().Interface()).ProtoReflect()))
+				r.redactForCloud(ctx, list.Get(i).Message().Interface())
 			}
 		} else {
-			msg.Set(field, protoreflect.ValueOfMessage(r.redactForCloud(ctx, value.Message().Interface()).ProtoReflect()))
+			r.redactForCloud(ctx, value.Message().Interface())
 		}
 		return true
 	})
+}
+
+func (r *cloudRedactor) redactContent(ctx context.Context, obj proto.Message) bool {
+	switch value := obj.(type) {
+	case *pb.Session:
+		r.sessions[value.GetId()] = value.GetRepoId()
+		if r.mode(ctx, value.GetRepoId()) == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
+			value.Plan = ""
+		}
+		return true
+	case *pb.AgentChatMetadata:
+		if r.mode(ctx, r.sessionRepo(ctx, value.GetSessionId())) == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
+			value.LastMessagePreview = ""
+		}
+		return true
+	case *pb.GetChatTranscriptResponse:
+		if r.scopePrivate(ctx) {
+			value.Messages = nil
+			value.FinalAssistantText = ""
+			value.Reason = ""
+		}
+		return true
+	case *pb.TrackerIssue:
+		if r.scopePrivate(ctx) {
+			value.Description = ""
+		}
+		return true
+	case *pb.GitHubCallback:
+		if r.mode(ctx, r.chatRepo(ctx, value.GetTargetChatId())) == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
+			value.Message = ""
+		}
+		return true
+	case *pb.BroadcastEgress:
+		mode := cloudControlProto(r.client.cloudControl)
+		if value.GetOriginChatId() != "" {
+			mode = r.mode(ctx, r.chatRepo(ctx, value.GetOriginChatId()))
+		}
+		if mode == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
+			value.Message = ""
+		}
+		return true
+	case *pb.CronJob:
+		if r.mode(ctx, value.GetRepoId()) == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
+			value.Prompt = ""
+			value.GateCommand = ""
+		}
+		return true
+	case *pb.Note:
+		if r.mode(ctx, value.GetRepoId()) == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
+			value.Body = ""
+		}
+		return true
+	}
+	return false
+}
+
+func (r *cloudRedactor) scopePrivate(ctx context.Context) bool {
+	if len(r.scope) == 0 {
+		return true
+	}
+	for _, repo := range r.scope {
+		if r.mode(ctx, repo) == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *cloudRedactor) chatRepo(ctx context.Context, id string) string {
+	if r.client.targetObjects != nil {
+		object, err := r.client.targetObjects.GetTarget(ctx, "chat", id)
+		if err == nil {
+			return object.RepoID
+		}
+	}
+	return ""
+}
+
+func (r *cloudRedactor) session(ctx context.Context, session *pb.Session) *pb.Session {
+	cloned := proto.CloneOf(session)
+	r.redactForCloud(ctx, cloned)
 	return cloned
+}
+func (r *cloudRedactor) chat(ctx context.Context, chat *pb.AgentChatMetadata) *pb.AgentChatMetadata {
+	cloned := proto.CloneOf(chat)
+	r.redactForCloud(ctx, cloned)
+	return cloned
+}
+
+func (r *cloudRedactor) registerRepos(ids []string) {
+	r.registered = make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		r.registered[id] = struct{}{}
+	}
+}
+
+func (r *cloudRedactor) repoRegistered(ctx context.Context, id string) bool {
+	if r.registered != nil {
+		if _, ok := r.registered[id]; !ok {
+			return false
+		}
+	}
+	if r.client.targetObjects != nil {
+		object, err := r.client.targetObjects.GetTarget(ctx, "repo", id)
+		return err == nil && object.RepoID == id
+	}
+	return true
 }

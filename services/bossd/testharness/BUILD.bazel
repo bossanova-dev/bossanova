@@ -6,6 +6,7 @@ go_library(
         "caller.go",
         "cloud_control.go",
         "harness.go",
+        "harness_webhook_targets.go",
         "intconv.go",
         "mock_agent.go",
         "mock_agent_runner.go",

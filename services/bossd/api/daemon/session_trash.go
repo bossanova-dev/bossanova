@@ -2,7 +2,15 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -22,7 +30,8 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 	repoBranchSeen := make(map[string]map[string]struct{})
 	deleted := int32(0)
 	for _, sess := range archived {
-		if olderThan != nil && sess.ArchivedAt != nil && sess.ArchivedAt.After(*olderThan) {
+		sess = s.trashSessionForDeletion(ctx, sess, olderThan)
+		if sess == nil {
 			continue
 		}
 		if sess.RepoID != "" && sess.BranchName != "" {
@@ -53,6 +62,9 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 		}
 		repo, err := s.repos.Get(ctx, repoID)
 		if err != nil {
+			continue
+		}
+		if !domain.CloudRepoAllowed(ctx, repoID) || !s.trashCleanupAllowed(ctx, repoID, archived) {
 			continue
 		}
 		if reapErr := s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, branches); reapErr != nil {
@@ -94,4 +106,86 @@ func (s *Server) unsharedBranches(ctx context.Context, repoID, removedID string,
 		unshared = append(unshared, branch)
 	}
 	return unshared
+}
+
+func (s *Server) trashCleanupAllowed(ctx context.Context, repoID string, archived []*models.Session) bool {
+	if !domain.IsCloudCommand(ctx) {
+		return true
+	}
+	repo, err := s.repos.Get(ctx, repoID)
+	if err != nil {
+		return false
+	}
+	key, err := trashStorageKey(repo.LocalPath)
+	if err != nil {
+		return false
+	}
+	for _, sess := range archived {
+		if domain.CloudRepoAllowed(ctx, sess.RepoID) {
+			continue
+		}
+		protected, err := s.repos.Get(ctx, sess.RepoID)
+		if err != nil {
+			return false
+		}
+		other, err := trashStorageKey(protected.LocalPath)
+		if err != nil || key == other {
+			return false
+		}
+	}
+	return true
+}
+
+func trashStorageKey(repoPath string) (string, error) {
+	dir := filepath.Join(repoPath, ".git")
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		data, err := os.ReadFile(dir)
+		if err != nil {
+			return "", err
+		}
+		value, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+		if !ok {
+			return "", errors.New("unrecognized git directory")
+		}
+		dir = strings.TrimSpace(value)
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(repoPath, dir)
+		}
+	}
+	common, err := os.ReadFile(filepath.Join(dir, "commondir"))
+	if err == nil {
+		value := strings.TrimSpace(string(common))
+		if value == "" {
+			return "", errors.New("empty git common directory")
+		}
+		if filepath.IsAbs(value) {
+			dir = value
+		} else {
+			dir = filepath.Join(dir, value)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	return filepath.EvalSymlinks(dir)
+}
+
+func (s *Server) trashSessionForDeletion(ctx context.Context, sess *models.Session, olderThan *time.Time) *models.Session {
+	if olderThan != nil && sess.ArchivedAt != nil && sess.ArchivedAt.After(*olderThan) {
+		return nil
+	}
+	if domain.IsCloudCommand(ctx) {
+		current, err := s.sessions.Get(ctx, sess.ID)
+		if err != nil || current == nil || current.RepoID != sess.RepoID || current.ArchivedAt == nil {
+			return nil
+		}
+		sess = current
+	}
+	if !domain.CloudRepoAllowed(ctx, sess.RepoID) {
+		return nil
+	}
+	return sess
 }

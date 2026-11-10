@@ -226,7 +226,7 @@ func (r *Resolver) Resolve(ctx context.Context, sel bcast.Selector, originChatID
 			Msg("broadcast resolve: skipped unreachable chats")
 	}
 
-	matched := sel.Filter(candidates)
+	matched := cloudBroadcastTargets(ctx, sel.Filter(candidates))
 
 	targets := make([]bcast.Target, 0, len(matched))
 	seen := make(map[string]struct{}, len(matched))
@@ -269,4 +269,17 @@ func sessionIsBroadcastable(s *models.Session) bool {
 		s.State != machine.Merged &&
 		s.State != machine.Closed &&
 		s.State != machine.Orphaned
+}
+
+func cloudBroadcastTargets(ctx context.Context, targets []bcast.Target) []bcast.Target {
+	if !domain.IsCloudCommand(ctx) {
+		return targets
+	}
+	allowed := targets[:0]
+	for _, target := range targets {
+		if domain.CloudRepoAllowed(ctx, target.RepoID) {
+			allowed = append(allowed, target)
+		}
+	}
+	return allowed
 }

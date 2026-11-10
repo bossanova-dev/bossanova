@@ -44,3 +44,24 @@ func IsCloudCommand(ctx context.Context) bool {
 	_, ok := ctx.Value(cloudTargetContextKey{}).(CloudTarget)
 	return ok
 }
+
+type cloudRepoCheckKey struct{}
+
+// WithCloudRepoCheck carries the local policy, which is read again at the point
+// of effect. It grants nothing outside the command's frozen ownership bindings.
+func WithCloudRepoCheck(ctx context.Context, check func(context.Context, string) bool) context.Context {
+	return context.WithValue(ctx, cloudRepoCheckKey{}, check)
+}
+
+// CloudRepoAllowed leaves local IPC alone and fails closed for cloud calls
+// without a current policy decision or a locally authorized target.
+func CloudRepoAllowed(ctx context.Context, repoID string) bool {
+	if !IsCloudCommand(ctx) {
+		return true
+	}
+	if repoID == "" || AssertCloudTarget(ctx, "repo", repoID, repoID) != nil {
+		return false
+	}
+	check, ok := ctx.Value(cloudRepoCheckKey{}).(func(context.Context, string) bool)
+	return ok && check(ctx, repoID)
+}

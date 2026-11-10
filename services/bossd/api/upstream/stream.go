@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/recurser/bossd/internal/notesync"
 
 	"connectrpc.com/connect"
@@ -777,6 +779,7 @@ type StreamClient struct {
 
 	targetObjects    CommandTargetObjects
 	cloudControl     CloudControlPolicy
+	resultRepos      sync.Map
 	sessionAttachMu  sync.Mutex
 	sessionAttaches  map[string]*sessionAttachState
 	opener           streamOpener
@@ -1570,7 +1573,10 @@ func (c *StreamClient) runWriter(ctx context.Context, stream bidirectionalStream
 			if chunk := ev.GetAttachChunk(); chunk != nil && !c.allowSessionAttach(ctx, chunk.GetCommandId(), chunk.GetSessionId()) {
 				continue
 			}
-			ev = c.newCloudRedactor().redactForCloud(ctx, ev).(*pb.DaemonEvent)
+			redactor := c.newCloudRedactor()
+			redactor.scope = c.takeResultScope(ev)
+			ev = proto.CloneOf(ev)
+			redactor.redactForCloud(ctx, ev)
 			if err := stream.Send(ev); err != nil {
 				c.logger.Debug().Err(err).Msg("stream send failed, writer exiting")
 				return
@@ -1615,10 +1621,7 @@ func (c *StreamClient) handleCommand(ctx context.Context, cmd *pb.OrchestratorCo
 		// chunks asynchronously (attach) or emit nothing (unknown).
 		return
 	}
-	select {
-	case outbound <- result:
-	case <-ctx.Done():
-	}
+	c.sendCommandResult(ctx, outbound, result)
 }
 
 // Reconnect wakes the Run loop out of its backoff sleep so it re-opens the

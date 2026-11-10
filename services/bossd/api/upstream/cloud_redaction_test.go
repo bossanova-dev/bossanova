@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestCloudRedactionSnapshotsAndDeltas(t *testing.T) {
+func TestCloudRedactionSnapshotsAndDeltas_ChatPicker_AC238101(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		policy  CloudControlPolicy
@@ -36,7 +36,7 @@ func TestCloudRedactionSnapshotsAndDeltas(t *testing.T) {
 				Chats:    &fakeChatReader{chats: []*pb.AgentChatMetadata{chat}},
 			})
 			client.cloudControl = tc.policy
-			client.targetObjects = &targetFixture{objects: map[targetKey]CommandTargetObject{{"session", "session"}: {RepoID: "repo"}}}
+			client.targetObjects = &targetFixture{objects: map[targetKey]CommandTargetObject{{"session", "session"}: {RepoID: "repo"}, {"repo", "repo"}: {RepoID: "repo"}}}
 			snapshot, err := client.buildSnapshot(context.Background())
 			if err != nil {
 				t.Fatal(err)
@@ -73,7 +73,7 @@ func TestCloudRedactionSnapshotsAndDeltas(t *testing.T) {
 	}
 }
 
-func TestCloudRedactionMixedRepos(t *testing.T) {
+func TestCloudRedactionMixedRepos_Sessions_AC238101(t *testing.T) {
 	c, _, targets := targetClient()
 	c.cloudControl = targetPolicy{machine: config.CloudControlFull, repos: map[string]config.CloudControlMode{"a": config.CloudControlPrivate, "b": config.CloudControlFull}}
 	c.targetObjects = targets
@@ -100,11 +100,36 @@ func TestCloudRedactionMixedCommandResults(t *testing.T) {
 	c, _, _ := targetClient()
 	c.cloudControl = targetPolicy{machine: config.CloudControlFull, repos: map[string]config.CloudControlMode{"a": config.CloudControlPrivate, "b": config.CloudControlFull}}
 	result := &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{Payload: &pb.CommandResult_ListNotes{ListNotes: &pb.ListNotesResponse{Notes: []*pb.Note{{Id: "na", RepoId: "a", Body: "secret"}, {Id: "nb", RepoId: "b", Body: "public"}, {Id: "unknown", Body: "unresolved"}}}}}}}
-	redacted := c.newCloudRedactor().redactForCloud(context.Background(), result).(*pb.DaemonEvent).GetResult().GetListNotes()
+	cloned := proto.CloneOf(result)
+	c.newCloudRedactor().redactForCloud(context.Background(), cloned)
+	redacted := cloned.GetResult().GetListNotes()
 	if redacted.Notes[0].Body != "" || redacted.Notes[1].Body != "public" || redacted.Notes[2].Body != "" {
 		t.Fatalf("mixed result leaked or over-redacted: %v", redacted)
 	}
 	if result.GetResult().GetListNotes().Notes[0].Body != "secret" {
 		t.Fatal("mutated result")
+	}
+}
+
+func TestCloudRedactionBroadcastOrigin(t *testing.T) {
+	c, _, _ := targetClient()
+	c.cloudControl = targetPolicy{machine: config.CloudControlFull, repos: map[string]config.CloudControlMode{"a": config.CloudControlPrivate, "b": config.CloudControlFull}}
+	for _, tc := range []struct{ chat, body string }{{"ca", ""}, {"cb", "body"}, {"unknown", ""}, {"", "body"}} {
+		got := &pb.BroadcastEgress{OriginChatId: tc.chat, Message: "body"}
+		c.newCloudRedactor().redactForCloud(context.Background(), got)
+		if got.Message != tc.body {
+			t.Fatalf("origin=%q body=%q want=%q", tc.chat, got.Message, tc.body)
+		}
+	}
+}
+
+func TestCloudRedactionQueuedDeltaAfterRepoRemoval(t *testing.T) {
+	c, _, targets := targetClient()
+	c.cloudControl = fixedCloudControl("full")
+	delete(targets.objects, targetKey{"repo", "a"})
+	out := make(chan *pb.DaemonEvent, 1)
+	c.forwardEvent(context.Background(), StreamEvent{Session: &SessionEvent{Session: &pb.Session{Id: "sa", RepoId: "a", Plan: "secret"}}}, out, nil)
+	if (<-out).GetSession().GetSession().GetPlan() != "" {
+		t.Fatal("queued delta leaked content after its repo registration disappeared")
 	}
 }

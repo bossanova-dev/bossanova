@@ -40,7 +40,7 @@ func (c *StreamClient) dispatchCommand(
 	ctx context.Context,
 	cmd *pb.OrchestratorCommand,
 	outbound chan<- *pb.DaemonEvent,
-) *pb.DaemonEvent {
+) (result *pb.DaemonEvent) {
 	if cmd == nil {
 		return nil
 	}
@@ -51,6 +51,7 @@ func (c *StreamClient) dispatchCommand(
 		return refused
 	}
 
+	defer func() { c.bindResultScope(ctx, result) }()
 	switch cmd.GetCmd().(type) {
 	case *pb.OrchestratorCommand_ApplyAgentAccountUsage:
 		return c.dispatchApplyAgentAccountUsage(ctx, cmdID, cmd.GetApplyAgentAccountUsage())
@@ -981,10 +982,8 @@ func (c *StreamClient) runAsyncCommand(
 		if ev == nil {
 			return
 		}
-		select {
-		case <-ctx.Done():
-		case outbound <- ev:
-		}
+		c.bindResultScope(ctx, ev)
+		c.sendCommandResult(ctx, outbound, ev)
 	})
 	return nil
 }
@@ -1031,10 +1030,8 @@ func (c *StreamClient) runCancelableAsyncCommand(
 		if ev == nil {
 			return
 		}
-		select {
-		case <-ctx.Done():
-		case outbound <- ev:
-		}
+		c.bindResultScope(ctx, ev)
+		c.sendCommandResult(ctx, outbound, ev)
 	})
 	c.asyncMu.Lock()
 	if c.asyncDone == nil {

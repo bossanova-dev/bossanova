@@ -1,7 +1,7 @@
 -- name: CreateBroadcast :execresult
 INSERT INTO broadcasts
-			(id, origin_chat_id, selector, message, state, target_count, expires_at, created_at, updated_at)
-		 VALUES (sqlc.arg(id), sqlc.narg(origin_chat_id), sqlc.arg(selector), sqlc.arg(message), sqlc.arg(state), sqlc.arg(target_count), sqlc.arg(expires_at), sqlc.arg(created_at), sqlc.arg(updated_at));
+			(id, origin_chat_id, selector, message, state, target_count, expires_at, created_at, updated_at, is_cloud_controlled)
+		 VALUES (sqlc.arg(id), sqlc.narg(origin_chat_id), sqlc.arg(selector), sqlc.arg(message), sqlc.arg(state), sqlc.arg(target_count), sqlc.arg(expires_at), sqlc.arg(created_at), sqlc.arg(updated_at), sqlc.arg(is_cloud_controlled));
 
 -- name: UpdateBroadcastAudience :execresult
 UPDATE broadcasts

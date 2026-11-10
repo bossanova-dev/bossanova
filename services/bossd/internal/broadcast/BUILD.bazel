@@ -31,6 +31,7 @@ go_library(
 go_test(
     name = "broadcast_test",
     srcs = [
+        "cloud_control_test.go",
         "egress_test.go",
         "ingress_test.go",
         "prompt_test.go",

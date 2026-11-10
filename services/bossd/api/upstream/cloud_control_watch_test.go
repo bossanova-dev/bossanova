@@ -88,7 +88,7 @@ func TestWatchCloudControlRepoDowngrade(t *testing.T) {
 		policy := &switchableCloudControl{}
 		policy.mode.Store(config.CloudControlFull)
 		client, _, targets := targetClient()
-		client.cloudControl = policy
+		client.cloudControl = &repoSwitchPolicy{repo: policy}
 		client.targetObjects = targets
 		client.stores = StreamStores{Sessions: &fakeSessionReader{sessions: []*pb.Session{{Id: "sa", RepoId: "a", Plan: "secret"}}}}
 		initial, err := client.repoCloudControl(t.Context())
@@ -105,7 +105,6 @@ func TestWatchCloudControlRepoDowngrade(t *testing.T) {
 		}()
 		synctest.Wait()
 		// Keep the advertised machine value fixed while only the repo authority changes.
-		client.cloudControl = &repoSwitchPolicy{repo: policy}
 		policy.mode.Store(config.CloudControlPrivate)
 		time.Sleep(defaultCloudControlPollInterval)
 		synctest.Wait()

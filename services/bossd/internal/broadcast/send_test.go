@@ -433,3 +433,16 @@ func TestSenderLogsNeverCarryTheMessageBody(t *testing.T) {
 		})
 	}
 }
+
+func TestSenderFiltersCloudAudience(t *testing.T) {
+	store := newFakeSendStore()
+	sender := newTestSender(t, store, &fakeAudience{targets: []bcast.Target{{ChatID: "ca", RepoID: "a"}, {ChatID: "cb", RepoID: "b"}}})
+	ctx := domain.WithCloudRepoCheck(domain.WithCloudTarget(context.Background(), domain.CloudTarget{"repo:a": "a"}), func(context.Context, string) bool { return true })
+	result, err := sender.Send(ctx, SendRequest{ID: "cloud", Selector: bcast.Selector{Clauses: []bcast.Clause{{}}}, Message: "hello", ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Deliveries) != 1 || result.Deliveries[0].TargetChatID != "ca" {
+		t.Fatalf("protected target in audience: %v", result.Deliveries)
+	}
+}

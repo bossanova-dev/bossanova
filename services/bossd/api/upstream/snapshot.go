@@ -33,6 +33,7 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 			return nil, fmt.Errorf("snapshot repos: %w", err)
 		}
 		snap.RepoIds = repoIDs
+		redactor.registerRepos(repoIDs)
 	}
 
 	if c.stores.Sessions != nil {
@@ -42,7 +43,7 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		}
 		snap.Sessions = make([]*pb.Session, len(sessions))
 		for i, session := range sessions {
-			snap.Sessions[i] = redactor.redactForCloud(ctx, session).(*pb.Session)
+			snap.Sessions[i] = redactor.session(ctx, session)
 		}
 	}
 
@@ -53,7 +54,7 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		}
 		snap.Chats = make([]*pb.AgentChatMetadata, len(chats))
 		for i, chat := range chats {
-			snap.Chats[i] = redactor.redactForCloud(ctx, chat).(*pb.AgentChatMetadata)
+			snap.Chats[i] = redactor.chat(ctx, chat)
 		}
 	}
 

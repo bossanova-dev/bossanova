@@ -74,12 +74,8 @@ func ResolveRepoCloudControl(s Settings, id RepoIdentity) (CloudControlMode, Clo
 	}
 	strict := make([]bool, len(s.CloudControlRepos))
 	for i, g := range s.CloudControlRepos {
-		pathMatch := sameCheckout(g.Checkout, id.LocalPath)
-		idMatch := g.RepoID > 0 && id.IsIDVerified && g.RepoID == id.ProviderRepoID
-		noProvider := g.RepoID == 0 && id.ProviderRepoID == 0 && id.Host != "github.com"
 		resolved := grantCloudControl(g.Mode)
-		// Unknown modes can only narrow, even when the identity strictly matches.
-		strict[i] = g.Host == id.Host && pathMatch && (idMatch || noProvider) && g.Mode == string(resolved)
+		strict[i] = isStrictRepoGrant(g, id)
 		if strict[i] {
 			if source != CloudControlSourceGrant {
 				mode = resolved
@@ -103,6 +99,14 @@ func ResolveRepoCloudControl(s Settings, id RepoIdentity) (CloudControlMode, Clo
 		}
 	}
 	return mode, source
+}
+
+func isStrictRepoGrant(g CloudControlRepoGrant, id RepoIdentity) bool {
+	pathMatch := sameCheckout(g.Checkout, id.LocalPath)
+	idMatch := g.RepoID > 0 && id.IsIDVerified && g.RepoID == id.ProviderRepoID
+	noProvider := g.RepoID == 0 && id.ProviderRepoID == 0 && id.Host != "github.com"
+	// Unknown modes can only narrow, even when the identity strictly matches.
+	return g.Host == id.Host && pathMatch && (idMatch || noProvider) && g.Mode == string(grantCloudControl(g.Mode))
 }
 
 func sameCheckout(a, b string) bool {

@@ -31,7 +31,7 @@ func (f webhookTargetFixture) WebhookTargets(context.Context, string, int) (stri
 	return f.repo, f.objects, f.err
 }
 
-func TestWebhookRepoPayloadAuthorization(t *testing.T) {
+func TestWebhookRepoPayloadAuthorization_Sessions_AC238102(t *testing.T) {
 	for _, tc := range []struct {
 		name, origin, repo string
 		mode               config.CloudControlMode

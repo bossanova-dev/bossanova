@@ -92,7 +92,7 @@ func (c *StreamClient) forwardEvent(
 		}
 	case ev.Session != nil:
 		out := &pb.DaemonEvent{Event: &pb.DaemonEvent_Session{
-			Session: &pb.SessionDelta{Kind: ev.Session.Kind, Session: c.newCloudRedactor().redactForCloud(ctx, ev.Session.Session).(*pb.Session), Seq: c.nextSessionDeltaSeq()},
+			Session: &pb.SessionDelta{Kind: ev.Session.Kind, Session: c.newCloudRedactor().session(ctx, ev.Session.Session), Seq: c.nextSessionDeltaSeq()},
 		}}
 		select {
 		case outbound <- out:
@@ -100,7 +100,7 @@ func (c *StreamClient) forwardEvent(
 		}
 	case ev.Chat != nil:
 		out := &pb.DaemonEvent{Event: &pb.DaemonEvent_Chat{
-			Chat: &pb.ChatDelta{Kind: ev.Chat.Kind, Chat: c.newCloudRedactor().redactForCloud(ctx, ev.Chat.Chat).(*pb.AgentChatMetadata)},
+			Chat: &pb.ChatDelta{Kind: ev.Chat.Kind, Chat: c.newCloudRedactor().chat(ctx, ev.Chat.Chat)},
 		}}
 		select {
 		case outbound <- out:

@@ -82,7 +82,9 @@ func (c *StreamClient) resolveTarget(ctx context.Context, cmd *pb.OrchestratorCo
 	if err := c.loadGlobalTargets(ctx, target, declaration.Fanout || contentList || globalMove); err != nil {
 		return nil, err
 	}
-	c.resolveTargetModes(ctx, target, declaration, contentList)
+	if !usesPerEntryCloudPolicy(arm.Name()) {
+		c.resolveTargetModes(ctx, target, declaration, contentList)
+	}
 	return target, nil
 }
 
@@ -275,12 +277,28 @@ func (c *StreamClient) targetRefusal(target *authorizedTarget, cmd *pb.Orchestra
 }
 
 func (c *StreamClient) authorizeTargetContext(ctx context.Context, target *authorizedTarget, cmd *pb.OrchestratorCommand) context.Context {
+	repos := make([]string, 0, len(target.repos))
+	for id := range target.repos {
+		repos = append(repos, id)
+	}
+	ctx = context.WithValue(ctx, resultScopeKey{}, repos)
 	bindings := make(domain.CloudTarget, len(target.objects))
 	for key, object := range target.objects {
 		bindings[key.kind+":"+key.id] = object.RepoID
 	}
 	ctx = context.WithValue(ctx, cloudCommandIDKey{}, cmd.GetCommandId())
 	ctx = domain.WithCloudTarget(ctx, bindings)
+	ctx = domain.WithCloudRepoCheck(ctx, func(checkCtx context.Context, repoID string) bool {
+		if c.cloudControl == nil || c.targetObjects == nil {
+			return false
+		}
+		object, err := c.targetObjects.GetTarget(checkCtx, "repo", repoID)
+		if err != nil || object.RepoID != repoID {
+			return false
+		}
+		mode, _ := c.cloudControl.RepoMode(checkCtx, repoID)
+		return mode == config.CloudControlFull
+	})
 	return context.WithValue(ctx, commandTargetContextKey{}, func() error {
 		for key, object := range target.objects {
 			current, err := c.targetObjects.GetTarget(ctx, key.kind, key.id)
@@ -331,4 +349,12 @@ func (c *StreamClient) authorizeCommand(ctx context.Context, cmd *pb.Orchestrato
 	}
 
 	return ctx, nil
+}
+
+func usesPerEntryCloudPolicy(arm protoreflect.Name) bool {
+	switch arm {
+	case "broadcast", "empty_trash", "list_notes", "list_cron_jobs", "list_github_callbacks":
+		return true
+	}
+	return false
 }

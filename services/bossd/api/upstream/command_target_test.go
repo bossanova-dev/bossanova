@@ -187,7 +187,7 @@ func TestRepoTargetMachineAccountsAndFanout(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if daemoncaps.CloudControlAllows(targetModeProto(target.mode), cmd) {
+			if name != "broadcast" && name != "empty_trash" && daemoncaps.CloudControlAllows(targetModeProto(target.mode), cmd) {
 				t.Fatal("repo grant enabled machine action")
 			}
 			client.cloudControl = targetPolicy{machine: config.CloudControlFull, repos: map[string]config.CloudControlMode{}}
@@ -200,8 +200,8 @@ func TestRepoTargetMachineAccountsAndFanout(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (name == "broadcast" || name == "empty_trash") && daemoncaps.CloudControlAllows(targetModeProto(target.mode), cmd) {
-				t.Fatal("fanout bypassed protected repo")
+			if (name == "broadcast" || name == "empty_trash") && !daemoncaps.CloudControlAllows(targetModeProto(target.mode), cmd) {
+				t.Fatal("fanout rejected instead of filtering targets")
 			}
 		})
 	}
@@ -215,9 +215,9 @@ func TestRepoTargetPrivateLists(t *testing.T) {
 		{Cmd: &pb.OrchestratorCommand_ListCronJobs{ListCronJobs: &pb.ListCronJobsCommand{}}},
 		{Cmd: &pb.OrchestratorCommand_ListGithubCallbacks{ListGithubCallbacks: &pb.ListGitHubCallbacksCommand{}}},
 	} {
-		event := client.dispatchCommand(context.Background(), cmd, nil)
-		if event.GetResult().GetErrorCode() != pb.CommandResult_ERROR_CODE_CLOUD_CONTROL_DISABLED {
-			t.Fatalf("result=%v", event)
+		_, event := client.authorizeCommand(context.Background(), cmd)
+		if event != nil {
+			t.Fatalf("mixed list rejected before per-entry redaction: %v", event)
 		}
 	}
 }

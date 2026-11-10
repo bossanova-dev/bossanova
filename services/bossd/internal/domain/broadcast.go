@@ -17,15 +17,17 @@ import (
 // read surface, never written to logs, and never copied into a
 // BroadcastDelivery.LastError diagnostic.
 type Broadcast struct {
-	ID           string
-	OriginChatID *string // nil = operator-issued, no originating chat
-	Selector     string  // Selector.String(), the byte-stable canonical form
-	Message      string  // SECRET: never echoed back, logged, or put in LastError
-	State        BroadcastState
-	TargetCount  int
-	ExpiresAt    time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// IsCloudControlled survives queueing and restart, so local IPC keeps its authority.
+	IsCloudControlled bool
+	ID                string
+	OriginChatID      *string // nil = operator-issued, no originating chat
+	Selector          string  // Selector.String(), the byte-stable canonical form
+	Message           string  // SECRET: never echoed back, logged, or put in LastError
+	State             BroadcastState
+	TargetCount       int
+	ExpiresAt         time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // BroadcastDelivery is one resolved target of a broadcast, carrying the lease

@@ -12,20 +12,21 @@ import (
 
 const createBroadcast = `-- name: CreateBroadcast :execresult
 INSERT INTO broadcasts
-			(id, origin_chat_id, selector, message, state, target_count, expires_at, created_at, updated_at)
-		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+			(id, origin_chat_id, selector, message, state, target_count, expires_at, created_at, updated_at, is_cloud_controlled)
+		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
 `
 
 type CreateBroadcastParams struct {
-	ID           string
-	OriginChatID *string
-	Selector     string
-	Message      string
-	State        string
-	TargetCount  int64
-	ExpiresAt    string
-	CreatedAt    string
-	UpdatedAt    string
+	ID                string
+	OriginChatID      *string
+	Selector          string
+	Message           string
+	State             string
+	TargetCount       int64
+	ExpiresAt         string
+	CreatedAt         string
+	UpdatedAt         string
+	IsCloudControlled bool
 }
 
 func (q *Queries) CreateBroadcast(ctx context.Context, arg CreateBroadcastParams) (sql.Result, error) {
@@ -39,6 +40,7 @@ func (q *Queries) CreateBroadcast(ctx context.Context, arg CreateBroadcastParams
 		arg.ExpiresAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.IsCloudControlled,
 	)
 }
 
@@ -92,7 +94,7 @@ func (q *Queries) DeleteUnmaterialisedBroadcast(ctx context.Context, arg DeleteU
 }
 
 const getBroadcast = `-- name: GetBroadcast :one
-SELECT id, origin_chat_id, selector, message, state, target_count, expires_at, created_at, updated_at FROM broadcasts WHERE id = ?
+SELECT id, origin_chat_id, selector, message, state, target_count, expires_at, created_at, updated_at, is_cloud_controlled FROM broadcasts WHERE id = ?
 `
 
 func (q *Queries) GetBroadcast(ctx context.Context, id string) (Broadcast, error) {
@@ -108,6 +110,7 @@ func (q *Queries) GetBroadcast(ctx context.Context, id string) (Broadcast, error
 		&i.ExpiresAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsCloudControlled,
 	)
 	return i, err
 }
@@ -190,7 +193,7 @@ func (q *Queries) ListBroadcastDeliveries(ctx context.Context, broadcastID strin
 }
 
 const listBroadcasts = `-- name: ListBroadcasts :many
-SELECT id, origin_chat_id, selector, message, state, target_count, expires_at, created_at, updated_at FROM broadcasts
+SELECT id, origin_chat_id, selector, message, state, target_count, expires_at, created_at, updated_at, is_cloud_controlled FROM broadcasts
 WHERE (CAST(?1 AS TEXT) IS NULL OR state = ?1)
  AND (CAST(?2 AS TEXT) IS NULL OR origin_chat_id = ?2)
  AND (CAST(?3 AS TEXT) IS NULL OR id IN (SELECT broadcast_id FROM broadcast_deliveries WHERE target_chat_id = ?3))
@@ -228,6 +231,7 @@ func (q *Queries) ListBroadcasts(ctx context.Context, arg ListBroadcastsParams) 
 			&i.ExpiresAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IsCloudControlled,
 		); err != nil {
 			return nil, err
 		}

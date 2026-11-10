@@ -97,15 +97,16 @@ type AgentRunChild struct {
 }
 
 type Broadcast struct {
-	ID           string
-	OriginChatID *string
-	Selector     string
-	Message      string
-	State        string
-	TargetCount  int64
-	ExpiresAt    string
-	CreatedAt    string
-	UpdatedAt    string
+	ID                string
+	OriginChatID      *string
+	Selector          string
+	Message           string
+	State             string
+	TargetCount       int64
+	ExpiresAt         string
+	CreatedAt         string
+	UpdatedAt         string
+	IsCloudControlled bool
 }
 
 type BroadcastDelivery struct {

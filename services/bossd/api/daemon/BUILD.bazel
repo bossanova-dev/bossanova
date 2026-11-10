@@ -315,6 +315,7 @@ go_test(
         "session_timeline_test.go",
         "session_tracker_rank_test.go",
         "session_tracker_test.go",
+        "session_trash_cloud_test.go",
         "set_chat_phase_test.go",
         "settings_test.go",
         "singleton_test.go",

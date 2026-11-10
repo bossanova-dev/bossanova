@@ -33,9 +33,11 @@ func (c *StreamClient) cloudControlPollInterval() time.Duration {
 // on the injected fake clock wait for a timer of at least that backoff, and a
 // poll timer on the same clock would satisfy that wait early.
 func (c *StreamClient) watchCloudControl(ctx context.Context, advertised pb.CloudControl, outbound chan<- *pb.DaemonEvent, initial ...map[string]pb.CloudControl) {
-	previous, _ := c.repoCloudControl(ctx)
+	var previous map[string]pb.CloudControl
 	if len(initial) > 0 {
 		previous = initial[0]
+	} else {
+		previous, _ = c.repoCloudControl(ctx)
 	}
 	ticker := time.NewTicker(c.cloudControlPollInterval())
 	defer ticker.Stop()

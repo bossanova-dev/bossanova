@@ -130,12 +130,23 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 		return nil, fmt.Errorf("resolve broadcast audience: %w", err)
 	}
 
+	if domain.IsCloudCommand(ctx) {
+		allowed := targets[:0]
+		for _, target := range targets {
+			if domain.CloudRepoAllowed(ctx, target.RepoID) {
+				allowed = append(allowed, target)
+			}
+		}
+		targets = allowed
+	}
+
 	broadcast := &domain.Broadcast{
-		ID:        req.ID,
-		Selector:  req.Selector.String(),
-		Message:   req.Message,
-		State:     domain.BroadcastStatePending,
-		ExpiresAt: req.ExpiresAt,
+		IsCloudControlled: domain.IsCloudCommand(ctx),
+		ID:                req.ID,
+		Selector:          req.Selector.String(),
+		Message:           req.Message,
+		State:             domain.BroadcastStatePending,
+		ExpiresAt:         req.ExpiresAt,
 	}
 	if req.OriginChatID != "" {
 		origin := req.OriginChatID

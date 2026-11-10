@@ -301,14 +301,13 @@ func (s *Server) modalDetectorFor(agentName string) domain.ModalDetector {
 // delivery_state to ProxySendChatMessageResponse WOULD put a new value on that
 // wire and would need a bump; that is the deferral recorded above.
 func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
-	chat, err := s.agentChats.GetByAgentSessionID(ctx, req.Msg.GetAgentSessionId())
-	if err != nil || chat == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat not found: %s", req.Msg.GetAgentSessionId()))
+	chat, sess, err := s.chatMessageTarget(ctx, req.Msg.GetAgentSessionId())
+	if err != nil {
+		return nil, err
 	}
 
-	sess, err := s.sessions.Get(ctx, chat.SessionID)
-	if err != nil || sess == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found for chat %s", req.Msg.GetAgentSessionId()))
+	if !domain.CloudRepoAllowed(ctx, sess.RepoID) {
+		return nil, connect.NewError(connect.CodePermissionDenied, domain.ErrCloudTarget)
 	}
 
 	// Intercept a SUBMITTED single-line "/boss switch" (or "/switch") control
@@ -441,6 +440,9 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			}
 			return false
 		}
+	}
+	if err := s.assertCloudChatMessage(ctx, chat, sess); err != nil {
+		return nil, err
 	}
 	sentAt := time.Now()
 	sendErr := spawner.SendMessageWithHooks(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName),
@@ -674,4 +676,31 @@ func (s *Server) handleBossSwitchInterception(ctx context.Context, chat *domain.
 		Delivered:  false,
 		NoticeText: res.NoticeText,
 	}), nil
+}
+
+func (s *Server) chatMessageTarget(ctx context.Context, id string) (*domain.AgentChat, *models.Session, error) {
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, id)
+	if err != nil || chat == nil {
+		return nil, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat not found: %s", id))
+	}
+	sess, err := s.sessions.Get(ctx, chat.SessionID)
+	if err != nil || sess == nil {
+		return nil, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found for chat %s", id))
+	}
+	return chat, sess, nil
+}
+
+func (s *Server) assertCloudChatMessage(ctx context.Context, chat *domain.AgentChat, sess *models.Session) error {
+	if !domain.IsCloudCommand(ctx) {
+		return nil
+	}
+	current, err := s.agentChats.GetByAgentSessionID(ctx, chat.AgentSessionID)
+	if err != nil || current == nil || current.SessionID != chat.SessionID {
+		return connect.NewError(connect.CodePermissionDenied, domain.ErrCloudTarget)
+	}
+	currentSession, err := s.sessions.Get(ctx, current.SessionID)
+	if err != nil || currentSession == nil || currentSession.RepoID != sess.RepoID || !domain.CloudRepoAllowed(ctx, currentSession.RepoID) {
+		return connect.NewError(connect.CodePermissionDenied, domain.ErrCloudTarget)
+	}
+	return nil
 }

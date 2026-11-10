@@ -189,15 +189,16 @@ func (s *SQLiteBroadcastStore) Create(ctx context.Context, b *domain.Broadcast) 
 	}
 
 	if _, err := sqlcgen.New(s.db).CreateBroadcast(ctx, sqlcgen.CreateBroadcastParams{
-		ID:           b.ID,
-		OriginChatID: b.OriginChatID,
-		Selector:     b.Selector,
-		Message:      b.Message,
-		State:        b.State.String(),
-		TargetCount:  int64(b.TargetCount),
-		ExpiresAt:    sqlutil.FormatTime(b.ExpiresAt),
-		CreatedAt:    sqlutil.FormatTime(b.CreatedAt),
-		UpdatedAt:    sqlutil.FormatTime(b.UpdatedAt),
+		ID:                b.ID,
+		IsCloudControlled: b.IsCloudControlled,
+		OriginChatID:      b.OriginChatID,
+		Selector:          b.Selector,
+		Message:           b.Message,
+		State:             b.State.String(),
+		TargetCount:       int64(b.TargetCount),
+		ExpiresAt:         sqlutil.FormatTime(b.ExpiresAt),
+		CreatedAt:         sqlutil.FormatTime(b.CreatedAt),
+		UpdatedAt:         sqlutil.FormatTime(b.UpdatedAt),
 	}); err != nil {
 		return fmt.Errorf("insert broadcast: %w", err)
 	}
@@ -726,7 +727,7 @@ func broadcastFromRow(row sqlcgen.Broadcast) (*domain.Broadcast, error) {
 	if err != nil {
 		return nil, fmt.Errorf("broadcast %s: %w", row.ID, err)
 	}
-	return &domain.Broadcast{ID: row.ID, OriginChatID: row.OriginChatID, Selector: row.Selector, Message: row.Message,
+	return &domain.Broadcast{IsCloudControlled: row.IsCloudControlled, ID: row.ID, OriginChatID: row.OriginChatID, Selector: row.Selector, Message: row.Message,
 		State: state, TargetCount: int(row.TargetCount), ExpiresAt: textTime(row.ExpiresAt), CreatedAt: textTime(row.CreatedAt), UpdatedAt: textTime(row.UpdatedAt)}, nil
 }
 

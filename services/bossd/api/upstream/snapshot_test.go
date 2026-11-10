@@ -154,7 +154,8 @@ func TestBuildSnapshot_ChatMetadataHasPreviewNotFullBody(t *testing.T) {
 	}
 
 	client := newTestClient(StreamStores{
-		Chats: &fakeChatReader{chats: []*pb.AgentChatMetadata{chat}},
+		Sessions: &fakeSessionReader{sessions: []*pb.Session{{Id: "s1", RepoId: "repo"}}},
+		Chats:    &fakeChatReader{chats: []*pb.AgentChatMetadata{chat}},
 	})
 
 	snap, err := client.buildSnapshot(context.Background())

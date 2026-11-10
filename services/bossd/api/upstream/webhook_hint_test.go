@@ -41,7 +41,7 @@ func TestDispatch_CloudWebhookHints(t *testing.T) {
 			close(evaluator.release)
 			dispatcher := NewWebhookDispatcherWithEmitter(orderedRefresher{log}, emitter, zerolog.Nop()).
 				WithReadInvalidator(orderedInvalidator{log}).WithPRPoller(orderedPRPoller{log}).WithEvaluator(evaluator).WithVerifyEvents(notifier).WithBaseMoves(moves)
-			dispatcher.WithCloudControl(tc.policy).WithWebhookHealth(health)
+			dispatcher.WithCloudControl(tc.policy).WithWebhookTargets(webhookTargetFixture{repo: "repo"}).WithWebhookHealth(health)
 			var pending []<-chan struct{}
 			dispatcher.evalDoneHook = func(done <-chan struct{}) { pending = append(pending, done) }
 			ev := &pb.WebhookEvent{RepoOriginUrl: origin, EventType: "pull_request_review", PullRequest: tc.envelope,

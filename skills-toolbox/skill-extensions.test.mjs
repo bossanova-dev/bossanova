@@ -667,6 +667,12 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     '  role: proof-publish',
     '  publish: /abs/publish.mjs',
   ])
+  writeSkill(root, 'bs-review-badmedia', [
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: proof-media',
+    '  media: ../media.mjs',
+  ])
   writeSkill(root, 'bs-review-badscript', [
     'x-boss-extension:',
     '  extends: bs-review',
@@ -680,6 +686,7 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     { core: 'bs-review', role: 'release' },
     { core: 'bs-review', role: 'proof-describe' },
     { core: 'bs-review', role: 'proof-publish' },
+    { core: 'bs-review', role: 'proof-media' },
     { core: 'bs-review', role: 'verify' },
     // A requested MODE is a property of the caller's argument, like the requested role below.
     { core: 'bs-review', role: 'plan-reviewer', mode: 'headless' },
@@ -737,6 +744,7 @@ test('exactly the non-extension and mode-not-declared skips are classified delib
     'incomplete-marker',
     'invalid-applies',
     'invalid-describe',
+    'invalid-media',
     'invalid-modes',
     'invalid-publish',
     'invalid-release-marker',
@@ -928,6 +936,7 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
     'plan-reviewer',
     'promote',
     'proof-describe',
+    'proof-media',
     'proof-publish',
     'release',
     'surface',

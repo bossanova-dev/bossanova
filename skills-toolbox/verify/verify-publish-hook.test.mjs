@@ -90,6 +90,19 @@ test('the deterministic prefix and content types match the daemon contract', () 
   assert.equal(publishContentType('index.html'), 'text/html; charset=utf-8')
   assert.equal(publishContentType('screenshots/a.webp'), 'image/webp')
   assert.equal(publishContentType('credentials.txt'), null)
+  assert.equal(publishContentType('player.js'), 'text/javascript; charset=utf-8')
+  for (const [name, type] of [
+    ['media/head-0.mp4', 'video/mp4'],
+    ['media/still.png', 'image/png'],
+    ['media/still.jpg', 'image/jpeg'],
+    ['media/still.webp', 'image/webp'],
+    ['media/clip.webm', null],
+    ['media/still.jpeg', null],
+    ['media/nested/a.mp4', null],
+    ['media/../index.html', null],
+    ['other/player.js', null],
+  ])
+    assert.equal(publishContentType(name), type, name)
 })
 
 test('the runner passes the envelope and returns the validated base URL', (t) => {

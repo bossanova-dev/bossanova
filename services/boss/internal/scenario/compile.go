@@ -138,7 +138,7 @@ func Compile(doc Document) (Plan, []Problem) {
 	for _, r := range doc.Repos {
 		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + r.Key, "-i"}, Stdout: `{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}`})
 		data, _ := json.Marshal(lists[r.Key])
-		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"pr", "list", "--repo", r.Key, "--state", "open", "--json", "number,title,headRefName,state,author", "--limit", "300"}, Stdout: string(data)})
+		p.GH = append(p.GH, realstack.OpenPRListResponse(r.Key, string(data)))
 	}
 	return p, ps
 }

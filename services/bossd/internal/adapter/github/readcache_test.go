@@ -182,7 +182,7 @@ func TestCachedReadErrorsAreNotCached(t *testing.T) {
 		if fail {
 			return "", errors.New("gh: HTTP 500")
 		}
-		return `[]`, nil
+		return emptySnapshot, nil
 	}}
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())

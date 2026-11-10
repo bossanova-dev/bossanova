@@ -400,18 +400,8 @@ func TestE2E_GitHub_UpdatePRTitle(t *testing.T) {
 func TestE2E_GitHub_ListOpenPRs(t *testing.T) {
 	f := newFakeGH(t)
 	f.expect(ghResponder{
-		match: func(args []string) bool {
-			if len(args) < 2 || args[0] != "pr" || args[1] != "list" {
-				return false
-			}
-			for _, a := range args {
-				if a == "open" {
-					return true
-				}
-			}
-			return false
-		},
-		stdout: fixture(t, "list_open_prs.json"),
+		match:  isOpenPRList,
+		stdout: listPage(fixture(t, "list_open_prs.json")),
 	})
 	p := newProvider(f)
 

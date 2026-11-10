@@ -37,8 +37,8 @@ func perMinuteGH(clock *clocktest.Clock, remaining int, refusing *atomic.Bool) *
 			return "", errors.New(graphQLExhausted)
 		case isPRView(args):
 			return draftPRView, nil
-		case len(args) >= 2 && args[0] == "pr" && args[1] == "list":
-			return `[]`, nil
+		case isOpenPRList(args):
+			return emptySnapshot, nil
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
@@ -269,7 +269,7 @@ func TestBurstRefusalIsTransientForTheRetryLadder(t *testing.T) {
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("ListOpenPRs err = %v, want error %v", err, tc.wantErr)
 			}
-			isList := func(args []string) bool { return len(args) >= 2 && args[0] == "pr" && args[1] == "list" }
+			isList := isOpenPRList
 			if got := gh.count(isList); got != tc.wantLists || sleeps != tc.wantSleep {
 				t.Fatalf("gh pr list ran %d times with %d sleeps, want %d and %d", got, sleeps, tc.wantLists, tc.wantSleep)
 			}

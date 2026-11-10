@@ -398,7 +398,7 @@ func TestListOpenPRs_RetriesSecondaryRateLimit(t *testing.T) {
 		if n == 1 {
 			return "", fmt.Errorf("gh pr list: HTTP 403: You have exceeded a secondary rate limit")
 		}
-		return `[]`, nil
+		return emptySnapshot, nil
 	}
 
 	p := New(zerolog.Nop(), WithRunGH(fakeGH), WithNowFunc(clock.Now), WithJitterFunc(noJitter), WithSleepFunc(clock.Advance))
@@ -423,12 +423,6 @@ func TestListPRsByState_PassesStateAndLimitAndMaps(t *testing.T) {
 		wantState string
 		wantLimit string
 	}{
-		{
-			name:      "open",
-			call:      func(p *Provider) ([]vcs.PRSummary, error) { return p.ListOpenPRs(context.Background(), "owner/repo") },
-			wantState: "open",
-			wantLimit: "300",
-		},
 		{
 			name:      "closed",
 			call:      func(p *Provider) ([]vcs.PRSummary, error) { return p.ListClosedPRs(context.Background(), "owner/repo") },
@@ -1931,7 +1925,7 @@ func TestListOpenPRs_ParsesAndMapsPayload(t *testing.T) {
 	var gotArgs []string
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		gotArgs = append([]string(nil), args...)
-		return listPRsPayload, nil
+		return listPage(listPRsPayload), nil
 	}
 
 	p := New(zerolog.Nop(), WithRunGH(fakeGH))
@@ -1941,8 +1935,8 @@ func TestListOpenPRs_ParsesAndMapsPayload(t *testing.T) {
 		t.Fatalf("ListOpenPRs: %v", err)
 	}
 
-	if got := flagValue(gotArgs, "--state"); got != "open" {
-		t.Errorf("ListOpenPRs requested --state %q, want %q", got, "open")
+	if !isOpenPRList(gotArgs) {
+		t.Fatalf("not an open PR query: %v", gotArgs)
 	}
 
 	want := []vcs.PRSummary{
@@ -1978,7 +1972,7 @@ func TestListClosedPRs_ParsesAndMapsPayload(t *testing.T) {
 }
 
 func TestListOpenPRs_EmptyPayloadYieldsNoPRs(t *testing.T) {
-	fakeGH := func(_ context.Context, _ ...string) (string, error) { return `[]`, nil }
+	fakeGH := func(_ context.Context, _ ...string) (string, error) { return emptySnapshot, nil }
 
 	p := New(zerolog.Nop(), WithRunGH(fakeGH))
 

@@ -54,7 +54,7 @@ func isRateLimitProbe(args []string) bool {
 	return len(args) >= 2 && args[0] == "api" && args[1] == "rate_limit"
 }
 func isRESTCall(args []string) bool {
-	return len(args) >= 1 && args[0] == "api" && !isRateLimitProbe(args)
+	return len(args) >= 1 && args[0] == "api" && !isRateLimitProbe(args) && !isGraphQL(args)
 }
 
 const graphQLExhausted = "gh pr view 7 --repo o/r: exit status 1: GraphQL: API rate limit already exceeded for user ID 96322."

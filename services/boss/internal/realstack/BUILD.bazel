@@ -16,6 +16,7 @@ go_library(
         "//lib/bossalib/contract/daemon/socketauth",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/kit/safego",
+        "//lib/bossalib/kit/vcs",
         "//services/boss/internal/adapter/realstackrpc",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_google_protobuf//proto",

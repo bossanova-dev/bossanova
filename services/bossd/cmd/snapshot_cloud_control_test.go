@@ -15,7 +15,7 @@ func TestSnapshotForPublishCloudControl(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	t.Setenv("BOSS_SETTINGS_PATH", path)
 	policy := upstream.NewCloudControlPolicy(zerolog.Nop())
-	for _, raw := range []string{"", "full", "read-only"} {
+	for _, raw := range []string{"", "full", "read-only", "private"} {
 		if err := config.SaveTo(path, config.Settings{CloudControl: raw}); err != nil {
 			t.Fatal(err)
 		}
@@ -26,6 +26,9 @@ func TestSnapshotForPublishCloudControl(t *testing.T) {
 		want := pb.CloudControl_CLOUD_CONTROL_READ_ONLY
 		if raw == "" || raw == "full" {
 			want = pb.CloudControl_CLOUD_CONTROL_FULL
+		}
+		if raw == "private" {
+			want = pb.CloudControl_CLOUD_CONTROL_PRIVATE
 		}
 		if snap.GetCloudControl() != want {
 			t.Fatalf("raw=%q snapshot=%v", raw, snap.GetCloudControl())

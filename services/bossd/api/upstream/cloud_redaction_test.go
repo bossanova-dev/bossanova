@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -20,8 +21,8 @@ func TestCloudRedactionSnapshotsAndDeltas(t *testing.T) {
 		{"nil", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			session := &pb.Session{Id: "session", Title: "session title", Plan: "operator prompt", BranchName: "branch", PrNumber: proto.Int32(42), BlockedReason: proto.String("blocked")}
-			chat := &pb.AgentChatMetadata{Id: "chat", Title: "chat title", LastMessagePreview: "agent output"}
+			session := &pb.Session{Id: "session", RepoId: "repo", Title: "session title", Plan: "operator prompt", BranchName: "branch", PrNumber: proto.Int32(42), BlockedReason: proto.String("blocked")}
+			chat := &pb.AgentChatMetadata{Id: "chat", SessionId: "session", Title: "chat title", LastMessagePreview: "agent output"}
 			originalSession := proto.Clone(session).(*pb.Session)
 			originalChat := proto.Clone(chat).(*pb.AgentChatMetadata)
 			wantSession := proto.Clone(session).(*pb.Session)
@@ -35,6 +36,7 @@ func TestCloudRedactionSnapshotsAndDeltas(t *testing.T) {
 				Chats:    &fakeChatReader{chats: []*pb.AgentChatMetadata{chat}},
 			})
 			client.cloudControl = tc.policy
+			client.targetObjects = &targetFixture{objects: map[targetKey]CommandTargetObject{{"session", "session"}: {RepoID: "repo"}}}
 			snapshot, err := client.buildSnapshot(context.Background())
 			if err != nil {
 				t.Fatal(err)
@@ -68,5 +70,41 @@ func TestCloudRedactionSnapshotsAndDeltas(t *testing.T) {
 				t.Fatal("snapshot or delta mutated store-owned input")
 			}
 		})
+	}
+}
+
+func TestCloudRedactionMixedRepos(t *testing.T) {
+	c, _, targets := targetClient()
+	c.cloudControl = targetPolicy{machine: config.CloudControlFull, repos: map[string]config.CloudControlMode{"a": config.CloudControlPrivate, "b": config.CloudControlFull}}
+	c.targetObjects = targets
+	c.stores = StreamStores{Sessions: &fakeSessionReader{sessions: []*pb.Session{{Id: "sa", RepoId: "a", Plan: "secret"}, {Id: "sb", RepoId: "b", Plan: "public"}}}, Chats: &fakeChatReader{chats: []*pb.AgentChatMetadata{{Id: "ca", SessionId: "sa", LastMessagePreview: "secret"}, {Id: "cb", SessionId: "sb", LastMessagePreview: "public"}}}}
+	snap, err := c.buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Sessions[0].Plan != "" || snap.Sessions[1].Plan != "public" || snap.Chats[0].LastMessagePreview != "" || snap.Chats[1].LastMessagePreview != "public" {
+		t.Fatalf("mixed snapshot leaked or over-redacted: %v", snap)
+	}
+	out := make(chan *pb.DaemonEvent, 1)
+	c.forwardEvent(context.Background(), StreamEvent{Session: &SessionEvent{Session: &pb.Session{Id: "sa", RepoId: "a", Plan: "secret"}}}, out, nil)
+	if (<-out).GetSession().Session.Plan != "" {
+		t.Fatal("private delta leaked")
+	}
+	c.forwardEvent(context.Background(), StreamEvent{Chat: &ChatEvent{Chat: &pb.AgentChatMetadata{Id: "cb", SessionId: "sb", LastMessagePreview: "public"}}}, out, nil)
+	if (<-out).GetChat().Chat.LastMessagePreview != "public" {
+		t.Fatal("full delta redacted")
+	}
+}
+
+func TestCloudRedactionMixedCommandResults(t *testing.T) {
+	c, _, _ := targetClient()
+	c.cloudControl = targetPolicy{machine: config.CloudControlFull, repos: map[string]config.CloudControlMode{"a": config.CloudControlPrivate, "b": config.CloudControlFull}}
+	result := &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{Payload: &pb.CommandResult_ListNotes{ListNotes: &pb.ListNotesResponse{Notes: []*pb.Note{{Id: "na", RepoId: "a", Body: "secret"}, {Id: "nb", RepoId: "b", Body: "public"}, {Id: "unknown", Body: "unresolved"}}}}}}}
+	redacted := c.newCloudRedactor().redactForCloud(context.Background(), result).(*pb.DaemonEvent).GetResult().GetListNotes()
+	if redacted.Notes[0].Body != "" || redacted.Notes[1].Body != "public" || redacted.Notes[2].Body != "" {
+		t.Fatalf("mixed result leaked or over-redacted: %v", redacted)
+	}
+	if result.GetResult().GetListNotes().Notes[0].Body != "secret" {
+		t.Fatal("mutated result")
 	}
 }

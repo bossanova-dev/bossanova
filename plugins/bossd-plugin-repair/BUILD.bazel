@@ -7,6 +7,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "bossd-plugin-repair_lib",
     srcs = [
+        "dependabot.go",
         "host.go",
         "main.go",
         "plugin.go",
@@ -45,6 +46,7 @@ go_binary(
 go_test(
     name = "bossd-plugin-repair_test",
     srcs = [
+        "dependabot_test.go",
         "escalation_test.go",
         "helpers_test.go",
         "host_test.go",

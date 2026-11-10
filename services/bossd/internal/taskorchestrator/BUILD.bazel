@@ -4,6 +4,7 @@ go_library(
     name = "taskorchestrator",
     srcs = [
         "automerge.go",
+        "dependabot_gate.go",
         "lifecycle.go",
         "liveness.go",
         "orchestrator.go",

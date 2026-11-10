@@ -261,3 +261,49 @@ func TestVerifyRepoMergeOwnerFollowsBotAdmission(t *testing.T) {
 		})
 	}
 }
+
+type dependabotBusyGate struct{ busy bool }
+
+func (g *dependabotBusyGate) DependabotRepairInFlight(context.Context, string) (string, bool) {
+	return "other-session", g.busy
+}
+
+func TestDependabotStartDeferredAndRetried_Sessions_AC248003(t *testing.T) {
+	for _, direct := range []bool{true, false} {
+		t.Run(fmt.Sprint(direct), func(t *testing.T) {
+			o, m, task, repo, _ := handoffFixture(t)
+			task.Action = pb.TaskAction_TASK_ACTION_CREATE_SESSION
+			gate := &dependabotBusyGate{busy: true}
+			o.SetDependabotRepairGate(gate)
+			created := 0
+			o.sessionCreator = &mockSessionCreatorOrch{createFn: func(context.Context, CreateSessionOpts) (*models.Session, error) {
+				created++
+				return &models.Session{ID: "new"}, nil
+			}}
+			before := m.RetryCount
+			if direct {
+				o.handleCreateSession(context.Background(), task, repo, m, false)
+				if o.active[repo.id] {
+					t.Fatal("deferred start retained repo slot")
+				}
+			} else {
+				o.active[repo.id] = false
+				delete(o.activeMapping, repo.id)
+				m.Status = domain.TaskMappingStatusFailed
+				m.UpdatedAt = time.Time{}
+				o.processTask(context.Background(), task, repo, "dependabot")
+			}
+			if created != 0 || m.RetryCount != before {
+				t.Fatalf("created=%d retry=%d", created, m.RetryCount)
+			}
+			if direct && m.Status == domain.TaskMappingStatusFailed {
+				t.Fatal("deferral failed mapping")
+			}
+			gate.busy = false
+			o.processTask(context.Background(), task, repo, "dependabot")
+			if created != 1 {
+				t.Fatalf("retry created=%d", created)
+			}
+		})
+	}
+}

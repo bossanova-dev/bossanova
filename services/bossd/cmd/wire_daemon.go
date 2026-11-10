@@ -179,6 +179,7 @@ func (w *daemonWiring) wireDaemon() {
 		w.opts.onVerifyJobSeamsWired(w.orchestrator.HasFactoryRepoChecker() && w.orchestrator.HasRepairActivity(), daemonConfig.FactoryRepoChecker == w.factoryRepoChecker && w.factoryRepoChecker != nil && w.orchestrator.UsesFactoryRepoChecker(w.factoryRepoChecker))
 	}
 
+	w.orchestrator.SetDependabotRepairGate(w.lifecycle)
 	w.lifecycle.SetRunResumeStore(w.resumeAttempts)
 	w.streamAttentionServer.Store(w.srv)
 

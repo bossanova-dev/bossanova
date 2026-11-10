@@ -162,7 +162,10 @@ test('post publishes the page through the base hook and notes the marker carryin
   })
   const page = fs.readFileSync(path.join(out, 'acme/widgets/7', head, PAGE_OBJECT), 'utf8')
   assert.match(page, /^<!doctype html>/)
-  assert.ok(page.includes('+message User { string email = 1; }'), 'the asking area shows its diff')
+  assert.ok(
+    page.includes('<span class="sign">+</span>message User { string email = 1; }'),
+    'the asking area shows its diff',
+  )
   assert.ok(page.includes('Regenerate the client'), 'the after-merge item is listed')
   assert.equal(fs.existsSync(path.join(out, 'HEAD_HOOK_RAN')), false, 'the head hook never runs')
   const envelope = JSON.parse(fs.readFileSync(path.join(out, 'envelope.json'), 'utf8'))

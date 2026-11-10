@@ -23,7 +23,7 @@ func (s *Server) ListRepoCloudControls(ctx context.Context, _ *connect.Request[p
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list repos: %w", err))
 	}
 	reader, _ := s.provider.(repoidentity.Reader)
-	verifier := repoidentity.New(reader)
+	verifier := repoidentity.New(reader, s.logger)
 	// Leave the settings callers' five-second deadline room to deliver metadata
 	// even when GitHub is unavailable. Later repos fall back to unverified identity.
 	identityCtx, cancel := context.WithTimeout(ctx, 2*time.Second)

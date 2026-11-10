@@ -8,8 +8,9 @@ go_library(
     deps = [
         "//lib/bossalib/kit/config",
         "//lib/bossalib/kit/vcs",
+        "//services/bossd/internal/detach",
         "//services/bossd/internal/domain",
-        "@org_golang_x_sync//singleflight",
+        "@com_github_rs_zerolog//:zerolog",
     ],
 )
 
@@ -17,5 +18,8 @@ go_test(
     name = "repoidentity_test",
     srcs = ["verifier_test.go"],
     embed = [":repoidentity"],
-    deps = ["//lib/bossalib/models"],
+    deps = [
+        "//lib/bossalib/models",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
 )

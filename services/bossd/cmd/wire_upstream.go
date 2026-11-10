@@ -484,7 +484,7 @@ func (w *daemonWiring) wireUpstream() {
 		w.ghProvider.SetWebhookHealth(webhookHealth)
 		w.prWaits.SetWebhookHealth(webhookHealth)
 		w.webhookEvidence = webhookHealth
-		targets := upstreamTargets{repos: w.repos, sessions: w.sessions, chats: w.agentChats, cronJobs: w.cronJobs, notes: w.notes, callbacks: w.githubCallbacks, identities: repoidentity.New(w.ghProvider)}
+		targets := upstreamTargets{repos: w.repos, sessions: w.sessions, chats: w.agentChats, cronJobs: w.cronJobs, notes: w.notes, callbacks: w.githubCallbacks, identities: repoidentity.New(w.ghProvider, log.Logger)}
 		cloudControl := upstream.NewCloudControlPolicy(log.Logger)
 		cloudControl.RepoIdentities = targets
 		terminalSealing := upstream.TerminalSealingConfig{DaemonID: cfg.DaemonID, IdentityKey: identityKey, Approvals: w.viewerApprovals}

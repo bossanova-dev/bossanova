@@ -8,10 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/singleflight"
+	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/vcs"
+	"github.com/recurser/bossd/internal/detach"
 	"github.com/recurser/bossd/internal/domain"
 )
 
@@ -37,12 +38,13 @@ type Verifier struct {
 	now    func() time.Time
 	mu     sync.Mutex
 	cache  map[string]entry
-	group  singleflight.Group
+	group  detach.Group
+	logger zerolog.Logger
 }
 
 // New constructs a verifier for a locally credentialed provider.
-func New(reader Reader) *Verifier {
-	return &Verifier{reader: reader, now: time.Now, cache: make(map[string]entry)}
+func New(reader Reader, logger zerolog.Logger) *Verifier {
+	return &Verifier{reader: reader, logger: logger, now: time.Now, cache: make(map[string]entry)}
 }
 
 // Identity combines the registered repo row with a freshly verified GitHub identity.
@@ -59,7 +61,7 @@ func (v *Verifier) Identity(ctx context.Context, repo domain.Repo) config.RepoId
 	if id.Host != "github.com" || v.reader == nil || ctx.Err() != nil {
 		return id
 	}
-	value, err, _ := v.group.Do(origin, func() (any, error) {
+	verified, err := detach.Flight(ctx, &v.group, v.logger, origin, fetchTimeout, func(fetchCtx context.Context) (entry, error) {
 		v.mu.Lock()
 		cached, ok := v.cache[origin]
 		if ok && v.now().Before(cached.expiresAt) {
@@ -69,8 +71,6 @@ func (v *Verifier) Identity(ctx context.Context, repo domain.Repo) config.RepoId
 		delete(v.cache, origin)
 		v.mu.Unlock()
 		started := v.now()
-		fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
-		defer cancel()
 		repoID, _, readErr := v.reader.GetRepositoryIdentity(fetchCtx, origin)
 		if readErr != nil {
 			return entry{}, readErr
@@ -90,8 +90,7 @@ func (v *Verifier) Identity(ctx context.Context, repo domain.Repo) config.RepoId
 	if err != nil || ctx.Err() != nil {
 		return id
 	}
-	verified, ok := value.(entry)
-	if ok && verified.repoID > 0 && v.now().Before(verified.expiresAt) {
+	if verified.repoID > 0 && v.now().Before(verified.expiresAt) {
 		id.ProviderRepoID = verified.repoID
 		id.IsIDVerified = true
 	}

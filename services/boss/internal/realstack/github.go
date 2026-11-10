@@ -100,7 +100,7 @@ func OpenPRListResponse(repo, nodes string) GHResponse {
 	nwo, host := repo, ""
 	if canonical := vcs.NormalizeRepoURL(repo); canonical != "" {
 		u, _ := url.Parse(canonical)
-		nwo, host = vcs.RepoSlug(canonical), u.Host
+		nwo, host = vcs.RepoSlug(canonical), u.Hostname()
 	}
 	owner, name, _ := strings.Cut(nwo, "/")
 	if nodes == "null" {

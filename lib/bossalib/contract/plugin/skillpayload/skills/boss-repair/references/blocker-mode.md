@@ -118,7 +118,7 @@ Pass `--carry-findings "$CARRY_FINDINGS_FILE"` on every receipt-carry invocation
 one after delta review. On `re-review`, run the fresh report-only review of the pushed delta,
 then re-run carry and receipt-carry with the returned verdict files. On `post` or `blocked`, after
 that fresh review, upsert the returned `reportFile`; its trailer merges fresh findings and all
-carried findings. A `carry` or `refused` decision upserts nothing. Never supersede the standing
+carried findings the delta review did not resolve. A `carry` or `refused` decision upserts nothing. Never supersede the standing
 report from outcomes alone or without a fresh delta review.
 
 Upsert the single review comment, following the same writer-owned selection as build publication.

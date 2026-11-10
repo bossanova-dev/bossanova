@@ -229,7 +229,7 @@ function fixture(t) {
   // A push from this repository moves the remote-tracking ref and logs it.
   const pushed = (sha) =>
     git('update-ref', '--create-reflog', 'refs/remotes/origin/feature', sha, '-m', 'update by push')
-  const verdict = (file, { base, head, findings = [] }) => {
+  const verdict = (file, { base, head, findings = [], resolves = [] }) => {
     writeFileSync(
       file,
       JSON.stringify({
@@ -238,6 +238,7 @@ function fixture(t) {
         base,
         head,
         findings,
+        resolves,
         fixPass: { ran: false },
         secondModel: { ran: true, agent: 'codex' },
       }),
@@ -283,6 +284,7 @@ test('a repair commit on a receipted head needs a review of exactly that commit'
   assert.equal(report.review.head, head)
   assert.deepEqual(report.review.skills, ['boss-review'])
   assert.equal(report.review.verdictFiles.length, 1)
+  assert.equal(report.review.priorVerdict, undefined)
   assert.equal(f.posts.length, 0)
 })
 
@@ -309,6 +311,64 @@ test('a blocking review of the repair delta posts nothing and writes the report'
   assert.equal(report.findings.length, 1)
   assert.match(readFileSync(report.reportFile, 'utf8'), /^<!-- bs-review -->/)
   assert.equal(f.posts.length, 0)
+})
+
+for (const resolves of [['0.1:old'], ['0.1:unknown'], []])
+  test(`delta review resolves only confirmed carried refs: ${JSON.stringify(resolves)}`, (t) => {
+    const f = fixture(t)
+    f.commit('old.txt', 'broken\n', 'old defect')
+    const start = f.git('rev-parse', 'HEAD')
+    f.receipts.add(start)
+    const head = f.commit('old.txt', 'fixed\n', 'repair old defect')
+    const carryFindings = join(f.dir, 'carried.json')
+    const old = {
+      id: 'old',
+      severity: 'P2',
+      file: 'old.txt',
+      line: 1,
+      title: 'old defect',
+      evidence: 'broken contents',
+      introduced: true,
+      assertionHead: start,
+    }
+    writeFileSync(carryFindings, JSON.stringify([old]))
+    const first = f.run(head, [], {}, start, { carryFindings })
+    assert.equal(first.decision, DECISIONS.RE_REVIEW)
+    assert.ok(first.review.priorVerdict)
+    const prior = JSON.parse(readFileSync(first.review.priorVerdict, 'utf8'))
+    assert.equal(prior.base, start)
+    assert.equal(prior.head, start)
+    const candidates = spawnSync(
+      process.execPath,
+      [
+        new URL('../review-verdict.mjs', import.meta.url).pathname,
+        'resolvable',
+        first.review.priorVerdict,
+      ],
+      { encoding: 'utf8' },
+    )
+    assert.equal(candidates.status, 0, candidates.stderr)
+    assert.deepEqual(
+      JSON.parse(candidates.stdout).map((f) => f.ref),
+      ['0.1:old'],
+    )
+    const [file] = first.review.verdictFiles
+    f.verdict(file, { base: start, head, resolves })
+    const report = f.run(head, [file], {}, start, { carryFindings })
+    assert.equal(report.decision, DECISIONS.POST)
+    const body = readFileSync(report.reportFile, 'utf8')
+    const fixed = resolves.includes('0.1:old')
+    assert.match(body, fixed ? /### Fixed in review/ : /### Unapplied review findings/)
+    assert.deepEqual(parseReportFindings(body).findings, fixed ? [] : [old])
+    if (fixed) assert.doesNotMatch(body, /### Unapplied review findings/)
+  })
+
+test('an empty carried list creates no prior verdict', (t) => {
+  const f = fixture(t)
+  const head = f.commit('c.txt', 'fix\n', 'repair fix')
+  const carryFindings = join(f.dir, 'carried.json')
+  writeFileSync(carryFindings, '[]')
+  assert.equal(f.run(head, [], {}, f.start, { carryFindings }).review.priorVerdict, undefined)
 })
 
 for (const blocked of [false, true])

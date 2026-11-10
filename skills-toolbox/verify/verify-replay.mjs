@@ -38,7 +38,8 @@ export const DEFAULT_CANDIDATE = 'default'
 
 // The `boss` verbs the judge path reads with; any other verb may write and is refused.
 const BOSS_READ_VERBS = new Set(['ls', 'show', 'version', '--version'])
-// The git verbs that write to a remote.
+// The git verbs that write to a remote, which the replay refuses.
+// ci-request: skip names git push only to refuse it; nothing here pushes
 const GIT_REMOTE_WRITES = new Set(['push', 'send-pack', 'send-email'])
 // git's global options that take the next argument as their value.
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])

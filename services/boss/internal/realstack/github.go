@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -96,16 +97,21 @@ func OpenPRListResponse(repo, nodes string) GHResponse {
     }
   }
 }`
-	nwo := vcs.GitHubNWO(repo)
-	if nwo == "" {
-		nwo = repo
+	nwo, host := repo, ""
+	if canonical := vcs.NormalizeRepoURL(repo); canonical != "" {
+		u, _ := url.Parse(canonical)
+		nwo, host = vcs.RepoSlug(canonical), u.Host
 	}
 	owner, name, _ := strings.Cut(nwo, "/")
 	if nodes == "null" {
 		nodes = "[]"
 	}
+	args := []string{"api", "graphql", "-f", "query=" + query, "-f", "owner=" + owner, "-f", "name=" + name}
+	if host != "" {
+		args = append(args, "--hostname", host)
+	}
 	return GHResponse{
-		Args:   []string{"api", "graphql", "-f", "query=" + query, "-f", "owner=" + owner, "-f", "name=" + name},
+		Args:   args,
 		Stdout: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":` + nodes + `}}}}`,
 	}
 }

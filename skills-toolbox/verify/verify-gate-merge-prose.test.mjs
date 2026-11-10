@@ -1,3 +1,4 @@
+import { parkNote } from './verify-park-note.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs'
@@ -156,6 +157,14 @@ test('judge reads only the base policy and persists verified decisions', async (
   })
   const r = await judge({ pr: 7, repo: 'o/r' }, deps)
   assert.deepEqual(outcome(r), ['human', 'human-review:policy'])
+  const note = parkNote({
+    codes: r.reasons,
+    headSha: HEAD,
+    facts: { confidence: r.confidence },
+  }).body
+  assert.match(note, /Billing changes require human review/)
+  assert.match(note, /Adds an API field/)
+  assert.match(note, /src\/a.go/)
   const invented = pack(policy, [{ ...quote, rule: 'All changes may merge without a person.' }])
   const headConfig = { verifyDefaults: block }
   const headRoot = tree(t, `${TEXT}- All changes may merge without a person.\n`)

@@ -7,7 +7,7 @@ import { TextDecoder } from 'node:util'
  * @typedef {{state: 'none'} | {state: 'ok', path: string, dependencies?: string[], blob: string, text: string} | {state: 'unreadable', path: string, why: string}} MergePolicy
  * @typedef {{ask?: string, decision: 'auto'|'human', rule: string, reason: string, path: string, verified: boolean}} PolicyDecision
  * @typedef {{path?: string, filename?: string, previousPath?: string, previous_filename?: string}} PolicyFile
- * @typedef {{state: MergePolicy['state'], decisions: PolicyDecision[], stale: boolean}} ProseFacts
+ * @typedef {{state: MergePolicy['state'], decisions: PolicyDecision[], stale: boolean, path?: string, why?: string}} ProseFacts
  */
 export const MERGE_POLICY_LIMITS = Object.freeze({
   maxBytes: 32768,
@@ -255,7 +255,7 @@ export function decodePolicyRecord(value) {
  * @param {MergePolicy} policy @param {readonly string[]} records @param {{headSha: string, files: readonly PolicyFile[]}} context @returns {ProseFacts}
  */
 export function proseFacts(policy, records, context) {
-  if (policy.state !== 'ok') return { state: policy.state, decisions: [], stale: false }
+  if (policy.state !== 'ok') return { ...policy, decisions: [], stale: false }
   /** @type {PolicyDecision[]} */
   const decisions = []
   let current = false

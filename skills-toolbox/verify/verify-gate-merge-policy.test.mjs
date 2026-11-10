@@ -1,3 +1,4 @@
+import { parkNote } from './verify-park-note.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -319,4 +320,49 @@ test('judge: merge rules never cover an edit to the policy surface, even with no
     fixture({ paths: ['.boss-skills.json'], baseConfig: { verifyDefaults: {} } }),
   )
   assert.equal(none.facts.policySurfaceHit, false)
+})
+
+test('judge explains breaking and failed describers over an additive schema diff', async () => {
+  for (const failed of [false, true]) {
+    const deps = fixture({
+      paths: ['api/x.proto'],
+      baseConfig: {
+        verifyDefaults: { merge: { auto: [{ area: 'api-contract', change: 'additive' }] } },
+      },
+    })
+    deps.treeAreaFacts = (files, policy) => {
+      const facts = pathParkFacts(files, policy)
+      const outcome = {
+        extension: 'contract-check',
+        area: 'api-contract',
+        ok: !failed,
+        ...(failed
+          ? { reason: 'timeout' }
+          : {
+              description: {
+                items: ['Removed credential field'],
+                links: [],
+                undisclosed: [],
+                breaking: true,
+              },
+            }),
+      }
+      return {
+        ...facts,
+        areas: describeAreas(
+          facts.areas.map((area) => ({ ...area, change: 'additive' })),
+          [outcome],
+        ).areas,
+      }
+    }
+    const result = await judge({ pr: 7, repo: 'o/r' }, deps)
+    assert.ok(result.reasons.includes('human-review:api-contract'))
+    const note = parkNote({
+      codes: result.reasons,
+      headSha: HEAD,
+      facts: { confidence: result.confidence },
+    }).body
+    assert.match(note, /contract-check/)
+    assert.match(note, failed ? /failed.*timeout/ : /breaking.*Removed credential field/)
+  }
 })

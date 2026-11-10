@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -90,13 +91,7 @@ func (m GeneralSettingsModel) repoCloudTargets(row settingsRow) []int {
 }
 
 func (m GeneralSettingsModel) repoCloudChoice(index int) string {
-	repo := m.repoCloudControls[index]
-	for _, grant := range m.settings.CloudControlRepos {
-		if grant.Host == repo.Host && grant.Name == repo.Name && grant.Checkout == repo.Checkout {
-			return grant.Mode
-		}
-	}
-	return "default"
+	return config.RepoCloudControlChoice(m.settings, repoCloudIdentity(m.repoCloudControls[index]))
 }
 
 func (m GeneralSettingsModel) groupCloudChoice(targets []int) string {
@@ -137,8 +132,13 @@ func (m GeneralSettingsModel) saveRepoCloudControl(mode string) GeneralSettingsM
 	m.cloudControlTargets = nil
 	return m.persistSettingsWithRollback(func(settings *config.Settings) error {
 		for _, index := range targets {
-			if err := config.SetRepoCloudControl(settings, repoCloudIdentity(m.repoCloudControls[index]), mode); err != nil {
-				return err
+			repo := m.repoCloudControls[index]
+			if err := config.SetRepoCloudControl(settings, repoCloudIdentity(repo), mode); err != nil {
+				label := repo.DisplayName
+				if label == "" {
+					label = repo.Name
+				}
+				return fmt.Errorf("%s (%s): %w", label, repo.Checkout, err)
 			}
 		}
 		return nil

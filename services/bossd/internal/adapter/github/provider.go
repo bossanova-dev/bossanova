@@ -1037,7 +1037,12 @@ const openPRListQuery = `query($owner: String!, $name: String!, $cursor: String)
 // fetchOpenPRs lists a repository's open pull requests from GitHub,
 // bypassing the read cache (see ListOpenPRs).
 func (p *Provider) fetchOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
-	owner, name, ok := splitNWO(repoFlag(repoPath))
+	nwo, host := repoFlag(repoPath), ""
+	if canonical := vcs.NormalizeRepoURL(repoPath); canonical != "" {
+		u, _ := url.Parse(canonical)
+		nwo, host = vcs.RepoSlug(canonical), u.Host
+	}
+	owner, name, ok := splitNWO(nwo)
 	if !ok {
 		return nil, fmt.Errorf("list open PRs: invalid GitHub repo %q", repoPath)
 	}
@@ -1046,6 +1051,9 @@ func (p *Provider) fetchOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRS
 	// Match gh pr list --limit 300: at most three 100-PR requests.
 	for page := 0; page < 3; page++ {
 		args := []string{"api", "graphql", "-f", "query=" + openPRListQuery, "-f", "owner=" + owner, "-f", "name=" + name}
+		if host != "" {
+			args = append(args, "--hostname", host)
+		}
 		if cursor != "" {
 			args = append(args, "-f", "cursor="+cursor)
 		}

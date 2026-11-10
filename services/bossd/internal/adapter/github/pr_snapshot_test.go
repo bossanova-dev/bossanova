@@ -733,6 +733,35 @@ func TestOpenPRListCommitAuthorship(t *testing.T) {
 	}
 }
 
+func TestOpenPRListRoutesOriginHost(t *testing.T) {
+	for _, tc := range []struct{ origin, host string }{
+		{"o/r", ""},
+		{"https://github.com/o/r.git", "github.com"},
+		{"https://github.corp.example/o/r.git", "github.corp.example"},
+		{"git@github.corp.example:o/r.git", "github.corp.example"},
+		{"ssh://git@github.corp.example/o/r.git", "github.corp.example"},
+	} {
+		t.Run(tc.origin, func(t *testing.T) {
+			calls := 0
+			p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+				if !isOpenPRList(args) || flagValue(args, "--hostname") != tc.host ||
+					!strings.Contains(strings.Join(args, " "), "owner=o -f name=r") {
+					t.Fatalf("incorrect repository routing: %v", args)
+				}
+				calls++
+				if calls == 1 {
+					return `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":true,"endCursor":"next"},"nodes":[]}}}}`, nil
+				}
+				return readFixture(t, "open_pr_snapshot_three.json"), nil
+			}))
+			prs, err := p.ListOpenPRs(t.Context(), tc.origin)
+			if err != nil || calls != 2 || len(prs) != 3 || prs[1].HeadSHA == "" || !prs[1].CommitAuthorsComplete {
+				t.Fatalf("PRs=%+v calls=%d err=%v", prs, calls, err)
+			}
+		})
+	}
+}
+
 func TestOpenPRListPaginatesTo300(t *testing.T) {
 	calls := 0
 	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {

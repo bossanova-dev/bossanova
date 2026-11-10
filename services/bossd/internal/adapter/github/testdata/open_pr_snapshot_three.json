@@ -135,6 +135,24 @@
                   }
                 }
               ]
+            },
+            "authorship": {
+              "totalCount": 1,
+              "nodes": [
+                {
+                  "commit": {
+                    "authors": {
+                      "totalCount": 1,
+                      "nodes": [
+                        {
+                          "email": "49699333+dependabot[bot]@users.noreply.github.com",
+                          "user": null
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
             }
           },
           {
@@ -170,6 +188,43 @@
                   }
                 }
               ]
+            },
+            "authorship": {
+              "totalCount": 2,
+              "nodes": [
+                {
+                  "commit": {
+                    "authors": {
+                      "totalCount": 1,
+                      "nodes": [
+                        {
+                          "email": "49699333+dependabot[bot]@users.noreply.github.com",
+                          "user": null
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "commit": {
+                    "authors": {
+                      "totalCount": 2,
+                      "nodes": [
+                        {
+                          "email": "49699333+dependabot[bot]@users.noreply.github.com",
+                          "user": null
+                        },
+                        {
+                          "email": "alice@example.com",
+                          "user": {
+                            "login": "alice"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
             }
           },
           {
@@ -202,6 +257,24 @@
                   "commit": {
                     "oid": "sha3",
                     "statusCheckRollup": null
+                  }
+                }
+              ]
+            },
+            "authorship": {
+              "totalCount": 11,
+              "nodes": [
+                {
+                  "commit": {
+                    "authors": {
+                      "totalCount": 1,
+                      "nodes": [
+                        {
+                          "email": "49699333+dependabot[bot]@users.noreply.github.com",
+                          "user": null
+                        }
+                      ]
+                    }
                   }
                 }
               ]

@@ -43,6 +43,10 @@ var openPRSnapshotQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $c
           pageInfo { hasNextPage }
           nodes { id isResolved isOutdated }
         }
+        authorship: commits(first: 10) {
+          totalCount
+          nodes { commit { authors(first: 5) { totalCount nodes { email user { login } } } } }
+        }
         commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
           pageInfo { hasNextPage }
           nodes {
@@ -108,6 +112,22 @@ type snapshotPR struct {
 		} `json:"pageInfo"`
 		Nodes []snapshotThread `json:"nodes"`
 	} `json:"reviewThreads"`
+	Authorship *struct {
+		TotalCount int `json:"totalCount"`
+		Nodes      []struct {
+			Commit struct {
+				Authors struct {
+					TotalCount int `json:"totalCount"`
+					Nodes      []struct {
+						Email string `json:"email"`
+						User  *struct {
+							Login string `json:"login"`
+						} `json:"user"`
+					} `json:"nodes"`
+				} `json:"authors"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"authorship"`
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
@@ -353,12 +373,16 @@ func (s *prSnapshot) openPRs() []vcs.PRSummary {
 		if pr.Author.Typename != "" && pr.Author.Typename != "User" {
 			author = "app/" + author
 		}
+		authors, complete := pr.commitAuthors()
 		prs = append(prs, vcs.PRSummary{
-			Number:     pr.Number,
-			Title:      pr.Title,
-			HeadBranch: pr.HeadRefName,
-			State:      parsePRState(pr.State),
-			Author:     author,
+			Number:                pr.Number,
+			Title:                 pr.Title,
+			HeadBranch:            pr.HeadRefName,
+			State:                 parsePRState(pr.State),
+			Author:                author,
+			HeadSHA:               pr.HeadRefOid,
+			CommitAuthors:         authors,
+			CommitAuthorsComplete: complete,
 		})
 	}
 	return prs
@@ -416,4 +440,28 @@ func (pr *snapshotPR) reviewActivityDigest() string {
 	b, _ := json.Marshal(input)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+func (pr *snapshotPR) commitAuthors() ([]vcs.CommitAuthor, bool) {
+	if pr.Authorship == nil {
+		return nil, false
+	}
+	complete := pr.Authorship.TotalCount <= 10 && pr.Authorship.TotalCount == len(pr.Authorship.Nodes)
+	var authors []vcs.CommitAuthor
+	seen := make(map[vcs.CommitAuthor]bool)
+	for _, node := range pr.Authorship.Nodes {
+		page := node.Commit.Authors
+		complete = complete && page.TotalCount <= 5 && page.TotalCount == len(page.Nodes)
+		for _, author := range page.Nodes {
+			identity := vcs.CommitAuthor{Email: author.Email}
+			if author.User != nil {
+				identity.Login = author.User.Login
+			}
+			if !seen[identity] {
+				authors = append(authors, identity)
+				seen[identity] = true
+			}
+		}
+	}
+	return authors, complete
 }

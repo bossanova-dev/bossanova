@@ -302,8 +302,8 @@ func TestOpenPRSnapshotListMatchesGHPRList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want0 := vcs.PRSummary{Number: 1, Title: "clean", HeadBranch: "feature-1", State: vcs.PRStateOpen, Author: "app/dependabot"}
-	if len(prs) != 9 || prs[0] != want0 || prs[1].Author != "alice" {
+	want0 := vcs.PRSummary{Number: 1, Title: "clean", HeadBranch: "feature-1", State: vcs.PRStateOpen, Author: "app/dependabot", HeadSHA: "sha1"}
+	if len(prs) != 9 || !reflect.DeepEqual(prs[0], want0) || prs[1].Author != "alice" {
 		t.Fatalf("open PRs = %+v; want 9 led by %+v", prs, want0)
 	}
 }
@@ -670,5 +670,84 @@ func TestSnapshotPRSize_Sessions_AC213501(t *testing.T) {
 	}
 	if got.AddedLineCount != 12 || got.DeletedLineCount != 3 || got.ChangedFileCount != 2 {
 		t.Fatalf("size lost: %+v", got)
+	}
+}
+
+func TestOpenPRSnapshotCommitAuthorship(t *testing.T) {
+	gh := routedGH(t, map[string]string{"graphql": readFixture(t, "open_pr_snapshot_three.json")})
+	p := New(zerolog.Nop(), WithRunGH(gh.run))
+	prs, err := p.ListOpenPRs(vcs.WithCachedReads(context.Background()), "o/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot := vcs.CommitAuthor{Email: "49699333+dependabot[bot]@users.noreply.github.com"}
+	human := vcs.CommitAuthor{Login: "alice", Email: "alice@example.com"}
+	wants := [][]vcs.CommitAuthor{{bot}, {bot, human}, {bot}}
+	for i, pr := range prs {
+		if pr.HeadSHA == "" || !reflect.DeepEqual(pr.CommitAuthors, wants[i]) || pr.CommitAuthorsComplete != (i < 2) {
+			t.Errorf("PR %d authorship = %+v", pr.Number, pr)
+		}
+	}
+}
+
+func TestOpenPRSnapshotTruncatedAuthors(t *testing.T) {
+	var pr snapshotPR
+	if err := json.Unmarshal([]byte(`{"authorship":{"totalCount":1,"nodes":[{"commit":{"authors":{"totalCount":6,"nodes":[{"email":"bot@example.com","user":null}]}}}]}}`), &pr); err != nil {
+		t.Fatal(err)
+	}
+	s := &prSnapshot{order: []int{1}, prs: map[int]*snapshotPR{1: &pr}}
+	if s.openPRs()[0].CommitAuthorsComplete {
+		t.Fatal("truncated coauthors reported complete")
+	}
+}
+
+func TestOpenPRListCommitAuthorship(t *testing.T) {
+	payload := `[{"number":1,"headRefOid":"abc123","commits":[{"authors":[{"login":"","email":"bot@example.com"}]},{"authors":[{"login":"","email":"bot@example.com"},{"login":"alice","email":"alice@example.com"}]}]}]`
+	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		if got := flagValue(args, "--json"); got != "number,title,headRefName,state,author,headRefOid,commits" {
+			t.Errorf("open fields = %q", got)
+		}
+		return payload, nil
+	}))
+	prs, err := p.ListOpenPRs(context.Background(), "o/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []vcs.CommitAuthor{{Email: "bot@example.com"}, {Login: "alice", Email: "alice@example.com"}}
+	if len(prs) != 1 || prs[0].HeadSHA != "abc123" || !prs[0].CommitAuthorsComplete || !reflect.DeepEqual(prs[0].CommitAuthors, want) {
+		t.Fatalf("summaries = %+v", prs)
+	}
+}
+
+func TestOpenPRListAuthorshipCaps(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		commits, authors int
+	}{{"commits", 100, 1}, {"authors", 1, 100}} {
+		t.Run(tc.name, func(t *testing.T) {
+			commits := make([]map[string]any, tc.commits)
+			for i := range commits {
+				commits[i] = map[string]any{"authors": make([]vcs.CommitAuthor, tc.authors)}
+			}
+			prs, err := decodePRList(mustJSON(t, []map[string]any{{"commits": commits}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prs[0].CommitAuthorsComplete {
+				t.Fatal("capped list reported complete")
+			}
+		})
+	}
+}
+
+func TestClosedPRListOmitsCommitAuthorship(t *testing.T) {
+	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		if got := flagValue(args, "--json"); got != "number,title,headRefName,state,author" {
+			t.Errorf("closed fields = %q", got)
+		}
+		return "[]", nil
+	}))
+	if _, err := p.ListClosedPRs(context.Background(), "o/r"); err != nil {
+		t.Fatal(err)
 	}
 }

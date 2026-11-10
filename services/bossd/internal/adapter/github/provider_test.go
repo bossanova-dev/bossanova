@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -469,7 +470,7 @@ func TestListPRsByState_PassesStateAndLimitAndMaps(t *testing.T) {
 				State:      parsePRState("OPEN"),
 				Author:     "alice",
 			}
-			if got != want {
+			if !reflect.DeepEqual(got, want) {
 				t.Errorf("PRSummary = %+v, want %+v", got, want)
 			}
 		})
@@ -517,7 +518,7 @@ func TestSearchPRsByTitleTag_QueriesAllStatesAndAppliesExactBracketFilter(t *tes
 		{Number: 1146, Title: "consolidate [BOS-289]", HeadBranch: "bos-289-b", State: vcs.PRStateMerged, Author: "bob"},
 	}
 	for i, w := range want {
-		if prs[i] != w {
+		if !reflect.DeepEqual(prs[i], w) {
 			t.Errorf("prs[%d] = %+v, want %+v", i, prs[i], w)
 		}
 	}
@@ -2135,7 +2136,7 @@ func assertPRSummaries(t *testing.T, got, want []vcs.PRSummary) {
 		t.Fatalf("got %d PRs, want %d: %+v", len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("PR[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}

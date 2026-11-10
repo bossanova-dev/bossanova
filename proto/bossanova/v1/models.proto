@@ -656,6 +656,12 @@ message ReviewComment {
   optional int32 line = 5;
 }
 
+// PRCommitAuthor identifies one author of a PR commit, including coauthors.
+message PRCommitAuthor {
+  string login = 1;
+  string email = 2;
+}
+
 // PRSummary is a lightweight representation of a PR for listing.
 message PRSummary {
   int32 number = 1;
@@ -663,6 +669,9 @@ message PRSummary {
   string head_branch = 3;
   PRState state = 4;
   string author = 5;
+  string head_sha = 6;
+  repeated PRCommitAuthor commit_authors = 7;
+  bool has_all_commit_authors = 8;
 }
 
 // CreatePROpts contains options for creating a new pull request.

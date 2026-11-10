@@ -174,7 +174,7 @@ judgement.
    (exit 3) posted nothing; `reasons` says why. `re-review` (exit 4) means the push changed the
    reviewed tree: run each skill in `review.skills`, report-only (no `--fix`), as a fresh awaited
    subagent whose prompt's first line is `[bs-reviewer-dispatch]` and states `BASE=<review.base>`,
-   `HEAD=<review.head>` and `OUT_DIR=` its `review.outDirs` entry (inline once if dispatch fails;
+   `HEAD=<review.head>`, `PRIOR_VERDICT=<review.priorVerdict>` when present, and `OUT_DIR=` its `review.outDirs` entry (inline once if dispatch fails;
    wait up to `review.hangGuardMs`), then re-run the command once with `--review-verdict <file>`
    for each `review.verdictFiles` entry.
    `blocked` (exit 3) posted nothing: report each of its `findings` as a residual (Watch mode

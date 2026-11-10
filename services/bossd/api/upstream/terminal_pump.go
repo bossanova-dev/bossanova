@@ -9,8 +9,8 @@ import (
 )
 
 // runAttachPump fans Output() and Exited() onto the per-stream outbound
-// channel. Owns the per-attach lifecycle: it removes the attach from the
-// map before returning so the writer can quiesce. The done channel
+// channel. Finished attaches retain output authorization until the writer
+// sends their queued exit; control lookup excludes them. The done channel
 // (closed by safego.Go after this function returns) is what
 // closeAllAttaches joins on for shutdown.
 func (c *TerminalStreamClient) runAttachPump(ctx context.Context, state *activeAttach, outbound chan<- *pb.TerminalServerMessage) {
@@ -52,7 +52,7 @@ func (c *TerminalStreamClient) runAttachPump(ctx context.Context, state *activeA
 				exitSent = c.forwardAttachExit(ctx, state, outbound, exited)
 				return
 			}
-			if state.outputRefused.Load() || (state.seal == nil && cloudControlMode(c.cloudControl) == config.CloudControlPrivate) {
+			if state.outputRefused.Load() || (c.attachMode(ctx, state) == config.CloudControlPrivate && !state.privateSealed) || state.policyRevoked.Load() {
 				state.refuseOutput()
 				return
 			}
@@ -108,7 +108,8 @@ func (c *TerminalStreamClient) sendAttachWakeNotice(ctx context.Context, state *
 }
 
 func (c *TerminalStreamClient) finishAttachPump(ctx context.Context, state *activeAttach, outbound chan<- *pb.TerminalServerMessage, exitSent bool) {
-	if state.seal != nil {
+	draining := exitSent && ctx.Err() == nil && !state.outputRefused.Load()
+	if state.seal != nil && !draining {
 		defer state.seal.destroy()
 	}
 	if state.outputRefused.Load() {
@@ -116,13 +117,17 @@ func (c *TerminalStreamClient) finishAttachPump(ctx context.Context, state *acti
 		// driver may suppress its own exit notification during Close.
 		_ = state.attach.Close()
 		if !exitSent {
-			c.sendExited(ctx, outbound, state.id, "cloud control is private on this machine")
+			reason := "cloud control is private on this machine"
+			if state.policyRevoked.Load() {
+				reason = "cloud control changed for this repo"
+			}
+			c.sendExited(ctx, outbound, state.id, reason)
 		}
 	}
 	c.mu.Lock()
 	// Only remove if still ours — handleClose may have already swapped
 	// us out and closed the attach.
-	if existing, ok := c.attaches[state.id]; ok && existing == state {
+	if existing, ok := c.attaches[state.id]; ok && existing == state && !draining {
 		delete(c.attaches, state.id)
 	}
 	c.mu.Unlock()
@@ -144,6 +149,7 @@ func (c *TerminalStreamClient) forwardAttachExit(ctx context.Context, state *act
 				ev = &pb.TerminalAttachExited{AttachId: state.id, ExitCode: -1, Reason: reason}
 			}
 		}
+		state.forwardedExit.Store(ev)
 		c.sendServerMessage(ctx, outbound, &pb.TerminalServerMessage{Msg: &pb.TerminalServerMessage_Exited{Exited: ev}})
 		return true
 	case <-state.outputStopped:

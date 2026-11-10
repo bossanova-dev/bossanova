@@ -635,6 +635,7 @@ func (w *daemonWiring) wireUpstream() {
 		// first attach.
 		w.terminalStreamClient = upstream.NewTerminalStreamClient(upstream.TerminalStreamClientConfig{
 			CloudControl:  cloudControl,
+			TargetObjects: targets,
 			Sealing:       terminalSealing,
 			Client:        client,
 			AuthToken:     authToken,

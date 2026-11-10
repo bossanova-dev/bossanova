@@ -366,12 +366,13 @@ func TestTerminalStreamClient_CycleStreamRebindsHalfOpenStream(t *testing.T) {
 
 	health := NewTerminalHealth()
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
-		CloudControl: fixedCloudControl("full"),
-		Client:       srv.client,
-		TmuxClient:   tmux.NewClient(tmux.WithCommandFactory((&recordingCmdFactory{}).factory)),
-		Chats:        &fakeChatLookup{},
-		Logger:       zerolog.Nop(),
-		Health:       health,
+		TargetObjects: dispatcherTargetFixture{},
+		CloudControl:  fixedCloudControl("full"),
+		Client:        srv.client,
+		TmuxClient:    tmux.NewClient(tmux.WithCommandFactory((&recordingCmdFactory{}).factory)),
+		Chats:         &fakeChatLookup{},
+		Logger:        zerolog.Nop(),
+		Health:        health,
 		// Long enough that neither the ready gate nor the heartbeat fires on
 		// its own: CycleStream is the only cancel source in this test.
 		ReadyTimeout: time.Minute,
@@ -410,7 +411,8 @@ func TestTerminalStreamClient_BoundedTeardownClosesHalfOpenConn(t *testing.T) {
 
 	health := NewTerminalHealth()
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
-		CloudControl: fixedCloudControl("full"),
+		TargetObjects: dispatcherTargetFixture{},
+		CloudControl:  fixedCloudControl("full"),
 		Opener: &terminalConnectOpener{
 			client:            srv.client,
 			logger:            zerolog.Nop(),

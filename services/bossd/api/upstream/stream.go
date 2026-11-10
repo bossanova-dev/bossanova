@@ -1563,7 +1563,7 @@ func (c *StreamClient) runWriter(ctx context.Context, stream bidirectionalStream
 			if !ok {
 				return
 			}
-			if chunk := ev.GetAttachChunk(); chunk != nil && !c.allowSessionAttach(chunk.GetCommandId()) {
+			if chunk := ev.GetAttachChunk(); chunk != nil && !c.allowSessionAttach(ctx, chunk.GetCommandId(), chunk.GetSessionId()) {
 				continue
 			}
 			if err := stream.Send(ev); err != nil {

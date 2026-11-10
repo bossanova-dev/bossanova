@@ -27,6 +27,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/chatupload"
 )
@@ -73,6 +74,10 @@ func (c *TerminalStreamClient) handleUploadStart(ctx context.Context, cmd *pb.Te
 		// so the browser may resend the same file after reconnecting,
 		// rather than telling the user the file itself was rejected.
 		c.failUpload(ctx, outbound, attachID, uploadID, "upload: unknown attach", true)
+		return
+	}
+	if c.attachMode(ctx, state) != config.CloudControlFull {
+		c.refuseCloudUpload(ctx, outbound, attachID, uploadID)
 		return
 	}
 	if err := c.uploads.Start(attachID, uploadID, state.chatID, cmd.GetFilename(), cmd.GetSizeBytes()); err != nil {
@@ -179,6 +184,10 @@ func (c *TerminalStreamClient) handleUploadFinish(ctx context.Context, cmd *pb.T
 		defer cancelDeliver()
 		// The returned path is deliberately discarded: it is the one
 		// value on this path that must never reach a log line.
+		if c.attachMode(deliverCtx, c.lookupAttach(attachID)) != config.CloudControlFull {
+			c.refuseCloudUpload(ctx, outbound, attachID, uploadID)
+			return
+		}
 		if _, err := c.uploads.Finish(deliverCtx, attachID, uploadID); err != nil {
 			c.sendUploadError(ctx, outbound, attachID, uploadID, err)
 			return

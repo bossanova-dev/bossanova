@@ -4,6 +4,7 @@ import { withDigest } from './verify-proof.mjs'
 import { renderProofHtml } from './verify-proof-page.mjs'
 import { NO_UI_RECORDING, fileAnchor } from './verify-proof-page-model.mjs'
 import { cutSnippet, parseUnifiedDiff } from './verify-proof-snippet.mjs'
+import { region } from '../../scripts/test-infra/gate-region-lib.mjs'
 
 const HEAD = '1'.repeat(40)
 const BASE = '2'.repeat(40)
@@ -146,7 +147,7 @@ test('a spec puts git-quoted, pinned diffs under its area and links its risk to 
 
 test('the generation check lists every dropped item and snippet problem, and what the agent was unsure of', () => {
   const html = render({ spec: spec(), snippet: resolver, files })
-  const qa = html.slice(html.indexOf('id="generation"'))
+  const qa = region(html, 'id="generation"')
   assert.ok(html.includes('<section class="qa flagged" id="generation">'))
   assert.ok(qa.includes('spec risks[1]: at.path: src/nowhere.ts is not changed by this PR'))
   assert.ok(qa.includes('src/cart.ts:3-6: shows no changed line, snippet dropped'))
@@ -262,11 +263,11 @@ test('an agent spec adds to the record and never hides a blocker, a reason or a 
     }),
     files,
   })
-  const waiting = html.slice(html.indexOf('id="waiting"'), html.indexOf('id="risks"'))
+  const waiting = region(html, 'id="waiting"', 'id="risks"')
   assert.ok(waiting.indexOf('Data loss on retry') < waiting.indexOf('Totals need a person'))
   assert.ok(waiting.indexOf('Totals need a person') < waiting.indexOf('Minor naming'))
   assert.ok(html.includes('<h3>Breaking API change in Logic</h3>'))
   assert.ok(html.includes('<h3>Totals &lt;i&gt;round&lt;/i&gt; once</h3>'))
-  const before = html.slice(html.indexOf('Before you approve'), html.indexOf('After merge</h3>'))
+  const before = region(html, 'Before you approve', 'After merge</h3>')
   assert.ok(before.indexOf('Resolve: Data loss on retry') < before.indexOf('Glance at names'))
 })

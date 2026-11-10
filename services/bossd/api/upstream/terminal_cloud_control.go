@@ -23,20 +23,31 @@ func (c *TerminalStreamClient) refuseTerminalControl(ctx context.Context, msg *p
 	if attachID != "" && c.refuseSealedUpload(ctx, outbound, attachID, uploadID) {
 		return true
 	}
-	if msg.GetAttach().GetViewerDeviceId() != "" {
+
+	if msg.GetAttach() != nil {
 		return false
 	}
-	if input := msg.GetInput(); input != nil {
-		if state := c.lookupAttach(input.AttachId); state != nil && state.seal != nil {
-			return false
+	if attachID == "" {
+		if input := msg.GetInput(); input != nil {
+			attachID = input.GetAttachId()
+		}
+		if resize := msg.GetResize(); resize != nil {
+			attachID = resize.GetAttachId()
 		}
 	}
-	if daemoncaps.CloudControlAllowsTerminal(cloudControlProto(c.cloudControl), msg) {
+	state := c.lookupAttach(attachID)
+	if state == nil && msg.GetUploadStart() != nil {
 		return false
 	}
+	if msg.GetInput() != nil && state != nil && state.seal != nil {
+		return false
+	}
+	mode := c.attachMode(ctx, state)
+	if daemoncaps.CloudControlAllowsTerminal(targetModeProto(mode), msg) {
+		return false
+	}
+
 	switch m := msg.GetMsg().(type) {
-	case *pb.TerminalClientMessage_Attach:
-		c.sendExited(ctx, outbound, m.Attach.GetAttachId(), "cloud control is private on this machine")
 	case *pb.TerminalClientMessage_Input:
 		if state := c.lookupAttach(m.Input.GetAttachId()); state != nil {
 			state.inputRefused.Do(func() { c.logger.Info().Str("attach_id", state.id).Msg("cloud terminal input refused") })
@@ -80,9 +91,9 @@ func (c *TerminalStreamClient) handleInput(cmd *pb.TerminalInputCommand) {
 			state.seal.fail(terminalFrameInvalid)
 			return
 		}
-		if cloudControlMode(c.cloudControl) != config.CloudControlFull {
-			return
-		}
+	}
+	if c.attachMode(context.Background(), state) != config.CloudControlFull || state.outputRefused.Load() {
+		return
 	}
 	if err := state.attach.Input(data); err != nil {
 		c.logger.Debug().Err(err).Str("attach_id", cmd.GetAttachId()).Msg("terminal stream: input write failed")
@@ -96,6 +107,9 @@ func (c *TerminalStreamClient) handleResize(cmd *pb.TerminalResizeCommand) {
 		c.logger.Debug().Str("attach_id", cmd.GetAttachId()).Msg("terminal stream: resize for unknown attach; dropping")
 		return
 	}
+	if c.attachMode(context.Background(), state) != config.CloudControlFull || state.outputRefused.Load() {
+		return
+	}
 	if err := state.attach.Resize(cmd.GetCols(), cmd.GetRows()); err != nil {
 		c.logger.Debug().Err(err).Str("attach_id", cmd.GetAttachId()).Msg("terminal stream: resize failed")
 	}
@@ -103,14 +117,16 @@ func (c *TerminalStreamClient) handleResize(cmd *pb.TerminalResizeCommand) {
 
 func (s *activeAttach) refuseOutput() {
 	if s.outputRefused.CompareAndSwap(false, true) {
-		close(s.outputStopped)
+		if s.outputStopped != nil {
+			close(s.outputStopped)
+		}
 	}
 }
 
 // runWriter drains outbound onto the stream. Returns when outbound is
 // closed (the openStream teardown path) or stream.Send fails.
 func (c *TerminalStreamClient) runWriter(ctx context.Context, stream terminalBidiStream, outbound <-chan *pb.TerminalServerMessage) {
-	refused := make(map[string]bool)
+	refused := make(map[string]string)
 	for {
 		select {
 		case <-ctx.Done():
@@ -119,26 +135,88 @@ func (c *TerminalStreamClient) runWriter(ctx context.Context, stream terminalBid
 			if !ok {
 				return
 			}
-			if data := msg.GetData(); data != nil {
-				id := data.GetAttachId()
-				if refused[id] || (!data.GetIsSealed() && cloudControlMode(c.cloudControl) == config.CloudControlPrivate) {
-					refused[id] = true
-					if state := c.lookupAttach(id); state != nil {
-						state.refuseOutput()
-					}
-					continue
-				}
+			if data := msg.GetData(); data != nil && c.refuseTerminalData(ctx, data, refused) {
+				continue
 			}
-			if exit := msg.GetExited(); exit != nil && refused[exit.GetAttachId()] {
+			exit := msg.GetExited()
+			if exit != nil && refused[exit.GetAttachId()] != "" {
+				reason := refused[exit.GetAttachId()]
 				delete(refused, exit.GetAttachId())
 				msg = &pb.TerminalServerMessage{Msg: &pb.TerminalServerMessage_Exited{Exited: &pb.TerminalAttachExited{
-					AttachId: exit.GetAttachId(), ExitCode: -1, Reason: "cloud control is private on this machine",
+					AttachId: exit.GetAttachId(), ExitCode: -1, Reason: reason,
 				}}}
 			}
 			if err := stream.Send(msg); err != nil {
 				c.logger.Debug().Err(err).Msg("terminal stream send failed; writer exiting")
 				return
 			}
+			if exit != nil {
+				c.retireWrittenAttach(exit)
+			}
 		}
+	}
+}
+
+func repoCloudControlMode(ctx context.Context, policy CloudControlPolicy, repoID string) config.CloudControlMode {
+	if policy == nil {
+		return config.CloudControlReadOnly
+	}
+	mode, _ := policy.RepoMode(ctx, repoID)
+	return config.ResolveCloudControl(string(mode))
+}
+
+func (c *TerminalStreamClient) attachMode(ctx context.Context, state *activeAttach) config.CloudControlMode {
+	if state == nil {
+		return config.CloudControlReadOnly
+	}
+	mode := repoCloudControlMode(ctx, c.cloudControl, state.repoID)
+	if (state.writable && mode != config.CloudControlFull) || (mode == config.CloudControlPrivate && !state.privateSealed) {
+		if mode != config.CloudControlPrivate {
+			state.policyRevoked.Store(true)
+		}
+		state.refuseOutput()
+	}
+	return mode
+}
+
+func (c *TerminalStreamClient) refuseTerminalData(ctx context.Context, data *pb.TerminalDataChunk, refused map[string]string) bool {
+
+	id := data.GetAttachId()
+	state := c.lookupOutputAttach(id)
+	if state == nil {
+		return true
+	}
+	if state.seal != nil {
+		if reason := state.seal.stopReason(); reason != "" {
+			refused[id] = reason
+			state.refuseOutput()
+			return true
+		}
+	}
+	mode := c.attachMode(ctx, state)
+	if refused[id] != "" || state.policyRevoked.Load() || (!data.GetIsSealed() && mode == config.CloudControlPrivate) {
+		refused[id] = "cloud control is private on this machine"
+		if state.policyRevoked.Load() {
+			refused[id] = "cloud control changed for this repo"
+		}
+		if state := c.lookupAttach(id); state != nil {
+			state.refuseOutput()
+		}
+		return true
+	}
+	return false
+}
+
+func (c *TerminalStreamClient) retireWrittenAttach(exit *pb.TerminalAttachExited) {
+	c.mu.Lock()
+	state := c.attaches[exit.GetAttachId()]
+	if state == nil || state.forwardedExit.Load() != exit {
+		c.mu.Unlock()
+		return
+	}
+	delete(c.attaches, state.id)
+	c.mu.Unlock()
+	if state.seal != nil {
+		state.seal.destroy()
 	}
 }

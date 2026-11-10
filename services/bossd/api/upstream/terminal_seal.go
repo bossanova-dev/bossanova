@@ -96,7 +96,10 @@ func (s *terminalSeal) destroy() {
 	s.key = nil
 	s.sealer = nil
 	s.opener = nil
-	s.unsubscribe()
+	if s.unsubscribe != nil {
+		s.unsubscribe()
+		s.unsubscribe = nil
+	}
 }
 
 func (s *terminalSeal) fail(reason string) {

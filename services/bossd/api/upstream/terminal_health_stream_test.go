@@ -39,6 +39,7 @@ func newHealthHarness(t *testing.T, mutate func(*TerminalStreamClientConfig)) *h
 	closeIdles := &atomic.Int32{}
 
 	cfg := TerminalStreamClientConfig{
+		TargetObjects: dispatcherTargetFixture{},
 		Opener:        opener,
 		Chats:         chats,
 		TmuxClient:    tmuxClient,

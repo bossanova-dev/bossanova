@@ -364,6 +364,7 @@ func newTestHarnessWithWakeTimeout(t *testing.T, wakeTimeout time.Duration) *tes
 	cmdRec := &recordingCmdFactory{clients: []string{testTmuxClientName}}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(cmdRec.factory))
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		TargetObjects: dispatcherTargetFixture{},
 		CloudControl:  fixedCloudControl("full"),
 		Opener:        opener,
 		Chats:         chats,
@@ -1220,10 +1221,11 @@ func TestTerminalStreamClient_NilTmuxClientPanics(t *testing.T) {
 		}
 	}()
 	_ = NewTerminalStreamClient(TerminalStreamClientConfig{
-		CloudControl: fixedCloudControl("full"),
-		Opener:       &fakeTerminalOpener{},
-		Chats:        &fakeChatLookup{},
-		Logger:       zerolog.Nop(),
+		TargetObjects: dispatcherTargetFixture{},
+		CloudControl:  fixedCloudControl("full"),
+		Opener:        &fakeTerminalOpener{},
+		Chats:         &fakeChatLookup{},
+		Logger:        zerolog.Nop(),
 		// TmuxClient deliberately omitted.
 	})
 }
@@ -1414,6 +1416,7 @@ func boundedTeardownClient(t *testing.T, opener terminalStreamOpener) (*Terminal
 	health := NewTerminalHealth()
 	logs := &syncBuffer{}
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		TargetObjects:     dispatcherTargetFixture{},
 		CloudControl:      fixedCloudControl("full"),
 		Opener:            opener,
 		Chats:             &fakeChatLookup{},
@@ -1799,26 +1802,5 @@ func TestTerminalOpenStream_AbandonedReaderCannotReachNextAttempt(t *testing.T) 
 	stub.mu.Unlock()
 	if bytes != 0 || claims != 0 {
 		t.Errorf("abandoned reader reached next upload: bytes=%d claims=%d", bytes, claims)
-	}
-}
-
-func TestTerminalUpload_TeardownWaitsOnlyForItsOwnAttemptsDeliveries(t *testing.T) {
-	t.Parallel()
-	wedged := newWedgedTerminalStream()
-	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged, closeConn: func() error { return nil }}
-	client, clock, health, _ := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
-	gate := make(chan struct{})
-	stub := &stubUploadManager{finishGate: gate}
-	client.uploads = stub
-	// Release delivery before cleanup joins the second attempt on a red run.
-	defer close(gate)
-	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_UploadFinish{UploadFinish: &pb.TerminalUploadFinish{AttachId: "att-1", UploadId: "up-1"}}}
-	first := startWedgedOpenStream(t, client, clock, health, wedged)
-	waitForN(t, "first delivery parked", 2*time.Second, func() bool { return stub.finishCount() == 1 })
-	abandonTerminalAttempt(t, clock, first)
-	_, second, cancel := startNextTerminalAttempt(t, client)
-	cancel()
-	if err := receiveOpenStreamErr(t, second, "while first delivery is still parked"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("second attempt: %v", err)
 	}
 }

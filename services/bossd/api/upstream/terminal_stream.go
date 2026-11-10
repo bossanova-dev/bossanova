@@ -31,7 +31,6 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/kit/config"
-	"github.com/recurser/bossalib/kit/daemoncaps"
 	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog"
 )
@@ -397,6 +396,7 @@ func (a *chatStoreAdapter) GetByAgentSessionID(ctx context.Context, agentSession
 type TerminalStreamClient struct {
 	sealing       TerminalSealingConfig
 	cloudControl  CloudControlPolicy
+	targetObjects CommandTargetObjects
 	opener        terminalStreamOpener
 	authState     *AuthState
 	tmuxClient    TerminalRefresher
@@ -465,6 +465,11 @@ type TerminalStreamClient struct {
 // the channel returned by safego.Go — closed once the pump goroutine has
 // fully exited (including its panic-recovery log path).
 type activeAttach struct {
+	repoID        string
+	writable      bool
+	privateSealed bool
+	policyRevoked atomic.Bool
+	forwardedExit atomic.Pointer[pb.TerminalAttachExited]
 	seal          *terminalSeal
 	wakeNotice    string
 	inputRefused  sync.Once
@@ -483,8 +488,9 @@ type activeAttach struct {
 
 // TerminalStreamClientConfig bundles the constructor inputs.
 type TerminalStreamClientConfig struct {
-	Sealing      TerminalSealingConfig
-	CloudControl CloudControlPolicy
+	Sealing       TerminalSealingConfig
+	CloudControl  CloudControlPolicy
+	TargetObjects CommandTargetObjects
 	// Opener is the live ConnectRPC client wrapper. If nil, an opener is
 	// built from Client + AuthToken + SessionToken at construction time.
 	Opener    terminalStreamOpener
@@ -618,6 +624,7 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 	}
 	return &TerminalStreamClient{
 		cloudControl:       cfg.CloudControl,
+		targetObjects:      cfg.TargetObjects,
 		opener:             opener,
 		authState:          cfg.AuthState,
 		tmuxClient:         cfg.TmuxClient,
@@ -1066,10 +1073,6 @@ func (c *TerminalStreamClient) handleClientMessage(ctx context.Context, msg *pb.
 // bosso as TerminalAttachExited so the browser can surface a clean error.
 func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.TerminalAttachCommand, outbound chan<- *pb.TerminalServerMessage) {
 	attachID := cmd.GetAttachId()
-	if cmd.GetViewerDeviceId() == "" && !daemoncaps.CloudControlAllowsTerminal(cloudControlProto(c.cloudControl), &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Attach{Attach: cmd}}) {
-		c.sendExited(ctx, outbound, attachID, "cloud control is private on this machine")
-		return
-	}
 	if attachID == "" {
 		c.logger.Warn().Msg("terminal stream: attach with empty attach_id; dropping")
 		return
@@ -1114,11 +1117,28 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 		c.sendExited(ctx, outbound, attachID, reason)
 		return
 	}
+
+	resolver := &StreamClient{targetObjects: c.targetObjects}
+	target := &authorizedTarget{objects: make(map[targetKey]CommandTargetObject), repos: make(map[string]CommandTargetObject)}
+	if err := resolver.loadTarget(ctx, target, targetKey{"chat", chatID}); err != nil || validateTargetParents(target, false) != nil {
+		reason := "chat lookup failed"
+		if isChatNotFound(err) || errors.Is(err, errTargetNotFound) {
+			reason = "chat not found"
+		}
+		c.sendExited(ctx, outbound, attachID, reason)
+		return
+	}
+	repoID := target.objects[targetKey{"chat", chatID}].RepoID
+	mode := repoCloudControlMode(ctx, c.cloudControl, repoID)
+	if cmd.GetViewerDeviceId() == "" && mode == config.CloudControlPrivate {
+		c.sendExited(ctx, outbound, attachID, "cloud control is private on this machine")
+		return
+	}
 	sessionName := ""
 	if row.TmuxSessionName != nil {
 		sessionName = *row.TmuxSessionName
 	}
-	readOnly := cloudControlMode(c.cloudControl) != config.CloudControlFull
+	readOnly := mode != config.CloudControlFull
 	wakeNotice := ""
 	if sessionName == "" && readOnly {
 		c.sendExited(ctx, outbound, attachID, "cloud control is read-only; cannot wake chat")
@@ -1163,6 +1183,9 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 
 	state := &activeAttach{
+		repoID:        repoID,
+		writable:      !readOnly,
+		privateSealed: seal != nil && mode == config.CloudControlPrivate,
 		seal:          seal,
 		wakeNotice:    wakeNotice,
 		id:            attachID,
@@ -1393,6 +1416,18 @@ func (c *TerminalStreamClient) handleClose(cmd *pb.TerminalCloseCommand) {
 
 // lookupAttach returns the active attach state for an attach_id, or nil.
 func (c *TerminalStreamClient) lookupAttach(attachID string) *activeAttach {
+	state := c.lookupOutputAttach(attachID)
+	if state != nil && state.done != nil {
+		select {
+		case <-state.done:
+			return nil
+		default:
+		}
+	}
+	return state
+}
+
+func (c *TerminalStreamClient) lookupOutputAttach(attachID string) *activeAttach {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.attaches[attachID]
@@ -1431,6 +1466,9 @@ func (c *TerminalStreamClient) cancelAndWaitAttaches(states []*activeAttach) {
 	}
 	for _, s := range states {
 		<-s.done
+		if s.seal != nil {
+			s.seal.destroy()
+		}
 	}
 }
 

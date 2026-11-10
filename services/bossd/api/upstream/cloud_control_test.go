@@ -397,10 +397,9 @@ func TestCloudControl_PrivateAnswersMetadata(t *testing.T) {
 	}
 }
 
-func TestCloudControl_PrivateTerminalAttachBeforeLookup(t *testing.T) {
+func TestCloudControl_PrivateTerminalAttachAfterLookup(t *testing.T) {
 	h := newTestHarness(t)
 	h.client.cloudControl = fixedCloudControl(config.CloudControlPrivate)
-	h.client.chats = nil // Any lookup would panic, before the factory can spawn tmux.
 	out := make(chan *pb.TerminalServerMessage, 2)
 	h.client.handleClientMessage(context.Background(), &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{AttachId: "private", ChatId: "claude-1"}}}, out, nil)
 	if len(out) != 1 {
@@ -417,4 +416,20 @@ func TestCloudControl_PrivateTerminalAttachBeforeLookup(t *testing.T) {
 
 func (p fixedCloudControl) RepoMode(context.Context, string) (config.CloudControlMode, config.CloudControlSource) {
 	return p.Mode(), config.CloudControlSourceMachine
+}
+
+func TestCloudControl_RepoPrivateTerminalAttach(t *testing.T) {
+	h := newTestHarness(t)
+	h.client.cloudControl = targetPolicy{machine: config.CloudControlFull, repos: map[string]config.CloudControlMode{"fixture": config.CloudControlPrivate}}
+	out := make(chan *pb.TerminalServerMessage, 8)
+	h.client.handleAttach(t.Context(), &pb.TerminalAttachCommand{AttachId: "private", ChatId: "claude-1"}, out)
+	defer h.client.closeAllAttaches()
+	select {
+	case msg := <-out:
+		if msg.GetExited().GetReason() != "cloud control is private on this machine" {
+			t.Fatalf("private attach = %v", msg)
+		}
+	default:
+		t.Fatal("repo-private attach was accepted under machine full")
+	}
 }

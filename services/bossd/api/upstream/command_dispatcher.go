@@ -420,7 +420,7 @@ func (c *StreamClient) dispatchAttach(
 		cancel()
 		return commandErr(cmdID, fmt.Sprintf("attach: %v", err))
 	}
-	state := &sessionAttachState{cancel: cancel, done: make(chan struct{})}
+	state := &sessionAttachState{cancel: cancel, done: make(chan struct{}), sessionID: sessionID}
 	c.sessionAttachMu.Lock()
 	if c.sessionAttaches == nil {
 		c.sessionAttaches = make(map[string]*sessionAttachState)
@@ -436,7 +436,7 @@ func (c *StreamClient) dispatchAttach(
 			case <-attachCtx.Done():
 				return
 			case chunk, ok := <-ch:
-				if !ok || !c.allowSessionAttach(cmdID) {
+				if !ok || !c.allowSessionAttach(attachCtx, cmdID, sessionID) {
 					return
 				}
 				select {

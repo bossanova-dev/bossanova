@@ -213,6 +213,7 @@ func newUploadHarness(t *testing.T, uploads UploadManager) *testHarness {
 	factory := newFakeAttachFactory()
 	cmdRec := &recordingCmdFactory{}
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		TargetObjects: dispatcherTargetFixture{},
 		CloudControl:  fixedCloudControl("full"),
 		Opener:        opener,
 		Chats:         chats,

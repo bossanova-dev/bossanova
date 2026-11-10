@@ -59,7 +59,6 @@ linters:
             - '!**/services/boss/internal/clitest/**'
             - '!**/services/bossd/testharness/**'
             # BEGIN generated: e2e-harness-imports baseline (node scripts/guards/e2e-harness-imports.mjs --write)
-            - "!**/services/boss/cmd/proof-tui-agent/main_test.go"
             - "!**/services/bossd/api/daemon/ready_handoff_integration_test.go"
             - "!**/services/bossd/internal/evidence/provider_contract_test.go"
             - "!**/services/bossd/internal/mcpcontract/contract_test.go"

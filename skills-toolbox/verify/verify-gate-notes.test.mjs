@@ -451,3 +451,47 @@ test('a failed not-applicable comment write leaves the verdict and status untouc
   assert.equal(w.writes[0].state, 'success')
   assert.equal(w.writes[0].description, 'verified')
 })
+
+test('post confidence files carry policy holds without rejecting malformed entries', async () => {
+  const w = world()
+  const confidence = {
+    level: 'moderate',
+    asks: [],
+    reasons: [],
+    loweredBy: [],
+    health: [],
+    holds: {
+      policy: [
+        {
+          kind: 'rule',
+          rule: 'Billing requires human review.',
+          reason: 'Changes invoices',
+          path: 'billing.js',
+          verified: true,
+        },
+        null,
+      ],
+      describers: [],
+    },
+  }
+  const result = await main(
+    [
+      'post',
+      '--pr',
+      '7',
+      '--head',
+      HEAD,
+      '--repo',
+      'o/r',
+      '--verdict',
+      'human',
+      '--reason',
+      'human-review:policy',
+      '--confidence',
+      inputFile(confidence),
+      '--dry-run',
+    ],
+    w.deps,
+  )
+  assert.match(JSON.stringify(result), /Billing requires human review/)
+})

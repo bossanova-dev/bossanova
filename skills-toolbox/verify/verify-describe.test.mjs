@@ -294,3 +294,26 @@ test('foldChange can only strengthen a computed change', () => {
           change === 'breaking' || breaking || failed ? 'breaking' : 'additive',
         )
 })
+
+test('holding describers retain their own items and failure reasons in descriptor order', () => {
+  const outputs = [
+    { extension: 'additive', area: 'housekeeping', ok: true, order: 1, description: valid() },
+    {
+      extension: 'breaking',
+      area: 'housekeeping',
+      ok: true,
+      order: 2,
+      description: { ...valid(), breaking: true, items: ['Removed field', 'Removed field'] },
+    },
+    { extension: 'failed', area: 'housekeeping', ok: false, order: 3, reason: 'timeout' },
+  ]
+  const result = describeAreas([area()], outputs)
+  assert.deepEqual(result.areas[0].describers, [
+    { extension: 'breaking', outcome: 'breaking', items: ['Removed field'] },
+    { extension: 'failed', outcome: 'failed', reason: 'timeout' },
+  ])
+  assert.deepEqual(result.areas[0].items, ['A change', 'Removed field'])
+  assert.equal(result.areas[0].defaultAsk, 'always')
+  assert.equal(result.areas[0].breaking, true)
+  assert.deepEqual(describeAreas([area()], []).areas[0].describers, [])
+})

@@ -78,7 +78,7 @@ async function run({
   return { result, uploads, notes }
 }
 
-test('a terminal verdict uploads the page and notes the proof line carrying its URL @sessions.AC248601', async () => {
+test('a parked verdict uploads the page and notes the proof line carrying its URL @sessions.AC248601', async () => {
   const { result, uploads, notes } = await run()
   const url = `https://proof.example/acme/widgets/7/${HEAD}/index.html`
   assert.deepEqual(result.page, { published: true, url, publisher: 'hook' })
@@ -280,4 +280,83 @@ test('comment markers tell a repo proof from the core proof note', () => {
     ],
   )
   assert.equal(markers[1].digest, note.digest)
+})
+
+test('media and the player go before the page, in daemon-sized calls, through either publisher @sessions.AC248607', async (t) => {
+  const workspace = tempDir('proof-workspace-', t)
+  const evidence = tempDir('proof-evidence-', t)
+  const assets = Array.from({ length: 70 }, (_, i) => {
+    fs.writeFileSync(path.join(evidence, `s${i}.png`), `still ${i}`)
+    return { name: `media/s${i}.png`, from: path.join(evidence, `s${i}.png`) }
+  })
+  assets.push({ name: 'player.js', text: 'player()' })
+  const target = { repo: 'acme/widgets', pr: 7, headSha: HEAD }
+  const calls = []
+  const callDaemon = async (_socket, _method, message, opts) => {
+    const read = (name) => fs.readFileSync(path.join(message.evidenceDir, name), 'utf8')
+    calls.push({
+      names: message.objects.map((o) => o.name),
+      first: read(message.objects[0].path),
+      opts,
+    })
+    return { keyPrefix: `acme/widgets/7/${HEAD}/`, publicBaseUrl: 'https://proof.example' }
+  }
+  const daemon = await uploadProofPage({
+    publisher: { kind: 'daemon' },
+    html: '<p>page</p>',
+    assets,
+    target,
+    workspaceRoot: workspace,
+    callDaemon,
+  })
+  assert.equal(daemon.ok, true)
+  assert.deepEqual(
+    calls.map((c) => [c.names.length, c.names[0], c.names.at(-1)]),
+    [
+      [64, 'media/s0.png', 'media/s63.png'],
+      [7, 'media/s64.png', 'player.js'],
+      [1, PAGE_OBJECT, PAGE_OBJECT],
+    ],
+  )
+  assert.deepEqual(
+    calls.map((c) => c.first),
+    ['still 0', 'still 64', '<p>page</p>'],
+  )
+  assert.ok(calls[0].opts.timeoutMs > calls[2].opts.timeoutMs, 'media get the long budget')
+  assert.equal(fs.existsSync(path.join(workspace, '.verify-evidence')), false)
+
+  const hooked = []
+  const runHook = ({ envelope }) => {
+    hooked.push(envelope.objects.map((o) => [o.name, o.contentType]))
+    return { ok: true, baseUrl: 'https://proof.example' }
+  }
+  const hook = await uploadProofPage({
+    publisher: { kind: 'hook', extension: { name: 'host' } },
+    html: '<p>page</p>',
+    assets: [assets[0], assets.at(-1)],
+    target,
+    runHook,
+  })
+  assert.deepEqual(hook, {
+    ok: true,
+    url: `https://proof.example/acme/widgets/7/${HEAD}/index.html`,
+  })
+  assert.deepEqual(hooked, [
+    [
+      ['media/s0.png', 'image/png'],
+      ['player.js', 'text/javascript; charset=utf-8'],
+    ],
+    [[PAGE_OBJECT, 'text/html; charset=utf-8']],
+  ])
+  const failed = await uploadProofPage({
+    publisher: { kind: 'hook', extension: { name: 'host' } },
+    html: '<p>page</p>',
+    assets: [assets[0]],
+    target,
+    runHook: ({ envelope }) =>
+      envelope.objects[0].name === PAGE_OBJECT
+        ? assert.fail('the page never goes up without its media')
+        : { ok: false, reason: 'exit:2' },
+  })
+  assert.deepEqual(failed, { ok: false, reason: 'hook-failed:exit:2' })
 })

@@ -46,6 +46,8 @@ export const VENDOR_MAP = {
     'stage-chain.mjs',
   ],
   'boss-review': [
+    'review/dispatch-waves.mjs',
+    'verification-receipt.mjs',
     'build/acceptance-retry.mjs',
     'review/claude-review.mjs',
     'review/codex-review.mjs',
@@ -54,6 +56,7 @@ export const VENDOR_MAP = {
     'skill-config.mjs',
   ],
   'boss-build': [
+    'verification-receipt.mjs',
     'issue-lease.mjs',
     'ci/ci-request.mjs',
     'build/blocker-verdict.mjs',
@@ -115,6 +118,7 @@ export const VENDOR_MAP = {
     'bs-dispatch-await.mjs',
     'epic/bs-epic-lib.mjs',
     'bs-record-notes.mjs',
+    'notes-record.mjs',
     'callback/adapter.mjs',
     'callback/boss.mjs',
     'callback/ci-watch.mjs',
@@ -134,6 +138,7 @@ export const VENDOR_MAP = {
     'tracker/preflight.mjs',
   ],
   'boss-plan': [
+    'session/claim-owner-status.mjs',
     'plan/plan-open-prs.mjs',
     'issue-lease.mjs',
     'plan/boss-plan-env.sh',

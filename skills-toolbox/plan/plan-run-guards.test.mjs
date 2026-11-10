@@ -1,3 +1,4 @@
+import { region } from '../../scripts/test-infra/gate-region-lib.mjs'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -146,6 +147,7 @@ test('validateDraftMetadata normalizes cosmetic fields instead of refusing the p
     metadata({
       agentBuild: 'false',
       estimate: 8,
+      descriptionSummary: withPlanning('- Atomic-5: indivisible'),
       priority: 0,
       openQuestions: 'one question',
       transcript: 'raw run log',
@@ -157,7 +159,7 @@ test('validateDraftMetadata normalizes cosmetic fields instead of refusing the p
   assert.equal(result.normalized.priority, 3)
   assert.deepEqual(result.normalized.openQuestions, ['one question'])
   assert.equal(Object.hasOwn(result.normalized, 'transcript'), false)
-  assert.ok(result.warnings.length >= 4, JSON.stringify(result.warnings))
+  assert.ok(result.warnings.length >= 3, JSON.stringify(result.warnings))
 
   assert.equal(validateDraftMetadata(metadata({ estimate: 4 })).normalized.estimate, 5)
   assert.equal(validateDraftMetadata(metadata({ priority: 9 })).normalized.priority, 4)
@@ -170,11 +172,94 @@ test('validateDraftMetadata normalizes cosmetic fields instead of refusing the p
   assert.equal(defaulted.normalized.priority, 3)
 })
 
-test('validateDraftMetadata warns, never refuses, on an estimate 5 with no Atomic-5 line', () => {
-  const result = validateDraftMetadata(metadata({ estimate: 5 }))
-  assert.equal(result.ok, true)
-  assert.ok(result.warnings.some((warning) => /Atomic-5/.test(warning.message)))
+test('estimate 5 requires a current Planning justification in either artifact', () => {
+  for (const estimate of [4, 5, 8]) {
+    for (const plan of [
+      '',
+      '## Original notes\n## Planning\n- Atomic-5: stale',
+      '```md\n## Planning\n- Atomic-5: example\n```',
+    ]) {
+      const result = validateDraftMetadata(metadata({ estimate }), { resolvePlan: () => plan })
+      assert.equal(result.ok, false)
+      assert.ok(result.violations.some((v) => v.code === 'estimate-5-unjustified'))
+    }
+  }
+  for (const options of [
+    {},
+    {
+      resolvePlan: () => {
+        throw new Error('unreadable')
+      },
+    },
+  ]) {
+    const result = validateDraftMetadata(metadata({ estimate: 5 }), options)
+    assert.equal(result.ok, false)
+    assert.ok(result.violations.some((v) => v.code === 'estimate-5-unjustified'))
+  }
+  const stale = validateDraftMetadata(
+    metadata({
+      estimate: 5,
+      descriptionSummary: descriptionSummary() + '\n## Planning\n- Atomic-5: stale',
+    }),
+  )
+  assert.equal(stale.ok, false)
 })
+
+test('estimate 5 carries a plan justification without changing Original notes', () => {
+  for (const label of ['Atomic-5', 'Oversized-child']) {
+    const original = descriptionSummary() + '\nuntouched tail \r\n'
+    const bullet = `${label}: indivisible change`
+    const result = validateDraftMetadata(metadata({ estimate: 5, descriptionSummary: original }), {
+      resolvePlan: () => `## Planning\n+ ${bullet}`,
+    })
+    assert.equal(result.ok, true, JSON.stringify(result.violations))
+    const rewritten = result.descriptionRewrite
+    assert.equal(rewritten.path, null)
+    assert.equal(rewritten.carried, bullet)
+    assert.equal(result.normalized.descriptionSummary, rewritten.text)
+    assert.ok(rewritten.text.includes(`- ${bullet}`))
+    assert.equal(region(rewritten.text, '## Original notes'), region(original, '## Original notes'))
+    assert.equal(result.normalized.agentBuild, label !== 'Oversized-child')
+  }
+})
+
+for (const verb of ['metadata', 'adopt-metadata']) {
+  for (const justified of [true, false]) {
+    test(`${verb} CLI ${justified ? 'carries' : 'refuses missing'} estimate-5 justification`, (t) => {
+      const dir = tempDir('plan-run-guards-atomic-')
+      t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+      const artifact = '.linear-plans/run-atomic/BOS-1.description.md'
+      const descriptionPath = path.join(dir, artifact)
+      mkdirSync(path.dirname(descriptionPath), { recursive: true })
+      const original = descriptionSummary() + '\nreporter bytes \r\n'
+      writeFileSync(descriptionPath, original)
+      const planPath = path.join(dir, 'plan.md')
+      writeFileSync(
+        planPath,
+        justified ? '## Planning\n- Atomic-5: indivisible' : '# No justification',
+      )
+      const value = metadata({ estimate: 5, planPath, descriptionSummary: { path: artifact } })
+      const metadataPath = path.join(dir, 'metadata.json')
+      writeFileSync(metadataPath, JSON.stringify(value))
+      const argv = [GUARD, verb, metadataPath]
+      if (verb === 'adopt-metadata') argv.push(JSON.stringify(value))
+      const run = spawnSync(process.execPath, argv, { cwd: dir, encoding: 'utf8' })
+      assert.equal(run.status, justified ? 0 : 1, run.stderr)
+      const actual = readFileSync(descriptionPath, 'utf8')
+      if (justified) {
+        assert.ok(actual.includes('- Atomic-5: indivisible'))
+        assert.equal(region(actual, '## Original notes'), region(original, '## Original notes'))
+        assert.deepEqual(
+          JSON.parse(readFileSync(metadataPath, 'utf8')).descriptionSummary,
+          value.descriptionSummary,
+        )
+      } else {
+        assert.ok(run.stderr.includes('estimate-5-unjustified'))
+        assert.equal(actual, original)
+      }
+    })
+  }
+}
 
 // BOS-1358 note 4 — a parented ticket honestly sized 5+ that is not atomic is planned as one ticket
 // with `- Oversized-child:` and handed to a human to split; `- Atomic-5:` keeps meaning "atomic".
@@ -205,6 +290,7 @@ test('BOS-1358 validateDraftMetadata accepts Oversized-child as the estimate-5 j
     }),
   )
   assert.deepEqual(atomic.warnings, [])
+  assert.equal(atomic.descriptionRewrite, undefined)
   assert.equal(atomic.normalized.agentBuild, true)
 })
 
@@ -1349,7 +1435,7 @@ test('every verb whose body throws records under its own gate id, never the usag
   ]) {
     const outcomes = path.join(dir, `${verb}.tsv`)
     const res = runGuardRecording(args, outcomes)
-    assert.equal(res.status, 1, `${verb}: ${res.stderr}`)
+    assert.equal(res.status, verb === 'idempotence' ? 2 : 1, `${verb}: ${res.stderr}`)
     assert.match(res.stderr, /unreadable-input/)
     assert.deepEqual(recordedOutcomes(outcomes), [
       [`plan-run-guards.${verb}`, 'fire', 'unreadable-input'],
@@ -1458,7 +1544,11 @@ test('adoptReturnedMetadata refuses a dispatch that returned no message at all',
 test('adopt-metadata CLI writes the normalized returned object over whatever was on disk', () => {
   const dir = tempDir('plan-run-guards-adopt-')
   const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
-  const returned = metadata({ labels: ['IMPROVEMENT'], estimate: 8 })
+  const returned = metadata({
+    labels: ['IMPROVEMENT'],
+    estimate: 8,
+    descriptionSummary: withPlanning('- Atomic-5: indivisible'),
+  })
 
   writeFileSync(metadataPath, JSON.stringify(metadata({ estimate: 1 })))
   const run = spawnSync(
@@ -2311,4 +2401,38 @@ test('deps CLI consumes a snapshot, preserves stdout without it, and refuses inv
   assert.equal(withPrs.status, 0, withPrs.stderr)
   assert.equal(JSON.parse(withPrs.stdout).edges[0].reason, 'file-overlap')
   assert.equal(runDeps(dir, { rows }).stdout, baseline.stdout)
+})
+
+test('recheck shares terminal-owner liveness and rejects malformed or unattached evidence', () => {
+  const dir = tempDir('recheck-owner-')
+  const selected = issue({ status: 'Backlog', attachments: [], description: 'Needs a plan' })
+  const file = path.join(dir, 'selected.json'),
+    evidence = path.join(dir, 'liveness.json')
+  writeFileSync(file, JSON.stringify(selected))
+  writeFileSync(path.join(dir, '.boss-skills.json'), JSON.stringify(TEST_CONFIG))
+  const me = 'b'.repeat(32)
+  const comments = JSON.stringify(
+    ['a'.repeat(32), me].map((token) => ({
+      body: `🔒 bs-plan-claim:${token} (boss-plan run claiming this ticket) owner:${token === me ? 'ours' : 'peer'}`,
+      createdAt: new Date().toISOString(),
+    })),
+  )
+  const run = (extra) =>
+    spawnSync(
+      process.execPath,
+      [GUARD, 'recheck', file, file, '--selected-id', 'BOS-1', ...extra],
+      { cwd: dir, encoding: 'utf8' },
+    )
+  const claim = ['--claim-token', me, '--comments', comments]
+  assert.equal(run(claim).status, 3)
+  const valid = { sessions: { peer: { terminal: true, reason: 'archived' } } }
+  writeFileSync(evidence, JSON.stringify(valid))
+  for (const value of [evidence, JSON.stringify(valid)]) {
+    const result = run([...claim, '--liveness', value])
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(JSON.parse(result.stdout).action, 'proceed')
+  }
+  writeFileSync(evidence, '{"sessions":{"peer":{"terminal":"yes"}}}')
+  assert.equal(run([...claim, '--liveness', evidence]).status, 2)
+  assert.equal(run(['--liveness', evidence]).status, 2)
 })

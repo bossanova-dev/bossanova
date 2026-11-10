@@ -29,7 +29,8 @@ export const SIBLING_MAX = 5
 export const SOURCE_KEY = 'source'
 
 const KEY_RE = /^[a-z0-9-]{1,40}$/
-const MARKER_RE = /<!--\s*boss-plan-sibling-of:(\S+)\s+key:([a-z0-9-]{1,40})\s*-->/
+const MARKER_RE =
+  /<!--\s*boss-plan-sibling-of:(<issue\b[^<>]*\/>|\S+)\s+key:([a-z0-9-]{1,40})\s*-->/
 
 const EX_USAGE = 64
 
@@ -163,6 +164,24 @@ export function siblingMarker(sourceId, key) {
   return `<!-- boss-plan-sibling-of:${sourceId} key:${key} -->`
 }
 
+/** Recover identifiers from tracker-rendered references without accepting a different issue. */
+function markerSourceId(source) {
+  const identifier = /^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]*$/
+  const issueLabel = /^<issue\b[^<>]*\slabel="([^"]+)"[^<>]*\/>$/.exec(source)?.[1]
+  if (issueLabel && identifier.test(issueLabel)) return issueLabel
+  const link = /^\[([^\]]+)\]\((?:<([^<>]+)>|([^<>]+))\)$/.exec(source)
+  if (!link || !identifier.test(link[1])) return source
+  try {
+    const url = new URL(link[2] ?? link[3])
+    if (['http:', 'https:'].includes(url.protocol) && url.pathname.split('/').includes(link[1])) {
+      return link[1]
+    }
+  } catch {
+    // An unrecognized reference remains intact so marker verification still rejects it.
+  }
+  return source
+}
+
 /**
  * @param {unknown} description
  * @returns {{sourceId: string, key: string} | null}
@@ -170,7 +189,7 @@ export function siblingMarker(sourceId, key) {
 export function parseSiblingMarker(description) {
   if (typeof description !== 'string') return null
   const match = description.match(MARKER_RE)
-  return match ? { sourceId: match[1], key: match[2] } : null
+  return match ? { sourceId: markerSourceId(match[1]), key: match[2] } : null
 }
 
 /**

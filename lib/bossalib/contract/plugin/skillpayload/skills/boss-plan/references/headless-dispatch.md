@@ -12,7 +12,8 @@ Immediately after a drafter returns, run its fresh recheck before metadata adopt
 
 ## Premise drift is reconciled, not appended
 
-Persist the Phase 2 sentinel array `$PREMISES` to `premises.json` before the first guard.
+Phase 2’s classifier persists the sentinel array to
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json` before the first guard.
 For empty premises, write `{}` to `premise-states.json`; both guard inputs must exist.
 For a non-empty sentinel `premises` array, use fresh `getIssue` reads at both write boundaries.
 The first pass runs after the secret gate and before image parity: `--annotate` updates the
@@ -56,20 +57,23 @@ It settles on the `draft` run-file sentinel and the drafter's own heartbeat — 
 output file (a symlink or a stub whose mtime and size never move), and never through a shell `sleep`.
 
 1. **Record the dispatch clock** immediately before each dispatch attempt, the one transport-death
-   retry included: `printf '%s000' "$(date +%s)" > "$RUN_DIR/draft.dispatched-at"`. The `draft`
-   sentinel is written only when the drafter finishes, so without a caller-held clock every re-armed
+   retry included:
+
+   ```bash
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-mark --run-dir <RUN_DIR>
+   ```
+
+   The `draft` sentinel is written only when the drafter finishes, so without a caller-held clock every re-armed
    call would restart the seed age at zero and `abandoned` could never fire. Shell variables do not
    survive between Bash calls; the run dir does, its non-`.json` name keeps it out of the sentinel
    set, and `cleanup` removes it with the dir.
+
 2. **Re-arm as a foreground Bash call.** Under Claude Code use `--budget 590000` with the Bash
    tool's `timeout` set to `600000`: the budget stays below the call's own tool timeout. One call
    spans the observed drafter beat gaps (up to about seven minutes), so no observed gap outlasts it.
 
    ```bash
-   # Claude Code Bash tool timeout: 600000 ms; wait budget: 590000 ms (strictly below timeout).
-   node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait "$RUN_DIR" "$RUN_ID" draft \
-     --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json \
-     --dispatched-at "$(cat "$RUN_DIR/draft.dispatched-at")" --while-live --budget 590000
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-wait --run-dir <RUN_DIR> --run-id <RUN_ID> --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --budget 590000
    ```
 
    Harnesses that cannot raise the tool timeout omit `--budget`, keeping the 110000 ms default
@@ -119,7 +123,7 @@ accepts a child as planned only when `plan-run-guards.mjs idempotence` over a fr
 
 ### Hydrate the epic reverify before step 4's block runs
 
-Step 4 accepts an epic only on `node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" epic-reverify`, and
+Step 4 accepts an epic only on `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs epic-reverify`, and
 that verb reads files, never the tracker: tracker reads are tool calls, which cannot run inside a
 bash block and share no shell state with it. So once the sentinel reports `payload.epic == true`,
 and before the step-4 block runs:
@@ -132,7 +136,7 @@ and before the step-4 block runs:
    `parent` and `children` carrying each issue's id, identifier, state, labels, attachments and
    links, and **no descriptions**. The verb ignores any description it finds there and derives every
    other path from the run directory itself, so nothing in the bundle can redirect a comparison.
-3. Read every description through `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description --id <UUID> --out-file <path>`
+3. Read every description through `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-description --id <UUID> --out-file <path>`
    on the run's one route (`references/plan-storage.md`; on the `getIssue` fallback route, copy
    the returned description byte-for-byte to the same path): the parent into
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-stored.md`, and **every live child
@@ -180,33 +184,24 @@ tracker write on either attempt.
 
 ## Validate the object that was returned, not a file at its path
 
-`node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" adopt-metadata "$METADATA" "$RETURNED_METADATA"`
-validates the object the dispatch **returned** (never a same-named file the worker may have written),
-normalizes cosmetic fields — label spelling, estimate, priority, optional fields — and writes the
-normalized object to `$METADATA`, printing a `warning:` line for each change. It fails only when the
-plan path or the description is missing or unusable.
-
-### Assign `$RETURNED_METADATA` with a quoted heredoc, never an inline quoted literal
-
-The returned object travels as argv, which is the only form the orchestrator holds it in — writing
-it to a file first would reintroduce the substitution this rule exists to refuse. That makes the
-**assignment** the hazard, not the guard. Drafted JSON routinely carries an apostrophe (a ticket
-title, a summary), and an apostrophe inside a single-quoted shell literal ends the literal: the
-variable then holds truncated JSON and `adopt-metadata` cannot parse it.
-
-Assign it with a **quoted** heredoc, whose delimiter suppresses every expansion and needs no
-escaping for `'`, `"`, `$` or backticks:
+After the dispatch returns, use the orchestrator's file-writing tool to write its returned JSON
+object byte-for-byte to
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-returned.json`, the declared `draft-returned`
+family. Overwrite any same-named file the drafter wrote: only the object the dispatch returned is
+trusted as input, and the orchestrator writes it after the dispatch returns. Do not interpolate it
+into a shell command; apostrophes, dollar signs and backticks must remain unchanged.
 
 ```bash
-RETURNED_METADATA="$(cat <<'RETURNED_JSON'
-<the returned object, pasted verbatim>
-RETURNED_JSON
-)"
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh adopt-metadata --returned .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-returned.json --metadata .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json --run-dir <RUN_DIR> --plan-path <PLAN_PATH> --run-scratch .linear-plans/run-<RUN-SCRATCH-ID>
 ```
 
-An unquoted `<<RETURNED_JSON` is not this rule: it would expand `$` and backticks inside the
-drafted text. `adopt-metadata` also refuses a dispatch that returned **nothing**
-(`metadata-not-returned`).
+The runner reads the returned file and validates it with `plan-run-guards.mjs adopt-metadata`.
+The guard normalizes cosmetic fields — label spelling, estimate, priority, optional fields — and
+writes the normalized object to the `draft-metadata` file, printing a `warning:` line for each
+change. It fails when the plan path or description is missing or unusable, and refuses a dispatch
+that returned nothing (`metadata-not-returned`). Estimate 5 requires an `Atomic-5:` /
+`Oversized-child:` bullet under either artifact's current `## Planning` (`estimate-5-unjustified`
+otherwise); a plan-only bullet is carried into the description artifact with a `warning:` line.
 
 ## Liveness is settled on the heartbeat, not on the seed clock
 

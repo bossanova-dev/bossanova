@@ -4,7 +4,11 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { appendSectionBullets, sectionListMarker } from './plan-section-append.mjs'
+import { appendSectionBullets, planningBullet, sectionListMarker } from './plan-section-append.mjs'
+import { runCli } from '../tracker/cli.mjs'
+import { applyDescriptionPatch } from '../tracker/description-patch.mjs'
+import { buildLinearOperationMap } from '../tracker/linear.mjs'
+import { region } from '../../scripts/test-infra/gate-region-lib.mjs'
 
 for (const marker of ['*', '-', '+']) {
   test(`append continues a ${marker} list and skips repeated items`, () => {
@@ -138,4 +142,139 @@ test('CLI is strict, atomic on refusal and leaves no-op inode unchanged', (t) =>
   assert.deepEqual(JSON.parse(noop.stdout).skipped, ['added'])
   assert.equal(statSync(file).ino, before.ino)
   assert.equal(statSync(file).mtimeMs, before.mtimeMs)
+})
+
+test('Planning and Open Questions appends reach Linear as safe description deltas', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'planning-description-patch-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const baseFile = join(dir, 'base.md')
+  const bodyFile = join(dir, 'body.md')
+  const lastBullet = '* Plan attachment: Implementation plan (TEST-1)'
+  const summary = 'Preserve the stored issue while recording planning decisions.'
+  const original = [
+    '```md',
+    '## Planning',
+    '* A heading inside source code is not the active section.',
+    '```',
+    '![Original screenshot](https://uploads.linear.app/example/screenshot.png)',
+    ...Array.from(
+      { length: 80 },
+      (_, i) => `Original observation ${i}: preserve these gated bytes.`,
+    ),
+  ].join('\n')
+  const planning = {
+    heading: 'Planning',
+    items: ['Dependencies: TEST-2 is merged', 'Keep the chosen scope'],
+  }
+  const questions = { heading: 'Open Questions', items: ['Use the planned default? Chosen: yes.'] }
+  const compose = (text) =>
+    appendSectionBullets(appendSectionBullets(text, planning).text, questions).text
+  const describe = (base, body) => {
+    writeFileSync(baseFile, base)
+    writeFileSync(bodyFile, body)
+    let out = '',
+      err = ''
+    const code = runCli(
+      ['write-description', '--id', 'TEST-1', '--base-file', baseFile, '--body-file', bodyFile],
+      {
+        write: (s) => {
+          out += s
+        },
+        errWrite: (s) => {
+          err += s
+        },
+        resolveAdapter: () => ({ operationMap: buildLinearOperationMap('linear') }),
+      },
+    )
+    assert.equal(code, 0, err)
+    return JSON.parse(out)
+  }
+  for (const duplicateAnchor of [false, true]) {
+    const base = [
+      '## Summary',
+      '',
+      summary,
+      ...(duplicateAnchor ? [lastBullet] : []),
+      '',
+      '## Key changes',
+      '',
+      '* Add planning decisions mechanically.',
+      '',
+      '## Planning',
+      '',
+      '* Contract: v1',
+      '* Scope: bounded',
+      lastBullet,
+      '',
+      '## Original notes',
+      '',
+      original,
+      '',
+    ].join('\n')
+    assert.equal(base.split(lastBullet).length - 1, duplicateAnchor ? 2 : 1)
+    const body = compose(base)
+    assert.equal(compose(body), body)
+    assert.equal(region(body, '## Original notes'), region(base, '## Original notes'))
+    const descriptor = describe(base, body)
+    assert.equal(descriptor.outcome, 'descriptor-emitted')
+    if (duplicateAnchor && descriptor.mode === 'replace') {
+      assert.equal(descriptor.args.description, body)
+      assert.equal(descriptor.args.patch, undefined)
+    } else {
+      assert.equal(descriptor.mode, 'patch')
+      assert.equal('description' in descriptor.args, false)
+      const ops = descriptor.args.patch
+      assert.ok(ops.length > 0)
+      let reconstructed = base
+      for (const op of ops) {
+        const anchor = op.op === 'replace' ? op.old_string : op.anchor
+        assert.equal(reconstructed.split(anchor).length - 1, 1)
+        reconstructed = applyDescriptionPatch(reconstructed, [op])
+      }
+      assert.equal(reconstructed, body)
+      const inserted = ops.map((op) => op.text ?? op.new_string).join('\n')
+      for (const item of [...planning.items, ...questions.items]) assert.ok(inserted.includes(item))
+      // Headings and fence delimiters are shared syntax; protect the existing prose.
+      const protectedLines = [summary, ...original.split('\n')].filter(
+        (line) => line && !line.startsWith('## ') && !line.startsWith('```'),
+      )
+      for (const line of protectedLines) assert.ok(!inserted.split('\n').includes(line))
+      assert.equal(descriptor.patchBytes, Buffer.byteLength(JSON.stringify(ops)))
+      assert.equal(descriptor.bytes, Buffer.byteLength(body))
+      assert.ok(descriptor.patchBytes < descriptor.bytes)
+    }
+    const unchanged = describe(body, compose(body))
+    assert.equal(unchanged.args.patch, undefined)
+    assert.equal(unchanged.args.description, body)
+  }
+})
+
+for (const marker of ['-', '*', '+']) {
+  test(`planningBullet reads ${marker} items with continuation lines`, () => {
+    assert.equal(
+      planningBullet(
+        `## Planning\n${marker} Atomic-5: one\n  indivisible\n  change\n${marker} Other: next`,
+        'Atomic-5',
+      ),
+      'Atomic-5: one indivisible change',
+    )
+  })
+}
+
+test('planningBullet ignores fences, other sections, empty labels and Original notes', () => {
+  for (const text of [
+    '## Other\n- Atomic-5: other',
+    '```md\n## Planning\n- Atomic-5: example\n```',
+    '## Original notes\n## Planning\n- Atomic-5: stale',
+    '## Planning\n- Atomic-5:   ',
+    '## Planning\n```md\n- Atomic-5: example\n```',
+  ])
+    assert.equal(planningBullet(text, 'Atomic-5'), null)
+  assert.equal(
+    planningBullet(
+      '## Planning\n- Atomic-5: actual\n```md\n  ignored\n```\n## Original notes\n  stale',
+      'Atomic-5',
+    ),
+    'Atomic-5: actual',
+  )
 })

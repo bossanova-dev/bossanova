@@ -79,6 +79,29 @@ function itemEnd(text, start, limit) {
 }
 
 /**
+ * Read a current Planning item, without fenced examples or the reporter's tail.
+ * @param {string} text
+ * @param {string} label
+ * @returns {string | null}
+ */
+export function planningBullet(text, label) {
+  const lines = contentLines(text)
+  for (const line of lines) {
+    if (line.section !== 'Planning' || !line.bullet?.[2].startsWith(`${label}:`)) continue
+    const limit =
+      lines.find((next) => next.start > line.start && next.heading)?.start ?? text.length
+    const end = itemEnd(text, line.end, limit)
+    const continuation = lines
+      .filter((next) => next.start >= line.end && next.start < end)
+      .map((next) => text.slice(next.start, next.end).trim())
+      .filter(Boolean)
+    const item = [line.bullet[2], ...continuation].join(' ')
+    if (item.slice(label.length + 1).trim()) return item
+  }
+  return null
+}
+
+/**
  * Append new bullet text without reformatting the stored description.
  * @param {string} text
  * @param {{heading: string, items: string[]}} options

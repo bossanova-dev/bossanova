@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { renderReport, parseReportFindings } from '../review-verdict.mjs'
 import {
@@ -68,6 +69,57 @@ test('titles describe first blocker and remain bounded by words and runes', () =
   assert.match(title, /…$/)
   assert.ok(Array.from(title).length <= 40)
   assert.ok(title.slice('repair: '.length).split(' ').length <= 3)
+})
+
+test('rename names the repair chat through boss and never renames the session', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'repair-rename-'))
+  try {
+    const blockers = join(dir, 'blockers.json')
+    writeFileSync(blockers, JSON.stringify(file()))
+    const calls = join(dir, 'calls.jsonl')
+    const boss = join(dir, 'boss')
+    writeFileSync(
+      boss,
+      `#!/usr/bin/env node
+require('fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + '\\n')
+process.exit(process.env.FAKE_BOSS_STATUS === '1' ? 1 : 0)
+`,
+    )
+    chmodSync(boss, 0o755)
+    const cli = fileURLToPath(new URL('./repair-blockers.mjs', import.meta.url))
+    const run = (env) =>
+      spawnSync(process.execPath, [cli, 'rename', '--blockers', blockers], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH, BOSS_BIN: boss, ...env },
+      })
+    const readCalls = () =>
+      existsSync(calls)
+        ? readFileSync(calls, 'utf8')
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((l) => JSON.parse(l))
+        : []
+
+    const named = run({ BOSS_AGENT_SESSION_ID: 'chat-1', BOSS_SESSION_ID: 'sess-1' })
+    assert.equal(named.status, 0, named.stderr)
+    assert.equal(named.stdout, 'repair: P2 waits\n')
+    assert.deepEqual(readCalls(), [['chat', 'rename', 'chat-1', 'repair: P2 waits']])
+
+    rmSync(calls, { force: true })
+    const unset = run({ BOSS_SESSION_ID: 'sess-1' })
+    assert.equal(unset.status, 0, unset.stderr)
+    assert.equal(unset.stdout, 'repair: P2 waits\n')
+    assert.match(unset.stderr, /^warning: /)
+    assert.deepEqual(readCalls(), [])
+
+    const failed = run({ BOSS_AGENT_SESSION_ID: 'chat-1', FAKE_BOSS_STATUS: '1' })
+    assert.equal(failed.status, 0, failed.stderr)
+    assert.equal(failed.stdout, 'repair: P2 waits\n')
+    assert.match(failed.stderr, /^warning: /)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
 })
 
 test('brief keeps hostile markdown entirely inside a longer fence', () => {

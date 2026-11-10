@@ -98,6 +98,13 @@ behaviour test where behaviour changes; run only the targeted tests for the pack
 scoped conventional subject that leaves room for a `[#PR]` tag. Do not touch anything else — no
 refactors, no non-blocking findings, no churn to satisfy a reviewer. If a finding is wrong, do not
 change code: return the evidence that refutes it. Return, per finding: `id`, `fixed` (bool),
-`fixCommit` (sha) or the refutation, and the test commands you ran with their result lines. Leave
+`fixCommit` (sha) or the refutation, and the test commands you ran with their terminal receipt
+summaries and `verificationReceipts` ids. Run each targeted test in the foreground through
+`node "$BOSS_REVIEW_TOOLBOX/verification-receipt.mjs" run --dispatch review-fix --id <finding-id>-<n> -- <cmd>`.
+Use lowercase safe receipt ids. Reuse the same id for completed expected-red and green runs of
+the same command; await each run before replacing its receipt and report the expected failure
+in the summary. Distinct commands use distinct ids. Await every command; never return while one
+is running.
+A result without a receipt id is not evidence. Leave
 the tree clean.
 ```

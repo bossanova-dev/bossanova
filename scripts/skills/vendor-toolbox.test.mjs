@@ -689,6 +689,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'linear-deps-lib.mjs',
       'linear-gate-lib.mjs',
       'main-module.mjs',
+      'notes-record.mjs',
       'epic/merge-eligibility.mjs',
       'plan-attachment.mjs',
       'pr-check-state.mjs',
@@ -737,6 +738,9 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/plan-candidates.mjs',
       'tracker/preflight.mjs',
       'tracker/read-description.mjs',
+      'tracker/read-issue.mjs',
+      'tracker/issue-snapshot.mjs',
+      'tracker/linear-issue-snapshot.mjs',
       'tracker/settle-read.mjs',
       'tracker/settle-verbs.mjs',
       'tracker/write-description.mjs',
@@ -780,7 +784,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
     )
   }
   // Mechanical trigger recording ships beside its sibling imports in every consuming core.
-  for (const core of ['boss-plan', 'boss-build', 'boss-repair']) {
+  for (const core of ['boss-plan', 'boss-build', 'boss-repair', 'boss-epic']) {
     for (const helper of ['notes-record.mjs', 'bs-record-notes.mjs', 'boss-binary.mjs']) {
       assert.ok(VENDORED_FILES[core].includes(helper), `${core} must vendor ${helper}`)
     }

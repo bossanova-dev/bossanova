@@ -13,6 +13,7 @@ import {
   ensurePlanScratchRoot,
   PLAN_SCRATCH_FAMILIES,
   PLAN_SCRATCH_ROOT,
+  planScratchBasename,
   planScratchFamily,
   planScratchPath,
   planScratchToken,
@@ -34,7 +35,7 @@ test('runScratchDir refuses a run id that could escape the scratch root', () => 
 test('planScratchPath builds every declared family inside this run directory', () => {
   const parts = {
     issueId: 'ABC-1',
-    slug: 'ABC-1-a-title',
+    title: 'A title',
     parentId: 'ABC-9',
     key: 'k1',
     childId: 'ABC-2',
@@ -67,7 +68,7 @@ test('planScratchPath refuses a family whose template parts were not supplied', 
 test('scratch paths accept literal undefined text while rejecting missing consumed parts', () => {
   const parts = {
     issueId: 'ABC-1',
-    slug: 'handle-undefined-values',
+    title: 'handle-undefined-values',
     parentId: 'ABC-9',
     key: 'undefined',
     childId: 'ABC-2',
@@ -95,10 +96,11 @@ test('scratch paths accept literal undefined text while rejecting missing consum
         () => planScratchPath('r1', family.family, { ...parts, [key]: undefined }),
         /unusable basename/,
       )
-      assert.throws(
-        () => planScratchPath('r1', family.family, { ...parts, [key]: 'a/b' }),
-        /unusable basename/,
-      )
+      if (key !== 'title')
+        assert.throws(
+          () => planScratchPath('r1', family.family, { ...parts, [key]: 'a/b' }),
+          /unusable basename/,
+        )
     }
   }
   assert.equal(
@@ -123,7 +125,7 @@ test('every declared family round-trips: its own template resolves back to it', 
 test('every declared family round-trips from a concrete path too', () => {
   const parts = {
     issueId: 'ABC-1',
-    slug: 'a-title',
+    title: 'a-title',
     parentId: 'ABC-9',
     key: 'k1',
     childId: 'ABC-2',
@@ -224,9 +226,7 @@ test('planScratchToken distinguishes child artifacts from their parent forms', (
   )
   assert.deepEqual(parent.families, ['image-guard-orig'])
 
-  const childPlan = planScratchToken(
-    '.linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md',
-  )
+  const childPlan = planScratchToken('.linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>.md')
   assert.deepEqual(childPlan.families, ['child-plan'])
 
   const plan = planScratchToken('.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md')
@@ -569,7 +569,7 @@ test('precreation child drafts have distinct declared names', () => {
       'ABC-1.child-key-add-the-store.plan.md',
     ],
     ['description', '<ISSUE-ID>.description.md', 'ABC-1.description.md'],
-    ['child-plan', '<PARENT>-child-<key>-<slug>.md', 'ABC-1-child-store-ABC-2-add-store.md'],
+    ['child-plan', '<PARENT>-child-<key>.md', 'ABC-1-child-store-ABC-2-add-store.md'],
   ]) {
     for (const name of [template, concrete])
       assert.deepEqual(planScratchToken(`.linear-plans/run-r1/${name}`).families, [family])
@@ -602,4 +602,87 @@ test('families declares a persistent premise report for writeback verification',
   )
   assert.equal(cli.status, 0, cli.stderr)
   assert.match(cli.stdout, /^premise-report\t<ISSUE-ID>\.premise-report\.json\t/m)
+})
+
+test('returned metadata has a declared family and is accepted by the CLI', () => {
+  const result = spawnSync(
+    process.execPath,
+    ['skills-toolbox/plan/plan-scratch-paths.mjs', 'families'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /^draft-returned\t/m)
+  const checked = spawnSync(
+    process.execPath,
+    [
+      'skills-toolbox/plan/plan-scratch-paths.mjs',
+      'check',
+      '.linear-plans/run-one/ABC-1.draft-returned.json',
+    ],
+    { encoding: 'utf8' },
+  )
+  assert.equal(checked.status, 0, checked.stderr)
+})
+
+test('claim liveness is addressed under the current run and selected issue', () => {
+  assert.equal(
+    planScratchPath('run-1', 'claim-liveness', { issueId: 'APP-1' }),
+    '.linear-plans/run-run-1/APP-1.claim-liveness.json',
+  )
+  assert.equal(planScratchToken('.linear-plans/run-run-1/APP-1.claim-liveness.json').ok, true)
+})
+
+for (const [family, suffix] of [
+  ['child-plan', '.md'],
+  ['child-plan-rejected', '.md.rejected'],
+]) {
+  test(`${family} uses the parent and spec key once`, () => {
+    assert.equal(
+      planScratchPath('r1', family, { parentId: 'ABC-9', key: 'add-the-store' }),
+      `.linear-plans/run-r1/ABC-9-child-add-the-store${suffix}`,
+    )
+  })
+}
+for (const [family, suffix] of [
+  ['plan', '.md'],
+  ['plan-rejected', '.md.rejected'],
+]) {
+  test(`${family} computes the issue slug from title`, () => {
+    assert.equal(
+      planScratchPath('r1', family, { issueId: 'abc-12', title: 'Add the store!' }),
+      `.linear-plans/run-r1/ABC-12-add-the-store${suffix}`,
+    )
+    assert.throws(() => planScratchPath('r1', family, { issueId: 'ABC-12' }))
+  })
+}
+test('every family rejects a caller-supplied slug', () => {
+  const parts = {
+    issueId: 'ABC-1',
+    title: 'A title',
+    parentId: 'ABC-9',
+    key: 'store',
+    childId: 'ABC-2',
+    n: '1',
+    role: 'draft',
+    name: 'example',
+  }
+  for (const { family } of PLAN_SCRATCH_FAMILIES) {
+    assert.equal(typeof planScratchBasename(family, parts), 'string')
+    assert.throws(() => planScratchPath('r1', family, { ...parts, slug: 'x' }))
+    assert.throws(() => planScratchBasename(family, { ...parts, slug: 'x' }))
+  }
+  const result = spawnSync(
+    process.execPath,
+    ['skills-toolbox/plan/plan-scratch-paths.mjs', 'path', 'r1', 'plan', 'issueId=ABC-1', 'slug=x'],
+    { encoding: 'utf8' },
+  )
+  assert.notEqual(result.status, 0)
+  assert.equal(result.stdout, '')
+})
+test('legacy concrete child names classify but doubled templates do not', () => {
+  assert.deepEqual(
+    planScratchToken('.linear-plans/run-r1/ABC-1-child-store-ABC-2-add-store.md').families,
+    ['child-plan'],
+  )
+  assert.equal(planScratchToken('.linear-plans/run-r1/<PARENT>-child-<key>-<slug>.md').ok, false)
 })

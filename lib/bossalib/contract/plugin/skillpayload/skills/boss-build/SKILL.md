@@ -99,6 +99,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Remove a recorded scratch dir                                          | `node scratch-remove.mjs --record <file>`                                                                                                               |
 | Rename an identifier across files                                      | `node rename-symbol.mjs --from <A> --to <B> [--path <p>] [--exclude <p>] [--dry-run]`                                                                   |
 | Is the worktree clean (hook-proof)?                                    | `node worktree-state.mjs [--base <ref>]`                                                                                                                |
+| Did a worker’s verification finish?                                    | `node verification-receipt.mjs run …` / `check …` / `clear …`                                                                                           |
 | Who owns this worktree?                                                | `worktree-lock.sh acquire\|heartbeat\|release <run-id> [ticket]`                                                                                        |
 | Is my claim visible yet?                                               | `node tracker/cli.mjs read-claim-comments …`                                                                                                            |
 | Did the state move land?                                               | `node tracker/cli.mjs await-state …`                                                                                                                    |
@@ -151,7 +152,10 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
    `buildDefaults.verifyFastPath: true`, an enabled `/boss-verify` cron job and a `pass` verdict.
 6. **Await every subagent.** Dispatch with awaited `Task` (Claude) or `spawn_agent` + `wait_agent`
    (Codex); never background a dispatch and move on. Keep bulk output (diffs, CI logs, review
-   transcripts) inside subagents that return short summaries.
+   transcripts) inside subagents that return short summaries. On Codex, after reading each result,
+   release the completed subagent using `close_agent` when exposed or the documented host release
+   primitive; completed agents may retain thread slots. An interrupt is not a release. If no
+   release primitive is available, record that limitation and continue with bounded dispatch.
 7. **A step is done when its artifact exists** (`$PLAN_FILE` holds the plan; `gh pr view <n>`
    returns), not when it was attempted.
 8. **Re-enter, don't stop early.** A prompt that arrives before this run printed a terminal state
@@ -578,7 +582,7 @@ that is available:
    current scope, rule 2, the task contract and the commit contract below.
 2. **A host-native test-first/implementation affordance**, if this environment has one.
 3. **The inline loop**: for each remaining task, a fresh focused subagent writes the failing test,
-   runs the smallest covering command until it fails for the right reason, writes the minimal code,
+   runs the smallest covering command through the verification receipt helper until it fails for the right reason, writes the minimal code,
    re-runs it green, refactors, and reviews its own task for spec compliance and quality.
 
 A tier **ran successfully** when its work is on the branch (the commits it reported are in the log
@@ -592,7 +596,7 @@ For a methodology-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLB
 
 **Task contract.** Each implementation subagent returns only: task id, files touched, tests
 added/passing, interface signatures, residual risks (checked against the prior art it cited),
-decisions made (with rationale), and commits made (short SHA + subject, or _no commit —
+decisions made (with rationale), `verificationReceipts` (receipt ids for every command in `testsAddedOrPassing`), and commits made (short SHA + subject, or _no commit —
 verification only_). Thread only that into the next dispatch; every decision reaches the PR body's
 `## Autonomous decisions`.
 
@@ -611,8 +615,32 @@ verification only_). Thread only that into the next dispatch; every decision rea
 - Do not write to the PR or the tracker; report evidence in the contract.
 - Re-read your commit messages before returning; correct any claim the run later disproved.
 
+**Verification contract** (every implementation brief carries it):
+
+- The parent supplies a safe dispatch label (`task-N` or `ext-<name>`) and clears its receipts
+  before dispatch. Run every verification command (tests, lint, gates) in the foreground through
+  `node "$BOSS_BUILD_TOOLBOX/verification-receipt.mjs" run --dispatch <label> --id <id> -- <cmd>`.
+- Reuse the same receipt id for the same test command across its completed expected-red and
+  green runs, so the final receipt records the repaired gate. Await each run before replacing its
+  receipt; distinct commands use distinct ids. Report the expected failure in the task summary.
+- Await completion. Never return while a verification command is running. Report each receipt id
+  in `verificationReceipts`; a command result without a receipt id is not evidence.
+
 **Verify each dispatch.** Before dispatching, the tree is clean and you have recorded the starting
 HEAD. After it returns, the tree is clean again and the log has advanced by the commits it reported.
+Also run `node "$BOSS_BUILD_TOOLBOX/verification-receipt.mjs" check --dispatch <label> --id <each-reported-id> --wait-ms 540000`
+inside a tool timeout of at least 600 seconds. Read every receipt, including unreported ones.
+Exit 0 admits the verification; exit 1 means a command finished but failed: fold its `summary`
+into the existing one re-dispatch allowance, and do not mark the task done. Exit 2 transfers gate
+ownership to the parent: for a live `pending` receipt, repeat the bounded `check` until it becomes
+terminal; a wait deadline never authorizes restarting that command or replacing its receipt.
+Re-run only `absent` or `orphaned` commands, after establishing that their original gate process
+is no longer running (a dead wrapper alone does not establish this). Use the recorded `command`
+or, when absent, the closest covering tests from **Verification**, in the foreground through
+`run` with the same receipt id. If the original process cannot be settled, keep verification
+incomplete and do not admit the dispatch. Record these results under `## Local verification`,
+then check again before admitting the dispatch. Clear receipts only after every gate has settled.
+Never substitute a whole-suite rerun. Usage errors must be corrected, never admitted.
 Residue the contract names: commit it yourself (only those paths) and re-check the task. Residue
 nobody can attribute: stop dispatching and go to Step 12 `BLOCKED`, naming the paths. An empty log
 range with no _verification only_ claim: confirm from the diff whether the work is actually missing;
@@ -678,7 +706,8 @@ or the repo's replacement skill — or chain of skills, run in order — from `r
 receives the same inputs and must write the same verdict file (`review-verdict.mjs` is the contract);
 boss-build reads nothing else from it.
 
-**Dispatch.** Each Step 6 pass gets its own numbered directory under the run's review root
+**Dispatch.** Before dispatching review members, release every completed subagent this run still
+holds, including Step 5 workers, using Rule 6's host capability check. Each Step 6 pass gets its own numbered directory under the run's review root
 (preflight clears it), and each chain member a numbered directory inside that, created before the
 dispatch so a member that never writes its verdict is counted as missing:
 
@@ -708,7 +737,11 @@ verdict file is the result. When `REVIEW_PASS > 1` and
 replaced only after this pass's members finish. Preflight clears review state between runs.
 Wait for each dispatch up to the hang guard
 (`reviewTimeDefaults(config).hangGuardMs`); a dispatch that never writes its verdict is an error, not
-a pass. If the dispatch tool itself fails, run the same review inline once.
+a pass. If dispatch fails, release completed agents where supported and retry the member once.
+If it still fails, run the review skill in this context once; it must dispatch its own finders and
+verifiers through `review/dispatch-waves.mjs` and record unavailable workers as coverage gaps.
+This context never reviews the diff itself. A replacement skill retains its independent-worker
+contract; an unavailable skill with no fallback produces the missing verdict error.
 
 **Classify** from the verdict files only — never the returned prose. Every pass this run is pooled,
 so a later re-review never clears a blocking finding; a later pass may resolve earlier
@@ -1008,9 +1041,10 @@ may change it.
   writes landed; otherwise name the held PRs and shared files in the breadcrumb. Apply State-move
   confirmation above; an unsettled restore is a warning.
 - Unless `BOSS_NOTES_SUPPRESSED=1`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" flush --core boss-build --outcome "$OUTCOME" --mode "<mode>"` once (unsampled, never fatal), then continue.
-- **Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Roll
-  `notesSampleRate` once per run (reuse the roll Step 6.5 left in
-  `$(git rev-parse --git-dir)/boss-build-notes-roll` if it is under 12 h old, consuming it). Write at
+- **Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Run
+  `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" roll --core boss-build --consume`; it reuses Step 6.5’s
+  decision. `notesSampleRate(config)` in `skill-config.mjs` resolves `notesDefaults.sampleRate`
+  (default `1`). If JSON `sampled` is `false`, print `notes: sampled out (rate <rate>)` and skip this notes dispatch. Otherwise write at
   most five secret-free observations (≤ 8 KiB) to a temp `observations.md` and dispatch **one**
   awaited worker that runs every extension in `(order, name)` order with the envelope
   `{"role":"notes","core":"boss-build","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`,
@@ -1110,7 +1144,7 @@ Then print the terminal state, adding `merged <sha>` only for a verified complet
 
 Locally, run only the tests relevant to the change: `commands.testAffected` when the repo has one,
 otherwise the tests covering what you changed, through the repo's own runner. Record every local
-command and its final summary in `## Local verification`, including repair, rebase and no-CI runs.
+command and its terminal receipt `summary` in `## Local verification`, including repair, rebase and no-CI runs.
 When selection is unreliable (no affected selector or mapped tests, or it ran nothing), run the
 closest covering tests you can identify and disclose what could not be selected and why with `gap:`.
 Do not substitute a full local suite: CI on the pushed head owns it, and Step 8 waits for it. Only

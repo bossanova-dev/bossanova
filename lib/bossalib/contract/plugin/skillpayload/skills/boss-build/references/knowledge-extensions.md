@@ -50,48 +50,24 @@ array is a legitimate success.
 
 ## Sampling gate (one roll per run, shared with the Step 12 notes phase)
 
-Reporting is sampled, not unconditional. `notesDefaults.sampleRate` (a number in `[0,1]`, default
-`1.0`; `0.33` is the recommended production setting) is the probability that a run reports at all,
-and **one roll governs both reporting phases of the run** — this pre-PR `knowledge` phase and the
-post-terminal `notes` phase. Whichever phase runs first takes the roll; this one runs first whenever
-it runs at all, so take it here and hand the pair forward to Step 12 rather than re-rolling there.
-Hand it forward **through a file** inside the git directory, not through the environment. Like the
-budget gate, the roll is checked **before** discovery, so a sampled-out run creates no scratch and
-prints no discovery output:
+`notesDefaults.sampleRate` (default `1.0`) is resolved by `notesSampleRate(config)` in
+`skill-config.mjs`. Take the shared roll before discovery:
 
 ```bash
 BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
 if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
-if [ -z "${NOTES_SAMPLED:-}" ]; then
-  NOTES_SAMPLE_RATE=$(export BOSS_BUILD_TOOLBOX; node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, notesSampleRate } = await import(pathToFileURL(process.env.BOSS_BUILD_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(String(notesSampleRate(loadSkillConfig())))')
-  NOTES_SAMPLED=$(awk -v r="${NOTES_SAMPLE_RATE:-1}" -v s="$$" 'BEGIN{srand(s);print (rand()<r)?"yes":"no"}')
-  export NOTES_SAMPLE_RATE NOTES_SAMPLED
-fi
-NOTES_ROLL_FILE="$(git rev-parse --git-dir 2>/dev/null || echo .)/boss-build-notes-roll"
-printf '%s %s\n' "${NOTES_SAMPLE_RATE:-1}" "$NOTES_SAMPLED" > "$NOTES_ROLL_FILE"
+node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" roll --core boss-build --fresh
 ```
 
-Write the file on **both** branches of the roll, which is why the `printf` sits outside the `if`; it
-overwrites unconditionally, so a file left by an earlier run is replaced rather than read.
+Read the JSON line's `sampled` and `rate`. When `sampled` is `false`, skip the entire phase,
+append `reporting: sampled out (rate <r>)` and go straight to Step 7: no discovery, scratch or
+worker. Otherwise continue to the budget gate. Step 12 calls `roll --core boss-build --consume`
+to reuse this run's decision and remove its record. The helper owns run identity and the reuse
+window; no environment variable carries the decision between shell calls.
 
-- `NOTES_SAMPLED` is not `yes` → **skip the entire phase**. Append
-  `reporting: sampled out (rate <r>)` and go straight to Step 7. Do not discover, do not create
-  scratch, do not dispatch. Step 12 reuses the same `no` and prints its own
-  `notes: sampled out (rate <r>)` line there, so a sampled-out run pays for neither reporting phase.
-
-  That line is deliberately **run-level rather than a `knowledge phase: skipped` claim**. This gate
-  fires before discovery, so it cannot yet know whether this repo configures a knowledge extension at
-  all — and most repos configure none. A per-phase claim would tell a repo that never opted in that
-  something of its own had been dropped, contradicting the resident body's
-  `No extensions → do nothing, print nothing`.
-
-- Otherwise continue to the budget gate below. A sampled-in run is bounded exactly as it was before.
-
-An unreadable or malformed _rate_ resolves to `1.0` at both ends — the accessor's own fallback and the
-`${NOTES_SAMPLE_RATE:-1}` default — so a broken config costs a few extra dispatches and never silently
-switches reporting off for a repository that never asked for that. A corrupt _verdict_ resolves the
-other way: a carried second field that is neither empty nor `yes` is not `yes`, so the run samples
-out. Like the budget ceiling, the sampling gate is a skip line and never a terminal state.
+A malformed record is re-rolled. An unreadable config falls back to rate `1.0`, so reporting
+stays enabled. Sampling is a run-level skip line, never a terminal state or a claim that an
+undiscovered knowledge extension was skipped.
 
 ## Budget gate (check this before discovering)
 

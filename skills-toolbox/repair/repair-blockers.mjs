@@ -3,6 +3,7 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
+import { resolveBossBinary } from '../boss-binary.mjs'
 import { isMainModule } from '../main-module.mjs'
 import {
   buildBlockers,
@@ -74,6 +75,23 @@ export function blockerTitle(input) {
   return `repair: ${runes.length > budget ? runes.slice(0, budget - 1).join('') + '…' : subject}${suffix}`
 }
 
+/**
+ * Name the repair chat and return the warning, if any. Never the session: a session rename
+ * also rewrites the PR title.
+ */
+function renameRepairChat(title, env = process.env) {
+  const chat = String(env.BOSS_AGENT_SESSION_ID ?? '').trim()
+  if (!chat) return 'BOSS_AGENT_SESSION_ID is unset, so the repair chat keeps its name'
+  const boss = resolveBossBinary(env)
+  if (!boss.ok) return `repair chat rename failed: ${boss.reason}`
+  const r = spawnSync(boss.path, ['chat', 'rename', chat, title], {
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  if (!r.error && r.status === 0) return null
+  return `repair chat rename failed: ${r.error?.message ?? (String(r.stderr ?? '').trim() || `exit ${r.status}`)}`
+}
+
 /** Validate the publication against real remote-tracking state and Git ancestry. */
 export function validateOutcomes(blockers, input, git = runGit) {
   const errors = [...validateBlockerFile(blockers).errors, ...validateOutcomeFile(input).errors]
@@ -141,8 +159,8 @@ export function carryFindings(
 
 export async function main(argv, { read = commandReader(), git = runGit } = {}) {
   const [command, ...args] = argv
-  if (!['brief', 'title', 'outcomes', 'carry'].includes(command))
-    throw new TypeError('expected brief, title, outcomes or carry')
+  if (!['brief', 'rename', 'outcomes', 'carry'].includes(command))
+    throw new TypeError('expected brief, rename, outcomes or carry')
   const allowed =
     command === 'carry'
       ? ['pr', 'repo', 'outcomes', 'out']
@@ -212,7 +230,12 @@ export async function main(argv, { read = commandReader(), git = runGit } = {}) 
   }
   const blockers = checkedBlockers(jsonFile(values.blockers))
   if (command === 'brief') return blockerBrief(blockers)
-  if (command === 'title') return blockerTitle(blockers) + '\n'
+  if (command === 'rename') {
+    const title = blockerTitle(blockers)
+    const warning = renameRepairChat(title)
+    if (warning) process.stderr.write(`warning: ${warning}\n`)
+    return title + '\n'
+  }
   const outcomes = jsonFile(values.outcomes)
   const result = validateOutcomes(blockers, outcomes)
   if (!result.ok) throw new Error(result.errors.join('; '))

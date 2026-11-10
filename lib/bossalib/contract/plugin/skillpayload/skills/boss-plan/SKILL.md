@@ -75,6 +75,7 @@ Blocks that still begin with the old preamble are being migrated; run them as wr
 | -------------------------------------------- | ------------------------------------------------------------------------------------- |
 | Which named steps are available?             | `bash <skill-dir>/toolbox/plan/boss-plan-run.sh steps`                                |
 | Is this repo configured for planning?        | `resolveTrackerTeam` → `isConfiguredForPlanning(config, {team})` (`skill-config.mjs`) |
+| Write the complete issue snapshot            | `node tracker/cli.mjs read-issue --id <id> --out-file <path>`                         |
 | Is the ticket already planned?               | `node plan/plan-run-guards.mjs idempotence <payload> --selected-id <id>`              |
 | Read / write the description exactly         | `node tracker/cli.mjs read-description \| write-description …`                        |
 | Upload / read / delete the plan attachment   | [`references/plan-storage.md`](references/plan-storage.md)                            |
@@ -111,32 +112,7 @@ Blocks that still begin with the old preamble are being migrated; run them as wr
 ## Phase 0 — Preflight
 
 ```bash
-BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-CONFIGURED=$(node -e 'import(require("node:url").pathToFileURL(process.env.BOSS_PLAN_TOOLBOX+"/skill-config.mjs").href).then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.trackerReadiness(c,{planning:true}))}).catch(e=>{process.stderr.write("boss-plan preflight: "+(e&&e.message||e)+"\n");process.stdout.write("error")})')
-# `trackerReadiness` requires the tracker identity AND the full state role map
-# (`states.{unplanned,planned,inProgress,inReview}`), so a repo configured only for a stateless
-# core self-disables cleanly ('unconfigured') instead of running with undefined state names.
-# 'ready' includes a configured team; 'needs-team' resolves it after the tracker preflight below.
-# Distinguish a loader failure (malformed/invalid .boss-skills.json → 'error' or empty) from a
-# valid "not planning-ready" ('unconfigured'): loadSkillConfig throws a `skill-config:` error on a present
-# but broken config, so a broken config must abort loudly, never skip silently as a clean no-op.
-if [ "$CONFIGURED" != "ready" ] && [ "$CONFIGURED" != "unconfigured" ] && [ "$CONFIGURED" != "needs-team" ]; then
-  echo "boss-plan: .boss-skills.json is present but could not be loaded (see error above) — aborting instead of skipping." >&2
-  exit 1
-fi
-if [ "$CONFIGURED" = "unconfigured" ]; then
-  echo "boss-plan: no configured tracker in .boss-skills.json for this repo — nothing to plan here; skipping."
-  exit 0
-fi
-# Amortized self-heal for plan scratch — files and directories alike — orphaned by runs
-# that abort before cleanup. It is TTL-gated, so a live peer run's scratch is never touched.
-node "$BOSS_PLAN_TOOLBOX/plan/plan-scratch-reap.mjs" .linear-plans ||
-  echo "warning: stale plan-scratch reap failed (non-fatal)" >&2
-# Mint this run's own scratch directory. `mktemp -d` creates it atomically, so two runs
-# started at the same instant cannot collide on it even when they plan the same ticket.
-node "$BOSS_PLAN_TOOLBOX/plan/plan-scratch-paths.mjs" ensure-root >/dev/null || { echo "boss-plan: cannot create plan scratch root" >&2; exit 1; }
-RUN_SCRATCH="$(mktemp -d .linear-plans/run-XXXXXXXX)" || { echo "boss-plan: cannot create run scratch directory" >&2; exit 1; }
-echo "run scratch: $RUN_SCRATCH"
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh preflight
 ```
 
 `<RUN-SCRATCH-ID>` is the suffix of the printed `run scratch:` directory; substitute it literally
@@ -146,31 +122,10 @@ everywhere below (it is not the sentinel `RUN_ID`). An `unconfigured` repo is a 
 Report installed-skill drift (a stale record warns; an absent capability stops):
 
 ```bash
-BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
-  if O="$("$BOSS_BIN" skills check --gate --heal 2>&1)" ||
-    { case "$O" in
-        *"unknown flag: --heal"*) O="$("$BOSS_BIN" skills check --gate 2>&1)" ;;
-        *) false ;;
-      esac; }; then
-    if [ -n "$O" ]; then printf '%s\n' "$O" >&2; fi
-  else
-    case "$O" in
-      *--gate*) node "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_PLAN_TOOLBOX" || true ;;
-      *)
-        printf '%s\n' "$O" >&2
-        printf '%s\n' "$O" | node "$BOSS_PLAN_TOOLBOX/skill-drift-verdict.mjs" classify --status 1 >&2 || exit 1
-        ;;
-    esac
-  fi
-elif [ -f "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" ]; then
-  node "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_PLAN_TOOLBOX" || true
-else
-  echo "boss-toolbox-drift: (drift helper not installed) — this install predates the check; drift is UNKNOWN, not clean." >&2
-fi
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh drift
 ```
 
-Inspect `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" operations`. When it lists `writePlan`, require
+Inspect `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs operations`. When it lists `writePlan`, require
 `operations --require writePlan,readPlanAttachment`; otherwise require
 `operations --require preparePlanAttachment,finalizePlanAttachment,readPlanAttachment,deletePlanAttachment`
 through the same CLI. Exit 2 names what is missing: stop before any write. Confirm the tracker
@@ -193,19 +148,19 @@ and gate on `isConfiguredForPlanning(config, {team})`. Unconfigured ⇒ print `m
 
 ## Phase 1 — Select the issue
 
-First report the phase: `node "$BOSS_PLAN_TOOLBOX/stage-chain.mjs" phase planning` (one JSON line, never fatal).
+First report the phase: `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node stage-chain.mjs phase planning` (one JSON line, never fatal).
 
-- **Arguments**: `node "$BOSS_PLAN_TOOLBOX/plan/plan-child-fanout.mjs" args -- <args>` parses the ticket
+- **Arguments**: `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs args -- <args>` parses the ticket
   ref, `--team`, the selection flags and `--parallel N` (child planners at once on the fan-out route;
   1..8, default 4) — non-zero ⇒ `BLOCKED: <its stderr>`.
 - **A named ticket**: `get_issue` it, whatever its state. Interactive re-planning follows
   `references/interactive-mode.md`. Headless stops on Done/Canceled.
 - **Selection flags** (`--label`, `--exclude-label`, `--assignee`, `--creator`, `--project` and their
   `--exclude-` forms) are filters, never ticket ids: classify arguments with
-  `node "$BOSS_PLAN_TOOLBOX/selection.mjs" split-args -- <args>`; with a named ticket they are
+  `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node selection.mjs split-args -- <args>`; with a named ticket they are
   ignored with a one-line warning.
 - **Otherwise**: candidates always come only from
-  `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" list-unplanned --team <team> <selectionArgs>`,
+  `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs list-unplanned --team <team> <selectionArgs>`,
   whether or not a selection is configured. Selection flags take precedence over the plan-stage
   entry, then shared keys; another stage's entry (for example `stages.build`) never applies. The
   verb requires `agent-plan` and excludes `needs-human`. It already excludes candidates holding a
@@ -215,8 +170,10 @@ First report the phase: `node "$BOSS_PLAN_TOOLBOX/stage-chain.mjs" phase plannin
   priority (Urgent first, None last), then oldest. Interactive confirms with the user (plan / skip /
   pick another / cancel); headless takes the head. An empty queue reports and stops.
 
-**Claim before routing.** Save the selected bare issue payload as
-`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`, then run the planning claim protocol in
+**Claim before routing.** Run
+`node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-issue --id <ISSUE-ID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`.
+Exit 0 continues; exit 2 uses the [snapshot fallback](references/planning-claims.md#claim-before-drafting);
+exit 64 means fix the call. Then run the planning claim protocol in
 [planning claims](references/planning-claims.md#claim-before-drafting). It applies to named tickets,
 single tickets, fan-out parents and epic resumes; acquire the issue lease before posting the comment claim. A planning claim must never use build scope.
 
@@ -227,54 +184,46 @@ hydrated `children` as the per-child payloads (no separate per-child read). Othe
 `list_issues parentId=<id> limit=250`, then `get_issue includeRelations=true` each child (list
 payloads truncate). Write the `{parent, children}` bundle (preserving any `relationWarnings`) to
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json`, and run
-`node "$BOSS_PLAN_TOOLBOX/plan/plan-child-fanout.mjs" route <that file>`. Print any `relationWarnings`
+`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs route <that file>`. Print any `relationWarnings`
 in the route summary; they never stop the run. `single` ⇒ continue below;
 `fan-out` ⇒ [`references/child-fanout.md`](references/child-fanout.md) instead of the precheck and Phases
 2–5; `epic-resume` ⇒ [`references/epic.md`](references/epic.md#resume); `epic-noop` ⇒ report its
 `reasons`, no writes, outcome `noop`; `abort` ⇒ report, no writes, outcome `blocked`.
 
-Then, for a `single` route, the idempotence precheck — write the issue payload to
-`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json` and:
+Then, for a `single` route, run the idempotence precheck against the selection snapshot already written:
 
 ```bash
-BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-PRECHECK=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json"
-node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" idempotence "$PRECHECK" --selected-id "<ISSUE-ID>"
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs idempotence .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json --selected-id <ISSUE-ID>
 ```
 
 `action: "noop"` (already planned with a valid description and plan attachment) ⇒ delete the scratch,
 print one line, route through Phase 6/7 with outcome `noop` and no planning writes. `action: "plan"` ⇒ log its `reasons` and continue;
-`fetched-issue-id-mismatch` means re-select.
+`fetched-issue-id-mismatch` means re-select. Exit 2 (`unreadable-input`) means re-run `read-issue`
+or stop closed; never treat unreadable input as `plan`.
 
 ## Phase 2 — Draft
 
 Drafting resolves through the first tier that succeeds: a repo-local `boss-plan-*` extension with
 `role: draft`, a host built-in, or the inline prompt. A dispatch succeeds only when its result is
 valid **and** it wrote a non-empty plan at the path it alone was given; record
-`extension <name>: skipped (<reason>)` for every one that did not, and run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger extension-failed --where "<extension name>"` (never fatal) for each.
+`extension <name>: skipped (<reason>)` for every one that did not, and run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node notes-record.mjs add --core boss-plan --trigger extension-failed --where "<extension name>"` (never fatal) for each.
 
 **Interactive:** follow `references/interactive-mode.md`, then Phase 3.5 and Phase 4.
 
 **Headless:** do not draft inline. Dispatch **one** awaited drafting subagent that keeps recon and the
 plan in its own context and returns only a path and bounded metadata.
 
-1. Create the sentinel context:
+1. Create the sentinel context. Copy the printed `KEY=value` lines literally into later calls;
+   no shell variables survive between calls:
 
    ```bash
-   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-   RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
-   test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing" >&2; exit 1; }
-   DISPATCH_FAILURE="dispatch-failure"
-   PLAN_PATH="$(node "$BOSS_PLAN_TOOLBOX/plan/plan-slug.mjs" plan-path --run-id "<RUN-SCRATCH-ID>" --issue-json ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json")" || exit 1
-   RUN="$(node "$RUN_SENTINEL" make-ctx boss-plan)"
-   RUN_ID="${RUN%%$'\t'*}"; RUN_DIR="${RUN#*$'\t'}"
-   RUN_SCRATCH=".linear-plans/run-<RUN-SCRATCH-ID>"   # Phase 0's directory; NOT $RUN_DIR, NOT $RUN_ID
-   export RUN_SENTINEL DISPATCH_FAILURE PLAN_PATH RUN_ID RUN_DIR RUN_SCRATCH
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-ctx --precheck .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json --run-scratch .linear-plans/run-<RUN-SCRATCH-ID>
    ```
 
-2. Snapshot the stored description — the run's only description source, which the worker builds
+2. Read the issue UUID from the selection snapshot's `uuid` field (MCP fallback: the adapter's UUID).
+   Snapshot the stored description — the run's only description source, which the worker builds
    `## Original notes` from and Phase 4 gates against:
-   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description --id <issue UUID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`
+   `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-description --id <issue UUID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`
    (exit 2 ⇒ byte-copy the Phase 1 `get_issue` description; exit 64 or a receipt for another id
    stops). Add nothing to it.
 
@@ -284,121 +233,55 @@ plan in its own context and returns only a path and bounded metadata.
    `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`, and `allowSiblingSplit: true` when
    the issue has a parent and `tracker/cli.mjs operations --require createIssue,appendDependency`
    exits 0. It returns only `planPath`, `labels`, `agentBuild`, `estimate`, `priority`,
-   `openQuestions`, `descriptionSummary: {path}` and any `siblings` — never plan text. Hold it: write `$RUN_DIR/draft.dispatched-at`
-   before each attempt and re-arm `node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait` while it
-   exits 98 or 95: Claude Code uses `--budget 590000` with Bash tool `timeout: 600000` (budget below tool
-   timeout); harnesses unable to raise it omit `--budget`.
+   `openQuestions`, `descriptionSummary: {path}` and any `siblings` — never plan text. Before
+   each attempt, record its clock:
+
+   ```bash
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-mark --run-dir <RUN_DIR>
+   ```
+
+   Hold the dispatch; re-arm this call while it exits 98 or 95:
+
+   ```bash
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-wait --run-dir <RUN_DIR> --run-id <RUN_ID> --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --budget 590000
+   ```
+
+   Claude Code sets Bash tool `timeout: 600000` (budget below tool timeout); harnesses unable
+   to raise it omit `--budget`.
    [`references/headless-dispatch.md`](references/headless-dispatch.md) owns the hold and failure rules.
 
 4. Classify from the run file only, and re-verify every artifact the payload names by measuring it on
    disk:
 
    ```bash
-   READ="$(node "$RUN_SENTINEL" read "$RUN_DIR" "$RUN_ID" draft)"
-   AWAIT="${RUN_SENTINEL%/*}/bs-dispatch-await.mjs"
-   # `disposition` demotes a provisional (never-upgraded) payload on EVERY kind.
-   DISP="$(node "$AWAIT" disposition "$RUN_DIR" "$RUN_ID" draft --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --dispatched-at "$(cat "$RUN_DIR/draft.dispatched-at")")"
-   if [ "$(printf '%s' "$DISP" | jq -r '.publishable')" != true ]; then
-     # SAFE branch — NO Linear write, non-zero exit.
-     echo "$DISPATCH_FAILURE: no publishable sentinel ($(printf '%s' "$DISP" | jq -r '.reason')) — aborting" >&2
-     node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-     # Probe every artifact the payload DECLARES: an epic outcome carries no `planPath`, so a
-     # plan-only probe finds nothing, authorises the removal below and eats finished child plans.
-     set -- "$PLAN_PATH"
-     while IFS= read -r A; do set -- "$@" "$A"; done <<<"$(printf '%s' "$READ" | jq -r '[.payload.epicSpecPaths,.payload.guardScratchPaths,(.payload.childPlanPaths|if type=="object" then [.[]] else . end)]|flatten|.[]|strings')"
-     node "$AWAIT" guard-discard "$@" || exit 1   # read before discard; non-zero = retain
-     # Abort skips Phase 5; delete the epic/guard/run-boundary scratch families now.
-     CLEANUP_RC=0
-     rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
-     if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
-     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
-     exit 1
-   fi
-   EPIC="$(printf '%s' "$READ" | jq -r '.payload.epic // empty')"
-   node "${RUN_SENTINEL%/*}/plan/plan-draft-manifest.mjs" verify \
-     --payload "$(printf '%s' "$READ" | jq -c '.payload // {}')" --plan-path "$PLAN_PATH" \
-     --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --label "$DISPATCH_FAILURE" ||
-     {
-       node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-       if [ "$EPIC" = "true" ]; then
-         echo "$DISPATCH_FAILURE: epic manifest verification failed — needs a human; run scratch kept (.linear-plans/run-<RUN-SCRATCH-ID>)" >&2
-         exit 1
-       fi
-       # Artifact verification failure also skips Phase 5; remove the same scratch families.
-       CLEANUP_RC=0
-       rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
-       if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
-       if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
-       exit 1
-     }
-   PREMISES="$(printf '%s' "$READ" | jq -c '.payload.premises // []')"
-   if [ "$EPIC" = "true" ]; then
-     # EPIC: inputs hydrated before this block (headless-dispatch.md).
-     RC=0; RV="$(node "${RUN_SENTINEL%/*}/plan/plan-run-guards.mjs" epic-reverify .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify.json)" || RC=$?
-     # A crashed node exits 1 too: only a printed resumable verdict deletes scratch.
-     case "$RC:$(printf '%s' "$RV" | jq -r .class 2>/dev/null)" in
-       0:*) ;;
-       1:resumable)
-       echo "$DISPATCH_FAILURE: epic reverify failed, parent still unplanned — next sweep resumes it" >&2
-       node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-       CLEANUP_RC=0
-       rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
-       if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
-       if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
-       exit 1 ;;
-       *)
-       echo "$DISPATCH_FAILURE: epic reverify exit $RC — needs a human; run scratch kept" >&2
-       node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-       exit 1 ;;
-     esac
-     # PASSED: no single-ticket plan/metadata — SKIP Phase 3.5-4; Phase 5 + 6 report epicParentId, childIds.
-     node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-   else
-     PLAN_FILE_RAW="$(printf '%s' "$READ" | jq -r '.payload.planPath // empty')"
-     # Normalize an equivalent absolute path; reject every path resolving elsewhere.
-     PLAN_FILE="$(node -e 'const {resolve}=require("node:path");const [reportedPath,expectedPath]=process.argv.slice(1);if(!reportedPath||resolve(reportedPath)!==resolve(expectedPath))process.exit(1);process.stdout.write(expectedPath)' "$PLAN_FILE_RAW" "$PLAN_PATH")"
-     # single-ticket `ok` sentinel → re-verify the expected plan file is non-empty.
-     if [ "$PLAN_FILE" != "$PLAN_PATH" ] || [ ! -s "$PLAN_FILE" ]; then
-       echo "$DISPATCH_FAILURE: sentinel ok but plan file missing/empty or wrong path ($PLAN_FILE_RAW) — no Linear write, aborting" >&2
-       node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-       exit 1
-     fi
-     node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-   fi
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-classify --run-dir <RUN_DIR> --run-id <RUN_ID> --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --plan-path <PLAN_PATH>
    ```
 
-   On any headless drafting `dispatch-failure`, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger dispatch-failed --where "boss-plan headless drafting dispatch"` (never fatal).
+   On any headless drafting `dispatch-failure`, run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node notes-record.mjs add --core boss-plan --trigger dispatch-failed --where "boss-plan headless drafting dispatch"` (never fatal).
 
    An epic outcome (`payload.epic`) already did every tracker write and is accepted only on
    `epic-reverify` exit 0 (`references/headless-dispatch.md` hydrates its inputs); skip Phase 3.5–4.
-   A single-ticket outcome continues. Keep `PREMISES` for Phase 4.
+   A single-ticket outcome continues with the printed `PLAN_FILE`. The classifier writes
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json` for Phase 4; an epic prints
+   `OUTCOME=epic`, and a single ticket prints `OUTCOME=single`.
 
 5. Before adopting any returned metadata or entering a Phase 4 gate, run the
    [fresh recheck](references/planning-claims.md#recheck-at-write-boundaries). Exit 3 releases the claim,
    discards the draft with `guard-discard`, removes this run's scratch, and ends `noop` with no
    planning writes. Exit 2 aborts closed and releases the claim; never treat unreadable input as proceed.
 
-   Validate the **returned** metadata (never a same-named file):
+   Write the **returned** metadata object verbatim with the orchestrator’s file-writing tool to
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-returned.json` (the declared
+   `draft-returned` family), overwriting any same-named file the drafter wrote. Then validate it:
 
    ```bash
-   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-   METADATA=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json"
-   if ! node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" adopt-metadata "$METADATA" "$RETURNED_METADATA"; then
-     echo "$DISPATCH_FAILURE: draft metadata failed plan-run-guards.mjs adopt-metadata — no Linear write, aborting" >&2
-     node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-     # Read before discard: the plan already PASSED re-verify.
-     node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" guard-discard "$PLAN_PATH" || exit 1
-     # Abort skips Phase 5; remove this run's whole scratch directory, as every sibling abort does.
-     CLEANUP_RC=0
-     rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
-     if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
-     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
-     exit 1
-   fi
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh adopt-metadata --returned .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-returned.json --metadata .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json --run-dir <RUN_DIR> --plan-path <PLAN_PATH> --run-scratch .linear-plans/run-<RUN-SCRATCH-ID>
    ```
 
    The guard normalises labels, estimate and priority itself (its `warning:` lines say what changed)
-   and fails only when the plan path or description is missing.
+   and refuses a missing plan path or description, or estimate 5 without an `Atomic-5:` /
+   `Oversized-child:` bullet under either artifact's current `## Planning` (`estimate-5-unjustified`).
+   A plan-only bullet is carried into the description artifact with a `warning:` line.
 
 ## Phase 2.5 — Epic
 
@@ -629,13 +512,15 @@ the parent and child ids; for a child fan-out, the per-child table and the paren
 
 On every terminal path, first release this run's issue lease with its retained token per the planning claim protocol, then release its comment by the retained id with
 `deleteComment` when the adapter declares that optional operation. Release is best-effort and never
-fatal: a stranded plan claim expires after two hours and build arbitration ignores it. Release also
+fatal: a stranded plan claim forfeits when its owner session is archived or closed, otherwise after two hours; build arbitration ignores it. Release also
 before selecting the next candidate. See [planning claims](references/planning-claims.md).
 
 On every terminal path, unless `BOSS_NOTES_SUPPRESSED=1`, run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node notes-record.mjs flush --core boss-plan --outcome "<outcome>" --mode "<mode>"` once (unsampled, never fatal), then continue.
 
-**Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Roll
-`notesSampleRate` once per run (reuse `NOTES_SAMPLED` if set); on a miss, stop. Otherwise write at
+**Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Run
+`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node notes-record.mjs roll --core boss-plan --consume`.
+`notesSampleRate(config)` in `skill-config.mjs` resolves `notesDefaults.sampleRate` (default `1`).
+If JSON `sampled` is `false`, print `notes: sampled out (rate <rate>)` and skip this notes dispatch. Otherwise write at
 most five secret-free observations (≤ 8 KiB) to a temp `observations.md` and dispatch each extension
 (instructions from its `skillPath`, bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`) with
 `{"role":"notes","core":"boss-plan","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`;

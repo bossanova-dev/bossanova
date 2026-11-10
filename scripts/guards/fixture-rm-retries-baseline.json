@@ -47,7 +47,6 @@
   "scripts/skills/review-feedback-probe.test.mjs": 1,
   "scripts/skills/skill-parity/capture-baseline.test.mjs": 2,
   "scripts/skills/skill-parity/parity-gate.test.mjs": 5,
-  "scripts/skills/skill-preflight-heal.test.mjs": 1,
   "scripts/skills/sync-codex-skills.test.mjs": 1,
   "scripts/skills/sync-generated-tree.test.mjs": 1,
   "scripts/skills/trim-cast.test.mjs": 1,

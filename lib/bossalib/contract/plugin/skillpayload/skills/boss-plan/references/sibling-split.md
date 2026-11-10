@@ -15,7 +15,7 @@ suggested split, `needs-human`):
 - the ticket has a parent;
 - its honest size is ≥ 5 and it is not atomic (an atomic 5 keeps `- Atomic-5:`);
 - the orchestrator passed `allowSiblingSplit: true`. It passes it only for a parented issue when
-  `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" operations --require createIssue,appendDependency`
+  `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs operations --require createIssue,appendDependency`
   exits 0, on the single-ticket route and to each fan-out child planner. A child drafted inside
   [`epic.md`](epic.md) build step 2 never gets it: that decomposition is already being shaped;
 - the other parts number 1 to `SIBLING_MAX` (5). More means the source was epic-sized: use
@@ -50,9 +50,7 @@ After write-back verification (step 5), file the siblings:
    claiming one key (a human keeps one); stop there with `needs-human` kept.
 
    ```bash
-   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-   SIBLINGS_IN=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json"
-   node "$BOSS_PLAN_TOOLBOX/plan/plan-sibling-split.mjs" plan --input "$SIBLINGS_IN" --out-dir .linear-plans/run-<RUN-SCRATCH-ID>
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs plan --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --out-dir .linear-plans/run-<RUN-SCRATCH-ID>
    ```
 
    It prints `{creates: [{key, title, estimate, bodyFile}], reused: {key: id}}`, `creates` in
@@ -63,10 +61,7 @@ After write-back verification (step 5), file the siblings:
    carries the planning-queue label, so the normal sweep plans it later with its own recon:
 
    ```bash
-   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-   node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" create-issue --title "<title>" \
-     --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-<key>.md \
-     --state-role unplanned --label-role agentPlan --label "<content label>" --parent "<PARENT-ID>"
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs create-issue --title "<title>" --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-<key>.md --state-role unplanned --label-role agentPlan --label "<content label>" --parent <PARENT-ID>
    ```
 
    Repeat `--label` for each of the source's content labels. Execute an emitted `{tool, args}`
@@ -81,10 +76,7 @@ After write-back verification (step 5), file the siblings:
    rather than re-writing it.
 
    ```bash
-   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-   SIBLINGS_IN=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json"
-   SIBLINGS_CREATED=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-created.json"
-   node "$BOSS_PLAN_TOOLBOX/plan/plan-sibling-split.mjs" edges --input "$SIBLINGS_IN" --created "$SIBLINGS_CREATED"
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs edges --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --created .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-created.json
    ```
 
 5. Read every sibling back (`get_issue`, or `listChildren` on the parent), write
@@ -93,10 +85,7 @@ After write-back verification (step 5), file the siblings:
    carries its marker:
 
    ```bash
-   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-   SIBLINGS_IN=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json"
-   SIBLINGS_READBACK=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-readback.json"
-   node "$BOSS_PLAN_TOOLBOX/plan/plan-sibling-split.mjs" verify --input "$SIBLINGS_IN" --read-back "$SIBLINGS_READBACK"
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs verify --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --read-back .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-readback.json
    ```
 
 6. Only on exit 0, and only when the drafter's `agentBuild` was true, flip the source's exposure

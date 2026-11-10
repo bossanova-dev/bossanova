@@ -124,15 +124,9 @@ arbitrary machines, so it may only write where it owns the ground.
 
 1. Create the run scratch and compute the design-doc path inside it:
    ```bash
-   ISSUE_ID="${ISSUE_ID:?set to the id of the ticket you are planning}"
-   RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-plan-run.XXXXXX")
-   DESIGN_DIR="$RUN_TMP/design"
-   mkdir -p "$DESIGN_DIR"
-   echo "$RUN_TMP"
-   echo "$DESIGN_DIR/$ISSUE_ID-design.md"
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh run-tmp create --design <ISSUE-ID>
    ```
-   Substitute the ticket's own id for `${ISSUE_ID:?…}` (or export `ISSUE_ID` first) — a fresh Bash
-   shell carries no value for it, so a verbatim copy aborts on that guard rather than seeding.
+   Substitute the ticket's own id for `<ISSUE-ID>`. The step prints `RUN_TMP` and `DESIGN_DOC`.
    `RUN_TMP` is the `runTmp` you pass to every Phase 4 dispatch; `mktemp -d` makes it unique per run,
    so two concurrent runs in the same worktree never collide. **Record the exact paths this prints**
    — call them the run scratch and the design-doc path. Cleanup (below) removes that literal scratch
@@ -165,8 +159,8 @@ arbitrary machines, so it may only write where it owns the ground.
 
 ## Phase 4 — Resolve the draft/review step (interactive only)
 
-Run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --mode interactive --json`
-after running the toolbox preamble first, and read both `extensions` and `skipped`; record every
+Run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role draft --mode interactive --json`
+and read both `extensions` and `skipped`; record every
 `skipped` entry whose `deliberate` is `false` as
 `extension <name>: skipped (<reason>)` in the autonomous decisions. Key that on the entry's own
 `deliberate` field, never on the text of `reason`. A `deliberate: true` entry is a same-prefix skill
@@ -263,25 +257,23 @@ the approved spec:
 
 **The worker self-verifies, and its prose is never evidence.** Require the worker to run the
 plan-contract guard from the repo worktree root per child before returning:
-`node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description "<absolute-runTmp>/batch-draft/<key>.description.md" --plan "<absolute-runTmp>/batch-draft/<key>.md" --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"`.
+`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-contract-guard.mjs --description "<absolute-runTmp>/batch-draft/<key>.description.md" --plan "<absolute-runTmp>/batch-draft/<key>.md" --module-roots "<tracked-top-level-paths-comma-separated>"`.
 Pass absolute draft paths because `runTmp` can be outside the repo. Never report success while any run exits non-zero. Do not read
 its claim of validation ("all N validated") either way: the orchestrator's own per-child gate run
 below stays the verdict.
 
-**Per-child validation reuses the existing gate — do not write a second one.** Run from the same repo worktree root with absolute draft paths. Every command below
-dereferences `$BOSS_PLAN_TOOLBOX`, so run each in a block that begins with the toolbox preamble —
-each Bash call is a fresh shell, and an unset `$BOSS_PLAN_TOOLBOX` turns these gates into
-module-not-found errors at the one step whose whole point is that they run. For each child, compose
+**Per-child validation reuses the existing gate — do not write a second one.** Run from the same repo worktree root with absolute draft paths. Every command uses the boss-plan runner from the core directory. For `--module-roots`, pass
+the top-level tracked names read with `git ls-tree --name-only HEAD`, comma-separated. For each child, compose
 its draft-metadata object from its `children[<key>]` entry plus `planPath` (its plan file) and
 `descriptionSummary` — the description file's contents as an **inline string**, never the
 `{"path": …}` form, which the guard accepts only for a declared `description` artifact under
 `.linear-plans/run-<RUN-SCRATCH-ID>/` and these drafts live under `runTmp` — write it to
 `<runTmp>/batch-draft/<key>.draft-metadata.json`, and run
-`node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" metadata <runTmp>/batch-draft/<key>.draft-metadata.json` — the same bounded-metadata guard the
+`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs metadata <runTmp>/batch-draft/<key>.draft-metadata.json` — the same bounded-metadata guard the
 single-ticket path runs, so an unknown key, a non-boolean `agentBuild` or a non-single-ticket
 estimate fails identically here. Then run the plan-contract guard
-(`node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description <desc> --plan <plan> --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"`), the image
-guard (`node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --require-verbatim …`), and the secret gate,
+(`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-contract-guard.mjs --description <desc> --plan <plan> --module-roots "<tracked-top-level-paths-comma-separated>"`), the image
+guard (`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-image-guard.mjs --require-verbatim …`), and the secret gate,
 per child, **before the first tracker write**. One dispatch drafting ten plans is precisely where a
 late plan degrades, so these are the gates that must not be batched.
 
@@ -317,7 +309,7 @@ any paraphrase: Linear does not expose description history, so the rewritten des
 surviving copy of those URLs (a prior screenshot-dropping data-loss incident). You MAY additionally
 list them under a `## Screenshots` bullet list in the plan body, but the URLs must stay intact in
 `## Original notes`. The orchestrator's mechanical guard
-(`$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs`, Phase 4) aborts the Linear write if any source image is
+(`plan/plan-image-guard.mjs`, Phase 4) aborts the Linear write if any source image is
 dropped or the block is not verbatim.
 
 ## Interactive cleanup
@@ -326,7 +318,7 @@ In addition to the plan file, remove the run scratch you created in Phase 3 — 
 design doc and every per-dispatch draft target (headless has no design doc to remove):
 
 ```bash
-rm -rf "<the exact run-scratch path you recorded in Phase 3>"
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh run-tmp remove --path "<the exact RUN_TMP path recorded in Phase 3>"
 ```
 
 Substitute the **literal** run-scratch path you recorded in Phase 3 — do not recompute it (the

@@ -41,7 +41,7 @@ if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/bo
 | What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …`                              |
 | Read the `boss/build` receipt                    | `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" read …`                                   |
 | Carry the receipt to the pushed head             | `node "$BOSS_REPAIR_TOOLBOX/repair/receipt-carry.mjs" …` (step 4)                        |
-| Read, name and report verify blockers            | `node "$BOSS_REPAIR_TOOLBOX/repair/repair-blockers.mjs" brief\|title\|outcomes\|carry …` |
+| Read, name and report verify blockers            | `node "$BOSS_REPAIR_TOOLBOX/repair/repair-blockers.mjs" brief\|rename\|outcomes\|carry…` |
 | Put the session worktree on the pushed head      | `node "$BOSS_REPAIR_TOOLBOX/worktree-sync.mjs" sync …`                                   |
 
 `worktree-state.mjs` exists because a command-rewriting shell hook can make `git status` print a
@@ -502,9 +502,10 @@ node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" discover --core boss-repair --r
 ```
 
 No extensions ⇒ do nothing and print nothing. Report each `skipped` entry whose `deliberate` is
-`false` as `extension <name>: skipped (<reason>)`. Roll `notesDefaults.sampleRate` (`notesSampleRate`
-in `toolbox/skill-config.mjs`, default `1.0`) once per run, reusing `NOTES_SAMPLED` if an earlier
-phase already rolled; on a miss, stop. Otherwise write at most five short, secret-free observations
+`false` as `extension <name>: skipped (<reason>)`. Run
+`node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" roll --core boss-repair --consume`.
+`notesSampleRate(config)` in `skill-config.mjs` resolves `notesDefaults.sampleRate` (default `1`).
+If JSON `sampled` is `false`, print `notes: sampled out (rate <rate>)` and skip this notes dispatch. Otherwise write at most five short, secret-free observations
 (problem plus a file/skill/command pointer — never transcripts, command output or credentials) to an
 `observations.md` in a fresh temp dir, and dispatch each extension as an awaited subagent (bounded by
 `BOSS_SKILL_EXTENSION_TIMEOUT_MS`, default 300000 ms) whose instructions are the `SKILL.md` read from

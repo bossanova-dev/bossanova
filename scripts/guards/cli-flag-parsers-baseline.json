@@ -41,7 +41,6 @@
   "skills-toolbox/epic/epic-driver.mjs",
   "skills-toolbox/finalize/cli.mjs",
   "skills-toolbox/linear-claim.mjs",
-  "skills-toolbox/notes-record.mjs",
   "skills-toolbox/plan/plan-child-fanout.mjs",
   "skills-toolbox/plan/plan-contract-guard.mjs",
   "skills-toolbox/plan/plan-image-guard.mjs",

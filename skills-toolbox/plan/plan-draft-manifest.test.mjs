@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { planScratchPath } from './plan-scratch-paths.mjs'
-import { issueSlug } from './plan-slug.mjs'
+import { epicChildMarker } from './plan-epic-lib.mjs'
 import { verifyDraftManifest, stageChildGuards } from './plan-draft-manifest.mjs'
 
 function fixture(t) {
@@ -43,13 +43,17 @@ function fixture(t) {
           file('child-plan', {
             parentId: 'ABC-1',
             key: children[i].key,
-            slug: issueSlug(id, children[i].title),
           }),
         ),
       ]),
     ),
-    guardScratchPaths: ids.flatMap((childId) =>
-      guards.map((family) => put(file(family, { childId }))),
+    guardScratchPaths: ids.flatMap((childId, i) =>
+      guards.map((family) =>
+        put(
+          file(family, { childId }),
+          family === 'child-image-guard-new' ? epicChildMarker(children[i].key) : 'guard bytes',
+        ),
+      ),
     ),
   }
   return {
@@ -61,7 +65,7 @@ function fixture(t) {
     verify: (p = payload) =>
       verifyDraftManifest({
         payload: p,
-        planPath: file('plan', { slug: 'parent' }),
+        planPath: file('plan', { title: 'parent' }),
         runScratchDir: dir,
       }),
   }
@@ -69,7 +73,7 @@ function fixture(t) {
 
 test('single plan must exist and contain bytes', (t) => {
   const f = fixture(t)
-  const path = f.file('plan', { slug: 'parent' })
+  const path = f.file('plan', { title: 'parent' })
   const verify = () => f.verify({ planPath: path })
   assert.equal(verify().ok, false)
   f.put(path, '')
@@ -159,7 +163,7 @@ test('staged created and adopted guards preserve bytes and verify', (t) => {
   f.put(f.file('attachment-guard-orig'), 'safe source\n')
   const descriptionFile = f.put(
     f.file('child-description-draft', { key: 'store' }),
-    'stored description\n',
+    `stored description\n${epicChildMarker('store')}`,
   )
   for (const adopted of [false, true]) {
     const paths = stageChildGuards({
@@ -179,7 +183,7 @@ test('staged created and adopted guards preserve bytes and verify', (t) => {
     )
     assert.equal(readFileSync(paths[0], 'utf8'), adopted ? '' : 'raw source\n')
     assert.equal(readFileSync(paths[1], 'utf8'), adopted ? '' : 'safe source\n')
-    assert.equal(readFileSync(paths[2], 'utf8'), 'stored description\n')
+    assert.equal(readFileSync(paths[2], 'utf8'), `stored description\n${epicChildMarker('store')}`)
     assert.equal(f.verify().ok, true)
   }
 })
@@ -210,7 +214,7 @@ test('CLI distinguishes valid, invalid and usage exits', (t) => {
     '--payload',
     JSON.stringify(f.payload),
     '--plan-path',
-    f.file('plan', { slug: 'parent' }),
+    f.file('plan', { title: 'parent' }),
     '--run-scratch',
     f.dir,
   ]
@@ -227,3 +231,21 @@ test('CLI distinguishes valid, invalid and usage exits', (t) => {
   )
   assert.equal(spawnSync(process.execPath, [cli, '--unknown']).status, 2)
 })
+
+for (const kind of ['legacy-name', 'swapped-plans', 'missing-marker', 'missing-description']) {
+  test(`child plans preserve id-to-key binding: ${kind}`, (t) => {
+    const f = fixture(t)
+    if (kind === 'legacy-name')
+      f.payload.childPlanPaths['ABC-2'] = f.put(join(f.dir, 'ABC-1-child-store-ABC-2-add-store.md'))
+    if (kind === 'swapped-plans')
+      [f.payload.childPlanPaths['ABC-2'], f.payload.childPlanPaths['ABC-3']] = [
+        f.payload.childPlanPaths['ABC-3'],
+        f.payload.childPlanPaths['ABC-2'],
+      ]
+    if (kind === 'missing-marker')
+      f.put(f.file('child-image-guard-new', { childId: 'ABC-2' }), 'no marker')
+    if (kind === 'missing-description')
+      rmSync(f.file('child-image-guard-new', { childId: 'ABC-2' }))
+    assert.ok(f.verify().errors.some((e) => e.code === 'childPlanPaths'))
+  })
+}

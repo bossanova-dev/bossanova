@@ -14,20 +14,20 @@ When `tracker/cli.mjs operations` lists `writePlan`, use this protocol instead o
    immutable selection snapshot and claim. Proceed only on exit 0; exit 3 releases the claim,
    discards the draft with `guard-discard`, removes this run's scratch and ends `noop` before any
    planning write.
-2. Invoke `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" invoke-operation writePlan --args-file <args-file>`
+2. Invoke `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs invoke-operation writePlan --args-file <args-file>`
    with `{issue: <ISSUE-ID>, file: "$PLAN_FILE", title: "Implementation plan (<ISSUE-ID>)"}`.
    The `file` value is the actual gated plan path, not its contents. Exit 0 with
    `outcome: operation-executed` means the helper wrote and read back the record; retain its
    `result.id` and `result.title`. It creates the record or edits the existing one in place, and
    refuses duplicates. Classify any non-zero exit with `classify-outcome --operation write` and
    follow its action line, taking the SAFE branch below when storage remains unverified.
-3. Invoke `tracker/cli.mjs invoke-operation readPlanAttachment --args-file <args-file>` with
+3. Invoke `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs invoke-operation readPlanAttachment --args-file <args-file>` with
    `{id: <result.id>, outFile: ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.plan-readback.md"}`.
    This command writes the stored plan bytes directly to the `plan-readback` scratch file. Run the
    same local contract and image checks on that file, using Phase 4's gated description and safe
    original notes:
-   `node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description "$NEW" --plan <plan-readback-file> --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"`
-   and `node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten <plan-readback-file> --require-verbatim --require-unsigned-uploads`.
+   `bash <skill-dir>/toolbox/plan/boss-plan-run.sh contract-gate --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --plan <plan-readback-file>`
+   and `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-image-guard.mjs --original "$SAFE_ORIG" --rewritten <plan-readback-file> --require-verbatim --require-unsigned-uploads`.
    Any failed read or guard takes the SAFE branch: no plan metadata/state write. Never delete the
    plan record on this route; duplicate records require a human to keep the intended one.
 4. Retain the returned id and exact title for the completion report, as for an attachment.
@@ -44,8 +44,9 @@ When `writePlan` is absent, use the attachment protocol before any issue update:
    [fresh planning recheck](planning-claims.md#recheck-at-write-boundaries), after all reviewers and
    gates. Use the **target issue's** immutable selection snapshot and claim, including the exact
    own-finalized ids on the epic route as described there. A newly created epic child must first
-   have its bare shell `getIssue` payload saved as `<CHILD-ID>.precheck.json` in its child scratch
-   and acquire its own planning claim through that protocol; retain it through upload and release
+   run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <CHILD-UUID> --out-file .linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.precheck.json`.
+   Exit 0 continues; exit 2 uses the [snapshot fallback](planning-claims.md#claim-before-drafting);
+   exit 64 means fix the call. Acquire its own planning claim through that protocol; retain it through upload and release
    it on every success or failure before removing child scratch. Never use the parent's snapshot
    to recheck a child. Proceed only on exit 0; exit 3 releases the claim, discards the draft with `guard-discard`,
    removes this run's scratch and ends `noop` before any planning write. Then call `preparePlanAttachment` with the **target issue id**, Markdown filename, `text/markdown`,
@@ -59,15 +60,15 @@ When `writePlan` is absent, use the attachment protocol before any issue update:
    plausible. Measure the file, after it is written, on the path you are about to send.
 2. Save `uploadRequest.headers` in a private scratch JSON file named
    `.linear-plans/run-<RUN-SCRATCH-ID>/<RUN-ISSUE-ID>.attachment-headers-<n>.json`, retain its exact path until the PUT
-   returns, then invoke `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" put "$PLAN_FILE" <uploadRequest.url>
-<headers-json-file>` after running the toolbox preamble first. Delete that exact scratch file immediately after the PUT returns,
+   returns, then invoke `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan-attachment.mjs put "$PLAN_FILE" <uploadRequest.url>
+<headers-json-file>` . Delete that exact scratch file immediately after the PUT returns,
    whether it succeeds or fails; keep its path for terminal cleanup as a defense-in-depth fallback.
    `<RUN-ISSUE-ID>` is the planning run's issue id, not necessarily the target issue id: child epic
    attachments still use the parent epic id here, so one epic run's header scratch stays one
    recognisable set. Removability no longer rests on that prefix — every file above is inside this
    run's own `.linear-plans/run-<RUN-SCRATCH-ID>/` directory, which Phase 5 removes whole — but the basename
    is part of the declared `attachment-headers` family in
-   `$BOSS_PLAN_TOOLBOX/plan/plan-scratch-paths.mjs`, so keep it.
+   `plan/plan-scratch-paths.mjs`, so keep it.
    **The signed URL is short-lived — treat its validity as seconds, not minutes.** Run the prepare
    and the PUT **back to back**: no other tool call, no intervening message, no batch of prepares
    ahead of the uploads. A single interleaved step is enough to expire it, and an expired URL is
@@ -107,7 +108,7 @@ When `writePlan` is absent, use the attachment protocol before any issue update:
    unsigned record `url` instead of a freshly signed one, the content-mode comparison below is the
    whole recipe — there is no third source, and inventing one repeats the unsigned-url mistake.
    **Compare the digest, not the size.** Require the stored bytes to equal the local plan file:
-   `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" verify "$PLAN_FILE" <signed-url>` fetches the
+   `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan-attachment.mjs verify "$PLAN_FILE" <signed-url>` fetches the
    signed URL and compares SHA-256 against the file, printing `verify: match …` on stdout and
    exiting 0, or naming both digests and both byte counts on stderr and exiting 1. It never puts the
    stored body in your context. Where only the content mode is available, write its returned bytes
@@ -126,7 +127,7 @@ When `writePlan` is absent, use the attachment protocol before any issue update:
 6. **Supersede stale duplicate plan attachments only after verified read-back.** After the
    read-back succeeds, write a **fresh** attachment list (the tracker's issue read, as
    returned) to `.linear-plans/run-<RUN-SCRATCH-ID>/<RUN-ISSUE-ID>.attachment-list-<n>.json`.
-   After the toolbox preamble, run `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" supersede <that file>
+   Run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan-attachment.mjs supersede <that file>
 --issue <ISSUE-ID> --keep <finalized-id> --just-finalized`. This run just finalized that id, which
    is knowledge no field on the attachment payload carries. On exit 0, delete each `supersede[].id`
    with `deletePlanAttachment`, logging and reporting its `title`. On `keep-not-listed`, delete
@@ -169,10 +170,7 @@ full replacement. The Phase 4 step 5 write-back check (`plan-writeback-verify.mj
 authority on what landed:
 
 ```bash
-BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md"
-BASE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"
-node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id "<ISSUE-ID>" --body-file "$NEW" --base-file "$BASE"
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs write-description --id <ISSUE-ID> --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md --base-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md
 ```
 
 `$NEW` is deliberately the same file every Phase 4 gate read, not a fresh copy of it: a second
@@ -228,9 +226,7 @@ reports drift that is not there. `read-description` is the read half of `write-d
 writes the stored bytes straight to disk and prints only a receipt:
 
 ```bash
-BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"
-node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description --id "<PHASE-1-ISSUE-UUID>" --out-file "$ORIG"
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-description --id <PHASE-1-ISSUE-UUID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md
 ```
 
 The run reads three times, each into its own declared scratch file: Phase 2 step 2 into

@@ -99,6 +99,7 @@ test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does 
     'blockerVerdict',
     'resolveSelection',
     'readDescription',
+    'readIssueSnapshot',
     'readClaimComments',
     'readIssueState',
     'selectMarked',
@@ -805,4 +806,20 @@ test('settling reads are optional and callable when declared', () => {
       /must be a function/,
     )
   }
+})
+
+test('readIssueSnapshot is optional and must be callable when supplied', () => {
+  assertConforms(stubAdapterWithOperationMap(validOperationMap()))
+  assertConforms({
+    ...stubAdapterWithOperationMap(validOperationMap()),
+    readIssueSnapshot: async () => ({}),
+  })
+  assert.throws(
+    () =>
+      assertConforms({
+        ...stubAdapterWithOperationMap(validOperationMap()),
+        readIssueSnapshot: true,
+      }),
+    /readIssueSnapshot must be a function/,
+  )
 })

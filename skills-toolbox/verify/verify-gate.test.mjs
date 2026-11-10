@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  cleanReviewBody,
   CLAIM_STALE_AFTER_MS,
   MERGE_RETRY_AFTER_MS,
   FOREIGN_BASE_EVENTS,
@@ -11743,4 +11744,10 @@ test('recording proof survives the extension record and approval re-judge', () =
     }).reasons.includes('human-review:ui'),
     true,
   )
+})
+
+test('partial coverage remains a clean review for the verify judge', () => {
+  const body = '## Review coverage\n\npartial: security (thread limit)\n'
+  assert.equal(cleanReviewBody(body), true)
+  assert.equal(cleanReviewBody(`${body}\n## Review findings\n- [ ] real defect`), false)
 })

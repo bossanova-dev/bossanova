@@ -740,6 +740,7 @@ func TestOpenPRListRoutesOriginHost(t *testing.T) {
 		{"https://github.corp.example/o/r.git", "github.corp.example"},
 		{"git@github.corp.example:o/r.git", "github.corp.example"},
 		{"ssh://git@github.corp.example/o/r.git", "github.corp.example"},
+		{"ssh://git@github.corp.example:7999/o/r.git", "github.corp.example"},
 	} {
 		t.Run(tc.origin, func(t *testing.T) {
 			calls := 0

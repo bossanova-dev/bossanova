@@ -1040,7 +1040,7 @@ func (p *Provider) fetchOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRS
 	nwo, host := repoFlag(repoPath), ""
 	if canonical := vcs.NormalizeRepoURL(repoPath); canonical != "" {
 		u, _ := url.Parse(canonical)
-		nwo, host = vcs.RepoSlug(canonical), u.Host
+		nwo, host = vcs.RepoSlug(canonical), u.Hostname()
 	}
 	owner, name, ok := splitNWO(nwo)
 	if !ok {

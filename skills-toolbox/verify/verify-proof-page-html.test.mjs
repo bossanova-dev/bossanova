@@ -60,7 +60,7 @@ function spec(overrides = {}) {
         level: 'medium',
         title: 'Totals <i>round</i> once',
         body: 'Check `round()`.',
-        area: 'Logic',
+        label: 'Logic',
         at: { path: 'src/cart.ts', line: 2 },
       },
       { level: 'low', title: 'Invented path', body: 'x', at: { path: 'src/nowhere.ts', line: 1 } },
@@ -85,9 +85,10 @@ function spec(overrides = {}) {
 }
 
 function media() {
-  const clip = (id, side, title) => ({
+  const clip = (id, side, title, pairs) => ({
     id,
     side,
+    ...(pairs ? { pairs } : {}),
     title,
     file: `${id}.mp4`,
     durationMs: 10_000,
@@ -101,7 +102,7 @@ function media() {
     schema: 'proof-media/1',
     head: HEAD,
     clips: [
-      clip('base-0', 'base', 'Before'),
+      clip('base-0', 'base', 'Before', 'head-1'),
       clip('head-0', 'head', 'Basket'),
       clip('head-1', 'head', 'Checkout'),
     ],
@@ -191,7 +192,10 @@ test('media becomes one player with chapters per clip, portrait stills with a li
   assert.ok(html.includes('<div class="lightbox" id="shot-0">'))
   assert.ok(html.includes('<a class="lb-next" href="#shot-1"'))
   assert.ok(html.includes('<figcaption>Before · Before still</figcaption>'))
-  assert.ok(html.includes('<figcaption>After · Basket still</figcaption>'))
+  assert.ok(
+    html.includes('<figcaption>After · Checkout still</figcaption>'),
+    'a base clip pairs with the head clip it names, not the one beside it',
+  )
   assert.ok(html.includes('&quot;total&quot;: &quot;&lt;3&gt;&quot;'))
   assert.ok(html.includes('2 recordings, 2 stills, base compared, 1 API call'))
   assert.equal(html.match(/<script[^>]*>/g)?.join(), '<script src="player.js" defer>')

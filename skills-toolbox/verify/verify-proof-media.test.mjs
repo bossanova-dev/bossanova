@@ -227,3 +227,40 @@ test('a manifest for another head or of another schema is ignored whole, and gar
       assert.doesNotThrow(() => validateProofMedia(raw, sized()))
     }
 })
+
+test('a base clip pairs with the head clip it names, wherever that clip sits', () => {
+  const base = (id, pairs) => ({
+    id,
+    side: 'base',
+    ...(pairs === undefined ? {} : { pairs }),
+    title: 'Before',
+    file: `${id}.mp4`,
+    durationMs: 5_000,
+    chapters: [],
+    stills: [{ file: `${id}-still.png`, caption: 'Before' }],
+  })
+  const raw = manifest()
+  raw.clips.unshift(base('base-0', 'head-0'))
+  raw.clips.push(base('base-1', 'head-9'), base('base-2', 'head-0'), base('base-3'))
+  const { media, dropped } = validateProofMedia(raw, sized())
+  assert.deepEqual(
+    media.clips.map((c) => [c.id, c.pairs]),
+    [
+      ['base-0', 'head-0'],
+      ['head-0', undefined],
+    ],
+  )
+  assert.deepEqual(
+    dropped.map((d) => [d.at, d.reason]),
+    [
+      ['clips[4]', 'pairs: expected text'],
+      ['clips.base-1', 'pairs: head-9 is not a head clip'],
+      ['clips.base-2', 'pairs: head-0 already has a base clip'],
+    ],
+  )
+  const headPairs = manifest()
+  headPairs.clips[0].pairs = 'head-1'
+  assert.deepEqual(validateProofMedia(headPairs, sized()).dropped, [
+    { at: 'clips[0]', reason: 'pairs: only a base clip names the head clip it pairs with' },
+  ])
+})

@@ -23,7 +23,7 @@ function spec() {
         title: 'Rounding moved',
         body: 'Totals now round once.',
         ifItMatters: 'Compare a three-item basket.',
-        area: 'Logic',
+        label: 'Logic',
         at: { path: 'src/cart.ts', line: 12 },
       },
     ],
@@ -71,6 +71,18 @@ test('each rule drops only its defective item and names why', () => {
     [
       'risk text too long',
       (s) => (s.risks[0].body = 'x'.repeat(301)),
+      'risks[0]',
+      (k) => k.risks.length,
+    ],
+    [
+      'risk label over 40 characters',
+      (s) => (s.risks[0].label = 'x'.repeat(41)),
+      'risks[0]',
+      (k) => k.risks.length,
+    ],
+    [
+      'risk with the retired area key',
+      (s) => (s.risks[0].area = 'Logic'),
       'risks[0]',
       (k) => k.risks.length,
     ],

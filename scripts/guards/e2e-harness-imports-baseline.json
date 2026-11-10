@@ -1,5 +1,4 @@
 [
-  "services/boss/cmd/proof-tui-agent/main_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
   "services/bossd/api/daemon/ready_handoff_integration_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
   "services/bossd/internal/evidence/provider_contract_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
   "services/bossd/internal/mcpcontract/contract_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",

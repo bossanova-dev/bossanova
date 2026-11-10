@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -19,7 +20,6 @@ import (
 	"github.com/recurser/boss/internal/adapter/realstackrpc"
 	"github.com/recurser/boss/internal/fixtures"
 	"github.com/recurser/boss/internal/realstack"
-	"github.com/recurser/boss/internal/tuitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -931,7 +931,10 @@ func TestE2E_SocketAttachDrivesExistingDaemon(t *testing.T) {
 		[]byte(`{"providers_acknowledged":true,"worktree_base_dir":"`+callerWorktreeBase+`"}`), 0o600); err != nil {
 		t.Fatalf("write caller settings: %v", err)
 	}
-	homeSettings := filepath.Join(tuitest.ConfigDirForHome(home), "settings.json")
+	homeSettings := filepath.Join(home, ".config", "bossanova", "settings.json")
+	if runtime.GOOS == "darwin" {
+		homeSettings = filepath.Join(home, "Library", "Application Support", "bossanova", "settings.json")
+	}
 
 	castPath := filepath.Join(t.TempDir(), "attach.cast")
 	cmd := exec.Command(agent, "--socket", socket, "--home", home, "--settings", settingsFile,

@@ -61,7 +61,6 @@ go_test(
         "//services/boss/internal/fixtures",
         "//services/boss/internal/realstack",
         "//services/boss/internal/scenario",
-        "//services/boss/internal/tuitest",
         "@land_charm_bubbles_v2//spinner",
         "@land_charm_lipgloss_v2//:lipgloss",
         "@org_golang_google_protobuf//proto",

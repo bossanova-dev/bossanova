@@ -241,8 +241,10 @@ function parkDecidedBy(codes, level, merge, asks) {
 /**
  * One report row: the judge output `judged` for PR `pr` under `candidate`, or `unknown` when the
  * replay could not judge it. A park carries the note `post` would leave for it.
+ * @param {{candidate: string, pr: number, headSha: string, prView?: {title?: string, body?: string}, judged?: Record<string, any>, unknown?: string, refused?: string[]}} input
  */
 export function replayRow({ candidate, pr, headSha, prView = {}, judged = {}, unknown, refused }) {
+  /** @type {(import('./verify-confidence.mjs').ConfidenceResult & {merge?: import('./verify-merge-policy.mjs').MergeDecisions}) | null} */
   const confidence = validConfidence(judged.confidence) ? judged.confidence : null
   const merge = confidence?.merge ?? null
   const decided = (merge?.decisions ?? []).map((ask) => ({ ...ask, from: fromOf(ask) }))
@@ -308,7 +310,9 @@ async function replayOne({ repo, pr, headSha, record, read, deps, dir }) {
   const run = async (results, n) => {
     const file = join(dir, `results-${pr}-${n}.json`)
     writeFileSync(file, JSON.stringify(results))
-    return judge({ pr, repo, extensionResults: file }, { ...deps, read })
+    /** @type {Record<string, any>} */
+    const judged = await judge({ pr, repo, extensionResults: file }, { ...deps, read })
+    return judged
   }
   const results = recordedResults(record, headSha)
   let judged = await run(results, 0)

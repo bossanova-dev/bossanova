@@ -64,7 +64,7 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 		if err != nil {
 			continue
 		}
-		if !domain.CloudRepoAllowed(ctx, repoID) || !s.trashCleanupAllowed(ctx, repoID, archived) {
+		if !domain.CloudRepoAllowed(ctx, repoID) || !s.trashCleanupAllowed(ctx, repoID) {
 			continue
 		}
 		if reapErr := s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, branches); reapErr != nil {
@@ -108,7 +108,7 @@ func (s *Server) unsharedBranches(ctx context.Context, repoID, removedID string,
 	return unshared
 }
 
-func (s *Server) trashCleanupAllowed(ctx context.Context, repoID string, archived []*models.Session) bool {
+func (s *Server) trashCleanupAllowed(ctx context.Context, repoID string) bool {
 	if !domain.IsCloudCommand(ctx) {
 		return true
 	}
@@ -120,13 +120,15 @@ func (s *Server) trashCleanupAllowed(ctx context.Context, repoID string, archive
 	if err != nil {
 		return false
 	}
-	for _, sess := range archived {
-		if domain.CloudRepoAllowed(ctx, sess.RepoID) {
+	// Git storage belongs to registrations, including those with only active
+	// sessions or no sessions. Archived rows cannot describe that boundary.
+	repos, err := s.repos.List(ctx)
+	if err != nil {
+		return false
+	}
+	for _, protected := range repos {
+		if domain.CloudRepoAllowed(ctx, protected.ID) {
 			continue
-		}
-		protected, err := s.repos.Get(ctx, sess.RepoID)
-		if err != nil {
-			return false
 		}
 		other, err := trashStorageKey(protected.LocalPath)
 		if err != nil || key == other {

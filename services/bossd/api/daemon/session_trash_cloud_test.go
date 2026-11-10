@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,6 +54,47 @@ func TestEmptyTrashCloudRechecksBeforeCleanup(t *testing.T) {
 	}
 	if result.Msg.DeletedCount != 1 || worktrees.reapLocalBranchesCalls != 0 {
 		t.Fatal("cleanup ignored policy downgrade after deletion")
+	}
+}
+
+func TestEmptyTrashCloudProtectsLinkedRegistrations(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("active=%t", active), func(t *testing.T) {
+			root := t.TempDir()
+			linked := t.TempDir()
+			metadata := filepath.Join(root, ".git", "worktrees", "linked")
+			if err := os.MkdirAll(metadata, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(metadata, "commondir"), []byte("../..\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(linked, ".git"), []byte("gitdir: "+metadata+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			sessions := &cleanupSessionStore{sessions: map[string]*models.Session{
+				"archived": {ID: "archived", RepoID: "a", BranchName: "shared", ArchivedAt: cleanupPtr(time.Now())},
+			}}
+			if active {
+				sessions.sessions["active"] = &models.Session{ID: "active", RepoID: "b", BranchName: "shared"}
+			}
+			worktrees := &cleanupWorktreeManager{}
+			s := &Server{sessions: sessions, worktrees: worktrees, repos: &cleanupRepoStore{repos: map[string]*models.Repo{
+				"a": {ID: "a", LocalPath: root}, "b": {ID: "b", LocalPath: linked},
+			}}}
+			ctx := domain.WithCloudTarget(context.Background(), domain.CloudTarget{"repo:a": "a", "repo:b": "b"})
+			ctx = domain.WithCloudRepoCheck(ctx, func(_ context.Context, id string) bool { return id == "a" })
+			result, err := s.EmptyTrash(ctx, connect.NewRequest(&pb.EmptyTrashRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Msg.DeletedCount != 1 || !sessions.deleted["archived"] || sessions.deleted["active"] {
+				t.Fatal("incorrect session deletion")
+			}
+			if worktrees.reapLocalBranchesCalls != 0 {
+				t.Fatal("reaped storage shared with protected registration")
+			}
+		})
 	}
 }
 

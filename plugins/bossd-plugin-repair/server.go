@@ -267,11 +267,12 @@ type repairMonitor struct {
 	reviewReadLog vcs.RateLimitLog
 
 	mu                      sync.Mutex
-	ctx                     context.Context        // Workflow context
-	cancel                  context.CancelFunc     // Cancel function for the workflow
-	stopped                 bool                   // True after CancelWorkflow until next StartWorkflow
-	paused                  bool                   // True after PauseWorkflow until ResumeWorkflow
-	config                  *repairConfig          // Parsed config from StartWorkflowRequest
+	ctx                     context.Context    // Workflow context
+	cancel                  context.CancelFunc // Cancel function for the workflow
+	stopped                 bool               // True after CancelWorkflow until next StartWorkflow
+	paused                  bool               // True after PauseWorkflow until ResumeWorkflow
+	config                  *repairConfig      // Parsed config from StartWorkflowRequest
+	dependabotDeferrals     map[string]bool
 	repairing               map[string]bool        // Sessions currently being repaired
 	cooldowns               map[string]time.Time   // Last repair attempt time per session
 	lastAttempt             map[string]repairInput // Input of the last repair attempt that ran, per session
@@ -565,6 +566,13 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		return
 	}
 
+	m.mu.Lock()
+	deferred := m.deferDependabotLocked(sessionID, info)
+	m.mu.Unlock()
+	if deferred {
+		return
+	}
+
 	// Idle gate: never interrupt a live agent chat with an automated repair —
 	// unless the chat has been quiet for at least idleRepairThreshold. The
 	// claude process can stay attached for days; we don't want a single
@@ -712,6 +720,10 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 			Str("base_sha", baseSHA).
 			Bool("base_sha_available", baseOk).
 			Msg("already attempted repair on this input, skipping")
+		return
+	}
+	if m.deferDependabotLocked(sessionID, info) {
+		m.mu.Unlock()
 		return
 	}
 	if streak, exhausted := m.noteBaseMoveRetryLocked(sessionID, input, baseMoveRetry); exhausted {

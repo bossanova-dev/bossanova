@@ -61,6 +61,7 @@ func (l *Lifecycle) ResumeOrphanedHeadlessRuns(ctx context.Context) (resumed int
 		return 0
 	}
 
+	resumedRepos := make(map[string]bool)
 	for _, session := range orphaned {
 		if session == nil {
 			continue
@@ -85,7 +86,17 @@ func (l *Lifecycle) ResumeOrphanedHeadlessRuns(ctx context.Context) (resumed int
 		if l.hasLiveChatPane(ctx, session.ID) {
 			continue
 		}
+		dependabot := IsDependabotBranch(session.BranchName)
+		if dependabot {
+			if resumedRepos[session.RepoID] {
+				continue
+			}
+			if _, busy := l.DependabotRepairInFlight(ctx, session.RepoID); busy {
+				continue
+			}
+		}
 		if l.resumeOrphanedRun(ctx, claimStore, session) {
+			resumedRepos[session.RepoID] = resumedRepos[session.RepoID] || dependabot
 			resumed++
 		}
 	}

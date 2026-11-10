@@ -116,7 +116,8 @@ type Orchestrator struct {
 	taskMappings       db.TaskMappingStore
 	sessionCreator     SessionCreator
 	provider           vcs.Provider
-	baseSyncer         BaseBranchSyncer       // optional; nil-safe
+	baseSyncer         BaseBranchSyncer // optional; nil-safe
+	dependabotGate     DependabotRepairGate
 	livenessChecker    SessionLivenessChecker // optional; nil-safe — see sessionLiveness
 	archiver           SessionArchiver        // optional; nil-safe. Auto-archives dependabot repair sessions on merge.
 	factoryRepoChecker FactoryRepoChecker
@@ -322,23 +323,16 @@ func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, pl
 // the per-repo FIFO queue. If no task is currently active for this
 // repo, the task is processed immediately.
 func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
+	if (task.GetAction() == bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION || task.GetAction() == bossanovav1.TaskAction_TASK_ACTION_UNSPECIFIED) && o.deferDependabotTask(ctx, repo, task.GetExternalId(), task.GetLabels()) {
+		return
+	}
 	externalID := task.GetExternalId()
 
-	// Dedup: skip if we've already seen this external ID. Most statuses
-	// (Pending/InProgress/Skipped) block automatic reprocessing, so we don't
-	// re-fire sessions or previously-rejected libraries every poll.
-	//
-	// Orphaned is one exception: MarkOrphaned flips Pending/InProgress
-	// to Orphaned on daemon restart because the driving goroutines died.
-	// Terminal (Completed/Failed) mappings are another exception: the dependabot
-	// plugin only re-emits a task for a PR that is still OPEN, so a fresh
-	// AUTO_MERGE for a now-green Completed (or previously-failed) PR means the
-	// merge still needs to happen, and a fresh CREATE_SESSION for a still-red PR
-	// means it needs another repair attempt. Re-processing is rate-limited by
-	// TerminalRetryCooldown. AUTO_MERGE deletes the stale row and lets routeTask
-	// insert a fresh one (the row must be deleted, not updated, because
-	// external_id is UNIQUE); CREATE_SESSION re-repairs in place below so the
-	// retry_count survives.
+	// Pending/InProgress/Skipped mappings suppress duplicate starts. Orphaned
+	// mappings are retryable after restart. Completed/Failed mappings can also
+	// retry after TerminalRetryCooldown: Dependabot only re-emits open PRs.
+	// CREATE_SESSION preserves retry_count in place; AUTO_MERGE replaces the
+	// row because external_id is unique.
 	existing, err := o.taskMappings.GetByExternalID(ctx, externalID)
 	if o.handoffGreenRepair(ctx, task, repo, pluginName, existing) {
 		return
@@ -935,6 +929,12 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 // next task when it finishes. We only dequeue here on the error path so
 // the queue advances if session creation fails.
 func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *domain.TaskMapping, preserveMappingOnDuplicate bool) {
+	if o.deferDependabotTask(ctx, repo, task.GetExternalId(), task.GetLabels()) {
+		// Orphaned mappings are re-picked on the next poll without a failure cooldown.
+		o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusOrphaned)
+		o.dequeueNext(ctx, repo.id)
+		return
+	}
 	// The task's base_branch is advisory: plugins that don't know the repo
 	// configuration set the repo's default branch (or "main" as a historical
 	// fallback). Always prefer the repo's configured default so repos with

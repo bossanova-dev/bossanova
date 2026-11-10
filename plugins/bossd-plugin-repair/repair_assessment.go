@@ -95,6 +95,9 @@ func firstLine(s string) string {
 // to make its decisions. Decoupling from the proto session type keeps the
 // idle-gate logic isolated and easy to test.
 type sessionInfo struct {
+	RepoID                      string
+	BranchName                  string
+	Sessions                    []*bossanovav1.Session
 	BlockedReason               *string
 	LastRepairBlockedAt         time.Time
 	StartBlock                  *sessionreason.RepairStartBlock
@@ -113,13 +116,7 @@ type sessionInfo struct {
 	RepoOriginURL               string
 	BaseBranch                  string
 	PRNumber                    int32
-	// LastRepairStartedAt and LastRepairAttemptCount are sourced from
-	// the daemon-persisted last_repair_* columns so the cooldown gate
-	// survives daemon restarts and plugin reloads. The previous
-	// implementation only consulted the in-memory `m.cooldowns` map,
-	// which reset to empty on every restart and let the failed PRs
-	// re-fire immediately — one of the reasons the production counter
-	// reached 321×.
+	// Persisted cooldown diagnostics survive daemon and plugin restarts.
 	LastRepairStartedAt    time.Time
 	LastRepairAttemptCount int32
 }
@@ -206,6 +203,9 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 			continue
 		}
 		info := sessionInfo{
+			RepoID:                      sess.GetRepoId(),
+			BranchName:                  sess.GetBranchName(),
+			Sessions:                    resp.GetSessions(),
 			HasActiveChat:               sess.GetHasActiveChat(),
 			BlockedReason:               sess.BlockedReason,
 			RepoName:                    sess.GetRepoDisplayName(),

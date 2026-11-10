@@ -17,10 +17,12 @@ func SeedRepo(ctx context.Context, client realstackrpc.Client, home string, repo
 		return nil, "", err
 	}
 	local := filepath.Join(filepath.Dir(path), "origin.git")
-	if repo.OriginUrl != "" {
-		if err = RunGit(path, "remote", "set-url", "origin", repo.OriginUrl); err != nil {
-			return nil, "", err
-		}
+	origin := repo.OriginUrl
+	if origin == "" {
+		origin = "https://github.com/fixture/" + filepath.Base(filepath.Dir(path)) + ".git"
+	}
+	if err = RunGit(path, "remote", "set-url", "origin", origin); err != nil {
+		return nil, "", err
 	}
 	response, err := client.RegisterRepo(ctx, realstackrpc.Request(&pb.RegisterRepoRequest{LocalPath: path, DisplayName: repo.DisplayName, DefaultBaseBranch: "main", WorktreeBaseDir: filepath.Join(home, "worktrees"), IsTrusted: proto.Bool(true)}))
 	if resetErr := RunGit(path, "remote", "set-url", "origin", local); resetErr != nil {

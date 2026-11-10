@@ -17,4 +17,5 @@ go_test(
     name = "fakegh_test",
     srcs = ["main_test.go"],
     embed = [":fakegh_lib"],
+    deps = ["//services/boss/internal/realstack"],
 )

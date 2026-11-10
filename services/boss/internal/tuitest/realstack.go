@@ -85,12 +85,11 @@ func seedFixtureRepos(t *testing.T, ctx context.Context, stack *realstack.Stack,
 		if name == "" {
 			name = fmt.Sprintf("repo-%d", i)
 		}
-		path := realstack.InitRepo(t, stack.Home(), name)
-		response, err := client.RegisterRepo(ctx, realstackrpc.Request(&pb.RegisterRepoRequest{LocalPath: path, DisplayName: name, DefaultBaseBranch: "main", WorktreeBaseDir: filepath.Join(stack.Home(), "worktrees"), IsTrusted: proto.Bool(true)}))
+		responseRepo, path, err := realstack.SeedRepo(ctx, client, stack.Home(), &pb.Repo{DisplayName: name, OriginUrl: repo.OriginUrl})
 		if err != nil {
 			t.Fatalf("register fixture repo: %v\n%s", err, stack.LogTail())
 		}
-		id := response.Msg.Repo.Id
+		id := responseRepo.Id
 		if len(cfg.trackerIssues[repo.Id]) > 0 {
 			key := "lin_fixture_only"
 			_, err := client.UpdateRepo(ctx, realstackrpc.Request(&pb.UpdateRepoRequest{Id: id, LinearApiKey: &key}))
@@ -111,9 +110,9 @@ func seedFixtureRepos(t *testing.T, ctx context.Context, stack *realstack.Stack,
 		if err != nil {
 			t.Fatal(err)
 		}
-		ghResponses = append(ghResponses, realstack.GHResponse{Args: []string{"pr", "list", "--repo", response.Msg.Repo.OriginUrl, "--state", "open", "--json", "number,title,headRefName,state,author", "--limit", "300"}, Stdout: string(prJSON)})
+		ghResponses = append(ghResponses, realstack.OpenPRListResponse(responseRepo.OriginUrl, string(prJSON)))
 		for _, issue := range cfg.trackerIssues[repo.Id] {
-			ghResponses = append(ghResponses, realstack.GHResponse{Args: []string{"pr", "list", "--repo", response.Msg.Repo.OriginUrl, "--state", "all", "--search", issue.ExternalId + " in:title", "--json", "number,title,headRefName,state,author", "--limit", "100"}, Stdout: "[]"})
+			ghResponses = append(ghResponses, realstack.GHResponse{Args: []string{"pr", "list", "--repo", responseRepo.OriginUrl, "--state", "all", "--search", issue.ExternalId + " in:title", "--json", "number,title,headRefName,state,author", "--limit", "100"}, Stdout: "[]"})
 		}
 		strategy := repo.MergeStrategy
 		if strategy == "" {

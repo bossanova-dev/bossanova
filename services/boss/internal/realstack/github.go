@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // GHResponse is one explicitly supported invocation of the fake GitHub CLI.
@@ -74,4 +77,35 @@ func (s *Stack) ReleaseHold(name string) error {
 		return fmt.Errorf("release hold %s: %w", name, err)
 	}
 	return nil
+}
+
+// OpenPRListResponse supplies the exact bounded list query used by bossd.
+// Keep this fixture query aligned with the GitHub adapter's open-list contract.
+func OpenPRListResponse(repo, nodes string) GHResponse {
+	const query = `query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: OPEN, first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title headRefName headRefOid state author { login __typename }
+        authorship: commits(first: 10) {
+          totalCount
+          nodes { commit { authors(first: 5) { totalCount nodes { email user { login } } } } }
+        }
+      }
+    }
+  }
+}`
+	nwo := vcs.GitHubNWO(repo)
+	if nwo == "" {
+		nwo = repo
+	}
+	owner, name, _ := strings.Cut(nwo, "/")
+	if nodes == "null" {
+		nodes = "[]"
+	}
+	return GHResponse{
+		Args:   []string{"api", "graphql", "-f", "query=" + query, "-f", "owner=" + owner, "-f", "name=" + name},
+		Stdout: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":` + nodes + `}}}}`,
+	}
 }

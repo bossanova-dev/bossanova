@@ -25,7 +25,7 @@ const emptySnapshot = `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNe
 // per-PR read path keeps exercising it under vcs.WithCachedReads.
 func withoutSnapshot(f ghFunc) ghFunc {
 	return func(ctx context.Context, args ...string) (string, error) {
-		if isGraphQL(args) {
+		if isGraphQL(args) && !isOpenPRList(args) {
 			return "", errors.New("snapshot unavailable in this test")
 		}
 		return f(ctx, args...)
@@ -45,6 +45,8 @@ func isPerPRRead(args []string) bool {
 // page), "pr view 7", "pr checks 7", "pr list", or "api <path>".
 func routeKey(args []string) string {
 	switch {
+	case isOpenPRList(args):
+		return "open graphql"
 	case isGraphQL(args):
 		for _, a := range args {
 			if strings.HasPrefix(a, "cursor=") {
@@ -630,10 +632,10 @@ func TestOpenPRSnapshotInFlightLosesToNewerPerPRRead(t *testing.T) {
 // fresh snapshot.
 func TestOpenPRSnapshotNotConsultedByUnmarkedReads(t *testing.T) {
 	gh := routedGH(t, map[string]string{
-		"graphql":     readFixture(t, "open_pr_snapshot_three.json"),
-		"pr view 3":   `{"state":"OPEN","isDraft":true,"title":"live","reviews":[]}`,
-		"pr checks 3": `[]`,
-		"pr list":     `[]`,
+		"graphql":      readFixture(t, "open_pr_snapshot_three.json"),
+		"pr view 3":    `{"state":"OPEN","isDraft":true,"title":"live","reviews":[]}`,
+		"pr checks 3":  `[]`,
+		"open graphql": emptySnapshot,
 	})
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
 	ctx := context.Background()
@@ -644,7 +646,7 @@ func TestOpenPRSnapshotNotConsultedByUnmarkedReads(t *testing.T) {
 	}
 	_, _ = p.GetCheckSet(ctx, "o/r", 3)
 	_, _ = p.ListOpenPRs(ctx, "o/r")
-	want := []string{"graphql", "pr view 3", "pr checks 3", "pr list"}
+	want := []string{"graphql", "pr view 3", "pr checks 3", "open graphql"}
 	if got := callKeys(gh); !reflect.DeepEqual(got, want) {
 		t.Fatalf("gh calls = %q, want %q", got, want)
 	}
@@ -701,42 +703,55 @@ func TestOpenPRSnapshotTruncatedAuthors(t *testing.T) {
 	}
 }
 
-func TestOpenPRListCommitAuthorship(t *testing.T) {
-	payload := `[{"number":1,"headRefOid":"abc123","commits":[{"authors":[{"login":"","email":"bot@example.com"}]},{"authors":[{"login":"","email":"bot@example.com"},{"login":"alice","email":"alice@example.com"}]}]}]`
-	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
-		if got := flagValue(args, "--json"); got != "number,title,headRefName,state,author,headRefOid,commits" {
-			t.Errorf("open fields = %q", got)
+func isOpenPRList(args []string) bool {
+	for _, arg := range args {
+		if arg == "query="+openPRListQuery {
+			return true
 		}
-		return payload, nil
+	}
+	return false
+}
+
+func listPage(nodes string) string {
+	return `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":` + nodes + `}}}}`
+}
+
+func TestOpenPRListCommitAuthorship(t *testing.T) {
+	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		if !isOpenPRList(args) {
+			t.Fatalf("unexpected query %v", args)
+		}
+		return readFixture(t, "open_pr_snapshot_three.json"), nil
 	}))
-	prs, err := p.ListOpenPRs(context.Background(), "o/r")
+	prs, err := p.ListOpenPRs(t.Context(), "o/r")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []vcs.CommitAuthor{{Email: "bot@example.com"}, {Login: "alice", Email: "alice@example.com"}}
-	if len(prs) != 1 || prs[0].HeadSHA != "abc123" || !prs[0].CommitAuthorsComplete || !reflect.DeepEqual(prs[0].CommitAuthors, want) {
+	want := []vcs.CommitAuthor{{Email: "49699333+dependabot[bot]@users.noreply.github.com"}, {Login: "alice", Email: "alice@example.com"}}
+	if len(prs) != 3 || prs[1].HeadSHA == "" || !prs[1].CommitAuthorsComplete || !reflect.DeepEqual(prs[1].CommitAuthors, want) || prs[2].CommitAuthorsComplete {
 		t.Fatalf("summaries = %+v", prs)
 	}
 }
 
-func TestOpenPRListAuthorshipCaps(t *testing.T) {
-	for _, tc := range []struct {
-		name             string
-		commits, authors int
-	}{{"commits", 100, 1}, {"authors", 1, 100}} {
-		t.Run(tc.name, func(t *testing.T) {
-			commits := make([]map[string]any, tc.commits)
-			for i := range commits {
-				commits[i] = map[string]any{"authors": make([]vcs.CommitAuthor, tc.authors)}
-			}
-			prs, err := decodePRList(mustJSON(t, []map[string]any{{"commits": commits}}))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if prs[0].CommitAuthorsComplete {
-				t.Fatal("capped list reported complete")
-			}
-		})
+func TestOpenPRListPaginatesTo300(t *testing.T) {
+	calls := 0
+	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		if !isOpenPRList(args) {
+			t.Fatalf("unexpected query %v", args)
+		}
+		if calls > 0 && args[len(args)-1] != fmt.Sprintf("cursor=page%d", calls) {
+			t.Fatalf("cursor args: %v", args)
+		}
+		nodes := make([]map[string]any, 100)
+		for i := range nodes {
+			nodes[i] = map[string]any{"number": calls*100 + i + 1, "state": "OPEN"}
+		}
+		calls++
+		return fmt.Sprintf(`{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":true,"endCursor":"page%d"},"nodes":%s}}}}`, calls, mustJSON(t, nodes)), nil
+	}))
+	prs, err := p.ListOpenPRs(t.Context(), "o/r")
+	if err != nil || len(prs) != 300 || calls != 3 || prs[299].Number != 300 {
+		t.Fatalf("PRs=%d calls=%d err=%v", len(prs), calls, err)
 	}
 }
 

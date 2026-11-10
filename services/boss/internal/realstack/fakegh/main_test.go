@@ -13,16 +13,19 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/boss/internal/realstack"
 )
 
 func TestFixtureResponses(t *testing.T) {
 	t.Parallel()
+	open := realstack.OpenPRListResponse("owner/repo", `[{"number":42,"state":"OPEN"}]`)
 	for _, tc := range []struct {
 		name string
 		args []string
 		out  string
 	}{
-		{"open PRs", []string{"pr", "list", "--repo", "owner/repo", "--state", "open", "--json", "number,title,headRefName,state,author", "--limit", "300"}, `[{"number":42,"title":"Fix","headRefName":"fix","state":"OPEN","author":{"login":"dev"}}]`},
+		{"open PRs", open.Args, open.Stdout},
 		{"closed PRs", []string{"pr", "list", "--repo", "owner/repo", "--state", "closed", "--json", "number,title,headRefName,state,author", "--limit", "50"}, `[]`},
 		{"search PRs", []string{"pr", "list", "--repo", "owner/repo", "--state", "all", "--search", "TEST-1 in:title", "--json", "number,title,headRefName,state,author", "--limit", "100"}, `[{"number":42,"title":"[TEST-1] Fix"}]`},
 		{"checks", []string{"pr", "checks", "42", "--repo", "owner/repo", "--json", "name,state,workflow,description"}, `[{"name":"test","state":"SUCCESS","workflow":"Go","description":"passed"}]`},

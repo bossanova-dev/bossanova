@@ -1016,10 +1016,53 @@ func (p *Provider) GetReviewInlineComments(ctx context.Context, repoPath string,
 	return comments, nil
 }
 
+// openPRListQuery bounds authorship to 10 commits and 5 authors per commit.
+// gh pr list's built-in commits selection asks for 100 by 100, exceeding
+// GitHub's 500,000-node limit at its 100-PR page size.
+const openPRListQuery = `query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: OPEN, first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title headRefName headRefOid state author { login __typename }
+        authorship: commits(first: 10) {
+          totalCount
+          nodes { commit { authors(first: 5) { totalCount nodes { email user { login } } } } }
+        }
+      }
+    }
+  }
+}`
+
 // fetchOpenPRs lists a repository's open pull requests from GitHub,
 // bypassing the read cache (see ListOpenPRs).
 func (p *Provider) fetchOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
-	return p.listPRsByState(ctx, repoPath, "list open PRs", "open", 300)
+	owner, name, ok := splitNWO(repoFlag(repoPath))
+	if !ok {
+		return nil, fmt.Errorf("list open PRs: invalid GitHub repo %q", repoPath)
+	}
+	snap := &prSnapshot{prs: make(map[int]*snapshotPR)}
+	cursor := ""
+	// Match gh pr list --limit 300: at most three 100-PR requests.
+	for page := 0; page < 3; page++ {
+		args := []string{"api", "graphql", "-f", "query=" + openPRListQuery, "-f", "owner=" + owner, "-f", "name=" + name}
+		if cursor != "" {
+			args = append(args, "-f", "cursor="+cursor)
+		}
+		out, err := p.runGHWithTransientRetry(ctx, "list open PRs", args...)
+		if err != nil {
+			return nil, fmt.Errorf("list open PRs: %w", err)
+		}
+		next, err := snap.addPage(out)
+		if err != nil {
+			return nil, fmt.Errorf("list open PRs: %w", err)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return snap.openPRs(), nil
 }
 
 // ListClosedPRs returns recently-closed (not merged) pull requests.
@@ -1033,9 +1076,6 @@ func (p *Provider) ListClosedPRs(ctx context.Context, repoPath string) ([]vcs.PR
 // the retry-logging description and error context for the caller.
 func (p *Provider) listPRsByState(ctx context.Context, repoPath, label, state string, limit int) ([]vcs.PRSummary, error) {
 	fields := "number,title,headRefName,state,author"
-	if state == "open" {
-		fields += ",headRefOid,commits"
-	}
 	out, err := p.runGHWithTransientRetry(ctx, label,
 		"pr", "list",
 		"--repo", repoFlag(repoPath),
@@ -1058,12 +1098,8 @@ func decodePRList(out string) ([]vcs.PRSummary, error) {
 		Number      int    `json:"number"`
 		Title       string `json:"title"`
 		HeadRefName string `json:"headRefName"`
-		HeadRefOid  string `json:"headRefOid"`
-		Commits     []struct {
-			Authors []vcs.CommitAuthor `json:"authors"`
-		} `json:"commits"`
-		State  string `json:"state"`
-		Author struct {
+		State       string `json:"state"`
+		Author      struct {
 			Login string `json:"login"`
 		} `json:"author"`
 	}
@@ -1079,21 +1115,6 @@ func decodePRList(out string) ([]vcs.PRSummary, error) {
 			HeadBranch: r.HeadRefName,
 			State:      parsePRState(r.State),
 			Author:     r.Author.Login,
-			HeadSHA:    r.HeadRefOid,
-			// gh windows commits and each commit's authors at 100, without totals.
-			CommitAuthorsComplete: r.Commits != nil && len(r.Commits) < 100,
-		}
-		seen := make(map[vcs.CommitAuthor]bool)
-		for _, commit := range r.Commits {
-			if len(commit.Authors) >= 100 || len(commit.Authors) == 0 {
-				prs[i].CommitAuthorsComplete = false
-			}
-			for _, author := range commit.Authors {
-				if !seen[author] {
-					prs[i].CommitAuthors = append(prs[i].CommitAuthors, author)
-					seen[author] = true
-				}
-			}
 		}
 	}
 

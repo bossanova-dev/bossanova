@@ -130,7 +130,7 @@ func (f *fixtureStack) addRepo(ctx context.Context, repo *pb.Repo) error {
 		originFlag = nwo
 	}
 	f.origins[repo.Id] = originFlag
-	f.gh = append(f.gh, realstack.GHResponse{Args: []string{"pr", "list", "--repo", originFlag, "--state", "open", "--json", "number,title,headRefName,state,author", "--limit", "300"}, Stdout: "[]"})
+	f.gh = append(f.gh, realstack.OpenPRListResponse(originFlag, "[]"))
 	data, err := json.Marshal(map[string]any{"responses": f.gh})
 	if err != nil {
 		return err
@@ -209,20 +209,30 @@ func (f *fixtureStack) addPR(repoKey string, pr map[string]any) error {
 		return fmt.Errorf("PR references unknown repo %q", repoKey)
 	}
 	for i := range f.gh {
-		// The local bare remote uniquely identifies the repository's fixture response.
-		if f.gh[i].Args[3] != f.origins[repoKey] {
+		// Match the exact query and repository variables.
+		expected := realstack.OpenPRListResponse(f.origins[repoKey], "[]")
+		if !slices.Equal(f.gh[i].Args, expected.Args) {
 			continue
 		}
-		prs := make([]map[string]any, 0, 1)
-		if err := json.Unmarshal([]byte(f.gh[i].Stdout), &prs); err != nil {
+		var page struct {
+			Data struct {
+				Repository struct {
+					PullRequests struct {
+						Nodes []map[string]any `json:"nodes"`
+					} `json:"pullRequests"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(f.gh[i].Stdout), &page); err != nil {
 			return err
 		}
+		prs := page.Data.Repository.PullRequests.Nodes
 		prs = append(prs, pr)
 		data, err := json.Marshal(prs)
 		if err != nil {
 			return err
 		}
-		f.gh[i].Stdout = string(data)
+		f.gh[i] = realstack.OpenPRListResponse(f.origins[repoKey], string(data))
 		data, err = json.Marshal(map[string]any{"responses": f.gh})
 		if err != nil {
 			return err

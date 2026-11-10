@@ -512,6 +512,7 @@ func (w *daemonWiring) wireUpstream() {
 			UsageRecorder:  w.accounts,
 			Webhooks: upstream.NewWebhookDispatcherWithEmitterAndReviewComments(w.displayPoller, emitter, w.ghProvider, log.Logger).
 				WithCloudControl(cloudControl).
+				WithWebhookTargets(targets).
 				WithEvaluator(w.callbackEvaluator).
 				WithVerifyEvents(verifyevent.New(w.repos, w.cronJobs, w.callbackEvaluator, proofenvkeyring.New(log.Logger), log.Logger).WithGHUsage(w.ghUsageShim)).
 				WithReadInvalidator(w.ghProvider).

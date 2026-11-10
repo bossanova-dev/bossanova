@@ -101,6 +101,7 @@ const prPollTimeout = 2 * time.Minute
 // WebhookDispatcher routes PR-scoped webhook events to the display poller.
 type WebhookDispatcher struct {
 	cloudControl   CloudControlPolicy
+	targets        WebhookTargetObjects
 	refresher      PRRefresher
 	emitter        SessionEventEmitter
 	reviewComments ReviewCommentProvider
@@ -141,6 +142,37 @@ func NewWebhookDispatcherWithEmitterAndReviewComments(refresher PRRefresher, emi
 func (d *WebhookDispatcher) WithCloudControl(policy CloudControlPolicy) *WebhookDispatcher {
 	d.cloudControl = policy
 	return d
+}
+
+// WebhookTargetObjects projects every local session and chat a delivery can act on.
+type WebhookTargetObjects interface {
+	WebhookTargets(context.Context, string, int) (string, []CommandTargetObject, error)
+}
+
+// WithWebhookTargets supplies local ownership evidence for the payload path.
+func (d *WebhookDispatcher) WithWebhookTargets(targets WebhookTargetObjects) *WebhookDispatcher {
+	d.targets = targets
+	return d
+}
+
+func (d *WebhookDispatcher) payloadAllowed(ctx context.Context, ev *pb.WebhookEvent) bool {
+	if d.cloudControl == nil || d.targets == nil || vcs.NormalizeRepoURL(ev.GetRepoOriginUrl()) == "" {
+		return false
+	}
+	repoID, objects, err := d.targets.WebhookTargets(ctx, ev.GetRepoOriginUrl(), int(ev.GetPullRequest()))
+	if err != nil || repoID == "" {
+		return false
+	}
+	mode, _ := d.cloudControl.RepoMode(ctx, repoID)
+	if mode != config.CloudControlFull {
+		return false
+	}
+	for _, object := range objects {
+		if object.RepoID != repoID {
+			return false
+		}
+	}
+	return true
 }
 
 // WithEvaluator attaches a CallbackEvaluator invoked for the affected PR after a
@@ -219,7 +251,7 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 	if d.refresher == nil {
 		return fmt.Errorf("webhook dispatcher refresher not wired")
 	}
-	hintMode := cloudControlMode(d.cloudControl) != config.CloudControlFull
+	hintMode := !d.payloadAllowed(ctx, ev)
 	if hintMode && ev.GetPullRequest() <= 0 {
 		d.logger.Debug().Str("event_type", ev.GetEventType()).
 			Str("repo_origin_url", ev.GetRepoOriginUrl()).

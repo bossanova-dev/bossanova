@@ -114,3 +114,38 @@ func (a upstreamTargets) GetTarget(ctx context.Context, kind, id string) (upstre
 
 var _ upstream.CommandTargetObjects = upstreamTargets{}
 var _ upstream.RepoIdentities = upstreamTargets{}
+
+// WebhookTargets resolves the envelope against local registrations, including
+// every chat whose session may receive an event for that PR.
+func (a upstreamTargets) WebhookTargets(ctx context.Context, origin string, pr int) (string, []upstream.CommandTargetObject, error) {
+	repo, err := a.repos.GetByOriginURL(ctx, origin)
+	if err != nil {
+		return "", nil, err
+	}
+	sessions, err := a.sessions.ListWithRepo(ctx, repo.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	var objects []upstream.CommandTargetObject
+	for _, sess := range sessions {
+		if pr > 0 && (sess.PRNumber == nil || *sess.PRNumber != pr) {
+			continue
+		}
+		objects = append(objects, upstream.CommandTargetObject{RepoID: sess.RepoID, SessionID: sess.ID})
+		chats, err := a.chats.ListBySession(ctx, sess.ID)
+		if err != nil {
+			return "", nil, err
+		}
+		for _, chat := range chats {
+			if chat.SessionID != sess.ID {
+				return "", nil, domain.ErrCloudTarget
+			}
+			object, err := a.GetTarget(ctx, "chat", chat.AgentSessionID)
+			if err != nil {
+				return "", nil, err
+			}
+			objects = append(objects, object)
+		}
+	}
+	return repo.ID, objects, nil
+}

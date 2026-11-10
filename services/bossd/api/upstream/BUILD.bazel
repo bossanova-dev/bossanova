@@ -157,6 +157,7 @@ go_test(
         "webhook_health_test.go",
         "webhook_hint_test.go",
         "webhook_lane_test.go",
+        "webhook_repo_policy_test.go",
         "wiring_test.go",
     ],
     data = glob(["testdata/**"]) + glob(

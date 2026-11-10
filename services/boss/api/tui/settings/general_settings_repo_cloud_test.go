@@ -162,3 +162,73 @@ func TestRepoCloudGroupLocalFallback(t *testing.T) {
 		t.Fatalf("local group = %q", got)
 	}
 }
+
+func Test_Settings_AC243003_RenamedAndSymlinkedGrantCycling(t *testing.T) {
+	m := repoCloudModel(t)
+	link := filepath.Join(t.TempDir(), "checkout-link")
+	if err := os.Symlink(m.repoCloudControls[1].Checkout, link); err != nil {
+		t.Fatal(err)
+	}
+	for i, repo := range m.repoCloudControls[:2] {
+		grant := config.CloudControlRepoGrant{Host: repo.Host, Name: repo.Name, Checkout: repo.Checkout, RepoID: repo.ProviderRepoId, Mode: "full"}
+		if i == 0 {
+			grant.Name = "acme/old"
+		} else {
+			grant.Checkout = link
+		}
+		m.settings.CloudControlRepos = append(m.settings.CloudControlRepos, grant)
+	}
+	owner := selectCloudRow(t, m, "github.com/acme")
+	if got := owner.repoCloudRowValue(owner.rows[owner.cursor]); got != "full (all registered repos)" {
+		t.Fatalf("owner value = %q", got)
+	}
+	for _, label := range []string{"oss", "secret", "github.com/acme"} {
+		t.Run(label, func(t *testing.T) {
+			selected := selectCloudRow(t, m, label)
+			if label != "github.com/acme" {
+				row := selected.rows[selected.cursor]
+				if got := selected.repoCloudRowValue(row); got != "full (grant)" {
+					t.Fatalf("row value = %q", got)
+				}
+				if got := selected.repoCloudChoice(row.RepoIndex); got != "full" {
+					t.Fatalf("stored choice = %q", got)
+				}
+			}
+			// Saving mutates the grant slice; each case needs its own copy.
+			selected.settings.CloudControlRepos = append([]config.CloudControlRepoGrant(nil), m.settings.CloudControlRepos...)
+			selected = cloudControlKey(selected, tea.KeyPressMsg{Code: tea.KeyLeft})
+			if selected.err != nil || selected.confirmCloudControl {
+				t.Fatalf("narrowing = %v, confirm=%v", selected.err, selected.confirmCloudControl)
+			}
+			for _, index := range selected.repoCloudTargets(selected.rows[selected.cursor]) {
+				if got := selected.repoCloudChoice(index); got != "read-only" {
+					t.Fatalf("cycled choice = %q", got)
+				}
+			}
+		})
+	}
+}
+
+func Test_Settings_AC243001_UnverifiedGroupNamesRepo(t *testing.T) {
+	m := repoCloudModel(t)
+	m.repoCloudControls[1].IsIdVerified = false
+	m = selectCloudRow(t, m, "github.com/acme")
+	before := append([]config.CloudControlRepoGrant(nil), m.settings.CloudControlRepos...)
+	m.cloudControlTargets = m.repoCloudTargets(m.rows[m.cursor])
+	m = m.saveRepoCloudControl("full")
+	if m.err == nil {
+		t.Fatal("unverified full grant accepted")
+	}
+	for _, want := range []string{"secret", m.repoCloudControls[1].Checkout, "can't verify this repo's identity with GitHub; try again"} {
+		if !strings.Contains(m.err.Error(), want) {
+			t.Errorf("error %q missing %q", m.err, want)
+		}
+	}
+	if !reflect.DeepEqual(before, m.settings.CloudControlRepos) {
+		t.Fatalf("failed owner edit changed grants: %+v", m.settings.CloudControlRepos)
+	}
+	saved, err := config.Load()
+	if err != nil || !reflect.DeepEqual(before, saved.CloudControlRepos) {
+		t.Fatalf("failed owner edit reached disk: %+v, %v", saved.CloudControlRepos, err)
+	}
+}

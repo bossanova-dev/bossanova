@@ -19,8 +19,7 @@ func SetRepoCloudControl(s *Settings, id RepoIdentity, mode string) error {
 	}
 	grants := make([]CloudControlRepoGrant, 0, len(s.CloudControlRepos)+1)
 	for _, g := range s.CloudControlRepos {
-		// A bound grant belongs to its checkout; provider identity may be shared by clones.
-		if sameCheckout(g.Checkout, id.LocalPath) || (g.Checkout == "" && grantMatchesRepo(g, id)) {
+		if replacesRepoGrant(g, id) {
 			continue
 		}
 		grants = append(grants, g)
@@ -34,6 +33,36 @@ func SetRepoCloudControl(s *Settings, id RepoIdentity, mode string) error {
 	}
 	s.CloudControlRepos = grants
 	return nil
+}
+
+// RepoCloudControlChoice reports the stored grant mode an edit of this repo starts
+// from: the strict grant the resolver applies, else the grant SetRepoCloudControl
+// would replace, else "default".
+func RepoCloudControlChoice(s Settings, id RepoIdentity) string {
+	var mode CloudControlMode
+	for _, g := range s.CloudControlRepos {
+		if isStrictRepoGrant(g, id) {
+			if mode == "" {
+				mode = grantCloudControl(g.Mode)
+			} else {
+				mode = restrictCloudControl(mode, grantCloudControl(g.Mode))
+			}
+		}
+	}
+	if mode != "" {
+		return string(mode)
+	}
+	for _, g := range s.CloudControlRepos {
+		if replacesRepoGrant(g, id) {
+			return g.Mode
+		}
+	}
+	return "default"
+}
+
+func replacesRepoGrant(g CloudControlRepoGrant, id RepoIdentity) bool {
+	// A bound grant belongs to its checkout; provider identity may be shared by clones.
+	return sameCheckout(g.Checkout, id.LocalPath) || (g.Checkout == "" && grantMatchesRepo(g, id))
 }
 
 func grantMatchesRepo(g CloudControlRepoGrant, id RepoIdentity) bool {

@@ -1,6 +1,69 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestRepoCloudControlChoice(t *testing.T) {
+	checkout := t.TempDir()
+	link := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(checkout, link); err != nil {
+		t.Fatal(err)
+	}
+	id := RepoIdentity{Host: "github.com", Name: "acme/new", LocalPath: checkout, ProviderRepoID: 42, IsIDVerified: true}
+	grant := CloudControlRepoGrant{Host: id.Host, Name: "acme/old", Checkout: checkout, RepoID: 42, Mode: "full"}
+	symlinked, loose, other, narrow, raw, unbound := grant, grant, grant, grant, grant, grant
+	symlinked.Checkout = link
+	loose.RepoID, loose.Mode = 0, "read-only"
+	other.Checkout = t.TempDir()
+	narrow.Mode = "private"
+	raw.Mode = "unknown"
+	unbound.Checkout, unbound.Mode = "", "private"
+	for _, tt := range []struct {
+		name   string
+		grants []CloudControlRepoGrant
+		want   string
+	}{
+		{name: "renamed strict grant", grants: []CloudControlRepoGrant{grant}, want: "full"},
+		{name: "symlinked strict grant", grants: []CloudControlRepoGrant{symlinked}, want: "full"},
+		{name: "loose unverified grant", grants: []CloudControlRepoGrant{loose}, want: "read-only"},
+		{name: "another checkout", grants: []CloudControlRepoGrant{other}, want: "default"},
+		{name: "strict grants fold", grants: []CloudControlRepoGrant{grant, narrow}, want: "private"},
+		{name: "strict takes priority over loose", grants: []CloudControlRepoGrant{loose, grant}, want: "full"},
+		{name: "replacement retains raw mode", grants: []CloudControlRepoGrant{raw}, want: "unknown"},
+		{name: "first replacement wins", grants: []CloudControlRepoGrant{raw, loose}, want: "unknown"},
+		{name: "unbound identity replacement", grants: []CloudControlRepoGrant{unbound}, want: "private"},
+		{name: "no grants", want: "default"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Settings{CloudControlRepos: tt.grants}
+			if got := RepoCloudControlChoice(s, id); got != tt.want {
+				t.Fatalf("choice = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveRepoCloudControlRenamedAndSymlinked(t *testing.T) {
+	checkout := t.TempDir()
+	link := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(checkout, link); err != nil {
+		t.Fatal(err)
+	}
+	id := RepoIdentity{Host: "github.com", Name: "acme/new", LocalPath: checkout, ProviderRepoID: 42, IsIDVerified: true}
+	for _, path := range []string{checkout, link} {
+		t.Run(path, func(t *testing.T) {
+			s := Settings{CloudControl: "private", CloudControlRepos: []CloudControlRepoGrant{
+				{Host: id.Host, Name: "acme/old", Checkout: path, RepoID: 42, Mode: "full"},
+			}}
+			if mode, source := ResolveRepoCloudControl(s, id); mode != CloudControlFull || source != CloudControlSourceGrant {
+				t.Fatalf("resolved %s (%s), want full (grant)", mode, source)
+			}
+		})
+	}
+}
 
 func TestSetRepoCloudControlIdentity(t *testing.T) {
 	id := RepoIdentity{Host: "github.com", Name: "acme/repo", LocalPath: t.TempDir()}

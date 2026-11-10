@@ -93,8 +93,13 @@ func TestGitHubInitWritesAndMergeConverges_BossInit_AC12_AC18(t *testing.T) {
 		t.Fatal(err)
 	}
 	tracker := cfg["trackerConfig"].(map[string]any)
-	if tracker["linear"] != nil || tracker["github"].(map[string]any)["repository"] != "o/r" || !hasStartSlowEntry(before) {
+	if tracker["linear"] != nil || tracker["github"].(map[string]any)["repository"] != "o/r" || cfg["verifyDefaults"] != nil {
 		t.Fatalf("config=%s", before)
+	}
+	for _, text := range []string{"Merge policy:", "verify merges nothing by default", "verifyDefaults.merge.auto", `{"level": "high"}`} {
+		if !strings.Contains(strings.Join(strings.Fields(out.String()), " "), text) {
+			t.Errorf("report missing %q: %s", text, out.String())
+		}
 	}
 	if strings.Contains(out.String(), "Harness MCP") || !strings.Contains(out.String(), "gh login octocat") {
 		t.Fatalf("report=%s", out.String())

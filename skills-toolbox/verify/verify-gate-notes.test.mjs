@@ -236,6 +236,7 @@ test('note severities never hold judge or post and remain visible', async () => 
       ci: { settled: true, green: true },
       extensions: [],
       reviewFindings: [note],
+      mergePolicy: { auto: [{ level: 'high' }] },
     })
     assert.equal(judged.verdict, 'pass')
     assert.equal(judged.findingNotes.length, 1)

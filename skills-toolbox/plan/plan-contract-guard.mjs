@@ -45,7 +45,14 @@ import { isMainModule } from '../main-module.mjs'
 import { recheckPlan } from '../plan-recheck.mjs'
 import { extractKeyChangeAreas } from './plan-deps-lib.mjs'
 import {
+  parseTargetRepoDeclaration,
+  resolveTargetContext,
+  targetModuleRoots,
+  targetRepoNotResolvedAdvisory,
+} from './plan-target-repo.mjs'
+import {
   classifyCheckCommand,
+  ROOT_DEPENDENT_COMMAND_CODES,
   fixedStringNeedle,
   DEFAULT_CONFIG,
   hasCountAssertion,
@@ -937,6 +944,7 @@ function commandVacuity(config, description, { criteria, premises }, opts = {}, 
     if (!item.check) return
     const classified = classifyCheckCommand(item.check, { ...opts, kind })
     for (const finding of classified.blocking) {
+      if (opts.cwd === null && ROOT_DEPENDENT_COMMAND_CODES.includes(finding.code)) continue
       violations.push(
         violation(
           `vacuous-${kind}-command-${finding.code}`,
@@ -945,6 +953,7 @@ function commandVacuity(config, description, { criteria, premises }, opts = {}, 
       )
     }
     for (const finding of classified.advisory) {
+      if (opts.cwd === null && ROOT_DEPENDENT_COMMAND_CODES.includes(finding.code)) continue
       if (finding.code === 'path-operand-absent' && plannedPath(finding.path)) continue
       advisories.push({
         code: `advisory: ${finding.code}`,
@@ -1202,7 +1211,10 @@ function planItemChecks(config, description, plan, opts) {
   const unique = (items) => items.filter((item) => !seen.has(item.text))
   const items = { criteria: unique(parsed.criteria), premises: unique(parsed.premises) }
   const vacuity = commandVacuity(config, description, items, opts, 'plan')
-  const rechecked = recheckPlan(config, plan, { root: opts.cwd ?? process.cwd() })
+  const rechecked =
+    opts.cwd === null
+      ? { items: [] }
+      : recheckPlan(config, plan, { root: opts.cwd ?? process.cwd() })
   const warnings = rechecked.items.flatMap((item) => {
     const locations = (item.locations ?? []).map((hit) => `${hit.file}:${hit.line}`).join(', ')
     const message = `plan: ${item.kind}: ${item.text}${locations ? ` → ${locations}` : ''}`
@@ -1246,6 +1258,8 @@ export function checkPlanContract({
   mode = 'child-plan',
   citationCwd = undefined,
   citationFs = undefined,
+  targetRoot = undefined,
+  readOrigin = undefined,
   moduleRoots = [],
 } = {}) {
   if (typeof description !== 'string') {
@@ -1275,6 +1289,18 @@ export function checkPlanContract({
   // Delegates the argument-order guard: a swapped call throws the validator's named error rather
   // than being reported as a contract violation of the plan.
   const result = validatePlanDescription(config, description, { mode })
+  const context = resolveTargetContext({
+    declaration: parseTargetRepoDeclaration(config, description),
+    checkoutRoot: citationCwd ?? process.cwd(),
+    targetRoot,
+    readOrigin,
+  })
+  if ('couldNotEvaluate' in context && context.couldNotEvaluate) {
+    couldNotEvaluateResults.push({
+      code: 'target-repo-could-not-evaluate',
+      message: `plan-contract-guard: ${context.couldNotEvaluate}; retaining local checks`,
+    })
+  }
 
   if (!result.ok && !unterminated) {
     if (result.missing.length > 0) {
@@ -1379,29 +1405,42 @@ export function checkPlanContract({
   violations.push(...checkLineSpanningEmphasis(config, description, { mode }))
   violations.push(...checkListNestedTable(config, description, { mode }))
   violations.push(...checkSelfFalsifiedLiteralSearch(config, description))
-  const citation = checkPlanCitations(config, description, {
-    cwd: citationCwd,
-    mode,
-    ...(citationFs ? { fs: citationFs } : {}),
-  })
+  const citation =
+    context.root === null
+      ? { violations: [], couldNotEvaluate: [] }
+      : checkPlanCitations(config, description, {
+          cwd: context.root,
+          mode,
+          ...(citationFs ? { fs: citationFs } : {}),
+        })
   violations.push(...citation.violations)
   couldNotEvaluateResults.push(...citation.couldNotEvaluate)
   violations.push(...checkPrBodyOnlyEvidence(config, description))
-  const commandVacuity = checkVerifyOnlyCommandVacuity(config, description, { cwd: citationCwd })
+  const commandVacuity = checkVerifyOnlyCommandVacuity(config, description, { cwd: context.root })
   violations.push(...commandVacuity.violations)
   violations.push(...checkPremiseReusedAsCriterion(config, description))
   violations.push(...checkUnmeasuredCountClaim(config, description))
   const advisories = [...commandVacuity.advisories]
+  if (context.root === null) advisories.push(targetRepoNotResolvedAdvisory(context))
   // Since the attachment became the plan, its criteria and premises live in the plan FILE and the
   // description only points at it — so the same item-level checks must also read the plan, or every
   // one of them is dead at plan time. All of these codes are warnings; `ok` keeps its meaning.
   if (typeof plan === 'string' && plan.trim() !== '') {
-    const planned = planItemChecks(config, description, plan, { cwd: citationCwd })
+    const planned = planItemChecks(config, description, plan, { cwd: context.root })
     violations.push(...planned.violations)
     advisories.push(...planned.advisories)
   }
   if (!unterminated) {
-    const subjectAreas = checkSubjectAreas(config, description, { mode, moduleRoots })
+    const subjectAreas = checkSubjectAreas(config, description, {
+      mode,
+      moduleRoots:
+        context.kind === 'foreign' && context.root !== null
+          ? targetModuleRoots(context.root)
+          : context.root === null
+            ? []
+            : moduleRoots,
+      skipUnresolved: context.root === null,
+    })
     violations.push(...subjectAreas.violations)
     advisories.push(...subjectAreas.advisories)
   }
@@ -1457,7 +1496,7 @@ export const BLOCKING_VIOLATION_CODES = new Set([
  * empty the classifier still degrades to admitting any slash-carrying token, which is the lenient
  * direction for the tokens it does cover.
  */
-function checkSubjectAreas(config, description, { mode, moduleRoots }) {
+function checkSubjectAreas(config, description, { mode, moduleRoots, skipUnresolved }) {
   const required = planSectionsForDescriptionMode(config, mode).map((section) => section.heading)
   // Exactly one non-blocking advisory whenever the check runs, naming what it read — an unexamined
   // description used to read exactly like a clean one. A description missing a REQUIRED
@@ -1486,7 +1525,7 @@ function checkSubjectAreas(config, description, { mode, moduleRoots }) {
         ` — name concrete repo-relative paths there`,
     )
   }
-  if (unresolved.length > 0) {
+  if (unresolved.length > 0 && !skipUnresolved) {
     faults.push(
       `${unresolved.length} path-shaped token(s) do not resolve to a repo-relative area ` +
         `(${unresolved.join(', ')}) — rewrite them as repo-relative paths, or declare their ` +
@@ -1537,6 +1576,9 @@ export function parseContractGuardArgs(argv) {
     } else if (flag === '--plan') {
       args.plan = readFlagValue(flag, i)
       i += 1
+    } else if (flag === '--target-root') {
+      args.targetRoot = resolve(readFlagValue(flag, i))
+      i += 1
     } else if (flag === '--mode') {
       args.mode = readFlagValue(flag, i)
       if (!DESCRIPTION_MODES.has(args.mode)) {
@@ -1567,7 +1609,9 @@ export function parseContractGuardArgs(argv) {
 }
 
 function main() {
-  const { description, plan, mode, moduleRoots } = parseContractGuardArgs(process.argv.slice(2))
+  const { description, plan, mode, moduleRoots, targetRoot } = parseContractGuardArgs(
+    process.argv.slice(2),
+  )
   // A file we cannot read is itself a violation, never a pass: an unreadable input is exactly the
   // state a broken upstream extraction produces, and that is the input a vacuous gate blesses.
   let descriptionText
@@ -1602,6 +1646,7 @@ function main() {
     config,
     mode,
     moduleRoots,
+    targetRoot,
     citationCwd: process.env.PLAN_CONTRACT_GUARD_CWD,
   })
   for (const { code, message } of couldNotEvaluate) {

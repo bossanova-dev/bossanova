@@ -11,14 +11,18 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestQueueProofUsesInjectedOpenerAndSafeURLs(t *testing.T) {
+// TestQueueProofOpensOnlyTheProofPage_Sessions_AC209302: p opens the selected
+// row's proof page through the injected opener and never falls back to the PR,
+// which g opens; the footer offers [p]roof only when there is a page.
+func TestQueueProofOpensOnlyTheProofPage_Sessions_AC209302(t *testing.T) {
 	for _, tc := range []struct {
 		name, proof, pr, want string
 		key                   rune
 	}{
 		{"proof", "https://proof.test/page", "https://github.test/pr", "https://proof.test/page", 'p'},
-		{"fallback", "", "http://github.test/pr", "http://github.test/pr", 'p'},
+		{"no proof page", "", "http://github.test/pr", "", 'p'},
 		{"github", "https://proof.test/page", "https://github.test/pr", "https://github.test/pr", 'g'},
+		{"github without proof page", "", "https://github.test/pr", "https://github.test/pr", 'g'},
 		{"javascript", "javascript:alert(1)", "", "", 'p'},
 		{"file", "file:///tmp/proof", "", "", 'p'},
 		{"relative", "/proof", "", "", 'p'},
@@ -30,6 +34,9 @@ func TestQueueProofUsesInjectedOpenerAndSafeURLs(t *testing.T) {
 			row.Session.PrUrl = proto.String(tc.pr)
 			row.Session.Attention.ProofUrl = tc.proof
 			m := queueModel(&queueScreenClient{}, row)
+			if offered, want := strings.Contains(m.footer(), "[p]roof"), tc.proof == "https://proof.test/page"; offered != want {
+				t.Fatalf("footer %q offers [p]roof=%v for proof URL %q, want %v", m.footer(), offered, tc.proof, want)
+			}
 			opened := ""
 			m.openURL = func(url string) error { opened = url; return nil }
 			m, cmd := queueKey(m, tc.key)
@@ -174,6 +181,7 @@ func TestQueueAcceptBlockerAndCancelStages(t *testing.T) {
 func TestQueueProofDoesNotForgetUnansweredMerge(t *testing.T) {
 	row := queueRow("waiting", pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE, 1, 10)
 	row.Session.Attention.Actions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE}
+	row.Session.Attention.ProofUrl = "https://proof.test/page"
 	c := &queueScreenClient{}
 	m := queueModel(c, row)
 	m.action = ui.AwaitingMerge("waiting", "Waiting for merge")

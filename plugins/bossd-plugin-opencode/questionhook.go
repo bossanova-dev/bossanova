@@ -63,11 +63,29 @@ func installQuestionHook(workDir string, extraEnv map[string]string) (bool, erro
 	if extraEnv[hookEnvPort] == "" || extraEnv[hookEnvToken] == "" {
 		return false, nil
 	}
-	path := questionHookPath(workDir)
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return false, fmt.Errorf("create %s dir: %w", questionHookPluginsDir, err)
+	root, err := os.OpenRoot(workDir)
+	if err != nil {
+		return false, fmt.Errorf("open question hook worktree: %w", err)
 	}
-	if err := os.WriteFile(path, questionHookJS, 0o600); err != nil {
+	defer func() { _ = root.Close() }()
+	if err := questionHookParents(root, true); err != nil {
+		return false, err
+	}
+	name := questionHookPath("")
+	info, err := root.Lstat(name)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	if err == nil && !info.Mode().IsRegular() {
+		return false, fmt.Errorf("unsafe question hook file %q", name)
+	}
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|questionHookOpenFlags, 0o600)
+	if err != nil {
+		return false, fmt.Errorf("open question hook: %w", err)
+	}
+	_, writeErr := file.Write(questionHookJS)
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
 		return false, fmt.Errorf("write question hook: %w", err)
 	}
 	return true, nil
@@ -86,23 +104,63 @@ func removeQuestionHook(workDir string) error {
 	if workDir == "" {
 		return nil
 	}
-	path := questionHookPath(workDir)
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove question hook: %w", err)
+	root, err := os.OpenRoot(workDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	pluginsDir := filepath.Dir(path)
-	removeDirIfEmpty(pluginsDir)
-	removeDirIfEmpty(filepath.Dir(pluginsDir))
+	if err != nil {
+		return fmt.Errorf("open question hook worktree: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := questionHookParents(root, false); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	name := questionHookPath("")
+	info, err := root.Lstat(name)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("unsafe question hook file %q", name)
+		}
+		if err := root.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove question hook: %w", err)
+		}
+	}
+	removeQuestionHookDirIfEmpty(root, filepath.Join(questionHookRootDir, questionHookPluginsDir))
+	removeQuestionHookDirIfEmpty(root, questionHookRootDir)
 	return nil
 }
 
-// removeDirIfEmpty removes dir only when it holds no entries at all. Any error
-// (unreadable, non-empty, already gone) is deliberately swallowed: pruning is a
-// tidiness measure, never a correctness one.
-func removeDirIfEmpty(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 0 {
-		return
+// questionHookParents rejects symlinks, including links within the worktree.
+// Root confines operations even if a parent is replaced after this check.
+func questionHookParents(root *os.Root, create bool) error {
+	for _, name := range []string{questionHookRootDir, filepath.Join(questionHookRootDir, questionHookPluginsDir)} {
+		info, err := root.Lstat(name)
+		if errors.Is(err, fs.ErrNotExist) && create {
+			if err := root.Mkdir(name, 0o750); err != nil && !errors.Is(err, fs.ErrExist) {
+				return err
+			}
+			info, err = root.Lstat(name)
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("unsafe question hook parent %q", name)
+		}
 	}
-	_ = os.Remove(dir)
+	return nil
+}
+
+// Pruning is best effort; Remove refuses a directory that has any entries.
+func removeQuestionHookDirIfEmpty(root *os.Root, name string) {
+	info, err := root.Lstat(name)
+	if err == nil && info.IsDir() {
+		_ = root.Remove(name)
+	}
 }

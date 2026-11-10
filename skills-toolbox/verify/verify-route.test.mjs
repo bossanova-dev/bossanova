@@ -447,10 +447,16 @@ test('gate-only mode: a pass posts verified then hands the judged head to a deta
   assert.equal(merge.options.env.PATH, '/fake/bin:/usr/bin')
 })
 
+const postFlag = (argv, name) => argv[argv.indexOf(`--${name}`) + 1]
+
 test('a human verdict posts needs-human and parks; tracker writes unavailable is a skip', () => {
   const w = world({ verdicts: { 1: { verdict: 'human', reason: 'no-receipt' } } })
   const r = sweep({}, w.deps())
-  assert.deepEqual(w.posts()[0].slice(5, 9), ['--verdict', 'human', '--reason', 'no-receipt'])
+  const [posted] = w.posts()
+  assert.deepEqual(
+    [postFlag(posted, 'verdict'), postFlag(posted, 'reason')],
+    ['human', 'no-receipt'],
+  )
   assert.deepEqual(lines(r), ['#1 parked: needs human (no-receipt)'])
   assert.equal(
     w.calls.some((c) => c.cmd === BOSS),
@@ -533,7 +539,8 @@ test('a set-valued park is posted unchanged and a set waiver is forwarded unchan
   const set = 'always-human-path,human-review:ui'
   const w = world({ verdicts: { 1: { verdict: 'human', reason: set } } })
   const r = sweep({}, w.deps())
-  assert.deepEqual(w.posts()[0].slice(5, 9), ['--verdict', 'human', '--reason', set])
+  const [posted] = w.posts()
+  assert.deepEqual([postFlag(posted, 'verdict'), postFlag(posted, 'reason')], ['human', set])
   assert.deepEqual(lines(r), [`#1 parked: needs human (${set})`])
 
   const approved = world({

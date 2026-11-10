@@ -1,10 +1,13 @@
+import { main as planClaim } from '../plan/plan-claim.mjs'
+import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
+import { join } from 'node:path'
 import { declaredOperationArgKeys } from './adapter.mjs'
 import { createLinearAdapter } from './linear.mjs'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createGithubAdapter } from './github.mjs'
 import { runCli } from './cli.mjs'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
 import { assertConforms, operationTransport } from './adapter-core.mjs'
 const config = { trackerConfig: { github: { repository: 'acme/tasks' } } }
 const raw = (number, labels = ['boss:todo']) => ({
@@ -286,7 +289,9 @@ test('GitHub claims conform and format identically to Linear in both scopes', ()
       )
 })
 
-test('concurrent GitHub leases agree on the first comment and the loser releases its claim', async () => {
+test('concurrent GitHub leases agree on the first comment and the loser releases its claim', async (t) => {
+  const dir = tempDir('github-claim-')
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
   for (const scope of ['build', 'plan']) {
     const createdAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
     let nextId = 99
@@ -313,13 +318,28 @@ test('concurrent GitHub leases agree on the first comment and the loser releases
     const cli = (args, write = () => {}) =>
       runCli(args, { resolveAdapter: () => adapter, write, errWrite: () => {} })
     const tokens = ['b'.repeat(32), 'a'.repeat(32)]
+    const receipts = tokens.map((_, index) =>
+      join(dir, `.linear-plans/run-peer-${index}/GH-42.claim-receipt.json`),
+    )
+    const plan = (args, write = () => {}) =>
+      planClaim(args, { resolveAdapter: () => adapter, write, errWrite: () => {} })
+    if (scope === 'plan') {
+      for (const [index, receipt] of receipts.entries()) {
+        assert.equal(plan(['start', '--receipt', receipt, '--issue', 'GH-42']), 0)
+        tokens[index] = JSON.parse(readFileSync(receipt, 'utf8')).token
+      }
+    }
     const ids = []
-    for (const token of tokens) {
+    for (const [index, token] of tokens.entries()) {
       let body = ''
       assert.equal(
-        cli(['claim-comment', '--scope', scope, '--token', token], (text) => {
-          body += text
-        }),
+        scope === 'plan'
+          ? plan(['comment', '--receipt', receipts[index]], (text) => {
+              body += text
+            })
+          : cli(['claim-comment', '--scope', scope, '--token', token], (text) => {
+              body += text
+            }),
         0,
       )
       ids.push(
@@ -329,30 +349,31 @@ test('concurrent GitHub leases agree on the first comment and the loser releases
     const comments = await adapter.runOperation('read-comments', { issueId: 'GH-42' })
     assert.equal(comments[0].createdAt, comments[1].createdAt)
     for (const evidence of [comments, { comments }]) {
-      assert.equal(
-        cli([
-          'claim-verdict',
-          '--scope',
-          scope,
-          '--me',
-          tokens[0],
-          '--comments',
-          JSON.stringify(evidence),
-        ]),
-        0,
-      )
-      assert.equal(
-        cli([
-          'claim-verdict',
-          '--scope',
-          scope,
-          '--me',
-          tokens[1],
-          '--comments',
-          JSON.stringify(evidence),
-        ]),
-        3,
-      )
+      for (const [index, status] of [
+        [0, 0],
+        [1, 3],
+      ]) {
+        assert.equal(
+          scope === 'plan'
+            ? plan([
+                'verdict',
+                '--receipt',
+                receipts[index],
+                '--comments',
+                JSON.stringify(evidence),
+              ])
+            : cli([
+                'claim-verdict',
+                '--scope',
+                scope,
+                '--me',
+                tokens[index],
+                '--comments',
+                JSON.stringify(evidence),
+              ]),
+          status,
+        )
+      }
     }
     const op = adapter.operationMap.deleteComment
     assert.deepEqual(await adapter.runOperation(op.command.verb, { id: ids[1] }), {

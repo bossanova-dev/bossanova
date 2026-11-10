@@ -686,3 +686,36 @@ test('legacy concrete child names classify but doubled templates do not', () => 
   )
   assert.equal(planScratchToken('.linear-plans/run-r1/<PARENT>-child-<key>-<slug>.md').ok, false)
 })
+
+test('epic reverify payload paths classify parent, listing and child inputs', () => {
+  for (const id of ['ABC-1', '<ISSUE-ID>']) {
+    for (const suffix of ['parent', 'children', 'child-ABC-2', 'child-<CHILD-ID>']) {
+      const token = planScratchToken(
+        `.linear-plans/run-r1/${id}.epic-reverify-payload-${suffix}.json`,
+      )
+      assert.deepEqual(token.families, ['epic-reverify-payload'])
+    }
+  }
+  assert.equal(
+    planScratchPath('r1', 'epic-reverify-payload', { issueId: 'ABC-1', part: 'parent' }),
+    '.linear-plans/run-r1/ABC-1.epic-reverify-payload-parent.json',
+  )
+  assert.equal(
+    planScratchPath('r1', 'epic-reverify-payload', { issueId: 'ABC-1', childId: 'ABC-2' }),
+    '.linear-plans/run-r1/ABC-1.epic-reverify-payload-child-ABC-2.json',
+  )
+})
+
+test('claim receipt is declared for templated and concrete run paths', () => {
+  assert.equal(planScratchFamily('claim-receipt').template, '<ISSUE-ID>.claim-receipt.json')
+  assert.equal(
+    planScratchPath('abc123', 'claim-receipt', { issueId: 'ABC-1' }),
+    '.linear-plans/run-abc123/ABC-1.claim-receipt.json',
+  )
+  for (const token of [
+    '.linear-plans/run-<RUN-ID>/<ISSUE-ID>.claim-receipt.json',
+    '.linear-plans/run-test/ABC-1.claim-receipt.json',
+  ]) {
+    assert.deepEqual(planScratchToken(token).families, ['claim-receipt'])
+  }
+})

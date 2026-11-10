@@ -144,6 +144,84 @@ const admission = object({
   additionalProperties: false,
 })
 
+// The built-in verify areas that can raise an ask (AREAS in skills-toolbox/verify/verify-areas.mjs,
+// less housekeeping and other), then the humanReview categories. A test derives the same set.
+export const VERIFY_MERGE_AREAS = [
+  'migrations',
+  'api-contract',
+  'infra',
+  'agent-rules',
+  'dependencies',
+  'ui',
+  'database',
+  'security',
+]
+const MERGE_RULE_KEYS = ['level', 'area', 'proof', 'change']
+const merge = object({
+  'x-msg': {
+    type: 'verifyDefaults.merge must be an object when present',
+    additionalProperties: 'verifyDefaults.merge.{extra} is unknown (expected policy, auto)',
+  },
+  properties: {
+    policy: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 200,
+      pattern: '^(?!/)(?![A-Za-z]:)(?!.*[\\\\\\u0000])(?!(?:.*/)?\\.\\.?(/|$)).*\\.md$',
+      'x-msg':
+        'verifyDefaults.merge.policy must be a repo-relative Markdown (.md) path when present',
+    },
+    auto: {
+      type: 'array',
+      maxItems: 32,
+      'x-msg': {
+        type: 'verifyDefaults.merge.auto must be an array of rules',
+        maxItems: 'verifyDefaults.merge.auto holds at most 32 rules',
+      },
+      items: object({
+        minProperties: 1,
+        'x-msg': {
+          type: 'verifyDefaults.merge.auto.{3} must be an object',
+          minProperties: `verifyDefaults.merge.auto.{3} must name at least one of ${MERGE_RULE_KEYS.join(', ')}`,
+          additionalProperties: `verifyDefaults.merge.auto.{3}.{extra} is unknown (expected ${MERGE_RULE_KEYS.join(', ')})`,
+        },
+        properties: {
+          level: {
+            enum: ['high', 'moderate', 'low'],
+            'x-msg': 'verifyDefaults.merge.auto.{3}.level must be "high", "moderate" or "low"',
+          },
+          area: {
+            enum: VERIFY_MERGE_AREAS,
+            'x-msg': `verifyDefaults.merge.auto.{3}.area must be one of ${VERIFY_MERGE_AREAS.join(', ')}`,
+          },
+          proof: {
+            enum: ['tests', 'recording'],
+            'x-msg': 'verifyDefaults.merge.auto.{3}.proof must be "tests" or "recording"',
+          },
+          change: {
+            enum: ['additive'],
+            'x-msg': 'verifyDefaults.merge.auto.{3}.change must be "additive"',
+          },
+        },
+        additionalProperties: false,
+        allOf: [
+          {
+            if: { properties: { proof: true }, required: ['proof'] },
+            then: { required: ['area'], properties: { area: { const: 'ui' } } },
+            'x-msg': 'verifyDefaults.merge.auto.{3}.proof needs area "ui"',
+          },
+          {
+            if: { properties: { change: true }, required: ['change'] },
+            then: { properties: { area: true }, required: ['area'] },
+            'x-msg': 'verifyDefaults.merge.auto.{3}.change needs an area',
+          },
+        ],
+      }),
+    },
+  },
+  additionalProperties: false,
+})
+
 const verifyDefaults = object({
   'x-msg': { type: 'verifyDefaults must be an object when present' },
   // Open on purpose: an older tree ignores a knob a newer one added.
@@ -199,6 +277,7 @@ const verifyDefaults = object({
       additionalProperties: false,
     }),
     admission,
+    merge,
   },
 })
 

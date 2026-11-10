@@ -687,7 +687,7 @@ test('reviewAreas applies the example policy to fresh-claim #11996', () => {
       ['services/dbt/**', 'services/directory/**', 'services/growth-sync/**'],
     ),
   )
-  const schema = r.areas.find((a) => a.area === 'config:API schema')
+  const schema = r.areas.find((a) => a.area === 'config:api-schema')
   assert.equal(schema.source, 'config')
   assert.equal(schema.defaultAsk, 'always')
   assert.ok(schema.paths.includes('services/api/entity/hospital.go'))

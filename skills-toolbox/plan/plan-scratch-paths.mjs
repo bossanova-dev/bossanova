@@ -93,15 +93,19 @@ export const PLAN_SCRATCH_FAMILIES = [
     ({ issueId }) => `${issueId}.plan-readback.md`,
     '^SEG\\.plan-readback\\.md$',
   ),
-  ...['recheck', 'claim-comments', 'claim-liveness'].map((family) =>
+  ...[
+    ['recheck', 'the fresh issue payload at a planning write boundary'],
+    ['claim-comments', 'the fresh comments used for planning claim arbitration'],
+    ['claim-liveness', 'the fresh terminal-owner evidence used for planning claim arbitration'],
+    [
+      'claim-receipt',
+      "the planning claim's token, issue id and posted comment id, read by every later claim step",
+    ],
+  ].map(([family, purpose]) =>
     fam(
       family,
       `<ISSUE-ID>.${family}.json`,
-      family === 'recheck'
-        ? 'the fresh issue payload at a planning write boundary'
-        : family === 'claim-liveness'
-          ? 'the fresh terminal-owner evidence used for planning claim arbitration'
-          : 'the fresh comments used for planning claim arbitration',
+      purpose,
       ({ issueId }) => `${issueId}.${family}.json`,
       `^SEG\\.${family}\\.json$`,
     ),
@@ -224,6 +228,16 @@ export const PLAN_SCRATCH_FAMILIES = [
     'the serialized epic decomposition spec',
     ({ issueId }) => `${issueId}.epic-spec.json`,
     '^SEG\\.epic-spec\\.json$',
+  ),
+  fam(
+    'epic-reverify-payload',
+    '<ISSUE-ID>.epic-reverify-payload-<PART>.json',
+    'a saved tracker issue payload the epic-reverify-bundle verb reads',
+    (parts) =>
+      'childId' in parts
+        ? `${parts.issueId}.epic-reverify-payload-child-${parts.childId}.json`
+        : `${parts.issueId}.epic-reverify-payload-${parts.part}.json`,
+    '^SEG\\.epic-reverify-payload-(?:parent|children|child-SEG|§)\\.json$',
   ),
   fam(
     'epic-reverify',

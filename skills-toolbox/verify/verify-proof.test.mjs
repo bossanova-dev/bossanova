@@ -390,6 +390,33 @@ test('marker contains exactly the compact summary and escapes HTML characters', 
   assert.throws(() => p.proofLine({ ...record, digest: 'bad' }))
 })
 
+test('parseProofLine reads the last line the daemon would read, and nothing else', () => {
+  const record = changed((x) => {
+    x.page = 'https://example.test/index.html'
+  })
+  const line = p.proofLine(record)
+  const read = {
+    head: record.head.toLowerCase(),
+    page: record.page,
+    level: record.confidence.level,
+  }
+  assert.deepEqual(p.parseProofLine(`Evidence\n\n${line}\n<!-- other -->`), read)
+  const future = line.replace(p.PROOF_SCHEMA, 'boss-proof/2')
+  const colon = line.replace(/"asks":\[[^\]]*\]/, '"asks":["config:api"]')
+  assert.notEqual(colon, line)
+  const dashed = line.replace(/"asks":\[[^\]]*\]/, '"asks":["config-api"]')
+  assert.equal(p.parseProofLine(dashed)?.head, read.head)
+  for (const bad of [
+    future,
+    colon,
+    line.replace('https://', 'http://'),
+    `${p.PROOF_MARKER} {} -->`,
+  ])
+    assert.equal(p.parseProofLine(bad), null, bad)
+  assert.deepEqual(p.parseProofLine(`${line}\n${future}`), read)
+  assert.equal(p.parseProofLine(undefined), null)
+})
+
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

@@ -623,10 +623,52 @@ func TestAttentionMergeIsNotOfferedTwiceWhileItRuns(t *testing.T) {
 	}
 }
 
+// TestProofKeyIgnoresParkWithoutProof_Sessions_AC208902 takes verify parks on
+// a PR with no proof page or video: neither Home nor session details offers
+// [p]roof, and p opens nothing, not even the PR that [g]ithub opens.
+func TestProofKeyIgnoresParkWithoutProof_Sessions_AC208902(t *testing.T) {
+	var opened []string
+	original := home.OpenURLFunc
+	home.OpenURLFunc = func(url string) error { opened = append(opened, url); return nil }
+	t.Cleanup(func() { home.OpenURLFunc = original })
+	pr := "https://github.com/org/repo/pull/42"
+	for _, tc := range []struct {
+		name string
+		kind pb.AttentionKind
+		park string
+	}{
+		{"blocked fix park", pb.AttentionKind_ATTENTION_KIND_FIX, "ledger-open"},
+		{"review park", pb.AttentionKind_ATTENTION_KIND_REVIEW, "human-review:ui"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := attentionSession(pb.AttentionAction_ATTENTION_ACTION_GITHUB)
+			s.PrUrl = &pr
+			s.Attention.Kind = tc.kind
+			s.Attention.ParkCodes = []string{tc.park}
+			for _, details := range []bool{false, true} {
+				c := &attentionStub{}
+				var model tea.Model = attentionHome(c, proto.CloneOf(s))
+				if details {
+					model = attentionDetails(c, proto.CloneOf(s))
+				}
+				if view := ansi.Strip(model.View().Content); strings.Contains(view, "[p]roof") {
+					t.Errorf("details=%v: [p]roof advertised without a proof page or video:\n%s", details, view)
+				}
+				opened = nil
+				if _, cmd := model.Update(keyPress('p')); cmd != nil {
+					t.Errorf("details=%v: p dispatched without a proof page or video", details)
+				}
+				if len(opened) != 0 {
+					t.Errorf("details=%v: p opened %v", details, opened)
+				}
+			}
+		})
+	}
+}
+
 // TestProofKeyOpensTheProofTarget_Sessions_AC208902 presses p on Home and on
-// session details for each thing it may open, in its order (proof page, legacy
-// video, the verify park's PR conversation), and v on the same rows: p opens
-// the target, v does nothing.
+// session details for each thing it may open, in its order (proof page, then
+// legacy video), and v on the same rows: p opens the target, v does nothing.
 func TestProofKeyOpensTheProofTarget_Sessions_AC208902(t *testing.T) {
 	var opened []string
 	original := home.OpenURLFunc
@@ -641,7 +683,6 @@ func TestProofKeyOpensTheProofTarget_Sessions_AC208902(t *testing.T) {
 	}{
 		{"proof page over video", []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_PROOF, pb.AttentionAction_ATTENTION_ACTION_MERGE}, pb.AttentionKind_ATTENTION_KIND_REVIEW, "https://example.com/proof-page"},
 		{"legacy video", []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_VIDEO, pb.AttentionAction_ATTENTION_ACTION_MERGE}, pb.AttentionKind_ATTENTION_KIND_REVIEW, "https://example.com/video.mp4"},
-		{"verify comment", []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB}, pb.AttentionKind_ATTENTION_KIND_FIX, pr},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := attentionSession(tc.actions...)

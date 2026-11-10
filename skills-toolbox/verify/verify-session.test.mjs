@@ -15,6 +15,7 @@ const greenFacts = {
   isDraft: false,
   ci: { settled: true, green: true },
   receipt: 'absent',
+  mergePolicy: { auto: [{ level: 'high' }] },
 }
 
 for (const tier of [undefined, { review: 'verify' }]) {

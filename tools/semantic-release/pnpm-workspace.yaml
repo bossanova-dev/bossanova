@@ -1,0 +1,10 @@
+# Independent release-tool install; keep the root workspace out of credentialed jobs.
+packages:
+  - "."
+
+minimumReleaseAge: 4320
+# Add narrowly scoped package names here only for urgent security updates.
+minimumReleaseAgeExclude: []
+
+# semantic-release resolves the configured plugins and presets from this install.
+nodeLinker: hoisted

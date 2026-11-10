@@ -1,3 +1,4 @@
+import { tempDir } from '../scripts/test-infra/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -81,6 +82,7 @@ import {
   validateLocalVerification,
   classifyCheckCommand,
   COMMAND_BLOCKING_CODES,
+  ROOT_DEPENDENT_COMMAND_CODES,
   hasCountAssertion,
   commandFindingRemedy,
   tokenizeSimpleShell,
@@ -5320,4 +5322,108 @@ test('repair admission labels validate and default without accepting malformed r
   for (const repair of ['', 'a\nb'])
     assert.throws(() => validateConfig(config({ repair }), 'test'), /labels.repair/)
   assert.throws(() => validateConfig(config({ unknown: 'x' }), 'test'), /repair/)
+})
+
+test('root-dependent command code partition follows filesystem changes', () => {
+  const empty = tempDir('command-partition-empty-')
+  const filled = tempDir('command-partition-filled-')
+  try {
+    for (const root of [empty, filled]) mkdirSync(join(root, 'pkg'))
+    writeFileSync(join(empty, 'pkg/pkg_test.go'), 'package pkg\n')
+    writeFileSync(
+      join(filled, 'pkg/pkg_test.go'),
+      'package pkg\nfunc TestPresent(t *testing.T) {}\n',
+    )
+    writeFileSync(join(empty, 'Makefile'), 'other:\n')
+    writeFileSync(join(filled, 'Makefile'), 'foo:\n')
+    writeFileSync(join(filled, 'alternate.mk'), 'foo:\n')
+    mkdirSync(join(filled, 'scripts'))
+    mkdirSync(join(empty, 'existing'))
+    mkdirSync(join(filled, 'existing'))
+    writeFileSync(join(filled, 'existing/test.mjs'), '')
+    writeFileSync(join(filled, 'scripts/test.mjs'), '')
+    writeFileSync(join(filled, 'run.sh'), '#!/bin/sh\n')
+    chmodSync(join(filled, 'run.sh'), 0o755)
+    mkdirSync(join(empty, 'migrations'))
+    writeFileSync(join(filled, 'migrations'), '')
+    const fixtures = [
+      ['command-unresolvable', './run.sh'],
+      ['make-goal-undefined', 'make foo'],
+      ['make-goal-unresolved', 'make -f alternate.mk foo'],
+      ['path-operand-missing', 'node scripts/test.mjs'],
+      ['path-operand-absent', 'node existing/test.mjs'],
+      ['selection-matches-no-test', 'go test -run TestPresent ./pkg'],
+      ['unscoped-negative-directory-search', '! rg -q needle migrations'],
+    ]
+    const findings = (command, cwd) => {
+      const result = classifyCheckCommand(command, { cwd, kind: 'criterion' })
+      return [...result.blocking, ...result.advisory]
+    }
+    assert.ok(Object.isFrozen(ROOT_DEPENDENT_COMMAND_CODES))
+    assert.deepEqual(
+      [...ROOT_DEPENDENT_COMMAND_CODES].sort(),
+      fixtures.map(([code]) => code).sort(),
+    )
+    for (const [code, command] of fixtures) {
+      assert.ok(
+        findings(command, empty).some((f) => f.code === code),
+        code,
+      )
+      assert.ok(!findings(command, filled).some((f) => f.code === code), code)
+      assert.ok(
+        !findings(command, null).some((f) => ROOT_DEPENDENT_COMMAND_CODES.includes(f.code)),
+        code,
+      )
+    }
+    const textFixtures = [
+      ['empty-command', ''],
+      ['unanchored-negative-search', '! rg needle'],
+      ['zero-selection-filter', 'go test -run TestPresent ./pkg'],
+      ['pipe-without-pipefail', 'true | cat'],
+      ['git-grep-word-boundary', 'git grep -E "\\bneedle\\b"'],
+    ]
+    assert.deepEqual(
+      COMMAND_BLOCKING_CODES.filter((code) => !ROOT_DEPENDENT_COMMAND_CODES.includes(code)).sort(),
+      textFixtures.map(([code]) => code).sort(),
+    )
+    for (const [code, command] of textFixtures) {
+      const a = findings(command, empty).filter(
+        (f) => !ROOT_DEPENDENT_COMMAND_CODES.includes(f.code),
+      )
+      const b = findings(command, filled).filter(
+        (f) => !ROOT_DEPENDENT_COMMAND_CODES.includes(f.code),
+      )
+      assert.ok(
+        a.some((f) => f.code === code),
+        code,
+      )
+      assert.deepEqual(a, b, code)
+      assert.deepEqual(a, findings(command, null), code)
+    }
+  } finally {
+    rmSync(empty, { recursive: true, force: true, maxRetries: 5 })
+    rmSync(filled, { recursive: true, force: true, maxRetries: 5 })
+  }
+})
+
+test('unresolved target checks reject assignment-only commands without resolving paths', () => {
+  for (const command of ['CHECK=1', 'CHECK=1; OTHER=2']) {
+    assert.ok(
+      classifyCheckCommand(command, { cwd: null, kind: 'criterion' }).blocking.some(
+        ({ code }) => code === 'empty-command',
+      ),
+    )
+  }
+  assert.deepEqual(classifyCheckCommand('CHECK=1 true', { cwd: null }).blocking, [])
+  assert.deepEqual(classifyCheckCommand('./missing-target-check', { cwd: null }).blocking, [])
+})
+
+test('mergedListItems recognises a joined target repository declaration', () => {
+  assert.equal(
+    mergedListItems(
+      DEFAULT_CONFIG,
+      planningDescription('- Contract: v1 - Target repo: acme/widgets'),
+    ).length,
+    1,
+  )
 })

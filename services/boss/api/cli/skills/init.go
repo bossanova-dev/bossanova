@@ -294,7 +294,7 @@ func (g *Group) runInit(out io.Writer, dir string, force bool, opts initOptions)
 		return fmt.Errorf("cannot access %s: %w", target, statErr)
 	}
 
-	result.Detected.VerifyDefaults = initStartSlowPolicy(target, targetInfo, force)
+	result.Detected.VerifyDefaults = initCarriedBrake(target, targetInfo, force)
 
 	if opts.applied == nil {
 		opts.applied = &initAppliedSteps{}
@@ -319,7 +319,7 @@ func (g *Group) runInit(out io.Writer, dir string, force bool, opts initOptions)
 		}
 		if !merged.unchanged {
 			opts.applied.ConfigPath = target
-			opts.applied.StartSlow = hasStartSlowEntry(merged.bytes)
+			opts.applied.MergePolicy = writtenMergePolicy(merged.bytes)
 		}
 		if existing != nil {
 			_, _ = io.WriteString(out, merged.reportText(target))
@@ -345,7 +345,7 @@ func (g *Group) runInit(out io.Writer, dir string, force bool, opts initOptions)
 		return err
 	}
 	opts.applied.ConfigPath = target
-	opts.applied.StartSlow = result.Detected.VerifyDefaults != nil
+	opts.applied.MergePolicy = detectedMergePolicy(result.Detected.VerifyDefaults)
 
 	writeInitReport(out, target, result.Detected, tracker, findAncestorConfig(repoDir, filename))
 	return g.finishInit(out, opts, repoDir, target, repo)
@@ -838,7 +838,7 @@ func initReport(target string, cfg detectedConfig, tracker initTracker, harnesse
 	written := cfg.TrackerConfig != nil
 	github := written && cfg.TrackerConfig.GitHub != nil
 	writeTrackerReport(&b, cfg, tracker)
-	b.WriteString(startSlowReport(cfg.VerifyDefaults != nil))
+	b.WriteString(mergePolicyReport(detectedMergePolicy(cfg.VerifyDefaults)))
 
 	// The trackerConfig entry stays in skippedBlocks so every default block is
 	// accounted for; only whether it renders, and its reason, depend on the run.

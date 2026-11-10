@@ -131,7 +131,7 @@ test('envelope exposes only the closed facts and quoted PR data', () => {
         paths: ['src/auth.mjs'],
         defaultAsk: 'always',
         source: 'builtin',
-        items: ['hidden'],
+        items: ['describer fact'],
       },
     ],
     confidence: {
@@ -159,6 +159,7 @@ test('envelope exposes only the closed facts and quoted PR data', () => {
     'paths',
     'defaultAsk',
     'source',
+    'items',
   ])
   assert.deepEqual(envelope.confidence, {
     level: 'moderate',
@@ -268,5 +269,93 @@ test('neverReview filters persisted judge paths only when every rename side is o
       files: [{ path: docs.path, previousPath: 'docs/old.md' }],
     }),
     [],
+  )
+})
+
+test('policy decisions and describer evidence cross the closed judge boundary', async () => {
+  const { gitBlobSha } = await import('./verify-merge-prose.mjs')
+  const { parseJudgeDecisions } = await import('./verify-judge.mjs')
+  const text = '- Authorization changes require human review.'
+  const mergePolicy = { state: 'ok', path: 'policy.md', blob: gitBlobSha(Buffer.from(text)), text }
+  const area = {
+    area: 'api-contract',
+    label: 'API',
+    paths: ['src/auth.mjs'],
+    defaultAsk: 'always',
+    items: ['5 additive changes, 0 breaking'],
+    change: 'additive',
+    ignored: true,
+  }
+  const input = {
+    headSha,
+    baseSha: 'b'.repeat(40),
+    files,
+    areas: [area],
+    confidence: { level: 'moderate', asks: [] },
+    pr: {},
+    mergePolicy,
+  }
+  const envelope = judgeEnvelope(input)
+  assert.deepEqual(envelope.mergePolicy, { path: 'policy.md', blob: mergePolicy.blob, text })
+  assert.deepEqual(envelope.areas[0].items, area.items)
+  assert.equal(envelope.areas[0].change, 'additive')
+  assert.equal(envelope.areas[0].ignored, undefined)
+  assert.equal('mergePolicy' in judgeEnvelope({ ...input, mergePolicy: { state: 'none' } }), false)
+  const decision = {
+    ask: 'Authorization',
+    decision: 'human',
+    rule: 'Authorization changes require human review.',
+    reason: 'Changes the authorization boundary',
+    path: 'src/auth.mjs',
+  }
+  const result = validateJudgeOutput(
+    { ...output(), policyBlob: mergePolicy.blob, decisions: [decision] },
+    { headSha, files, mergePolicy },
+  )
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.health, [])
+  assert.equal(result.decisions[0].ask, 'judge:authorization')
+  const record = encodeJudgeRecord(result.areas, {
+    policy: mergePolicy,
+    decisions: result.decisions,
+  })
+  assert.deepEqual(parseJudgeRecord(record), [entry])
+  assert.deepEqual(parseJudgeDecisions(record), {
+    policyBlob: mergePolicy.blob,
+    decisions: result.decisions,
+  })
+  assert.equal(parseJudgeDecisions(encodeJudgeRecord(result.areas)), null)
+  assert.equal(
+    encodeJudgeRecord(result.areas, { policy: { state: 'none' }, decisions: [] }),
+    encodeJudgeRecord(result.areas),
+  )
+  const malformed = Buffer.from(
+    JSON.stringify({
+      areas: [entry],
+      policyBlob: mergePolicy.blob,
+      decisions: [{ ...decision, verified: 'yes' }],
+    }),
+  ).toString('base64url')
+  assert.equal(parseJudgeRecord(malformed), null)
+  assert.equal(parseJudgeDecisions(malformed), null)
+})
+
+test('judge policy decisions require the exact policy blob that was assessed', async () => {
+  const { gitBlobSha } = await import('./verify-merge-prose.mjs')
+  const text = '- Authorization changes require human review.'
+  const mergePolicy = { state: 'ok', path: 'policy.md', blob: gitBlobSha(Buffer.from(text)), text }
+  for (const policyBlob of [undefined, 'c'.repeat(40)]) {
+    const result = validateJudgeOutput(
+      { ...output(), policyBlob, decisions: [] },
+      { headSha, files, mergePolicy },
+    )
+    assert.equal(result.ok, false)
+  }
+  assert.equal(
+    validateJudgeOutput(
+      { ...output(), policyBlob: mergePolicy.blob },
+      { headSha, files, mergePolicy },
+    ).ok,
+    true,
   )
 })

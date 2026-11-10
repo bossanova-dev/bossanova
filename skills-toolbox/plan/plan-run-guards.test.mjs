@@ -30,6 +30,22 @@ import { DEFAULT_CONFIG, requiredPlanSections } from '../skill-config.mjs'
 
 // Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
 process.env.BOSS_GATE_OUTCOME_FILE = path.join(tempDir('gate-outcome-suite-'), 'outcomes.tsv')
+function claimReceipt(dir, token) {
+  const receipt = '.linear-plans/run-test/BOS-1.claim-receipt.json'
+  mkdirSync(path.join(dir, '.linear-plans/run-test'), { recursive: true })
+  writeFileSync(
+    path.join(dir, receipt),
+    JSON.stringify({
+      version: 1,
+      scope: 'plan',
+      issueId: 'BOS-1',
+      token,
+      commentId: null,
+      released: false,
+    }),
+  )
+  return receipt
+}
 const GUARD = fileURLToPath(new URL('./plan-run-guards.mjs', import.meta.url))
 const TEST_CONFIG = {
   ...DEFAULT_CONFIG,
@@ -2205,7 +2221,7 @@ test('recheck refuses peer planning races and malformed inputs', () => {
   ]) {
     writeFileSync(commentsFile, JSON.stringify(tokens))
     for (const value of [commentsFile, JSON.stringify(tokens)]) {
-      result = check(selected, ['--claim-token', me, '--comments', value])
+      result = check(selected, ['--claim-receipt', claimReceipt(dir, me), '--comments', value])
       assert.equal(result.status, code, result.stderr)
       assert.deepEqual(JSON.parse(result.stdout).reasons, reasons)
     }
@@ -2279,7 +2295,7 @@ test('plan claim helpers agree on the same file or inline comments value', () =>
       createdAt: new Date().toISOString(),
     },
   ]
-  const tracker = fileURLToPath(new URL('../tracker/cli.mjs', import.meta.url))
+  const tracker = fileURLToPath(new URL('./plan-claim.mjs', import.meta.url))
   for (const payload of [comments, { comments }]) {
     const json = JSON.stringify(payload),
       file = path.join(dir, 'comments.json')
@@ -2291,7 +2307,7 @@ test('plan claim helpers agree on the same file or inline comments value', () =>
       ]) {
         const verdict = spawnSync(
           process.execPath,
-          [tracker, 'claim-verdict', '--scope', 'plan', '--me', me, '--comments', value],
+          [tracker, 'verdict', '--receipt', claimReceipt(dir, me), '--comments', value],
           { cwd: dir, encoding: 'utf8' },
         )
         const recheck = spawnSync(
@@ -2303,8 +2319,8 @@ test('plan claim helpers agree on the same file or inline comments value', () =>
             selectedFile,
             '--selected-id',
             'BOS-1',
-            '--claim-token',
-            me,
+            '--claim-receipt',
+            claimReceipt(dir, me),
             '--comments',
             value,
           ],
@@ -2423,8 +2439,11 @@ test('recheck shares terminal-owner liveness and rejects malformed or unattached
       [GUARD, 'recheck', file, file, '--selected-id', 'BOS-1', ...extra],
       { cwd: dir, encoding: 'utf8' },
     )
-  const claim = ['--claim-token', me, '--comments', comments]
+  const claim = ['--claim-receipt', claimReceipt(dir, me), '--comments', comments]
   assert.equal(run(claim).status, 3)
+  assert.equal(run(['--claim-token', me, '--comments', comments]).status, 2)
+  assert.equal(run(['--claim-receipt', claimReceipt(dir, me)]).status, 2)
+  assert.equal(run(['--comments', comments]).status, 2)
   const valid = { sessions: { peer: { terminal: true, reason: 'archived' } } }
   writeFileSync(evidence, JSON.stringify(valid))
   for (const value of [evidence, JSON.stringify(valid)]) {
@@ -2435,4 +2454,131 @@ test('recheck shares terminal-owner liveness and rejects malformed or unattached
   writeFileSync(evidence, '{"sessions":{"peer":{"terminal":"yes"}}}')
   assert.equal(run([...claim, '--liveness', evidence]).status, 2)
   assert.equal(run(['--liveness', evidence]).status, 2)
+})
+
+function savedEpicPayloads(edit = () => {}) {
+  const fixture = writeEpicFixture(edit)
+  const bundle = JSON.parse(readFileSync(path.join(fixture.dir, fixture.bundle), 'utf8'))
+  for (const child of bundle.children) child.parentId = bundle.parent.id
+  bundle.parent.description = 'payload description must never survive'
+  bundle.parent.attachments[0].url = 'https://uploads.linear.app/spec?signature=private'
+  writeFileSync(
+    path.join(fixture.runDir, 'BOS-10.epic-reverify-payload-parent.json'),
+    JSON.stringify(bundle.parent),
+  )
+  writeFileSync(
+    path.join(fixture.runDir, 'BOS-10.epic-reverify-payload-children.json'),
+    JSON.stringify({
+      result: { children: bundle.children.slice(0, 1), relationWarnings: ['relation-warning'] },
+    }),
+  )
+  writeFileSync(
+    path.join(fixture.runDir, 'BOS-10.epic-reverify-payload-child-BOS-12.json'),
+    JSON.stringify(bundle.children[1]),
+  )
+  return fixture
+}
+function runBundleCli(fixture, args = []) {
+  return spawnSync(
+    process.execPath,
+    [
+      GUARD,
+      'epic-reverify-bundle',
+      '--run-scratch',
+      fixture.runDir,
+      '--payload',
+      JSON.stringify({ epic: true, epicParentId: 'BOS-10', childIds: ['BOS-11', 'BOS-12'] }),
+      ...args,
+    ],
+    { cwd: fixture.dir, encoding: 'utf8' },
+  )
+}
+test('epic-reverify-bundle: saved payloads round-trip and preserve the resumable class', () => {
+  for (const parentState of ['Todo', 'Unplanned']) {
+    const fixture = savedEpicPayloads((ctx) => {
+      ctx.parentState = parentState
+    })
+    const result = runBundleCli(fixture)
+    assert.equal(result.status, 0, result.stderr)
+    const lines = result.stdout.trim().split('\n')
+    assert.equal(lines.length, 1)
+    const built = JSON.parse(lines[0])
+    assert.equal(built.ok, true)
+    assert.deepEqual(built.children, ['BOS-11', 'BOS-12'])
+    assert.deepEqual(built.unhydratedChildIds, [])
+    assert.equal(
+      built.storedDescriptions.parent,
+      path.join(fixture.runDir, 'BOS-10.image-guard-stored.md'),
+    )
+    assert.equal(
+      built.storedDescriptions.children['BOS-12'],
+      path.join(fixture.runDir, 'BOS-10.child-BOS-12.image-guard-stored.md'),
+    )
+    assert.match(result.stderr, /relation-warning/)
+    const bytes = readFileSync(built.bundlePath, 'utf8')
+    assert.ok(!bytes.includes('signature='))
+    assert.ok(!bytes.includes('description'))
+    const verified = runEpicReverifyCli(fixture)
+    assert.equal(verified.status, parentState === 'Todo' ? 0 : 1, verified.stderr)
+    assert.equal(verified.verdict.class, parentState === 'Todo' ? 'pass' : 'resumable')
+    assert.deepEqual(
+      readdirSync(fixture.runDir).filter((file) => file.endsWith('.tmp')),
+      [],
+    )
+  }
+})
+test('epic-reverify-bundle: strict usage errors exit 2', () => {
+  const fixture = savedEpicPayloads()
+  for (const args of [['--unknown'], ['--payload', '[]'], ['--run-scratch', fixture.dir]]) {
+    assert.equal(runBundleCli(fixture, args).status, 2)
+  }
+  const result = spawnSync(
+    process.execPath,
+    [GUARD, 'epic-reverify-bundle', '--run-scratch', fixture.runDir],
+    { encoding: 'utf8' },
+  )
+  assert.equal(result.status, 2)
+})
+test('epic-reverify-bundle: detached fallback children cannot pass epic reverify', () => {
+  for (const parentState of ['Todo', 'Unplanned']) {
+    const fixture = savedEpicPayloads((ctx) => {
+      ctx.parentState = parentState
+    })
+    const file = path.join(fixture.runDir, 'BOS-10.epic-reverify-payload-child-BOS-12.json')
+    const child = JSON.parse(readFileSync(file, 'utf8'))
+    child.parentId = null
+    delete child.parent
+    writeFileSync(file, JSON.stringify(child))
+    const result = runBundleCli(fixture)
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout).unhydratedChildIds, ['BOS-12'])
+    const verified = runEpicReverifyCli(fixture)
+    assert.notEqual(verified.status, 0)
+    assert.equal(verified.verdict.class, parentState === 'Todo' ? 'needs-human' : 'resumable')
+    assert.ok(verified.verdict.blockers.some((b) => b.code === 'child-set-mismatch'))
+  }
+})
+test('epic-reverify-bundle: defects remove stale bundles and never hydrate from a peer run', () => {
+  const fixture = savedEpicPayloads()
+  const filename = 'BOS-10.epic-reverify-payload-parent.json'
+  const peer = path.join(fixture.dir, '.linear-plans', 'run-peer')
+  mkdirSync(peer)
+  writeFileSync(path.join(peer, filename), readFileSync(path.join(fixture.runDir, filename)))
+  rmSync(path.join(fixture.runDir, filename))
+  let result = runBundleCli(fixture)
+  assert.equal(result.status, 3)
+  assert.ok(
+    JSON.parse(result.stdout).defects.some(
+      (d) => d.code === 'parent-payload-missing' && d.file.endsWith(filename),
+    ),
+  )
+  assert.throws(() => statSync(path.join(fixture.dir, fixture.bundle)), { code: 'ENOENT' })
+  writeFileSync(path.join(fixture.runDir, filename), '{broken')
+  result = runBundleCli(fixture)
+  assert.equal(result.status, 3)
+  assert.ok(JSON.parse(result.stdout).defects.some((d) => d.code === 'payload-unreadable'))
+  assert.deepEqual(
+    readdirSync(fixture.runDir).filter((file) => file.endsWith('.tmp')),
+    [],
+  )
 })

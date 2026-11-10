@@ -105,8 +105,8 @@ and precheck payload (use exactly as given);
    exit 64 means fix the call. Keep that
    selection snapshot unchanged through both rechecks; the description snapshot is a separate
    artifact. Set `PRECHECK` to this path and follow
-   [`planning-claims.md`](planning-claims.md#claim-before-drafting) for this child, retaining its own
-   token and comment id (never the parent's). On `LOST`, release and return
+   [`planning-claims.md`](planning-claims.md#claim-before-drafting) for this child, using its own claim receipt under the child scratch
+   (never the parent's). On `LOST`, release and return
    `{"issueId":"<CHILD-ID>","outcome":"failed","reason":"peer-claimed"}` without drafting;
    the orchestrator's Settle check decides whether the peer finished planning. A repeated
    `NO_WINNER` also returns failed after release. Unsupported plan scope continues unclaimed as

@@ -2288,47 +2288,7 @@ test('resolve-selection rejects a fault deferred by the real config loader befor
   }
 })
 
-test('plan claims expire by default and remain isolated from build claims', () => {
-  const adapter = createLinearAdapter({})
-  const peer = 'a'.repeat(32),
-    me = 'b'.repeat(32)
-  const now = Date.now()
-  const comment = (token, age, scope = 'plan') => ({
-    body: adapter.formatClaimComment(token, null, { scope }),
-    createdAt: new Date(now - age).toISOString(),
-  })
-  assert.deepEqual(adapter.claimScopes, ['build', 'plan'])
-  assert.equal(
-    adapter.resolveClaim(
-      [comment(peer, 3 * 3600_000), comment(me, 1000), comment(peer, 4000, 'build')],
-      me,
-      { scope: 'plan', now: new Date(now).toISOString() },
-    ),
-    true,
-  )
-  assert.equal(
-    adapter.resolveClaim([comment(peer, 3 * 3600_000)], me, {
-      scope: 'plan',
-      now: new Date(now).toISOString(),
-    }),
-    null,
-  )
-  for (const [comments, expected] of [
-    [[comment(peer, 5000), comment(me, 1000)], 3],
-    [[comment(peer, 3 * 3600_000), comment(me, 1000)], 0],
-    [[comment(peer, 3 * 3600_000)], 4],
-  ]) {
-    assert.equal(
-      runCli(
-        ['claim-verdict', '--scope', 'plan', '--me', me, '--comments', JSON.stringify(comments)],
-        { write: () => {} },
-      ),
-      expected,
-    )
-  }
-})
-
-test('claim CLI rejects invalid scope and adapters without planning capability', () => {
+test('claim CLI rejects invalid scope and requires a receipt for plan scope', () => {
   for (const verb of ['claim-comment', 'claim-verdict']) {
     for (const scope of ['other', 'plan']) {
       let err = '',
@@ -2354,23 +2314,9 @@ test('claim CLI rejects invalid scope and adapters without planning capability',
       )
       assert.equal(code, 2)
       assert.equal(out, '')
-      assert.match(err, scope === 'other' ? /--scope/ : /claimScopes.*plan/)
+      assert.match(err, scope === 'other' ? /--scope/ : /plan\/plan-claim\.mjs --receipt/)
     }
   }
-})
-
-test('claim-comment forwards plan scope and keeps the build default', () => {
-  let out = ''
-  assert.equal(
-    runCli(['claim-comment', '--scope', 'plan', '--token', won], {
-      env: {},
-      write: (s) => {
-        out += s
-      },
-    }),
-    0,
-  )
-  assert.equal(out, `🔒 bs-plan-claim:${won} (boss-plan run claiming this ticket)\n`)
 })
 
 test('concurrent planning tokens elect exactly one winner until the two hour boundary passes', () => {
@@ -2400,11 +2346,10 @@ test('concurrent planning tokens elect exactly one winner until the two hour bou
   )
 })
 
-test('claim scope requires a value and planning liveness rejects primitive evidence', () => {
+test('claim scope requires a value', () => {
   for (const argv of [
     ['claim-comment', '--token', won, '--scope'],
     ['claim-verdict', '--me', won, '--comments', '[]', '--scope'],
-    ['claim-verdict', '--me', won, '--comments', '[]', '--scope', 'plan', '--liveness', 'true'],
   ]) {
     let err = ''
     assert.equal(
@@ -2416,7 +2361,7 @@ test('claim scope requires a value and planning liveness rejects primitive evide
       }),
       2,
     )
-    assert.match(err, argv.includes('true') ? /liveness options must be an object/ : /--scope/)
+    assert.match(err, /--scope/)
   }
 })
 
@@ -2524,28 +2469,4 @@ test('list-unplanned excludes claimed candidates with diagnostics and fails clos
   assert.equal(legacy.code, 0)
   assert.equal(JSON.parse(legacy.out).length, 1)
   assert.match(legacy.err, /does not declare planClaimSelection/)
-})
-
-test('plan claim-verdict forfeits terminal owners with file evidence', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verdict-liveness-'))
-  try {
-    const file = path.join(dir, 'evidence.json')
-    const peer = 'a'.repeat(32),
-      me = 'b'.repeat(32)
-    const claims = [peer, me].map((token) => ({
-      body: `🔒 bs-plan-claim:${token} (boss-plan run claiming this ticket) owner:${token === peer ? 'peer' : 'ours'}`,
-      createdAt: new Date().toISOString(),
-    }))
-    fs.writeFileSync(
-      file,
-      JSON.stringify({ sessions: { peer: { terminal: true, reason: 'closed' } } }),
-    )
-    const args = ['claim-verdict', '--scope', 'plan', '--me', me, '--liveness', file, '--comments']
-    assert.equal(runCli([...args, JSON.stringify(claims)], {}), 0)
-    assert.equal(runCli([...args, JSON.stringify(claims.slice(0, 1))], { write() {} }), 4)
-    fs.writeFileSync(file, JSON.stringify({ sessions: { peer: { terminal: 'yes' } } }))
-    assert.equal(runCli([...args, JSON.stringify(claims)], { errWrite() {} }), 2)
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
-  }
 })

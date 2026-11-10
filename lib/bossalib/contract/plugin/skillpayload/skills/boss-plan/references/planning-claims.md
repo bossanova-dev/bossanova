@@ -12,12 +12,14 @@ an own `description` string or null, and the complete `attachments` array of obj
 `ISSUE_SNAPSHOT_FIELDS` contract from `tracker/issue-snapshot.mjs`; guards refuse incomplete snapshots
 with exit 2. Preserve the adapter's UUID for later description reads.
 
-Generate a token with
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs claim-token`, retaining it as `PLAN_CLAIM_TOKEN`.
-Before posting any comment, acquire the issue lease with that same token:
+The claim's token and posted comment id live only in
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.claim-receipt.json`. Set `CLAIM_RECEIPT` to that
+path in each shell call; never carry ownership state in shell variables or invent another file.
+Start the receipt, then acquire its issue lease before posting any comment:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node issue-lease.mjs acquire --scope plan --issue <ISSUE-ID> --token <PLAN_CLAIM_TOKEN>
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs start --receipt "$CLAIM_RECEIPT" --issue <ISSUE-ID>
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs acquire --receipt "$CLAIM_RECEIPT"
 ```
 
 - Exit 0 (`acquired`): retain the lease for the whole planning run; continue to the comment claim.
@@ -28,17 +30,19 @@ bash <skill-dir>/toolbox/plan/boss-plan-run.sh node issue-lease.mjs acquire --sc
 - Exit 4 (`unavailable`): record its reason in the run report and continue to the comment claim.
 - Exit 2: correct the usage error or abort closed; never treat it as graceful degradation.
 
-The lease defaults to 7200 seconds. Per-child epic claims use this same protocol and retain their
-own issue id and token until release; the parent keeps its lease until the parent run ends.
+The lease defaults to 7200 seconds. Per-child epic claims use their own receipt under their
+own run scratch; the parent keeps its lease until the parent run ends.
 Then format the comment with
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs claim-comment --scope plan --token "$PLAN_CLAIM_TOKEN" --session-id "${BOSS_SESSION_ID:-}"`.
-Post that body through `writeComment`, retaining both token and returned comment id. Re-read
-`readComments` into `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.claim-comments.json` and run
+`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs comment --receipt "$CLAIM_RECEIPT" --session-id "${BOSS_SESSION_ID:-}"`.
+Post that body through `writeComment`, then immediately persist its returned id with
+`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs record-comment --receipt "$CLAIM_RECEIPT" --id <COMMENT-ID>`.
+Every later step reads ownership from the receipt. Re-read `readComments` into
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.claim-comments.json` and run
 the owner evidence helper, then arbitration:
 
 ```sh
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node session/claim-owner-status.mjs --comments "$CLAIM_COMMENTS" --me "$PLAN_CLAIM_TOKEN" --out "$CLAIM_LIVENESS" --issue "<ISSUE-ID>" --release-forfeited-leases
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs claim-verdict --scope plan --me "$PLAN_CLAIM_TOKEN" --comments "$CLAIM_COMMENTS" --liveness "$CLAIM_LIVENESS"
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node session/claim-owner-status.mjs --comments "$CLAIM_COMMENTS" --claim-receipt "$CLAIM_RECEIPT" --out "$CLAIM_LIVENESS" --issue "<ISSUE-ID>" --release-forfeited-leases
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs verdict --receipt "$CLAIM_RECEIPT" --comments "$CLAIM_COMMENTS" --liveness "$CLAIM_LIVENESS"
 ```
 
 `CLAIM_COMMENTS` names the fresh `claim-comments` scratch file; `CLAIM_LIVENESS` is this run's
@@ -50,27 +54,32 @@ Planning claims never use build scope.
 - Exit 0 (`WON`): continue. Plan claims forfeit after two hours, or immediately when the owner
   session is proven archived or closed. An unknown or unreadable owner adds no forfeiture evidence;
   NOT_FOUND, MERGED and ORPHANED retain the age rule. Surviving claims arbitrate in the adapter's claim order: earliest `createdAt` then token, or lowest comment id on trackers whose `created_at` is too coarse, such as GitHub.
-- Exit 3 (`LOST`): release your own comment. Headless sweeps end `noop`. Selection already
+- Exit 3 (`LOST`): release through the receipt below. Headless sweeps end `noop`. Selection already
   skipped claimed heads, so losing means a peer claimed the same head concurrently; the next
   scheduled run selects the next available head. Name every non-terminal peer from the evidence's
   `peers`: token prefix, owner session (or none), `ageMinutes`, and minutes until the two-hour
   forfeit (`max(0, 120 - ageMinutes)`). Interactive or named-ticket runs report the peer; only
   an explicit interactive confirmation permits continuing unclaimed.
-- Exit 4 (`NO_WINNER`): release and retry claiming once; a repeat ends `noop`.
+- Exit 4 (`NO_WINNER`): release, then run `start` again on the same receipt for a fresh token
+  and retry claiming once; a repeat ends `noop`.
 - Exit 2 naming an unsupported `claimScopes` plan capability: warn, continue unclaimed and omit
-  `--claim-token` at rechecks. Other errors stop closed; never format a build claim as a fallback.
+  `--claim-receipt` at rechecks. Release through the receipt first. Other errors stop closed; never format a build claim as a fallback.
 
 Release always includes the lease, even when no comment was posted or deletion is unavailable:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node issue-lease.mjs release --scope plan --issue <ISSUE-ID> --token <PLAN_CLAIM_TOKEN>
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs release --receipt "$CLAIM_RECEIPT"
 ```
 
-Also delete only the retained own comment id through optional `deleteComment` when available.
-Both releases are best-effort, never fatal, and run before retrying or selecting another head,
-every terminal Phase 6 notes flush, and every Phase 2 abort before scratch removal or `exit 1`.
-If deletion is unavailable or fails, report that the comment claim expires; never delete a peer's
-claim, including forfeited terminal peers. Release each retained issue/token pair on terminal paths, including parent and child claims.
+The helper prints `{lease,commentId}` and records the release in the receipt. Use that printed
+`commentId`, when non-null, to delete exactly this run's comment through optional `deleteComment`.
+If the deletion happens in a later shell call, invoke `release` again to obtain the recorded id;
+never carry the id across calls. Lease release and comment deletion are best-effort, never fatal,
+and run before retrying or selecting another head, every terminal Phase 6 notes flush, and every
+Phase 2 abort before scratch removal or `exit 1`. Remove scratch last, after deletion has been
+attempted. If deletion is unavailable or fails, report that the comment claim expires; never delete
+a peer's claim, including forfeited terminal peers. Release through each parent and child receipt
+on terminal paths.
 
 ## Recheck at write boundaries
 
@@ -85,8 +94,8 @@ own selected issue id; the parent claim remains held until the parent run ends.
 
 Invoke `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs recheck "$PRECHECK" "$RECHECK" --selected-id "<ISSUE-ID>"`.
 `PRECHECK` is the original selection artifact and `RECHECK` the new bare payload. If the run holds
-a planning claim, append `--claim-token "$PLAN_CLAIM_TOKEN" --comments "$CLAIM_COMMENTS" --liveness "$CLAIM_LIVENESS"`.
-Do not pass a token on the unsupported-adapter or confirmed interactive override route.
+a planning claim, append `--claim-receipt "$CLAIM_RECEIPT" --comments "$CLAIM_COMMENTS" --liveness "$CLAIM_LIVENESS"`.
+Omit the claim receipt on the unsupported-adapter or confirmed interactive override route.
 For a multi-upload epic, append `--own-attachment-id <id>` once per exact attachment id returned
 by this run's successful `finalizePlanAttachment` calls for this target issue. Retain those ids
 across prepare retries. Never infer ownership from title, a fresh attachment list, or a prior run;

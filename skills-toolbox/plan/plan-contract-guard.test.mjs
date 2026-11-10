@@ -2238,3 +2238,168 @@ describe('list-nested table guard', () => {
     assert.match(result.stderr, /\[list-nested-table\]/)
   })
 })
+
+describe('declared target repository routing', () => {
+  const foreignDescription = (declaration = '- Target repo: acme/foreign') =>
+    conformant(`- Contract: v1\n${declaration}`)
+      .replace(KEY_CHANGES_BLOCK, '## Key changes\n\n- `some/dir/file:1`: change target code.')
+      .replace(
+        '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        [
+          '## Acceptance criteria',
+          '- [ ] Build the target — check: `make foo`',
+          '- [ ] Inspect the target — check: `test -f some/dir/file`',
+          '- [ ] Search the target — check: `rg needle some/dir/file`',
+          '- [ ] Retain text risks — check: `make foo | cat`',
+        ].join('\n'),
+      )
+  const plan =
+    '## Premises\n- [ ] Target reference `some/dir/file:1` exists — check: `rg needle some/dir/file`\n\n## Acceptance criteria\n- [ ] Missing target file is reported — check: `node some/missing/run.mjs`\n'
+  const rootCodes = (result) =>
+    [...result.violations, ...result.advisories].filter(({ code }) =>
+      /unresolvable-citation|unresolvable-plan-citation|command-(?:make-goal|path-operand|command-unresolvable)|advisory: (?:path-operand|make-goal)/.test(
+        code,
+      ),
+    )
+
+  test('unresolved foreign plans reject assignment-only criterion and premise checks', () => {
+    const result = checkPlanContract({
+      description: foreignDescription().replace('`make foo`', '`CHECK=1`'),
+      plan: plan.replace('`rg needle some/dir/file`', '`CHECK=1`'),
+      readOrigin: () => 'acme/local',
+    })
+    assert.ok(codes(result).includes('vacuous-criterion-command-empty-command'))
+    assert.ok(codes(result).includes('vacuous-premise-command-empty-command'))
+  })
+
+  test('unresolved foreign plans skip root checks but retain independent findings', () => {
+    const root = tempDir('target-guard-')
+    try {
+      const options = { plan, citationCwd: root, readOrigin: () => 'acme/local' }
+      const undeclared = checkPlanContract({ ...options, description: foreignDescription('') })
+      const same = checkPlanContract({
+        ...options,
+        description: foreignDescription('- Target repo: ACME/local'),
+      })
+      assert.deepEqual(same, undeclared)
+      assert.ok(rootCodes(undeclared).length > 0)
+      const foreign = checkPlanContract({ ...options, description: foreignDescription() })
+      assert.deepEqual(rootCodes(foreign), [])
+      assert.equal(
+        foreign.advisories.filter(({ code }) => code === 'advisory: target-repo-not-resolved')
+          .length,
+        1,
+      )
+      assert.ok(codes(foreign).includes('vacuous-criterion-command-pipe-without-pipefail'))
+      assert.equal(foreign.ok, undeclared.ok)
+      const mismatch = checkPlanContract({
+        ...options,
+        description: foreignDescription(),
+        targetRoot: root,
+      })
+      assert.deepEqual(rootCodes(mismatch), [])
+      assert.match(
+        mismatch.advisories.find(({ code }) => code === 'advisory: target-repo-not-resolved')
+          .message,
+        /acme\/local/,
+      )
+      const unknown = checkPlanContract({
+        ...options,
+        description: foreignDescription(),
+        readOrigin: () => null,
+      })
+      assert.ok(rootCodes(unknown).length > 0)
+      assert.equal(
+        unknown.couldNotEvaluate.filter(({ code }) => code === 'target-repo-could-not-evaluate')
+          .length,
+        1,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 })
+    }
+  })
+
+  test('matching foreign roots resolve paths and module names inside the target', () => {
+    const checkout = tempDir('target-guard-local-')
+    const target = tempDir('target-guard-foreign-')
+    try {
+      mkdirSync(path.join(target, 'some/dir'), { recursive: true })
+      writeFileSync(path.join(target, 'some/dir/file'), 'needle\n')
+      writeFileSync(path.join(target, 'Makefile'), 'foo:\n')
+      const result = checkPlanContract({
+        description: foreignDescription(),
+        plan,
+        citationCwd: checkout,
+        targetRoot: target,
+        moduleRoots: ['wrong'],
+        readOrigin: (root) => (root === checkout ? 'acme/local' : 'acme/foreign'),
+      })
+      assert.ok(!codes(result).includes('unresolvable-citation'))
+      assert.ok(!codes(result).includes('unresolvable-plan-citation'))
+      assert.ok(!codes(result).includes('vacuous-criterion-command-make-goal-undefined'))
+      assert.ok(codes(result).includes('vacuous-criterion-command-path-operand-missing'))
+      const modules = checkPlanContract({
+        description: foreignDescription().replace('`some/dir/file:1`', '`some`'),
+        citationCwd: checkout,
+        targetRoot: target,
+        moduleRoots: ['wrong'],
+        readOrigin: (root) => (root === checkout ? 'acme/local' : 'acme/foreign'),
+      })
+      assert.ok(!codes(modules).includes('subject-areas-unresolved'))
+    } finally {
+      rmSync(checkout, { recursive: true, force: true, maxRetries: 5 })
+      rmSync(target, { recursive: true, force: true, maxRetries: 5 })
+    }
+  })
+
+  test('CLI accepts target-root and verifies its actual git origin', () => {
+    const root = tempDir('target-guard-cli-')
+    const target = tempDir('target-guard-cli-foreign-')
+    try {
+      for (const [dir, repo] of [
+        [root, 'local'],
+        [target, 'foreign'],
+      ]) {
+        assert.equal(spawnSync('git', ['init', '-q', dir]).status, 0)
+        assert.equal(
+          spawnSync('git', [
+            '-C',
+            dir,
+            'remote',
+            'add',
+            'origin',
+            `https://github.com/acme/${repo}.git`,
+          ]).status,
+          0,
+        )
+      }
+      mkdirSync(path.join(target, 'some/dir'), { recursive: true })
+      writeFileSync(path.join(target, 'some/dir/file'), 'needle\n')
+      writeFileSync(path.join(target, 'Makefile'), 'foo:\n')
+      const desc = path.join(root, 'description.md')
+      writeFileSync(desc, foreignDescription())
+      const result = spawnSync(
+        process.execPath,
+        [GUARD, '--description', desc, '--target-root', target],
+        { cwd: root, encoding: 'utf8', env: { ...process.env, PLAN_CONTRACT_GUARD_CWD: root } },
+      )
+      assert.equal(result.status, 0, result.stderr)
+      assert.doesNotMatch(
+        result.stderr,
+        /target-repo-not-resolved|unresolvable-citation|make-goal-undefined/,
+      )
+      assert.match(result.stderr, /pipe-without-pipefail/)
+      assert.equal(
+        parseContractGuardArgs(['--description', desc, '--target-root', target]).targetRoot,
+        path.resolve(target),
+      )
+      assert.throws(
+        () => parseContractGuardArgs(['--description', desc, '--target-root']),
+        /required/,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 })
+      rmSync(target, { recursive: true, force: true, maxRetries: 5 })
+    }
+  })
+})

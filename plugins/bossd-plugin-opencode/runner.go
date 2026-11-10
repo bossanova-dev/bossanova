@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -109,6 +110,26 @@ func NewRunner(logger zerolog.Logger, opts ...Option) *Runner {
 		SessionIDFromOutput: sessionIDFromOutput,
 	}, extra...)
 	return r
+}
+
+type runOptions struct {
+	isolateProject bool
+}
+
+// Start applies plugin-owned isolation after the caller's environment overlay.
+// Trusted and direct runner launches preserve their existing environment.
+func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string, options ...runOptions) (string, error) {
+	if len(options) > 0 && options[0].isolateProject {
+		extraEnv = maps.Clone(extraEnv)
+		if extraEnv == nil {
+			extraEnv = make(map[string]string)
+		}
+		for _, setting := range projectIsolationEnv {
+			key, value, _ := strings.Cut(setting, "=")
+			extraEnv[key] = value
+		}
+	}
+	return r.Runner.Start(ctx, workDir, plan, resume, sessionID, logPath, model, extraEnv)
 }
 
 // classifyExit is the PostExit body: it upgrades a generic non-zero exit into a

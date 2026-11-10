@@ -1,0 +1,12 @@
+# Independent release-tool install; keep the root workspace out of credentialed jobs.
+packages:
+  - "."
+
+minimumReleaseAge: 4320
+# Add narrowly scoped package names here only for urgent security updates.
+minimumReleaseAgeExclude: []
+
+# Wrangler's bundler and local runtime need their platform binaries installed.
+allowBuilds:
+  esbuild: true
+  workerd: true

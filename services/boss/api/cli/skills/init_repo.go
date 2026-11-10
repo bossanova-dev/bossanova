@@ -29,8 +29,8 @@ type initAppliedSteps struct {
 	GitHubMissing []string
 	// ConfigPath is set once the config file has been written (created,
 	// replaced or merged); an unchanged merge leaves it empty.
-	ConfigPath string
-	StartSlow  bool
+	ConfigPath  string
+	MergePolicy mergePolicy
 	// Overrides is the tracker override set the config write used.
 	Overrides linearOverrides
 	// Crons is every factory cron stage outcome, including partial runs, with

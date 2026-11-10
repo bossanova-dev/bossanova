@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
@@ -10,14 +11,26 @@ import { isMainModule } from '../../skills-toolbox/main-module.mjs'
 export function main(argv) {
   const { values } = parseArgs({
     args: argv,
-    options: { boss: { type: 'string' } },
+    options: { boss: { type: 'string' }, build: { type: 'boolean', default: false } },
     strict: true,
     allowPositionals: false,
   })
   if (!values.boss) throw new Error('Usage: skills-check-isolated.mjs --boss <binary>')
   const boss = path.resolve(values.boss)
   const home = mkdtempSync(path.join(tmpdir(), 'boss-skills-check-'))
+  const workspace = path.resolve(`.skills-check-${randomUUID()}.work`)
   try {
+    if (values.build) {
+      // Keep relative use/replace paths anchored at the caller's workspace root.
+      copyFileSync('go.work', workspace)
+      if (existsSync('go.work.sum')) copyFileSync('go.work.sum', `${workspace}.sum`)
+      const result = spawnSync('make', ['build-boss'], {
+        env: { ...process.env, GOWORK: workspace },
+        stdio: 'inherit',
+      })
+      if (result.error) process.stderr.write(`build boss: ${result.error.message}\n`)
+      if (result.error || result.status !== 0) return result.status || 1
+    }
     const bin = path.join(home, 'bin')
     mkdirSync(bin)
     for (const agent of ['claude', 'codex']) {
@@ -59,6 +72,8 @@ export function main(argv) {
     }
     return 0
   } finally {
+    rmSync(workspace, { force: true })
+    rmSync(`${workspace}.sum`, { force: true })
     rmSync(home, { recursive: true, force: true, maxRetries: 3 })
   }
 }

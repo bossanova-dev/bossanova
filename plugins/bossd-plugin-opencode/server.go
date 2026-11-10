@@ -101,11 +101,18 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 // inverse that actually fires; see RemoveAgentRunHook for why that RPC is not
 // the safety net it appears to be.
 func (s *Server) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+	trusted, err := s.projectConfigTrusted(req.GetProjectTrust())
+	if err != nil {
+		return nil, err
+	}
 	var resume *string
 	if req.ResumeId != nil {
 		resume = req.ResumeId
 	}
-	injected, err := installQuestionHook(req.WorkDir, req.GetExtraEnv())
+	injected := false
+	if trusted {
+		injected, err = installQuestionHook(req.WorkDir, req.GetExtraEnv())
+	}
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("opencode: question hook injection failed; running without a question signal")
 		// A failed install can still leave bytes behind: WriteFile truncates
@@ -115,7 +122,7 @@ func (s *Server) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRun
 		// below would ever remove it. Sweep it here; removal is idempotent.
 		s.removeQuestionHookBestEffort(req.WorkDir)
 	}
-	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetExtraEnv())
+	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetExtraEnv(), runOptions{isolateProject: !trusted})
 	if err != nil {
 		if injected {
 			// The run never started, so nothing will ever call the run-end
@@ -212,6 +219,10 @@ func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusR
 // valid for a resumed chat. Its --prompt option auto-submits, as verified with
 // OpenCode 1.18.4 in a live tmux pane, so startup input must be marked consumed.
 func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	trusted, err := s.projectConfigTrusted(req.GetProjectTrust())
+	if err != nil {
+		return nil, err
+	}
 	args := []string{"opencode"}
 	if req.GetResume() && req.GetSessionId() != "" {
 		args = append(args, "--session", req.GetSessionId())
@@ -241,6 +252,10 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 		// at exec time when bossd supplied one, inline otherwise. With the file,
 		// the boss context still reaches the launch command, so IN_ARGV stands.
 		args = append(args, "--prompt")
+	}
+
+	if !trusted {
+		args = append(append([]string{"env"}, projectIsolationEnv...), args...)
 	}
 
 	loginShell := ""

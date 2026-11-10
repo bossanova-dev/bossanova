@@ -266,6 +266,13 @@ function daemonEnvelope(view, statuses = []) {
   }
 }
 
+// Most worlds model a repo whose merge rule lets a high head merge, as verify did before repos owned
+// their merge policy; a world with no `merge` block parks every pass `human-merge`.
+const AUTO_HIGH = Object.freeze({ auto: [{ level: 'high' }] })
+const AUTO_HIGH_CONFIG = JSON.stringify({ verifyDefaults: { merge: AUTO_HIGH } })
+const policyText = (verifyDefaults) =>
+  JSON.stringify({ verifyDefaults: { merge: AUTO_HIGH, ...verifyDefaults } })
+
 // A scripted world behind one fake reader. Every call is recorded; statuses posted through
 // `gh api --method POST …/statuses/<sha>` are prepended to that SHA's list, so read-backs are real.
 function world(opts = {}) {
@@ -297,9 +304,10 @@ function world(opts = {}) {
     ]),
     // Compare reads `<BASE>...<sha>`: `{[sha]: files[] | payload | null}`; a missing key fails.
     compare: opts.compare ?? {},
-    // The config file at the base tip: absent (a 404) by default, `null` for a failed read, a
+    // The config file at the base tip: one whose merge rule lets a high head merge by default,
+    // absent (a 404) with `baseConfigAbsent` or an explicit `undefined`, `null` for a failed read, a
     // string for its raw contents.
-    baseConfig: pick('baseConfig', undefined),
+    baseConfig: opts.baseConfigAbsent ? undefined : pick('baseConfig', AUTO_HIGH_CONFIG),
     // A raw read result for the base config, overriding `baseConfig` when set.
     baseConfigRead: opts.baseConfigRead,
     // `null` is an unreadable session list.
@@ -815,7 +823,9 @@ const actionsCheck = (suite, name, conclusion, extra = {}) => ({
   ...extra,
 })
 // The base guard only runs for a repo that opts in, so these worlds carry a base policy that does.
-const REQUIRE_GREEN_BASE = JSON.stringify({ verifyDefaults: { requireGreenBase: true } })
+const REQUIRE_GREEN_BASE = JSON.stringify({
+  verifyDefaults: { requireGreenBase: true, merge: AUTO_HIGH },
+})
 
 const baseWorld = (workflowRuns, checkRuns, extra = {}) =>
   world({
@@ -1155,7 +1165,7 @@ test('judge alwaysHumanPaths: an invalid config waits instead of dropping the po
 })
 
 test('judge alwaysHumanPaths: a hit is human, an unreadable diff waits with a note', async () => {
-  const baseConfig = JSON.stringify({ verifyDefaults: { alwaysHumanPaths: ['migrations/**'] } })
+  const baseConfig = policyText({ alwaysHumanPaths: ['migrations/**'] })
   const hit = world({ diff: ['src/a.go', 'migrations/001.sql'], baseConfig })
   const r1 = await judge({ pr: 7, repo: REPO }, deps(hit))
   assert.equal(r1.verdict, 'human')
@@ -1203,7 +1213,6 @@ test('the extension envelope lists a renamed file under both its names', async (
   ])
 })
 
-const policyText = (verifyDefaults) => JSON.stringify({ verifyDefaults })
 const diffReads = (w) => w.calls.filter(isPrFilesRead).length
 
 test('judge with no policy anywhere reads the base config once, reads no diff and passes', async () => {
@@ -1256,10 +1265,8 @@ test('judge reads the verify policy from the base tip, never the PR head', async
 })
 
 test('judge base policy: absent is empty, unreadable or invalid waits config-unreadable', async () => {
-  assert.equal(
-    (await judge({ pr: 7, repo: REPO }, deps(world({ baseConfig: undefined })))).verdict,
-    'pass',
-  )
+  const absent = await judge({ pr: 7, repo: REPO }, deps(world({ baseConfigAbsent: true })))
+  assert.deepEqual([absent.verdict, absent.reason], ['human', 'human-merge'])
   for (const baseConfig of [
     null,
     '{not json',
@@ -1274,7 +1281,10 @@ test('judge base policy: absent is empty, unreadable or invalid waits config-unr
       ['evidence-unknown'],
     )
   }
-  const otherBlocksBroken = JSON.stringify({ lensMap: 'nope', verifyDefaults: {} })
+  const otherBlocksBroken = JSON.stringify({
+    lensMap: 'nope',
+    verifyDefaults: { merge: AUTO_HIGH },
+  })
   assert.equal(
     (await judge({ pr: 7, repo: REPO }, deps(world({ baseConfig: otherBlocksBroken })))).verdict,
     'pass',
@@ -2540,16 +2550,20 @@ test('judge: changing a declared applicability script is a policy-surface hit un
   assert.equal(r.verdict, 'human')
   assert.equal(r.reason, 'human-review:asks')
 
-  const unconfigured = world({ diff: [GATED.applies], baseConfig: policyText({}) })
-  const r2 = await judge(
-    { pr: 7, repo: REPO },
-    deps(unconfigured, {
-      read: withApplies(unconfigured, { [GATED.applies]: exited(10) }).read,
-      discover,
-    }),
-  )
-  assert.equal(r2.facts.policySurfaceHit, false)
-  assert.equal(r2.verdict, 'pass')
+  // Merge rules alone make the policy one a PR could weaken; with neither globs nor rules the hit
+  // costs nothing beyond the default human merge.
+  for (const [config, hit, reason] of [
+    [policyText({}), true, 'human-review:asks'],
+    [JSON.stringify({ verifyDefaults: {} }), false, 'human-merge'],
+  ]) {
+    const other = world({ diff: [GATED.applies], baseConfig: config })
+    const r2 = await judge(
+      { pr: 7, repo: REPO },
+      deps(other, { read: withApplies(other, { [GATED.applies]: exited(10) }).read, discover }),
+    )
+    assert.equal(r2.facts.policySurfaceHit, hit, config)
+    assert.deepEqual([r2.verdict, r2.reason], ['human', reason], config)
+  }
 
   assert.deepEqual(
     policySurfaceHits(['scripts/verify-applies.mjs', './scripts/verify-applies.mjs', 'x.mjs'], {
@@ -9645,6 +9659,7 @@ const greenFacts = (extra = {}) => ({
   ci: { settled: true, green: true },
   receipt: 'success',
   extensions: [],
+  mergePolicy: AUTO_HIGH,
   ...extra,
 })
 
@@ -9957,7 +9972,7 @@ const handView = (extra = {}) => ({
   labels: [],
   ...extra,
 })
-const admissionText = (admission) => JSON.stringify({ verifyDefaults: { admission } })
+const admissionText = (admission) => policyText({ admission })
 const workingTreeAdmits = (admission) => () => ({ verifyDefaults: { admission } })
 
 test('judge reads the tier from the base tip, never the working tree', async () => {
@@ -11416,7 +11431,7 @@ test('judge reads local cap state and caps only matching module heads', async ()
     assert.equal(result.verdict, expected)
     assert.equal(
       result.policyFingerprint,
-      policyFingerprint(null, [], { root: TRUSTED, capKeys: [cap.key] }),
+      policyFingerprint({ merge: AUTO_HIGH }, [], { root: TRUSTED, capKeys: [cap.key] }),
     )
     assert.equal(result.confidence.level, expected === 'human' ? 'moderate' : 'high')
   }
@@ -11435,7 +11450,10 @@ test('clearing area caps invalidates quiet ticks and reconsiders cap-only standi
   let caps = [cap]
   let refreshedAt = iso(0)
   const capFs = { readFileSync: () => JSON.stringify({ v: 1, repo: REPO, refreshedAt, caps }) }
-  const recorded = policyFingerprint(null, [], { root: TRUSTED, capKeys: [cap.key] })
+  const recorded = policyFingerprint({ merge: AUTO_HIGH }, [], {
+    root: TRUSTED,
+    capKeys: [cap.key],
+  })
   const scan = async (quietFingerprint) => {
     const w = sweepWorld({
       statuses: [parkStatus('needs human: always-human-path'), receipt()],
@@ -11621,7 +11639,7 @@ test('neverReview suppresses four persisted judge asks without lowering confiden
     ),
   ).toString('base64url')
   const w = world({
-    baseConfig: JSON.stringify({ verifyDefaults: { neverReview: ['docs/**'] } }),
+    baseConfig: policyText({ neverReview: ['docs/**'] }),
     diff: ['docs/x.md'],
     comments: [
       {

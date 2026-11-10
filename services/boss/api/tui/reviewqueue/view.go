@@ -37,7 +37,10 @@ func (m Model) footer() string {
 	}
 	hints := []string{"[o]rder"}
 	if r := m.selected(); r != nil {
-		hints = []string{"[enter] details", "[p]roof"}
+		hints = []string{"[enter] details"}
+		if webURL(r.GetSession().GetAttention().GetProofUrl()) {
+			hints = append(hints, "[p]roof")
+		}
 		if _, ok := ui.AttentionBinding(r.GetSession(), "m", false); ok && !r.GetIsAuditSample() && !m.action.MergeUnresolved() {
 			hints = append(hints, "[m]erge")
 		}

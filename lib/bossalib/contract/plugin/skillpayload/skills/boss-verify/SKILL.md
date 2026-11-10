@@ -69,11 +69,16 @@ stopping; the helper counts retries per head and chat. `fallback: gate` means re
 
 After each judge, when `findingNotes` is non-empty, write that JSON array to a run-temp file, and
 when `notApplicableNotes` is non-empty, write that JSON array to another run-temp file.
-High passes and merges immediately through the head-pinned merge. Moderate and Low park with the level, at most three asks and reasons; Low adds the full review checklist. Blocked goes to repair. Missing confidence evidence is reread twice before a `cannot-assess` park, which re-judges on the next tick. On every human post carrying a judge result, write its `confidence` object to a run-temp JSON file and pass `--confidence <confidence-file>`. Also pass `--judge-record <judgeRecord>` whenever that output carries one; this keeps the added asks on later ticks.
+High passes and merges through the head-pinned merge only when a base-tip `verifyDefaults.merge` rule allows it; otherwise it parks `human-merge`. Moderate and Low park with the level, at most three asks and reasons, unless those rules cover every ask; Low adds the full review checklist. Blocked goes to repair. Missing confidence evidence is reread twice before a `cannot-assess` park, which re-judges on the next tick. On every human post carrying a judge result, write its `confidence` object to a run-temp JSON file and pass `--confidence <confidence-file>`. Also pass `--judge-record <judgeRecord>` whenever that output carries one; this keeps the added asks on later ticks.
 
 Pass `--notes <notes-file>` and `--not-applicable <file>` on the resulting `post` for `pass`,
 `blocked`, `defect` or `human`, including a verdict after extensions or review. Never pass either
 on `claim` or `wait`. A notes-write failure is reported separately and never changes the verdict.
+
+Save each judge output to a run-temp file. On that same `post`, pass `--judge <file>` with the output
+whose verdict you post, plus `--intent <file>` when **Say what it does** recorded one. After the
+verdict lands, `post` publishes the head's [proof page](references/proof-page.md). Report its
+`proof` outcome; it never changes the verdict.
 
 The [blocker contract](references/blockers.md) defines the files and the standing-review supersede rule.
 
@@ -193,7 +198,7 @@ Report `node "$BOSS_VERIFY_TOOLBOX/stage-chain.mjs" phase verifying` (never fata
 selection flags when given, and report its lines. It routes exactly as the gate does: mechanical `post`/`merge` when no `verify`
 extension applies and neither review nor judge dispatch is required, otherwise a claim plus `/boss-verify <pr> --claim <token>` sent into each
 PR's own session — its `verify` chat, a new `verify` chat, or a `boss new --pr <n>` session for a PR
-with no live session. Its mechanical posts carry the judge's notes and not-applicable notes themselves. It never waits for a dispatched verify. A non-zero exit means discovery failed:
+with no live session. Its mechanical posts carry the judge's notes, not-applicable notes and proof page themselves. It never waits for a dispatched verify. A non-zero exit means discovery failed:
 report it, never as "nothing to do".
 
 ## Rules
@@ -208,6 +213,8 @@ report it, never as "nothing to do".
 ## References
 
 - `references/area-caps.md` — automatic area caps after High escapes and the operator clear verb.
+
+- `references/proof-page.md` — the head's proof record, where its page is published, and when a repo's own proof wins.
 
 - `references/cron-gate.md` — the verify cron job: schedule, prompt, gate command, and what its exit
   codes mean.

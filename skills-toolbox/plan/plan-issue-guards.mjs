@@ -1,3 +1,4 @@
+import { readClaimReceipt } from './plan-claim.mjs'
 import { issueSnapshotProblems } from '../tracker/issue-snapshot.mjs'
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
@@ -118,7 +119,7 @@ export function runPlanRecheck(argv) {
       strict: true,
       options: {
         'selected-id': { type: 'string' },
-        'claim-token': { type: 'string' },
+        'claim-receipt': { type: 'string' },
         comments: { type: 'string' },
         liveness: { type: 'string' },
         'own-attachment-id': { type: 'string', multiple: true },
@@ -127,11 +128,11 @@ export function runPlanRecheck(argv) {
     if (
       positionals.length !== 2 ||
       !values['selected-id'] ||
-      Boolean(values['claim-token']) !== Boolean(values.comments) ||
-      (values.liveness !== undefined && !values['claim-token'])
+      Boolean(values['claim-receipt']) !== Boolean(values.comments) ||
+      (values.liveness !== undefined && !values['claim-receipt'])
     )
       throw new Error(
-        'recheck <selection.json> <fresh.json> --selected-id <id> [--claim-token <t> --comments <file|json> [--liveness <file|json>]] [--own-attachment-id <id>]…',
+        'recheck <selection.json> <fresh.json> --selected-id <id> [--claim-receipt <t> --comments <file|json> [--liveness <file|json>]] [--own-attachment-id <id>]…',
       )
     const read = (file) => JSON.parse(readFileSync(file, 'utf8'))
     const [selection, fresh] = positionals.map((file) => {
@@ -164,14 +165,18 @@ export function runPlanRecheck(argv) {
       )
     )
       reasons.push('peer-attachment')
-    if (values['claim-token']) {
+    if (values['claim-receipt']) {
       const adapter = resolveTrackerAdapter(process.env)
       if (!adapter.claimScopes?.includes('plan'))
         throw new Error('tracker adapter missing claimScopes plan capability')
-      const won = adapter.resolveClaim(loadClaimComments(values.comments), values['claim-token'], {
-        ...(values.liveness === undefined ? {} : loadClaimLiveness(values.liveness)),
-        scope: 'plan',
-      })
+      const won = adapter.resolveClaim(
+        loadClaimComments(values.comments),
+        readClaimReceipt(values['claim-receipt']).token,
+        {
+          ...(values.liveness === undefined ? {} : loadClaimLiveness(values.liveness)),
+          scope: 'plan',
+        },
+      )
       if (won === false) reasons.push('claim-lost')
       else if (won === null) reasons.push('claim-missing')
     }

@@ -56,9 +56,8 @@ var AttentionActionBindings = []AttentionActionBinding{
 }
 
 // ProofTarget is what [p]roof opens: the proof page when PROOF is offered,
-// else the legacy evidence video when VIDEO is, else, on a verify park (a
-// REVIEW or blocked FIX, both with park codes), the PR conversation holding
-// verify's park note.
+// else the legacy evidence video when VIDEO is, else nothing. The PR is never
+// a proof target: [g]ithub already opens it.
 func ProofTarget(s *pb.Session) (string, bool) {
 	a := s.GetAttention()
 	switch {
@@ -66,8 +65,6 @@ func ProofTarget(s *pb.Session) (string, bool) {
 		return a.GetProofUrl(), true
 	case slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_VIDEO) && a.GetEvidenceUrl() != "":
 		return a.GetEvidenceUrl(), true
-	case len(a.GetParkCodes()) > 0 && s.GetPrUrl() != "" && (a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW || a.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX):
-		return s.GetPrUrl(), true
 	}
 	return "", false
 }

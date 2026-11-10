@@ -162,6 +162,7 @@ export const VENDOR_MAP = {
     'plan/plan-run-guards.mjs',
     'plan/plan-issue-guards.mjs',
     'plan/plan-scratch-paths.mjs',
+    'plan/plan-claim.mjs',
     'plan/plan-scratch-reap.mjs',
     'plan/plan-secret-scan.mjs',
     'plan/plan-sibling-split.mjs',

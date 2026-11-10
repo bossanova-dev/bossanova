@@ -17,8 +17,8 @@ vendor-toolbox-check:
 	node scripts/skills/vendor-toolbox.mjs --check
 ## skills-check: Build boss and prove this checkout's skill install/check round trip
 ## under a disposable HOME with stub agents, independent of host skill trees.
-skills-check: build-boss
-	node scripts/skills/skills-check-isolated.mjs --boss ./bin/boss
+skills-check:
+	node scripts/skills/skills-check-isolated.mjs --boss ./bin/boss --build
 
 ## skills-check-host: Build boss and check the host's installed skill trees against
 ## the binary embed and checkout sources. Operator-only host drift check.

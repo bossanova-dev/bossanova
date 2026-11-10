@@ -281,7 +281,11 @@ func (s *cleanupRepoStore) GetByOriginURL(context.Context, string) (*models.Repo
 	panic("not used")
 }
 func (s *cleanupRepoStore) List(context.Context) ([]*models.Repo, error) {
-	panic("not used")
+	var repos []*models.Repo
+	for _, repo := range s.repos {
+		repos = append(repos, repo)
+	}
+	return repos, nil
 }
 func (s *cleanupRepoStore) Update(context.Context, string, db.UpdateRepoParams) (*models.Repo, error) {
 	panic("not used")

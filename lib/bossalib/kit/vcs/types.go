@@ -285,13 +285,23 @@ func SortPRCommentsNewestFirst(comments []PRComment) {
 	slices.SortStableFunc(comments, func(a, b PRComment) int { return b.WrittenAt.Compare(a.WrittenAt) })
 }
 
+// CommitAuthor identifies a commit author or coauthor. Login can be empty for bots.
+type CommitAuthor struct {
+	Login string
+	Email string
+}
+
 // PRSummary is a lightweight representation of a PR for listing.
 type PRSummary struct {
-	Number     int
-	Title      string
-	HeadBranch string
-	State      PRState
-	Author     string
+	Number        int
+	Title         string
+	HeadBranch    string
+	State         PRState
+	Author        string
+	HeadSHA       string
+	CommitAuthors []CommitAuthor
+	// CommitAuthorsComplete is false when any commit or author window is truncated.
+	CommitAuthorsComplete bool
 }
 
 // CreatePROpts contains options for creating a new pull/merge request.

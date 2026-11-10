@@ -1032,11 +1032,15 @@ func (p *Provider) ListClosedPRs(ctx context.Context, repoPath string) ([]vcs.PR
 // "closed"), capped at limit, and maps them to vcs.PRSummary. label provides
 // the retry-logging description and error context for the caller.
 func (p *Provider) listPRsByState(ctx context.Context, repoPath, label, state string, limit int) ([]vcs.PRSummary, error) {
+	fields := "number,title,headRefName,state,author"
+	if state == "open" {
+		fields += ",headRefOid,commits"
+	}
 	out, err := p.runGHWithTransientRetry(ctx, label,
 		"pr", "list",
 		"--repo", repoFlag(repoPath),
 		"--state", state,
-		"--json", "number,title,headRefName,state,author",
+		"--json", fields,
 		"--limit", strconv.Itoa(limit),
 	)
 	if err != nil {
@@ -1054,8 +1058,12 @@ func decodePRList(out string) ([]vcs.PRSummary, error) {
 		Number      int    `json:"number"`
 		Title       string `json:"title"`
 		HeadRefName string `json:"headRefName"`
-		State       string `json:"state"`
-		Author      struct {
+		HeadRefOid  string `json:"headRefOid"`
+		Commits     []struct {
+			Authors []vcs.CommitAuthor `json:"authors"`
+		} `json:"commits"`
+		State  string `json:"state"`
+		Author struct {
 			Login string `json:"login"`
 		} `json:"author"`
 	}
@@ -1071,6 +1079,21 @@ func decodePRList(out string) ([]vcs.PRSummary, error) {
 			HeadBranch: r.HeadRefName,
 			State:      parsePRState(r.State),
 			Author:     r.Author.Login,
+			HeadSHA:    r.HeadRefOid,
+			// gh windows commits and each commit's authors at 100, without totals.
+			CommitAuthorsComplete: r.Commits != nil && len(r.Commits) < 100,
+		}
+		seen := make(map[vcs.CommitAuthor]bool)
+		for _, commit := range r.Commits {
+			if len(commit.Authors) >= 100 || len(commit.Authors) == 0 {
+				prs[i].CommitAuthorsComplete = false
+			}
+			for _, author := range commit.Authors {
+				if !seen[author] {
+					prs[i].CommitAuthors = append(prs[i].CommitAuthors, author)
+					seen[author] = true
+				}
+			}
 		}
 	}
 

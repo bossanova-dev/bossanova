@@ -16321,6 +16321,18 @@ components:
           format: int32
       title: PRClosedEvent
       additionalProperties: false
+    bossanova.v1.PRCommitAuthor:
+      type: object
+      properties:
+        login:
+          type: string
+          title: login
+        email:
+          type: string
+          title: email
+      title: PRCommitAuthor
+      additionalProperties: false
+      description: PRCommitAuthor identifies one author of a PR commit, including coauthors.
     bossanova.v1.PRHeldWorkflowRun:
       type: object
       properties:
@@ -16414,6 +16426,17 @@ components:
         author:
           type: string
           title: author
+        headSha:
+          type: string
+          title: head_sha
+        commitAuthors:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.PRCommitAuthor'
+          title: commit_authors
+        hasAllCommitAuthors:
+          type: boolean
+          title: has_all_commit_authors
       title: PRSummary
       additionalProperties: false
       description: PRSummary is a lightweight representation of a PR for listing.

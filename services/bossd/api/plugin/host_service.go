@@ -787,11 +787,16 @@ func prSummariesToProto(prs []vcs.PRSummary) []*bossanovav1.PRSummary {
 	pbPRs := make([]*bossanovav1.PRSummary, len(prs))
 	for i, pr := range prs {
 		pbPRs[i] = &bossanovav1.PRSummary{
-			Number:     safeInt32(pr.Number),
-			Title:      pr.Title,
-			HeadBranch: pr.HeadBranch,
-			State:      vcsPRStateToProto(pr.State),
-			Author:     pr.Author,
+			Number:              safeInt32(pr.Number),
+			Title:               pr.Title,
+			HeadBranch:          pr.HeadBranch,
+			State:               vcsPRStateToProto(pr.State),
+			Author:              pr.Author,
+			HeadSha:             pr.HeadSHA,
+			HasAllCommitAuthors: pr.CommitAuthorsComplete,
+		}
+		for _, author := range pr.CommitAuthors {
+			pbPRs[i].CommitAuthors = append(pbPRs[i].CommitAuthors, &bossanovav1.PRCommitAuthor{Login: author.Login, Email: author.Email})
 		}
 	}
 	return pbPRs

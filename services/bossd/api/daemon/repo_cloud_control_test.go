@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -66,6 +69,7 @@ func TestListRepoCloudControlsSlowProviderAllowsNarrowing(t *testing.T) {
 	t.Setenv("BOSS_SETTINGS_PATH", t.TempDir()+"/settings.json")
 	first, second := t.TempDir(), t.TempDir()
 	synctest.Test(t, func(t *testing.T) {
+		defer time.Sleep(5 * time.Second)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		repos := &repoMgmtRepoStore{listRepos: []*models.Repo{
@@ -89,6 +93,119 @@ func TestListRepoCloudControlsSlowProviderAllowsNarrowing(t *testing.T) {
 			if err := config.SetRepoCloudControl(&settings, identity, "full"); err == nil {
 				t.Fatalf("unverified full grant accepted for %s", repo.Name)
 			}
+		}
+	})
+}
+
+type budgetCloudIdentityProvider struct {
+	vcs.Provider
+	read func(context.Context, string) (int64, string, error)
+}
+
+func (p budgetCloudIdentityProvider) GetRepositoryIdentity(ctx context.Context, origin string) (int64, string, error) {
+	return p.read(ctx, origin)
+}
+
+func TestListRepoCloudControlsBudget_Settings_AC242901_AC242902(t *testing.T) {
+	t.Setenv("BOSS_SETTINGS_PATH", t.TempDir()+"/settings.json")
+	for _, mode := range []string{"full", "private"} {
+		t.Run(mode, func(t *testing.T) {
+			machine := "private"
+			if mode == "private" {
+				machine = "full"
+			}
+			settings := config.Settings{CloudControl: machine, CloudControlRepos: []config.CloudControlRepoGrant{{Host: "github.com", RepoID: 42, Name: "acme/slow", Checkout: "/slow", Mode: mode}}}
+			if err := config.Save(settings); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Test(t, func(t *testing.T) {
+				defer time.Sleep(5 * time.Second)
+				repos := &repoMgmtRepoStore{listRepos: []*models.Repo{
+					{ID: "slow", DisplayName: "slow", OriginURL: "https://github.com/acme/slow", LocalPath: "/slow"},
+					{ID: "fast", DisplayName: "fast", OriginURL: "https://github.com/acme/fast", LocalPath: "/fast"},
+					{ID: "other", DisplayName: "other", OriginURL: "https://github.com/acme/other", LocalPath: "/other"},
+					{ID: "fourth", DisplayName: "fourth", OriginURL: "https://github.com/acme/fourth", LocalPath: "/fourth"},
+					{ID: "fifth", DisplayName: "fifth", OriginURL: "https://github.com/acme/fifth", LocalPath: "/fifth"},
+				}}
+				provider := budgetCloudIdentityProvider{read: func(ctx context.Context, origin string) (int64, string, error) {
+					if strings.HasSuffix(origin, "/slow") {
+						<-ctx.Done()
+						return 0, "", ctx.Err()
+					}
+					return 42, "private", nil
+				}}
+				server := New(Config{Repos: repos, Provider: provider})
+				started := time.Now()
+				response, err := server.ListRepoCloudControls(context.Background(), connect.NewRequest(&pb.ListRepoCloudControlsRequest{}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if elapsed := time.Since(started); elapsed > repoIdentityBudget {
+					t.Fatalf("list budget exceeded: %v", elapsed)
+				}
+				if len(response.Msg.Repos) != len(repos.listRepos) {
+					t.Fatal(response.Msg)
+				}
+				for i, row := range response.Msg.Repos {
+					registered := repos.listRepos[i]
+					if row.DisplayName != registered.DisplayName || row.Checkout != registered.LocalPath || row.OriginUrl != registered.OriginURL || row.Host != "github.com" || row.Name != "acme/"+registered.ID {
+						t.Fatalf("metadata: %+v", row)
+					}
+					if row.IsIdVerified != (i > 0) {
+						t.Fatalf("verification: %+v", row)
+					}
+				}
+				slow := response.Msg.Repos[0]
+				if slow.ProviderRepoId != 0 || slow.EffectiveMode != "private" {
+					t.Fatalf("failed closed/narrowed: %+v", slow)
+				}
+				if mode == "full" && !slow.HasUnverifiedGrant {
+					t.Fatalf("missing unverified grant: %+v", slow)
+				}
+				if mode == "private" && slow.Source != "grant-narrowed" {
+					t.Fatalf("narrowing source: %+v", slow)
+				}
+			})
+		})
+	}
+}
+
+func TestListRepoCloudControlsConcurrentAndCached(t *testing.T) {
+	t.Setenv("BOSS_SETTINGS_PATH", t.TempDir()+"/settings.json")
+	synctest.Test(t, func(t *testing.T) {
+		defer time.Sleep(5 * time.Second)
+		var calls, active, high atomic.Int32
+		repos := &repoMgmtRepoStore{}
+		for i := range 8 {
+			repos.listRepos = append(repos.listRepos, &models.Repo{ID: fmt.Sprint(i), OriginURL: fmt.Sprintf("https://github.com/acme/r%d", i)})
+		}
+		provider := budgetCloudIdentityProvider{read: func(context.Context, string) (int64, string, error) {
+			calls.Add(1)
+			n := active.Add(1)
+			for prev := high.Load(); n > prev && !high.CompareAndSwap(prev, n); prev = high.Load() {
+			}
+			defer active.Add(-1)
+			time.Sleep(time.Second)
+			return 42, "private", nil
+		}}
+		server := New(Config{Repos: repos, Provider: provider})
+		started := time.Now()
+		for range 2 {
+			response, err := server.ListRepoCloudControls(context.Background(), connect.NewRequest(&pb.ListRepoCloudControlsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, repo := range response.Msg.Repos {
+				if !repo.IsIdVerified {
+					t.Fatalf("unverified: %+v", repo)
+				}
+			}
+		}
+		if elapsed := time.Since(started); elapsed != 2*time.Second {
+			t.Fatalf("fanout/cache elapsed %v", elapsed)
+		}
+		if calls.Load() != 8 || high.Load() > 4 {
+			t.Fatalf("reads=%d concurrent=%d", calls.Load(), high.Load())
 		}
 	})
 }

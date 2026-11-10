@@ -30,7 +30,7 @@ export const IMAGE_TYPES = Object.freeze(['.png', '.jpg', '.webp'])
  * @typedef {import('./verify-proof-spec.mjs').Dropped} Dropped
  * @typedef {{atMs: number, caption: string}} Chapter
  * @typedef {{file: string, caption: string, atMs?: number}} Still
- * @typedef {{id: string, side: string, title: string, file: string, poster?: string, durationMs: number, chapters: Chapter[], stills: Still[]}} Clip
+ * @typedef {{id: string, side: string, pairs?: string, title: string, file: string, poster?: string, durationMs: number, chapters: Chapter[], stills: Still[]}} Clip
  * @typedef {{title: string, note?: string, status: number, ms: number, request: unknown, response: unknown, rows?: string}} Transcript
  * @typedef {{schema: string, head: string, source?: {kind: string, url: string}, clips: Clip[], transcripts: Transcript[]}} ProofMedia
  * @typedef {{head: string, sizeOf?: (file: string) => number | null}} MediaContext
@@ -121,6 +121,7 @@ export function validateProofMedia(value, { head, sizeOf }) {
       const c = onlyKeys(entry, [
         'id',
         'side',
+        'pairs',
         'title',
         'file',
         'poster',
@@ -133,6 +134,9 @@ export function validateProofMedia(value, { head, sizeOf }) {
       if (ids.has(id)) throw new Drop(`id: ${id} appears twice`)
       if (typeof c.side !== 'string' || !CLIP_SIDES.includes(c.side))
         throw new Drop('side: expected head or base')
+      if (c.side === 'head' && c.pairs !== undefined)
+        throw new Drop('pairs: only a base clip names the head clip it pairs with')
+      const pairs = c.side === 'base' ? needText(c.pairs, 40, 'pairs') : undefined
       const durationMs = needMs(c.durationMs, 'durationMs')
       if (durationMs === 0 || durationMs >= MAX_CLIP_MS)
         throw new Drop(`durationMs: a clip runs under ${MAX_CLIP_MS} ms`)
@@ -176,10 +180,35 @@ export function validateProofMedia(value, { head, sizeOf }) {
         },
         dropped,
       )
-      return compact({ id, side: c.side, title, file: video, poster, durationMs, chapters, stills })
+      return compact({
+        id,
+        side: c.side,
+        pairs,
+        title,
+        file: video,
+        poster,
+        durationMs,
+        chapters,
+        stills,
+      })
     },
     dropped,
   )
+  // A base clip pairs with one kept head clip, which may come after it in the manifest.
+  const heads = new Set(clips.filter((c) => c.side === 'head').map((c) => c.id))
+  const paired = new Set()
+  const kept = clips.filter((clip) => {
+    if (clip.side !== 'base') return true
+    const pairs = /** @type {string} */ (clip.pairs)
+    const reason = !heads.has(pairs)
+      ? `pairs: ${pairs} is not a head clip`
+      : paired.has(pairs)
+        ? `pairs: ${pairs} already has a base clip`
+        : null
+    if (reason) dropped.push({ at: `clips.${clip.id}`, reason })
+    else paired.add(pairs)
+    return !reason
+  })
   /** @param {unknown} json @param {string} field */
   const bounded = (json, field) => {
     let text
@@ -219,7 +248,7 @@ export function validateProofMedia(value, { head, sizeOf }) {
       schema: PROOF_MEDIA_SCHEMA,
       head: value.head.toLowerCase(),
       source,
-      clips,
+      clips: kept,
       transcripts,
     }),
     dropped,

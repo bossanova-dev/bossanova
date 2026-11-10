@@ -27,7 +27,7 @@ export const GENERATED_PATH =
  * @typedef {{path: string, adds: number | null, dels: number | null}} ChangedFile
  * @typedef {{spec?: unknown, media?: unknown, mediaSize?: (file: string) => number | null, snippet?: SnippetResolver, files?: unknown}} PageExtras
  * @typedef {{title: string, detail?: string, href?: string, link?: string, proof?: boolean}} WaitingItem
- * @typedef {{level: string, title: string, body?: string, items?: string[], ifItMatters?: string, area?: string, path?: string, line?: number}} RiskItem
+ * @typedef {{level: string, title: string, body?: string, items?: string[], ifItMatters?: string, label?: string, path?: string, line?: number}} RiskItem
  * @typedef {{label: string, files: FileDiff[], text: string | null, remaining: number}} AreaExcerpt
  * @typedef {{kind: string, url: string, caption: string, inline: boolean, poster?: string}} AreaMedia
  * @typedef {{id: string, name: string, summary: string, facts: {text: string, flag: boolean}[], tag: string,
@@ -144,9 +144,9 @@ export function buildPageModel({ proof, input, view, extras = {} }) {
   const heads = (media?.clips ?? []).filter((clip) => clip.side === 'head')
   const bases = (media?.clips ?? []).filter((clip) => clip.side === 'base')
   /** @type {StillPair[]} */
-  const pairs = bases.flatMap((base, i) =>
-    (base.stills ?? []).flatMap((still, j) => {
-      const head = heads[i]?.stills[j]
+  const pairs = bases.flatMap((base) =>
+    base.stills.flatMap((still, j) => {
+      const head = heads.find((clip) => clip.id === base.pairs)?.stills[j]
       return head ? [{ base: still, head }] : []
     }),
   )
@@ -187,7 +187,7 @@ export function buildPageModel({ proof, input, view, extras = {} }) {
               level: 'high',
               title: `Breaking API change in ${area.label ?? area.name}`,
               ...(area.changeReasons?.length ? { items: [...area.changeReasons] } : {}),
-              area: area.label ?? area.name,
+              label: area.label ?? area.name,
             },
           ]
         : []),
@@ -197,7 +197,7 @@ export function buildPageModel({ proof, input, view, extras = {} }) {
               level: 'medium',
               title: `Not in the description: ${area.label ?? area.name}`,
               items: [...area.unmentioned],
-              area: area.label ?? area.name,
+              label: area.label ?? area.name,
             },
           ]
         : []),
@@ -207,7 +207,7 @@ export function buildPageModel({ proof, input, view, extras = {} }) {
       title: risk.title,
       body: risk.body,
       ...(risk.ifItMatters ? { ifItMatters: risk.ifItMatters } : {}),
-      ...(risk.area ? { area: risk.area } : {}),
+      ...(risk.label ? { label: risk.label } : {}),
       path: risk.at.path,
       line: risk.at.line,
     })),

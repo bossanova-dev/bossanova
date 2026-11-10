@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,5 +193,67 @@ func TestSettingsRepoAmbiguityAndDaemonFailure(t *testing.T) {
 	}
 	if _, err := executeRepoSettings(t, g); err != nil {
 		t.Fatalf("machine settings must remain readable: %v", err)
+	}
+}
+
+func Test_Settings_AC243002_RepoSelectorPathWithEquals(t *testing.T) {
+	seedDaemonNameSettings(t)
+	repo := registeredControlRepo(t, "acme/oss", 42)
+	repo.Checkout = filepath.Join(t.TempDir(), "a=b")
+	if err := os.Mkdir(repo.Checkout, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	g := repoControlGroup(repo)
+	if _, err := executeRepoSettings(t, g, "--cloud-control-repo", repo.Checkout+"=read-only"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.CloudControlRepoGrant{Host: repo.Host, RepoID: 42, Name: repo.Name, Checkout: repo.Checkout, Mode: "read-only"}
+	if len(s.CloudControlRepos) != 1 || s.CloudControlRepos[0] != want {
+		t.Fatalf("grants = %#v, want %#v", s.CloudControlRepos, want)
+	}
+	if _, err := executeRepoSettings(t, g, "--cloud-control-repo", repo.Checkout+"=default"); err != nil {
+		t.Fatal(err)
+	}
+	s, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.CloudControlRepos) != 0 {
+		t.Fatalf("grants remain: %#v", s.CloudControlRepos)
+	}
+}
+
+func Test_Settings_AC243001_OwnerIdentityErrorNamesRepo(t *testing.T) {
+	for _, displayName := range []string{"Friendly New", ""} {
+		t.Run(displayName, func(t *testing.T) {
+			seedDaemonNameSettings(t)
+			verified := registeredControlRepo(t, "acme/oss", 42)
+			unknown := registeredControlRepo(t, "acme/new", 0)
+			unknown.DisplayName = displayName
+			_, err := executeRepoSettings(t, repoControlGroup(verified, unknown), "--cloud-control-owner", "github.com/acme=full")
+			if err == nil {
+				t.Fatal("unverified full grant accepted")
+			}
+			label := displayName
+			if label == "" {
+				label = unknown.Name
+			}
+			for _, want := range []string{label, unknown.Checkout, "can't verify this repo's identity with GitHub; try again"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("identity error %q lacks %q", err, want)
+				}
+			}
+			s, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(s.CloudControlRepos) != 0 {
+				t.Fatalf("partially saved grants: %#v", s.CloudControlRepos)
+			}
+		})
 	}
 }

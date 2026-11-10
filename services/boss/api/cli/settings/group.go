@@ -122,10 +122,11 @@ func (g *Group) applyRepoCloudControlFlags(cmd *cobra.Command, s *config.Setting
 }
 
 func applyRepoCloudControlValue(s *config.Settings, repos []*pb.RepoCloudControl, flag, value string) (bool, error) {
-	selector, mode, ok := strings.Cut(value, "=")
-	if !ok || selector == "" || mode == "" {
+	i := strings.LastIndex(value, "=")
+	if i <= 0 || i == len(value)-1 {
 		return false, fmt.Errorf("%s requires <repo or host/owner>=<default|private|read-only|full>", flag)
 	}
+	selector, mode := value[:i], value[i+1:]
 	matches := matchingRepoCloudControls(repos, flag, selector)
 	if len(matches) == 0 {
 		return false, fmt.Errorf("no registered repo matches %q", selector)
@@ -135,7 +136,11 @@ func applyRepoCloudControlValue(s *config.Settings, repos []*pb.RepoCloudControl
 	}
 	for _, repo := range matches {
 		if err := config.SetRepoCloudControl(s, repoCloudControlIdentity(repo), mode); err != nil {
-			return false, err
+			label := repo.GetDisplayName()
+			if label == "" {
+				label = repo.GetName()
+			}
+			return false, fmt.Errorf("%s (%s): %w", label, repo.GetCheckout(), err)
 		}
 	}
 	return mode == "full", nil

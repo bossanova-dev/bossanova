@@ -7966,7 +7966,10 @@ test('parkStillRaised attributes each code to the zero-token judge, a recorded e
       { applicable: ['a'], record: rec },
       true,
     ],
-    ['repair gave up', ['repair-exhausted'], { extensionsRan: false }, true],
+    ['repair still needed', ['repair-exhausted'], { repairing: true }, true],
+    ['fresh repair exhaustion', ['repair-exhausted'], { fresh: ['repair-exhausted'] }, true],
+    ['repair cleared', ['repair-exhausted'], { extensionsRan: false }, false],
+    ['repair cleared with a live extension', ['repair-exhausted'], { applicable: ['a'] }, false],
     ['worktree stuck off the head', ['worktree-diverged'], { extensionsRan: false }, true],
     ['worktree sync failed', ['worktree-unsynced'], { extensionsRan: false }, true],
     [
@@ -10569,6 +10572,62 @@ test('standing writer reports expose P2 blockers and notes, with newest update s
   )
   assert.equal(unknown.reason, 'approval-unreadable')
 })
+test('a clean superseding report releases a same-head repair-exhausted park', async () => {
+  const older = standingReport([p2Review], { id: 10, msAgo: 60_000 })
+  const newest = standingReport([], { id: 11, msAgo: 500 })
+  for (const policy of [false, true]) {
+    const w = world({
+      statuses: [
+        parkStatus(`needs human: repair-exhausted${policy ? ',human-review:ui' : ''}`),
+        receipt(),
+      ],
+      comments: [older, newest],
+      ...(policy ? { baseConfig: UI_POLICY, diff: ['web/a.tsx'] } : {}),
+    })
+    const result = await judge({ pr: 7, repo: REPO }, deps(w))
+    assert.deepEqual(
+      [result.verdict, result.reason, result.held],
+      policy ? ['human', 'human-review:ui', undefined] : ['pass', 'verified', undefined],
+    )
+    assert.deepEqual(w.mutating(), [])
+  }
+})
+test('a same-head repair-exhausted park does not hide remaining review blockers', async () => {
+  const w = world({
+    statuses: [parkStatus('needs human: repair-exhausted'), receipt()],
+    comments: [standingReport([p2Review])],
+  })
+  const result = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.equal(result.verdict, 'blocked')
+  assert.equal(result.blockers[0].file, p2Review.file)
+  assert.equal(result.held, undefined)
+})
+
+test('a same-head repair-exhausted park still sends fresh extension defects to repair', async (t) => {
+  const dir = tmp()
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
+  const w = world({
+    statuses: [parkStatus('needs human: repair-exhausted'), receipt()],
+    comments: [standingReport([])],
+  })
+  const result = await judge(
+    {
+      pr: 7,
+      repo: REPO,
+      extensionResults: jsonFile(dir, 'results.json', [
+        { extension: EXT.name, result: failResult },
+      ]),
+    },
+    deps(w, { discover: () => ({ extensions: [EXT] }) }),
+  )
+  assert.equal(result.verdict, 'defect')
+  assert.equal(result.findings[0].title, 'nil deref')
+  assert.equal(
+    parkStillRaised(['repair-exhausted'], { repairing: result.verdict === 'defect' }),
+    true,
+  )
+})
+
 test('blocked posts comment then failure and recovers identical head-bound blocker files from writer comments', async () => {
   const dir = tmp()
   try {

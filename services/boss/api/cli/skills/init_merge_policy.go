@@ -8,8 +8,53 @@ import (
 
 const startSlowGlob = "**"
 const startSlowLabel = "start slow, every PR waits until you enable auto-merge"
-const startSlowPolicyText = `verify parks every passing PR for boss pr approve or the TUI's [m]erge. To enable auto-merge, remove the "**" entry from verifyDefaults.alwaysHumanPaths and merge that change to the base branch.`
-const startSlowBeforeBuild = "commit .boss-skills.json and merge it to the base branch before the first build: verify reads its park-every-PR policy from there, and until then it merges passing PRs"
+
+type mergePolicy string
+
+const (
+	mergePolicyDefault mergePolicy = "default"
+	mergePolicyBrake   mergePolicy = "brake"
+	mergePolicyRules   mergePolicy = "rules"
+)
+
+func (policy mergePolicy) text() string {
+	switch policy {
+	case mergePolicyDefault:
+		return `verify merges nothing by default: it parks every passing PR for boss pr approve or the TUI's [m]erge. To let verify auto-merge, add rules to verifyDefaults.merge.auto (for example {"level": "high"}) and merge that change to the base branch.`
+	case mergePolicyBrake:
+		return `the config keeps its "**" verifyDefaults.alwaysHumanPaths entry, which parks every passing PR for boss pr approve or the TUI's [m]erge and which no verifyDefaults.merge.auto rule can cover. To let verify auto-merge, remove that entry, add verifyDefaults.merge.auto rules (for example {"level": "high"}) and merge that change to the base branch.`
+	default:
+		return ""
+	}
+}
+
+func writtenMergePolicy(existing []byte) mergePolicy {
+	if hasStartSlowEntry(existing) {
+		return mergePolicyBrake
+	}
+	if mergeAutoRules(existing) {
+		return mergePolicyRules
+	}
+	return mergePolicyDefault
+}
+
+func mergeAutoRules(existing []byte) bool {
+	var cfg struct {
+		VerifyDefaults struct {
+			Merge struct {
+				Auto []json.RawMessage `json:"auto"`
+			} `json:"merge"`
+		} `json:"verifyDefaults"`
+	}
+	return json.Unmarshal(existing, &cfg) == nil && len(cfg.VerifyDefaults.Merge.Auto) > 0
+}
+
+func detectedMergePolicy(cfg *verifyDefaultsBlock) mergePolicy {
+	if cfg != nil {
+		return mergePolicyBrake
+	}
+	return mergePolicyDefault
+}
 
 // detectedConfig carries detected commands and the policy resolved in Go. DisallowUnknownFields is used when decoding into it, so a
 // detector that grows a new block fails loudly here instead of having that
@@ -48,8 +93,8 @@ func newStartSlowPolicy() *verifyDefaultsBlock {
 	return &verifyDefaultsBlock{AlwaysHumanPaths: []alwaysHumanPathEntry{{Glob: startSlowGlob, Label: startSlowLabel}}}
 }
 
-func initStartSlowPolicy(target string, info os.FileInfo, force bool) *verifyDefaultsBlock {
-	if info == nil || (force && carryStartSlow(target, info)) {
+func initCarriedBrake(target string, info os.FileInfo, force bool) *verifyDefaultsBlock {
+	if force && carryStartSlow(target, info) {
 		return newStartSlowPolicy()
 	}
 	return nil
@@ -88,16 +133,15 @@ func hasStartSlowEntry(existing []byte) bool {
 	return false
 }
 
-func startSlowReport(enabled bool) string {
-	if !enabled {
+func mergePolicyReport(policy mergePolicy) string {
+	text := policy.text()
+	if text == "" {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("\nMerge policy:\n")
-	for _, text := range []string{startSlowPolicyText, startSlowBeforeBuild} {
-		for _, line := range wrapText(text) {
-			b.WriteString("  " + line + "\n")
-		}
+	for _, line := range wrapText(text) {
+		b.WriteString("  " + line + "\n")
 	}
 	return b.String()
 }

@@ -40,12 +40,12 @@ func (m Model) key(k tea.KeyMsg) (Model, tea.Cmd) {
 		if row == nil {
 			return m, nil
 		}
-		target := s.GetPrUrl()
-		if k.String() == "p" && s.GetAttention().GetProofUrl() != "" {
-			target = s.GetAttention().GetProofUrl()
+		target, missing := s.GetPrUrl(), "No PR for #%d"
+		if k.String() == "p" {
+			target, missing = s.GetAttention().GetProofUrl(), "No proof page for #%d"
 		}
 		if !webURL(target) {
-			m.status = fmt.Sprintf("No proof page or PR for #%d", s.GetPrNumber())
+			m.status = fmt.Sprintf(missing, s.GetPrNumber())
 			return m, nil
 		}
 		return m, func() tea.Msg { return openResultMsg{Err: m.openURL(target)} }

@@ -25,12 +25,15 @@ export function main(argv, deps = {}) {
     })
     values = parsed.values
     command = parsed.positionals[0]
+    if (values.scope === 'plan') {
+      throw new Error('plan scope requires plan/plan-claim.mjs --receipt <path>')
+    }
     const ttl = Number(values['ttl-seconds'] ?? 7200)
     if (
       parsed.positionals.length !== 1 ||
       !['acquire', 'release'].includes(command) ||
       !values.issue?.trim() ||
-      !['plan', 'build'].includes(values.scope) ||
+      values.scope !== 'build' ||
       !/^[a-fA-F0-9]{32}$/.test(values.token ?? '') ||
       !Number.isInteger(ttl) ||
       ttl <= 0 ||
@@ -38,12 +41,30 @@ export function main(argv, deps = {}) {
       (command === 'release' && values['ttl-seconds'] !== undefined)
     ) {
       throw new Error(
-        'expected acquire|release --issue ID --scope plan|build --token 32-hex [--ttl-seconds N]',
+        'expected acquire|release --issue ID --scope build --token 32-hex [--ttl-seconds N]',
       )
     }
   } catch (error) {
     return { status: 2, error: error.message }
   }
+  return runIssueLease(
+    {
+      command,
+      issue: values.issue,
+      scope: values.scope,
+      token: values.token,
+      ttlSeconds: Number(values['ttl-seconds'] ?? 7200),
+    },
+    deps,
+  )
+}
+
+/**
+ * Execute a validated issue lease request for a build or receipt-backed planning claim.
+ * @param {{command: string, issue: string, scope: string, token: string, ttlSeconds?: number}} request
+ * @param {{loadConfig?: () => {adapters: {tracker: string}}, resolveBinary?: typeof resolveBossBinary, run?: typeof spawnSync}} [deps]
+ */
+export function runIssueLease({ command, issue, scope, token, ttlSeconds = 7200 }, deps = {}) {
   const unavailable = (reason) => ({
     status: command === 'release' ? 0 : 4,
     result: { verdict: 'unavailable', reason },
@@ -56,13 +77,13 @@ export function main(argv, deps = {}) {
       'lease',
       command,
       '--issue',
-      `${config.adapters.tracker}:${values.issue}`,
+      `${config.adapters.tracker}:${issue}`,
       '--purpose',
-      values.scope,
+      scope,
       '--holder',
-      values.token,
+      token,
     ]
-    if (command === 'acquire') args.push('--ttl', `${values['ttl-seconds'] ?? 7200}s`)
+    if (command === 'acquire') args.push('--ttl', `${ttlSeconds}s`)
     args.push('--json')
     const response = (deps.run ?? spawnSync)(binary.path, args, {
       encoding: 'utf8',

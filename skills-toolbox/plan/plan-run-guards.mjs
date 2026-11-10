@@ -35,6 +35,7 @@ import {
   validateDependencyScanInput,
   withScanDefaults,
 } from './plan-deps-lib.mjs'
+import { runEpicReverifyBundle } from './plan-epic-reverify-bundle.mjs'
 import { CHILD_MAX_ESTIMATE, parseEpicSpec } from './plan-epic-lib.mjs'
 import { EPIC_REVERIFY_CLASS, epicReverifyVerdict } from './plan-epic-phase25.mjs'
 import { RUN_SCRATCH_DIR_PREFIX, planScratchPath, planScratchToken } from './plan-scratch-paths.mjs'
@@ -1033,6 +1034,10 @@ function runGuardVerb(argv) {
       process.stdout.write(`${JSON.stringify({ ...result, verdict })}\n`)
       return { verb, code: 0, reason: verdict.verdict }
     }
+    if (command === 'epic-reverify-bundle') {
+      verb = 'epic-reverify-bundle'
+      return { verb, ...runEpicReverifyBundle(argv) }
+    }
     if (command === 'epic-reverify' && first) {
       verb = 'epic-reverify'
       // This branch owns its read/parse/config errors: the shared catch below exits 1, and exit 1 is
@@ -1123,7 +1128,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-token <t> --comments <file|json> [--liveness <file|json>]] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID> [--open-prs <file>]\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-receipt <path> --comments <file|json> [--liveness <file|json>]] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify-bundle --run-scratch <dir> --payload <json> | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID> [--open-prs <file>]\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

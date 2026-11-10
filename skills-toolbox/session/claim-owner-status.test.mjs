@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { formatClaimComment, resolveClaimVerdict } from '../linear-claim.mjs'
@@ -16,7 +16,20 @@ function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'claim-owner-'))
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
   const out = join(dir, 'liveness.json')
-  return { dir, out, args: ['--me', me, '--out', out] }
+  const receipt = join(dir, '.linear-plans/run-owner/APP-1.claim-receipt.json')
+  mkdirSync(join(dir, '.linear-plans/run-owner'), { recursive: true })
+  writeFileSync(
+    receipt,
+    JSON.stringify({
+      version: 1,
+      scope: 'plan',
+      issueId: 'APP-1',
+      token: me,
+      commentId: null,
+      released: false,
+    }),
+  )
+  return { dir, out, args: ['--claim-receipt', receipt, '--out', out] }
 }
 const binary = () => ({ ok: true, path: '/boss' })
 
@@ -61,7 +74,7 @@ test('terminal evidence deduplicates lookups, names every peer and releases only
         return {
           status: 0,
           result: {
-            verdict: argv.at(-1).startsWith('a') ? 'released' : 'unavailable',
+            verdict: argv.token.startsWith('a') ? 'released' : 'unavailable',
             reason: 'offline',
           },
         }
@@ -85,12 +98,12 @@ test('terminal evidence deduplicates lookups, names every peer and releases only
   assert.equal(evidence.peers[3].owner, 'unknown')
   assert.equal(evidence.peers[4].owner, 'none')
   assert.deepEqual(
-    releases.map((argv) => argv.at(-1)),
+    releases.map((argv) => argv.token),
     ['a', 'b', 'c'].map((v) => v.repeat(32)),
   )
   assert.ok(
     releases.every(
-      (argv) => argv.slice(0, 6).join(' ') === 'release --scope plan --issue APP-1 --token',
+      (argv) => argv.command === 'release' && argv.scope === 'plan' && argv.issue === 'APP-1',
     ),
   )
   assert.equal(resolveClaimVerdict(comments, me, { scope: 'plan', now, ...evidence }), false)

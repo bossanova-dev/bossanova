@@ -288,7 +288,10 @@
       "services/docs/openapi/bossanova.v1.openapi.yaml"
     ],
     "generatedChecks": ["drift"],
-    "evidence": true
+    "evidence": true,
+    "merge": {
+      "auto": [{ "level": "high" }, { "area": "ui", "proof": "tests" }]
+    }
   },
   "planContract": {
     "sections": [

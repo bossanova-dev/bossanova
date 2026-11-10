@@ -21,6 +21,8 @@ const facts = (extra = {}) => ({
   receipt: 'success',
   ci: { settled: true, green: true },
   extensions: [],
+  // A repo whose merge rule lets a high head merge.
+  mergePolicy: { auto: [{ level: 'high' }] },
   ...extra,
 })
 const finding = {

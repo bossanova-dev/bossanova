@@ -30,6 +30,8 @@ for (const paths of [
       ci: { settled: true, green: true },
       receipt: 'success',
       extensions: [],
+      // Paths predict path parks; a high head merges only under a rule, which this repo has.
+      mergePolicy: { auto: [{ level: 'high' }] },
     })
     assert.deepEqual(prediction.codes, verdict.reasons ?? [])
     assert.deepEqual(prediction.labels, verdict.labels ?? [])

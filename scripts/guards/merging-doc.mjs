@@ -15,16 +15,17 @@ const SETTING_MEANINGS = {
   canAutoMerge: 'marks a passing draft PR ready for review; does not merge',
   canAutoMergeDependabot: 'lets Dependabot PRs auto-merge',
 }
-/** @typedef {{shared: readonly string[], session: readonly string[], human: readonly string[], review: import('../../skills-toolbox/verify/verify-review-policy.mjs').ReviewPolicy, settings: Record<string, boolean | undefined>}} Sources */
+/** @typedef {{shared: readonly string[], session: readonly string[], human: readonly string[], review: import('../../skills-toolbox/verify/verify-review-policy.mjs').ReviewPolicy, merge: import('../../skills-toolbox/verify/verify-merge-policy.mjs').MergeRule[] | null, settings: Record<string, boolean | undefined>}} Sources */
 
 /** @param {string} repoRoot @returns {Promise<Sources>} */
 export async function loadSources(repoRoot) {
   const load = (file) => import(pathToFileURL(path.join(repoRoot, file)).href)
-  const [shared, session, human, config] = await Promise.all([
+  const [shared, session, human, config, merge] = await Promise.all([
     load('skills-toolbox/epic/merge-eligibility.mjs'),
     load('skills-toolbox/build/completion-gate.mjs'),
     load('skills-toolbox/verify/verify-gate.mjs'),
     load('skills-toolbox/skill-config.mjs'),
+    load('skills-toolbox/verify/verify-merge-policy.mjs'),
   ])
   const policy = config.loadSkillConfig({ cwd: repoRoot })
   const project = JSON.parse(fs.readFileSync(path.join(repoRoot, '.boss-project.json'), 'utf8'))
@@ -33,6 +34,7 @@ export async function loadSources(repoRoot) {
     session: session.INELIGIBLE_REASONS,
     human: human.HUMAN_REASONS,
     review: config.verifyPolicyFromConfigText(JSON.stringify(policy), '.boss-skills.json').review,
+    merge: merge.mergeRules(policy.verifyDefaults?.merge),
     settings: project.repo?.settings ?? {},
   }
 }
@@ -89,6 +91,14 @@ export function renderRegion(sources) {
     list(sources.review.neverReview),
     '',
     'The legacy keys `alwaysHumanPaths` and `humanReview` are deprecated; move their globs to named `alwaysReview` areas.',
+    '',
+    '## Merge rules',
+    '',
+    'Source: `.boss-skills.json`, `verifyDefaults.merge.auto`, applied by `skills-toolbox/verify/verify-merge-policy.mjs`, `policyCodes`.',
+    '',
+    sources.merge?.length
+      ? sources.merge.map((rule) => `- \`${JSON.stringify(rule)}\``).join('\n')
+      : 'none: every PR verify passes waits for a person to merge it.',
     '',
     '## Repo settings',
     '',

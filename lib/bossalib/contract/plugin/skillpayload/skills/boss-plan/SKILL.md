@@ -357,6 +357,10 @@ bash <skill-dir>/toolbox/plan/boss-plan-run.sh contract-gate --run-scratch .line
 
 It fails only on a missing `## Summary` / `## Original notes`, text that is not a plan description,
 an unsubstituted placeholder, or an empty/truncated plan; everything else is a `warning:`.
+For code in another repository, add `- Target repo: <owner>/<name>` under the description’s
+`## Planning` and pass `--target-root <checkout>` to `plan-contract-guard.mjs` when a matching
+checkout exists; otherwise it prints one `target-repo-not-resolved` advisory in place of per-path
+warnings.
 
 Then:
 
@@ -510,8 +514,9 @@ the write-back verdict and read route; the dependency verdict (`<verdict> compar
 transitive-block warning; premise drift; predicted verify park codes, labels and action; for an epic,
 the parent and child ids; for a child fan-out, the per-child table and the parent-flip result ([`references/child-fanout.md`](references/child-fanout.md)).
 
-On every terminal path, first release this run's issue lease with its retained token per the planning claim protocol, then release its comment by the retained id with
-`deleteComment` when the adapter declares that optional operation. Release is best-effort and never
+On every terminal path, first run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs release --receipt "$CLAIM_RECEIPT"`
+per the planning claim protocol, then delete its printed `commentId`, when non-null, through
+`deleteComment` when the adapter declares that optional operation. Remove scratch last. Release is best-effort and never
 fatal: a stranded plan claim forfeits when its owner session is archived or closed, otherwise after two hours; build arbitration ignores it. Release also
 before selecting the next candidate. See [planning claims](references/planning-claims.md).
 

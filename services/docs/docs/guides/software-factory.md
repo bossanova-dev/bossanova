@@ -99,7 +99,9 @@ that commit, mergeability, and the `boss/build` receipt. Then it runs any
 [verify extensions](../skills/extensions.md) your repository installs. The verdict lands as a `boss/verify` status on
 the commit:
 
-- A pass merges the PR, pinned to that commit, and moves the ticket to Done.
+- A pass merges the PR, pinned to that commit, and moves the ticket to Done, when one
+  of your [merge rules](./pr-lifecycle.md#steps) allows it. Without a rule the pass
+  waits for you to merge it (`human-merge`).
 - A defect posts the findings as a PR comment and a failure status, which hands the
   PR to repair. An unparked defect also converts the PR to draft. After its push,
   boss-repair marks it ready before re-verification only when verify drafted it;
@@ -300,18 +302,18 @@ verify job, or when you run `boss-verify` yourself.
 
 Add `agent-plan` to a Backlog ticket to start the pipeline.
 
-### Start slow, then turn on auto-merge
+### Verify merges nothing until you opt in
 
-A fresh `boss init` config includes a `"**"` entry in
-`verifyDefaults.alwaysHumanPaths`, labelled "start slow, every PR waits until you enable auto-merge".
-It parks every passing PR for approval through `boss pr approve <pr>` or the TUI's
-`[m]erge`. Commit `.boss-skills.json` and merge it to the base branch before the
-first build: verify reads policy from there, and until then passing PRs merge automatically.
+Verify merges nothing by default. It parks every passing PR for approval through
+`boss pr approve <pr>` or the TUI's `[m]erge`. A fresh `boss init` writes no
+`verifyDefaults` block. To let verify auto-merge, add `verifyDefaults.merge.auto`
+rules, for example `"merge": { "auto": [{ "level": "high" }] }` inside
+`verifyDefaults`, and merge that config change to the base branch.
 
-Once you trust the factory, remove the `"**"` entry from
-`verifyDefaults.alwaysHumanPaths` and merge that change to the base branch to turn
-on auto-merge. The PR that removes it still waits for approval. Keep any other
-always-human paths you want to review. Existing configs keep their policy:
+Older configs with a `"**"` entry in `verifyDefaults.alwaysHumanPaths` keep parking
+every PR: auto-merge rules never cover that floor. Remove that entry as well as
+adding the rules to opt in. The policy change itself waits for approval. Keep any
+other always-human paths you want to review. Existing configs keep their policy:
 `--merge` never adds or removes this entry, and `--force` keeps it only if the
 replaced config had it.
 
@@ -369,9 +371,9 @@ also asks for review from `verifyDefaults.reviewers`, or by default from the
 repository owner. When the owner opened the PR, it is assigned to them instead. A saved Linear view filtered to label `needs-human`
 lists everything waiting for you, at any stage.
 
-With the [start-slow default](#start-slow-then-turn-on-auto-merge), every passing PR
-waits here until you remove the `"**"` entry from `verifyDefaults.alwaysHumanPaths`
-and merge that change to the base branch.
+With the [default merge policy](#verify-merges-nothing-until-you-opt-in), every passing PR
+waits here until the base branch carries `verifyDefaults.merge.auto` rules that allow
+it. An older `"**"` entry in `verifyDefaults.alwaysHumanPaths` must also be removed.
 
 Read the findings, then decide.
 

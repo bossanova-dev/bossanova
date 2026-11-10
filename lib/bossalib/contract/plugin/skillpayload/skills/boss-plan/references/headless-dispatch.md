@@ -6,7 +6,7 @@ then the three rules that decide a run only when something is unusual — an EPI
 death, or a metadata object that does not match the file at its declared path. Read those at those
 three points, not on the happy path.
 
-Every Phase 2 abort path releases this run's retained planning claim before removing scratch or
+Every Phase 2 abort path releases this run's planning claim through its receipt before removing scratch or
 executing `exit 1`; use the best-effort release in [planning claims](planning-claims.md).
 Immediately after a drafter returns, run its fresh recheck before metadata adoption and Phase 4.
 
@@ -128,27 +128,47 @@ that verb reads files, never the tracker: tracker reads are tool calls, which ca
 bash block and share no shell state with it. So once the sentinel reports `payload.epic == true`,
 and before the step-4 block runs:
 
-1. `getIssue` the parent. When the adapter declares `listChildren`, invoke it with `{parentId}`
-   and use every hydrated child it returns. Otherwise `list_issues parentId=<parent> limit=250`
-   and `getIssue` each child it returns. Print any `relationWarnings`.
-2. Write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify.json` as
-   `{parentId, childIds, parent, children}` — `parentId` and `childIds` from the sentinel payload,
-   `parent` and `children` carrying each issue's id, identifier, state, labels, attachments and
-   links, and **no descriptions**. The verb ignores any description it finds there and derives every
-   other path from the run directory itself, so nothing in the bundle can redirect a comparison.
-3. Read every description through `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-description --id <UUID> --out-file <path>`
+1. `getIssue` the parent and save the bare response unchanged to
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-parent.json`.
+   When the adapter declares `listChildren`, invoke it with `{parentId}` and save its unchanged result
+   to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-children.json`.
+   Otherwise `list_issues parentId=<parent> limit=250`, `getIssue` every returned child, and save each
+   bare response unchanged to
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-child-<CHILD-ID>.json`,
+   named by its identifier (or id when it has no identifier). Do not strip or reconstruct fields.
+2. Build the bundle from those saved payloads and the sentinel's ids:
+
+   ```bash
+   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+   RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
+   node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" epic-reverify-bundle \
+     --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> \
+     --payload "$(node "$RUN_SENTINEL" read "<RUN_DIR>" "<RUN_ID>" draft | jq -c '.payload // {}')"
+   ```
+
+   Exit 0 prints the bundle path, live children, coverage gaps and `storedDescriptions` paths;
+   listing `relationWarnings` are printed to stderr. Exit 2 is a usage error: correct the invocation.
+   On exit 3, fix each defect's saved input, re-save the payload and run the verb once more.
+   If it still exits 3, report `epic reverify bundle defect — needs a human; run scratch kept`,
+   release this run's planning claim, and clean up only the sentinel with
+   `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs cleanup <RUN_DIR>`
+   (the step-4 needs-human arm); retain the run scratch. When `unhydratedChildIds` is non-empty,
+   `getIssue` each named id, save its per-child payload, and rerun the verb once. Never edit the
+   bundle by hand. Coverage gaps do not decide the epic's class; `epic-reverify` does.
+   A fallback payload without a positive parent link remains a coverage gap: identity alone
+   cannot prove that the issue belongs to this epic. A live children listing proves membership.
+
+3. Read every description into the exact paths printed under `storedDescriptions`: `parent` and
+   every entry in `children`, including live children absent from the sentinel's `childIds`.
+   Use `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-description --id <UUID> --out-file <path>`
    on the run's one route (`references/plan-storage.md`; on the `getIssue` fallback route, copy
-   the returned description byte-for-byte to the same path): the parent into
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-stored.md`, and **every live child
-   enumeration returned** — not only the `childIds` — into
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<CHILD-ID>.image-guard-stored.md`, named by
-   its `identifier`, the key the sentinel's `childIds` and `image-guard-new` basenames use. On the
-   single-record route the parent is different: read its one `Implementation plan (<ISSUE-ID>)`
-   overview record through `readPlanAttachment` (`read-plan`) directly into the parent's
-   `image-guard-stored.md`; never use its unchanged issue description as the overview. For every
-   live child, copy `getIssue`'s `description` byte-for-byte into its child stored file when
-   `readDescription` is absent (the GitHub route). Stop on a read failure, duplicate overview
-   records, or a receipt `id` / `identifier` that is not the one requested.
+   the returned description byte-for-byte to the same path). On the single-record route the
+   parent is different: read its one `Implementation plan (<ISSUE-ID>)` overview record through
+   `readPlanAttachment` (`read-plan`) directly into its printed stored-description path; never use
+   its unchanged issue description as the overview. For every live child, copy `getIssue`'s
+   `description` byte-for-byte into its printed stored file when `readDescription` is absent
+   (the GitHub route). Stop on a read failure, duplicate overview records, or a receipt
+   `id` / `identifier` that is not the one requested.
 
 The verb prints one JSON verdict on stdout and exits by class:
 

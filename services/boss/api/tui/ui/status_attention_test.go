@@ -32,7 +32,8 @@ func TestProof_Sessions_AC208704(t *testing.T) {
 }
 
 // proofCases is a session for each ProofTarget case, in its order: a proof
-// page, a legacy video, a verify park's PR conversation, and nothing.
+// page, a legacy video, then sessions with no proof target. A verify park on
+// a PR with neither a page nor a video has none: [g]ithub opens its PR.
 func proofCases() []struct {
 	name    string
 	session *pb.Session
@@ -48,7 +49,9 @@ func proofCases() []struct {
 	}{
 		{"proof page", &pb.Session{PrUrl: &pr, Attention: &pb.SessionAttention{Kind: review, ParkCodes: []string{"human-review:ui"}, Actions: []pb.AttentionAction{github, proof, merge}, ProofUrl: "https://proof.test/page", EvidenceUrl: "https://proof.test/video.mp4"}}, "https://proof.test/page"},
 		{"legacy video", &pb.Session{PrUrl: &pr, Attention: &pb.SessionAttention{Kind: review, ParkCodes: []string{"human-review:ui"}, Actions: []pb.AttentionAction{github, video, merge}, EvidenceUrl: "https://proof.test/video.mp4"}}, "https://proof.test/video.mp4"},
-		{"verify comment", &pb.Session{PrUrl: &pr, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, ParkCodes: []string{"ledger-open"}, Actions: []pb.AttentionAction{github}}}, pr},
+		{"blocked park without proof", &pb.Session{PrUrl: &pr, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, ParkCodes: []string{"ledger-open"}, Actions: []pb.AttentionAction{github}}}, ""},
+		{"review park without proof", &pb.Session{PrUrl: &pr, Attention: &pb.SessionAttention{Kind: review, ParkCodes: []string{"human-review:ui"}, Actions: []pb.AttentionAction{github, merge}}}, ""},
+		{"proof action without page", &pb.Session{PrUrl: &pr, Attention: &pb.SessionAttention{Kind: review, ParkCodes: []string{"human-review:ui"}, Actions: []pb.AttentionAction{github, proof, video, merge}}}, ""},
 		{"none", &pb.Session{PrUrl: &pr, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, Actions: []pb.AttentionAction{merge, github}}}, ""},
 	}
 }
@@ -91,9 +94,9 @@ func TestProofTargetOrder_Sessions_AC208902(t *testing.T) {
 }
 
 // TestProofStandsWhereTheDaemonListedIt_Sessions_AC208902 keeps [p] proof between github and
-// merge whether the daemon served PROOF, VIDEO or neither.
+// merge whether the daemon served PROOF or VIDEO.
 func TestProofStandsWhereTheDaemonListedIt_Sessions_AC208902(t *testing.T) {
-	for _, tc := range proofCases()[:3] {
+	for _, tc := range proofCases()[:2] {
 		if got, want := AttentionFooter(tc.session, true), []string{"[g] github", "[p] proof"}; !slices.Equal(got[:min(2, len(got))], want) {
 			t.Errorf("%s: details footer = %v, want it to open %v", tc.name, got, want)
 		}

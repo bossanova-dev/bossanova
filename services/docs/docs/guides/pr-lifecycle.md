@@ -35,6 +35,30 @@ where you sit inside it.
    mergeable returns its repair slot within one Dependabot poll once
    its repair lease ends. Other PRs follow the repository's verify or
    manual merge path.
+
+   Verify's auto-merge is opt-in. With no `verifyDefaults.merge` block
+   in `.boss-skills.json`, a PR that verify passes waits for a person to
+   merge it. A repository lists the PRs verify merges on its own as
+   `auto` rules, read from the base branch so a PR cannot change them:
+
+   ```json
+   "verifyDefaults": {
+     "merge": {
+       "auto": [
+         { "level": "high" },
+         { "area": "ui", "proof": "tests" }
+       ]
+     }
+   }
+   ```
+
+   `{ "level": "high" }` merges every PR verify rates high, which is
+   what verify did before merge rules existed. Protected paths, an
+   extension's sign-off and asks the verify judge raised always wait for
+   a person. See the
+   [`verifyDefaults.merge` reference](https://github.com/bossanova-dev/bossanova/blob/main/docs/skills/skill-config.md)
+   for every rule key.
+
 7. **Archive.** Close the session in `boss`. The worktree is removed
    and the session row drops out of Home (visible later in Trash).
 

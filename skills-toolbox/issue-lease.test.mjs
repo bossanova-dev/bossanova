@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { main } from './issue-lease.mjs'
+import { main, runIssueLease } from './issue-lease.mjs'
 
 const token = 'a'.repeat(32)
 const argv = (action = 'acquire') => [
@@ -12,7 +12,7 @@ const argv = (action = 'acquire') => [
   '--issue',
   'ENG-1',
   '--scope',
-  'plan',
+  'build',
   '--token',
   token,
 ]
@@ -48,7 +48,7 @@ test('acquire forwards configured tracker, holder, purpose and bounded TTL to bo
         '--issue',
         `${tracker}:ENG-1`,
         '--purpose',
-        'plan',
+        'build',
         '--holder',
         token,
         '--ttl',
@@ -136,4 +136,54 @@ test('real resolver without boss degrades with a single JSON output line', () =>
   } finally {
     rmSync(cwd, { recursive: true, force: true, maxRetries: 3 })
   }
+})
+
+test('plan scope on argv requires a claim receipt with no stdout', () => {
+  const result = spawnSync(
+    process.execPath,
+    ['skills-toolbox/issue-lease.mjs', ...argv(), '--scope', 'plan'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(result.status, 2)
+  assert.equal(result.stdout, '')
+  assert.match(result.stderr, /plan\/plan-claim\.mjs --receipt/)
+})
+
+test('receipt-backed plan leases preserve injectable execution and outcomes', () => {
+  for (const [response, status] of [
+    [
+      {
+        status: 0,
+        stdout: JSON.stringify({ is_acquired: true, scope: 'daemon', expires_at: 'later' }),
+      },
+      0,
+    ],
+    [{ status: 3, stdout: '{"expires_at":"later"}' }, 3],
+    [{ status: 1, stderr: 'unavailable' }, 4],
+  ]) {
+    const h = harness(response)
+    const result = runIssueLease(
+      { command: 'acquire', issue: 'ENG-1', scope: 'plan', token, ttlSeconds: 30 },
+      h.deps,
+    )
+    assert.equal(result.status, status)
+    assert.deepEqual(h.calls[0][1], [
+      'lease',
+      'acquire',
+      '--issue',
+      'github:ENG-1',
+      '--purpose',
+      'plan',
+      '--holder',
+      token,
+      '--ttl',
+      '30s',
+      '--json',
+    ])
+  }
+  const h = harness({ status: 2 })
+  assert.equal(
+    runIssueLease({ command: 'release', issue: 'ENG-1', scope: 'plan', token }, h.deps).status,
+    0,
+  )
 })

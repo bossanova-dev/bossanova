@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -99,3 +108,60 @@ test('rejects unknown CLI arguments', () => {
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /Unknown option/)
 })
+
+for (const buildStatus of [0, 19]) {
+  test(`build preserves caller workspace checksums and cleans up (exit ${buildStatus})`, (t) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'skills-build-test-'))
+    t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+    const bin = path.join(dir, 'bin')
+    mkdirSync(bin)
+    const workspace = 'go 1.26\nuse ./module\n'
+    const checksum = 'caller-owned pre-existing checksum edits\n'
+    writeFileSync(path.join(dir, 'go.work'), workspace)
+    writeFileSync(path.join(dir, 'go.work.sum'), checksum)
+    writeFileSync(path.join(dir, 'Makefile'), 'build-boss:\n\tgo build\n')
+    const log = path.join(dir, 'build.json')
+    writeFileSync(
+      path.join(bin, 'go'),
+      `#!${process.execPath}
+const fs = require('node:fs')
+fs.writeFileSync(process.env.TEST_BUILD_LOG, JSON.stringify({
+  workspace: process.env.GOWORK,
+  contents: fs.readFileSync(process.env.GOWORK, 'utf8'),
+  checksum: fs.readFileSync(process.env.GOWORK + '.sum', 'utf8'),
+}))
+fs.appendFileSync(process.env.GOWORK + '.sum', 'build checksum churn\\n')
+process.exit(${buildStatus})
+`,
+      { mode: 0o755 },
+    )
+    const boss = path.join(bin, 'boss')
+    writeFileSync(boss, '#!/bin/sh\nprintf "installed: yes\\n"\n', { mode: 0o755 })
+    const result = spawnSync(process.execPath, [helper.pathname, '--boss', boss, '--build'], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        TEST_BUILD_LOG: log,
+      },
+      encoding: 'utf8',
+    })
+    assert.equal(result.status, buildStatus === 0 ? 0 : 2, result.stderr)
+    const built = JSON.parse(readFileSync(log, 'utf8'))
+    assert.equal(path.dirname(built.workspace), realpathSync(dir))
+    assert.notEqual(built.workspace, path.join(dir, 'go.work'))
+    assert.equal(built.contents, workspace)
+    assert.equal(built.checksum, checksum)
+    assert.equal(readFileSync(path.join(dir, 'go.work'), 'utf8'), workspace)
+    assert.equal(readFileSync(path.join(dir, 'go.work.sum'), 'utf8'), checksum)
+    assert.equal(existsSync(built.workspace), false)
+    assert.equal(existsSync(built.workspace + '.sum'), false)
+    assert.deepEqual(readdirSync(dir).sort(), [
+      'Makefile',
+      'bin',
+      'build.json',
+      'go.work',
+      'go.work.sum',
+    ])
+  })
+}

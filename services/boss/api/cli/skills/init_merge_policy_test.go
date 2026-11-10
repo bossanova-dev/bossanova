@@ -11,15 +11,16 @@ import (
 	"testing"
 )
 
-func TestInitStartSlowPolicy_BossInit_AC11(t *testing.T) {
+func TestInitStartSlowPolicy_BossInit_AC11_AC239301(t *testing.T) {
 	for _, tc := range []struct {
 		name, existing            string
 		force, merge, roles, want bool
 	}{
-		{name: "fresh", want: true},
-		{name: "fresh force", force: true, want: true},
-		{name: "fresh roles", roles: true, want: true},
-		{name: "fresh merge", merge: true, want: true},
+		{name: "fresh"},
+		{name: "fresh force", force: true},
+		{name: "fresh roles", roles: true},
+		{name: "fresh merge", merge: true},
+		{name: "merge rules", existing: `{"verifyDefaults":{"merge":{"auto":[{"level":"high"}]}}}`, merge: true, roles: true},
 		{name: "merge configured", existing: `{}`, merge: true},
 		{name: "merge brake", existing: `{"verifyDefaults":{"alwaysHumanPaths":[{"glob":"**","label":"keep this label"}]}}`, merge: true, want: true},
 		{name: "force configured", existing: `{}`, force: true},
@@ -52,7 +53,7 @@ func TestInitStartSlowPolicy_BossInit_AC11(t *testing.T) {
 				t.Fatal(err)
 			}
 			policy, present := cfg["verifyDefaults"]
-			if present != tc.want {
+			if present != (tc.want || tc.name == "merge rules") {
 				t.Fatalf("verifyDefaults = %s, present %v; want %v", policy, present, tc.want)
 			}
 			if tc.want {
@@ -83,19 +84,35 @@ func TestInitStartSlowPolicy_BossInit_AC11(t *testing.T) {
 					}
 				}
 			}
-			// A merge report describes leaves; the fresh/replacement report and summary describe the policy.
+			if tc.name == "merge rules" && !jsonEqual([]byte(`{"merge":{"auto":[{"level":"high"}]}}`), policy) {
+				t.Fatalf("merge changed rules: %s", raw)
+			}
+			summary := (&initInterview{group: newTestGroup(), steps: steps}).summary()
+			reports := map[string]string{"summary": summary}
+			// Non-interactive merge reports describe changed leaves only.
 			if !tc.merge || tc.existing == "" {
-				summary := (&initInterview{group: newTestGroup(), steps: steps}).summary()
-				for name, report := range map[string]string{"report": out.String(), "summary": summary} {
-					if strings.Contains(report, "Merge policy:") != tc.want {
-						t.Errorf("%s merge policy presence: %s", name, report)
-					}
-					if tc.want {
-						for _, text := range []string{`remove the "**" entry from verifyDefaults.alwaysHumanPaths and merge that change to the base branch`, "before the first build", "boss pr approve", "[m]erge"} {
-							if !strings.Contains(strings.Join(strings.Fields(report), " "), text) {
-								t.Errorf("%s missing %q: %s", name, text, report)
-							}
-						}
+				reports["report"] = out.String()
+			}
+			for name, report := range reports {
+				wantLine := tc.name != "merge rules" && (name != "summary" || steps.ConfigPath != "")
+				if strings.Contains(report, "Merge policy:") != wantLine {
+					t.Errorf("%s merge policy presence: %s", name, report)
+				}
+				if strings.Contains(report, "before the first build") {
+					t.Errorf("%s contains obsolete build instruction: %s", name, report)
+				}
+				if !wantLine {
+					continue
+				}
+				texts := []string{"verifyDefaults.merge.auto", `{"level": "high"}`, "boss pr approve", "[m]erge"}
+				if tc.want {
+					texts = append(texts, `keeps its "**" verifyDefaults.alwaysHumanPaths entry`, "no verifyDefaults.merge.auto rule can cover")
+				} else {
+					texts = append(texts, "verify merges nothing by default")
+				}
+				for _, text := range texts {
+					if !strings.Contains(strings.Join(strings.Fields(report), " "), text) {
+						t.Errorf("%s missing %q: %s", name, text, report)
 					}
 				}
 			}
@@ -119,20 +136,34 @@ const m = await import(pathToFileURL(%s).href)
 const globs = m.verifyAlwaysHumanPaths(m.loadSkillConfig({cwd:%s}))
 process.stdout.write(JSON.stringify(globs.map(entry => ['README.md', 'a/b/c.go', '.github/workflows/x.yml'].map(path => m.globToRegExp(entry).test(path)))))
 `, jsString(bridge.module), jsString(dir))
-	raw, err := bridge.run(script, "read start slow policy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var matches [][]bool
-	if err := json.Unmarshal(raw, &matches); err != nil {
-		t.Fatal(err)
-	}
-	if len(matches) != 1 || len(matches[0]) != 3 {
-		t.Fatalf("matches = %s", raw)
-	}
-	for _, match := range matches[0] {
-		if !match {
-			t.Fatalf("policy misses path: %s", raw)
+	for _, carry := range []bool{false, true} {
+		if carry {
+			writeFixture(t, dir, map[string]string{".boss-skills.json": `{"verifyDefaults":{"alwaysHumanPaths":["**"]}}`})
+			if err := newTestGroup().runInit(&out, dir, true, initOptions{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		raw, err := bridge.run(script, "read merge policy")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var matches [][]bool
+		if err := json.Unmarshal(raw, &matches); err != nil {
+			t.Fatal(err)
+		}
+		if !carry {
+			if len(matches) != 0 {
+				t.Fatalf("fresh policy = %s", raw)
+			}
+			continue
+		}
+		if len(matches) != 1 || len(matches[0]) != 3 {
+			t.Fatalf("matches = %s", raw)
+		}
+		for _, match := range matches[0] {
+			if !match {
+				t.Fatalf("policy misses path: %s", raw)
+			}
 		}
 	}
 }

@@ -115,3 +115,17 @@ test('review paths render named areas, park codes, omissions and legacy deprecat
   assert.match(text, /### neverReview[\s\S]*`dbt\/\*\*`/)
   assert.match(text, /legacy keys.*deprecated/i)
 })
+
+test('merge rules render each base rule, or say nothing merges without one', async () => {
+  const sources = await loadSources(repoRoot)
+  const rules = renderRegion({
+    ...sources,
+    merge: [{ level: 'high' }, { area: 'ui', proof: 'tests' }],
+  })
+  assert.match(
+    rules,
+    /## Merge rules[\s\S]*- `\{"level":"high"\}`\n- `\{"area":"ui","proof":"tests"\}`/,
+  )
+  for (const merge of [null, []])
+    assert.match(renderRegion({ ...sources, merge }), /## Merge rules[\s\S]*none: every PR/)
+})

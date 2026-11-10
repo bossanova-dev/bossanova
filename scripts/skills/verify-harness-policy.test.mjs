@@ -16,10 +16,10 @@ import {
 import { CONFIG_FILENAME, verifyPolicyFromConfigText } from '../../skills-toolbox/skill-config.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..')
-const policy = verifyPolicyFromConfigText(
-  readFileSync(join(ROOT, CONFIG_FILENAME), 'utf8'),
-  CONFIG_FILENAME,
-)
+const configText = readFileSync(join(ROOT, CONFIG_FILENAME), 'utf8')
+const policy = verifyPolicyFromConfigText(configText, CONFIG_FILENAME)
+// The repo's merge rules, which the gate reads from the same base-tip block.
+const mergePolicy = JSON.parse(configText).verifyDefaults?.merge ?? null
 
 const HARNESS_PATHS = [
   '.claude/skills/verify/lib/pr-evidence.mjs',
@@ -111,6 +111,7 @@ function factsFor(changedPaths) {
     areas,
     judgeAreas: [],
     review: policy.review,
+    mergePolicy,
     changedLines: 12,
     sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
     policySurfaceHit: policySurfaceHits(changedPaths).length > 0,

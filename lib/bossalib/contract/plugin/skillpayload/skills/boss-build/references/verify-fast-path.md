@@ -103,6 +103,7 @@ rearms on transition, so a new head is judged again. The file follows the blocke
 
 A human judge writes its `confidence` object to a run-temp JSON file and posts with
 `post --verdict human --confidence <file>`, adding `--judge-record <judgeRecord>` when returned
-so later ticks preserve the added asks. High passes and merges immediately; Moderate and Low
-park with their level and asks. Changed-range and size-baseline collection get three attempts;
+so later ticks preserve the added asks. High merges only when a base-tip `verifyDefaults.merge`
+rule allows it and otherwise parks `human-merge`; Moderate and Low park with their level and the
+asks no rule covers. Changed-range and size-baseline collection get three attempts;
 unavailable evidence then parks as `cannot-assess` and is re-judged on the next tick.

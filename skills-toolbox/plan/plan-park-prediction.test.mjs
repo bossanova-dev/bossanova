@@ -171,6 +171,8 @@ test('plan predictions match judge path reasons across policy categories and mix
       ci: { settled: true, green: true },
       receipt: 'success',
       extensions: [],
+      // A prediction names path parks only; a high head merges under a rule this repo has.
+      mergePolicy: { auto: [{ level: 'high' }] },
     })
     assert.deepEqual(prediction.codes, verdict.reasons ?? [])
     assert.deepEqual(prediction.labels, verdict.labels ?? [])

@@ -169,6 +169,8 @@ No headings are required, except that it **ends with `## Original notes`**, whos
 `DESCRIPTION_SNAPSHOT_PATH` and runs to the end of the file (`plan-image-guard.mjs --require-verbatim`
 checks it). Some things help the implementer and the guards:
 
+- For code in another repository, add `- Target repo: <owner>/<name>` under the description’s
+  `## Planning`; the contract guard resolves root-dependent checks only in that repository.
 - **One ticket, one PR.** If the plan enumerates two or more independently mergeable tasks, it is an
   epic — re-triage.
 - **Acceptance criteria** as checkboxes (`- [ ] …`), each demonstrable by a test or gate. A criterion
@@ -251,6 +253,10 @@ no history, so a dropped URL is gone. Use a fenced block for any literal whose s
 matters.
 
 ## Step 8 — Verify, then write the sentinel
+
+For a declared foreign target, pass `--target-root <checkout>` to `plan-contract-guard.mjs` when a
+matching checkout exists; without one it prints one `target-repo-not-resolved` advisory in place of
+per-path warnings.
 
 Write a redacted, signature-stripped copy of the snapshot to
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md`. Fix anything either guard

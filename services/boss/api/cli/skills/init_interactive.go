@@ -803,8 +803,8 @@ func (iv *initInterview) summary() string {
 		line("Config", "unchanged")
 	}
 
-	if s.StartSlow {
-		line("Merge policy", startSlowPolicyText)
+	if s.ConfigPath != "" && s.MergePolicy.text() != "" {
+		line("Merge policy", s.MergePolicy.text())
 	}
 
 	if len(s.Crons) == 0 {
@@ -836,11 +836,7 @@ func (iv *initInterview) summary() string {
 	b.WriteString("  Left to do:\n")
 	left := []string{}
 	if s.ConfigPath != "" {
-		if s.StartSlow {
-			left = append(left, startSlowBeforeBuild)
-		} else {
-			left = append(left, "commit "+filepath.Base(s.ConfigPath)+" and merge it to the base branch: cron sessions run in fresh worktrees off it")
-		}
+		left = append(left, "commit "+filepath.Base(s.ConfigPath)+" and merge it to the base branch: cron sessions run in fresh worktrees off it")
 	}
 	if iv.opts.tracker == "github" {
 		if len(s.GitHubMissing) > 0 {

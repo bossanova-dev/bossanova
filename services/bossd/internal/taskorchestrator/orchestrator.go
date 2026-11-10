@@ -346,13 +346,9 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 		isTerminal := existing.Status == domain.TaskMappingStatusCompleted ||
 			existing.Status == domain.TaskMappingStatusFailed
 
-		// A terminal mapping is not a permanent tombstone. The dependabot plugin
-		// only re-emits a task for a PR that is still OPEN and actionable, so a
-		// fresh AUTO_MERGE means a now-green PR still needs merging (e.g. a repair
-		// session completed and CI went green) and a fresh CREATE_SESSION means a
-		// still-red PR needs another repair. Re-process, rate-limited by the
-		// cooldown; CREATE_SESSION is re-processed in place below while AUTO_MERGE
-		// falls through to delete+recreate.
+		// Dependabot re-emits only open, actionable PRs. Retry terminal mappings
+		// after cooldown: CREATE_SESSION preserves the row and retry history,
+		// while AUTO_MERGE replaces it for a distinct success-path event.
 		retryTerminal := isTerminal &&
 			(action == bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE ||
 				action == bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION)
@@ -399,11 +395,15 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 			return
 		}
 
-		// AUTO_MERGE (and Orphaned recovery) delete the stale row so routeTask can
-		// insert a fresh one; retry_count resets to 0 here. That is intentional:
-		// an AUTO_MERGE only fires on a genuinely green+mergeable PR, so it is a
-		// distinct success-path event, not a repair retry. Only the in-place
-		// CREATE_SESSION re-repair above carries and bounds retry_count.
+		if action == bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION {
+			// Only orphaned session mappings remain. Resume after deferral or restart without
+			// discarding its retry history or charging another retry.
+			o.enqueueMappedCreateSession(ctx, task, repo, existing)
+			return
+		}
+
+		// Replace stale mappings for AUTO_MERGE or other non-session actions.
+		// CREATE_SESSION always preserves retry history above.
 		if delErr := o.taskMappings.Delete(ctx, existing.ID); delErr != nil {
 			o.logger.Error().Err(delErr).
 				Str("external_id", externalID).

@@ -307,3 +307,61 @@ func TestDependabotStartDeferredAndRetried_Sessions_AC248003(t *testing.T) {
 		})
 	}
 }
+
+func TestDeferredRepairPreservesRetryLimit(t *testing.T) {
+	ctx := context.Background()
+	o, m, task, repo, _ := handoffFixture(t)
+	task.Action = pb.TaskAction_TASK_ACTION_CREATE_SESSION
+	m.Status = domain.TaskMappingStatusFailed
+	m.UpdatedAt = time.Time{}
+	m.RetryCount = MaxReRepairAttempts - 1
+	store := o.taskMappings.(*mockTaskMappingStore)
+	store.updateFn = func(_ context.Context, id string, p db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
+		current := store.mappings[m.ExternalID]
+		if current == nil || current.ID != id {
+			return nil, errors.New("mapping not found")
+		}
+		if p.Status != nil {
+			current.Status = *p.Status
+		}
+		if p.RetryCount != nil {
+			current.RetryCount = *p.RetryCount
+		}
+		return current, nil
+	}
+	created := 0
+	o.sessionCreator = &mockSessionCreatorOrch{createFn: func(context.Context, CreateSessionOpts) (*models.Session, error) {
+		created++
+		return nil, errors.New("repair failed")
+	}}
+	gate := &dependabotBusyGate{}
+	o.SetDependabotRepairGate(gate)
+
+	// The terminal retry queues behind another task before contention appears.
+	o.processTask(ctx, task, repo, "dependabot")
+	if m.RetryCount != MaxReRepairAttempts || len(o.queues[repo.id]) != 1 {
+		t.Fatal("terminal retry was not counted and queued")
+	}
+	gate.busy = true
+	o.dequeueNext(ctx, repo.id)
+	if created != 0 || m.Status != domain.TaskMappingStatusOrphaned {
+		t.Fatal("queued repair was not deferred")
+	}
+	gate.busy = false
+	o.processTask(ctx, task, repo, "dependabot")
+	persisted, err := store.GetByExternalID(ctx, m.ExternalID)
+	if err != nil || persisted == nil {
+		t.Fatalf("read resumed mapping: %v", err)
+	}
+	if created != 1 || persisted.RetryCount != MaxReRepairAttempts || persisted.Status != domain.TaskMappingStatusFailed {
+		t.Fatalf("resumed attempt: created=%d retry=%d status=%v", created, persisted.RetryCount, persisted.Status)
+	}
+	m.UpdatedAt = time.Time{}
+	o.processTask(ctx, task, repo, "dependabot")
+	if created != 1 {
+		t.Fatal("exhausted repair started another session")
+	}
+	if got, _ := store.GetByExternalID(ctx, m.ExternalID); got != m {
+		t.Fatal("deferral replaced the repair mapping")
+	}
+}

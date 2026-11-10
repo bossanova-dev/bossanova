@@ -369,3 +369,61 @@ func TestUploadEvidenceConfigurationReasonMetadata_Sessions_AC220701(t *testing.
 		})
 	}
 }
+
+func TestUploadEvidencePageAssets_Sessions_AC248607(t *testing.T) {
+	var order []string
+	types := map[string]string{}
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, "/accounts/account/r2/buckets/bucket/objects/")
+		order = append(order, key)
+		types[key] = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer endpoint.Close()
+	s, dir := pagesServer(t, endpoint.URL, true)
+	names := []string{"media/head-0.mp4", "media/head-0-still.png", "media/head-0-still.jpg", "media/base-0.webp", "player.js", "index.html"}
+	var objects []*pb.EvidenceObject
+	for _, name := range names {
+		if err := os.MkdirAll(filepath.Join(dir, "media"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		objects = append(objects, &pb.EvidenceObject{Name: name, Path: name})
+	}
+	if _, err := s.UploadEvidence(context.Background(), connect.NewRequest(&pb.UploadEvidenceRequest{EvidenceDir: dir, PrNumber: 3, HeadSha: evidenceTestSHA, Objects: objects})); err != nil {
+		t.Fatal(err)
+	}
+	prefix := "acme/widgets/3/" + evidenceTestSHA + "/"
+	want := map[string]string{"media/head-0.mp4": "video/mp4", "media/head-0-still.png": "image/png", "media/head-0-still.jpg": "image/jpeg", "media/base-0.webp": "image/webp", "player.js": "text/javascript; charset=utf-8", "index.html": "text/html; charset=utf-8"}
+	for i, name := range names {
+		if order[i] != prefix+name || types[prefix+name] != want[name] {
+			t.Fatalf("PUT %d = %s (%s), want %s (%s)", i, order[i], types[order[i]], prefix+name, want[name])
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		object string
+		keyed  bool
+	}{
+		{name: "player on a random prefix", object: "player.js"},
+		{name: "media of another type", object: "media/clip.webm", keyed: true},
+		{name: "nested media", object: "media/clips/a.mp4", keyed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := newRecordingEndpoint(t)
+			s, dir := pagesServer(t, rec.server.URL, true)
+			req := &pb.UploadEvidenceRequest{EvidenceDir: dir, Objects: []*pb.EvidenceObject{{Name: tc.object, Path: "manifest.json"}}}
+			if tc.keyed {
+				req.PrNumber, req.HeadSha = 3, evidenceTestSHA
+			}
+			if _, err := s.UploadEvidence(context.Background(), connect.NewRequest(req)); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("code = %v; %v", connect.CodeOf(err), err)
+			}
+			if len(rec.puts) != 0 {
+				t.Fatalf("refused object sent PUTs: %v", rec.puts)
+			}
+		})
+	}
+}

@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import {
   CLAIM_MARKER,
   loadClaimComments,
+  loadClaimLiveness,
   resolveClaimVerdict,
   PLAN_CLAIM_STALE_AFTER_MS,
   claimWinner,
@@ -574,4 +575,54 @@ test('live plan claim selection uses arbitration age and ignores other scopes', 
     assert.equal(liveClaimWinner(comments, { scope: 'plan', now }), expected ? token : null)
   }
   assert.equal(hasLivePlanClaim([{ body: 'ordinary comment' }], { now }), false)
+})
+
+test('terminal owners forfeit young plan claims before activity checks', () => {
+  const now = new Date().toISOString()
+  const peer = 'a'.repeat(32),
+    me = 'b'.repeat(32)
+  const comments = [peer, me].map((token, i) => ({
+    body: formatClaimComment(token, i ? 'ours' : 'peer', { scope: 'plan' }),
+    createdAt: now,
+  }))
+  assert.equal(
+    resolveClaimVerdict(comments, me, {
+      scope: 'plan',
+      sessions: { peer: { terminal: true, reason: 'archived' } },
+    }),
+    true,
+  )
+  assert.equal(
+    resolveClaimVerdict(comments.slice(0, 1), me, {
+      scope: 'plan',
+      sessions: { peer: { terminal: true } },
+    }),
+    null,
+  )
+  assert.equal(
+    resolveClaimVerdict(comments, me, { scope: 'plan', sessions: { peer: { terminal: false } } }),
+    false,
+  )
+  assert.equal(resolveClaimVerdict(comments, me, { scope: 'plan', sessions: {} }), false)
+  for (const terminal of ['true', null, 1]) {
+    assert.throws(
+      () => resolveClaimVerdict(comments, me, { scope: 'plan', sessions: { peer: { terminal } } }),
+      /terminal.*boolean/,
+    )
+  }
+})
+
+test('liveness evidence accepts files and inline objects and rejects unreadable input', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'claim-liveness-'))
+  try {
+    const file = join(dir, 'evidence.json')
+    const evidence = { sessions: { peer: { terminal: true, reason: 'closed' } } }
+    writeFileSync(file, JSON.stringify(evidence))
+    assert.deepEqual(loadClaimLiveness(file), evidence)
+    assert.deepEqual(loadClaimLiveness(JSON.stringify(evidence)), evidence)
+    for (const input of ['{', 'null', '[]', 'true', join(dir, 'absent')])
+      assert.throws(() => loadClaimLiveness(input), /--liveness/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
 })

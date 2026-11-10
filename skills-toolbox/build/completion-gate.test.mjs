@@ -1232,3 +1232,12 @@ test('fast path: a human verdict persists the judge record', (t) => {
     postCall('human', ['--reason', 'always-human-path', '--judge-record', 'record']),
   ])
 })
+
+test('partial review coverage routes to verify rather than the completion fast path', () => {
+  const result = computeEligibility({
+    ...green(),
+    reviewCoverage: 'partial: security (thread limit)',
+  })
+  assert.equal(result.mergeEligible, false)
+  assert.deepEqual(result.ineligibleReasons, ['coverage-not-full'])
+})

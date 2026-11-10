@@ -3,8 +3,8 @@ import { basename, dirname, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { parseArgs } from 'node:util'
 import { isMainModule } from '../main-module.mjs'
-import { planScratchFamily, planScratchPath } from './plan-scratch-paths.mjs'
-import { issueSlug } from './plan-slug.mjs'
+import { planScratchBasename, planScratchFamily, planScratchPath } from './plan-scratch-paths.mjs'
+import { parseEpicChildMarker } from './plan-epic-lib.mjs'
 
 const GUARD_FAMILIES = [
   'child-image-guard-orig',
@@ -92,12 +92,23 @@ export function verifyDraftManifest({ payload, planPath, runScratchDir }) {
         continue
       }
       const index = children.findIndex(
-        ({ key, title }) =>
-          basename(path) ===
-          planScratchFamily('child-plan').basename({ parentId, key, slug: issueSlug(id, title) }),
+        ({ key }) => basename(path) === planScratchBasename('child-plan', { parentId, key }),
       )
       if (index < 0 || used.has(index)) fail('childPlanPaths', path)
-      else used.add(index)
+      else {
+        try {
+          const guardName = planScratchBasename('child-image-guard-new', {
+            issueId: parentId,
+            childId: id,
+          })
+          const guard = guards.find((path) => basename(path) === guardName)
+          const key = guard ? parseEpicChildMarker(readFileSync(guard, 'utf8')) : null
+          if (key !== children[index].key) fail('childPlanPaths', path)
+          else used.add(index)
+        } catch {
+          fail('childPlanPaths', path)
+        }
+      }
     }
     if (used.size !== children.length) fail('childPlanPaths')
   } else if (!entries('planPath').some((p) => text(p))) fail('planPath')

@@ -102,6 +102,62 @@ test('the marker round-trips and a foreign comment does not parse as one', () =>
   assert.equal(parseSiblingMarker(undefined), null)
 })
 
+const rewrittenSourceLinks = [
+  '[SRC-1](https://tracker.example/issue/SRC-1/slug)',
+  '[SRC-1](<https://tracker.example/issue/SRC-1/slug>)',
+]
+
+test('parseSiblingMarker recovers tracker-rendered source identifiers', () => {
+  for (const source of [
+    'SRC-1',
+    ...rewrittenSourceLinks,
+    '<issue id="x" label="SRC-1" href="https://tracker.example/issue/SRC-1" />',
+  ]) {
+    assert.deepEqual(
+      parseSiblingMarker(siblingMarker(source, 'b')),
+      {
+        sourceId: 'SRC-1',
+        key: 'b',
+      },
+      source,
+    )
+  }
+})
+
+test('parseSiblingMarker preserves links that do not identify the source', () => {
+  for (const source of [
+    '[SRC-1](https://tracker.example/issue/SRC-2/slug)',
+    '[see](https://tracker.example/issue/SRC-1)',
+    '[SRC-1](https://tracker.example/issue/SRC-10)',
+    '[SRC-1](/issue/SRC-1)',
+    '[SRC-1](ftp://tracker.example/issue/SRC-1)',
+  ]) {
+    assert.deepEqual(parseSiblingMarker(siblingMarker(source, 'b')), { sourceId: source, key: 'b' })
+    const verdict = verifySiblings({
+      ...input({ siblings: [sibling('b')] }),
+      readBack: { b: readBackIssue('b', { description: siblingMarker(source, 'b') }) },
+    })
+    assert.equal(verdict.ok, false, source)
+    assert.equal(verdict.problems.length, 1)
+    assert.match(verdict.problems[0], /lacks the marker/)
+  }
+})
+
+test('siblingSplitPlan reuses a child after the tracker links its marker source', () => {
+  for (const source of rewrittenSourceLinks) {
+    const { creates, reused } = siblingSplitPlan(
+      input({
+        existingChildren: [{ identifier: 'KID-9', description: siblingMarker(source, 'b') }],
+      }),
+    )
+    assert.deepEqual(reused, { b: 'KID-9' })
+    assert.deepEqual(
+      creates.map((child) => child.key),
+      ['c'],
+    )
+  }
+})
+
 test('siblingSplitPlan creates in dependency order with the marker in every body', () => {
   const { creates, reused } = siblingSplitPlan(input())
   assert.deepEqual(
@@ -212,6 +268,17 @@ test('verifySiblings passes when every sibling exists under the parent with its 
     readBack: {
       b: readBackIssue('b'),
       c: readBackIssue('c', { parentId: undefined, parent: { id: 'PAR-1' } }),
+    },
+  })
+  assert.deepEqual(verdict, { ok: true, problems: [] })
+})
+
+test('verifySiblings passes after the tracker links marker source identifiers', () => {
+  const verdict = verifySiblings({
+    ...input(),
+    readBack: {
+      b: readBackIssue('b', { description: siblingMarker(rewrittenSourceLinks[0], 'b') }),
+      c: readBackIssue('c', { description: siblingMarker(rewrittenSourceLinks[1], 'c') }),
     },
   })
   assert.deepEqual(verdict, { ok: true, problems: [] })

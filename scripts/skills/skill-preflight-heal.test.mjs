@@ -1,23 +1,39 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { region } from '../test-infra/gate-region-lib.mjs'
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 
 // Execute the shipped shell, with only its binary and installed-toolbox dependencies replaced.
 function runPreflight(t, core, scenario) {
   const scratch = mkdtempSync(path.join(tmpdir(), 'boss-preflight-heal-'))
-  t.after(() => rmSync(scratch, { recursive: true, force: true }))
-  const skill = readFileSync(
-    path.join(root, 'lib/bossalib/contract/plugin/skillpayload/skills', core, 'SKILL.md'),
-    'utf8',
-  )
-  const start = skill.indexOf('if BOSS_BIN=')
-  const shell = skill.slice(start).split('\nfi\n')[0] + '\nfi\n'
+  t.after(() => rmSync(scratch, { recursive: true, force: true, maxRetries: 3 }))
+  const payload = path.join(root, 'lib/bossalib/contract/plugin/skillpayload/skills', core)
+  let args
+  if (core === 'boss-plan') {
+    mkdirSync(path.join(scratch, 'plan/run-steps'), { recursive: true })
+    for (const file of ['plan/boss-plan-run.sh', 'plan/run-steps/drift.sh']) {
+      copyFileSync(path.join(payload, 'toolbox', file), path.join(scratch, file))
+    }
+    args = [path.join(scratch, 'plan/boss-plan-run.sh'), 'drift']
+  } else {
+    const skill = readFileSync(path.join(payload, 'SKILL.md'), 'utf8')
+    const shell = region(region(skill, 'if BOSS_BIN='), 'if BOSS_BIN=', '\nfi\n') + '\nfi\n'
+    args = ['-eu', '-c', shell]
+  }
   const calls = path.join(scratch, 'calls.jsonl')
   writeFileSync(calls, '')
   writeFileSync(
@@ -50,7 +66,7 @@ if (process.env.SCENARIO === 'absent') {
     path.join(scratch, 'toolbox-drift.mjs'),
     "console.error('fallback toolbox probe ran')\n",
   )
-  const result = spawnSync('/bin/bash', ['-eu', '-c', shell], {
+  const result = spawnSync('/bin/bash', args, {
     encoding: 'utf8',
     cwd: scratch,
     env: {

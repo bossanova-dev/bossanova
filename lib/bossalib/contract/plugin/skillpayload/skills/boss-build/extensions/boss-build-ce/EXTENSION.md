@@ -25,6 +25,9 @@ boss-build owns the worktree, branch, review and shipping. Tell `ce-work` so whe
 hold it to that:
 
 - Run its implementation phases and its local checks (tests, the repo's lint gate and the tests relevant to the change (boss-build `## Verification`), never the full suite; report each command and its result in `testsAddedOrPassing`) only.
+- Run every local verification command in the foreground through
+  `node "$BOSS_BUILD_TOOLBOX/verification-receipt.mjs" run --dispatch <parent-label> --id <id> -- <cmd>`.
+  Await each terminal receipt and return its id in `verificationReceipts`; never return pending gates.
 - Stop before its shipping workflow: no push, no PR or tracker writes, no branch create, switch or
   rename, no merge or rebase, and no edits to the plan file.
 - Do not run `ce-code-review` from inside it; boss-build reviews the branch next.
@@ -35,5 +38,5 @@ hold it to that:
   `ce-work` brings.
 
 Return only boss-build's task contract: `taskId`, `filesTouched`, `testsAddedOrPassing`,
-`interfaceSignatures`, `residualRisks`, `decisionsRecorded`, `commitsMade` (every commit this dispatch
+`verificationReceipts`, `interfaceSignatures`, `residualRisks`, `decisionsRecorded`, `commitsMade` (every commit this dispatch
 landed, as `<short SHA> <subject>`).

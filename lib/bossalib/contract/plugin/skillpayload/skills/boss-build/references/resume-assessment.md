@@ -53,6 +53,7 @@ node "$T/worktree-state.mjs" \
   --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 # …must print `verdict: clean`. Only once it does, record the HEAD the dispatch starts from *and* which
 # dispatch is starting — substitute the task's number for N:
+node "$T/verification-receipt.mjs" clear --dispatch task-N
 printf '%s task-N\n' "$(git rev-parse HEAD)" \
   >"$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"
 ```
@@ -67,6 +68,8 @@ is never committed.
 
 **Label the snapshot for the dispatch unit**, and branch on which of the two forms you read rather
 than assuming the per-task one:
+
+Use the same label in `clear`, the worker brief and `check`; replace `task-N` above for an extension.
 
 - `task-N` — a per-task dispatch. Commit residue as `chore(task-N)` and re-assess task `N`.
 - `ext-<name>` — one whole Tier-1 methodology extension. Recovery is extension-wide: commit residue
@@ -83,6 +86,10 @@ node "$T/worktree-state.mjs" \
 # must print `verdict: clean`
 git log --oneline "$(cut -d' ' -f1 "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head")..HEAD"
 # …must list this dispatch's commit(s)
+# Use the label from the snapshot and repeat --id for each reported receipt:
+DISPATCH_LABEL="$(cut -d' ' -f2 "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head")"
+node "$T/verification-receipt.mjs" check --dispatch "$DISPATCH_LABEL" --wait-ms 540000
+# Route exits 1/2 through Step 5's verification contract before admitting the result.
 ```
 
 **Recovering residue.** Stage exactly the attributed paths — the ones the verdict listed _and_ the
@@ -103,10 +110,13 @@ commit, leave the residue in the tree, stop dispatching, and go to **Stop cleanl
 naming the uncommitted paths — never revert the work, and never continue on top of residue you
 could not capture.
 
-**Consume the snapshot** at **any** resolved outcome — the range checked out, a verification-only
+**Consume the snapshot** only after every gate has settled (never clear live pending receipts),
+at **any** resolved outcome — the range checked out, a verification-only
 dispatch declared _no commit_, or you recovered the residue yourself — not only on the clean path:
 
 ```bash
+DISPATCH_LABEL="$(cut -d' ' -f2 "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head")"
+node "$T/verification-receipt.mjs" clear --dispatch "$DISPATCH_LABEL"
 rm "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"
 ```
 

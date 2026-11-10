@@ -1087,6 +1087,27 @@ describe('checkPlanContract — each violation code fires', () => {
     )
   })
 
+  test('verify-only command vacuity guard accepts a stdin-fed premise search', () => {
+    const description = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      [
+        '## Premises',
+        '',
+        '- [ ] (central) external premise — check: `set -o pipefail; printf needle | grep -n needle -`',
+        '',
+        '## Acceptance criteria',
+        '',
+        '- [ ] (verify-only) criterion remains valid — check: `node --test skills-toolbox/skill-config.test.mjs`',
+      ].join('\n'),
+    )
+    const result = checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description)
+    assert.equal(
+      result.advisories.some((finding) => finding.code === 'advisory: unscoped-premise-search'),
+      false,
+    )
+    assert.deepEqual(result.violations, [])
+  })
+
   test('path-operand-absent is dropped for a file the plan Key changes creates', () => {
     const dir = tempDir('plan-contract-operand-')
     mkdirSync(path.join(dir, 'skills-toolbox'))

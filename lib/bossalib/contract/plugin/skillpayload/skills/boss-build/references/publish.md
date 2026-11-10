@@ -65,7 +65,8 @@ Tracker issue: <url>
 <ran (<agent>) | skipped: <reason> | error: <reason>>
 
 ## Review coverage
-<full | none: review did not run (<reason>) | none: review verdict unusable (<reason>) |
+<full | partial: <worker> (<reason>); … | none: no reviewer ran (<worker> (<reason>); …) |
+ none: review did not run (<reason>) | none: review verdict unusable (<reason>) |
  none: review coverage unknown (<reason>)>
 ```
 

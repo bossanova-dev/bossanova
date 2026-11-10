@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -16,9 +16,85 @@ function fixture(t) {
     'export const currentSymbol = 1\n' + '\n'.repeat(12) + 'export const movedSymbol = 2\n',
   )
   writeFileSync(join(root, 'new.mjs'), 'export const relocatedSymbol = 3\n')
+  mkdirSync(join(root, 'docs'))
+  writeFileSync(join(root, 'docs', 'guide.md'), '# Guide\n')
   execFileSync('git', ['add', '.'], { cwd: root })
   return { root, check: (text) => recheckPlan(DEFAULT_CONFIG, text, { root }) }
 }
+
+test('classifies non-prerequisite paths without reporting drift', (t) => {
+  const { check } = fixture(t)
+  const cases = [
+    ['`docs/**/*.md`', 'pattern', { matches: 1 }],
+    ['`docs/g?ide.md`', 'pattern', { matches: 1 }],
+    ['`docs/missing*.md`', 'pattern', { matches: 0 }],
+    ['`skills-toolbox/plan-{a,b}.mjs`', 'pattern', { matches: null }],
+    ['`docs/[a-z].md`', 'pattern', { matches: null }],
+    ['`~/.claude/skills/boss-build/SKILL.md`', 'outside-repo', { reason: 'home-relative' }],
+    ['`$HOME/notes/today.md`', 'outside-repo', { reason: 'variable' }],
+    ['`${BOSS_PLAN_TOOLBOX}/plan-recheck.mjs`', 'outside-repo', { reason: 'variable' }],
+    ['`/tmp/plan.md`', 'outside-repo', { reason: 'absolute' }],
+    ['`https://example.com/fixture.json`', 'url', {}],
+    ['New file `scripts/x/new-helper.mjs`', 'planned', {}],
+    ['`lib/y/added.mjs` (new)', 'planned', {}],
+    ['`scripts/x/new-helper.mjs` mentioned again', 'planned', {}],
+    ['a new `./old.mjs`', 'present', {}],
+  ]
+  const result = check(cases.map(([line]) => line).join('\n'))
+  assert.equal(result.verdict, 'current')
+  assert.equal(result.items.length, cases.length)
+  cases.forEach(([, kind, details], index) => {
+    assert.equal(result.items[index].source, 'path')
+    assert.equal(result.items[index].kind, kind, cases[index][0])
+    for (const [key, value] of Object.entries(details))
+      assert.equal(result.items[index][key], value, cases[index][0])
+  })
+  const missing = check(cases.map(([line]) => line).join('\n') + '\n`missing/prereq.mjs`')
+  assert.equal(missing.items.at(-1).kind, 'absent')
+  assert.equal(missing.verdict, 'drifted')
+})
+
+test('only adjacent explicit markers declare planned paths across mentions', (t) => {
+  const { check } = fixture(t)
+  for (const prefix of [
+    'new',
+    'a new',
+    'new file',
+    'new module',
+    'new test',
+    'create',
+    'creates',
+    'add',
+    'adds',
+  ]) {
+    const result = check('`nested/added.mjs`\n' + prefix.toUpperCase() + ' `./nested/added.mjs`')
+    assert.equal(result.verdict, 'current', prefix)
+    assert.ok(
+      result.items.every((item) => item.kind === 'planned'),
+      prefix,
+    )
+  }
+  for (const suffix of ['(new, pure)', ': new module', ': a new helper', '— new test', '- new'])
+    assert.equal(check('`nested/added.mjs` ' + suffix).items[0].kind, 'planned', suffix)
+  for (const text of [
+    'New behavior in `nested/prereq.mjs`',
+    'renew `nested/prereq.mjs`',
+    '`nested/prereq.mjs`\n## Original notes\nNew file `nested/prereq.mjs`',
+    '`nested/prereq.mjs`\n```\nNew file `nested/prereq.mjs`\n```',
+  ]) {
+    assert.equal(check(text).items[0].kind, 'absent', text)
+    assert.equal(check(text).verdict, 'drifted', text)
+  }
+})
+
+test('glob counts remain unevaluated when tracked files cannot be read', (t) => {
+  const { root, check } = fixture(t)
+  rmSync(join(root, '.git'), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  const result = check('`docs/**/*.md`')
+  assert.equal(result.verdict, 'current')
+  assert.equal(result.items[0].kind, 'pattern')
+  assert.equal(result.items[0].matches, null)
+})
 
 test('resolves anchored and unanchored coordinates, relocation, missing paths and fences', (t) => {
   const { check } = fixture(t)

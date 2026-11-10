@@ -494,8 +494,10 @@ final summary on each root and in the chat: **merged** (with PRs, in order), **f
 (session, last status, reason), **skipped** (reason or failed ancestor), and **duration**. The parent
 is left for a human to close.
 
-**Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Roll
-`notesSampleRate` once per run (reuse `NOTES_SAMPLED`); on a miss, stop. Otherwise write at most five
+**Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Run
+`node "$BOSS_EPIC_TOOLBOX/notes-record.mjs" roll --core boss-epic --consume`.
+`notesSampleRate(config)` in `skill-config.mjs` resolves `notesDefaults.sampleRate` (default `1`).
+If JSON `sampled` is `false`, print `notes: sampled out (rate <rate>)` and skip this notes dispatch. Otherwise write at most five
 secret-free observations (≤ 8 KiB) to a temp `observations.md` and dispatch each extension
 (instructions from `skillPath`, bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`) with
 `{"role":"notes","core":"boss-epic","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`;

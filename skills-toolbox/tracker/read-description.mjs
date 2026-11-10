@@ -154,19 +154,10 @@ export async function runReadDescription(
     )
   }
   const target = path.resolve(outFile)
-  const temp = path.join(
-    parent,
-    `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
-  )
   let bytes
   try {
-    // Written verbatim: Linear stores descriptions without a trailing newline, and appending one
-    // would make every byte-compare against this file report drift on a correct write.
-    writeFileSync(temp, description, { encoding: 'utf8', flag: 'wx' })
-    renameSync(temp, target)
-    bytes = statSync(target).size
+    bytes = writeFileAtomically(target, description)
   } catch (err) {
-    rmSync(temp, { force: true })
     return fail(`could not write --out-file ${outFile}: ${err?.message ?? err}`)
   }
   write(
@@ -179,4 +170,19 @@ export async function runReadDescription(
     }) + '\n',
   )
   return 0
+}
+
+// A sibling rename exposes either the old complete file or the new complete file.
+export function writeFileAtomically(target, text) {
+  const temp = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
+  )
+  try {
+    writeFileSync(temp, text, { encoding: 'utf8', flag: 'wx' })
+    renameSync(temp, target)
+    return statSync(target).size
+  } finally {
+    rmSync(temp, { force: true })
+  }
 }

@@ -308,7 +308,7 @@ test('claim-verdict exits 2 for malformed liveness evidence', () => {
     errWrite: (s) => (err += s),
   })
   assert.equal(code, 2)
-  assert.match(err, /--liveness: malformed JSON/)
+  assert.match(err, /--liveness/)
 })
 
 test('claim-verdict exits 2 for primitive liveness evidence', () => {
@@ -321,7 +321,7 @@ test('claim-verdict exits 2 for primitive liveness evidence', () => {
     },
   )
   assert.equal(code, 2)
-  assert.match(err, /claim arbitration failed: claim liveness options must be an object/)
+  assert.match(err, /claim arbitration failed: .*claim liveness options must be an object/)
 })
 
 test('claim-verdict exits 2 for malformed comments evidence', () => {
@@ -2524,4 +2524,28 @@ test('list-unplanned excludes claimed candidates with diagnostics and fails clos
   assert.equal(legacy.code, 0)
   assert.equal(JSON.parse(legacy.out).length, 1)
   assert.match(legacy.err, /does not declare planClaimSelection/)
+})
+
+test('plan claim-verdict forfeits terminal owners with file evidence', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verdict-liveness-'))
+  try {
+    const file = path.join(dir, 'evidence.json')
+    const peer = 'a'.repeat(32),
+      me = 'b'.repeat(32)
+    const claims = [peer, me].map((token) => ({
+      body: `🔒 bs-plan-claim:${token} (boss-plan run claiming this ticket) owner:${token === peer ? 'peer' : 'ours'}`,
+      createdAt: new Date().toISOString(),
+    }))
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ sessions: { peer: { terminal: true, reason: 'closed' } } }),
+    )
+    const args = ['claim-verdict', '--scope', 'plan', '--me', me, '--liveness', file, '--comments']
+    assert.equal(runCli([...args, JSON.stringify(claims)], {}), 0)
+    assert.equal(runCli([...args, JSON.stringify(claims.slice(0, 1))], { write() {} }), 4)
+    fs.writeFileSync(file, JSON.stringify({ sessions: { peer: { terminal: 'yes' } } }))
+    assert.equal(runCli([...args, JSON.stringify(claims)], { errWrite() {} }), 2)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
 })

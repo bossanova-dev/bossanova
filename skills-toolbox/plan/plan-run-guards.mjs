@@ -26,11 +26,7 @@ import {
 } from './plan-open-prs.mjs'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
-import {
-  assertBareIssuePayload,
-  planIdempotencePrecheck,
-  runPlanRecheck,
-} from './plan-issue-guards.mjs'
+import { runPlanIdempotence, runPlanRecheck } from './plan-issue-guards.mjs'
 export { planIdempotencePrecheck } from './plan-issue-guards.mjs'
 import {
   dependencyScanVerdict,
@@ -42,7 +38,7 @@ import {
 import { CHILD_MAX_ESTIMATE, parseEpicSpec } from './plan-epic-lib.mjs'
 import { EPIC_REVERIFY_CLASS, epicReverifyVerdict } from './plan-epic-phase25.mjs'
 import { RUN_SCRATCH_DIR_PREFIX, planScratchPath, planScratchToken } from './plan-scratch-paths.mjs'
-import { sectionListMarker } from './plan-section-append.mjs'
+import { appendSectionBullets, planningBullet, sectionListMarker } from './plan-section-append.mjs'
 import { normalizeSiblings } from './plan-sibling-split.mjs'
 import { createGateRecorder } from '../gate-outcome.mjs'
 import { isMainModule } from '../main-module.mjs'
@@ -88,7 +84,7 @@ function planningSection(descriptionSummary) {
 // (why it is not atomic, and the suggested sibling split) and handed to a human to split. That
 // bullet is the estimate-5 justification for this shape; `- Atomic-5:` keeps meaning "atomic".
 function hasOversizedChildBullet(descriptionSummary) {
-  return /^[-*]\s*Oversized-child:\s*\S/m.test(planningSection(descriptionSummary))
+  return planningBullet(descriptionSummary, 'Oversized-child') !== null
 }
 
 // A parented, non-atomic ≥ 5 ticket planned as its first part, its other parts returned as
@@ -119,13 +115,6 @@ function siblingSplitViolations(object, estimate, descriptionText) {
     problems.push('"- Sibling-split:" and "- Oversized-child:" are exclusive')
   }
   return problems
-}
-
-function hasAtomic5Justification(descriptionSummary) {
-  return (
-    /^[-*]\s*Atomic-5:\s*\S/m.test(planningSection(descriptionSummary)) ||
-    hasOversizedChildBullet(descriptionSummary)
-  )
 }
 
 // `descriptionSummary` is either the description text inline, or `{ path }` naming this run's
@@ -189,7 +178,7 @@ function readDescriptionSummary(value, resolveDescription, cwd = process.cwd()) 
 
 export function validateDraftMetadata(
   metadata,
-  { config = DEFAULT_CONFIG, resolveDescription, cwd = process.cwd() } = {},
+  { config = DEFAULT_CONFIG, resolveDescription, resolvePlan, cwd = process.cwd() } = {},
 ) {
   const missing = []
   const invalid = []
@@ -204,9 +193,7 @@ export function validateDraftMetadata(
     return { ok: false, missing, invalid, violations, warnings, normalized: metadata }
   }
 
-  // Only the plan path and the description are load-bearing: without them there is nothing to
-  // write. Every other field is normalized to something usable and reported as a warning, because a
-  // finished plan is worth far more than any one cosmetic field the drafter got slightly wrong.
+  // Artifact references and estimate-5 justification are load-bearing; cosmetic fields normalize.
   const normalized = {}
   for (const key of Object.keys(object)) {
     if (!Object.hasOwn(DRAFT_RETURN_KEYS, key)) warn(key, `dropped unknown top-level key "${key}"`)
@@ -253,8 +240,9 @@ export function validateDraftMetadata(
   const summary = Object.hasOwn(object, 'descriptionSummary')
     ? readDescriptionSummary(object.descriptionSummary, resolveDescription, cwd)
     : null
-  const descriptionText = summary?.kind === 'text' ? summary.text : null
+  let descriptionText = summary?.kind === 'text' ? summary.text : null
 
+  let descriptionRewrite
   const estimate = Number(object.estimate)
   if (Object.hasOwn(object, 'estimate') && Number.isFinite(estimate)) {
     const valid = [...VALID_ESTIMATES].sort((a, b) => a - b)
@@ -263,14 +251,41 @@ export function validateDraftMetadata(
       warn('estimate', `estimate ${JSON.stringify(object.estimate)} normalized to ${snapped}`)
     }
     normalized.estimate = snapped
-    if (snapped === 5 && descriptionText !== null && !hasAtomic5Justification(descriptionText)) {
-      warn(
-        'estimate',
-        'estimate 5 without an "- Atomic-5:" or "- Oversized-child:" justification under ## Planning',
-      )
-    }
   } else {
     if (Object.hasOwn(object, 'estimate')) warn('estimate', 'estimate was not a number; omitted')
+  }
+
+  const justification = (text) =>
+    planningBullet(text, 'Atomic-5') ?? planningBullet(text, 'Oversized-child')
+  if (normalized.estimate === 5 && descriptionText !== null && !justification(descriptionText)) {
+    let plan
+    try {
+      plan = resolvePlan?.(normalized.planPath)
+    } catch {
+      /* unreadable plans cannot justify */
+    }
+    const carried = typeof plan === 'string' ? justification(plan) : null
+    if (carried) {
+      descriptionText = appendSectionBullets(descriptionText, {
+        heading: 'Planning',
+        items: [carried],
+      }).text
+      descriptionRewrite = {
+        path: typeof object.descriptionSummary === 'string' ? null : object.descriptionSummary.path,
+        text: descriptionText,
+        carried,
+      }
+      warn('estimate', `carried ${carried} from the plan into the description`)
+    } else {
+      violations.push(
+        entry(
+          'estimate-5-unjustified',
+          'estimate',
+          'estimate 5 requires Atomic-5: or Oversized-child: under ## Planning in the description or plan' +
+            (typeof plan !== 'string' || !plan.trim() ? '; plan unreadable or unavailable' : ''),
+        ),
+      )
+    }
   }
 
   const priority = Math.round(Number(object.priority))
@@ -345,7 +360,8 @@ export function validateDraftMetadata(
   // The description's content is checked once, by the Phase 4 plan-contract gate over the bytes
   // actually written; checking it here too only discarded plans that gate would have kept.
   if (Object.hasOwn(object, 'descriptionSummary')) {
-    normalized.descriptionSummary = object.descriptionSummary
+    normalized.descriptionSummary =
+      descriptionRewrite?.path === null ? descriptionText : object.descriptionSummary
   }
 
   return {
@@ -355,6 +371,7 @@ export function validateDraftMetadata(
     violations,
     warnings,
     normalized,
+    ...(descriptionRewrite ? { descriptionRewrite } : {}),
   }
 }
 
@@ -920,20 +937,25 @@ function printViolations(result) {
   }
 }
 
+function writeDraftMetadata(file, metadata, verb) {
+  const result = validateDraftMetadata(metadata, {
+    config: loadSkillConfig(),
+    resolveDescription: (path) => readFileSync(path, 'utf8'),
+    resolvePlan: (path) => readFileSync(path, 'utf8'),
+  })
+  printViolations(result)
+  if (result.ok) {
+    if (result.descriptionRewrite?.path)
+      writeFileSync(result.descriptionRewrite.path, result.descriptionRewrite.text)
+    writeFileSync(file, `${JSON.stringify(result.normalized)}\n`)
+  }
+  return { verb, code: result.ok ? 0 : 1, reason: result.ok ? 'ok' : 'invalid-metadata' }
+}
+
 /** Run one verb and report the exit code alongside the gate id and reason to record for it. */
 // The dependency scan's repo module roots, as a comma-separated `--module-roots` value. Optional
 // and positional-agnostic: every verb here takes positional inputs, so the flag is read out of the
 // whole argv rather than from a fixed slot. Absent, the contract check keeps its old empty list.
-// `--selected-id <id>` is OPTIONAL by contract: omitting it leaves the idempotence verdict exactly
-// as it was before the flag existed. It is not defaulted to anything — a guessed selector would
-// manufacture the very mismatch the conjunct exists to detect.
-function parseSelectedIDFlag(argv) {
-  const index = argv.indexOf('--selected-id')
-  if (index === -1) return null
-  const value = String(argv[index + 1] ?? '').trim()
-  return value === '' ? null : value
-}
-
 function parseModuleRootsFlag(argv) {
   const index = argv.indexOf('--module-roots')
   if (index === -1) return []
@@ -957,27 +979,12 @@ function runGuardVerb(argv) {
   try {
     if (command === 'metadata' && first) {
       verb = 'metadata'
-      // This verb IS the orchestrator's boundary, so it is where the by-reference
-      // `descriptionSummary` gets hydrated: the guard itself stays pure and refuses an
-      // unhydrated reference, and the disk read lives here where the run's scratch is.
-      const result = validateDraftMetadata(readJSON(first), {
-        config: loadSkillConfig(),
-        resolveDescription: (file) => readFileSync(file, 'utf8'),
-      })
-      printViolations(result)
-      if (result.ok) writeFileSync(first, `${JSON.stringify(result.normalized)}\n`)
-      return {
-        verb,
-        code: result.ok ? 0 : 1,
-        reason: result.ok ? 'ok' : 'invalid-metadata',
-      }
+      return writeDraftMetadata(first, readJSON(first), verb)
     }
     if (command === 'adopt-metadata' && first && second !== undefined) {
       verb = 'adopt-metadata'
-      // `second` is the RETURNED object, handed over as argv text because that is the only form
-      // the orchestrator has it in — it arrived as a message, not as a file. Writing it to disk
-      // first and then pointing this verb at the file would reintroduce the very gap being
-      // closed: the thing validated has to be the thing received.
+      // The orchestrator forwards its returned-message file as literal argv bytes. The
+      // worker-written normalized metadata file remains untrusted until this adoption.
       const decided = adoptReturnedMetadata({
         returned: JSON.parse(second),
         onDisk: existsSync(first) ? readJSON(first) : undefined,
@@ -986,34 +993,15 @@ function runGuardVerb(argv) {
       if (!decided.ok) {
         return { verb, code: 1, reason: decided.violations[0]?.code ?? 'not-adopted' }
       }
-      const result = validateDraftMetadata(decided.adopted, {
-        config: loadSkillConfig(),
-        resolveDescription: (file) => readFileSync(file, 'utf8'),
-      })
-      printViolations(result)
-      writeFileSync(first, `${JSON.stringify(result.ok ? result.normalized : decided.adopted)}\n`)
-      return { verb, code: result.ok ? 0 : 1, reason: result.ok ? 'ok' : 'invalid-metadata' }
+      return writeDraftMetadata(first, decided.adopted, verb)
     }
     if (command === 'recheck') {
       verb = 'recheck'
       return { verb, ...runPlanRecheck(argv.slice(1)) }
     }
-    if (command === 'idempotence' && first) {
+    if (command === 'idempotence') {
       verb = 'idempotence'
-      const payload = readJSON(first)
-      // Raised through the existing `unreadable-input` catch below, so the CLI exits non-zero with a
-      // named reason rather than printing a plausible verdict it never computed.
-      assertBareIssuePayload(payload, first)
-      const result = planIdempotencePrecheck({
-        issue: payload,
-        selectedID: parseSelectedIDFlag(argv),
-        config: loadSkillConfig(),
-      })
-      process.stdout.write(`${JSON.stringify(result)}\n`)
-      // This verb never refuses — it reports whether planning is still needed. Both answers are a
-      // `pass`; the reason carries which one, so the record stays informative without inventing a
-      // fire that the caller never saw.
-      return { verb, code: 0, reason: result.action === 'noop' ? 'noop' : 'plan' }
+      return { verb, ...runPlanIdempotence(argv.slice(1)) }
     }
     if (command === 'deps' && first && second && parseSubjectFlag(argv)) {
       verb = 'deps'
@@ -1135,7 +1123,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-token <t> --comments <file|json>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID> [--open-prs <file>]\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-token <t> --comments <file|json> [--liveness <file|json>]] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID> [--open-prs <file>]\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

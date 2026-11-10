@@ -752,3 +752,125 @@ test('attach-acceptance validates before changing the verdict', () => {
     }
   }
 })
+
+test('coverage gaps validate structurally without changing finding status', () => {
+  for (const coverage of [
+    null,
+    [],
+    {},
+    { gaps: null },
+    { gaps: [null] },
+    { gaps: [{ worker: '', reason: 'capacity' }] },
+    { gaps: [{ worker: 'security', reason: ' ' }] },
+  ]) {
+    const result = run(['validate', '/v.json'], withVerdict(verdict([], { coverage })))
+    assert.equal(result.code, 2)
+    assert.match(result.err, /coverage/)
+  }
+  const coverage = { gaps: [{ worker: 'security', reason: 'thread limit' }] }
+  assert.equal(verdictStatus(verdict([], { coverage })).status, 'pass')
+  assert.equal(verdictStatus(verdict([finding()], { coverage })).status, 'blocked')
+})
+
+test('coverage renders full, partial and no-reviewer tokens in PR and report', () => {
+  for (const [coverage, secondModel, token] of [
+    [undefined, { ran: false }, 'full'],
+    [{ gaps: [] }, { ran: false }, 'full'],
+    [
+      { gaps: [{ worker: 'security', reason: 'thread limit' }] },
+      { ran: false },
+      'partial: security (thread limit)',
+    ],
+    [
+      {
+        gaps: ['correctness', 'guidelines', 'security'].map((worker) => ({
+          worker,
+          reason: 'thread limit',
+        })),
+      },
+      { ran: false },
+      'none: no reviewer ran (correctness (thread limit); guidelines (thread limit); security (thread limit))',
+    ],
+    [
+      {
+        gaps: ['correctness', 'guidelines', 'security'].map((worker) => ({
+          worker,
+          reason: 'thread limit',
+        })),
+      },
+      { ran: true, agent: 'claude' },
+      'partial: correctness (thread limit); guidelines (thread limit); security (thread limit)',
+    ],
+  ]) {
+    const result = verdictStatus(verdict([], { coverage, secondModel }))
+    assert.equal(
+      sections(reviewVerdict.renderPrSection(result)).get('review coverage').join('\n').trim(),
+      token,
+    )
+    assert.ok(reviewVerdict.renderReport(result).includes(`Coverage: ${token}`))
+  }
+})
+
+test('merge unions exact gaps and pool prefixes each pass and member', () => {
+  const gap = { worker: 'security', reason: 'thread limit' }
+  const one = verdictStatus(verdict([], { coverage: { gaps: [gap, gap] } }))
+  const two = verdictStatus(
+    verdict([], { coverage: { gaps: [{ worker: 'correctness', reason: 'no slot' }] } }),
+  )
+  assert.deepEqual(reviewVerdict.mergeVerdicts([one, two]).coverage.gaps, [
+    gap,
+    two.verdict.coverage.gaps[0],
+  ])
+  const pooled = reviewVerdict.poolVerdicts([
+    { pass: '1', member: '2', result: one },
+    { pass: '2', member: '1', result: two },
+  ]).verdict
+  assert.deepEqual(pooled.coverage.gaps, [
+    { ...gap, worker: '1.2:security' },
+    { worker: '2.1:correctness', reason: 'no slot' },
+  ])
+  assert.equal(pooled.status, 'pass')
+})
+
+test('pooled coverage preserves successful reviewers across passes and repeated merges', () => {
+  assert.equal(
+    reviewVerdict.validateVerdict(
+      verdict([], {
+        coverage: { gaps: [], hasReviewerRun: 'yes' },
+      }),
+    ).ok,
+    false,
+  )
+  const make = (missing) =>
+    verdictStatus(
+      verdict([], {
+        coverage: { gaps: missing.map((worker) => ({ worker, reason: 'no slot' })) },
+      }),
+    )
+  const all = ['correctness', 'guidelines', 'security']
+  for (const passes of [
+    [all, []],
+    [['security'], ['correctness', 'guidelines']],
+  ]) {
+    const pooled = reviewVerdict.poolVerdicts(
+      passes.map((missing, i) => ({
+        pass: String(i + 1),
+        member: '1',
+        result: make(missing),
+      })),
+    )
+    assert.match(reviewVerdict.renderPrSection(pooled), /\npartial: /)
+    const merged = verdictStatus(reviewVerdict.mergeVerdicts([pooled, make(all)]))
+    assert.match(reviewVerdict.renderPrSection(merged), /\npartial: /)
+    const repooled = reviewVerdict.poolVerdicts([{ pass: '3', member: '1', result: merged }])
+    assert.match(reviewVerdict.renderPrSection(repooled), /\npartial: /)
+  }
+  const absent = reviewVerdict.poolVerdicts(
+    [all, all].map((missing, i) => ({
+      pass: String(i + 1),
+      member: '1',
+      result: make(missing),
+    })),
+  )
+  assert.match(reviewVerdict.renderPrSection(absent), /\nnone: no reviewer ran /)
+})

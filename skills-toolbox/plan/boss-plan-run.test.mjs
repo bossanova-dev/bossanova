@@ -24,6 +24,7 @@ function fixture(t) {
     'plan/boss-plan-run.sh',
     'plan/run-steps',
     'plan/plan-scratch-paths.mjs',
+    'plan/plan-slug.mjs',
     'main-module.mjs',
     'bs-run-sentinel.mjs',
   ]) {
@@ -63,7 +64,7 @@ test('runner locates its own toolbox through symlinks and forwards literal argv 
 })
 
 test('runner rejects invalid helpers and steps without executing anything', (t) => {
-  const { run } = fixture(t)
+  const { run, toolbox } = fixture(t)
   for (const args of [
     [],
     ['unknown'],
@@ -80,10 +81,15 @@ test('runner rejects invalid helpers and steps without executing anything', (t) 
   const missing = run('node', 'plan/missing.mjs')
   assert.equal(missing.status, 1)
   assert.match(missing.stdout, /^BLOCKED:/)
-  assert.equal(
-    run('steps').stdout,
-    'cleanup\ncontract-gate\ndeps\ndispatch-mark\ndispatch-wait\nimage-gates\nopen-prs\npremise-repass\npremises\nread-base\nsentinel-ctx\nwriteback-verify\n',
-  )
+  const steps = join(toolbox, 'plan/run-steps')
+  rmSync(steps, { recursive: true, maxRetries: 5 })
+  mkdirSync(steps)
+  writeFileSync(join(steps, 'zeta.sh'), 'exit 91\n')
+  writeFileSync(join(steps, 'alpha.sh'), 'exit 92\n')
+  writeFileSync(join(steps, 'ignored.txt'), 'not a step')
+  const listed = run('steps')
+  assert.equal(listed.status, 0, listed.stderr)
+  assert.equal(listed.stdout, 'alpha\nzeta\n')
 })
 
 test('cleanup confines removal to a single run scratch directory', (t) => {

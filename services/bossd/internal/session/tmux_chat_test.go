@@ -3707,13 +3707,13 @@ func TestResolveSessionFacts_RepoLocalBossFallback(t *testing.T) {
 // BossBin present → the identifier list advertises BOSS_BIN and the guidance
 // points at the resolved binary, with no "not available"/`make build` fallback.
 func TestBossSessionContext_BossBinAdvertisedWhenResolved(t *testing.T) {
-	got := bossSessionContext(Facts{SessionID: "s", BossBin: "/trusted/boss", McpBin: "/trusted/mcp"})
+	got := bossSessionContext(Facts{SessionID: "s", AgentSessionID: "chat-1", BossBin: "/trusted/boss", McpBin: "/trusted/mcp"})
 	// Byte-stable identifier tail from today (regression guard on the resolved case).
 	if !strings.Contains(got, "BOSS_SETTINGS_PATH, BOSS_SOCKET, BOSS_BIN, BOSS_MCP_BIN (context for you, not an") {
 		t.Fatalf("resolved prompt must advertise BOSS_BIN/BOSS_MCP_BIN in the identifier list: %q", got)
 	}
-	if !strings.Contains(got, "/trusted/boss env") {
-		t.Fatalf("resolved prompt must point guidance at the resolved binary: %q", got)
+	if !strings.Contains(got, "/trusted/boss env") || !strings.Contains(got, "`/trusted/boss chat rename chat-1 <new title>`") {
+		t.Fatalf("resolved prompt must point guidance, including this chat's rename, at the resolved binary: %q", got)
 	}
 	if strings.Contains(got, "make build") || strings.Contains(got, "./bin/boss") {
 		t.Fatalf("resolved prompt must not name the make build fallback: %q", got)

@@ -2401,11 +2401,12 @@ func resolveRepoLocalBoss(worktree string) string {
 // and hard-forbids working around a missing capability by editing boss state
 // directly.
 func bossSessionContext(f Facts) string {
-	var bossRef, helpRef, renameRef string
+	var bossRef, helpRef, renameRef, chatRenameRef string
 	if f.BossBin != "" {
 		bossRef = "the boss CLI at " + f.BossBin
 		helpRef = "`" + f.BossBin + " env` (or `" + f.BossBin + " --help`)"
 		renameRef = "`" + f.BossBin + " rename " + f.SessionID + " <new title>`"
+		chatRenameRef = "`" + f.BossBin + " chat rename " + f.AgentSessionID + " <new title>`"
 	} else {
 		// BOS-230: no boss CLI resolved (not trusted, no repo build). Tell the
 		// truth and point at the build recipe instead of advertising `boss` as
@@ -2413,6 +2414,7 @@ func bossSessionContext(f Facts) string {
 		bossRef = "the boss CLI (not available in this environment — build it with `make build`, then use `./bin/boss`)"
 		helpRef = "`./bin/boss env` (or `./bin/boss --help`)"
 		renameRef = "`./bin/boss rename " + f.SessionID + " <new title>`"
+		chatRenameRef = "`./bin/boss chat rename " + f.AgentSessionID + " <new title>`"
 	}
 	// Advertise exactly the identifier vars managedSessionEnv exports, so the
 	// prompt never names an unset var (BOS-230). BOSS_BIN and BOSS_MCP_BIN are
@@ -2437,7 +2439,8 @@ func bossSessionContext(f Facts) string {
 		strings.Join(idVars, ", ") + " (context for you, not an " +
 		"action surface). To act on this session or chat, use " + bossRef + " — run " + helpRef +
 		" for your live session context plus the full, current CLI command and MCP tool inventory " +
-		"(for example, " + renameRef + " retitles a session). " +
+		"(for example, " + chatRenameRef + " retitles this chat, while " + renameRef +
+		" retitles the whole session and its pull request). " +
 		"Boss operations are keyed on the session ID and agent-session (chat) ID above. " +
 		"Do not assume a capability is missing without checking " + helpRef + " first. " +
 		"Never edit the boss database or session files directly, and never invent a workaround " +

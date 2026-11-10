@@ -2784,6 +2784,38 @@ test('classifyCheckCommand skips search option values while preserving tool-spec
   }
 })
 
+test('classifyCheckCommand scopes premise searches to explicit stdin or pipe input', () => {
+  for (const [command, expected] of [
+    ['gh api repos/o/r/contents/f | rg -n "pattern" -', false],
+    ['rg -n pattern -', false],
+    ['set -o pipefail; gh api x | rg -n pat', false],
+    ['gh api x | grep -c pat', false],
+    ['cat f | grep -r pat -', false],
+    ['grep - file', false],
+    ['rg needle ~/.claude/skills/boss-plan', false],
+    ['cat f | grep -r pat', true],
+    ['cat f | grep -rn pat', true],
+    ['rg needle', true],
+    ['rg needle | head -1', true],
+    ['true || rg needle', true],
+    ['true; rg needle', true],
+  ]) {
+    assert.equal(
+      classifyCheckCommand(command, { kind: 'premise' }).advisory.some(
+        (finding) => finding.code === 'unscoped-premise-search',
+      ),
+      expected,
+      command,
+    )
+  }
+  assert.equal(
+    classifyCheckCommand('! rg needle -', { kind: 'criterion' }).advisory.some(
+      (finding) => finding.code === 'unscoped-negative-directory-search',
+    ),
+    false,
+  )
+})
+
 test('classifyCheckCommand exports every blocking reason and its remedy', () => {
   assert.ok(Object.isFrozen(COMMAND_BLOCKING_CODES))
   for (const code of COMMAND_BLOCKING_CODES) {

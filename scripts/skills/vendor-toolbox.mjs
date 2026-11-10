@@ -239,6 +239,8 @@ export const VENDOR_MAP = {
     'verify/verify-proof.mjs',
     'verify/verify-proof-page.mjs',
     'verify/verify-publish-hook.mjs',
+    // The merge-policy replay is a CLI an operator runs; no toolbox module imports it.
+    'verify/verify-replay.mjs',
     'worktree-sync.mjs',
   ],
   'bs-sweep-debt': ['bs-run-sentinel.mjs'],

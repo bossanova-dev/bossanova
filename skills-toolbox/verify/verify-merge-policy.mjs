@@ -12,6 +12,9 @@ import { testPath } from './verify-ui-proof.mjs'
  * @typedef {import('./verify-confidence.mjs').ConfidenceFacts} ConfidenceFacts
  * @typedef {ConfidenceResult['asks'][number]} Ask
  * @typedef {{alwaysReview?: {name: string, parkCode: string}[]}} Review
+ * @typedef {{index: number, rule: MergeRule}} RuleHit
+ * @typedef {{area: string, label: string, source: string, code: string|null, floor: boolean, covered: boolean, rule: RuleHit|null, prose: boolean}} AskDecision
+ * @typedef {{decisions: AskDecision[], residual: string[], levelRule: RuleHit|null, holds: string[]}} MergeDecisions
  */
 
 const RULE_KEYS = ['level', 'area', 'proof', 'change']
@@ -89,31 +92,33 @@ function proofCovers(facts, ask, proof) {
   )
 }
 
+const NO_PROSE = Object.freeze({ state: 'none', decisions: [], stale: false })
+
 /**
- * The park codes a head is left with after its repo's merge rules.
+ * How a repo's merge rules decided each ask of a head: for every ask in `result.asks` (same order)
+ * its own park code, whether it is a floor ask no rule can cover, the first structured rule that
+ * covers it (`{index, rule}`, or null) and whether a verified prose decision covers it; the level
+ * causes left once the asks are settled (`residual`); the level-only rule allowing the head's level
+ * (`levelRule`, or null); and the prose policy's own hold codes.
  * @param {ConfidenceResult} result the head's confidence
  * @param {ConfidenceFacts} facts `levelFacts(...)` for the same head
  * @param {Review} [review] the base tip's review policy
  * @param {unknown} [merge] the base tip's raw `verifyDefaults.merge` block
  * @param {import('./verify-merge-prose.mjs').ProseFacts} [prose]
- * @returns {string[]}
+ * @returns {MergeDecisions}
  */
-export function policyCodes(
-  result,
-  facts,
-  review = {},
-  merge = null,
-  prose = { state: 'none', decisions: [], stale: false },
-) {
-  if (result.level === 'cannot-assess' || result.level === 'blocked')
-    return legacyCodes(result, review)
+export function mergeDecisions(result, facts, review = {}, merge = null, prose = NO_PROSE) {
+  const assessable = result.level !== 'cannot-assess' && result.level !== 'blocked'
+  const rules = assessable ? (mergeRules(merge) ?? []) : []
   const holds =
-    prose.state === 'unreadable' ||
-    prose.decisions.some((decision) => decision.decision === 'human')
+    assessable &&
+    (prose.state === 'unreadable' ||
+      prose.decisions.some((decision) => decision.decision === 'human'))
       ? ['human-review:policy']
       : []
-  const rules = mergeRules(merge) ?? []
-  const levelOnly = rules.some((rule) => rule.area === undefined && rule.level === result.level)
+  const levelIndex = rules.findIndex(
+    (rule) => rule.area === undefined && rule.level === result.level,
+  )
   /** @param {MergeRule} rule @param {Ask} ask */
   const matches = (rule, ask) => {
     if (rule.level !== undefined && rule.level !== result.level) return false
@@ -123,29 +128,62 @@ export function policyCodes(
     if (rule.proof !== undefined && !proofCovers(facts, ask, rule.proof)) return false
     return rule.change === undefined || changeOf(facts, rule.area) === rule.change
   }
-  const uncovered = result.asks.filter(
-    (ask) =>
-      isFloor(ask, review) ||
-      !(
-        (ask.source !== 'judge' && rules.some((rule) => matches(rule, ask))) ||
-        (prose.decisions.some(
-          (decision) =>
-            decision.ask === ask.area && decision.decision === 'auto' && decision.verified,
-        ) &&
-          !prose.decisions.some(
-            (decision) => decision.ask === ask.area && decision.decision === 'human',
-          ))
-      ),
-  )
-  const uiAsks = result.asks.filter((ask) => askArea(ask, review) === 'ui')
+  /** @param {Ask} ask */
+  const proseCovers = (ask) =>
+    assessable &&
+    prose.decisions.some(
+      (decision) => decision.ask === ask.area && decision.decision === 'auto' && decision.verified,
+    ) &&
+    !prose.decisions.some((decision) => decision.ask === ask.area && decision.decision === 'human')
+  const decisions = result.asks.map((ask) => {
+    const floor = isFloor(ask, review)
+    const index = floor || ask.source === 'judge' ? -1 : rules.findIndex((r) => matches(r, ask))
+    const byProse = !floor && proseCovers(ask)
+    return {
+      area: ask.area,
+      label: ask.label,
+      source: ask.source,
+      code: codeOf(ask, review) ?? null,
+      floor,
+      covered: !floor && (index !== -1 || byProse),
+      rule: index === -1 ? null : { index, rule: rules[index] },
+      prose: byProse,
+    }
+  })
   const uiCovered =
     facts.proof?.behavior !== 'unproven' &&
-    uiAsks.length > 0 &&
-    uiAsks.every((ask) => !uncovered.includes(ask))
+    result.asks.some((ask) => askArea(ask, review) === 'ui') &&
+    result.asks.every((ask, i) => askArea(ask, review) !== 'ui' || decisions[i].covered)
   const residual = result.loweredBy.filter(
     (cause) => cause !== 'area-asks' && !(cause === 'unproven' && uiCovered),
   )
-  if (result.level === 'high') return [...holds, ...(levelOnly ? [] : ['human-merge'])]
-  if (uncovered.length === 0 && (residual.length === 0 || levelOnly)) return holds
+  return {
+    decisions,
+    residual,
+    levelRule: levelIndex === -1 ? null : { index: levelIndex, rule: rules[levelIndex] },
+    holds,
+  }
+}
+
+/**
+ * The park codes a head is left with after its repo's merge rules: the projection of
+ * mergeDecisions, which it also records on `result.merge` so a reader of the judge's confidence
+ * (the merge-policy replay) sees how each ask was decided.
+ * @param {ConfidenceResult & {merge?: MergeDecisions}} result the head's confidence
+ * @param {ConfidenceFacts} facts `levelFacts(...)` for the same head
+ * @param {Review} [review] the base tip's review policy
+ * @param {unknown} [merge] the base tip's raw `verifyDefaults.merge` block
+ * @param {import('./verify-merge-prose.mjs').ProseFacts} [prose]
+ * @returns {string[]}
+ */
+export function policyCodes(result, facts, review = {}, merge = null, prose = NO_PROSE) {
+  const decided = mergeDecisions(result, facts, review, merge, prose)
+  result.merge = decided
+  if (result.level === 'cannot-assess' || result.level === 'blocked')
+    return legacyCodes(result, review)
+  const { holds, residual, levelRule } = decided
+  if (result.level === 'high') return [...holds, ...(levelRule ? [] : ['human-merge'])]
+  const uncovered = result.asks.filter((_, i) => !decided.decisions[i].covered)
+  if (uncovered.length === 0 && (residual.length === 0 || levelRule)) return holds
   return [...holds, ...legacyCodes({ ...result, asks: uncovered }, review)]
 }

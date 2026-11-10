@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeRules, policyCodes } from './verify-merge-policy.mjs'
+import { mergeDecisions, mergeRules, policyCodes } from './verify-merge-policy.mjs'
 import { levelConfidence, levelFacts, legacyCodes } from './verify-level.mjs'
 import { pathParkFacts } from './verify-path-parks.mjs'
 import { reviewPolicyFromBlock } from './verify-review-policy.mjs'
@@ -213,6 +213,30 @@ test('a proof rule covers a config UI ask only when the proof speaks to each of 
     codesFor(['tui/x.go', 'web/App.tsx'], { review, auto: recording, ...recorded }),
     ['human-review:ui'],
   )
+})
+
+test('mergeDecisions names the rule covering each ask and policyCodes records it', () => {
+  const review = reviewPolicyFromBlock({ humanReview: { ui: ['web/**'] } })
+  const paths = ['web/App.tsx', 'web/App.test.tsx', 'api/x.proto']
+  const facts = {
+    ...pathParkFacts(paths, { review }),
+    changedPaths: paths,
+    changedLines: 12,
+    sizeBaseline: SIZE,
+    judgeAreas: [],
+    ci: { green: true },
+    uiTests: { covered: true },
+  }
+  const result = levelConfidence(facts)
+  const merge = { auto: [{ level: 'high' }, { area: 'ui', proof: 'tests' }] }
+  const decided = mergeDecisions(result, levelFacts(facts), review, merge)
+  const byCode = Object.fromEntries(decided.decisions.map((ask) => [ask.code, ask]))
+  assert.deepEqual(byCode['human-review:ui'].rule, { index: 1, rule: merge.auto[1] })
+  assert.equal(byCode['human-review:api-contract'].rule, null)
+  assert.equal(decided.levelRule, null)
+  const codes = policyCodes(result, levelFacts(facts), review, merge)
+  assert.deepEqual(codes, ['human-review:api-contract'])
+  assert.deepEqual(result.merge, decided)
 })
 
 test('cannot-assess and blocked heads keep their legacy codes', () => {

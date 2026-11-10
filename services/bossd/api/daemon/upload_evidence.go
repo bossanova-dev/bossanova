@@ -27,14 +27,20 @@ const EvidenceReasonHeader = "Bossd-Evidence-Reason"
 const evidenceUploadCeiling = 10 * time.Minute
 const evidenceObjectSizeCap = 300 * 1024 * 1024
 
-// evidencePageName is the proof page object; it is accepted only under the
-// deterministic prefix and on a destination with pages enabled.
-const evidencePageName = "index.html"
+// evidencePageName is the proof page object and evidencePlayerName the static
+// script it links; both are accepted only under the deterministic prefix and
+// on a destination with pages enabled.
+const (
+	evidencePageName   = "index.html"
+	evidencePlayerName = "player.js"
+)
 
 var (
 	evidenceScreenshotName = regexp.MustCompile(`^screenshots/[A-Za-z0-9._-]+\.(png|jpg|jpeg|webp)$`)
-	evidenceHeadSHA        = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	evidenceRepoSlug       = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+	// evidenceMediaName is a proof page's media, published flat beside it.
+	evidenceMediaName = regexp.MustCompile(`^media/[A-Za-z0-9._-]+\.(mp4|png|jpg|webp)$`)
+	evidenceHeadSHA   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	evidenceRepoSlug  = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 )
 
 // UploadEvidence publishes only finished evidence belonging to a trusted registered workspace.
@@ -59,9 +65,11 @@ func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.Upl
 			_ = f.file.Close()
 		}
 	}()
-	page := slices.ContainsFunc(files, func(f evidenceUploadFile) bool { return f.name == evidencePageName })
+	page := slices.ContainsFunc(files, func(f evidenceUploadFile) bool {
+		return f.name == evidencePageName || f.name == evidencePlayerName
+	})
 	if page && !deterministic {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("index.html requires pr_number and head_sha"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("index.html and player.js require pr_number and head_sha"))
 	}
 	prefix, err := evidencePrefix(repo, req.Msg.PrNumber, req.Msg.HeadSha, deterministic)
 	if err != nil {
@@ -259,11 +267,15 @@ func evidenceContentType(name string) string {
 		return "application/x-ndjson"
 	case evidencePageName:
 		return "text/html; charset=utf-8"
+	case evidencePlayerName:
+		return "text/javascript; charset=utf-8"
 	}
-	if !evidenceScreenshotName.MatchString(name) {
+	if !evidenceScreenshotName.MatchString(name) && !evidenceMediaName.MatchString(name) {
 		return ""
 	}
 	switch filepath.Ext(name) {
+	case ".mp4":
+		return "video/mp4"
 	case ".png":
 		return "image/png"
 	case ".jpg", ".jpeg":

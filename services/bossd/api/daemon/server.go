@@ -28,6 +28,7 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/ghusage"
 	"github.com/recurser/bossd/internal/plugin"
+	"github.com/recurser/bossd/internal/repoidentity"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
@@ -210,6 +211,7 @@ type Server struct {
 	agentClients                map[string]agent.RunnerClient
 	worktrees                   worktreeManager
 	provider                    vcs.Provider
+	repoIdentity                *repoidentity.Verifier
 	prResolver                  PRAssociationResolver
 	pluginHost                  *plugin.Host
 	chatTmux                    ChatTmuxSpawner
@@ -665,6 +667,7 @@ type PRRefresher interface {
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
+	identityReader, _ := cfg.Provider.(repoidentity.Reader)
 	if cfg.TrackerIssueLeaseNow == nil {
 		cfg.TrackerIssueLeaseNow = time.Now
 	}
@@ -740,6 +743,7 @@ func New(cfg Config) *Server {
 		agentClients: cfg.AgentClients,
 		worktrees:    cfg.Worktrees,
 		provider:     cfg.Provider,
+		repoIdentity: repoidentity.New(identityReader, cfg.Logger),
 
 		prResolver:            cfg.PRResolver,
 		pluginHost:            cfg.PluginHost,

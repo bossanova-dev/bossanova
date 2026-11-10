@@ -231,7 +231,7 @@ func (w *daemonWiring) wireDeliveryWorkers() {
 	// expires overdue subscriptions and fires any whose owning session already
 	// sits in a trigger state, covering both a transition made while the daemon
 	// was down and the startup bulk orphan advance that bypasses the hook.
-	broadcastTargets := upstreamTargets{repos: w.repos, sessions: w.sessions, chats: w.agentChats, identities: repoidentity.New(w.ghProvider)}
+	broadcastTargets := upstreamTargets{repos: w.repos, sessions: w.sessions, chats: w.agentChats, identities: repoidentity.New(w.ghProvider, log.Logger)}
 	broadcastPolicy := upstream.NewCloudControlPolicy(log.Logger)
 	broadcastPolicy.RepoIdentities = broadcastTargets
 	broadcastWorker := broadcast.NewDeliveryWorker(broadcast.WorkerConfig{

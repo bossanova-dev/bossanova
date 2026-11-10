@@ -76,14 +76,30 @@ test('ordered view and outputs preserve facts and optional sections', () => {
       'After merge',
     ],
   )
-  for (const render of [renderProofHtml, renderProofComment]) {
-    const output = render(input)
-    let prior = -1
-    for (const section of view.sections) {
-      const next = output.indexOf(section.title, prior + 1)
-      assert.ok(next > prior)
-      prior = next
-    }
+  const comment = renderProofComment(input)
+  let prior = -1
+  for (const section of view.sections) {
+    const next = comment.indexOf(section.title, prior + 1)
+    assert.ok(next > prior, section.title)
+    prior = next
+  }
+  const html = renderProofHtml(input)
+  const order = [
+    'waiting',
+    'risks',
+    'changes',
+    'evidence',
+    'checklist',
+    'notes',
+    'files',
+    'generation',
+  ]
+  const at = order.map((id) => html.indexOf(` id="${id}"`))
+  assert.ok(
+    at.every((n, i) => n > 0 && (i === 0 || n > at[i - 1])),
+    `section order ${at}`,
+  )
+  for (const output of [html, comment]) {
     for (const fact of [
       'Useful change',
       'Needs inspection',
@@ -100,7 +116,9 @@ test('ordered view and outputs preserve facts and optional sections', () => {
   }
   delete input.timeline
   delete input.afterMerge
-  assert.ok(!renderProofHtml(input).includes('<h2>Timeline'))
+  const bare = renderProofHtml(input)
+  assert.ok(!bare.includes('Initial change') && !bare.includes('Commits'))
+  assert.ok(bare.includes('<h3>After merge</h3><ul><li><span>Nothing.</span></li></ul>'))
 })
 test('every manifest level supplies guidance without changing confidence', () => {
   for (const level of LEVELS) {
@@ -115,7 +133,7 @@ test('every manifest level supplies guidance without changing confidence', () =>
     resign(input)
     assert.ok(LEVEL_GUIDANCE[level])
     assert.equal(proofView(input).level, level)
-    assert.equal(renderProofHtml(input).includes('<h2>Why not high'), level !== 'high')
+    assert.equal(renderProofHtml(input).includes('<ol class="reasons">'), level !== 'high')
     input.rates = { [level]: { fixed: 7, total: 287 } }
     assert.ok(renderProofComment(input).includes('2.4%'))
     delete input.rates
@@ -161,11 +179,14 @@ test('not-computed confidence preserves other reasons and review blockers', () =
   })
   input.proof.review.blockers = [{ title: 'Fix the failure', where: 'file:1' }]
   resign(input)
-  for (const render of [renderProofHtml, renderProofComment]) {
-    const output = render(input)
-    assert.ok(output.includes('Why not high'))
+  const comment = renderProofComment(input)
+  assert.ok(comment.includes('Why not high'))
+  assert.ok(comment.includes('Fix the failure (file:1)'))
+  const html = renderProofHtml(input)
+  assert.ok(html.includes('<div class="t">Fix the failure</div><div class="d">file:1</div>'))
+  assert.ok(html.includes('<span>Resolve: Fix the failure</span>'))
+  for (const output of [html, comment]) {
     assert.ok(output.includes('Needs inspection'))
-    assert.ok(output.includes('Fix the failure (file:1)'))
     assert.ok(!output.includes('Confidence is not computed yet.'))
   }
 })
@@ -222,14 +243,18 @@ test('CSP hashes the only stylesheet and only own-origin media inline', () => {
   const hash = createHash('sha256').update(style).digest('base64')
   assert.ok(
     html.includes(
-      `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-${hash}'; img-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'">`,
+      `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-${hash}'; script-src 'self'; img-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'">`,
     ),
   )
-  assert.ok(!/<script|<link|<iframe|<object|\son\w+\s*=|@import|url\(/i.test(html))
+  assert.ok(!/<script/.test(html), 'no recording, no player script')
+  assert.ok(!/<link|<iframe|<object|\son\w+\s*=|\sstyle=|@import|url\(/i.test(html))
   assert.ok(html.includes('<video controls preload="none"'))
   assert.ok(html.includes('<img'))
   for (const match of html.matchAll(/(?:src|poster)="([^"]+)"/g))
-    assert.equal(new URL(match[1]).origin, 'https://proof.example')
+    assert.equal(
+      new URL(match[1], 'https://proof.example/proof.html').origin,
+      'https://proof.example',
+    )
   input.proof.page = null
   resign(input)
   assert.ok(!/<video|<img/.test(renderProofHtml(input)))
@@ -346,9 +371,22 @@ test('view text reaches both outputs including checked areas and escaped facts',
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
       .replace(/&amp;/g, '&')
-  for (const output of [renderProofHtml(input), renderProofComment(input)].map(decode)) {
+  const page = decode(renderProofHtml(input))
+  for (const fact of [
+    'Checked label',
+    'Checked fact < & >',
+    'Checked: proven.',
+    'Reviewer _one_: ran',
+    '<time datetime="2026-01-01T00:00:00Z">2026-01-01 00:00</time><span>Initial change</span>',
+  ])
+    assert.ok(page.includes(fact), fact)
+  for (const [output, skipped] of [
+    [page, ['Checked for you', 'Timeline']],
+    [decode(renderProofComment(input)), []],
+  ]) {
     for (const section of view.sections) {
-      for (const bullet of section.bullets) assert.ok(output.includes(bullet), bullet)
+      if (!skipped.includes(section.title))
+        for (const bullet of section.bullets) assert.ok(output.includes(bullet), bullet)
       for (const ask of section.asks || []) {
         assert.ok(output.includes(ask.label))
         for (const item of ask.items) assert.ok(output.includes(item))
@@ -439,7 +477,7 @@ test('optional park verdict opens the page and comment, preserving confidence', 
   assert.equal(validatePageInput(input).ok, true)
   assert.equal(proofView(input).verdict, sentence)
   assert.ok(renderProofComment(input).startsWith(`<details>\n<summary>${sentence}</summary>`))
-  assert.ok(renderProofHtml(input).includes(`<main><h1>${sentence}</h1>`))
+  assert.ok(renderProofHtml(input).includes(`<h1>${sentence}</h1>`))
   for (const output of [renderProofComment(input), renderProofHtml(input)])
     assert.ok(output.includes('Confidence: Moderate'))
   input.verdict.label = '<!-- forged --> @ops <script>'
@@ -541,8 +579,12 @@ test('factory health shows one strip above Confidence in the page and above the 
   const strip = 'Second model down · Factory health unreadable: unimplemented'
   assert.equal(proofView(input).healthStrip, strip)
   const html = renderProofHtml(input)
-  assert.ok(html.includes(`<main><p><strong>Factory health:</strong> ${strip}</p>`))
-  assert.ok(html.indexOf('Factory health:') < html.indexOf('<h2>Confidence</h2>'))
+  assert.ok(
+    html.includes(
+      `<header class="pr"><p class="health"><strong>Factory health:</strong> ${strip}</p>`,
+    ),
+  )
+  assert.ok(html.indexOf('Factory health:') < html.indexOf('<dt>Confidence</dt>'))
   const comment = renderProofComment(input)
   assert.ok(comment.startsWith(`**Factory health:** ${strip}\n\n<details>\n`))
 })
@@ -641,7 +683,7 @@ test('review links render once with escaped destinations and leave absent output
     })
     const absent = render(input)
     const stripped = linked
-      .replace(/<p><a href="[^"]+">Review this head<\/a><\/p>/, '')
+      .replace(/<span><a href="[^"]+">Review this head<\/a><\/span>/, '')
       .replace(/\[Review this head\]\([^\n]+\)\n\n/, '')
     assert.equal(stripped, absent)
   }

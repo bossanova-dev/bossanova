@@ -82,3 +82,45 @@ func TestWatchCloudControlResnapshotsOnLocalChange(t *testing.T) {
 func (p *switchableCloudControl) RepoMode(context.Context, string) (config.CloudControlMode, config.CloudControlSource) {
 	return p.Mode(), config.CloudControlSourceMachine
 }
+
+func TestWatchCloudControlRepoDowngrade(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		policy := &switchableCloudControl{}
+		policy.mode.Store(config.CloudControlFull)
+		client, _, targets := targetClient()
+		client.cloudControl = policy
+		client.targetObjects = targets
+		client.stores = StreamStores{Sessions: &fakeSessionReader{sessions: []*pb.Session{{Id: "sa", RepoId: "a", Plan: "secret"}}}}
+		initial, err := client.repoCloudControl(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		out := make(chan *pb.DaemonEvent, 4)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			client.watchCloudControl(ctx, pb.CloudControl_CLOUD_CONTROL_FULL, out, initial)
+		}()
+		synctest.Wait()
+		// Keep the advertised machine value fixed while only the repo authority changes.
+		client.cloudControl = &repoSwitchPolicy{repo: policy}
+		policy.mode.Store(config.CloudControlPrivate)
+		time.Sleep(defaultCloudControlPollInterval)
+		synctest.Wait()
+		snap := pendingEvent(out).GetSnapshot()
+		if snap == nil || snap.CloudControl != pb.CloudControl_CLOUD_CONTROL_FULL || len(snap.Sessions) != 1 || snap.Sessions[0].Plan != "" {
+			t.Fatalf("downgrade did not replace content: %v", snap)
+		}
+		cancel()
+		<-done
+	})
+}
+
+type repoSwitchPolicy struct{ repo *switchableCloudControl }
+
+func (p *repoSwitchPolicy) Mode() config.CloudControlMode { return config.CloudControlFull }
+func (p *repoSwitchPolicy) RepoMode(ctx context.Context, id string) (config.CloudControlMode, config.CloudControlSource) {
+	return p.repo.RepoMode(ctx, id)
+}

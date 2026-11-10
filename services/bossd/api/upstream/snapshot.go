@@ -25,6 +25,8 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		SupportedCommandFields:     daemoncaps.StreamCommands(),
 	}
 
+	redactor := c.newCloudRedactor()
+
 	if c.stores.Repos != nil {
 		repoIDs, err := c.stores.Repos.SnapshotRepoIDs(ctx)
 		if err != nil {
@@ -40,7 +42,7 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		}
 		snap.Sessions = make([]*pb.Session, len(sessions))
 		for i, session := range sessions {
-			snap.Sessions[i] = redactSessionForCloud(session, snap.CloudControl)
+			snap.Sessions[i] = redactor.redactForCloud(ctx, session).(*pb.Session)
 		}
 	}
 
@@ -51,7 +53,7 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		}
 		snap.Chats = make([]*pb.AgentChatMetadata, len(chats))
 		for i, chat := range chats {
-			snap.Chats[i] = redactChatForCloud(chat, snap.CloudControl)
+			snap.Chats[i] = redactor.redactForCloud(ctx, chat).(*pb.AgentChatMetadata)
 		}
 	}
 
@@ -146,4 +148,11 @@ type StatusSnapshotReader interface {
 // callback.DeriveInterests.
 type CallbackInterestReader interface {
 	SnapshotCallbackInterests(ctx context.Context) ([]*pb.CallbackInterest, error)
+}
+
+// BuildCloudSnapshot shares the stream's per-object redaction with the unary
+// reconciliation publisher. Ownership comes from the snapshot's local sessions.
+func BuildCloudSnapshot(ctx context.Context, stores StreamStores, policy CloudControlPolicy) (*pb.DaemonSnapshot, error) {
+	c := &StreamClient{stores: stores, cloudControl: policy}
+	return c.buildSnapshot(ctx)
 }

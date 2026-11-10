@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -31,7 +32,11 @@ func (c *StreamClient) cloudControlPollInterval() time.Duration {
 // It ticks on wall time, not c.clock: tests that drive the reconnect backoff
 // on the injected fake clock wait for a timer of at least that backoff, and a
 // poll timer on the same clock would satisfy that wait early.
-func (c *StreamClient) watchCloudControl(ctx context.Context, advertised pb.CloudControl, outbound chan<- *pb.DaemonEvent) {
+func (c *StreamClient) watchCloudControl(ctx context.Context, advertised pb.CloudControl, outbound chan<- *pb.DaemonEvent, initial ...map[string]pb.CloudControl) {
+	previous, _ := c.repoCloudControl(ctx)
+	if len(initial) > 0 {
+		previous = initial[0]
+	}
 	ticker := time.NewTicker(c.cloudControlPollInterval())
 	defer ticker.Stop()
 	for {
@@ -40,7 +45,11 @@ func (c *StreamClient) watchCloudControl(ctx context.Context, advertised pb.Clou
 			return
 		case <-ticker.C:
 		}
-		if cloudControlProto(c.cloudControl) == advertised {
+		current, err := c.repoCloudControl(ctx)
+		if err != nil {
+			continue
+		}
+		if cloudControlProto(c.cloudControl) == advertised && maps.Equal(previous, current) {
 			continue
 		}
 		snap, err := c.buildSnapshot(ctx)
@@ -52,8 +61,34 @@ func (c *StreamClient) watchCloudControl(ctx context.Context, advertised pb.Clou
 		case outbound <- &pb.DaemonEvent{Event: &pb.DaemonEvent_Snapshot{Snapshot: snap}}:
 			c.logger.Info().Str("cloud_control", snap.GetCloudControl().String()).Msg("cloud control changed; snapshot re-sent")
 			advertised = snap.GetCloudControl()
+			previous = current
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+func (c *StreamClient) repoCloudControl(ctx context.Context) (map[string]pb.CloudControl, error) {
+	modes := make(map[string]pb.CloudControl)
+	var ids []string
+	if c.targetObjects != nil {
+		repos, err := c.targetObjects.ListTargetRepos(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, repo := range repos {
+			ids = append(ids, repo.RepoID)
+		}
+	} else if c.stores.Repos != nil {
+		var err error
+		ids, err = c.stores.Repos.SnapshotRepoIDs(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	redactor := c.newCloudRedactor()
+	for _, id := range ids {
+		modes[id] = redactor.mode(ctx, id)
+	}
+	return modes, nil
 }

@@ -1433,6 +1433,10 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	// 1. Build + send the snapshot. Any error here is fatal for this
 	//    attempt — bosso rejects streams whose first event isn't a
 	//    snapshot, so there's no point forwarding deltas afterwards.
+	initialRepoModes, err := c.repoCloudControl(streamCtx)
+	if err != nil {
+		return err
+	}
 	snap, err := c.buildSnapshot(streamCtx)
 	if err != nil {
 		return fmt.Errorf("build snapshot: %w", err)
@@ -1479,7 +1483,7 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 		c.subscribeDeltas(streamCtx, outbound)
 	})
 	cloudControlDone := safego.Go(c.logger, func() {
-		c.watchCloudControl(streamCtx, snap.GetCloudControl(), outbound)
+		c.watchCloudControl(streamCtx, snap.GetCloudControl(), outbound, initialRepoModes)
 	})
 
 	// 4. Token refresher. Drives outbound on refresh; returning an error
@@ -1566,6 +1570,7 @@ func (c *StreamClient) runWriter(ctx context.Context, stream bidirectionalStream
 			if chunk := ev.GetAttachChunk(); chunk != nil && !c.allowSessionAttach(ctx, chunk.GetCommandId(), chunk.GetSessionId()) {
 				continue
 			}
+			ev = c.newCloudRedactor().redactForCloud(ctx, ev).(*pb.DaemonEvent)
 			if err := stream.Send(ev); err != nil {
 				c.logger.Debug().Err(err).Msg("stream send failed, writer exiting")
 				return

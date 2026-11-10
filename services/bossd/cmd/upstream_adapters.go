@@ -13,7 +13,6 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossalib/kit/config"
 	"github.com/rs/zerolog"
 
 	server "github.com/recurser/bossd/api/daemon"
@@ -252,42 +251,12 @@ func setGitHubCredentialReporter(cfg *server.Config, src *ghtoken.Source) {
 }
 
 func buildSnapshotForPublish(ctx context.Context, stores upstream.StreamStores, daemonID, hostname string, policy upstream.CloudControlPolicy) (*bossanovav1.DaemonSnapshot, error) {
-	snap := &bossanovav1.DaemonSnapshot{
-		DaemonId:     daemonID,
-		Hostname:     hostname,
-		CloudControl: bossanovav1.CloudControl_CLOUD_CONTROL_READ_ONLY,
+	snap, err := upstream.BuildCloudSnapshot(ctx, stores, policy)
+	if err != nil {
+		return nil, err
 	}
-	if policy != nil && policy.Mode() == config.CloudControlFull {
-		snap.CloudControl = bossanovav1.CloudControl_CLOUD_CONTROL_FULL
-	}
-	if stores.Repos != nil {
-		repos, err := stores.Repos.SnapshotRepoIDs(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot repos: %w", err)
-		}
-		snap.RepoIds = repos
-	}
-	if stores.Sessions != nil {
-		sessions, err := stores.Sessions.SnapshotSessions(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot sessions: %w", err)
-		}
-		snap.Sessions = sessions
-	}
-	if stores.Chats != nil {
-		chats, err := stores.Chats.SnapshotChats(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot chats: %w", err)
-		}
-		snap.Chats = chats
-	}
-	if stores.Statuses != nil {
-		statuses, err := stores.Statuses.SnapshotStatuses(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot statuses: %w", err)
-		}
-		snap.Statuses = statuses
-	}
+	snap.DaemonId = daemonID
+	snap.Hostname = hostname
 	return snap, nil
 }
 

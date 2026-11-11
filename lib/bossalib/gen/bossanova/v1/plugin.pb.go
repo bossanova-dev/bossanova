@@ -31,6 +31,7 @@ const (
 	TaskAction_TASK_ACTION_AUTO_MERGE     TaskAction = 1 // Merge PR directly (no Claude session).
 	TaskAction_TASK_ACTION_CREATE_SESSION TaskAction = 2 // Create Claude Code session with plan.
 	TaskAction_TASK_ACTION_NOTIFY_USER    TaskAction = 3 // Skip action, notify user (eg. previously-rejected).
+	TaskAction_TASK_ACTION_REQUEST_REBASE TaskAction = 4 // Ask the PR bot to rebase; no session.
 )
 
 // Enum value maps for TaskAction.
@@ -40,12 +41,14 @@ var (
 		1: "TASK_ACTION_AUTO_MERGE",
 		2: "TASK_ACTION_CREATE_SESSION",
 		3: "TASK_ACTION_NOTIFY_USER",
+		4: "TASK_ACTION_REQUEST_REBASE",
 	}
 	TaskAction_value = map[string]int32{
 		"TASK_ACTION_UNSPECIFIED":    0,
 		"TASK_ACTION_AUTO_MERGE":     1,
 		"TASK_ACTION_CREATE_SESSION": 2,
 		"TASK_ACTION_NOTIFY_USER":    3,
+		"TASK_ACTION_REQUEST_REBASE": 4,
 	}
 )
 
@@ -881,8 +884,12 @@ type TaskItem struct {
 	Action TaskAction `protobuf:"varint,8,opt,name=action,proto3,enum=bossanova.v1.TaskAction" json:"action,omitempty"`
 	// Existing branch to check out (eg. dependabot's PR branch).
 	ExistingBranch string `protobuf:"bytes,9,opt,name=existing_branch,json=existingBranch,proto3" json:"existing_branch,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Whether all commits belong to the PR bot.
+	IsBotRebaseRequestable bool `protobuf:"varint,10,opt,name=is_bot_rebase_requestable,json=isBotRebaseRequestable,proto3" json:"is_bot_rebase_requestable,omitempty"`
+	// The head whose commit authors were classified.
+	HeadSha       string `protobuf:"bytes,11,opt,name=head_sha,json=headSha,proto3" json:"head_sha,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TaskItem) Reset() {
@@ -974,6 +981,20 @@ func (x *TaskItem) GetAction() TaskAction {
 func (x *TaskItem) GetExistingBranch() string {
 	if x != nil {
 		return x.ExistingBranch
+	}
+	return ""
+}
+
+func (x *TaskItem) GetIsBotRebaseRequestable() bool {
+	if x != nil {
+		return x.IsBotRebaseRequestable
+	}
+	return false
+}
+
+func (x *TaskItem) GetHeadSha() string {
+	if x != nil {
+		return x.HeadSha
 	}
 	return ""
 }
@@ -5685,7 +5706,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tH\x00R\rrepoOriginUrl\x88\x01\x01B\x12\n" +
 	"\x10_repo_origin_url\"A\n" +
 	"\x11PollTasksResponse\x12,\n" +
-	"\x05tasks\x18\x01 \x03(\v2\x16.bossanova.v1.TaskItemR\x05tasks\"\xad\x02\n" +
+	"\x05tasks\x18\x01 \x03(\v2\x16.bossanova.v1.TaskItemR\x05tasks\"\x83\x03\n" +
 	"\bTaskItem\x12\x1f\n" +
 	"\vexternal_id\x18\x01 \x01(\tR\n" +
 	"externalId\x12\x14\n" +
@@ -5697,7 +5718,10 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\bpriority\x18\x06 \x01(\x05R\bpriority\x12\x16\n" +
 	"\x06labels\x18\a \x03(\tR\x06labels\x120\n" +
 	"\x06action\x18\b \x01(\x0e2\x18.bossanova.v1.TaskActionR\x06action\x12'\n" +
-	"\x0fexisting_branch\x18\t \x01(\tR\x0eexistingBranch\"\x8a\x01\n" +
+	"\x0fexisting_branch\x18\t \x01(\tR\x0eexistingBranch\x129\n" +
+	"\x19is_bot_rebase_requestable\x18\n" +
+	" \x01(\bR\x16isBotRebaseRequestable\x12\x19\n" +
+	"\bhead_sha\x18\v \x01(\tR\aheadSha\"\x8a\x01\n" +
 	"\x17UpdateTaskStatusRequest\x12\x1f\n" +
 	"\vexternal_id\x18\x01 \x01(\tR\n" +
 	"externalId\x124\n" +
@@ -6056,13 +6080,14 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x121\n" +
 	"\x04type\x18\x04 \x01(\x0e2\x1d.bossanova.v1.UserSettingTypeR\x04type\x12#\n" +
 	"\rdefault_value\x18\x05 \x01(\tR\fdefaultValue\x12%\n" +
-	"\x0eallowed_values\x18\x06 \x03(\tR\rallowedValues*\x82\x01\n" +
+	"\x0eallowed_values\x18\x06 \x03(\tR\rallowedValues*\xa2\x01\n" +
 	"\n" +
 	"TaskAction\x12\x1b\n" +
 	"\x17TASK_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16TASK_ACTION_AUTO_MERGE\x10\x01\x12\x1e\n" +
 	"\x1aTASK_ACTION_CREATE_SESSION\x10\x02\x12\x1b\n" +
-	"\x17TASK_ACTION_NOTIFY_USER\x10\x03*\x91\x01\n" +
+	"\x17TASK_ACTION_NOTIFY_USER\x10\x03\x12\x1e\n" +
+	"\x1aTASK_ACTION_REQUEST_REBASE\x10\x04*\x91\x01\n" +
 	"\x0eTaskItemStatus\x12 \n" +
 	"\x1cTASK_ITEM_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cTASK_ITEM_STATUS_IN_PROGRESS\x10\x01\x12\x1e\n" +

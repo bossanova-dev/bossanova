@@ -16,7 +16,7 @@ function writeExecutable(file, body) {
 }
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ensure-buf-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
   const bin = path.join(dir, 'bin')
   fs.mkdirSync(bin)
   const dest = path.join(dir, `buf-${version}`, 'buf')
@@ -31,6 +31,7 @@ function fixture(t) {
     DOWNLOAD: download,
     SUMS: sums,
     CURL_LOG: curlLog,
+    GO_FAIL: '1',
   }
   writeExecutable(
     download,
@@ -49,6 +50,13 @@ case "$2" in */sha256.txt) cp "$SUMS" "$4" ;; *) cp "$DOWNLOAD" "$4" ;; esac`,
   )
   // Keep bounded retry behavior without spending 15 seconds on synthetic network failures.
   writeExecutable(path.join(bin, 'sleep'), 'exit 0')
+  writeExecutable(
+    path.join(bin, 'go'),
+    `echo "$*" >> "$CALLS"
+[ -z "$GO_FAIL" ] || exit 1
+cp "$DOWNLOAD" "$GOBIN/buf"
+chmod +x "$GOBIN/buf"`,
+  )
   function run(args) {
     return spawnSync('sh', [helper, ...args, version, dest], { env, encoding: 'utf8' })
   }
@@ -103,8 +111,34 @@ for (const failure of ['checksum', 'version', 'download']) {
     assert.notEqual(f.run(['install']).status, 0)
     assert.equal(fs.existsSync(f.dest), false)
     assert.deepEqual(fs.readdirSync(path.dirname(f.dest)), [])
+    if (failure !== 'download') assert.equal(fs.existsSync(f.calls), false)
   })
 }
+
+test('make builds pinned buf through the module proxy after release downloads fail', (t) => {
+  const f = fixture(t)
+  f.env.CURL_FAIL = '1'
+  f.env.GO_FAIL = ''
+  succeeded(f.make(['buf-check-version']))
+  succeeded(f.run(['check']))
+  assert.match(
+    fs.readFileSync(f.calls, 'utf8'),
+    /^install github\.com\/bufbuild\/buf\/cmd\/buf@v1\.66\.1$/m,
+  )
+  assert.deepEqual(fs.readdirSync(path.dirname(f.dest)), ['buf'])
+})
+
+test('a wrong-version source build preserves an existing destination', (t) => {
+  const f = fixture(t)
+  f.seed('1.68.2')
+  const before = fs.readFileSync(f.dest)
+  f.env.CURL_FAIL = '1'
+  f.env.GO_FAIL = ''
+  f.env.DOWNLOAD_VERSION = '1.68.3'
+  assert.notEqual(f.run(['install']).status, 0)
+  assert.deepEqual(fs.readFileSync(f.dest), before)
+  assert.deepEqual(fs.readdirSync(path.dirname(f.dest)), ['buf'])
+})
 
 test('failed download preserves an existing destination', (t) => {
   const f = fixture(t)

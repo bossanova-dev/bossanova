@@ -15,6 +15,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/testharness"
 )
@@ -107,6 +108,43 @@ func (f *fakeTmux) findCall(sub string) []string {
 		}
 	}
 	return nil
+}
+
+const (
+	realTmuxReadyBudget = tmux.DefaultSessionStartReadyDeadline
+	// Mirrors providerSessionIDBackgroundDiscoveryTimeout in services/bossd/api/daemon/server.go.
+	providerSessionDiscoveryBudget = time.Minute
+	providerSessionPollInterval    = 50 * time.Millisecond
+)
+
+func realTmuxOptions(t *testing.T) testharness.Options {
+	t.Helper()
+	return testharness.Options{
+		TmuxCommandFactory: realTmuxFactory(t),
+		TmuxOptions:        []tmux.Option{tmux.WithSessionStartReadyDeadline(realTmuxReadyBudget)},
+	}
+}
+
+func waitForProviderSessionID(t *testing.T, store db.AgentChatStore, agentSessionID string) *domain.AgentChat {
+	t.Helper()
+	ticker := time.NewTicker(providerSessionPollInterval)
+	defer ticker.Stop()
+	timer := time.NewTimer(providerSessionDiscoveryBudget)
+	defer timer.Stop()
+	for {
+		chat, err := store.GetByAgentSessionID(context.Background(), agentSessionID)
+		if err != nil {
+			t.Fatalf("GetByAgentSessionID: %v", err)
+		}
+		if chat != nil && chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
+			return chat
+		}
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("provider_session_id not persisted within %s: last chat=%+v", providerSessionDiscoveryBudget, chat)
+		}
+	}
 }
 
 func realTmuxFactory(t *testing.T) tmux.CommandFactory {
@@ -448,13 +486,12 @@ func TestE2E_RecordChat_CodexRealTmuxDiscoversProviderSessionID(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
 	}
-	tmuxFactory := realTmuxFactory(t)
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("BOSSD_TEST_CODEX_TUI_DISCOVERY_REQUIRED", "1")
 	_ = installFakeCodexTUI(t)
 
-	h := testharness.NewWithOptions(t, testharness.Options{TmuxCommandFactory: tmuxFactory})
+	h := testharness.NewWithOptions(t, realTmuxOptions(t))
 	ctx := context.Background()
 	repoDir := testharness.TempRepoDir(t)
 	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
@@ -490,13 +527,7 @@ func TestE2E_RecordChat_CodexRealTmuxDiscoversProviderSessionID(t *testing.T) {
 		_ = h.Tmux.KillSession(context.Background(), resp.Msg.Chat.TmuxSessionName)
 	})
 
-	chat, err := h.AgentChats.GetByAgentSessionID(ctx, agentSessionID)
-	if err != nil {
-		t.Fatalf("GetByAgentSessionID: %v", err)
-	}
-	if chat.ProviderSessionID == nil || *chat.ProviderSessionID == "" {
-		t.Fatal("expected provider_session_id to be discovered and persisted")
-	}
+	chat := waitForProviderSessionID(t, h.AgentChats, agentSessionID)
 	if *chat.ProviderSessionID == agentSessionID {
 		t.Fatalf("provider_session_id = logical id %q; want fake codex-generated id", agentSessionID)
 	}
@@ -594,12 +625,11 @@ func TestE2E_RecordChat_CodexResumeTwicePreservesChatIdentity(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
 	}
-	tmuxFactory := realTmuxFactory(t)
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	argvLog := installFakeCodexTUI(t)
 
-	h := testharness.NewWithOptions(t, testharness.Options{TmuxCommandFactory: tmuxFactory})
+	h := testharness.NewWithOptions(t, realTmuxOptions(t))
 	ctx := context.Background()
 	repoDir := testharness.TempRepoDir(t)
 	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{

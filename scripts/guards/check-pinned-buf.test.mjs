@@ -39,20 +39,23 @@ test('pinned call sites pass', () => {
         text: 'buf-check-version:\n\t"$(BUF)" lint\n\tnode scripts/test-infra/run-gate.mjs --label "buf lint" -- "$(BUF)" lint\n\t@echo "pinned buf absent — committed gen used"\n\t"$$BUF" generate -o "$$stage"',
       },
       { file: 'a.mjs', text: 'spawnSync(buf, [])' },
-      { file: '.github/workflows/test.yml', text: workflow(setup + '      - run: buf generate\n') },
+      {
+        file: '.github/workflows/test.yml',
+        text: workflow('      - run: \'"$(make -s --no-print-directory buf-path)" generate\'\n'),
+      },
     ]),
     [],
   )
 })
 
-test('a buf action in another job does not license a bare call', () => {
+test('buf actions do not license bare calls in any job or order', () => {
   const text = workflow(setup) + '  other:\n    steps:\n      - run: buf generate\n'
   assert.deepEqual(
     findBareBufCalls([{ file: '.github/workflows/test.yml', text }]).map((x) => x.line),
-    [9],
+    [4, 9],
   )
   const later = workflow('      - run: buf lint\n' + setup)
-  assert.equal(findBareBufCalls([{ file: '.github/workflows/test.yml', text: later }]).length, 1)
+  assert.equal(findBareBufCalls([{ file: '.github/workflows/test.yml', text: later }]).length, 2)
 })
 
 test('shell segmentation detects wrappers and substitutions without scanning quoted prose', () => {
@@ -83,7 +86,6 @@ test('the real tree has no bare buf call sites', () => {
   const result = scanRepository(fileURLToPath(new URL('../..', import.meta.url)))
   assert.deepEqual(result.findings, [])
   for (const count of Object.values(result.counts)) assert.ok(count > 0)
-  assert.ok(result.licensed > 0)
 })
 
 test('Make continuations and shell expansions are executable call sites', () => {
@@ -113,12 +115,13 @@ test('JS call and fallback forms are detected while comments and fixtures are ig
   )
 })
 
-test('workflow setup requires a pin and supports named and composite steps', () => {
+test('buf actions are rejected in named and composite steps even with a version pin', () => {
   const named =
     '      - name: Setup buf\n        uses: bufbuild/buf-setup-action@abc\n        with:\n          version: 1.66.1\n      - run: buf lint\n'
+  const findings = findBareBufCalls([{ file: '.github/workflows/a.yml', text: workflow(named) }])
   assert.deepEqual(
-    findBareBufCalls([{ file: '.github/workflows/a.yml', text: workflow(named) }]),
-    [],
+    findings.map((finding) => finding.kind),
+    ['workflow-action', 'workflow'],
   )
   assert.equal(
     findBareBufCalls([
@@ -127,15 +130,15 @@ test('workflow setup requires a pin and supports named and composite steps', () 
         text: workflow('      - uses: bufbuild/buf-action@abc\n      - run: buf lint\n'),
       },
     ]).length,
-    1,
+    2,
   )
-  assert.deepEqual(
+  assert.equal(
     findBareBufCalls([
       {
         file: '.github/actions/foo/action.yml',
         text: 'runs:\n  using: composite\n  steps:\n' + named,
       },
-    ]),
-    [],
+    ]).length,
+    2,
   )
 })

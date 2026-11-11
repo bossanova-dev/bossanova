@@ -31,7 +31,7 @@ type entry struct {
 	expiresAt time.Time
 }
 
-// Verifier caches only successful, unexpired reads from the local GitHub adapter.
+// Verifier caches successful reads from the local GitHub adapter.
 // It does not accept provider identities from cloud payloads.
 type Verifier struct {
 	reader Reader
@@ -47,17 +47,38 @@ func New(reader Reader, logger zerolog.Logger) *Verifier {
 	return &Verifier{reader: reader, logger: logger, now: time.Now, cache: make(map[string]entry)}
 }
 
-// Identity combines the registered repo row with a freshly verified GitHub identity.
-// An expired identity is never returned while its replacement is being fetched.
-func (v *Verifier) Identity(ctx context.Context, repo domain.Repo) config.RepoIdentity {
+func localIdentity(repo domain.Repo) (config.RepoIdentity, string) {
 	id := config.RepoIdentity{LocalPath: repo.LocalPath}
 	origin := vcs.CanonicalRepoURL(repo.OriginURL)
 	parsed, err := url.Parse(origin)
 	if err != nil || origin == "" {
-		return id
+		return id, ""
 	}
 	id.Host = parsed.Host
 	id.Name = strings.TrimPrefix(parsed.Path, "/")
+	return id, origin
+}
+
+// LastVerifiedIdentity returns local metadata and the last successful provider ID.
+// It is only for matching local policy changes on idle terminals. Active content
+// and control require Identity, which refreshes expired verification.
+// This method never starts or waits for a provider lookup.
+func (v *Verifier) LastVerifiedIdentity(repo domain.Repo) config.RepoIdentity {
+	id, origin := localIdentity(repo)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	cached := v.cache[origin]
+	if cached.repoID > 0 {
+		id.ProviderRepoID = cached.repoID
+		id.IsIDVerified = true
+	}
+	return id
+}
+
+// Identity combines the registered repo row with a freshly verified GitHub identity.
+// An expired identity is never returned while its replacement is being fetched.
+func (v *Verifier) Identity(ctx context.Context, repo domain.Repo) config.RepoIdentity {
+	id, origin := localIdentity(repo)
 	if id.Host != "github.com" || v.reader == nil || ctx.Err() != nil {
 		return id
 	}
@@ -68,7 +89,6 @@ func (v *Verifier) Identity(ctx context.Context, repo domain.Repo) config.RepoId
 			v.mu.Unlock()
 			return cached, nil
 		}
-		delete(v.cache, origin)
 		v.mu.Unlock()
 		started := v.now()
 		repoID, _, readErr := v.reader.GetRepositoryIdentity(fetchCtx, origin)

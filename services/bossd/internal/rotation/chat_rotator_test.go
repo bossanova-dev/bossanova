@@ -955,15 +955,15 @@ func TestChatRotator_OnAuthDecisionCompleteRunsAfterAuditRecord(t *testing.T) {
 	}
 
 	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
 	select {
 	case got := <-done:
 		if got != 1 {
 			t.Fatalf("audit records visible to callback = %d, want 1", got)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for auth decision completion callback")
+	default:
+		t.Fatal("auth decision completion callback did not run")
 	}
-	waitIdle(t, r)
 }
 
 func TestChatRotator_OnAuthDecisionCompleteRunsAfterScheduledReprobeAudit(t *testing.T) {
@@ -980,13 +980,14 @@ func TestChatRotator_OnAuthDecisionCompleteRunsAfterScheduledReprobeAudit(t *tes
 	}
 
 	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
 	select {
 	case got := <-done:
 		if got != 1 {
 			t.Fatalf("initial callback audit records = %d, want 1", got)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for initial auth decision completion callback")
+	default:
+		t.Fatal("initial auth decision completion callback did not run")
 	}
 	fireWhenArmed(t, &f.sched)
 	select {
@@ -994,10 +995,9 @@ func TestChatRotator_OnAuthDecisionCompleteRunsAfterScheduledReprobeAudit(t *tes
 		if got != 2 {
 			t.Fatalf("reprobe callback audit records = %d, want 2", got)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for re-probe auth decision completion callback")
+	default:
+		t.Fatal("re-probe auth decision completion callback did not run")
 	}
-	waitIdle(t, r)
 }
 
 func TestChatRotator_RecordsProbeGateAudit(t *testing.T) {

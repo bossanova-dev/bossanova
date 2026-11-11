@@ -130,6 +130,7 @@ lint:
 	@node guards/web-feature-boundaries.mjs layout --check
 	@node guards/check-web-filenames.mjs
 	@node guards/check-web-e2e-harness-imports.mjs
+	@node guards/check-web-iframe-sandbox.mjs
 	@node guards/check-settings-readiness-figure.mjs
 	@node guards/check-exec-waitdelay.mjs
 	@node guards/check-timing-bounds.mjs

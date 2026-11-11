@@ -23,6 +23,12 @@ type RepoIdentities interface {
 	Identity(context.Context, string) (config.RepoIdentity, error)
 }
 
+type lastVerifiedRepoIdentities interface {
+	// LastVerifiedIdentity is only used for idle local-policy matching.
+	// Content-bearing decisions continue to call Identity.
+	LastVerifiedIdentity(context.Context, string) (config.RepoIdentity, error)
+}
+
 // LocalCloudControlPolicy reads the operator-owned settings file.
 type LocalCloudControlPolicy struct {
 	logger         zerolog.Logger
@@ -65,13 +71,30 @@ func (p *LocalCloudControlPolicy) Mode() config.CloudControlMode {
 }
 
 func (p *LocalCloudControlPolicy) RepoMode(ctx context.Context, repoID string) (config.CloudControlMode, config.CloudControlSource) {
+	var lookup func(context.Context, string) (config.RepoIdentity, error)
+	if p.RepoIdentities != nil {
+		lookup = p.RepoIdentities.Identity
+	}
+	return p.resolveRepoMode(ctx, repoID, lookup)
+}
+
+func (p *LocalCloudControlPolicy) idleRepoMode(ctx context.Context, repoID string) config.CloudControlMode {
+	var lookup func(context.Context, string) (config.RepoIdentity, error)
+	if identities, ok := p.RepoIdentities.(lastVerifiedRepoIdentities); ok {
+		lookup = identities.LastVerifiedIdentity
+	}
+	mode, _ := p.resolveRepoMode(ctx, repoID, lookup)
+	return mode
+}
+
+func (p *LocalCloudControlPolicy) resolveRepoMode(ctx context.Context, repoID string, lookup func(context.Context, string) (config.RepoIdentity, error)) (config.CloudControlMode, config.CloudControlSource) {
 	settings, err := p.settings()
 	if err != nil {
 		return config.CloudControlReadOnly, config.CloudControlSourceDefault
 	}
 	var id config.RepoIdentity
-	if len(settings.CloudControlRepos) > 0 && p.RepoIdentities != nil {
-		verified, err := p.RepoIdentities.Identity(ctx, repoID)
+	if len(settings.CloudControlRepos) > 0 && lookup != nil {
+		verified, err := lookup(ctx, repoID)
 		if err == nil {
 			id = verified
 		}

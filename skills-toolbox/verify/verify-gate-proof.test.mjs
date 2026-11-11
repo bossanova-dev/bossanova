@@ -336,27 +336,28 @@ test('the sweep path collects media itself and a missing spec leaves the determi
   assert.deepEqual(result.proof.media, { extension: 'boss-verify-stub-media', clips: 1 })
   const page = fs.readFileSync(path.join(out, `acme/widgets/7/${head}/${PAGE_OBJECT}`), 'utf8')
   assert.ok(
-    page.includes('spec spec: not a proof-spec/1 document'),
+    page.includes('<li>spec: not a proof-spec/1 document</li>'),
     'the generation check names it',
   )
   assert.ok(page.includes('<video id="proof-video"'))
   assert.equal(calls(out).length, 2)
 })
 
-test('a changed UI area with no recording leads the page, which then has no player @sessions.AC248607', async (t) => {
+test('a changed UI area with no recording leads the page, which still gets the player first @sessions.AC248607', async (t) => {
   const { head, base, out, deps } = await setup(t, { STUB_NO_MEDIA: '1' })
   const judge = judgeFile(tempDir('verify-proof-run-', t), { head, base })
   const result = await main(post(head, 'human', ['--judge', judge]), deps)
   assert.deepEqual(result.proof.media, { reason: 'not-json' })
   assert.deepEqual(
     calls(out).map((call) => call.objects.map((o) => o.name)),
-    [[PAGE_OBJECT]],
+    [[PLAYER_OBJECT], [PAGE_OBJECT]],
   )
   const page = fs.readFileSync(path.join(out, `acme/widgets/7/${head}/${PAGE_OBJECT}`), 'utf8')
   assert.ok(
     page.includes(`<ol class="reasons"><li class="proof"><div><div class="t">${NO_UI_RECORDING}`),
   )
-  assert.ok(!page.includes('<script'))
+  assert.ok(page.includes(`<script src="${PLAYER_OBJECT}" defer></script>`))
+  assert.ok(!page.includes('<video'), 'the player has no video to drive and does nothing for it')
 })
 
 test('a pass, blocked or defect head uploads nothing and notes the level with a null page @sessions.AC248606', async (t) => {

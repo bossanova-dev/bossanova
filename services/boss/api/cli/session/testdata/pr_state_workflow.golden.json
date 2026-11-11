@@ -1,4 +1,5 @@
 {
+  "is_degraded": false,
   "repo": "acme/widgets",
   "pr_number": 7,
   "state": "open",
@@ -50,6 +51,7 @@
     "reason": "",
     "label": ""
   },
+  "is_verify_passed": false,
   "has_build_receipt": false,
   "has_settled_workflow_runs": null,
   "held_workflow_runs": [],

@@ -63,6 +63,7 @@ var methodRoutes = map[string]route{
 	"GetPRStatus":               routeRead,
 	"GetCheckResults":           routeRead,
 	"GetCheckSet":               routeRead,
+	"VerifyPassedAtHead":        routeRead,
 	"GetReviewComments":         routeRead,
 	"GetReviewObservation":      routeRead,
 	"GetReviewInlineComments":   routeRead,
@@ -79,6 +80,7 @@ var methodRoutes = map[string]route{
 	"OpenIssueURL":              routeRead,
 
 	"PostCommitStatus": routeStatusWrite,
+	"PostPRComment":    routeOperator,
 
 	"CreateDraftPR":      routeOperator,
 	"MarkReadyForReview": routeOperator,

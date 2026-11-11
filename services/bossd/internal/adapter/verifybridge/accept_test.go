@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/recurser/bossd/internal/domain"
 )
@@ -60,7 +59,7 @@ func TestAcceptResultsAndShape(t *testing.T) {
 
 func TestAcceptPrivateReasonAndArgv(t *testing.T) {
 	f := newFixture(t, `{"accepted":false,"reason":"not-open"}`, "", 0)
-	f.bridge.Timeout = 30 * time.Second
+	f.bridge.Timeout = DefaultTimeout
 	copyPath := filepath.Join(t.TempDir(), "copy")
 	addProbe(t, f, `for a in "$@"; do case "$a" in --reason-file=*) p=${a#--reason-file=}; test "$(ls -l "$p" | cut -c 1-10)" = '-rw-------' || exit 8; cat "$p" > '`+copyPath+`';; esac; done`)
 	reason := "reason `$(literal)`\n<!-- @user -->"

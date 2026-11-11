@@ -10,10 +10,14 @@ import (
 
 // prStateJSON is the stable `boss pr state --json` envelope. Field names are
 // the machine contract; enum values are lowercase strings, empty when unset.
+// is_verify_passed is the verify pass verdict. A check's conclusion is
+// GitHub's raw state.
 // is_mergeable is null while GitHub has not computed it,
 // has_settled_workflow_runs is null unless the check verdict is green, and
 // workflow_runs is empty unless is_workflow_runs_read.
+// is_degraded marks reads supplied through another quota while the primary refused.
 type prStateJSON struct {
+	IsDegraded             bool                  `json:"is_degraded"`
 	Repo                   string                `json:"repo"`
 	PRNumber               int32                 `json:"pr_number"`
 	State                  string                `json:"state"`
@@ -28,6 +32,7 @@ type prStateJSON struct {
 	Checks                 []prCheckJSON         `json:"checks"`
 	CheckVerdict           prCheckVerdictJSON    `json:"check_verdict"`
 	VerifyPhase            prVerifyPhaseJSON     `json:"verify_phase"`
+	IsVerifyPassed         bool                  `json:"is_verify_passed"`
 	HasBuildReceipt        bool                  `json:"has_build_receipt"`
 	HasSettledWorkflowRuns *bool                 `json:"has_settled_workflow_runs"`
 	HeldWorkflowRuns       []prHeldRunJSON       `json:"held_workflow_runs"`
@@ -128,6 +133,7 @@ func newPRStateJSON(r *pb.GetPRStateResponse) prStateJSON {
 			Reason: r.GetVerifyPhase().GetReason(),
 			Label:  r.GetVerifyPhase().GetLabel(),
 		},
+		IsVerifyPassed:         r.GetIsVerifyPassed(),
 		HasBuildReceipt:        r.GetHasBuildReceipt(),
 		HasSettledWorkflowRuns: r.HasSettledWorkflowRuns,
 		HeldWorkflowRuns:       make([]prHeldRunJSON, 0, len(r.GetHeldWorkflowRuns())),
@@ -135,6 +141,7 @@ func newPRStateJSON(r *pb.GetPRStateResponse) prStateJSON {
 		ObservedAt:             cliutil.Rfc3339OrEmpty(r.GetObservedAt()),
 		WorkflowRuns:           make([]prWorkflowRunJSON, 0, len(r.GetWorkflowRuns())),
 		IsWorkflowRunsRead:     r.GetIsWorkflowRunsRead(),
+		IsDegraded:             r.GetIsDegraded(),
 	}
 	for _, c := range r.GetChecks() {
 		check := prCheckJSON{Name: c.GetName(), Status: enumName(c.GetStatus(), "CHECK_STATUS_"), Description: c.GetDescription(), IsUnclassified: c.GetIsUnclassified(), WorkflowName: c.GetWorkflowName()}

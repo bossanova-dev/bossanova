@@ -23,6 +23,7 @@ import {
   parseRunOptions,
   runChunk,
   statusOf,
+  takeReading,
   trendOf,
 } from './ci-wait.mjs'
 import { CHECK_REASONS, classifyChecks } from './pr-check-state.mjs'
@@ -691,6 +692,27 @@ const headRun = (name, status, conclusion = '') => ({
   conclusion,
   headSha: HEAD_A,
   event: 'pull_request',
+})
+
+test('runs: a cancelled job with an in-progress replacement returns a pending reading', async () => {
+  const h = harness({
+    script: () =>
+      view(HEAD_A, [
+        { ...passing('ci'), workflowName: 'CI' },
+        { name: 'notify', status: 'COMPLETED', conclusion: 'CANCELLED', workflowName: 'CI' },
+      ]),
+    runs: () => ({ ok: true, payload: [headRun('CI', 'in_progress')] }),
+  })
+  const reading = await takeReading({
+    read: h.read,
+    pr: 7,
+    readTimeoutMs: 60_000,
+    deadline: T0 + 120_000,
+    now: h.now,
+  })
+  assert.equal(reading.verdict.state, 'pending')
+  assert.equal(reading.verdict.reason, 'pending')
+  assert.deepEqual(reading.verdict.cancelledPendingReplacement, ['notify'])
 })
 
 test('runs: a green read with a queued head run waits, and settles only after a confirming green read', async () => {

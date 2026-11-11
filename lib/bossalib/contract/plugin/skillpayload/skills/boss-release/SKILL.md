@@ -11,9 +11,25 @@ extension, report the unreleased changes and stop.
 
 ## Toolbox and arguments
 
+Run this pre-pin block first, once per run:
+
 ```bash
 BOSS_RELEASE_TOOLBOX="${BOSS_RELEASE_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-release/toolbox}"
 if [ ! -d "$BOSS_RELEASE_TOOLBOX" ]; then BOSS_RELEASE_TOOLBOX="$HOME/.codex/skills/boss-release/toolbox"; fi
+BOSS_RELEASE_SKILLS_HOME="$(dirname "$(dirname "$BOSS_RELEASE_TOOLBOX")")"
+node "$BOSS_RELEASE_TOOLBOX/skill-pin.mjs" create --skill boss-release --skills-home "$BOSS_RELEASE_SKILLS_HOME" || exit 1
+BOSS_RELEASE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-release"
+BOSS_RELEASE_TOOLBOX="$BOSS_RELEASE_PIN/toolbox"
+[ -f "$BOSS_RELEASE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-release skill pin missing - re-run the first block"; exit 1; }
+```
+
+After the pin exists, read `references/…`, `scripts/…` and `extensions/…` from
+`$BOSS_RELEASE_PIN/`. Every later shell block resolves only this pin:
+
+```bash
+BOSS_RELEASE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-release"
+BOSS_RELEASE_TOOLBOX="$BOSS_RELEASE_PIN/toolbox"
+[ -f "$BOSS_RELEASE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-release skill pin missing - re-run the first block"; exit 1; }
 ```
 
 An optional environment argument limits the run: pass `--environment <environment>` to `next`.
@@ -79,6 +95,15 @@ A dispatch failure, timeout, missing output or invalid result uses the same skip
 nothing. Continue with the next candidate. Delete this run's temporary files after consuming them.
 Tag mode records a release tag; branch mode observes the environment branch. Nonrelease answers
 hold this exact candidate locally so cron can stay idle until a new ref is ready.
+
+After the candidate loop, and before any earlier stop, remove the pin in its own Bash call:
+
+```bash
+BOSS_RELEASE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-release"
+BOSS_RELEASE_TOOLBOX="$BOSS_RELEASE_PIN/toolbox"
+[ -f "$BOSS_RELEASE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-release skill pin missing - re-run the first block"; exit 1; }
+node "$BOSS_RELEASE_TOOLBOX/skill-pin.mjs" remove --skill boss-release
+```
 
 ## Cron
 

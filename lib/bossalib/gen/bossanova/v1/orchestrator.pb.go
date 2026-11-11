@@ -1528,8 +1528,11 @@ type ProxyListReviewQueueRequest struct {
 	// Unset means every organization the caller belongs to. Set narrows to that
 	// organization after a membership check.
 	OrganizationId *string `protobuf:"bytes,3,opt,name=organization_id,json=organizationId,proto3,oneof" json:"organization_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Unset means every daemon the caller can read. Set narrows to that daemon's
+	// sessions after the same access check ListSessions applies.
+	DaemonId      *string `protobuf:"bytes,4,opt,name=daemon_id,json=daemonId,proto3,oneof" json:"daemon_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProxyListReviewQueueRequest) Reset() {
@@ -1579,6 +1582,13 @@ func (x *ProxyListReviewQueueRequest) GetSort() ReviewQueueSort {
 func (x *ProxyListReviewQueueRequest) GetOrganizationId() string {
 	if x != nil && x.OrganizationId != nil {
 		return *x.OrganizationId
+	}
+	return ""
+}
+
+func (x *ProxyListReviewQueueRequest) GetDaemonId() string {
+	if x != nil && x.DaemonId != nil {
+		return *x.DaemonId
 	}
 	return ""
 }
@@ -9604,9 +9614,11 @@ type IssueAttachTokenRequest struct {
 	ChatId    string                 `protobuf:"bytes,2,opt,name=chat_id,json=chatId,proto3" json:"chat_id,omitempty"`
 	// EDITOR or VIEWER. Only EDITOR is used in v1 — VIEWER is accepted and
 	// behaves identically for now (see the plan's deferred items).
-	Scope         AttachScope `protobuf:"varint,3,opt,name=scope,proto3,enum=bossanova.v1.AttachScope" json:"scope,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Scope AttachScope `protobuf:"varint,3,opt,name=scope,proto3,enum=bossanova.v1.AttachScope" json:"scope,omitempty"`
+	// Optional caller-owned viewer device; empty preserves plaintext attaches.
+	ViewerDeviceId string `protobuf:"bytes,4,opt,name=viewer_device_id,json=viewerDeviceId,proto3" json:"viewer_device_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *IssueAttachTokenRequest) Reset() {
@@ -9658,6 +9670,13 @@ func (x *IssueAttachTokenRequest) GetScope() AttachScope {
 		return x.Scope
 	}
 	return AttachScope_ATTACH_SCOPE_UNSPECIFIED
+}
+
+func (x *IssueAttachTokenRequest) GetViewerDeviceId() string {
+	if x != nil {
+		return x.ViewerDeviceId
+	}
+	return ""
 }
 
 // IssueAttachTokenResponse carries the freshly-minted attach JWT and its
@@ -21091,12 +21110,15 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x1eOrganizationSessionReadFailure\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\x12+\n" +
 	"\x11organization_name\x18\x02 \x01(\tR\x10organizationName\x12\x16\n" +
-	"\x06reason\x18\x03 \x01(\tR\x06reason\"\xba\x01\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\xea\x01\n" +
 	"\x1bProxyListReviewQueueRequest\x12&\n" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x121\n" +
 	"\x04sort\x18\x02 \x01(\x0e2\x1d.bossanova.v1.ReviewQueueSortR\x04sort\x12,\n" +
-	"\x0forganization_id\x18\x03 \x01(\tH\x00R\x0eorganizationId\x88\x01\x01B\x12\n" +
-	"\x10_organization_id\"\xf9\x01\n" +
+	"\x0forganization_id\x18\x03 \x01(\tH\x00R\x0eorganizationId\x88\x01\x01\x12 \n" +
+	"\tdaemon_id\x18\x04 \x01(\tH\x01R\bdaemonId\x88\x01\x01B\x12\n" +
+	"\x10_organization_idB\f\n" +
+	"\n" +
+	"_daemon_id\"\xf9\x01\n" +
 	"\x1cProxyListReviewQueueResponse\x120\n" +
 	"\x04rows\x18\x01 \x03(\v2\x1c.bossanova.v1.ReviewQueueRowR\x04rows\x12F\n" +
 	"\flevel_counts\x18\x02 \x03(\v2#.bossanova.v1.ReviewQueueLevelCountR\vlevelCounts\x12_\n" +
@@ -21743,12 +21765,13 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\bstatuses\x18\x04 \x03(\v2\x1d.bossanova.v1.ChatStatusEntryR\bstatuses\"D\n" +
 	"\rDaemonOffline\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"\x82\x01\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xac\x01\n" +
 	"\x17IssueAttachTokenRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
 	"\achat_id\x18\x02 \x01(\tR\x06chatId\x12/\n" +
-	"\x05scope\x18\x03 \x01(\x0e2\x19.bossanova.v1.AttachScopeR\x05scope\"k\n" +
+	"\x05scope\x18\x03 \x01(\x0e2\x19.bossanova.v1.AttachScopeR\x05scope\x12(\n" +
+	"\x10viewer_device_id\x18\x04 \x01(\tR\x0eviewerDeviceId\"k\n" +
 	"\x18IssueAttachTokenResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x129\n" +
 	"\n" +

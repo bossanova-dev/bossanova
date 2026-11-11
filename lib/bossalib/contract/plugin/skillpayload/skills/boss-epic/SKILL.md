@@ -70,17 +70,15 @@ the answer. A descriptor verb (`create-issue`, `update-comment`, `write-descript
 
 ## The library
 
-Feed JSON on stdin, read JSON on stdout. Each Bash call is a fresh shell. This block resolves the
+Phase 0 step 1 creates the pin once. After it exists, read `references/…`, `scripts/…` and
+`extensions/…` from `$BOSS_EPIC_PIN/`; callback wakes reuse that pin.
+Feed JSON on stdin, read JSON on stdout. Each Bash call is a fresh shell. This pinned block resolves the
 toolbox, the planned and review states, and the per-child wall clock, then classifies tickets:
 
 ```bash
-if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-    if [ -d "$candidate/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-  done
-fi
-test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
+BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
+[ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
 export BOSS_EPIC_TOOLBOX
 # Eligibility (planned) and the merge gate (inReview) are gated on the tracker's state
 # names, never a baked-in word. Resolve ADAPTER-FIRST via `resolveStateRole`: the tracker
@@ -155,6 +153,18 @@ assumeCleared, assumeClearedAndMerge, selectionFlags?}` (`--label`/`--exclude-la
    `BLOCKED: <message>`.
 
    ```bash
+   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+       if [ -d "$candidate/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+     done
+   fi
+   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
+   node "$BOSS_EPIC_TOOLBOX/skill-pin.mjs" create --skill boss-epic --skills-home "$BOSS_SKILLS_HOME" || exit 1
+   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+   BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
+   [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
+   export BOSS_EPIC_TOOLBOX
    node --input-type=module -e '
      const { parseEpicArgs } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/epic/bs-epic-lib.mjs`)
      process.stdout.write(JSON.stringify(parseEpicArgs(process.argv.slice(1))))
@@ -168,10 +178,11 @@ assumeCleared, assumeClearedAndMerge, selectionFlags?}` (`--label`/`--exclude-la
    `$BOSS_BIN`, `boss` on `PATH`, `./bin/boss`) and use `"$BOSS"` everywhere:
 
    ```bash
-   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-   if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
-   BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
-   test -f "$BOSS_EPIC_TOOLBOX/boss-binary.mjs" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+   BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
+   [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
+   export BOSS_EPIC_TOOLBOX
+   test -f "$BOSS_EPIC_TOOLBOX/boss-binary.mjs" || { echo "BLOCKED: boss-epic pin helper missing"; exit 1; }
    BOSS_WHY="$(mktemp)"  # stdout = resolved path (empty if none); stderr = the reason
    BOSS="$(node --input-type=module -e '
      import{pathToFileURL as u}from"node:url"
@@ -197,9 +208,10 @@ non-zero exit is the stop reason, verbatim.
 
    ```bash
    set -euo pipefail
-   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-   if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
-   BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
+   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+   BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
+   [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
+   export BOSS_EPIC_TOOLBOX
    BOSS="${BOSS:-$(node --input-type=module -e '
      import{pathToFileURL as u}from"node:url"
      const m = await import(u(process.env.BOSS_EPIC_TOOLBOX+"/boss-binary.mjs").href)
@@ -232,10 +244,11 @@ non-zero exit is the stop reason, verbatim.
    neither is complete. Compare `boss env --json` (`.capabilities.cli`, `.capabilities.mcp`) against:
 
    ```bash
-   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-   if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
-   BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
-   test -f "$BOSS_EPIC_TOOLBOX/session/boss.mjs" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+   BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
+   [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
+   export BOSS_EPIC_TOOLBOX
+   test -f "$BOSS_EPIC_TOOLBOX/session/boss.mjs" || { echo "BLOCKED: boss-epic pin helper missing"; exit 1; }
    node --input-type=module -e '
      import{pathToFileURL as u}from"node:url"
      const m = await import(u(process.env.BOSS_EPIC_TOOLBOX+"/session/boss.mjs").href)
@@ -423,9 +436,10 @@ its `action`.
   children routinely run 2–4 h). Carry it in state, or re-resolve it with its own guard:
 
   ```bash
-  BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-  if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
-  BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
+  BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+  BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
+  [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
+  export BOSS_EPIC_TOOLBOX
   BOSS_EPIC_CHILD_WALL_CLOCK_MIN="$(node --input-type=module -e '
     import { pathToFileURL } from "node:url"
     const { loadSkillConfig, epicChildWallClockMinutes } = await import(
@@ -502,6 +516,15 @@ secret-free observations (≤ 8 KiB) to a temp `observations.md` and dispatch ea
 (instructions from `skillPath`, bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`) with
 `{"role":"notes","core":"boss-epic","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`;
 validate with `--role notes`. Never fatal.
+
+After notes, remove the pin in its own Bash call:
+
+```bash
+BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
+[ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
+node "$BOSS_EPIC_TOOLBOX/skill-pin.mjs" remove --skill boss-epic
+```
 
 ## The progress comment
 

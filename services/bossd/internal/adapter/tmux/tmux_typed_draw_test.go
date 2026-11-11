@@ -635,7 +635,7 @@ func startSlowComposerWith(ctx context.Context, t *testing.T, cfg slowComposer) 
 		select {
 		case <-ctx.Done():
 			t.Fatalf("the slow composer never drew its input box: %v", ctx.Err())
-		case <-time.After(20 * time.Millisecond):
+		case <-time.After(retryPollInterval):
 		}
 	}
 }

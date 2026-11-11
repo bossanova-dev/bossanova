@@ -14512,8 +14512,13 @@ type GetPRStateResponse struct {
 	// The runs read happened, so an empty workflow_runs means the head has no
 	// run rather than that its runs were not read.
 	IsWorkflowRunsRead bool `protobuf:"varint,21,opt,name=is_workflow_runs_read,json=isWorkflowRunsRead,proto3" json:"is_workflow_runs_read,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// The head carries a completed boss/verify pass. Human holds and other
+	// non-pass statuses are false. This is the predicate the merge gate checks.
+	IsVerifyPassed bool `protobuf:"varint,22,opt,name=is_verify_passed,json=isVerifyPassed,proto3" json:"is_verify_passed,omitempty"`
+	// Another quota supplied part of this snapshot while the primary quota refused.
+	IsDegraded    bool `protobuf:"varint,23,opt,name=is_degraded,json=isDegraded,proto3" json:"is_degraded,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetPRStateResponse) Reset() {
@@ -14689,6 +14694,20 @@ func (x *GetPRStateResponse) GetWorkflowRuns() []*PRWorkflowRun {
 func (x *GetPRStateResponse) GetIsWorkflowRunsRead() bool {
 	if x != nil {
 		return x.IsWorkflowRunsRead
+	}
+	return false
+}
+
+func (x *GetPRStateResponse) GetIsVerifyPassed() bool {
+	if x != nil {
+		return x.IsVerifyPassed
+	}
+	return false
+}
+
+func (x *GetPRStateResponse) GetIsDegraded() bool {
+	if x != nil {
+		return x.IsDegraded
 	}
 	return false
 }
@@ -18893,7 +18912,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"conclusion\x18\x03 \x01(\tR\n" +
 	"conclusion\x12\x14\n" +
 	"\x05event\x18\x04 \x01(\tR\x05event\x12\x19\n" +
-	"\bhead_sha\x18\x05 \x01(\tR\aheadSha\"\xe3\b\n" +
+	"\bhead_sha\x18\x05 \x01(\tR\aheadSha\"\xae\t\n" +
 	"\x12GetPRStateResponse\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x1b\n" +
 	"\tpr_number\x18\x02 \x01(\x05R\bprNumber\x12+\n" +
@@ -18919,7 +18938,10 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\vobserved_at\x18\x13 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"observedAt\x12@\n" +
 	"\rworkflow_runs\x18\x14 \x03(\v2\x1b.bossanova.v1.PRWorkflowRunR\fworkflowRuns\x121\n" +
-	"\x15is_workflow_runs_read\x18\x15 \x01(\bR\x12isWorkflowRunsReadB\x0f\n" +
+	"\x15is_workflow_runs_read\x18\x15 \x01(\bR\x12isWorkflowRunsRead\x12(\n" +
+	"\x10is_verify_passed\x18\x16 \x01(\bR\x0eisVerifyPassed\x12\x1f\n" +
+	"\vis_degraded\x18\x17 \x01(\bR\n" +
+	"isDegradedB\x0f\n" +
 	"\r_is_mergeableB\x1c\n" +
 	"\x1a_has_settled_workflow_runs\"\xbb\x02\n" +
 	"\x12WaitPRStateRequest\x12\x12\n" +

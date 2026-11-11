@@ -5,11 +5,13 @@
 import { spawnSync } from 'node:child_process'
 
 export const SNIPPET_CONTEXT = 100_000
+/** A diff excerpt line longer than this is cut, its last character an ellipsis. */
+export const MAX_LINE_CHARS = 200
 // Paths are literal, never globs.
 const GIT_FLAGS = Object.freeze(['--literal-pathspecs'])
 
 /**
- * @typedef {{kind: 'add' | 'del' | 'ctx', old: number | null, new: number | null, text: string}} DiffRow
+ * @typedef {{kind: 'add' | 'del' | 'ctx', old: number | null, new: number | null, text: string, cut?: boolean}} DiffRow
  * @typedef {{path: string, rows: DiffRow[], adds: number, dels: number}} FileDiff
  * @typedef {{path: string, start: number, end: number, pinLine?: number}} SnippetRequest
  * @typedef {{path: string, start: number, end: number, rows: DiffRow[], adds: number, dels: number, pinLine: number | null}} Snippet
@@ -17,10 +19,41 @@ const GIT_FLAGS = Object.freeze(['--literal-pathspecs'])
  * @typedef {(request: SnippetRequest) => SnippetResult} SnippetResolver
  */
 
-/** `b/path` from a `+++ b/path` line, or null for `/dev/null`. @param {string} line */
-const headPath = (line) => {
-  const raw = line.slice(4).replace(/^"(.*)"$/, '$1')
-  return raw === '/dev/null' ? null : raw.replace(/^b\//, '')
+const ESCAPES = Object.freeze(
+  /** @type {Record<string, number>} */ ({ a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 }),
+)
+
+/** A path as git writes it in a diff header: C-quoted when it has special bytes, and followed by a
+ * tab when it has a space. @param {string} raw */
+function unquotePath(raw) {
+  const text = raw.replace(/\t$/, '')
+  const quoted = /^"(.*)"$/.exec(text)
+  if (!quoted) return text
+  /** @type {number[]} */
+  const bytes = []
+  const body = quoted[1]
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== '\\') {
+      bytes.push(...Buffer.from(body[i]))
+      continue
+    }
+    const octal = /^[0-7]{3}/.exec(body.slice(i + 1))
+    if (octal) {
+      bytes.push(parseInt(octal[0], 8))
+      i += 3
+    } else {
+      const next = body[++i] ?? ''
+      bytes.push(...(ESCAPES[next] === undefined ? Buffer.from(next) : [ESCAPES[next]]))
+    }
+  }
+  return Buffer.from(bytes).toString('utf8')
+}
+
+/** The path a `--- a/path` or `+++ b/path` header names, or null for `/dev/null`.
+ * @param {string} line */
+const headerPath = (line) => {
+  const raw = unquotePath(line.slice(4))
+  return raw === '/dev/null' ? null : raw.replace(/^[ab]\//, '')
 }
 
 /**
@@ -36,15 +69,22 @@ export function parseUnifiedDiff(text) {
   let oldLine = 0
   let newLine = 0
   let inHunk = false
+  /** @type {string | null} */
+  let oldPath = null
   for (const line of text.replace(/\n$/, '').split('\n')) {
     if (line.startsWith('diff --git ')) {
       file = null
       inHunk = false
+      oldPath = null
       continue
     }
-    if (!inHunk && /^--- /.test(line)) continue
+    if (!inHunk && /^--- /.test(line)) {
+      oldPath = headerPath(line)
+      continue
+    }
     if (!inHunk && /^\+\+\+ /.test(line)) {
-      file = { path: headPath(line) ?? '', rows: [], adds: 0, dels: 0 }
+      // A deleted file's head side is /dev/null, so its name comes from the base side.
+      file = { path: headerPath(line) ?? oldPath ?? '', rows: [], adds: 0, dels: 0 }
       files.push(file)
       continue
     }
@@ -119,12 +159,12 @@ export function cutSnippet(diff, { path, start, end, pinLine }) {
 }
 
 /**
- * A resolver that quotes each snippet from `git diff -U<large> base..head -- path` in `cwd`.
+ * Each path's whole-file diff, `git diff -U<large> base..head -- path` in `cwd`, read once.
  * `run(args)` returns git's stdout, or null when git fails; it defaults to spawning git.
  * @param {{base: string, head: string, cwd?: string, run?: (args: string[]) => string | null}} options
- * @returns {SnippetResolver}
+ * @returns {(path: string) => FileDiff | undefined}
  */
-export function gitSnippetResolver({ base, head, cwd, run }) {
+export function gitFileDiffs({ base, head, cwd, run }) {
   const git =
     run ??
     ((args) => {
@@ -141,8 +181,8 @@ export function gitSnippetResolver({ base, head, cwd, run }) {
     })
   /** @type {Map<string, FileDiff | undefined>} */
   const cache = new Map()
-  return (request) => {
-    if (!cache.has(request.path)) {
+  return (path) => {
+    if (!cache.has(path)) {
       const text = git([
         'diff',
         `-U${SNIPPET_CONTEXT}`,
@@ -150,18 +190,42 @@ export function gitSnippetResolver({ base, head, cwd, run }) {
         '--no-ext-diff',
         `${base}..${head}`,
         '--',
-        request.path,
+        path,
       ])
-      const file = text === null ? undefined : parseUnifiedDiff(text)[0]
-      cache.set(request.path, file)
+      cache.set(path, text === null ? undefined : parseUnifiedDiff(text)[0])
     }
-    return cutSnippet(cache.get(request.path), request)
+    return cache.get(path)
   }
+}
+
+/** A resolver that quotes each snippet from `diffs`, as `gitFileDiffs` reads them.
+ * @param {(path: string) => FileDiff | undefined} diffs @returns {SnippetResolver} */
+export const snippetResolver = (diffs) => (request) => cutSnippet(diffs(request.path), request)
+
+/**
+ * Whether `line` exists in `path` at head, from its whole-file diff; a deleted file's lines are
+ * its base lines. False only when the diff shows the file whole: one run of lines from line 1,
+ * ending before the `SNIPPET_CONTEXT` window does. Null when the line is not proved either way:
+ * the diff cannot be read, has no rows (a mode-only or binary change), or may not reach the line.
+ * @param {(path: string) => FileDiff | undefined} diffs
+ * @returns {(path: string, line: number) => boolean | null}
+ */
+export const lineChecker = (diffs) => (path, line) => {
+  const diff = diffs(path)
+  if (!diff) return null
+  const side = diff.rows.some((row) => row.new !== null) ? 'new' : 'old'
+  const lines = diff.rows.flatMap((row) => (row[side] === null ? [] : [row[side]]))
+  if (lines.includes(line)) return true
+  let trailing = 0
+  while (trailing < diff.rows.length && diff.rows[diff.rows.length - 1 - trailing].kind === 'ctx')
+    trailing++
+  const whole = lines.length > 0 && lines.every((n, i) => n === i + 1) && trailing < SNIPPET_CONTEXT
+  return whole ? false : null
 }
 
 /**
  * The files `base..head` changes with their added and deleted line counts (null for binary), from
- * `git diff --numstat`, or null when git fails. `run(args)` is as for `gitSnippetResolver`.
+ * `git diff --numstat`, or null when git fails. `run(args)` is as for `gitFileDiffs`.
  * @param {{base: string, head: string, cwd?: string, run?: (args: string[]) => string | null}} options
  * @returns {{path: string, adds: number | null, dels: number | null}[] | null}
  */

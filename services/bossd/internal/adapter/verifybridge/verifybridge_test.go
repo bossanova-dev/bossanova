@@ -67,7 +67,7 @@ func newFixture(t *testing.T, stdout, stderr string, code int) *fixture {
 	if err := os.WriteFile(node, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f.bridge = &Bridge{Node: node, Script: script, Timeout: 10 * time.Second}
+	f.bridge = &Bridge{Node: node, Script: script, Timeout: DefaultTimeout}
 	return f
 }
 
@@ -476,7 +476,7 @@ process.stdout.write(JSON.stringify({ approved: true, waives: '', signOff: 'merg
 	if err := os.WriteFile(script, []byte(stub), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b := &Bridge{Node: node, Script: script, Timeout: 30 * time.Second}
+	b := &Bridge{Node: node, Script: script, Timeout: DefaultTimeout}
 	got, err := b.Approve(context.Background(), Target{PR: 7, Dir: dir}, &MergeApproval{Head: pinnedHead})
 	if err != nil {
 		t.Fatalf("Approve: %v", err)

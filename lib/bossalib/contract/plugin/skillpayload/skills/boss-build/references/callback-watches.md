@@ -3,6 +3,11 @@
 Read this when a step blocks on a PR's CI checks or merge/close state (Step 8's green gate, Step 9's
 re-inject wait).
 
+After a terminal line, the previous pin has been removed. First use the callback continuation in
+the core's **Preflight** section: unset the old `BLI_RUNID`, set `BOSS_BUILD_CONTINUE=1`, and run
+Preflight and Step 1. Only then resolve this reference and its helpers from the new pin. Preserve
+the existing review and ready route; this is a fresh reconciliation pass, not another ticket claim.
+
 **First decide whether callbacks are usable at all.** `callbacksAvailable(env)`
 (`toolbox/callback/adapter.mjs`) is the single "callbacks usable" gate, and it is a **conjunction of
 two checks — both must hold**:
@@ -22,9 +27,9 @@ at every call site below; the snippets spell `boss` only because that is the com
 ```bash
 # Each fenced block is a FRESH shell, so re-resolve the toolbox rather than assuming
 # the startup block's export survived.
-BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
-BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 export BOSS_BUILD_TOOLBOX
 BOSS="$(
   node --input-type=module -e '
@@ -79,9 +84,9 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    ```bash
    PR="$PR_NUMBER"
    MSG="boss-build: CI/PR state changed for PR #$PR — reconcile and continue."
-   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-   if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
-   BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
+   BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+   BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+   [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
    export BOSS_BUILD_TOOLBOX
    WATCH_TRIGGERS="$(
      node --input-type=module -e '
@@ -187,9 +192,9 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
 
    ```bash
    PR="$PR_NUMBER"
-   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-   if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
-   BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
+   BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+   BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+   [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
    node "$BOSS_BUILD_TOOLBOX/ci-wait.mjs" run --pr "$PR"
    ```
 

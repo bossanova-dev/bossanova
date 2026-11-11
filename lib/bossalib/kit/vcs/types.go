@@ -126,6 +126,9 @@ func (k ConflictBlockKind) String() string {
 
 // PRStatus represents the current status of a pull/merge request.
 type PRStatus struct {
+	// Degraded means another quota supplied the status while the primary quota refused.
+	// ReviewDecisionState is unset; LatestReviewState comes from REST reviews alone.
+	Degraded bool
 	// PR size is refreshed by the PR fetch; ChangedFileCount zero means not yet read.
 	AddedLineCount   int
 	DeletedLineCount int
@@ -214,7 +217,9 @@ func (pr *PRStatus) ConflictBlockKind(rebaseStrategy bool) ConflictBlockKind {
 // CheckSet is the current PR head's checks and its build provenance receipt.
 // The receipt is separate from Checks because it is not a CI gate.
 type CheckSet struct {
-	Checks []CheckResult
+	// Degraded means another quota supplied checks while the primary quota refused.
+	Degraded bool
+	Checks   []CheckResult
 	// HasBuildReceipt is true only for a success boss/build status on the head.
 	HasBuildReceipt bool
 	// BuildReceiptSeen is true when any boss/build status, in any state, is on
@@ -302,6 +307,8 @@ type PRSummary struct {
 	CommitAuthors []CommitAuthor
 	// CommitAuthorsComplete is false when any commit or author window is truncated.
 	CommitAuthorsComplete bool
+	// IsConflicted is true only for a conclusive conflict in the list snapshot.
+	IsConflicted bool
 }
 
 // CreatePROpts contains options for creating a new pull/merge request.

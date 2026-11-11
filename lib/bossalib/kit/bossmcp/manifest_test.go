@@ -311,7 +311,7 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// descriptions to what no argument doc can say.
 	const (
 		maxToolCount   = 79
-		maxSchemaBytes = 66388
+		maxSchemaBytes = 66387
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

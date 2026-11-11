@@ -7,7 +7,7 @@ import { TextDecoder } from 'node:util'
  * @typedef {{state: 'none'} | {state: 'ok', path: string, dependencies?: string[], blob: string, text: string} | {state: 'unreadable', path: string, why: string}} MergePolicy
  * @typedef {{ask?: string, decision: 'auto'|'human', rule: string, reason: string, path: string, verified: boolean}} PolicyDecision
  * @typedef {{path?: string, filename?: string, previousPath?: string, previous_filename?: string}} PolicyFile
- * @typedef {{state: MergePolicy['state'], decisions: PolicyDecision[], stale: boolean, path?: string, why?: string}} ProseFacts
+ * @typedef {{state: MergePolicy['state'], decisions: PolicyDecision[], stale: boolean, path?: string, blob?: string, why?: string}} ProseFacts
  */
 export const MERGE_POLICY_LIMITS = Object.freeze({
   maxBytes: 32768,
@@ -35,7 +35,7 @@ export const validJudgeEntry = (value) =>
   line(value.reason, JUDGE_LIMITS.maxReasonLength)
 
 /** @param {string} path */
-const safePath = (path) =>
+export const safeMergePolicyPath = (path) =>
   path.length > 0 &&
   path.length <= 200 &&
   path.endsWith('.md') &&
@@ -91,7 +91,7 @@ export function readMergePolicy(block, root, fs = defaultFs) {
     path: typeof path === 'string' ? path : '',
     why,
   })
-  if (typeof path !== 'string' || !safePath(path)) return unreadable('unsafe-path')
+  if (typeof path !== 'string' || !safeMergePolicyPath(path)) return unreadable('unsafe-path')
   if (!root) return unreadable('no-trusted-tree')
   try {
     const realRoot = fs.realpathSync(root)
@@ -272,7 +272,7 @@ export function proseFacts(policy, records, context) {
       }).decisions,
     )
   }
-  return { state: 'ok', decisions, stale: !current }
+  return { state: 'ok', path: policy.path, blob: policy.blob, decisions, stale: !current }
 }
 
 /** @param {readonly (string|PolicyFile)[]} changedPaths @param {MergePolicy} policy */

@@ -85,13 +85,15 @@ func continueSentence(s string) string {
 }
 
 // labelAsks keeps complete names from the bounded verify status description.
+// The writer, levelLabel in skills-toolbox/verify/verify-level.mjs, joins
+// names with ", ", so a size such as "3,379 lines" stays one name.
 func labelAsks(label string) []string {
 	if !strings.HasPrefix(label, "moderate:") && !strings.HasPrefix(label, "low:") {
 		return nil
 	}
 	_, names, _ := strings.Cut(label, ":")
 	var asks []string
-	for _, name := range strings.Split(names, ",") {
+	for _, name := range strings.Split(names, ", ") {
 		name = strings.TrimSpace(name)
 		// The writer appends +N to the final ask, without an extra comma.
 		if before, suffix, ok := strings.Cut(name, " +"); ok {

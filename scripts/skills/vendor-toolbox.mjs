@@ -21,6 +21,7 @@ export { withSkillSourceRewriteLock } from './skill-source-rewrite-lock.mjs'
 // Relative ESM dependencies are discovered by expandImportClosure before copying.
 export const VENDOR_MAP = {
   'boss-retro': [
+    'skill-pin.mjs',
     'verify/verify-escapes-trace.mjs',
     'verify/verify-area-caps-sync.mjs',
     'boss-binary.mjs',
@@ -40,12 +41,14 @@ export const VENDOR_MAP = {
     'tracker/cli.mjs',
   ],
   'boss-release': [
+    'skill-pin.mjs',
     'cron-gates/boss-release.mjs',
     'release/release-gate.mjs',
     'skill-extensions.mjs',
     'stage-chain.mjs',
   ],
   'boss-review': [
+    'skill-pin.mjs',
     'review/dispatch-waves.mjs',
     'verification-receipt.mjs',
     'build/acceptance-retry.mjs',
@@ -56,6 +59,7 @@ export const VENDOR_MAP = {
     'skill-config.mjs',
   ],
   'boss-build': [
+    'skill-pin.mjs',
     'verification-receipt.mjs',
     'issue-lease.mjs',
     'ci/ci-request.mjs',
@@ -113,6 +117,7 @@ export const VENDOR_MAP = {
     'worktree-state.mjs',
   ],
   'boss-epic': [
+    'skill-pin.mjs',
     'boss-binary.mjs',
     // Compatibility roots retain the existing epic toolbox entrypoints.
     'bs-dispatch-await.mjs',
@@ -179,6 +184,7 @@ export const VENDOR_MAP = {
     'tracker/cli.mjs',
   ],
   'boss-repair': [
+    'skill-pin.mjs',
     'ci/ci-request.mjs',
     'bs-dispatch-await.mjs',
     'bs-record-notes.mjs',
@@ -203,6 +209,7 @@ export const VENDOR_MAP = {
     'worktree-sync.mjs',
   ],
   'boss-finalize': [
+    'skill-pin.mjs',
     'ci/ci-request.mjs',
     'finalize/draft-guard.mjs',
     'bs-dispatch-await.mjs',
@@ -213,6 +220,7 @@ export const VENDOR_MAP = {
     'worktree-state.mjs',
   ],
   'boss-verify': [
+    'skill-pin.mjs',
     'cron-gates/boss-verify.mjs',
     'selection.mjs',
     'skill-extensions.mjs',

@@ -12,9 +12,34 @@ action per verdict. It runs unattended: never ask, decide and report.
 
 ## Toolbox
 
+Run this pre-pin block first, once per run:
+
 ```bash
 BOSS_VERIFY_TOOLBOX="${BOSS_VERIFY_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-verify/toolbox}"
 if [ ! -d "$BOSS_VERIFY_TOOLBOX" ]; then BOSS_VERIFY_TOOLBOX="$HOME/.codex/skills/boss-verify/toolbox"; fi
+BOSS_VERIFY_SKILLS_HOME="$(dirname "$(dirname "$BOSS_VERIFY_TOOLBOX")")"
+node "$BOSS_VERIFY_TOOLBOX/skill-pin.mjs" create --skill boss-verify --skills-home "$BOSS_VERIFY_SKILLS_HOME" || exit 1
+BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify"
+BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
+[ -f "$BOSS_VERIFY_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-verify skill pin missing - re-run the first block"; exit 1; }
+```
+
+After the pin exists, read `references/…`, `scripts/…` and `extensions/…` from
+`$BOSS_VERIFY_PIN/`. Every later shell block resolves only this pin:
+
+```bash
+BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify"
+BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
+[ -f "$BOSS_VERIFY_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-verify skill pin missing - re-run the first block"; exit 1; }
+```
+
+The last Bash call before any stop (single PR or sweep) removes this run's pin:
+
+```bash
+BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify"
+BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
+[ -f "$BOSS_VERIFY_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-verify skill pin missing - re-run the first block"; exit 1; }
+node "$BOSS_VERIFY_TOOLBOX/skill-pin.mjs" remove --skill boss-verify
 ```
 
 Every `verify-gate.mjs` verb prints one JSON line. A failed read is **unknown**, never a pass: when
@@ -22,6 +47,7 @@ a verb exits non-zero or prints nothing parseable, report it and stop on that PR
 
 ## Arguments
 
+Run the pre-pin block above before the first argument read in single-PR and sweep mode.
 Split them with `node "$BOSS_VERIFY_TOOLBOX/selection.mjs" split-args -- <args>`: `tickets` holds a
 ticket id, `other` holds a PR number or URL plus this skill's own flags, and `selectionArgs` holds the
 shared selection flags (`--label`, `--assignee`, `--creator`, `--project` and their `--exclude-`

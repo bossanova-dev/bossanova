@@ -80,7 +80,7 @@ func TestBackgroundReadBelowStandardFloorIsRefused_Sessions_AC222201(t *testing.
 	gh := newFloorGH(graphQLAt(clock, 1500, 20*time.Minute))
 	p := newFloorProvider(gh, clock)
 
-	_, err := p.GetPRStatus(vcs.WithCachedReads(context.Background()), "o/r", 7)
+	_, err := primaryPRRead(p, vcs.WithCachedReads(context.Background()), "o/r", 7)
 	if !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("background read at 30%% err = %v, want vcs.ErrRateLimited", err)
 	}
@@ -102,10 +102,10 @@ func TestForegroundReadsAndBackgroundWritesPassTheFloor_Sessions_AC222201(t *tes
 	p := newFloorProvider(gh, clock)
 	bg := vcs.WithCachedReads(context.Background())
 
-	if _, err := p.GetPRStatus(bg, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, bg, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("background read err = %v, want vcs.ErrRateLimited", err)
 	}
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); err != nil {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); err != nil {
 		t.Fatalf("foreground read after a floor refusal: %v", err)
 	}
 	if got := gh.count(isPRView); got != 1 {
@@ -136,7 +136,7 @@ func TestReserveTierReadsDownToTheReserveFloor_Callbacks_AC222201(t *testing.T) 
 			gh := newFloorGH(graphQLAt(clock, tc.remaining, 20*time.Minute))
 			p := newFloorProvider(gh, clock)
 
-			_, err := p.GetPRStatus(vcs.WithReserveQuotaReads(context.Background()), "o/r", 7)
+			_, err := primaryPRRead(p, vcs.WithReserveQuotaReads(context.Background()), "o/r", 7)
 			if got := errors.Is(err, vcs.ErrRateLimited); got != tc.refused {
 				t.Fatalf("reserve read err = %v, refused = %v; want refused = %v", err, got, tc.refused)
 			}
@@ -165,7 +165,7 @@ func TestFloorFailsOpen(t *testing.T) {
 			gh := newFloorGH(tc.body(clock))
 			p := newFloorProvider(gh, clock, tc.opts...)
 
-			if _, err := p.GetPRStatus(vcs.WithCachedReads(context.Background()), "o/r", 7); err != nil {
+			if _, err := primaryPRRead(p, vcs.WithCachedReads(context.Background()), "o/r", 7); err != nil {
 				t.Fatalf("background read: %v", err)
 			}
 			if got := gh.count(isPRView); got != 1 {
@@ -182,7 +182,7 @@ func TestProviderWithoutFloorsNeverProbes(t *testing.T) {
 	gh := newFloorGH(graphQLAt(clock, 100, time.Hour))
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 
-	if _, err := p.GetPRStatus(vcs.WithCachedReads(context.Background()), "o/r", 7); err != nil {
+	if _, err := primaryPRRead(p, vcs.WithCachedReads(context.Background()), "o/r", 7); err != nil {
 		t.Fatalf("background read: %v", err)
 	}
 	if got := gh.count(isRateLimitProbe); got != 0 {
@@ -199,12 +199,12 @@ func TestFloorRereadsAReadingWhoseResetPassed(t *testing.T) {
 	p := newFloorProvider(gh, clock)
 	bg := vcs.WithCachedReads(context.Background())
 
-	if _, err := p.GetPRStatus(bg, "o/r", 7); err != nil {
+	if _, err := primaryPRRead(p, bg, "o/r", 7); err != nil {
 		t.Fatalf("read at 80%%: %v", err)
 	}
 	clock.Advance(40 * time.Second) // past the reset, inside quotaReadingTTL
 	gh.setBody(graphQLAt(clock, 1500, time.Hour))
-	if _, err := p.GetPRStatus(bg, "o/r", 8); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, bg, "o/r", 8); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("read after the reset err = %v, want the new window's refusal", err)
 	}
 	if got := gh.count(isRateLimitProbe); got != 2 {
@@ -240,7 +240,7 @@ func TestConcurrentBackgroundReadsShareOneFloorProbe(t *testing.T) {
 	errs := make([]error, callers)
 	for i := range callers {
 		// Distinct repositories, so the read cache cannot coalesce them first.
-		done.Go(func() { _, errs[i] = p.GetPRStatus(bg, fmt.Sprintf("o/r%d", i), 7) })
+		done.Go(func() { _, errs[i] = primaryPRRead(p, bg, fmt.Sprintf("o/r%d", i), 7) })
 	}
 	done.Wait()
 	for i, err := range errs {
@@ -265,13 +265,13 @@ func TestFloorLogsTransitionsNotRefusals(t *testing.T) {
 	bg := vcs.WithCachedReads(context.Background())
 
 	for i := range 3 {
-		if _, err := p.GetPRStatus(bg, "o/r", 7+i); !errors.Is(err, vcs.ErrRateLimited) {
+		if _, err := primaryPRRead(p, bg, "o/r", 7+i); !errors.Is(err, vcs.ErrRateLimited) {
 			t.Fatalf("read %d err = %v, want vcs.ErrRateLimited", i, err)
 		}
 	}
 	clock.Advance(quotaReadingTTL)
 	gh.setBody(graphQLAt(clock, 5000, time.Hour))
-	if _, err := p.GetPRStatus(bg, "o/r", 7); err != nil {
+	if _, err := primaryPRRead(p, bg, "o/r", 7); err != nil {
 		t.Fatalf("read after recovery: %v", err)
 	}
 	if got := countInfosWith(logs.String(), "below the background floor"); got != 1 {

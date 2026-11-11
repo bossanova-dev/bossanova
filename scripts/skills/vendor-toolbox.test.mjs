@@ -707,6 +707,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'skill-config-validate.generated.mjs',
       'skill-config.mjs',
       'skill-extensions.mjs',
+      'skill-pin.mjs',
+      'toolbox-drift.mjs',
       'tracker/adapter-core.mjs',
       'tracker/adapter.mjs',
       'tracker/blocker-clearance.mjs',
@@ -752,6 +754,18 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'verify/verify-publish-hook.mjs',
     ].sort(),
   )
+  for (const core of [
+    'boss-build',
+    'boss-repair',
+    'boss-finalize',
+    'boss-verify',
+    'boss-review',
+    'boss-epic',
+    'boss-release',
+    'boss-retro',
+  ]) {
+    assert.ok(VENDORED_FILES[core].includes('skill-pin.mjs'), `${core} must vendor skill-pin.mjs`)
+  }
   assert.ok(VENDORED_FILES['boss-plan'].includes('bs-run-sentinel.mjs'))
   // Asserted BY NAME: every core that vendors skill-config.mjs must vendor its selection.mjs import,
   // and boss-plan ships its own canonical cron gate (BOS-1378) as boss-build does.

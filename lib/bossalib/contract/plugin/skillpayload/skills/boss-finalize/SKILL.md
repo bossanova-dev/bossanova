@@ -33,24 +33,55 @@ fork-point heuristic can silently drop this run's commits after a force-push). N
 
 ## Dispatch
 
+The orchestrator runs this pre-pin block before dispatching or taking the inline fallback:
+
+```bash
+BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
+if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+BOSS_FINALIZE_SKILLS_HOME="$(dirname "$(dirname "$BOSS_FINALIZE_TOOLBOX")")"
+node "$BOSS_FINALIZE_TOOLBOX/skill-pin.mjs" create --skill boss-finalize --skills-home "$BOSS_FINALIZE_SKILLS_HOME" || exit 1
+BOSS_FINALIZE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-finalize"
+BOSS_FINALIZE_TOOLBOX="$BOSS_FINALIZE_PIN/toolbox"
+[ -f "$BOSS_FINALIZE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-finalize skill pin missing - re-run the first block"; exit 1; }
+```
+
+After the pin exists, read `references/…`, `scripts/…` and `extensions/…` from
+`$BOSS_FINALIZE_PIN/`. Every later shell block resolves only this pin:
+
+```bash
+BOSS_FINALIZE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-finalize"
+BOSS_FINALIZE_TOOLBOX="$BOSS_FINALIZE_PIN/toolbox"
+[ -f "$BOSS_FINALIZE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-finalize skill pin missing - re-run the first block"; exit 1; }
+```
+
 Run Steps 1–7 in **one** fresh awaited subagent (`general-purpose`, `model: "sonnet"` — the happy
 path is mechanical), bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default 300000 ms) and classified
 with `toolbox/bs-dispatch-await.mjs`; never background it. Give it the branch, PR URL and number, base
-branch, the gate commands and the "Done means" list above. It keeps all bulk output (logs, diffs,
+branch, the gate commands and the "Done means" list above. It uses the pinned form below
+and never creates or removes the pin. It keeps all bulk output (logs, diffs,
 check tables) in its own context and returns only the final PR state, check status and what it
 pushed. If it meets a real merge conflict or a failing gate that needs a code change, it stops and
 returns `NEEDS_OPUS: <reason>` rather than resolving it; you then run the steps inline on your own
 model, as you also do if the dispatch itself fails. Afterwards re-verify with one call, setting
-`BOSS_FINALIZE_TOOLBOX` first as Step 1 does (this runs in your context, not the subagent's):
+`BOSS_FINALIZE_TOOLBOX` with the pinned form as Step 1 does (this runs in your context, not the subagent's):
 `node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" view` (PR state reads go through this daemon-first
-reader; it runs labelled `gh` only when no daemon answers).
+reader; it runs labelled `gh` only when no daemon answers). After that final re-verify on either
+the dispatched or inline path, the orchestrator removes the pin in its own Bash call:
+
+```bash
+BOSS_FINALIZE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-finalize"
+BOSS_FINALIZE_TOOLBOX="$BOSS_FINALIZE_PIN/toolbox"
+[ -f "$BOSS_FINALIZE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-finalize skill pin missing - re-run the first block"; exit 1; }
+node "$BOSS_FINALIZE_TOOLBOX/skill-pin.mjs" remove --skill boss-finalize
+```
 
 ## Step 1: Find the base and make sure it is in the branch
 
 ```bash
 git status                            # Uncommitted changes?
-BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
-if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+BOSS_FINALIZE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-finalize"
+BOSS_FINALIZE_TOOLBOX="$BOSS_FINALIZE_PIN/toolbox"
+[ -f "$BOSS_FINALIZE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-finalize skill pin missing - re-run the first block"; exit 1; }
 BASE_BRANCH=$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" view --field baseRefName 2>/dev/null || true)
 if [ -z "$BASE_BRANCH" ]; then
   CURRENT_BRANCH=$(git branch --show-current)
@@ -124,15 +155,19 @@ Commit remaining work with the repo's commit convention (conventional commits by
 - **PR reference, when the repo requires one** (see "Done means" 3):
 
   ```bash
-  ~/.claude/skills/boss-finalize/add-pr-numbers.sh   # run from the repo root; detects the PR number
+  BOSS_FINALIZE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-finalize"
+  BOSS_FINALIZE_TOOLBOX="$BOSS_FINALIZE_PIN/toolbox"
+  [ -f "$BOSS_FINALIZE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-finalize skill pin missing - re-run the first block"; exit 1; }
+  "$BOSS_FINALIZE_PIN/add-pr-numbers.sh"   # run from the repo root; detects the PR number
   ```
 
   It rebases since the base, tags every non-empty commit, and exits non-zero naming any commit it
   could not tag (usually a message a repo hook rejected — fix exactly what the hook names). Verify:
 
   ```bash
-  BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
-  if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+  BOSS_FINALIZE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-finalize"
+  BOSS_FINALIZE_TOOLBOX="$BOSS_FINALIZE_PIN/toolbox"
+  [ -f "$BOSS_FINALIZE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-finalize skill pin missing - re-run the first block"; exit 1; }
   PR_NUM=$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field number)
   git log origin/$BASE_BRANCH..HEAD --format='%H%x09%s' |
     while IFS=$'\t' read -r sha subject; do
@@ -213,8 +248,9 @@ Let the helper decide; a bucket table on its own cannot tell a gate that passed 
 ran:
 
 ```bash
-BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
-if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+BOSS_FINALIZE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-finalize"
+BOSS_FINALIZE_TOOLBOX="$BOSS_FINALIZE_PIN/toolbox"
+[ -f "$BOSS_FINALIZE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-finalize skill pin missing - re-run the first block"; exit 1; }
 CHECK_DIR="$(mktemp -d)"
 PR_NUMBER="$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field number)"
 test -n "$PR_NUMBER" || exit 1
@@ -238,8 +274,9 @@ node "$BOSS_FINALIZE_TOOLBOX/pr-check-state.mjs" classify --pr-state "$CHECK_DIR
 ## Step 6: Ready and mergeable
 
 ```bash
-BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
-if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+BOSS_FINALIZE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-finalize"
+BOSS_FINALIZE_TOOLBOX="$BOSS_FINALIZE_PIN/toolbox"
+[ -f "$BOSS_FINALIZE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-finalize skill pin missing - re-run the first block"; exit 1; }
 PR_NUMBER="$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field number)"
 PR_URL="$(node "$BOSS_FINALIZE_TOOLBOX/pr-state.mjs" session-pr --field url)"
 DRAFT_GUARD=$(node "$BOSS_FINALIZE_TOOLBOX/finalize/draft-guard.mjs" decide --pr "$PR_URL") || true
@@ -286,8 +323,9 @@ commits, push with lease, and re-check.
 ```bash
 git stash list        # Note any stashes (don't auto-clear without asking)
 git remote prune origin
-BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
-if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+BOSS_FINALIZE_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-finalize"
+BOSS_FINALIZE_TOOLBOX="$BOSS_FINALIZE_PIN/toolbox"
+[ -f "$BOSS_FINALIZE_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-finalize skill pin missing - re-run the first block"; exit 1; }
 node "$BOSS_FINALIZE_TOOLBOX/worktree-state.mjs"   # Confirm clean state: must print verdict: clean
 ```
 

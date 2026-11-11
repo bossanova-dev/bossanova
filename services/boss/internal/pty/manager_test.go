@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const processExitBudget = 30 * time.Second
+
 // TestManagerConcurrentGetGetOrStartCleanup drives Get, GetOrStart, and
 // Cleanup from many goroutines against overlapping IDs. It exists to lock
 // in the process-map invariants against future refactors: the whole map
@@ -88,7 +90,7 @@ func TestManagerGetDeletesExitedEntry(t *testing.T) {
 
 	select {
 	case <-p.Done():
-	case <-time.After(2 * time.Second):
+	case <-time.After(processExitBudget):
 		t.Fatal("process did not exit in time")
 	}
 
@@ -108,7 +110,7 @@ func TestManagerGetDeletesExitedEntry(t *testing.T) {
 	}
 	select {
 	case <-p2.Done():
-	case <-time.After(2 * time.Second):
+	case <-time.After(processExitBudget):
 	}
 	m.Cleanup(id)
 }
@@ -120,11 +122,36 @@ func TestManagerGetDeletesExitedEntry(t *testing.T) {
 // `tmux attach` child has already died.
 func TestManagerRecentOutputAfterExit(t *testing.T) {
 	m := NewManager()
-	// `printf` writes then exits immediately, giving us a done process.
-	cmd := exec.Command("printf", "missing or unsuitable terminal: xterm-ghostty")
+	const marker = "missing or unsuitable terminal: xterm-ghostty"
+	// Keep the slave open until the master has consumed the output; an immediate
+	// exit can discard unread PTY output on macOS.
+	cmd := exec.Command("sh", "-c", `printf "%s" "$1"; read -r _`, "sh", marker)
 	p, err := m.GetOrStart("sess-1", cmd)
 	if err != nil {
 		t.Fatalf("GetOrStart: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		select {
+		case <-p.Done():
+		case <-time.After(processExitBudget):
+			t.Error("process did not exit during cleanup")
+		}
+		m.Cleanup("sess-1")
+	})
+	w := &outputMarkerWriter{process: p, marker: marker, ready: make(chan struct{})}
+	p.Attach(w)
+	// readLoop buffers output before forwarding it to the attached writer, so
+	// attach-before-check covers output produced on either side of Attach.
+	if !strings.Contains(string(p.RecentOutput(4096)), marker) {
+		select {
+		case <-w.ready:
+		case <-time.After(processExitBudget):
+			t.Fatal("process did not produce the marker")
+		}
+	}
+	if err := p.WriteInput([]byte("\n")); err != nil {
+		t.Fatalf("release child: %v", err)
 	}
 	// Wait for exit via p.Done() rather than polling IsRunning/Get: Get
 	// evicts a done process from the map as a side effect (that's exactly
@@ -132,11 +159,27 @@ func TestManagerRecentOutputAfterExit(t *testing.T) {
 	// would race the entry out from under the assertion below.
 	select {
 	case <-p.Done():
-	case <-time.After(2 * time.Second):
+	case <-time.After(processExitBudget):
 		t.Fatal("process did not exit in time")
 	}
 	got := string(m.RecentOutput("sess-1", 4096))
 	if !strings.Contains(got, "missing or unsuitable terminal") {
 		t.Fatalf("RecentOutput after exit = %q, want the tmux error text", got)
 	}
+}
+
+// outputMarkerWriter checks the accumulated tail so a marker split across Attach
+// still signals readiness. readLoop has already buffered each chunk before Write.
+type outputMarkerWriter struct {
+	process *Process
+	marker  string
+	ready   chan struct{}
+	once    sync.Once
+}
+
+func (w *outputMarkerWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(w.process.RecentOutput(4096)), w.marker) {
+		w.once.Do(func() { close(w.ready) })
+	}
+	return len(p), nil
 }

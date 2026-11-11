@@ -118,10 +118,12 @@ func prStateResponse(slug string, pr int, snap prstate.Snapshot) *pb.GetPRStateR
 		LatestReviewState:      pb.ReviewState(clampInt32(int(st.LatestReviewState))),
 		CheckVerdict:           prCheckVerdict(snap.Verdict),
 		VerifyPhase:            &pb.PRVerifyPhase{Kind: pb.PRVerifyPhaseKind(clampInt32(int(snap.VerifyPhase.Kind) + 1)), Reason: snap.VerifyPhase.Reason, Label: snap.VerifyPhase.Label},
+		IsVerifyPassed:         snap.VerifyPassed,
 		HasBuildReceipt:        snap.HasBuildReceipt,
 		HasSettledWorkflowRuns: snap.RunsSettled,
 		ObservedAt:             timestamppb.New(snap.ObservedAt),
 		IsWorkflowRunsRead:     snap.RunsRead,
+		IsDegraded:             snap.Degraded,
 	}
 	for _, c := range snap.Checks {
 		check := &pb.PRCheck{Name: c.Name, Status: pb.CheckStatus(clampInt32(int(c.Status))), Description: c.Description, IsUnclassified: c.Unclassified, WorkflowName: c.Workflow}

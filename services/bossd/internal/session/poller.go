@@ -481,7 +481,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models
 		return
 	}
 
-	if reviewSubmittedState(prStatus.LatestReviewState) &&
+	if !prStatus.Degraded && reviewSubmittedState(prStatus.LatestReviewState) &&
 		prStatus.LatestReviewState != vcs.ReviewState(sess.LastObservedReviewState) {
 		event := vcs.ReviewSubmitted{PRID: prID, State: prStatus.LatestReviewState}
 		if prStatus.LatestReviewState == vcs.ReviewStateChangesRequested {

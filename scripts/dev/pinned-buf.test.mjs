@@ -47,6 +47,7 @@ test('a wrong-version BUF override is an error even when tools are optional', (t
 test('an absent pin offline is a skip and leaves no downloaded files', (t) => {
   const f = fixture(t)
   f.executable(path.join(f.bin, 'curl'), 'exit 22')
+  f.executable(path.join(f.bin, 'go'), 'exit 1')
   f.executable(path.join(f.bin, 'sleep'), 'exit 0')
   const result = resolvePinnedBuf({ repoRoot, env: f.env })
   assert.ok('skip' in result)
@@ -75,6 +76,7 @@ test('scrubbing inherited overrides leaves fixture make values in control', (t) 
 test('proto proofs skip an offline pin locally and fail when tools are required', (t) => {
   const f = fixture(t)
   f.executable(path.join(f.bin, 'curl'), 'exit 22')
+  f.executable(path.join(f.bin, 'go'), 'exit 1')
   f.executable(path.join(f.bin, 'sleep'), 'exit 0')
   delete f.env.NODE_TEST_CONTEXT
   for (const required of ['0', '1']) {

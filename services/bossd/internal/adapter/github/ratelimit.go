@@ -489,3 +489,11 @@ func (p *Provider) QuotaStatus(ctx context.Context) ([]vcs.Quota, error) {
 	}
 	return quotas, nil
 }
+
+func refusedQuota(err error) (string, bool) {
+	var limited *rateLimitedError
+	if errors.As(err, &limited) {
+		return limited.quota, true
+	}
+	return "", false
+}

@@ -672,6 +672,8 @@ message PRSummary {
   string head_sha = 6;
   repeated PRCommitAuthor commit_authors = 7;
   bool has_all_commit_authors = 8;
+  // True only when the open-PR snapshot conclusively reports a conflict.
+  bool is_conflicted = 9;
 }
 
 // CreatePROpts contains options for creating a new pull request.

@@ -88,6 +88,8 @@ func TestLabelAsks(t *testing.T) {
 		{"low: A, B…", []string{"A"}},
 		{"Security", nil},
 		{"moderate: A, B, C, D", []string{"A", "B", "C"}},
+		{"moderate: 3,379 lines", []string{"3,379 lines"}},
+		{"low: API contract, 12,004 lines +1", []string{"API contract", "12,004 lines"}},
 	} {
 		if got := labelAsks(tc.label); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("labelAsks(%q) = %v, want %v", tc.label, got, tc.want)

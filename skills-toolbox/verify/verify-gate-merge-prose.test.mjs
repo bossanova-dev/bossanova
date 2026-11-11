@@ -252,6 +252,9 @@ test('floor asks remain uncovered by verified prose auto decisions', (t) => {
       extra,
     )
     assert.ok(r.reasons.includes(expected), JSON.stringify(r))
+    const floor = r.confidence.merge.decisions.find((entry) => entry.floor)
+    assert.equal(floor.covered, false)
+    assert.equal(floor.prose, null)
   }
 })
 

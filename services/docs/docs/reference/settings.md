@@ -749,6 +749,11 @@ transcripts, notes, cron and callback prompts, tracker issue descriptions and te
 refused. Outbound session/chat metadata is still sent; this setting does not yet trim titles or output
 previews in events.
 
+When `private` policy disallows an open cloud terminal, it closes with
+"cloud control is private on this machine" before sending more output. Idle terminals check local
+settings and cached repository identity once a second. A terminal opened in private mode stays
+authorized while its viewer approval remains valid and its connection uses end-to-end encryption.
+
 Use `default` to clear the explicit machine-wide mode, which returns the machine to `full`. The per-repo section in the CLI summary
 and TUI lists registered repositories grouped by their local `host/owner`, with effective modes
 and their source. Select a repository by its origin, display name or checkout path.

@@ -85,6 +85,11 @@ type CommitStatusPoster interface {
 	PostCommitStatus(ctx context.Context, repoPath, sha string, s CommitStatus) error
 }
 
+// PRCommentPoster is an optional capability for posting a PR conversation comment.
+type PRCommentPoster interface {
+	PostPRComment(ctx context.Context, repoPath string, prID int, body string) error
+}
+
 // PRBodyUpdater is an optional Provider capability: replace a pull/merge
 // request's description. Callers type-assert and skip when it is absent.
 type PRBodyUpdater interface {

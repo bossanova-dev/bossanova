@@ -6,6 +6,7 @@ import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import {
   MAX_MEDIA_OUTPUT_BYTES,
   collectProofMedia,
+  mediaSummary,
   pageAssets,
   readMediaDir,
   writeMediaManifest,
@@ -133,9 +134,66 @@ test('every failure is a named reason and never media', (t) => {
   assert.equal(untrusted.reason, 'trusted-tree-unavailable')
 })
 
-test('a page without a head clip needs no player', () => {
+test('a page without a head clip, or without media, still gets the player', () => {
   const base = manifest()
   base.clips = []
-  assert.deepEqual(pageAssets(base, '/evidence', 'player()'), [])
-  assert.deepEqual(pageAssets(null, '/evidence', 'player()'), [])
+  const player = [{ name: PLAYER_OBJECT, text: 'player()' }]
+  assert.deepEqual(pageAssets(base, '/evidence', 'player()'), player)
+  assert.deepEqual(pageAssets(null, '/evidence', 'player()'), player)
+})
+
+test('documents reach the page assets and the manifest under media/, and the bundle sees only their text', (t) => {
+  const out = tempDir('media-docs-', t)
+  const dir = path.join(out, 'media')
+  fs.mkdirSync(dir)
+  for (const f of ['statement.pdf', 'statement-p1.png', 'statement-p2.png'])
+    fs.writeFileSync(path.join(dir, f), f)
+  const raw = {
+    schema: 'proof-media/1',
+    head: HEAD,
+    clips: [],
+    documents: [
+      {
+        id: 'doc-0',
+        side: 'head',
+        title: 'Monthly statement',
+        file: 'statement.pdf',
+        pageCount: 4,
+        pages: [
+          { page: 1, file: 'statement-p1.png', caption: 'Page 1: totals' },
+          { page: 2, file: 'statement-p2.png', caption: 'Page 2: items' },
+        ],
+      },
+    ],
+  }
+  const outcome = readMediaDir(dir, HEAD)
+  assert.equal(outcome.reason, 'no-manifest')
+  const written = writeMediaManifest({ media: raw, dropped: [], dir }, out)
+  assert.deepEqual(
+    written.documents[0].pages.map((p) => p.file),
+    ['media/statement-p1.png', 'media/statement-p2.png'],
+  )
+  const reread = readMediaDir(out, HEAD)
+  assert.deepEqual(reread.dropped, [])
+  assert.equal(reread.media.documents[0].file, 'media/statement.pdf')
+  assert.deepEqual(
+    pageAssets(reread.media, out, 'player()').map((a) => a.name),
+    ['media/statement.pdf', 'media/statement-p1.png', 'media/statement-p2.png', 'player.js'],
+    'documents publish beside the page and its player',
+  )
+  const summary = mediaSummary(reread)
+  assert.deepEqual(summary.documents, [
+    {
+      id: 'doc-0',
+      side: 'head',
+      title: 'Monthly statement',
+      pageCount: 4,
+      pages: [
+        { page: 1, caption: 'Page 1: totals' },
+        { page: 2, caption: 'Page 2: items' },
+      ],
+    },
+  ])
+  assert.ok(!JSON.stringify(summary).includes('.pdf'), 'the summary names no file')
+  assert.equal(Object.hasOwn(mediaSummary({ media: null, dropped: [], dir }), 'documents'), false)
 })

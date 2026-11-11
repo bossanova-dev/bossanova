@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/kit/config"
 )
 
 // runAttachPump fans Output() and Exited() onto the per-stream outbound
@@ -30,6 +29,7 @@ func (c *TerminalStreamClient) runAttachPump(ctx context.Context, state *activeA
 	}
 	output := state.attach.Output()
 	exited := state.attach.Exited()
+	policyRecheck := c.clock.After(terminalCloudControlRecheckInterval)
 
 	for {
 		select {
@@ -47,13 +47,17 @@ func (c *TerminalStreamClient) runAttachPump(ctx context.Context, state *activeA
 			return
 		case <-state.outputStopped:
 			return
-		case chunk, ok := <-output:
-			if !ok {
-				exitSent = c.forwardAttachExit(ctx, state, outbound, exited)
+		case <-policyRecheck:
+			if c.recheckIdleAttach(ctx, state) {
 				return
 			}
-			if state.outputRefused.Load() || (c.attachMode(ctx, state) == config.CloudControlPrivate && !state.privateSealed) || state.policyRevoked.Load() {
-				state.refuseOutput()
+			policyRecheck = c.clock.After(terminalCloudControlRecheckInterval)
+		case chunk, ok := <-output:
+			if c.attachOutputRefused(ctx, state) {
+				return
+			}
+			if !ok {
+				exitSent = c.forwardAttachExit(ctx, state, outbound, exited)
 				return
 			}
 			if chunk.GetLost() {
@@ -102,6 +106,9 @@ func (c *TerminalStreamClient) sendAttachWakeNotice(ctx context.Context, state *
 	if state.wakeNotice == "" {
 		return true
 	}
+	if c.attachOutputRefused(ctx, state) {
+		return false
+	}
 	c.logger.Info().Str("attach_id", state.id).Str("reason", state.wakeNotice).Msg("terminal stream: attach woke chat with a fresh pane")
 	line := fmt.Sprintf("\r\n[boss] previous conversation could not be resumed (%s); starting a fresh agent.\r\n", sanitizeWakeReason(state.wakeNotice))
 	return c.sendAttachData(ctx, state, outbound, &pb.TerminalDataChunk{AttachId: state.id, Data: []byte(line)})
@@ -113,15 +120,12 @@ func (c *TerminalStreamClient) finishAttachPump(ctx context.Context, state *acti
 		defer state.seal.destroy()
 	}
 	if state.outputRefused.Load() {
-		// Close before removing the PTY, and synthesize the exit because the
-		// driver may suppress its own exit notification during Close.
+		c.logger.Info().Str("attach_id", state.id).Msg("cloud terminal output refused")
+		// Close joins the PTY goroutines. The driver can suppress its own
+		// exit during Close, so send the fixed policy exit without waiting.
 		_ = state.attach.Close()
 		if !exitSent {
-			reason := "cloud control is private on this machine"
-			if state.policyRevoked.Load() {
-				reason = "cloud control changed for this repo"
-			}
-			c.sendExited(ctx, outbound, state.id, reason)
+			c.sendExited(ctx, outbound, state.id, state.policyExitReason())
 		}
 	}
 	c.mu.Lock()

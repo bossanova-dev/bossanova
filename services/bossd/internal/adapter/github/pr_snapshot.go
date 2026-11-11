@@ -383,6 +383,7 @@ func (s *prSnapshot) openPRs() []vcs.PRSummary {
 			HeadSHA:               pr.HeadRefOid,
 			CommitAuthors:         authors,
 			CommitAuthorsComplete: complete,
+			IsConflicted:          pr.Mergeable == "CONFLICTING",
 		})
 	}
 	return prs

@@ -2,6 +2,7 @@ package main
 
 import (
 	"go/token"
+	"slices"
 	"testing"
 )
 
@@ -85,5 +86,56 @@ func TestFakeDeclarationsAndParseErrors(t *testing.T) {
 	bad := scanSource(token.NewFileSet(), "broken_test.go", "package p\nfunc")
 	if len(bad.Errors) != 1 {
 		t.Fatalf("parse errors = %+v", bad.Errors)
+	}
+}
+
+func TestScanSourceLiteralTimers(t *testing.T) {
+	tests := []struct {
+		name, body string
+		want       int
+	}{
+		{"all constructors", `tm.After(tm.Second); tm.NewTimer(2 * tm.Minute); tm.AfterFunc(tm.Millisecond, func() {}); tm.Tick(tm.Hour); tm.NewTicker(tm.Microsecond)`, 5},
+		{"literal expressions", `(tm.After)((-2 + 3) * tm.Second); tm.After(tm.Duration(1.5 * 1000)); tm.After(0); tm.After(1 << 3); tm.After(^1)`, 5},
+		{"named and computed budgets", `tm.After(timeout); tm.After(2 * timeout); tm.After(other.Delay); tm.After(next()); tm.After(tm.Duration(timeout))`, 0},
+		{"non-duration literals and selectors", `tm.After("short"); tm.After('s'); tm.After(tm.Unknown); tm.After(other.Second)`, 0},
+		{"shadowed import", `{ tm := other; tm.After(tm.Second) }; tm.After(tm.Second)`, 1},
+		{"shadowed unit import", `tm.After(func() int { tm := other; return tm.Second }())`, 0},
+		{"unrelated calls", `tm.Since(1); tm.Until(1); other.After(tm.Second); tm.After()`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanSource(token.NewFileSet(), "timers_test.go", "package p\nimport tm \"time\"\nfunc f(){"+tt.body+"}")
+			if len(got.Errors) != 0 || len(got.Sleeps) != tt.want {
+				t.Fatalf("scan = %+v; want %d timer calls", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScanSourceTimerNamesAndBubbles(t *testing.T) {
+	got := scanSource(token.NewFileSet(), "timers_test.go", `package p
+import tm "time"
+import st "testing/synctest"
+func f() {
+tm.Sleep(timeout)
+tm.After(tm.Second)
+tm.NewTimer(tm.Second)
+tm.AfterFunc(tm.Second, func(){})
+tm.Tick(tm.Second)
+tm.NewTicker(tm.Second)
+st.Test(nil, func(t any) { (tm.After)(tm.Second); func(){tm.NewTimer(tm.Second)}() })
+}`)
+	var calls []string
+	var bubbles []bool
+	for _, found := range got.Sleeps {
+		calls = append(calls, found.Call)
+		bubbles = append(bubbles, found.InSynctest)
+		if found.File != "timers_test.go" || found.Line < 5 {
+			t.Fatalf("location = %+v", found)
+		}
+	}
+	if len(got.Errors) != 0 || !slices.Equal(calls, []string{"Sleep", "After", "NewTimer", "AfterFunc", "Tick", "NewTicker", "After", "NewTimer"}) ||
+		!slices.Equal(bubbles, []bool{false, false, false, false, false, false, true, true}) {
+		t.Fatalf("calls = %v, bubbles = %v, errors = %v", calls, bubbles, got.Errors)
 	}
 }

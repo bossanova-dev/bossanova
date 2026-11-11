@@ -92,3 +92,15 @@ func filterDependabotPRs(prs []*bossanovav1.PRSummary) []*bossanovav1.PRSummary 
 	}
 	return filtered
 }
+
+func dependabotOnly(pr *bossanovav1.PRSummary) bool {
+	if pr.GetHeadSha() == "" || !pr.GetHasAllCommitAuthors() || len(pr.GetCommitAuthors()) == 0 {
+		return false
+	}
+	for _, author := range pr.GetCommitAuthors() {
+		if author.GetLogin() != "dependabot[bot]" && author.GetEmail() != "49699333+dependabot[bot]@users.noreply.github.com" {
+			return false
+		}
+	}
+	return true
+}

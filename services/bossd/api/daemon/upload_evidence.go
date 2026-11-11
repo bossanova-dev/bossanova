@@ -38,7 +38,7 @@ const (
 var (
 	evidenceScreenshotName = regexp.MustCompile(`^screenshots/[A-Za-z0-9._-]+\.(png|jpg|jpeg|webp)$`)
 	// evidenceMediaName is a proof page's media, published flat beside it.
-	evidenceMediaName = regexp.MustCompile(`^media/[A-Za-z0-9._-]+\.(mp4|png|jpg|webp)$`)
+	evidenceMediaName = regexp.MustCompile(`^media/[A-Za-z0-9._-]+\.(mp4|png|jpg|webp|pdf)$`)
 	evidenceHeadSHA   = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	evidenceRepoSlug  = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 )
@@ -274,6 +274,8 @@ func evidenceContentType(name string) string {
 		return ""
 	}
 	switch filepath.Ext(name) {
+	case ".pdf":
+		return "application/pdf"
 	case ".mp4":
 		return "video/mp4"
 	case ".png":

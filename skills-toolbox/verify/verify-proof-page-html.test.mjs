@@ -1,10 +1,11 @@
 import test from 'node:test'
+import { PROOF_STYLE } from './verify-proof-style.mjs'
 import assert from 'node:assert/strict'
 import { withDigest } from './verify-proof.mjs'
 import { renderProofHtml } from './verify-proof-page.mjs'
 import { NO_UI_RECORDING, fileAnchor } from './verify-proof-page-model.mjs'
 import { cutSnippet, parseUnifiedDiff } from './verify-proof-snippet.mjs'
-import { region } from '../../scripts/test-infra/gate-region-lib.mjs'
+import { region, regionUntilNext } from '../../scripts/test-infra/gate-region-lib.mjs'
 
 const HEAD = '1'.repeat(40)
 const BASE = '2'.repeat(40)
@@ -188,7 +189,9 @@ test('media becomes one player with chapters per clip, portrait stills with a li
     ['1', 'media/head-1.mp4', '4.00'],
   ])
   assert.ok(!html.includes('media/base-0.mp4'), 'a base clip is never played')
-  assert.ok(html.includes('<a class="thumb" href="#shot-1"><img src="media/head-1-still.png"'))
+  assert.ok(
+    html.includes('<a class="thumb" id="thumb-1" href="#shot-1"><img src="media/head-1-still.png"'),
+  )
   assert.ok(html.includes('<div class="lightbox" id="shot-0">'))
   assert.ok(html.includes('<a class="lb-next" href="#shot-1"'))
   assert.ok(html.includes('<figcaption>Before · Before still</figcaption>'))
@@ -223,8 +226,8 @@ test('a spec or manifest for another head is ignored and says so', () => {
     spec: spec({ head: 'f'.repeat(40) }),
     media: { ...media(), head: 'f'.repeat(40) },
   })
-  assert.ok(html.includes('spec spec.head: written for another head'))
-  assert.ok(html.includes('media media.head: captured for another head'))
+  assert.ok(html.includes('<li>spec.head: written for another head</li>'))
+  assert.ok(html.includes('<li>media.head: captured for another head</li>'))
   assert.ok(!html.includes('proof-video'))
   assert.ok(
     html.includes('<div class="t">Totals need a person</div>'),
@@ -274,4 +277,136 @@ test('an agent spec adds to the record and never hides a blocker, a reason or a 
   assert.ok(html.includes('<h3>Totals &lt;i&gt;round&lt;/i&gt; once</h3>'))
   const before = region(html, 'Before you approve', 'After merge</h3>')
   assert.ok(before.indexOf('Resolve: Data loss on retry') < before.indexOf('Glance at names'))
+})
+
+/** A head statement of three pages paired with a base of two. */
+function statement() {
+  const doc = (id, side, name, pageCount, pairs) => ({
+    id,
+    side,
+    ...(pairs ? { pairs } : {}),
+    title: 'Monthly <statement>',
+    file: `docs/${name}.pdf`,
+    pageCount,
+    pages: Array.from({ length: pageCount }, (_, i) => ({
+      page: i + 1,
+      file: `docs/${name}-p${i + 1}.png`,
+      caption: `${side} page ${i + 1}`,
+    })),
+  })
+  return {
+    schema: 'proof-media/1',
+    head: HEAD,
+    clips: [],
+    transcripts: [],
+    documents: [
+      doc('doc-0-base', 'base', 'statement-base', 2, 'doc-0'),
+      doc('doc-0', 'head', 'statement-head', 3),
+    ],
+  }
+}
+
+test('a paired document pairs pages by number, so a dropped page never shifts the rest', () => {
+  const media = statement()
+  media.documents[1].pages.splice(1, 1)
+  const html = render({ media })
+  const docs = regionUntilNext(html, '<h3 class="sub" id="documents">Documents</h3>', '</section>')
+  assert.ok(
+    docs.includes(
+      '<header><b>Monthly &lt;statement&gt;</b><span class="dim">3 pages, 2 before</span><a href="media/statement-head.pdf">Download PDF</a><a href="media/statement-base.pdf">Download base PDF</a><span class="framed-note dim">To download the PDF, open this page in its own tab.</span></header>',
+    ),
+  )
+  const rows = [...docs.matchAll(/<div class="pair">(.*?)<\/div>/g)].map((m) =>
+    [...m[1].matchAll(/<figcaption>([^<]*)<\/figcaption>/g)].map((c) => c[1]),
+  )
+  assert.deepEqual(rows, [
+    ['Before · base page 1', 'After · head page 1'],
+    ['Before · base page 2', 'After · no page 2'],
+    ['Before · no page 3', 'After · head page 3'],
+  ])
+  assert.ok(
+    docs.includes(
+      '<a id="doc-0-head-p3-thumb" href="#doc-0-head-p3"><img src="media/statement-head-p3.png" alt="head page 3" loading="lazy" decoding="async"></a>',
+    ),
+  )
+  for (const id of ['doc-0-head-p1', 'doc-0-head-p3', 'doc-0-base-p1', 'doc-0-base-p2'])
+    assert.ok(html.includes(`<div class="lightbox" id="${id}">`), id)
+  assert.ok(!html.includes('id="doc-0-head-p2"'))
+  const box = region(
+    html,
+    '<div class="lightbox" id="doc-0-head-p3">',
+    '<div class="lightbox" id="doc-0-base-p1">',
+  )
+  assert.ok(
+    box.includes(
+      '<img src="media/statement-head-p3.png" alt="head page 3" loading="lazy" decoding="async">',
+    ),
+  )
+  assert.ok(box.includes('<a class="lb-full" href="media/statement-head-p3.png">Full size</a>'))
+  assert.ok(
+    box.includes('<a class="lb-prev" href="#doc-0-head-p1"'),
+    'previous skips the missing page',
+  )
+  assert.ok(!box.includes('lb-next'), 'page 3 is the last head page')
+  assert.ok(
+    box.includes('<a class="lb-x" href="#doc-0-head-p3-thumb">Close</a>'),
+    'closing returns to the page thumbnail it opened from',
+  )
+  assert.equal(
+    new Set([...html.matchAll(/ id="([^"]+)"/g)].map((m) => m[1])).size,
+    html.match(/ id="/g).length,
+    'every id is unique',
+  )
+  assert.ok(html.includes('<h2>Evidence <span class="n">1 document</span></h2>'))
+  assert.ok(!/<(object|iframe|embed)\b/.test(html), 'the PDF is linked, never embedded')
+  assert.deepEqual(
+    html.match(/<script[^>]*>/g),
+    ['<script src="player.js" defer>'],
+    'documents add no script beyond the page player',
+  )
+})
+
+test('pages with no numbers keep their positions, so a dropped page leaves a gap', () => {
+  const media = statement()
+  for (const doc of media.documents) for (const page of doc.pages) delete page.page
+  media.documents[1].pages[1].file = 'docs/statement-head-p2.pdf'
+  const docs = regionUntilNext(
+    render({ media }),
+    '<h3 class="sub" id="documents">Documents</h3>',
+    '</section>',
+  )
+  const rows = [...docs.matchAll(/<div class="pair">(.*?)<\/div>/g)].map((m) =>
+    [...m[1].matchAll(/<figcaption>([^<]*)<\/figcaption>/g)].map((c) => c[1]),
+  )
+  assert.deepEqual(rows, [
+    ['Before · base page 1', 'After · head page 1'],
+    ['Before · base page 2', 'After · no page 2'],
+    ['Before · no page 3', 'After · head page 3'],
+  ])
+})
+
+test('an unpaired document shows thumbnails and no base link', () => {
+  const media = statement()
+  media.documents = [media.documents[1]]
+  const docs = regionUntilNext(render({ media }), 'id="documents"', '</section>')
+  assert.ok(
+    docs.includes(
+      '<span class="dim">3 pages</span><a href="media/statement-head.pdf">Download PDF</a><span class="framed-note dim">To download the PDF, open this page in its own tab.</span></header>',
+    ),
+  )
+  assert.ok(!docs.includes('Download base PDF'))
+  assert.ok(
+    docs.includes(
+      '<span class="framed-note dim">To download the PDF, open this page in its own tab.</span>',
+    ),
+    'a framed review view, which may not download, says where the PDF downloads',
+  )
+  assert.match(PROOF_STYLE, /\n\.framed-note\{display:none\}/)
+  assert.match(PROOF_STYLE, /\n\.proof-framed \.doc>header a\{display:none\}/)
+  assert.match(PROOF_STYLE, /\n\.proof-framed \.framed-note\{display:inline\}/)
+  assert.ok(!docs.includes('class="pair"'))
+  assert.equal(
+    docs.match(/<a class="thumb" id="doc-0-head-p\d-thumb" href="#doc-0-head-p\d">/g)?.length,
+    3,
+  )
 })

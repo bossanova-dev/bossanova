@@ -117,21 +117,27 @@ The launcher is a searchable command palette: type to filter, navigate with
 `↑`/`↓`/`Home`/`End`, and press `Enter` to run the highlighted action.
 Mouse users can hover to highlight a row and click to run it.
 
-| Screen         | Key | Action            |
-| -------------- | --- | ----------------- |
-| Sessions list  | `N` | New session       |
-| Session detail | `G` | Open pull request |
-| Session detail | `M` | Merge session     |
-| Session detail | `A` | Archive session   |
+| Screen         | Key      | Action                |
+| -------------- | -------- | --------------------- |
+| Sessions list  | `N`      | New session           |
+| Session detail | `G`      | Open pull request     |
+| Session detail | `M`      | Merge session         |
+| Session detail | `A`      | Archive session       |
+| Session detail | `N`      | New chat              |
+| Review         | `C`      | Show or hide chats    |
+| Review         | `N`      | New chat              |
+| Chat           | `Ctrl X` | Detach to the session |
 
-The launcher is excluded on the chat-terminal route so that keystrokes
-pass through to the agent session uninterrupted.
+On the chat terminal, keys typed into the terminal go to the agent session,
+so `?` opens the launcher only while focus is outside the terminal.
 
 ## Review screen
 
 Open `/review/<owner>/<name>/<pr>?head=<40-hex-sha>` as a Bossanova Cloud user to review boss's stored PR record. The owner and name are the GitHub repository slug. A supplied head pins the link to that commit; a different current head disables actions and offers a link to the current record.
 
-The screen offers approve and merge, send to repair with a note, and close, each after confirmation. Close abandons the boss session and leaves the GitHub PR open. Proof-page generators link to this route using their manifest's repository slug, PR number and head.
+The screen offers Merge and Reject (send back to repair with a note), each after confirmation. Move between PRs with `J` and `K` or the arrow keys. Proof-page generators link to this route using their manifest's repository slug, PR number and head.
+
+The PR's chats sit in a drawer beside its review summary. Toggle it with the Chats button or `C`; the choice is remembered. Choose a chat to work in its live terminal there, or start one with New chat or `N`. Esc outside the terminal returns to the list, and Open full screen opens the chat's own page. Drag the dividers, or focus one and press the arrow keys, to resize the list and the drawer. On a phone the drawer takes the summary's place.
 
 ## Encrypt the web terminal
 

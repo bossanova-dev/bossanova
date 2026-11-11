@@ -11932,6 +11932,16 @@ components:
           description: |-
             The runs read happened, so an empty workflow_runs means the head has no
              run rather than that its runs were not read.
+        isVerifyPassed:
+          type: boolean
+          title: is_verify_passed
+          description: |-
+            The head carries a completed boss/verify pass. Human holds and other
+             non-pass statuses are false. This is the predicate the merge gate checks.
+        isDegraded:
+          type: boolean
+          title: is_degraded
+          description: Another quota supplied part of this snapshot while the primary quota refused.
       title: GetPRStateResponse
       additionalProperties: false
     bossanova.v1.GetPRStatusRequest:
@@ -12845,6 +12855,10 @@ components:
             EDITOR or VIEWER. Only EDITOR is used in v1 — VIEWER is accepted and
              behaves identically for now (see the plan's deferred items).
           $ref: '#/components/schemas/bossanova.v1.AttachScope'
+        viewerDeviceId:
+          type: string
+          title: viewer_device_id
+          description: Optional caller-owned viewer device; empty preserves plaintext attaches.
       title: IssueAttachTokenRequest
       additionalProperties: false
       description: |-
@@ -16437,6 +16451,10 @@ components:
         hasAllCommitAuthors:
           type: boolean
           title: has_all_commit_authors
+        isConflicted:
+          type: boolean
+          title: is_conflicted
+          description: True only when the open-PR snapshot conclusively reports a conflict.
       title: PRSummary
       additionalProperties: false
       description: PRSummary is a lightweight representation of a PR for listing.
@@ -18128,6 +18146,14 @@ components:
           description: |-
             Unset means every organization the caller belongs to. Set narrows to that
              organization after a membership check.
+        daemonId:
+          type:
+            - string
+            - "null"
+          title: daemon_id
+          description: |-
+            Unset means every daemon the caller can read. Set narrows to that daemon's
+             sessions after the same access check ListSessions applies.
       title: ProxyListReviewQueueRequest
       additionalProperties: false
     bossanova.v1.ProxyListReviewQueueResponse:
@@ -23614,6 +23640,7 @@ components:
         - TASK_ACTION_AUTO_MERGE
         - TASK_ACTION_CREATE_SESSION
         - TASK_ACTION_NOTIFY_USER
+        - TASK_ACTION_REQUEST_REBASE
       description: TaskAction specifies what the daemon should do with a task.
     bossanova.v1.TaskItem:
       type: object
@@ -23657,6 +23684,14 @@ components:
           type: string
           title: existing_branch
           description: Existing branch to check out (eg. dependabot's PR branch).
+        isBotRebaseRequestable:
+          type: boolean
+          title: is_bot_rebase_requestable
+          description: Whether all commits belong to the PR bot.
+        headSha:
+          type: string
+          title: head_sha
+          description: The head whose commit authors were classified.
       title: TaskItem
       additionalProperties: false
       description: TaskItem is a task from an external system ready to become a session.

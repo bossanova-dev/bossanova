@@ -22,7 +22,7 @@ func withMergeLabel(ctx context.Context) context.Context {
 // that may be one open-PR snapshot old, so its AUTO_MERGE verdict alone never
 // merges a head. It reports whether the merge landed; on false it has already
 // settled the mapping (Failed, or handed to repairRebase for a rebase refusal).
-func (o *Orchestrator) mergeConfirmedHead(ctx context.Context, repo repoInfo, mapping *domain.TaskMapping, prNumber int, strategy string, repairRebase func(error)) bool {
+func (o *Orchestrator) mergeConfirmedHead(ctx context.Context, repo repoInfo, mapping *domain.TaskMapping, prNumber int, strategy string, repairRebase func(error, string)) bool {
 	opts, err := o.confirmAutoMergeHead(ctx, repo, prNumber, strategy)
 	if err != nil {
 		o.logger.Info().Err(err).
@@ -48,8 +48,8 @@ func (o *Orchestrator) mergeConfirmedHead(ctx context.Context, repo repoInfo, ma
 		o.logger.Info().Err(err).
 			Int("pr", prNumber).
 			Str("repo", repo.displayName).
-			Msg("auto-merge rebase failed; queueing repair session")
-		repairRebase(err)
+			Msg("auto-merge rebase failed; requesting rebase recovery")
+		repairRebase(err, opts.ExpectedHeadSHA)
 		return false
 	default:
 		o.logger.Error().Err(err).

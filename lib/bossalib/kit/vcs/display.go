@@ -215,6 +215,11 @@ func ComputeDisplayStatusWith(pr *PRStatus, checks []CheckResult, reviews []Revi
 		return DisplayInfo{Status: DisplayStatusReview}
 	}
 
+	// REST reviews cannot establish whether branch protection requires more approval.
+	if pr.Degraded && pr.ReviewDecisionState == ReviewStateUnspecified {
+		return DisplayInfo{Status: DisplayStatusChecking}
+	}
+
 	if hasApproval && !mergeableUnknown && !notRequested {
 		return DisplayInfo{Status: DisplayStatusApproved}
 	}

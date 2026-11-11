@@ -7,12 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/testharness"
 )
+
+const repairFakePaneHold = 2 * time.Minute
 
 type repairFakeAgentClient struct {
 	argv       []string
@@ -48,12 +51,11 @@ printf '%%s\n' "$data" > "$prompt_path"
 # confirms submission — a real agent shows activity the instant it accepts a
 # line; without this the fake would exit at the prompt and capture-pane would
 # race the pane's teardown ("verify command submission: ... exit status 1").
-# The bounded sleep keeps the pane alive through the 2s verify budget. Run
-# completion is signalled by ExitStatus once the prompt file exists above,
-# independent of this sleep.
+# Hold the pane until teardown; the bound caps an orphan if cleanup fails.
+# The test verifies the prompt file before tearing down the pane.
 printf '\n⏺ working\n'
-sleep 3
-`, promptPath)
+sleep %d
+`, promptPath, int(repairFakePaneHold.Seconds()))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake agent: %v", err)
@@ -159,9 +161,7 @@ func setupRepairE2E(t *testing.T, fake agent.RunnerClient) (*testharness.Harness
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
 
-	h := testharness.NewWithOptions(t, testharness.Options{
-		TmuxCommandFactory: realTmuxFactory(t),
-	})
+	h := testharness.NewWithOptions(t, realTmuxOptions(t))
 	h.SetAgentClientsForTest(map[string]agent.RunnerClient{"codex": fake})
 
 	ctx := context.Background()
@@ -210,16 +210,6 @@ func TestRepairE2E_StartChatRunKeepsTTYAndInjectsPrompt(t *testing.T) {
 		t.Fatalf("StartChatRun returned empty agent session id")
 	}
 
-	waitResp, err := h.HostService.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{
-		AgentSessionId: startResp.GetAgentSessionId(),
-	})
-	if err != nil {
-		t.Fatalf("WaitChatRun: %v", err)
-	}
-	if waitResp.GetExitError() != "" {
-		t.Fatalf("WaitChatRun exit error = %q", waitResp.GetExitError())
-	}
-
 	prompt, err := os.ReadFile(fake.promptPath)
 	if err != nil {
 		t.Fatalf("read prompt file: %v", err)
@@ -240,5 +230,19 @@ func TestRepairE2E_StartChatRunKeepsTTYAndInjectsPrompt(t *testing.T) {
 	}
 	if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 		t.Fatalf("chat tmux session name not recorded")
+	}
+	// Tmux runs complete when their pane exits; plugin ExitStatus only tracks
+	// headless runs. Tear down after proving submission so the hold cannot race it.
+	if err := h.Tmux.KillSession(ctx, *chat.TmuxSessionName); err != nil {
+		t.Fatalf("kill completed fake pane: %v", err)
+	}
+	waitResp, err := h.HostService.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{
+		AgentSessionId: startResp.GetAgentSessionId(),
+	})
+	if err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+	if waitResp.GetExitError() != "" {
+		t.Fatalf("WaitChatRun exit error = %q", waitResp.GetExitError())
 	}
 }

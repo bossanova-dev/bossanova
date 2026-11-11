@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import {
+  defaultProbes,
   upstreamConfig,
   classifyRemedyOwner,
   route,
@@ -137,3 +142,47 @@ test('forward requires byte-exact read-back for the entire theme before deletion
   assert.deepEqual(forwardDeleteIds(plan, partial), [])
   assert.ok(calls.every((args) => args[1] !== 'add' || args[args.length - 2] === '--'))
 })
+
+for (const mode of ['pin', 'override', 'unpinned']) {
+  test(`defaultProbes discovers installed cores from ${mode} context`, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'retro-probes-'))
+    t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }))
+    execFileSync('git', ['init', '-q', root])
+    const home = path.join(root, 'installed')
+    const pin = path.join(root, 'pins', 'boss-retro')
+    const moduleDir = path.join(pin, 'toolbox', 'retro')
+    for (const core of ['boss-build', 'boss-retro']) {
+      fs.mkdirSync(path.join(home, core), { recursive: true })
+      fs.writeFileSync(path.join(home, core, 'SKILL.md'), '# skill')
+    }
+    fs.mkdirSync(moduleDir, { recursive: true })
+    const env = {}
+    if (mode !== 'unpinned') {
+      fs.writeFileSync(
+        path.join(pin, '.boss-skill-pin.json'),
+        JSON.stringify({ source: path.join(home, 'boss-retro') }),
+      )
+    }
+    if (mode === 'override') env.BOSS_SKILLS_HOME = home
+    // Without a manifest the module's original self-relative namespace remains authoritative.
+    const actual = defaultProbes({
+      cwd: root,
+      env,
+      moduleDir:
+        mode === 'unpinned' ? path.join(home, 'boss-retro', 'toolbox', 'retro') : moduleDir,
+    })
+    assert.deepEqual(
+      actual.installedCores.sort(),
+      ['boss-build', 'boss-retro'].map((core) => path.join(home, core)),
+    )
+    if (mode === 'override') {
+      const other = path.join(root, 'override')
+      fs.mkdirSync(path.join(other, 'boss-review'), { recursive: true })
+      fs.writeFileSync(path.join(other, 'boss-review', 'SKILL.md'), '# skill')
+      assert.deepEqual(
+        defaultProbes({ cwd: root, env: { BOSS_SKILLS_HOME: other }, moduleDir }).installedCores,
+        [path.join(other, 'boss-review')],
+      )
+    }
+  })
+}

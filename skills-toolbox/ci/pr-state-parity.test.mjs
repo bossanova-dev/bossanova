@@ -69,6 +69,27 @@ function envelope({ checks, runs, verdict, settled = null, runsRead = true, phas
 }
 
 const SCENARIOS = [
+  ...['in_progress', 'completed'].map((status) => ({
+    name: `cancelled notification with ${status} replacement`,
+    sameHeadAbsent: status === 'completed' ? ['notify'] : [],
+    want:
+      status === 'completed'
+        ? verdictOf(CHECK_STATES.GREEN, CHECK_REASONS.OK)
+        : verdictOf(CHECK_STATES.PENDING, CHECK_REASONS.PENDING),
+    gh: {
+      rollup: [ghCheck('build', 'SUCCESS'), ghCheck('notify', 'CANCELLED')],
+      runs: [ghRun('CI', status, status === 'completed' ? 'success' : '')],
+    },
+    daemon: envelope({
+      checks: [
+        daemonCheck('build', 'completed', 'success', { workflow_name: 'CI' }),
+        daemonCheck('notify', 'completed', 'cancelled', { workflow_name: 'CI' }),
+      ],
+      runs: [daemonRun('CI', status, status === 'completed' ? 'success' : '')],
+      verdict: verdictOf('failing', 'failed'),
+      settled: status === 'completed',
+    }),
+  })),
   {
     name: 'green',
     want: verdictOf(CHECK_STATES.GREEN, CHECK_REASONS.OK),
@@ -345,7 +366,7 @@ for (const scenario of SCENARIOS) {
     // A prior head's view is a `--prior` payload: the same set as prior reads as no absent gate.
     const againstItself = classify(view.out, view.out)
     assert.equal(againstItself.priorKnown, true)
-    assert.deepEqual(againstItself.absent, [])
+    assert.deepEqual(againstItself.absent, scenario.sameHeadAbsent ?? [])
   })
 }
 

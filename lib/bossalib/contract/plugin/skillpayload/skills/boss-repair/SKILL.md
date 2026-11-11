@@ -19,14 +19,29 @@ helpers that answer questions reliably. How you investigate and fix is up to you
 
 ## Helpers
 
+Run this pre-pin block first, once per run:
+
 Every helper ships in this skill's `toolbox/` (and the review probe in `scripts/`). Shell state does
 not survive between tool calls, so resolve the paths in each block that uses them:
 
 ```bash
 BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
 if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
-BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
-if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
+BOSS_REPAIR_SKILLS_HOME="$(dirname "$(dirname "$BOSS_REPAIR_TOOLBOX")")"
+node "$BOSS_REPAIR_TOOLBOX/skill-pin.mjs" create --skill boss-repair --skills-home "$BOSS_REPAIR_SKILLS_HOME" || exit 1
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
+[ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
+```
+
+After the pin exists, read `references/…`, `scripts/…` and `extensions/…` from
+`$BOSS_REPAIR_PIN/`. Every later shell block resolves only this pin:
+
+```bash
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
+[ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
+BOSS_REPAIR_PROBE="$BOSS_REPAIR_PIN/scripts/review-feedback-probe.js"
 ```
 
 | Question                                         | Ask                                                                                      |
@@ -121,7 +136,7 @@ judgement.
 
 ## A repair pass
 
-1. **Assess.** Report the phase (`node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" phase repairing`, never fatal), then record the PR head SHA as `START_SHA`.
+1. **Assess.** Run the pre-pin block first, then resolve the pinned probe above. Report the phase (`node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" phase repairing`, never fatal), then record the PR head SHA as `START_SHA`.
    First load verify's blockers for that head:
 
    ```bash
@@ -183,8 +198,9 @@ judgement.
    Re-run `carry` before the post-review invocation too. No exit changes the pass's own exit code:
 
    ```bash
-   BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
-   if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+   BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+   BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
+   [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
    BRANCH="$(git branch --show-current)"
    if git fetch -q origin "$BRANCH" &&
      [ "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$BRANCH")" ]; then
@@ -265,8 +281,9 @@ genuinely empty. After the rebase completes, audit it (substitute the recorded S
 not survive between tool calls):
 
 ```bash
-BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
-if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
+[ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
 node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check --repo "$(git rev-parse --show-toplevel)" \
   --pre-rebase-head "$PRE_REBASE_HEAD" --base "origin/$BASE_BRANCH"
 ```
@@ -350,8 +367,9 @@ Poll checks, review feedback and mergeability together — never wait on one whi
 others. Check state goes through the classifier, keyed to the head SHA:
 
 ```bash
-BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
-if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
+[ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
 CHECK_DIR="$(git rev-parse --git-dir)/boss-repair-checks"
 mkdir -p "$CHECK_DIR"
 PR_NUMBER="$(node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" session-pr --field number)"
@@ -496,8 +514,9 @@ Skip this phase when `BOSS_NOTES_SUPPRESSED=1` (a calling core owns the notes fo
 Otherwise, after the terminal outcome is decided:
 
 ```bash
-BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
-if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
+[ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
 node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" discover --core boss-repair --role notes --json
 ```
 
@@ -531,3 +550,13 @@ Validate each result with `node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" vali
 --file <outPath>`, record the persisted-note count or the skip reason, and remove the temp dir. This
 phase never changes the outcome, exit code, or any PR write.
 For a notes-extension skip or invalid result, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger extension-failed --where "<extension name>"` (never fatal).
+
+After post-terminal notes (including when suppressed), in Default and Watch mode, remove the pin
+as a separate final Bash call.
+
+```bash
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
+[ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
+node "$BOSS_REPAIR_TOOLBOX/skill-pin.mjs" remove --skill boss-repair
+```

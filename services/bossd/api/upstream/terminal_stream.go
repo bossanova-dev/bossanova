@@ -1130,8 +1130,8 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 	repoID := target.objects[targetKey{"chat", chatID}].RepoID
 	mode := repoCloudControlMode(ctx, c.cloudControl, repoID)
-	if cmd.GetViewerDeviceId() == "" && mode == config.CloudControlPrivate {
-		c.sendExited(ctx, outbound, attachID, "cloud control is private on this machine")
+	if !terminalAttachAllowed(mode, seal != nil) {
+		c.sendExited(ctx, outbound, attachID, terminalPrivateReason)
 		return
 	}
 	sessionName := ""

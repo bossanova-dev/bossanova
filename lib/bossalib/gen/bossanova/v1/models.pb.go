@@ -4073,8 +4073,10 @@ type PRSummary struct {
 	HeadSha             string                 `protobuf:"bytes,6,opt,name=head_sha,json=headSha,proto3" json:"head_sha,omitempty"`
 	CommitAuthors       []*PRCommitAuthor      `protobuf:"bytes,7,rep,name=commit_authors,json=commitAuthors,proto3" json:"commit_authors,omitempty"`
 	HasAllCommitAuthors bool                   `protobuf:"varint,8,opt,name=has_all_commit_authors,json=hasAllCommitAuthors,proto3" json:"has_all_commit_authors,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// True only when the open-PR snapshot conclusively reports a conflict.
+	IsConflicted  bool `protobuf:"varint,9,opt,name=is_conflicted,json=isConflicted,proto3" json:"is_conflicted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PRSummary) Reset() {
@@ -4159,6 +4161,13 @@ func (x *PRSummary) GetCommitAuthors() []*PRCommitAuthor {
 func (x *PRSummary) GetHasAllCommitAuthors() bool {
 	if x != nil {
 		return x.HasAllCommitAuthors
+	}
+	return false
+}
+
+func (x *PRSummary) GetIsConflicted() bool {
+	if x != nil {
+		return x.IsConflicted
 	}
 	return false
 }
@@ -8897,7 +8906,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x05_line\"<\n" +
 	"\x0ePRCommitAuthor\x12\x14\n" +
 	"\x05login\x18\x01 \x01(\tR\x05login\x12\x14\n" +
-	"\x05email\x18\x02 \x01(\tR\x05email\"\xb4\x02\n" +
+	"\x05email\x18\x02 \x01(\tR\x05email\"\xd9\x02\n" +
 	"\tPRSummary\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\x05R\x06number\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1f\n" +
@@ -8907,7 +8916,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x06author\x18\x05 \x01(\tR\x06author\x12\x19\n" +
 	"\bhead_sha\x18\x06 \x01(\tR\aheadSha\x12C\n" +
 	"\x0ecommit_authors\x18\a \x03(\v2\x1c.bossanova.v1.PRCommitAuthorR\rcommitAuthors\x123\n" +
-	"\x16has_all_commit_authors\x18\b \x01(\bR\x13hasAllCommitAuthors\"\xad\x01\n" +
+	"\x16has_all_commit_authors\x18\b \x01(\bR\x13hasAllCommitAuthors\x12#\n" +
+	"\ris_conflicted\x18\t \x01(\bR\fisConflicted\"\xad\x01\n" +
 	"\fCreatePROpts\x12\x1b\n" +
 	"\trepo_path\x18\x01 \x01(\tR\brepoPath\x12\x1f\n" +
 	"\vhead_branch\x18\x02 \x01(\tR\n" +

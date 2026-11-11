@@ -47,10 +47,19 @@ async function run({
   diff = DIFF,
   env = {},
   overrides = {},
+  missing = new Set(),
 } = {}) {
   const uploads = []
   const notes = []
+  const calls = []
   const read = (command, args) => {
+    if (command === 'git') calls.push(args.join(' '))
+    if (command === 'git' && args[0] === 'cat-file')
+      return { ok: !missing.has(args.at(-1).replace('^{commit}', '')) }
+    if (command === 'git' && args[0] === 'fetch') {
+      missing.delete(args.at(-1))
+      return { ok: true, output: '' }
+    }
     if (command === 'git' && args[0] === 'diff') return { ok: true, output: diff }
     if (command === 'git' && args[0] === 'log')
       return { ok: true, output: '2026-11-10T00:00:00Z\tAdd the user message' }
@@ -75,7 +84,7 @@ async function run({
       ...overrides,
     },
   )
-  return { result, uploads, notes }
+  return { result, uploads, notes, calls }
 }
 
 test('a parked verdict uploads the page and notes the proof line carrying its URL @sessions.AC248601', async () => {
@@ -359,4 +368,20 @@ test('media and the player go before the page, in daemon-sized calls, through ei
         : { ok: false, reason: 'exit:2' },
   })
   assert.deepEqual(failed, { ok: false, reason: 'hook-failed:exit:2' })
+})
+
+test('a checkout without the base commit fetches it before any diff, so the page has its file list', async () => {
+  const base = BASE
+  const { result, calls } = await run({ missing: new Set([base]) })
+  assert.equal(result.recorded, true)
+  const fetch = calls.findIndex((c) => c === `fetch --no-tags --quiet origin ${base}`)
+  const diff = calls.findIndex(
+    (c) => c.startsWith('diff') || c.startsWith('--literal-pathspecs diff'),
+  )
+  assert.ok(fetch >= 0, `fetches the missing base: ${calls.join(' | ')}`)
+  assert.ok(diff > fetch, 'the fetch comes before the first diff')
+  assert.ok(
+    !calls.includes(`fetch --no-tags --quiet origin ${HEAD}`),
+    'a present head is not fetched',
+  )
 })

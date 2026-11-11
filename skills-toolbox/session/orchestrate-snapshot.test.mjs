@@ -874,3 +874,37 @@ test('the daemon dump links a cron job’s latest run, so only the other idle bu
     ['s2', 'stalled-chat'],
   ])
 })
+
+// A plan cron run as `boss ls`/`boss show` report it: titled with its job's name, no branch, no PR.
+// A later fire of the job (allowed to overlap) took the job's last-run pointer.
+const FAKE_PLAN_BOSS = `#!/usr/bin/env node
+const [cmd, , id] = process.argv.slice(2)
+const chat = { agent_session_id: 'c-' + id, title: 'build', role: 'build',
+  created_at: '2026-11-07T08:00:00Z', status: 'IDLE', spinner_present: false, waiting_reason: '',
+  last_output_at: '2026-11-07T08:48:00Z', last_substantive_output_at: '2026-11-07T08:48:00Z' }
+const sessions = {
+  p1: { id: 'p1', title: 'fc-plan', repo_id: 'r-fc', state: 'IMPLEMENTING_PLAN', branch: '' },
+  o1: { id: 'o1', title: 'fc-plan', repo_id: 'r-other', state: 'IMPLEMENTING_PLAN', branch: '' },
+}
+const out = {
+  cron: [{ id: 'job-fc', repo_id: 'r-fc', name: 'fc-plan', last_run_session_id: 'p-newer' }],
+  ls: { sessions: Object.values(sessions) },
+  chats: { chats: [chat] },
+  show: { session: { ...sessions[id], last_agent_activity_at: '2026-11-07T08:48:00Z' } },
+  notes: [],
+}[cmd]
+process.stdout.write(JSON.stringify(out))
+`
+
+test('a finished plan cron run that lost its job’s last-run pointer is still bossd’s to finalize', (t) => {
+  const dir = tempDir('orchestrate-boss-', t)
+  const boss = path.join(dir, 'boss')
+  fs.writeFileSync(boss, FAKE_PLAN_BOSS, { mode: 0o755 })
+  const result = collect({ hosts: [], local: true, bossBin: boss, now: NOW, root: dir })
+  assert.deepEqual(result.errors, [])
+  // The same title in a repo with no such job is no cron run, so its idle chat is nudged.
+  assert.deepEqual(result.rows.map((row) => [row.session, row.action]).sort(), [
+    ['o1', 'stalled-chat'],
+    ['p1', 'finalizing'],
+  ])
+})

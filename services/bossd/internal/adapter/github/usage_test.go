@@ -54,12 +54,12 @@ func TestBreakerRefusalRecordsOneBreakerSkip_GitHubUsage_AC222301(t *testing.T) 
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithUsageRecorder(ledger))
 
 	// The first call is sent, refused by GitHub, and opens the breaker.
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("first call err = %v, want vcs.ErrRateLimited", err)
 	}
 	sent := gh.count(isPRView)
 	pollerCtx := ghusage.WithLabel(context.Background(), ghusage.LabelPRPoller)
-	if _, err := p.GetPRStatus(pollerCtx, "o/r", 8); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, pollerCtx, "o/r", 8); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("refused call err = %v, want vcs.ErrRateLimited", err)
 	}
 	if got := gh.count(isPRView); got != sent {
@@ -85,7 +85,7 @@ func TestFloorRefusalRecordsOneFloorSkip_GitHubUsage_AC222301(t *testing.T) {
 	p := newFloorProvider(gh, clock, WithUsageRecorder(ledger))
 
 	ctx := ghusage.WithLabel(vcs.WithCachedReads(context.Background()), ghusage.LabelDisplayPoller)
-	if _, err := p.GetPRStatus(ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("background read below the floor err = %v, want vcs.ErrRateLimited", err)
 	}
 	if gh.count(isRateLimitProbe) == 0 {
@@ -109,7 +109,7 @@ func TestSentRefusalRecordsOneCallAndNoSkip_GitHubUsage_AC222301(t *testing.T) {
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithUsageRecorder(ledger))
 
 	ctx := ghusage.WithLabel(context.Background(), ghusage.LabelCallbacks)
-	if _, err := p.GetPRStatus(ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("refused call err = %v, want vcs.ErrRateLimited", err)
 	}
 	clock.Advance(2 * quotaReadingTTL) // expire the reading so QuotaStatus probes again

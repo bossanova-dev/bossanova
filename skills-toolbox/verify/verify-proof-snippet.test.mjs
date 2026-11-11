@@ -7,7 +7,10 @@ import { join } from 'node:path'
 import {
   cutSnippet,
   gitChangedFiles,
-  gitSnippetResolver,
+  gitFileDiffs,
+  lineChecker,
+  SNIPPET_CONTEXT,
+  snippetResolver,
   parseUnifiedDiff,
 } from './verify-proof-snippet.mjs'
 
@@ -45,7 +48,7 @@ function fixture() {
 test('a snippet quotes git rows with old and new line numbers, never spec text', () => {
   const { dir, base, head } = fixture()
   try {
-    const resolve = gitSnippetResolver({ base, head, cwd: dir })
+    const resolve = snippetResolver(gitFileDiffs({ base, head, cwd: dir }))
     const { snippet, problems } = resolve({ path: 'app.ts', start: 18, end: 22, pinLine: 20 })
     assert.deepEqual(problems, [])
     assert.deepEqual(snippet.rows, [
@@ -79,7 +82,7 @@ test('a snippet quotes git rows with old and new line numbers, never spec text',
 test('a snippet outside the diff, on an unchanged file or with no changed line is dropped', () => {
   const { dir, base, head } = fixture()
   try {
-    const resolve = gitSnippetResolver({ base, head, cwd: dir })
+    const resolve = snippetResolver(gitFileDiffs({ base, head, cwd: dir }))
     for (const [request, problem] of [
       [{ path: 'app.ts', start: 38, end: 44 }, /line 42 is outside the diff, snippet dropped/],
       [{ path: 'same.ts', start: 1, end: 4 }, /same\.ts is not in the diff, snippet dropped/],
@@ -90,7 +93,7 @@ test('a snippet outside the diff, on an unchanged file or with no changed line i
       assert.equal(result.problems.length, 1)
       assert.match(result.problems[0], problem)
     }
-    const broken = gitSnippetResolver({ base, head: 'f'.repeat(40), cwd: dir })
+    const broken = snippetResolver(gitFileDiffs({ base, head: 'f'.repeat(40), cwd: dir }))
     assert.equal(broken({ path: 'app.ts', start: 18, end: 22 }).snippet, null)
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
@@ -139,7 +142,7 @@ test('paths are literal and a blank context line stays inside its hunk, whatever
     git(dir, 'add', '.')
     git(dir, 'commit', '-qm', 'head')
     const head = git(dir, 'rev-parse', 'HEAD')
-    const resolve = gitSnippetResolver({ base, head, cwd: dir })
+    const resolve = snippetResolver(gitFileDiffs({ base, head, cwd: dir }))
     const glob = resolve({ path: 'app/[A]/p.ts', start: 1, end: 1 })
     assert.deepEqual(glob.snippet.rows, [{ kind: 'add', old: null, new: 1, text: 'new' }])
     const spanning = resolve({ path: 'app/A/p.ts', start: 2, end: 5 })
@@ -155,4 +158,41 @@ test('paths are literal and a blank context line stays inside its hunk, whatever
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
+})
+
+test('a line is absent only when the diff shows the whole head file, else it is not checked', (t) => {
+  const whole = parseUnifiedDiff(
+    '--- a/w.ts\n+++ b/w.ts\n@@ -1,3 +1,3 @@\n one\n-two\n+2\n three\n',
+  )[0]
+  const late = parseUnifiedDiff('--- a/l.ts\n+++ b/l.ts\n@@ -100,3 +100,3 @@\n a\n-b\n+B\n c\n')[0]
+  const tail = Array.from({ length: SNIPPET_CONTEXT }, (_, i) => ` ctx ${i}`).join('\n')
+  const long = parseUnifiedDiff(`--- a/t.ts\n+++ b/t.ts\n@@ -1 +1 @@\n-x\n+y\n${tail}\n`)[0]
+  const gone = parseUnifiedDiff('--- a/d.go\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n')[0]
+  const headerOnly = { path: 'm.sh', rows: [], adds: 0, dels: 0 }
+  const by = { 'w.ts': whole, 'l.ts': late, 't.ts': long, 'd.go': gone, 'm.sh': headerOnly }
+  const has = lineChecker((path) => by[path])
+  assert.equal(has('w.ts', 2), true)
+  assert.equal(has('w.ts', 4), false, 'past the end of a file the diff shows whole')
+  assert.equal(has('d.go', 2), true, 'a deleted file is checked against its base lines')
+  assert.equal(has('d.go', 3), false)
+  assert.equal(has('l.ts', 101), true)
+  assert.equal(has('l.ts', 50), null, 'before a hunk that starts after line 1')
+  assert.equal(
+    has('t.ts', SNIPPET_CONTEXT + 5),
+    null,
+    'past a context window that may not reach the end',
+  )
+  assert.equal(has('m.sh', 1), null, 'a change with no diff rows')
+
+  const { dir, base } = fixture()
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  spawnSync('chmod', ['+x', join(dir, 'same.ts')])
+  writeFileSync(join(dir, 'blob.bin'), Buffer.from([0, 1, 2, 0]))
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-qm', 'mode and binary')
+  const real = lineChecker(gitFileDiffs({ base, head: git(dir, 'rev-parse', 'HEAD'), cwd: dir }))
+  assert.equal(real('same.ts', 1), null, 'a mode-only change is not checked')
+  assert.equal(real('blob.bin', 1), null, 'a binary file is not checked')
+  assert.equal(real('app.ts', 41), true)
+  assert.equal(real('app.ts', 42), false)
 })

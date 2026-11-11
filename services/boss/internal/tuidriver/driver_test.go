@@ -2,12 +2,30 @@ package tuidriver_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/recurser/boss/internal/tuidriver"
 )
+
+const screenWaitBudget = 30 * time.Second
+
+// holdOpen keeps the PTY slave open until the driver has drained the command's output.
+func holdOpen(t *testing.T, command string, args ...string) (string, []string) {
+	t.Helper()
+	cat, err := exec.LookPath("cat")
+	if err != nil {
+		t.Fatalf("find cat: %v", err)
+	}
+	cat, err = filepath.Abs(cat)
+	if err != nil {
+		t.Fatalf("absolute cat path: %v", err)
+	}
+	return "sh", append([]string{"-c", `"$@"; exec ` + strconv.Quote(cat), "sh", command}, args...)
+}
 
 // TestDriver_Dimensions verifies New applies the documented width/height
 // defaults only when the option is zero, and otherwise honors the caller's
@@ -49,9 +67,10 @@ func TestDriver_Dimensions(t *testing.T) {
 // to the child process. The child prints an env var that exists only in the
 // supplied Env; if New failed to apply it the marker would be absent.
 func TestDriver_EnvApplied(t *testing.T) {
+	command, args := holdOpen(t, "sh", "-c", "echo env-is:$TUIDRIVER_MARKER")
 	d, err := tuidriver.New(tuidriver.Options{
-		Command: "sh",
-		Args:    []string{"-c", "echo env-is:$TUIDRIVER_MARKER"},
+		Command: command,
+		Args:    args,
 		Env:     []string{"TUIDRIVER_MARKER=present-42"},
 		Width:   80,
 		Height:  24,
@@ -61,7 +80,7 @@ func TestDriver_EnvApplied(t *testing.T) {
 	}
 	defer func() { _ = d.Close() }()
 
-	if err := d.WaitForText(5*time.Second, "env-is:present-42"); err != nil {
+	if err := d.WaitForText(screenWaitBudget, "env-is:present-42"); err != nil {
 		t.Fatalf("expected supplied Env to reach the child: %v", err)
 	}
 }
@@ -74,9 +93,10 @@ func TestDriver_DirApplied(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dir-marker.txt"), []byte("dir-content-99"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+	command, args := holdOpen(t, "cat", "dir-marker.txt")
 	d, err := tuidriver.New(tuidriver.Options{
-		Command: "cat",
-		Args:    []string{"dir-marker.txt"},
+		Command: command,
+		Args:    args,
 		Dir:     dir,
 		Width:   80,
 		Height:  24,
@@ -86,16 +106,17 @@ func TestDriver_DirApplied(t *testing.T) {
 	}
 	defer func() { _ = d.Close() }()
 
-	if err := d.WaitForText(5*time.Second, "dir-content-99"); err != nil {
+	if err := d.WaitForText(screenWaitBudget, "dir-content-99"); err != nil {
 		t.Fatalf("expected child to run in Options.Dir: %v", err)
 	}
 }
 
 func TestDriver_SimpleCommand(t *testing.T) {
 	// Spawn "echo hello" and verify the output appears on screen.
+	command, args := holdOpen(t, "echo", "hello-from-tuidriver")
 	d, err := tuidriver.New(tuidriver.Options{
-		Command: "echo",
-		Args:    []string{"hello-from-tuidriver"},
+		Command: command,
+		Args:    args,
 		Width:   80,
 		Height:  24,
 	})
@@ -104,7 +125,7 @@ func TestDriver_SimpleCommand(t *testing.T) {
 	}
 	defer func() { _ = d.Close() }()
 
-	err = d.WaitForText(5*time.Second, "hello-from-tuidriver")
+	err = d.WaitForText(screenWaitBudget, "hello-from-tuidriver")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,9 +243,10 @@ func TestDriver_CloseReportsPTYCloseError(t *testing.T) {
 }
 
 func TestDriver_ScreenContains(t *testing.T) {
+	command, args := holdOpen(t, "echo", "unique-marker-xyz")
 	d, err := tuidriver.New(tuidriver.Options{
-		Command: "echo",
-		Args:    []string{"unique-marker-xyz"},
+		Command: command,
+		Args:    args,
 		Width:   80,
 		Height:  24,
 	})
@@ -233,7 +255,7 @@ func TestDriver_ScreenContains(t *testing.T) {
 	}
 	defer func() { _ = d.Close() }()
 
-	if err := d.WaitForText(5*time.Second, "unique-marker-xyz"); err != nil {
+	if err := d.WaitForText(screenWaitBudget, "unique-marker-xyz"); err != nil {
 		t.Fatal(err)
 	}
 

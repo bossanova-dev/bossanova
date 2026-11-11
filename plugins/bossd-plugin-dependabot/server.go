@@ -99,10 +99,12 @@ func (s *server) PollTasks(ctx context.Context, req *bossanovav1.PollTasksReques
 				// BaseBranch is intentionally left empty: the daemon knows the
 				// repo's configured default branch and fills it in. Plugins
 				// that hardcode "main" misdirect repos using master/develop/trunk.
-				BaseBranch:     "",
-				ExistingBranch: pr.GetHeadBranch(),
-				Labels:         []string{"dependabot", parseDependabotLibrary(pr)},
-				Action:         bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER,
+				BaseBranch:             "",
+				ExistingBranch:         pr.GetHeadBranch(),
+				Labels:                 []string{"dependabot", parseDependabotLibrary(pr)},
+				Action:                 bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER,
+				IsBotRebaseRequestable: dependabotOnly(pr),
+				HeadSha:                pr.GetHeadSha(),
 			})
 			continue
 		}
@@ -129,6 +131,18 @@ func (s *server) PollTasks(ctx context.Context, req *bossanovav1.PollTasksReques
 // repo is the "owner/name" slug for log context; repoURL is the canonical URL used for host calls.
 func (s *server) classifyPR(ctx context.Context, repoURL, repo string, pr *bossanovav1.PRSummary) (*bossanovav1.TaskItem, error) {
 	prNumber := pr.GetNumber()
+	requestable := dependabotOnly(pr)
+	if requestable && pr.GetIsConflicted() {
+		return &bossanovav1.TaskItem{
+			ExternalId:             fmt.Sprintf("dependabot:rebase:%s:%s:%d", repoURL, pr.GetHeadSha(), prNumber),
+			Title:                  pr.GetTitle(),
+			RepoOriginUrl:          repoURL,
+			ExistingBranch:         pr.GetHeadBranch(),
+			Action:                 bossanovav1.TaskAction_TASK_ACTION_REQUEST_REBASE,
+			IsBotRebaseRequestable: true,
+			HeadSha:                pr.GetHeadSha(),
+		}, nil
+	}
 
 	// Fetch check results.
 	checks, err := s.host.GetCheckResults(ctx, repoURL, prNumber)
@@ -152,9 +166,11 @@ func (s *server) classifyPR(ctx context.Context, repoURL, repo string, pr *bossa
 
 	externalID := fmt.Sprintf("dependabot:pr:%s:%d", repoURL, prNumber)
 	base := &bossanovav1.TaskItem{
-		ExternalId:    externalID,
-		Title:         pr.GetTitle(),
-		RepoOriginUrl: repoURL,
+		IsBotRebaseRequestable: requestable,
+		HeadSha:                pr.GetHeadSha(),
+		ExternalId:             externalID,
+		Title:                  pr.GetTitle(),
+		RepoOriginUrl:          repoURL,
 		// BaseBranch intentionally empty — the daemon fills it in from the
 		// repo's configured default so master/develop/trunk repos don't get
 		// misdirected. See handleCreateSession in orchestrator.go.

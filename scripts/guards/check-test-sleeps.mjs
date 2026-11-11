@@ -71,11 +71,11 @@ if (isMainModule(import.meta.url)) {
         console.error(
           result.declarations
             .filter((item) => item.file === failure.key)
-            .map((item) => `${item.file}:${item.line}`)
+            .map((item) => `${item.file}:${item.line} (time.${item.call})`)
             .join('\n'),
         )
         console.error(
-          'Use testing/synctest (synctest.Test or synctest.Wait) or lib/bossalib/kit/clocktest',
+          'Use testing/synctest (synctest.Test or synctest.Wait) or lib/bossalib/kit/clocktest; derive deadlines from the test context or a named, load-tolerant budget (for example the package integration timeout)',
         )
       }
     }

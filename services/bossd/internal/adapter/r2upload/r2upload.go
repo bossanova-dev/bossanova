@@ -84,6 +84,11 @@ func (b *bucket) Put(ctx context.Context, key, contentType string, body io.Reade
 	}
 	req.Header.Set("Authorization", "Bearer "+b.target.Token)
 	req.Header.Set("Content-Type", contentType)
+	if contentType == "application/pdf" {
+		// R2 stores the disposition, so the host serves a PDF as a download and never renders
+		// it inline at the proof page's origin.
+		req.Header.Set("Content-Disposition", "attachment")
+	}
 	req.ContentLength = size
 	if size == 0 {
 		req.Body = http.NoBody

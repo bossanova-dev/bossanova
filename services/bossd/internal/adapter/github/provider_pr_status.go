@@ -64,6 +64,13 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 		"--json", "state,mergeable,mergeStateStatus,isDraft,title,body,headRefName,baseRefName,headRefOid,isCrossRepository,reviewDecision,reviews,additions,deletions,changedFiles",
 	)
 	if err != nil {
+		if quota, ok := refusedQuota(err); ok && quota == quotaGraphQL {
+			status, restErr := p.fetchPRStatusREST(ctx, repoPath, prID)
+			if restErr == nil {
+				return status, nil
+			}
+			err = fmt.Errorf("GraphQL read refused (%v); REST fallback: %w", err, restErr)
+		}
 		return nil, fmt.Errorf("get PR status: %w", err)
 	}
 
@@ -162,6 +169,35 @@ type checkRow struct {
 	State       string `json:"state"`
 	Workflow    string `json:"workflow"`
 	Description string `json:"description"`
+}
+
+// VerifyPassedAtHead confirms a candidate verify pass using commit statuses for
+// the reported SHA. PR status and check rollups have independent cache entries.
+func (p *Provider) VerifyPassedAtHead(ctx context.Context, repoPath, sha string) (bool, error) {
+	nwo := repoFlag(repoPath)
+	if _, _, ok := splitNWO(nwo); !ok || !isFullLowerHexSHA(sha) {
+		return false, fmt.Errorf("confirm verify pass: invalid repository or commit SHA")
+	}
+	ctx = withRoute(ctx, "VerifyPassedAtHead", nwo)
+	out, err := p.gh(ctx, "api", fmt.Sprintf("repos/%s/commits/%s/status?per_page=100", nwo, sha), "--paginate", "--jq", ".statuses")
+	if err != nil {
+		return false, fmt.Errorf("get commit statuses: %w", err)
+	}
+	type statusRow struct {
+		Context string `json:"context"`
+		checkRow
+	}
+	rows, err := decodePaginatedPages[statusRow](out, "commit statuses")
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if row.Context == vcs.VerifyStatusContext {
+			row.Name = row.Context
+			return vcs.VerifyPassed(p.buildCheckSet([]checkRow{row.checkRow}).Checks), nil
+		}
+	}
+	return false, nil
 }
 
 // buildCheckSet is the one decision path from check rows to a vcs.CheckSet,

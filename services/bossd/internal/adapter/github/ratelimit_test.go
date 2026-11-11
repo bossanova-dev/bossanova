@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,13 @@ import (
 
 	"github.com/recurser/bossd/internal/ghusage"
 )
+
+// primaryPRRead exercises quota admission without the high-level REST fallback.
+// Fallback classification and accounting are covered by provider_quota_fallback_test.go.
+func primaryPRRead(p *Provider, ctx context.Context, repo string, prID int) (string, error) {
+	return p.gh(withRoute(ctx, "GetPRStatus", vcs.GitHubNWO(repo)),
+		"pr", "view", strconv.Itoa(prID), "--repo", repoFlag(repo))
+}
 
 func newFakeClock() *clocktest.Clock { return clocktest.New(time.Unix(1_800_000_000, 0)) }
 
@@ -96,11 +104,11 @@ func TestBreakerPausesExhaustedQuotaForEveryCaller(t *testing.T) {
 	}}
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("first call err = %v, want vcs.ErrRateLimited", err)
 	}
 	for i := 0; i < 5; i++ {
-		if _, err := p.GetPRStatus(context.Background(), "o/r", 7+i); !errors.Is(err, vcs.ErrRateLimited) {
+		if _, err := primaryPRRead(p, context.Background(), "o/r", 7+i); !errors.Is(err, vcs.ErrRateLimited) {
 			t.Fatalf("paused call err = %v, want vcs.ErrRateLimited", err)
 		}
 	}
@@ -112,13 +120,13 @@ func TestBreakerPausesExhaustedQuotaForEveryCaller(t *testing.T) {
 	}
 
 	clock.Advance(19 * time.Minute)
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("call before reset err = %v, want vcs.ErrRateLimited", err)
 	}
 
 	exhausted = false
 	clock.Advance(2 * time.Minute)
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); err != nil {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); err != nil {
 		t.Fatalf("call after reset: %v", err)
 	}
 	if got := gh.count(isPRView); got != 2 {
@@ -143,7 +151,7 @@ func TestBreakerQuotasAreIndependent(t *testing.T) {
 	}}
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("err = %v, want vcs.ErrRateLimited", err)
 	}
 	if _, err := p.GetReviewObservation(context.Background(), "o/r", 7); err != nil {
@@ -163,13 +171,13 @@ func TestBreakerFallsBackWhenResetIsUnreadable(t *testing.T) {
 	}}
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 
-	_, _ = p.GetPRStatus(context.Background(), "o/r", 7)
-	_, _ = p.GetPRStatus(context.Background(), "o/r", 7)
+	_, _ = primaryPRRead(p, context.Background(), "o/r", 7)
+	_, _ = primaryPRRead(p, context.Background(), "o/r", 7)
 	if got := gh.count(isPRView); got != 1 {
 		t.Fatalf("gh pr view ran %d times inside the fallback pause, want 1", got)
 	}
 	clock.Advance(rateLimitFallbackPause + time.Second)
-	_, _ = p.GetPRStatus(context.Background(), "o/r", 7)
+	_, _ = primaryPRRead(p, context.Background(), "o/r", 7)
 	if got := gh.count(isPRView); got != 2 {
 		t.Fatalf("gh pr view ran %d times after the fallback pause, want 2", got)
 	}
@@ -192,10 +200,10 @@ func TestBreakerDoesNotPauseWhenQuotaAlreadyReset(t *testing.T) {
 	}}
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("err = %v, want the refused call to report vcs.ErrRateLimited", err)
 	}
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); err != nil {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); err != nil {
 		t.Fatalf("second call: %v (the quota had headroom, nothing should pause)", err)
 	}
 }
@@ -213,7 +221,7 @@ func TestBreakerIgnoresAuthFailures(t *testing.T) {
 		return "", errors.New(msg)
 	}}
 	p := New(zerolog.Nop(), WithRunGH(gh.run))
-	_, err := p.GetPRStatus(context.Background(), "o/r", 7)
+	_, err := primaryPRRead(p, context.Background(), "o/r", 7)
 	if errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("err = %v classified as a rate-limit refusal", err)
 	}
@@ -258,7 +266,7 @@ func TestQuotaReadingIsReusedWithinTTL(t *testing.T) {
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 
 	for i := 0; i < 50; i++ {
-		if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+		if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 			t.Fatalf("call %d err = %v, want vcs.ErrRateLimited", i, err)
 		}
 	}
@@ -267,7 +275,7 @@ func TestQuotaReadingIsReusedWithinTTL(t *testing.T) {
 	}
 
 	clock.Advance(quotaReadingTTL + time.Second)
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("call after TTL err = %v, want vcs.ErrRateLimited", err)
 	}
 	if got := gh.count(isRateLimitProbe); got != 2 {
@@ -308,7 +316,7 @@ func TestConcurrentRefusalsShareOneProbe(t *testing.T) {
 	var done sync.WaitGroup
 	errs := make([]error, callers)
 	for i := range callers {
-		done.Go(func() { _, errs[i] = p.GetPRStatus(context.Background(), "o/r", 7) })
+		done.Go(func() { _, errs[i] = primaryPRRead(p, context.Background(), "o/r", 7) })
 	}
 	done.Wait()
 	for i, err := range errs {
@@ -335,7 +343,7 @@ func TestRefusalNewerThanCachedReadingReprobes(t *testing.T) {
 		t.Fatalf("QuotaStatus: %v", err)
 	}
 	clock.Advance(10 * time.Second)
-	if _, err := p.GetPRStatus(ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("refused call err = %v, want vcs.ErrRateLimited", err)
 	}
 	if got := gh.count(isRateLimitProbe); got != 2 {
@@ -360,7 +368,7 @@ func TestRefusalLeavesCachedReadingAtGitHubsFigures(t *testing.T) {
 		t.Fatal("no reading")
 	}
 	clock.Advance(10 * time.Second)
-	_, _ = p.GetPRStatus(ctx, "o/r", 7)
+	_, _ = primaryPRRead(p, ctx, "o/r", 7)
 
 	after, ok := p.readQuotas(ctx)
 	if !ok {
@@ -389,13 +397,13 @@ func TestFailedProbeIsNotCached(t *testing.T) {
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 	ctx := context.Background()
 
-	_, _ = p.GetPRStatus(ctx, "o/r", 7)
+	_, _ = primaryPRRead(p, ctx, "o/r", 7)
 	if _, ok := p.readQuotas(ctx); ok {
 		t.Fatal("a failed probe left a cached reading")
 	}
 	probes := gh.count(isRateLimitProbe)
 	clock.Advance(rateLimitFallbackPause + time.Second)
-	_, _ = p.GetPRStatus(ctx, "o/r", 7)
+	_, _ = primaryPRRead(p, ctx, "o/r", 7)
 	if got := gh.count(isRateLimitProbe); got != probes+1 {
 		t.Fatalf("rate_limit probed %d times after the fallback pause, want %d", got, probes+1)
 	}
@@ -494,7 +502,7 @@ func TestGHMetersEverySentCall(t *testing.T) {
 	// The first GraphQL call is sent and spends the quota; the rest are
 	// refused by the breaker without contacting GitHub.
 	for i := 0; i < 3; i++ {
-		if _, err := p.GetPRStatus(context.Background(), "o/r", 7+i); !errors.Is(err, vcs.ErrRateLimited) {
+		if _, err := primaryPRRead(p, context.Background(), "o/r", 7+i); !errors.Is(err, vcs.ErrRateLimited) {
 			t.Fatalf("GraphQL call %d err = %v, want vcs.ErrRateLimited", i, err)
 		}
 	}

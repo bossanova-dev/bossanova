@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os/exec"
 	"strconv"
@@ -637,6 +636,13 @@ func (p *Provider) fetchCheckSet(ctx context.Context, repoPath string, prID int)
 		"--json", "name,state,workflow,description",
 	)
 	if err != nil {
+		if quota, ok := refusedQuota(err); ok && quota == quotaGraphQL {
+			set, restErr := p.fetchCheckSetREST(ctx, repoPath, prID)
+			if restErr == nil {
+				return set, nil
+			}
+			err = fmt.Errorf("GraphQL read refused (%v); REST fallback: %w", err, restErr)
+		}
 		// A PR whose head commit has no check runs is a normal empty result,
 		// not a failure. Returning it as an error here would make the display
 		// poller bail before updating the tracker, freezing the row on its
@@ -764,23 +770,13 @@ func (p *Provider) listRawReviews(ctx context.Context, repoPath string, prID int
 // names the listed items in errors ("parse <what>: ..."); output with no page
 // at all is an error, not an empty list.
 func decodePaginatedPages[T any](out, what string) ([]T, error) {
-	var all []T
-	pages := 0
-	dec := json.NewDecoder(strings.NewReader(out))
-	for {
-		var page []T
-		err := dec.Decode(&page)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", what, err)
-		}
-		pages++
-		all = append(all, page...)
+	pages, err := decodePaginatedObjects[[]T](out, what)
+	if err != nil {
+		return nil, err
 	}
-	if pages == 0 {
-		return nil, fmt.Errorf("parse %s: empty response", what)
+	var all []T
+	for _, page := range pages {
+		all = append(all, page...)
 	}
 	return all, nil
 }

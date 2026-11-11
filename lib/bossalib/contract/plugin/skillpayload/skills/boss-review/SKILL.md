@@ -45,9 +45,12 @@ boss-build certifies fresh when no reusable block exists.
 
 ## Helpers
 
+Scope creates the pin once. Steps 2–5 use this pinned form in every fresh shell:
+
 ```bash
-BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
-if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
+BOSS_REVIEW_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-review"
+BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_PIN/toolbox"
+[ -f "$BOSS_REVIEW_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-review skill pin missing - re-run the first block"; exit 1; }
 ```
 
 | Question                                        | Ask                                                                                         |
@@ -62,6 +65,9 @@ if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skill
 | Is the other agent's CLI usable?                | `node review/codex-review.mjs probe` / `node review/claude-review.mjs probe` → `ready`      |
 | Run the second model over a range               | `node review/<agent>-review.mjs run --base <sha> --head <sha>`                              |
 | Is the second model on? Hang guard, soft budget | `reviewSecondModel`, `reviewTimeDefaults` in `skill-config.mjs`                             |
+
+After the pin exists, read `references/…`, `scripts/…` and `extensions/…` from
+`$BOSS_REVIEW_PIN/`.
 
 ## Rules
 
@@ -95,6 +101,13 @@ if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skill
 ## 1. Scope
 
 ```bash
+BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
+if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
+BOSS_REVIEW_SKILLS_HOME="$(dirname "$(dirname "$BOSS_REVIEW_TOOLBOX")")"
+node "$BOSS_REVIEW_TOOLBOX/skill-pin.mjs" create --skill boss-review --skills-home "$BOSS_REVIEW_SKILLS_HOME" || exit 1
+BOSS_REVIEW_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-review"
+BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_PIN/toolbox"
+[ -f "$BOSS_REVIEW_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-review skill pin missing - re-run the first block"; exit 1; }
 HEAD_SHA="$(git rev-parse "${HEAD:-HEAD}")" || exit 1
 if [ -z "${BASE:-}" ]; then
   DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
@@ -193,7 +206,16 @@ not produce findings at all — at least one finder dispatched and every dispatc
 Finders that never started are gaps: with all three unavailable, compute status from findings as
 usual (including any second-model findings). Coverage renders `none: no reviewer ran (…)` when
 the second model did not run, or `partial: …` otherwise; gaps never change status.
-Print the report, then `boss-review: $STATUS $OUT_DIR/review-verdict.json` as the last line.
+After the final Step 4 (including Step 5's redo), remove the pin in a separate Bash call,
+then print the report and `boss-review: $STATUS $OUT_DIR/review-verdict.json` as the last line.
+Step 5 stays in this process; defer removal while a fix or re-review remains.
+
+```bash
+BOSS_REVIEW_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-review"
+BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_PIN/toolbox"
+[ -f "$BOSS_REVIEW_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-review skill pin missing - re-run the first block"; exit 1; }
+node "$BOSS_REVIEW_TOOLBOX/skill-pin.mjs" remove --skill boss-review
+```
 
 ## 5. Fix (`--fix` only)
 

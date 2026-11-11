@@ -41,7 +41,10 @@ function spec() {
       after: [{ text: 'Watch totals', done: true }],
     },
     notes: [{ severity: 'P3', at: 'src/cart.ts:12', text: 'Name the constant.' }],
-    evidencePlan: [{ claim: 'The total shows', kind: 'still', how: 'Open the basket.' }],
+    evidencePlan: [
+      { claim: 'The total shows', kind: 'still', how: 'Open the basket.' },
+      { claim: 'The statement lists fees', kind: 'document', how: 'Render the statement.' },
+    ],
     uncertain: ['Whether discounts round too'],
   }
 }
@@ -139,7 +142,7 @@ test('each rule drops only its defective item and names why', () => {
       'evidence kind outside the set',
       (s) => (s.evidencePlan[0].kind = 'gif'),
       'evidencePlan[0]',
-      (k) => k.evidencePlan.length,
+      (k) => k.evidencePlan.length - 1,
     ],
     ['note without text', (s) => (s.notes[0].text = ''), 'notes[0]', (k) => k.notes.length],
     [

@@ -57,19 +57,19 @@ func TestHeadroomRefusalBurstPausesWhateverTheHeadroom(t *testing.T) {
 			p := New(zerolog.New(&logs), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 			ctx := context.Background()
 
-			if _, err := p.GetPRStatus(ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+			if _, err := primaryPRRead(p, ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 				t.Fatalf("refused call err = %v, want vcs.ErrRateLimited", err)
 			}
 			healthy = true
 			clock.Advance(rateLimitBurstPause - time.Second)
-			if _, err := p.GetPRStatus(ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+			if _, err := primaryPRRead(p, ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 				t.Fatalf("call inside the pause err = %v, want vcs.ErrRateLimited", err)
 			}
 			if got := gh.count(isPRView); got != 1 {
 				t.Fatalf("gh pr view ran %d times inside the pause, want 1", got)
 			}
 			clock.Advance(time.Second)
-			if _, err := p.GetPRStatus(ctx, "o/r", 7); err != nil {
+			if _, err := primaryPRRead(p, ctx, "o/r", 7); err != nil {
 				t.Fatalf("call after the pause: %v", err)
 			}
 			if got := countWarnsWith(logs.String(), `"remaining":`); got != 1 {
@@ -88,8 +88,8 @@ func TestRateLimitResetAtFromBreaker(t *testing.T) {
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 	want := time.Unix(clock.Now().Add(20*time.Minute).Unix(), 0)
 
-	_, refused := p.GetPRStatus(context.Background(), "o/r", 7)
-	_, skipped := p.GetPRStatus(context.Background(), "o/r", 7)
+	_, refused := primaryPRRead(p, context.Background(), "o/r", 7)
+	_, skipped := primaryPRRead(p, context.Background(), "o/r", 7)
 	if got := gh.count(isPRView); got != 1 {
 		t.Fatalf("gh pr view ran %d times, want 1 (the second call is skipped)", got)
 	}

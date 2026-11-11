@@ -352,14 +352,13 @@ func TestOpenPRSnapshotDeclinesFallThroughToPerPRReads(t *testing.T) {
 	}
 }
 
-// TestOpenPRSnapshotRateLimitedSpendsNothingPerPR pins the quota guard: a
-// snapshot refused for an exhausted GraphQL quota returns ErrRateLimited and
-// does not fall back to per-PR calls against the same exhausted quota.
+// A snapshot refusal cannot spend the paused GraphQL quota; REST is still tried.
 func TestOpenPRSnapshotRateLimitedSpendsNothingPerPR(t *testing.T) {
 	clock := newFakeClock()
 	gh := routedGH(t, map[string]string{
-		"graphql":        "error:" + graphQLExhausted,
-		"api rate_limit": rateLimitBody(clock, 0, 30*time.Minute),
+		"graphql":               "error:" + graphQLExhausted,
+		"api repos/o/r/pulls/7": "error:HTTP 403: API rate limit exceeded",
+		"api rate_limit":        rateLimitBody(clock, 0, 30*time.Minute),
 	})
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
 
@@ -367,8 +366,8 @@ func TestOpenPRSnapshotRateLimitedSpendsNothingPerPR(t *testing.T) {
 	if !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("err = %v, want ErrRateLimited", err)
 	}
-	if got := gh.count(isPerPRRead); got != 0 {
-		t.Fatalf("per-PR calls after an exhausted quota = %d, want 0", got)
+	if got := gh.count(isPRView); got != 0 {
+		t.Fatalf("GraphQL PR calls after an exhausted quota = %d, want 0", got)
 	}
 }
 
@@ -794,5 +793,43 @@ func TestClosedPRListOmitsCommitAuthorship(t *testing.T) {
 	}))
 	if _, err := p.ListClosedPRs(context.Background(), "o/r"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenPRSummaryConflictDoesNotNeedFullStatus_Sessions_AC248204(t *testing.T) {
+	var page openPRSnapshotPage
+	if err := json.Unmarshal([]byte(readFixture(t, "open_pr_snapshot_parity.json")), &page); err != nil {
+		t.Fatal(err)
+	}
+	for _, pr := range page.Data.Repository.PullRequests.Nodes {
+		if pr.Number == 2 {
+			pr.ReviewPage.PageInfo.HasPreviousPage = true
+		}
+	}
+	gh := routedGH(t, map[string]string{"graphql": mustJSON(t, page)})
+	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	for range 2 {
+		prs, err := p.ListOpenPRs(vcs.WithCachedReads(t.Context()), "o/r")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[int]bool{}
+		for _, pr := range prs {
+			seen[pr.Number] = true
+			if pr.IsConflicted != (pr.Number == 2) {
+				t.Fatalf("PR %d conflict=%t", pr.Number, pr.IsConflicted)
+			}
+		}
+		for _, number := range []int{2, 7, 8} {
+			if !seen[number] {
+				t.Fatalf("missing conflict/UNKNOWN/truncated-reviews PR %d", number)
+			}
+		}
+	}
+	if got := gh.count(isPerPRRead); got != 0 {
+		t.Fatalf("summary made %d per-PR reads: %q", got, callKeys(gh))
+	}
+	if got := gh.count(isGraphQL); got != 1 {
+		t.Fatalf("snapshot queries=%d, want 1", got)
 	}
 }

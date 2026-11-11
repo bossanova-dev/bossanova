@@ -1,12 +1,10 @@
 # (.github/workflows/*.yml). Bumping requires coordinated changes to both.
 GOLANGCI_LINT_VERSION := v2.15.0
 
-# Pinned buf version — single source of truth for both local (`make deps`,
-# `buf-check-version`) and CI (the `version:` on every `bufbuild/buf-setup-action`
-# and `bufbuild/buf-action` step in .github/workflows/*.yml). The
-# scripts/dev/gen-pin-drift.test.mjs test asserts those workflow `version:` values
-# equal this pin. Bumping requires re-running `make generate` and committing any
-# regen drift. Recipes use the shared versioned cache, never a PATH buf.
+# Pinned buf version — local and CI commands resolve $(BUF) through make buf-path.
+# The shared installer falls back to the Go module proxy after release failures.
+# Bumping requires re-running `make generate` and committing any regen drift.
+# Recipes use the shared versioned cache, never a PATH buf.
 BUF_VERSION := 1.66.1
 BUF_CACHE_DIR ?= $(HOME)/.cache/bossanova-tools
 BUF ?= $(BUF_CACHE_DIR)/buf-$(BUF_VERSION)/buf

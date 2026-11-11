@@ -301,7 +301,7 @@ func TestRepairableConflictBlockKeepsPlainMergeConflictWhenStrategyResolutionFai
 	}
 }
 
-func TestCheckSession_EmitsReviewSubmittedWhenStateChanges(t *testing.T) {
+func TestCheckSession_EmitsReviewSubmittedWhenStateChanges_Sessions_AC245501(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
@@ -326,6 +326,17 @@ func TestCheckSession_EmitsReviewSubmittedWhenStateChanges(t *testing.T) {
 
 	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, logger)
 	ch := make(chan Event, 1)
+	vp.nextPRStatus.Degraded = true
+	poller.checkSession(ctx, ch, repo, sess)
+	select {
+	case ev := <-ch:
+		t.Fatalf("degraded read emitted %T", ev.Event)
+	default:
+	}
+	if sess.LastObservedReviewState != int(vcs.ReviewStateUnspecified) {
+		t.Fatal("degraded read changed observed review state")
+	}
+	vp.nextPRStatus.Degraded = false
 	poller.checkSession(ctx, ch, repo, sess)
 
 	select {

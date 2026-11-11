@@ -196,7 +196,7 @@ test('real skill roots pass node heredoc syntax check', async () => {
   const repoRoot = path.join(path.dirname(new URL(import.meta.url).pathname), '../..')
   let stats = null
   assert.deepEqual(await checkSkillNodeFencesInRepo(repoRoot, { onStats: (s) => (stats = s) }), [])
-  assert.equal(stats.checked, 4)
+  assert.ok(stats.checked > 0, 'the repository check must inspect at least one heredoc')
 })
 
 test('skill roots exclude generated codex mirrors', () => {

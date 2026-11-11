@@ -1,8 +1,9 @@
 // verify-replay.mjs — replays a repo's open PRs through the verify judge under candidate merge
-// policies and reports what each would do, writing nothing.
+// policies and reports what each would do without writing to external systems.
 //
 //   node verify-replay.mjs [--repo o/r] [--pr <n>[,<n>…]] [--candidate <name>=<file>]…
-//                          [--format json|markdown]
+//                          [--policy <name>=<file.md>]… [--envelopes-dir <dir>]
+//                          [--judge-outputs <dir>] [--format json|markdown]
 //
 // A candidate is a `verifyDefaults.merge` block of structured `auto` rules, read as JSON from its
 // file; the default candidate (no merge block, so nothing merges without a person) always runs
@@ -30,8 +31,18 @@ import {
   writeAwareReader,
 } from './verify-gate.mjs'
 import { levelLabel, validConfidence } from './verify-level.mjs'
+import { gitBlobSha, readMergePolicy } from './verify-merge-prose.mjs'
 import { readOpenPrs } from './verify-open-prs.mjs'
 import { parkNote } from './verify-park-note.mjs'
+import {
+  candidatePolicyReader,
+  policySummary,
+  quoteSpan,
+  replayDecision,
+  replayJudgeOutput,
+  replayStem,
+  writeReplayEnvelope,
+} from './verify-replay-prose.mjs'
 
 export const REFUSED = 'replay-write-refused'
 export const DEFAULT_CANDIDATE = 'default'
@@ -184,15 +195,17 @@ export function recordedResults(record, headSha) {
 
 /**
  * A candidate's `verifyDefaults.merge` block, checked with the validator the gate reads the base
- * tip with. A prose `policy` is refused: replaying it needs the LLM judge run per candidate.
+ * tip with.
  */
-export function validateCandidate(name, merge) {
+export function validateCandidate(name, merge, fileNames = false) {
   if (!plainObject(merge))
     throw new UsageError(`verify-replay: candidate ${name} must hold a JSON object`)
-  if (Object.hasOwn(merge, 'policy'))
-    throw new UsageError(
-      `verify-replay: candidate ${name} sets merge.policy; prose candidates are not replayed`,
-    )
+  const pattern =
+    fileNames || Object.hasOwn(merge, 'policy')
+      ? /^[a-z0-9][a-z0-9-]{0,39}$/
+      : /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+  if (!pattern.test(name) || name === DEFAULT_CANDIDATE)
+    throw new UsageError(`verify-replay: invalid candidate name ${name}`)
   try {
     verifyPolicyFromConfigText(
       JSON.stringify({ verifyDefaults: { merge } }),
@@ -221,6 +234,7 @@ function mergeDecidedBy(judged, merge, asks) {
   if (merge?.levelRule) return [{ by: 'level-rule', rule: merge.levelRule }]
   const rules = asks.map((ask) => ask.rule).filter(Boolean)
   const unique = [...new Map(rules.map((rule) => [rule.index, rule])).values()]
+  if (asks.some((ask) => ask.prose?.decision === 'auto')) return [{ by: 'prose' }]
   return unique.length ? [{ by: 'rules', rules: unique }] : [{ by: 'no-asks' }]
 }
 
@@ -242,9 +256,19 @@ function parkDecidedBy(codes, level, merge, asks) {
 /**
  * One report row: the judge output `judged` for PR `pr` under `candidate`, or `unknown` when the
  * replay could not judge it. A park carries the note `post` would leave for it.
- * @param {{candidate: string, pr: number, headSha: string, prView?: {title?: string, body?: string}, judged?: Record<string, any>, unknown?: string, refused?: string[]}} input
+ * @param {{candidate: string, pr: number, headSha: string, prView?: {title?: string, body?: string}, judged?: Record<string, any>, unknown?: string, refused?: string[], envelope?: string, policy?: ReturnType<typeof policySummary>}} input
  */
-export function replayRow({ candidate, pr, headSha, prView = {}, judged = {}, unknown, refused }) {
+export function replayRow({
+  candidate,
+  pr,
+  headSha,
+  prView = {},
+  judged = {},
+  unknown,
+  refused,
+  envelope,
+  policy,
+}) {
   /** @type {(import('./verify-confidence.mjs').ConfidenceResult & {merge?: import('./verify-merge-policy.mjs').MergeDecisions}) | null} */
   const confidence = validConfidence(judged.confidence) ? judged.confidence : null
   const merge = confidence?.merge ?? null
@@ -256,7 +280,7 @@ export function replayRow({ candidate, pr, headSha, prView = {}, judged = {}, un
     code,
     floor,
     rule,
-    ...(prose ? { prose } : {}),
+    decidedBy: { structured: rule, prose: replayDecision(prose) },
     ...(from ? { from } : {}),
   }))
   const outcome = unknown
@@ -273,6 +297,9 @@ export function replayRow({ candidate, pr, headSha, prView = {}, judged = {}, un
     outcome,
     codes,
     asks,
+    policy: policy ?? merge?.policy ?? { state: 'none' },
+    envelope,
+    proseHolds: (merge?.proseHolds ?? []).map(replayDecision),
     decidedBy:
       outcome === 'merge'
         ? mergeDecidedBy(judged, merge, decided)
@@ -306,13 +333,34 @@ export function replayRow({ candidate, pr, headSha, prView = {}, judged = {}, un
 }
 
 /** Judges one open PR under one candidate, reusing the head's recorded extension run. */
-async function replayOne({ repo, pr, headSha, record, read, deps, dir }) {
+async function replayOne({
+  repo,
+  pr,
+  headSha,
+  record,
+  read,
+  deps,
+  dir,
+  name,
+  readPolicy,
+  judgeOutputs,
+  envelopesDir,
+}) {
   const recorded = new Set((record ?? []).map((entry) => entry.extension))
-  const run = async (results, n) => {
+  /** @type {import('./verify-merge-prose.mjs').MergePolicy} */
+  let policy = { state: 'none' }
+  const run = async (results, n, judgeAreas = undefined) => {
     const file = join(dir, `results-${pr}-${n}.json`)
     writeFileSync(file, JSON.stringify(results))
     /** @type {Record<string, any>} */
-    const judged = await judge({ pr, repo, extensionResults: file }, { ...deps, read })
+    const judged = await judge(
+      { pr, repo, extensionResults: file, judgeAreas },
+      {
+        ...deps,
+        read,
+        readMergePolicy: (block, root) => (policy = readPolicy(block, root)),
+      },
+    )
     return judged
   }
   const results = recordedResults(record, headSha)
@@ -320,11 +368,31 @@ async function replayOne({ repo, pr, headSha, record, read, deps, dir }) {
   const aggregated = Array.isArray(judged.extensions?.outcomes)
   const applicable = judged.facts?.extensionsApplicable ?? []
   if (aggregated && applicable.some((name) => !recorded.has(name)))
-    return { judged, unknown: 'unknown: extensions-unrecorded' }
+    return { judged, policy, unknown: 'unknown: extensions-unrecorded' }
   // A recorded extension the base no longer installs returns no result on a real run.
   const kept = results.filter((entry) => applicable.includes(entry.extension))
-  if (aggregated && kept.length !== results.length) judged = await run(kept, 1)
-  return { judged, unknown: undefined }
+  const applicableResults = aggregated ? kept : results
+  if (applicableResults.length !== results.length) judged = await run(applicableResults, 1)
+  const stem = replayStem(name, pr, policy)
+  let unknown
+  if (judgeOutputs) {
+    const output = replayJudgeOutput(judgeOutputs, stem, headSha)
+    if (output.invalid) return { judged, policy, unknown: 'unknown: judge-output-invalid' }
+    if (output.file) {
+      const withOutput = await run(applicableResults, 2, output.file)
+      if (withOutput.facts?.judgeFailed) unknown = 'unknown: judge-output-invalid'
+      else judged = withOutput
+    }
+  }
+  const envelope =
+    judged.verdict === 'judge-required' && envelopesDir
+      ? writeReplayEnvelope(
+          envelopesDir,
+          stem,
+          `${JSON.stringify(JSON.parse(canonicalJson(judged.judgeEnvelope)), null, 2)}\n`,
+        )
+      : undefined
+  return { judged, policy, envelope, unknown }
 }
 
 const COUNTS = ['merge', 'park', 'blocked', 'defect', 'wait', 'unknown']
@@ -334,7 +402,12 @@ const COUNTS = ['merge', 'park', 'blocked', 'defect', 'wait', 'unknown']
  * candidate and then `candidates` (`[{name, merge}]`). `deps.read` is the real reader, which only
  * ever sees calls the guard allows; the other deps reach `judge` as they are.
  */
-export async function replay({ repo: repoOption, prs = [], candidates = [] }, deps = {}) {
+export async function replay(
+  { repo: repoOption, prs = [], candidates = [], judgeOutputs, envelopesDir },
+  deps = {},
+) {
+  const fileNames = judgeOutputs !== undefined || envelopesDir !== undefined
+  for (const candidate of candidates) validateCandidate(candidate.name, candidate.merge, fileNames)
   const refused = []
   const guard = guardedReader(deps.read ?? commandReader(deps), refused)
   const shared = writeAwareReader(guard)
@@ -368,9 +441,15 @@ export async function replay({ repo: repoOption, prs = [], candidates = [] }, de
   }
   const dir = mkdtempSync(join(tmpdir(), 'verify-replay-'))
   const rows = []
+  const candidateReports = []
   try {
     for (const candidate of all) {
       const read = candidateReader(shared, candidate.merge)
+      const path = candidate.merge?.policy
+      const readPolicy = path
+        ? candidatePolicyReader(dir, path, candidate.policyBytes)
+        : readMergePolicy
+      const policies = new Map()
       for (const head of heads) {
         const before = refused.length
         const base = { candidate: candidate.name, pr: head.pr, headSha: head.headSha }
@@ -378,7 +457,19 @@ export async function replay({ repo: repoOption, prs = [], candidates = [] }, de
           rows.push(replayRow({ ...base, unknown: head.skip }))
           continue
         }
-        const out = await replayOne({ repo, ...head, read, deps: judgeDeps, dir })
+        const out = await replayOne({
+          repo,
+          ...head,
+          read,
+          deps: judgeDeps,
+          dir,
+          name: candidate.name,
+          readPolicy,
+          judgeOutputs,
+          envelopesDir,
+        })
+        const policy = policySummary(out.policy)
+        if (policy.state !== 'none') policies.set(canonicalJson(policy), policy)
         rows.push(
           replayRow({
             ...base,
@@ -386,9 +477,34 @@ export async function replay({ repo: repoOption, prs = [], candidates = [] }, de
             judged: out.judged,
             unknown: out.unknown,
             refused: refused.slice(before),
+            policy,
+            envelope: out.envelope,
           }),
         )
       }
+      const seen = [...policies.keys()].sort().map((key) => ({
+        ...policies.get(key),
+        source: candidate.policyBytes === undefined ? 'base' : 'candidate',
+      }))
+      const blobs =
+        candidate.policyBytes === undefined
+          ? seen.map((entry) => entry.blob ?? null)
+          : [gitBlobSha(candidate.policyBytes)]
+      candidateReports.push({
+        name: candidate.name,
+        digest: createHash('sha256')
+          .update(canonicalJson(path ? [candidate.merge, blobs] : (candidate.merge ?? null)))
+          .digest('hex'),
+        rules: Array.isArray(candidate.merge?.auto) ? candidate.merge.auto : [],
+        ...(path && {
+          policy: seen[0] ?? {
+            state: 'unobserved',
+            path,
+            source: candidate.policyBytes === undefined ? 'base' : 'candidate',
+          },
+        }),
+        ...(seen.length > 1 && { policies: seen }),
+      })
     }
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
@@ -405,19 +521,22 @@ export async function replay({ repo: repoOption, prs = [], candidates = [] }, de
   )
   return {
     repo,
-    candidates: all.map((candidate) => ({
-      name: candidate.name,
-      digest: createHash('sha256')
-        .update(canonicalJson(candidate.merge ?? null))
-        .digest('hex'),
-      rules: Array.isArray(candidate.merge?.auto) ? candidate.merge.auto : [],
-    })),
+    candidates: candidateReports,
     prs: heads.map((head) => ({ number: head.pr, headSha: head.headSha })),
     rows,
     summary: {
       perCandidate,
       unattributedAlwaysHumanPath: rows.filter((row) => row.unattributedAlwaysHumanPath).length,
       refusedWrites: refused.length,
+      judgeMissing: rows.filter((row) => row.outcome === 'unknown: judge-missing').length,
+      judgeOutputInvalid: rows.filter((row) => row.outcome === 'unknown: judge-output-invalid')
+        .length,
+      envelopesWritten: rows.filter((row) => row.envelope).length,
+      quoteCheckFailed: rows.reduce(
+        (total, row) =>
+          total + row.proseHolds.filter((hold) => hold.quoteCheck === 'failed').length,
+        0,
+      ),
       truncated,
     },
   }
@@ -425,6 +544,28 @@ export async function replay({ repo: repoOption, prs = [], candidates = [] }, de
 
 const cell = (value) => String(value).replaceAll('|', '\\|').replaceAll('\n', ' ')
 const ruleText = (hit) => `rule ${hit.index} ${canonicalJson(hit.rule)}`
+const proseText = (decision) =>
+  decision.quoteCheck === 'failed'
+    ? 'quote check failed'
+    : `${decision.decision} ${quoteSpan(decision.rule)}`
+
+function rowDecisionText(row) {
+  const details = row.asks.flatMap(({ label, decidedBy: { structured, prose } }) => {
+    const rules = [
+      ...(structured ? [ruleText(structured)] : []),
+      ...(prose ? [proseText(prose)] : []),
+    ]
+    return rules.length ? [`${label}: ${rules.join(', ')}`] : []
+  })
+  const unmatched = row.proseHolds.filter(
+    (hold) => !row.asks.some((ask) => canonicalJson(ask.decidedBy.prose) === canonicalJson(hold)),
+  )
+  return [
+    ...row.decidedBy.map(decidedText).filter(Boolean),
+    ...details,
+    ...unmatched.map(proseText),
+  ].join('; ')
+}
 
 function decidedText(entry) {
   if (entry.by === 'approval') return 'an approval of this head'
@@ -457,7 +598,7 @@ export function renderMarkdown(report) {
     const rows = report.rows.filter((row) => row.candidate === candidate.name)
     for (const row of rows)
       out.push(
-        `| #${row.pr} | \`${row.headSha.slice(0, 12)}\` | ${cell(row.outcome)}${row.unattributedAlwaysHumanPath ? ' (unattributed protected path)' : ''} | ${cell(row.codes.join(', '))} | ${cell(row.decidedBy.map(decidedText).join('; '))} |`,
+        `| #${row.pr} | \`${row.headSha.slice(0, 12)}\` | ${cell(row.outcome)}${row.unattributedAlwaysHumanPath ? ' (unattributed protected path)' : ''} | ${cell(row.codes.join(', '))} | ${cell(rowDecisionText(row))} |`,
       )
     out.push('')
     for (const row of rows.filter((r) => r.note))
@@ -476,15 +617,33 @@ export function renderMarkdown(report) {
 function readCandidate(spec) {
   const at = spec.indexOf('=')
   const name = at > 0 ? spec.slice(0, at) : ''
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name === DEFAULT_CANDIDATE)
-    throw new UsageError(`verify-replay: --candidate needs <name>=<file>, got ${spec}`)
+  if (!name) throw new UsageError(`verify-replay: --candidate needs <name>=<file>, got ${spec}`)
   let merge
   try {
     merge = JSON.parse(readFileSync(spec.slice(at + 1), 'utf8'))
   } catch (error) {
     throw new UsageError(`verify-replay: candidate ${name} is unreadable: ${error.message}`)
   }
-  return { name, merge: validateCandidate(name, merge) }
+  return { name, merge, policyBytes: undefined }
+}
+
+function readPolicyOptions(specs, candidates) {
+  for (const spec of specs) {
+    const at = spec.indexOf('=')
+    if (at < 1) throw new UsageError('verify-replay: --policy needs <name>=<file.md>')
+    const name = spec.slice(0, at)
+    const candidate = candidates.find((entry) => entry.name === name)
+    if (!candidate) throw new UsageError(`verify-replay: unknown policy candidate ${name}`)
+    if (!candidate.merge?.policy)
+      throw new UsageError(`verify-replay: candidate ${name} has no merge.policy`)
+    if (candidate.policyBytes !== undefined)
+      throw new UsageError(`verify-replay: duplicate --policy for ${name}`)
+    try {
+      candidate.policyBytes = readFileSync(spec.slice(at + 1))
+    } catch {
+      throw new UsageError(`verify-replay: policy for ${name} is unreadable`)
+    }
+  }
 }
 
 /** Parses argv and runs the replay: `{report, text, exitCode}`. Usage errors throw UsageError. */
@@ -499,6 +658,9 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         repo: { type: 'string' },
         pr: { type: 'string' },
         candidate: { type: 'string', multiple: true },
+        policy: { type: 'string', multiple: true },
+        'envelopes-dir': { type: 'string' },
+        'judge-outputs': { type: 'string' },
         format: { type: 'string', default: 'json' },
       },
     }))
@@ -514,8 +676,15 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   const names = candidates.map((candidate) => candidate.name)
   if (new Set(names).size !== names.length)
     throw new UsageError('verify-replay: candidate names must be unique')
+  readPolicyOptions(values.policy ?? [], candidates)
   const report = await replay(
-    { repo: values.repo, prs: [...new Set(prs.map(Number))], candidates },
+    {
+      repo: values.repo,
+      prs: [...new Set(prs.map(Number))],
+      candidates,
+      envelopesDir: values['envelopes-dir'],
+      judgeOutputs: values['judge-outputs'],
+    },
     deps,
   )
   return {

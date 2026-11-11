@@ -7,7 +7,7 @@ export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url
 const SCANNER_DIR = path.join(REPO_ROOT, 'tools/testscan')
 
 /** @typedef {{name: string, dir: string, file: string, line: number}} Fake */
-/** @typedef {{file: string, line: number, inSynctest: boolean}} Sleep */
+/** @typedef {{file: string, line: number, call: string, inSynctest: boolean}} Sleep */
 /**
  * @param {string} root
  * @param {{scans: string[]}} record

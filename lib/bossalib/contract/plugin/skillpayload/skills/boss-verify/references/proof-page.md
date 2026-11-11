@@ -12,7 +12,8 @@ output:
   core record carries no media.
 - **Review.** The build review and each extension that ran, the blockers with `file:line`, and
   the finding and not-applicable notes.
-- **Health.** The judge's health codes.
+- **Health.** The judge's health codes. They describe the pipeline, not the PR, so the page shows
+  them as one quiet line in its Generation check.
 
 ## Which verdicts get a page
 
@@ -31,8 +32,15 @@ undisclosed changes. On top of them:
   deterministic one. The sweep's mechanical posts never dispatch the agent.
 - **Media.** `post --proof-media <dir>` reads the `proof-media/1` manifest `proof-bundle` left in
   `<dir>`; without it, the core runs the base tree's `proof-media` extension itself. Only files
-  inside the extension's evidence directory are published, each as `media/<basename>`. A head clip
-  adds the static `player.js`; the page loads no other script.
+  inside the extension's evidence directory are published, each as `media/<basename>`.
+- **Player.** Every page loads the static `player.js` beside it, with or without media. It drives
+  the video, the still lightbox and section links that add no Back entry in a framed review tab,
+  and does nothing it has no element for. The page loads no other script and works without it.
+- **Documents.** Rendered `documents` show under Evidence, Documents: each head document's title,
+  page count and a plain "Download PDF" link, with its page images opening in the lightbox, and
+  base and head pages side by side when a base document pairs with it. The page never embeds a PDF.
+  A framed page, which a sandbox may not let download, shows a note to open it in its own tab
+  instead of the links.
 - **No recording.** A changed `ui` area with no head clip leads "Why it's waiting" with "No
   recording of the changed UI".
 

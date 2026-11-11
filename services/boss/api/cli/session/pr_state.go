@@ -47,8 +47,9 @@ func (g *Group) prStateCmd() *cobra.Command {
 			"PR webhook clears, so repeated status and check reads within the cache window cost no\n" +
 			"GitHub call. A green verdict adds one uncached workflow-runs read. It prints the head\n" +
 			"SHA, PR state, draft flag, mergeability, review decision, checks (commit statuses\n" +
-			"included), the check verdict with counts, the verify phase, the build receipt and, for a\n" +
-			"green verdict, whether every head workflow run has settled and the head's workflow runs.\n" +
+			"included), the check verdict with counts, the verify phase, whether verify passed the head,\n" +
+			"the build receipt and, for a green verdict, whether every head workflow run has settled\n" +
+			"and the head's workflow runs.\n" +
 			"--with-workflow-runs reads the workflow runs whatever the verdict.\n\n" +
 			"<pr> is a number, #n or a PR URL. The repo comes from --repo, else the PR URL, else the\n" +
 			"registered repo the working directory belongs to. Only repos registered on the daemon\n" +
@@ -172,13 +173,17 @@ func writePRStateSummary(w io.Writer, r *pb.GetPRStateResponse) error {
 		mergeable = map[bool]string{true: "yes", false: "no"}[*env.IsMergeable]
 	}
 	v := env.CheckVerdict
+	verify := "passed"
+	if !env.IsVerifyPassed {
+		verify = phaseText(env.VerifyPhase)
+	}
 	lines := []string{
 		fmt.Sprintf("PR %s#%d: %s%s", env.Repo, env.PRNumber, env.State, draft),
 		fmt.Sprintf("head: %s (%s -> %s)", env.HeadSHA, env.HeadBranch, env.BaseBranch),
 		fmt.Sprintf("mergeable: %s, merge state: %s, review: %s", mergeable, orNone(env.MergeStateStatus), orNone(env.ReviewDecision)),
 		fmt.Sprintf("checks: %s (%s), %d passed, %d failed, %d pending, %d skipped, %d unclassified",
 			v.State, v.Reason, v.PassedCount, v.FailedCount, v.PendingCount, v.SkippedCount, v.UnclassifiedCount),
-		fmt.Sprintf("verify: %s", phaseText(env.VerifyPhase)),
+		fmt.Sprintf("verify: %s", verify),
 	}
 	if env.HasSettledWorkflowRuns != nil {
 		lines = append(lines, fmt.Sprintf("workflow runs settled: %t (%d held)", *env.HasSettledWorkflowRuns, len(env.HeldWorkflowRuns)))

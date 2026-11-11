@@ -221,6 +221,45 @@ func TestGetPRStateLeavesSettlementUnsetWhenNotComputed(t *testing.T) {
 	}
 }
 
+func TestGetPRStateVerifyPassed_Callbacks_AC235301(t *testing.T) {
+	success, failure := vcs.CheckConclusionSuccess, vcs.CheckConclusionFailure
+	for _, tc := range []struct {
+		name        string
+		description string
+		status      vcs.CheckStatus
+		conclusion  *vcs.CheckConclusion
+		passed      bool
+		phase       pb.PRVerifyPhaseKind
+	}{
+		{"park", "needs human: human-review:ui", vcs.CheckStatusCompleted, &success, false, pb.PRVerifyPhaseKind_PR_VERIFY_PHASE_KIND_NEEDS_HUMAN},
+		{"legacy park", "needs human: human-review:ui", vcs.CheckStatusInProgress, nil, false, pb.PRVerifyPhaseKind_PR_VERIFY_PHASE_KIND_NEEDS_HUMAN},
+		{"pass", "verified", vcs.CheckStatusCompleted, &success, true, pb.PRVerifyPhaseKind_PR_VERIFY_PHASE_KIND_NONE},
+		{"approved pass", "verified (approved)", vcs.CheckStatusCompleted, &success, true, pb.PRVerifyPhaseKind_PR_VERIFY_PHASE_KIND_NONE},
+		{"claim", "verifying…", vcs.CheckStatusInProgress, nil, false, pb.PRVerifyPhaseKind_PR_VERIFY_PHASE_KIND_VERIFYING},
+		{"wait", "waiting: checks", vcs.CheckStatusInProgress, nil, false, pb.PRVerifyPhaseKind_PR_VERIFY_PHASE_KIND_WAITING},
+		{"cannot assess", "cannot assess: checks", vcs.CheckStatusCompleted, &failure, false, pb.PRVerifyPhaseKind_PR_VERIFY_PHASE_KIND_VERIFYING},
+		{name: "missing", phase: pb.PRVerifyPhaseKind_PR_VERIFY_PHASE_KIND_NONE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var checks []vcs.CheckResult
+			if tc.description != "" {
+				checks = []vcs.CheckResult{{Name: vcs.VerifyStatusContext, Status: tc.status, Conclusion: tc.conclusion, Description: tc.description}}
+			}
+			reader := &fakePRStateReader{snap: prstate.Snapshot{Checks: checks, VerifyPhase: vcs.ClassifyVerify(checks), VerifyPassed: tc.passed}}
+			resp, err := getPRState(prStateServer(reader), &pb.GetPRStateRequest{Repo: "acme/widgets", PrNumber: 7})
+			if err != nil {
+				t.Fatalf("GetPRState: %v", err)
+			}
+			if got := resp.GetIsVerifyPassed(); got != tc.passed {
+				t.Errorf("is_verify_passed = %t, want %t", got, tc.passed)
+			}
+			if got := resp.GetVerifyPhase().GetKind(); got != tc.phase {
+				t.Errorf("verify phase = %v, want %v", got, tc.phase)
+			}
+		})
+	}
+}
+
 // TestPRStateEnumNumbering pins the numbering the converter's casts rely on.
 func TestPRStateEnumNumbering(t *testing.T) {
 	pairs := []struct {
@@ -256,6 +295,19 @@ func TestPRStateEnumNumbering(t *testing.T) {
 	for i, p := range pairs {
 		if clampInt32(p.vcs) != p.proto {
 			t.Errorf("pair %d: vcs %d != proto %d", i, p.vcs, p.proto)
+		}
+	}
+}
+
+func TestGetPRStateDegradedMarker_Callbacks_AC245501(t *testing.T) {
+	for _, degraded := range []bool{false, true} {
+		reader := &fakePRStateReader{snap: prstate.Snapshot{Degraded: degraded}}
+		resp, err := getPRState(prStateServer(reader), &pb.GetPRStateRequest{Repo: "acme/widgets", PrNumber: 7})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.GetIsDegraded() != degraded {
+			t.Fatalf("degraded=%v, want %v", resp.GetIsDegraded(), degraded)
 		}
 	}
 }

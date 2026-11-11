@@ -131,3 +131,25 @@ func TestDecodePaginatedPages(t *testing.T) {
 		t.Fatalf("empty comments: err = %v, want the PR comments prefix", err)
 	}
 }
+
+func TestPostPRComment_Sessions_AC248204(t *testing.T) {
+	calls := 0
+	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		calls++
+		want := "api --method POST repos/owner/repo/issues/42/comments -f body=@dependabot rebase"
+		if strings.Join(args, " ") != want {
+			t.Fatalf("args=%v", args)
+		}
+		return "{}", nil
+	}))
+	if err := p.PostPRComment(t.Context(), "https://github.com/owner/repo", 42, "@dependabot rebase"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("writes=%d", calls)
+	}
+	p = New(zerolog.Nop(), WithRunGH(func(context.Context, ...string) (string, error) { return "", errors.New("offline") }))
+	if err := p.PostPRComment(t.Context(), "owner/repo", 42, "@dependabot rebase"); err == nil {
+		t.Fatal("write error lost")
+	}
+}

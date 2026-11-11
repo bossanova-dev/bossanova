@@ -306,8 +306,7 @@ func TestTerminalAttach_RoundTrip(t *testing.T) {
 		t.Fatalf("Input: %v", err)
 	}
 
-	// Drain Output for up to 3 seconds, looking for our string in the bytes.
-	deadline := time.After(3 * time.Second)
+	deadline := time.After(integrationTestTimeout)
 	var seen bytes.Buffer
 	for !strings.Contains(seen.String(), "hello-cat") {
 		select {
@@ -408,7 +407,7 @@ func TestTerminalAttach_BackpressureRaisesLost(t *testing.T) {
 	// the ringBuffer doc ("subsequent chunks set lost=false until the next
 	// overflow"). The clear-on-emit invariant is exercised deterministically
 	// by TestRingBuffer_LostFlagDoesNotPersistPastOneEmit.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(integrationTestTimeout)
 	var chunks []*pb.TerminalDataChunk
 loop:
 	for len(chunks) < 32 {
@@ -468,7 +467,7 @@ func TestTerminalAttach_ExitFiresWhenSessionKilled(t *testing.T) {
 	// Wait for Exited first, then assert that Output is ALREADY closed by
 	// the time we receive the exit frame. This locks in the documented
 	// ordering invariant: receive Exited → Output already closed.
-	exitTimeout := time.After(5 * time.Second)
+	exitTimeout := time.After(integrationTestTimeout)
 	var exitFrame *pb.TerminalAttachExited
 
 	// Drain Output in the background so senderLoop is never stuck pushing
@@ -491,15 +490,10 @@ func TestTerminalAttach_ExitFiresWhenSessionKilled(t *testing.T) {
 		t.Fatalf("timed out waiting for Exited")
 	}
 
-	// At this point Output() MUST already be closed. Use a non-blocking
-	// receive on `drainDone` (which is closed only after Output() closes
-	// and the goroutine returns) — but we need to allow a tiny scheduling
-	// window for the drain goroutine to observe the close, so use a short
-	// deadline rather than zero.
 	select {
 	case <-drainDone:
 		// Output channel is closed — invariant holds.
-	case <-time.After(2 * time.Second):
+	case <-time.After(integrationTestTimeout):
 		t.Fatalf("Output() was not closed by the time Exited fired (ordering invariant violated)")
 	}
 

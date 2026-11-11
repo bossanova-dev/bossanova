@@ -24,6 +24,7 @@ type mockHostService struct {
 	closedErr error
 	// closedCalls counts ListClosedPRs calls.
 	closedCalls int
+	statusCalls int
 }
 
 func (m *mockHostService) ListOpenPRs(_ context.Context, _ string) ([]*bossanovav1.PRSummary, error) {
@@ -46,6 +47,7 @@ func (m *mockHostService) GetCheckResults(_ context.Context, _ string, prNumber 
 }
 
 func (m *mockHostService) GetPRStatus(_ context.Context, _ string, prNumber int32) (*bossanovav1.PRStatus, error) {
+	m.statusCalls++
 	if s, ok := m.status[prNumber]; ok {
 		return s, nil
 	}

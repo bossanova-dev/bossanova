@@ -55,6 +55,23 @@ func TestTerminalRepoInputAndDowngrade(t *testing.T) {
 	})
 }
 
+func TestTerminalWriterRejectsRecordedDowngrade(t *testing.T) {
+	h := newTestHarness(t)
+	h.client.cloudControl = fixedCloudControl(config.CloudControlFull)
+	state := &activeAttach{id: "viewer", writable: true}
+	h.client.attaches[state.id] = state
+	state.policyRevoked.Store(true)
+
+	refused := make(map[string]string)
+	data := &pb.TerminalDataChunk{AttachId: state.id, Data: []byte("queued")}
+	if !h.client.refuseTerminalData(t.Context(), data, refused) {
+		t.Fatal("writer forwarded output after the writable downgrade was recorded")
+	}
+	if refused[state.id] != "cloud control changed for this repo" {
+		t.Fatalf("writer refusal = %q", refused[state.id])
+	}
+}
+
 func TestTerminalRepoReadOnlyDoesNotWake(t *testing.T) {
 	h := newTestHarness(t)
 	h.client.targetObjects = terminalRepoTargets()
@@ -158,6 +175,66 @@ func TestTerminalRepoStrictGrantWithMachineReadOnly(t *testing.T) {
 	defer h.client.closeAllAttaches()
 	if h.factory.get("a").inputCount() != 1 || h.factory.get("b").inputCount() != 0 {
 		t.Fatal("strict repo grant did not isolate input")
+	}
+}
+
+type idleTerminalIdentities struct {
+	targetIdentityFixture
+	liveReads int
+}
+
+func (f *idleTerminalIdentities) Identity(ctx context.Context, id string) (config.RepoIdentity, error) {
+	f.liveReads++
+	return f.targetIdentityFixture.Identity(ctx, id)
+}
+
+func (f *idleTerminalIdentities) LastVerifiedIdentity(ctx context.Context, id string) (config.RepoIdentity, error) {
+	return f.targetIdentityFixture.Identity(ctx, id)
+}
+
+func TestTerminalIdlePolicyUsesCachedIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("BOSS_SETTINGS_PATH", path)
+	checkout := t.TempDir()
+	settings := config.Settings{
+		CloudControl: "private",
+		CloudControlRepos: []config.CloudControlRepoGrant{
+			{Host: "github.com", RepoID: 42, Checkout: checkout, Mode: "read-only"},
+		},
+	}
+	if err := config.SaveTo(path, settings); err != nil {
+		t.Fatal(err)
+	}
+	identities := &idleTerminalIdentities{targetIdentityFixture: targetIdentityFixture{
+		repoID:   "a",
+		identity: config.RepoIdentity{Host: "github.com", ProviderRepoID: 42, IsIDVerified: true, LocalPath: checkout},
+	}}
+	policy := NewCloudControlPolicy(zerolog.Nop())
+	policy.RepoIdentities = identities
+	h := newTestHarness(t)
+	h.client.cloudControl = policy
+	state := &activeAttach{repoID: "a"}
+	if h.client.recheckIdleAttach(t.Context(), state) {
+		t.Fatal("idle recheck refused a verified read-only grant")
+	}
+
+	settings.CloudControlRepos[0].Mode = "private"
+	if err := config.SaveTo(path, settings); err != nil {
+		t.Fatal(err)
+	}
+	if !h.client.recheckIdleAttach(t.Context(), state) {
+		t.Fatal("idle recheck missed the local policy change")
+	}
+	settings.CloudControl = "full"
+	settings.CloudControlRepos[0].Checkout = t.TempDir()
+	if err := config.SaveTo(path, settings); err != nil {
+		t.Fatal(err)
+	}
+	if !h.client.recheckIdleAttach(t.Context(), &activeAttach{repoID: "a"}) {
+		t.Fatal("idle recheck missed an ID-only restrictive grant")
+	}
+	if identities.liveReads != 0 {
+		t.Fatalf("idle rechecks made %d live identity reads", identities.liveReads)
 	}
 }
 

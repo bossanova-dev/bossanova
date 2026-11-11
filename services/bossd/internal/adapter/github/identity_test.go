@@ -93,12 +93,40 @@ func (g *tokenGH) reset() {
 	g.mu.Unlock()
 }
 
+func TestVerifyPassedAtHeadReadsOnlyNamedCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		pages string
+		pass  bool
+	}{
+		{name: "pass after another context", pages: `[{"context":"CI","state":"success"}][{"context":"boss/verify","state":"success","description":"verified (approved)"}]`, pass: true},
+		{name: "human hold", pages: `[{"context":"boss/verify","state":"success","description":"needs human: human-review:ui"}]`},
+		{name: "missing", pages: `[{"context":"CI","state":"success"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := "repos/o/r/commits/" + testSHA + "/status?per_page=100"
+			p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+				want := []string{"api", endpoint, "--paginate", "--jq", ".statuses"}
+				if !slices.Equal(args, want) {
+					t.Errorf("gh arguments = %v, want %v", args, want)
+				}
+				return tc.pages, nil
+			}))
+			got, err := p.VerifyPassedAtHead(context.Background(), "o/r", testSHA)
+			if err != nil || got != tc.pass {
+				t.Fatalf("VerifyPassedAtHead = %t, %v; want %t, nil", got, err, tc.pass)
+			}
+		})
+	}
+}
+
 // routedInvocations calls every exported Provider method that may run gh.
 var routedInvocations = map[string]func(context.Context, *Provider){
 	"GetRepositoryIdentity": func(ctx context.Context, p *Provider) { _, _, _ = p.GetRepositoryIdentity(ctx, testOrigin) },
 	"GetPRStatus":           func(ctx context.Context, p *Provider) { _, _ = p.GetPRStatus(ctx, testOrigin, 7) },
 	"GetCheckResults":       func(ctx context.Context, p *Provider) { _, _ = p.GetCheckResults(ctx, testOrigin, 7) },
 	"GetCheckSet":           func(ctx context.Context, p *Provider) { _, _ = p.GetCheckSet(ctx, testOrigin, 7) },
+	"VerifyPassedAtHead":    func(ctx context.Context, p *Provider) { _, _ = p.VerifyPassedAtHead(ctx, testOrigin, testSHA) },
 	"GetReviewComments": func(ctx context.Context, p *Provider) {
 		_, _ = p.GetReviewComments(ctx, testOrigin, 7)
 	},
@@ -134,6 +162,7 @@ var routedInvocations = map[string]func(context.Context, *Provider){
 	"MarkReadyForReview": func(ctx context.Context, p *Provider) { _ = p.MarkReadyForReview(ctx, testOrigin, 7) },
 	"MergePR":            func(ctx context.Context, p *Provider) { _ = p.MergePR(ctx, testOrigin, 7, vcs.MergePROpts{}) },
 	"UpdatePRTitle":      func(ctx context.Context, p *Provider) { _ = p.UpdatePRTitle(ctx, testOrigin, 7, "t") },
+	"PostPRComment":      func(ctx context.Context, p *Provider) { _ = p.PostPRComment(ctx, testOrigin, 7, "body") },
 	"UpdatePRBody":       func(ctx context.Context, p *Provider) { _ = p.UpdatePRBody(ctx, testOrigin, 7, "b") },
 	"QuotaStatus":        func(ctx context.Context, p *Provider) { _, _ = p.QuotaStatus(ctx) },
 }
@@ -370,8 +399,11 @@ func TestInstallationAndUserPoolsPauseIndependently(t *testing.T) {
 			}}
 			p := newRoutedProvider(gh, installationSource(nil), WithNowFunc(clock.Now))
 			ctx := context.Background()
-			read := func() error { _, err := p.GetPRStatus(ctx, testOrigin, 7); return err }
-			userRead := func() error { _, err := p.GetPRStatus(withRoute(ctx, "MergePR", testNWO), testOrigin, 7); return err }
+			read := func() error { _, err := primaryPRRead(p, ctx, testOrigin, 7); return err }
+			userRead := func() error {
+				_, err := primaryPRRead(p, withRoute(ctx, "MergePR", testNWO), testOrigin, 7)
+				return err
+			}
 			exhaustedRead, otherRead := read, userRead
 			if exhausted == "user" {
 				exhaustedRead, otherRead = userRead, read

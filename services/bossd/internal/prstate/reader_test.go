@@ -30,6 +30,9 @@ type recordingProvider struct {
 	runsErr    error
 	commentErr error
 	calls      []providerCall
+	verifyHead string
+	verifyPass bool
+	verifyErr  error
 }
 
 func (f *recordingProvider) record(ctx context.Context, method string) {
@@ -44,6 +47,12 @@ func (f *recordingProvider) GetPRStatus(ctx context.Context, _ string, _ int) (*
 func (f *recordingProvider) GetCheckSet(ctx context.Context, _ string, _ int) (vcs.CheckSet, error) {
 	f.record(ctx, "checks")
 	return f.set, f.setErr
+}
+
+func (f *recordingProvider) VerifyPassedAtHead(ctx context.Context, _, sha string) (bool, error) {
+	f.record(ctx, "verify")
+	f.verifyHead = sha
+	return f.verifyPass, f.verifyErr
 }
 
 func (f *recordingProvider) ListWorkflowRuns(ctx context.Context, _, _ string) ([]vcs.WorkflowRun, error) {
@@ -83,6 +92,35 @@ func read(t *testing.T, p *recordingProvider, opts Options) Snapshot {
 		t.Fatalf("Read: %v", err)
 	}
 	return snap
+}
+
+func TestReadVerifyPassConfirmsReportedHead_Callbacks_AC235301(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pass bool
+		err  error
+	}{
+		{name: "cached pass for another head"},
+		{name: "confirmed pass", pass: true},
+		{name: "confirmation unavailable", err: errors.New("status read unavailable")},
+		{name: "confirmation below quota floor", err: vcs.ErrRateLimited},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &recordingProvider{
+				status:     openStatus(),
+				set:        vcs.CheckSet{Checks: []vcs.CheckResult{passed(vcs.VerifyStatusContext)}},
+				verifyPass: tc.pass,
+				verifyErr:  tc.err,
+			}
+			snap, err := NewReader(p, nil).Read(context.Background(), "acme/widgets", 7, Options{})
+			if err != nil {
+				t.Fatalf("Read discarded the available snapshot: %v", err)
+			}
+			if p.verifyHead != head || snap.VerifyPassed != tc.pass || snap.Status.HeadSHA != head {
+				t.Fatalf("verified head = %q, pass = %t; want %q, %t", p.verifyHead, snap.VerifyPassed, head, tc.pass)
+			}
+		})
+	}
 }
 
 func TestReadMarksEveryCallCachedAndLabelled(t *testing.T) {
@@ -357,5 +395,16 @@ func TestReadJudgesTheVerdictByTheRepoRequiredChecks(t *testing.T) {
 				t.Fatalf("policy asked about %v, want [acme/widgets]", src.repos)
 			}
 		})
+	}
+}
+
+func TestReadPropagatesDegradedSnapshot_Callbacks_AC245501(t *testing.T) {
+	for _, tc := range []struct{ status, checks bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		p := &recordingProvider{status: openStatus(), set: vcs.CheckSet{Degraded: tc.checks}}
+		p.status.Degraded = tc.status
+		snap := read(t, p, Options{})
+		if snap.Degraded != (tc.status || tc.checks) {
+			t.Fatalf("degraded=%v for %+v", snap.Degraded, tc)
+		}
 	}
 }

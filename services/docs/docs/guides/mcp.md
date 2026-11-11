@@ -222,7 +222,7 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 | `list_chats`                   | List agent chats for a session                                                             |
 | `get_chat_statuses`            | Get live chat status for a session — `last_output_at` is a floor, see below                |
 | `get_session_statuses`         | Get best live status across chats for multiple sessions — aggregate only, see below        |
-| `list_check_snapshots`         | List recent CI check snapshots for a session                                               |
+| `list_check_snapshots`         | List recent CI check snapshots, newest first. See [verify verdict](#verify-verdict).       |
 | `repair_doctor`                | Run daemon repair-doctor diagnostics                                                       |
 | `list_agents`                  | List loaded agent-runner plugins                                                           |
 | `list_plugins`                 | List every plugin the daemon attempted to load                                             |
@@ -241,6 +241,13 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 | `get_organization_note_quota`  | Report an organization's hourly note-write quota without spending any                      |
 | `export_project_config`        | Export this repo's boss setup as `.boss-project.json` content                              |
 | `diff_project_config`          | Plan converging onto a `.boss-project.json` passed as an argument; writes nothing          |
+
+### Verify verdict
+
+The `list_check_snapshots` tool returns GitHub's raw check states in `raw_json`.
+A `boss/verify` success with a description starting `needs human:` means
+the head is held for a person. Read `is_verify_passed` from
+`boss pr state <pr> --json` for the verify verdict.
 
 ### Mutating (35)
 

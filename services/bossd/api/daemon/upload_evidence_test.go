@@ -381,7 +381,7 @@ func TestUploadEvidencePageAssets_Sessions_AC248607(t *testing.T) {
 	}))
 	defer endpoint.Close()
 	s, dir := pagesServer(t, endpoint.URL, true)
-	names := []string{"media/head-0.mp4", "media/head-0-still.png", "media/head-0-still.jpg", "media/base-0.webp", "player.js", "index.html"}
+	names := []string{"media/head-0.mp4", "media/head-0-still.png", "media/head-0-still.jpg", "media/base-0.webp", "media/statement.pdf", "player.js", "index.html"}
 	var objects []*pb.EvidenceObject
 	for _, name := range names {
 		if err := os.MkdirAll(filepath.Join(dir, "media"), 0700); err != nil {
@@ -396,7 +396,7 @@ func TestUploadEvidencePageAssets_Sessions_AC248607(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := "acme/widgets/3/" + evidenceTestSHA + "/"
-	want := map[string]string{"media/head-0.mp4": "video/mp4", "media/head-0-still.png": "image/png", "media/head-0-still.jpg": "image/jpeg", "media/base-0.webp": "image/webp", "player.js": "text/javascript; charset=utf-8", "index.html": "text/html; charset=utf-8"}
+	want := map[string]string{"media/head-0.mp4": "video/mp4", "media/head-0-still.png": "image/png", "media/head-0-still.jpg": "image/jpeg", "media/base-0.webp": "image/webp", "media/statement.pdf": "application/pdf", "player.js": "text/javascript; charset=utf-8", "index.html": "text/html; charset=utf-8"}
 	for i, name := range names {
 		if order[i] != prefix+name || types[prefix+name] != want[name] {
 			t.Fatalf("PUT %d = %s (%s), want %s (%s)", i, order[i], types[order[i]], prefix+name, want[name])
@@ -410,6 +410,8 @@ func TestUploadEvidencePageAssets_Sessions_AC248607(t *testing.T) {
 		{name: "player on a random prefix", object: "player.js"},
 		{name: "media of another type", object: "media/clip.webm", keyed: true},
 		{name: "nested media", object: "media/clips/a.mp4", keyed: true},
+		{name: "a document of another type", object: "media/statement.docx", keyed: true},
+		{name: "a PDF outside media", object: "screenshots/statement.pdf", keyed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newRecordingEndpoint(t)

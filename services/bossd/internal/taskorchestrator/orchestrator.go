@@ -334,7 +334,7 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 	// CREATE_SESSION preserves retry_count in place; AUTO_MERGE replaces the
 	// row because external_id is unique.
 	existing, err := o.taskMappings.GetByExternalID(ctx, externalID)
-	if o.handoffGreenRepair(ctx, task, repo, pluginName, existing) {
+	if o.handoffGreenRepair(ctx, task, repo, pluginName, existing) || o.retainUnconfirmedRebase(ctx, existing, task.GetAction() == bossanovav1.TaskAction_TASK_ACTION_REQUEST_REBASE) {
 		return
 	}
 	if err == nil && existing != nil {
@@ -343,15 +343,7 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 			action = bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION
 		}
 
-		isTerminal := existing.Status == domain.TaskMappingStatusCompleted ||
-			existing.Status == domain.TaskMappingStatusFailed
-
-		// Dependabot re-emits only open, actionable PRs. Retry terminal mappings
-		// after cooldown: CREATE_SESSION preserves the row and retry history,
-		// while AUTO_MERGE replaces it for a distinct success-path event.
-		retryTerminal := isTerminal &&
-			(action == bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE ||
-				action == bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION)
+		retryTerminal := terminalMappingRetryable(action, existing.Status)
 
 		if retryTerminal && !terminalRetryReady(existing, time.Now(), TerminalRetryCooldown) {
 			o.logger.Info().
@@ -608,127 +600,6 @@ func (o *Orchestrator) RetryPendingUpdates(ctx context.Context) {
 	}
 }
 
-// recoverStaleTasks checks for CREATE_SESSION tasks that are stuck
-// (dead Claude process, orphaned mapping) and forces queue advancement.
-// This is called at the start of each poll cycle as a safety net.
-func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
-	o.mu.Lock()
-	// Snapshot the active mappings so we don't hold the lock during DB calls.
-	activeMappings := make(map[string]string, len(o.activeMapping))
-	for repoID, mappingID := range o.activeMapping {
-		activeMappings[repoID] = mappingID
-	}
-	o.mu.Unlock()
-
-	for repoID, mappingID := range activeMappings {
-		// Re-check under lock that the mapping hasn't changed since we
-		// took the snapshot. A concurrent HandleSessionCompleted may have
-		// already completed this mapping and started a new task, which
-		// would set a different mapping ID for the same repo.
-		o.mu.Lock()
-		currentMappingID, stillActive := o.activeMapping[repoID]
-		o.mu.Unlock()
-		if !stillActive || currentMappingID != mappingID {
-			// A concurrent completion already handled this mapping.
-			continue
-		}
-
-		mapping, err := o.taskMappings.Get(ctx, mappingID)
-		if err != nil {
-			// Mapping not found — it was deleted or the DB is inconsistent.
-			// Clear the active state and advance the queue.
-			o.logger.Warn().
-				Str("repo", repoID).
-				Str("mapping", mappingID).
-				Msg("active mapping not found, clearing stale state")
-			o.mu.Lock()
-			// Double-check: only clear if the mapping hasn't been replaced.
-			if o.activeMapping[repoID] == mappingID {
-				delete(o.activeMapping, repoID)
-			}
-			o.mu.Unlock()
-			o.dequeueNext(ctx, repoID)
-			continue
-		}
-
-		switch mapping.Status {
-		case domain.TaskMappingStatusCompleted, domain.TaskMappingStatusFailed, domain.TaskMappingStatusSkipped, domain.TaskMappingStatusOrphaned:
-			// Terminal-from-this-loop's-perspective: clear active state and
-			// advance. Orphaned shouldn't normally be in activeMapping (the
-			// status is set by MarkOrphaned at boot, before this map
-			// is populated), but if it ever is, treat the slot as freed —
-			// the next poll will re-pick the task via processTask's
-			// orphan-aware path.
-			o.logger.Info().
-				Str("repo", repoID).
-				Str("mapping", mappingID).
-				Int("status", int(mapping.Status)).
-				Msg("active mapping already terminal, advancing queue")
-			o.mu.Lock()
-			if o.activeMapping[repoID] == mappingID {
-				delete(o.activeMapping, repoID)
-			}
-			o.mu.Unlock()
-			o.dequeueNext(ctx, repoID)
-
-		case domain.TaskMappingStatusInProgress:
-			if mapping.SessionID != nil {
-				// Has a session — check if it's still alive.
-				// Only a DEAD session recovers the task. A parked session
-				// (its pane deliberately reaped, chat row kept) is not a
-				// failure — failing it here would be exactly the wrong
-				// inference BOS-884 exists to prevent — so the mapping is
-				// left in place for a later sweep to re-evaluate.
-				switch o.sessionLiveness(ctx, *mapping.SessionID) {
-				case session.LivenessDead:
-					o.logger.Warn().
-						Str("repo", repoID).
-						Str("mapping", mappingID).
-						Str("session", *mapping.SessionID).
-						Msg("session dead, recovering stuck task")
-					// Reuse the existing idempotent completion flow.
-					o.HandleSessionCompleted(ctx, *mapping.SessionID, domain.TaskMappingStatusFailed)
-				case session.LivenessParked:
-					o.logger.Info().
-						Str("repo", repoID).
-						Str("mapping", mappingID).
-						Str("session", *mapping.SessionID).
-						Msg("session parked (tmux pane deliberately reaped), leaving task in progress")
-				case session.LivenessAlive:
-					// Still working; the sweep has nothing to recover.
-				}
-			} else {
-				// InProgress with no session — orphaned. Mark failed and advance.
-				o.logger.Warn().
-					Str("repo", repoID).
-					Str("mapping", mappingID).
-					Msg("in-progress mapping with no session, marking failed")
-				o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusFailed)
-				o.mu.Lock()
-				if o.activeMapping[repoID] == mappingID {
-					delete(o.activeMapping, repoID)
-				}
-				o.mu.Unlock()
-				o.dequeueNext(ctx, repoID)
-			}
-
-		default:
-			// Pending — shouldn't be in activeMapping. Mark failed and advance.
-			o.logger.Warn().
-				Str("repo", repoID).
-				Str("mapping", mappingID).
-				Msg("pending mapping in active state, marking failed")
-			o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusFailed)
-			o.mu.Lock()
-			if o.activeMapping[repoID] == mappingID {
-				delete(o.activeMapping, repoID)
-			}
-			o.mu.Unlock()
-			o.dequeueNext(ctx, repoID)
-		}
-	}
-}
-
 // taskMappingStatusToProto converts an internal task mapping status
 // to a proto TaskItemStatus.
 func taskMappingStatusToProto(s domain.TaskMappingStatus) bossanovav1.TaskItemStatus {
@@ -776,7 +647,9 @@ func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem
 		o.logger.Error().Err(err).
 			Str("external_id", externalID).
 			Msg("create task mapping failed")
-		o.dequeueNext(ctx, repo.id)
+		if action != bossanovav1.TaskAction_TASK_ACTION_REQUEST_REBASE {
+			o.dequeueNext(ctx, repo.id)
+		}
 		return
 	}
 
@@ -786,6 +659,9 @@ func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem
 
 	case bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION:
 		o.handleCreateSession(ctx, task, repo, mapping, false)
+
+	case bossanovav1.TaskAction_TASK_ACTION_REQUEST_REBASE:
+		o.handleRequestRebase(ctx, task, repo, mapping)
 
 	case bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER:
 		o.handleNotifyUser(ctx, task, repo, mapping)
@@ -866,7 +742,20 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 			Msg("auto-merge: substituted squash for rebase")
 	}
 
-	repairRebase := func(err error) { o.enqueueMappedCreateSession(ctx, rebaseRepairTask(task, repo, err), repo, mapping) }
+	repairRebase := func(err error, head string) {
+		if mapping.PluginName == "dependabot" && task.GetIsBotRebaseRequestable() && head != "" && head == task.GetHeadSha() {
+			rebase := &bossanovav1.TaskItem{
+				ExternalId:             fmt.Sprintf("dependabot:rebase:%s:%s:%d", repo.originURL, head, prNumber),
+				HeadSha:                head,
+				IsBotRebaseRequestable: true,
+				Action:                 bossanovav1.TaskAction_TASK_ACTION_REQUEST_REBASE,
+			}
+			o.processTask(ctx, rebase, repo, "dependabot")
+			o.updateMappingStatusWithDetails(ctx, mapping.ID, domain.TaskMappingStatusFailed, "requested @dependabot rebase")
+			return
+		}
+		o.enqueueMappedCreateSession(ctx, rebaseRepairTask(task, repo, err), repo, mapping)
+	}
 	if !o.mergeConfirmedHead(ctx, repo, mapping, prNumber, strategy, repairRebase) {
 		return
 	}
@@ -1142,4 +1031,40 @@ type repoInfo struct {
 	baseBranch      string
 	mergeStrategy   string
 	verifyOwnsMerge bool
+}
+
+func terminalMappingRetryable(action bossanovav1.TaskAction, status domain.TaskMappingStatus) bool {
+	switch action {
+	case bossanovav1.TaskAction_TASK_ACTION_REQUEST_REBASE:
+		return status == domain.TaskMappingStatusFailed
+	case bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE, bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION:
+		return status == domain.TaskMappingStatusCompleted || status == domain.TaskMappingStatusFailed
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) handleRequestRebase(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *domain.TaskMapping) {
+	poster, ok := o.provider.(vcs.PRCommentPoster)
+	if !ok || mapping.PluginName != "dependabot" || !task.GetIsBotRebaseRequestable() || task.GetHeadSha() == "" {
+		o.logger.Warn().Str("external_id", task.GetExternalId()).Msg("bot rebase unavailable")
+		o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusSkipped)
+		return
+	}
+	pr, err := parsePRNumberFromExternalID(task.GetExternalId())
+	if err == nil {
+		status := domain.TaskMappingStatusInProgress
+		detail := rebaseDeliveryUnconfirmed
+		detailPtr := &detail
+		if _, intentErr := o.taskMappings.Update(ctx, mapping.ID, db.UpdateTaskMappingParams{Status: &status, LastError: &detailPtr}); intentErr != nil {
+			o.updateMappingStatusWithDetails(ctx, mapping.ID, domain.TaskMappingStatusFailed, fmt.Sprintf("persist bot rebase intent: %v", intentErr))
+			return
+		}
+		err = poster.PostPRComment(ctx, repo.originURL, pr, "@dependabot rebase")
+	}
+	if err != nil {
+		o.updateMappingStatusWithDetails(ctx, mapping.ID, domain.TaskMappingStatusFailed, err.Error())
+		return
+	}
+	o.updateMappingStatusWithDetails(ctx, mapping.ID, domain.TaskMappingStatusCompleted, fmt.Sprintf("requested @dependabot rebase for %s", task.GetHeadSha()))
 }

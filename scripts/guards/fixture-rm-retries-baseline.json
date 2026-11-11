@@ -15,7 +15,6 @@
   "scripts/bazel/bazel-run-ledger.test.mjs": 1,
   "scripts/bazel/check-build-drift.test.mjs": 1,
   "scripts/dev/commit-message-policy.test.mjs": 1,
-  "scripts/dev/ensure-buf.test.mjs": 1,
   "scripts/dev/format-staged.test.mjs": 1,
   "scripts/dev/legacy-support-refs.test.mjs": 1,
   "scripts/dev/tidy-drift-all.test.mjs": 1,

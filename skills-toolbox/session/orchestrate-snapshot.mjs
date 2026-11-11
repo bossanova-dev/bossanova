@@ -271,7 +271,7 @@ function verifyPassed(pr) {
  * The next orchestrating action for one session. `pr` is `boss pr state --json` for the session's
  * PR (null when it has none), plus `draftHold` when a timeline was read. `residual` is the
  * session's open inherited-red residual note (`openResidual`), or null. `cronJob` is the cron job
- * whose latest run the session is (`boss cron ls`), or null.
+ * the session is a run of (`boss cron ls`), or null.
  */
 export function classifySession({
   session,
@@ -460,7 +460,9 @@ const STALE_DIALOG =
 // Runs on the daemon's machine (over SSH for a remote host) so one round trip lists everything.
 // argv: boss. Prints { sessions, residuals, errors }; `residuals` are the host's repair-residual
 // notes across every repo (`--repo ""`, since the notes list defaults to the current repo). A
-// session that is a cron job's latest run carries that job as `cron`.
+// session that is a cron job's run carries that job as `cron`: its latest run, or a session titled
+// with the job's name in the job's repo (a fire titles its session so; a branchless plan run keeps
+// that title, and an overlapping or gated later fire moves the job's latest-run pointer).
 const DAEMON_DUMP = `
 const { execFile } = require('node:child_process')
 const boss = process.argv[2] || 'boss'
@@ -469,12 +471,14 @@ const run = (args) => new Promise((resolve, reject) =>
     err ? reject(err) : resolve(JSON.parse(out))))
 const settle = (p) => p.then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }))
 const TERMINAL = new Set(['CLOSED', 'MERGED', 'ARCHIVED'])
-// The cron job whose latest run each session is, from one cron list.
+// The cron job each session is a run of, from one cron list.
 const cronBySession = new Map()
+const cronByTitle = new Map()
+const titleKey = (repoId, name) => repoId + '\\0' + name
 async function one(s) {
   const entry = { session: s, chats: [], pr: null }
   if (TERMINAL.has(s.state)) return entry
-  const cron = cronBySession.get(s.id)
+  const cron = cronBySession.get(s.id) ?? cronByTitle.get(titleKey(s.repo_id, s.title))
   if (cron) entry.cron = cron
   const ref = /github\\.com\\/([^/]+\\/[^/]+)\\/pull\\/(\\d+)/.exec(s.pr_url || '')
   // Sequential per session and few workers: a burst of parallel calls makes bossd drop connections.
@@ -496,6 +500,7 @@ async function one(s) {
     const jobs = Array.isArray(crons.value) ? crons.value : (crons.value.jobs ?? [])
     for (const job of jobs) {
       if (job.last_run_session_id) cronBySession.set(job.last_run_session_id, { id: job.id, name: job.name })
+      if (job.repo_id && job.name) cronByTitle.set(titleKey(job.repo_id, job.name), { id: job.id, name: job.name })
     }
   } else errors.push('cron jobs: ' + String(crons.reason.message).slice(0, 160))
   const listed = await run(['ls', '--json'])

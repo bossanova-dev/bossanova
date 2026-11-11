@@ -8,7 +8,7 @@ import {
   readTrackedText,
   assertNonVacuousScan,
 } from '../dev/tree-scan-lib.mjs'
-import { structuralLines, nestedUnder, keyColumn, keyValue } from '../dev/workflow-yaml-lib.mjs'
+import { structuralLines, keyColumn, keyValue } from '../dev/workflow-yaml-lib.mjs'
 
 /** @typedef {{file: string, line: number, kind: string, snippet: string}} Finding */
 /** @param {string} file */
@@ -125,44 +125,24 @@ function javascriptCalls(file, text) {
   return findings
 }
 
-/** @param {string} text @returns {{line: number, command: string, licensed: boolean}[]} */
+/** @param {string} text @returns {{line: number, command: string, kind: string}[]} */
 function workflowCalls(text) {
   const structure = structuralLines(text)
-  const jobs = structure.findIndex(
-    (entry) => keyValue(entry.text)?.key === 'jobs' && entry.indent === 0,
-  )
-  const scopes =
-    jobs < 0
-      ? [structure.map((_, i) => i)]
-      : nestedUnder(structure, jobs)
-          .filter((i) => structure[i].indent === keyColumn(structure[jobs]) + 2)
-          .map((i) => nestedUnder(structure, i))
   const raw = text.split('\n')
   const calls = []
-  for (const scope of scopes) {
-    let licensed = false
-    let stepStart = scope[0]
-    for (const i of scope) {
-      const entry = structure[i]
-      const kv = keyValue(entry.text)
-      if (entry.text.startsWith('- ')) stepStart = i
-      if (kv?.key === 'uses' && /^bufbuild\/buf-(?:setup-)?action@/.test(kv.value)) {
-        const version = nestedUnder(structure, stepStart, structure[stepStart].indent).some(
-          (j) =>
-            keyValue(structure[j].text)?.key === 'version' &&
-            /^\d+\.\d+\.\d+$/.test(keyValue(structure[j].text).value),
-        )
-        if (version) licensed = true
-      }
-      if (kv?.key !== 'run') continue
-      if (/^[|>]/.test(kv.value)) {
-        for (let n = entry.line; n < raw.length; n++) {
-          if (raw[n].trim() && raw[n].length - raw[n].trimStart().length <= keyColumn(entry)) break
-          if (bareCommand(raw[n])) calls.push({ line: n + 1, command: raw[n], licensed })
-        }
-      } else if (bareCommand(kv.value))
-        calls.push({ line: entry.line, command: kv.value, licensed })
+  for (const entry of structure) {
+    const kv = keyValue(entry.text)
+    if (kv?.key === 'uses' && /^bufbuild\/buf-(?:setup-)?action@/.test(kv.value)) {
+      calls.push({ line: entry.line, command: entry.text, kind: 'workflow-action' })
     }
+    if (kv?.key !== 'run') continue
+    if (/^[|>]/.test(kv.value)) {
+      for (let n = entry.line; n < raw.length; n++) {
+        if (raw[n].trim() && raw[n].length - raw[n].trimStart().length <= keyColumn(entry)) break
+        if (bareCommand(raw[n])) calls.push({ line: n + 1, command: raw[n], kind: 'workflow' })
+      }
+    } else if (bareCommand(kv.value))
+      calls.push({ line: entry.line, command: kv.value, kind: 'workflow' })
   }
   return calls
 }
@@ -180,9 +160,12 @@ export function findBareBufCalls(entries) {
     }
     if (kind === 'workflow') {
       findings.push(
-        ...workflowCalls(text)
-          .filter((call) => !call.licensed)
-          .map((call) => ({ file, line: call.line, kind, snippet: call.command.trim() })),
+        ...workflowCalls(text).map((call) => ({
+          file,
+          line: call.line,
+          kind: call.kind,
+          snippet: call.command.trim(),
+        })),
       )
       continue
     }
@@ -236,10 +219,6 @@ export function scanRepository(root) {
     counts: Object.fromEntries(
       Object.entries(classes).map(([kind, files]) => [kind, files.length]),
     ),
-    licensed: entries
-      .filter((entry) => fileClass(entry.file) === 'workflow')
-      .flatMap((entry) => workflowCalls(entry.text))
-      .filter((call) => call.licensed).length,
   }
 }
 
@@ -252,7 +231,7 @@ function main() {
     console.error(`${finding.file}:${finding.line} ${finding.kind} ${finding.snippet}`)
   if (result.findings.length) {
     console.error(
-      'Use "$(BUF)" in Make, scripts/dev/pinned-buf.mjs in scripts, or an earlier pinned buf setup/action step in the same workflow job.',
+      'Use "$(BUF)" in Make, scripts/dev/pinned-buf.mjs in scripts, or make buf-path in workflows; the shared installer falls back to the Go module proxy.',
     )
     process.exitCode = 1
   }

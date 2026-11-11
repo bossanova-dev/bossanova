@@ -4647,6 +4647,8 @@ function candidateWorld(opts = {}) {
       })
     }
     if (args[0] === 'api') {
+      const runHead = args[1].match(/actions\/runs\?head_sha=([0-9a-f]{40})/)?.[1]
+      if (runHead) return opts.headRuns?.[runHead] ? ok(opts.headRuns[runHead]) : fail()
       const pr = args[1].match(/^repos\/o\/r\/issues\/(\d+)\/comments\?per_page=100$/)?.[1]
       if (pr)
         return opts.commentsFail?.includes(Number(pr)) ? fail() : ok([opts.comments?.[pr] ?? []])
@@ -10349,6 +10351,74 @@ const admissionOf = (result, n) => {
   const { state, reason } = result.admission.find((entry) => entry.pr === n)
   return `${state}/${reason}`
 }
+
+test('candidates reconcile cancelled-only red heads with replacement workflow runs', async () => {
+  const rollup = cancelledBeside.map((c) => ({ ...c, workflowName: 'CI' }))
+  const runPage = (status, conclusion = '') => [
+    {
+      total_count: 1,
+      workflow_runs: [{ name: 'CI', head_sha: SHA_OF(1), status, conclusion }],
+    },
+  ]
+  for (const [runs, reason] of [
+    [runPage('completed', 'success'), null],
+    [runPage('in_progress'), 'ci-unsettled'],
+    [null, 'ci-red'],
+    [[{ ...runPage('completed', 'success')[0], total_count: 2 }], 'ci-red'],
+  ]) {
+    const w = candidateWorld({ rollups: { 1: rollup }, headRuns: { [SHA_OF(1)]: runs } })
+    const result = await candidates({ repo: REPO }, candDeps(w))
+    assert.equal(result.skipped.find((s) => s.pr === 1)?.reason ?? null, reason)
+    assert.equal(
+      result.candidates.some((c) => c.pr === 1),
+      reason === null,
+    )
+  }
+})
+
+test('candidates read workflow runs only for cancelled-only red heads with workflow identity', async () => {
+  const w = candidateWorld({
+    tickets: [heldTicket(1), heldTicket(2), heldTicket(3), heldTicket(4)],
+    rollups: {
+      2: cancelledBeside,
+      3: [{ name: 'ci', workflowName: 'CI', status: 'COMPLETED', conclusion: 'FAILURE' }],
+      4: [{ name: 'ci', workflowName: 'CI', status: 'IN_PROGRESS', conclusion: '' }],
+    },
+  })
+  await candidates({ repo: REPO }, candDeps(w))
+  assert.deepEqual(
+    w.calls.filter((c) => c.args.some((arg) => arg.includes('actions/runs?'))),
+    [],
+  )
+})
+
+test('judge reports only real failures beside superseded and replacement-pending cancellations', async () => {
+  for (const [status, conclusion] of [
+    ['completed', 'success'],
+    ['in_progress', ''],
+  ]) {
+    const r = await judge(
+      { pr: 7, repo: REPO },
+      deps(
+        world({
+          pr: {
+            statusCheckRollup: [
+              { name: 'ci', workflowName: 'CI', status: 'COMPLETED', conclusion: 'SUCCESS' },
+              { name: 'notify', workflowName: 'CI', status: 'COMPLETED', conclusion: 'CANCELLED' },
+              { name: 'lint', workflowName: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' },
+            ],
+          },
+          headRuns: [{ workflow_runs: [{ name: 'CI', head_sha: HEAD, status, conclusion }] }],
+        }),
+      ),
+    )
+    assert.equal(r.verdict, 'blocked')
+    assert.deepEqual(
+      r.blockers.filter((b) => b.kind === 'check').map((b) => b.id),
+      ['check:lint'],
+    )
+  }
+})
 
 test('candidates store an admitted head skipped for CI or an unread step as pending under its hold @sessions.AC234401 @sessions.AC234402', async () => {
   const w = candidateWorld({

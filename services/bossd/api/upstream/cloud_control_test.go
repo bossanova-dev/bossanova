@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
@@ -185,6 +186,15 @@ func TestCloudControl_ExistingTerminalOutputRespectsPrivate(t *testing.T) {
 						synctest.Wait()
 						if len(out) != 3 {
 							t.Fatalf("queued frames = %d", len(out))
+						}
+					} else {
+						attach.output <- &pb.TerminalDataChunk{AttachId: "viewer", Data: []byte("shared content")}
+						synctest.Wait()
+						if len(out) != 1 {
+							t.Fatalf("got %d initial frames, want one output frame", len(out))
+						}
+						if got := (<-out).GetData(); string(got.GetData()) != "shared content" {
+							t.Fatalf("initial terminal output = %v", got)
 						}
 					}
 					setMode("private")
@@ -432,4 +442,98 @@ func TestCloudControl_RepoPrivateTerminalAttach(t *testing.T) {
 	default:
 		t.Fatal("repo-private attach was accepted under machine full")
 	}
+}
+
+func TestCloudControl_PrivateRevokesIdleTerminal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager, _ := newRealManager(t, &recordingChatSender{})
+		t.Cleanup(manager.CancelAll)
+		h := newUploadHarness(t, manager)
+		clock := newFakeClock()
+		h.client.clock = clock
+		policy := &switchableCloudControl{}
+		policy.mode.Store(config.CloudControlFull)
+		h.client.cloudControl = &repoSwitchPolicy{repo: policy}
+		ctx := t.Context()
+		out := make(chan *pb.TerminalServerMessage, 8)
+		session := newTerminalStreamSession()
+		h.client.handleClientMessage(ctx, &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Attach{
+			Attach: &pb.TerminalAttachCommand{AttachId: "viewer", ChatId: "claude-1"},
+		}}, out, session)
+		defer h.client.closeAllAttaches()
+		attach := h.factory.attaches["viewer"]
+		if attach == nil {
+			t.Fatal("attachment did not start")
+		}
+		if err := manager.Start("viewer", "upload", "claude-1", "upload.txt", 2); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		clock.Advance(time.Second)
+		synctest.Wait()
+		if attach.closed.Load() || len(out) != 0 {
+			t.Fatal("unchanged policy interrupted an idle terminal")
+		}
+
+		policy.mode.Store(config.CloudControlPrivate)
+		clock.Advance(time.Second)
+		synctest.Wait()
+		if !attach.closed.Load() || h.client.lookupOutputAttach("viewer") != nil {
+			t.Fatal("idle terminal stayed attached after one recheck interval")
+		}
+		if len(out) != 1 {
+			t.Fatalf("got %d frames, want one synthetic exit", len(out))
+		}
+		exit := (<-out).GetExited()
+		if exit.GetAttachId() != "viewer" || exit.GetExitCode() != -1 || exit.GetReason() != "cloud control is private on this machine" {
+			t.Fatalf("idle revocation exit = %v", exit)
+		}
+		if _, err := manager.Chunk("viewer", "upload", 0, []byte("x")); err == nil {
+			t.Fatal("idle revocation retained the active upload")
+		}
+		h.client.handleClientMessage(ctx, &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ping{
+			Ping: &pb.TerminalPing{Seq: 42},
+		}}, out, session)
+		if len(out) != 1 {
+			t.Fatalf("got %d frames, want one pong", len(out))
+		}
+		if pong := (<-out).GetPong(); pong.GetSeq() != 42 {
+			t.Fatalf("stream pong after revocation = %v", pong)
+		}
+	})
+}
+
+func TestCloudControl_ReadOnlyKeepsViewing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHarness(t)
+		clock := newFakeClock()
+		h.client.clock = clock
+		policy := &switchableCloudControl{}
+		policy.mode.Store(config.CloudControlReadOnly)
+		h.client.cloudControl = policy
+		out := make(chan *pb.TerminalServerMessage, 8)
+		h.client.handleAttach(t.Context(), &pb.TerminalAttachCommand{AttachId: "viewer", ChatId: "claude-1"}, out)
+		defer h.client.closeAllAttaches()
+		attach := h.factory.attaches["viewer"]
+		if attach == nil {
+			t.Fatal("attachment did not start")
+		}
+		synctest.Wait()
+		for _, mode := range []config.CloudControlMode{config.CloudControlFull, config.CloudControlReadOnly} {
+			policy.mode.Store(mode)
+			clock.Advance(time.Second)
+			synctest.Wait()
+			if attach.closed.Load() {
+				t.Fatalf("view-only terminal closed in %s mode", mode)
+			}
+			attach.output <- &pb.TerminalDataChunk{AttachId: "viewer", Data: []byte(mode)}
+			synctest.Wait()
+			if len(out) != 1 {
+				t.Fatalf("got %d frames in %s mode, want one output frame", len(out), mode)
+			}
+			if got := (<-out).GetData(); string(got.GetData()) != string(mode) {
+				t.Fatalf("terminal output in %s mode = %v", mode, got)
+			}
+		}
+	})
 }

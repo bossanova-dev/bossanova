@@ -21,6 +21,21 @@ import { scanSleeps, compareBaseline } from './check-test-sleeps.mjs'
 
 for (const [name, source, count] of [
   [
+    'a seeded literal time.After in a test file fails',
+    'package x\nimport "time"\nfunc f(){ <-time.After(time.Second) }',
+    1,
+  ],
+  [
+    'a timer using a named budget passes',
+    'package x\nimport "time"\nfunc f(){ <-time.After(timeout) }',
+    0,
+  ],
+  [
+    'a literal timer in a synctest bubble passes',
+    'package x\nimport ("time"; "testing/synctest"; "testing")\nfunc f(t *testing.T){ synctest.Test(t, func(t *testing.T){ <-time.After(time.Second) }) }',
+    0,
+  ],
+  [
     'a seeded time.Sleep in a test file fails',
     'package x\nimport "time"\nfunc f(){ time.Sleep(time.Millisecond) }',
     1,

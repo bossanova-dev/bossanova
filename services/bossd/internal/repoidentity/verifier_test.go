@@ -53,6 +53,37 @@ func TestIdentityExpiryAndFailures(t *testing.T) {
 	}
 }
 
+func TestLastVerifiedIdentityRetainsIdleGrantMatching(t *testing.T) {
+	now := time.Now()
+	var reads int
+	var failure error
+	v := New(identityReaderFunc(func(context.Context, string) (int64, string, error) {
+		reads++
+		return 42, "private", failure
+	}), zerolog.Nop())
+	v.now = func() time.Time { return now }
+	repo := models.Repo{OriginURL: "https://github.com/o/r", LocalPath: t.TempDir()}
+
+	if got := v.LastVerifiedIdentity(repo); got.IsIDVerified || got.Name != "o/r" || got.LocalPath != repo.LocalPath || reads != 0 {
+		t.Fatalf("cold cache returned %+v with %d provider reads", got, reads)
+	}
+	v.Identity(t.Context(), repo)
+	if got := v.LastVerifiedIdentity(repo); !got.IsIDVerified || got.ProviderRepoID != 42 || reads != 1 {
+		t.Fatalf("warm cache returned %+v with %d provider reads", got, reads)
+	}
+	now = now.Add(identityTTL)
+	if got := v.LastVerifiedIdentity(repo); !got.IsIDVerified || got.ProviderRepoID != 42 || reads != 1 {
+		t.Fatalf("expired cache returned %+v with %d provider reads", got, reads)
+	}
+	failure = errors.New("provider unavailable")
+	if got := v.Identity(t.Context(), repo); got.IsIDVerified || reads != 2 {
+		t.Fatalf("active lookup reused expired verification: %+v, %d reads", got, reads)
+	}
+	if got := v.LastVerifiedIdentity(repo); got.ProviderRepoID != 42 || reads != 2 {
+		t.Fatalf("idle policy lost its matching identity: %+v, %d reads", got, reads)
+	}
+}
+
 func TestIdentityTimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		v := New(identityReaderFunc(func(ctx context.Context, _ string) (int64, string, error) {

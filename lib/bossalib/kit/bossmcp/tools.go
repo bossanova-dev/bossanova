@@ -421,7 +421,7 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "list_check_snapshots",
-		Description: "List recent CI check snapshots for a session (most recent first).",
+		Description: "CI snapshots. In raw_json, boss/verify success with needs human: is a hold. See is_verify_passed in boss pr state --json.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListCheckSnapshotsArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.ListCheckSnapshots(ctx, args.SessionID, args.Limit)
@@ -888,8 +888,8 @@ type ListTrackerIssuesArgs struct {
 
 // ListCheckSnapshotsArgs is the typed argument struct for list_check_snapshots.
 type ListCheckSnapshotsArgs struct {
-	SessionID string `json:"session_id" jsonschema:"the session id"`
-	Limit     int32  `json:"limit,omitempty" jsonschema:"max snapshots to return (0 = server default)"`
+	SessionID string `json:"session_id"`
+	Limit     int32  `json:"limit,omitempty" jsonschema:"0 = server default"`
 }
 
 // GetChatTranscriptArgs is the typed argument struct for get_chat_transcript.

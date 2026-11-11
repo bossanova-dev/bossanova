@@ -16,7 +16,10 @@ into the spec.
   the review `areas` with describer facts (`items`, `change`, `undisclosed`), the `confidence` and
   park `reasons`, `blockers` and review `notes`, CI checks in `ci`, `commits`,
   `repoSettings.canAutoMerge`, and `media`: a summary of what a passing run recorded on this head
-  (clip titles, chapters, still captions, API transcript titles), or why there is none.
+  (clip titles, chapters, still captions, API transcript titles), or why there is none. Its
+  `documents`, when present, are the PDFs a passing run rendered: each with a `title`, a
+  `pageCount` and the `page` number and caption of each rendered page. A `side: base` document
+  `pairs` with the head document it shows the before of, page by page number.
 - `media.json` when the caller gives it: the same media, validated. You read captions from it; you
   never open or describe a binary.
 - The worktree at `head`, **read-only**. Use only `git show <sha>:<path>`,
@@ -60,7 +63,7 @@ Write one JSON object to the `spec` path:
     "after": [{ "text": "…", "done": false }]
   },
   "notes": [{ "severity": "P2", "at": "path:line", "text": "…" }],
-  "evidencePlan": [{ "claim": "…", "kind": "still | clip | transcript", "how": "…" }],
+  "evidencePlan": [{ "claim": "…", "kind": "still | clip | transcript | document", "how": "…" }],
   "uncertain": ["…"]
 }
 ```
@@ -78,7 +81,8 @@ omitted.
    anything you write. Add only a concrete reason those do not name: `canAutoMerge: false`, an area
    whose `defaultAsk` is `always`, a failing or pending check, a deploy step. Never repeat one.
 3. **`risks`** are what could go wrong for a user, the business or the system if this merges as
-   it is, in plain words. `at` is the exact head-side file and line the risk is about, and the file
+   it is, in plain words. A changed rendered document is a risk when its page count or a page
+   caption shows a change the PR does not explain; cite the template or code that renders it. `at` is the exact head-side file and line the risk is about, and the file
    must be one the PR changes. `deploy` is for a required step outside the PR: a secret, an
    infrastructure change, a manual data fix. A PR with nothing risky gets an empty list; do not pad
    it. Order by level. `label` is one or two words, at most 40 characters.
@@ -92,10 +96,13 @@ omitted.
 5. **`checklist.before`** holds the decisions the reviewer must make (questions, from the risks),
    plus facts already verified (`done: true`, such as a passing check). **`after`** holds deploy
    steps.
-6. **`notes`** are the bundle's review notes, one sentence each. Empty when there are none.
+6. **`notes`** are findings of your own that no bundle review note already makes, one sentence
+   each, with a `severity` from P0 to P3 when you can grade it. The page shows the bundle's review
+   notes itself, so never restate one here, even reworded. Empty when you have none.
 7. **`evidencePlan`**: for each user-visible behaviour the media do not already show, how a
    pipeline could capture proof: the repository's existing end-to-end test that drives it (cite its
-   real path and test name), or "none possible" with why. You capture nothing yourself.
+   real path and test name), or "none possible" with why. Use `kind: "document"` for a rendered
+   file such as a PDF statement or invoice. You capture nothing yourself.
 8. **`uncertain`** lists what you could not settle. It is shown to the reader as such.
 
 Text is at most 300 characters per field, the title 110, and each list at most 20 entries (12

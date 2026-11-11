@@ -1035,7 +1035,7 @@ func TestReadyRetry_AWaitWokenLateNamesTheDeadlineThatEndedIt(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				var arm sync.Once
 				return ctx, cancel, func(ctx context.Context, name string) (string, error) {
-					arm.Do(func() { time.AfterFunc(100*time.Millisecond, cancel) })
+					arm.Do(func() { time.AfterFunc(10*retryPollInterval, cancel) })
 					return booting(ctx, name)
 				}
 			},

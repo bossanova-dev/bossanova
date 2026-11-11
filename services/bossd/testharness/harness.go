@@ -73,6 +73,8 @@ type Options struct {
 	// this nil — the daemon then short-circuits ensureChatTmuxSession on
 	// the !Available check.
 	TmuxCommandFactory tmux.CommandFactory
+	// TmuxOptions are appended after the harness readiness pins, so they override them.
+	TmuxOptions []tmux.Option
 	// TmuxDaemonID, when non-empty, makes the daemon's tmux.Client stamp
 	// every session it creates with that owning-daemon id, exactly as
 	// production does. Tests that reconcile panes against the DB need it:
@@ -234,28 +236,13 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	if opts.TmuxDaemonID != "" {
 		tmuxOpts = append(tmuxOpts, tmux.WithDaemonID(opts.TmuxDaemonID))
 	}
-	// Pin the session-start readiness budget rather than inheriting the
-	// production default. The harness drives a fake tmux whose panes either
-	// show the ready marker immediately or never show it at all, so a long
-	// budget buys nothing here and costs the full budget on every test that
-	// exercises a readiness FAILURE. When BOS-893 raised the production default
-	// from 5s to 45s, TestRepairE2E_TeeWrapperFailsBeforePromptAndRecordsStartError
-	// went from 5.2s to 45.2s on exactly that account.
-	//
-	// BOS-895 retried that wait, so the cost a failing test pays is now a
-	// PRODUCT — attempts × budget — and both factors are pinned here rather
-	// than one being pinned and the other inherited. The first cut halved the
-	// budget to 2.5s and left the attempt count to the tmux package const,
-	// which meant this pin was worth 5s only for as long as that const stayed
-	// at 2, with nothing here to say so and nothing to fail if it moved.
-	//
-	// State both. 2 × 2.5s is the 5s this pin has always been worth, and a
-	// change to the production attempt count now leaves the harness cost
-	// exactly where it is instead of silently rescaling it.
+	// Fake panes show the ready marker immediately or never, so pin both
+	// factors at 2 × 2.5s. Real-tmux tests override this through TmuxOptions.
 	tmuxOpts = append(tmuxOpts,
 		tmux.WithSessionStartReadyAttempts(2),
 		tmux.WithSessionStartReadyDeadline(2500*time.Millisecond),
 	)
+	tmuxOpts = append(tmuxOpts, opts.TmuxOptions...)
 	tmuxClient = tmux.NewClient(tmuxOpts...)
 
 	// Lifecycle. Wired with tmuxClient so cron-spawned sessions route

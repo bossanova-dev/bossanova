@@ -67,7 +67,7 @@ func TestPerMinuteRefusalPausesBrieflyNotUntilReset_ScheduledJobs_AC230401(t *te
 	ctx := context.Background()
 	start := clock.Now()
 
-	_, err := p.GetPRStatus(ctx, "o/r", 7)
+	_, err := primaryPRRead(p, ctx, "o/r", 7)
 	if !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("refused call err = %v, want vcs.ErrRateLimited", err)
 	}
@@ -77,7 +77,7 @@ func TestPerMinuteRefusalPausesBrieflyNotUntilReset_ScheduledJobs_AC230401(t *te
 	assertResetAt(t, err, start.Add(rateLimitBurstPause))
 
 	clock.Advance(rateLimitBurstPause - time.Second)
-	_, err = p.GetPRStatus(ctx, "o/r", 7)
+	_, err = primaryPRRead(p, ctx, "o/r", 7)
 	if !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("call inside the burst pause err = %v, want vcs.ErrRateLimited", err)
 	}
@@ -91,7 +91,7 @@ func TestPerMinuteRefusalPausesBrieflyNotUntilReset_ScheduledJobs_AC230401(t *te
 
 	refusing.Store(false)
 	clock.Advance(time.Second)
-	if _, err := p.GetPRStatus(ctx, "o/r", 7); err != nil {
+	if _, err := primaryPRRead(p, ctx, "o/r", 7); err != nil {
 		t.Fatalf("call after the burst pause: %v", err)
 	}
 	if got := countWarnsWith(logs.String(), burstLogLine); got != 1 {
@@ -116,7 +116,7 @@ func TestPerMinuteRefusalLeavesQuotaStatusAtGitHubsFigures_ScheduledJobs_AC23040
 		t.Fatalf("QuotaStatus before the refusal: %v", err)
 	}
 	clock.Advance(5 * time.Second)
-	if _, err := p.GetPRStatus(ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("refused call err = %v, want vcs.ErrRateLimited", err)
 	}
 	quotas, err := p.QuotaStatus(ctx)
@@ -135,7 +135,7 @@ func TestPerMinuteRefusalLeavesQuotaStatusAtGitHubsFigures_ScheduledJobs_AC23040
 
 	refusing.Store(false)
 	clock.Advance(rateLimitBurstPause)
-	if _, err := p.GetPRStatus(vcs.WithCachedReads(ctx), "o/r", 7); err != nil {
+	if _, err := primaryPRRead(p, vcs.WithCachedReads(ctx), "o/r", 7); err != nil {
 		t.Fatalf("background read after the burst pause: %v (the floor must read GitHub's figures)", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestRepeatedBurstRefusalsBackOffToTheFallbackCap(t *testing.T) {
 	refuse := func(want time.Duration) {
 		t.Helper()
 		now := clock.Now()
-		_, err := p.GetPRStatus(ctx, "o/r", 7)
+		_, err := primaryPRRead(p, ctx, "o/r", 7)
 		assertResetAt(t, err, now.Add(want))
 		clock.Advance(want)
 	}
@@ -162,7 +162,7 @@ func TestRepeatedBurstRefusalsBackOffToTheFallbackCap(t *testing.T) {
 	}
 
 	refusing.Store(false)
-	if _, err := p.GetPRStatus(ctx, "o/r", 7); err != nil {
+	if _, err := primaryPRRead(p, ctx, "o/r", 7); err != nil {
 		t.Fatalf("call after the capped pause: %v", err)
 	}
 	refusing.Store(true)
@@ -192,13 +192,13 @@ func TestSecondaryRefusalBurstPausesWithoutProbing(t *testing.T) {
 	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 	start := clock.Now()
 
-	_, err := p.GetPRStatus(context.Background(), "o/r", 7)
+	_, err := primaryPRRead(p, context.Background(), "o/r", 7)
 	if !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("secondary refusal err = %v, want vcs.ErrRateLimited", err)
 	}
 	assertResetAt(t, err, start.Add(rateLimitBurstPause))
 	clock.Advance(30 * time.Second)
-	if _, err := p.GetPRStatus(context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
+	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("call inside the secondary burst pause err = %v, want vcs.ErrRateLimited", err)
 	}
 	if got := gh.count(isPRView); got != 1 {
@@ -214,13 +214,13 @@ func TestHourlyExhaustionStillPausesUntilReset(t *testing.T) {
 	ctx := context.Background()
 	reset := time.Unix(clock.Now().Add(40*time.Minute).Unix(), 0)
 
-	_, err := p.GetPRStatus(ctx, "o/r", 7)
+	_, err := primaryPRRead(p, ctx, "o/r", 7)
 	assertResetAt(t, err, reset)
 	if isGitHubTransient(err) {
 		t.Fatalf("hourly exhaustion %v is transient; it lasts until the reset", err)
 	}
 	clock.Advance(39 * time.Minute)
-	_, err = p.GetPRStatus(ctx, "o/r", 7)
+	_, err = primaryPRRead(p, ctx, "o/r", 7)
 	assertResetAt(t, err, reset)
 	if got := gh.count(isPRView); got != 1 {
 		t.Fatalf("gh pr view ran %d times before the reset, want 1", got)

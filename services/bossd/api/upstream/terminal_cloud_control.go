@@ -2,11 +2,29 @@ package upstream
 
 import (
 	"context"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/daemoncaps"
 )
+
+const (
+	terminalPrivateReason               = "cloud control is private on this machine"
+	terminalRepoPolicyChangedReason     = "cloud control changed for this repo"
+	terminalCloudControlRecheckInterval = time.Second
+)
+
+func terminalAttachAllowed(mode config.CloudControlMode, privateSealed bool) bool {
+	return mode != config.CloudControlPrivate || privateSealed
+}
+
+func (s *activeAttach) policyExitReason() string {
+	if s.policyRevoked.Load() {
+		return terminalRepoPolicyChangedReason
+	}
+	return terminalPrivateReason
+}
 
 func (c *TerminalStreamClient) refuseTerminalControl(ctx context.Context, msg *pb.TerminalClientMessage, outbound chan<- *pb.TerminalServerMessage) bool {
 	var attachID, uploadID string
@@ -170,13 +188,35 @@ func (c *TerminalStreamClient) attachMode(ctx context.Context, state *activeAtta
 		return config.CloudControlReadOnly
 	}
 	mode := repoCloudControlMode(ctx, c.cloudControl, state.repoID)
-	if (state.writable && mode != config.CloudControlFull) || (mode == config.CloudControlPrivate && !state.privateSealed) {
-		if mode != config.CloudControlPrivate {
-			state.policyRevoked.Store(true)
-		}
-		state.refuseOutput()
-	}
+	state.applyCloudControlMode(mode)
 	return mode
+}
+
+func (s *activeAttach) applyCloudControlMode(mode config.CloudControlMode) {
+	if (s.writable && mode != config.CloudControlFull) || !terminalAttachAllowed(mode, s.privateSealed) {
+		if mode != config.CloudControlPrivate {
+			s.policyRevoked.Store(true)
+		}
+		s.refuseOutput()
+	}
+}
+
+func (c *TerminalStreamClient) recheckIdleAttach(ctx context.Context, state *activeAttach) bool {
+	if policy, ok := c.cloudControl.(interface {
+		idleRepoMode(context.Context, string) config.CloudControlMode
+	}); ok {
+		state.applyCloudControlMode(policy.idleRepoMode(ctx, state.repoID))
+		return state.outputRefused.Load()
+	}
+	return c.attachOutputRefused(ctx, state)
+}
+
+func (c *TerminalStreamClient) attachOutputRefused(ctx context.Context, state *activeAttach) bool {
+	if state.outputRefused.Load() {
+		return true
+	}
+	c.attachMode(ctx, state)
+	return state.outputRefused.Load()
 }
 
 func (c *TerminalStreamClient) refuseTerminalData(ctx context.Context, data *pb.TerminalDataChunk, refused map[string]string) bool {
@@ -194,11 +234,8 @@ func (c *TerminalStreamClient) refuseTerminalData(ctx context.Context, data *pb.
 		}
 	}
 	mode := c.attachMode(ctx, state)
-	if refused[id] != "" || state.policyRevoked.Load() || (!data.GetIsSealed() && mode == config.CloudControlPrivate) {
-		refused[id] = "cloud control is private on this machine"
-		if state.policyRevoked.Load() {
-			refused[id] = "cloud control changed for this repo"
-		}
+	if refused[id] != "" || state.policyRevoked.Load() || state.outputRefused.Load() || !terminalAttachAllowed(mode, data.GetIsSealed()) {
+		refused[id] = state.policyExitReason()
 		if state := c.lookupAttach(id); state != nil {
 			state.refuseOutput()
 		}

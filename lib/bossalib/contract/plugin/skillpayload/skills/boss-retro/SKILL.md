@@ -22,14 +22,60 @@ adds filing labels and one project; it never narrows marker dedupe. Teardown on 
 
 ## 0. Preflight
 
-Resolve the installed helpers in every shell block; shell state is not shared:
+Run this pre-pin block first, once per run. Acquire the repo lock before replacing the pin;
+a peer receiving `held` must never create or remove the owner's pin:
 
 ```bash
 BOSS_RETRO_TOOLBOX="${BOSS_RETRO_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-retro/toolbox}"
 if [ ! -d "$BOSS_RETRO_TOOLBOX" ]; then BOSS_RETRO_TOOLBOX="$HOME/.codex/skills/boss-retro/toolbox"; fi
+BOSS_RETRO_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/boss-retro.XXXXXX")" || exit 1
+BOSS_RETRO_COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir)" || exit 1
+BOSS_RETRO_LOCK_STATUS=0
+BOSS_RETRO_LOCK="$(node "$BOSS_RETRO_TOOLBOX/retro/retro-write.mjs" lock acquire --dir "$BOSS_RETRO_COMMON_DIR")" || BOSS_RETRO_LOCK_STATUS=$?
+if [ "$BOSS_RETRO_LOCK_STATUS" != 0 ]; then
+  rmdir "$BOSS_RETRO_RUN_DIR"
+  printf '%s\n' "$BOSS_RETRO_LOCK"
+  exit "$BOSS_RETRO_LOCK_STATUS"
+fi
+BOSS_RETRO_LOCK_TOKEN="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).token)' "$BOSS_RETRO_LOCK")" || exit 1
+BOSS_RETRO_SKILLS_HOME="$(dirname "$(dirname "$BOSS_RETRO_TOOLBOX")")"
+if ! node "$BOSS_RETRO_TOOLBOX/skill-pin.mjs" create --skill boss-retro --skills-home "$BOSS_RETRO_SKILLS_HOME"; then
+  node "$BOSS_RETRO_TOOLBOX/retro/retro-write.mjs" lock release --dir "$BOSS_RETRO_COMMON_DIR" --token "$BOSS_RETRO_LOCK_TOKEN"
+  rmdir "$BOSS_RETRO_RUN_DIR"
+  exit 1
+fi
+BOSS_RETRO_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-retro"
+BOSS_RETRO_TOOLBOX="$BOSS_RETRO_PIN/toolbox"
+[ -f "$BOSS_RETRO_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-retro skill pin missing - re-run the first block"; exit 1; }
 ```
 
-Create a scratch run directory outside the checkout and set `BOSS_RETRO_RUN_DIR` to it.
+The first block created scratch and acquired the lock. Carry its common dir, token and scratch
+path across calls. Install teardown now, before settings or any other helper: on every locked
+exit (including interruption), remove scratch and the pin, then release the lock. Hold the lock
+through pin removal so a peer cannot create its new pin before this run removes the old one.
+Load the release function before removing its helper tree; cleanup is a separate Bash call:
+
+```bash
+BOSS_RETRO_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-retro"
+BOSS_RETRO_TOOLBOX="$BOSS_RETRO_PIN/toolbox"
+[ -f "$BOSS_RETRO_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-retro skill pin missing - re-run the first block"; exit 1; }
+node --input-type=module - "$BOSS_RETRO_TOOLBOX" "$BOSS_RETRO_COMMON_DIR" "$BOSS_RETRO_LOCK_TOKEN" "$BOSS_RETRO_RUN_DIR" <<'NODE'
+import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
+const [toolbox, dir, token, scratch] = process.argv.slice(2)
+const { lock } = await import(pathToFileURL(toolbox + '/retro/retro-write.mjs').href)
+try {
+  fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 3 })
+  execFileSync(process.execPath, [toolbox + '/skill-pin.mjs', 'remove', '--skill', 'boss-retro'])
+} finally {
+  console.log(JSON.stringify(lock('release', { dir, token })))
+}
+NODE
+```
+
+After the pin exists, read `references/…`, `scripts/…` and `extensions/…` from
+`$BOSS_RETRO_PIN/`. Every later shell block uses the pinned locator above; never recreate the pin.
 The scratch directory holds files only; run every command from the checkout root, and rerun a
 helper exiting 3 (`not-a-checkout`) from that root rather than substituting an empty result.
 Run
@@ -51,10 +97,8 @@ operation is run with `tracker/cli.mjs invoke-operation <op> --args-file <file>`
 the answer. A descriptor verb (`create-issue`, `update-comment`, `write-description`) that prints
 `outcome: operation-executed` has already performed the write: do not make an MCP call for it.
 
-Run `retro-write.mjs lock acquire --dir <git-common-dir>`. `held` exits without acting;
-`acquired` supplies the token. Install teardown that calls `lock release --dir <git-common-dir>
---token <token>` and removes scratch files on every exit, including interrupted runs. Touch the
-lock at phase boundaries and while awaiting workers.
+Touch the acquired lock at phase boundaries and while awaiting workers with
+`retro-write.mjs lock touch --dir <git-common-dir> --token <token>`.
 
 ## 1. Collect
 

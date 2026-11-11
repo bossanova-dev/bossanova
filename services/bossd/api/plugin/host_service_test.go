@@ -223,7 +223,7 @@ func TestRecordAgentRunStartClosesStaleOpenRowBeforeStart(t *testing.T) {
 func TestHostServiceListOpenPRs(t *testing.T) {
 	mock := &mockVCSProvider{
 		openPRs: []vcs.PRSummary{
-			{Number: 1, Title: "PR One", HeadBranch: "feat/one", State: vcs.PRStateOpen, Author: "alice", HeadSHA: "abc123", CommitAuthors: []vcs.CommitAuthor{{Login: "alice", Email: "alice@example.com"}}, CommitAuthorsComplete: true},
+			{Number: 1, Title: "PR One", HeadBranch: "feat/one", State: vcs.PRStateOpen, Author: "alice", HeadSHA: "abc123", CommitAuthors: []vcs.CommitAuthor{{Login: "alice", Email: "alice@example.com"}}, CommitAuthorsComplete: true, IsConflicted: true},
 			{Number: 2, Title: "PR Two", HeadBranch: "feat/two", State: vcs.PRStateOpen, Author: "bob"},
 		},
 	}
@@ -244,6 +244,9 @@ func TestHostServiceListOpenPRs(t *testing.T) {
 	}
 	if prs[0].GetAuthor() != "alice" {
 		t.Errorf("PR[0].Author = %q, want %q", prs[0].GetAuthor(), "alice")
+	}
+	if !prs[0].GetIsConflicted() || prs[1].GetIsConflicted() {
+		t.Fatal("conclusive conflict not preserved")
 	}
 	if prs[0].GetHeadSha() != "abc123" || !prs[0].GetHasAllCommitAuthors() || len(prs[0].GetCommitAuthors()) != 1 {
 		t.Fatalf("authorship not preserved: %v", prs[0])

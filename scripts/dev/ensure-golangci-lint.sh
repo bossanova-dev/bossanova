@@ -54,16 +54,9 @@ if check 2>/dev/null; then
 fi
 mkdir -p "$gobin"
 echo "    golangci-lint: installing v$version..."
-if ! want="v$version" gobin="$gobin" "$script_dir/retry.sh" 3 5 sh -c 'set -e; tmp=$(mktemp); trap "rm -f $tmp" EXIT; curl -sSfL -o "$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$want/install.sh"; sh "$tmp" -b "$gobin" "$want"'; then
-  # GitHub release assets can be down (HTTP 5xx) while the Go module proxy is up. Build the
-  # same pinned version from source instead. install.sh verifies the release tarball against
-  # the release's checksums.txt; a local build cannot match those bytes (different Go,
-  # ldflags and build stamps), so integrity comes from the Go checksum database instead,
-  # and the check below still requires the pinned version and a new enough Go.
-  major=${version%%.*}
-  module=github.com/golangci/golangci-lint
-  [ "$major" -lt 2 ] || module=$module/v$major
-  echo "    golangci-lint: release download failed; building v$version with go install from the Go module proxy..." >&2
-  GOBIN=$gobin "$script_dir/retry.sh" 3 5 go install "$module/cmd/golangci-lint@v$version"
-fi
+major=${version%%.*}
+module=github.com/golangci/golangci-lint
+[ "$major" -lt 2 ] || module=$module/v$major
+want="v$version" gobin="$gobin" "$script_dir/install-pinned-tool.sh" "$gobin" "$module/cmd/golangci-lint" "$version" -- \
+  sh -c 'set -e; tmp=$(mktemp); trap "rm -f $tmp" EXIT; curl -sSfL -o "$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$want/install.sh"; sh "$tmp" -b "$gobin" "$want"'
 check

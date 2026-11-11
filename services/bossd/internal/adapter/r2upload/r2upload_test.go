@@ -106,3 +106,24 @@ func TestOpenEvidenceBucketPreservesSourceError(t *testing.T) {
 		}
 	}
 }
+
+func TestUploadPDFIsStoredAsAttachment(t *testing.T) {
+	dispositions := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dispositions[r.Header.Get("Content-Type")] = r.Header.Get("Content-Disposition")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	bucket, err := New(&uploadTestSource{token: "t"}, WithBaseURL(server.URL)).OpenEvidenceBucket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contentType := range []string{"application/pdf", "image/png"} {
+		if err := bucket.Put(context.Background(), "media/a", contentType, strings.NewReader("x"), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if dispositions["application/pdf"] != "attachment" || dispositions["image/png"] != "" {
+		t.Fatalf("Content-Disposition by type = %v, want attachment for the PDF only", dispositions)
+	}
+}

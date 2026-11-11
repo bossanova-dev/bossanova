@@ -274,6 +274,8 @@ func TestReserveReadDoesNotJoinRefusedStandardFlight_Callbacks_AC222201(t *testi
 				}
 			})
 			return graphQLAt(clock, 1500, time.Hour), nil
+		case isRESTCall(args):
+			return "", &rateLimitedError{quota: quotaCore}
 		case isPRView(args):
 			return draftPRView, nil
 		}

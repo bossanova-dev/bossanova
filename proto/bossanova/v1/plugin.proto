@@ -64,6 +64,7 @@ enum TaskAction {
   TASK_ACTION_AUTO_MERGE = 1;     // Merge PR directly (no Claude session).
   TASK_ACTION_CREATE_SESSION = 2; // Create Claude Code session with plan.
   TASK_ACTION_NOTIFY_USER = 3;    // Skip action, notify user (eg. previously-rejected).
+  TASK_ACTION_REQUEST_REBASE = 4; // Ask the PR bot to rebase; no session.
 }
 
 // TaskItem is a task from an external system ready to become a session.
@@ -86,6 +87,10 @@ message TaskItem {
   TaskAction action = 8;
   // Existing branch to check out (eg. dependabot's PR branch).
   string existing_branch = 9;
+  // Whether all commits belong to the PR bot.
+  bool is_bot_rebase_requestable = 10;
+  // The head whose commit authors were classified.
+  string head_sha = 11;
 }
 
 message UpdateTaskStatusRequest {

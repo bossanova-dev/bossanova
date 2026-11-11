@@ -31,6 +31,14 @@ func (a upstreamTargets) Identity(ctx context.Context, id string) (config.RepoId
 	return a.identities.Identity(ctx, *repo), nil
 }
 
+func (a upstreamTargets) LastVerifiedIdentity(ctx context.Context, id string) (config.RepoIdentity, error) {
+	repo, err := a.repos.Get(ctx, id)
+	if err != nil {
+		return config.RepoIdentity{}, err
+	}
+	return a.identities.LastVerifiedIdentity(*repo), nil
+}
+
 func (a upstreamTargets) ListTargetRepos(ctx context.Context) ([]upstream.CommandTargetObject, error) {
 	repos, err := a.repos.List(ctx)
 	if err != nil {

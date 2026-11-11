@@ -550,8 +550,8 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 // whichever of key's own entry and the repository snapshot holds newer data;
 // with neither fresh it fetches the snapshot (one query for every open PR) and
 // projects from it, unless a per-PR read stored while that fetch was in flight.
-// Only a PR the snapshot declines, or a snapshot fetch that failed for any
-// reason but an exhausted quota, falls through to the per-PR read. A failed
+// A PR the snapshot declines, or a failed snapshot fetch, falls through
+// to the per-PR read. A failed
 // snapshot is not refetched for one TTL (or until a webhook invalidates it);
 // background reads go straight to the per-PR read meanwhile.
 func snapshotRead[T any](ctx context.Context, p *Provider, repoPath, key string, clone func(T) T, project func(*prSnapshot) (T, bool), fetch func(context.Context) (T, error)) (T, error) {
@@ -568,9 +568,6 @@ func snapshotRead[T any](ctx context.Context, p *Provider, repoPath, key string,
 		var zero T
 		fetched, err := p.readOpenPRSnapshot(ctx, repoPath)
 		switch {
-		case errors.Is(err, vcs.ErrRateLimited):
-			// Falling back would spend the same exhausted quota per PR.
-			return zero, err
 		case err != nil && ctx.Err() != nil:
 			// The caller gave up; a per-PR read under the same ctx would too.
 			return zero, err

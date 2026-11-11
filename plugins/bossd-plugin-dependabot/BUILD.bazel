@@ -36,6 +36,7 @@ go_test(
     srcs = [
         "github_test.go",
         "history_test.go",
+        "rebase_test.go",
         "server_test.go",
     ],
     embed = [":bossd-plugin-dependabot_lib"],

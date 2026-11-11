@@ -47,8 +47,10 @@ verdict line at all) means stop and report, never clean.
 **Before the dispatch**, as one invocation:
 
 ```bash
-T="${BOSS_BUILD_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox}"
-[ -f "$T/worktree-state.mjs" ] || T="$HOME/.codex/skills/boss-build/toolbox"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
+T="$BOSS_BUILD_TOOLBOX"
 node "$T/worktree-state.mjs" \
   --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 # …must print `verdict: clean`. Only once it does, record the HEAD the dispatch starts from *and* which
@@ -79,8 +81,10 @@ Use the same label in `clear`, the worker brief and `check`; replace `task-N` ab
 **After the subagent returns**, as a second self-contained invocation — same pathspec:
 
 ```bash
-T="${BOSS_BUILD_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox}"
-[ -f "$T/worktree-state.mjs" ] || T="$HOME/.codex/skills/boss-build/toolbox"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
+T="$BOSS_BUILD_TOOLBOX"
 node "$T/worktree-state.mjs" \
   --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 # must print `verdict: clean`
@@ -137,8 +141,10 @@ interruption, inventory that committed state before dispatching anything:
 git log --oneline "$BASE_REF..HEAD"
 # residue from a subagent that died before committing — scoped exactly like the Step 5 check, so
 # host artifacts don't read as residue.
-T="${BOSS_BUILD_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox}"
-[ -f "$T/worktree-state.mjs" ] || T="$HOME/.codex/skills/boss-build/toolbox"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
+T="$BOSS_BUILD_TOOLBOX"
 node "$T/worktree-state.mjs" \
   --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 ```

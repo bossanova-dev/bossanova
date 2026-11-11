@@ -1001,6 +1001,115 @@ const greenHead = {
   checks: [bucketRow('test-go', 'SUCCESS', 'pass'), bucketRow('lint', 'SUCCESS', 'pass')],
 }
 
+const cancelledHead = [
+  { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'CI' },
+  {
+    name: 'Notify on nightly failure',
+    status: 'COMPLETED',
+    conclusion: 'CANCELLED',
+    workflowName: 'CI',
+  },
+]
+
+test('classifyChecks — a cancelled head job waits for its replacement workflow run', () => {
+  const v = classifyChecks({
+    headSHA: HEAD,
+    rollup: cancelledHead,
+    workflowRuns: [run('CI', 'in_progress')],
+  })
+  assert.equal(v.state, CHECK_STATES.PENDING)
+  assert.equal(v.reason, CHECK_REASONS.PENDING)
+  assert.deepEqual(v.cancelledPendingReplacement, ['Notify on nightly failure'])
+  assert.deepEqual(v.supersededCancelled, [])
+})
+
+test('classifyChecks — a successful workflow supersedes a cancelled notification job that never reattaches', () => {
+  for (const conclusion of ['success', 'neutral']) {
+    const v = classifyChecks({
+      headSHA: HEAD,
+      rollup: cancelledHead,
+      workflowRuns: [run('CI', 'completed', conclusion)],
+    })
+    assert.equal(v.state, CHECK_STATES.GREEN, conclusion)
+    assert.equal(v.reason, CHECK_REASONS.OK, conclusion)
+    assert.deepEqual(v.supersededCancelled, ['Notify on nightly failure'])
+    assert.deepEqual(v.cancelledPendingReplacement, [])
+  }
+})
+
+test('classifyChecks — a cancelled head job without complete replacement evidence still fails', () => {
+  for (const workflowRuns of [
+    undefined,
+    [],
+    [run('other', 'completed', 'success')],
+    [run('CI', 'completed', 'cancelled')],
+    [run('CI', 'completed', 'failure')],
+    { total_count: 2, workflow_runs: [run('CI', 'completed', 'success')] },
+    [run('CI', 'completed', 'success', 'other-head')],
+  ]) {
+    const v = classifyChecks({ headSHA: HEAD, rollup: cancelledHead, workflowRuns })
+    assert.equal(v.state, CHECK_STATES.FAILING, JSON.stringify(workflowRuns))
+    assert.deepEqual(v.supersededCancelled, [])
+    assert.deepEqual(v.cancelledPendingReplacement, [])
+  }
+  const v = classifyChecks({
+    rollup: cancelledHead.map(({ workflowName, ...entry }) => entry),
+    workflowRuns: [run('CI', 'completed', 'success')],
+  })
+  assert.equal(v.state, CHECK_STATES.FAILING)
+})
+
+test('classifyChecks — replacement reconciliation preserves a same-name failure in another workflow or source', () => {
+  for (const status of ['completed', 'in_progress']) {
+    const v = classifyChecks({
+      headSHA: HEAD,
+      rollup: [
+        ...cancelledHead,
+        { ...cancelledHead[1], workflowName: 'other', conclusion: 'FAILURE' },
+      ],
+      workflowRuns: [run('CI', status, status === 'completed' ? 'success' : '')],
+    })
+    assert.equal(v.state, CHECK_STATES.FAILING, status)
+    assert.deepEqual(v.supersededCancelled, [])
+    assert.deepEqual(v.cancelledPendingReplacement, [])
+  }
+  const v = classifyChecks({
+    rollup: cancelledHead,
+    buckets: [{ name: 'Notify on nightly failure', state: 'FAILURE', bucket: 'fail' }],
+    workflowRuns: [run('CI', 'completed', 'success')],
+  })
+  assert.equal(v.state, CHECK_STATES.FAILING)
+  assert.deepEqual(v.supersededCancelled, [])
+})
+
+test('classifyChecks — cancellation reconciliation handles bucket-only readings and attributed REST runs', () => {
+  const bucket = classifyChecks({
+    buckets: [
+      { name: 'ci', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+      { name: 'notify', bucket: 'cancel', workflow: 'CI' },
+    ],
+    workflowRuns: [run('CI', 'in_progress')],
+  })
+  assert.equal(bucket.state, CHECK_STATES.PENDING)
+  assert.deepEqual(bucket.cancelledPendingReplacement, ['notify'])
+  const rest = classifyChecks({
+    headSHA: HEAD,
+    checkRuns: {
+      check_runs: [
+        { ...checkRun('ci', 'completed', 'success'), check_suite: { id: 100 } },
+        { ...checkRun('notify', 'completed', 'cancelled'), check_suite: { id: 99 } },
+      ],
+    },
+    workflowRuns: [
+      { ...run('CI', 'completed', 'cancelled'), workflow_id: 7, check_suite_id: 99 },
+      { ...run('CI', 'completed', 'success'), workflow_id: 7, check_suite_id: 100 },
+      { ...run('CI', 'completed', 'failure'), workflow_id: 8 },
+    ],
+  })
+  assert.equal(rest.state, CHECK_STATES.GREEN)
+  assert.deepEqual(rest.supersededCancelled, ['notify'])
+})
+
 test('classifyChecks — a queued head run holds an all-success attached set at pending', () => {
   const verdict = classifyChecks({
     headSHA: HEAD,

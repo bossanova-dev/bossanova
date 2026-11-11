@@ -794,6 +794,7 @@ func prSummariesToProto(prs []vcs.PRSummary) []*bossanovav1.PRSummary {
 			Author:              pr.Author,
 			HeadSha:             pr.HeadSHA,
 			HasAllCommitAuthors: pr.CommitAuthorsComplete,
+			IsConflicted:        pr.IsConflicted,
 		}
 		for _, author := range pr.CommitAuthors {
 			pbPRs[i].CommitAuthors = append(pbPRs[i].CommitAuthors, &bossanovav1.PRCommitAuthor{Login: author.Login, Email: author.Email})

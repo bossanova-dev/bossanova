@@ -94,7 +94,7 @@ export const CRON_FINALIZE_WAIT = 60 * MINUTE
 const CRON_BRANCH = /^cron-/
 
 /**
- * Whether the session is a cron run: its job's latest run, or on a cron fire's branch.
+ * Whether the session is a cron run: linked to its job, or on a cron fire's branch.
  * @param {{ branch?: string }} session
  * @param {{ id: string } | null} [cronJob]
  */

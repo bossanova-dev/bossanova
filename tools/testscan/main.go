@@ -1,4 +1,4 @@
-// Command testscan reports test fake declarations and imported time.Sleep calls.
+// Command testscan reports test fake declarations, sleeps and literal timer calls.
 // It parses source only: build tags and unavailable dependencies do not hide tests.
 package main
 
@@ -24,6 +24,7 @@ type fake struct {
 type sleep struct {
 	File       string `json:"file"`
 	Line       int    `json:"line"`
+	Call       string `json:"call"`
 	InSynctest bool   `json:"inSynctest"`
 }
 type result struct {
@@ -141,11 +142,7 @@ func scanSource(fset *token.FileSet, file string, source any) result {
 	var bindings []binding
 	// Walk every expression, including function literals in package initializers.
 	ast.Walk(declarations{end: tree.End(), bindings: &bindings}, tree)
-	importedCall := func(call *ast.CallExpr, pkg, method string) bool {
-		sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != method {
-			return false
-		}
+	importedSelector := func(sel *ast.SelectorExpr, pkg string) bool {
 		id, ok := sel.X.(*ast.Ident)
 		if !ok || imports[id.Name] != pkg {
 			return false
@@ -157,6 +154,11 @@ func scanSource(fset *token.FileSet, file string, source any) result {
 		}
 		return true
 	}
+	importedCall := func(call *ast.CallExpr, pkg, method string) bool {
+		sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == method && importedSelector(sel, pkg)
+	}
+	importedTime := func(sel *ast.SelectorExpr) bool { return importedSelector(sel, "time") }
 	type interval struct{ start, end token.Pos }
 	var bubbles []interval
 	ast.Inspect(tree, func(node ast.Node) bool {
@@ -174,7 +176,14 @@ func scanSource(fset *token.FileSet, file string, source any) result {
 				out.Fakes = append(out.Fakes, fake{n.Name.Name, filepath.ToSlash(filepath.Dir(file)), file, fset.Position(n.Pos()).Line})
 			}
 		case *ast.CallExpr:
-			if importedCall(n, "time", "Sleep") {
+			call := ""
+			for _, method := range []string{"Sleep", "After", "NewTimer", "AfterFunc", "Tick", "NewTicker"} {
+				if importedCall(n, "time", method) && (method == "Sleep" || len(n.Args) > 0 && literalDuration(n.Args[0], importedTime)) {
+					call = method
+					break
+				}
+			}
+			if call != "" {
 				inside := false
 				for _, bubble := range bubbles {
 					if bubble.start <= n.Pos() && n.Pos() < bubble.end {
@@ -182,12 +191,35 @@ func scanSource(fset *token.FileSet, file string, source any) result {
 						break
 					}
 				}
-				out.Sleeps = append(out.Sleeps, sleep{file, fset.Position(n.Pos()).Line, inside})
+				out.Sleeps = append(out.Sleeps, sleep{file, fset.Position(n.Pos()).Line, call, inside})
 			}
 		}
 		return true
 	})
 	return out
+}
+
+func literalDuration(expr ast.Expr, importedTime func(*ast.SelectorExpr) bool) bool {
+	switch n := ast.Unparen(expr).(type) {
+	case *ast.BasicLit:
+		return n.Kind == token.INT || n.Kind == token.FLOAT
+	case *ast.SelectorExpr:
+		if !importedTime(n) {
+			return false
+		}
+		switch n.Sel.Name {
+		case "Nanosecond", "Microsecond", "Millisecond", "Second", "Minute", "Hour":
+			return true
+		}
+	case *ast.UnaryExpr:
+		return literalDuration(n.X, importedTime)
+	case *ast.BinaryExpr:
+		return literalDuration(n.X, importedTime) && literalDuration(n.Y, importedTime)
+	case *ast.CallExpr:
+		sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == "Duration" && importedTime(sel) && len(n.Args) == 1 && literalDuration(n.Args[0], importedTime)
+	}
+	return false
 }
 
 func main() {

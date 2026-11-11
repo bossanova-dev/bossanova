@@ -86,13 +86,16 @@ Step 3's `.inProgress` move needs no await because claim arbitration does not re
 
 ## Helpers
 
-Every helper ships in `toolbox/`. Shell state does not survive between tool calls, and a
-dispatched subagent inherits none of yours, so re-resolve the path in each block:
+Every helper ships in `toolbox/`. After Preflight, shell blocks and dispatched subagents
+resolve the same private pin from the worktree git dir:
 
 ```bash
-BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
-if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 ```
+
+Once Preflight has pinned, read `references/…` and `agents/…` from `$BOSS_BUILD_PIN/`.
 
 | Question                                                               | Ask                                                                                                                                                     |
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -168,7 +171,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
    worktree lock goes through **Stop cleanly** (Step 12). Discard scratch files and temp dirs you created.
 10. **Bookkeeping warns, capability blocks.** A drifted install, an incomplete route receipt, or a
     failed ledger write prints `warning: <what> — bookkeeping only, work state unaffected` and the
-    run continues. A missing toolbox or helper script is a hard stop; tracker tools not yet in your
+    run continues. A missing pin, toolbox or helper script is a hard stop; tracker tools not yet in your
     tool list are not (see **Tracker**).
 
 ## Mode
@@ -185,6 +188,18 @@ A `--headless` argument forces headless; when unsure, choose headless.
 
 ## Preflight
 
+For pin recovery during a run, set `BOSS_BUILD_CONTINUE=1` and carry that run's own
+`BLI_RUNID` into this block. Do not adopt a token from another entrant. This preserves review
+bookkeeping and reenters the existing lock before replacing the missing pin.
+The run record keeps its original `START_SHA` with the token; Step 1 reloads both in fresh shells.
+
+A callback delivered after the terminal line starts a new reconciliation pass: unset `BLI_RUNID`,
+set `BOSS_BUILD_CONTINUE=1`, and execute Preflight and Step 1 before reading pinned references or
+running their helpers. This takes a new lock and pin while preserving the previous review and ready
+route. Skip ticket selection, claiming and implementation; reconcile through
+[callback watches](references/callback-watches.md), then use Steps 9–12 for the resulting state.
+The new pass owns its fresh route receipt and removes its pin when it stops.
+
 ```bash
 git rev-parse --show-toplevel
 git branch --show-current
@@ -193,9 +208,11 @@ command -v git; command -v gh; gh auth status
 
 ```bash
 START_SHA="$(git rev-parse HEAD)"
-# Clear a previous run's Step 6 review state and Step 9 ready-route note (contracts: Steps 6, 9).
-rm -f "$(git rev-parse --git-dir)/boss-build-review-verdict" "$(git rev-parse --git-dir)/boss-build-ready-route"
-rm -rf "$(git rev-parse --git-dir)/boss-build/review" "$(git rev-parse --git-dir)/boss-build/review-verdict.json"
+# A continuation needs the reviewed-head and route history it is reconciling.
+if [ "${BOSS_BUILD_CONTINUE:-}" != 1 ]; then
+  rm -f "$(git rev-parse --git-dir)/boss-build-review-verdict" "$(git rev-parse --git-dir)/boss-build-ready-route"
+  rm -rf "$(git rev-parse --git-dir)/boss-build/review" "$(git rev-parse --git-dir)/boss-build/review-verdict.json"
+fi
 SESSION_BRANCH="$(git branch --show-current)"
 BASE_UPSTREAM="$(git rev-parse --abbrev-ref "$SESSION_BRANCH@{upstream}" 2>/dev/null)"
 BASE_REMOTE="${BASE_UPSTREAM%%/*}"
@@ -250,11 +267,38 @@ elif [ -f "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" ]; then
 else
   echo "boss-toolbox-drift: (drift helper not installed) — this install predates the check; drift is UNKNOWN, not clean." >&2
 fi
+# Own the worktree before replacing its pin. Keep a stable release helper if the shared tree moves.
+if [ -z "${BLI_RUNID:-}" ]; then
+  BLI_RUNID="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-token)" || exit 1
+fi
+PREFLIGHT_LOCK="$(mktemp -t boss-build-preflight-lock.XXXXXX)" || exit 1
+cp "$BOSS_BUILD_TOOLBOX/worktree-lock.sh" "$PREFLIGHT_LOCK" || { rm -f "$PREFLIGHT_LOCK"; exit 1; }
+LOCK_STATUS=0
+bash "$PREFLIGHT_LOCK" acquire "$BLI_RUNID" pending || LOCK_STATUS=$?
+if [ "$LOCK_STATUS" != 0 ]; then rm -f "$PREFLIGHT_LOCK"; exit "$LOCK_STATUS"; fi
+trap 'rm -f "$(git rev-parse --absolute-git-dir)/boss-build-run-id"; bash "$PREFLIGHT_LOCK" release "$BLI_RUNID"; rm -f "$PREFLIGHT_LOCK"' EXIT
+# Preserve the original review baseline when recovering this run's pin after implementation.
+RUN_RECORD="$(git rev-parse --absolute-git-dir)/boss-build-run-id"
+if [ "${BOSS_BUILD_CONTINUE:-}" = 1 ] && [ -f "$RUN_RECORD" ] &&
+  [ "$(sed -n '1p' "$RUN_RECORD")" = "$BLI_RUNID" ]; then
+  START_SHA="$(sed -n '2p' "$RUN_RECORD")"
+  [ -n "$START_SHA" ] || { echo "BLOCKED: run record has no start SHA"; exit 1; }
+fi
+# A peer cannot replace either field without owning the lock.
+printf '%s\n%s\n' "$BLI_RUNID" "$START_SHA" >"$RUN_RECORD" || exit 1
+# Pin the healed skill before any later helper or reference is read.
+node "$BOSS_BUILD_TOOLBOX/skill-pin.mjs" create --skill boss-build || exit 1
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
+export BOSS_BUILD_PIN BOSS_BUILD_TOOLBOX
 # BOSSD_MANAGED=1 iff a bossd daemon provisioned this worktree (references/standalone-mode.md):
 if node "$BOSS_BUILD_TOOLBOX/bossd-present.mjs"; then BOSSD_MANAGED=1; else BOSSD_MANAGED=0; fi
 if [ "$BOSSD_MANAGED" = "1" ]; then
   test -n "$SESSION_BRANCH" || exit 1
 fi
+trap - EXIT
+rm -f "$PREFLIGHT_LOCK"
 ```
 
 A stale-but-present installed file warns and the run continues; an `absent`, `mode` or
@@ -315,17 +359,21 @@ missing, degraded, partial, inventoryHint }`; the CLI is preferred whenever its 
 `partial: <capability>(<fields>)` when non-empty. Under `BOSSD_MANAGED=0` there may be no transport
 at all — see [`references/standalone-mode.md`](references/standalone-mode.md).
 
-## Step 1: Take the worktree lock
+## Step 1: Confirm the worktree lock
+
+Preflight acquired the lock before replacing the pin. Re-enter with its saved token; never
+mint a new token here. A failed Preflight releases its lock through its EXIT trap. A peer
+rejected by that acquisition stops `NO_CHANGE` without touching the pin or tracker.
 
 ```bash
-if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
-  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-    if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
-  done
-fi
-test -n "${BOSS_BUILD_TOOLBOX:-}" || { echo "BLOCKED: boss-build toolbox not found"; exit 1; }
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 LOCK="$BOSS_BUILD_TOOLBOX/worktree-lock.sh"
-BLI_RUNID="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-token)"
+RUN_RECORD="$(git rev-parse --absolute-git-dir)/boss-build-run-id"
+BLI_RUNID="$(sed -n '1p' "$RUN_RECORD")" || exit 1
+START_SHA="$(sed -n '2p' "$RUN_RECORD")" || exit 1
+[ -n "$BLI_RUNID" ] && [ -n "$START_SHA" ] || exit 1
 "$LOCK" acquire "$BLI_RUNID" pending
 ```
 
@@ -403,8 +451,9 @@ create a `boss-build/<ticket-id>` branch off the base first
 # Stays on gh: the ownership judgement reads the PR title and body, which the daemon does not carry.
 PR_JSON="$(gh pr list --head "$SESSION_BRANCH" --state open \
   --json number,title,body,headRefName,state)"
-BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
-if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 PR_NUMBER="$(node "$BOSS_BUILD_TOOLBOX/build/pr-ownership.mjs" number --pr-json "$PR_JSON")"
 ```
 
@@ -421,12 +470,9 @@ body, and real commits ahead of `$BASE_REF` (ignoring bossd's empty bootstrap co
 ## Step 3: Claim
 
 ```bash
-if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
-  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-    if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
-  done
-fi
-test -n "${BOSS_BUILD_TOOLBOX:-}" || { echo "BLOCKED: boss-build toolbox not found"; exit 1; }
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 TOKEN="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-token)"
 LEASE_STATUS=0
 LEASE_JSON="$(node "$BOSS_BUILD_TOOLBOX/issue-lease.mjs" acquire --scope build --issue '<TICKET-ID>' --token "$TOKEN")" || LEASE_STATUS=$?
@@ -510,8 +556,9 @@ an existing tracker link; later rank refresh fills sessions skipped here.
 Save the `getIssue` payload as `$ISSUE_JSON`. The plan lives in the tracker, never the repo:
 
 ```bash
-BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
-if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 PLAN_FILE="$(git rev-parse --git-dir)/boss-build/plan.md"
 mkdir -p "$(dirname "$PLAN_FILE")"
 node "$BOSS_BUILD_TOOLBOX/plan-attachment.mjs" build-source "$ISSUE_JSON" "$PLAN_FILE"
@@ -837,9 +884,9 @@ Every route from Step 6 comes through here.
 ## Step 8: Tag and get to green
 
 ```bash
-BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
-BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
+[ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" || exit 1
 # PR_NUMBER was captured in Step 7; re-derive if unset (resume / fresh shell). PR state reads go
 # through the daemon-first reader; it runs labelled gh only when no daemon answers.
@@ -1080,33 +1127,6 @@ may change it.
   and Hand-off arms the verify chat. Stamp `completion-phase-done` on every route. A verified merge also stamps
   `pr-merged-by-completion`, moves the ticket to `.done` (bookkeeping failures
   warn). `OUTCOME` never changes.
-- Release the lock: `"$BOSS_BUILD_TOOLBOX/worktree-lock.sh" release "$BLI_RUNID"`.
-- Assert the route receipt (an incomplete receipt only warns; a missing helper is a hard stop):
-
-```bash
-# Keep the two streams APART. stdout carries only the honest outcome line; stderr carries the JSON
-# detail plus node's own load-time noise, written BEFORE the outcome. Never merge them with 2>&1.
-RC_ERR="$(mktemp -t boss-build-route-err.XXXXXX)"
-RC_OUT="$(node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" assert --outcome "$OUTCOME" --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --run-id "$BLI_RUNID" 2>"$RC_ERR")" && RC_OK=yes || RC_OK=no
-RC_VERDICT="$(printf '%s\n' "$RC_OUT" | head -n 1)"
-case "$RC_VERDICT" in
-  REVIEW_READY | PARTIAL | BLOCKED | NO_CHANGE | ROUTE_UNSATISFIED) ;;
-  # No verdict line at all: the helper is absent, or was called wrong (its usage() exit 2 writes
-  # nothing to stdout). That is an ABSENT CAPABILITY, not an accounting gap — it stays a hard stop.
-  *)
-    cat "$RC_ERR" >&2
-    rm -f "$RC_ERR"
-    echo "BLOCKED: route-contract helper unusable; no verdict on stdout" >&2
-    exit 1
-    ;;
-esac
-if [ "$RC_OK" != yes ]; then
-  RC_DETAIL="$(tr '\n' ' ' <"$RC_ERR")"
-  echo "warning: route receipt incomplete (${RC_DETAIL:-no detail}) — bookkeeping only, work state unaffected" >&2
-fi
-rm -f "$RC_ERR"
-```
-
 - On every route with a PR, first `boss callback remove --all --pr "$PR_NUMBER" --repo <owner/name> --json`; a non-zero
   exit is a failed cleanup to report (callback-watches.md step 6). Nothing is re-armed except below,
   and `$WATCH_LIST_JSON` must be listed after this cleanup, never reused from before it.
@@ -1135,8 +1155,53 @@ node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \
 names, classify once more, print. `unknown` (`unreadable-check-state`) ⇒ run the bounded poll, then
 print. Never arm twice.
 
-- Scratch removal runs last, in its own Bash call (Rule 9) — never chained with lock release,
-  receipt or callback cleanup.
+- Remove recorded scratch in its own Bash call (Rule 9), after callback cleanup and hand-off.
+- Finally remove the pin, release the lock, stamp `lock-released` and assert the route receipt.
+  Keep the lock through pin removal so a peer cannot publish its next pin before this run deletes it.
+  The final process loads the route module and release script before removing the pin; it needs no
+  helper path afterwards. An incomplete receipt only warns; an unusable helper remains a hard stop.
+
+```bash
+# Keep the two streams APART. stdout carries only the honest outcome line; stderr carries the JSON
+# detail plus node's own load-time noise, written BEFORE the outcome. Never merge them with 2>&1.
+RC_ERR="$(mktemp -t boss-build-route-err.XXXXXX)"
+RC_OUT="$(node --input-type=module - "$BOSS_BUILD_TOOLBOX" "$BLI_RUNID" "$OUTCOME" "$BOSS_BUILD_ROUTE_RECEIPT" 2>"$RC_ERR" <<'NODE'
+import fs from 'node:fs'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
+const [toolbox, runId, outcome, receipt] = process.argv.slice(2)
+const route = await import(pathToFileURL(path.join(toolbox, 'finalize/route-contract.mjs')).href)
+const lock = fs.readFileSync(path.join(toolbox, 'worktree-lock.sh'), 'utf8')
+const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim()
+try {
+  fs.rmSync(path.join(gitDir, 'boss-build-run-id'), { force: true })
+  execFileSync(process.execPath, [path.join(toolbox, 'skill-pin.mjs'), 'remove', '--skill', 'boss-build'])
+} finally {
+  process.stderr.write(execFileSync('bash', ['-s', '--', 'release', runId], { input: lock, encoding: 'utf8' }))
+}
+route.stampObligation(receipt, 'lock-released', { runId })
+process.exitCode = route.runCli(['assert', '--outcome', outcome, '--receipt', receipt, '--run-id', runId])
+NODE
+)" && RC_OK=yes || RC_OK=no
+RC_VERDICT="$(printf '%s\n' "$RC_OUT" | head -n 1)"
+case "$RC_VERDICT" in
+  REVIEW_READY | PARTIAL | BLOCKED | NO_CHANGE | ROUTE_UNSATISFIED) ;;
+  # No verdict line at all: the helper is absent, or was called wrong (its usage() exit 2 writes
+  # nothing to stdout). That is an ABSENT CAPABILITY, not an accounting gap — it stays a hard stop.
+  *)
+    cat "$RC_ERR" >&2
+    rm -f "$RC_ERR"
+    echo "BLOCKED: route-contract helper unusable; no verdict on stdout" >&2
+    exit 1
+    ;;
+esac
+if [ "$RC_OK" != yes ]; then
+  RC_DETAIL="$(tr '\n' ' ' <"$RC_ERR")"
+  echo "warning: route receipt incomplete (${RC_DETAIL:-no detail}) — bookkeeping only, work state unaffected" >&2
+fi
+rm -f "$RC_ERR"
+```
 
 Then print the terminal state, adding `merged <sha>` only for a verified completion merge.
 

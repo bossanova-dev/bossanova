@@ -16,6 +16,7 @@ import (
 type Provider interface {
 	GetPRStatus(ctx context.Context, repoPath string, prID int) (*vcs.PRStatus, error)
 	GetCheckSet(ctx context.Context, repoPath string, prID int) (vcs.CheckSet, error)
+	VerifyPassedAtHead(ctx context.Context, repoPath, headSHA string) (bool, error)
 	ListWorkflowRuns(ctx context.Context, repoPath, headSHA string) ([]vcs.WorkflowRun, error)
 	GetReviewComments(ctx context.Context, repoPath string, prID int) ([]vcs.ReviewComment, error)
 }
@@ -37,11 +38,15 @@ type Options struct {
 
 // Snapshot is one PR's state as read at ObservedAt.
 type Snapshot struct {
+	// Degraded marks a snapshot read through another quota while the primary refused.
+	Degraded        bool
 	Status          vcs.PRStatus
 	Checks          []vcs.CheckResult
 	HasBuildReceipt bool
 	Verdict         vcs.CheckVerdict
 	VerifyPhase     vcs.VerifyPhase
+	// VerifyPassed confirms a candidate pass against statuses on Status.HeadSHA.
+	VerifyPassed bool
 	// RunsSettled is nil unless Verdict is green, so "not computed" differs
 	// from "not settled"; without IncludeWorkflowRuns the runs read is skipped
 	// for any other verdict.
@@ -99,7 +104,8 @@ func (r *Reader) requiredFor(ctx context.Context, repo, base string) []string {
 // Read returns the state of repo#pr. Every provider read is attributed to
 // opts.Label (the pr-state usage label by default) and, unless opts.Fresh, may
 // be served from the read cache or joined to an identical read already in
-// flight. A failed read is returned as an error, never as a partial snapshot.
+// flight. Required reads return errors. An unavailable verify confirmation
+// leaves VerifyPassed false while retaining the available snapshot.
 func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (Snapshot, error) {
 	label := opts.Label
 	if label == "" {
@@ -122,10 +128,18 @@ func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (S
 	}
 	snap := Snapshot{
 		Status:          *status,
+		Degraded:        status.Degraded || set.Degraded,
 		Checks:          set.Checks,
 		HasBuildReceipt: set.HasBuildReceipt,
 		Verdict:         vcs.EvaluateChecksRequiring(status.HeadSHA, set.Checks, nil, r.requiredFor(ctx, repo, status.BaseBranch)),
 		VerifyPhase:     vcs.ClassifyVerify(set.Checks),
+	}
+	if status.HeadSHA != "" && vcs.VerifyPassed(set.Checks) {
+		confirmed, confirmErr := r.provider.VerifyPassedAtHead(ctx, repo, status.HeadSHA)
+		snap.VerifyPassed = confirmErr == nil && confirmed
+		if ctx.Err() != nil {
+			return Snapshot{}, ctx.Err()
+		}
 	}
 	if green := snap.Verdict.IsGreen(); green || opts.IncludeWorkflowRuns {
 		runs, read, err := r.readRuns(ctx, repo, status.HeadSHA)

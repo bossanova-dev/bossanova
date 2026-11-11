@@ -274,6 +274,62 @@ func TestPRStateJSONCarriesWorkflowRuns_Callbacks_AC231201(t *testing.T) {
 	}
 }
 
+func TestPRStateVerifyPark_Callbacks_AC235301(t *testing.T) {
+	resp := prStateFixture()
+	success := pb.CheckConclusion_CHECK_CONCLUSION_SUCCESS
+	verify := resp.Checks[2]
+	verify.Status = pb.CheckStatus_CHECK_STATUS_COMPLETED
+	verify.Conclusion = &success
+	verify.Description = "needs human: human-review:ui · moderate: UI"
+	resp.VerifyPhase.Reason = "human-review:ui"
+	resp.VerifyPhase.Label = "moderate: UI"
+	fake := &prStateFake{resp: resp}
+
+	out, err := runPRStateCmd(t, fake, "7", "--repo", "acme/widgets", "--json")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("envelope %q: %v", out, err)
+	}
+	phase := env["verify_phase"].(map[string]any)
+	check := env["checks"].([]any)[2].(map[string]any)
+	if env["is_verify_passed"] != false || phase["kind"] != "needs_human" || check["conclusion"] != "success" {
+		t.Errorf("park verdict = %v, phase = %v, check = %v", env["is_verify_passed"], phase, check)
+	}
+
+	out, err = runPRStateCmd(t, fake, "7", "--repo", "acme/widgets")
+	if err != nil || !strings.Contains(out, "verify: needs_human (human-review:ui · moderate: UI)") {
+		t.Fatalf("park summary = %q, err = %v", out, err)
+	}
+}
+
+func TestPRStateVerifyPass_Callbacks_AC235301(t *testing.T) {
+	resp := &pb.GetPRStateResponse{
+		Repo: "acme/widgets", PrNumber: 7, IsVerifyPassed: true,
+		VerifyPhase: &pb.PRVerifyPhase{Kind: pb.PRVerifyPhaseKind_PR_VERIFY_PHASE_KIND_NONE},
+	}
+	fake := &prStateFake{resp: resp}
+	out, err := runPRStateCmd(t, fake, "7", "--repo", "acme/widgets", "--json")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("envelope %q: %v", out, err)
+	}
+	phase := env["verify_phase"].(map[string]any)
+	if env["is_verify_passed"] != true || phase["kind"] != "none" {
+		t.Errorf("pass verdict = %v, phase = %v", env["is_verify_passed"], phase)
+	}
+
+	out, err = runPRStateCmd(t, fake, "7", "--repo", "acme/widgets")
+	if err != nil || !strings.Contains(out, "verify: passed") {
+		t.Fatalf("pass summary = %q, err = %v", out, err)
+	}
+}
+
 func TestPRStateJSONNullsUncomputedFields(t *testing.T) {
 	out, err := runPRStateCmd(t, &prStateFake{resp: &pb.GetPRStateResponse{Repo: "acme/widgets", PrNumber: 7}}, "7", "--repo", "acme/widgets", "--json")
 	if err != nil {
@@ -301,6 +357,24 @@ func TestPRStateHumanSummary(t *testing.T) {
 	for _, want := range []string{"acme/widgets#7: open (draft)", "abc123", "merge state: blocked", "failing (failed)", "needs_human (AC-UNPROVEN)", "failing: lint", "pending: boss/verify", "settled: false (1 held)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPRStateDegradedJSON_Callbacks_AC245501(t *testing.T) {
+	for _, degraded := range []bool{false, true} {
+		fixture := prStateFixture()
+		fixture.IsDegraded = degraded
+		out, err := runPRStateCmd(t, &prStateFake{resp: fixture}, "7", "--repo", "acme/widgets", "--json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var env map[string]any
+		if err := json.Unmarshal([]byte(out), &env); err != nil {
+			t.Fatal(err)
+		}
+		if env["is_degraded"] != degraded {
+			t.Fatalf("is_degraded=%v, want %v", env["is_degraded"], degraded)
 		}
 	}
 }

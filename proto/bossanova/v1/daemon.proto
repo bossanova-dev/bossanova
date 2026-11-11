@@ -2710,6 +2710,11 @@ message GetPRStateResponse {
   // The runs read happened, so an empty workflow_runs means the head has no
   // run rather than that its runs were not read.
   bool is_workflow_runs_read = 21;
+  // The head carries a completed boss/verify pass. Human holds and other
+  // non-pass statuses are false. This is the predicate the merge gate checks.
+  bool is_verify_passed = 22;
+  // Another quota supplied part of this snapshot while the primary quota refused.
+  bool is_degraded = 23;
 }
 
 // PRWaitCondition names what a WaitPRState call waits for.

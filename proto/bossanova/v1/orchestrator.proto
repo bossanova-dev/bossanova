@@ -1381,6 +1381,9 @@ message ProxyListReviewQueueRequest {
   // Unset means every organization the caller belongs to. Set narrows to that
   // organization after a membership check.
   optional string organization_id = 3;
+  // Unset means every daemon the caller can read. Set narrows to that daemon's
+  // sessions after the same access check ListSessions applies.
+  optional string daemon_id = 4;
 }
 
 message ProxyListReviewQueueResponse {
@@ -2485,6 +2488,8 @@ message IssueAttachTokenRequest {
   // EDITOR or VIEWER. Only EDITOR is used in v1 — VIEWER is accepted and
   // behaves identically for now (see the plan's deferred items).
   AttachScope scope = 3;
+  // Optional caller-owned viewer device; empty preserves plaintext attaches.
+  string viewer_device_id = 4;
 }
 
 // IssueAttachTokenResponse carries the freshly-minted attach JWT and its

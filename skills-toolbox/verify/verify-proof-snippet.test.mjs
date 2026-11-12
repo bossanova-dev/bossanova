@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  cutContext,
   cutSnippet,
   gitChangedFiles,
   gitFileDiffs,
@@ -226,4 +227,20 @@ test('a line is absent only when the diff shows the whole head file, else it is 
   assert.equal(real('blob.bin', 1), null, 'a binary file is not checked')
   assert.equal(real('app.ts', 41), true)
   assert.equal(real('app.ts', 42), false)
+})
+
+test('the context around a line keeps the base lines a change replaced, and is capped', () => {
+  const removed = Array.from({ length: 20 }, (_, i) => `-gone ${i + 1}`).join('\n')
+  const diff = parseUnifiedDiff(
+    `--- a/x.go\n+++ b/x.go\n@@ -1,22 +1,3 @@\n keep 1\n${removed}\n+new 2\n keep 3\n`,
+  )[0]
+  const cut = cutContext(diff, 2)
+  assert.deepEqual(cut.focus, { side: 'new', line: 2 })
+  assert.equal(cut.rows.length, 12, 'a long deletion is cut to twelve rows')
+  assert.ok(
+    cut.rows.some((row) => row.kind === 'add' && row.new === 2),
+    'the focus line stays',
+  )
+  assert.equal(cutContext(diff, 40), null, 'a line neither side has quotes nothing')
+  assert.equal(cutContext(undefined, 1), null)
 })

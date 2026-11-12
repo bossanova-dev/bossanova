@@ -46,6 +46,14 @@
           "  status text NOT NULL,",
           "  sent_at timestamptz",
           ");"
+        ],
+        "clients/web/src/invoices/InvoiceList.tsx": [
+          "import { useInvoices } from './useInvoices'",
+          "",
+          "export function InvoiceList() {",
+          "  const { invoices } = useInvoices({ status: 'SENT' })",
+          "  return <Table rows={invoices} columns={['number', 'totalCents']} />",
+          "}"
         ]
       }
     },
@@ -166,6 +174,45 @@
           "\tif moved := MarkOverdue(invoices, asOf); moved != 1 {",
           "\t\tt.Fatalf(\"moved %d invoices, want 1\", moved)",
           "\t}",
+          "}"
+        ],
+        "clients/web/src/invoices/InvoiceList.tsx": [
+          "import { useInvoices } from './useInvoices'",
+          "import { useMarkOverdue } from './useMarkOverdue'",
+          "",
+          "export function InvoiceList() {",
+          "  const { invoices } = useInvoices({ status: 'SENT' })",
+          "  const [markOverdue] = useMarkOverdue()",
+          "  return (",
+          "    <Table",
+          "      rows={invoices}",
+          "      columns={['number', 'totalCents', 'dueOn']}",
+          "      onRefresh={() => markOverdue({ variables: { asOf: today() } })}",
+          "    />",
+          "  )",
+          "}"
+        ],
+        "clients/web/src/invoices/useMarkOverdue.ts": [
+          "import { gql, useMutation } from '@apollo/client'",
+          "",
+          "export const MARK_OVERDUE = gql`",
+          "  mutation MarkOverdue($asOf: Date!) {",
+          "    markOverdue(asOf: $asOf)",
+          "  }",
+          "`",
+          "",
+          "export function useMarkOverdue() {",
+          "  return useMutation(MARK_OVERDUE)",
+          "}"
+        ],
+        "services/api/http/routes.go": [
+          "package http",
+          "",
+          "import \"net/http\"",
+          "",
+          "// Routes registers the billing-run webhook the scheduler calls each night.",
+          "func Routes(mux *http.ServeMux, billingRun http.HandlerFunc) {",
+          "\tmux.HandleFunc(\"POST /webhooks/billing-run\", billingRun)",
           "}"
         ]
       }

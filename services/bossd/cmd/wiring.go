@@ -38,6 +38,7 @@ import (
 	"github.com/recurser/bossd/internal/notesync"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
+	"github.com/recurser/bossd/internal/prstack"
 	"github.com/recurser/bossd/internal/prstate"
 	"github.com/recurser/bossd/internal/resume"
 	"github.com/recurser/bossd/internal/rotation"
@@ -144,6 +145,7 @@ type daemonWiring struct {
 	pollerCancel                   context.CancelFunc
 	pollerCtx                      context.Context
 	prAssociationResolver          *session.PRAssociationResolver
+	prStacks                       *prstack.Detector
 	prState                        *prstate.Reader
 	prWaits                        *prstate.WaitHub
 	proofEnv                       *proofenvkeyring.Resolver

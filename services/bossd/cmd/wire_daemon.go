@@ -113,6 +113,7 @@ func (w *daemonWiring) wireDaemon() {
 		PRWaits:              w.prWaits,
 		RotationEvents:       w.rotationEvents,
 		Evidence:             w.evidenceReader,
+		PRStacks:             w.prStacks,
 		ResumeAttempts:       w.resumeAttempts,
 		PendingTrackerMerges: w.pendingTrackerMerges,
 		WedgeActivityCache:   w.wedgeActivityCache,

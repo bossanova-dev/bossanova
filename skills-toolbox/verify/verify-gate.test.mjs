@@ -10643,6 +10643,31 @@ test('standing writer reports expose P2 blockers and notes, with newest update s
   )
   assert.equal(unknown.reason, 'approval-unreadable')
 })
+test('a v2 report carries what review fixed and certified to the judge output', async () => {
+  const fixed = { ...p2Review, id: 'gone', line: 40 }
+  delete fixed.introduced
+  const acceptance = [
+    {
+      id: 'AC1',
+      text: 'Publishes once',
+      result: 'met',
+      check: 'go test ./agentaccounts',
+      head: OTHER,
+    },
+  ]
+  const note = { ...p2Review, severity: 'P3' }
+  const payload = { findings: [note], fixed: [fixed], acceptance }
+  const report = operatorComment(
+    `<!-- bs-review -->\n<!-- bs-review-findings v2 base=${BASE} head=${OTHER} ${Buffer.from(JSON.stringify(payload)).toString('base64url')} -->`,
+  )
+  const r = await judge({ pr: 7, repo: REPO }, deps(world({ comments: [report] })))
+  assert.equal(r.verdict, 'pass')
+  assert.deepEqual(r.reviewFixed, [fixed])
+  assert.deepEqual(r.reviewAcceptance, acceptance)
+  assert.deepEqual(r.reviewUnfixed, [{ ...note, verified: true, fixed: false }])
+  const v1 = await judge({ pr: 7, repo: REPO }, deps(world({ comments: [standingReport([note])] })))
+  assert.deepEqual([v1.reviewFixed, v1.reviewAcceptance], [undefined, undefined])
+})
 test('a clean superseding report releases a same-head repair-exhausted park', async () => {
   const older = standingReport([p2Review], { id: 10, msAgo: 60_000 })
   const newest = standingReport([], { id: 11, msAgo: 500 })

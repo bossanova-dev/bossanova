@@ -9,7 +9,9 @@ import { fileURLToPath } from 'node:url'
 import {
   CEILING_MS,
   DEFAULTS,
+  MIN_DELAY_MS,
   NOT_REQUESTED_SETTLE_MS,
+  STRANDED_SETTLE_MS,
   TRENDS,
   TREND_WINDOW_MS,
   UsageError,
@@ -1540,4 +1542,124 @@ test('parseRunOptions: --daemon-wait-ms defaults to 240s and is clamped to the b
     PR_WAIT_CAP_MS,
   )
   assert.throws(() => parseRunOptions(['--pr', '1', '--daemon-wait-ms', '10']), UsageError)
+})
+
+const strandedNode = () => ({
+  ...running('build'),
+  workflowName: 'CI',
+  detailsUrl: 'https://github.com/acme/widgets/actions/runs/111/job/222',
+})
+const strandedRuns = () => ({ ok: true, payload: [headRun('CI', 'completed', 'success')] })
+
+test('stranded: ends unknown with a job-only remedy after the same-head settle window', async () => {
+  const h = harness({ script: () => view(HEAD_A, [strandedNode()]), runs: strandedRuns })
+  const { verdict, messages } = await run(h, memStore())
+  assert.equal(verdict.state, WAIT_STATES.UNKNOWN)
+  assert.equal(verdict.reason, WAIT_REASONS.STRANDED_CHECK)
+  const span = h.calls.at(-1).atMs - h.calls[0].atMs
+  assert.ok(span >= STRANDED_SETTLE_MS)
+  assert.ok(span < STRANDED_SETTLE_MS + DEFAULTS.intervalMs)
+  assert.deepEqual(verdict.stranded, [
+    { name: 'build', workflow: 'CI', runId: '111', jobId: '222' },
+  ])
+  assert.deepEqual(verdict.strandedRemedy, ['gh run rerun 111 --job 222'])
+  assert.ok(messages.some((m) => m.includes('build') && m.includes('gh run rerun 111 --job 222')))
+})
+
+test('stranded: minimum-interval polling retains the full settle window', async () => {
+  for (const daemon of [false, true]) {
+    const h = harness({
+      script: (req) => ({
+        ...view(HEAD_A, [strandedNode()]),
+        fresh: !daemon || req.fresh === true,
+      }),
+      runs: strandedRuns,
+    })
+    if (daemon) h.read.source = () => 'daemon'
+    const { verdict } = await run(h, memStore(), {
+      intervalMs: MIN_DELAY_MS,
+      budgetMs: STRANDED_SETTLE_MS + 2 * MIN_DELAY_MS,
+    })
+    assert.equal(verdict.state, WAIT_STATES.UNKNOWN)
+    assert.equal(verdict.reason, WAIT_REASONS.STRANDED_CHECK)
+    assert.ok(verdict.elapsedMs >= STRANDED_SETTLE_MS)
+  }
+})
+
+test('stranded: a check clearing inside the window settles green', async () => {
+  const h = harness({
+    script: () => view(HEAD_A, [h.now() - T0 < 120_000 ? strandedNode() : passing('build')]),
+    runs: strandedRuns,
+  })
+  const { verdict } = await run(h, memStore())
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.deepEqual(verdict.stranded, [])
+})
+
+test('stranded: a second pending workflow keeps waiting and timeout still names stranded checks', async () => {
+  const h = harness({
+    script: () => view(HEAD_A, [strandedNode(), { ...running('other'), workflowName: 'Other' }]),
+    runs: () => ({
+      ok: true,
+      payload: [...strandedRuns().payload, headRun('Other', 'in_progress')],
+    }),
+  })
+  const { verdict } = await run(h, memStore(), {
+    budgetMs: STRANDED_SETTLE_MS + DEFAULTS.intervalMs,
+  })
+  assert.equal(verdict.state, WAIT_STATES.TIMEOUT)
+  assert.equal(verdict.stranded.length, 1)
+  assert.deepEqual(verdict.strandedRemedy, ['gh run rerun 111 --job 222'])
+})
+
+test('stranded: replacing a check or job restarts its same-head settle window', async () => {
+  const switchAt = STRANDED_SETTLE_MS - 2 * DEFAULTS.intervalMs
+  for (const replacement of [
+    { ...strandedNode(), name: 'other' },
+    {
+      ...strandedNode(),
+      detailsUrl: 'https://github.com/acme/widgets/actions/runs/333/job/444',
+    },
+  ]) {
+    const h = harness({
+      script: () => view(HEAD_A, [h.now() - T0 < switchAt ? strandedNode() : replacement]),
+      runs: strandedRuns,
+    })
+    const store = memStore()
+    let result = await run(h, store)
+    while (result.verdict.state === WAIT_STATES.CONTINUE) result = await run(h, store)
+    assert.equal(result.verdict.reason, WAIT_REASONS.STRANDED_CHECK)
+    assert.ok(result.verdict.elapsedMs >= switchAt + STRANDED_SETTLE_MS)
+    assert.equal(result.verdict.stranded[0].name, replacement.name)
+  }
+})
+
+test('stranded: a rerun resumes the same record and settles after the check completes', async () => {
+  const store = memStore()
+  const h = harness({ script: () => view(HEAD_A, [strandedNode()]), runs: strandedRuns })
+  const first = await run(h, store)
+  assert.equal(first.verdict.reason, WAIT_REASONS.STRANDED_CHECK)
+  const resumed = harness({
+    start: h.now(),
+    script: (_req, i) => view(HEAD_A, [i < 2 ? strandedNode() : passing('build')]),
+    runs: (_req, i) => ({
+      ok: true,
+      payload: [headRun('CI', i < 2 ? 'in_progress' : 'completed', i < 2 ? '' : 'success')],
+    }),
+  })
+  const next = await run(resumed, store)
+  assert.equal(next.record.startedAtMs, first.record.startedAtMs)
+  assert.ok(next.verdict.reads > first.verdict.reads)
+  assert.equal(next.verdict.state, WAIT_STATES.SETTLED)
+})
+
+test('stranded: cached daemon evidence is refreshed before ending the wait', async () => {
+  const h = harness({
+    script: (req) => ({ ...view(HEAD_A, [strandedNode()]), fresh: req.fresh === true }),
+    runs: strandedRuns,
+  })
+  h.read.source = () => 'daemon'
+  const { verdict } = await run(h, memStore())
+  assert.equal(verdict.reason, WAIT_REASONS.STRANDED_CHECK)
+  assert.equal(h.calls.at(-1).fresh, true)
 })

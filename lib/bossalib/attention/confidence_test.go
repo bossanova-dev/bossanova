@@ -25,6 +25,7 @@ func TestParkLevelSharedFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	levels := map[string]pb.ConfidenceLevel{
+		"high":          pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH,
 		"moderate":      pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE,
 		"low":           pb.ConfidenceLevel_CONFIDENCE_LEVEL_LOW,
 		"cannot-assess": pb.ConfidenceLevel_CONFIDENCE_LEVEL_CANNOT_ASSESS,

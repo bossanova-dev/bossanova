@@ -5,11 +5,13 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestQueueCrossRepositorySortAndCounts_Sessions_AC209301(t *testing.T) {
@@ -165,5 +167,22 @@ func TestQueueRefreshPreservesSelectedPR(t *testing.T) {
 	m = queueUpdate(m, LoadedMsg{Rows: []*pb.ReviewQueueRow{a, replacement}})
 	if m.selected().GetSession().GetId() != "b" || m.table.Cursor() != 0 {
 		t.Fatalf("refresh lost selection: cursor=%d selected=%v", m.table.Cursor(), m.selected())
+	}
+}
+
+// A parked PR whose chat asks a question keeps its row's asks, proof page and
+// wait from its verify park, not from the question its attention now shows.
+func TestQueueRowReadsItsParkWhileTheChatAsks_Sessions_AC209301(t *testing.T) {
+	row := queueRow("asking", pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE, 1, 10)
+	parkedAt := time.Now().Add(-3 * time.Hour)
+	row.Session.VerifyPark = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Asks: []string{"Migrations"}, ProofUrl: "https://proof.test/asking", Since: timestamppb.New(parkedAt)}
+	row.Session.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, Since: timestamppb.Now()}
+	m := queueModel(&queueScreenClient{}, row)
+	rendered := strings.Join(m.table.Rows()[0], "|")
+	if !strings.Contains(rendered, "Migrations") || !strings.Contains(rendered, "3h") {
+		t.Fatalf("row does not show its park's asks and wait: %s", rendered)
+	}
+	if !strings.Contains(ansi.Strip(m.footer()), "[p]roof") {
+		t.Fatalf("footer misses the park's proof page: %s", m.footer())
 	}
 }

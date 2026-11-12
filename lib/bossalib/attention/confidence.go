@@ -20,9 +20,12 @@ type Proof struct {
 }
 
 // ParkLevel mirrors verify's parkLevel: an explicit label wins, then inability
-// to assess, then a park composed entirely of sign-off codes.
+// to assess, then a park composed entirely of sign-off codes. A "high:" label is
+// a pass held for a person because no merge rule covers it.
 func ParkLevel(codes []string, label string) pb.ConfidenceLevel {
 	switch {
+	case strings.HasPrefix(label, "high:"):
+		return pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH
 	case strings.HasPrefix(label, "moderate:"):
 		return pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE
 	case strings.HasPrefix(label, "low:"):

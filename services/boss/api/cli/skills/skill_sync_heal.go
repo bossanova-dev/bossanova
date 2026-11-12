@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
@@ -65,6 +67,9 @@ func (g *Group) healSkillGateTree(out io.Writer, agent, dir string, payload sele
 	}
 	if len(result.Healed) > 0 {
 		_, _ = fmt.Fprintf(out, "boss skills gate: %s healed %d path(s) from origin/HEAD merge-base %.12s: %s\n", agent, len(result.Healed), base, strings.Join(result.Healed, ", "))
+	}
+	for _, line := range skillGateReloadLines(agent, result.Healed) {
+		_, _ = fmt.Fprintln(out, line)
 	}
 	if len(result.Skipped) > 0 {
 		_, _ = fmt.Fprintf(out, "boss skills gate: %s skipped %d path(s) changed during heal: %s\n", agent, len(result.Skipped), strings.Join(result.Skipped, ", "))
@@ -142,4 +147,28 @@ func (g *Group) skillGateHealFix(repoRoot, dir, base string, frozen fs.FS, entry
 		fix.Operation = libskillinstall.HealChmod
 	}
 	return fix, true
+}
+
+func skillGateReloadLines(agent string, healed []string) []string {
+	byCore := make(map[string][]string)
+	for _, rel := range healed {
+		core, rest, _ := strings.Cut(rel, "/")
+		if !isTopLevelSkillKey(core) {
+			continue
+		}
+		if rest == "" || rest == "SKILL.md" || strings.HasPrefix(rest, "references/") {
+			byCore[core] = append(byCore[core], rel)
+		}
+	}
+	cores := slices.Sorted(maps.Keys(byCore))
+	if len(cores) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(cores))
+	for _, core := range cores {
+		paths := byCore[core]
+		slices.Sort(paths)
+		lines = append(lines, fmt.Sprintf("boss skills gate: reload core=%s agent=%s paths=%s", core, agent, strings.Join(paths, ",")))
+	}
+	return lines
 }

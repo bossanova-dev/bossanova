@@ -1,0 +1,75 @@
+{
+  "repo": "acme/shop",
+  "pr": 58,
+  "commits": [
+    {
+      "message": "chore: start the shop sessions",
+      "files": {
+        "README.md": ["# Shop", "", "Sessions for the storefront."],
+        "src/auth/session.ts": [
+          "import { store } from './store'",
+          "",
+          "export type Session = { id: string; userId: string; createdAt: number }",
+          "",
+          "export function readSession(id: string): Session | null {",
+          "  const session = store.get(id)",
+          "  if (!session) return null",
+          "  return session",
+          "}",
+          "",
+          "export function dropSession(id: string): void {",
+          "  store.delete(id)",
+          "}"
+        ],
+        "src/auth/legacy-token.ts": [
+          "import { store } from './store'",
+          "",
+          "export function sessionFromToken(token: string) {",
+          "  const id = Buffer.from(token, 'base64').toString('utf8')",
+          "  return store.get(id) ?? null",
+          "}"
+        ],
+        "src/auth/store.ts": ["export const store = new Map()"]
+      }
+    },
+    {
+      "message": "feat: expire sessions after a day and drop legacy tokens",
+      "files": {
+        "src/auth/session.ts": [
+          "import { store } from './store'",
+          "",
+          "export const SESSION_TTL_MS = 24 * 60 * 60 * 1000",
+          "",
+          "export type Session = { id: string; userId: string; createdAt: number }",
+          "",
+          "export function readSession(id: string, now = Date.now()): Session | null {",
+          "  const session = store.get(id)",
+          "  if (!session) return null",
+          "  if (now - session.createdAt > SESSION_TTL_MS) {",
+          "    store.delete(id)",
+          "    return null",
+          "  }",
+          "  return session",
+          "}",
+          "",
+          "export function dropSession(id: string): void {",
+          "  store.delete(id)",
+          "}"
+        ],
+        "src/auth/session.test.ts": [
+          "import { test } from 'node:test'",
+          "import assert from 'node:assert/strict'",
+          "import { readSession, SESSION_TTL_MS } from './session'",
+          "import { store } from './store'",
+          "",
+          "test('an expired session reads as none and is dropped', () => {",
+          "  store.set('s1', { id: 's1', userId: 'u1', createdAt: 0 })",
+          "  assert.equal(readSession('s1', SESSION_TTL_MS + 1), null)",
+          "  assert.equal(store.has('s1'), false)",
+          "})"
+        ],
+        "src/auth/legacy-token.ts": null
+      }
+    }
+  ]
+}

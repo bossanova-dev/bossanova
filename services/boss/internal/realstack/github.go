@@ -88,7 +88,7 @@ func OpenPRListResponse(repo, nodes string) GHResponse {
     pullRequests(states: OPEN, first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title headRefName headRefOid state author { login __typename }
+        number title headRefName baseRefName headRefOid state author { login __typename }
         authorship: commits(first: 10) {
           totalCount
           nodes { commit { authors(first: 5) { totalCount nodes { email user { login } } } } }

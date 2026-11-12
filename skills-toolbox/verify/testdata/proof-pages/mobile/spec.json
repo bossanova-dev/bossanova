@@ -13,12 +13,12 @@
     {
       "level": "medium",
       "title": "Check-in is local only",
-      "body": "useVisits flips checkedIn in memory; nothing is saved, so a restart forgets it.",
-      "ifItMatters": "Persist the check-in before release.",
       "at": {
         "path": "app/src/hooks/useVisits.ts",
         "line": 8
-      }
+      },
+      "impact": "useVisits flips checkedIn in memory; nothing is saved, so a restart forgets it.",
+      "guard": "None."
     }
   ],
   "areas": [
@@ -43,7 +43,6 @@
     }
   ],
   "checklist": {
-    "before": [],
     "after": []
   },
   "notes": [],

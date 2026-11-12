@@ -37,6 +37,14 @@ const VENDORED_FILES = Object.fromEntries(
   ]),
 )
 
+test('each drift gate consumer ships both verdict and fallback helpers', () => {
+  for (const core of ['boss-build', 'boss-plan', 'boss-repair', 'boss-finalize', 'boss-verify']) {
+    for (const helper of ['skill-drift-verdict.mjs', 'toolbox-drift.mjs']) {
+      assert.ok(VENDORED_FILES[core].includes(helper), `${core} lacks ${helper}`)
+    }
+  }
+})
+
 const LOAD_TOLERANT_WAIT_MS = 30_000
 
 async function waitFor(predicate, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
@@ -750,6 +758,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       // verify-area-ids.mjs is the one area id verify-describe.mjs exempts from a breaking ask.
       'verify/verify-area-ids.mjs',
       'verify/verify-describe.mjs',
+      // verify-describe-blocks.mjs validates the typed facts verify-describe.mjs accepts.
+      'verify/verify-describe-blocks.mjs',
       'verify/verify-proof.mjs',
       'verify/verify-review-policy.mjs',
       // skill-extensions.mjs imports the proof-publish marker parser and result validator.

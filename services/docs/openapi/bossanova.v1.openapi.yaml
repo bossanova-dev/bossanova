@@ -22308,6 +22308,45 @@ components:
           type: string
           title: pr_proof_head_sha
           description: Head the pr_proof_url record was made for (40 hex), or empty.
+        verifyPark:
+          title: verify_park
+          description: |-
+            The verify sign-off park on the PR's current head, as attention shows it
+             when nothing outranks the park: its confidence level, asks, lowered-by
+             reasons, proof URL and park time. Set whatever attention is, so a park
+             whose chat asks a question or works stays known; unset once a new head,
+             a merge or a close ends the park, and for a blocked park, which attention
+             alone carries. The review queue lists a session by it. No dated API bump
+             or transform: the field is additive and older clients ignore it. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+          $ref: '#/components/schemas/bossanova.v1.SessionAttention'
+        prBaseBranch:
+          type: string
+          title: pr_base_branch
+          description: |-
+            The open PR's current base branch on GitHub, read from bossd's open-PR
+             listing, never persisted; empty when unknown or the PR is not open. It
+             follows a retarget, unlike base_branch, which is fixed at creation.
+        repoDefaultBranch:
+          type: string
+          title: repo_default_branch
+          description: |-
+            The repository's default base branch that pr_base_branch is compared
+             with, served with it; empty whenever pr_base_branch is.
+        prStackedOn:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.StackedPullRequest'
+          title: pr_stacked_on
+          description: |-
+            The other open PRs this PR is stacked on, nearest first: a PR whose head
+             branch is this PR's base, then, newest first, the owners of commits this
+             PR carries that are not its own (matched by patch id, so a rebased copy
+             still counts; each commit belongs to the oldest open PR carrying it).
+             Transport-only, never persisted.
+             No dated API bump or transform: the three fields are additive and older
+             clients ignore them without changing their existing behavior. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -23104,6 +23143,41 @@ components:
           title: text
       title: SetupScriptOutput
       additionalProperties: false
+    bossanova.v1.StackedPullRequest:
+      type: object
+      properties:
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        title:
+          type: string
+          title: title
+        url:
+          type: string
+          title: url
+        headBranch:
+          type: string
+          title: head_branch
+        sharedCommitCount:
+          type: integer
+          title: shared_commit_count
+          format: int32
+          description: This PR's commits whose oldest open carrier is this parent.
+        commitCount:
+          type: integer
+          title: commit_count
+          format: int32
+          description: The parent's own commit count over the default branch.
+        isBaseBranch:
+          type: boolean
+          title: is_base_branch
+          description: The parent's head branch is this PR's base branch.
+      title: StackedPullRequest
+      additionalProperties: false
+      description: |-
+        StackedPullRequest is an open PR another PR is stacked on, so reviewing it
+         comes first.
     bossanova.v1.StartAgentRunHostRequest:
       type: object
       properties:

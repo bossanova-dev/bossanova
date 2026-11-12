@@ -12,7 +12,7 @@ import (
 )
 
 // unhealthyRecheckInterval is how often a pending wait re-reads while its
-// repo's webhook delivery is unhealthy, or after one of its reads failed.
+// repo's webhook delivery is unhealthy, or a read failed or returned degraded.
 // These tick reads bypass the GitHub read cache: for an unhealthy repo the
 // cache serves a snapshot up to snapshotFallbackMaxAge (five minutes) old
 // (services/bossd/internal/adapter/github/readcache.go), so a cached tick
@@ -208,7 +208,7 @@ func (h *WaitHub) Wait(ctx context.Context, req WaitRequest) (WaitResult, error)
 	defer deadline.Stop()
 	recheck := time.NewTicker(unhealthyRecheckInterval)
 	defer recheck.Stop()
-	retry := err != nil
+	retry := err != nil || snap.Degraded
 	for {
 		fresh := req.Fresh
 		select {
@@ -226,11 +226,12 @@ func (h *WaitHub) Wait(ctx context.Context, req WaitRequest) (WaitResult, error)
 			fresh = true
 		}
 		next, err := h.reader.Read(ctx, req.Repo, req.PR, Options{Fresh: fresh, Label: ghusage.LabelPRWait})
-		if retry = err != nil; retry {
+		if err != nil {
+			retry = true
 			continue
 		}
 		out, snap, err = h.resolve(ctx, req, next, since, fresh)
-		retry = err != nil
+		retry = err != nil || snap.Degraded
 		if out != waitPending {
 			return WaitResult{Outcome: out, Snapshot: snap}, nil
 		}

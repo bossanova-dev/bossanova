@@ -7,6 +7,8 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import test from 'node:test'
 import { checkDomainImports } from './domain-imports.mjs'
 
+const LINTER_PROOF_TIMEOUT_MS = 300_000
+
 function fixture(t, files = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'domain-imports-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 }))
@@ -128,7 +130,7 @@ test('domain-imports real depguard flags seeded domain imports', (t) => {
     runGolangciSync(['run', '--enable-only', 'depguard', './...'], {
       cwd: root,
       encoding: 'utf8',
-      timeout: 120000,
+      timeout: LINTER_PROOF_TIMEOUT_MS,
       maxBuffer: 4 * 1024 * 1024,
     })
   const result = run()

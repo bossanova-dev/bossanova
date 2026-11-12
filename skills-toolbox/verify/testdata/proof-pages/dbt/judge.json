@@ -28,24 +28,25 @@
         "label": "Revenue models",
         "paths": ["analytics/models/marts/fct_daily_revenue.sql"],
         "defaultAsk": "always",
-        "source": "config",
-        "items": [
-          "Adds model fct_daily_revenue (incremental, unique_key revenue_date)",
-          "Adds columns gross_cents, refund_cents, net_cents"
-        ],
-        "undisclosed": ["Materialises fct_daily_revenue incrementally"]
+        "source": "config"
       },
       {
-        "area": "other",
-        "label": "Other changes",
+        "area": "no-sign-off",
+        "label": "No sign-off",
         "paths": [
           "analytics/models/staging/schema.yml",
           "analytics/models/staging/stg_refunds.sql"
         ],
         "defaultAsk": "never",
-        "source": "builtin",
-        "items": ["Adds view stg_refunds over shop.refunds"]
+        "source": "config"
       }
     ]
-  }
+  },
+  "judgeNotes": [
+    {
+      "label": "Settled refunds only",
+      "path": "analytics/models/staging/stg_refunds.sql",
+      "reason": "stg_refunds keeps only settled refunds, so a pending refund never reaches the mart"
+    }
+  ]
 }

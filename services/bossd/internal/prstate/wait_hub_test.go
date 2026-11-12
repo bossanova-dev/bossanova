@@ -522,3 +522,47 @@ func TestSettledAnswerFromACachedReadIsConfirmedFresh(t *testing.T) {
 		})
 	}
 }
+
+func TestDegradedWaitRechecksWhileHealthy_Callbacks_AC245701(t *testing.T) {
+	for _, degradedAt := range []int{1, 2, 3} {
+		t.Run(fmt.Sprint(degradedAt), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := &fakeSnapshots{answer: func(n int) (Snapshot, error) {
+					if n < degradedAt {
+						if degradedAt == 3 && n == 2 {
+							return settledSnapshot(), nil
+						}
+						return pendingSnapshot(), nil
+					}
+					if n == degradedAt {
+						snap := settledSnapshot()
+						snap.Degraded = true
+						snap.RunsRead = false
+						snap.RunsSettled = ptr(false)
+						return snap, nil
+					}
+					return settledSnapshot(), nil
+				}}
+				h := healthyHub(f)
+				done := startWait(h, checksWait(7))
+				synctest.Wait()
+				if degradedAt > 1 {
+					h.NotifyPR("acme/widgets", 7)
+					synctest.Wait()
+				}
+				requirePending(t, done)
+				requireCalls(t, f, degradedAt)
+				time.Sleep(unhealthyRecheckInterval)
+				synctest.Wait()
+				r := <-done
+				if r.err != nil || r.res.Outcome != WaitMet || r.res.Snapshot.Degraded {
+					t.Fatalf("Wait = %+v, %v; want recovered met", r.res, r.err)
+				}
+				fresh := f.freshness()
+				if !fresh[len(fresh)-1] {
+					t.Fatal("recheck must read fresh")
+				}
+			})
+		})
+	}
+}

@@ -28,6 +28,7 @@ import {
   provesGreenAgrees,
   provesGreenReason,
   runLiveness,
+  strandedRemedy,
   verdictAt,
 } from './pr-check-state.mjs'
 
@@ -2629,4 +2630,151 @@ test('CLI classify — --required-checks holds a light-only head at not-requeste
   assert.equal(parsed.reason, CHECK_REASONS.NOT_REQUESTED)
   assert.deepEqual(parsed.notRequested, ['go-test', 'scripts'])
   assert.equal(parsed.green, false)
+})
+
+const strandedCheck = (status = 'IN_PROGRESS', extra = {}) => ({
+  ...checkRun('build', status, ''),
+  workflowName: 'CI',
+  detailsUrl: 'https://github.com/acme/widgets/actions/runs/111/job/222?pr=7',
+  ...extra,
+})
+
+test('stranded: pending checks of completed workflows keep their pending verdict and Actions ids', () => {
+  for (const status of ['IN_PROGRESS', 'QUEUED']) {
+    const v = classifyChecks({
+      rollup: [strandedCheck(status)],
+      workflowRuns: [run('CI', 'completed', 'success')],
+    })
+    assert.equal(v.state, CHECK_STATES.PENDING)
+    assert.equal(v.reason, CHECK_REASONS.PENDING)
+    assert.deepEqual(v.stranded, [{ name: 'build', workflow: 'CI', runId: '111', jobId: '222' }])
+  }
+})
+
+test('stranded: incomplete, missing, mismatched and truncated workflow evidence never strands a check', () => {
+  const cases = [
+    { workflowRuns: [run('CI', 'in_progress')] },
+    { workflowRuns: [run('Other', 'completed', 'success')] },
+    { workflowRuns: [] },
+    {},
+    { workflowRuns: Array.from({ length: 100 }, () => run('CI', 'completed', 'success')) },
+    {
+      rollup: [strandedCheck('IN_PROGRESS', { workflowName: '' })],
+      workflowRuns: [run('CI', 'completed', 'success')],
+    },
+    {
+      rollup: [{ __typename: 'StatusContext', context: 'external', state: 'PENDING' }],
+      workflowRuns: [run('CI', 'completed', 'success')],
+    },
+    {
+      rollup: [strandedCheck('IN_PROGRESS', { workflowId: '1' })],
+      workflowRuns: [{ ...run('CI', 'completed', 'success'), workflowId: '2' }],
+    },
+  ]
+  for (const input of cases)
+    assert.deepEqual(classifyChecks({ rollup: [strandedCheck()], ...input }).stranded, [])
+})
+
+test('stranded: every matching workflow run must complete, matched by id ahead of name', () => {
+  const rollup = [strandedCheck('IN_PROGRESS', { workflowId: '1' })]
+  const completed = { ...run('CI', 'completed', 'success'), workflowId: '1' }
+  assert.deepEqual(
+    classifyChecks({ rollup, workflowRuns: [completed, { ...completed, status: 'queued' }] })
+      .stranded,
+    [],
+  )
+  const v = classifyChecks({
+    rollup,
+    workflowRuns: [completed, completed, { ...run('CI', 'in_progress'), workflowId: '2' }],
+  })
+  assert.equal(v.stranded.length, 1)
+})
+
+test('stranded: REST suite attribution parses details_url and missing job URLs give null ids', () => {
+  const workflowRuns = [
+    { ...run('CI', 'completed', 'success'), workflow_id: 7, check_suite_id: 99 },
+  ]
+  const rest = {
+    ...checkRun('build', 'in_progress', ''),
+    check_suite: { id: 99 },
+    details_url: 'https://github.com/acme/widgets/actions/runs/111/job/222',
+  }
+  assert.deepEqual(classifyChecks({ checkRuns: [rest], workflowRuns }).stranded, [
+    { name: 'build', workflow: '7', runId: '111', jobId: '222' },
+  ])
+  for (const detailsUrl of [undefined, 'https://example.com/check/111']) {
+    const v = classifyChecks({ rollup: [strandedCheck('QUEUED', { detailsUrl })], workflowRuns })
+    assert.deepEqual(v.stranded, [{ name: 'build', workflow: 'CI', runId: null, jobId: null }])
+  }
+})
+
+test('stranded: context ids survive a more severe reading without metadata and names are sorted', () => {
+  const v = classifyChecks({
+    rollup: [
+      strandedCheck('COMPLETED', { conclusion: 'SUCCESS' }),
+      strandedCheck('QUEUED', { name: 'aaa' }),
+    ],
+    buckets: [{ name: 'build', bucket: 'pending' }],
+    workflowRuns: [run('CI', 'completed', 'success')],
+  })
+  assert.deepEqual(
+    v.stranded.map((e) => e.name),
+    ['aaa', 'build'],
+  )
+  assert.equal(v.stranded[1].jobId, '222')
+})
+
+test('stranded: settled green and failed checks keep their states and have no stranded entries', () => {
+  for (const [conclusion, state] of [
+    ['SUCCESS', CHECK_STATES.GREEN],
+    ['FAILURE', CHECK_STATES.FAILING],
+  ]) {
+    const v = classifyChecks({
+      rollup: [strandedCheck('COMPLETED', { conclusion })],
+      workflowRuns: [run('CI', 'completed', 'success')],
+    })
+    assert.equal(v.state, state)
+    assert.deepEqual(v.stranded, [])
+  }
+})
+
+test('stranded remedy names a job rerun or a workflow/head lookup, and handles an empty verdict', () => {
+  const entry = { name: 'build', workflow: 'CI', runId: '111', jobId: '222' }
+  assert.deepEqual(strandedRemedy({ stranded: [entry] }), ['gh run rerun 111 --job 222'])
+  for (const runId of ['111', null]) {
+    const [remedy] = strandedRemedy({
+      headSHA: 'abc',
+      stranded: [{ ...entry, runId, jobId: null }],
+    })
+    assert.match(remedy, /build/)
+    assert.match(remedy, /gh run view/)
+    assert.match(remedy, /--json jobs/)
+    if (runId) assert.match(remedy, /111/)
+    else {
+      assert.match(remedy, /CI/)
+      assert.match(remedy, /abc/)
+    }
+  }
+  assert.deepEqual(strandedRemedy({ stranded: [] }), [])
+})
+
+test('stranded remedy preserves shell metacharacters in workflow lookup arguments', () => {
+  const workflow = "$HOME $(printf substituted) `printf also-substituted` O'Brien"
+  const [remedy] = strandedRemedy({
+    headSHA: 'abc',
+    stranded: [{ name: 'build', workflow, runId: null, jobId: null }],
+  })
+  const lookup = remedy.split('; gh run view ')[0]
+  const result = spawnSync('bash', ['-c', `gh() { printf '%s\\n' "$@"; }; ${lookup}`], {
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(result.stdout.trimEnd().split('\n'), [
+    'run',
+    'list',
+    '--commit',
+    'abc',
+    '--workflow',
+    workflow,
+  ])
 })

@@ -610,8 +610,10 @@ const withCores = (output, cores) => classifySkillDrift({ exitStatus: 1, output,
 test('the closure table names each consumer and the cores it invokes in-run', () => {
   assert.deepEqual(Object.keys(SKILL_DRIFT_CORE_CLOSURE).sort(), [
     'boss-build',
+    'boss-finalize',
     'boss-plan',
     'boss-repair',
+    'boss-verify',
   ])
   assert.deepEqual([...SKILL_DRIFT_CORE_CLOSURE['boss-plan']], ['boss-plan'])
   assert.deepEqual([...SKILL_DRIFT_CORE_CLOSURE['boss-repair']], ['boss-repair'])
@@ -749,6 +751,7 @@ function vendoredCopy(core) {
     'verify/verify-area-ids.mjs',
     'verify/verify-contract.mjs',
     'verify/verify-describe.mjs',
+    'verify/verify-describe-blocks.mjs',
     'verify/verify-proof.mjs',
     'verify/verify-publish-hook.mjs',
   ]) {
@@ -812,9 +815,7 @@ test('--core overrides inference, repeats, and a valueless --core widens to the 
   assert.equal(status(['--core', 'boss-unknown']), 1)
 })
 
-// ---------------------------------------------------------------------------
 // Direction wording: only a row the checkout is ahead of may be called lagging
-
 const DOWNGRADE_LEAD =
   '  reinstall withheld [downgrade] — the installed copy is newer than this checkout (it is on origin/HEAD); a reinstall from here would downgrade it:'
 const DESTRUCTIVE_LEAD =
@@ -1056,9 +1057,7 @@ test('the CLI over a vendored copy downgrades only an absent file its SKILL.md n
   assert.match(canonical.stdout, /^BLOCKED: /)
 })
 
-// ---------------------------------------------------------------------------
 // Published-core portability
-
 test('the helper stays publishable: node builtins and main-module.mjs only, no project identity', () => {
   const source = readFileSync(SCRIPT_PATH, 'utf8')
   const imports = [...source.matchAll(/^import .*? from '([^']+)'$/gm)].map((m) => m[1])
@@ -1068,6 +1067,7 @@ test('the helper stays publishable: node builtins and main-module.mjs only, no p
     'node:fs',
     'node:path',
     'node:url',
+    'node:util',
   ])
   // A vendored core ships into every repo on the machine, so a tracker id, a project MCP server
   // or a repo path here would leak out of this project entirely.

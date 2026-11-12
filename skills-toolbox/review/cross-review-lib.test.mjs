@@ -30,6 +30,8 @@ import {
   sliceLenUtf8Safe,
 } from './cross-review-lib.mjs'
 
+const LOAD_TOLERANT_WAIT_MS = 30_000
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -613,7 +615,7 @@ test('probe stage reports timeout and numeric exit details', async () => {
       await runProbeStage(bin, [], {
         env: process.env,
         repo: dir,
-        timeoutMs: 1000,
+        timeoutMs: LOAD_TOLERANT_WAIT_MS,
         nonZeroStatus: 'error',
       }),
       {

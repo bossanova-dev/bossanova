@@ -94,6 +94,10 @@ func (w *daemonWiring) wireStreamObservers() {
 		publishSessionUpdated(ctx, sessionID)
 	}
 	w.evidenceReader.SetOnChange(refreshAttention)
+	// A PR becoming or ceasing to be stacked changes no display trio.
+	w.prStacks.SetOnChange(func(sessionID string) {
+		publishSessionUpdated(context.Background(), sessionID)
+	})
 	w.resumeAttempts.SetOnChange(func(sessionID string) {
 		refreshAttention(context.Background(), sessionID)
 	})

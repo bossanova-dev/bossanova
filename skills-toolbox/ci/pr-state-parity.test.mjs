@@ -421,3 +421,39 @@ test('parity — a prior head saved through view keeps workflow identity for not
     verdictOf(CHECK_STATES.PENDING, CHECK_REASONS.ABSENT_GATE),
   )
 })
+
+test('parity — stranded check names agree across gh rollup and daemon envelope', () => {
+  const rollup = [
+    {
+      ...ghCheck('build', '', 'IN_PROGRESS'),
+      detailsUrl: 'https://github.com/acme/widgets/actions/runs/111/job/222',
+    },
+  ]
+  const fromGh = classifyChecks({
+    headSHA: HEAD,
+    rollup,
+    workflowRuns: [ghRun('CI', 'completed', 'success')],
+  })
+  const state = envelope({
+    checks: [daemonCheck('build', 'in_progress', '', { workflow_name: 'CI' })],
+    runs: [daemonRun('CI', 'completed', 'success')],
+    verdict: verdictOf('pending', 'pending'),
+    settled: true,
+  })
+  const fromDaemon = classifyChecks(classifyInputsFromPrState({ source: 'daemon', state }))
+  assert.deepEqual(verdictOf(fromGh.state, fromGh.reason), verdictOf('pending', 'pending'))
+  assert.deepEqual(
+    verdictOf(fromDaemon.state, fromDaemon.reason),
+    verdictOf(fromGh.state, fromGh.reason),
+  )
+  assert.deepEqual(
+    fromGh.stranded.map((e) => e.name),
+    ['build'],
+  )
+  assert.deepEqual(
+    fromDaemon.stranded.map((e) => e.name),
+    ['build'],
+  )
+  assert.equal(fromGh.stranded[0].runId, '111')
+  assert.equal(fromDaemon.stranded[0].runId, null)
+})

@@ -4,6 +4,7 @@ import {
   validateProofMedia,
   mediaName,
   MAX_CLIPS,
+  MAX_CLIP_FILES,
   MAX_DOCUMENT_PAGES,
   MAX_FILE_BYTES,
   MAX_PDF_BYTES,
@@ -614,4 +615,18 @@ test('a page list that numbers some pages and not others is dropped whole', () =
       reason: 'page: either every page names its page number or none does',
     },
   ])
+})
+
+test('a clip keeps the changed files it proves, and an empty or oversized list drops the clip', () => {
+  const withFiles = (files) => {
+    const m = manifest()
+    m.clips[0] = { ...m.clips[0], files }
+    return validateProofMedia(m, sized())
+  }
+  assert.deepEqual(withFiles(['src/cart.ts']).media?.clips[0].files, ['src/cart.ts'])
+  for (const files of [[], Array(MAX_CLIP_FILES + 1).fill('a.ts'), 'src/cart.ts'])
+    assert.deepEqual(withFiles(files).dropped, [
+      { at: 'clips[0]', reason: `files: expected 1 to ${MAX_CLIP_FILES} paths` },
+    ])
+  assert.equal(withFiles([' ']).dropped[0]?.at, 'clips[0]')
 })

@@ -1,11 +1,15 @@
 // `verify-gate.mjs proof-bundle`: everything the proof-author agent reads for one parked head,
-// gathered with zero tokens. It writes `bundle.json` (the PR, per-file line counts, the judge's
-// areas, confidence and park reasons, notes, CI checks, commits, whether the repo can auto-merge,
-// and a summary of the media), runs the base tree's `proof-media` extension into `<out>/media`
-// and writes the validated manifest as `<out>/media.json`. `post --proof-media <out>` reads it.
+// gathered with zero tokens. It writes `bundle.json` (the PR, its ticket's description and the
+// criteria review certified, the base tip's merge policy text, per-file line counts, the judge's
+// areas, confidence and park reasons, review's findings and notes, CI checks, commits, whether the
+// repo can auto-merge, the branch context, and a summary of the media), runs the base tree's
+// `proof-media` extension
+// into `<out>/media` and writes the validated manifest as `<out>/media.json`.
+// `post --proof-media <out>` reads it.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { classifyEntry, normalizeRollup } from '../pr-check-state.mjs'
+import { readBranchContext } from './verify-branch-context.mjs'
 import {
   MEDIA_DIR,
   MEDIA_MANIFEST,
@@ -13,7 +17,9 @@ import {
   mediaSummary,
   writeMediaManifest,
 } from './verify-media-hook.mjs'
-import { buildProofRecord } from './verify-proof-build.mjs'
+import { parseTicketLine, ticketDescription } from './verify-admission.mjs'
+import { readMergePolicy } from './verify-merge-prose.mjs'
+import { buildProofRecord, reviewSidecar } from './verify-proof-build.mjs'
 import { gitChangedFiles } from './verify-proof-snippet.mjs'
 
 export const BUNDLE_SCHEMA = 'proof-bundle/1'
@@ -30,14 +36,33 @@ const objects = (list) => (Array.isArray(list) ? list.filter(isObject) : [])
 
 /**
  * The bundle for a parked head. `areas` are the proof record's (their `id` is the name a spec
- * cites), each with the judge area's describer facts. Pure: every read happens in the caller.
+ * cites), each with the judge area's describer facts. `ticket` is the PR's ticket with its
+ * description, or why it was not read, and the acceptance rows review certified; `findings` are
+ * review's, whose ids a spec cites as evidence. `mergePolicy` is the base tip's policy text, which
+ * says what the repository intends. Pure: every read happens in the caller.
  * @param {{judged: Record<string, any>, record: {proof: any, areas: any[]}, pr: Record<string, any>,
  *   repo: string, files: unknown[] | null, commits: {at: string, subject: string}[],
- *   canAutoMerge: boolean | null, media: ReturnType<typeof mediaSummary>}} input
+ *   canAutoMerge: boolean | null, media: ReturnType<typeof mediaSummary>,
+ *   branch?: import('./verify-proof-page.mjs').BranchContext | null,
+ *   ticket?: {id: string, url: string, description: {read: boolean, text?: string, why?: string}} | null,
+ *   mergePolicy?: import('./verify-merge-prose.mjs').MergePolicy}} input
  */
-export function proofBundle({ judged, record, pr, repo, files, commits, canAutoMerge, media }) {
+export function proofBundle({
+  judged,
+  record,
+  pr,
+  repo,
+  files,
+  commits,
+  canAutoMerge,
+  media,
+  branch,
+  ticket = null,
+  mergePolicy = { state: 'none' },
+}) {
   const judgeAreas = new Map(objects(judged.facts?.areas).map((area) => [area.area, area]))
   const { proof } = record
+  const review = reviewSidecar(judged)
   return {
     schema: BUNDLE_SCHEMA,
     repo,
@@ -50,6 +75,17 @@ export function proofBundle({ judged, record, pr, repo, files, commits, canAutoM
       base: proof.base,
       head: proof.head,
     },
+    ticket: ticket && {
+      id: ticket.id,
+      url: ticket.url,
+      ...(ticket.description.read
+        ? { description: ticket.description.text }
+        : { descriptionUnread: ticket.description.why }),
+      acceptance: review.acceptance,
+    },
+    ...(mergePolicy.state === 'ok'
+      ? { mergePolicy: { path: mergePolicy.path, text: mergePolicy.text } }
+      : {}),
     verdict: judged.verdict,
     reasons: Array.isArray(judged.reasons) ? judged.reasons : [],
     ...(typeof judged.label === 'string' ? { label: judged.label } : {}),
@@ -70,6 +106,7 @@ export function proofBundle({ judged, record, pr, repo, files, commits, canAutoM
         undisclosed: recorded.unmentioned ?? [],
       }
     }),
+    findings: review.findings,
     blockers: proof.review.blockers,
     notes: proof.review.notes,
     ci: normalizeRollup(pr.statusCheckRollup)
@@ -77,6 +114,7 @@ export function proofBundle({ judged, record, pr, repo, files, commits, canAutoM
       .map((check) => ({ name: check.name, state: classifyEntry(check) })),
     commits,
     repoSettings: { canAutoMerge },
+    ...(branch === undefined ? {} : { branch }),
     media,
   }
 }
@@ -98,7 +136,7 @@ function readJson(file) {
  * `proof-spec/1`. `{written: false, reason}` when the
  * judge output is unreadable or for another head, or the PR moved. Never writes to the forge.
  */
-export function proofBundleVerb(options, deps, actions) {
+export async function proofBundleVerb(options, deps, actions) {
   const { UsageError, writeAwareReader, commandReader, repoFor, readPr } = actions
   const headSha = String(options.head ?? '').toLowerCase()
   if (!/^[0-9a-f]{40}$/.test(headSha) || options.judge === undefined || options.out === undefined)
@@ -138,6 +176,12 @@ export function proofBundleVerb(options, deps, actions) {
       return { at, subject: subject.join('\t') }
     })
   const policy = actions.readBasePolicy?.(read, repo, base)
+  // The policy text the judge read, from the same base snapshot.
+  const tree = actions.trustedTree?.({ baseSha: base, cwd: actions.cwd, read })
+  const mergePolicy = readMergePolicy(
+    policy?.state === 'ok' ? policy.block : null,
+    tree?.ok ? tree.root : null,
+  )
   // A merge rule on the base is what lets verify merge a head with no person; unknown is null.
   const canAutoMerge =
     policy?.state === 'ok'
@@ -161,6 +205,11 @@ export function proofBundleVerb(options, deps, actions) {
     ...(actions.discover ? { discover: actions.discover } : {}),
   })
   const manifest = writeMediaManifest(outcome, out)
+  const ref = parseTicketLine(pr.body)
+  const ticket = ref && {
+    ...ref,
+    description: await ticketDescription(actions.adapter?.() ?? null, ref, pr.createdAt),
+  }
   const bundle = proofBundle({
     judged,
     record: /** @type {{proof: any, areas: any[]}} */ (record),
@@ -170,6 +219,13 @@ export function proofBundleVerb(options, deps, actions) {
     commits,
     canAutoMerge,
     media: mediaSummary(outcome),
+    branch: (actions.readBranchContext ?? readBranchContext)({
+      read,
+      repo,
+      pr: Number(options.pr),
+    }),
+    ticket,
+    mergePolicy,
   })
   const bundlePath = path.join(out, BUNDLE_FILE)
   writeFileSync(bundlePath, `${JSON.stringify(bundle, null, 2)}\n`)

@@ -18,6 +18,7 @@ import {
   MAX_DESCRIBE_LINKS,
   MAX_DESCRIBE_OUTPUT_BYTES,
 } from './verify-describe.mjs'
+import { MAX_BLOCKS, MAX_OPERATION_CHARS, locatedRisks } from './verify-describe-blocks.mjs'
 
 const valid = () => ({
   ok: true,
@@ -341,4 +342,256 @@ test('holding describers retain their own items and failure reasons in descripto
   assert.equal(result.areas[0].defaultAsk, 'always')
   assert.equal(result.areas[0].breaking, true)
   assert.deepEqual(describeAreas([area()], []).areas[0].describers, [])
+})
+
+/** One block of every kind, a signal and a located risk, as a describer would send them. */
+const typed = () => ({
+  blocks: [
+    {
+      kind: 'schema',
+      types: [
+        {
+          keyword: 'type',
+          name: 'Mutation',
+          change: 'changed',
+          class: 'breaking',
+          mobile: 'Shipped builds still send `archive`',
+          fields: [
+            {
+              name: 'markOverdue',
+              args: [{ name: 'asOf', type: 'Date!', default: 'null' }],
+              type: 'Int!',
+              directives: ['@auth'],
+              change: 'added',
+            },
+            { name: 'archive', type: 'Boolean', change: 'removed' },
+            { name: 'total', type: 'Int!', before: 'Int', change: 'changed' },
+          ],
+        },
+        { keyword: 'enum', name: 'Status', change: 'added', fields: [{ name: 'OVERDUE' }] },
+      ],
+    },
+    {
+      kind: 'client-call',
+      name: 'Mutation.markOverdue',
+      path: 'web/useMarkOverdue.ts',
+      operation: 'mutation M($asOf: Date!) {\n  markOverdue(asOf: $asOf)\n}',
+      before: ['useInvoices()'],
+      after: ['useInvoices()', 'useMarkOverdue()'],
+      note: 'A new document',
+    },
+    {
+      kind: 'route',
+      method: 'POST',
+      path: '/webhooks/run',
+      auth: 'none',
+      change: 'added',
+      note: 'The scheduler calls it',
+    },
+    {
+      kind: 'table',
+      name: 'invoices',
+      relation: 'table',
+      materialization: 'table',
+      change: 'changed',
+      columns: [
+        {
+          name: 'email',
+          type: 'text',
+          constraints: 'not null',
+          change: 'added',
+          pii: true,
+          note: 'From the customer',
+        },
+      ],
+    },
+    { kind: 'code', path: 'api/routes.go', start: 5, lines: ['func Routes() {', '', '}'] },
+    { kind: 'steps', steps: ['Run `./migrate`'] },
+  ],
+  signals: [{ key: 'db', label: 'Database', state: 'additive', summary: 'Adds a column' }],
+  risks: [
+    {
+      level: 'high',
+      title: 'Anyone can run billing',
+      impact: 'An unauthenticated POST moves invoices',
+      guard: 'None',
+      at: { path: 'api/routes.go', line: 7 },
+    },
+  ],
+})
+
+test('every block kind, signal and risk validates and rides its area through the merge', () => {
+  const facts = typed()
+  assert.deepEqual(refineDescription({ ...valid(), ...facts }), [])
+  const [merged] = describeAreas(
+    [area()],
+    [{ extension: 'x', area: 'housekeeping', ok: true, description: { ...valid(), ...facts } }],
+  ).areas
+  assert.deepEqual(
+    merged.blocks.map((b) => b.kind),
+    ['schema', 'client-call', 'route', 'table', 'code', 'steps'],
+  )
+  assert.deepEqual(merged.signals, facts.signals)
+  assert.deepEqual(merged.risks, facts.risks)
+})
+
+test('an untyped description leaves its area exactly as before', () => {
+  const [merged] = describeAreas(
+    [area()],
+    [{ extension: 'x', area: 'housekeeping', ok: true, description: valid() }],
+  ).areas
+  for (const key of ['blocks', 'signals', 'risks']) assert.ok(!Object.hasOwn(merged, key), key)
+})
+
+test('an unknown block kind or key rejects the description with an error naming its path', () => {
+  const facts = typed()
+  const at = (/** @type {Record<string, unknown>} */ patch) =>
+    refineDescription({ ...valid(), ...facts, ...patch })[0]
+  const swap = (/** @type {number} */ i, /** @type {Record<string, unknown>} */ change) => ({
+    blocks: facts.blocks.map((b, j) => (i === j ? { ...b, ...change } : b)),
+  })
+  assert.equal(
+    at({ blocks: [{ kind: 'chart', series: [] }] }),
+    'blocks.0.kind: unknown block kind "chart"',
+  )
+  assert.equal(
+    at({ blocks: [{ kind: 'constructor' }] }),
+    'blocks.0.kind: unknown block kind "constructor"',
+  )
+  assert.equal(at(swap(2, { colour: 'red' })), 'blocks.2.colour: unknown key')
+  assert.equal(at({ graph: [] }), 'unknown key: graph')
+  assert.equal(
+    at(swap(0, { types: [{ ...facts.blocks[0].types[1], fields: [{ name: 'A', x: 1 }] }] })),
+    'blocks.0.types.0.fields.0.x: unknown key',
+  )
+  assert.equal(
+    at(swap(3, { columns: [{ name: 'a', type: 'text', pii: 'yes' }] })),
+    'blocks.3.columns.0.pii: expected boolean',
+  )
+  assert.equal(
+    at(swap(2, { method: 'FETCH' })),
+    'blocks.2.method: expected one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, ANY',
+  )
+  assert.equal(
+    at(swap(4, { lines: ['a\nb'] })),
+    'blocks.4.lines.0: expected one source line of at most 300 characters',
+  )
+  assert.equal(
+    at({ blocks: [{ kind: 'client-call', name: 'Query.x' }] }),
+    'blocks.0: a client call needs an operation or a call site',
+  )
+  assert.equal(
+    at({ signals: [{ ...facts.signals[0], state: 'great' }] }),
+    'signals.0.state: expected one of none, safe, additive, proven, review, manual, unproven, risky, breaking',
+  )
+  assert.equal(
+    at({ risks: [{ ...facts.risks[0], at: { path: 'a.go' } }] }),
+    'risks.0.at.line: required',
+  )
+})
+
+test('typed facts are bounded in count and size', () => {
+  const facts = typed()
+  const code = facts.blocks[4]
+  for (const [patch, error] of [
+    [
+      { blocks: Array(MAX_BLOCKS + 1).fill(code) },
+      `blocks: expected at most ${MAX_BLOCKS} entries`,
+    ],
+    [
+      { blocks: [{ ...facts.blocks[1], operation: 'x'.repeat(MAX_OPERATION_CHARS + 1) }] },
+      `blocks.0.operation: expected operation text of at most ${MAX_OPERATION_CHARS} characters`,
+    ],
+    [{ blocks: [{ ...code, lines: [] }] }, 'blocks.0.lines: expected 1 to 40 entries'],
+    [{ signals: Array(9).fill(facts.signals[0]) }, 'signals: expected at most 8 entries'],
+    [
+      { signals: [{ ...facts.signals[0], summary: 'two\nlines' }] },
+      `signals.0.summary: expected single-line text of at most ${MAX_TEXT_CHARS} characters`,
+    ],
+  ])
+    assert.equal(refineDescription({ ...valid(), ...patch })[0], error)
+})
+
+test('the runner fails a describer that sends an unknown block kind, naming the error', (t) => {
+  const { root, extension } = fixture(
+    t,
+    `process.stdout.write(JSON.stringify({ ...${JSON.stringify(valid())}, blocks: [{ kind: 'chart' }] }))`,
+  )
+  const [outcome] = runDescribers({
+    extensions: [extension],
+    areas: [area()],
+    baseSha: 'b'.repeat(40),
+    headSha: 'a'.repeat(40),
+    pr: {},
+    cwd: root,
+  })
+  assert.equal(outcome.reason, 'invalid:blocks.0.kind: unknown block kind "chart"')
+})
+
+test('merging keeps the first signal per key and reports a cut list', () => {
+  const facts = typed()
+  const outcome = (/** @type {string} */ extension, /** @type {number} */ order, description) => ({
+    extension,
+    area: 'housekeeping',
+    order,
+    ok: true,
+    description: { ...valid(), ...description },
+  })
+  const merged = describeAreas(
+    [area()],
+    [
+      outcome('second', 2, {
+        signals: [{ ...facts.signals[0], summary: 'later' }],
+        blocks: Array(MAX_BLOCKS).fill(facts.blocks[4]),
+      }),
+      outcome('first', 1, { signals: facts.signals, blocks: [facts.blocks[5]] }),
+    ],
+  )
+  assert.deepEqual(merged.areas[0].signals, facts.signals)
+  assert.equal(merged.areas[0].blocks.length, MAX_BLOCKS)
+  const signal = (key, summary) => ({ key, label: key, state: 'safe', summary })
+  const ordered = describeAreas(
+    [area()],
+    [
+      outcome('first', 1, { signals: [signal('a', 'a1'), signal('b', 'b1')] }),
+      outcome('second', 2, { signals: [signal('a', 'a2'), signal('c', 'c2')] }),
+    ],
+  )
+  assert.deepEqual(
+    ordered.areas[0].signals.map((s) => s.summary),
+    ['a1', 'b1', 'c2'],
+    'signals keep their describers order',
+  )
+  assert.equal(merged.areas[0].blocks[0].kind, 'steps')
+  assert.equal(merged.health[0].code, 'describer-items-truncated')
+})
+
+test('a risk shows only where the diff holds its location, and every drop says why', () => {
+  const risk = (/** @type {string} */ path, /** @type {number} */ line) => ({
+    ...typed().risks[0],
+    at: { path, line },
+  })
+  const hasLine = (/** @type {string} */ path, /** @type {number} */ line) =>
+    path === 'api/routes.go' ? line <= 8 : null
+  const { kept, dropped } = locatedRisks(
+    [risk('api/routes.go', 7), risk('docs/elsewhere.md', 1), risk('api/routes.go', 40)],
+    { changedPaths: ['api/routes.go'], hasLine },
+  )
+  assert.deepEqual(kept, [risk('api/routes.go', 7)])
+  assert.deepEqual(dropped, [
+    { at: 'risks.1', reason: 'at.path: docs/elsewhere.md is not changed by this PR' },
+    { at: 'risks.2', reason: 'at.line: api/routes.go has no line 40 at head' },
+  ])
+  assert.deepEqual(
+    locatedRisks([risk('api/routes.go', 7)], { changedPaths: null }).dropped.map((d) => d.reason),
+    ['at.path: the changed files are unknown, so it cannot be checked'],
+  )
+})
+
+test('boundDescription passes typed facts through for the core to validate', () => {
+  const facts = typed()
+  const result = boundDescription('boss-verify-x', { items: ['a'], ...facts })
+  assert.deepEqual(validateResult(result, 'proof-describe').errors, [])
+  assert.deepEqual(result.blocks, facts.blocks)
+  assert.ok(!Object.hasOwn(boundDescription('x', { items: [] }), 'blocks'))
 })

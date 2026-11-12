@@ -49,6 +49,7 @@ async function run({
   env = {},
   overrides = {},
   missing = new Set(),
+  judgement = judged,
 } = {}) {
   const uploads = []
   const notes = []
@@ -68,7 +69,7 @@ async function run({
     throw new Error(`unexpected ${command} ${args.join(' ')}`)
   }
   const result = await recordHeadProof(
-    { read, repo: 'acme/widgets', pr: 7, headSha: HEAD, judged, cwd: '/repo', env },
+    { read, repo: 'acme/widgets', pr: 7, headSha: HEAD, judged: judgement, cwd: '/repo', env },
     {
       readOperatorMarkers: () => (readable ? { readable: true, markers } : { readable: false }),
       recordHeadNote: (_read, note) => {
@@ -101,6 +102,33 @@ test('a parked verdict uploads the page and notes the proof line carrying its UR
   assert.deepEqual(parseProofLine(notes[0].note.body), { head: HEAD, page: url, level: 'moderate' })
 })
 
+test('a parked page shows what review fixed and how the ticket criteria checked out', async () => {
+  const fixed = {
+    severity: 'P2',
+    file: 'api.proto',
+    line: 1,
+    title: 'Field named twice',
+    evidence: 'Renamed.',
+  }
+  const { uploads } = await run({
+    judgement: {
+      ...judged,
+      ticket: { id: 'BOS-9', url: 'https://linear.app/acme/issue/BOS-9' },
+      reviewFixed: [fixed],
+      reviewAcceptance: [
+        { id: 'AC1', text: 'Adds the User message', result: 'met', check: 'buf lint', head: HEAD },
+      ],
+    },
+  })
+  const html = uploads[0].html
+  assert.ok(html.includes('<h2>Does it satisfy BOS-9?'), 'the ticket section names the ticket')
+  assert.ok(
+    html.includes('<span class="pill success">done</span>'),
+    'a passed check on this head is done',
+  )
+  assert.ok(html.includes('Field named twice'), 'the fixed finding shows')
+  assert.ok(html.includes('<span class="pill success">fixed</span>'))
+})
 test("a repo's own proof for the head wins: nothing is uploaded or written @sessions.AC248603", async () => {
   const markers = [{ kind: 'repo-proof', head: HEAD }]
   const { result, uploads, notes } = await run({ markers })
@@ -387,7 +415,7 @@ test('a checkout without the base commit fetches it before any diff, so the page
   )
 })
 
-test('after the base moves, the page diffs, lists and logs only the branch, on its merge base', async (t) => {
+test('after the base moves, the page diffs and lists only the branch, on its merge base', async (t) => {
   const dir = tempDir('proof-merge-base-', t)
   const git = (...args) =>
     execFileSync(
@@ -433,6 +461,7 @@ test('after the base moves, the page diffs, lists and logs only the branch, on i
         outcome: 'posted',
         url: 'https://github.com/acme/widgets/pull/7#c1',
       }),
+      readBranchContext: () => undefined,
       discoverPublisher: () => ({ publisher: { kind: 'hook', extension: { name: 'host' } } }),
       uploadPage: async (input) => {
         uploads.push(input)
@@ -443,7 +472,6 @@ test('after the base moves, the page diffs, lists and logs only the branch, on i
   const { html } = uploads[0]
   assert.match(html, /message User \{\}/)
   assert.doesNotMatch(html, /message Main|main\.ts|Trunk moves on/)
-  assert.match(html, /Add the user message/)
   assert.match(html, new RegExp(`on <code>${fork.slice(0, 12)}</code>`))
   assert.ok(!html.includes(base.slice(0, 7)), 'the base tip is never shown')
 })

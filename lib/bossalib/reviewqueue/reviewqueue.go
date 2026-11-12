@@ -21,11 +21,20 @@ import (
 // and one header count
 // per ConfidenceLevel in enum order. Audit rows never contribute to counts.
 //
-// A session is a row when it is open, not archived, has a PR, and its attention
-// is a verify park: REVIEW or FIX carrying park codes. A code-less FIX is an
+// A session is a row when it is open, not archived, has a PR, and its Park is a
+// verify park: REVIEW or FIX carrying park codes. A code-less FIX is an
 // ordinary fault, not a park. An open, non-archived PR session that is merging
 // now counts as HIGH without becoming a row, even while its park codes linger,
 // since nobody is waiting on it.
+//
+// No dated apiversion bump for listing a sign-off park whose chat asks or
+// works, and why: ListReviewQueue reaches the boss TUI, which can point at a
+// daemon of another version, and ProxyListReviewQueue reaches the web through
+// version-skewed bosso. Both read the row's level from the row, so an older
+// client shows the row at its level, without the asks and park age it reads
+// from the attention. A transform dropping the row again would restore the
+// defect this corrects: a PR parked for a person missing from the queue. See
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 func Build(sessions []*pb.Session, sort pb.ReviewQueueSort, now time.Time) ([]*pb.ReviewQueueRow, []*pb.ReviewQueueLevelCount) {
 	rows := make([]*pb.ReviewQueueRow, 0)
 	counts := make(map[pb.ConfidenceLevel]int32)
@@ -41,8 +50,8 @@ func Build(sessions []*pb.Session, sort pb.ReviewQueueSort, now time.Time) ([]*p
 			counts[pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH]++
 			continue
 		}
-		if isVerifyPark(sess.GetAttention()) {
-			level := rowLevel(sess.GetAttention())
+		if park := Park(sess); isVerifyPark(park) {
+			level := rowLevel(park)
 			rows = append(rows, &pb.ReviewQueueRow{Session: sess, ConfidenceLevel: level})
 			counts[level]++
 		}
@@ -83,6 +92,17 @@ func MatchesOrigin(s *pb.Session, originURL string) bool {
 		return false
 	}
 	return vcs.CanonicalRepoURL(s.GetRepoOriginUrl()) == want
+}
+
+// Park is the verify park a row waits under: the session's sign-off park,
+// whatever its attention says now, else its attention, which carries a
+// blocked park and every park from a daemon that predates verify_park. Its
+// asks, lowered-by reasons, proof URL and since are the row's.
+func Park(sess *pb.Session) *pb.SessionAttention {
+	if park := sess.GetVerifyPark(); park != nil {
+		return park
+	}
+	return sess.GetAttention()
 }
 
 func isOpenPR(sess *pb.Session) bool {
@@ -182,8 +202,8 @@ func compareRank(left, right *pb.ReviewQueueRow, mostFirst bool) int {
 }
 
 func compareSince(left, right *pb.ReviewQueueRow) int {
-	leftSince := left.GetSession().GetAttention().GetSince()
-	rightSince := right.GetSession().GetAttention().GetSince()
+	leftSince := Park(left.GetSession()).GetSince()
+	rightSince := Park(right.GetSession()).GetSince()
 	return cmp.Or(
 		cmp.Compare(leftSince.GetSeconds(), rightSince.GetSeconds()),
 		cmp.Compare(leftSince.GetNanos(), rightSince.GetNanos()),

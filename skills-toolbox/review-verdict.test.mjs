@@ -622,7 +622,9 @@ test('standing report findings round trip and reject malformed trailers', () => 
     verdict([open, finding({ id: 'fixed', fixed: true }), finding({ id: 'raw', verified: false })]),
   )
   const parsed = reviewVerdict.parseReportFindings(reviewVerdict.renderReport(result))
+  const fixed = finding({ id: 'fixed', fixed: true })
   assert.deepEqual(parsed, {
+    version: 2,
     base: BASE,
     head: HEAD,
     findings: [
@@ -632,9 +634,74 @@ test('standing report findings round trip and reject malformed trailers', () => 
         ),
       ),
     ],
+    fixed: [
+      Object.fromEntries(
+        ['id', 'severity', 'file', 'line', 'title', 'evidence'].map((k) => [k, fixed[k]]),
+      ),
+    ],
+    acceptance: [],
   })
-  for (const body of ['', '<!-- bs-review-findings v1 base=x head=y eA -->'])
+  for (const body of [
+    '',
+    '<!-- bs-review-findings v1 base=x head=y eA -->',
+    `<!-- bs-review-findings v3 base=${BASE} head=${HEAD} ${encoded([])} -->`,
+    `<!-- bs-review-findings v2 base=${BASE} head=${HEAD} ${encoded([])} -->`,
+    `<!-- bs-review-findings v2 base=${BASE} head=${HEAD} ${encoded({ findings: [], fixed: [{ id: 'x' }] })} -->`,
+  ])
     assert.equal(reviewVerdict.parseReportFindings(body), null)
+})
+
+const encoded = (payload) => Buffer.from(JSON.stringify(payload)).toString('base64url')
+
+test('a v1 trailer still parses, with no fixed findings and no acceptance rows', () => {
+  const open = Object.fromEntries(
+    ['id', 'severity', 'file', 'line', 'title', 'evidence', 'introduced'].map((k) => [
+      k,
+      finding()[k],
+    ]),
+  )
+  const body = `<!-- bs-review -->\n<!-- bs-review-findings v1 base=${BASE} head=${HEAD} ${encoded([open])} -->`
+  assert.deepEqual(reviewVerdict.parseReportFindings(body), {
+    version: 1,
+    base: BASE,
+    head: HEAD,
+    findings: [open],
+    fixed: [],
+    acceptance: [],
+  })
+})
+
+test('a v2 trailer carries fixed findings and acceptance rows with their head', () => {
+  const fixCommit = 'c'.repeat(40)
+  const result = verdictStatus(
+    verdict([finding({ id: 'gone', fixed: true, fixCommit, line: 40 })], {
+      acceptance: {
+        head: HEAD,
+        tree: BASE,
+        criteria: [
+          { id: 'AC1', text: 'Saves the draft', result: 'met', check: 'go test ./draft' },
+          { id: 'AC2', text: 'Shows the | count', result: 'unchecked' },
+        ],
+      },
+    }),
+  )
+  const parsed = reviewVerdict.parseReportFindings(reviewVerdict.renderReport(result))
+  assert.equal(parsed.findings.length, 0)
+  assert.deepEqual(parsed.fixed, [
+    {
+      id: 'gone',
+      severity: 'P1',
+      file: 'src/a.go',
+      line: 40,
+      title: 'nil map write',
+      evidence: finding().evidence,
+      fixCommit,
+    },
+  ])
+  assert.deepEqual(parsed.acceptance, [
+    { id: 'AC1', text: 'Saves the draft', result: 'met', check: 'go test ./draft', head: HEAD },
+    { id: 'AC2', text: 'Shows the | count', result: 'unchecked', check: '', head: HEAD },
+  ])
 })
 test('standing report bounds large evidence while preserving titles', () => {
   const body = reviewVerdict.renderReport(

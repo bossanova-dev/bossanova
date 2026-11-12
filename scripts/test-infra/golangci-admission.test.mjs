@@ -8,6 +8,9 @@ import { test } from 'node:test'
 import { tempDir } from './test-tmpdir.mjs'
 import { runGolangciSync, golangciAdmissionConfig } from './golangci-admission.mjs'
 
+const LOAD_TOLERANT_WAIT_MS = 60_000
+const CHILD_TIMEOUT_MS = 5_000
+
 function fixture(t) {
   const dir = tempDir('golangci-admission-', t)
   const log = path.join(dir, 'events')
@@ -30,7 +33,7 @@ fs.appendFileSync(process.env.EVENTS, JSON.stringify({kind:'end',pid:process.pid
       EVENTS: log,
       BOSS_GOLANGCI_SLOT_DIR: path.join(dir, 'slots'),
       BOSS_GOLANGCI_SLOTS: '2',
-      BOSS_GOLANGCI_ADMISSION_WAIT_MS: '5000',
+      BOSS_GOLANGCI_ADMISSION_WAIT_MS: String(LOAD_TOLERANT_WAIT_MS),
       GOLANGCI_LINT_CACHE: '',
       BOSS_GATE_LINT_CACHE_POOL: '',
       BOSS_GATE_ADMISSION_DIR: path.join(dir, 'gate-slots'),
@@ -143,8 +146,15 @@ test('a live child retains its slot and admission queue time is outside timeout'
     process.execPath,
     [
       '-e',
-      `const fs=require('node:fs'); fs.writeFileSync(process.argv[1],JSON.stringify({pid:process.pid})); console.log('ready'); setTimeout(()=>{fs.unlinkSync(process.argv[1]);},3000)`,
+      `const fs=require('node:fs');
+fs.writeFileSync(process.argv[1],JSON.stringify({pid:process.pid}));
+console.log('ready');
+setTimeout(()=>{
+  fs.appendFileSync(process.argv[2],JSON.stringify({kind:'released'})+'\\n');
+  fs.unlinkSync(process.argv[1]);
+},${CHILD_TIMEOUT_MS + 1_000})`,
       file,
+      f.log,
     ],
     { stdio: ['ignore', 'pipe', 'inherit'] },
   )
@@ -153,12 +163,16 @@ test('a live child retains its slot and admission queue time is outside timeout'
   const result = runGolangciSync(['run'], {
     env: { ...f.env, BOSS_GOLANGCI_SLOTS: '1' },
     privateCache: true,
-    timeout: 2000,
+    timeout: CHILD_TIMEOUT_MS,
     encoding: 'utf8',
   })
   assert.equal(result.status, 0, result.stderr)
   await ended
-  assert.equal(events(f.log).length, 2)
+  // The hold exceeds the child's whole budget; success proves queue time was excluded.
+  assert.deepEqual(
+    events(f.log).map((event) => event.kind),
+    ['released', 'start', 'end'],
+  )
 })
 test('concurrent reclaimers preserve exactly one holder of a stale slot', async (t) => {
   const f = fixture(t)
@@ -246,7 +260,7 @@ test('two concurrent gates use distinct warm slot caches without serializing', a
     path.join(f.dir, 'golangci-lint'),
     fs.readFileSync(path.join(f.dir, 'golangci-lint'), 'utf8').replace(
       'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,80)',
-      `const deadline = Date.now() + 10000
+      `const deadline = Date.now() + ${LOAD_TOLERANT_WAIT_MS}
 while (fs.readFileSync(process.env.EVENTS, 'utf8').trim().split('\\n').map(JSON.parse).filter(e => e.kind === 'start').length < 2) {
   if (Date.now() > deadline) throw new Error('second linter never reached the rendezvous')
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10)

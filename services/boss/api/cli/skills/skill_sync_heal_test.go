@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 )
 
-func TestRunSkillGateHeal(t *testing.T) {
+func TestRunSkillGateHeal_BossSkills_AC246401(t *testing.T) {
 	g := newTestGroup()
 
 	for _, scenario := range []string{"recoverable", "mixed", "skip", "untrusted", "fallback", "self-edited", "self-edited-committed", "read-only", "unknown"} {
@@ -67,6 +68,17 @@ func TestRunSkillGateHeal(t *testing.T) {
 			var out bytes.Buffer
 			err := g.runSkillGateWithHeal(&out, "claude", scenario != "read-only")
 			assertGateOutputHidesGateFlag(t, out.String())
+			if scenario == "recoverable" {
+				t.Log(out.String())
+				if !strings.Contains(out.String(), "boss skills gate: reload core=boss-build agent=claude paths=boss-build/SKILL.md") {
+					t.Fatalf("missing body reload: %s", &out)
+				}
+			}
+			if scenario == "skip" || scenario == "untrusted" || scenario == "fallback" {
+				if strings.Contains(out.String(), "boss skills gate: reload ") {
+					t.Fatalf("reload without heal: %s", &out)
+				}
+			}
 			got, readErr := os.ReadFile(installedFile)
 			if readErr != nil {
 				t.Fatal(readErr)
@@ -152,5 +164,35 @@ func TestRunSkillGateHealAhead(t *testing.T) {
 	// guidance-audit: allow — installed bytes and the CLI refusal are runtime behavior.
 	if err != nil || !bytes.Equal(got, newer["skills/boss/SKILL.md"].Data) || strings.Contains(out.String(), "reinstall withheld") {
 		t.Fatalf("ahead changed: %q %v %s", got, err, &out)
+	}
+}
+
+func TestSkillGateReloadLines_BossSkills_AC246401(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		healed []string
+		want   []string
+	}{
+		{name: "empty"},
+		{name: "entry", healed: []string{"boss-build"}, want: []string{"boss skills gate: reload core=boss-build agent=claude paths=boss-build"}},
+		{name: "body", healed: []string{"boss-build/SKILL.md"}, want: []string{"boss skills gate: reload core=boss-build agent=claude paths=boss-build/SKILL.md"}},
+		{name: "reference", healed: []string{"boss-build/references/a.md"}, want: []string{"boss skills gate: reload core=boss-build agent=claude paths=boss-build/references/a.md"}},
+		{name: "helpers", healed: []string{"boss-build/toolbox/a.mjs", "boss-build/agents/a.md", "boss-build/scripts/a.sh", "invalid/SKILL.md"}},
+		{name: "sorted", healed: []string{"boss-plan/references/z.md", "boss-build/SKILL.md", "boss-plan/SKILL.md", "boss-build/toolbox/a.mjs"}, want: []string{
+			"boss skills gate: reload core=boss-build agent=claude paths=boss-build/SKILL.md",
+			"boss skills gate: reload core=boss-plan agent=claude paths=boss-plan/SKILL.md,boss-plan/references/z.md",
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := skillGateReloadLines("claude", tt.healed)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("reload lines = %q; want %q", got, tt.want)
+			}
+			for _, line := range got {
+				if strings.Contains(line, "--gate") || strings.HasPrefix(line, "  ") {
+					t.Fatalf("not a flush-left reload header: %q", line)
+				}
+			}
+		})
 	}
 }

@@ -10,7 +10,8 @@
           "  \"verifyDefaults\": {",
           "    \"alwaysReview\": {",
           "      \"Revenue models\": [\"analytics/models/marts/**\"]",
-          "    }",
+          "    },",
+          "    \"noSignOff\": [\"analytics/models/staging/**\"]",
           "  }",
           "}"
         ],
@@ -51,6 +52,7 @@
           "select",
           "  id as refund_id,",
           "  order_id,",
+          "  customer_email,",
           "  refunded_at,",
           "  amount_cents",
           "from {{ source('shop', 'refunds') }}",

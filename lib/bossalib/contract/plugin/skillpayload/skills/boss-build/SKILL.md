@@ -246,6 +246,7 @@ export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
 # skill-drift-verdict.mjs decides severity: a stale record warns, an absent
 # capability stops. Without a boss CLI, use the warning helper so drift is not
 # called clean.
+O=
 if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
   if O="$("$BOSS_BIN" skills check --gate --heal 2>&1)" ||
     { case "$O" in
@@ -299,10 +300,15 @@ if [ "$BOSSD_MANAGED" = "1" ]; then
 fi
 trap - EXIT
 rm -f "$PREFLIGHT_LOCK"
+printf '%s\n' "${O:-}" | node "$BOSS_BUILD_TOOLBOX/skill-drift-verdict.mjs" reload --core boss-build --skill-md "${BOSS_BUILD_TOOLBOX%/toolbox}/SKILL.md" || exit "$?"
 ```
 
-A stale-but-present installed file warns and the run continues; an `absent`, `mode` or
-`broken-symlink` row from the drift gate, or no toolbox at all, stops (rule 10).
+On `RELOAD:`, read the named file in full and restart this block under that body with
+`BOSS_BUILD_CONTINUE=1` and this run's `BLI_RUNID`, once per run. The lock and run record stay owned.
+A second reload means a peer install is racing; continue under the body just read and report it.
+
+A stale record warns and the run continues. A blocking drift verdict, including config-validator
+drift or an `absent`, `mode` or `broken-symlink` capability, or no toolbox at all, stops (rule 10).
 
 When `tracker/cli.mjs operations` lists a `preflight` operation, run it with
 `tracker/cli.mjs invoke-operation preflight` instead of the MCP preflight and team listing. A

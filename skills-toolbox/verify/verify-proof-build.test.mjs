@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildProofRecord, proofAreaName } from './verify-proof-build.mjs'
+import { buildProofRecord, proofAreaName, reviewSidecar } from './verify-proof-build.mjs'
+import { buildBlockers } from './verify-blockers.mjs'
 import { validateProof } from './verify-proof.mjs'
 import { canonicalAreaId, configAreaIds, reviewAreas } from './verify-areas.mjs'
 import { legacyCodes } from './verify-level.mjs'
@@ -209,4 +210,99 @@ test('an ask recorded under the raw config name keeps its park code @sessions.AC
     }
     assert.deepEqual(legacyCodes(result, review), codes, area)
   }
+})
+
+test('the review sidecar keeps each finding with its file, line, severity and status', () => {
+  const raw = {
+    id: 'f1',
+    severity: 'P1',
+    file: 'src/a.mjs',
+    line: 4,
+    title: 'Returns the wrong value',
+    evidence: 'It returns  the old\n total.',
+    introduced: true,
+    verified: true,
+    fixed: false,
+  }
+  const [open] = buildBlockers({ reviewFindings: [raw] })
+  const note = { ...raw, id: 'n1', severity: 'P3', line: 9, title: 'Name it' }
+  const preexisting = { ...raw, id: 'p1', introduced: false, line: 30, title: 'Old race' }
+  const fixed = { ...raw, id: 'x1', severity: 'P2', line: 12, title: 'Off by one' }
+  const sidecar = reviewSidecar(
+    judged({
+      blockers: [open, { id: 'check:ci', kind: 'check', summary: 'ci', text: 'ci' }],
+      findingNotes: [note, { title: 'Extension note without a place', severity: 'P3' }],
+      reviewUnfixed: [raw, note, preexisting],
+      reviewFixed: [fixed],
+    }),
+  )
+  assert.deepEqual(
+    sidecar.findings.map((f) => [f.status, f.severity, f.file, f.line, f.title]),
+    [
+      ['open', 'P1', 'src/a.mjs', 4, 'Returns the wrong value'],
+      ['open', 'P1', 'src/a.mjs', 30, 'Old race'],
+      ['note', 'P3', 'src/a.mjs', 9, 'Name it'],
+      ['note', 'P3', undefined, undefined, 'Extension note without a place'],
+      ['fixed', 'P2', 'src/a.mjs', 12, 'Off by one'],
+    ],
+    'a finding read from the blockers and the unfixed list shows once, and checks are not findings',
+  )
+  assert.equal(sidecar.findings[0].id, open.id)
+  assert.equal(sidecar.findings[0].detail, 'It returns the old total.')
+  assert.deepEqual(sidecar.acceptance, [])
+})
+
+test('the review sidecar keeps well-formed acceptance rows once per criterion', () => {
+  const row = { id: 'AC1', text: 'Saves', result: 'met', check: 'go test ./x', head: HEAD }
+  const { acceptance } = reviewSidecar(
+    judged({
+      reviewAcceptance: [
+        row,
+        { ...row, result: 'unmet' },
+        { id: 'AC2', text: '', result: 'unchecked', check: '', head: HEAD },
+        { id: 'AC3', text: 'Bad', result: 'pass', head: HEAD },
+        { id: 'AC4', text: 'Bad', result: 'met', head: 'nope' },
+      ],
+    }),
+  )
+  assert.deepEqual(acceptance, [
+    { ...row, result: 'unmet' },
+    { id: 'AC2', text: 'AC2', result: 'unchecked', head: HEAD },
+  ])
+})
+
+test('describer blocks, signals and risks ride the sidecar areas and leave the record digest alone', async () => {
+  const { proofPageInput } = await import('./verify-proof-publish.mjs')
+  const facts = {
+    blocks: [{ kind: 'steps', steps: ['Run `./migrate`'] }],
+    signals: [{ key: 'db', label: 'Database', state: 'additive', summary: 'Adds a column' }],
+  }
+  const plain = build()
+  const typed = build({
+    facts: { ...judged().facts, areas: [{ ...schema, ...facts }, contract, other] },
+  })
+  assert.equal(typed.proof.digest, plain.proof.digest, 'the record never carries the blocks')
+  assert.deepEqual(typed.proof, plain.proof)
+  assert.deepEqual(typed.areas[0].described, facts)
+  assert.deepEqual(plain.areas[0].described, {})
+  const sidecar = (built) =>
+    proofPageInput({
+      proof: built.proof,
+      areas: built.areas,
+      judged: judged(),
+      git: () => ({ ok: false }),
+      prBody: '',
+      repo: 'acme/widgets',
+      pr: 7,
+    })
+  assert.deepEqual(sidecar(typed).described, { [typed.areas[0].name]: facts })
+  assert.ok(!Object.hasOwn(sidecar(plain), 'described'))
+  const broken = build({
+    facts: {
+      ...judged().facts,
+      areas: [{ ...schema, blocks: [{ kind: 'chart' }] }, contract, other],
+    },
+  })
+  assert.ok(!Object.hasOwn(sidecar(broken), 'described'), 'an invalid area is left out')
+  assert.ok(Object.hasOwn(sidecar(broken), 'filesUrl'), 'and the rest of the sidecar stays')
 })

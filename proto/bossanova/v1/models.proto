@@ -622,6 +622,47 @@ message Session {
   string pr_proof_url = 89;
   // Head the pr_proof_url record was made for (40 hex), or empty.
   string pr_proof_head_sha = 90;
+  // The verify sign-off park on the PR's current head, as attention shows it
+  // when nothing outranks the park: its confidence level, asks, lowered-by
+  // reasons, proof URL and park time. Set whatever attention is, so a park
+  // whose chat asks a question or works stays known; unset once a new head,
+  // a merge or a close ends the park, and for a blocked park, which attention
+  // alone carries. The review queue lists a session by it. No dated API bump
+  // or transform: the field is additive and older clients ignore it. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  SessionAttention verify_park = 95;
+
+  // The open PR's current base branch on GitHub, read from bossd's open-PR
+  // listing, never persisted; empty when unknown or the PR is not open. It
+  // follows a retarget, unlike base_branch, which is fixed at creation.
+  string pr_base_branch = 92;
+  // The repository's default base branch that pr_base_branch is compared
+  // with, served with it; empty whenever pr_base_branch is.
+  string repo_default_branch = 93;
+  // The other open PRs this PR is stacked on, nearest first: a PR whose head
+  // branch is this PR's base, then, newest first, the owners of commits this
+  // PR carries that are not its own (matched by patch id, so a rebased copy
+  // still counts; each commit belongs to the oldest open PR carrying it).
+  // Transport-only, never persisted.
+  // No dated API bump or transform: the three fields are additive and older
+  // clients ignore them without changing their existing behavior. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  repeated StackedPullRequest pr_stacked_on = 94;
+}
+
+// StackedPullRequest is an open PR another PR is stacked on, so reviewing it
+// comes first.
+message StackedPullRequest {
+  int32 pr_number = 1;
+  string title = 2;
+  string url = 3;
+  string head_branch = 4;
+  // This PR's commits whose oldest open carrier is this parent.
+  int32 shared_commit_count = 5;
+  // The parent's own commit count over the default branch.
+  int32 commit_count = 6;
+  // The parent's head branch is this PR's base branch.
+  bool is_base_branch = 7;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

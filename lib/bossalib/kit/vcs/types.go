@@ -298,9 +298,11 @@ type CommitAuthor struct {
 
 // PRSummary is a lightweight representation of a PR for listing.
 type PRSummary struct {
-	Number        int
-	Title         string
-	HeadBranch    string
+	Number     int
+	Title      string
+	HeadBranch string
+	// BaseBranch is the branch the PR merges into, where the listing reads it.
+	BaseBranch    string
 	State         PRState
 	Author        string
 	HeadSHA       string

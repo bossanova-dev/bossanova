@@ -1,0 +1,82 @@
+{
+  "schema": "proof-spec/1",
+  "head": "c8d74848c3cf28acf52b6baabcacff1b759a0faa",
+  "title": "Add a dead-letter queue and longer job timeouts",
+  "waiting": [
+    {
+      "title": "Prod capacity doubles",
+      "detail": "Worker replicas go from 2 to 4 alongside a new image.",
+      "area": "infra"
+    }
+  ],
+  "risks": [
+    {
+      "level": "deploy",
+      "title": "Timeouts must stay ordered",
+      "body": "The worker gives up at 840 s and the queue redelivers at 900 s; a job slower than that runs twice.",
+      "ifItMatters": "Keep JOB_TIMEOUT_SECONDS below the visibility timeout.",
+      "at": {
+        "path": "deploy/k8s/worker.yaml",
+        "line": 16
+      }
+    },
+    {
+      "level": "medium",
+      "title": "Default timeout changes for every environment",
+      "body": "The module default moves from 60 s to 300 s, so staging changes too.",
+      "at": {
+        "path": "infra/modules/queue/variables.tf",
+        "line": 7
+      }
+    }
+  ],
+  "areas": [
+    {
+      "id": "infra",
+      "name": "Infrastructure",
+      "summary": "Adds a dead-letter queue, a timeout variable and a bigger worker deployment.",
+      "facts": [
+        {
+          "text": "maxReceiveCount 5",
+          "flag": false
+        },
+        {
+          "text": "replicas 2 \u2192 4",
+          "flag": true
+        }
+      ],
+      "snippets": [
+        {
+          "path": "infra/modules/queue/main.tf",
+          "start": 1,
+          "end": 15,
+          "pinLine": 8
+        },
+        {
+          "path": "deploy/k8s/worker.yaml",
+          "start": 6,
+          "end": 16,
+          "pinLine": 16,
+          "pinNote": "Must stay below 900."
+        }
+      ]
+    }
+  ],
+  "checklist": {
+    "before": [
+      {
+        "text": "terraform plan shows one queue added and one changed",
+        "done": true
+      }
+    ],
+    "after": [
+      {
+        "text": "Watch the dead-letter queue depth for a day",
+        "done": false
+      }
+    ]
+  },
+  "notes": [],
+  "evidencePlan": [],
+  "uncertain": []
+}

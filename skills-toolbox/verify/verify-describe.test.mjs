@@ -6,6 +6,7 @@ import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { MAX_ITEMS, MAX_TEXT_CHARS } from './verify-proof.mjs'
 import { Readable } from 'node:stream'
 import { validateResult } from '../skill-extensions.mjs'
+import { NO_SIGN_OFF_AREA } from './verify-areas.mjs'
 import {
   foldChange,
   boundDescription,
@@ -178,6 +179,30 @@ test('ask monotonicity holds for every path policy and describer outcome', () =>
       assert.equal(merged.health.length, result.ok ? 0 : 1)
       if (!result.ok) assert.equal(merged.health[0].code, 'describer-failed')
     }
+})
+
+test('a breaking describer keeps its facts on the no-sign-off area but never makes it ask', () => {
+  const outcome = (areaId) => [
+    {
+      extension: 'describe-test',
+      area: areaId,
+      order: 1,
+      ok: true,
+      description: { ...valid(), items: ['Drops a column'], breaking: true },
+    },
+  ]
+  const noSignOff = { ...area('never'), area: NO_SIGN_OFF_AREA, label: 'No sign-off' }
+  const [described] = describeAreas([noSignOff], outcome(NO_SIGN_OFF_AREA)).areas
+  assert.equal(described.defaultAsk, 'never')
+  assert.equal(described.breaking, true)
+  assert.deepEqual(described.items, ['Drops a column'])
+  assert.deepEqual(described.describers, [
+    { extension: 'describe-test', outcome: 'breaking', items: ['Drops a column'] },
+  ])
+  assert.equal(
+    describeAreas([area('never')], outcome('housekeeping')).areas[0].defaultAsk,
+    'always',
+  )
 })
 
 test('merge is deterministic, deduplicates in descriptor order and bounds lists', () => {

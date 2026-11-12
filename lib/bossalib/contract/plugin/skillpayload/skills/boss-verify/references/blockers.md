@@ -37,7 +37,7 @@ Kinds and stable ids:
 | `no-review`      | `no-review`                                                                        | Legacy only: readable in standing comments, never emitted; verify reviews a boss head lacking a receipt itself |
 
 Ids are unique. Order is review findings by severity, file and line, checks by name, then conflict. P3 and style findings are notes and never blockers. Pre-existing, unverified and
-fixed findings never block. Missing receipts route eligible heads to review; forks and unadmitted heads retain their park rules.
+fixed findings never block. `isBlockingFinding` in `toolbox/verify/verify-blockers.mjs` is the shared predicate boss-review uses. Missing receipts route eligible heads to review; forks and unadmitted heads retain their park rules.
 PARTIAL builds retain their park after review; conflicts and failed checks still block PARTIAL builds.
 
 The posted comment lists every blocker, then its verify marker, then a final encoded envelope.

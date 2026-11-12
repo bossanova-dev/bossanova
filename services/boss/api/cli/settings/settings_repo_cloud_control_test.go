@@ -257,3 +257,61 @@ func Test_Settings_AC243001_OwnerIdentityErrorNamesRepo(t *testing.T) {
 		})
 	}
 }
+
+func Test_Settings_AC238301_RestrictPublicRepos(t *testing.T) {
+	for _, owner := range []string{"", "github.com/acme"} {
+		t.Run(owner, func(t *testing.T) {
+			seedDaemonNameSettings(t)
+			a, b, c := registeredControlRepo(t, "acme/a", 1), registeredControlRepo(t, "other/b", 2), registeredControlRepo(t, "acme/private", 3)
+			a.IsSuggested, b.IsSuggested = true, true
+			g := repoControlGroup(a, b, c)
+			args := []string{"--restrict-public-repos", "--yes"}
+			if owner != "" {
+				args = append(args, "--owner", owner)
+			}
+			if _, err := executeRepoSettings(t, g, args...); err != nil {
+				t.Fatal(err)
+			}
+			settings, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 2
+			if owner != "" {
+				want = 1
+			}
+			if len(settings.CloudControlRepos) != want {
+				t.Fatalf("grants: %+v", settings.CloudControlRepos)
+			}
+			for _, grant := range settings.CloudControlRepos {
+				if grant.Mode != "read-only" || grant.RepoID == 0 || grant.Checkout == "" || grant.Host != "github.com" {
+					t.Fatalf("unbound grant: %+v", grant)
+				}
+				if owner != "" && !strings.HasPrefix(grant.Name, "acme/") {
+					t.Fatalf("wrong owner: %+v", grant)
+				}
+			}
+		})
+	}
+}
+func TestPublicRestrictionConfirmationAndEmpty(t *testing.T) {
+	seedDaemonNameSettings(t)
+	repo := registeredControlRepo(t, "acme/a", 1)
+	repo.IsSuggested = true
+	for _, answer := range []string{"n\n", "y\n"} {
+		cmd := repoControlGroup(repo).SettingsCmd()
+		cmd.SetArgs([]string{"--restrict-public-repos"})
+		cmd.SetIn(strings.NewReader(answer))
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		settings, _ := config.Load()
+		if (len(settings.CloudControlRepos) == 1) != (answer == "y\n") {
+			t.Fatalf("answer %q: %+v", answer, settings.CloudControlRepos)
+		}
+	}
+	out, err := executeRepoSettings(t, repoControlGroup(), "--restrict-public-repos", "--yes")
+	if err != nil || !strings.Contains(out, "No public repos to restrict") {
+		t.Fatalf("empty: %s %v", out, err)
+	}
+}

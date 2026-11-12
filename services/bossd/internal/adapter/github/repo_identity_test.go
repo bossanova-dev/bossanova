@@ -16,6 +16,7 @@ func TestGetRepositoryIdentity(t *testing.T) {
 		wantErr    bool
 	}{
 		{"success", `{"id":42,"visibility":"private"}`, nil, false},
+		{"legacy private", `{"id":42,"private":true}`, nil, false},
 		{"missing id", `{"visibility":"private"}`, nil, true},
 		{"malformed", `{`, nil, true},
 		{"not found", "", errors.New("404"), true},

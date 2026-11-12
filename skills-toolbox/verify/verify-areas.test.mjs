@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   AREAS,
   GENERATED_GLOBS,
+  NO_SIGN_OFF_AREA,
   bumpLevel,
   detectAreas,
   dependencyBumps,
@@ -669,14 +670,14 @@ test('dependencyChanges lists every changed, added and removed direct dependency
   })
 })
 
-const reviewPolicy = (alwaysReview = {}, neverReview = []) => ({
+const reviewPolicy = (alwaysReview = {}, noSignOff = []) => ({
   alwaysReview: Object.entries(alwaysReview).map(([name, globs]) => ({
     name,
     globs,
     parkCode: 'always-human-path',
     label: name,
   })),
-  neverReview,
+  noSignOff,
   deprecations: [],
 })
 test('reviewAreas applies the example policy to fresh-claim #11996', () => {
@@ -692,12 +693,53 @@ test('reviewAreas applies the example policy to fresh-claim #11996', () => {
   assert.equal(schema.defaultAsk, 'always')
   assert.ok(schema.paths.includes('services/api/entity/hospital.go'))
   assert.ok(schema.paths.some((p) => p.startsWith('services/api/internal/migration/seeds/')))
+  assert.deepEqual(r.areas.flatMap((a) => a.paths).sort(), [...new Set(freshClaimFiles)].sort())
+})
+const freshClaimPolicy = () =>
+  reviewPolicy({ 'API schema': ['services/api/entity/**', 'services/api/internal/migration/**'] }, [
+    'services/dbt/**',
+    'services/directory/**',
+    'services/growth-sync/**',
+  ])
+test('dbt-only files form exactly one no-sign-off area that never asks', () => {
+  const files = ['services/dbt/models/schema.yml', 'services/dbt/models/a.sql']
+  const { areas } = reviewAreas(files, freshClaimPolicy())
+  assert.deepEqual(areas, [
+    {
+      area: NO_SIGN_OFF_AREA,
+      label: 'No sign-off',
+      paths: ['services/dbt/models/a.sql', 'services/dbt/models/schema.yml'],
+      defaultAsk: 'never',
+      source: 'config',
+    },
+  ])
+  assert.equal(NO_SIGN_OFF_AREA, 'no-sign-off')
+  assert.ok(
+    !reviewAreas(['src/a.go'], freshClaimPolicy()).areas.some((a) => a.area === NO_SIGN_OFF_AREA),
+  )
+})
+test('a mixed dbt and entity change asks for the schema area and not the no-sign-off area', () => {
+  const { areas } = reviewAreas(
+    ['services/dbt/models/a.sql', 'services/api/entity/x.go'],
+    freshClaimPolicy(),
+  )
   assert.deepEqual(
-    r.areas
-      .flatMap((a) => a.paths)
-      .concat(r.omitted)
-      .sort(),
-    [...new Set(freshClaimFiles)].sort(),
+    areas.map((a) => [a.area, a.defaultAsk, a.paths]),
+    [
+      ['config:api-schema', 'always', ['services/api/entity/x.go']],
+      [NO_SIGN_OFF_AREA, 'never', ['services/dbt/models/a.sql']],
+    ],
+  )
+})
+test('alwaysReview wins over noSignOff for the same path', () => {
+  const policy = reviewPolicy({ Models: ['services/dbt/models/**'] }, ['services/dbt/**'])
+  const { areas } = reviewAreas(['services/dbt/models/a.sql', 'services/dbt/tests/t.sql'], policy)
+  assert.deepEqual(
+    areas.map((a) => [a.area, a.defaultAsk, a.paths]),
+    [
+      ['config:models', 'always', ['services/dbt/models/a.sql']],
+      [NO_SIGN_OFF_AREA, 'never', ['services/dbt/tests/t.sql']],
+    ],
   )
 })
 test('reviewAreas precedence, first match, omissions and shuffle determinism', () => {
@@ -712,7 +754,21 @@ test('reviewAreas precedence, first match, omissions and shuffle determinism', (
     ],
   )
   assert.deepEqual(reviewAreas([...files].reverse(), policy), r)
-  assert.deepEqual(reviewAreas(files, reviewPolicy({}, ['db/**'])).omitted, ['db/queries/x.sql'])
+  const dbOff = reviewAreas(files, reviewPolicy({}, ['db/**'])).areas
+  assert.deepEqual(dbOff.at(-1), {
+    area: NO_SIGN_OFF_AREA,
+    label: 'No sign-off',
+    paths: ['db/queries/x.sql'],
+    defaultAsk: 'never',
+    source: 'config',
+  })
+  assert.deepEqual(
+    dbOff.slice(0, -1),
+    detectAreas(files.filter((f) => !f.startsWith('db/'))).map((a) => ({
+      ...a,
+      source: 'builtin',
+    })),
+  )
   assert.deepEqual(
     reviewAreas(files, reviewPolicy()).areas,
     detectAreas(files).map((a) => ({ ...a, source: 'builtin' })),
@@ -731,11 +787,18 @@ test('reviewAreas joins rename names before policy matching and keeps a partitio
     [['First', ['last/a.go', 'old/a.go', 'src/new.go']]],
   )
   assert.deepEqual(r, reviewAreas([...files].reverse(), policy))
-  assert.deepEqual(reviewAreas(files, reviewPolicy({}, ['old/**'])).omitted, [])
-  assert.deepEqual(reviewAreas(files, reviewPolicy({}, ['**'])).omitted, [
-    'last/a.go',
-    'old/a.go',
-    'src/new.go',
+  // One rename side outside the globs keeps the whole group reviewable with an ask.
+  const partial = reviewAreas(files, reviewPolicy({}, ['old/**'])).areas
+  assert.ok(!partial.some((a) => a.area === NO_SIGN_OFF_AREA))
+  assert.deepEqual(partial.flatMap((a) => a.paths).sort(), ['last/a.go', 'old/a.go', 'src/new.go'])
+  assert.deepEqual(reviewAreas(files, reviewPolicy({}, ['**'])).areas, [
+    {
+      area: NO_SIGN_OFF_AREA,
+      label: 'No sign-off',
+      paths: ['last/a.go', 'old/a.go', 'src/new.go'],
+      defaultAsk: 'never',
+      source: 'config',
+    },
   ])
 })
 

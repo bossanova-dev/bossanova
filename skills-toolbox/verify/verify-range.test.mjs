@@ -519,7 +519,7 @@ for (const [name, deltaPatch, ask] of [
     })
     assert.deepEqual(result.paths, ['package.json'])
     assert.deepEqual(result.files, [deltaManifest])
-    const { areas } = levelAreasFor(result.files, { review: { alwaysReview: [], neverReview: [] } })
+    const { areas } = levelAreasFor(result.files, { review: { alwaysReview: [], noSignOff: [] } })
     assert.deepEqual(
       areas.map(({ area, defaultAsk }) => [area, defaultAsk]),
       [['dependencies', ask]],
@@ -549,6 +549,6 @@ test('selectChangedRange retains reverted paths omitted by a rewritten-head comp
   })
   assert.deepEqual(result.paths, ['proto/service.proto', 'src/a.go'])
   assert.ok(result.files.some((file) => file.filename === reverted.filename))
-  const { areas } = levelAreasFor(result.files, { review: { alwaysReview: [], neverReview: [] } })
+  const { areas } = levelAreasFor(result.files, { review: { alwaysReview: [], noSignOff: [] } })
   assert.equal(areas.find((area) => area.paths.includes(reverted.filename))?.defaultAsk, 'always')
 })

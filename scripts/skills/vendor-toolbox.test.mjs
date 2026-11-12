@@ -747,6 +747,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/settle-verbs.mjs',
       'tracker/write-description.mjs',
       'verify/verify-contract.mjs',
+      // verify-area-ids.mjs is the one area id verify-describe.mjs exempts from a breaking ask.
+      'verify/verify-area-ids.mjs',
       'verify/verify-describe.mjs',
       'verify/verify-proof.mjs',
       'verify/verify-review-policy.mjs',

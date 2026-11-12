@@ -119,6 +119,16 @@ bash <skill-dir>/toolbox/plan/boss-plan-run.sh preflight
 everywhere below (it is not the sentinel `RUN_ID`). An `unconfigured` repo is a clean no-op (exit 0);
 `ready` and `needs-team` continue. A present but broken config aborts.
 
+Measure checkout freshness before the drift report:
+
+```bash
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-checkout-freshness.mjs check
+```
+
+Carry the JSON `reconRef` as `<RECON-REF>`; substitute it literally like `<RUN-SCRATCH-ID>`.
+On `stale` or `unevaluated`, report its warning and continue; `unevaluated` never means fresh.
+Every inline or dispatched recon read uses `<RECON-REF>` when it is not `HEAD`.
+
 Report installed-skill drift (a stale record warns; an absent capability stops):
 
 ```bash
@@ -229,7 +239,7 @@ plan in its own context and returns only a path and bounded metadata.
 
 3. Dispatch a `general-purpose` subagent on the orchestrator's model (planning is judgement). Pass
    the **path** `references/headless-drafting-brief.md`, the ticket id and title, the snapshot path,
-   `PLAN_PATH`, `RUN_SCRATCH`, Phase 0's resolved tracker `team`,
+   `PLAN_PATH`, `RUN_SCRATCH`, `<RECON-REF>` as `RECON_REF`, Phase 0's resolved tracker `team`,
    `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`, and `allowSiblingSplit: true` when
    the issue has a parent and `tracker/cli.mjs operations --require createIssue,appendDependency`
    exits 0. It returns only `planPath`, `labels`, `agentBuild`, `estimate`, `priority`,

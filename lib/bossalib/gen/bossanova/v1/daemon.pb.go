@@ -17676,8 +17676,11 @@ type RepoCloudControl struct {
 	EffectiveMode      string                 `protobuf:"bytes,8,opt,name=effective_mode,json=effectiveMode,proto3" json:"effective_mode,omitempty"`
 	Source             string                 `protobuf:"bytes,9,opt,name=source,proto3" json:"source,omitempty"`
 	HasUnverifiedGrant bool                   `protobuf:"varint,10,opt,name=has_unverified_grant,json=hasUnverifiedGrant,proto3" json:"has_unverified_grant,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Informational, locally verified metadata; never used to decide authority.
+	Visibility    string `protobuf:"bytes,11,opt,name=visibility,proto3" json:"visibility,omitempty"`
+	IsSuggested   bool   `protobuf:"varint,12,opt,name=is_suggested,json=isSuggested,proto3" json:"is_suggested,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RepoCloudControl) Reset() {
@@ -17776,6 +17779,20 @@ func (x *RepoCloudControl) GetSource() string {
 func (x *RepoCloudControl) GetHasUnverifiedGrant() bool {
 	if x != nil {
 		return x.HasUnverifiedGrant
+	}
+	return false
+}
+
+func (x *RepoCloudControl) GetVisibility() string {
+	if x != nil {
+		return x.Visibility
+	}
+	return ""
+}
+
+func (x *RepoCloudControl) GetIsSuggested() bool {
+	if x != nil {
+		return x.IsSuggested
 	}
 	return false
 }
@@ -19166,7 +19183,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\asession\x18\x01 \x01(\v2\x15.bossanova.v1.SessionR\asession\"\x1e\n" +
 	"\x1cListRepoCloudControlsRequest\"U\n" +
 	"\x1dListRepoCloudControlsResponse\x124\n" +
-	"\x05repos\x18\x01 \x03(\v2\x1e.bossanova.v1.RepoCloudControlR\x05repos\"\xd9\x02\n" +
+	"\x05repos\x18\x01 \x03(\v2\x1e.bossanova.v1.RepoCloudControlR\x05repos\"\x9c\x03\n" +
 	"\x10RepoCloudControl\x12!\n" +
 	"\fdisplay_name\x18\x01 \x01(\tR\vdisplayName\x12\x12\n" +
 	"\x04host\x18\x02 \x01(\tR\x04host\x12\x1a\n" +
@@ -19179,7 +19196,11 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x0eeffective_mode\x18\b \x01(\tR\reffectiveMode\x12\x16\n" +
 	"\x06source\x18\t \x01(\tR\x06source\x120\n" +
 	"\x14has_unverified_grant\x18\n" +
-	" \x01(\bR\x12hasUnverifiedGrant*}\n" +
+	" \x01(\bR\x12hasUnverifiedGrant\x12\x1e\n" +
+	"\n" +
+	"visibility\x18\v \x01(\tR\n" +
+	"visibility\x12!\n" +
+	"\fis_suggested\x18\f \x01(\bR\visSuggested*}\n" +
 	"\n" +
 	"CallerKind\x12\x1b\n" +
 	"\x17CALLER_KIND_UNSPECIFIED\x10\x00\x12\x18\n" +

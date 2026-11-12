@@ -123,6 +123,67 @@ func TestAttentionProofDigest_CurrentHeadAcrossReadSurfaces(t *testing.T) {
 	}
 }
 
+type latestProofEvidence struct {
+	attentionProofEvidence
+	latest *evidence.ProofRecord
+}
+
+func (e latestProofEvidence) LatestProof(string) (evidence.ProofRecord, bool) {
+	if e.latest == nil {
+		return evidence.ProofRecord{}, false
+	}
+	return *e.latest, true
+}
+
+// A parked PR whose chat the operator starts reads in progress, so its
+// attention drops the park's proof page; the session still serves the PR's
+// newest proof page, and the head it was made for, on every read surface.
+func TestAttentionProofURL_ServedWhileAChatWorks(t *testing.T) {
+	page, older := "https://proof.example/12", strings.Repeat("b", 40)
+	digest := "sha256:" + strings.Repeat("c", 64)
+	for _, tc := range []struct {
+		name              string
+		latest            *evidence.ProofRecord
+		wantURL, wantHead string
+	}{
+		{"current head", &evidence.ProofRecord{Head: timelineHead, Page: page, Digest: digest}, page, timelineHead},
+		{"older head", &evidence.ProofRecord{Head: older, Page: page, Digest: digest}, page, older},
+		{"no page", &evidence.ProofRecord{Head: timelineHead, Digest: digest}, "", ""},
+		{"no record", nil, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := 12
+			chatID := "chat"
+			row := &models.Session{ID: "s", RepoID: "r", State: machine.ReadyForReview, PRNumber: &n, UpdatedAt: time.Now()}
+			tracker := status.NewDisplayTracker()
+			tracker.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:security", HeadSHA: timelineHead})
+			chats := map[string][]*domain.AgentChat{row.ID: {{SessionID: row.ID, AgentSessionID: chatID}}}
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, chats, tracker, status.NewTracker())
+			s.chatStatus.Update(chatID, pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+			s.evidence = latestProofEvidence{attentionProofEvidence: attentionProofEvidence{record: evidence.ProofRecord{Head: timelineHead, Page: page, Digest: digest}}, latest: tc.latest}
+			listed, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.sessions = &sessionStoreFake{sess: row}
+			fetched, err := s.GetSession(t.Context(), connect.NewRequest(&pb.GetSessionRequest{Id: row.ID}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			streamed := &pb.Session{Id: row.ID, PrProofUrl: "stale", PrProofHeadSha: "stale"}
+			s.HydrateAttentionForStream(t.Context(), streamed)
+			for _, got := range []*pb.Session{onlySession(t, listed.Msg.Sessions), fetched.Msg.Session, streamed} {
+				if kind := got.GetAttention().GetKind(); kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || got.GetAttention().GetProofUrl() != "" {
+					t.Fatalf("attention = %v; want in progress with no park proof page", got.GetAttention())
+				}
+				if got.GetPrProofUrl() != tc.wantURL || got.GetPrProofHeadSha() != tc.wantHead {
+					t.Fatalf("pr_proof_url=%q pr_proof_head_sha=%q; want %q, %q", got.GetPrProofUrl(), got.GetPrProofHeadSha(), tc.wantURL, tc.wantHead)
+				}
+			}
+		})
+	}
+}
+
 // TestAttentionListParkCases serves a sign-off park as a REVIEW whose merge
 // records the approval and a blocked park as a FIX that never offers a merge,
 // with the open checklist items its park note recorded.

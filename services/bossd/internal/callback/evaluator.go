@@ -168,7 +168,7 @@ func (e *Evaluator) ChecksPassedReady(ctx context.Context, owner, name string, p
 	return headSHA, satisfiedTriggers(status, checks, e.requiredFor(ctx, repoPath(owner, name), status), settled)[models.GitHubCallbackTriggerChecksPassedReady], nil
 }
 
-// readPRState reads the PR status, its checks and, when they are green, its
+// readPRState reads the PR status, its checks and, when green or cancelled, its
 // workflow runs. These reads feed merge decisions, so they are marked
 // reserve-tier: below the standard background quota floor they keep reading
 // down to the reserve floor (see vcs.WithReserveQuotaReads).
@@ -187,13 +187,24 @@ func (e *Evaluator) readPRState(ctx context.Context, rp string, prNumber int) (*
 		return nil, nil, false, fmt.Errorf("get check results %s#%d: %w", rp, prNumber, err)
 	}
 
-	// The runs read only matters when the attached check set is green, so it is
-	// skipped otherwise to spare the API quota.
-	runsSettled := false
-	if vcs.EvaluateChecksRequiring("", checks, nil, e.requiredFor(ctx, rp, status)).IsGreen() {
-		runsSettled, _ = e.runsSettled(ctx, rp, prNumber, status)
+	var runs []vcs.WorkflowRun
+	read, attempted := false, vcs.HasCancelledWorkflowCheck(checks)
+	if attempted {
+		runs, read = e.headRuns(ctx, rp, prNumber, status)
+		if read {
+			checks = vcs.ReconcileSupersededCancelled(status.HeadSHA, checks, runs)
+		}
 	}
-	return status, checks, runsSettled, nil
+	settled := false
+	if vcs.EvaluateChecksRequiring("", checks, nil, e.requiredFor(ctx, rp, status)).IsGreen() {
+		if !attempted {
+			runs, read = e.headRuns(ctx, rp, prNumber, status)
+		}
+		if read {
+			settled, _ = e.runsSettled(rp, prNumber, status.HeadSHA, runs)
+		}
+	}
+	return status, checks, settled, nil
 }
 
 // EvaluatePR lists active callbacks for repoOwner/repoName#prNumber, queries the
@@ -334,25 +345,25 @@ func (e *Evaluator) ReconcileAll(ctx context.Context) error {
 // heldWorkflowRun is the shared classification of a head run still in flight.
 type heldWorkflowRun = prstate.HeldWorkflowRun
 
-// runsSettled reports whether every GitHub Actions workflow run for the PR's
-// head SHA has completed. A check set read before the head's workflows have
-// attached their jobs is green on the jobs it has so far, so checks_passed is
-// only decidable once nothing is still queued or running. An empty head SHA or
-// a failed runs read is not settled: it is logged and suppresses only the
-// checks-passed pair, never the other triggers on the same evaluation.
-func (e *Evaluator) runsSettled(ctx context.Context, rp string, prNumber int, status *vcs.PRStatus) (bool, []heldWorkflowRun) {
+// headRuns reads workflow runs once. Missing heads and failed reads hold checks_passed.
+func (e *Evaluator) headRuns(ctx context.Context, rp string, prNumber int, status *vcs.PRStatus) ([]vcs.WorkflowRun, bool) {
 	if status == nil || status.HeadSHA == "" {
 		e.logger.Warn().Str("repo", rp).Int("pr", prNumber).
 			Msg("callback evaluator: no head SHA; checks_passed held until workflow runs are readable")
-		return false, nil
+		return nil, false
 	}
 	runs, err := e.provider.ListWorkflowRuns(ctx, rp, status.HeadSHA)
 	if err != nil {
 		e.logger.WithLevel(e.rateLimitLog.Level("list workflow runs", err)).Err(err).Str("repo", rp).Int("pr", prNumber).
 			Str("head_sha", status.HeadSHA).Msg("callback evaluator: list workflow runs failed; checks_passed held")
-		return false, nil
+		return nil, false
 	}
-	held := prstate.HeldHeadRuns(status.HeadSHA, runs)
+	return runs, true
+}
+
+// runsSettled classifies and logs runs already read for this head.
+func (e *Evaluator) runsSettled(rp string, prNumber int, headSHA string, runs []vcs.WorkflowRun) (bool, []heldWorkflowRun) {
+	held := prstate.HeldHeadRuns(headSHA, runs)
 	if len(held) == 0 {
 		return true, nil
 	}
@@ -362,7 +373,7 @@ func (e *Evaluator) runsSettled(ctx context.Context, rp string, prNumber int, st
 		level = zerolog.WarnLevel
 		message = "callback evaluator: checks_passed held; head workflow run awaits approval"
 	}
-	e.logger.WithLevel(level).Str("repo", rp).Int("pr", prNumber).Str("head_sha", status.HeadSHA).
+	e.logger.WithLevel(level).Str("repo", rp).Int("pr", prNumber).Str("head_sha", headSHA).
 		Interface("held_runs", held).Msg(message)
 	return false, held
 }

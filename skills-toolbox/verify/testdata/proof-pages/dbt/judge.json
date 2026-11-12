@@ -1,0 +1,51 @@
+{
+  "verdict": "human",
+  "reasons": ["always-human-path"],
+  "label": "Revenue models",
+  "confidence": {
+    "level": "low",
+    "asks": [
+      {
+        "area": "config:revenue-models",
+        "label": "Revenue models"
+      },
+      {
+        "area": "unproven-behavior",
+        "label": "Unproven behavior"
+      }
+    ],
+    "loweredBy": ["area-asks", "unproven"],
+    "health": []
+  },
+  "facts": {
+    "receipt": {
+      "verdict": "present",
+      "state": "success"
+    },
+    "areas": [
+      {
+        "area": "config:revenue-models",
+        "label": "Revenue models",
+        "paths": ["analytics/models/marts/fct_daily_revenue.sql"],
+        "defaultAsk": "always",
+        "source": "config",
+        "items": [
+          "Adds model fct_daily_revenue (incremental, unique_key revenue_date)",
+          "Adds columns gross_cents, refund_cents, net_cents"
+        ],
+        "undisclosed": ["Materialises fct_daily_revenue incrementally"]
+      },
+      {
+        "area": "other",
+        "label": "Other changes",
+        "paths": [
+          "analytics/models/staging/schema.yml",
+          "analytics/models/staging/stg_refunds.sql"
+        ],
+        "defaultAsk": "never",
+        "source": "builtin",
+        "items": ["Adds view stg_refunds over shop.refunds"]
+      }
+    ]
+  }
+}

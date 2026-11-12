@@ -74,8 +74,36 @@ test('direct pinned setup-bazel in a workflow requires the repository-cache wrap
   const jobs = readJob(`      - uses: bazel-contrib/setup-bazel@${SHA}\n`)
   const findings = checkWorkflow('w.yml', workflow({ jobs }))
   assert.equal(findings.length, 1)
-  assert.match(findings[0].message, /repository cache/)
+  assert.match(findings[0].message, /bazel-contrib\/setup-bazel/)
   assert.match(findings[0].message, /\.\/\.github\/actions\/setup-bazel/)
+})
+
+test('direct pinned pnpm setup requires its repository wrapper', () => {
+  const jobs = readJob(`      - uses: pnpm/action-setup@${SHA}\n`)
+  const findings = checkWorkflow('w.yml', workflow({ jobs }))
+  assert.equal(findings.length, 1)
+  assert.match(findings[0].message, /pnpm\/action-setup/)
+  assert.match(findings[0].message, /\.\/\.github\/actions\/setup-pnpm/)
+})
+
+test('another composite cannot directly wrap pnpm setup', () => {
+  const findings = checkActionFile(
+    '.github/actions/other/action.yml',
+    `runs:\n  using: composite\n  steps:\n    - uses: pnpm/action-setup@${SHA}\n`,
+  )
+  assert.equal(findings.length, 1)
+  assert.match(findings[0].message, /pnpm\/action-setup/)
+  assert.match(findings[0].message, /\.\/\.github\/actions\/setup-pnpm/)
+})
+
+test('the pnpm wrapper can use the pinned upstream action', () => {
+  assert.deepEqual(
+    checkActionFile(
+      '.github/actions/setup-pnpm/action.yml',
+      `runs:\n  using: composite\n  steps:\n    - uses: pnpm/action-setup@${SHA}\n`,
+    ),
+    [],
+  )
 })
 
 test('another composite cannot directly wrap setup-bazel', () => {
@@ -637,7 +665,7 @@ test('an action named for a package manager counts as running it', () => {
   const job = (step) =>
     `  push:\n    runs-on: x\n    permissions:\n      contents: write\n    steps:\n      - uses: actions/checkout@${SHA}\n${step}      - run: make\n`
   for (const step of [
-    `      - uses: pnpm/action-setup@${SHA}\n        with:\n          run_install: true\n`,
+    '      - uses: ./.github/actions/setup-pnpm\n',
     `      - { uses: 'bahmutov/npm-install@${SHA}' }\n`,
     `      - uses: borales/actions-yarn@${SHA}\n        with:\n          cmd: install\n`,
     `      - uses: owner/setup-pnpm@${SHA}\n`,

@@ -1,0 +1,107 @@
+{
+  "repo": "acme/warehouse",
+  "pr": 87,
+  "commits": [
+    {
+      "message": "chore: start the warehouse project",
+      "files": {
+        ".boss-skills.json": [
+          "{",
+          "  \"verifyDefaults\": {",
+          "    \"alwaysReview\": {",
+          "      \"Revenue models\": [\"analytics/models/marts/**\"]",
+          "    }",
+          "  }",
+          "}"
+        ],
+        "analytics/dbt_project.yml": [
+          "name: warehouse",
+          "version: \"1.0.0\"",
+          "profile: warehouse",
+          "model-paths: [\"models\"]",
+          "models:",
+          "  warehouse:",
+          "    staging:",
+          "      +materialized: view",
+          "    marts:",
+          "      +materialized: table"
+        ],
+        "analytics/models/staging/stg_orders.sql": [
+          "select",
+          "  id as order_id,",
+          "  customer_id,",
+          "  placed_at,",
+          "  total_cents",
+          "from {{ source('shop', 'orders') }}"
+        ],
+        "analytics/models/staging/schema.yml": [
+          "version: 2",
+          "models:",
+          "  - name: stg_orders",
+          "    columns:",
+          "      - name: order_id",
+          "        tests: [unique, not_null]"
+        ]
+      }
+    },
+    {
+      "message": "feat(dbt): add refunds to staging",
+      "files": {
+        "analytics/models/staging/stg_refunds.sql": [
+          "select",
+          "  id as refund_id,",
+          "  order_id,",
+          "  refunded_at,",
+          "  amount_cents",
+          "from {{ source('shop', 'refunds') }}",
+          "where status = 'settled'"
+        ],
+        "analytics/models/staging/schema.yml": [
+          "version: 2",
+          "models:",
+          "  - name: stg_orders",
+          "    columns:",
+          "      - name: order_id",
+          "        tests: [unique, not_null]",
+          "  - name: stg_refunds",
+          "    columns:",
+          "      - name: refund_id",
+          "        tests: [unique, not_null]",
+          "      - name: order_id",
+          "        tests: [not_null]"
+        ]
+      }
+    },
+    {
+      "message": "feat(dbt): net refunds out of daily revenue",
+      "files": {
+        "analytics/models/marts/fct_daily_revenue.sql": [
+          "{{ config(materialized='incremental', unique_key='revenue_date') }}",
+          "",
+          "with orders as (",
+          "  select date_trunc('day', placed_at) as revenue_date, sum(total_cents) as gross_cents",
+          "  from {{ ref('stg_orders') }}",
+          "  group by 1",
+          "),",
+          "",
+          "refunds as (",
+          "  select date_trunc('day', refunded_at) as revenue_date, sum(amount_cents) as refund_cents",
+          "  from {{ ref('stg_refunds') }}",
+          "  group by 1",
+          ")",
+          "",
+          "select",
+          "  orders.revenue_date,",
+          "  orders.gross_cents,",
+          "  coalesce(refunds.refund_cents, 0) as refund_cents,",
+          "  orders.gross_cents - coalesce(refunds.refund_cents, 0) as net_cents",
+          "from orders",
+          "left join refunds using (revenue_date)",
+          "{% if is_incremental() %}",
+          "where orders.revenue_date >= (select max(revenue_date) from {{ this }})",
+          "{% endif %}"
+        ]
+      }
+    }
+  ]
+}

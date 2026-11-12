@@ -198,3 +198,33 @@ func TestIdentityAbandonedFlightWarmsCache(t *testing.T) {
 		}
 	})
 }
+
+func TestVisibilityIsFreshInformationalMetadata(t *testing.T) {
+	now := time.Now()
+	visibility := "public"
+	var failure error
+	v := New(identityReaderFunc(func(context.Context, string) (int64, string, error) { return 42, visibility, failure }), zerolog.Nop())
+	v.now = func() time.Time { return now }
+	repo := models.Repo{OriginURL: "https://github.com/acme/repo"}
+	for _, tc := range []struct{ input, want string }{{"public", "public"}, {"internal", "public"}, {"private", "private"}, {"", "unknown"}, {"unexpected", "unknown"}} {
+		visibility = tc.input
+		now = now.Add(identityTTL)
+		if got := v.Identity(t.Context(), repo); got.Visibility != tc.want || !got.IsIDVerified {
+			t.Fatalf("%q: %+v", tc.input, got)
+		}
+	}
+	visibility = "public"
+	now = now.Add(identityTTL)
+	v.Identity(t.Context(), repo)
+	failure = errors.New("404")
+	now = now.Add(identityTTL)
+	if got := v.Identity(t.Context(), repo); got.Visibility != "unknown" || got.IsIDVerified {
+		t.Fatalf("stale visibility: %+v", got)
+	}
+	for _, origin := range []string{"", "https://enterprise.example/acme/repo", "https://gitlab.com/acme/repo"} {
+		repo.OriginURL = origin
+		if got := v.Identity(t.Context(), repo); got.Visibility != "unknown" {
+			t.Fatalf("unsupported: %+v", got)
+		}
+	}
+}

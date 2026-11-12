@@ -54,7 +54,7 @@ array is a legitimate success.
 `skill-config.mjs`. Take the shared roll before discovery:
 
 ```bash
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" roll --core boss-build --fresh
@@ -92,7 +92,7 @@ line, and it is checked before it.
 Resolve the extension helper, then discover the `knowledge` role:
 
 ```bash
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 KNOWLEDGE_JSON=$(node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" discover --core boss-build --role knowledge --json)

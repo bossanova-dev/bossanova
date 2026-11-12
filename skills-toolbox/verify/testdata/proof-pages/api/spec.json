@@ -1,0 +1,126 @@
+{
+  "schema": "proof-spec/1",
+  "head": "fb906e0ae889b53164299645ae286707749faaec",
+  "title": "Give invoices a due date and mark the late ones overdue",
+  "waiting": [
+    {
+      "title": "A new enum value reaches every client",
+      "detail": "InvoiceStatus gains OVERDUE, which a client with an exhaustive switch rejects.",
+      "area": "api-contract"
+    },
+    {
+      "title": "The backfill rewrites every sent invoice",
+      "detail": "One UPDATE sets due_on for all sent invoices in a single transaction.",
+      "area": "migrations"
+    }
+  ],
+  "risks": [
+    {
+      "level": "medium",
+      "title": "Old clients see an unknown status",
+      "body": "A client built before OVERDUE existed receives a status it cannot display.",
+      "ifItMatters": "Ship the client that knows OVERDUE before the first markOverdue run.",
+      "at": {
+        "path": "services/api/schema/invoice.graphqls",
+        "line": 15
+      }
+    },
+    {
+      "level": "deploy",
+      "title": "The backfill locks the invoices table",
+      "body": "The UPDATE touches every sent invoice in one statement.",
+      "ifItMatters": "Run it outside billing hours.",
+      "at": {
+        "path": "services/api/migrations/0008_add_invoice_due_on.sql",
+        "line": 3
+      }
+    },
+    {
+      "level": "low",
+      "title": "Due today is not overdue",
+      "body": "MarkOverdue uses Before, so an invoice due on the run date stays SENT.",
+      "at": {
+        "path": "services/api/service/invoice_overdue.go",
+        "line": 13
+      }
+    }
+  ],
+  "areas": [
+    {
+      "id": "api-contract",
+      "name": "API contract",
+      "summary": "Adds a due date, an OVERDUE status and a mutation that applies it.",
+      "facts": [
+        {
+          "text": "Invoice.dueOn is nullable",
+          "flag": false
+        },
+        {
+          "text": "OVERDUE is a new enum value",
+          "flag": true
+        }
+      ],
+      "snippets": [
+        {
+          "path": "services/api/schema/invoice.graphqls",
+          "start": 11,
+          "end": 24,
+          "pinLine": 15,
+          "pinNote": "Clients must handle this value."
+        }
+      ]
+    },
+    {
+      "id": "migrations",
+      "name": "Migrations",
+      "summary": "Adds invoices.due_on and backfills it from sent_at.",
+      "facts": [
+        {
+          "text": "Nullable column, no default",
+          "flag": false
+        },
+        {
+          "text": "Backfill runs in the migration",
+          "flag": true
+        }
+      ],
+      "snippets": [
+        {
+          "path": "services/api/migrations/0008_add_invoice_due_on.sql",
+          "start": 1,
+          "end": 5,
+          "pinLine": 4
+        }
+      ]
+    }
+  ],
+  "checklist": {
+    "before": [
+      {
+        "text": "Ship the client release that knows OVERDUE",
+        "done": false
+      }
+    ],
+    "after": [
+      {
+        "text": "Run markOverdue once and compare the count with the billing report",
+        "done": false
+      }
+    ]
+  },
+  "notes": [
+    {
+      "severity": "low",
+      "at": "services/api/service/invoice_overdue.go:13",
+      "text": "Consider comparing dates rather than instants."
+    }
+  ],
+  "evidencePlan": [
+    {
+      "claim": "markOverdue moves only past-due sent invoices",
+      "kind": "transcript",
+      "how": "Call the mutation against a seeded database and list the moved invoices."
+    }
+  ],
+  "uncertain": ["Whether 30 days is the right default term for every customer"]
+}

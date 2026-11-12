@@ -241,10 +241,16 @@ const verifyDefaults = object({
         'x-msg': 'verifyDefaults.alwaysReview.{2} must be an array of non-empty glob strings',
       },
     }),
+    noSignOff: {
+      type: 'array',
+      items: nonEmptyString,
+      'x-msg': 'verifyDefaults.noSignOff must be an array of non-empty glob strings',
+    },
     neverReview: {
       type: 'array',
       items: nonEmptyString,
-      'x-msg': 'verifyDefaults.neverReview must be an array of non-empty glob strings',
+      'x-msg':
+        'verifyDefaults.neverReview (the deprecated alias of noSignOff) must be an array of non-empty glob strings',
     },
     alwaysHumanPaths: globList(`verifyDefaults.alwaysHumanPaths must be ${GLOB_LIST_SHAPE}`),
     requireGreenBase: {
@@ -279,6 +285,16 @@ const verifyDefaults = object({
     admission,
     merge,
   },
+  allOf: [
+    {
+      not: {
+        properties: { noSignOff: true, neverReview: true },
+        required: ['noSignOff', 'neverReview'],
+      },
+      'x-msg':
+        'verifyDefaults.noSignOff and verifyDefaults.neverReview cannot both be set: neverReview is the deprecated alias of noSignOff',
+    },
+  ],
 })
 
 const roleMap = (field) =>
@@ -602,6 +618,22 @@ export const schema = object({
                 items: nonBlankString,
               },
             }),
+          },
+          additionalProperties: false,
+        }),
+        dependabot: object({
+          properties: {
+            required: {
+              type: 'array',
+              items: object({
+                required: ['name'],
+                properties: {
+                  name: nonBlankString,
+                  paths: { type: 'array', items: { ...nonBlankString, not: { pattern: '^!' } } },
+                },
+                additionalProperties: false,
+              }),
+            },
           },
           additionalProperties: false,
         }),

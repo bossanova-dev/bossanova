@@ -89,10 +89,15 @@ func (s *Server) HydrateAttentionForStream(ctx context.Context, p *pb.Session) {
 // and streamSessionHydrator.Hydrate; it never writes the legacy display fields.
 // The additive field already has its compatibility transform (SessionAttentionChange).
 func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentionDeps) {
-	p.PrProofDigest = ""
+	p.PrProofDigest, p.PrProofUrl, p.PrProofHeadSha = "", "", ""
 	row := d.row
 	if row == nil {
 		return
+	}
+	if s.evidence != nil && row.PRNumber != nil {
+		if proof, ok := s.evidence.LatestProof(row.ID); ok && proof.Page != "" {
+			p.PrProofUrl, p.PrProofHeadSha = proof.Page, proof.Head
+		}
 	}
 	in := attention.Input{HasPR: row.PRNumber != nil, PRState: attention.PRStateOpen, DismissedAlertKey: row.DismissedAlertKey, StateSince: row.UpdatedAt, HasTrackerLink: p.GetTrackerUrl() != ""}
 	if row.StateEnteredAt != nil {

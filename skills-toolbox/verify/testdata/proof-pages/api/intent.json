@@ -1,0 +1,7 @@
+{
+  "source": "pr-body",
+  "bullets": [
+    "Adds a due date to every invoice",
+    "Marks sent invoices overdue once their due date passes"
+  ]
+}

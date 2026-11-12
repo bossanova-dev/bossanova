@@ -39,6 +39,28 @@ The action bar shows the available keys: `[n]ew`, `[e/enter]dit`,
 `[d]elete`, `[space] toggle`, `[r]un now`. `esc` returns to Settings.
 Both `e` and `Enter` open the highlighted job in the edit form.
 
+## The web Scheduler
+
+The web app lists the same jobs on its **Scheduler** page (`/scheduler`),
+across all your daemons. Old `/settings/cron` links land there.
+Jobs that will run sit under **Scheduled**, and both sections list jobs by name. Jobs
+that are turned off sit under **Paused**, which starts folded; while
+folded, its heading counts the jobs and shows a pill for each that is
+running, gating, failed or gated. The page remembers whether you opened
+or folded each section in that browser.
+
+Each row shows the repo, the job's name with its schedule in plain words
+(`every 10 minutes`, `weekdays at 09:00`; an expression with no plain
+reading stays as written), the daemon, the next run (`in 4m`, or `paused`),
+the last run with its result (`no changes`, a link to the session that
+opened a PR, or the failure), and a status pill when the job is not idle.
+The row's buttons run the job now and pause or resume it; clicking the row
+opens its edit page, which is where you delete a job. On a phone, a row's
+`⋯` button opens the same actions, Delete included, in a sheet.
+
+Filter the list by daemon or organization from the filter button; the
+filters live in the URL, so a filtered link opens the same view.
+
 ## Add a cron job
 
 Press `n` from the cron list. The form's fields all come from

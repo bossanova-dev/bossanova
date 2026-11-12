@@ -54,6 +54,11 @@ func (c *StreamClient) watchCloudControl(ctx context.Context, advertised pb.Clou
 		if cloudControlProto(c.cloudControl) == advertised && maps.Equal(previous, current) {
 			continue
 		}
+		// The delta orders the per-repo change; the snapshot that follows also
+		// refreshes Session.cloud_control and the content redaction.
+		if !c.sendRepoCloudControlDelta(ctx, outbound, previous, current) {
+			return
+		}
 		snap, err := c.buildSnapshot(ctx)
 		if err != nil {
 			c.logger.Warn().Err(err).Msg("cloud control changed; snapshot rebuild failed, retrying")
@@ -71,26 +76,35 @@ func (c *StreamClient) watchCloudControl(ctx context.Context, advertised pb.Clou
 }
 
 func (c *StreamClient) repoCloudControl(ctx context.Context) (map[string]pb.CloudControl, error) {
-	modes := make(map[string]pb.CloudControl)
-	var ids []string
-	if c.targetObjects != nil {
-		repos, err := c.targetObjects.ListTargetRepos(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, repo := range repos {
-			ids = append(ids, repo.RepoID)
-		}
-	} else if c.stores.Repos != nil {
-		var err error
-		ids, err = c.stores.Repos.SnapshotRepoIDs(ctx)
-		if err != nil {
-			return nil, err
-		}
+	ids, err := c.cloudControlRepoIDs(ctx)
+	if err != nil {
+		return nil, err
 	}
+	modes := make(map[string]pb.CloudControl, len(ids))
 	redactor := c.newCloudRedactor()
 	for _, id := range ids {
 		modes[id] = redactor.mode(ctx, id)
 	}
 	return modes, nil
+}
+
+// cloudControlRepoIDs lists the registered repositories by database id, the
+// key grants, sessions and bosso's command targets use. The snapshot's RepoIds
+// are origin URLs for webhook routing, so they cannot key cloud control.
+func (c *StreamClient) cloudControlRepoIDs(ctx context.Context) ([]string, error) {
+	if c.targetObjects == nil {
+		if c.stores.Repos == nil {
+			return nil, nil
+		}
+		return c.stores.Repos.SnapshotRepoIDs(ctx)
+	}
+	repos, err := c.targetObjects.ListTargetRepos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(repos))
+	for _, repo := range repos {
+		ids = append(ids, repo.RepoID)
+	}
+	return ids, nil
 }

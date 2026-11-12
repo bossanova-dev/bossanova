@@ -1,0 +1,7 @@
+{
+  "source": "pr-body",
+  "bullets": [
+    "Sends jobs that fail five times to a dead-letter queue",
+    "Gives prod jobs fifteen minutes before they retry"
+  ]
+}

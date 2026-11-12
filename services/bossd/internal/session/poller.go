@@ -453,6 +453,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models
 		return
 	}
 
+	checks = p.reconcileCancelled(ctx, repoPath, prStatus.HeadSHA, checks)
 	required := requiredChecksPolicy(ctx, p.required, repo.LocalPath).For(prStatus.BaseBranch)
 	verdict := vcs.EvaluateChecksRequiring(prStatus.HeadSHA, checks, nil, required)
 	switch verdict.State {
@@ -494,6 +495,28 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models
 		}
 		emitIf(machine.ReviewSubmitted, event)
 	}
+}
+
+type workflowRunLister interface {
+	ListWorkflowRuns(context.Context, string, string) ([]vcs.WorkflowRun, error)
+}
+
+func (p *Poller) reconcileCancelled(ctx context.Context, repo, headSHA string, checks []vcs.CheckResult) []vcs.CheckResult {
+	if !vcs.HasCancelledWorkflowCheck(checks) {
+		return checks
+	}
+	lister, ok := p.provider.(workflowRunLister)
+	if !ok || headSHA == "" {
+		p.logger.Debug().Str("repo", repo).Msg("poller: cancelled checks retained; workflow runs unavailable")
+		return checks
+	}
+	runs, err := lister.ListWorkflowRuns(ctx, repo, headSHA)
+	if err != nil {
+		p.logger.WithLevel(p.rateLimitLog.Level("poller: list workflow runs", err)).Err(err).Str("repo", repo).
+			Msg("poller: cancelled checks retained; list workflow runs failed")
+		return checks
+	}
+	return vcs.ReconcileSupersededCancelled(headSHA, checks, runs)
 }
 
 func reviewSubmittedState(state vcs.ReviewState) bool {

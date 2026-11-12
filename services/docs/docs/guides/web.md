@@ -24,6 +24,9 @@ can also see and drive from the web.
   and send keystrokes back. Useful for nudging an agent that's stuck
   or asking a follow-up while you're away from the machine running
   the daemon.
+- **Scheduler.** See every cron job across your daemons, run one now,
+  pause or resume it, and add or edit jobs. See
+  [Cron Jobs](./cron-jobs.md#the-web-scheduler).
 - **Daemons list.** Manage which machines are registered to your
   account. Each `bossd` registers under a stable `daemon_id`
   (set via the `BOSSD_DAEMON_ID` env var; defaults to the machine
@@ -52,6 +55,18 @@ confirm before it stops working. At the 50-token limit, revoke an unused token
 before creating another. See [Personal API tokens](./mcp.md#personal-api-tokens)
 for connecting to hosted MCP.
 
+## Getting around
+
+The header links the three main pages: **Sessions**, **Review** and
+**Scheduler**. **Review** shows how many PRs wait for review across your
+repositories. The avatar at the right shows your Google profile picture
+when you signed in with Google, otherwise your Gravatar, otherwise your
+initial. It opens your email, **Settings** and **Sign out**. On a phone the three links sit in a tab strip under the logo,
+and the avatar's menu opens from the bottom of the screen.
+
+The Sessions page bar shows your active filters at its left; remove one with
+its ×, or use **Clear**. The filter and new-session buttons stay at its right.
+
 ## Routes
 
 Four URL routes make up the web app, each mapping onto a feature
@@ -63,6 +78,7 @@ above:
 | `/review/:repo`             | Review queue   | PRs waiting for a person, confidence counts, sort controls and links to proof pages.  |
 | `/sessions/:id`             | Session detail | A single session: worktree, PR, recent commits, plugin activity, current task.        |
 | `/sessions/:sid/chats/:cid` | Chat terminal  | Live agent terminal for chat `cid` in session `sid`. Streams output, accepts keys.    |
+| `/scheduler`                | Scheduler      | Cron jobs across your daemons, in Scheduled and Paused sections.                      |
 | `/daemons`                  | Daemons list   | Machines registered to your account. One row per `daemon_id` from your settings file. |
 
 Bookmarkable URLs mean a teammate can paste you a link to a specific
@@ -124,6 +140,10 @@ Mouse users can hover to highlight a row and click to run it.
 | Session detail | `M`      | Merge session         |
 | Session detail | `A`      | Archive session       |
 | Session detail | `N`      | New chat              |
+| Scheduler      | `N`      | New job               |
+| Scheduler      | `R`      | Run now               |
+| Scheduler      | `E`      | Edit job              |
+| Scheduler      | `Space`  | Pause or resume       |
 | Review         | `C`      | Show or hide chats    |
 | Review         | `N`      | New chat              |
 | Chat           | `Ctrl X` | Detach to the session |

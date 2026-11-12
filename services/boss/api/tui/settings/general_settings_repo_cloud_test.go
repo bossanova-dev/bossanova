@@ -232,3 +232,46 @@ func Test_Settings_AC243001_UnverifiedGroupNamesRepo(t *testing.T) {
 		t.Fatalf("failed owner edit reached disk: %+v, %v", saved.CloudControlRepos, err)
 	}
 }
+
+func Test_Settings_AC238302_RestrictPublicGroupConfirmation(t *testing.T) {
+	m := repoCloudModel(t)
+	for _, repo := range m.repoCloudControls {
+		repo.IsSuggested = true
+	}
+	m.settings.CloudControlRepos = nil
+	m.rows = nil
+	m.appendRepoCloudRows()
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindRestrictPublic && row.Key == "github.com/acme" {
+			m.cursor = i
+			break
+		}
+	}
+	m = cloudControlKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.confirmCloudControl || len(m.settings.CloudControlRepos) != 0 {
+		t.Fatal("restriction did not await confirmation")
+	}
+	cancelled := cloudControlKey(m, tea.KeyPressMsg{Code: 'n'})
+	if cancelled.confirmCloudControl || len(cancelled.settings.CloudControlRepos) != 0 {
+		t.Fatal("cancel wrote grants")
+	}
+	m = cloudControlKey(m, tea.KeyPressMsg{Code: 'y'})
+	if m.confirmCloudControl || m.err != nil {
+		t.Fatalf("restriction: %v", m.err)
+	}
+	want := 0
+	for i, repo := range m.repoCloudControls {
+		choice := m.repoCloudChoice(i)
+		if repoCloudGroup(repo) == "github.com/acme" {
+			want++
+			if choice != "read-only" {
+				t.Fatalf("not restricted: %s", choice)
+			}
+		} else if choice != "default" {
+			t.Fatalf("other owner changed: %s", choice)
+		}
+	}
+	if len(m.settings.CloudControlRepos) != want {
+		t.Fatalf("grants: %+v", m.settings.CloudControlRepos)
+	}
+}

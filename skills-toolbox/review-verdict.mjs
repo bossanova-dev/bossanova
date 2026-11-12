@@ -22,7 +22,7 @@
 import defaultFs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { isNoteFinding } from './verify/verify-blockers.mjs'
+import { isBlockingFinding, isNoteFinding } from './verify/verify-blockers.mjs'
 import { isMainModule } from './main-module.mjs'
 
 export const VERDICT_FILENAME = 'review-verdict.json'
@@ -183,24 +183,17 @@ export function validateVerdict(input) {
   return { ok: errors.length === 0, errors, warnings, verdict: errors.length ? null : verdict }
 }
 
-/** A non-note finding blocks only when verified, introduced, P0/P1, and not fixed. */
-export const isBlocking = (f) =>
-  f.verified === true &&
-  f.introduced === true &&
-  SERIOUS.has(f.severity) &&
-  f.fixed !== true &&
-  !isNoteFinding(f)
+export const isBlocking = isBlockingFinding
 
 /** Serious, verified, unfixed, but not this change's doing: a follow-up, never a blocker. */
 export const isSeriousPreexisting = (f) =>
   f.verified === true && f.introduced === false && SERIOUS.has(f.severity) && f.fixed !== true
 
-/** Verified, unfixed P2 findings, excluding notes. */
-export const isUnapplied = (f) =>
-  f.verified === true && f.fixed !== true && !SERIOUS.has(f.severity) && !isNoteFinding(f)
-
-/** Verified, unfixed P3 or style findings; notes never block. */
-export const isReviewNote = (f) => f.verified === true && f.fixed !== true && isNoteFinding(f)
+/** Verified, unfixed notes and pre-existing P2 findings never block. */
+export const isReviewNote = (f) =>
+  f.verified === true &&
+  f.fixed !== true &&
+  (isNoteFinding(f) || (f.introduced === false && f.severity.toUpperCase() === 'P2'))
 
 /**
  * The status the findings support. An `error` verdict stays an error; anything else is recomputed,
@@ -235,7 +228,10 @@ function foldedNotes(notes) {
     '',
     '<details><summary>Notes</summary>',
     '',
-    ...notes.map((f) => `- ${item(f)}: ${oneLine(f.evidence)}`),
+    ...notes.map(
+      (f) =>
+        `- ${item(f)}${f.introduced === false ? ' (pre-existing)' : ''}: ${oneLine(f.evidence)}`,
+    ),
     '',
     '</details>',
     '',
@@ -277,8 +273,8 @@ function coverageUnion(verdicts) {
 
 /**
  * PR-body sections. `## Review findings` appears only when something blocks (verify-gate reads its
- * presence as "not clean"); verified P2 findings go to an `## Unapplied review findings`
- * checklist and P3/style findings to folded `## Review notes`; `## Cross-model review` and
+ * presence as "not clean"); notes and pre-existing P2 findings go to folded
+ * `## Review notes`; `## Cross-model review` and
  * `## Review coverage` always carry the token the review earned. Serious pre-existing findings are not rendered here — `followups` routes them.
  */
 export function renderPrSection(result) {
@@ -296,13 +292,6 @@ export function renderPrSection(result) {
   if (blocking.length) {
     lines.push('## Review findings')
     for (const f of blocking) lines.push(`- [ ] ${item(f)}: ${oneLine(f.evidence)}`)
-    lines.push('')
-  }
-  const unapplied = findings.filter(isUnapplied)
-  if (unapplied.length) {
-    lines.push('## Unapplied review findings')
-    for (const f of unapplied)
-      lines.push(`- [ ] ${item(f)}${f.introduced ? '' : ' (pre-existing)'}: ${oneLine(f.evidence)}`)
     lines.push('')
   }
   const notes = findings.filter(isReviewNote)
@@ -499,11 +488,10 @@ export function renderReport(result) {
   const blocking = v.findings.filter(isBlocking)
   const fixed = v.findings.filter((f) => f.verified && f.fixed)
   const preexisting = v.findings.filter(isSeriousPreexisting)
-  const unapplied = v.findings.filter(isUnapplied)
   const notes = v.findings.filter(isReviewNote)
   lines.push(
     `Reviewed \`${short(v.base)}...${short(v.head)}\`: ${blocking.length} blocking, ${fixed.length} fixed, ` +
-      `${preexisting.length} pre-existing, ${unapplied.length} unapplied, ${notes.length} notes.`,
+      `${preexisting.length} pre-existing, ${notes.length} notes.`,
     `Second model: ${secondModelLine(v.secondModel)}.`,
     `Fix pass: ${v.fixPass?.ran ? `ran; delta re-reviewed from \`${short(v.fixPass.deltaBase)}\`` : 'not run'}.`,
     `Coverage: ${coverageLine(v)}`,
@@ -540,7 +528,6 @@ export function renderReport(result) {
     preexisting,
     (f) => `- ${item(f)}\n  - ${oneLine(f.evidence)}`,
   )
-  section('Unapplied review findings', unapplied, (f) => `- [ ] ${item(f)}: ${oneLine(f.evidence)}`)
   if (notes.length) lines.push('### Notes (never block)', ...foldedNotes(notes))
   return lines.join('\n').slice(0, 16000) + '\n' + reportTrailer(v)
 }

@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
@@ -384,4 +385,65 @@ test('a checkout without the base commit fetches it before any diff, so the page
     !calls.includes(`fetch --no-tags --quiet origin ${HEAD}`),
     'a present head is not fetched',
   )
+})
+
+test('after the base moves, the page diffs, lists and logs only the branch, on its merge base', async (t) => {
+  const dir = tempDir('proof-merge-base-', t)
+  const git = (...args) =>
+    execFileSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args],
+      { cwd: dir, encoding: 'utf8' },
+    ).trim()
+  git('init', '-q', '-b', 'trunk')
+  fs.writeFileSync(path.join(dir, 'api.proto'), 'syntax = "proto3";\n\n\n\n\n\n\n\n')
+  git('add', '.')
+  git('commit', '-qm', 'fork')
+  const fork = git('rev-parse', 'HEAD')
+  git('checkout', '-qb', 'pr')
+  fs.appendFileSync(path.join(dir, 'api.proto'), 'message User {}\n')
+  git('commit', '-qam', 'Add the user message')
+  const head = git('rev-parse', 'HEAD')
+  git('checkout', '-q', 'trunk')
+  fs.writeFileSync(path.join(dir, 'api.proto'), 'syntax = "proto3";\nmessage Main {}\n\n\n\n\n\n\n')
+  fs.writeFileSync(path.join(dir, 'main.ts'), 'export const main = 1\n')
+  git('add', '.')
+  git('commit', '-qm', 'Trunk moves on')
+  const base = git('rev-parse', 'HEAD')
+  const read = (command, args) => {
+    try {
+      return { ok: true, output: execFileSync(command, args, { cwd: dir, encoding: 'utf8' }) }
+    } catch {
+      return { ok: false }
+    }
+  }
+  const uploads = []
+  await recordHeadProof(
+    {
+      read,
+      repo: 'acme/widgets',
+      pr: 7,
+      headSha: head,
+      judged: { ...judged, headSha: head, baseSha: base },
+      cwd: dir,
+    },
+    {
+      readOperatorMarkers: () => ({ readable: true, markers: [] }),
+      recordHeadNote: () => ({
+        outcome: 'posted',
+        url: 'https://github.com/acme/widgets/pull/7#c1',
+      }),
+      discoverPublisher: () => ({ publisher: { kind: 'hook', extension: { name: 'host' } } }),
+      uploadPage: async (input) => {
+        uploads.push(input)
+        return { ok: true, url: `https://proof.example/acme/widgets/7/${head}/index.html` }
+      },
+    },
+  )
+  const { html } = uploads[0]
+  assert.match(html, /message User \{\}/)
+  assert.doesNotMatch(html, /message Main|main\.ts|Trunk moves on/)
+  assert.match(html, /Add the user message/)
+  assert.match(html, new RegExp(`on <code>${fork.slice(0, 12)}</code>`))
+  assert.ok(!html.includes(base.slice(0, 7)), 'the base tip is never shown')
 })

@@ -1,0 +1,95 @@
+{
+  "schema": "proof-spec/1",
+  "head": "b1cc57af6975c23cf6a6b3c9f21f603e7349d363",
+  "title": "Net settled refunds out of daily revenue",
+  "waiting": [
+    {
+      "title": "Revenue numbers change for past days",
+      "detail": "Net revenue now subtracts refunds settled on the same day.",
+      "area": "config-revenue-models"
+    }
+  ],
+  "risks": [
+    {
+      "level": "high",
+      "title": "Late refunds never reach past days",
+      "body": "The incremental filter only rebuilds the latest day, so a refund settled for an older day is missed.",
+      "ifItMatters": "Run a full refresh weekly, or widen the filter to a lookback window.",
+      "at": {
+        "path": "analytics/models/marts/fct_daily_revenue.sql",
+        "line": 23
+      }
+    },
+    {
+      "level": "low",
+      "title": "Refund-only days vanish",
+      "body": "The left join starts from orders, so a day with refunds and no orders has no row.",
+      "at": {
+        "path": "analytics/models/marts/fct_daily_revenue.sql",
+        "line": 21
+      }
+    }
+  ],
+  "areas": [
+    {
+      "id": "config-revenue-models",
+      "name": "Revenue models",
+      "summary": "A new incremental mart joins daily orders to daily settled refunds.",
+      "facts": [
+        {
+          "text": "Incremental on revenue_date",
+          "flag": true
+        },
+        {
+          "text": "net_cents = gross - refunds",
+          "flag": false
+        }
+      ],
+      "snippets": [
+        {
+          "path": "analytics/models/marts/fct_daily_revenue.sql",
+          "start": 15,
+          "end": 24,
+          "pinLine": 23,
+          "pinNote": "Only the newest day is rebuilt."
+        }
+      ]
+    },
+    {
+      "id": "other",
+      "name": "Staging",
+      "summary": "stg_refunds keeps settled refunds only.",
+      "facts": [
+        {
+          "text": "Filters status = settled",
+          "flag": false
+        }
+      ],
+      "snippets": [
+        {
+          "path": "analytics/models/staging/stg_refunds.sql",
+          "start": 1,
+          "end": 7
+        }
+      ]
+    }
+  ],
+  "checklist": {
+    "before": [],
+    "after": [
+      {
+        "text": "Compare one week of net_cents with the finance export",
+        "done": false
+      }
+    ]
+  },
+  "notes": [],
+  "evidencePlan": [
+    {
+      "claim": "net_cents matches the finance export",
+      "kind": "document",
+      "how": "Export one week from both and diff them."
+    }
+  ],
+  "uncertain": ["Whether finance books refunds by settlement day or order day"]
+}

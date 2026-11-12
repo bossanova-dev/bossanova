@@ -63,6 +63,8 @@ message DaemonEvent {
     // Complete metadata inventory; an empty event withdraws all memberships.
     AgentAccountInventory agent_account_inventory = 12;
     AgentAccountUsageReport agent_account_usage_report = 13;
+    // Per-repo effective cloud control changes between snapshots.
+    RepoCloudControlsChanged repo_cloud_controls_changed = 14;
   }
 }
 
@@ -254,15 +256,8 @@ message CommandCancel {
 
 // --- Snapshot (first event on every connect) ---
 
-// CloudControl is the daemon's locally configured cloud control mode.
-enum CloudControl {
-  // The daemon predates the setting and dispatches every command.
-  CLOUD_CONTROL_UNSPECIFIED = 0;
-  CLOUD_CONTROL_READ_ONLY = 1;
-  CLOUD_CONTROL_FULL = 2;
-  // Metadata observe commands only; content-bearing observe commands and terminal attach are refused.
-  CLOUD_CONTROL_PRIVATE = 3;
-}
+// CloudControl lives in models.proto so Session.cloud_control can name it;
+// stream.proto imports models.proto, never the reverse.
 
 // DaemonSnapshot is the required first event on every stream connect. It
 // carries slim metadata only (IDs, state, timestamps, preview strings) — full
@@ -289,7 +284,10 @@ message DaemonSnapshot {
   // to 65 (run_trigger_gate) and nothing newer.
   repeated int32 supported_command_fields = 8;
   repeated AgentAccount agent_accounts = 9;
-  // Presentation only; the daemon enforces its locally configured mode.
+  // The configured machine-wide default: the mode the daemon applies to
+  // repo-less and account commands. It is never a repository's effective mode;
+  // that is repo_cloud_controls. Presentation only; the daemon enforces its
+  // locally configured mode.
   CloudControl cloud_control = 10;
   // Presentation hint only; enforcement remains local.
   bool is_terminal_sealing_supported = 11;
@@ -299,6 +297,40 @@ message DaemonSnapshot {
   // that advertise the mode only at connect; bosso forwards every command to
   // those, so a local opt-in still takes effect on the next command.
   bool has_cloud_control_updates = 12;
+  // True when this daemon decides cloud commands by their resolved target and
+  // publishes repo_cloud_controls and Session.cloud_control. Only then may
+  // bosso decide a command from the per-repo modes, treating a repository or
+  // session without a published mode as read-only. False on older daemons,
+  // whose cloud_control is the only mode bosso has.
+  // Additive stream fields: older bosso builds ignore them and keep the
+  // daemon-wide decision. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  bool is_repo_cloud_control_supported = 13;
+  // Each registered repository's effective mode, after any
+  // cloud_control_repos grant. Replaces bosso's whole per-repo set.
+  repeated RepoCloudControlMode repo_cloud_controls = 14;
+  // Orders this set against RepoCloudControlsChanged deltas. Strictly
+  // increasing within one daemon process, seeded from wall-clock time at
+  // start so a restarted daemon does not reuse an older revision.
+  uint64 repo_cloud_control_revision = 15;
+}
+
+// RepoCloudControlMode is one registered repository's effective cloud
+// control mode. Presentation only; the daemon enforces its local policy.
+message RepoCloudControlMode {
+  string repo_id = 1;
+  CloudControl cloud_control = 2;
+}
+
+// RepoCloudControlsChanged updates the per-repo modes a DaemonSnapshot
+// published. bosso applies it only when revision is newer than the one it
+// holds; a later snapshot replaces the whole set.
+message RepoCloudControlsChanged {
+  uint64 revision = 1;
+  // Repositories whose effective mode changed or which were registered.
+  repeated RepoCloudControlMode upserted = 2;
+  // Repositories the daemon no longer has registered.
+  repeated string removed_repo_ids = 3;
 }
 
 // CallbackInterest advertises that a daemon holds one or more active GitHub

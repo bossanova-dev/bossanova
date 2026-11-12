@@ -603,6 +603,25 @@ message Session {
   // ignore the unknown field without changing their existing behavior. See
   // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
   string pr_proof_digest = 87;
+
+  // Effective cloud control mode of this session's repository, published by
+  // a daemon that decides commands per repo
+  // (DaemonSnapshot.is_repo_cloud_control_supported). Presentation only; the
+  // daemon enforces its local policy. UNSPECIFIED from older daemons. No dated
+  // API bump: this is additive and older clients ignore the unknown field. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  CloudControl cloud_control = 91;
+  // Proof page URL of the PR's latest non-legacy proof record, or empty: the
+  // current head's record when it has one, else the newest one on an older
+  // head, which pr_proof_head_sha then names. Served for every attention kind,
+  // unlike SessionAttention.proof_url, which only a park carries, so the web
+  // review screen keeps the page while a chat works. No dated API bump or transform:
+  // both fields are additive and older clients ignore them without changing
+  // their existing behavior. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  string pr_proof_url = 89;
+  // Head the pr_proof_url record was made for (40 hex), or empty.
+  string pr_proof_head_sha = 90;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -1711,4 +1730,16 @@ message TrackerRank {
   bool is_scheduled = 5;
   int32 unblocked_ticket_count = 6;
   google.protobuf.Timestamp ranked_at = 7;
+}
+
+// CloudControl is a daemon's cloud control mode: the machine-wide default on
+// DaemonSnapshot and DaemonInfo, or a repository's effective mode on
+// RepoCloudControlMode and Session.
+enum CloudControl {
+  // The daemon predates the setting and dispatches every command.
+  CLOUD_CONTROL_UNSPECIFIED = 0;
+  CLOUD_CONTROL_READ_ONLY = 1;
+  CLOUD_CONTROL_FULL = 2;
+  // Metadata observe commands only; content-bearing observe commands and terminal attach are refused.
+  CLOUD_CONTROL_PRIVATE = 3;
 }

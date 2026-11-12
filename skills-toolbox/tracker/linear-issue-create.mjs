@@ -3,7 +3,7 @@ import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
 import { classifyTrackerOutcome } from './outcome.mjs'
 
 const TEAM_QUERY = `query CreateTeam($team: String!) {
-  teams(filter: {name: {eq: $team}}) {
+  teams(first: 2, filter: {name: {eq: $team}}) {
     nodes { id states(first: 250) { nodes { id name } pageInfo { hasNextPage } } }
   }
 }`

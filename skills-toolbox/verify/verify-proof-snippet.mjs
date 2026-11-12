@@ -159,7 +159,7 @@ export function cutSnippet(diff, { path, start, end, pinLine }) {
 }
 
 /**
- * Each path's whole-file diff, `git diff -U<large> base..head -- path` in `cwd`, read once.
+ * Each path's whole-file diff, `git diff -U<large> base...head -- path` in `cwd`, read once.
  * `run(args)` returns git's stdout, or null when git fails; it defaults to spawning git.
  * @param {{base: string, head: string, cwd?: string, run?: (args: string[]) => string | null}} options
  * @returns {(path: string) => FileDiff | undefined}
@@ -188,7 +188,7 @@ export function gitFileDiffs({ base, head, cwd, run }) {
         `-U${SNIPPET_CONTEXT}`,
         '--no-color',
         '--no-ext-diff',
-        `${base}..${head}`,
+        `${base}...${head}`,
         '--',
         path,
       ])
@@ -223,24 +223,37 @@ export const lineChecker = (diffs) => (path, line) => {
   return whole ? false : null
 }
 
+/** @param {string[]} args @param {{cwd?: string, run?: (args: string[]) => string | null}} options */
+function gitOutput(args, { cwd, run }) {
+  if (run) return run(args)
+  const out = spawnSync('git', [...GIT_FLAGS, ...args], {
+    cwd,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  })
+  return out.status === 0 ? out.stdout : null
+}
+
 /**
- * The files `base..head` changes with their added and deleted line counts (null for binary), from
+ * The commit `base...head` diffs from, `git merge-base base head`, or null when git fails.
+ * `run(args)` is as for `gitFileDiffs`.
+ * @param {{base: string, head: string, cwd?: string, run?: (args: string[]) => string | null}} options
+ */
+export function gitMergeBase({ base, head, cwd, run }) {
+  return gitOutput(['merge-base', base, head], { cwd, run })?.trim() || null
+}
+
+/**
+ * The files `base...head` changes with their added and deleted line counts (null for binary), from
  * `git diff --numstat`, or null when git fails. `run(args)` is as for `gitFileDiffs`.
  * @param {{base: string, head: string, cwd?: string, run?: (args: string[]) => string | null}} options
  * @returns {{path: string, adds: number | null, dels: number | null}[] | null}
  */
 export function gitChangedFiles({ base, head, cwd, run }) {
-  const args = ['diff', '--numstat', '-z', '--no-renames', `${base}..${head}`]
-  let text = null
-  if (run) text = run(args)
-  else {
-    const out = spawnSync('git', [...GIT_FLAGS, ...args], {
-      cwd,
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-    })
-    text = out.status === 0 ? out.stdout : null
-  }
+  const text = gitOutput(['diff', '--numstat', '-z', '--no-renames', `${base}...${head}`], {
+    cwd,
+    run,
+  })
   if (text === null) return null
   const count = (/** @type {string} */ n) => (n === '-' ? null : Number(n))
   return text

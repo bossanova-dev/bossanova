@@ -1,0 +1,147 @@
+{
+  "repo": "acme/field-app",
+  "pr": 203,
+  "commits": [
+    {
+      "message": "chore: start the field app",
+      "files": {
+        "app/src/components/VisitCard.tsx": [
+          "import { Text, View } from 'react-native'",
+          "",
+          "import { styles } from './VisitCard.styles'",
+          "",
+          "export type Visit = { id: string; site: string; startsAt: string }",
+          "",
+          "export function VisitCard({ visit }: { visit: Visit }): JSX.Element {",
+          "  return (",
+          "    <View style={styles.card}>",
+          "      <Text style={styles.site}>{visit.site}</Text>",
+          "      <Text style={styles.time}>{visit.startsAt}</Text>",
+          "    </View>",
+          "  )",
+          "}"
+        ],
+        "app/src/components/VisitCard.styles.ts": [
+          "import { StyleSheet } from 'react-native'",
+          "",
+          "export const styles = StyleSheet.create({",
+          "  card: { borderRadius: 8, marginBottom: 8, padding: 16 },",
+          "  site: { fontSize: 16, fontWeight: '600' },",
+          "  time: { color: '#5f6368', fontSize: 14 },",
+          "})"
+        ],
+        "app/src/screens/VisitListScreen.tsx": [
+          "import { FlatList } from 'react-native'",
+          "",
+          "import { VisitCard } from '../components/VisitCard'",
+          "import { useVisits } from '../hooks/useVisits'",
+          "",
+          "export function VisitListScreen(): JSX.Element {",
+          "  const { visits } = useVisits()",
+          "  return (",
+          "    <FlatList",
+          "      data={visits}",
+          "      keyExtractor={(visit) => visit.id}",
+          "      renderItem={({ item }) => <VisitCard visit={item} />}",
+          "    />",
+          "  )",
+          "}"
+        ],
+        "app/src/hooks/useVisits.ts": [
+          "import { useState } from 'react'",
+          "",
+          "import type { Visit } from '../components/VisitCard'",
+          "",
+          "export function useVisits(): { visits: Visit[] } {",
+          "  const [visits] = useState<Visit[]>([])",
+          "  return { visits }",
+          "}"
+        ]
+      }
+    },
+    {
+      "message": "feat(mobile): check in to a visit from the list",
+      "files": {
+        "app/src/components/VisitCard.tsx": [
+          "import { Pressable, Text, View } from 'react-native'",
+          "",
+          "import { styles } from './VisitCard.styles'",
+          "",
+          "export type Visit = { id: string; site: string; startsAt: string; checkedIn: boolean }",
+          "",
+          "type Props = { visit: Visit; onCheckIn: (id: string) => void }",
+          "",
+          "export function VisitCard({ visit, onCheckIn }: Props): JSX.Element {",
+          "  return (",
+          "    <View style={styles.card}>",
+          "      <Text style={styles.site}>{visit.site}</Text>",
+          "      <Text style={styles.time}>{visit.startsAt}</Text>",
+          "      {visit.checkedIn ? (",
+          "        <Text style={styles.done}>Checked in</Text>",
+          "      ) : (",
+          "        <Pressable accessibilityRole=\"button\" onPress={() => onCheckIn(visit.id)}>",
+          "          <Text style={styles.action}>Check in</Text>",
+          "        </Pressable>",
+          "      )}",
+          "    </View>",
+          "  )",
+          "}"
+        ],
+        "app/src/components/VisitCard.styles.ts": [
+          "import { StyleSheet } from 'react-native'",
+          "",
+          "export const styles = StyleSheet.create({",
+          "  action: { color: '#1a73e8', fontSize: 14, fontWeight: '600', marginTop: 8 },",
+          "  card: { borderRadius: 8, marginBottom: 8, padding: 16 },",
+          "  done: { color: '#188038', fontSize: 14, marginTop: 8 },",
+          "  site: { fontSize: 16, fontWeight: '600' },",
+          "  time: { color: '#5f6368', fontSize: 14 },",
+          "})"
+        ],
+        "app/src/screens/VisitListScreen.tsx": [
+          "import { FlatList } from 'react-native'",
+          "",
+          "import { VisitCard } from '../components/VisitCard'",
+          "import { useVisits } from '../hooks/useVisits'",
+          "",
+          "export function VisitListScreen(): JSX.Element {",
+          "  const { checkIn, visits } = useVisits()",
+          "  return (",
+          "    <FlatList",
+          "      data={visits}",
+          "      keyExtractor={(visit) => visit.id}",
+          "      renderItem={({ item }) => <VisitCard onCheckIn={checkIn} visit={item} />}",
+          "    />",
+          "  )",
+          "}"
+        ],
+        "app/src/hooks/useVisits.ts": [
+          "import { useState } from 'react'",
+          "",
+          "import type { Visit } from '../components/VisitCard'",
+          "",
+          "export function useVisits(): { checkIn: (id: string) => void; visits: Visit[] } {",
+          "  const [visits, setVisits] = useState<Visit[]>([])",
+          "  const checkIn = (id: string): void =>",
+          "    setVisits((all) => all.map((visit) => (visit.id === id ? { ...visit, checkedIn: true } : visit)))",
+          "  return { checkIn, visits }",
+          "}"
+        ],
+        "app/src/components/VisitCard.test.tsx": [
+          "import { fireEvent, render } from '@testing-library/react-native'",
+          "",
+          "import { VisitCard } from './VisitCard'",
+          "",
+          "const visit = { checkedIn: false, id: 'v1', site: 'North depot', startsAt: '09:00' }",
+          "",
+          "test('check in calls back with the visit id', () => {",
+          "  const onCheckIn = jest.fn()",
+          "  const screen = render(<VisitCard onCheckIn={onCheckIn} visit={visit} />)",
+          "  fireEvent.press(screen.getByRole('button', { name: 'Check in' }))",
+          "  expect(onCheckIn).toHaveBeenCalledWith('v1')",
+          "})"
+        ]
+      }
+    }
+  ]
+}

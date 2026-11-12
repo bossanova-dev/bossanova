@@ -31,7 +31,13 @@ func (s *Server) ListRepoCloudControls(ctx context.Context, _ *connect.Request[p
 	for i, r := range repos {
 		id := identities[i]
 		mode, source := config.ResolveRepoCloudControl(settings, id)
-		response.Repos = append(response.Repos, &pb.RepoCloudControl{DisplayName: r.DisplayName, Host: id.Host, Checkout: id.LocalPath, ProviderRepoId: id.ProviderRepoID, IsIdVerified: id.IsIDVerified, Name: id.Name, OriginUrl: r.OriginURL, EffectiveMode: string(mode), Source: string(source), HasUnverifiedGrant: config.HasUnverifiedRepoGrant(settings, id)})
+		hasUnverifiedGrant := config.HasUnverifiedRepoGrant(settings, id)
+		response.Repos = append(response.Repos, &pb.RepoCloudControl{
+			DisplayName: r.DisplayName, Host: id.Host, Checkout: id.LocalPath, ProviderRepoId: id.ProviderRepoID,
+			IsIdVerified: id.IsIDVerified, Name: id.Name, OriginUrl: r.OriginURL, EffectiveMode: string(mode), Source: string(source),
+			HasUnverifiedGrant: hasUnverifiedGrant, Visibility: id.Visibility,
+			IsSuggested: id.Host == "github.com" && id.IsIDVerified && id.Visibility == "public" && config.RepoCloudControlChoice(settings, id) == "default" && !hasUnverifiedGrant,
+		})
 	}
 	return connect.NewResponse(response), nil
 }

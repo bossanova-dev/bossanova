@@ -6,6 +6,57 @@ import (
 	"unicode"
 )
 
+// HasCancelledWorkflowCheck reports whether checks contain a completed Actions cancellation.
+func HasCancelledWorkflowCheck(checks []CheckResult) bool {
+	for _, c := range checks {
+		if cancelledWorkflowCheck(c) {
+			return true
+		}
+	}
+	return false
+}
+
+func cancelledWorkflowCheck(c CheckResult) bool {
+	return c.Name != VerifyStatusContext && c.Workflow != "" && c.Status == CheckStatusCompleted &&
+		c.Conclusion != nil && *c.Conclusion == CheckConclusionCancelled
+}
+
+// ReconcileSupersededCancelled reconciles cancellations against same-head workflow runs.
+// It mirrors BOS-2444's agent-side rule in skills-toolbox/pr-check-state.mjs:
+// an in-flight replacement makes a cancellation pending; otherwise a success or
+// neutral replacement supersedes it. The original checks and conclusions stay intact.
+func ReconcileSupersededCancelled(headSHA string, checks []CheckResult, runs []WorkflowRun) []CheckResult {
+	if len(runs) == 0 {
+		return checks
+	}
+	out := make([]CheckResult, 0, len(checks))
+	for _, c := range checks {
+		if cancelledWorkflowCheck(c) {
+			pending, passed := replacementWorkflowState(headSHA, c.Workflow, runs)
+			if pending {
+				c.Status, c.Conclusion = CheckStatusInProgress, nil
+			} else if passed {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func replacementWorkflowState(headSHA, workflow string, runs []WorkflowRun) (pending, passed bool) {
+	for _, run := range runs {
+		if run.Name != workflow || (run.HeadSHA != "" && run.HeadSHA != headSHA) {
+			continue
+		}
+		if run.Status != "completed" {
+			return true, false
+		}
+		passed = passed || strings.EqualFold(run.Conclusion, "success") || strings.EqualFold(run.Conclusion, "neutral")
+	}
+	return false, passed
+}
+
 // CheckVerdictState is the aggregate state of a PR's check-run set.
 type CheckVerdictState int
 

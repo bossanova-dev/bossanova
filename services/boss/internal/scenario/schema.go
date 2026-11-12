@@ -62,6 +62,10 @@ func constrainField(typ reflect.Type, name string, node map[string]any) {
 		node["maximum"] = 2147483647
 	case typ == reflect.TypeFor[Operation]() && name == "op":
 		node["enum"] = operationNames()
+	case typ == reflect.TypeFor[Repo]() && name == "visibility":
+		node["enum"] = []string{"public", "internal", "private", "unknown"}
+	case typ == reflect.TypeFor[Repo]() && name == "providerRepoId":
+		node["minimum"] = 1
 	case typ == reflect.TypeFor[Repo]() && name == "mergeStrategy":
 		node["enum"] = []string{"merge", "rebase", "squash"}
 	}

@@ -68,4 +68,4 @@ describer item. A decision cannot remove an ask: only the gate can cover a non-f
 gate validates every addition and appends it after deterministic areas.
 Return only the output file path to the caller.
 
-The gate drops areas whose paths are all under the repo’s `neverReview` globs, so the judge need not flag them.
+Review every changed path alike, including the `no-sign-off` area. A finding whose paths all fall under the repo’s `noSignOff` globs is kept as a review note on the proof page instead of an ask, so report it as you would any other.

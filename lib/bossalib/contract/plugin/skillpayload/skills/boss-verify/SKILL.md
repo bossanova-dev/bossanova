@@ -19,7 +19,7 @@ BOSS_VERIFY_TOOLBOX="${BOSS_VERIFY_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/sk
 if [ ! -d "$BOSS_VERIFY_TOOLBOX" ]; then BOSS_VERIFY_TOOLBOX="$HOME/.codex/skills/boss-verify/toolbox"; fi
 BOSS_VERIFY_SKILLS_HOME="$(dirname "$(dirname "$BOSS_VERIFY_TOOLBOX")")"
 node "$BOSS_VERIFY_TOOLBOX/skill-pin.mjs" create --skill boss-verify --skills-home "$BOSS_VERIFY_SKILLS_HOME" || exit 1
-BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify"
+BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
 [ -f "$BOSS_VERIFY_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-verify skill pin missing - re-run the first block"; exit 1; }
 ```
@@ -28,7 +28,7 @@ After the pin exists, read `references/…`, `scripts/…` and `extensions/…` 
 `$BOSS_VERIFY_PIN/`. Every later shell block resolves only this pin:
 
 ```bash
-BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify"
+BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
 [ -f "$BOSS_VERIFY_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-verify skill pin missing - re-run the first block"; exit 1; }
 ```
@@ -36,7 +36,7 @@ BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
 The last Bash call before any stop (single PR or sweep) removes this run's pin:
 
 ```bash
-BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify"
+BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
 [ -f "$BOSS_VERIFY_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-verify skill pin missing - re-run the first block"; exit 1; }
 node "$BOSS_VERIFY_TOOLBOX/skill-pin.mjs" remove --skill boss-verify

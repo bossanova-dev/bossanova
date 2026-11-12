@@ -141,8 +141,14 @@ func (r *Reader) SetOnChange(onChange func(context.Context, string)) {
 // headState is what the reader knows about one session's current head.
 type headState struct {
 	head  string
+	pr    int
 	entry *Entry
 	proof *ProofRecord
+	// latest is the PR's newest non-legacy proof record, for this head or an
+	// older one: the head's own record when it has one, else the newest
+	// trusted record on any head. A new head on the same PR starts from the
+	// previous head's latest until its first read answers.
+	latest *ProofRecord
 	// openItems is what the park note recorded as keeping the head's PR
 	// checklist open; nil when no note names this head.
 	openItems []string
@@ -265,9 +271,17 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 		r.mu.Unlock()
 		return
 	}
-	invalidated := st != nil && !sameHead(st.head, head) && (st.entry != nil || st.proof != nil)
-	if st == nil || !sameHead(st.head, head) {
-		st = &headState{head: head}
+	// Comments belong to one PR, so a session moved to another PR starts over
+	// even at the same head; only a new head on the same PR keeps latest.
+	samePR := st != nil && st.pr == obs.PRNumber
+	replaced := !samePR || !sameHead(st.head, head)
+	invalidated := st != nil && replaced && (st.entry != nil || st.proof != nil || !samePR && st.latest != nil)
+	if replaced {
+		next := &headState{head: head, pr: obs.PRNumber}
+		if samePR {
+			next.latest = st.latest
+		}
+		st = next
 		r.sessions[obs.SessionID] = st
 	}
 	st.cycle = r.cycle
@@ -304,6 +318,7 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 type headComments struct {
 	entry     *Entry
 	proof     *ProofRecord
+	latest    *ProofRecord
 	openItems []string
 	sentBack  bool
 }
@@ -340,8 +355,9 @@ func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq
 		if cur.entry != nil && entry != nil {
 			changed = cur.entry.Summary != entry.Summary || !cur.entry.RecordedAt.Equal(entry.RecordedAt)
 		}
-		changed = changed || !cur.proof.equal(found.proof) || !slices.Equal(cur.openItems, found.openItems) || cur.sentBack != found.sentBack
+		changed = changed || !cur.proof.equal(found.proof) || !cur.latest.equal(found.latest) || !slices.Equal(cur.openItems, found.openItems) || cur.sentBack != found.sentBack
 		cur.proof = found.proof
+		cur.latest = found.latest
 		cur.entry = entry
 		cur.openItems = found.openItems
 		cur.sentBack = found.sentBack
@@ -422,6 +438,8 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 		unordered bool
 		proof     *ProofLine
 		proofAt   time.Time
+		latest    *ProofLine
+		latestAt  time.Time
 	)
 	for i := range comments {
 		c := &comments[i]
@@ -431,8 +449,13 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 		if summary, ok := Parse(c.Body); found.entry == nil && ok && sameHead(summary.Head, head) {
 			found.entry = &Entry{Summary: summary, RecordedAt: c.WrittenAt}
 		}
-		if line, ok := ParseProof(c.Body); proof == nil && ok && sameHead(line.Head, head) {
-			proof, proofAt = &line, c.WrittenAt
+		if line, ok := ParseProof(c.Body); ok {
+			if proof == nil && sameHead(line.Head, head) {
+				proof, proofAt = &line, c.WrittenAt
+			}
+			if latest == nil {
+				latest, latestAt = &line, c.WrittenAt
+			}
 		}
 		if items, ok := ParseOpenItems(c.Body); found.openItems == nil && ok && sameHead(items.Head, head) {
 			found.openItems = items.Items
@@ -448,6 +471,10 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 		}
 	}
 	found.proof = buildRecord(proof, proofAt, found.entry)
+	found.latest = buildRecord(latest, latestAt, nil)
+	if proof != nil {
+		found.latest = found.proof
+	}
 	found.sentBack = found.sentBack || unordered
 	return found, nil
 }
@@ -533,4 +560,20 @@ func (r *Reader) Proof(sessionID, head string) (ProofRecord, bool) {
 		return ProofRecord{}, false
 	}
 	return st.proof.clone(), true
+}
+
+// LatestProof returns the newest non-legacy proof record on the session's PR,
+// which can be for an older head than the current one (headState.latest). Its
+// slices are copied so consumers cannot mutate the cache.
+func (r *Reader) LatestProof(sessionID string) (ProofRecord, bool) {
+	if r == nil {
+		return ProofRecord{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.sessions[sessionID]
+	if st == nil || st.latest == nil {
+		return ProofRecord{}, false
+	}
+	return st.latest.clone(), true
 }

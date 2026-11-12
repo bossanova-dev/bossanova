@@ -31,8 +31,9 @@ export const GENERATED_PATH =
  * @typedef {import('./verify-proof-snippet.mjs').SnippetResolver} SnippetResolver
  * @typedef {import('./verify-proof-snippet.mjs').FileDiff} FileDiff
  * @typedef {{path: string, adds: number | null, dels: number | null}} ChangedFile
- * @typedef {{spec?: unknown, media?: unknown, mediaSize?: (file: string) => number | null, snippet?: SnippetResolver, hasLine?: (path: string, line: number) => boolean | null, files?: unknown}} PageExtras
+ * @typedef {{spec?: unknown, media?: unknown, mediaSize?: (file: string) => number | null, snippet?: SnippetResolver, hasLine?: (path: string, line: number) => boolean | null, files?: unknown, mergeBase?: string}} PageExtras
  *   `files: null` says git was asked for the changed files and failed; leaving it out says there is no git.
+ *   `mergeBase` is the commit the files and snippets diff from, shown as the page's base.
  * @typedef {{title: string, detail?: string, href?: string, link?: string, proof?: boolean, high?: boolean}} WaitingItem
  * @typedef {{level: string, title: string, body?: string, items?: string[], ifItMatters?: string, label?: string, path?: string, line?: number}} RiskItem
  * @typedef {{label: string, files: FileDiff[], text: string | null, remaining: number}} AreaExcerpt
@@ -346,7 +347,7 @@ export function buildPageModel({ proof, input, view, extras = {} }) {
     repo: proof.repo,
     pr: proof.pr,
     head: proof.head,
-    base: proof.base,
+    base: extras.mergeBase ?? proof.base,
     digest: proof.digest,
     title: spec?.title ?? view.headline,
     verdict: view.verdict,

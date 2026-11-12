@@ -32,7 +32,7 @@ test('a read-only pin survives a peer install and records payload provenance', a
   fs.writeFileSync(path.join(f.skillsHome, '.bossanova-skills.payload.json'), '{"revision":"abc"}')
   fs.symlinkSync('helper.mjs', path.join(f.source, 'toolbox', 'linked.mjs'))
   const result = await createPin(f)
-  assert.equal(result.skillDir, pinDir(f.gitDir, f.skill))
+  assert.equal(result.skillDir, pinDir(f.gitDir, f.skill, 'local'))
   assert.deepEqual(result.payloadRecord, { revision: 'abc' })
   const before = captureManifest(result.skillDir)
   assert.equal(fs.statSync(path.join(result.toolbox, 'helper.mjs')).mode & 0o777, 0o444)
@@ -56,7 +56,10 @@ test('capture retries after a mutation and rejects a source that never settles',
     },
   })
   assert.equal(captures, 2)
-  assert.equal(fs.readFileSync(path.join(pinDir(f.gitDir, f.skill), 'SKILL.md'), 'utf8'), 'updated')
+  assert.equal(
+    fs.readFileSync(path.join(pinDir(f.gitDir, f.skill, 'local'), 'SKILL.md'), 'utf8'),
+    'updated',
+  )
   await assert.rejects(
     createPin({
       ...f,
@@ -116,7 +119,7 @@ test('a new capture replaces an earlier pin, and verify detects tampering and mi
   await createPin(f)
   fs.writeFileSync(path.join(f.source, 'SKILL.md'), 'new instructions')
   await createPin(f)
-  const skillFile = path.join(pinDir(f.gitDir, f.skill), 'SKILL.md')
+  const skillFile = path.join(pinDir(f.gitDir, f.skill, 'local'), 'SKILL.md')
   assert.equal(fs.readFileSync(skillFile, 'utf8'), 'new instructions')
   fs.chmodSync(skillFile, 0o644)
   fs.writeFileSync(skillFile, 'tampered')
@@ -131,10 +134,11 @@ test('CLI removes read-only pins, reports missing pins and refuses unsafe names'
   const run = (verb, skill = f.skill) =>
     spawnSync(process.execPath, [cli, verb, '--skill', skill, '--git-dir', f.gitDir], {
       encoding: 'utf8',
+      env: { ...process.env, BOSS_AGENT_SESSION_ID: '' },
     })
   assert.equal(run('verify').status, 0)
   assert.equal(run('remove').status, 0)
-  assert.equal(fs.existsSync(pinDir(f.gitDir, f.skill)), false)
+  assert.equal(fs.existsSync(pinDir(f.gitDir, f.skill, 'local')), false)
   assert.equal(run('verify').status, 2)
   assert.equal(run('remove', '../escape').status, 1)
 })
@@ -159,4 +163,57 @@ test('restrictive umask still publishes traversable pin directories', async (t) 
   } finally {
     process.umask(previous)
   }
+})
+
+// Two runs of one core can share a worktree: a stale verify claim plus a callback's fresh run, or
+// a repair that runs verify while the verify cron does. Each run must own its pin.
+const chat = (id) => ({ BOSS_AGENT_SESSION_ID: id })
+
+test("a run's remove leaves a concurrent run's pin in place", async (t) => {
+  const f = fixture(t)
+  const a = await createPin({ ...f, env: chat('chat-a') })
+  const b = await createPin({ ...f, env: chat('chat-b') })
+  const cli = fileURLToPath(new URL('./skill-pin.mjs', import.meta.url))
+  const removed = spawnSync(
+    process.execPath,
+    [cli, 'remove', '--skill', f.skill, '--git-dir', f.gitDir],
+    { encoding: 'utf8', env: { ...process.env, ...chat('chat-a') } },
+  )
+  assert.equal(removed.status, 0, removed.stderr)
+  assert.equal(fs.existsSync(a.skillDir), false)
+  assert.equal(fs.existsSync(path.join(b.skillDir, '.boss-skill-pin.json')), true)
+  assert.equal(verifyPin({ ...f, env: chat('chat-b') }).status, 0)
+})
+
+test("a peer run's create never swaps the tree a running pin reads", async (t) => {
+  const f = fixture(t)
+  const a = await createPin({ ...f, env: chat('chat-a') })
+  const inode = fs.statSync(a.skillDir).ino
+  fs.writeFileSync(path.join(f.source, 'SKILL.md'), 'peer instructions')
+  const b = await createPin({ ...f, env: chat('chat-b') })
+  assert.equal(fs.statSync(a.skillDir).ino, inode)
+  assert.equal(fs.readFileSync(path.join(a.skillDir, 'SKILL.md'), 'utf8'), 'current instructions')
+  assert.equal(fs.readFileSync(path.join(b.skillDir, 'SKILL.md'), 'utf8'), 'peer instructions')
+  assert.equal(verifyPin({ ...f, env: chat('chat-a') }).status, 0)
+})
+
+test('create sweeps only pins older than the TTL that a crashed run left behind', async (t) => {
+  const f = fixture(t)
+  const crashed = await createPin({ ...f, env: chat('chat-crashed') })
+  const recent = await createPin({ ...f, env: chat('chat-recent') })
+  const stale = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)
+  fs.utimesSync(crashed.skillDir, stale, stale)
+  await createPin({ ...f, env: chat('chat-new') })
+  assert.equal(fs.existsSync(crashed.skillDir), false)
+  assert.equal(verifyPin({ ...f, env: chat('chat-recent') }).status, 0)
+  assert.equal(fs.existsSync(recent.skillDir), true)
+})
+
+test('a run id that is not a safe path segment is refused, and no id pins the local run', async (t) => {
+  const f = fixture(t)
+  await assert.rejects(createPin({ ...f, env: chat('../escape') }), /BLOCKED/)
+  const local = await createPin({ ...f, env: {} })
+  assert.equal(path.basename(local.skillDir), 'local')
+  assert.equal(verifyPin({ ...f, env: {} }).status, 0)
+  assert.equal(verifyPin({ ...f, env: chat('chat-other') }).status, 2)
 })

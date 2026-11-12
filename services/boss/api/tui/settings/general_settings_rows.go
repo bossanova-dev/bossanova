@@ -92,6 +92,8 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 	}
 	var line string
 	switch row.Kind { //nolint:exhaustive // header rows take an early return path in View
+	case settingsRowKindRestrictPublic:
+		line = row.Label
 	case settingsRowKindRepoCloud, settingsRowKindOwnerCloud:
 		line = valueLine(m.repoCloudRowValue(row))
 	case settingsRowKindMCPToken:

@@ -101,7 +101,7 @@ func TestArchiveTrackerSeamsWired(t *testing.T) {
 	}
 
 	if !verifySeams.Load() {
-		t.Fatal("verify-job checker or repair lease missing from production wiring")
+		t.Fatal("verify-job checker, repair lease or Dependabot merge gate missing from production wiring")
 	}
 	if !repairLapseSeams.Load() {
 		t.Fatal("poller or dispatcher missing the repair lease, so a lapsed fixing_checks is never released")

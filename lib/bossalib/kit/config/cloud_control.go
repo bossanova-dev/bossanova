@@ -51,6 +51,8 @@ type RepoIdentity struct {
 	IsIDVerified   bool
 	LocalPath      string
 	Name           string
+	// Visibility is informational metadata for local suggestions only.
+	Visibility string
 }
 
 // CloudControlSource explains which local setting determined a mode.

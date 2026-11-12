@@ -57,9 +57,12 @@ View or update global settings
 - `--managed-accounts` — Enable managed accounts (bossd credential rotation)
 - `--no-managed-accounts` — Disable managed accounts (use the terminal's own login)
 - `--no-skip-permissions` — Disable Claude --dangerously-skip-permissions
+- `--owner` — Limit public-repo restriction to <host/owner>
 - `--poll-interval` — Set poll interval in seconds (0 = default) (default: 0)
+- `--restrict-public-repos` — Suggest public repos and restrict them to read-only after confirmation
 - `--skip-permissions` — Enable Claude --dangerously-skip-permissions
 - `--worktree-dir` — Set worktree base directory
+- `--yes` — Confirm public-repo restriction without prompting
 
 ```bash
 boss settings

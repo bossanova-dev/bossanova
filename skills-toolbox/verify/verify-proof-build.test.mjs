@@ -108,6 +108,18 @@ test('asks are the asking areas in area order, under contract-valid names @sessi
   assert.deepEqual(proof.review.notes, ['Polish naming', 'boss-verify-ui: no UI paths'])
 })
 
+test('judge notes on no-sign-off paths reach the review notes after the finding notes', () => {
+  const { proof } = build({
+    judgeNotes: [{ label: 'Docs drift', path: 'docs/x.md', reason: 'Stale example' }],
+  })
+  assert.deepEqual(proof.review.notes, [
+    'Polish naming',
+    'Docs drift (docs/x.md): Stale example',
+    'boss-verify-ui: no UI paths',
+  ])
+  assert.equal(validateProof(proof).ok, true)
+})
+
 test('an ask no judge area carries becomes its own asking area', () => {
   const { proof } = build({
     confidence: confidence('moderate', ['capped:other:docs', 'api-contract']),
@@ -157,7 +169,7 @@ const policy = (names) => ({
     globs: [`area${i}/**`],
     parkCode: 'human-review:database',
   })),
-  neverReview: [],
+  noSignOff: [],
   deprecations: [],
 })
 

@@ -1,0 +1,50 @@
+{
+  "verdict": "human",
+  "reasons": ["always-human-path"],
+  "label": "UI",
+  "confidence": {
+    "level": "moderate",
+    "asks": [
+      {
+        "area": "ui",
+        "label": "UI"
+      }
+    ],
+    "loweredBy": ["area-asks"],
+    "health": []
+  },
+  "facts": {
+    "receipt": {
+      "verdict": "present",
+      "state": "success"
+    },
+    "areas": [
+      {
+        "area": "housekeeping",
+        "label": "Housekeeping",
+        "paths": ["app/src/components/VisitCard.test.tsx"],
+        "defaultAsk": "never",
+        "source": "builtin"
+      },
+      {
+        "area": "ui",
+        "label": "UI",
+        "paths": [
+          "app/src/components/VisitCard.styles.ts",
+          "app/src/components/VisitCard.tsx",
+          "app/src/screens/VisitListScreen.tsx"
+        ],
+        "defaultAsk": "unless-proven",
+        "source": "builtin",
+        "items": ["Changes screen VisitListScreen", "Changes component VisitCard"]
+      },
+      {
+        "area": "other",
+        "label": "Other changes",
+        "paths": ["app/src/hooks/useVisits.ts"],
+        "defaultAsk": "never",
+        "source": "builtin"
+      }
+    ]
+  }
+}

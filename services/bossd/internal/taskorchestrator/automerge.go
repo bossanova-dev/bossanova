@@ -24,6 +24,10 @@ func withMergeLabel(ctx context.Context) context.Context {
 // settled the mapping (Failed, or handed to repairRebase for a rebase refusal).
 func (o *Orchestrator) mergeConfirmedHead(ctx context.Context, repo repoInfo, mapping *domain.TaskMapping, prNumber int, strategy string, repairRebase func(error, string)) bool {
 	opts, err := o.confirmAutoMergeHead(ctx, repo, prNumber, strategy)
+	if errors.Is(err, errStaleBase) {
+		repairRebase(err, opts.ExpectedHeadSHA)
+		return false
+	}
 	if err != nil {
 		o.logger.Info().Err(err).
 			Int("pr", prNumber).
@@ -73,10 +77,15 @@ func (o *Orchestrator) confirmAutoMergeHead(ctx context.Context, repo repoInfo, 
 	if status == nil {
 		return vcs.MergePROpts{}, errors.New("fresh PR status read returned no status")
 	}
+	required, err := o.evaluateDependabotGate(ctx, repo, status)
+	if err != nil {
+		sha, _ := vcs.NormalizeHeadSHA(status.HeadSHA)
+		return vcs.MergePROpts{ExpectedHeadSHA: sha}, err
+	}
 	checkSet, readErr := vcs.ReadCheckSet(ctx, o.provider, repo.originURL, prNumber)
-	verdict := vcs.EvaluateChecks(status.HeadSHA, checkSet.Checks, readErr)
+	verdict := vcs.EvaluateChecksRequiring(status.HeadSHA, checkSet.Checks, readErr, required)
 	if !verdict.IsGreen() {
-		return vcs.MergePROpts{}, fmt.Errorf("fresh checks verdict on head %q is %s (%s)", status.HeadSHA, verdict.State, verdict.Reason)
+		return vcs.MergePROpts{}, fmt.Errorf("fresh checks verdict on head %q is %s (%s; required=%v; not-requested=%v)", status.HeadSHA, verdict.State, verdict.Reason, required, verdict.NotRequested)
 	}
 	if status.Mergeable != nil && !*status.Mergeable {
 		return vcs.MergePROpts{}, fmt.Errorf("fresh PR status reports head %q not mergeable", status.HeadSHA)

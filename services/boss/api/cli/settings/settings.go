@@ -10,6 +10,7 @@ import (
 	"github.com/recurser/bossalib/kit/buildinfo"
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func (g *Group) SettingsCmd() *cobra.Command {
@@ -17,7 +18,7 @@ func (g *Group) SettingsCmd() *cobra.Command {
 		Use:   "settings",
 		Short: "View or update global settings",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return g.runSettings(cmd)
+			return g.runSettingsWithRestriction(cmd)
 		},
 	}
 	cmd.Flags().Bool("skip-permissions", false, "Enable Claude --dangerously-skip-permissions")
@@ -36,6 +37,9 @@ func (g *Group) SettingsCmd() *cobra.Command {
 	cmd.Flags().String("cloud-control", "", "Cloud control: default, private, read-only or full (takes effect immediately; no restart needed)")
 	cmd.Flags().StringArray("cloud-control-repo", nil, "Set a registered repo grant: <origin, display name or checkout>=<default|private|read-only|full> (repeatable)")
 	cmd.Flags().StringArray("cloud-control-owner", nil, "Set each registered repo under <host/owner>=<default|private|read-only|full> (repeatable)")
+	cmd.Flags().Bool("restrict-public-repos", false, "Suggest public repos and restrict them to read-only after confirmation")
+	cmd.Flags().String("owner", "", "Limit public-repo restriction to <host/owner>")
+	cmd.Flags().Bool("yes", false, "Confirm public-repo restriction without prompting")
 	return cmd
 }
 func (g *Group) ConfigCmd() *cobra.Command {
@@ -111,6 +115,27 @@ func printSettingsCloudControlWarnings(cmd *cobra.Command, s config.Settings, re
 	if repoFull && (!cmd.Flags().Changed("cloud-control") || s.CloudControl != "full") {
 		fmt.Println(config.FullCloudControlWarning)
 	}
+}
+
+func (g *Group) runSettingsWithRestriction(cmd *cobra.Command) error {
+	restrict, _ := cmd.Flags().GetBool("restrict-public-repos")
+	if restrict {
+		var incompatible string
+		cmd.Flags().Visit(func(flag *pflag.Flag) {
+			if flag.Name != "restrict-public-repos" && flag.Name != "owner" && flag.Name != "yes" {
+				incompatible = flag.Name
+			}
+		})
+		if incompatible != "" {
+			return fmt.Errorf("--restrict-public-repos cannot be combined with --%s", incompatible)
+		}
+		return g.restrictPublicRepos(cmd)
+	}
+	if cmd.Flags().Changed("owner") || cmd.Flags().Changed("yes") {
+		return fmt.Errorf("--owner and --yes require --restrict-public-repos")
+	}
+
+	return g.runSettings(cmd)
 }
 
 func (g *Group) runSettings(cmd *cobra.Command) error {

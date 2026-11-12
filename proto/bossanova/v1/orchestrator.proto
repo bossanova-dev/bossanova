@@ -1253,8 +1253,16 @@ message DaemonInfo {
   string organization_id = 7;
   // Public signing identity, included only for the calling user's own daemons.
   bytes identity_public_key = 8;
-  // Advertised mode for UX; the daemon enforces its local policy.
+  // Advertised machine-wide default for UX; the daemon enforces its local
+  // policy. A repository's effective mode is in repo_cloud_controls.
   CloudControl cloud_control = 9;
+  // True when the daemon publishes per-repo modes. False means the daemon can
+  // only report its machine-wide mode and cannot protect individual repos.
+  // No dated API bump: both fields are additive and older clients ignore
+  // them. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  bool is_repo_cloud_control_supported = 10;
+  // Each registered repository's effective mode, when supported.
+  repeated RepoCloudControlMode repo_cloud_controls = 11;
 }
 
 // DaemonRef is the minimal identity needed to filter sessions served by a

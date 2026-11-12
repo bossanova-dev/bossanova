@@ -8099,7 +8099,10 @@ components:
         - CLOUD_CONTROL_READ_ONLY
         - CLOUD_CONTROL_FULL
         - CLOUD_CONTROL_PRIVATE
-      description: CloudControl is the daemon's locally configured cloud control mode.
+      description: |-
+        CloudControl is a daemon's cloud control mode: the machine-wide default on
+         DaemonSnapshot and DaemonInfo, or a repository's effective mode on
+         RepoCloudControlMode and Session.
     bossanova.v1.CloudTrialEligibility:
       type: string
       title: CloudTrialEligibility
@@ -10116,6 +10119,15 @@ components:
             - egressBroadcast
         - type: object
           properties:
+            repoCloudControlsChanged:
+              title: repo_cloud_controls_changed
+              description: Per-repo effective cloud control changes between snapshots.
+              $ref: '#/components/schemas/bossanova.v1.RepoCloudControlsChanged'
+          title: repo_cloud_controls_changed
+          required:
+            - repoCloudControlsChanged
+        - type: object
+          properties:
             result:
               title: result
               description: Response to Stop/Pause/Resume/Transfer/Attach commands.
@@ -10205,8 +10217,24 @@ components:
           description: Public signing identity, included only for the calling user's own daemons.
         cloudControl:
           title: cloud_control
-          description: Advertised mode for UX; the daemon enforces its local policy.
+          description: |-
+            Advertised machine-wide default for UX; the daemon enforces its local
+             policy. A repository's effective mode is in repo_cloud_controls.
           $ref: '#/components/schemas/bossanova.v1.CloudControl'
+        isRepoCloudControlSupported:
+          type: boolean
+          title: is_repo_cloud_control_supported
+          description: |-
+            True when the daemon publishes per-repo modes. False means the daemon can
+             only report its machine-wide mode and cannot protect individual repos.
+             No dated API bump: both fields are additive and older clients ignore
+             them. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        repoCloudControls:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.RepoCloudControlMode'
+          title: repo_cloud_controls
+          description: Each registered repository's effective mode, when supported.
       title: DaemonInfo
       additionalProperties: false
     bossanova.v1.DaemonOffline:
@@ -10333,7 +10361,11 @@ components:
           title: agent_accounts
         cloudControl:
           title: cloud_control
-          description: Presentation only; the daemon enforces its locally configured mode.
+          description: |-
+            The configured machine-wide default: the mode the daemon applies to
+             repo-less and account commands. It is never a repository's effective mode;
+             that is repo_cloud_controls. Presentation only; the daemon enforces its
+             locally configured mode.
           $ref: '#/components/schemas/bossanova.v1.CloudControl'
         isTerminalSealingSupported:
           type: boolean
@@ -10348,6 +10380,36 @@ components:
              bosso to refuse a control command without forwarding it. False on daemons
              that advertise the mode only at connect; bosso forwards every command to
              those, so a local opt-in still takes effect on the next command.
+        isRepoCloudControlSupported:
+          type: boolean
+          title: is_repo_cloud_control_supported
+          description: |-
+            True when this daemon decides cloud commands by their resolved target and
+             publishes repo_cloud_controls and Session.cloud_control. Only then may
+             bosso decide a command from the per-repo modes, treating a repository or
+             session without a published mode as read-only. False on older daemons,
+             whose cloud_control is the only mode bosso has.
+             Additive stream fields: older bosso builds ignore them and keep the
+             daemon-wide decision. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        repoCloudControls:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.RepoCloudControlMode'
+          title: repo_cloud_controls
+          description: |-
+            Each registered repository's effective mode, after any
+             cloud_control_repos grant. Replaces bosso's whole per-repo set.
+        repoCloudControlRevision:
+          type:
+            - integer
+            - string
+          title: repo_cloud_control_revision
+          format: int64
+          description: |-
+            Orders this set against RepoCloudControlsChanged deltas. Strictly
+             increasing within one daemon process, seeded from wall-clock time at
+             start so a restarted daemon does not reuse an older revision.
       title: DaemonSnapshot
       additionalProperties: false
       description: |-
@@ -20270,8 +20332,56 @@ components:
         hasUnverifiedGrant:
           type: boolean
           title: has_unverified_grant
+        visibility:
+          type: string
+          title: visibility
+          description: Informational, locally verified metadata; never used to decide authority.
+        isSuggested:
+          type: boolean
+          title: is_suggested
       title: RepoCloudControl
       additionalProperties: false
+    bossanova.v1.RepoCloudControlMode:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+        cloudControl:
+          title: cloud_control
+          $ref: '#/components/schemas/bossanova.v1.CloudControl'
+      title: RepoCloudControlMode
+      additionalProperties: false
+      description: |-
+        RepoCloudControlMode is one registered repository's effective cloud
+         control mode. Presentation only; the daemon enforces its local policy.
+    bossanova.v1.RepoCloudControlsChanged:
+      type: object
+      properties:
+        revision:
+          type:
+            - integer
+            - string
+          title: revision
+          format: int64
+        upserted:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.RepoCloudControlMode'
+          title: upserted
+          description: Repositories whose effective mode changed or which were registered.
+        removedRepoIds:
+          type: array
+          items:
+            type: string
+          title: removed_repo_ids
+          description: Repositories the daemon no longer has registered.
+      title: RepoCloudControlsChanged
+      additionalProperties: false
+      description: |-
+        RepoCloudControlsChanged updates the per-repo modes a DaemonSnapshot
+         published. bosso applies it only when revision is newer than the one it
+         holds; a later snapshot replaces the whole set.
     bossanova.v1.RepoOrganizationMapping:
       type: object
       properties:
@@ -22172,6 +22282,32 @@ components:
              kind. No dated API bump or transform: this is additive and older clients
              ignore the unknown field without changing their existing behavior. See
              docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        cloudControl:
+          title: cloud_control
+          description: |-
+            Effective cloud control mode of this session's repository, published by
+             a daemon that decides commands per repo
+             (DaemonSnapshot.is_repo_cloud_control_supported). Presentation only; the
+             daemon enforces its local policy. UNSPECIFIED from older daemons. No dated
+             API bump: this is additive and older clients ignore the unknown field. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+          $ref: '#/components/schemas/bossanova.v1.CloudControl'
+        prProofUrl:
+          type: string
+          title: pr_proof_url
+          description: |-
+            Proof page URL of the PR's latest non-legacy proof record, or empty: the
+             current head's record when it has one, else the newest one on an older
+             head, which pr_proof_head_sha then names. Served for every attention kind,
+             unlike SessionAttention.proof_url, which only a park carries, so the web
+             review screen keeps the page while a chat works. No dated API bump or transform:
+             both fields are additive and older clients ignore them without changing
+             their existing behavior. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        prProofHeadSha:
+          type: string
+          title: pr_proof_head_sha
+          description: Head the pr_proof_url record was made for (40 hex), or empty.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.

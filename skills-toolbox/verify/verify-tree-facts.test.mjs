@@ -6,6 +6,7 @@ import path from 'node:path'
 import { gitFixture } from './verify-git-fixture.mjs'
 import { apiSchemaChange, dbtProjectRoots, treeAreaFacts } from './verify-tree-facts.mjs'
 import { verifyPolicyFromConfigText } from '../skill-config.mjs'
+import { NO_SIGN_OFF_AREA } from './verify-areas.mjs'
 
 function change(t, before, after) {
   const repo = gitFixture(t)
@@ -171,6 +172,64 @@ test('trusted describers monotonically classify tree facts and failures', (t) =>
   })
   assert.equal(fork.areas[0].change, 'breaking')
   assert.ok(fork.areas[0].changeReasons.includes('describers unavailable'))
+})
+
+test('describers run over the no-sign-off area and their items land on it without an ask', (t) => {
+  const fixture = change(t, { 'dbt/models/a.sql': 'select 1' }, { 'dbt/models/a.sql': 'select 2' })
+  const script = path.join(fixture.cwd, 'describe.mjs')
+  writeFileSync(script, '')
+  const extension = {
+    name: 'custom-dbt',
+    dir: fixture.cwd,
+    describe: 'describe.mjs',
+    describeAreas: [NO_SIGN_OFF_AREA],
+    order: 1,
+  }
+  const policy = verifyPolicyFromConfigText(
+    JSON.stringify({ verifyDefaults: { noSignOff: ['dbt/**'] } }),
+  )
+  const describers = []
+  const run = (command, args, options) => {
+    if (command !== process.execPath) return spawnSync(command, args, options)
+    describers.push(JSON.parse(options.input).area.area)
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        ok: true,
+        role: 'proof-describe',
+        extension: extension.name,
+        items: ['model a drops a column'],
+        breaking: true,
+        undisclosed: [],
+      }),
+    }
+  }
+  const result = treeAreaFacts(['dbt/models/a.sql'], policy, {
+    ...fixture,
+    baseSha: fixture.mergeBase,
+    run,
+    trustedRoot: fixture.cwd,
+    discover: () => ({ extensions: [extension], skipped: [] }),
+  })
+  assert.deepEqual(describers, [NO_SIGN_OFF_AREA])
+  assert.deepEqual(
+    result.areas.map((a) => [a.area, a.defaultAsk, a.items, a.breaking, a.change]),
+    [[NO_SIGN_OFF_AREA, 'never', ['model a drops a column'], true, undefined]],
+  )
+  const untrusted = treeAreaFacts(['dbt/models/a.sql'], policy, {
+    ...fixture,
+    baseSha: fixture.mergeBase,
+    trustedRoot: null,
+  })
+  assert.deepEqual(untrusted.areas, [
+    {
+      area: NO_SIGN_OFF_AREA,
+      label: 'No sign-off',
+      paths: ['dbt/models/a.sql'],
+      defaultAsk: 'never',
+      source: 'config',
+    },
+  ])
 })
 
 test('an existing contract blob that cannot be read fails closed', (t) => {

@@ -33,23 +33,45 @@ test('an iframe with allow-same-origin fails naming the file and line', (t) => {
   )
 })
 
+const granted = 'allow-scripts allow-popups allow-popups-to-escape-sandbox'
+
+for (const token of [
+  'allow-same-origin',
+  'allow-top-navigation',
+  'allow-top-navigation-by-user-activation',
+  'allow-top-navigation-to-custom-protocols',
+  'allow-forms',
+  'allow-modals',
+  'allow-downloads',
+  'allow-presentation',
+  'allow-pointer-lock',
+  'allow-orientation-lock',
+  'allow-storage-access-by-user-activation',
+]) {
+  test(`rejects ${token} beside every allowed token, naming it`, (t) => {
+    const result = run(t, frame(`sandbox="${granted} ${token}"`))
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, new RegExp(`Seed\\.tsx:2: <iframe> sandbox grants ${token}$`, 'm'))
+  })
+}
+
 for (const [label, attributes] of [
   ['no sandbox', 'title="t"'],
-  ['allow-top-navigation', 'sandbox="allow-scripts allow-top-navigation"'],
-  ['allow-top-navigation-by-user-activation', 'sandbox="allow-top-navigation-by-user-activation"'],
-  ['allow-popups', 'sandbox={"allow-popups"}'],
-  ['allow-popups-to-escape-sandbox', 'sandbox="allow-popups-to-escape-sandbox"'],
-  ['allow-forms', 'sandbox="allow-forms"'],
+  ['upper-case ALLOW-FORMS', 'sandbox="ALLOW-FORMS"'],
   ['a computed sandbox', 'sandbox={tokens}'],
   ['mixed-case Allow-Same-Origin', 'sandbox="allow-scripts Allow-Same-Origin"'],
-  ['upper-case ALLOW-POPUPS', 'sandbox="ALLOW-POPUPS"'],
-  ['allow-downloads', 'sandbox="allow-scripts allow-downloads"'],
-  ['allow-modals', 'sandbox="allow-modals"'],
-  ['allow-storage-access-by-user-activation', 'sandbox="allow-storage-access-by-user-activation"'],
   ['spread props', '{...props} sandbox="allow-scripts"'],
 ]) {
   test(`rejects ${label}`, (t) => {
     assert.equal(run(t, frame(attributes)).status, 1)
+  })
+}
+
+for (const escape of ['allow-popups-to-escape-sandbox', 'Allow-Popups-To-Escape-Sandbox']) {
+  test(`rejects ${escape} without allow-popups`, (t) => {
+    const result = run(t, frame(`sandbox="allow-scripts ${escape}"`))
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /<iframe> sandbox grants allow-popups-to-escape-sandbox without/)
   })
 }
 
@@ -104,6 +126,9 @@ for (const sandbox of [
   'sandbox="allow-scripts"',
   'sandbox={"allow-scripts"}',
   'sandbox="  Allow-Scripts\tallow-scripts "',
+  'sandbox="allow-popups"',
+  `sandbox="${granted}"`,
+  'sandbox={"ALLOW-POPUPS Allow-Popups-To-Escape-Sandbox allow-scripts"}',
 ]) {
   test(`accepts ${sandbox}`, (t) => {
     assert.equal(run(t, frame(sandbox)).status, 0)

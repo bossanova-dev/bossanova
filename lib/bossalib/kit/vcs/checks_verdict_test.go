@@ -605,3 +605,67 @@ func TestRequiredChecksFor(t *testing.T) {
 		t.Errorf("empty Names For = %v, want nil", got)
 	}
 }
+
+func TestHasCancelledWorkflowCheck(t *testing.T) {
+	cancelled := CheckConclusionCancelled
+	for _, tc := range []struct {
+		name  string
+		check CheckResult
+		want  bool
+	}{
+		{"workflow cancellation", CheckResult{Workflow: "CI", Status: CheckStatusCompleted, Conclusion: &cancelled}, true},
+		{"commit status", CheckResult{Status: CheckStatusCompleted, Conclusion: &cancelled}, false},
+		{"pending", CheckResult{Workflow: "CI", Status: CheckStatusInProgress, Conclusion: &cancelled}, false},
+		{"no conclusion", CheckResult{Workflow: "CI", Status: CheckStatusCompleted}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasCancelledWorkflowCheck([]CheckResult{tc.check}); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReconcileSupersededCancelled(t *testing.T) {
+	cancelled, success := CheckConclusionCancelled, CheckConclusionSuccess
+	base := CheckResult{Name: "notification", Workflow: "CI", Status: CheckStatusCompleted, Conclusion: &cancelled}
+	for _, tc := range []struct {
+		name     string
+		runs     []WorkflowRun
+		workflow string
+		want     CheckVerdictState
+	}{
+		{"success", []WorkflowRun{{Name: "CI", HeadSHA: "head", Status: "completed", Conclusion: "success"}}, "CI", CheckVerdictGreen},
+		{"neutral uppercase", []WorkflowRun{{Name: "CI", Status: "completed", Conclusion: "NEUTRAL"}}, "CI", CheckVerdictGreen},
+		{"queued", []WorkflowRun{{Name: "CI", Status: "queued"}}, "CI", CheckVerdictPending},
+		{"running", []WorkflowRun{{Name: "CI", Status: "in_progress"}}, "CI", CheckVerdictPending},
+		{"waiting", []WorkflowRun{{Name: "CI", Status: "waiting"}}, "CI", CheckVerdictPending},
+		{"pending beats green", []WorkflowRun{{Name: "CI", Status: "completed", Conclusion: "success"}, {Name: "CI", Status: "queued"}}, "CI", CheckVerdictPending},
+		{"cancelled", []WorkflowRun{{Name: "CI", Status: "completed", Conclusion: "cancelled"}}, "CI", CheckVerdictFailing},
+		{"failure", []WorkflowRun{{Name: "CI", Status: "completed", Conclusion: "failure"}}, "CI", CheckVerdictFailing},
+		{"no runs", nil, "CI", CheckVerdictFailing},
+		{"commit status", []WorkflowRun{{Name: "CI", Status: "completed", Conclusion: "success"}}, "", CheckVerdictFailing},
+		{"other workflow", []WorkflowRun{{Name: "other", Status: "completed", Conclusion: "success"}}, "CI", CheckVerdictFailing},
+		{"other head", []WorkflowRun{{Name: "CI", HeadSHA: "other", Status: "completed", Conclusion: "success"}}, "CI", CheckVerdictFailing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := base
+			c.Workflow = tc.workflow
+			checks := []CheckResult{c, {Name: "build", Status: CheckStatusCompleted, Conclusion: &success}}
+			before := append([]CheckResult(nil), checks...)
+			got := ReconcileSupersededCancelled("head", checks, tc.runs)
+			if verdict := EvaluateChecksRequiring("head", got, nil, []string{"build"}); verdict.State != tc.want {
+				t.Fatalf("verdict = %+v, want %v", verdict, tc.want)
+			}
+			if !reflect.DeepEqual(checks, before) || cancelled != CheckConclusionCancelled {
+				t.Fatal("mutated input")
+			}
+			if tc.want == CheckVerdictGreen && len(got) != 1 {
+				t.Fatalf("superseded entry retained: %+v", got)
+			}
+			if tc.want == CheckVerdictPending && (got[0].Status != CheckStatusInProgress || got[0].Conclusion != nil) {
+				t.Fatalf("not rewritten as pending: %+v", got[0])
+			}
+		})
+	}
+}

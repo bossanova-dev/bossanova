@@ -209,3 +209,53 @@ func TestListRepoCloudControlsConcurrentAndCached(t *testing.T) {
 		}
 	})
 }
+
+type suggestionIdentityProvider struct {
+	vcs.Provider
+	visibility string
+	failure    error
+}
+
+func (p suggestionIdentityProvider) GetRepositoryIdentity(context.Context, string) (int64, string, error) {
+	return 42, p.visibility, p.failure
+}
+func TestPublicRepoSuggestions(t *testing.T) {
+	t.Setenv("BOSS_SETTINGS_PATH", t.TempDir()+"/settings.json")
+	checkout := t.TempDir()
+	for _, tc := range []struct {
+		visibility, origin, grant string
+		suggested                 bool
+	}{
+		{"public", "https://github.com/acme/repo", "", true},
+		{"internal", "https://github.com/acme/repo", "", true},
+		{"private", "https://github.com/acme/repo", "", false},
+		{"", "https://github.com/acme/repo", "", false},
+		{"public", "https://enterprise.example/acme/repo", "", false},
+		{"public", "https://gitlab.com/acme/repo", "", false},
+		{"public", "https://github.com/acme/repo", "full", false},
+		{"public", "https://github.com/acme/repo", "read-only", false},
+	} {
+		t.Run(tc.visibility+tc.origin+tc.grant, func(t *testing.T) {
+			settings := config.Settings{}
+			if tc.grant != "" {
+				settings.CloudControlRepos = []config.CloudControlRepoGrant{{Host: "github.com", RepoID: 42, Name: "acme/repo", Checkout: checkout, Mode: tc.grant}}
+			}
+			if err := config.Save(settings); err != nil {
+				t.Fatal(err)
+			}
+			repos := &repoMgmtRepoStore{listRepos: []*models.Repo{{ID: "repo", OriginURL: tc.origin, LocalPath: checkout}}}
+			server := New(Config{Repos: repos, Provider: suggestionIdentityProvider{visibility: tc.visibility}})
+			response, err := server.ListRepoCloudControls(t.Context(), connect.NewRequest(&pb.ListRepoCloudControlsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := response.Msg.Repos[0]
+			if got.IsSuggested != tc.suggested {
+				t.Fatalf("suggestion: %+v", got)
+			}
+			if tc.grant == "" && got.EffectiveMode != "full" {
+				t.Fatalf("visibility changed authority: %+v", got)
+			}
+		})
+	}
+}

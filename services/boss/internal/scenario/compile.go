@@ -137,7 +137,13 @@ func Compile(doc Document) (Plan, []Problem) {
 	}
 	p.GH = append(p.GH, heldMergeResponses(doc)...)
 	for _, r := range doc.Repos {
-		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + r.Key, "-i"}, Stdout: `{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}`})
+		metadata := map[string]any{"allow_merge_commit": true, "allow_squash_merge": true, "allow_rebase_merge": true}
+		if r.ProviderRepoID > 0 {
+			metadata["id"] = r.ProviderRepoID
+			metadata["visibility"] = r.Visibility
+		}
+		identity, _ := json.Marshal(metadata)
+		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + r.Key, "-i"}, Stdout: string(identity)})
 		data, _ := json.Marshal(lists[r.Key])
 		p.GH = append(p.GH, realstack.OpenPRListResponse(r.Key, string(data)))
 	}

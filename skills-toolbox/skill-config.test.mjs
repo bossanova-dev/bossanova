@@ -4682,7 +4682,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and ci and return
   assert.throws(() => verifyPolicyFromConfigText('{not json', 'base'), /not valid JSON/)
   assert.throws(() => verifyPolicyFromConfigText('[]', 'base'), /JSON object/)
   assert.deepEqual(verifyPolicyFromConfigText('{}', 'base'), {
-    review: { alwaysReview: [], neverReview: [], deprecations: [] },
+    review: { alwaysReview: [], noSignOff: [], deprecations: [] },
     requireGreenBase: false,
     alwaysHumanPaths: [],
     humanReview: { database: [], security: [], ui: [] },
@@ -5296,8 +5296,14 @@ test('review lists validate each shape with field-specific diagnostics', () => {
     [{ alwaysReview: { API: 'x' } }, /alwaysReview.API must be an array/],
     [{ alwaysReview: { API: [''] } }, /alwaysReview.API must be an array/],
     [{ alwaysReview: { API: [{ glob: 'x' }] } }, /alwaysReview.API must be an array/],
-    [{ neverReview: 'x' }, /neverReview must be an array/],
-    [{ neverReview: [''] }, /neverReview must be an array/],
+    [{ noSignOff: 'x' }, /noSignOff must be an array/],
+    [{ noSignOff: [''] }, /noSignOff must be an array/],
+    [{ neverReview: 'x' }, /neverReview .*must be an array/],
+    [{ neverReview: [''] }, /neverReview .*must be an array/],
+    [
+      { noSignOff: ['a/**'], neverReview: ['b/**'] },
+      /noSignOff and verifyDefaults.neverReview cannot both be set/,
+    ],
   ])
     assert.throws(() => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'), message)
 })
@@ -5305,13 +5311,22 @@ test('validated new review config exposes the normalized policy', async () => {
   const { reviewPolicyFromBlock } = await import('./verify/verify-review-policy.mjs')
   const verifyDefaults = {
     alwaysReview: { 'API schema': ['entity/**'], Empty: [] },
-    neverReview: ['dbt/**'],
+    noSignOff: ['dbt/**'],
   }
   assert.doesNotThrow(() => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'))
-  assert.deepEqual(
-    verifyPolicyFromConfigText(JSON.stringify({ verifyDefaults }), 'base').review,
-    reviewPolicyFromBlock(verifyDefaults),
-  )
+  const review = verifyPolicyFromConfigText(JSON.stringify({ verifyDefaults }), 'base').review
+  assert.deepEqual(review, reviewPolicyFromBlock(verifyDefaults))
+  assert.deepEqual(review.noSignOff, ['dbt/**'])
+  assert.deepEqual(review.deprecations, [])
+})
+test('the neverReview alias validates alone and normalizes to noSignOff with one deprecation', () => {
+  const verifyDefaults = { neverReview: ['dbt/**'] }
+  assert.doesNotThrow(() => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'))
+  const review = verifyPolicyFromConfigText(JSON.stringify({ verifyDefaults }), 'base').review
+  assert.deepEqual(review.noSignOff, ['dbt/**'])
+  assert.deepEqual(review.deprecations, [
+    'verifyDefaults.neverReview is deprecated: rename it to verifyDefaults.noSignOff',
+  ])
 })
 
 test('repair admission labels validate and default without accepting malformed roles', async () => {
@@ -5426,4 +5441,35 @@ test('mergedListItems recognises a joined target repository declaration', () => 
     ).length,
     1,
   )
+})
+
+test('ci.dependabot validates named path-scoped merge gates', () => {
+  for (const dependabot of [
+    {},
+    { required: [] },
+    { required: [{ name: 'ci' }, { name: 'lock', paths: ['pnpm-lock.yaml', '**/package.json'] }] },
+  ]) {
+    assert.doesNotThrow(() =>
+      validateConfig(mergeConfig(DEFAULT_CONFIG, { ci: { dependabot } }), 'test'),
+    )
+  }
+  for (const dependabot of [
+    null,
+    true,
+    'ci',
+    { required: null },
+    { required: [{ name: ' ' }] },
+    { required: [{ paths: ['**'] }] },
+    { required: [{ name: 'ci', paths: null }] },
+    { required: [{ name: 'ci', paths: ['!package.json'] }] },
+    { required: [{ name: 'ci', paths: [' '] }] },
+    { required: [{ name: 'ci', extra: true }] },
+    { extra: true },
+  ]) {
+    assert.throws(
+      () => validateConfig(mergeConfig(DEFAULT_CONFIG, { ci: { dependabot } }), 'test'),
+      undefined,
+      JSON.stringify(dependabot),
+    )
+  }
 })

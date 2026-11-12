@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "kept_marker.go",
         "pathsafety.go",
+        "pr_head.go",
         "push_provenance.go",
         "redact.go",
         "setup_run.go",
@@ -17,6 +18,7 @@ go_library(
     deps = [
         "//lib/bossalib/gitremote",
         "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/vcs",
         "//services/bossd/internal/adapter/setupscript",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/keyedgate",
@@ -31,6 +33,7 @@ go_test(
         "keepcurrent_test.go",
         "kept_marker_test.go",
         "pathsafety_test.go",
+        "pr_head_test.go",
         "push_provenance_test.go",
         "redact_test.go",
         "setup_run_test.go",

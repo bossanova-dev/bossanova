@@ -46,7 +46,7 @@ for (const changes of [0, 2, undefined]) {
           changes,
         },
       ],
-      { review: { alwaysReview: [], neverReview: [] } },
+      { review: { alwaysReview: [], noSignOff: [] } },
     )
     assert.deepEqual(
       areas.map(({ area, defaultAsk }) => [area, defaultAsk]),

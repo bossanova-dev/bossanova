@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "automerge.go",
         "dependabot_gate.go",
+        "dependabot_merge_gate.go",
         "lifecycle.go",
         "liveness.go",
         "orchestrator.go",
@@ -31,6 +32,7 @@ go_library(
         "//services/bossd/internal/ghusage",
         "//services/bossd/internal/plugin",
         "//services/bossd/internal/session",
+        "//services/bossd/internal/session/checkpolicy",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
@@ -40,6 +42,7 @@ go_test(
     srcs = [
         "automerge_test.go",
         "backoff_test.go",
+        "dependabot_merge_gate_test.go",
         "lifecycle_test.go",
         "liveness_parked_test.go",
         "liveness_test.go",
@@ -63,6 +66,7 @@ go_test(
         "//services/bossd/internal/domain",
         "//services/bossd/internal/plugin",
         "//services/bossd/internal/session",
+        "//services/bossd/internal/session/checkpolicy",
         "//services/bossd/internal/verifyjob",
         "@com_github_rs_zerolog//:zerolog",
     ],

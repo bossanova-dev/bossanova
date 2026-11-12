@@ -20,6 +20,9 @@ func Validate(doc Document) []Problem {
 		path := fmt.Sprintf("repos[%d]", i)
 		uniqueKey(&ps, repos, path, r.Key)
 		required(&ps, path+".displayName", r.DisplayName)
+		if r.Visibility != "" {
+			enumProblem(&ps, path+".visibility", r.Visibility, []string{"public", "internal", "private", "unknown"})
+		}
 		if r.MergeStrategy != "" {
 			enumProblem(&ps, path+".mergeStrategy", r.MergeStrategy, []string{"merge", "rebase", "squash"})
 		}

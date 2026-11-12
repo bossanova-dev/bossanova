@@ -5,12 +5,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { capText, withDigest } from './verify-proof.mjs'
 import { renderProofComment, renderProofHtml } from './verify-proof-page.mjs'
-import { FILES_MISSING, fileAnchor } from './verify-proof-page-model.mjs'
+import { FILES_MISSING, bannerReason, fileAnchor } from './verify-proof-page-model.mjs'
 import { cutSnippet, lineChecker, parseUnifiedDiff } from './verify-proof-snippet.mjs'
 import { PROOF_STYLE } from './verify-proof-style.mjs'
 import { validateProofSpec } from './verify-proof-spec.mjs'
 import { validateProofMedia } from './verify-proof-media.mjs'
-import { region } from '../../scripts/test-infra/gate-region-lib.mjs'
+import { region, regionUntilNext } from '../../scripts/test-infra/gate-region-lib.mjs'
 
 const HEAD = 'a'.repeat(40)
 const BASE = 'b'.repeat(40)
@@ -69,7 +69,7 @@ const FILES = [
   { path: LONG_PATH, adds: 1, dels: 1 },
 ]
 
-function proof({ whatItDoes, notes } = {}) {
+function proof({ whatItDoes, notes, docsAsk = false } = {}) {
   const area = (name, label, ask, items) => ({
     name,
     label,
@@ -87,7 +87,7 @@ function proof({ whatItDoes, notes } = {}) {
     base: BASE,
     confidence: {
       level: 'moderate',
-      asks: ['logic'],
+      asks: docsAsk ? ['logic', 'docs'] : ['logic'],
       loweredBy: [{ code: 'gap', text: TOKEN }],
     },
     whatItDoes: whatItDoes ?? {
@@ -99,7 +99,7 @@ function proof({ whatItDoes, notes } = {}) {
       area(
         'docs',
         LONG_LABEL,
-        false,
+        docsAsk,
         Array.from({ length: 20 }, (_, i) => `Docs fact ${i + 1}`),
       ),
     ],
@@ -127,13 +127,13 @@ function spec(overrides = {}) {
       {
         level: 'medium',
         title: 'Rounds once',
-        body: 'Check it.',
+        impact: 'Check it.',
         at: { path: 'src/cart.ts', line: 2 },
       },
       {
         level: 'high',
         title: 'Invented line',
-        body: 'x',
+        impact: 'x',
         at: { path: 'src/cart.ts', line: 999_999 },
       },
     ],
@@ -146,7 +146,16 @@ function spec(overrides = {}) {
         snippets: [{ path: 'src/cart.ts', start: 1, end: 5, pinLine: 2, pinNote: 'The new call.' }],
       },
     ],
-    checklist: { before: [{ text: TOKEN, done: false }], after: [{ text: TOKEN, done: false }] },
+    decisions: [
+      {
+        id: 'D1',
+        question: TOKEN,
+        why: TOKEN,
+        suggestion: TOKEN,
+        at: { path: 'src/cart.ts', line: 2 },
+      },
+    ],
+    checklist: { after: [{ text: TOKEN, done: false }] },
     notes: [
       { severity: 'P3', at: 'lib/rev.go:7', text: `${DUPLICATE} ` },
       {
@@ -206,6 +215,16 @@ const extras = (more = {}) => ({
   ...more,
 })
 const page = (more, overrides) => renderProofHtml(input(overrides), extras(more))
+/** The body of the page section with this id; a page without one fails the test. */
+const section = (html, id) => {
+  const found = new RegExp(`<section class="sec[^"]*" id="${id}"[^>]*>([\\s\\S]*?)</section>`).exec(
+    html,
+  )
+  assert.ok(found, `the page has a #${id} section`)
+  return found[1]
+}
+const bannerOf = (html) => region(html, '<section class="banner', '</section>')
+const outsideDebug = (html) => html.replace(/<section class="sec debug"[\s\S]*?<\/section>/, '')
 /** The CSS rule for `selector`, exactly as the sheet writes it. */
 const rule = (selector) => {
   const found = new RegExp(`\\n${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\{[^}]*\\}`).exec(
@@ -217,85 +236,63 @@ const rule = (selector) => {
 
 test('#1 #2 #14 #19 every text container breaks an unbroken token instead of widening the page', () => {
   assert.match(rule('body'), /overflow-wrap:anywhere/)
-  for (const [, columns] of PROOF_STYLE.matchAll(/grid-template-columns:([^;}]+)/g))
-    assert.doesNotMatch(
-      columns.replace(/minmax\(0,1fr\)/g, ''),
-      /1fr/,
-      `a bare 1fr column grows to its longest word: ${columns}`,
-    )
+  assert.match(rule('pre'), /white-space:pre-wrap;overflow-wrap:anywhere/)
+  assert.match(rule('.code .scroll'), /overflow-x:auto/, 'a long code line scrolls in its figure')
+  // A pill word, a count, a line number, a nav label in a scroller and a capped location.
+  const short =
+    /^(\.pill|\.diffstat|\.secnav a|\.code td\.[nm]|\.frow \.c2,\.frow \.c3,\.frow \.c4|\.loc)\{/
   for (const [declaration] of PROOF_STYLE.matchAll(/[^{}\n]+\{[^}]*white-space:nowrap[^}]*\}/g))
-    assert.match(
-      declaration,
-      /text-overflow:ellipsis|overflow-x:auto|^\.area \.count|^\.lb-full|^\.notes \.loc\{/,
-      `nowrap text must clip or scroll: ${declaration}`,
+    assert.ok(
+      /text-overflow:ellipsis|overflow-x:auto/.test(declaration) || short.test(declaration),
+      `nowrap text must clip, scroll or be short: ${declaration}`,
     )
-})
-
-test('#3 #4 the checklist columns and nested risk items keep their own widths', () => {
-  assert.match(rule('.checks'), /grid-template-columns:minmax\(0,1fr\) minmax\(0,1fr\)/)
-  assert.doesNotMatch(PROOF_STYLE, /\.risks li[{+,]/, 'a nested ul.items li is not a risk row')
-  assert.match(rule('.risks>li'), /grid-template-columns/)
-})
-
-test('#5 #6 #7 a 300-character record label and 20 facts are cut and folded', () => {
   const html = page()
-  const reasons = region(html, '<ol class="reasons">', '</ol>')
-  const link = /<a class="x" href="#a-docs">([^<]*)<\/a>/.exec(reasons)?.[1] ?? ''
-  assert.ok(link.length <= 40 && link.endsWith('…'), `waiting link is cut: ${link}`)
-  assert.doesNotMatch(rule('.reasons .x'), /nowrap/)
-  const docs = region(html, '<details class="area" id="a-docs"', '<section id="evidence">')
-  const name = /<span class="name" title="([^"]*)">([^<]*)<\/span>/.exec(docs)
-  assert.equal(name?.[1], LONG_LABEL, 'the full label is the title')
-  assert.ok((name?.[2].length ?? 99) <= 40)
-  const summary = region(docs, '<summary>', '</summary>')
-  assert.equal(summary.match(/Docs fact \d+/g)?.length, 6, 'six facts in the summary')
-  assert.ok(region(docs, '<ul class="morefacts">', '</ul>').includes('Docs fact 20'))
+  const text = (fragment) => fragment.replace(/<[^>]+>/g, '')
+  assert.ok(text(region(html, '<p class="reason">', '</p>')).includes(TOKEN), 'the reason keeps it')
+  assert.ok(text(region(section(html, 'a-logic'), '<p class="lead">', '</p>')).includes(TOKEN))
+})
+
+test('#5 #6 #7 a 300-character record label is cut at a word, and none of 20 facts is lost', () => {
+  const html = page({}, { docsAsk: true })
+  const cut = 'A record label that runs to the full…'
+  const docs = section(html, 'a-docs')
+  assert.ok(docs.startsWith(`<h2>${cut}<span class="pill`), 'the heading is cut at a word')
+  assert.ok(bannerOf(html).includes(`<span class="k">${cut}</span>`), 'so is its signal row')
+  assert.ok(region(html, '<nav class="secnav"', '</nav>').includes(`>${cut}</a>`))
+  assert.equal(
+    regionUntilNext(docs, '<ul class="facts">', '</ul>').match(/<li>Docs fact \d+<\/li>/g)?.length,
+    20,
+  )
+  assert.match(rule('.sig .v'), /-webkit-line-clamp:2/, 'the signal summary stays two lines')
 })
 
 test('#8 the chapter list scrolls inside the player instead of growing the panel', () => {
-  assert.match(rule('.chapters'), /max-height:560px/)
-  assert.match(rule('.chapters ol'), /overflow:auto;flex:1;min-height:0/)
+  assert.match(rule('.chapters'), /max-height:560px;overflow-y:auto/)
 })
 
-test('#9 #10 #11 a lightbox still loads lazily, keeps its own size and offers full size', () => {
+test('#9 #10 #11 every screenshot loads lazily and opens its own image in the one lightbox', () => {
   const html = page()
-  const box = region(
+  const pairs = regionUntilNext(
     html,
-    '<div class="lightbox" id="shot-0">',
-    '<div class="lightbox" id="shot-1">',
+    '<h3 class="sub">Before and after</h3>',
+    '<div class="thumbs">',
   )
-  assert.match(
-    box,
-    /<img src="media\/head-0-0.png" alt="head-0 first" loading="lazy" decoding="async">/,
-  )
-  assert.ok(box.includes('<a class="lb-full" href="media/head-0-0.png">Full size</a>'))
-  assert.match(rule('.lightbox figure'), /align-items:center/)
-  assert.match(rule('.lightbox.full figure'), /overflow:auto/)
-  const pairs = region(html, '<h3 class="sub">Before and after</h3>', '<div class="thumbs">')
   assert.equal(pairs.match(/<img /g)?.length, 6)
   assert.equal(
     pairs.match(/loading="lazy" decoding="async"/g)?.length,
     6,
     'every pair image is lazy',
   )
-})
-
-test('#12 closing a lightbox returns to its thumb, never to the top of Evidence', () => {
-  const html = page()
-  const box = region(
-    html,
-    '<div class="lightbox" id="shot-1">',
-    '<div class="lightbox" id="shot-2">',
-  )
-  assert.ok(box.includes('<a class="lb-bg" href="#thumb-1" aria-label="Close"></a>'))
-  assert.ok(box.includes('<a class="lb-x" href="#thumb-1">Close</a>'))
-  assert.ok(!box.includes('href="#evidence"'))
-  assert.ok(html.includes('<a class="thumb" id="thumb-1" href="#shot-1">'))
-  assert.equal(
-    rule(':root:not(.proof-js) .lightbox:target,.lightbox.open'),
-    ':root:not(.proof-js) .lightbox:target,.lightbox.open{display:grid}',
-    'once player.js runs, a :target lightbox shows only while the player keeps it open',
-  )
+  const shots = [
+    ...html.matchAll(/<a class="shot" href="([^"]+)" data-cap="[^"]*"><img src="([^"]+)"/g),
+  ]
+  assert.equal(shots.length, 9, 'three pairs and three head stills')
+  for (const [, href, src] of shots)
+    assert.equal(href, src, 'without the script it opens the image')
+  const box = region(html, '<div class="lb" id="lb" hidden', '<script')
+  for (const id of ['lb-cap', 'lb-zoom', 'lb-close', 'lb-stage', 'lb-img'])
+    assert.ok(box.includes(`id="${id}"`), id)
+  assert.equal(html.split('id="lb"').length, 2, 'one lightbox for every screenshot')
 })
 
 test('#13 a clip with no poster shows its first still', () => {
@@ -303,25 +300,13 @@ test('#13 a clip with no poster shows its first still', () => {
 })
 
 test('#15 before and after images share one height so their captions line up', () => {
-  assert.match(
-    rule('.pair img'),
-    /[{;]height:360px;object-fit:contain/,
-    'a fixed height, not a max',
-  )
-  assert.match(
-    rule('.pair .nopage::before'),
-    /[{;]height:360px;/,
-    'a missing document page holds the same height, so the captions beside it line up',
-  )
+  const pairImage = /\n\.pair (?:\.shot )?img\{[^}]*\}/.exec(PROOF_STYLE)
+  assert.ok(pairImage, 'a before and after pair sets its image height')
+  assert.match(pairImage[0], /[{;]height:\d+px/, 'a fixed height, not a max')
 })
 
 test('#16 #17 #18 #20 ask excerpts name files right, skip quoted ones and count the PR', () => {
-  const html = page()
-  const logic = region(
-    html,
-    '<details class="area" id="a-logic"',
-    '<details class="area" id="a-docs"',
-  )
+  const logic = section(page(), 'a-logic')
   const captions = [...logic.matchAll(/<span class="path" title="[^"]*">([^<]*)<\/span>/g)].map(
     (m) => m[1],
   )
@@ -336,13 +321,13 @@ test('#16 #17 #18 #20 ask excerpts name files right, skip quoted ones and count 
   assert.equal(captions.filter((c) => c === 'src/cart.ts').length, 1, 'a quoted file is shown once')
   assert.match(
     logic,
-    /assets\/a file\.txt<\/span><span class="stat"><b class="plus">\+250000<\/b>/,
+    /assets\/a file\.txt<\/span><span class="diffstat"><span class="a">\+250,000<\/span>/,
     'excerpt counts come from the changed-file list',
   )
   assert.ok(logic.includes('@@ -1,1 +1,1 @@'), 'hunk headers carry counts')
   assert.ok(logic.includes('@@ -1,2 +0,0 @@'))
   assert.ok(logic.includes('<span class="cut">… line cut</span>'), 'a cut line says so')
-  assert.match(rule('.diff td.t'), /tab-size:4/)
+  assert.match(rule('.code td.t'), /tab-size:4/)
 })
 
 test('#17 git header paths unquote, lose their trailing tab and fall back to the base side', () => {
@@ -354,56 +339,101 @@ test('#17 git header paths unquote, lose their trailing tab and fall back to the
   ])
 })
 
-test('#21 #22 #23 #24 notes show once, reviewers wait, the list is capped and :line survives', () => {
+/** Each finding's text, in page order. */
+const findingTexts = (html) =>
+  [...section(html, 'findings').matchAll(/<div class="q">(.*?)<\/div>/g)].map(([, q]) =>
+    q.replace(/<[^>]+>/g, '').trim(),
+  )
+
+test('#21 #22 #23 notes show once with their location, and the list is capped', () => {
   const html = page()
-  const notes = region(html, '<section id="notes">', '<section id="files">')
-  const shown = [...notes.matchAll(/<li>.*?<\/li>/g)].map(([li]) => li.replace(/<[^>]+>/g, ''))
+  const shown = findingTexts(html)
+  assert.equal(shown.length, 20, 'the list is capped')
   assert.deepEqual(
-    shown,
-    [DUPLICATE, ...Array.from({ length: 19 }, (_, i) => `Record note ${i + 1}`)],
-    'twenty reviewer notes fill the list and no agent note hides one',
+    shown.slice(0, 19),
+    Array.from({ length: 19 }, (_, i) => `Record note ${i + 1}`),
+    'record notes lead, so spec notes never push one past the cap',
   )
-  assert.ok(
-    notes.includes('<li class="more">9 more notes not shown.</li>'),
-    'the agent notes count as more',
+  assert.equal(shown[19], DUPLICATE, 'the spec notes fill what the record notes leave')
+  assert.equal(shown.filter((text) => text === DUPLICATE).length, 1, 'a restated note shows once')
+  assert.match(
+    section(html, 'findings'),
+    /<div class="q">Stored revision times[^<]*<\/div><code class="loc" title="lib\/rev\.go:7">rev\.go:7<\/code>/,
+    'with the location the spec gave it',
   )
-  assert.ok(
-    !notes.includes('lib/rev.go'),
-    'a restated note keeps the record copy, not the agent location',
-  )
-  const few = region(
-    page(undefined, { notes: [DUPLICATE, 'Record note 1'] }),
-    '<section id="notes">',
-    '<section id="files">',
-  )
-  const fewShown = [...few.matchAll(/<li>.*?<\/li>/g)].map(([li]) => li.replace(/<[^>]+>/g, ''))
-  assert.deepEqual(fewShown.slice(0, 3), [
-    DUPLICATE,
-    'Record note 1',
-    'P1…entVeryLongFileNameSegment.go:42A word severity',
-  ])
+  const few = findingTexts(page(undefined, { notes: [DUPLICATE, 'Record note 1'] }))
+  assert.equal(few.length, 11, 'the record note nobody restated and ten spec notes')
+  assert.equal(few[0], 'Record note 1')
+})
+
+test('#24 a long file location is cut to fit and keeps its line number', () => {
+  const findings = section(page(undefined, { notes: [] }), 'findings')
+  const at = `lib/${'VeryLongFileNameSegment'.repeat(3)}.go:42`
+  const loc = new RegExp(`<code class="loc" title="${at}">([^<]*)</code>`).exec(findings)
+  assert.ok(loc, 'the full location is the title')
+  assert.ok(loc[1].endsWith('.go:42'), 'the line number is never cut')
+  assert.ok(loc[1].length <= 40, `a long file name is cut, since .loc never wraps: ${loc[1]}`)
+})
+
+test('reviewers: one that failed is not proven, one that skipped or ran shows only in debug', () => {
+  const html = page()
+  const gaps = regionUntilNext(bannerOf(html), '<ul class="glist gaps">', '</ul>')
+  assert.ok(gaps.includes('The security review did not finish'))
+  for (const quiet of ['codex', 'No quota', 'review: ran'])
+    assert.ok(!outsideDebug(html).includes(quiet), quiet)
+  assert.ok(section(html, 'debug').includes('<li>codex: skipped (No quota)</li>'))
+})
+
+test('a skipped security review is not proven; a skipped second model stays in debug', () => {
+  const { digest, ...record } = proof()
+  record.review.models = [
+    { agent: 'codex', outcome: 'skipped', detail: 'No quota' },
+    { agent: 'security', outcome: 'skipped' },
+  ]
+  const html = renderProofHtml({ proof: withDigest(record) }, extras())
+  const gaps = regionUntilNext(bannerOf(html), '<ul class="glist gaps">', '</ul>')
+  assert.ok(gaps.includes('The security review was skipped'))
+  assert.ok(!outsideDebug(html).includes('codex'))
+})
+
+test('the banner reason reads as one sentence: names lower-cased mid-sentence, one size clause', () => {
+  const reason = (/** @type {string[]} */ codes, /** @type {string} */ label) =>
+    bannerReason(
+      /** @type {any} */ ({
+        confidence: {
+          level: 'low',
+          asks: ['a'],
+          loweredBy: codes.map((code) => ({ code, text: TEXTS[code] })),
+        },
+        areas: [{ name: 'a', label, ask: true }],
+        review: null,
+      }),
+      undefined,
+    )
+  const TEXTS = /** @type {Record<string, string>} */ ({
+    'area-asks': 'It changes areas a person reviews.',
+    'size-p90': 'It is larger than nine in ten merged PRs here.',
+    'size-p99': 'It is larger than 99 in 100 merged PRs here.',
+  })
   assert.equal(
-    fewShown.length,
-    11,
-    'agent notes fill the slots the record leaves, the restated one dropped',
+    reason(['area-asks', 'size-p90', 'size-p99'], 'Revenue models'),
+    'It changes revenue models, which a person reviews, and it is larger than 99 in 100 merged PRs here.',
   )
-  assert.ok(!few.includes('class="more"'))
-  assert.ok(few.includes('<span class="ln">:42</span>'), 'the line number is never cut')
-  assert.ok(few.includes('>…'), 'a long file name loses its start')
-  const reasons = region(html, '<ol class="reasons">', '</ol>')
-  assert.ok(
-    reasons.indexOf('<li class="high"><div><div class="t">Security review failed</div>') <
-      reasons.indexOf('Codex review was skipped'),
-    'a failed security review leads, as a high reason',
+  assert.equal(
+    reason(['area-asks'], 'GraphQL schema'),
+    'It changes GraphQL schema, which a person reviews.',
   )
-  assert.ok(reasons.includes('<div class="d">No quota</div>'))
-  assert.ok(!reasons.includes('Review was'), 'a reviewer that ran is not a reason')
+  assert.equal(
+    reason(['area-asks'], 'API contract'),
+    'It changes API contract, which a person reviews.',
+  )
 })
 
 test('#25 a note severity is optional, words map to P-levels and a long one is left out', () => {
   const { spec: kept, dropped } = validateProofSpec(spec(), {
     head: HEAD,
     changedPaths: FILES.map((f) => f.path),
+    hasLine: () => true,
   })
   assert.deepEqual(
     kept.notes.slice(1, 4).map((n) => [n.severity, n.text]),
@@ -418,11 +448,12 @@ test('#25 a note severity is optional, words map to P-levels and a long one is l
   ])
 })
 
-test('#26 a missing changed-file list is one explicit Generation check line', () => {
+test('#26 a missing changed-file list is one debug line and no Files section', () => {
   const html = page({ files: null })
-  const qa = region(html, 'id="generation"', '<footer>')
-  assert.ok(qa.includes(`${FILES_MISSING} (3 dropped).`))
-  assert.ok(!qa.includes('the changed files are unknown'))
+  const debug = section(html, 'debug')
+  assert.ok(debug.includes(`${FILES_MISSING} (4 dropped).`), 'two risks, a decision and a snippet')
+  assert.ok(!debug.includes('the changed files are unknown'))
+  assert.ok(!html.includes('id="files"'))
 })
 
 test('#27 #31 a blank still caption keeps the still, null stays null, MiB and one prefix', () => {
@@ -435,39 +466,49 @@ test('#27 #31 a blank still caption keeps the still, null stays null, MiB and on
     sizeOf: (file) => (file === 'base-0.mp4' ? 16 * 1024 * 1024 : 1),
   })
   assert.equal(dropped[0].reason, 'file: base-0.mp4 is over 15 MiB')
-  const qa = region(page({ spec: { ...spec(), extra: 1 } }), 'id="generation"', '<footer>')
-  assert.ok(qa.includes('<li>spec.extra: unknown key</li>'))
+  const debug = section(page({ spec: { ...spec(), extra: 1 } }), 'debug')
+  assert.ok(debug.includes('<li>spec.extra: unknown key</li>'))
 })
 
 test('#28 a risk that cites a line the file does not have at head is dropped', () => {
   const html = page()
   assert.ok(!html.includes('Invented line'))
-  assert.ok(html.includes('spec risks[1]: at.line: src/cart.ts has no line 999999 at head'))
+  assert.ok(
+    section(html, 'debug').includes(
+      'spec risks[1]: at.line: src/cart.ts has no line 999999 at head',
+    ),
+  )
   const noGit = renderProofHtml(input(), extras({ hasLine: undefined }))
-  assert.ok(noGit.includes('Invented line'), 'without git the line is not checked')
+  assert.ok(
+    section(noGit, 'risks').includes('Invented line'),
+    'without git the line is not checked',
+  )
 })
 
-test('#29 #30 with no spec title the heading is short and the verdict sits in the meta line', () => {
+test('#29 #30 with no spec title the heading is the PR and the judge names what a person reviews', () => {
   const html = renderProofHtml(
     { ...input(), verdict: { codes: ['always-human-path'], label: 'the verify judge' } },
     extras({ spec: spec({ title: undefined }) }),
   )
-  assert.ok(html.includes('<h1>Confidence: Moderate. Inspect the asks before deciding.</h1>'))
-  assert.match(region(html, '<div class="meta">', '<dl class="status">'), /<span>Not verified/)
-  assert.ok(html.includes('<li>Rounds the total once with <code>round()</code></li>'))
+  assert.ok(html.includes('<h1>acme/edge #9</h1>'))
+  assert.ok(
+    region(html, '<p class="reason">', '</p>').startsWith(
+      '<p class="reason">It changes the verify judge, which a person reviews',
+    ),
+  )
+  assert.ok(!outsideDebug(html).includes('Not verified'), 'the gate state is a debug line')
 })
 
-test('leftovers: no intent-unknown bullet, no em dash, and factory health is a quiet line', () => {
+test('leftovers: no intent-unknown bullet, no em dash, and factory health only behind ?debug', () => {
   const unknown = page({}, { whatItDoes: { source: 'unknown', bullets: [] } })
   assert.ok(!unknown.includes('intent unknown'))
   for (const output of [page(), renderProofComment(input())])
     assert.ok(!output.includes('—'), 'no em dash in page or comment copy')
   const html = page()
-  assert.ok(!region(html, '<header class="pr">', '</header>').includes('Factory health'))
+  assert.ok(!outsideDebug(html).includes('Factory health'))
+  assert.ok(!outsideDebug(html).includes('judge decisions ignored'))
   assert.ok(
-    region(html, 'id="generation"', '<footer>').includes(
-      '<p class="dim">Factory health: judge decisions ignored.</p>',
-    ),
+    section(html, 'debug').includes('<p class="dim">Factory health: judge decisions ignored.</p>'),
   )
 })
 
@@ -475,13 +516,8 @@ test('display caps cut at a word boundary and end in an ellipsis', () => {
   const words = 'Record finding with more words to reach the cap '.repeat(10)
   const capped = capText(words, 300)
   assert.ok(capped.length <= 300)
-  assert.match(capped, /\S\u2026$/, 'ends in an ellipsis right after a word')
+  assert.match(capped, /\S…$/, 'ends in an ellipsis right after a word')
   assert.ok(words.startsWith(`${capped.slice(0, -1)} `), 'the cut falls between two words')
   assert.equal(capText(TOKEN, 40).length, 40, 'an unbroken token is cut mid-token')
   assert.equal(capText('short', 40), 'short')
-  const docs = region(page(), '<details class="area" id="a-docs"', '<section id="evidence">')
-  assert.match(
-    docs,
-    /<span class="name" title="[^"]*">A record label that runs to the full\u2026<\/span>/,
-  )
 })

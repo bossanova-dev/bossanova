@@ -1,0 +1,192 @@
+{
+  "migrations": [
+    {
+      "ok": true,
+      "extension": "schema-describer",
+      "role": "proof-describe",
+      "items": [
+        "Adds invoices.due_on (date, nullable)",
+        "Backfills due_on as sent_at plus 30 days"
+      ],
+      "breaking": false,
+      "undisclosed": [],
+      "blocks": [
+        {
+          "kind": "table",
+          "name": "invoices",
+          "relation": "table",
+          "change": "changed",
+          "columns": [
+            {
+              "name": "due_on",
+              "type": "date",
+              "change": "added",
+              "note": "Backfilled as `sent_at` plus 30 days"
+            }
+          ]
+        },
+        {
+          "kind": "steps",
+          "steps": ["Run `./migrate` in staging, then in production"]
+        }
+      ],
+      "signals": [
+        {
+          "key": "db",
+          "label": "Database",
+          "state": "additive",
+          "summary": "Adds `invoices.due_on` and backfills every sent invoice"
+        },
+        {
+          "key": "manual",
+          "label": "Manual steps",
+          "state": "manual",
+          "summary": "`./migrate` in each environment"
+        }
+      ]
+    }
+  ],
+  "api-contract": [
+    {
+      "ok": true,
+      "extension": "schema-describer",
+      "role": "proof-describe",
+      "items": [
+        "Adds Invoice.dueOn: Date",
+        "Adds InvoiceStatus.OVERDUE",
+        "Adds Mutation.markOverdue(asOf: Date!): Int!"
+      ],
+      "breaking": false,
+      "undisclosed": ["Adds InvoiceStatus.OVERDUE"],
+      "blocks": [
+        {
+          "kind": "schema",
+          "types": [
+            {
+              "keyword": "type",
+              "name": "Mutation",
+              "change": "added",
+              "fields": [
+                {
+                  "name": "markOverdue",
+                  "args": [
+                    {
+                      "name": "asOf",
+                      "type": "Date!"
+                    }
+                  ],
+                  "type": "Int!"
+                }
+              ]
+            },
+            {
+              "keyword": "type",
+              "name": "Invoice",
+              "change": "changed",
+              "fields": [
+                {
+                  "name": "dueOn",
+                  "type": "Date",
+                  "change": "added"
+                }
+              ]
+            },
+            {
+              "keyword": "enum",
+              "name": "InvoiceStatus",
+              "change": "changed",
+              "class": "dangerous",
+              "mobile": "A build with an exhaustive switch on `status` shows an unknown value",
+              "fields": [
+                {
+                  "name": "DRAFT"
+                },
+                {
+                  "name": "SENT"
+                },
+                {
+                  "name": "PAID"
+                },
+                {
+                  "name": "OVERDUE",
+                  "change": "added"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "route",
+          "method": "POST",
+          "path": "/webhooks/billing-run",
+          "auth": "none",
+          "change": "added",
+          "note": "The nightly scheduler calls it"
+        },
+        {
+          "kind": "client-call",
+          "name": "Mutation.markOverdue",
+          "path": "clients/web/src/invoices/useMarkOverdue.ts",
+          "operation": "mutation MarkOverdue($asOf: Date!) { markOverdue(asOf: $asOf) }",
+          "note": "A new web document; no shipped build sends it"
+        },
+        {
+          "kind": "client-call",
+          "name": "InvoiceList",
+          "path": "clients/web/src/invoices/InvoiceList.tsx",
+          "before": ["  return <Table rows={invoices} columns={['number', 'totalCents']} />"],
+          "after": [
+            "  const [markOverdue] = useMarkOverdue()",
+            "      columns={['number', 'totalCents', 'dueOn']}",
+            "      onRefresh={() => markOverdue({ variables: { asOf: today() } })}"
+          ],
+          "note": "Each refresh of the list marks invoices overdue"
+        },
+        {
+          "kind": "code",
+          "path": "services/api/http/routes.go",
+          "start": 5,
+          "title": "The route takes no credentials",
+          "lines": [
+            "// Routes registers the billing-run webhook the scheduler calls each night.",
+            "func Routes(mux *http.ServeMux, billingRun http.HandlerFunc) {",
+            "\tmux.HandleFunc(\"POST /webhooks/billing-run\", billingRun)",
+            "}"
+          ]
+        }
+      ],
+      "signals": [
+        {
+          "key": "api",
+          "label": "API",
+          "state": "additive",
+          "summary": "Adds `Invoice.dueOn`, `InvoiceStatus.OVERDUE` and `Mutation.markOverdue`"
+        },
+        {
+          "key": "security",
+          "label": "Security",
+          "state": "risky",
+          "summary": "`POST /webhooks/billing-run` takes no credentials"
+        },
+        {
+          "key": "clients",
+          "label": "Old clients",
+          "state": "review",
+          "summary": "A build that predates `OVERDUE` cannot show the new status"
+        }
+      ],
+      "risks": [
+        {
+          "level": "high",
+          "title": "Anyone can start a billing run",
+          "impact": "An unauthenticated POST marks every past-due invoice overdue.",
+          "guard": "None in this PR",
+          "at": {
+            "path": "services/api/http/routes.go",
+            "line": 7
+          }
+        }
+      ]
+    }
+  ]
+}

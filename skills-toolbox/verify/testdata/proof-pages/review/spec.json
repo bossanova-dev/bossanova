@@ -1,0 +1,65 @@
+{
+  "schema": "proof-spec/1",
+  "head": "f3d543efef1900c1276c03f6cef112a1f6da2a4c",
+  "title": "Expire sessions after a day and drop legacy tokens",
+  "waiting": [
+    {
+      "title": "Every session older than a day ends",
+      "detail": "Users signed in before the deploy sign in again on their next request.",
+      "area": "security"
+    }
+  ],
+  "risks": [
+    {
+      "level": "medium",
+      "title": "Long-lived sessions end at once",
+      "at": {
+        "path": "src/auth/session.ts",
+        "line": 10
+      },
+      "impact": "The first request after the deploy signs out everyone whose session is older than 24 hours.",
+      "guard": "None."
+    }
+  ],
+  "areas": [
+    {
+      "id": "security",
+      "name": "Security",
+      "summary": "Sessions expire after 24 hours, and the base64 token path is gone.",
+      "facts": [
+        {
+          "text": "SESSION_TTL_MS is 24 hours",
+          "flag": false
+        },
+        {
+          "text": "sessionFromToken is deleted",
+          "flag": true
+        }
+      ],
+      "snippets": []
+    }
+  ],
+  "checklist": {
+    "after": [
+      {
+        "text": "Tell support that users sign in again after the deploy",
+        "done": false
+      }
+    ]
+  },
+  "notes": [],
+  "uncertain": [],
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Is a 24-hour limit in `src/auth/session.ts` right for the storefront?",
+      "why": "Every session older than a day ends on its next request.",
+      "suggestion": "Yes for staff; check with support before shoppers see it.",
+      "at": {
+        "path": "src/auth/session.ts",
+        "line": 10
+      },
+      "links": []
+    }
+  ]
+}

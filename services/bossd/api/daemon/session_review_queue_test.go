@@ -149,3 +149,39 @@ func TestListReviewQueueAudit_Sessions_AC213601(t *testing.T) {
 		}
 	}
 }
+
+// A chat asking a question on a parked PR outranks the park in its attention,
+// but the head is still parked for a person, so the PR stays in the queue at
+// its park's level, with its park on the row's session.
+func TestListReviewQueueKeepsParkWhileChatAsks_Sessions_AC209001(t *testing.T) {
+	n := 7
+	parked := &models.Session{ID: "parked", RepoID: "r", Title: "Add widgets", State: machine.ReadyForReview, PRNumber: &n, UpdatedAt: time.Now()}
+	tracker := status.NewDisplayTracker()
+	tracker.Set(parked.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:database", VerifyLabel: "moderate: Migrations", HeadSHA: timelineHead})
+	chat := &domain.AgentChat{ID: "c", SessionID: parked.ID, AgentSessionID: "asking", AgentName: "claude"}
+	chats := status.NewTracker()
+	asked := time.Now()
+	chats.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_QUESTION, asked)
+	s := newListSessionsDisplayStatusTestServer([]*models.Session{parked}, map[string][]*domain.AgentChat{parked.ID: {chat}}, tracker, chats)
+	s.attentionCache.questions = map[string]questionAttention{chat.AgentSessionID: {text: "Which base?", askedAt: asked, at: asked}}
+	s.sessions = repoScopedSessionStore{s.sessions.(*listSessionsSessionStoreFake)}
+
+	got, err := s.ListReviewQueue(t.Context(), connect.NewRequest(&pb.ListReviewQueueRequest{RepoId: "r"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := got.Msg.GetRows()
+	if len(rows) != 1 || rows[0].GetSession().GetId() != parked.ID {
+		t.Fatalf("rows = %v, want the parked session", rows)
+	}
+	sess := rows[0].GetSession()
+	if kind := sess.GetAttention().GetKind(); kind != pb.AttentionKind_ATTENTION_KIND_QUESTION {
+		t.Fatalf("attention kind = %v, want QUESTION", kind)
+	}
+	if park := sess.GetVerifyPark(); park.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW || park.GetConfidenceLevel() != pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE {
+		t.Fatalf("verify park = %v, want a Moderate REVIEW", park)
+	}
+	if rows[0].GetConfidenceLevel() != pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE {
+		t.Fatalf("row level = %v, want MODERATE", rows[0].GetConfidenceLevel())
+	}
+}

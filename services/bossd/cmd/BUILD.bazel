@@ -123,6 +123,7 @@ go_library(
         "//services/bossd/internal/notesync",
         "//services/bossd/internal/plugin",
         "//services/bossd/internal/plugin/eventbus",
+        "//services/bossd/internal/prstack",
         "//services/bossd/internal/prstate",
         "//services/bossd/internal/repoidentity",
         "//services/bossd/internal/resume",

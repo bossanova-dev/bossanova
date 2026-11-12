@@ -36,7 +36,9 @@ are in [references/briefs.md](references/briefs.md).
   and `resolves` (earlier finding refs confirmed gone). Pooling adds each
   finding's `ref` (`<pass>.<member>:<id>`) and, when resolved later, `resolvedBy` (`<pass>.<member>`).
 - `$OUT_DIR/review-report.md` — `review-verdict.mjs render --report`; its first line is
-  `<!-- bs-review -->` so a caller can upsert it as a PR comment.
+  `<!-- bs-review -->` so a caller can upsert it as a PR comment, and its last line is the
+  `bs-review-findings v2` trailer: the unfixed and fixed findings with their locations, and the
+  acceptance rows, which verify reads back for its blockers and proof page.
 - A last line `boss-review: <status> <path to review-verdict.json>`.
 
 A repo can replace this skill entirely (`review.skill` in `.boss-skills.json`); the replacement

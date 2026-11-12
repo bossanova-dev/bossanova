@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/api/tui/ui"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	queue "github.com/recurser/bossalib/reviewqueue"
 )
 
 const tableBlockPadding = 1
@@ -38,7 +39,7 @@ func (m Model) footer() string {
 	hints := []string{"[o]rder"}
 	if r := m.selected(); r != nil {
 		hints = []string{"[enter] details"}
-		if webURL(r.GetSession().GetAttention().GetProofUrl()) {
+		if webURL(queue.Park(r.GetSession()).GetProofUrl()) {
 			hints = append(hints, "[p]roof")
 		}
 		if _, ok := ui.AttentionBinding(r.GetSession(), "m", false); ok && !r.GetIsAuditSample() && !m.action.MergeUnresolved() {
@@ -89,8 +90,9 @@ func (m *Model) buildTable() {
 	rows := make([]table.Row, len(m.rows))
 	for i, r := range m.rows {
 		s := r.GetSession()
-		level := ui.ConfidenceCell(r.GetConfidenceLevel(), s.GetAttention().GetAsks(), s.GetAttention().GetLoweredBy())
-		since := s.GetAttention().GetSince()
+		park := queue.Park(s)
+		level := ui.ConfidenceCell(r.GetConfidenceLevel(), park.GetAsks(), park.GetLoweredBy())
+		since := park.GetSince()
 		if r.GetIsAuditSample() {
 			level += " sample"
 			since = s.GetStateEnteredAt()

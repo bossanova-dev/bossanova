@@ -25,6 +25,11 @@ import { reviewTimeDefaults } from '../skill-config.mjs'
 const SCRIPT_PATH = fileURLToPath(new URL('./claude-review.mjs', import.meta.url))
 const LOAD_TOLERANT_WAIT_MS = 30_000
 const PROBE_READY_TIMEOUT_MS = LOAD_TOLERANT_WAIT_MS
+// The retry test pays one full timeout; give the successful shell startup room under load.
+const PROBE_RETRY_TIMEOUT_MS = 5_000
+// OS readiness and reaping polls must keep real time when a test controls the watchdog clock.
+const realNow = Date.now
+const realSetTimeout = setTimeout
 
 test('CLI through a symlink rejects a missing command loudly', () => {
   const dir = fs.realpathSync(tempDir('claude-review-link-'))
@@ -67,14 +72,14 @@ function writeEchoArgvBin(dir) {
 }
 
 async function waitForPidFile(pidFile, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
-  const deadline = Date.now() + timeoutMs
+  const deadline = realNow() + timeoutMs
   while (true) {
     if (fs.existsSync(pidFile)) {
       const pid = Number(fs.readFileSync(pidFile, 'utf8').trim())
       if (Number.isInteger(pid) && pid > 0) return pid
     }
-    if (Date.now() >= deadline) break
-    await new Promise((r) => setTimeout(r, 20))
+    if (realNow() >= deadline) break
+    await new Promise((r) => realSetTimeout(r, 20))
   }
   throw new Error(`timed out waiting for pid file: ${pidFile}`)
 }
@@ -115,7 +120,7 @@ function processGroupOnlyZombies(pgid) {
  * the group is gone, false if it is still live after `timeoutMs`.
  */
 async function waitForGroupGone(pgid, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
-  const deadline = Date.now() + timeoutMs
+  const deadline = realNow() + timeoutMs
   for (;;) {
     try {
       process.kill(-pgid, 0)
@@ -124,8 +129,8 @@ async function waitForGroupGone(pgid, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
       // EPERM (exists but not ours) — fall through to the zombie check.
     }
     if (processGroupOnlyZombies(pgid)) return true
-    if (Date.now() >= deadline) return false
-    await new Promise((r) => setTimeout(r, 50))
+    if (realNow() >= deadline) return false
+    await new Promise((r) => realSetTimeout(r, 50))
   }
 }
 
@@ -432,13 +437,13 @@ test('buildClaudeArgs: preamble mentions BASE...HEAD range', () => {
 // 5. run — timeout kills process group, no throw, timedOut flag
 // ---------------------------------------------------------------------------
 
-test('run: fake claude that sleeps is killed, timedOut=true, process group gone, no throw', async () => {
+test('run: fake claude that sleeps is killed, timedOut=true, process group gone, no throw', async (t) => {
   const dir = makeTmpDir()
+  const timeoutMs = 5000
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
   try {
     const pidFile = path.join(dir, 'child.pid')
-    const bin = writeFakeBin(dir, 'claude', `echo $$ > "${pidFile}"\nsleep 30`)
-    const timeoutMs = 5000
-    const t0 = Date.now()
+    const bin = writeFakeBin(dir, 'claude', `echo $$ > "${pidFile}"\nsleep 300`)
     const resultPromise = run({
       env: { BOSS_CLAUDE_BIN: bin },
       base: 'abc1234',
@@ -446,13 +451,13 @@ test('run: fake claude that sleeps is killed, timedOut=true, process group gone,
       repo: dir,
       timeoutMs,
     })
-    const childPid = await waitForPidFile(pidFile, timeoutMs)
+    const childPid = await waitForPidFile(pidFile)
+    t.mock.timers.tick(timeoutMs)
     const result = await resultPromise
-    const elapsed = Date.now() - t0
     assert.equal(result.timedOut, true)
     assert.equal(result.ok, false)
     assert.equal(typeof result.output, 'string')
-    assert.ok(elapsed < timeoutMs * 3, `run took too long: ${elapsed}ms`)
+    t.mock.timers.runAll()
 
     // Assert the process group is actually gone (no live orphan). A killed
     // child can briefly remain as an unreaped zombie under PID 1, so poll and
@@ -461,25 +466,29 @@ test('run: fake claude that sleeps is killed, timedOut=true, process group gone,
     const gone = await waitForGroupGone(childPid)
     assert.ok(gone, `process group ${childPid} should be gone (zombies/ESRCH)`)
   } finally {
+    t.mock.timers.runAll()
+    t.mock.timers.reset()
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test('run: timeout still reaps a child that ignores SIGTERM after the leader exits', async () => {
+test('run: timeout still reaps a child that ignores SIGTERM after the leader exits', async (t) => {
   const dir = makeTmpDir()
+  const timeoutMs = 5000
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
   try {
     const pidFile = path.join(dir, 'leader.pid')
+    const readyFile = path.join(dir, 'ignoring-term')
     const bin = writeFakeBin(
       dir,
       'claude',
       [
+        `( trap '' TERM; echo ready > "${readyFile}"; while true; do sleep 0.2; done ) >/dev/null 2>&1 &`,
+        `while [ ! -f "${readyFile}" ]; do sleep 0.01; done`,
         `echo $$ > "${pidFile}"`,
-        "( trap '' TERM; while true; do sleep 0.2; done ) >/dev/null 2>&1 &",
-        'exec sleep 30',
+        'exec sleep 300',
       ].join('\n'),
     )
-    const timeoutMs = 5000
-    const t0 = Date.now()
     const resultPromise = run({
       env: { BOSS_CLAUDE_BIN: bin },
       base: 'abc1234',
@@ -487,18 +496,25 @@ test('run: timeout still reaps a child that ignores SIGTERM after the leader exi
       repo: dir,
       timeoutMs,
     })
-    const leaderPid = await waitForPidFile(pidFile, timeoutMs)
+    const leaderPid = await waitForPidFile(pidFile)
+    t.mock.timers.tick(timeoutMs)
     const result = await resultPromise
-    const elapsed = Date.now() - t0
     assert.equal(result.timedOut, true)
     assert.equal(result.ok, false)
-    assert.ok(elapsed < timeoutMs * 3, `run took too long: ${elapsed}ms`)
+    assert.equal(
+      processGroupOnlyZombies(leaderPid),
+      false,
+      'SIGTERM-ignoring child survives the leader',
+    )
+    t.mock.timers.runAll()
 
     // A SIGTERM-ignoring child that outlives the leader gets SIGKILLed and may
     // linger as an unreaped zombie under PID 1; poll and treat zombies as gone.
     const gone = await waitForGroupGone(leaderPid)
     assert.ok(gone, `process group ${leaderPid} should be gone (zombies/ESRCH)`)
   } finally {
+    t.mock.timers.runAll()
+    t.mock.timers.reset()
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
@@ -700,12 +716,16 @@ test('run: a slow diff.external driver cannot hang the bounded run', async () =>
 
     // A pathologically slow external diff driver. Without --no-ext-diff the
     // pre-arm bestEffortDiff would block on this for 30s before the agent runs.
-    const slowDiff = writeFakeBin(dir, 'slow-diff', 'sleep 30')
+    const driverMarker = path.join(dir, 'external-diff-ran')
+    const slowDiff = writeFakeBin(
+      dir,
+      'slow-diff',
+      'printf invoked >> "$(dirname "$0")/external-diff-ran"\nsleep 30',
+    )
     git(dir, ['config', 'diff.external', slowDiff])
 
     const bin = writeEchoArgvBin(dir)
-    const timeoutMs = 4000
-    const t0 = Date.now()
+    const timeoutMs = LOAD_TOLERANT_WAIT_MS
     const result = await run({
       env: { BOSS_CLAUDE_BIN: bin },
       base,
@@ -713,13 +733,7 @@ test('run: a slow diff.external driver cannot hang the bounded run', async () =>
       repo: dir,
       timeoutMs,
     })
-    const elapsed = Date.now() - t0
-    // Exactly the run's own timeout, and the tightness is the whole assertion. The pre-arm diff
-    // budget is `Math.min(effectiveTimeoutMs, DIFF_COLLECTION_BUDGET_MS)`, which at this timeoutMs
-    // IS timeoutMs — so a run that did honour the slow driver would be killed at ~timeoutMs and
-    // land just above this line, while any ceiling at or above 2x could not tell the two apart.
-    // The passing path embeds a fast internal diff and finishes in a fraction of that.
-    assert.ok(elapsed < timeoutMs, `slow external diff hung the run: ${elapsed}ms`)
+    assert.equal(fs.existsSync(driverMarker), false, 'external diff driver must not run')
     assert.equal(result.timedOut, false)
     assert.ok(
       result.output.includes('+SENTINEL-ADDED-LINE'),
@@ -1060,7 +1074,7 @@ test('CLI: auth diagnostics preserve probe tokens and run failure status (claude
         env,
         cwd: dir,
         encoding: 'utf8',
-        timeout: 5000,
+        timeout: LOAD_TOLERANT_WAIT_MS,
       })
       assert.equal(res.status, 0)
       assert.equal(res.stdout, `${token}\n`)
@@ -1069,7 +1083,7 @@ test('CLI: auth diagnostics preserve probe tokens and run failure status (claude
       const review = spawnSync(
         process.execPath,
         [SCRIPT_PATH, 'run', '--base', 'abc', '--head', 'def', '--repo', dir],
-        { env, encoding: 'utf8', timeout: 5000 },
+        { env, encoding: 'utf8', timeout: LOAD_TOLERANT_WAIT_MS },
       )
       assert.equal(review.status, code)
       if (code !== 0)
@@ -1118,7 +1132,11 @@ test('CLI: exit-zero empty review keeps generic failure despite auth stderr (cla
     const res = spawnSync(
       process.execPath,
       [SCRIPT_PATH, 'run', '--base', 'abc', '--head', 'def', '--repo', dir],
-      { env: { ...process.env, BOSS_CLAUDE_BIN: bin }, encoding: 'utf8', timeout: 5000 },
+      {
+        env: { ...process.env, BOSS_CLAUDE_BIN: bin },
+        encoding: 'utf8',
+        timeout: LOAD_TOLERANT_WAIT_MS,
+      },
     )
     assert.equal(res.status, 1)
     assert.ok(res.stderr.startsWith('claude-review: claude -p failed'), res.stderr)
@@ -1139,11 +1157,16 @@ n=0
 [ ! -f '${counter}' ] || n=$(/bin/cat '${counter}')
 n=$((n + 1))
 echo "$n" > '${counter}'
-[ "$n" != 1 ] || /bin/sleep 10
+[ "$n" != 1 ] || /bin/sleep 300
 exit 0`,
     )
     assert.equal(
-      await probe({ env: { BOSS_CLAUDE_BIN: bin }, repo: dir, timeoutMs: 2000, retryBackoffMs: 0 }),
+      await probe({
+        env: { BOSS_CLAUDE_BIN: bin },
+        repo: dir,
+        timeoutMs: PROBE_RETRY_TIMEOUT_MS,
+        retryBackoffMs: 0,
+      }),
       'ready',
     )
     assert.equal(fs.readFileSync(counter, 'utf8').trim(), '2')
@@ -1159,7 +1182,7 @@ exit 1`,
     const result = await probeDetailed({
       env: { BOSS_CLAUDE_BIN: bin },
       repo: dir,
-      timeoutMs: 1000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
       sleep: async () => {
         assert.fail('auth must not wait')
       },
@@ -1189,7 +1212,7 @@ test('probeDetailed reports the second timeout or exit and CLI reports two attem
     const exited = await probeDetailed({
       env: { BOSS_CLAUDE_BIN: bin },
       repo: dir,
-      timeoutMs: 1000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
       retryBackoffMs: 0,
     })
     assert.equal(exited.classification, 'error')

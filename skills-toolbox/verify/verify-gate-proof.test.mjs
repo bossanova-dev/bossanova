@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { precedes, region, regionUntilNext } from '../../scripts/test-infra/gate-region-lib.mjs'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { commandReader, main, materializeTrustedTree } from './verify-gate.mjs'
 import { NO_UI_RECORDING } from './verify-proof-page-model.mjs'
@@ -79,6 +80,8 @@ function repository(t) {
   fs.writeFileSync(path.join(repo, 'proto', 'api.proto'), 'syntax = "proto3";\n')
   fs.mkdirSync(path.join(repo, 'web'))
   fs.writeFileSync(path.join(repo, 'web', 'form.tsx'), 'export const Form = () => null\n')
+  fs.mkdirSync(path.join(repo, 'docs'))
+  fs.writeFileSync(path.join(repo, 'docs', 'policy.md'), `# Merge policy\n\n${INTENDED}\n`)
   git('add', '-A')
   git('commit', '-qm', 'base')
   const base = git('rev-parse', 'HEAD')
@@ -96,7 +99,9 @@ function repository(t) {
   return { repo, base, head: git('rev-parse', 'HEAD') }
 }
 
-function world({ repo, base, head }) {
+const INTENDED = 'A staff role may read every account. This is intended and never a risk.'
+
+function world({ repo, base, head, config = null }) {
   const writes = []
   const real = commandReader({ cwd: repo })
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
@@ -111,6 +116,7 @@ function world({ repo, base, head }) {
         body: 'Tracker issue: https://tracker.example/issue/ACME-1\n\nAdds a user.\n\n## After merge\n\n- [ ] Regenerate the client',
         url: 'https://github.com/acme/widgets/pull/7',
         baseRefName: 'main',
+        createdAt: '2026-01-02T00:00:00Z',
         statusCheckRollup: [{ name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }],
       })
     if (command === 'gh' && args[0] === 'api') {
@@ -119,6 +125,12 @@ function world({ repo, base, head }) {
       if (route.includes('/statuses')) return ok([[]])
       if (route.includes('/comments?')) return ok([[]])
       if (route.includes('/permission')) return ok({ permission: 'write' })
+      if (route.includes('/contents/') && config)
+        return ok({
+          type: 'file',
+          encoding: 'base64',
+          content: Buffer.from(JSON.stringify(config)).toString('base64'),
+        })
       if (route.includes('/contents/'))
         return { ok: false, payload: { status: '404' }, error: 'HTTP 404', exit: 1, output: '' }
       if (route.endsWith('/commits/main')) return ok({ sha: base })
@@ -150,7 +162,7 @@ const AREAS = [
   { area: 'ui', label: 'UI', paths: ['web/form.tsx'], defaultAsk: 'unless-proven', items: [] },
 ]
 
-function judgeFile(dir, { head, base, verdict = 'human' }) {
+function judgeFile(dir, { head, base, verdict = 'human', uiAsk = false }) {
   const file = path.join(dir, `judge-${verdict}.json`)
   fs.writeFileSync(
     file,
@@ -162,7 +174,10 @@ function judgeFile(dir, { head, base, verdict = 'human' }) {
       baseSha: base,
       confidence: {
         level: 'moderate',
-        asks: [{ area: 'api-contract', label: 'API contract', source: 'builtin' }],
+        asks: [
+          { area: 'api-contract', label: 'API contract', source: 'builtin' },
+          ...(uiAsk ? [{ area: 'ui', label: 'UI', source: 'builtin' }] : []),
+        ],
         reasons: ['Changes API contract. Reviewing this area would raise this.'],
         loweredBy: ['area-asks'],
         health: [],
@@ -201,12 +216,12 @@ function authorSpec(bundle, head) {
   }
 }
 
-async function setup(t, env = {}) {
+async function setup(t, env = {}, config = null) {
   const { repo, base, head } = repository(t)
   const out = tempDir('verify-proof-out-', t)
   const secret = path.join(tempDir('verify-proof-secret-', t), 'id.png')
   fs.writeFileSync(secret, 'outside the evidence directory')
-  const w = world({ repo, base, head })
+  const w = world({ repo, base, head, config })
   const trees = tempDir('verify-proof-trees-', t)
   const deps = {
     read: w.read,
@@ -238,8 +253,24 @@ const calls = (out) =>
 
 test('a parked head gets the bundle, the author spec, its media and player, then its page @sessions.AC248601 @sessions.AC248607 @sessions.AC248608', async (t) => {
   const { head, base, out, w, deps } = await setup(t)
+  const branch = {
+    base: 'main',
+    default: 'main',
+    stackedOn: [
+      {
+        pr: 5,
+        title: 'Add the user message',
+        url: 'https://github.com/acme/widgets/pull/5',
+        branch: 'user-message',
+        shared: 1,
+        total: 2,
+        how: 'content',
+      },
+    ],
+  }
+  deps.proof = { readBranchContext: ({ pr }) => (pr === 7 ? branch : undefined) }
   const run = tempDir('verify-proof-run-', t)
-  const judge = judgeFile(run, { head, base })
+  const judge = judgeFile(run, { head, base, uiAsk: true })
   const bundled = await main(
     [
       'proof-bundle',
@@ -269,6 +300,7 @@ test('a parked head gets the bundle, the author spec, its media and player, then
   )
   assert.deepEqual(bundle.ci, [{ name: 'test', state: 'passed' }])
   assert.deepEqual(bundle.repoSettings, { canAutoMerge: false })
+  assert.deepEqual(bundle.branch, branch, 'the author reads the stack the page shows')
   assert.deepEqual(bundle.media.clips[0].stills, [{ caption: 'The form', atMs: 900 }])
   assert.deepEqual(bundle.media.dropped, [
     { at: 'clips[0].stills[1]', reason: 'file: leak.png is missing' },
@@ -313,18 +345,62 @@ test('a parked head gets the bundle, the author spec, its media and player, then
     'the spec titles it',
   )
   assert.ok(page.includes('<video id="proof-video"'), 'the head clip plays')
+  assert.match(page, /<div class="bnotice stacked">.*Carries 1 of <a[^>]*>#5<\/a>'s 2 commits/)
   assert.ok(page.includes(`<script src="${PLAYER_OBJECT}" defer></script>`))
   assert.ok(page.includes("script-src 'self'"))
   assert.match(
-    page,
-    /<figure class="diff" id="f-web-form-tsx-[0-9a-f]{6}">.*<tr class="add pinned"><td class="n"><\/td><td class="n">3<\/td>/,
-    'the spec snippet is quoted from git and pins its line',
+    regionUntilNext(page, '<section class="sec" id="a-ui">', '</section>'),
+    /<figure class="code" id="f-web-form-tsx-[0-9a-f]{6}">.*<tr class="add pinned"><td class="n"><\/td><td class="n">3<\/td>/,
+    'the spec snippet is quoted from git under its reviewed area and pins its line',
   )
   assert.ok(!page.includes(NO_UI_RECORDING), 'the changed UI has a recording')
   assert.equal(fs.existsSync(path.join(out, 'HEAD_HOOK_RAN')), false, 'no head hook runs')
   const note = w.writes.find((x) => x.body?.includes('boss-proof-note'))
   assert.deepEqual(parseProofLine(note.body), { head, page: url, level: 'moderate' })
   assert.ok(!JSON.stringify(result).includes('chatter'))
+})
+
+test('the author bundle carries the base tip merge policy, the ticket description and review rows', async (t) => {
+  const config = { verifyDefaults: { merge: { policy: 'docs/policy.md' } } }
+  const { head, base, deps } = await setup(t, {}, config)
+  deps.adapter = {
+    readDescription: async (id) => ({
+      identifier: id,
+      description: '## Acceptance criteria\n\n- A user signs up with an email address',
+      descriptionUpdatedAt: '2026-01-01T00:00:00Z',
+    }),
+  }
+  const run = tempDir('verify-proof-run-', t)
+  const judge = judgeFile(run, { head, base })
+  const judged = JSON.parse(fs.readFileSync(judge, 'utf8'))
+  judged.reviewAcceptance = [{ id: 'AC1', text: 'Sign up by email', result: 'met', head }]
+  fs.writeFileSync(judge, JSON.stringify(judged))
+  const args = ['proof-bundle', '--pr', '7', '--head', head, '--judge', judge, '--out', run]
+  const bundled = await main([...args, '--repo', 'acme/widgets'], deps)
+  const bundle = JSON.parse(fs.readFileSync(bundled.bundle, 'utf8'))
+  assert.deepEqual(bundle.mergePolicy, {
+    path: 'docs/policy.md',
+    text: `# Merge policy\n\n${INTENDED}\n`,
+  })
+  assert.deepEqual(bundle.ticket, {
+    id: 'ACME-1',
+    url: 'https://tracker.example/issue/ACME-1',
+    description: '## Acceptance criteria\n\n- A user signs up with an email address',
+    acceptance: [{ id: 'AC1', text: 'Sign up by email', result: 'met', head }],
+  })
+
+  deps.adapter = {
+    readDescription: async (id) => ({
+      identifier: id,
+      description: 'Rewritten after the PR opened',
+      descriptionUpdatedAt: '2026-01-03T00:00:00Z',
+    }),
+  }
+  const late = JSON.parse(
+    fs.readFileSync((await main([...args, '--repo', 'acme/widgets'], deps)).bundle, 'utf8'),
+  )
+  assert.equal(late.ticket.description, undefined, 'an edit after the PR opened is not read')
+  assert.equal(late.ticket.descriptionUnread, 'edited-after-pr')
 })
 
 test('the sweep path collects media itself and a missing spec leaves the deterministic page @sessions.AC248607 @sessions.AC248608', async (t) => {
@@ -336,8 +412,10 @@ test('the sweep path collects media itself and a missing spec leaves the determi
   assert.deepEqual(result.proof.media, { extension: 'boss-verify-stub-media', clips: 1 })
   const page = fs.readFileSync(path.join(out, `acme/widgets/7/${head}/${PAGE_OBJECT}`), 'utf8')
   assert.ok(
-    page.includes('<li>spec: not a proof-spec/1 document</li>'),
-    'the generation check names it',
+    region(page, '<section class="sec debug" id="debug"', '</main>').includes(
+      '<li>spec: not a proof-spec/1 document</li>',
+    ),
+    'the debug section names it',
   )
   assert.ok(page.includes('<video id="proof-video"'))
   assert.equal(calls(out).length, 2)
@@ -354,8 +432,10 @@ test('a changed UI area with no recording leads the page, which still gets the p
   )
   const page = fs.readFileSync(path.join(out, `acme/widgets/7/${head}/${PAGE_OBJECT}`), 'utf8')
   assert.ok(
-    page.includes(`<ol class="reasons"><li class="proof"><div><div class="t">${NO_UI_RECORDING}`),
+    regionUntilNext(page, '<ul class="glist gaps">', '</ul>').includes(NO_UI_RECORDING),
+    'the banner says the changed UI is not proven',
   )
+  assert.ok(precedes(page, '<section class="banner', '<ul class="glist gaps">'))
   assert.ok(page.includes(`<script src="${PLAYER_OBJECT}" defer></script>`))
   assert.ok(!page.includes('<video'), 'the player has no video to drive and does nothing for it')
 })

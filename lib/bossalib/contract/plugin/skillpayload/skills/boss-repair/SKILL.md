@@ -28,11 +28,38 @@ not survive between tool calls, so resolve the paths in each block that uses the
 BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
 if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
 BOSS_REPAIR_SKILLS_HOME="$(dirname "$(dirname "$BOSS_REPAIR_TOOLBOX")")"
+O=
+if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
+  if O="$("$BOSS_BIN" skills check --gate --heal 2>&1)" ||
+    { case "$O" in
+        *"unknown flag: --heal"*) O="$("$BOSS_BIN" skills check --gate 2>&1)" ;;
+        *) false ;;
+      esac; }; then
+    if [ -n "$O" ]; then printf '%s\n' "$O" >&2; fi
+  else
+    case "$O" in
+      *--gate*) node "$BOSS_REPAIR_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_REPAIR_TOOLBOX" || true ;;
+      *)
+        printf '%s\n' "$O" >&2
+        printf '%s\n' "$O" | node "$BOSS_REPAIR_TOOLBOX/skill-drift-verdict.mjs" classify --status 1 >&2 || exit 1
+        ;;
+    esac
+  fi
+elif [ -f "$BOSS_REPAIR_TOOLBOX/toolbox-drift.mjs" ]; then
+  node "$BOSS_REPAIR_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_REPAIR_TOOLBOX" || true
+else
+  echo "boss-toolbox-drift: (drift helper not installed) — this install predates the check; drift is UNKNOWN, not clean." >&2
+fi
 node "$BOSS_REPAIR_TOOLBOX/skill-pin.mjs" create --skill boss-repair --skills-home "$BOSS_REPAIR_SKILLS_HOME" || exit 1
 BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
 [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
+printf '%s\n' "${O:-}" | node "$BOSS_REPAIR_TOOLBOX/skill-drift-verdict.mjs" reload --core boss-repair --skill-md "${BOSS_REPAIR_TOOLBOX%/toolbox}/SKILL.md" || exit "$?"
 ```
+
+On `RELOAD:`, read the named file in full and restart this block under that body, once per run.
+A second reload means a peer install is racing; continue under the body just read and report it.
+A blocking drift verdict, including config-validator drift, is a hard stop.
 
 After the pin exists, read `references/…`, `scripts/…` and `extensions/…` from
 `$BOSS_REPAIR_PIN/`. Every later shell block resolves only this pin:

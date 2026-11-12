@@ -41,6 +41,11 @@ export const workflowRouteRules = [
 
 export const workflowRouteExemptions = [
   {
+    workflow: 'test-web.yml',
+    pattern: 'skills-toolbox/verify/verify-proof-player.mjs',
+    reason: 'the proof player runs inside the web review frame, so test-web e2e drives it; its unit tests stay in test-scripts',
+  },
+  {
     workflow: 'test-bosso-production-deployment.yml',
     pattern: 'services/bosso/**',
     reason: 'deployment smoke has no worktree-local make target',

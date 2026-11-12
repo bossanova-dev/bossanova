@@ -23,6 +23,7 @@ import (
 	"github.com/recurser/bossd/internal/callback"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/ghusage"
+	"github.com/recurser/bossd/internal/prstack"
 	"github.com/recurser/bossd/internal/prstate"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/session/checkpolicy"
@@ -207,6 +208,10 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 	var evidenceComments vcs.Provider = w.ghProvider
 	w.evidenceReader = evidence.NewReader(evidenceComments, log.Logger)
 	w.displayPoller.SetEvidenceObserver(w.evidenceReader)
+	// Each cycle also reads which open PRs every session's PR is stacked on,
+	// from the cached open-PR snapshot and the repository's local clone.
+	w.prStacks = prstack.NewDetector(w.ghProvider, w.worktrees, log.Logger)
+	w.displayPoller.SetStackRefresher(w.prStacks)
 	if reconciled, err := w.agentRuns.MarkOpenStopped(context.Background(), time.Now(), liveTmuxAgentSessionIDs(context.Background(), w.agentChats, w.tmuxClient)); err != nil {
 		log.Warn().Err(err).Msg("failed to reconcile open agent runs")
 	} else if reconciled > 0 {

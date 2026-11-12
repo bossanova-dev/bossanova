@@ -60,7 +60,6 @@
   "skills-toolbox/selection.mjs",
   "skills-toolbox/session/session-self-archive.mjs",
   "skills-toolbox/skill-config.mjs",
-  "skills-toolbox/skill-drift-verdict.mjs",
   "skills-toolbox/skill-extensions.mjs",
   "skills-toolbox/stage-chain.mjs",
   "skills-toolbox/toolbox-drift.mjs",

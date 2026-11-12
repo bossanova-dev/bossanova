@@ -1,0 +1,117 @@
+{
+  "config:revenue-models": [
+    {
+      "ok": true,
+      "extension": "dbt-describer",
+      "role": "proof-describe",
+      "items": [
+        "Adds model fct_daily_revenue (incremental, unique_key revenue_date)",
+        "Adds columns gross_cents, refund_cents, net_cents"
+      ],
+      "breaking": false,
+      "undisclosed": ["Materialises fct_daily_revenue incrementally"],
+      "blocks": [
+        {
+          "kind": "table",
+          "name": "fct_daily_revenue",
+          "relation": "dbt-model",
+          "materialization": "incremental",
+          "change": "added",
+          "columns": [
+            {
+              "name": "revenue_date",
+              "type": "date",
+              "note": "`unique_key`; only the newest day rebuilds"
+            },
+            {
+              "name": "gross_cents",
+              "type": "bigint"
+            },
+            {
+              "name": "refund_cents",
+              "type": "bigint",
+              "note": "0 on a day with no refunds"
+            },
+            {
+              "name": "net_cents",
+              "type": "bigint",
+              "note": "`gross_cents` minus `refund_cents`"
+            }
+          ]
+        },
+        {
+          "kind": "steps",
+          "steps": ["Run `dbt build --select stg_refunds+` in production"]
+        }
+      ],
+      "signals": [
+        {
+          "key": "db",
+          "label": "Database",
+          "state": "additive",
+          "summary": "New incremental model `fct_daily_revenue` over the new view `stg_refunds`"
+        },
+        {
+          "key": "pii",
+          "label": "Personal data",
+          "state": "review",
+          "summary": "`stg_refunds` exposes `customer_email`"
+        },
+        {
+          "key": "manual",
+          "label": "Manual steps",
+          "state": "manual",
+          "summary": "One `dbt build` in production"
+        }
+      ]
+    }
+  ],
+  "no-sign-off": [
+    {
+      "ok": true,
+      "extension": "dbt-describer",
+      "role": "proof-describe",
+      "items": [
+        "Adds view stg_refunds over shop.refunds",
+        "Tests refund_id as unique and not null"
+      ],
+      "breaking": false,
+      "undisclosed": [],
+      "blocks": [
+        {
+          "kind": "table",
+          "name": "stg_refunds",
+          "relation": "dbt-model",
+          "materialization": "view",
+          "change": "added",
+          "columns": [
+            {
+              "name": "refund_id",
+              "type": "bigint",
+              "constraints": "unique \u00b7 not null"
+            },
+            {
+              "name": "order_id",
+              "type": "bigint",
+              "constraints": "not null"
+            },
+            {
+              "name": "customer_email",
+              "type": "text",
+              "pii": true,
+              "note": "Copied from `shop.refunds`"
+            },
+            {
+              "name": "refunded_at",
+              "type": "timestamptz"
+            },
+            {
+              "name": "amount_cents",
+              "type": "bigint"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

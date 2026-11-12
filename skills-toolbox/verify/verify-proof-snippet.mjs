@@ -17,6 +17,8 @@ const GIT_FLAGS = Object.freeze(['--literal-pathspecs'])
  * @typedef {{path: string, start: number, end: number, rows: DiffRow[], adds: number, dels: number, pinLine: number | null}} Snippet
  * @typedef {{snippet: Snippet | null, problems: string[]}} SnippetResult
  * @typedef {(request: SnippetRequest) => SnippetResult} SnippetResolver
+ * @typedef {{path: string, rows: DiffRow[], adds: number, dels: number, focus: {side: 'new' | 'old', line: number}}} Context
+ * @typedef {(path: string, line: number, radius?: number) => Context | null} ContextResolver
  */
 
 const ESCAPES = Object.freeze(
@@ -201,6 +203,53 @@ export function gitFileDiffs({ base, head, cwd, run }) {
 /** A resolver that quotes each snippet from `diffs`, as `gitFileDiffs` reads them.
  * @param {(path: string) => FileDiff | undefined} diffs @returns {SnippetResolver} */
 export const snippetResolver = (diffs) => (request) => cutSnippet(diffs(request.path), request)
+
+/** Rows on each side of a focus line that `contextResolver` quotes. */
+export const CONTEXT_RADIUS = 2
+const MAX_CONTEXT_ROWS = 12
+
+/**
+ * The rows within `radius` lines of `line` in `diff`, at most 12: its head-side line when the head
+ * has one, else its base-side line, so a finding on a deleted line quotes the base. A row from the
+ * other side sits at the position of the row that follows it. Null when the diff has no such line.
+ * @param {FileDiff | undefined} diff @param {number} line @param {number} [radius]
+ * @returns {Omit<Context, 'path'> | null}
+ */
+export function cutContext(diff, line, radius = CONTEXT_RADIUS) {
+  if (!diff) return null
+  /** @type {'new' | 'old' | null} */
+  const side = diff.rows.some((row) => row.new === line)
+    ? 'new'
+    : diff.rows.some((row) => row.old === line)
+      ? 'old'
+      : null
+  if (!side) return null
+  let previous = 0
+  const placed = diff.rows.map((row) => {
+    const position = row[side] ?? previous + 1
+    if (row[side] !== null) previous = row[side]
+    return { row, position }
+  })
+  const near = placed.filter((p) => Math.abs(p.position - line) <= radius)
+  const at = near.findIndex((p) => p.row[side] === line)
+  const from = Math.max(
+    0,
+    Math.min(at - Math.floor(MAX_CONTEXT_ROWS / 2), near.length - MAX_CONTEXT_ROWS),
+  )
+  return {
+    rows: near.slice(from, from + MAX_CONTEXT_ROWS).map((p) => p.row),
+    adds: diff.adds,
+    dels: diff.dels,
+    focus: { side, line },
+  }
+}
+
+/** A resolver that quotes the lines around `path:line` from `diffs`, as `gitFileDiffs` reads them.
+ * @param {(path: string) => FileDiff | undefined} diffs @returns {ContextResolver} */
+export const contextResolver = (diffs) => (path, line, radius) => {
+  const cut = cutContext(diffs(path), line, radius)
+  return cut && { path, ...cut }
+}
 
 /**
  * Whether `line` exists in `path` at head, from its whole-file diff; a deleted file's lines are

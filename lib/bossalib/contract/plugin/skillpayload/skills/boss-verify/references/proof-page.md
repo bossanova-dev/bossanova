@@ -41,6 +41,12 @@ undisclosed changes. On top of them:
   base and head pages side by side when a base document pairs with it. The page never embeds a PDF.
   A framed page, which a sandbox may not let download, shows a note to open it in its own tab
   instead of the links.
+- **Review findings and the ticket.** The page sidecar carries what review found: each unfixed
+  and fixed finding with its severity, status, `file:line` and one line of evidence, shown once with
+  the lines around it quoted from the merge-base diff, base side for a deleted line. A finding with
+  no location shows as text. The acceptance rows fill "Does it satisfy" the ticket: a criterion is
+  done only when its check passed on this head. Chips link a finding to the risk at its lines and to
+  the decisions and criteria that name its file.
 - **No recording.** A changed `ui` area with no head clip leads "Why it's waiting" with "No
   recording of the changed UI".
 

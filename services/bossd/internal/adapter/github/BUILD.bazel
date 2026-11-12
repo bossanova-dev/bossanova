@@ -46,6 +46,7 @@ go_test(
         "provider_partial_test.go",
         "provider_quota_fallback_test.go",
         "provider_size_test.go",
+        "provider_supplement_test.go",
         "provider_test.go",
         "ratelimit_burst_test.go",
         "ratelimit_headroom_test.go",

@@ -230,7 +230,12 @@ const VerifyMergeGrace = 30 * time.Minute
 // session with a tracker link offers ATTENTION_ACTION_TRACKER last, whatever
 // its kind.
 func Compute(in Input) *pb.SessionAttention {
-	att := computeKind(in)
+	return withRowFacts(in, computeKind(in))
+}
+
+// withRowFacts adds what every kind carries: the head's blockers, the tracker
+// action and the row's status phrase.
+func withRowFacts(in Input, att *pb.SessionAttention) *pb.SessionAttention {
 	att.BlockerTallies = blockerTalliesProto(in.BlockerTallies)
 	att.BlockerFiles = slices.Clone(in.BlockerFiles)
 	if in.HasTrackerLink {

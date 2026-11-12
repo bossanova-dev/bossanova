@@ -141,19 +141,19 @@
     "name": "high label alone",
     "codes": [],
     "label": "high: Review evidence",
-    "level": null
+    "level": "high"
   },
   {
     "name": "high label with merge",
     "codes": ["human-merge"],
     "label": "high: Review evidence",
-    "level": "moderate"
+    "level": "high"
   },
   {
     "name": "high label path fallback",
     "codes": ["human-review:ui"],
     "label": "high: Review evidence",
-    "level": "moderate"
+    "level": "high"
   },
   {
     "name": "empty",

@@ -1,0 +1,109 @@
+{
+  "verdict": "human",
+  "reasons": ["always-human-path"],
+  "label": "Security",
+  "ticket": { "id": "SHOP-12", "url": "https://linear.app/acme/issue/SHOP-12" },
+  "confidence": {
+    "level": "moderate",
+    "asks": [{ "area": "security", "label": "Security" }],
+    "loweredBy": ["area-asks"],
+    "health": []
+  },
+  "facts": {
+    "receipt": { "verdict": "present", "state": "success" },
+    "areas": [
+      {
+        "area": "security",
+        "label": "Security",
+        "paths": ["src/auth/legacy-token.ts", "src/auth/session.ts"],
+        "defaultAsk": "always",
+        "source": "builtin",
+        "items": ["Sessions expire after 24 hours", "Removes sessionFromToken"]
+      }
+    ]
+  },
+  "reviewUnfixed": [
+    {
+      "id": "c1",
+      "severity": "P2",
+      "file": "src/auth/session.ts",
+      "line": 7,
+      "title": "The expiry clock comes from the caller",
+      "evidence": "readSession takes now from its caller, so a caller that passes a stale time keeps an expired session alive.",
+      "introduced": true,
+      "verified": true,
+      "fixed": false
+    },
+    {
+      "id": "g1",
+      "severity": "P3",
+      "file": "src/auth/session.ts",
+      "line": 3,
+      "title": "SESSION_TTL_MS could live with the other auth constants",
+      "evidence": "The other auth limits sit in src/auth/limits.ts with their units.",
+      "introduced": true,
+      "verified": true,
+      "fixed": false
+    }
+  ],
+  "findingNotes": [
+    {
+      "id": "g1",
+      "severity": "P3",
+      "file": "src/auth/session.ts",
+      "line": 3,
+      "title": "SESSION_TTL_MS could live with the other auth constants",
+      "evidence": "The other auth limits sit in src/auth/limits.ts with their units.",
+      "introduced": true,
+      "verified": true,
+      "fixed": false
+    },
+    {
+      "extension": "copy-check",
+      "severity": "P3",
+      "title": "The sign-in page still says a session lasts a week"
+    }
+  ],
+  "reviewFixed": [
+    {
+      "id": "c2",
+      "severity": "P1",
+      "file": "src/auth/session.ts",
+      "line": 11,
+      "title": "An expired session stayed in the store",
+      "evidence": "The first version returned null but kept the entry, so the store grew without bound.",
+      "fixCommit": "f3d543efef1900c1276c03f6cef112a1f6da2a4c"
+    },
+    {
+      "id": "s1",
+      "severity": "P2",
+      "file": "src/auth/legacy-token.ts",
+      "line": 4,
+      "title": "A legacy token decodes to any session id",
+      "evidence": "Any base64 string named a session, so a guessed id signed a user in."
+    }
+  ],
+  "reviewAcceptance": [
+    {
+      "id": "AC1",
+      "text": "A session older than a day reads as none in src/auth/session.ts",
+      "result": "met",
+      "check": "node --test src/auth/session.test.ts",
+      "head": "f3d543efef1900c1276c03f6cef112a1f6da2a4c"
+    },
+    {
+      "id": "AC2",
+      "text": "Legacy base64 tokens no longer sign a user in",
+      "result": "met",
+      "check": "! git grep -q sessionFromToken",
+      "head": "f3d543efef1900c1276c03f6cef112a1f6da2a4c"
+    },
+    {
+      "id": "AC3",
+      "text": "A signed-out user lands on the sign-in page",
+      "result": "unchecked",
+      "check": "",
+      "head": "f3d543efef1900c1276c03f6cef112a1f6da2a4c"
+    }
+  ]
+}

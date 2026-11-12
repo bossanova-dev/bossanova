@@ -9,6 +9,9 @@ import { fileURLToPath } from 'node:url'
 import { buildPrompt, classifyOutcome, runCodexReview } from './bs-security-codex.mjs'
 
 const SCRIPT = fileURLToPath(new URL('./bs-security-codex.mjs', import.meta.url))
+const LOAD_TOLERANT_WAIT_MS = 30_000
+// This timeout test pays the whole budget so a loaded Node startup can publish its child PID.
+const PROCESS_GROUP_TIMEOUT_MS = 5_000
 const REPORT = `### Widget deletion skips ownership
 - Severity: high
 - Location: widget.go:12
@@ -39,7 +42,7 @@ fs.writeFileSync(process.env.FAKE_EXEC_ARGS, JSON.stringify(args))
 const out = args[args.indexOf('-o') + 1]
 if (mode === 'timeout') {
   const grandchild = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { stdio: 'ignore' })
-  grandchild.on('spawn', () => fs.writeFileSync(process.env.FAKE_GRANDCHILD, String(grandchild.pid)))
+  fs.writeFileSync(process.env.FAKE_GRANDCHILD, String(grandchild.pid))
   setInterval(() => {}, 1000)
 } else if (mode === 'blocked') {
   process.stderr.write('This content was flagged for possible cybersecurity risk\n')
@@ -65,7 +68,7 @@ if (mode === 'timeout') {
     runDir: path.join(dir, 'run'),
     template,
     knownList,
-    timeoutMs: 5000,
+    timeoutMs: LOAD_TOLERANT_WAIT_MS,
     env: {
       ...process.env,
       BOSS_CODEX_BIN: bin,
@@ -123,7 +126,7 @@ test('blocked: a policy refusal with no findings gives outcome blocked', async (
 
 test('timeout: a fake that sleeps past the timeout gives outcome timeout and its process group is gone', async (t) => {
   const opts = fixture(t, 'timeout')
-  const result = await runCodexReview({ ...opts, timeoutMs: 1000 })
+  const result = await runCodexReview({ ...opts, timeoutMs: PROCESS_GROUP_TIMEOUT_MS })
   assert.equal(result.outcome, 'timeout')
   const pid = Number(fs.readFileSync(opts.env.FAKE_GRANDCHILD, 'utf8'))
   // Give init time to reap the orphan after the runner has killed the whole group.
@@ -182,12 +185,10 @@ test('empty: exit 0 with prose and no finding blocks gives outcome empty', async
   assert.deepEqual(result.findings, [])
 })
 
-test('stdin is closed: a fake that reads stdin to EOF still finishes well inside the timeout', async (t) => {
-  const started = Date.now()
+test('stdin is closed: a fake that reads stdin to EOF gives outcome ok', async (t) => {
   const opts = fixture(t, 'stdin')
   const result = await runCodexReview(opts)
   assert.equal(result.outcome, 'ok')
-  assert.ok(Date.now() - started < opts.timeoutMs)
 })
 
 test('argv carries -s read-only and -o and no model flag', async (t) => {

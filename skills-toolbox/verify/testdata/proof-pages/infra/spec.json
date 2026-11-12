@@ -11,23 +11,24 @@
   ],
   "risks": [
     {
-      "level": "deploy",
+      "level": "medium",
       "title": "Timeouts must stay ordered",
-      "body": "The worker gives up at 840 s and the queue redelivers at 900 s; a job slower than that runs twice.",
-      "ifItMatters": "Keep JOB_TIMEOUT_SECONDS below the visibility timeout.",
       "at": {
         "path": "deploy/k8s/worker.yaml",
         "line": 16
-      }
+      },
+      "impact": "The worker gives up at 840 s and the queue redelivers at 900 s; a job slower than that runs twice.",
+      "guard": "The worker gives up at 840 s, below the 900 s visibility timeout."
     },
     {
       "level": "medium",
       "title": "Default timeout changes for every environment",
-      "body": "The module default moves from 60 s to 300 s, so staging changes too.",
       "at": {
         "path": "infra/modules/queue/variables.tf",
         "line": 7
-      }
+      },
+      "impact": "The module default moves from 60 s to 300 s, so staging changes too.",
+      "guard": "None."
     }
   ],
   "areas": [
@@ -41,7 +42,7 @@
           "flag": false
         },
         {
-          "text": "replicas 2 \u2192 4",
+          "text": "replicas 2 → 4",
           "flag": true
         }
       ],
@@ -63,12 +64,6 @@
     }
   ],
   "checklist": {
-    "before": [
-      {
-        "text": "terraform plan shows one queue added and one changed",
-        "done": true
-      }
-    ],
     "after": [
       {
         "text": "Watch the dead-letter queue depth for a day",

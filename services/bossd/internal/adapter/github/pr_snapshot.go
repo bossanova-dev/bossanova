@@ -378,6 +378,7 @@ func (s *prSnapshot) openPRs() []vcs.PRSummary {
 			Number:                pr.Number,
 			Title:                 pr.Title,
 			HeadBranch:            pr.HeadRefName,
+			BaseBranch:            pr.BaseRefName,
 			State:                 parsePRState(pr.State),
 			Author:                author,
 			HeadSHA:               pr.HeadRefOid,

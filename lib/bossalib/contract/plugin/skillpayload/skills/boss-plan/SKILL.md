@@ -135,6 +135,10 @@ Report installed-skill drift (a stale record warns; an absent capability stops):
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh drift
 ```
 
+On `RELOAD:`, read the named file in full and restart Phase 0 under that body, once per run.
+A second reload means a peer install is racing; continue under the body just read and report it.
+A blocking drift verdict, including config-validator drift, is a hard stop.
+
 Inspect `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs operations`. When it lists `writePlan`, require
 `operations --require writePlan,readPlanAttachment`; otherwise require
 `operations --require preparePlanAttachment,finalizePlanAttachment,readPlanAttachment,deletePlanAttachment`

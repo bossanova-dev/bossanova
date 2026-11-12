@@ -85,12 +85,14 @@ func (s *Server) HydrateAttentionForStream(ctx context.Context, p *pb.Session) {
 	s.hydrateAttention(ctx, p, attentionDeps{row: row, display: display, chats: chats})
 }
 
-// hydrateAttention supplies Session.attention last in GetSession, ListSessions,
-// and streamSessionHydrator.Hydrate; it never writes the legacy display fields.
+// hydrateAttention supplies Session.attention, and the PR's base and stack,
+// last in GetSession, ListSessions, and streamSessionHydrator.Hydrate; it
+// never writes the legacy display fields.
 // The additive field already has its compatibility transform (SessionAttentionChange).
 func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentionDeps) {
 	p.PrProofDigest, p.PrProofUrl, p.PrProofHeadSha = "", "", ""
 	row := d.row
+	s.hydratePRStack(p, row)
 	if row == nil {
 		return
 	}
@@ -178,6 +180,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 	s.hydrateRepairAttention(ctx, p, d, &in)
 	in.BlockerTallies, in.BlockerFiles = s.attentionBlockers(p, d, in)
 	p.Attention = attention.Compute(in)
+	p.VerifyPark = attention.SignOffPark(in)
 	s.hydrateMergedConfidence(ctx, p, d)
 	p.Attention.ShouldShowDisplayLabel = p.Attention.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && displaystatus.FixShowsLabel(p)
 	if !session.CanResumeSessionRun(row) || (s.lifecycle != nil && !s.lifecycle.RunResumeAvailable(ctx, row, d.chats)) {

@@ -146,6 +146,7 @@ type Server struct {
 	prWaits                 PRWaiter
 	rotationEvents          rotationEventReader
 	evidence                EvidenceSource
+	stacks                  StackSource
 	cronScheduler           *cron.Scheduler
 	// cronActivity is the agent-liveness seam used to derive cron STATUS
 	// (RUNNING only when the last-run agent is actively working). Shares the
@@ -483,6 +484,9 @@ type Config struct {
 	// GetSessionTimeline (*evidence.Reader). Optional, may be nil; the
 	// timeline then omits the evidence step.
 	Evidence EvidenceSource
+	// PRStacks serves each session's open-PR base branch and stacked-on PRs
+	// (*prstack.Detector). Optional; nil serves none.
+	PRStacks StackSource
 	// WedgeActivityCache memoises the restart-proof agent activity
 	// (WedgeActivity). Pass the reverse-stream hydrator's cache so both hand
 	// clients the same value. Optional; nil gives the server its own.
@@ -725,6 +729,7 @@ func New(cfg Config) *Server {
 		prWaits:              cfg.PRWaits,
 		rotationEvents:       cfg.RotationEvents,
 		evidence:             cfg.Evidence,
+		stacks:               cfg.PRStacks,
 		webhookEvidence:      cfg.WebhookEvidence,
 		wedgeCache:           cfg.WedgeActivityCache,
 		cronScheduler:        cfg.CronScheduler,

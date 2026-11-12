@@ -2,6 +2,10 @@
   "verdict": "human",
   "reasons": ["always-human-path"],
   "label": "the API contract and a migration",
+  "ticket": {
+    "id": "LED-12",
+    "url": "https://linear.app/acme/issue/LED-12"
+  },
   "confidence": {
     "level": "moderate",
     "asks": [
@@ -28,26 +32,16 @@
         "label": "Migrations",
         "paths": ["services/api/migrations/0008_add_invoice_due_on.sql"],
         "defaultAsk": "always",
-        "source": "builtin",
-        "items": [
-          "Adds invoices.due_on (date, nullable)",
-          "Backfills due_on as sent_at plus 30 days"
-        ]
+        "source": "builtin"
       },
       {
         "area": "api-contract",
         "label": "API contract",
-        "paths": ["services/api/schema/invoice.graphqls"],
+        "paths": ["services/api/schema/invoice.graphqls", "services/api/http/routes.go"],
         "defaultAsk": "always",
         "source": "builtin",
         "change": "additive",
-        "changeReasons": ["GraphQL schema: additive"],
-        "items": [
-          "Adds Invoice.dueOn: Date",
-          "Adds InvoiceStatus.OVERDUE",
-          "Adds Mutation.markOverdue(asOf: Date!): Int!"
-        ],
-        "undisclosed": ["Adds InvoiceStatus.OVERDUE"]
+        "changeReasons": ["GraphQL schema: additive"]
       },
       {
         "area": "housekeeping",
@@ -59,7 +53,12 @@
       {
         "area": "other",
         "label": "Other changes",
-        "paths": ["services/api/service/invoice.go", "services/api/service/invoice_overdue.go"],
+        "paths": [
+          "services/api/service/invoice.go",
+          "services/api/service/invoice_overdue.go",
+          "clients/web/src/invoices/InvoiceList.tsx",
+          "clients/web/src/invoices/useMarkOverdue.ts"
+        ],
         "defaultAsk": "never",
         "source": "builtin"
       }

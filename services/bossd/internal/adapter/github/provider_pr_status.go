@@ -79,10 +79,12 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 		return nil, fmt.Errorf("parse PR status: %w", err)
 	}
 
+	degraded := false
 	var mergeability *pullRequestMergeability
 	if raw.needsMergeability() {
 		rest, err := p.getPRMergeability(ctx, repoPath, prID)
 		if err != nil {
+			degraded = vcs.IsRateLimited(err)
 			p.logger.WithLevel(p.rateLimitLog.Level("PR mergeability", err)).Err(err).Int("pr", prID).Msg("failed to fetch PR mergeability")
 		} else {
 			mergeability = rest
@@ -98,7 +100,9 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 			return true
 		}
 		if restTrusted == nil {
-			restTrusted = p.trustedReviewNodeIDs(ctx, repoPath, prID)
+			var refused bool
+			restTrusted, refused = p.trustedReviewNodeIDs(ctx, repoPath, prID)
+			degraded = degraded || refused
 		}
 		if review.ID != "" && restTrusted[review.ID] {
 			return true
@@ -106,7 +110,9 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 		p.logUntrustedReview(prID, review.Author.Login, review.AuthorAssociation, "pr status")
 		return false
 	}
-	return buildPRStatus(raw, mergeability, trusted), nil
+	status := buildPRStatus(raw, mergeability, trusted)
+	status.Degraded = status.Degraded || degraded
+	return status, nil
 }
 
 // buildPRStatus is the one decision path from a PR's GraphQL fields to a

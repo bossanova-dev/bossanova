@@ -1,7 +1,8 @@
 {
   "schema": "proof-spec/1",
-  "head": "fb906e0ae889b53164299645ae286707749faaec",
+  "head": "7f01b165095799a6044e1db90abb66f53b6d7449",
   "title": "Give invoices a due date and mark the late ones overdue",
+  "reason": "The new status and the backfill need a person, and one test covers the overdue rule.",
   "waiting": [
     {
       "title": "A new enum value reaches every client",
@@ -16,35 +17,111 @@
   ],
   "risks": [
     {
+      "id": "R1",
       "level": "medium",
       "title": "Old clients see an unknown status",
-      "body": "A client built before OVERDUE existed receives a status it cannot display.",
-      "ifItMatters": "Ship the client that knows OVERDUE before the first markOverdue run.",
+      "impact": "A client built before OVERDUE existed receives a status it cannot display.",
+      "guard": "None.",
       "at": {
         "path": "services/api/schema/invoice.graphqls",
         "line": 15
-      }
+      },
+      "links": ["D1"]
     },
     {
-      "level": "deploy",
+      "id": "R2",
+      "level": "medium",
       "title": "The backfill locks the invoices table",
-      "body": "The UPDATE touches every sent invoice in one statement.",
-      "ifItMatters": "Run it outside billing hours.",
+      "impact": "The UPDATE touches every sent invoice in one statement, so invoice writes wait for it.",
+      "guard": "None.",
       "at": {
         "path": "services/api/migrations/0008_add_invoice_due_on.sql",
         "line": 3
-      }
+      },
+      "links": ["AC3"]
     },
     {
+      "id": "R3",
       "level": "low",
       "title": "Due today is not overdue",
-      "body": "MarkOverdue uses Before, so an invoice due on the run date stays SENT.",
+      "impact": "MarkOverdue uses Before, so an invoice due on the run date stays SENT.",
+      "guard": "The test only covers an invoice due the day before.",
       "at": {
         "path": "services/api/service/invoice_overdue.go",
         "line": 13
-      }
+      },
+      "links": ["AC1"]
     }
   ],
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Is it OK to ship `OVERDUE` before every client handles it?",
+      "why": "A client with an exhaustive switch on `InvoiceStatus` rejects a value it does not know.",
+      "suggestion": "Yes, if the web client ships in the same release.",
+      "at": {
+        "path": "services/api/schema/invoice.graphqls",
+        "line": 15
+      },
+      "links": ["R1"]
+    }
+  ],
+  "ticketFit": {
+    "summary": "The overdue rule is tested; the backfill and the list column are only in the code.",
+    "criteria": [
+      {
+        "id": "AC1",
+        "text": "Mark a sent invoice overdue once its due date passes",
+        "status": "done",
+        "evidence": [
+          {
+            "kind": "test",
+            "label": "TestMarkOverdueMovesOnlyPastDueSentInvoices",
+            "ref": "services/api/service/invoice_overdue_test.go:8"
+          }
+        ]
+      },
+      {
+        "id": "AC2",
+        "text": "Leave paid invoices alone",
+        "status": "done",
+        "evidence": [
+          {
+            "kind": "test",
+            "label": "TestMarkOverdueMovesOnlyPastDueSentInvoices",
+            "ref": "services/api/service/invoice_overdue_test.go:13"
+          }
+        ]
+      },
+      {
+        "id": "AC3",
+        "text": "Give every sent invoice a due date",
+        "status": "unverified",
+        "note": "No test runs the backfill.",
+        "evidence": [
+          {
+            "kind": "code",
+            "label": "backfill",
+            "ref": "services/api/migrations/0008_add_invoice_due_on.sql:3"
+          }
+        ]
+      },
+      {
+        "id": "AC4",
+        "text": "Show the due date in the invoice list",
+        "status": "unverified",
+        "evidence": [
+          {
+            "kind": "code",
+            "label": "dueOn column",
+            "ref": "clients/web/src/invoices/InvoiceList.tsx:10"
+          }
+        ]
+      }
+    ],
+    "skipped": [],
+    "contradictions": []
+  },
   "areas": [
     {
       "id": "api-contract",
@@ -95,12 +172,6 @@
     }
   ],
   "checklist": {
-    "before": [
-      {
-        "text": "Ship the client release that knows OVERDUE",
-        "done": false
-      }
-    ],
     "after": [
       {
         "text": "Run markOverdue once and compare the count with the billing report",

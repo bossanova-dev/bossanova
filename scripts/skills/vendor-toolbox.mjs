@@ -185,6 +185,8 @@ export const VENDOR_MAP = {
     'tracker/cli.mjs',
   ],
   'boss-repair': [
+    'skill-drift-verdict.mjs',
+    'toolbox-drift.mjs',
     'skill-pin.mjs',
     'ci/ci-request.mjs',
     'bs-dispatch-await.mjs',
@@ -210,6 +212,8 @@ export const VENDOR_MAP = {
     'worktree-sync.mjs',
   ],
   'boss-finalize': [
+    'skill-drift-verdict.mjs',
+    'toolbox-drift.mjs',
     'skill-pin.mjs',
     'ci/ci-request.mjs',
     'finalize/draft-guard.mjs',
@@ -221,6 +225,8 @@ export const VENDOR_MAP = {
     'worktree-state.mjs',
   ],
   'boss-verify': [
+    'skill-drift-verdict.mjs',
+    'toolbox-drift.mjs',
     'skill-pin.mjs',
     'cron-gates/boss-verify.mjs',
     'selection.mjs',

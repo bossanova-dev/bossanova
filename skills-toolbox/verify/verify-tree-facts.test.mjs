@@ -310,3 +310,82 @@ test('an existing proto module with unreadable base extraction fails closed', (t
       : spawnSync(command, args, options)
   assert.equal(apiSchemaChange({ ...fixture, run, env: { BUF: bin } }).change, 'breaking')
 })
+
+test('a migrations describer runs on the head and its table block reaches the page', async (t) => {
+  const { buildProofRecord } = await import('./verify-proof-build.mjs')
+  const { proofPageInput } = await import('./verify-proof-publish.mjs')
+  const { renderProofHtml } = await import('./verify-proof-page.mjs')
+  const sql = 'db/migrations/0002_add_due_on.sql'
+  const fixture = change(
+    t,
+    { 'db/migrations/0001_init.sql': 'create table invoices (id int);' },
+    { [sql]: 'alter table invoices add column due_on date;' },
+  )
+  writeFileSync(path.join(fixture.cwd, 'describe.mjs'), '')
+  const extension = {
+    name: 'custom-db',
+    dir: fixture.cwd,
+    describe: 'describe.mjs',
+    describeAreas: ['migrations', 'ui'],
+    order: 1,
+  }
+  const table = {
+    kind: 'table',
+    name: 'invoices',
+    relation: 'table',
+    change: 'changed',
+    columns: [{ name: 'due_on', type: 'date', change: 'added' }],
+  }
+  const described = []
+  const run = (command, args, options) => {
+    if (command !== process.execPath) return spawnSync(command, args, options)
+    described.push(JSON.parse(options.input).area.area)
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        ok: true,
+        role: 'proof-describe',
+        extension: extension.name,
+        items: ['Adds invoices.due_on'],
+        breaking: false,
+        undisclosed: [],
+        blocks: [table],
+      }),
+    }
+  }
+  const facts = treeAreaFacts([sql], verifyPolicyFromConfigText('{}'), {
+    ...fixture,
+    baseSha: fixture.mergeBase,
+    run,
+    trustedRoot: fixture.cwd,
+    discover: () => ({ extensions: [extension], skipped: [] }),
+  })
+  assert.deepEqual(described, ['migrations'], 'only the areas on the head run, once each')
+  const migrations = facts.areas.find((a) => a.area === 'migrations')
+  assert.deepEqual(migrations.blocks, [table])
+  const judged = {
+    verdict: 'human',
+    headSha: fixture.headSha,
+    baseSha: fixture.mergeBase,
+    confidence: { level: 'moderate', asks: [{ area: 'migrations' }], loweredBy: ['area-asks'] },
+    facts: { areas: facts.areas },
+  }
+  const built = buildProofRecord({ judged, intent: null, repo: 'acme/db', pr: 3 })
+  assert.ok(built.ok, built.reason)
+  const input = proofPageInput({
+    proof: built.proof,
+    areas: built.areas,
+    judged,
+    git: () => ({ ok: false }),
+    prBody: '',
+    repo: 'acme/db',
+    pr: 3,
+  })
+  const html = renderProofHtml(input, { files: [{ path: sql, adds: 1, dels: 0 }] })
+  const section = /<section class="sec" id="a-migrations">([\s\S]*?)<\/section>/.exec(html)?.[1]
+  assert.ok(
+    section?.includes('<span class="nm">invoices</span>'),
+    'the table renders under Migrations',
+  )
+  assert.ok(section.includes('<td class="cn">due_on</td>'))
+})

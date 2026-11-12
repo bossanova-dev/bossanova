@@ -42,6 +42,7 @@ type DisplayPoller struct {
 	receiptProbe       ReceiptPushProbe       // optional; see SetReceiptCarrier
 	evidence           EvidenceObserver       // optional; nil disables evidence reads
 	required           RequiredChecksSource   // optional; nil requires no named checks
+	stacks             StackRefresher         // optional; nil detects no stacked PRs
 	interval           time.Duration
 	logger             zerolog.Logger
 	rateLimitLog       vcs.RateLimitLog // logs each read site's quota refusal once per window
@@ -498,6 +499,9 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 				continue
 			}
 			p.pollSession(ctx, repo, sess, *sess.PRNumber)
+		}
+		if p.stacks != nil {
+			p.stacks.Refresh(ctx, repo, sessions)
 		}
 	}
 	p.pruneLastPoll(activeSessions)

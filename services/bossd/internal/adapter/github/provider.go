@@ -407,19 +407,20 @@ func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*v
 // author passes vcs.IsTrustedReviewAuthor, which recognises bots that the
 // GraphQL review list cannot. It fails closed: on a fetch error it returns an
 // empty (non-nil) set, so every untrusted-association review stays skipped.
-func (p *Provider) trustedReviewNodeIDs(ctx context.Context, repoPath string, prID int) map[string]bool {
+// The second result reports a quota refusal.
+func (p *Provider) trustedReviewNodeIDs(ctx context.Context, repoPath string, prID int) (map[string]bool, bool) {
 	trusted := map[string]bool{}
 	raw, err := p.listRawReviews(ctx, repoPath, prID)
 	if err != nil {
 		p.logger.WithLevel(p.rateLimitLog.Level("review authors", err)).Err(err).Int("pr", prID).Msg("failed to identify review authors; skipping untrusted-association reviews")
-		return trusted
+		return trusted, vcs.IsRateLimited(err)
 	}
 	for _, r := range raw {
 		if r.NodeID != "" && vcs.IsTrustedReviewAuthor(r.User.Login, r.AuthorAssociation) {
 			trusted[r.NodeID] = true
 		}
 	}
-	return trusted
+	return trusted, false
 }
 
 type pullRequestMergeability struct {
@@ -1020,7 +1021,7 @@ const openPRListQuery = `query($owner: String!, $name: String!, $cursor: String)
     pullRequests(states: OPEN, first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title headRefName headRefOid state author { login __typename }
+        number title headRefName baseRefName headRefOid state author { login __typename }
         authorship: commits(first: 10) {
           totalCount
           nodes { commit { authors(first: 5) { totalCount nodes { email user { login } } } } }

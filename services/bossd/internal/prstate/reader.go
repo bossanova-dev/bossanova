@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/recurser/bossalib/kit/vcs"
@@ -105,8 +106,9 @@ func (r *Reader) requiredFor(ctx context.Context, repo, base string) []string {
 // Read returns the state of repo#pr. Every provider read is attributed to
 // opts.Label (the pr-state usage label by default) and, unless opts.Fresh, may
 // be served from the read cache or joined to an identical read already in
-// flight. Required reads return errors. An unavailable verify confirmation
-// leaves VerifyPassed false while retaining the available snapshot.
+// flight. Required reads return errors, except a quota-refused workflow-runs
+// read returns a degraded snapshot with runs unread. An unavailable verify
+// confirmation leaves VerifyPassed false while retaining the available snapshot.
 func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (Snapshot, error) {
 	label := opts.Label
 	if label == "" {
@@ -136,14 +138,10 @@ func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (S
 	}
 	checks := set.Checks
 	if vcs.HasCancelledWorkflowCheck(checks) {
-		runs, read, err := r.readRuns(ctx, repo, status.HeadSHA)
-		if err != nil {
+		if err := r.readRuns(ctx, repo, &snap); err != nil {
 			return Snapshot{}, err
 		}
-		snap.WorkflowRuns, snap.RunsRead = runs, read
-		if read {
-			checks = vcs.ReconcileSupersededCancelled(status.HeadSHA, checks, runs)
-		}
+		checks = reconcileCancelledChecks(snap)
 	}
 	// apiversion-skip: boss pr state/wait and the skills toolbox ship with bossd
 	// but may skew. Restoring a false cancellation failure has no useful transform.
@@ -158,11 +156,9 @@ func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (S
 	}
 	if green := snap.Verdict.IsGreen(); green || opts.IncludeWorkflowRuns {
 		if !snap.RunsRead {
-			runs, read, err := r.readRuns(ctx, repo, status.HeadSHA)
-			if err != nil {
+			if err := r.readRuns(ctx, repo, &snap); err != nil {
 				return Snapshot{}, err
 			}
-			snap.WorkflowRuns, snap.RunsRead = runs, read
 		}
 		if green {
 			held := HeldHeadRuns(status.HeadSHA, snap.WorkflowRuns)
@@ -181,16 +177,37 @@ func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (S
 	return snap, nil
 }
 
-// readRuns lists the head's workflow runs and reports whether the read
-// happened. An empty head SHA cannot name its runs, so it is not read, and a
-// green head with no read is never settled.
-func (r *Reader) readRuns(ctx context.Context, repo, headSHA string) ([]vcs.WorkflowRun, bool, error) {
+// reconcileCancelledChecks keeps a cancellation pending until its replacement
+// runs can be read. Raw results stay intact, and other failures still settle.
+func reconcileCancelledChecks(snap Snapshot) []vcs.CheckResult {
+	if snap.RunsRead {
+		return vcs.ReconcileSupersededCancelled(snap.Status.HeadSHA, snap.Checks, snap.WorkflowRuns)
+	}
+	checks := slices.Clone(snap.Checks)
+	for i := range checks {
+		if vcs.HasCancelledWorkflowCheck(checks[i : i+1]) {
+			checks[i].Status, checks[i].Conclusion = vcs.CheckStatusInProgress, nil
+		}
+	}
+	return checks
+}
+
+// readRuns records the head's workflow runs or marks the snapshot degraded on
+// a quota refusal. An empty head SHA cannot name its runs, so it is not read,
+// and a green head with no read is never settled.
+func (r *Reader) readRuns(ctx context.Context, repo string, snap *Snapshot) error {
+	headSHA := snap.Status.HeadSHA
 	if headSHA == "" {
-		return nil, false, nil
+		return nil
 	}
 	runs, err := r.provider.ListWorkflowRuns(ctx, repo, headSHA)
-	if err != nil {
-		return nil, false, fmt.Errorf("list workflow runs %s@%s: %w", repo, headSHA, err)
+	if vcs.IsRateLimited(err) {
+		snap.Degraded = true
+		return nil
 	}
-	return runs, true, nil
+	if err != nil {
+		return fmt.Errorf("list workflow runs %s@%s: %w", repo, headSHA, err)
+	}
+	snap.WorkflowRuns, snap.RunsRead = runs, true
+	return nil
 }

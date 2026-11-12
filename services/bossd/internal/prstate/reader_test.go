@@ -3,6 +3,7 @@ package prstate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -406,5 +407,69 @@ func TestReadPropagatesDegradedSnapshot_Callbacks_AC245501(t *testing.T) {
 		if snap.Degraded != (tc.status || tc.checks) {
 			t.Fatalf("degraded=%v for %+v", snap.Degraded, tc)
 		}
+	}
+}
+
+func TestReadWorkflowRunsQuotaRefusal_Callbacks_AC245701(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		checks  []vcs.CheckResult
+		include bool
+		green   bool
+	}{
+		{"green", []vcs.CheckResult{passed("ci")}, false, true},
+		{"pending requested runs", []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusInProgress}}, true, false},
+		{"cancelled", []vcs.CheckResult{{Name: "ci", Workflow: "CI", Status: vcs.CheckStatusCompleted, Conclusion: conclusion(vcs.CheckConclusionCancelled)}}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &recordingProvider{status: openStatus(), set: vcs.CheckSet{Checks: tc.checks}, runsErr: fmt.Errorf("quota: %w", vcs.ErrRateLimited)}
+			snap := read(t, p, Options{IncludeWorkflowRuns: tc.include})
+			if !snap.Degraded || snap.RunsRead || len(snap.HeldRuns) != 0 || len(snap.WorkflowRuns) != 0 {
+				t.Fatalf("refused snapshot = %+v", snap)
+			}
+			if tc.green {
+				if snap.RunsSettled == nil || *snap.RunsSettled {
+					t.Fatalf("green settlement = %v", snap.RunsSettled)
+				}
+				if evaluateWait(checksWait(7), snap, head) != waitPending {
+					t.Fatal("green head settled without reading runs")
+				}
+			} else if snap.RunsSettled != nil {
+				t.Fatal("non-green verdict carried settlement")
+			}
+		})
+	}
+}
+
+func TestReadCancelledChecksAwaitQuotaRecovery_Callbacks_AC245701(t *testing.T) {
+	cancelled := vcs.CheckResult{Name: "ci", Workflow: "CI", Status: vcs.CheckStatusCompleted, Conclusion: conclusion(vcs.CheckConclusionCancelled)}
+	for _, tc := range []struct {
+		name   string
+		checks []vcs.CheckResult
+		want   vcs.CheckVerdictState
+		wait   WaitOutcome
+	}{
+		{"cancellation needs reconciliation", []vcs.CheckResult{cancelled}, vcs.CheckVerdictPending, waitPending},
+		{"real failure still settles", []vcs.CheckResult{cancelled, {Name: "test", Status: vcs.CheckStatusCompleted, Conclusion: conclusion(vcs.CheckConclusionFailure)}}, vcs.CheckVerdictFailing, WaitMet},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &recordingProvider{status: openStatus(), set: vcs.CheckSet{Checks: tc.checks}, runsErr: vcs.ErrRateLimited}
+			snap := read(t, p, Options{})
+			if snap.Verdict.State != tc.want || evaluateWait(checksWait(7), snap, head) != tc.wait || !snap.Degraded || snap.RunsRead {
+				t.Fatalf("refused cancellation snapshot = %+v", snap)
+			}
+			if *snap.Checks[0].Conclusion != vcs.CheckConclusionCancelled {
+				t.Fatal("reconciliation changed the raw check result")
+			}
+		})
+	}
+	p := &recordingProvider{status: openStatus(), set: vcs.CheckSet{Checks: []vcs.CheckResult{cancelled, passed("replacement")}}, runsErr: vcs.ErrRateLimited}
+	if snap := read(t, p, Options{}); evaluateWait(checksWait(7), snap, head) != waitPending {
+		t.Fatal("cancelled check settled before its replacement runs were readable")
+	}
+	p.runsErr = nil
+	p.runs = []vcs.WorkflowRun{{Name: "CI", HeadSHA: head, Status: "completed", Conclusion: "success"}}
+	if snap := read(t, p, Options{}); !snap.Verdict.IsGreen() || evaluateWait(checksWait(7), snap, head) != WaitMet {
+		t.Fatalf("recovered cancellation snapshot = %+v", snap)
 	}
 }

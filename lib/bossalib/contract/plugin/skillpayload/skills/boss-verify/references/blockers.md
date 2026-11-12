@@ -61,14 +61,19 @@ the repository. The newest writer-authored blockers comment for that head wins. 
 The standing review report carries a final machine-readable line:
 
 ```text
-<!-- bs-review-findings v1 base=<40-hex> head=<40-hex> <base64url JSON> -->
+<!-- bs-review-findings v2 base=<40-hex> head=<40-hex> <base64url JSON> -->
 ```
 
-The JSON array contains verified, unfixed findings with `id`, `severity`, `file`, `line`, `title`,
-`evidence` and `introduced`. `parseReportFindings` is the sole reader; missing or malformed trailers
-return null. Encoding protects embedded comment terminators. Large evidence is truncated with `…`
-around the 48 KB encoded payload budget, retaining titles and keeping the report under the comment
-limit.
+The JSON object has three lists. `findings` holds the verified, unfixed findings with `id`,
+`severity`, `file`, `line`, `title`, `evidence` and `introduced`. `fixed` holds the findings fixed
+in review with `id`, `severity`, `file`, `line`, `title`, `evidence` and, when known, `fixCommit`.
+`acceptance` holds one row per certified criterion with `id`, `text`, `result`, `check` and the
+`head` it was checked on. A `v1` trailer's JSON is the `findings` array alone and still reads, with
+no fixed findings and no acceptance rows. `parseReportFindings` is the sole reader; missing or
+malformed trailers return null. Encoding protects embedded comment terminators. Large evidence is
+truncated with `…` around the 48 KB encoded payload budget, retaining titles and keeping the
+report under the comment limit. Only `findings` decides blockers. The judge output carries all
+three lists, as `reviewUnfixed`, `reviewFixed` and `reviewAcceptance`, for the proof page.
 
 The most recently updated valid report from a writer stands for subsequent heads until a newer
 report supersedes it. A repair fixing a review-finding blocker must publish a superseding review

@@ -304,7 +304,7 @@ func TestOpenPRSnapshotListMatchesGHPRList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want0 := vcs.PRSummary{Number: 1, Title: "clean", HeadBranch: "feature-1", State: vcs.PRStateOpen, Author: "app/dependabot", HeadSHA: "sha1"}
+	want0 := vcs.PRSummary{Number: 1, Title: "clean", HeadBranch: "feature-1", BaseBranch: "main", State: vcs.PRStateOpen, Author: "app/dependabot", HeadSHA: "sha1"}
 	if len(prs) != 9 || !reflect.DeepEqual(prs[0], want0) || prs[1].Author != "alice" {
 		t.Fatalf("open PRs = %+v; want 9 led by %+v", prs, want0)
 	}
@@ -729,6 +729,22 @@ func TestOpenPRListCommitAuthorship(t *testing.T) {
 	want := []vcs.CommitAuthor{{Email: "49699333+dependabot[bot]@users.noreply.github.com"}, {Login: "alice", Email: "alice@example.com"}}
 	if len(prs) != 3 || prs[1].HeadSHA == "" || !prs[1].CommitAuthorsComplete || !reflect.DeepEqual(prs[1].CommitAuthors, want) || prs[2].CommitAuthorsComplete {
 		t.Fatalf("summaries = %+v", prs)
+	}
+}
+
+// GraphQL answers only the fields a query selects, so the uncached open-PR
+// list carries each PR's base branch only when its query asks for it.
+func TestOpenPRListReadsBaseBranch(t *testing.T) {
+	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		node := `{"number":5,"title":"t","headRefName":"child","headRefOid":"sha5","state":"OPEN"}`
+		if isOpenPRList(args) && strings.Contains(strings.Join(args, " "), " baseRefName ") {
+			node = `{"number":5,"title":"t","headRefName":"child","baseRefName":"production","headRefOid":"sha5","state":"OPEN"}`
+		}
+		return listPage("[" + node + "]"), nil
+	}))
+	prs, err := p.ListOpenPRs(t.Context(), "o/r")
+	if err != nil || len(prs) != 1 || prs[0].BaseBranch != "production" {
+		t.Fatalf("open PRs = %+v, %v; want one PR into production", prs, err)
 	}
 }
 

@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "prstack",
+    srcs = [
+        "detector.go",
+        "resolve.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/prstack",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/kit/vcs",
+        "//lib/bossalib/models",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "prstack_test",
+    srcs = [
+        "detector_test.go",
+        "resolve_test.go",
+    ],
+    embed = [":prstack"],
+    deps = [
+        "//lib/bossalib/kit/vcs",
+        "//lib/bossalib/models",
+        "//services/bossd/internal/adapter/git",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

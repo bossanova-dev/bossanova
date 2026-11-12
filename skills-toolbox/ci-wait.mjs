@@ -31,7 +31,7 @@
 //   timeout   budget exhausted while still waiting      terminal (carries `trend`)
 //   unknown   anything the classifier will not call     terminal (an `absent-gate` one carries
 //             green or red, plus `delay-inert` and      `absentGateRemedy`)
-//             `repeated-interruption`
+//             `repeated-interruption` or `stranded-check` (carries `stranded` and `strandedRemedy`)
 //   continue  chunk used up, budget left                NOT terminal — issue `run` again in a new
 //                                                       call; never assign it to CI_WAIT_STATE
 //
@@ -66,7 +66,13 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { isMainModule } from './main-module.mjs'
-import { CHECK_REASONS, CHECK_STATES, absentGateRemedy, classifyChecks } from './pr-check-state.mjs'
+import {
+  CHECK_REASONS,
+  CHECK_STATES,
+  absentGateRemedy,
+  classifyChecks,
+  strandedRemedy,
+} from './pr-check-state.mjs'
 import {
   FALLBACK_LABELS,
   PR_WAIT_CAP_MS,
@@ -101,11 +107,14 @@ export const INTERRUPTION_LIMIT = 3
 // How long a head must keep reading not-requested before the wait ends on it: well past the lag
 // between a push and Actions creating that head's workflow runs.
 export const NOT_REQUESTED_SETTLE_MS = 3 * 60 * 1000
+// Allow GitHub time to publish check completion after its workflow completed.
+export const STRANDED_SETTLE_MS = 5 * 60 * 1000
 // Delays shorter than this cannot be told apart from an inert timer, so none is ever requested.
 export const MIN_DELAY_MS = 1000
 // A read is only started when at least this much chunk time remains for it.
 const READ_FLOOR_MS = 1000
-const READINGS_KEPT = 200
+const READINGS_KEPT =
+  Math.ceil(Math.max(NOT_REQUESTED_SETTLE_MS, STRANDED_SETTLE_MS) / MIN_DELAY_MS) + 2
 
 export const WAIT_STATES = Object.freeze({
   SETTLED: 'settled',
@@ -121,6 +130,7 @@ export const WAIT_REASONS = Object.freeze({
   HEAD_CHANGED: 'head-changed',
   DELAY_INERT: 'delay-inert',
   REPEATED_INTERRUPTION: 'repeated-interruption',
+  STRANDED_CHECK: 'stranded-check',
 })
 
 export const TRENDS = Object.freeze({
@@ -301,6 +311,8 @@ function recordReading(record, reading) {
     pendingRuns: v.pendingRuns ?? [],
     notRequested: v.notRequested ?? [],
     absentGateRemedy: absentGateRemedy(v),
+    stranded: v.stranded ?? [],
+    strandedRemedy: strandedRemedy(v),
     verifyHold: reading.verifyHold ?? null,
     excludedContexts: reading.excludedContexts ?? [],
     // The raw latest `boss/verify` status the statuses read returned, kept as evidence.
@@ -311,6 +323,13 @@ function recordReading(record, reading) {
     headSha: reading.headSha,
     // Whether the reading bypassed every read cache; only a fresh daemon reading may confirm a green.
     fresh: reading.fresh === true,
+    strandedKey: JSON.stringify(v.stranded ?? []),
+    strandedOnly:
+      v.state === CHECK_STATES.PENDING &&
+      v.reason === CHECK_REASONS.PENDING &&
+      v.pendingRuns?.length === 0 &&
+      v.stranded?.length > 0 &&
+      v.stranded.length === v.pending,
     state: reading.verdict.state,
     reason: reading.verdict.reason,
     // An unreadable read counted nothing; a zero here would read as a fall to the trend.
@@ -322,23 +341,19 @@ function recordReading(record, reading) {
   }
 }
 
-// confirmsNotRequested: a missing required run only ends the wait once the head's consecutive
-// not-requested readings span NOT_REQUESTED_SETTLE_MS. Any head run (a push-event run, a third-party
-// app's run) can make the classifier read CI as started while Actions is still creating the run
-// that carries the required check, so two reads one interval apart are no proof it never will.
-function confirmsNotRequested(record) {
+function heldFor(record, matches, windowMs) {
   const n = record.readings.length
   const last = record.readings[n - 1]
-  if (last?.reason !== CHECK_REASONS.NOT_REQUESTED) return false
+  if (!last || !matches(last)) return false
   let first = n - 1
   while (
     first > 0 &&
-    record.readings[first - 1].reason === CHECK_REASONS.NOT_REQUESTED &&
+    matches(record.readings[first - 1]) &&
     record.readings[first - 1].headSha === last.headSha
   ) {
     first -= 1
   }
-  return first < n - 1 && last.atMs - record.readings[first].atMs >= NOT_REQUESTED_SETTLE_MS
+  return first < n - 1 && last.atMs - record.readings[first].atMs >= windowMs
 }
 
 function totalBudget(record) {
@@ -542,6 +557,8 @@ export async function runChunk({ state, read, wait = null, sleep, now, options }
       pendingRuns: record.lastDetail?.pendingRuns ?? [],
       notRequested: record.lastDetail?.notRequested ?? [],
       absentGateRemedy: record.lastDetail?.absentGateRemedy ?? 'none',
+      stranded: record.lastDetail?.stranded ?? [],
+      strandedRemedy: record.lastDetail?.strandedRemedy ?? [],
       verifyHold: record.lastDetail?.verifyHold ?? null,
       excludedContexts: record.lastDetail?.excludedContexts ?? [],
       stateFile: state.pathFor?.(record.headSha) ?? null,
@@ -552,6 +569,11 @@ export async function runChunk({ state, read, wait = null, sleep, now, options }
         `${record.reads} read(s), ${seconds(elapsedMs)} of ${seconds(budgetMs)}; ` +
         `${verdict.pending ?? '?'} pending of ${verdict.total ?? '?'}; trend ${trend}`,
     )
+    if (reason === WAIT_REASONS.STRANDED_CHECK) {
+      messages.push(
+        `ci-wait: stranded checks: ${verdict.stranded.map((entry, i) => `${entry.name}: ${verdict.strandedRemedy[i]}`).join('; ')}`,
+      )
+    }
     return { verdict, record, messages }
   }
 
@@ -586,14 +608,22 @@ export async function runChunk({ state, read, wait = null, sleep, now, options }
   const maxReads = Math.ceil(opts.chunkMs / MIN_DELAY_MS) + 2
   for (;;) {
     reads += 1
-    const decision = mapVerdict(reading.verdict)
+    const strandedKey = record.readings.at(-1)?.strandedKey
+    const decision = heldFor(
+      record,
+      (r) => r.strandedOnly === true && r.strandedKey === strandedKey,
+      STRANDED_SETTLE_MS,
+    )
+      ? { wait: false, state: WAIT_STATES.UNKNOWN, reason: WAIT_REASONS.STRANDED_CHECK }
+      : mapVerdict(reading.verdict)
     // A green read settles only once a second read of the same head confirms it; until then it is
     // one more interval of waiting like any pending read.
     const daemonPath = read.source?.() === 'daemon'
     const greenRule = { fresh: daemonPath, intervalMs: opts.intervalMs }
     const unconfirmed =
       (decision.state === WAIT_STATES.SETTLED && !confirmsGreen(record, greenRule)) ||
-      (decision.reason === CHECK_REASONS.NOT_REQUESTED && !confirmsNotRequested(record))
+      (decision.reason === CHECK_REASONS.NOT_REQUESTED &&
+        !heldFor(record, (r) => r.reason === CHECK_REASONS.NOT_REQUESTED, NOT_REQUESTED_SETTLE_MS))
     // The daemon's checks carry no SHA and may be cached from an older head than its status, so a
     // daemon-path wait ends only on a fresh reading: a cached terminal one is re-read fresh first.
     const cached = daemonPath && reading.fresh !== true

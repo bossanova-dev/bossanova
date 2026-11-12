@@ -11,6 +11,7 @@ import {
   parseJudgeRecord,
   judgeRecordMarker,
   judgeAreasFor,
+  judgeReview,
 } from './verify-judge.mjs'
 
 const headSha = 'a'.repeat(40)
@@ -242,12 +243,12 @@ test('record unions preserve more than one dispatch limit of additions', () => {
   assert.equal(judgeAreasFor([...records, encodeJudgeRecord([])], { headSha, files }).length, 16)
 })
 
-test('neverReview filters persisted judge paths only when every rename side is omitted', () => {
+test('noSignOff filters persisted judge paths only when every rename side is omitted', () => {
   const docs = { ...entry, path: 'docs/x.md' }
   const record = Buffer.from(JSON.stringify([docs])).toString('base64url')
-  const context = { headSha, files: [{ path: docs.path }], neverReview: ['docs/**'] }
+  const context = { headSha, files: [{ path: docs.path }], noSignOff: ['docs/**'] }
   assert.deepEqual(judgeAreasFor([record], context), [])
-  assert.equal(judgeAreasFor([record], { ...context, neverReview: [] }).length, 1)
+  assert.equal(judgeAreasFor([record], { ...context, noSignOff: [] }).length, 1)
   assert.equal(judgeAreasFor([record], { headSha, files: context.files }).length, 1)
   for (const file of [
     { path: docs.path, previousPath: 'src/x.md' },
@@ -259,7 +260,7 @@ test('neverReview filters persisted judge paths only when every rename side is o
     judgeAreasFor([Buffer.from(JSON.stringify([entry])).toString('base64url')], {
       headSha,
       files,
-      neverReview: ['docs/**'],
+      noSignOff: ['docs/**'],
     }).length,
     1,
   )
@@ -270,6 +271,43 @@ test('neverReview filters persisted judge paths only when every rename side is o
     }),
     [],
   )
+})
+
+test('judgeReview keeps findings on noSignOff paths as notes, never as asking areas', () => {
+  const docs = { ...entry, label: 'Docs drift', path: 'docs/x.md', reason: 'Stale example' }
+  const code = { ...entry, label: 'Access', path: 'src/a.go', reason: 'Access checks removed' }
+  const record = Buffer.from(JSON.stringify([docs, code])).toString('base64url')
+  const context = {
+    headSha,
+    files: [{ path: docs.path }, { path: code.path }],
+    noSignOff: ['docs/**'],
+  }
+  const review = judgeReview([record], context)
+  assert.deepEqual(
+    review.notes.map((a) => [a.label, a.paths, a.reason]),
+    [['Docs drift', ['docs/x.md'], 'Stale example']],
+  )
+  assert.deepEqual(
+    review.areas.map((a) => [a.label, a.paths, a.reason]),
+    [['Access', ['src/a.go'], 'Access checks removed']],
+  )
+  assert.deepEqual(judgeAreasFor([record], context), review.areas)
+  assert.equal(judgeReview([], context), undefined)
+  assert.deepEqual(judgeReview([record], { ...context, noSignOff: [] }).notes, [])
+  assert.equal(judgeReview([record], { ...context, noSignOff: [] }).areas.length, 2)
+  // A rename with one side outside the globs stays an ask, as for judgeAreasFor.
+  const renamed = judgeReview([Buffer.from(JSON.stringify([docs])).toString('base64url')], {
+    ...context,
+    files: [{ path: docs.path, previousPath: 'src/x.md' }],
+  })
+  assert.equal(renamed.areas.length, 1)
+  assert.deepEqual(renamed.notes, [])
+  const within = judgeReview([Buffer.from(JSON.stringify([docs])).toString('base64url')], {
+    ...context,
+    files: [{ path: docs.path, previousPath: 'docs/old.md' }],
+  })
+  assert.deepEqual(within.areas, [])
+  assert.equal(within.notes.length, 1)
 })
 
 test('policy decisions and describer evidence cross the closed judge boundary', async () => {

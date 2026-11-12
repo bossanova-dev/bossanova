@@ -10,6 +10,9 @@ the plan file, the description artifact and the sentinel. Only the epic path wri
 
 ## Inputs
 
+- `RECON_REF` — Phase 0's measured code ref; `HEAD` means current, another ref supplies the
+  fresher code. Treat a missing value from an older orchestrator as `HEAD`.
+
 - `ISSUE-ID`, `title`, and `DESCRIPTION_SNAPSHOT_PATH`
   (`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`) — the tracker's **stored**
   description, written before you were dispatched. It is the only source for `## Original notes`:
@@ -80,6 +83,12 @@ priority, otherwise rank against the planned backlog.
 | ≥ 5 / epic     | Full recon; epic per `epic.md`                                              | Targeted runs as needed, each wrapped in `beat` | Full, or epic                                                    |
 
 ## Step 2 — Recon
+
+- When `RECON_REF` is not `HEAD`, read code at it with `git show <RECON_REF>:<path>`,
+  `git grep <pattern> <RECON_REF> -- <path>` and `git ls-tree -r --name-only <RECON_REF>`.
+  Keep premise and criterion `check:` commands ref-neutral, since builds use the base tip.
+  The contract guard resolves citations against the working tree: when a cited file differs
+  from `RECON_REF`, cite its path without a line number rather than a working-tree line.
 
 - **Read the ticket's evidence attachments** (notes, findings, logs, transcripts, specs) before
   fixing scope. A description is often a summary of a longer attached list; scope against the
@@ -154,7 +163,7 @@ bash <skill-dir>/toolbox/plan/boss-plan-run.sh run-tmp create
   read from its descriptor's `skillPath` (resources resolve from `dir`) — never as a nested
   dispatch, and never through the Skill tool. Give each its own plan target
   (`<runTmp>/draft-<extension-name>/<basename of PLAN_PATH>`) and the envelope
-  `{role: "draft", core: "boss-plan", context: {mode: "headless", planPath, ticket}, runTmp, outPath}`.
+  `{role: "draft", core: "boss-plan", context: {mode: "headless", planPath, ticket, reconRef: RECON_REF}, runTmp, outPath}`.
   One **succeeds** only when its envelope is valid **and** it wrote a non-empty plan at its own
   target; promote the first success to `PLAN_PATH`. Record every failure as a skip. Any success
   suppresses tiers 2 and 3.

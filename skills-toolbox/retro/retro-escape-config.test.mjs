@@ -51,7 +51,7 @@ test('skip reasons reflect overlap, generated content, configured coverage and b
     propose(['a/x.go', 'db/x.sql'], { alwaysReview: { Existing: ['a/**'] } }).skipped[0].reason,
     'already-asks',
   )
-  assert.equal(propose(['a/x.go'], { neverReview: ['a/**'] }).proposals.length, 1)
+  assert.equal(propose(['a/x.go'], { noSignOff: ['a/**'] }).proposals.length, 1)
 })
 
 test('mixed rows retain uncovered test/docs paths and name their first remaining area', () => {

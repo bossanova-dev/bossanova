@@ -103,7 +103,7 @@ test('review paths render named areas, park codes, omissions and legacy deprecat
           label: 'API schema',
         },
       ],
-      neverReview: ['dbt/**'],
+      noSignOff: ['dbt/**'],
       deprecations: [],
     },
   })
@@ -112,8 +112,10 @@ test('review paths render named areas, park codes, omissions and legacy deprecat
     text,
     /### alwaysReview[\s\S]*#### API schema[\s\S]*`always-human-path`[\s\S]*`entity\/\*\*`/,
   )
-  assert.match(text, /### neverReview[\s\S]*`dbt\/\*\*`/)
+  assert.match(text, /### noSignOff[\s\S]*never ask a person[\s\S]*`dbt\/\*\*`/)
+  assert.doesNotMatch(text, /### neverReview/)
   assert.match(text, /legacy keys.*deprecated/i)
+  assert.match(text, /`neverReview` is the deprecated alias of `noSignOff`/)
 })
 
 test('merge rules render each base rule, or say nothing merges without one', async () => {

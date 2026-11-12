@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import * as blockerRules from './verify-blockers.mjs'
+import { isBlocking } from '../review-verdict.mjs'
 import {
   operatorNoteBlocker,
   MAX_OPERATOR_NOTE_CHARS,
@@ -29,6 +31,44 @@ const finding = (extra = {}) => ({
   ...extra,
 })
 const file = (blockers) => ({ version: 1, pr: 3752, head: 'a'.repeat(40), blockers })
+
+test('the blocking predicate admits only verified introduced unfixed P0–P2 defects', () => {
+  for (const severity of ['P0', 'P1', 'P2', 'p0', 'p1', 'p2']) {
+    const f = finding({ severity })
+    assert.equal(blockerRules.isBlockingFinding(f), true)
+    assert.equal(buildBlockers({ reviewFindings: [f] })[0].severity, severity.toUpperCase())
+  }
+  for (const extra of [
+    { severity: 'P3' },
+    { severity: 'style' },
+    { category: 'style' },
+    { severity: 'P0', verified: false },
+    { severity: 'P0', introduced: false },
+    { severity: 'P0', fixed: true },
+  ])
+    assert.equal(blockerRules.isBlockingFinding(finding(extra)), false, JSON.stringify(extra))
+})
+
+test('build and verify agree across the review finding blocking matrix', () => {
+  assert.equal(isBlocking, blockerRules.isBlockingFinding)
+  for (const severity of ['P0', 'P1', 'P2', 'P3', 'style', 'p0', 'p1', 'p2', 'p3', 'Style'])
+    for (const verified of [false, true])
+      for (const introduced of [false, true])
+        for (const fixed of [false, true]) {
+          const f = finding({ severity, verified, introduced, fixed })
+          const expected =
+            ['P0', 'P1', 'P2'].includes(severity.toUpperCase()) && verified && introduced && !fixed
+          assert.equal(isBlocking(f), expected, JSON.stringify(f))
+          assert.equal(
+            buildBlockers({ reviewFindings: [f] }).length > 0,
+            expected,
+            JSON.stringify(f),
+          )
+        }
+  const note = finding({ category: 'style' })
+  assert.equal(isBlocking(note), false)
+  assert.deepEqual(buildBlockers({ reviewFindings: [note] }), [])
+})
 
 test('verified introduced unfixed P2 yields a stable located blocker', () => {
   const f = finding()

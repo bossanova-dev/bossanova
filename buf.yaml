@@ -44,6 +44,15 @@ modules:
           - proto/bossanova/v1/daemon.proto
         FIELD_NO_DELETE:
           - proto/bossanova/v1/daemon.proto
+        # stream.proto is the bossd<->bosso stream contract. The CloudControl
+        # enum moved to models.proto (same package, same wire numbers) so
+        # Session.cloud_control can name it: models.proto cannot import
+        # stream.proto, which already imports it. ENUM_NO_DELETE reports that
+        # move as a deletion. A move is wire- and Go-identical; deleting an enum
+        # a field still uses fails to compile, and FIELD_SAME_TYPE still guards
+        # every field that names one.
+        ENUM_NO_DELETE:
+          - proto/bossanova/v1/stream.proto
         # plugin.proto is the bossd<->plugin contract; both sides ship from
         # this repo in lockstep. NewVersionedPluginMap in
         # services/bossd/internal/plugin/shared.go refuses a plugin whose

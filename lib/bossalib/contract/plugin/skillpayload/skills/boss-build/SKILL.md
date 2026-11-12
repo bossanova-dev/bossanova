@@ -90,7 +90,7 @@ Every helper ships in `toolbox/`. After Preflight, shell blocks and dispatched s
 resolve the same private pin from the worktree git dir:
 
 ```bash
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 ```
@@ -288,7 +288,7 @@ fi
 printf '%s\n%s\n' "$BLI_RUNID" "$START_SHA" >"$RUN_RECORD" || exit 1
 # Pin the healed skill before any later helper or reference is read.
 node "$BOSS_BUILD_TOOLBOX/skill-pin.mjs" create --skill boss-build || exit 1
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 export BOSS_BUILD_PIN BOSS_BUILD_TOOLBOX
@@ -366,7 +366,7 @@ mint a new token here. A failed Preflight releases its lock through its EXIT tra
 rejected by that acquisition stops `NO_CHANGE` without touching the pin or tracker.
 
 ```bash
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 LOCK="$BOSS_BUILD_TOOLBOX/worktree-lock.sh"
@@ -451,7 +451,7 @@ create a `boss-build/<ticket-id>` branch off the base first
 # Stays on gh: the ownership judgement reads the PR title and body, which the daemon does not carry.
 PR_JSON="$(gh pr list --head "$SESSION_BRANCH" --state open \
   --json number,title,body,headRefName,state)"
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 PR_NUMBER="$(node "$BOSS_BUILD_TOOLBOX/build/pr-ownership.mjs" number --pr-json "$PR_JSON")"
@@ -470,7 +470,7 @@ body, and real commits ahead of `$BASE_REF` (ignoring bossd's empty bootstrap co
 ## Step 3: Claim
 
 ```bash
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 TOKEN="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-token)"
@@ -556,7 +556,7 @@ an existing tracker link; later rank refresh fills sessions skipped here.
 Save the `getIssue` payload as `$ISSUE_JSON`. The plan lives in the tracker, never the repo:
 
 ```bash
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 PLAN_FILE="$(git rev-parse --git-dir)/boss-build/plan.md"
@@ -884,7 +884,7 @@ Every route from Step 6 comes through here.
 ## Step 8: Tag and get to green
 
 ```bash
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" || exit 1

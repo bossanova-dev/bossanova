@@ -63,11 +63,11 @@ function run(argv, files = {}, overrides = {}) {
 
 const withVerdict = (v) => ({ '/v.json': JSON.stringify(v) })
 
-test('only a verified, introduced, unfixed P0/P1 finding blocks', () => {
+test('only a verified, introduced, unfixed P0–P2 finding blocks', () => {
   const cases = [
     [finding(), 'blocked'],
     [finding({ severity: 'P0' }), 'blocked'],
-    [finding({ severity: 'P2' }), 'pass'],
+    [finding({ severity: 'P2' }), 'blocked'],
     [finding({ severity: 'P3' }), 'pass'],
     [finding({ verified: false }), 'pass'],
     [finding({ introduced: false }), 'pass'],
@@ -140,11 +140,11 @@ test('usage errors exit 2', () => {
 test('a passing PR section carries no Review findings heading; a blocked one names file:line', () => {
   const pass = run(
     ['render', '/v.json', '--pr-section'],
-    withVerdict(verdict([finding({ severity: 'P2' })])),
+    withVerdict(verdict([finding({ severity: 'P2', introduced: false })])),
   )
   const passSections = sections(pass.out)
   assert.equal(passSections.has('review findings'), false)
-  assert.ok(passSections.get('unapplied review findings').some((l) => l.includes('src/a.go:12')))
+  assert.ok(passSections.get('review notes').some((l) => l.includes('src/a.go:12')))
 
   const blocked = run(['render', '/v.json', '--pr-section'], withVerdict(verdict([finding()])))
   assert.ok(
@@ -436,10 +436,10 @@ function resolutionPool(verdicts) {
   return { ...result, pooled: JSON.parse(files['/pooled.json']) }
 }
 
-test('later explicit resolutions retire P2/P3 findings from PR sections and report trailers', () => {
-  for (const severity of ['P2', 'P3']) {
+test('later explicit resolutions retire notes and pre-existing P2 findings', () => {
+  for (const extra of [{ severity: 'P2', introduced: false }, { severity: 'P3' }]) {
     const { pooled, err } = resolutionPool([
-      { pass: '1', value: verdict([finding({ severity })]) },
+      { pass: '1', value: verdict([finding(extra)]) },
       { pass: '2', value: verdict([], { resolves: ['1.1:f1'], head: 'c'.repeat(40) }) },
     ])
     const f = pooled.findings[0]
@@ -469,16 +469,17 @@ test('resolved pre-existing P0/P1 findings leave followups', () => {
   }
 })
 
-test('pool cannot clear a blocking finding and keeps stdout to the capped note', () => {
-  const result = resolutionPool([
-    { pass: '1', value: verdict([finding()]) },
-    { pass: '2', value: verdict([], { resolves: ['1.1:f1'] }) },
-  ])
-  assert.equal(result.pooled.findings[0].fixed, false)
-  assert.equal(result.pooled.status, 'blocked')
-  assert.equal(result.out, 'capped\n')
-  assert.match(result.err, /1\.1:f1.*blocking/)
-})
+for (const severity of ['P0', 'P1', 'P2'])
+  test(`pool cannot clear a blocking ${severity} finding and keeps the capped note`, () => {
+    const result = resolutionPool([
+      { pass: '1', value: verdict([finding({ severity })]) },
+      { pass: '2', value: verdict([], { resolves: ['1.1:f1'] }) },
+    ])
+    assert.equal(result.pooled.findings[0].fixed, false)
+    assert.equal(result.pooled.status, 'blocked')
+    assert.equal(result.out, 'capped\n')
+    assert.match(result.err, /1\.1:f1.*blocking/)
+  })
 
 test('pool warns for unknown, same-pass and later-pass resolution refs', () => {
   const result = resolutionPool([
@@ -563,7 +564,8 @@ test('appending a passing review resolving every earlier ref never improves the 
 
 test('resolvable lists only verified unfixed nonblocking ref-bearing findings', () => {
   const findings = [
-    finding({ id: 'p2', severity: 'P2', ref: '1.1:p2' }),
+    finding({ id: 'p2', severity: 'P2', introduced: false, ref: '1.1:p2' }),
+    finding({ id: 'p3', severity: 'P3', ref: '1.1:p3' }),
     finding({ id: 'old', introduced: false, ref: '1.1:old' }),
     finding({ id: 'block', ref: '1.1:block' }),
     finding({ id: 'unverified', severity: 'P3', verified: false, ref: '1.1:unverified' }),
@@ -574,7 +576,7 @@ test('resolvable lists only verified unfixed nonblocking ref-bearing findings', 
   assert.equal(result.code, 0)
   assert.deepEqual(
     JSON.parse(result.out),
-    findings.slice(0, 2).map(({ ref, severity, introduced, file, line, title }) => ({
+    findings.slice(0, 3).map(({ ref, severity, introduced, file, line, title }) => ({
       ref,
       severity,
       introduced,
@@ -650,7 +652,7 @@ test('report trailers preserve category-style notes for the shared note predicat
   assert.equal(parsed.findings[0].severity, 'style')
 })
 
-test('review notes fold separately from unapplied P2 findings without holding the review', () => {
+test('review notes fold with pre-existing P2 findings without holding the review', () => {
   for (const note of [
     finding({ severity: 'P3' }),
     finding({ severity: 'style' }),
@@ -658,7 +660,6 @@ test('review notes fold separately from unapplied P2 findings without holding th
     finding({ severity: 'P1', category: 'style' }),
   ]) {
     assert.equal(reviewVerdict.isReviewNote(note), true)
-    assert.equal(reviewVerdict.isUnapplied(note), false)
     assert.equal(reviewVerdict.isReviewNote({ ...note, verified: false }), false)
     assert.equal(reviewVerdict.isReviewNote({ ...note, fixed: true }), false)
     const result = { status: 'pass', verdict: verdict([note]), errors: [] }
@@ -669,7 +670,7 @@ test('review notes fold separately from unapplied P2 findings without holding th
       pr,
       /## Review notes\n1 note — notes never block\n\n<details><summary>Notes<\/summary>/,
     )
-    assert.match(report, /0 unapplied, 1 notes\./)
+    assert.match(report, /0 pre-existing, 1 notes\./)
     assert.match(
       report,
       /### Notes \(never block\)\n1 note — notes never block\n\n<details><summary>Notes<\/summary>/,
@@ -687,15 +688,18 @@ test('review notes fold separately from unapplied P2 findings without holding th
   const result = verdictStatus(
     verdict([
       finding({ id: 'note', severity: 'P3' }),
-      finding({ id: 'p2', severity: 'P2', title: 'still unapplied' }),
+      finding({ id: 'p2', severity: 'P2', title: 'introduced P2' }),
       finding({ id: 'old-p2', severity: 'P2', introduced: false, title: 'pre-existing P2' }),
     ]),
   )
   const pr = sections(reviewVerdict.renderPrSection(result))
-  assert.match(pr.get('unapplied review findings').join('\n'), /- \[ \].*still unapplied/)
-  assert.match(pr.get('unapplied review findings').join('\n'), /pre-existing P2 \(pre-existing\)/)
-  assert.doesNotMatch(pr.get('unapplied review findings').join('\n'), /P3/)
-  assert.match(reviewVerdict.renderReport(result), /2 unapplied, 1 notes\./)
+  assert.match(pr.get('review findings').join('\n'), /- \[ \].*introduced P2/)
+  assert.match(pr.get('review notes').join('\n'), /pre-existing P2 \(pre-existing\)/)
+  assert.equal(pr.has('unapplied review findings'), false)
+  const report = reviewVerdict.renderReport(result)
+  assert.doesNotMatch(report, /### Unapplied review findings/)
+  assert.match(report, /pre-existing P2 \(pre-existing\)/)
+  assert.match(report, /1 blocking, 0 fixed, 0 pre-existing, 2 notes\./)
 })
 
 test('acceptance validates independently of review status and survives latest-block pooling', () => {
@@ -873,4 +877,12 @@ test('pooled coverage preserves successful reviewers across passes and repeated 
     })),
   )
   assert.match(reviewVerdict.renderPrSection(absent), /\nnone: no reviewer ran /)
+})
+
+test('a fixed P2 passes and is listed as fixed in review', () => {
+  const result = verdictStatus(verdict([finding({ severity: 'P2', fixed: true, fixCommit: HEAD })]))
+  assert.equal(result.status, 'pass')
+  assert.match(reviewVerdict.renderReport(result), /### Fixed in review[\s\S]*\*\*P2\*\*/)
+  const open = verdictStatus(verdict([finding({ severity: 'P2' })]))
+  assert.equal(reviewVerdict.noteVerdict(open.status), 'capped')
 })

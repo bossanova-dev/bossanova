@@ -279,3 +279,27 @@ func TestPRSizes_Sessions_AC213501(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicRepositoryIdentityFixture(t *testing.T) {
+	doc := Document{Version: 1, Name: "public", Repos: []Repo{{Key: "r", DisplayName: "Public", ProviderRepoID: 42, Visibility: "public"}}}
+	plan, _ := Compile(doc)
+	found := false
+	for _, response := range plan.GH {
+		if slices.Equal(response.Args, []string{"api", "repos/r", "-i"}) {
+			var repo struct {
+				ID         int    `json:"id"`
+				Visibility string `json:"visibility"`
+			}
+			if err := json.Unmarshal([]byte(response.Stdout), &repo); err != nil {
+				t.Fatal(err)
+			}
+			if repo.ID != 42 || repo.Visibility != "public" {
+				t.Fatalf("fixture: %s", response.Stdout)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("repository identity fixture absent")
+	}
+}

@@ -26,12 +26,19 @@ func (p *Provider) GetRepositoryIdentity(ctx context.Context, repoPath string) (
 	var response struct {
 		ID         int64  `json:"id"`
 		Visibility string `json:"visibility"`
+		Private    *bool  `json:"private"`
 	}
 	if err := json.Unmarshal([]byte(out), &response); err != nil {
 		return 0, "", fmt.Errorf("parse repository identity: %w", err)
 	}
 	if response.ID <= 0 {
 		return 0, "", fmt.Errorf("repository identity missing positive id")
+	}
+	if response.Visibility == "" && response.Private != nil {
+		response.Visibility = "public"
+		if *response.Private {
+			response.Visibility = "private"
+		}
 	}
 	return response.ID, response.Visibility, nil
 }

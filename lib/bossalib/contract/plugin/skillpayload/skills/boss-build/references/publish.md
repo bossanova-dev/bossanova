@@ -10,12 +10,15 @@ Write it to a temp file **outside** the worktree, then `gh pr create --body-file
 changed sections to a file and merge them into the live body (`gh pr view --json body -q .body`):
 `node "$BOSS_BUILD_TOOLBOX/build/pr-body.mjs" merge --body-file <live> --update-file <sections> --out <path>`.
 It replaces each section in place, so reruns converge on one copy. An optional section that is now
-empty (`## Human follow-up`, `## After merge`, `## Host notes`, `## Unapplied review findings`,
+empty (`## Human follow-up`, `## After merge`, `## Host notes`,
 `## Review notes`) gets
 `--drop '<heading>'`, or the merge keeps its stale published copy. A warning that a heading survives in several copies means the
 update must render that section too. Never patch a body with
 `String#replace` or `sed`: their replacement patterns (`$'`, `&`) expand, and `-run '^X$'`
 contains one.
+
+When republishing an older PR, also pass `--drop '## Unapplied review findings'` to remove its
+retired advisory checklist.
 
 ```
 Tracker issue: <url>
@@ -49,15 +52,12 @@ Tracker issue: <url>
 ## Host notes
 - <build-host or environment problem — optional, non-gating, omitted when empty>
 
-## Unapplied review findings
-- [ ] <verified P2 finding — omitted when there are none>
-
 ## Review notes
 <N> notes — notes never block
 
 <details><summary>Notes</summary>
 
-- <verified P3/style finding — optional section, omitted when there are none>
+- <verified P3/style or pre-existing P2 finding — optional, omitted when empty>
 
 </details>
 
@@ -75,7 +75,7 @@ Tracker issue: <url>
   sections and the PARTIAL marker below.
 - **Never omit** `## Cross-model review` or `## Review coverage`: an absent section reads as
   "passed clean" / "full coverage". Publish the token the run actually earned, never a cleaner one.
-- `## Review findings`, `## Unapplied review findings`, `## Review notes`, `## Cross-model review` and
+- `## Review findings`, `## Review notes`, `## Cross-model review` and
   `## Review coverage` are exactly what `review-verdict.mjs render <verdict> --pr-section` prints for
   the run's pooled verdict — never hand-written. `## Review findings` appears only when something
   blocks.

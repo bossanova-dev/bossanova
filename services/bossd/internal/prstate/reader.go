@@ -48,13 +48,14 @@ type Snapshot struct {
 	// VerifyPassed confirms a candidate pass against statuses on Status.HeadSHA.
 	VerifyPassed bool
 	// RunsSettled is nil unless Verdict is green, so "not computed" differs
-	// from "not settled"; without IncludeWorkflowRuns the runs read is skipped
-	// for any other verdict.
+	// from "not settled". Runs are also read for cancelled workflow checks
+	// or when IncludeWorkflowRuns is set.
 	RunsSettled *bool
 	// HeldRuns lists the head runs still in flight when RunsSettled is false.
 	HeldRuns []HeldWorkflowRun
 	// WorkflowRuns is every run the runs read returned for the head; RunsRead
-	// says the read happened, so an empty list is a head with no run.
+	// says the read happened, so an empty list is a head with no run. Runs are
+	// read for green verdicts, cancelled workflow checks, or IncludeWorkflowRuns.
 	WorkflowRuns []vcs.WorkflowRun
 	RunsRead     bool
 	// ReviewComments is read only with Options.IncludeReviewComments.
@@ -131,9 +132,23 @@ func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (S
 		Degraded:        status.Degraded || set.Degraded,
 		Checks:          set.Checks,
 		HasBuildReceipt: set.HasBuildReceipt,
-		Verdict:         vcs.EvaluateChecksRequiring(status.HeadSHA, set.Checks, nil, r.requiredFor(ctx, repo, status.BaseBranch)),
 		VerifyPhase:     vcs.ClassifyVerify(set.Checks),
 	}
+	checks := set.Checks
+	if vcs.HasCancelledWorkflowCheck(checks) {
+		runs, read, err := r.readRuns(ctx, repo, status.HeadSHA)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		snap.WorkflowRuns, snap.RunsRead = runs, read
+		if read {
+			checks = vcs.ReconcileSupersededCancelled(status.HeadSHA, checks, runs)
+		}
+	}
+	// apiversion-skip: boss pr state/wait and the skills toolbox ship with bossd
+	// but may skew. Restoring a false cancellation failure has no useful transform.
+	// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	snap.Verdict = vcs.EvaluateChecksRequiring(status.HeadSHA, checks, nil, r.requiredFor(ctx, repo, status.BaseBranch))
 	if status.HeadSHA != "" && vcs.VerifyPassed(set.Checks) {
 		confirmed, confirmErr := r.provider.VerifyPassedAtHead(ctx, repo, status.HeadSHA)
 		snap.VerifyPassed = confirmErr == nil && confirmed
@@ -142,14 +157,16 @@ func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (S
 		}
 	}
 	if green := snap.Verdict.IsGreen(); green || opts.IncludeWorkflowRuns {
-		runs, read, err := r.readRuns(ctx, repo, status.HeadSHA)
-		if err != nil {
-			return Snapshot{}, err
+		if !snap.RunsRead {
+			runs, read, err := r.readRuns(ctx, repo, status.HeadSHA)
+			if err != nil {
+				return Snapshot{}, err
+			}
+			snap.WorkflowRuns, snap.RunsRead = runs, read
 		}
-		snap.WorkflowRuns, snap.RunsRead = runs, read
 		if green {
-			held := HeldHeadRuns(status.HeadSHA, runs)
-			settled := read && len(held) == 0
+			held := HeldHeadRuns(status.HeadSHA, snap.WorkflowRuns)
+			settled := snap.RunsRead && len(held) == 0
 			snap.RunsSettled, snap.HeldRuns = &settled, held
 		}
 	}

@@ -14,11 +14,12 @@ func TestCloudRedactionSnapshotsAndDeltas_ChatPicker_AC238101(t *testing.T) {
 		name    string
 		policy  CloudControlPolicy
 		private bool
+		mode    pb.CloudControl
 	}{
-		{"private", fixedCloudControl("private"), true},
-		{"read-only", fixedCloudControl("read-only"), false},
-		{"full", fixedCloudControl("full"), false},
-		{"nil", nil, false},
+		{"private", fixedCloudControl("private"), true, pb.CloudControl_CLOUD_CONTROL_PRIVATE},
+		{"read-only", fixedCloudControl("read-only"), false, pb.CloudControl_CLOUD_CONTROL_READ_ONLY},
+		{"full", fixedCloudControl("full"), false, pb.CloudControl_CLOUD_CONTROL_FULL},
+		{"nil", nil, false, pb.CloudControl_CLOUD_CONTROL_READ_ONLY},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			session := &pb.Session{Id: "session", RepoId: "repo", Title: "session title", Plan: "operator prompt", BranchName: "branch", PrNumber: proto.Int32(42), BlockedReason: proto.String("blocked")}
@@ -27,6 +28,7 @@ func TestCloudRedactionSnapshotsAndDeltas_ChatPicker_AC238101(t *testing.T) {
 			originalChat := proto.Clone(chat).(*pb.AgentChatMetadata)
 			wantSession := proto.Clone(session).(*pb.Session)
 			wantChat := proto.Clone(chat).(*pb.AgentChatMetadata)
+			wantSession.CloudControl = tc.mode
 			if tc.private {
 				wantSession.Plan = ""
 				wantChat.LastMessagePreview = ""

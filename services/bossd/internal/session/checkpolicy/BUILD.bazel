@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "checkpolicy",
-    srcs = ["checkpolicy.go"],
+    srcs = [
+        "checkpolicy.go",
+        "dependabot.go",
+    ],
     importpath = "github.com/recurser/bossd/internal/session/checkpolicy",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
@@ -14,7 +17,10 @@ go_library(
 
 go_test(
     name = "checkpolicy_test",
-    srcs = ["checkpolicy_test.go"],
+    srcs = [
+        "checkpolicy_test.go",
+        "dependabot_test.go",
+    ],
     embed = [":checkpolicy"],
     deps = [
         "//services/bossd/internal/domain",

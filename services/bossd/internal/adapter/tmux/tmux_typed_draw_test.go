@@ -331,9 +331,10 @@ const slowComposerClearLagEnv = "BOSS_TMUX_SLOW_COMPOSER_CLEAR_LAG"
 
 // slowComposer configures the fake agent a real-tmux test runs in its pane.
 type slowComposer struct {
-	busy     time.Duration
-	swallow  int
-	clearLag time.Duration
+	busy       time.Duration
+	swallow    int
+	clearLag   time.Duration
+	syncFrames bool
 }
 
 // slowComposerColumns is the width of every pane the fake agent runs in.
@@ -462,21 +463,11 @@ func deleteToLineStart(text string, width int) string {
 	return head + strings.Join(rows[:len(rows)-1], "")
 }
 
-// runSlowComposer models the Claude startup behaviour measured on Claude Code
-// 2.1.302: the composer is drawn before input is read, and a read that carries
-// typed text together with a CR is a paste, so that CR is a newline. Only a CR
-// read on its own submits. A bare slash command opens the slash-command menu
-// below the box, its selected entry marked "❯" as in
-// testdata/panes/claude_typed_slash_menu_real.txt. It styles the composer the
-// way Claude Code 2.1.302 renders it: the prompt glyph is coloured, the cursor
-// is an inverse cell, which an empty composer puts on the first letter of its
-// dim placeholder, and a slash command followed by a space shows a dim
-// argument hint. Input is read as UTF-8 characters, and a read holding more
-// than two CRs or 800 UTF-16 units is drawn as one "[Pasted text #N +M lines]"
-// placeholder, as Claude draws a long paste. Text is wrapped as Claude wraps
-// it (wrapClaudeComposerLine), with the cursor cell wrapped as part of the
-// text, so a last row that fills the width puts the cursor on an empty row of
-// its own. C-u is deleteToLineStart. The first swallow lone CRs are dropped.
+// runSlowComposer models Claude Code 2.1.302's startup and composer: input is
+// UTF-8, CRs received with text are pasted newlines, lone CRs submit (unless
+// swallowed), and Ctrl-U kills to the wrapped line start. Pastes over 800 UTF-16
+// units or two CRs collapse. The drawing preserves Claude's cursor, placeholder,
+// slash menu and argument hint (see testdata/panes/claude_typed_slash_menu_real.txt).
 func runSlowComposer(in io.Reader, out io.Writer, cfg slowComposer, columns int) {
 	busy, swallow := cfg.busy, cfg.swallow
 	width := claudeComposerWrapWidth(columns)
@@ -485,7 +476,7 @@ func runSlowComposer(in io.Reader, out io.Writer, cfg slowComposer, columns int)
 	}
 	var composer string
 	var ran []string
-	pastes := 0
+	pastes, frames, acknowledged := 0, 0, 0
 	draw := func() {
 		var b strings.Builder
 		b.WriteString("\x1b[H\x1b[2J")
@@ -517,7 +508,9 @@ func runSlowComposer(in io.Reader, out io.Writer, cfg slowComposer, columns int)
 			fmt.Fprintf(&b, "  ❯ %-30s Automated PR repair (user)\r\n", composer)
 			fmt.Fprintf(&b, "    %-30s Find-then-verify code review (user)\r\n", "/boss-review")
 		}
+		fmt.Fprintf(&b, "\x1b]2;%s%d:%d\x1b\\", slowComposerFramePrefix, frames, acknowledged)
 		_, _ = io.WriteString(out, b.String())
+		frames++
 	}
 	draw()
 	time.Sleep(busy)
@@ -539,7 +532,14 @@ func runSlowComposer(in io.Reader, out io.Writer, cfg slowComposer, columns int)
 			}
 		}
 		chunk := string(read[:end])
+		acknowledged += strings.Count(chunk, "\x06")
+		chunk = strings.ReplaceAll(chunk, "\x06", "")
 		read = append([]byte(nil), read[end:]...)
+		if chunk == "" {
+			_, _ = fmt.Fprintf(out, "\x1b]2;%s%d:%d\x1b\\", slowComposerFramePrefix, frames, acknowledged)
+			frames++
+			continue
+		}
 		pasted := strings.ContainsFunc(chunk, func(r rune) bool { return r >= ' ' })
 		if newlines := strings.Count(chunk, "\r"); pasted && (len(utf16.Encode([]rune(chunk))) > 800 || newlines > 2) {
 			pastes++
@@ -630,6 +630,9 @@ func startSlowComposerWith(ctx context.Context, t *testing.T, cfg slowComposer) 
 	}
 	for {
 		if out, err := c.CapturePane(ctx, name); err == nil && composerRows(out) != "" {
+			if cfg.syncFrames {
+				syncSlowComposerFrames(ctx, t, c, name)
+			}
 			return c, name
 		}
 		select {
@@ -1534,7 +1537,7 @@ func TestNotSubmittedSendOfEveryShapeEndsWithAnEmptyComposer(t *testing.T) {
 			parallelSlowComposer(t)
 			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 			defer cancel()
-			c, pane := startSlowComposerSwallowing(ctx, t, 0, 2)
+			c, pane := startSlowComposerWith(ctx, t, slowComposer{swallow: 2, syncFrames: true})
 			opts := c.sendDeliveryOpts(sendPlanReadyMarker, true, nil)
 
 			err := c.sendPlan(ctx, pane, payload, opts)
@@ -1557,24 +1560,6 @@ func TestNotSubmittedSendOfEveryShapeEndsWithAnEmptyComposer(t *testing.T) {
 	}
 }
 
-// fillComposer pastes payload into the slow composer's empty box and waits
-// until the box holds exactly it.
-func fillComposer(ctx context.Context, t *testing.T, c *Client, pane, payload string) {
-	t.Helper()
-	if err := c.pasteBufferNoEnter(ctx, pane, payload); err != nil {
-		t.Fatalf("paste the payload: %v", err)
-	}
-	var styled string
-	for range 100 {
-		var err error
-		if styled, err = c.captureVisibleStyled(ctx, pane); err == nil && composerHoldsOnlyPayload(styled, composerDrawing{text: payload}) {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("the composer never held exactly %q; it showed %q", payload, composerRows(plainText(styled)))
-}
-
 // Claude Code 2.1.302's ctrl+u kills a newline before the cursor on its own,
 // or else back to the start of the cursor's wrapped row, so a payload of
 // several rows takes several presses. The withdrawal presses until the box is
@@ -1587,7 +1572,7 @@ func TestWithdrawalEmptiesAPayloadOfSeveralRows(t *testing.T) {
 			parallelSlowComposer(t)
 			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 			defer cancel()
-			c, pane := startSlowComposer(ctx, t, 0)
+			c, pane := startSlowComposerWith(ctx, t, slowComposer{syncFrames: true})
 			fillComposer(ctx, t, c, pane, payload)
 			presses := 0
 			onTmux(c, func(args []string, _ CommandFactory) {

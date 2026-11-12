@@ -1,7 +1,11 @@
 package settings
 
 import (
+	"fmt"
+
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/recurser/boss/api/tui/ui"
 	"github.com/recurser/bossalib/kit/config"
 )
 
@@ -11,7 +15,12 @@ func (m GeneralSettingsModel) updateCloudControlConfirm(msg tea.Msg) GeneralSett
 		case "y", "Y", "enter":
 			m.confirmCloudControl = false
 			if len(m.cloudControlTargets) > 0 {
-				return m.saveRepoCloudControl("full")
+				mode := "full"
+				if m.cloudControlPending == "read-only" {
+					mode = "read-only"
+				}
+				m.cloudControlPending = ""
+				return m.saveRepoCloudControl(mode)
 			}
 			pending := m.cloudControlPending
 			m.cloudControlPending = ""
@@ -77,4 +86,22 @@ func (m GeneralSettingsModel) cycleCloudControlArrow(key string) GeneralSettings
 		return m.cycleRepoCloudControl(direction)
 	}
 	return m.cycleCloudControl(direction)
+}
+
+func (m GeneralSettingsModel) beginPublicRestriction(owner string) GeneralSettingsModel {
+	m.cloudControlTargets = m.publicRepoTargets(owner)
+	if len(m.cloudControlTargets) > 0 {
+		m.cloudControlPending = "read-only"
+		m.confirmCloudControl = true
+	}
+	return m
+}
+
+func (m GeneralSettingsModel) cloudControlConfirmView() tea.View {
+	title, warning := "Allow cloud control?", config.FullCloudControlWarning
+	if m.cloudControlPending == "read-only" {
+		title = "Restrict public repos?"
+		warning = fmt.Sprintf("Restrict %d public repos to read-only cloud control?", len(m.cloudControlTargets))
+	}
+	return tea.NewView(ui.StyleTitle.Render(title) + "\n\n" + lipgloss.NewStyle().Padding(0, 2).Width(m.width).Render(warning) + "\n" + ui.ActionBarWidth(m.width, []string{"[y/enter] confirm", "[n/esc] cancel"}))
 }

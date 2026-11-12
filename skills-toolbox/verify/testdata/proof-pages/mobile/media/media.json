@@ -1,0 +1,36 @@
+{
+  "schema": "proof-media/1",
+  "head": "3a2ecb173e79583d732859d3f8dc96c552867e17",
+  "clips": [
+    {
+      "id": "check-in",
+      "side": "head",
+      "title": "Check in to the first visit",
+      "file": "check-in.mp4",
+      "durationMs": 2000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Visit list before"
+        },
+        {
+          "atMs": 1000,
+          "caption": "After pressing Check in"
+        }
+      ],
+      "stills": [
+        {
+          "file": "visits-before.png",
+          "caption": "Every visit offers Check in",
+          "atMs": 0
+        },
+        {
+          "file": "visits-after.png",
+          "caption": "North depot reads Checked in",
+          "atMs": 1000
+        }
+      ]
+    }
+  ],
+  "transcripts": []
+}

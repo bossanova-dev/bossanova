@@ -1,0 +1,174 @@
+{
+  "repo": "acme/ledger",
+  "pr": 41,
+  "commits": [
+    {
+      "message": "chore: start the ledger service",
+      "files": {
+        "README.md": ["# Ledger", "", "Invoices and payments for the billing team."],
+        "services/api/schema/invoice.graphqls": [
+          "type Invoice {",
+          "  id: ID!",
+          "  number: String!",
+          "  totalCents: Int!",
+          "  status: InvoiceStatus!",
+          "}",
+          "",
+          "enum InvoiceStatus {",
+          "  DRAFT",
+          "  SENT",
+          "  PAID",
+          "}",
+          "",
+          "type Query {",
+          "  invoice(id: ID!): Invoice",
+          "}"
+        ],
+        "services/api/service/invoice.go": [
+          "package service",
+          "",
+          "import \"time\"",
+          "",
+          "// Invoice is a bill sent to one customer.",
+          "type Invoice struct {",
+          "\tID         string",
+          "\tNumber     string",
+          "\tTotalCents int64",
+          "\tStatus     string",
+          "\tSentAt     *time.Time",
+          "}"
+        ],
+        "services/api/migrations/0007_create_invoices.sql": [
+          "CREATE TABLE invoices (",
+          "  id uuid PRIMARY KEY,",
+          "  number text NOT NULL UNIQUE,",
+          "  total_cents bigint NOT NULL,",
+          "  status text NOT NULL,",
+          "  sent_at timestamptz",
+          ");"
+        ]
+      }
+    },
+    {
+      "message": "feat(api): add invoice due dates",
+      "files": {
+        "services/api/schema/invoice.graphqls": [
+          "scalar Date",
+          "",
+          "type Invoice {",
+          "  id: ID!",
+          "  number: String!",
+          "  totalCents: Int!",
+          "  status: InvoiceStatus!",
+          "  dueOn: Date",
+          "}",
+          "",
+          "enum InvoiceStatus {",
+          "  DRAFT",
+          "  SENT",
+          "  PAID",
+          "}",
+          "",
+          "type Query {",
+          "  invoice(id: ID!): Invoice",
+          "}"
+        ],
+        "services/api/service/invoice.go": [
+          "package service",
+          "",
+          "import \"time\"",
+          "",
+          "// Invoice is a bill sent to one customer.",
+          "type Invoice struct {",
+          "\tID         string",
+          "\tNumber     string",
+          "\tTotalCents int64",
+          "\tStatus     string",
+          "\tSentAt     *time.Time",
+          "\tDueOn      *time.Time",
+          "}"
+        ],
+        "services/api/migrations/0008_add_invoice_due_on.sql": [
+          "ALTER TABLE invoices ADD COLUMN due_on date;",
+          "",
+          "UPDATE invoices",
+          "SET due_on = (sent_at + interval '30 days')::date",
+          "WHERE sent_at IS NOT NULL;"
+        ]
+      }
+    },
+    {
+      "message": "feat(api): mark overdue invoices",
+      "files": {
+        "services/api/schema/invoice.graphqls": [
+          "scalar Date",
+          "",
+          "type Invoice {",
+          "  id: ID!",
+          "  number: String!",
+          "  totalCents: Int!",
+          "  status: InvoiceStatus!",
+          "  dueOn: Date",
+          "}",
+          "",
+          "enum InvoiceStatus {",
+          "  DRAFT",
+          "  SENT",
+          "  PAID",
+          "  OVERDUE",
+          "}",
+          "",
+          "type Query {",
+          "  invoice(id: ID!): Invoice",
+          "}",
+          "",
+          "type Mutation {",
+          "  markOverdue(asOf: Date!): Int!",
+          "}"
+        ],
+        "services/api/service/invoice_overdue.go": [
+          "package service",
+          "",
+          "import \"time\"",
+          "",
+          "// MarkOverdue moves every sent invoice whose due date has passed to OVERDUE and returns how many",
+          "// it moved.",
+          "func MarkOverdue(invoices []*Invoice, asOf time.Time) int {",
+          "\tmoved := 0",
+          "\tfor _, invoice := range invoices {",
+          "\t\tif invoice.Status != \"SENT\" || invoice.DueOn == nil {",
+          "\t\t\tcontinue",
+          "\t\t}",
+          "\t\tif invoice.DueOn.Before(asOf) {",
+          "\t\t\tinvoice.Status = \"OVERDUE\"",
+          "\t\t\tmoved++",
+          "\t\t}",
+          "\t}",
+          "\treturn moved",
+          "}"
+        ],
+        "services/api/service/invoice_overdue_test.go": [
+          "package service",
+          "",
+          "import (",
+          "\t\"testing\"",
+          "\t\"time\"",
+          ")",
+          "",
+          "func TestMarkOverdueMovesOnlyPastDueSentInvoices(t *testing.T) {",
+          "\tasOf := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)",
+          "\tpast := asOf.AddDate(0, 0, -1)",
+          "\tinvoices := []*Invoice{",
+          "\t\t{Status: \"SENT\", DueOn: &past},",
+          "\t\t{Status: \"PAID\", DueOn: &past},",
+          "\t\t{Status: \"SENT\"},",
+          "\t}",
+          "\tif moved := MarkOverdue(invoices, asOf); moved != 1 {",
+          "\t\tt.Fatalf(\"moved %d invoices, want 1\", moved)",
+          "\t}",
+          "}"
+        ]
+      }
+    }
+  ]
+}

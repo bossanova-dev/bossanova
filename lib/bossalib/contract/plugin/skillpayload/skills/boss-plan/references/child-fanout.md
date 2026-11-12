@@ -42,7 +42,7 @@ Run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.
 3. `bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-mark --run-dir <RUN_DIR> --name child-<CHILD-ID>`, then
    `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs record .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-ledger.json <CHILD-ID> dispatched --scratch .linear-plans/run-<CHILD-SCRATCH-ID>`
    **before** dispatching a `general-purpose` subagent on the orchestrator's model with the
-   [brief](#child-planner-brief), so a dispatch-tool error finds the child `dispatched` and earns its
+   [brief](#child-planner-brief) and Phase 0's `<RECON-REF>` as `RECON_REF`, so a dispatch-tool error finds the child `dispatched` and earns its
    transport retry.
 
 **Hold** the one id `next` returned as `poll` with a foreground re-arm (never end the turn while a
@@ -92,7 +92,7 @@ is `planned` when `ok` and the parent write (if any) verified, else `failed`.
 You plan **one** child of an epic, unattended, inside an awaited subagent the boss-plan orchestrator
 dispatched. Never call `AskUserQuestion`.
 
-**Inputs:** `CHILD-ID`, its title and UUID; your scratch directory
+**Inputs:** `RECON_REF` (the orchestrator's Phase 0 ref); `CHILD-ID`, its title and UUID; your scratch directory
 `.linear-plans/run-<CHILD-SCRATCH-ID>/` — use `<CHILD-SCRATCH-ID>` wherever the brief or SKILL.md says
 `<RUN-SCRATCH-ID>` and `CHILD-ID` wherever they say `<ISSUE-ID>`; the snapshot path; `PLAN_PATH`, computed with `plan-slug.mjs plan-path` from the child run id
 and precheck payload (use exactly as given);

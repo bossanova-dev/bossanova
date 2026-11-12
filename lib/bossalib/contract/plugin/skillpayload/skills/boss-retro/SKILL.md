@@ -44,7 +44,7 @@ if ! node "$BOSS_RETRO_TOOLBOX/skill-pin.mjs" create --skill boss-retro --skills
   rmdir "$BOSS_RETRO_RUN_DIR"
   exit 1
 fi
-BOSS_RETRO_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-retro"
+BOSS_RETRO_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-retro/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_RETRO_TOOLBOX="$BOSS_RETRO_PIN/toolbox"
 [ -f "$BOSS_RETRO_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-retro skill pin missing - re-run the first block"; exit 1; }
 ```
@@ -56,7 +56,7 @@ through pin removal so a peer cannot create its new pin before this run removes 
 Load the release function before removing its helper tree; cleanup is a separate Bash call:
 
 ```bash
-BOSS_RETRO_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-retro"
+BOSS_RETRO_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-retro/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_RETRO_TOOLBOX="$BOSS_RETRO_PIN/toolbox"
 [ -f "$BOSS_RETRO_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-retro skill pin missing - re-run the first block"; exit 1; }
 node --input-type=module - "$BOSS_RETRO_TOOLBOX" "$BOSS_RETRO_COMMON_DIR" "$BOSS_RETRO_LOCK_TOKEN" "$BOSS_RETRO_RUN_DIR" <<'NODE'

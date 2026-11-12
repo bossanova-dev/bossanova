@@ -94,6 +94,7 @@ import {
 } from './verify-gate.mjs'
 import * as verifyGate from './verify-gate.mjs'
 import { isCannotAssess } from './verify-vocabulary.mjs'
+import { encodeJudgeRecord, parseJudgeRecord } from './verify-judge.mjs'
 import { VERIFY_RETRY_AFTER_MS, VERIFY_RETRY_ATTEMPTS } from './verify-wake.mjs'
 import { judgeTier, storeScanAdmission } from './verify-admission.mjs'
 import { tickWasQuiet } from './verify-settlement.mjs'
@@ -11098,7 +11099,7 @@ test('admission merge authority: human and bot passes require both auto policy a
 test('new review areas park using the base policy and their area label', async () => {
   const baseConfig = policyText({
     alwaysReview: { 'API schema': ['entity/**'] },
-    neverReview: ['**'],
+    noSignOff: ['**'],
   })
   const r = await judge({ pr: 1 }, deps(world({ baseConfig, diff: ['entity/hospital.go'] })))
   assert.equal(r.verdict, 'human')
@@ -11106,8 +11107,8 @@ test('new review areas park using the base policy and their area label', async (
   assert.deepEqual(r.labels, ['API schema'])
   assert.deepEqual(r.policyDeprecations, [])
 })
-test('judge exposes legacy deprecations and neverReview cannot quiet policy edits', async () => {
-  const baseConfig = policyText({ humanReview: { ui: ['web/**'] }, neverReview: ['**'] })
+test('judge exposes legacy deprecations and noSignOff cannot quiet policy edits', async () => {
+  const baseConfig = policyText({ humanReview: { ui: ['web/**'] }, noSignOff: ['**'] })
   const r = await judge({ pr: 1 }, deps(world({ baseConfig, diff: ['.boss-skills.json'] })))
   assert.equal(r.verdict, 'human')
   assert.deepEqual(r.reasons, ['human-review:asks'])
@@ -11122,15 +11123,25 @@ test('policy verb reports normalized new areas, deprecations and unmatched globs
     loadConfig: () => ({
       verifyDefaults: {
         alwaysReview: { 'API schema': ['entity/**', 'gone/**'] },
-        neverReview: ['dbt/**'],
+        noSignOff: ['dbt/**'],
       },
     }),
   })
   assert.equal(r.policy.review.alwaysReview[0].name, 'API schema')
+  assert.deepEqual(r.policy.review.noSignOff, ['dbt/**'])
   assert.deepEqual(r.deprecations, [])
   assert.deepEqual(r.warnings, [
     { list: 'alwaysReview.API schema', glob: 'gone/**' },
-    { list: 'neverReview', glob: 'dbt/**' },
+    { list: 'noSignOff', glob: 'dbt/**' },
+  ])
+  const alias = await main(['policy'], {
+    read: () => ({ ok: true, output: 'entity/hospital.go\0', exit: 0 }),
+    loadConfig: () => ({ verifyDefaults: { neverReview: ['dbt/**'] } }),
+  })
+  assert.deepEqual(alias.policy.review.noSignOff, ['dbt/**'])
+  assert.deepEqual(alias.warnings, [{ list: 'noSignOff', glob: 'dbt/**' }])
+  assert.deepEqual(alias.deprecations, [
+    'verifyDefaults.neverReview is deprecated: rename it to verifyDefaults.noSignOff',
   ])
 })
 
@@ -11757,7 +11768,7 @@ test('split judge waivers preserve the legacy umbrella without waiving protected
   )
 })
 
-test('neverReview suppresses four persisted judge asks without lowering confidence', async () => {
+test('noSignOff suppresses four persisted judge asks without lowering confidence', async () => {
   const record = Buffer.from(
     JSON.stringify(
       ['One', 'Two', 'Three', 'Four'].map((label) => ({
@@ -11768,7 +11779,7 @@ test('neverReview suppresses four persisted judge asks without lowering confiden
     ),
   ).toString('base64url')
   const w = world({
-    baseConfig: policyText({ neverReview: ['docs/**'] }),
+    baseConfig: policyText({ noSignOff: ['docs/**'] }),
     diff: ['docs/x.md'],
     comments: [
       {
@@ -11784,6 +11795,122 @@ test('neverReview suppresses four persisted judge asks without lowering confiden
   assert.equal(result.verdict, 'pass')
   assert.equal(result.confidence.level, 'high')
   assert.deepEqual(result.confidence.asks, [])
+  assert.equal(result.judgeNotes.length, 4)
+  assert.deepEqual(result.judgeNotes[0], { label: 'One', path: 'docs/x.md', reason: 'Review docs' })
+  assert.deepEqual(
+    result.facts.areas.map((a) => [a.area, a.defaultAsk, a.paths]),
+    [['no-sign-off', 'never', ['docs/x.md']]],
+  )
+})
+
+test('a dbt-only diff under noSignOff passes high with the judge finding as a note', async () => {
+  const noSignOff = ['services/dbt/**']
+  const record = encodeJudgeRecord([
+    {
+      area: 'model-a',
+      label: 'Model A',
+      paths: ['services/dbt/models/a.sql'],
+      defaultAsk: 'always',
+      source: 'judge',
+      reason: 'Drops a column the dashboard reads',
+    },
+  ])
+  const judgeComment = {
+    id: 1,
+    user: { login: 'operator' },
+    author_association: 'MEMBER',
+    created_at: iso(1),
+    body: `<!-- boss-judge-record head=${HEAD} areas=${record} -->`,
+  }
+  for (const key of ['noSignOff', 'neverReview']) {
+    const w = world({
+      baseConfig: policyText({ [key]: noSignOff }),
+      diff: ['services/dbt/models/a.sql'],
+      comments: [judgeComment],
+    })
+    const result = await rawJudge({ pr: 7 }, deps(w))
+    assert.equal(result.verdict, 'pass', key)
+    assert.equal(result.confidence.level, 'high', key)
+    assert.deepEqual(result.confidence.asks, [], key)
+    assert.deepEqual(result.judgeNotes, [
+      {
+        label: 'Model A',
+        path: 'services/dbt/models/a.sql',
+        reason: 'Drops a column the dashboard reads',
+      },
+    ])
+    assert.ok(
+      result.facts.areas.some((a) => a.area === 'no-sign-off'),
+      key,
+    )
+    assert.deepEqual(
+      result.policyDeprecations,
+      key === 'neverReview'
+        ? ['verifyDefaults.neverReview is deprecated: rename it to verifyDefaults.noSignOff']
+        : [],
+    )
+  }
+  const asked = await rawJudge(
+    { pr: 7 },
+    deps(
+      world({
+        baseConfig: policyText({}),
+        diff: ['services/dbt/models/a.sql'],
+        comments: [judgeComment],
+      }),
+    ),
+  )
+  assert.equal(asked.verdict, 'human')
+  assert.equal(asked.judgeNotes, undefined)
+})
+
+test('a judge file naming only noSignOff paths records them and does not park', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-no-signoff-'))
+  try {
+    const w = world({
+      baseConfig: policyText({ noSignOff: ['docs/**'] }),
+      diff: ['docs/x.md'],
+    })
+    const file = jsonFile(dir, 'judge.json', {
+      version: 1,
+      head: HEAD,
+      areas: [{ label: 'Docs drift', path: 'docs/x.md', reason: 'Stale example' }],
+    })
+    const judged = await rawJudge({ pr: 7, judgeAreas: file }, deps(w))
+    assert.notEqual(judged.verdict, 'human')
+    assert.deepEqual(judged.confidence.asks, [])
+    assert.deepEqual(judged.judgeNotes, [
+      { label: 'Docs drift', path: 'docs/x.md', reason: 'Stale example' },
+    ])
+    // A record rides only a human verdict (it is posted with the park), so a pass carries none.
+    assert.equal(judged.judgeRecord, undefined)
+    // When another finding parks the head, the persisted record keeps the noted finding too.
+    const mixed = world({
+      baseConfig: policyText({ noSignOff: ['docs/**'] }),
+      diff: ['docs/x.md', 'src/a.go'],
+    })
+    const both = jsonFile(dir, 'both.json', {
+      version: 1,
+      head: HEAD,
+      areas: [
+        { label: 'Docs drift', path: 'docs/x.md', reason: 'Stale example' },
+        { label: 'Access', path: 'src/a.go', reason: 'Access checks removed' },
+      ],
+    })
+    const parked = await rawJudge({ pr: 7, judgeAreas: both }, deps(mixed))
+    assert.equal(parked.verdict, 'human')
+    assert.deepEqual(parked.reasons, ['human-review:judge'])
+    assert.deepEqual(parked.labels, ['Access'])
+    assert.deepEqual(parked.judgeNotes, [
+      { label: 'Docs drift', path: 'docs/x.md', reason: 'Stale example' },
+    ])
+    assert.deepEqual(parseJudgeRecord(parked.judgeRecord), [
+      { label: 'Docs drift', path: 'docs/x.md', reason: 'Stale example' },
+      { label: 'Access', path: 'src/a.go', reason: 'Access checks removed' },
+    ])
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
 })
 
 test('post publishes broad computed-code sets without losing their approval codes', async () => {

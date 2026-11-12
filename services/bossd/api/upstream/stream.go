@@ -808,6 +808,8 @@ type StreamClient struct {
 
 	// sessionDeltaSeq survives reconnects and distinguishes repeated transitions.
 	sessionDeltaSeq atomic.Uint64
+	// repoCloudControlRevision orders per-repo cloud control publications.
+	repoCloudControlRevision atomic.Uint64
 
 	// reconnectCh is a coalesced wake signal for the Run loop. Reconnect()
 	// does a non-blocking send here; the loop's backoff select drains it to
@@ -1177,6 +1179,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		cloudControlPoll: cfg.CloudControlPollInterval,
 	}
 	client.sessionDeltaSeq.Store(uint64(clock.Now().UnixNano()))
+	client.repoCloudControlRevision.Store(uint64(clock.Now().UnixNano()))
 	return client
 }
 

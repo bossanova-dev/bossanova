@@ -1,0 +1,82 @@
+{
+  "verdict": "human",
+  "reasons": ["always-human-path"],
+  "label": "the API contract and a migration",
+  "confidence": {
+    "level": "moderate",
+    "asks": [
+      {
+        "area": "migrations",
+        "label": "Migrations"
+      },
+      {
+        "area": "api-contract",
+        "label": "API contract"
+      }
+    ],
+    "loweredBy": ["area-asks"],
+    "health": ["second-model-skipped"]
+  },
+  "facts": {
+    "receipt": {
+      "verdict": "present",
+      "state": "success"
+    },
+    "areas": [
+      {
+        "area": "migrations",
+        "label": "Migrations",
+        "paths": ["services/api/migrations/0008_add_invoice_due_on.sql"],
+        "defaultAsk": "always",
+        "source": "builtin",
+        "items": [
+          "Adds invoices.due_on (date, nullable)",
+          "Backfills due_on as sent_at plus 30 days"
+        ]
+      },
+      {
+        "area": "api-contract",
+        "label": "API contract",
+        "paths": ["services/api/schema/invoice.graphqls"],
+        "defaultAsk": "always",
+        "source": "builtin",
+        "change": "additive",
+        "changeReasons": ["GraphQL schema: additive"],
+        "items": [
+          "Adds Invoice.dueOn: Date",
+          "Adds InvoiceStatus.OVERDUE",
+          "Adds Mutation.markOverdue(asOf: Date!): Int!"
+        ],
+        "undisclosed": ["Adds InvoiceStatus.OVERDUE"]
+      },
+      {
+        "area": "housekeeping",
+        "label": "Housekeeping",
+        "paths": ["services/api/service/invoice_overdue_test.go"],
+        "defaultAsk": "never",
+        "source": "builtin"
+      },
+      {
+        "area": "other",
+        "label": "Other changes",
+        "paths": ["services/api/service/invoice.go", "services/api/service/invoice_overdue.go"],
+        "defaultAsk": "never",
+        "source": "builtin"
+      }
+    ]
+  },
+  "findingNotes": [
+    {
+      "title": "MarkOverdue compares instants, so an invoice due today is not overdue until tomorrow",
+      "severity": "P3"
+    }
+  ],
+  "extensions": {
+    "outcomes": [
+      {
+        "extension": "schema-describer",
+        "outcome": "ok"
+      }
+    ]
+  }
+}

@@ -3,8 +3,11 @@ package upstream
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
@@ -324,5 +327,83 @@ func TestRepoTargetDispatchWithStrictLocalGrant(t *testing.T) {
 	}
 	if handler.stopCalls.Load() != 1 {
 		t.Fatal("protected repo reached handler")
+	}
+}
+
+func TestSuggestedRepoRestrictionAndResetHint(t *testing.T) {
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	id := config.RepoIdentity{Host: "github.com", Name: "acme/granted", LocalPath: t.TempDir(), ProviderRepoID: 42, IsIDVerified: true, Visibility: "public"}
+	policy := NewCloudControlPolicy(zerolog.Nop())
+	policy.RepoIdentities = targetIdentityFixture{identity: id}
+	client, _, _ := targetClient()
+	client.cloudControl = policy
+	command := &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_Stop{Stop: &pb.StopSessionCommand{SessionId: "sa"}}}
+	if got := client.dispatchCommand(t.Context(), command, nil).GetResult(); !got.GetOk() {
+		t.Fatalf("suggested repo refused: %v", got)
+	}
+	settings := config.Settings{}
+	if err := config.SetRepoCloudControl(&settings, id, "read-only"); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Save(settings); err != nil {
+		t.Fatal(err)
+	}
+	got := client.dispatchCommand(t.Context(), command, nil).GetResult()
+	if got.GetOk() || !strings.Contains(got.GetError(), "boss settings --cloud-control-repo 'acme/granted=default'") {
+		t.Fatalf("restriction hint: %v", got)
+	}
+}
+
+func TestRepoResetHintPreservesShellArgument(t *testing.T) {
+	for _, name := range []string{"My Project", "O'Reilly $(printf injected) \"repo\"", "repo`printf injected`"} {
+		t.Run(name, func(t *testing.T) {
+			client := &StreamClient{hostname: "workstation"}
+			hint := client.targetRefusal(&authorizedTarget{mode: config.CloudControlReadOnly, repoName: name}, nil)
+			_, command, ok := strings.Cut(hint, "run `")
+			if !ok {
+				t.Fatal("refusal has no recovery command")
+			}
+			command, ok = strings.CutSuffix(command, "` on workstation to restore the default")
+			if !ok {
+				t.Fatal("refusal recovery command is incomplete")
+			}
+			cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "boss() { printf '%s\\000' \"$@\"; }; "+command)
+			cmd.WaitDelay = time.Second
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("run recovery command: %v: %s", err, out)
+			}
+			want := "settings\x00--cloud-control-repo\x00" + name + "=default\x00"
+			if string(out) != want {
+				t.Fatalf("recovery arguments = %q, want %q", out, want)
+			}
+		})
+	}
+}
+
+func TestPublicVisibilityNeverDecidesAuthority(t *testing.T) {
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	for _, raw := range []string{"", "full", "read-only", "private"} {
+		if err := config.Save(config.Settings{CloudControl: raw}); err != nil {
+			t.Fatal(err)
+		}
+		policy := NewCloudControlPolicy(zerolog.Nop())
+		policy.RepoIdentities = targetIdentityFixture{identity: config.RepoIdentity{Host: "github.com", Name: "acme/public", ProviderRepoID: 42, IsIDVerified: true, Visibility: "public"}}
+		client, _, _ := targetClient()
+		client.cloudControl = policy
+		want := config.ResolveCloudControl(raw)
+		if got, _ := policy.RepoMode(t.Context(), "a"); got != want {
+			t.Fatalf("command mode: %s != %s", got, want)
+		}
+		if got := repoCloudControlMode(t.Context(), policy, "a"); got != want {
+			t.Fatalf("terminal mode: %s != %s", got, want)
+		}
+		if got := client.newCloudRedactor().mode(t.Context(), "a"); got != targetModeProto(want) {
+			t.Fatalf("egress mode: %s", got)
+		}
+		command := &pb.OrchestratorCommand{Cmd: &pb.OrchestratorCommand_Stop{Stop: &pb.StopSessionCommand{SessionId: "sa"}}}
+		if got := client.dispatchCommand(t.Context(), command, nil).GetResult(); got.GetOk() != (want == config.CloudControlFull) {
+			t.Fatalf("dispatch: %v", got)
+		}
 	}
 }

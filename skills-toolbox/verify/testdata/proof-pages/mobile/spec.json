@@ -1,0 +1,58 @@
+{
+  "schema": "proof-spec/1",
+  "head": "3a2ecb173e79583d732859d3f8dc96c552867e17",
+  "title": "Check in to a visit from the visit list",
+  "waiting": [
+    {
+      "title": "A new button on the main screen",
+      "detail": "Every visit card gains a Check in action.",
+      "area": "ui"
+    }
+  ],
+  "risks": [
+    {
+      "level": "medium",
+      "title": "Check-in is local only",
+      "body": "useVisits flips checkedIn in memory; nothing is saved, so a restart forgets it.",
+      "ifItMatters": "Persist the check-in before release.",
+      "at": {
+        "path": "app/src/hooks/useVisits.ts",
+        "line": 8
+      }
+    }
+  ],
+  "areas": [
+    {
+      "id": "ui",
+      "name": "UI",
+      "summary": "VisitCard shows Check in until pressed, then Checked in.",
+      "facts": [
+        {
+          "text": "Button has role button",
+          "flag": false
+        }
+      ],
+      "snippets": [
+        {
+          "path": "app/src/components/VisitCard.tsx",
+          "start": 9,
+          "end": 23,
+          "pinLine": 17
+        }
+      ]
+    }
+  ],
+  "checklist": {
+    "before": [],
+    "after": []
+  },
+  "notes": [],
+  "evidencePlan": [
+    {
+      "claim": "Pressing Check in marks the visit checked in",
+      "kind": "clip",
+      "how": "Record the visit list before and after one press."
+    }
+  ],
+  "uncertain": []
+}

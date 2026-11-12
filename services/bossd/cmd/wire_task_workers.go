@@ -49,6 +49,7 @@ func (w *daemonWiring) wireTaskWorkers() {
 		w.worktrees, w.livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
 	)
 
+	w.orchestrator.SetDependabotGate(w.checkPolicy, w.worktrees)
 	w.orchestrator.SetFactoryRepoChecker(w.factoryRepoChecker)
 	w.orchestrator.SetRepairActivity(w.repairLease)
 

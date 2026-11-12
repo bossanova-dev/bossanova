@@ -25,6 +25,7 @@ go_library(
         "github_callback.go",
         "note.go",
         "pending_tracker_merge.go",
+        "pr_head.go",
         "proxy.go",
         "proxy_token.go",
         "repo.go",

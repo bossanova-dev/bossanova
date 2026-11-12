@@ -1,0 +1,104 @@
+{
+  "repo": "acme/platform",
+  "pr": 512,
+  "commits": [
+    {
+      "message": "chore: start the platform repo",
+      "files": {
+        "infra/modules/queue/main.tf": [
+          "resource \"aws_sqs_queue\" \"jobs\" {",
+          "  name                       = \"${var.prefix}-jobs\"",
+          "  visibility_timeout_seconds = 60",
+          "  message_retention_seconds  = 345600",
+          "}"
+        ],
+        "infra/modules/queue/variables.tf": ["variable \"prefix\" {", "  type = string", "}"],
+        "infra/envs/prod/main.tf": [
+          "module \"queue\" {",
+          "  source = \"../../modules/queue\"",
+          "  prefix = \"prod\"",
+          "}"
+        ],
+        "deploy/k8s/worker.yaml": [
+          "apiVersion: apps/v1",
+          "kind: Deployment",
+          "metadata:",
+          "  name: worker",
+          "spec:",
+          "  replicas: 2",
+          "  template:",
+          "    spec:",
+          "      containers:",
+          "        - name: worker",
+          "          image: registry.example.invalid/worker:1.4.0",
+          "          env:",
+          "            - name: QUEUE_NAME",
+          "              value: prod-jobs"
+        ]
+      }
+    },
+    {
+      "message": "feat(infra): add a dead-letter queue for jobs",
+      "files": {
+        "infra/modules/queue/main.tf": [
+          "resource \"aws_sqs_queue\" \"jobs\" {",
+          "  name                       = \"${var.prefix}-jobs\"",
+          "  visibility_timeout_seconds = var.visibility_timeout_seconds",
+          "  message_retention_seconds  = 345600",
+          "",
+          "  redrive_policy = jsonencode({",
+          "    deadLetterTargetArn = aws_sqs_queue.jobs_dead.arn",
+          "    maxReceiveCount     = 5",
+          "  })",
+          "}",
+          "",
+          "resource \"aws_sqs_queue\" \"jobs_dead\" {",
+          "  name                      = \"${var.prefix}-jobs-dead\"",
+          "  message_retention_seconds = 1209600",
+          "}"
+        ],
+        "infra/modules/queue/variables.tf": [
+          "variable \"prefix\" {",
+          "  type = string",
+          "}",
+          "",
+          "variable \"visibility_timeout_seconds\" {",
+          "  type    = number",
+          "  default = 300",
+          "}"
+        ]
+      }
+    },
+    {
+      "message": "feat(infra): give prod jobs fifteen minutes",
+      "files": {
+        "infra/envs/prod/main.tf": [
+          "module \"queue\" {",
+          "  source = \"../../modules/queue\"",
+          "  prefix = \"prod\"",
+          "",
+          "  visibility_timeout_seconds = 900",
+          "}"
+        ],
+        "deploy/k8s/worker.yaml": [
+          "apiVersion: apps/v1",
+          "kind: Deployment",
+          "metadata:",
+          "  name: worker",
+          "spec:",
+          "  replicas: 4",
+          "  template:",
+          "    spec:",
+          "      containers:",
+          "        - name: worker",
+          "          image: registry.example.invalid/worker:1.5.0",
+          "          env:",
+          "            - name: QUEUE_NAME",
+          "              value: prod-jobs",
+          "            - name: JOB_TIMEOUT_SECONDS",
+          "              value: \"840\""
+        ]
+      }
+    }
+  ]
+}

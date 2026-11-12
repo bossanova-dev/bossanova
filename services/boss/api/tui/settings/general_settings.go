@@ -44,6 +44,7 @@ const (
 	settingsRowKindMCPToken                                // transient MCP HTTP credential
 	settingsRowKindRepoCloud                               // editable repository grant
 	settingsRowKindOwnerCloud                              // editable group of repository grants
+	settingsRowKindRestrictPublic                          // confirmed restriction of suggested public repositories
 )
 
 // daemonRestartHint is appended to the daemon name row so the delayed effect
@@ -100,8 +101,6 @@ type GeneralSettingsModel struct {
 	mcpTokenRevealed    bool
 	confirmMCPRotate    bool
 	confirmCloudControl bool
-	// cloudControlPending is the machine-wide value saved when the full-control
-	// confirmation is accepted: "full", or "" for the default, which is also full.
 	cloudControlPending string
 	rotatingMCPToken    bool
 	mcpTokenNotice      string
@@ -637,6 +636,8 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 	}
 	row := m.rows[m.cursor]
 	switch row.Kind {
+	case settingsRowKindRestrictPublic:
+		return m.beginPublicRestriction(row.Key), nil
 	case settingsRowKindRepoCloud, settingsRowKindOwnerCloud:
 		return m.cycleRepoCloudControl(1), nil
 	case settingsRowKindMCPToken:
@@ -939,12 +940,7 @@ func (m GeneralSettingsModel) Cancelled() bool { return m.cancel }
 func (m GeneralSettingsModel) View() tea.View {
 	var b strings.Builder
 	if m.confirmCloudControl {
-		b.WriteString(ui.StyleTitle.Render("Allow cloud control?"))
-		b.WriteString("\n\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Width(m.width).Render(config.FullCloudControlWarning))
-		b.WriteString("\n")
-		b.WriteString(ui.ActionBarWidth(m.width, []string{"[y/enter] confirm", "[n/esc] cancel"}))
-		return tea.NewView(b.String())
+		return m.cloudControlConfirmView()
 	}
 	if m.confirmMCPRotate {
 		b.WriteString(ui.StyleTitle.Render("Rotate MCP HTTP token?"))

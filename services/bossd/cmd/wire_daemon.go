@@ -176,7 +176,7 @@ func (w *daemonWiring) wireDaemon() {
 	w.srv = server.New(daemonConfig)
 	w.srv.SetRequiredChecks(w.checkPolicy)
 	if w.opts.onVerifyJobSeamsWired != nil {
-		w.opts.onVerifyJobSeamsWired(w.orchestrator.HasFactoryRepoChecker() && w.orchestrator.HasRepairActivity(), daemonConfig.FactoryRepoChecker == w.factoryRepoChecker && w.factoryRepoChecker != nil && w.orchestrator.UsesFactoryRepoChecker(w.factoryRepoChecker))
+		w.opts.onVerifyJobSeamsWired(w.orchestrator.HasFactoryRepoChecker() && w.orchestrator.HasRepairActivity() && w.orchestrator.HasDependabotGate(), daemonConfig.FactoryRepoChecker == w.factoryRepoChecker && w.factoryRepoChecker != nil && w.orchestrator.UsesFactoryRepoChecker(w.factoryRepoChecker))
 	}
 
 	w.orchestrator.SetDependabotRepairGate(w.lifecycle)

@@ -152,7 +152,7 @@
   "services/bossd/internal/adapter/tmux/attach_test.go": 3,
   "services/bossd/internal/adapter/tmux/tmux_ready_retry_test.go": 3,
   "services/bossd/internal/adapter/tmux/tmux_test.go": 1,
-  "services/bossd/internal/adapter/tmux/tmux_typed_draw_test.go": 7,
+  "services/bossd/internal/adapter/tmux/tmux_typed_draw_test.go": 6,
   "services/bossd/internal/agent/dispatcher_test.go": 2,
   "services/bossd/internal/agent/log_tailer_test.go": 2,
   "services/bossd/internal/agent/plugin_runner_test.go": 2,

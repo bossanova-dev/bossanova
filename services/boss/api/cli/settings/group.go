@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -198,4 +199,49 @@ func (g *Group) printRepoCloudControls(cmd *cobra.Command) {
 		}
 		fmt.Printf("      %s: %s (%s)%s\n", name, repo.GetEffectiveMode(), repo.GetSource(), warning)
 	}
+}
+
+func (g *Group) restrictPublicRepos(cmd *cobra.Command) error {
+	settings, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	repos, err := g.repoCloudControls(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("list registered repos: %w", err)
+	}
+	owner, _ := cmd.Flags().GetString("owner")
+	var suggestions []*pb.RepoCloudControl
+	for _, repo := range repos {
+		if repo.GetIsSuggested() && (owner == "" || strings.EqualFold(owner, repoCloudControlOwner(repo))) && config.RepoCloudControlChoice(settings, repoCloudControlIdentity(repo)) == "default" && !config.HasUnverifiedRepoGrant(settings, repoCloudControlIdentity(repo)) {
+			suggestions = append(suggestions, repo)
+			fmt.Printf("  %s (%s) — %s\n", repo.GetName(), repo.GetCheckout(), repoCloudControlOwner(repo))
+		}
+	}
+	if len(suggestions) == 0 {
+		fmt.Println("No public repos to restrict")
+		return nil
+	}
+	yes, _ := cmd.Flags().GetBool("yes")
+	if !yes {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Restrict %d public repos to read-only? [y/N] ", len(suggestions))
+		answer, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if readErr != nil && strings.TrimSpace(answer) == "" {
+			return fmt.Errorf("read confirmation: %w", readErr)
+		}
+		answer = strings.TrimSpace(answer)
+		if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
+			return nil
+		}
+	}
+	for _, repo := range suggestions {
+		if err := config.SetRepoCloudControl(&settings, repoCloudControlIdentity(repo), "read-only"); err != nil {
+			return err
+		}
+	}
+	if err := config.Save(settings); err != nil {
+		return fmt.Errorf("save settings: %w", err)
+	}
+	fmt.Printf("Restricted %d public repos to read-only.\n", len(suggestions))
+	return nil
 }

@@ -60,14 +60,22 @@ func repoCloudIdentity(repo *pb.RepoCloudControl) config.RepoIdentity {
 }
 
 func (m *GeneralSettingsModel) appendRepoCloudRows() {
+	if len(m.repoCloudControls) == 0 {
+		m.rows = append(m.rows, settingsRow{Kind: settingsRowKindAgentHeader, Label: "Repos follow the machine-wide mode (full by default)", IsHeader: true})
+		return
+	}
+	m.rows = append(m.rows, settingsRow{Kind: settingsRowKindAgentHeader, Label: "Cloud control per repo", IsHeader: true})
+	if len(m.publicRepoTargets("")) > 0 {
+		m.rows = append(m.rows, settingsRow{Kind: settingsRowKindRestrictPublic, Label: "Restrict all public repos"})
+	}
 	group := ""
 	for i, repo := range m.repoCloudControls {
 		if next := repoCloudGroup(repo); next != group {
-			if group == "" {
-				m.rows = append(m.rows, settingsRow{Kind: settingsRowKindAgentHeader, Label: "Cloud control per repo", IsHeader: true})
-			}
 			group = next
 			m.rows = append(m.rows, settingsRow{Kind: settingsRowKindOwnerCloud, Label: group, Key: group})
+			if len(m.publicRepoTargets(group)) > 0 {
+				m.rows = append(m.rows, settingsRow{Kind: settingsRowKindRestrictPublic, Label: "Restrict all public repos: " + group, Key: group})
+			}
 		}
 		label := repo.DisplayName
 		if label == "" {
@@ -152,9 +160,23 @@ func (m GeneralSettingsModel) repoCloudRowValue(row settingsRow) string {
 	repo := m.repoCloudControls[row.RepoIndex]
 	identity := repoCloudIdentity(repo)
 	mode, source := config.ResolveRepoCloudControl(m.settings, identity)
+	hasUnverifiedGrant := config.HasUnverifiedRepoGrant(m.settings, identity)
 	value := string(mode) + " (" + string(source) + ")"
-	if config.HasUnverifiedRepoGrant(m.settings, identity) {
+	if repo.IsSuggested && m.repoCloudChoice(row.RepoIndex) == "default" && !hasUnverifiedGrant {
+		value += "; suggested read-only (public repo)"
+	}
+	if hasUnverifiedGrant {
 		value += "; grant not verified: narrowing only"
 	}
 	return value
+}
+
+func (m GeneralSettingsModel) publicRepoTargets(owner string) []int {
+	var targets []int
+	for i, repo := range m.repoCloudControls {
+		if repo.IsSuggested && (owner == "" || repoCloudGroup(repo) == owner) && m.repoCloudChoice(i) == "default" && !config.HasUnverifiedRepoGrant(m.settings, repoCloudIdentity(repo)) {
+			targets = append(targets, i)
+		}
+	}
+	return targets
 }

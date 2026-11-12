@@ -59,7 +59,12 @@ const CONSENT_GRANTED = {
   ad_user_data: 'granted',
   analytics_storage: 'granted',
 }
+// Google signals is off: its ga-audiences pixel goes to the visitor's country
+// Google domain (www.google.co.jp, ...), which no CSP can list. This overrides
+// the property's own Google signals setting.
 const TAG_CONFIG = {
+  allow_ad_personalization_signals: false,
+  allow_google_signals: false,
   cookie_domain: GOOGLE_TAG_COOKIE_DOMAIN,
   linker: { domains: [...GOOGLE_TAG_LINKER_DOMAINS] },
   send_page_view: false,

@@ -76,7 +76,7 @@ Feed JSON on stdin, read JSON on stdout. Each Bash call is a fresh shell. This p
 toolbox, the planned and review states, and the per-child wall clock, then classifies tickets:
 
 ```bash
-BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
 [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
 export BOSS_EPIC_TOOLBOX
@@ -161,7 +161,7 @@ assumeCleared, assumeClearedAndMerge, selectionFlags?}` (`--label`/`--exclude-la
    test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
    BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
    node "$BOSS_EPIC_TOOLBOX/skill-pin.mjs" create --skill boss-epic --skills-home "$BOSS_SKILLS_HOME" || exit 1
-   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic/${BOSS_AGENT_SESSION_ID:-local}"
    BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
    [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
    export BOSS_EPIC_TOOLBOX
@@ -178,7 +178,7 @@ assumeCleared, assumeClearedAndMerge, selectionFlags?}` (`--label`/`--exclude-la
    `$BOSS_BIN`, `boss` on `PATH`, `./bin/boss`) and use `"$BOSS"` everywhere:
 
    ```bash
-   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic/${BOSS_AGENT_SESSION_ID:-local}"
    BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
    [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
    export BOSS_EPIC_TOOLBOX
@@ -208,7 +208,7 @@ non-zero exit is the stop reason, verbatim.
 
    ```bash
    set -euo pipefail
-   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic/${BOSS_AGENT_SESSION_ID:-local}"
    BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
    [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
    export BOSS_EPIC_TOOLBOX
@@ -244,7 +244,7 @@ non-zero exit is the stop reason, verbatim.
    neither is complete. Compare `boss env --json` (`.capabilities.cli`, `.capabilities.mcp`) against:
 
    ```bash
-   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+   BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic/${BOSS_AGENT_SESSION_ID:-local}"
    BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
    [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
    export BOSS_EPIC_TOOLBOX
@@ -436,7 +436,7 @@ its `action`.
   children routinely run 2–4 h). Carry it in state, or re-resolve it with its own guard:
 
   ```bash
-  BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+  BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic/${BOSS_AGENT_SESSION_ID:-local}"
   BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
   [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
   export BOSS_EPIC_TOOLBOX
@@ -520,7 +520,7 @@ validate with `--role notes`. Never fatal.
 After notes, remove the pin in its own Bash call:
 
 ```bash
-BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
 [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
 node "$BOSS_EPIC_TOOLBOX/skill-pin.mjs" remove --skill boss-epic

@@ -21,8 +21,11 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		IsTerminalSealingSupported: c.terminalSealingSupported,
 		CloudControl:               cloudControlProto(c.cloudControl),
 		HasCloudControlUpdates:     true,
-		Hostname:                   c.hostname,
-		SupportedCommandFields:     daemoncaps.StreamCommands(),
+		// Commands are decided by their resolved target; see command_target.go.
+		IsRepoCloudControlSupported: true,
+		RepoCloudControlRevision:    c.repoCloudControlRevision.Load(),
+		Hostname:                    c.hostname,
+		SupportedCommandFields:      daemoncaps.StreamCommands(),
 	}
 
 	redactor := c.newCloudRedactor()
@@ -33,7 +36,12 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 			return nil, fmt.Errorf("snapshot repos: %w", err)
 		}
 		snap.RepoIds = repoIDs
-		redactor.registerRepos(repoIDs)
+		controlIDs, err := c.cloudControlRepoIDs(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot repo cloud control: %w", err)
+		}
+		redactor.registerRepos(controlIDs)
+		snap.RepoCloudControls = redactor.repoCloudControlModes(ctx, controlIDs)
 	}
 
 	if c.stores.Sessions != nil {

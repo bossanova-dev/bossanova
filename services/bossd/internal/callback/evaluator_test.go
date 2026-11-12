@@ -882,9 +882,9 @@ func TestRunsSettled_HoldLogs(t *testing.T) {
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			var buf bytes.Buffer
-			prov := &fakeProvider{runs: []vcs.WorkflowRun{{Name: "deploy", Status: tc.status, Event: "push", HeadSHA: testHeadSHA}}}
+			prov := &fakeProvider{status: prStatus(vcs.PRStateOpen), checks: []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)}, runs: []vcs.WorkflowRun{{Name: "deploy", Status: tc.status, Event: "push", HeadSHA: testHeadSHA}}}
 			ev := NewEvaluator(nil, prov, fixedNow(), zerolog.New(&buf))
-			if settled, _ := ev.runsSettled(context.Background(), "acme/widgets", 7, prStatus(vcs.PRStateOpen)); settled {
+			if _, _, settled, err := ev.readPRState(context.Background(), "acme/widgets", 7); err != nil || settled {
 				t.Fatal("held run must not settle")
 			}
 			var record struct {
@@ -928,7 +928,11 @@ func TestRunsSettled_ClassifiesAndSortsHeldRuns(t *testing.T) {
 	}}
 	var buf bytes.Buffer
 	ev := NewEvaluator(nil, prov, fixedNow(), zerolog.New(&buf))
-	settled, held := ev.runsSettled(context.Background(), "acme/widgets", 7, prStatus(vcs.PRStateOpen))
+	runs, read := ev.headRuns(context.Background(), "acme/widgets", 7, prStatus(vcs.PRStateOpen))
+	if !read {
+		t.Fatal("workflow runs not read")
+	}
+	settled, held := ev.runsSettled("acme/widgets", 7, testHeadSHA, runs)
 	want := []heldWorkflowRun{
 		{Name: "a-build", Status: "queued", Event: "push", Class: "in-flight"},
 		{Name: "approval", Status: "action_required", Event: "pull_request", Class: "awaiting-approval"},

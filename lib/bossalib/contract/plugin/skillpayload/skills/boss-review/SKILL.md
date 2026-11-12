@@ -1,6 +1,6 @@
 ---
 name: boss-review
-description: Find-then-verify code review of the current branch. Three independent finders (correctness, repo guidelines, security) and a cross-agent second model propose findings; each candidate is verified against the code, and only verified P0/P1 problems the change introduced block. Writes a machine-readable verdict (review-verdict.json). With --fix, one fix pass and one re-review of that fix, then it stops. Used by boss-build. Use when asked to "review this branch", "boss-review", or to review before a PR.
+description: Find-then-verify code review of the current branch. Three independent finders (correctness, repo guidelines, security) and a cross-agent second model propose findings; each candidate is verified against the code, and only verified P0–P2 problems the change introduced block. Writes a machine-readable verdict (review-verdict.json). With --fix, one fix pass and one re-review of that fix, then it stops. Used by boss-build. Use when asked to "review this branch", "boss-review", or to review before a PR.
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Task, Skill
 ---
 
@@ -48,7 +48,7 @@ boss-build certifies fresh when no reusable block exists.
 Scope creates the pin once. Steps 2–5 use this pinned form in every fresh shell:
 
 ```bash
-BOSS_REVIEW_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-review"
+BOSS_REVIEW_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-review/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_PIN/toolbox"
 [ -f "$BOSS_REVIEW_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-review skill pin missing - re-run the first block"; exit 1; }
 ```
@@ -90,7 +90,7 @@ After the pin exists, read `references/…`, `scripts/…` and `extensions/…` 
    re-run an incomplete fixer receipt through the verification receipt helper, and nothing else.
 4. **Only verified findings exist.** An unverified candidate is dropped, not downgraded. Never write
    `status` by judgement: `review-verdict.mjs status` recomputes it from the findings.
-5. **Blocking is narrow:** verified, introduced by this change, P0 or P1, not fixed. Everything else
+5. **Blocking is narrow:** verified, introduced by this change, P0, P1 or P2, not fixed. Everything else
    is reported and never blocks; a pre-existing problem is labelled pre-existing.
 6. **Optional capabilities never error.** An unavailable second model is `secondModel.ran: false`
    with its reason. An unavailable finder or verifier is a coverage gap, never an `error`.
@@ -105,7 +105,7 @@ BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolb
 if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
 BOSS_REVIEW_SKILLS_HOME="$(dirname "$(dirname "$BOSS_REVIEW_TOOLBOX")")"
 node "$BOSS_REVIEW_TOOLBOX/skill-pin.mjs" create --skill boss-review --skills-home "$BOSS_REVIEW_SKILLS_HOME" || exit 1
-BOSS_REVIEW_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-review"
+BOSS_REVIEW_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-review/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_PIN/toolbox"
 [ -f "$BOSS_REVIEW_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-review skill pin missing - re-run the first block"; exit 1; }
 HEAD_SHA="$(git rev-parse "${HEAD:-HEAD}")" || exit 1
@@ -211,7 +211,7 @@ then print the report and `boss-review: $STATUS $OUT_DIR/review-verdict.json` as
 Step 5 stays in this process; defer removal while a fix or re-review remains.
 
 ```bash
-BOSS_REVIEW_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-review"
+BOSS_REVIEW_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-review/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_PIN/toolbox"
 [ -f "$BOSS_REVIEW_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-review skill pin missing - re-run the first block"; exit 1; }
 node "$BOSS_REVIEW_TOOLBOX/skill-pin.mjs" remove --skill boss-review
@@ -242,7 +242,7 @@ Only when the status is `blocked`, and only once:
    results are recorded and every gate has settled, then `clear --dispatch review-fix`.
 2. Re-review only the fix: run steps 2–3 over `PRE_FIX_HEAD...HEAD` (no second model). Mark each
    original blocking finding the fix resolved as `fixed: true` with its `fixCommit`. Add any **new**
-   verified P0/P1 the fix introduced as a blocking finding; ignore everything else the delta pass
+   verified P0–P2 the fix introduced as a blocking finding; ignore everything else the delta pass
    finds.
 3. Set `fixPass: {ran: true, deltaBase: PRE_FIX_HEAD}`, set `head` to the new `HEAD`, and redo step 4.
    Whatever still blocks stays blocked. There is no second round.

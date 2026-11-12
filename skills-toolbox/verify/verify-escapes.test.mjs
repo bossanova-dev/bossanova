@@ -121,7 +121,7 @@ test('signals parse the review renderer, size and merge-head status', () => {
     changedFiles: 1,
     verifyState: 'success',
   })
-  assert.equal(signals.findings.unapplied, 1)
+  assert.deepEqual(signals.findings, { blocking: 1, unapplied: 0, maxSeverity: 'P2' })
   assert.equal(signals.findings.maxSeverity, 'P2')
   assert.equal(signals.secondModel, 'skipped')
   assert.equal(signals.verify, 'success')
@@ -182,7 +182,7 @@ test('separate fixes retain distinct markers; areas fall back to all original pa
   assert.equal(second.areaBasis, 'original')
   assert.deepEqual(second.areas, [{ area: 'other', paths: ['src/a.js'] }])
 })
-test('renderer findings count blocking and unapplied items; absent second model is unknown', () => {
+test('renderer findings count introduced defects as blockers; absent second model is unknown', () => {
   const f = {
     id: 'R1',
     severity: 'P1',
@@ -202,10 +202,28 @@ test('renderer findings count blocking and unapplied items; absent second model 
     },
   })
   const signals = escapeSignals({ ...original, body })
-  assert.deepEqual(signals.findings, { blocking: 1, unapplied: 1, maxSeverity: 'P1' })
+  assert.deepEqual(signals.findings, { blocking: 2, unapplied: 0, maxSeverity: 'P1' })
   assert.equal(signals.secondModel, 'ran')
   assert.equal(escapeSignals(original).secondModel, 'unknown')
   assert.equal(escapeSignals(original).verify, 'absent')
+})
+
+test('legacy PR bodies retain unapplied review finding signals', () => {
+  const body = [
+    '## Review findings',
+    '- [ ] **P1** `a:1` — defect',
+    '',
+    '## Unapplied review findings',
+    '- [ ] **P2** `b:2` — another defect',
+    '',
+    '## Cross-model review',
+    'ran (independent)',
+  ].join('\n')
+  assert.deepEqual(escapeSignals({ ...original, body }).findings, {
+    blocking: 1,
+    unapplied: 1,
+    maxSeverity: 'P1',
+  })
 })
 
 test('follow-up feature prose, lifecycle states and tool names do not imply findings', () => {

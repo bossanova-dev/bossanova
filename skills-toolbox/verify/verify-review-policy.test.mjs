@@ -6,7 +6,7 @@ test('new areas keep config order and new keys need no deprecation', () => {
   assert.deepEqual(
     reviewPolicyFromBlock({
       alwaysReview: { 'API schema': ['api/**'], Empty: [], UI: ['web/**'] },
-      neverReview: ['vendor/**'],
+      noSignOff: ['vendor/**'],
     }),
     {
       alwaysReview: [
@@ -19,7 +19,7 @@ test('new areas keep config order and new keys need no deprecation', () => {
         { name: 'Empty', globs: [], parkCode: 'always-human-path', label: 'Empty' },
         { name: 'UI', globs: ['web/**'], parkCode: 'always-human-path', label: 'UI' },
       ],
-      neverReview: ['vendor/**'],
+      noSignOff: ['vendor/**'],
       deprecations: [],
     },
   )
@@ -64,7 +64,7 @@ test('malformed blocks and entries are harmless and well formed siblings survive
   for (const block of [undefined, null, 1, 'x', []])
     assert.deepEqual(reviewPolicyFromBlock(block), {
       alwaysReview: [],
-      neverReview: [],
+      noSignOff: [],
       deprecations: [],
     })
   const r = reviewPolicyFromBlock({
@@ -74,11 +74,22 @@ test('malformed blocks and entries are harmless and well formed siblings survive
       Good: ['yes', '', 7, { glob: 'no' }],
       Wrong: 'x',
     },
-    neverReview: ['ok', '', null],
+    noSignOff: ['ok', '', null],
   })
   assert.deepEqual(
     r.alwaysReview.map((a) => a.globs),
     [['yes']],
   )
-  assert.deepEqual(r.neverReview, ['ok'])
+  assert.deepEqual(r.noSignOff, ['ok'])
+})
+test('neverReview is the deprecated alias of noSignOff and loses to it', () => {
+  const alias = reviewPolicyFromBlock({ neverReview: ['vendor/**'] })
+  assert.deepEqual(alias.noSignOff, ['vendor/**'])
+  assert.deepEqual(alias.deprecations, [
+    'verifyDefaults.neverReview is deprecated: rename it to verifyDefaults.noSignOff',
+  ])
+  const both = reviewPolicyFromBlock({ noSignOff: ['a/**'], neverReview: ['b/**'] })
+  assert.deepEqual(both.noSignOff, ['a/**'])
+  assert.equal(both.deprecations.length, 1)
+  assert.deepEqual(reviewPolicyFromBlock({ noSignOff: ['a/**'] }).deprecations, [])
 })

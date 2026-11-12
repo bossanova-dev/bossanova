@@ -29,7 +29,7 @@ BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolb
 if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
 BOSS_REPAIR_SKILLS_HOME="$(dirname "$(dirname "$BOSS_REPAIR_TOOLBOX")")"
 node "$BOSS_REPAIR_TOOLBOX/skill-pin.mjs" create --skill boss-repair --skills-home "$BOSS_REPAIR_SKILLS_HOME" || exit 1
-BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
 [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
 ```
@@ -38,7 +38,7 @@ After the pin exists, read `references/…`, `scripts/…` and `extensions/…` 
 `$BOSS_REPAIR_PIN/`. Every later shell block resolves only this pin:
 
 ```bash
-BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
 [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
 BOSS_REPAIR_PROBE="$BOSS_REPAIR_PIN/scripts/review-feedback-probe.js"
@@ -198,7 +198,7 @@ judgement.
    Re-run `carry` before the post-review invocation too. No exit changes the pass's own exit code:
 
    ```bash
-   BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+   BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair/${BOSS_AGENT_SESSION_ID:-local}"
    BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
    [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
    BRANCH="$(git branch --show-current)"
@@ -281,7 +281,7 @@ genuinely empty. After the rebase completes, audit it (substitute the recorded S
 not survive between tool calls):
 
 ```bash
-BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
 [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
 node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check --repo "$(git rev-parse --show-toplevel)" \
@@ -367,7 +367,7 @@ Poll checks, review feedback and mergeability together — never wait on one whi
 others. Check state goes through the classifier, keyed to the head SHA:
 
 ```bash
-BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
 [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
 CHECK_DIR="$(git rev-parse --git-dir)/boss-repair-checks"
@@ -514,7 +514,7 @@ Skip this phase when `BOSS_NOTES_SUPPRESSED=1` (a calling core owns the notes fo
 Otherwise, after the terminal outcome is decided:
 
 ```bash
-BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
 [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
 node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" discover --core boss-repair --role notes --json
@@ -555,7 +555,7 @@ After post-terminal notes (including when suppressed), in Default and Watch mode
 as a separate final Bash call.
 
 ```bash
-BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair"
+BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
 [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
 node "$BOSS_REPAIR_TOOLBOX/skill-pin.mjs" remove --skill boss-repair

@@ -27,8 +27,9 @@ type Reader interface {
 }
 
 type entry struct {
-	repoID    int64
-	expiresAt time.Time
+	visibility string
+	repoID     int64
+	expiresAt  time.Time
 }
 
 // Verifier caches successful reads from the local GitHub adapter.
@@ -48,7 +49,7 @@ func New(reader Reader, logger zerolog.Logger) *Verifier {
 }
 
 func localIdentity(repo domain.Repo) (config.RepoIdentity, string) {
-	id := config.RepoIdentity{LocalPath: repo.LocalPath}
+	id := config.RepoIdentity{LocalPath: repo.LocalPath, Visibility: "unknown"}
 	origin := vcs.CanonicalRepoURL(repo.OriginURL)
 	parsed, err := url.Parse(origin)
 	if err != nil || origin == "" {
@@ -91,14 +92,14 @@ func (v *Verifier) Identity(ctx context.Context, repo domain.Repo) config.RepoId
 		}
 		v.mu.Unlock()
 		started := v.now()
-		repoID, _, readErr := v.reader.GetRepositoryIdentity(fetchCtx, origin)
+		repoID, visibility, readErr := v.reader.GetRepositoryIdentity(fetchCtx, origin)
 		if readErr != nil {
 			return entry{}, readErr
 		}
 		if fetchCtx.Err() != nil {
 			return entry{}, fetchCtx.Err()
 		}
-		fresh := entry{repoID: repoID, expiresAt: started.Add(identityTTL)}
+		fresh := entry{repoID: repoID, visibility: normalizeVisibility(visibility), expiresAt: started.Add(identityTTL)}
 		if repoID <= 0 || !v.now().Before(fresh.expiresAt) {
 			return entry{}, nil
 		}
@@ -113,6 +114,18 @@ func (v *Verifier) Identity(ctx context.Context, repo domain.Repo) config.RepoId
 	if verified.repoID > 0 && v.now().Before(verified.expiresAt) {
 		id.ProviderRepoID = verified.repoID
 		id.IsIDVerified = true
+		id.Visibility = verified.visibility
 	}
 	return id
+}
+
+func normalizeVisibility(raw string) string {
+	switch raw {
+	case "public", "internal":
+		return "public"
+	case "private":
+		return "private"
+	default:
+		return "unknown"
+	}
 }

@@ -26,6 +26,7 @@ function fixture(options = {}) {
                     id: 'team-id',
                     states: { nodes: options.noState ? [] : [{ id: 'state-id', name: 'Todo' }] },
                   },
+                  ...(options.twoTeams ? [{ id: 'other-team-id' }] : []),
                 ],
           },
         }
@@ -79,6 +80,29 @@ test('real Linear adapter conforms and creates with resolved team, state and pre
       },
     ],
   )
+})
+test('every connection sent to Linear has an explicit page bound', async () => {
+  const h = fixture()
+  assert.equal((await h.adapter.applyIssueCreate({ ...input, marker })).outcome, 'ok')
+  assert.equal(h.mutations().length, 1)
+  const fields = new Set()
+  for (const { query } of h.calls) {
+    for (const match of query.matchAll(/(\w+)\s*(\(([^)]*)\))?\s*\{\s*nodes\b/g)) {
+      fields.add(match[1])
+      assert.match(match[3] ?? '', /\bfirst\s*:/, `${match[1]} must have a page bound`)
+    }
+  }
+  assert.deepEqual([...fields].sort(), ['issueLabels', 'issues', 'states', 'teams'])
+})
+test('two matching teams fail permanently without mutation', async () => {
+  const h = fixture({ twoTeams: true })
+  assert.deepEqual(await h.adapter.applyIssueCreate(input), {
+    ok: false,
+    outcome: 'failed',
+    reason: 'team-not-found',
+    permanent: true,
+  })
+  assert.equal(h.mutations().length, 0)
 })
 test('unknown team, state and label fail permanently without mutation', async () => {
   for (const flag of ['noTeam', 'noState', 'noLabel']) {

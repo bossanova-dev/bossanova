@@ -240,7 +240,7 @@ test('fresh-claim schema changes ask through the real area policy', () => {
     'services/api/internal/service/hospital_update_claim_number_request_email_test.go',
     'services/api/internal/storage/hospital.go',
   ]
-  const policy = { alwaysReview: [], neverReview: [] }
+  const policy = { alwaysReview: [], noSignOff: [] }
   const { areas } = reviewAreas(files, policy)
   const facts = { ...base(), areas, proof: { ui: 'tests' } }
   assert.equal(confidence(facts).level, 'moderate')

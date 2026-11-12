@@ -88,8 +88,14 @@ function page(hash = '', { withVideo = true, framed = false } = {}) {
     location: { hash, pathname: '/acme/edge/9/index.html', search: '' },
     history,
   })
-  if (framed) win.top = {}
-  else win.top = win
+  const parent = {
+    posted: [],
+    postMessage(message, targetOrigin) {
+      this.posted.push([message, targetOrigin])
+    },
+  }
+  win.top = framed ? parent : win
+  win.parent = framed ? parent : win
   const root = element()
   const ids = {
     ...(withVideo ? { 'proof-video': video } : {}),
@@ -147,6 +153,7 @@ function page(hash = '', { withVideo = true, framed = false } = {}) {
     boxes,
     history,
     win,
+    parent,
     root,
     current,
     link,
@@ -315,4 +322,13 @@ test('Back and Forward to a lightbox hash open and shut it', () => {
 test('a framed page marks its root, so links a sandbox cannot follow give way to a note', () => {
   assert.equal(page('', { framed: true }).root.classList.has('proof-framed'), true)
   assert.equal(page('').root.classList.has('proof-framed'), false, 'a page in its own tab')
+})
+
+test('a page posts nothing to its parent or itself, framed or in its own tab, before or after load', () => {
+  for (const framed of [true, false]) {
+    const { win, parent } = page('', { framed })
+    win.postMessage = () => assert.fail('the page posted to its own window')
+    win.fire('load')
+    assert.deepEqual(parent.posted, [], framed ? 'a framed page' : 'a page in its own tab')
+  }
 })

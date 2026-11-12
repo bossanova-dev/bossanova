@@ -154,7 +154,7 @@ type runOpts struct {
 	// assert shutdown actually waits on it.
 	onArchiveTrackerSeamsWired func(live bool, track func(string, <-chan struct{}))
 
-	// onVerifyJobSeamsWired reports the production merge-owner and repair-lease
+	// onVerifyJobSeamsWired reports the merge-owner, Dependabot gate and repair-lease
 	// wiring, including reuse of the daemon's checker in the server config.
 	onVerifyJobSeamsWired func(orchestratorLive, sharedChecker bool)
 

@@ -45,8 +45,8 @@ test('a matching module cap lowers High and leads its label, reason and park ban
 
 test('configured review filtering cannot erase a matching module cap', () => {
   for (const review of [
-    { alwaysReview: [], neverReview: ['services/a/**'] },
-    { alwaysReview: [{ name: 'Code', globs: ['services/a/**'] }], neverReview: [] },
+    { alwaysReview: [], noSignOff: ['services/a/**'] },
+    { alwaysReview: [{ name: 'Code', globs: ['services/a/**'] }], noSignOff: [] },
   ]) {
     const { areas } = reviewAreas(gate.changedPaths, review)
     const result = levelConfidence({ ...gate, areas })

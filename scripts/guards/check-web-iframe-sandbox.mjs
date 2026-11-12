@@ -11,7 +11,14 @@ import record from './registry/web-iframe-sandbox.mjs'
 // The sandbox is the boundary that keeps framed content (a proof page) out of
 // the app; CSP frame-src only limits which URLs may load. Browsers match
 // sandbox tokens ASCII case-insensitively, so tokens are lowercased first.
-const ALLOWED_SANDBOX_TOKENS = new Set(['allow-scripts'])
+// Popups are allowed so a proof host's sign-in link can open a tab: the app's
+// Cross-Origin-Opener-Policy: same-origin gives that tab no opener, and
+// services/web/e2e/review-screen.spec.ts proves the tab cannot reach the app.
+const ALLOWED_SANDBOX_TOKENS = new Set([
+  'allow-scripts',
+  'allow-popups',
+  'allow-popups-to-escape-sandbox',
+])
 // <object>, <embed> and <frame> take no sandbox, so they cannot frame safely.
 const FRAMING_TAGS = new Set(['iframe', 'object', 'embed', 'frame'])
 const FRAMING_MARKUP = /<(iframe|object|embed|frame)/i
@@ -38,10 +45,13 @@ function iframeProblem(element) {
   if (!sandbox) return 'has no sandbox attribute'
   const value = literalText(sandbox.initializer)
   if (value === null) return 'sets sandbox to a non-literal value'
-  const granted = value
-    .split(/[\t\n\f\r ]+/)
-    .filter((token) => token && !ALLOWED_SANDBOX_TOKENS.has(token.toLowerCase()))
+  const tokens = value.split(/[\t\n\f\r ]+/).filter(Boolean)
+  const granted = tokens.filter((token) => !ALLOWED_SANDBOX_TOKENS.has(token.toLowerCase()))
   if (granted.length > 0) return `sandbox grants ${granted.join(', ')}`
+  const lowered = new Set(tokens.map((token) => token.toLowerCase()))
+  if (lowered.has('allow-popups-to-escape-sandbox') && !lowered.has('allow-popups')) {
+    return 'sandbox grants allow-popups-to-escape-sandbox without allow-popups, which it needs'
+  }
   return literalText(attribute(element, 'allow')?.initializer) === ''
     ? null
     : 'must set allow="" to delegate no permissions'
@@ -113,12 +123,12 @@ if (isMainModule(import.meta.url)) {
   if (failures.length) {
     console.error(failures.join('\n'))
     console.error(
-      'Frame untrusted pages only with a JSX <iframe sandbox="allow-scripts" allow="">, at most.',
+      'Frame untrusted pages only with a JSX <iframe allow=""> whose sandbox grants at most allow-scripts allow-popups allow-popups-to-escape-sandbox.',
     )
     process.exitCode = 1
   } else {
     console.log(
-      'OK: every web frame is an <iframe> sandboxed to allow-scripts at most, with allow=""',
+      'OK: every web frame is an <iframe> sandboxed to allow-scripts and popups at most, with allow=""',
     )
   }
 }

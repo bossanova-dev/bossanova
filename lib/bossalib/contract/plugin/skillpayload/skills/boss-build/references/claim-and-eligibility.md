@@ -166,7 +166,7 @@ the descriptor; its missing verdicts take the `unknown` path above.
 **The rule.** With a selection in effect, the candidate list comes **only** from:
 
 ```bash
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 # Pass --team "<team>" when the Tracker preflight resolved the team (no configured team), then the

@@ -13,9 +13,11 @@ type Document struct {
 
 // Repo describes repository configuration, without a daemon identifier.
 type Repo struct {
-	Key           string `json:"key"`
-	DisplayName   string `json:"displayName"`
-	MergeStrategy string `json:"mergeStrategy,omitempty"`
+	Key            string `json:"key"`
+	DisplayName    string `json:"displayName"`
+	MergeStrategy  string `json:"mergeStrategy,omitempty"`
+	ProviderRepoID int    `json:"providerRepoId,omitempty"`
+	Visibility     string `json:"visibility,omitempty"`
 }
 
 // Session describes lifecycle inputs belonging to a repository key.

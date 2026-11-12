@@ -3076,4 +3076,7 @@ message RepoCloudControl {
   string effective_mode = 8;
   string source = 9;
   bool has_unverified_grant = 10;
+  // Informational, locally verified metadata; never used to decide authority.
+  string visibility = 11;
+  bool is_suggested = 12;
 }

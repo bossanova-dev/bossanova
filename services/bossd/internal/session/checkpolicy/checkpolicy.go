@@ -46,8 +46,9 @@ type fileVersion struct {
 }
 
 type fileEntry struct {
-	version  fileVersion
-	required vcs.RequiredChecks
+	version    fileVersion
+	required   vcs.RequiredChecks
+	dependabot DependabotPolicy
 }
 
 type refEntry struct {
@@ -92,7 +93,7 @@ func (r *Resolver) RequiredChecks(ctx context.Context, repoRef string) vcs.Requi
 	if path == "" {
 		return vcs.RequiredChecks{}
 	}
-	return r.forPath(path)
+	return r.forPath(path).required
 }
 
 // resolvePath maps repoRef to a repo's local checkout, or "" when no repo
@@ -158,11 +159,11 @@ func (r *Resolver) lookupByNWO(ctx context.Context, repoRef string) string {
 
 // forPath reads <dir>/.boss-skills.json ci.required, reusing the cached result
 // while the file's modification time and size are unchanged.
-func (r *Resolver) forPath(dir string) vcs.RequiredChecks {
+func (r *Resolver) forPath(dir string) fileEntry {
 	path := filepath.Join(dir, configFile)
 	info, err := os.Stat(path)
 	if err != nil {
-		return vcs.RequiredChecks{}
+		return fileEntry{}
 	}
 	version := fileVersion{modTime: info.ModTime(), size: info.Size()}
 
@@ -170,22 +171,28 @@ func (r *Resolver) forPath(dir string) vcs.RequiredChecks {
 	cached, ok := r.files[path]
 	r.mu.Unlock()
 	if ok && cached.version == version {
-		return cached.required
+		return cached
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return vcs.RequiredChecks{}
+		return fileEntry{}
 	}
 	required, parseErr := Parse(data)
+	dependabot := ParseDependabot(data)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if parseErr != nil && r.warned[path] != version {
+	if (parseErr != nil || dependabot.Malformed != nil) && r.warned[path] != version {
 		r.warned[path] = version
-		r.logger.Warn().Err(parseErr).Str("path", path).Msg("checkpolicy: malformed ci.required; no required checks")
+		if parseErr != nil {
+			r.logger.Warn().Err(parseErr).Str("path", path).Msg("checkpolicy: malformed ci.required; no required checks")
+		} else {
+			r.logger.Warn().Err(dependabot.Malformed).Str("path", path).Msg("checkpolicy: malformed ci.dependabot; merges refused")
+		}
 	}
-	r.files[path] = fileEntry{version: version, required: required}
-	return required
+	entry := fileEntry{version: version, required: required, dependabot: dependabot}
+	r.files[path] = entry
+	return entry
 }
 
 // Parse extracts ci.required from a .boss-skills.json document. An absent block

@@ -23,7 +23,6 @@ import (
 // bare "origin" remote, so that `git fetch origin <branch>` works in tests.
 func initTestRepo(t *testing.T) string {
 	t.Helper()
-
 	// Create a bare repo to act as "origin".
 	bareDir := t.TempDir()
 	bareCmd := exec.Command("git", "init", "--bare", "-b", "main")
@@ -38,6 +37,7 @@ func initTestRepo(t *testing.T) string {
 		{"init", "-b", "main"},
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test"},
+		{"config", "commit.gpgsign", "false"},
 		{"commit", "--allow-empty", "-m", "init"},
 		{"remote", "add", "origin", bareDir},
 		{"push", "-u", "origin", "main"},

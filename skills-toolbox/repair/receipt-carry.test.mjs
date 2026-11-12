@@ -350,7 +350,7 @@ for (const resolves of [['0.1:old'], ['0.1:unknown'], []])
     assert.equal(candidates.status, 0, candidates.stderr)
     assert.deepEqual(
       JSON.parse(candidates.stdout).map((f) => f.ref),
-      ['0.1:old'],
+      [],
     )
     const [file] = first.review.verdictFiles
     f.verdict(file, { base: start, head, resolves })
@@ -358,9 +358,9 @@ for (const resolves of [['0.1:old'], ['0.1:unknown'], []])
     assert.equal(report.decision, DECISIONS.POST)
     const body = readFileSync(report.reportFile, 'utf8')
     const fixed = resolves.includes('0.1:old')
-    assert.match(body, fixed ? /### Fixed in review/ : /### Unapplied review findings/)
+    assert.match(body, fixed ? /### Fixed in review/ : /### Blocking/)
     assert.deepEqual(parseReportFindings(body).findings, fixed ? [] : [old])
-    if (fixed) assert.doesNotMatch(body, /### Unapplied review findings/)
+    if (fixed) assert.doesNotMatch(body, /### Blocking/)
   })
 
 test('an empty carried list creates no prior verdict', (t) => {

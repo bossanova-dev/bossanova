@@ -46,6 +46,7 @@ export const ACTIONS_DIR = '.github/actions'
 export const DEPENDABOT_FILE = '.github/dependabot.yml'
 export const WRAPPED_ACTIONS = new Map([
   ['bazel-contrib/setup-bazel', '.github/actions/setup-bazel/action.yml'],
+  ['pnpm/action-setup', '.github/actions/setup-pnpm/action.yml'],
 ])
 
 // Workflows that cannot move their write grant down to a job, one `<workflow path> — <reason>`
@@ -151,7 +152,7 @@ function usesFindings(file, lines) {
       findings.push({
         file,
         line: entry.line,
-        message: `direct setup-bazel skips the repository cache; use \`./${path.posix.dirname(wrapper)}\``,
+        message: `direct ${ref.split('@')[0]} bypasses its repository-owned composite; use \`./${path.posix.dirname(wrapper)}\``,
       })
     }
   }

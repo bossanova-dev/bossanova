@@ -36,7 +36,7 @@ side: a true gate followed by `command not found`.
 # Each fenced block is a FRESH shell, so re-resolve the toolbox rather than assuming
 # the startup block's export survived — unset, the bridge below imports
 # `undefined/boss-binary.mjs`, dies, and hands back the bare `boss` this exists to avoid.
-BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
 [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
 export BOSS_EPIC_TOOLBOX
@@ -191,7 +191,7 @@ read are the authoritative filter, and both run again on every wake regardless o
    # checks_passed_ready, NOT checks_passed: the child PR is a draft until boss-build
    # readies it, and a bare green-on-draft fire would burn the one-shot watch.
    if [ -n "$CALLBACK_CHAT" ] && [ -n "$CALLBACK_REPO" ]; then
-     BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic"
+     BOSS_EPIC_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-epic/${BOSS_AGENT_SESSION_ID:-local}"
      BOSS_EPIC_TOOLBOX="$BOSS_EPIC_PIN/toolbox"
      [ -f "$BOSS_EPIC_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-epic skill pin missing - re-run the first block"; exit 1; }
      export BOSS_EPIC_TOOLBOX

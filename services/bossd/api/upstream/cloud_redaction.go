@@ -63,8 +63,14 @@ func (r *cloudRedactor) redactForCloud(ctx context.Context, obj proto.Message) {
 	}
 	switch value := obj.(type) {
 	case *pb.DaemonSnapshot:
-		if value.RepoIds != nil {
-			r.registerRepos(value.GetRepoIds())
+		// RepoIds are origin URLs for webhook routing; the per-repo modes name
+		// the registered repositories by the database id sessions carry.
+		if value.RepoCloudControls != nil {
+			ids := make([]string, 0, len(value.GetRepoCloudControls()))
+			for _, entry := range value.GetRepoCloudControls() {
+				ids = append(ids, entry.GetRepoId())
+			}
+			r.registerRepos(ids)
 		}
 		for _, session := range value.GetSessions() {
 			r.sessions[session.GetId()] = session.GetRepoId()
@@ -91,7 +97,12 @@ func (r *cloudRedactor) redactContent(ctx context.Context, obj proto.Message) bo
 	switch value := obj.(type) {
 	case *pb.Session:
 		r.sessions[value.GetId()] = value.GetRepoId()
-		if r.mode(ctx, value.GetRepoId()) == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
+		mode := r.mode(ctx, value.GetRepoId())
+		// A repo-less session (a delete delta) has no effective mode to publish.
+		if value.GetRepoId() != "" {
+			value.CloudControl = mode
+		}
+		if mode == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
 			value.Plan = ""
 		}
 		return true

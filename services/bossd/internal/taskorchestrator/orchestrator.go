@@ -98,7 +98,6 @@ type BaseBranchSyncer interface {
 	CountMergeCommits(ctx context.Context, localPath, base, head string) (int, error)
 }
 
-// queuedTask pairs a task item with its repo info for the FIFO queue.
 type queuedTask struct {
 	task       *bossanovav1.TaskItem
 	repo       repoInfo
@@ -118,6 +117,7 @@ type Orchestrator struct {
 	provider           vcs.Provider
 	baseSyncer         BaseBranchSyncer // optional; nil-safe
 	dependabotGate     DependabotRepairGate
+	dependabotMerge    *dependabotMergeGate
 	livenessChecker    SessionLivenessChecker // optional; nil-safe — see sessionLiveness
 	archiver           SessionArchiver        // optional; nil-safe. Auto-archives dependabot repair sessions on merge.
 	factoryRepoChecker FactoryRepoChecker

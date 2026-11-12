@@ -22,11 +22,12 @@ import (
 )
 
 // EvidenceSource serves a session's current-head verify evidence summary, the
-// open checklist items its verify park note recorded on head, and whether the
-// operator's newest record on head is a legacy send-back.
-// *evidence.Reader satisfies it.
+// open checklist items its verify park note recorded on head, whether the
+// operator's newest record on head is a legacy send-back, and the PR's newest
+// proof record on any head. *evidence.Reader satisfies it.
 type EvidenceSource interface {
 	Proof(sessionID, head string) (evidence.ProofRecord, bool)
+	LatestProof(sessionID string) (evidence.ProofRecord, bool)
 	Entry(sessionID string) (evidence.Entry, bool)
 	OpenItems(sessionID, head string) []string
 	SentBack(sessionID, head string) bool

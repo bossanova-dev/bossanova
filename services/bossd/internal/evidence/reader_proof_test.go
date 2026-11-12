@@ -220,3 +220,83 @@ func TestReaderProofRetentionResetsWhenSessionReturns(t *testing.T) {
 		})
 	}
 }
+
+func TestReaderLatestProofOutlivesItsHead(t *testing.T) {
+	newer := strings.Repeat("b", 40)
+	page := func(head, url string) string {
+		p := proofPayload()
+		p["head"], p["page"] = head, url
+		return proofComment(t, p)
+	}
+	f := &proofCommentFinder{comments: []vcs.PRComment{{Body: page(sha, "https://example.test/old"), AuthorAssociation: "OWNER"}}}
+	var atChange []string
+	now := time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC)
+	var r *evidence.Reader
+	r = evidence.NewReader(f, zerolog.Nop(), evidence.WithClock(func() time.Time { return now }), evidence.WithOnChange(func(context.Context, string) {
+		got, _ := r.LatestProof("s")
+		atChange = append(atChange, got.Head)
+	}))
+	latest := func() evidence.ProofRecord {
+		t.Helper()
+		got, _ := r.LatestProof("s")
+		return got
+	}
+	r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 1, HeadSHA: sha, IsPROpen: true})
+	if got := latest(); got.Head != sha || got.Page != "https://example.test/old" {
+		t.Fatalf("current head latest = %+v", got)
+	}
+	moved := len(atChange)
+	r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 1, HeadSHA: newer, IsPROpen: true})
+	if _, ok := r.Proof("s", newer); ok {
+		t.Fatal("the older head's proof served as the new head's")
+	}
+	if got := latest(); got.Head != sha || got.Page != "https://example.test/old" || atChange[moved] != sha {
+		t.Fatalf("after new commits latest = %+v, at invalidation %q", got, atChange[moved:])
+	}
+	f.comments = append([]vcs.PRComment{{Body: page(newer, "https://example.test/new"), AuthorAssociation: "OWNER"}}, f.comments...)
+	now = now.Add(evidence.DefaultRefreshInterval)
+	r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 1, HeadSHA: newer, IsPROpen: true, IsVerifyActive: true})
+	if got := latest(); got.Head != newer || got.Page != "https://example.test/new" {
+		t.Fatalf("re-verified latest = %+v", got)
+	}
+	f.comments = nil
+	moved = len(atChange)
+	r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 2, HeadSHA: strings.Repeat("c", 40), IsPROpen: true})
+	if got, ok := r.LatestProof("s"); ok || atChange[moved] != "" {
+		t.Fatalf("another PR kept the old PR's proof: %+v, at invalidation %q", got, atChange[moved:])
+	}
+}
+
+func TestReaderLatestProofReadsAnOlderHeadsComment(t *testing.T) {
+	old := proofPayload()
+	old["page"] = "https://example.test/old"
+	comments := []vcs.PRComment{
+		{Body: proofComment(t, map[string]any{"schema": "boss-proof/1", "head": strings.Repeat("d", 40), "page": "https://evil.test", "level": "high", "asks": []string{}, "digest": "sha256:" + strings.Repeat("d", 64)}), AuthorAssociation: "NONE"},
+		{Body: proofComment(t, old), AuthorAssociation: "OWNER"},
+	}
+	r := evidence.NewReader(&proofCommentFinder{comments: comments}, zerolog.Nop())
+	r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 1, HeadSHA: strings.Repeat("b", 40), IsPROpen: true})
+	got, ok := r.LatestProof("s")
+	if !ok || got.Head != sha || got.Page != "https://example.test/old" || got.Digest != old["digest"] || got.Legacy {
+		t.Fatalf("LatestProof = %+v %v; want the trusted older head's record", got, ok)
+	}
+}
+
+func TestReaderProofDoesNotFollowTheSessionToAnotherPRAtTheSameHead(t *testing.T) {
+	p := proofPayload()
+	p["page"] = "https://example.test/pr1"
+	f := &proofCommentFinder{comments: []vcs.PRComment{{Body: proofComment(t, p), AuthorAssociation: "OWNER"}}}
+	r := evidence.NewReader(f, zerolog.Nop())
+	r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 1, HeadSHA: sha, IsPROpen: true})
+	if _, ok := r.LatestProof("s"); !ok {
+		t.Fatal("PR 1 proof not read")
+	}
+	f.comments = nil
+	r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 2, HeadSHA: sha, IsPROpen: true})
+	if got, ok := r.LatestProof("s"); ok {
+		t.Fatalf("PR 2 serves PR 1's proof: %+v", got)
+	}
+	if got, ok := r.Proof("s", sha); ok {
+		t.Fatalf("PR 2 serves PR 1's current-head proof: %+v", got)
+	}
+}

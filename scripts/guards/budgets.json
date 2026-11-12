@@ -210,7 +210,7 @@
       "services/bosso/api/webhook/handler.go": 1289,
       "services/bosso/cmd/main.go": 2301,
       "services/bosso/internal/live/ownership.go": 1729,
-      "services/bosso/internal/stream/registry.go": 2861,
+      "services/bosso/internal/stream/registry.go": 2869,
       "services/bosso/internal/stream/state.go": 1391
     }
   },
@@ -284,7 +284,7 @@
       "skills-toolbox/skill-config.mjs": 3808,
       "skills-toolbox/tracker/cli.mjs": 1054,
       "skills-toolbox/tracker/linear.mjs": 1123,
-      "skills-toolbox/verify/verify-gate.mjs": 4660,
+      "skills-toolbox/verify/verify-gate.mjs": 4664,
       "skills-toolbox/verify/verify-route.mjs": 1161
     }
   },
@@ -326,8 +326,8 @@
       "services/bossd/internal/adapter/credmaterialize/credmaterialize_test.go": 3561,
       "services/bossd/internal/adapter/git/worktree_test.go": 5202,
       "services/bossd/internal/adapter/github/provider_test.go": 2961,
-      "services/bossd/internal/adapter/tmux/tmux_test.go": 4870,
-      "services/bossd/internal/adapter/tmux/tmux_typed_draw_test.go": 1863,
+      "services/bossd/internal/adapter/tmux/tmux_test.go": 4564,
+      "services/bossd/internal/adapter/tmux/tmux_typed_draw_test.go": 1848,
       "services/bossd/internal/cron/scheduler_test.go": 2136,
       "services/bossd/internal/db/db_test.go": 1719,
       "services/bossd/internal/db/session_store_test.go": 2026,
@@ -354,7 +354,7 @@
       "services/web/src/features/accounts/pages/AccountsSettings.reconnect.test.tsx": 1651,
       "services/web/src/features/accounts/pages/AccountsSettings.test.tsx": 2008,
       "services/web/src/features/chat/pages/ChatTerminal.test.tsx": 1763,
-      "services/web/src/features/cron/pages/CronJobs.test.tsx": 1575,
+      "services/web/src/features/cron/pages/CronJobs.test.tsx": 1616,
       "services/web/src/features/repos/pages/RepoSettings.test.tsx": 1730,
       "services/web/src/features/sessions/pages/SessionDetail.test.tsx": 1713,
       "services/web/src/features/sessions/pages/Sessions.test.tsx": 2530
@@ -367,7 +367,6 @@
     "subjects": {
       "services/marketing/scripts/prose-lint.mjs": 2,
       "services/web/e2e/real/global-setup.ts": 1,
-      "services/web/e2e/responsive-layout.spec.ts": 1,
       "services/web/src/features/chat/lib/touchScroll.ts": 1,
       "services/web/src/features/chat/lib/wsAttach.ts": 1,
       "services/web/src/features/chat/pages/ChatTerminal.tsx": 1,
@@ -379,7 +378,6 @@
   "tsx-file-size": {
     "default": 400,
     "subjects": {
-      "services/web/src/app/Layout.tsx": 473,
       "services/web/src/features/accounts/pages/AccountsSettings.tsx": 978,
       "services/web/src/features/chat/pages/ChatTerminal.tsx": 1176,
       "services/web/src/features/cron/components/CronJobForm.tsx": 524,

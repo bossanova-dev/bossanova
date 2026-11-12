@@ -8,6 +8,7 @@ import {
   cutSnippet,
   gitChangedFiles,
   gitFileDiffs,
+  gitMergeBase,
   lineChecker,
   SNIPPET_CONTEXT,
   snippetResolver,
@@ -95,6 +96,36 @@ test('a snippet outside the diff, on an unchanged file or with no changed line i
     }
     const broken = snippetResolver(gitFileDiffs({ base, head: 'f'.repeat(40), cwd: dir }))
     assert.equal(broken({ path: 'app.ts', start: 18, end: 22 }).snippet, null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('files and snippets hold only the branch, after the base moves and merges into it', () => {
+  const { dir, base: fork, head: branched } = fixture()
+  try {
+    git(dir, 'checkout', '-qb', 'trunk', fork)
+    writeFileSync(join(dir, 'same.ts'), lines(5, { 2: 'main edit' }))
+    git(dir, 'commit', '-qam', 'main moves')
+    git(dir, 'checkout', '-qb', 'pr', branched)
+    git(dir, 'merge', '-q', '--no-edit', 'trunk')
+    const merged = git(dir, 'rev-parse', 'trunk')
+    git(dir, 'checkout', '-q', 'trunk')
+    writeFileSync(join(dir, 'main.ts'), lines(3))
+    git(dir, 'add', 'main.ts')
+    git(dir, 'commit', '-qm', 'main moves again')
+    const range = {
+      base: git(dir, 'rev-parse', 'trunk'),
+      head: git(dir, 'rev-parse', 'pr'),
+      cwd: dir,
+    }
+    assert.equal(gitMergeBase(range), merged)
+    assert.deepEqual(gitChangedFiles(range), [{ path: 'app.ts', adds: 2, dels: 1 }])
+    const diffs = gitFileDiffs(range)
+    assert.equal(diffs('main.ts'), undefined)
+    assert.equal(diffs('same.ts'), undefined)
+    assert.equal(snippetResolver(diffs)({ path: 'app.ts', start: 18, end: 22 }).snippet.adds, 2)
+    assert.equal(gitMergeBase({ ...range, head: 'f'.repeat(40) }), null)
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }

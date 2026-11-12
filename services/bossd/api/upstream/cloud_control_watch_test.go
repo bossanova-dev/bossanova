@@ -108,6 +108,9 @@ func TestWatchCloudControlRepoDowngrade(t *testing.T) {
 		policy.mode.Store(config.CloudControlPrivate)
 		time.Sleep(defaultCloudControlPollInterval)
 		synctest.Wait()
+		if pendingEvent(out).GetRepoCloudControlsChanged() == nil {
+			t.Fatal("repo downgrade published no repo delta before the snapshot")
+		}
 		snap := pendingEvent(out).GetSnapshot()
 		if snap == nil || snap.CloudControl != pb.CloudControl_CLOUD_CONTROL_FULL || len(snap.Sessions) != 1 || snap.Sessions[0].Plan != "" {
 			t.Fatalf("downgrade did not replace content: %v", snap)

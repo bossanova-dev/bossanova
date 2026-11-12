@@ -1,0 +1,19 @@
+name: Set up pnpm
+description: Install the packageManager pnpm version with one retry for registry failures
+runs:
+  using: composite
+  steps:
+    # The sqlc job hit a registry connection reset during pnpm setup.
+    # Retry the action itself to preserve its PNPM_HOME, PATH and store setup.
+    - id: attempt1
+      continue-on-error: true
+      uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+    - name: Back off before retrying pnpm setup
+      if: steps.attempt1.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::warning::pnpm setup failed; retrying after 15 seconds"
+        sleep 15
+    - name: Retry pnpm setup
+      if: steps.attempt1.outcome == 'failure'
+      uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1

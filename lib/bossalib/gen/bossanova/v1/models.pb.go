@@ -2076,6 +2076,63 @@ func (TrackerIssueLeaseScope) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{31}
 }
 
+// CloudControl is a daemon's cloud control mode: the machine-wide default on
+// DaemonSnapshot and DaemonInfo, or a repository's effective mode on
+// RepoCloudControlMode and Session.
+type CloudControl int32
+
+const (
+	// The daemon predates the setting and dispatches every command.
+	CloudControl_CLOUD_CONTROL_UNSPECIFIED CloudControl = 0
+	CloudControl_CLOUD_CONTROL_READ_ONLY   CloudControl = 1
+	CloudControl_CLOUD_CONTROL_FULL        CloudControl = 2
+	// Metadata observe commands only; content-bearing observe commands and terminal attach are refused.
+	CloudControl_CLOUD_CONTROL_PRIVATE CloudControl = 3
+)
+
+// Enum value maps for CloudControl.
+var (
+	CloudControl_name = map[int32]string{
+		0: "CLOUD_CONTROL_UNSPECIFIED",
+		1: "CLOUD_CONTROL_READ_ONLY",
+		2: "CLOUD_CONTROL_FULL",
+		3: "CLOUD_CONTROL_PRIVATE",
+	}
+	CloudControl_value = map[string]int32{
+		"CLOUD_CONTROL_UNSPECIFIED": 0,
+		"CLOUD_CONTROL_READ_ONLY":   1,
+		"CLOUD_CONTROL_FULL":        2,
+		"CLOUD_CONTROL_PRIVATE":     3,
+	}
+)
+
+func (x CloudControl) Enum() *CloudControl {
+	p := new(CloudControl)
+	*p = x
+	return p
+}
+
+func (x CloudControl) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CloudControl) Descriptor() protoreflect.EnumDescriptor {
+	return file_bossanova_v1_models_proto_enumTypes[32].Descriptor()
+}
+
+func (CloudControl) Type() protoreflect.EnumType {
+	return &file_bossanova_v1_models_proto_enumTypes[32]
+}
+
+func (x CloudControl) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CloudControl.Descriptor instead.
+func (CloudControl) EnumDescriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{32}
+}
+
 type MergeBlock_Gate int32
 
 const (
@@ -2124,11 +2181,11 @@ func (x MergeBlock_Gate) String() string {
 }
 
 func (MergeBlock_Gate) Descriptor() protoreflect.EnumDescriptor {
-	return file_bossanova_v1_models_proto_enumTypes[32].Descriptor()
+	return file_bossanova_v1_models_proto_enumTypes[33].Descriptor()
 }
 
 func (MergeBlock_Gate) Type() protoreflect.EnumType {
-	return &file_bossanova_v1_models_proto_enumTypes[32]
+	return &file_bossanova_v1_models_proto_enumTypes[33]
 }
 
 func (x MergeBlock_Gate) Number() protoreflect.EnumNumber {
@@ -3043,8 +3100,26 @@ type Session struct {
 	// ignore the unknown field without changing their existing behavior. See
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	PrProofDigest string `protobuf:"bytes,87,opt,name=pr_proof_digest,json=prProofDigest,proto3" json:"pr_proof_digest,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Effective cloud control mode of this session's repository, published by
+	// a daemon that decides commands per repo
+	// (DaemonSnapshot.is_repo_cloud_control_supported). Presentation only; the
+	// daemon enforces its local policy. UNSPECIFIED from older daemons. No dated
+	// API bump: this is additive and older clients ignore the unknown field. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	CloudControl CloudControl `protobuf:"varint,91,opt,name=cloud_control,json=cloudControl,proto3,enum=bossanova.v1.CloudControl" json:"cloud_control,omitempty"`
+	// Proof page URL of the PR's latest non-legacy proof record, or empty: the
+	// current head's record when it has one, else the newest one on an older
+	// head, which pr_proof_head_sha then names. Served for every attention kind,
+	// unlike SessionAttention.proof_url, which only a park carries, so the web
+	// review screen keeps the page while a chat works. No dated API bump or transform:
+	// both fields are additive and older clients ignore them without changing
+	// their existing behavior. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	PrProofUrl string `protobuf:"bytes,89,opt,name=pr_proof_url,json=prProofUrl,proto3" json:"pr_proof_url,omitempty"`
+	// Head the pr_proof_url record was made for (40 hex), or empty.
+	PrProofHeadSha string `protobuf:"bytes,90,opt,name=pr_proof_head_sha,json=prProofHeadSha,proto3" json:"pr_proof_head_sha,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -3689,6 +3764,27 @@ func (x *Session) GetPrChangedFileCount() int32 {
 func (x *Session) GetPrProofDigest() string {
 	if x != nil {
 		return x.PrProofDigest
+	}
+	return ""
+}
+
+func (x *Session) GetCloudControl() CloudControl {
+	if x != nil {
+		return x.CloudControl
+	}
+	return CloudControl_CLOUD_CONTROL_UNSPECIFIED
+}
+
+func (x *Session) GetPrProofUrl() string {
+	if x != nil {
+		return x.PrProofUrl
+	}
+	return ""
+}
+
+func (x *Session) GetPrProofHeadSha() string {
+	if x != nil {
+		return x.PrProofHeadSha
 	}
 	return ""
 }
@@ -8738,7 +8834,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\r_setup_script\"4\n" +
 	"\fHTTPEndpoint\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\"\xa8'\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"\xb6(\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -8840,7 +8936,11 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13pr_added_line_count\x18T \x01(\x05R\x10prAddedLineCount\x121\n" +
 	"\x15pr_deleted_line_count\x18U \x01(\x05R\x12prDeletedLineCount\x121\n" +
 	"\x15pr_changed_file_count\x18V \x01(\x05R\x12prChangedFileCount\x12&\n" +
-	"\x0fpr_proof_digest\x18W \x01(\tR\rprProofDigestB\x13\n" +
+	"\x0fpr_proof_digest\x18W \x01(\tR\rprProofDigest\x12?\n" +
+	"\rcloud_control\x18[ \x01(\x0e2\x1a.bossanova.v1.CloudControlR\fcloudControl\x12 \n" +
+	"\fpr_proof_url\x18Y \x01(\tR\n" +
+	"prProofUrl\x12)\n" +
+	"\x11pr_proof_head_sha\x18Z \x01(\tR\x0eprProofHeadShaB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +
@@ -9585,7 +9685,12 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x16TrackerIssueLeaseScope\x12)\n" +
 	"%TRACKER_ISSUE_LEASE_SCOPE_UNSPECIFIED\x10\x00\x12*\n" +
 	"&TRACKER_ISSUE_LEASE_SCOPE_ORGANIZATION\x10\x01\x12$\n" +
-	" TRACKER_ISSUE_LEASE_SCOPE_DAEMON\x10\x02B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	" TRACKER_ISSUE_LEASE_SCOPE_DAEMON\x10\x02*}\n" +
+	"\fCloudControl\x12\x1d\n" +
+	"\x19CLOUD_CONTROL_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17CLOUD_CONTROL_READ_ONLY\x10\x01\x12\x16\n" +
+	"\x12CLOUD_CONTROL_FULL\x10\x02\x12\x19\n" +
+	"\x15CLOUD_CONTROL_PRIVATE\x10\x03B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_models_proto_rawDescOnce sync.Once
@@ -9599,7 +9704,7 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_models_proto_rawDescData
 }
 
-var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 33)
+var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 34)
 var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),                            // 0: bossanova.v1.SessionState
@@ -9634,206 +9739,208 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(TriggerInvocationStatus)(0),                 // 29: bossanova.v1.TriggerInvocationStatus
 	(TrackerIssueLeasePurpose)(0),                // 30: bossanova.v1.TrackerIssueLeasePurpose
 	(TrackerIssueLeaseScope)(0),                  // 31: bossanova.v1.TrackerIssueLeaseScope
-	(MergeBlock_Gate)(0),                         // 32: bossanova.v1.MergeBlock.Gate
-	(*RotationEvent)(nil),                        // 33: bossanova.v1.RotationEvent
-	(*Repo)(nil),                                 // 34: bossanova.v1.Repo
-	(*SecretUpdate)(nil),                         // 35: bossanova.v1.SecretUpdate
-	(*RepoSettings)(nil),                         // 36: bossanova.v1.RepoSettings
-	(*HTTPEndpoint)(nil),                         // 37: bossanova.v1.HTTPEndpoint
-	(*Session)(nil),                              // 38: bossanova.v1.Session
-	(*FixAttempt)(nil),                           // 39: bossanova.v1.FixAttempt
-	(*PRStatus)(nil),                             // 40: bossanova.v1.PRStatus
-	(*CheckResult)(nil),                          // 41: bossanova.v1.CheckResult
-	(*ReviewComment)(nil),                        // 42: bossanova.v1.ReviewComment
-	(*PRCommitAuthor)(nil),                       // 43: bossanova.v1.PRCommitAuthor
-	(*PRSummary)(nil),                            // 44: bossanova.v1.PRSummary
-	(*CreatePROpts)(nil),                         // 45: bossanova.v1.CreatePROpts
-	(*PRInfo)(nil),                               // 46: bossanova.v1.PRInfo
-	(*TrackerIssue)(nil),                         // 47: bossanova.v1.TrackerIssue
-	(*VCSEvent)(nil),                             // 48: bossanova.v1.VCSEvent
-	(*ChecksPassedEvent)(nil),                    // 49: bossanova.v1.ChecksPassedEvent
-	(*ChecksFailedEvent)(nil),                    // 50: bossanova.v1.ChecksFailedEvent
-	(*ConflictDetectedEvent)(nil),                // 51: bossanova.v1.ConflictDetectedEvent
-	(*ReviewSubmittedEvent)(nil),                 // 52: bossanova.v1.ReviewSubmittedEvent
-	(*PRMergedEvent)(nil),                        // 53: bossanova.v1.PRMergedEvent
-	(*PRClosedEvent)(nil),                        // 54: bossanova.v1.PRClosedEvent
-	(*AttentionStatus)(nil),                      // 55: bossanova.v1.AttentionStatus
-	(*SessionAttention)(nil),                     // 56: bossanova.v1.SessionAttention
-	(*BlockerTally)(nil),                         // 57: bossanova.v1.BlockerTally
-	(*ReviewQueueRow)(nil),                       // 58: bossanova.v1.ReviewQueueRow
-	(*ReviewQueueLevelCount)(nil),                // 59: bossanova.v1.ReviewQueueLevelCount
-	(*MergeBlock)(nil),                           // 60: bossanova.v1.MergeBlock
-	(*AgentChat)(nil),                            // 61: bossanova.v1.AgentChat
-	(*CronJob)(nil),                              // 62: bossanova.v1.CronJob
-	(*GitHubCallback)(nil),                       // 63: bossanova.v1.GitHubCallback
-	(*AgentAccount)(nil),                         // 64: bossanova.v1.AgentAccount
-	(*AgentAccountIdentity)(nil),                 // 65: bossanova.v1.AgentAccountIdentity
-	(*AuthCheck)(nil),                            // 66: bossanova.v1.AuthCheck
-	(*UsageModelWindow)(nil),                     // 67: bossanova.v1.UsageModelWindow
-	(*UsageSnapshot)(nil),                        // 68: bossanova.v1.UsageSnapshot
-	(*ChatMessage)(nil),                          // 69: bossanova.v1.ChatMessage
-	(*Trigger)(nil),                              // 70: bossanova.v1.Trigger
-	(*TriggerGate)(nil),                          // 71: bossanova.v1.TriggerGate
-	(*HTTPTriggerConfig)(nil),                    // 72: bossanova.v1.HTTPTriggerConfig
-	(*GitHubTriggerConfig)(nil),                  // 73: bossanova.v1.GitHubTriggerConfig
-	(*TriggerLaunchSettings)(nil),                // 74: bossanova.v1.TriggerLaunchSettings
-	(*TriggerPlacement)(nil),                     // 75: bossanova.v1.TriggerPlacement
-	(*TriggerFilter)(nil),                        // 76: bossanova.v1.TriggerFilter
-	(*TriggerInvocation)(nil),                    // 77: bossanova.v1.TriggerInvocation
-	(*TriggerInvocationSummary)(nil),             // 78: bossanova.v1.TriggerInvocationSummary
-	(*TriggerCatalog)(nil),                       // 79: bossanova.v1.TriggerCatalog
-	(*TriggerTypeSpec)(nil),                      // 80: bossanova.v1.TriggerTypeSpec
-	(*TriggerEventTypeSpec)(nil),                 // 81: bossanova.v1.TriggerEventTypeSpec
-	(*TriggerFilterFieldSpec)(nil),               // 82: bossanova.v1.TriggerFilterFieldSpec
-	(*AgentCredentialDevice)(nil),                // 83: bossanova.v1.AgentCredentialDevice
-	(*ListAgentCredentialDevicesRequest)(nil),    // 84: bossanova.v1.ListAgentCredentialDevicesRequest
-	(*ListAgentCredentialDevicesResponse)(nil),   // 85: bossanova.v1.ListAgentCredentialDevicesResponse
-	(*ApproveAgentCredentialDeviceRequest)(nil),  // 86: bossanova.v1.ApproveAgentCredentialDeviceRequest
-	(*ApproveAgentCredentialDeviceResponse)(nil), // 87: bossanova.v1.ApproveAgentCredentialDeviceResponse
-	(*RevokeAgentCredentialDeviceRequest)(nil),   // 88: bossanova.v1.RevokeAgentCredentialDeviceRequest
-	(*RevokeAgentCredentialDeviceResponse)(nil),  // 89: bossanova.v1.RevokeAgentCredentialDeviceResponse
-	(*AcquireTrackerIssueLeaseRequest)(nil),      // 90: bossanova.v1.AcquireTrackerIssueLeaseRequest
-	(*AcquireTrackerIssueLeaseResponse)(nil),     // 91: bossanova.v1.AcquireTrackerIssueLeaseResponse
-	(*ReleaseTrackerIssueLeaseRequest)(nil),      // 92: bossanova.v1.ReleaseTrackerIssueLeaseRequest
-	(*ReleaseTrackerIssueLeaseResponse)(nil),     // 93: bossanova.v1.ReleaseTrackerIssueLeaseResponse
-	(*ViewerDevice)(nil),                         // 94: bossanova.v1.ViewerDevice
-	(*TrackerRank)(nil),                          // 95: bossanova.v1.TrackerRank
-	(*timestamppb.Timestamp)(nil),                // 96: google.protobuf.Timestamp
+	(CloudControl)(0),                            // 32: bossanova.v1.CloudControl
+	(MergeBlock_Gate)(0),                         // 33: bossanova.v1.MergeBlock.Gate
+	(*RotationEvent)(nil),                        // 34: bossanova.v1.RotationEvent
+	(*Repo)(nil),                                 // 35: bossanova.v1.Repo
+	(*SecretUpdate)(nil),                         // 36: bossanova.v1.SecretUpdate
+	(*RepoSettings)(nil),                         // 37: bossanova.v1.RepoSettings
+	(*HTTPEndpoint)(nil),                         // 38: bossanova.v1.HTTPEndpoint
+	(*Session)(nil),                              // 39: bossanova.v1.Session
+	(*FixAttempt)(nil),                           // 40: bossanova.v1.FixAttempt
+	(*PRStatus)(nil),                             // 41: bossanova.v1.PRStatus
+	(*CheckResult)(nil),                          // 42: bossanova.v1.CheckResult
+	(*ReviewComment)(nil),                        // 43: bossanova.v1.ReviewComment
+	(*PRCommitAuthor)(nil),                       // 44: bossanova.v1.PRCommitAuthor
+	(*PRSummary)(nil),                            // 45: bossanova.v1.PRSummary
+	(*CreatePROpts)(nil),                         // 46: bossanova.v1.CreatePROpts
+	(*PRInfo)(nil),                               // 47: bossanova.v1.PRInfo
+	(*TrackerIssue)(nil),                         // 48: bossanova.v1.TrackerIssue
+	(*VCSEvent)(nil),                             // 49: bossanova.v1.VCSEvent
+	(*ChecksPassedEvent)(nil),                    // 50: bossanova.v1.ChecksPassedEvent
+	(*ChecksFailedEvent)(nil),                    // 51: bossanova.v1.ChecksFailedEvent
+	(*ConflictDetectedEvent)(nil),                // 52: bossanova.v1.ConflictDetectedEvent
+	(*ReviewSubmittedEvent)(nil),                 // 53: bossanova.v1.ReviewSubmittedEvent
+	(*PRMergedEvent)(nil),                        // 54: bossanova.v1.PRMergedEvent
+	(*PRClosedEvent)(nil),                        // 55: bossanova.v1.PRClosedEvent
+	(*AttentionStatus)(nil),                      // 56: bossanova.v1.AttentionStatus
+	(*SessionAttention)(nil),                     // 57: bossanova.v1.SessionAttention
+	(*BlockerTally)(nil),                         // 58: bossanova.v1.BlockerTally
+	(*ReviewQueueRow)(nil),                       // 59: bossanova.v1.ReviewQueueRow
+	(*ReviewQueueLevelCount)(nil),                // 60: bossanova.v1.ReviewQueueLevelCount
+	(*MergeBlock)(nil),                           // 61: bossanova.v1.MergeBlock
+	(*AgentChat)(nil),                            // 62: bossanova.v1.AgentChat
+	(*CronJob)(nil),                              // 63: bossanova.v1.CronJob
+	(*GitHubCallback)(nil),                       // 64: bossanova.v1.GitHubCallback
+	(*AgentAccount)(nil),                         // 65: bossanova.v1.AgentAccount
+	(*AgentAccountIdentity)(nil),                 // 66: bossanova.v1.AgentAccountIdentity
+	(*AuthCheck)(nil),                            // 67: bossanova.v1.AuthCheck
+	(*UsageModelWindow)(nil),                     // 68: bossanova.v1.UsageModelWindow
+	(*UsageSnapshot)(nil),                        // 69: bossanova.v1.UsageSnapshot
+	(*ChatMessage)(nil),                          // 70: bossanova.v1.ChatMessage
+	(*Trigger)(nil),                              // 71: bossanova.v1.Trigger
+	(*TriggerGate)(nil),                          // 72: bossanova.v1.TriggerGate
+	(*HTTPTriggerConfig)(nil),                    // 73: bossanova.v1.HTTPTriggerConfig
+	(*GitHubTriggerConfig)(nil),                  // 74: bossanova.v1.GitHubTriggerConfig
+	(*TriggerLaunchSettings)(nil),                // 75: bossanova.v1.TriggerLaunchSettings
+	(*TriggerPlacement)(nil),                     // 76: bossanova.v1.TriggerPlacement
+	(*TriggerFilter)(nil),                        // 77: bossanova.v1.TriggerFilter
+	(*TriggerInvocation)(nil),                    // 78: bossanova.v1.TriggerInvocation
+	(*TriggerInvocationSummary)(nil),             // 79: bossanova.v1.TriggerInvocationSummary
+	(*TriggerCatalog)(nil),                       // 80: bossanova.v1.TriggerCatalog
+	(*TriggerTypeSpec)(nil),                      // 81: bossanova.v1.TriggerTypeSpec
+	(*TriggerEventTypeSpec)(nil),                 // 82: bossanova.v1.TriggerEventTypeSpec
+	(*TriggerFilterFieldSpec)(nil),               // 83: bossanova.v1.TriggerFilterFieldSpec
+	(*AgentCredentialDevice)(nil),                // 84: bossanova.v1.AgentCredentialDevice
+	(*ListAgentCredentialDevicesRequest)(nil),    // 85: bossanova.v1.ListAgentCredentialDevicesRequest
+	(*ListAgentCredentialDevicesResponse)(nil),   // 86: bossanova.v1.ListAgentCredentialDevicesResponse
+	(*ApproveAgentCredentialDeviceRequest)(nil),  // 87: bossanova.v1.ApproveAgentCredentialDeviceRequest
+	(*ApproveAgentCredentialDeviceResponse)(nil), // 88: bossanova.v1.ApproveAgentCredentialDeviceResponse
+	(*RevokeAgentCredentialDeviceRequest)(nil),   // 89: bossanova.v1.RevokeAgentCredentialDeviceRequest
+	(*RevokeAgentCredentialDeviceResponse)(nil),  // 90: bossanova.v1.RevokeAgentCredentialDeviceResponse
+	(*AcquireTrackerIssueLeaseRequest)(nil),      // 91: bossanova.v1.AcquireTrackerIssueLeaseRequest
+	(*AcquireTrackerIssueLeaseResponse)(nil),     // 92: bossanova.v1.AcquireTrackerIssueLeaseResponse
+	(*ReleaseTrackerIssueLeaseRequest)(nil),      // 93: bossanova.v1.ReleaseTrackerIssueLeaseRequest
+	(*ReleaseTrackerIssueLeaseResponse)(nil),     // 94: bossanova.v1.ReleaseTrackerIssueLeaseResponse
+	(*ViewerDevice)(nil),                         // 95: bossanova.v1.ViewerDevice
+	(*TrackerRank)(nil),                          // 96: bossanova.v1.TrackerRank
+	(*timestamppb.Timestamp)(nil),                // 97: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
 	2,   // 0: bossanova.v1.RotationEvent.trigger:type_name -> bossanova.v1.RotationTrigger
-	96,  // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
+	97,  // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
 	3,   // 2: bossanova.v1.RotationEvent.outcome:type_name -> bossanova.v1.RotationOutcome
-	96,  // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	97,  // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
+	97,  // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	97,  // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	12,  // 6: bossanova.v1.SecretUpdate.action:type_name -> bossanova.v1.SecretAction
 	11,  // 7: bossanova.v1.RepoSettings.merge_strategy:type_name -> bossanova.v1.MergeStrategy
-	96,  // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
+	97,  // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
 	0,   // 9: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	6,   // 10: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
 	6,   // 11: bossanova.v1.Session.last_check_state_observed:type_name -> bossanova.v1.ChecksOverall
-	96,  // 12: bossanova.v1.Session.last_check_state_at:type_name -> google.protobuf.Timestamp
-	96,  // 13: bossanova.v1.Session.state_entered_at:type_name -> google.protobuf.Timestamp
-	96,  // 14: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	96,  // 15: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 16: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	97,  // 12: bossanova.v1.Session.last_check_state_at:type_name -> google.protobuf.Timestamp
+	97,  // 13: bossanova.v1.Session.state_entered_at:type_name -> google.protobuf.Timestamp
+	97,  // 14: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	97,  // 15: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	97,  // 16: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	19,  // 17: bossanova.v1.Session.display_status:type_name -> bossanova.v1.DisplayStatus
-	55,  // 18: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
+	56,  // 18: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
 	20,  // 19: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
-	95,  // 20: bossanova.v1.Session.tracker_rank:type_name -> bossanova.v1.TrackerRank
+	96,  // 20: bossanova.v1.Session.tracker_rank:type_name -> bossanova.v1.TrackerRank
 	13,  // 21: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
-	96,  // 22: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
+	97,  // 22: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
 	19,  // 23: bossanova.v1.Session.last_repair_display_status:type_name -> bossanova.v1.DisplayStatus
-	96,  // 24: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	96,  // 25: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
-	60,  // 26: bossanova.v1.Session.merge_block:type_name -> bossanova.v1.MergeBlock
-	96,  // 27: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
-	33,  // 28: bossanova.v1.Session.rotation_events:type_name -> bossanova.v1.RotationEvent
-	37,  // 29: bossanova.v1.Session.http_endpoints:type_name -> bossanova.v1.HTTPEndpoint
-	96,  // 30: bossanova.v1.Session.repair_stalled_at:type_name -> google.protobuf.Timestamp
-	56,  // 31: bossanova.v1.Session.attention:type_name -> bossanova.v1.SessionAttention
+	97,  // 24: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	97,  // 25: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
+	61,  // 26: bossanova.v1.Session.merge_block:type_name -> bossanova.v1.MergeBlock
+	97,  // 27: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
+	34,  // 28: bossanova.v1.Session.rotation_events:type_name -> bossanova.v1.RotationEvent
+	38,  // 29: bossanova.v1.Session.http_endpoints:type_name -> bossanova.v1.HTTPEndpoint
+	97,  // 30: bossanova.v1.Session.repair_stalled_at:type_name -> google.protobuf.Timestamp
+	57,  // 31: bossanova.v1.Session.attention:type_name -> bossanova.v1.SessionAttention
 	17,  // 32: bossanova.v1.Session.merged_confidence_level:type_name -> bossanova.v1.ConfidenceLevel
-	9,   // 33: bossanova.v1.FixAttempt.trigger:type_name -> bossanova.v1.FixAttemptTrigger
-	10,  // 34: bossanova.v1.FixAttempt.result:type_name -> bossanova.v1.FixAttemptResult
-	96,  // 35: bossanova.v1.FixAttempt.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 36: bossanova.v1.FixAttempt.updated_at:type_name -> google.protobuf.Timestamp
-	7,   // 37: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
-	4,   // 38: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
-	5,   // 39: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
-	8,   // 40: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
-	7,   // 41: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
-	43,  // 42: bossanova.v1.PRSummary.commit_authors:type_name -> bossanova.v1.PRCommitAuthor
-	49,  // 43: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
-	50,  // 44: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
-	51,  // 45: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
-	52,  // 46: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
-	53,  // 47: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
-	54,  // 48: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
-	41,  // 49: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
-	42,  // 50: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
-	14,  // 51: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	96,  // 52: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
-	15,  // 53: bossanova.v1.SessionAttention.kind:type_name -> bossanova.v1.AttentionKind
-	16,  // 54: bossanova.v1.SessionAttention.actions:type_name -> bossanova.v1.AttentionAction
-	96,  // 55: bossanova.v1.SessionAttention.since:type_name -> google.protobuf.Timestamp
-	17,  // 56: bossanova.v1.SessionAttention.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
-	57,  // 57: bossanova.v1.SessionAttention.blocker_tallies:type_name -> bossanova.v1.BlockerTally
-	38,  // 58: bossanova.v1.ReviewQueueRow.session:type_name -> bossanova.v1.Session
-	17,  // 59: bossanova.v1.ReviewQueueRow.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
-	17,  // 60: bossanova.v1.ReviewQueueLevelCount.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
-	32,  // 61: bossanova.v1.MergeBlock.gate:type_name -> bossanova.v1.MergeBlock.Gate
-	19,  // 62: bossanova.v1.MergeBlock.display_status:type_name -> bossanova.v1.DisplayStatus
-	96,  // 63: bossanova.v1.AgentChat.created_at:type_name -> google.protobuf.Timestamp
-	23,  // 64: bossanova.v1.AgentChat.role:type_name -> bossanova.v1.ChatRole
-	96,  // 65: bossanova.v1.AgentChat.reclaimed_at:type_name -> google.protobuf.Timestamp
-	96,  // 66: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
-	96,  // 67: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
-	96,  // 68: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 69: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
-	24,  // 70: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
-	25,  // 71: bossanova.v1.CronJob.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
-	96,  // 72: bossanova.v1.GitHubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
-	96,  // 73: bossanova.v1.GitHubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
-	96,  // 74: bossanova.v1.GitHubCallback.triggered_at:type_name -> google.protobuf.Timestamp
-	96,  // 75: bossanova.v1.GitHubCallback.delivered_at:type_name -> google.protobuf.Timestamp
-	96,  // 76: bossanova.v1.GitHubCallback.expires_at:type_name -> google.protobuf.Timestamp
-	96,  // 77: bossanova.v1.GitHubCallback.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 78: bossanova.v1.GitHubCallback.updated_at:type_name -> google.protobuf.Timestamp
-	96,  // 79: bossanova.v1.AgentAccount.cooldown_until:type_name -> google.protobuf.Timestamp
-	96,  // 80: bossanova.v1.AgentAccount.last_used_at:type_name -> google.protobuf.Timestamp
-	96,  // 81: bossanova.v1.AgentAccount.last_test_ok_at:type_name -> google.protobuf.Timestamp
-	96,  // 82: bossanova.v1.AgentAccount.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 83: bossanova.v1.AgentAccount.updated_at:type_name -> google.protobuf.Timestamp
-	68,  // 84: bossanova.v1.AgentAccount.usage:type_name -> bossanova.v1.UsageSnapshot
-	66,  // 85: bossanova.v1.AgentAccount.auth_check:type_name -> bossanova.v1.AuthCheck
-	65,  // 86: bossanova.v1.AgentAccount.identity:type_name -> bossanova.v1.AgentAccountIdentity
-	96,  // 87: bossanova.v1.AuthCheck.checked_at:type_name -> google.protobuf.Timestamp
-	96,  // 88: bossanova.v1.AuthCheck.next_retry_at:type_name -> google.protobuf.Timestamp
-	96,  // 89: bossanova.v1.UsageModelWindow.resets_at:type_name -> google.protobuf.Timestamp
-	96,  // 90: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
-	96,  // 91: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
-	96,  // 92: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
-	67,  // 93: bossanova.v1.UsageSnapshot.model_windows:type_name -> bossanova.v1.UsageModelWindow
-	72,  // 94: bossanova.v1.Trigger.http:type_name -> bossanova.v1.HTTPTriggerConfig
-	73,  // 95: bossanova.v1.Trigger.github:type_name -> bossanova.v1.GitHubTriggerConfig
-	74,  // 96: bossanova.v1.Trigger.launch:type_name -> bossanova.v1.TriggerLaunchSettings
-	75,  // 97: bossanova.v1.Trigger.placement:type_name -> bossanova.v1.TriggerPlacement
-	27,  // 98: bossanova.v1.Trigger.concurrency_policy:type_name -> bossanova.v1.TriggerConcurrencyPolicy
-	76,  // 99: bossanova.v1.Trigger.filters:type_name -> bossanova.v1.TriggerFilter
-	78,  // 100: bossanova.v1.Trigger.last_invocation:type_name -> bossanova.v1.TriggerInvocationSummary
-	96,  // 101: bossanova.v1.Trigger.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 102: bossanova.v1.Trigger.updated_at:type_name -> google.protobuf.Timestamp
-	71,  // 103: bossanova.v1.Trigger.gate:type_name -> bossanova.v1.TriggerGate
-	26,  // 104: bossanova.v1.TriggerPlacement.mode:type_name -> bossanova.v1.TriggerPlacementMode
-	28,  // 105: bossanova.v1.TriggerFilter.operator:type_name -> bossanova.v1.TriggerFilterOperator
-	29,  // 106: bossanova.v1.TriggerInvocation.status:type_name -> bossanova.v1.TriggerInvocationStatus
-	96,  // 107: bossanova.v1.TriggerInvocation.received_at:type_name -> google.protobuf.Timestamp
-	96,  // 108: bossanova.v1.TriggerInvocation.decided_at:type_name -> google.protobuf.Timestamp
-	96,  // 109: bossanova.v1.TriggerInvocation.launched_at:type_name -> google.protobuf.Timestamp
-	29,  // 110: bossanova.v1.TriggerInvocationSummary.status:type_name -> bossanova.v1.TriggerInvocationStatus
-	96,  // 111: bossanova.v1.TriggerInvocationSummary.received_at:type_name -> google.protobuf.Timestamp
-	80,  // 112: bossanova.v1.TriggerCatalog.types:type_name -> bossanova.v1.TriggerTypeSpec
-	81,  // 113: bossanova.v1.TriggerTypeSpec.event_types:type_name -> bossanova.v1.TriggerEventTypeSpec
-	82,  // 114: bossanova.v1.TriggerTypeSpec.filter_fields:type_name -> bossanova.v1.TriggerFilterFieldSpec
-	28,  // 115: bossanova.v1.TriggerFilterFieldSpec.operators:type_name -> bossanova.v1.TriggerFilterOperator
-	96,  // 116: bossanova.v1.AgentCredentialDevice.requested_at:type_name -> google.protobuf.Timestamp
-	96,  // 117: bossanova.v1.AgentCredentialDevice.expires_at:type_name -> google.protobuf.Timestamp
-	96,  // 118: bossanova.v1.AgentCredentialDevice.approved_at:type_name -> google.protobuf.Timestamp
-	96,  // 119: bossanova.v1.AgentCredentialDevice.revoked_at:type_name -> google.protobuf.Timestamp
-	83,  // 120: bossanova.v1.ListAgentCredentialDevicesResponse.devices:type_name -> bossanova.v1.AgentCredentialDevice
-	30,  // 121: bossanova.v1.AcquireTrackerIssueLeaseRequest.purpose:type_name -> bossanova.v1.TrackerIssueLeasePurpose
-	96,  // 122: bossanova.v1.AcquireTrackerIssueLeaseResponse.expires_at:type_name -> google.protobuf.Timestamp
-	31,  // 123: bossanova.v1.AcquireTrackerIssueLeaseResponse.scope:type_name -> bossanova.v1.TrackerIssueLeaseScope
-	30,  // 124: bossanova.v1.ReleaseTrackerIssueLeaseRequest.purpose:type_name -> bossanova.v1.TrackerIssueLeasePurpose
-	96,  // 125: bossanova.v1.ViewerDevice.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 126: bossanova.v1.ViewerDevice.last_requested_at:type_name -> google.protobuf.Timestamp
-	96,  // 127: bossanova.v1.TrackerRank.ranked_at:type_name -> google.protobuf.Timestamp
-	128, // [128:128] is the sub-list for method output_type
-	128, // [128:128] is the sub-list for method input_type
-	128, // [128:128] is the sub-list for extension type_name
-	128, // [128:128] is the sub-list for extension extendee
-	0,   // [0:128] is the sub-list for field type_name
+	32,  // 33: bossanova.v1.Session.cloud_control:type_name -> bossanova.v1.CloudControl
+	9,   // 34: bossanova.v1.FixAttempt.trigger:type_name -> bossanova.v1.FixAttemptTrigger
+	10,  // 35: bossanova.v1.FixAttempt.result:type_name -> bossanova.v1.FixAttemptResult
+	97,  // 36: bossanova.v1.FixAttempt.created_at:type_name -> google.protobuf.Timestamp
+	97,  // 37: bossanova.v1.FixAttempt.updated_at:type_name -> google.protobuf.Timestamp
+	7,   // 38: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
+	4,   // 39: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
+	5,   // 40: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
+	8,   // 41: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
+	7,   // 42: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
+	44,  // 43: bossanova.v1.PRSummary.commit_authors:type_name -> bossanova.v1.PRCommitAuthor
+	50,  // 44: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
+	51,  // 45: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
+	52,  // 46: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
+	53,  // 47: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
+	54,  // 48: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
+	55,  // 49: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
+	42,  // 50: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
+	43,  // 51: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
+	14,  // 52: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
+	97,  // 53: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	15,  // 54: bossanova.v1.SessionAttention.kind:type_name -> bossanova.v1.AttentionKind
+	16,  // 55: bossanova.v1.SessionAttention.actions:type_name -> bossanova.v1.AttentionAction
+	97,  // 56: bossanova.v1.SessionAttention.since:type_name -> google.protobuf.Timestamp
+	17,  // 57: bossanova.v1.SessionAttention.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
+	58,  // 58: bossanova.v1.SessionAttention.blocker_tallies:type_name -> bossanova.v1.BlockerTally
+	39,  // 59: bossanova.v1.ReviewQueueRow.session:type_name -> bossanova.v1.Session
+	17,  // 60: bossanova.v1.ReviewQueueRow.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
+	17,  // 61: bossanova.v1.ReviewQueueLevelCount.confidence_level:type_name -> bossanova.v1.ConfidenceLevel
+	33,  // 62: bossanova.v1.MergeBlock.gate:type_name -> bossanova.v1.MergeBlock.Gate
+	19,  // 63: bossanova.v1.MergeBlock.display_status:type_name -> bossanova.v1.DisplayStatus
+	97,  // 64: bossanova.v1.AgentChat.created_at:type_name -> google.protobuf.Timestamp
+	23,  // 65: bossanova.v1.AgentChat.role:type_name -> bossanova.v1.ChatRole
+	97,  // 66: bossanova.v1.AgentChat.reclaimed_at:type_name -> google.protobuf.Timestamp
+	97,  // 67: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
+	97,  // 68: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
+	97,  // 69: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
+	97,  // 70: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
+	24,  // 71: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
+	25,  // 72: bossanova.v1.CronJob.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
+	97,  // 73: bossanova.v1.GitHubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
+	97,  // 74: bossanova.v1.GitHubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
+	97,  // 75: bossanova.v1.GitHubCallback.triggered_at:type_name -> google.protobuf.Timestamp
+	97,  // 76: bossanova.v1.GitHubCallback.delivered_at:type_name -> google.protobuf.Timestamp
+	97,  // 77: bossanova.v1.GitHubCallback.expires_at:type_name -> google.protobuf.Timestamp
+	97,  // 78: bossanova.v1.GitHubCallback.created_at:type_name -> google.protobuf.Timestamp
+	97,  // 79: bossanova.v1.GitHubCallback.updated_at:type_name -> google.protobuf.Timestamp
+	97,  // 80: bossanova.v1.AgentAccount.cooldown_until:type_name -> google.protobuf.Timestamp
+	97,  // 81: bossanova.v1.AgentAccount.last_used_at:type_name -> google.protobuf.Timestamp
+	97,  // 82: bossanova.v1.AgentAccount.last_test_ok_at:type_name -> google.protobuf.Timestamp
+	97,  // 83: bossanova.v1.AgentAccount.created_at:type_name -> google.protobuf.Timestamp
+	97,  // 84: bossanova.v1.AgentAccount.updated_at:type_name -> google.protobuf.Timestamp
+	69,  // 85: bossanova.v1.AgentAccount.usage:type_name -> bossanova.v1.UsageSnapshot
+	67,  // 86: bossanova.v1.AgentAccount.auth_check:type_name -> bossanova.v1.AuthCheck
+	66,  // 87: bossanova.v1.AgentAccount.identity:type_name -> bossanova.v1.AgentAccountIdentity
+	97,  // 88: bossanova.v1.AuthCheck.checked_at:type_name -> google.protobuf.Timestamp
+	97,  // 89: bossanova.v1.AuthCheck.next_retry_at:type_name -> google.protobuf.Timestamp
+	97,  // 90: bossanova.v1.UsageModelWindow.resets_at:type_name -> google.protobuf.Timestamp
+	97,  // 91: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
+	97,  // 92: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
+	97,  // 93: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
+	68,  // 94: bossanova.v1.UsageSnapshot.model_windows:type_name -> bossanova.v1.UsageModelWindow
+	73,  // 95: bossanova.v1.Trigger.http:type_name -> bossanova.v1.HTTPTriggerConfig
+	74,  // 96: bossanova.v1.Trigger.github:type_name -> bossanova.v1.GitHubTriggerConfig
+	75,  // 97: bossanova.v1.Trigger.launch:type_name -> bossanova.v1.TriggerLaunchSettings
+	76,  // 98: bossanova.v1.Trigger.placement:type_name -> bossanova.v1.TriggerPlacement
+	27,  // 99: bossanova.v1.Trigger.concurrency_policy:type_name -> bossanova.v1.TriggerConcurrencyPolicy
+	77,  // 100: bossanova.v1.Trigger.filters:type_name -> bossanova.v1.TriggerFilter
+	79,  // 101: bossanova.v1.Trigger.last_invocation:type_name -> bossanova.v1.TriggerInvocationSummary
+	97,  // 102: bossanova.v1.Trigger.created_at:type_name -> google.protobuf.Timestamp
+	97,  // 103: bossanova.v1.Trigger.updated_at:type_name -> google.protobuf.Timestamp
+	72,  // 104: bossanova.v1.Trigger.gate:type_name -> bossanova.v1.TriggerGate
+	26,  // 105: bossanova.v1.TriggerPlacement.mode:type_name -> bossanova.v1.TriggerPlacementMode
+	28,  // 106: bossanova.v1.TriggerFilter.operator:type_name -> bossanova.v1.TriggerFilterOperator
+	29,  // 107: bossanova.v1.TriggerInvocation.status:type_name -> bossanova.v1.TriggerInvocationStatus
+	97,  // 108: bossanova.v1.TriggerInvocation.received_at:type_name -> google.protobuf.Timestamp
+	97,  // 109: bossanova.v1.TriggerInvocation.decided_at:type_name -> google.protobuf.Timestamp
+	97,  // 110: bossanova.v1.TriggerInvocation.launched_at:type_name -> google.protobuf.Timestamp
+	29,  // 111: bossanova.v1.TriggerInvocationSummary.status:type_name -> bossanova.v1.TriggerInvocationStatus
+	97,  // 112: bossanova.v1.TriggerInvocationSummary.received_at:type_name -> google.protobuf.Timestamp
+	81,  // 113: bossanova.v1.TriggerCatalog.types:type_name -> bossanova.v1.TriggerTypeSpec
+	82,  // 114: bossanova.v1.TriggerTypeSpec.event_types:type_name -> bossanova.v1.TriggerEventTypeSpec
+	83,  // 115: bossanova.v1.TriggerTypeSpec.filter_fields:type_name -> bossanova.v1.TriggerFilterFieldSpec
+	28,  // 116: bossanova.v1.TriggerFilterFieldSpec.operators:type_name -> bossanova.v1.TriggerFilterOperator
+	97,  // 117: bossanova.v1.AgentCredentialDevice.requested_at:type_name -> google.protobuf.Timestamp
+	97,  // 118: bossanova.v1.AgentCredentialDevice.expires_at:type_name -> google.protobuf.Timestamp
+	97,  // 119: bossanova.v1.AgentCredentialDevice.approved_at:type_name -> google.protobuf.Timestamp
+	97,  // 120: bossanova.v1.AgentCredentialDevice.revoked_at:type_name -> google.protobuf.Timestamp
+	84,  // 121: bossanova.v1.ListAgentCredentialDevicesResponse.devices:type_name -> bossanova.v1.AgentCredentialDevice
+	30,  // 122: bossanova.v1.AcquireTrackerIssueLeaseRequest.purpose:type_name -> bossanova.v1.TrackerIssueLeasePurpose
+	97,  // 123: bossanova.v1.AcquireTrackerIssueLeaseResponse.expires_at:type_name -> google.protobuf.Timestamp
+	31,  // 124: bossanova.v1.AcquireTrackerIssueLeaseResponse.scope:type_name -> bossanova.v1.TrackerIssueLeaseScope
+	30,  // 125: bossanova.v1.ReleaseTrackerIssueLeaseRequest.purpose:type_name -> bossanova.v1.TrackerIssueLeasePurpose
+	97,  // 126: bossanova.v1.ViewerDevice.created_at:type_name -> google.protobuf.Timestamp
+	97,  // 127: bossanova.v1.ViewerDevice.last_requested_at:type_name -> google.protobuf.Timestamp
+	97,  // 128: bossanova.v1.TrackerRank.ranked_at:type_name -> google.protobuf.Timestamp
+	129, // [129:129] is the sub-list for method output_type
+	129, // [129:129] is the sub-list for method input_type
+	129, // [129:129] is the sub-list for extension type_name
+	129, // [129:129] is the sub-list for extension extendee
+	0,   // [0:129] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }
@@ -9869,7 +9976,7 @@ func file_bossanova_v1_models_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
-			NumEnums:      33,
+			NumEnums:      34,
 			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   0,

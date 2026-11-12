@@ -27,7 +27,7 @@ at every call site below; the snippets spell `boss` only because that is the com
 ```bash
 # Each fenced block is a FRESH shell, so re-resolve the toolbox rather than assuming
 # the startup block's export survived.
-BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
 export BOSS_BUILD_TOOLBOX
@@ -84,7 +84,7 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    ```bash
    PR="$PR_NUMBER"
    MSG="boss-build: CI/PR state changed for PR #$PR — reconcile and continue."
-   BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+   BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
    BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
    [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
    export BOSS_BUILD_TOOLBOX
@@ -192,7 +192,7 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
 
    ```bash
    PR="$PR_NUMBER"
-   BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build"
+   BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
    BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
    [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
    node "$BOSS_BUILD_TOOLBOX/ci-wait.mjs" run --pr "$PR"

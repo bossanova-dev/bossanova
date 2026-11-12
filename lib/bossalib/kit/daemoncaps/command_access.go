@@ -178,3 +178,9 @@ func ObserveCommandFields() []int32 {
 func CloudControlDisabledText(hostname string) string {
 	return fmt.Sprintf("cloud control is read-only on %s; set `cloud_control` to `full` in that machine's local settings.json to allow it", hostname)
 }
+
+// CloudControlRepoDisabledText explains a refusal decided by the target
+// repository's own mode on a machine whose default would allow the command.
+func CloudControlRepoDisabledText(hostname string) string {
+	return fmt.Sprintf("cloud control is read-only for this repository on %s; grant it in `cloud_control_repos` in that machine's local settings.json", hostname)
+}

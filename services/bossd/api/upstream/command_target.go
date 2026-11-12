@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
@@ -271,7 +272,8 @@ func targetModeProto(mode config.CloudControlMode) pb.CloudControl {
 
 func (c *StreamClient) targetRefusal(target *authorizedTarget, cmd *pb.OrchestratorCommand) string {
 	if target.repoName != "" {
-		return fmt.Sprintf("cloud control is %s for %s on %s; grant it in `cloud_control_repos` in that machine's local settings.json", target.mode, target.repoName, c.hostname)
+		selector := "'" + strings.ReplaceAll(target.repoName+"=default", "'", "'\"'\"'") + "'"
+		return fmt.Sprintf("cloud control is %s for %s on %s; run `boss settings --cloud-control-repo %s` on %s to restore the default", target.mode, target.repoName, c.hostname, selector, c.hostname)
 	}
 	return c.cloudControlCommandRefusal(targetModeProto(target.mode), cmd)
 }

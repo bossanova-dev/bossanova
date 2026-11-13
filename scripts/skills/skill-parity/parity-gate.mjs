@@ -40,7 +40,8 @@ const EXPECTED_EXTENSIONS = [
     core: 'boss-plan',
     role: 'plan-reviewer',
     skill: 'boss-plan',
-    names: ['boss-plan-feature-map'],
+    names: ['boss-plan-feature-map', 'boss-plan-premises'],
+    builtin: true,
   },
   {
     core: 'boss-plan',

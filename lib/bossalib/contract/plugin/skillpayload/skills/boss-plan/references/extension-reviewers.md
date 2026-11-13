@@ -135,6 +135,11 @@ dispatched as an awaited subagent (no human gating).
    label per Phase 3). The orchestrator owns any edit to the plan file; extensions only produce
    findings.
 
+   Correct every valid `refuted` finding in both artifacts before Phase 4; never attach a claim
+   the reviewer disproved. When correction requires a genuine product fork, replace the refuted
+   claim with an explicit `## Open Questions` decision; fold `gap` and `unverified` items into the
+   quality pass as usual.
+
    **Recompute open questions after folding.** Phase 2's drafting subagent returns `openQuestions`
    before this phase runs. Append any new controversial fork to that list before Phase 4 so a
    now-non-empty list adds the `agent-question` label and the labels agree with the plan and saved

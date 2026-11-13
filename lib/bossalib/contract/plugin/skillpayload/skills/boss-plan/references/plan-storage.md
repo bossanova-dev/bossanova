@@ -187,7 +187,7 @@ below. `descriptor-emitted` means execute the MCP descriptor described here:
 - `mode` — informational: `patch` or `replace`; always execute the returned `{tool, args}`.
 - `patchBytes` — the serialized patch's byte count, present in patch mode.
 - `patchFallback` — why a supplied base could not produce a patch (absent capability, unsafe or
-  uneconomical delta); replacement mode still sends the intended body.
+  uneconomical delta, or a reference-bearing anchor); replacement mode still sends the intended body.
 - `bytes` — the body's size **measured on disk** with `stat(2)`, not counted from a decoded string, so
   a multi-byte body reports its true size. Report this number; never substitute one you derived.
 - `outcome` — `descriptor-emitted`. Branch on this, not on the exit status alone: an explicit success
@@ -195,8 +195,7 @@ below. `descriptor-emitted` means execute the MCP descriptor described here:
 
 Use the Phase 2 `image-guard-orig.md` snapshot as the first save's base. For the second save,
 read into `image-guard-base.md`, copy to `image-guard-final.md`, and edit only the final file.
-If an anchored patch is rejected as missing or non-unique, read the issue back before retrying
-once without `--base-file`. A failed or invalid UTF-8 base is a caller error to fix, never a
+A failed or invalid UTF-8 base is a caller error to fix, never a
 reason to silently retry a replacement.
 
 Every failure exits 2, writes a one-line reason to **stderr** and **nothing to stdout**, so a caller

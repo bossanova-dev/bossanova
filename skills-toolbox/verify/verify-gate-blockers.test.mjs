@@ -8,7 +8,12 @@ import {
   aggregateExtensions,
   resolveEffectiveVerdict,
   post,
+  parsePostOptions,
+  operatorMarkers,
+  readOperatorMarkers,
 } from './verify-gate.mjs'
+import { resolutionComment, resolvedOn, resolutionFacts } from './verify-resolution.mjs'
+import { renderReport } from '../review-verdict.mjs'
 import { buildBlockers, encodeBlockerTrailer, encodeOutcomesTrailer } from './verify-blockers.mjs'
 const facts = (extra = {}) => ({
   changedPaths: [],
@@ -349,4 +354,226 @@ test('same-head repeated not-fixable sends park with the blocker reason before t
   const result = await postBlocked(t, w)
   assert.deepEqual([result.verdict, result.reason], ['human', 'repair-exhausted'])
   assert.match(w.commentBodies[0], /not fixable twice: Requires an operator credential/)
+})
+
+test('stale review findings require an independent resolution before blocking', () => {
+  const result = decideVerdict(
+    facts({ pr: 7, reviewFindings: [finding], reportHead: 'b'.repeat(40) }),
+  )
+  assert.equal(result.verdict, 'resolution-required')
+  assert.equal(result.resolutionEnvelope.findings.length, 1)
+  assert.equal(result.resolutionEnvelope.findings[0].title, finding.title)
+  assert.equal(result.resolutionEnvelope.findings[0].assertionHead, 'b'.repeat(40))
+  assert.equal(
+    decideVerdict(facts({ reviewFindings: [finding], reportHead: HEAD })).verdict,
+    'blocked',
+  )
+  assert.equal(
+    decideVerdict(
+      facts({ reviewFindings: [finding], reportHead: 'b'.repeat(40), tier: { class: 'fork' } }),
+    ).verdict,
+    'blocked',
+  )
+  const id = result.resolutionEnvelope.findings[0].id
+  for (const status of ['present', 'unsure'])
+    assert.equal(
+      decideVerdict(
+        facts({
+          reviewFindings: [finding],
+          reportHead: 'b'.repeat(40),
+          resolution: new Map([[id, { id, status }]]),
+        }),
+      ).verdict,
+      'blocked',
+    )
+  assert.equal(
+    decideVerdict(
+      facts({
+        reviewFindings: [finding],
+        reportHead: 'b'.repeat(40),
+        resolution: new Map([[id, { id, status: 'resolved' }]]),
+      }),
+    ).verdict,
+    'pass',
+  )
+})
+
+test('resolution file re-judge validates the tree and keeps unresolved or invalid ids', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'resolution-rejudge-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const second = { ...finding, title: 'Second defect' },
+    third = { ...finding, title: 'Third defect' }
+  const report = { head: 'b'.repeat(40), findings: [finding, second, third] }
+  const bs = buildBlockers({ reviewFindings: report.findings })
+  const byTitle = new Map(bs.map((b) => [b.summary, b.id]))
+  const entries = report.findings.map((f, i) => ({
+    id: byTitle.get(f.title),
+    status: i === 1 ? 'present' : 'resolved',
+    file: f.file,
+    line: i === 2 ? 999 : 1,
+    test: 'regression',
+    command: 'node --test app.test.mjs',
+    exitCode: 0,
+  }))
+  const path = join(dir, 'resolution.json')
+  writeFileSync(path, JSON.stringify({ version: 1, head: HEAD, entries }))
+  const extra = resolutionFacts(facts(), report, [], path, (cmd, args) => ({
+    ok: true,
+    output: args[0] === 'cat-file' ? 'blob' : 'line',
+  }))
+  const judged = decideVerdict(facts({ reviewFindings: report.findings, ...extra }))
+  assert.equal(judged.verdict, 'blocked')
+  assert.deepEqual(
+    new Set(judged.blockers.map((b) => b.summary)),
+    new Set([second.title, third.title]),
+  )
+  assert.equal(judged.resolved[0].id, entries[0].id)
+  const comments = [
+    {
+      body: resolutionComment(HEAD, [...extra.resolution.values()]).body,
+      user: { login: 'operator' },
+      author_association: 'OWNER',
+      id: 1,
+      created_at: '2026-10-01T00:00:00Z',
+    },
+  ]
+  const markers = operatorMarkers(comments)
+  assert.equal(
+    decideVerdict(
+      facts({
+        reviewFindings: report.findings,
+        reportHead: report.head,
+        resolution: resolvedOn(markers, HEAD),
+      }),
+    ).verdict,
+    'blocked',
+  )
+  assert.equal(operatorMarkers([{ ...comments[0], author_association: 'NONE' }]).length, 0)
+  const w = postWorld(comments, { permission: 'read' })
+  assert.deepEqual(readOperatorMarkers(w.deps.read, 'o/r', 7).markers, [])
+})
+
+test('a newer same-head report reasserts a finding despite an older resolved marker', () => {
+  const report = { head: HEAD, at: 2, id: 2, findings: [finding] }
+  const id = buildBlockers({ reviewFindings: report.findings })[0].id
+  const marker = {
+    kind: 'resolution',
+    head: HEAD,
+    at: 1,
+    id: 1,
+    entries: [{ id, status: 'resolved' }],
+  }
+  const judgeWith = (markers) =>
+    decideVerdict(
+      facts({
+        reviewFindings: report.findings,
+        ...resolutionFacts(facts(), report, markers, undefined),
+      }),
+    )
+  const stale = judgeWith([marker])
+  assert.equal(stale.verdict, 'blocked')
+  assert.deepEqual(
+    stale.blockers.map((b) => b.id),
+    [id],
+  )
+  assert.equal(judgeWith([{ ...marker, at: 3 }]).verdict, 'pass')
+})
+
+test('post records resolution evidence once per digest and leaves a failed write cosmetic', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'resolution-post-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const reportFinding = { ...finding, severity: 'P1' }
+  const reportBody = renderReport({
+    status: 'pass',
+    verdict: {
+      status: 'pass',
+      base: 'b'.repeat(40),
+      head: 'b'.repeat(40),
+      findings: [reportFinding],
+    },
+  })
+  const comments = [
+    {
+      body: reportBody,
+      user: { login: 'operator' },
+      author_association: 'OWNER',
+      id: 1,
+      created_at: '2026-10-01T00:00:00Z',
+    },
+  ]
+  const entries = [
+    {
+      id: blockerFile(HEAD).blockers[0].id,
+      status: 'resolved',
+      file: finding.file,
+      line: 1,
+      test: 'regression',
+      command: 'node --test regression.test.mjs',
+      exitCode: 0,
+    },
+  ]
+  const path = join(dir, 'resolution.json'),
+    blockersPath = join(dir, 'blockers.json')
+  writeFileSync(path, JSON.stringify({ version: 1, head: HEAD, entries }))
+  writeFileSync(
+    blockersPath,
+    JSON.stringify({
+      ...blockerFile(HEAD),
+      blockers: blockerFile(HEAD).blockers.filter((b) => b.kind === 'check'),
+    }),
+  )
+  const options = {
+    pr: 7,
+    head: HEAD,
+    verdict: 'blocked',
+    blockers: blockersPath,
+    repo: 'o/r',
+    resolution: path,
+  }
+  const makeWorld = (failed = false) => {
+    const w = postWorld(comments),
+      read = w.deps.read
+    w.deps.read = (cmd, args) => {
+      if (cmd === 'git') return { ok: true, output: args[0] === 'cat-file' ? 'blob' : 'fixed' }
+      if (failed && args.some((a) => a.startsWith('body=') && a.includes('boss-verify-resolution')))
+        return { ok: false }
+      return read(cmd, args)
+    }
+    return w
+  }
+  const w = makeWorld(),
+    first = await post(options, w.deps)
+  assert.equal(first.posted, true)
+  assert.equal(first.resolutionRecord, 'posted')
+  assert.match(w.commentBodies[0], /Resolved on this head/)
+  assert.equal(w.commentBodies.filter((b) => b.includes('boss-verify-resolution')).length, 1)
+  const failed = await post(options, makeWorld(true).deps)
+  assert.equal(failed.verdict, 'blocked')
+  assert.equal(failed.posted, true)
+  assert.equal(failed.resolutionRecord, 'failed')
+  comments.push({
+    ...comments[0],
+    id: 2,
+    body: w.commentBodies.find((b) => b.includes('boss-verify-resolution')),
+  })
+  const again = makeWorld(),
+    result = await post(options, again.deps)
+  assert.equal(result.resolutionRecord, 'current')
+  assert.equal(
+    again.commentBodies.some((b) => b.includes('boss-verify-resolution')),
+    false,
+  )
+  comments[0].updated_at = '2026-10-03T00:00:00Z'
+  const refreshed = makeWorld(),
+    renewed = await post(options, refreshed.deps)
+  assert.equal(renewed.resolutionRecord, 'posted')
+  assert.equal(
+    refreshed.commentBodies.filter((b) => b.includes('boss-verify-resolution')).length,
+    1,
+  )
+  for (const verdict of ['claim', 'wait'])
+    assert.throws(
+      () => parsePostOptions({ pr: 7, head: HEAD, verdict, reason: 'pending', resolution: path }),
+      /resolution/,
+    )
 })

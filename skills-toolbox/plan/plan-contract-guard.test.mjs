@@ -2127,7 +2127,7 @@ test('plan-file rechecks report non-blocking citation and premise drift', () => 
     const result = checkPlanContract({
       description: conformant(),
       citationCwd: root,
-      plan: '## Premises\n- [ ] Has 99 lines — check: `wc -l code.mjs`\n## Approach\n`code.mjs:1` `liveSymbol`\n`missing.mjs:2`\n`new/file.mjs`',
+      plan: '## Premises\n- [ ] Has 99 lines against a 100-line budget — check: `wc -l code.mjs`\n## Approach\n`code.mjs:1` `liveSymbol`\n`missing.mjs:2`, `missing.mjs:5`, `missing.mjs:9`\n`new/file.mjs`',
     })
     for (const code of [
       'stale-plan-citation',
@@ -2139,6 +2139,23 @@ test('plan-file rechecks report non-blocking citation and premise drift', () => 
       assert.ok(!result.blocking.some((v) => v.code === code))
     }
     assert.ok(!result.violations.some((v) => v.message.includes('new/file.mjs')))
+    const citationWarnings = result.violations.filter((v) =>
+      ['stale-plan-citation', 'unresolvable-plan-citation'].includes(v.code),
+    )
+    assert.equal(citationWarnings.length, 2)
+    assert.match(citationWarnings[0].message, /code\.mjs:1/)
+    assert.match(citationWarnings[1].message, /missing\.mjs:2, 5, 9/)
+    assert.ok(
+      !codes(
+        checkPlanContract({
+          description: conformant().replace(
+            KEY_CHANGES_BLOCK,
+            `${KEY_CHANGES_BLOCK}\n- Use \`Manager.Start:12\`.`,
+          ),
+          citationCwd: root,
+        }),
+      ).includes('unresolvable-citation'),
+    )
     assert.equal(result.ok, true)
   } finally {
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })

@@ -613,7 +613,8 @@ type skillDriftDirection string
 const (
 	// skillDriftLossless replaces no installed content, so no history is needed.
 	skillDriftLossless skillDriftDirection = "lossless"
-	// skillDriftBehind is a reachable revision in skill history.
+	// skillDriftBehind is a reachable revision in skill history whose path
+	// has no changes ahead of HEAD on origin/HEAD.
 	skillDriftBehind skillDriftDirection = "behind"
 	// skillDriftUnrecoverable is content no reachable skill revision contains,
 	// so a reinstall would replace bytes this checkout cannot restore.
@@ -679,7 +680,7 @@ func (g *Group) resolveSkillDriftDirection(repoRoot, dir, rel string, kind libsk
 		return skillTopLevelEntryDirection(dir, rel)
 	}
 	installedPath := filepath.Join(dir, libskillinstall.Namespace, filepath.FromSlash(rel))
-	return g.resolveSkillDriftAncestry(repoRoot, installedPath, history)
+	return g.resolveSkillDriftAncestry(repoRoot, installedPath, rel, history)
 }
 
 // isTopLevelSkillKey reports whether a drift path is the library's bare
@@ -725,12 +726,12 @@ func skillTopLevelEntryDirection(dir, rel string) skillDriftDirection {
 // for an otherwise-unrecoverable answer, and any failure in it (origin/HEAD
 // unresolvable, git erroring) leaves the answer unrecoverable — the stricter
 // refusal is the floor, never weakened by a lookup that did not complete.
-func (g *Group) resolveSkillDriftAncestry(repoRoot, installedPath string, history *skillDriftHistory) skillDriftDirection {
+func (g *Group) resolveSkillDriftAncestry(repoRoot, installedPath, rel string, history *skillDriftHistory) skillDriftDirection {
 	blob, err := g.skillDriftHistoryGit(repoRoot, "hash-object", "--", installedPath)
 	if err != nil || blob == "" {
 		return skillDriftUnknown
 	}
-	return g.resolveSkillDriftBlobAncestry(repoRoot, blob, history)
+	return g.resolveSkillDriftPathAncestry(repoRoot, rel, blob, history)
 }
 
 // skillCheckoutBehindCount is how many commits this checkout's HEAD lacks from

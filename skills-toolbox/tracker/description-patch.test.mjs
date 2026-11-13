@@ -1,6 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeDescriptionPatch, applyDescriptionPatch } from './description-patch.mjs'
+import {
+  computeDescriptionPatch,
+  applyDescriptionPatch,
+  REFERENCE_PATTERNS,
+} from './description-patch.mjs'
 
 const padding = '\n## Original notes\n' + 'unchanged source notes with details\n'.repeat(40)
 
@@ -12,6 +16,7 @@ function roundTrip(base, intended) {
     const anchor = op.anchor ?? op.old_string
     assert.equal(base.indexOf(anchor), base.lastIndexOf(anchor))
     assert.ok(anchor.length)
+    assertReferenceFree(anchor)
   }
   return ops
 }
@@ -92,4 +97,106 @@ test('simulation rejects missing, repeated and stale anchors atomically', () => 
       { op: 'insert_before', anchor: 'body', text: 'x' },
     ]),
   )
+})
+
+const references = [
+  '[ISSUE-123](https://tracker.example/issue/123)',
+  '![image](https://tracker.example/image.png)',
+  '<issue id="abc" />',
+  '<https://tracker.example/123>',
+  'https://tracker.example/123',
+  'ISSUE-123',
+  'issue-123',
+  '#4138',
+  '@someone',
+]
+
+function assertReferenceFree(anchor) {
+  const masked = anchor.replace(/(`+)[^\n]*?\1/g, '')
+  for (const reference of references) assert.ok(!masked.includes(reference), reference)
+  for (const pattern of REFERENCE_PATTERNS) assert.doesNotMatch(masked, new RegExp(pattern.source))
+}
+
+test('clips past a link to a unique reference-free insertion anchor', () => {
+  const base = '## Evidence\n- fixed [ISSUE-123](https://tracker.example/issue/123)\n' + padding
+  const intended = base.replace('\n## Original notes', '\n- new evidence\n## Original notes')
+  roundTrip(base, intended)
+})
+
+test('falls back when links fence both sides of an insertion', () => {
+  const base = '- [A-1](u1)\n- [A-2](u2)\n- [A-3](u3)\n' + padding
+  const intended = base.replace('- [A-2]', '- added\n- [A-2]')
+  assert.deepEqual(computeDescriptionPatch(base, intended), { ops: null, reason: 'link-anchor' })
+})
+
+for (const reference of references) {
+  test(`anchors never span ${reference}`, () => {
+    const base = `- ${reference}\n- ${reference}\n` + padding
+    const intended = `- ${reference}\n- added\n- ${reference}\n` + padding
+    const result = computeDescriptionPatch(base, intended)
+    if (result.ops) roundTrip(base, intended)
+    else assert.equal(result.reason, 'link-anchor')
+  })
+}
+
+test('changing a reference label falls back rather than matching partial reference text', () => {
+  const base = '- [ISSUE-123](https://tracker.example/issue/123)\n' + padding
+  assert.deepEqual(computeDescriptionPatch(base, base.replace('ISSUE-123', 'ISSUE-456')), {
+    ops: null,
+    reason: 'link-anchor',
+  })
+})
+
+test('code-spanned attachment references remain usable as insertion anchors', () => {
+  const attachment = '- Plan attachment: `Implementation plan (ISSUE-123)`\n'
+  const base = '## Planning\n' + attachment + padding
+  const ops = roundTrip(base, base.replace(attachment, attachment + '- Dependencies: none\n'))
+  assert.equal(ops[0].op, 'insert_after')
+  assert.equal(ops[0].anchor, attachment)
+})
+
+test('first and second planning saves still patch descriptions with linked notes', () => {
+  const original = '## Reporter notes\n- [ISSUE-123](https://tracker.example/issue/123)\n' + padding
+  const planned = '## Planning\n- Plan attachment: `Implementation plan (ISSUE-123)`\n\n' + original
+  roundTrip(original, planned)
+  roundTrip(planned, planned.replace('\n\n## Reporter', '\n- Dependencies: none\n\n## Reporter'))
+})
+
+test('clipped unique punctuation is a valid anchor between two link lines', () => {
+  const base = '- [A-1](u1)\n- [A-2](u2)\n' + padding
+  roundTrip(base, base.replace('- [A-2]', '- added\n- [A-2]'))
+})
+
+test('multibyte text before a reference preserves hazard offsets', () => {
+  const base = '## 計画 ✅\n- [ISSUE-123](https://tracker.example/issue/123)\n' + padding
+  assert.equal(
+    computeDescriptionPatch(base, base.replace('ISSUE-123', 'ISSUE-456')).reason,
+    'link-anchor',
+  )
+})
+
+test('references within fenced code remain usable when context grows across the fence', () => {
+  for (const fence of ['```', '~~~']) {
+    const base = `${fence}text\nISSUE-123\nrepeat\n${fence}\nrepeat\n` + padding
+    const intended = base.replace('repeat\n' + fence, 'changed\n' + fence)
+    const { ops } = computeDescriptionPatch(base, intended)
+    assert.ok(ops)
+    assert.equal(applyDescriptionPatch(base, ops), intended)
+  }
+})
+
+test('unequal inline delimiters do not hide reference hazards', () => {
+  const base = '- ``literal ISSUE-123 ```\n' + padding
+  assert.equal(
+    computeDescriptionPatch(base, base.replace('ISSUE-123', 'ISSUE-456')).reason,
+    'link-anchor',
+  )
+})
+
+test('a longer closing fence still protects literal references from rewriting', () => {
+  const base = '```text\nISSUE-123\n````\n' + padding
+  const intended = base.replace('ISSUE-123', 'ISSUE-456')
+  const { ops } = computeDescriptionPatch(base, intended)
+  assert.ok(ops)
+  assert.equal(applyDescriptionPatch(base, ops), intended)
 })

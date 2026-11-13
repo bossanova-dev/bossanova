@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { resolutionComment } from '../verify/verify-resolution.mjs'
 import { renderReport, parseReportFindings } from '../review-verdict.mjs'
 import {
   operatorNoteBlocker,
@@ -545,4 +546,137 @@ test('explicit current repair discharges orphaned assertions while historical fi
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
+})
+
+test('carry discharges only resolution evidence within the finding generation ancestry', () => {
+  const id = file().blockers[0].id
+  const asserted = 'b'.repeat(40),
+    resolved = 'c'.repeat(40)
+  const f = { ...finding, assertionHead: asserted }
+  const ancestor = (commit, descendant = head) =>
+    (commit === resolved && descendant === head) || (commit === asserted && descendant === resolved)
+  const entries = [{ id, status: 'resolved', head: resolved }]
+  assert.deepEqual(carryFindings([f], [], ancestor, [], entries), [])
+  assert.deepEqual(
+    carryFindings([f], [], () => false, [], entries),
+    [f],
+  )
+  assert.deepEqual(carryFindings([f], [], ancestor, [], [{ ...entries[0], status: 'present' }]), [
+    f,
+  ])
+  assert.deepEqual(carryFindings([{ ...f, assertionHead: head }], [], ancestor, [], entries), [
+    { ...f, assertionHead: head },
+  ])
+})
+
+test('carry reads trusted resolution markers and ignores non-writers', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'carry-resolution-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const report = renderReport({
+    status: 'pass',
+    verdict: { status: 'pass', base: head, head, findings: [finding] },
+  })
+  const entry = {
+    id: file().blockers[0].id,
+    status: 'resolved',
+    file: 'a.js',
+    line: 1,
+    test: 'regression',
+    command: 'node --test a.test.mjs',
+    exitCode: 0,
+  }
+  const record = resolutionComment(head, [entry]).body
+  for (const [association, permission, expected] of [
+    ['MEMBER', 'write', 0],
+    ['NONE', 'write', 1],
+    ['MEMBER', 'read', 1],
+  ]) {
+    const comments = [report, record].map((body, i) => ({
+      id: i + 1,
+      body,
+      user: { login: i ? 'reviewer' : 'owner' },
+      author_association: i ? association : 'OWNER',
+      created_at: `2026-01-0${i + 1}T00:00:00Z`,
+    }))
+    const read = (cmd, args) =>
+      args[1].includes('/permission')
+        ? { ok: true, payload: { permission: args[1].includes('/owner/') ? 'admin' : permission } }
+        : { ok: true, payload: [comments] }
+    const git = (args) => ({ ok: true, output: args[0] === 'rev-parse' ? head : '' })
+    const out = join(dir, 'carried.json')
+    await main(['carry', '--pr', '7', '--repo', 'o/r', '--out', out], { read, git })
+    assert.equal(JSON.parse(readFileSync(out, 'utf8')).length, expected)
+    comments[0].updated_at = '2026-01-03T00:00:00Z'
+    await main(['carry', '--pr', '7', '--repo', 'o/r', '--out', out], { read, git })
+    assert.equal(JSON.parse(readFileSync(out, 'utf8')).length, 1)
+  }
+})
+
+test('carry preserves a finding re-confirmed after an earlier resolution', () => {
+  const commits = ['a', 'b', 'c', 'd'].map((c) => c.repeat(40))
+  const ancestor = (commit, descendant = commits[3]) =>
+    commits.includes(commit) && commits.indexOf(commit) <= commits.indexOf(descendant)
+  const f = { ...finding, assertionHead: commits[0] }
+  const id = file().blockers[0].id
+  const resolved = { id, status: 'resolved', head: commits[1] }
+  for (const status of ['present', 'unsure']) {
+    const reconfirmed = { id, status, head: commits[2] }
+    assert.deepEqual(carryFindings([f], [], ancestor, [], [resolved, reconfirmed]), [f])
+    assert.deepEqual(
+      carryFindings(
+        [f],
+        [],
+        ancestor,
+        [],
+        [resolved, reconfirmed, { ...resolved, head: commits[3] }],
+      ),
+      [],
+    )
+    assert.deepEqual(
+      carryFindings([f], [], ancestor, [], [resolved, { ...reconfirmed, head: 'e'.repeat(40) }]),
+      [],
+    )
+  }
+})
+
+test('carry orders trusted resolution comments before selecting the latest finding result', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'carry-resolution-order-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const report = renderReport({
+    status: 'pass',
+    verdict: { status: 'pass', base: head, head, findings: [finding] },
+  })
+  const entry = {
+    id: file().blockers[0].id,
+    status: 'resolved',
+    file: 'a.js',
+    line: 1,
+    test: 'regression',
+    command: 'node --test a.test.mjs',
+    exitCode: 0,
+  }
+  const comment = (id, body, at) => ({
+    id,
+    body,
+    user: { login: 'writer' },
+    author_association: 'MEMBER',
+    created_at: at,
+  })
+  const comments = [
+    comment(
+      3,
+      resolutionComment(head, [{ id: entry.id, status: 'present' }]).body,
+      '2026-01-03T00:00:00Z',
+    ),
+    comment(1, report, '2026-01-01T00:00:00Z'),
+    comment(2, resolutionComment(head, [entry]).body, '2026-01-02T00:00:00Z'),
+  ]
+  const read = (_cmd, args) =>
+    args[1].includes('/permission')
+      ? { ok: true, payload: { permission: 'write' } }
+      : { ok: true, payload: [comments] }
+  const git = (args) => ({ ok: true, output: args[0] === 'rev-parse' ? head : '' })
+  const out = join(dir, 'carried.json')
+  await main(['carry', '--pr', '7', '--repo', 'o/r', '--out', out], { read, git })
+  assert.equal(JSON.parse(readFileSync(out, 'utf8')).length, 1)
 })

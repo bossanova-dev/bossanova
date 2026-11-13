@@ -124,18 +124,21 @@ accepts a child as planned only when `plan-run-guards.mjs idempotence` over a fr
 ### Hydrate the epic reverify before step 4's block runs
 
 Step 4 accepts an epic only on `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs epic-reverify`, and
-that verb reads files, never the tracker: tracker reads are tool calls, which cannot run inside a
-bash block and share no shell state with it. So once the sentinel reports `payload.epic == true`,
-and before the step-4 block runs:
+that verb reads files, never the tracker. Once the sentinel reports `payload.epic == true`,
+prepare its inputs through the adapter command before the step-4 block runs:
 
-1. `getIssue` the parent and save the bare response unchanged to
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-parent.json`.
-   When the adapter declares `listChildren`, invoke it with `{parentId}` and save its unchanged result
-   to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-children.json`.
-   Otherwise `list_issues parentId=<parent> limit=250`, `getIssue` every returned child, and save each
-   bare response unchanged to
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-child-<CHILD-ID>.json`,
-   named by its identifier (or id when it has no identifier). Do not strip or reconstruct fields.
+1. Read the parent's hydrated child listing and save the unchanged result. The same result
+   supplies the parent snapshot:
+
+   ```bash
+   set -o pipefail
+   printf '{"parentId":"%s"}\n' "<EPIC-PARENT-ID>" |
+     bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs invoke-operation listChildren --args-file /dev/stdin --result-only > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-children.json
+   jq '.parent' .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-children.json > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-parent.json
+   ```
+
+   Stop on a listing failure; never treat a refused or partial listing as no children.
+
 2. Build the bundle from those saved payloads and the sentinel's ids:
 
    ```bash
@@ -153,8 +156,7 @@ and before the step-4 block runs:
    release this run's planning claim, and clean up only the sentinel with
    `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs cleanup <RUN_DIR>`
    (the step-4 needs-human arm); retain the run scratch. When `unhydratedChildIds` is non-empty,
-   `getIssue` each named id, save its per-child payload, and rerun the verb once. Never edit the
-   bundle by hand. Coverage gaps do not decide the epic's class; `epic-reverify` does.
+   refresh the listing in step 1 and rerun the verb once. Never edit the bundle by hand. Coverage gaps do not decide the epic's class; `epic-reverify` does.
    A fallback payload without a positive parent link remains a coverage gap: identity alone
    cannot prove that the issue belongs to this epic. A live children listing proves membership.
 

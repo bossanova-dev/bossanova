@@ -1,0 +1,25 @@
+{
+  "verdict": "human",
+  "reasons": ["always-human-path"],
+  "label": "the database",
+  "ticket": { "id": "ACME-41", "url": "https://linear.app/acme/issue/ACME-41" },
+  "confidence": {
+    "level": "moderate",
+    "asks": [{ "area": "migrations", "label": "Database" }],
+    "loweredBy": ["area-asks"],
+    "health": []
+  },
+  "facts": {
+    "receipt": { "verdict": "present", "state": "success" },
+    "areas": [
+      {
+        "area": "migrations",
+        "label": "Database",
+        "paths": ["db/migrations/002_sender_brand.sql"],
+        "defaultAsk": "always",
+        "source": "builtin",
+        "items": ["Adds column outgoing_messages.sms_sender_brand"]
+      }
+    ]
+  }
+}

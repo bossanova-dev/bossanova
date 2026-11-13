@@ -117,6 +117,24 @@ for (const scenario of [
     verdict: 'blocked',
   },
   { name: 'verified head', changes: {}, verdict: 'pass' },
+  {
+    name: 'stale finding',
+    changes: {
+      reportHead: 'b'.repeat(40),
+      reviewFindings: [
+        {
+          severity: 'P2',
+          verified: true,
+          introduced: true,
+          file: 'app.js',
+          line: 1,
+          title: 'error',
+          evidence: 'failure',
+        },
+      ],
+    },
+    verdict: 'resolution-required',
+  },
   { name: 'unjudged head', changes: { judgeAreas: undefined }, verdict: 'judge-required' },
   {
     name: '#12030 boss head without a receipt',
@@ -137,9 +155,12 @@ for (const scenario of [
     assert.deepEqual(w.errors, [])
     assert.equal(w.posts.length, 1)
     const { args, options, parsed } = w.posts[0]
-    const claimed = ['review-required', 'extensions-required', 'judge-required'].includes(
-      judged.verdict,
-    )
+    const claimed = [
+      'review-required',
+      'extensions-required',
+      'judge-required',
+      'resolution-required',
+    ].includes(judged.verdict)
     assert.equal(parsed.verdict, claimed ? 'claim' : judged.verdict)
     assert.equal(parsed.pr, PR)
     assert.equal(parsed.headSha, HEAD)
@@ -154,7 +175,6 @@ for (const scenario of [
     if (claimed) {
       assert.equal(result.records[0].outcome, 'dispatched')
       assert.equal(args.includes('--blockers'), false)
-      assert.equal(judged.blockers, undefined)
     }
     assert.equal(result.records[0].line.includes('post failed'), false)
   })
@@ -213,6 +233,7 @@ test('every gate verdict has an explicit sweep post or deliberate nonpost route'
     'review-required': 'claim',
     'extensions-required': 'claim',
     'judge-required': 'claim',
+    'resolution-required': 'claim',
     wait: null,
     defect: null,
     reverify: null,

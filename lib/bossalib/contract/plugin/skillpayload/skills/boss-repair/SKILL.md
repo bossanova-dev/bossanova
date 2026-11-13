@@ -207,7 +207,8 @@ judgement.
    blocker-mode `no-review` item when no push was needed. Before every receipt-carry invocation,
    run `repair-blockers.mjs carry --pr <n> --out <file>` and pass its file as `--carry-findings`;
    carry drops findings marked fixed in trusted posted repair outcomes when the fix commit is in
-   `HEAD` ancestry, in every mode. In blocker mode also supply `--outcomes <file>` for this run's
+   `HEAD` ancestry, in every mode. It also drops trusted verify-resolution ids when their marker
+   head is in `HEAD` ancestry and their assertion head is an ancestor of that marker head. In blocker mode also supply `--outcomes <file>` for this run's
    not-yet-posted outcomes.
    A failed carry read is a residual: never substitute an empty list or publish a replacement
    report. See [the carry protocol](references/blocker-mode.md#carry-and-supersede) for both modes.

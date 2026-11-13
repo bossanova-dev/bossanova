@@ -715,6 +715,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'skill-config-validate.generated.mjs',
       'skill-config.mjs',
       'skill-extensions.mjs',
+      // skill-frontmatter.mjs is the frontmatter reader skill-extensions.mjs discovers with.
+      'skill-frontmatter.mjs',
       'skill-pin.mjs',
       'toolbox-drift.mjs',
       'tracker/adapter-core.mjs',
@@ -736,6 +738,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/github-relations.mjs',
       'tracker/github-verbs.mjs',
       'tracker/github.mjs',
+      'tracker/linear-children.mjs',
       'tracker/linear-issue-create.mjs',
       'tracker/linear-planned-query.mjs',
       'tracker/linear-rank-facts.mjs',
@@ -764,6 +767,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'verify/verify-review-policy.mjs',
       // skill-extensions.mjs imports the proof-publish marker parser and result validator.
       'verify/verify-publish-hook.mjs',
+      // skill-extensions.mjs imports the proof-section marker parser.
+      'verify/verify-proof-sections.mjs',
     ].sort(),
   )
   for (const core of [

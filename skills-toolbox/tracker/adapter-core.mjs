@@ -271,8 +271,8 @@ export const OPTIONAL_TRACKER_CAPABILITIES = [
 //      resolveTrackerTeam, which then trusts an explicit --team or self-disables cleanly.
 //   6. createIssue, the issue creation write used only by notes consumers.
 //   8. patchDescription, optional anchored description deltas; absence falls back to replace.
-//   7. listChildren, tracker-neutral hydrated child enumeration when children are not
-//      reachable through Linear list_issues parentId.
+//   7. listChildren, tracker-neutral hydrated parent and live-child enumeration.
+//      Both reference adapters declare it; boss-plan requires it before any write.
 //
 // The invariant for every entry here: an ABSENT optional op conforms, while a DECLARED
 // one is validated exactly as strictly as a required op (one usable transport and summary) —

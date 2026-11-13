@@ -747,12 +747,14 @@ function vendoredCopy(core) {
     'skill-drift-verdict.mjs',
     'main-module.mjs',
     'skill-extensions.mjs',
+    'skill-frontmatter.mjs',
     'session/orchestrate-contract.mjs',
     'verify/verify-area-ids.mjs',
     'verify/verify-contract.mjs',
     'verify/verify-describe.mjs',
     'verify/verify-describe-blocks.mjs',
     'verify/verify-proof.mjs',
+    'verify/verify-proof-sections.mjs',
     'verify/verify-publish-hook.mjs',
   ]) {
     mkdirSync(path.dirname(path.join(toolbox, file)), { recursive: true })

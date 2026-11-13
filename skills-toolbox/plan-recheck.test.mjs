@@ -137,6 +137,46 @@ test('resolves anchored and unanchored coordinates, relocation, missing paths an
   assert.equal(check('`./old.mjs`').items[0].kind, 'present')
 })
 
+test('exact citations use only their adjacent anchors, including wrapped code spans', (t) => {
+  const { root, check } = fixture(t)
+  writeFileSync(join(root, 'release.sh'), 'printf "%s" "${NAME:-}"\n')
+  const cases = [
+    ['- `old.mjs:1` (`"ready"`), plus `new.mjs:1` (`relocatedSymbol`).', [[], ['relocatedSymbol']]],
+    [
+      '- `${NAME:-}` at `release.sh:1`, plus `new.mjs:1` (`relocatedSymbol`).',
+      [[], ['relocatedSymbol']],
+    ],
+    [
+      '- `old.mjs:1` (`call(\n  argument)`) and `new.mjs:1` (`relocatedSymbol`).',
+      [[], ['relocatedSymbol']],
+    ],
+    [
+      '- `old.mjs:1` `currentSymbol\n  ` and `new.mjs:1` `relocatedSymbol`.',
+      [['currentSymbol'], ['relocatedSymbol']],
+    ],
+    ['- `old.mjs:1` (`currentSymbol`, `relocatedSymbol`).', [['currentSymbol']]],
+    [
+      '- `currentSymbol` at `old.mjs:1`, plus `new.mjs:1` is `relocatedSymbol()`.',
+      [['currentSymbol'], ['relocatedSymbol']],
+    ],
+  ]
+  for (const [text, anchors] of cases) {
+    const items = check(text).items.filter((item) => item.source === 'citation')
+    assert.deepEqual(
+      items.map((item) => item.kind),
+      anchors.map(() => 'current'),
+      text,
+    )
+    assert.deepEqual(
+      items.map((item) => item.anchors),
+      anchors,
+      text,
+    )
+    assert.ok(items.every((item) => item.text === text))
+  }
+  assert.deepEqual(check('`Manager.Start:12` beside `currentSymbol`').items, [])
+})
+
 test('rechecks searches and counts without executing shell syntax', (t) => {
   const { root, check } = fixture(t)
   const result = check(
@@ -192,6 +232,31 @@ test('confirms measurements and marks unsupported or ambiguous measurements manu
     ['confirmed', 'confirmed', 'confirmed', 'not-evaluated', 'not-evaluated', 'not-evaluated'],
   )
   assert.equal(result.verdict, 'current')
+})
+
+test('evaluates size and budget claims without guessing other two-number counts', (t) => {
+  const { root, check } = fixture(t)
+  writeFileSync(join(root, 'budget.txt'), 'one\ntwo\n')
+  const cases = [
+    ['Has 2 lines against a 5-line budget', '-l', 'confirmed', 5, 3],
+    ['Has 2 lines with a budget of 5', '-l', 'confirmed', 5, 3],
+    ['Has 1 line against a 5-line cap', '-l', 'count-drift', 5, 3],
+    ['Has 2 lines with a limit of 1', '-l', 'confirmed', 1, -1],
+    ['Has 8 bytes against a 10-byte limit', '-c', 'confirmed', 10, 2],
+    ['Has 8 bytes with a cap of 10', '-c', 'confirmed', 10, 2],
+    ['Has between 2 and 5 lines', '-l', 'not-evaluated'],
+    ['Has 2 lines against 5 estimates', '-l', 'not-evaluated'],
+    ['Has 2 lines against a 5-line budget and a 6-line cap', '-l', 'not-evaluated'],
+  ]
+  for (const [claim, mode, kind, budget, headroom] of cases) {
+    const result = check(`## Premises\n- [ ] ${claim} — check: \`wc ${mode} budget.txt\``)
+    const item = result.items.find((entry) => entry.source === 'premise')
+    assert.equal(item.kind, kind, claim)
+    assert.equal(item.budget, budget, claim)
+    assert.equal(item.headroom, headroom, claim)
+  }
+  const plan = '## Premises\n- [ ] Has 1 line against a 5-line budget — check: `wc -l budget.txt`'
+  assert.equal(check(plan).verdict, 'stale')
 })
 
 test('missing premise paths are stale and non-git relocation remains unknown', (t) => {

@@ -12,6 +12,7 @@ import {
   encodeOutcomesTrailer,
 } from '../verify/verify-blockers.mjs'
 import { commandReader, readOperatorMarkers } from '../verify/verify-gate.mjs'
+import { resolutionMarkersAfter } from '../verify/verify-resolution.mjs'
 
 const line = (value) => typeof value === 'string' && value.trim() !== '' && !/[\r\n]/.test(value)
 const jsonFile = (file) => JSON.parse(readFileSync(file, 'utf8'))
@@ -139,21 +140,31 @@ export function carryFindings(
   outcomes = [],
   isAncestor = (_commit, _descendant = undefined) => false,
   currentOutcomes = [],
+  resolutions = [],
 ) {
   const fixes = [...outcomes, ...currentOutcomes].filter(
     (o) => o.outcome === 'fixed' && isAncestor(o.commit),
   )
+  const latestResolutions = new Map(
+    resolutions.filter((r) => isAncestor(r.head)).map((r) => [r.id, r]),
+  )
   return findings.filter(
     (f) =>
-      !buildBlockers({ reviewFindings: [{ ...f, verified: true, fixed: false }] }).some((b) =>
-        fixes.some(
-          (o) =>
-            o.id === b.id &&
-            (currentOutcomes.includes(o) ||
-              !f.assertionHead ||
-              (o.blockersHead && isAncestor(f.assertionHead, o.blockersHead))),
-        ),
-      ),
+      !buildBlockers({ reviewFindings: [{ ...f, verified: true, fixed: false }] }).some((b) => {
+        const resolution = latestResolutions.get(b.id)
+        return (
+          (resolution?.status === 'resolved' &&
+            f.assertionHead &&
+            isAncestor(f.assertionHead, resolution.head)) ||
+          fixes.some(
+            (o) =>
+              o.id === b.id &&
+              (currentOutcomes.includes(o) ||
+                !f.assertionHead ||
+                (o.blockersHead && isAncestor(f.assertionHead, o.blockersHead))),
+          )
+        )
+      }),
   )
 }
 
@@ -223,6 +234,9 @@ export async function main(argv, { read = commandReader(), git = runGit } = {}) 
           outcomes,
           isAncestor,
           local?.outcomes ?? [],
+          resolutionMarkersAfter(result.markers, standing)
+            .sort((a, b) => a.at - b.at || a.id - b.id)
+            .flatMap((m) => m.entries.map((e) => ({ ...e, head: m.head }))),
         ),
       ) + '\n',
     )

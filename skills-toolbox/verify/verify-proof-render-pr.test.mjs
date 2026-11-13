@@ -91,7 +91,7 @@ const tree = (dir) =>
   )
 
 test('every committed fixture renders a validated page that names its head', (t) => {
-  assert.deepEqual(fixtureNames(), ['api', 'dbt', 'infra', 'mobile', 'review'])
+  assert.deepEqual(fixtureNames(), ['api', 'dbt', 'infra', 'mobile', 'review', 'sections'])
   for (const name of fixtureNames()) {
     const { html, player } = fixturePage(t, name)
     const spec = JSON.parse(readFileSync(join(FIXTURES_DIR, name, 'spec.json'), 'utf8'))
@@ -136,7 +136,8 @@ test('every fixture page keeps the CSP shape: one hashed sheet, one own-origin s
 test('every fixture page orders its sections and its Files grid the same way', (t) => {
   for (const name of fixtureNames()) {
     const { html } = fixturePage(t, name)
-    const ids = sectionIds(html)
+    // A repository's own sections go where it declares them; the core sections keep their order.
+    const ids = sectionIds(html).filter((id) => !id.startsWith('sec-'))
     assert.equal(ids.at(-1), 'debug', name)
     const rank = (id) =>
       ['risks', 'decide', 'ticket'].includes(id)
@@ -402,4 +403,26 @@ test('a describe file the gate would reject fails the render with its first erro
     join(dir, 'out'),
   ])
   assert.ok(unknown.stderr.includes(`${describe}: nowhere is not a judged area`), unknown.stderr)
+})
+
+test('the sections fixture shows the base commit declared sections where it places them, filled from the spec', (t) => {
+  const { html } = fixturePage(t, 'sections')
+  const ids = sectionIds(html)
+  assert.deepEqual(ids, [
+    'risks',
+    'ticket',
+    'sec-testing',
+    'a-migrations',
+    'sec-infra',
+    'files',
+    'debug',
+  ])
+  const infra = section(html, 'sec-infra')
+  for (const kind of ['<div class="cl grp">', '<table class="tbl stbl">', '<ul class="kv">'])
+    assert.ok(infra.includes(kind), `infra renders ${kind}`)
+  assert.ok(section(html, 'sec-testing').includes('<span class="no">3</span>'))
+  assert.ok(
+    section(html, 'risks').includes('<a class="lk" href="#sec-infra-i1" title="'),
+    'a risk links to an infra step',
+  )
 })

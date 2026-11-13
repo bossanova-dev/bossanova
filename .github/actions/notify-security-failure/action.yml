@@ -1,12 +1,18 @@
 name: Notify security scan failure
 description: >-
-  Open a GitHub issue (or comment on the existing open one) when a security
-  scan or nightly workflow fails on main or a scheduled run. De-duplicates into
-  a single open issue per `label` (default `security-scan-failure`).
+  Open a Linear issue (or comment on the existing open one) when a security
+  scan or nightly workflow fails. De-duplicates into a single open issue
+  per team and label (default security-scan-failure).
 
 inputs:
   github-token:
-    description: "Token with issues:write permission (pass ${{ github.token }})."
+    description: "Token with actions:read permission (pass the workflow's github.token)."
+    required: true
+  linear-api-key:
+    description: 'Linear API key with permission to create issues, labels and comments.'
+    required: true
+  linear-team-key:
+    description: 'Linear team key receiving workflow failure issues.'
     required: true
   label:
     description: 'Issue label the notifier de-duplicates on. Defaults to the security label.'
@@ -20,82 +26,23 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Open or update security-scan-failure issue
+    - name: Open or update workflow failure issue
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
+        NOTIFY_LINEAR_API_KEY: ${{ inputs.linear-api-key }}
+        NOTIFY_LINEAR_TEAM_KEY: ${{ inputs.linear-team-key }}
         NOTIFY_LABEL: ${{ inputs.label }}
         NOTIFY_TITLE_PREFIX: ${{ inputs.title-prefix }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
-          const label = process.env.NOTIFY_LABEL;
-          const ref = context.ref.replace('refs/heads/', '');
-          const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-          const title = `${process.env.NOTIFY_TITLE_PREFIX} on ${ref}`;
-
-          // Name the jobs and steps that failed or ran out of time. Reading the run's
-          // jobs needs `actions: read`; a caller without it still gets the issue,
-          // just without this list.
-          const bad = new Set(['failure', 'cancelled', 'timed_out']);
-          let failedSteps = [];
-          try {
-            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-              ...context.repo,
-              run_id: context.runId,
-              filter: 'latest',
-              per_page: 100,
-            });
-            failedSteps = jobs
-              .filter((job) => bad.has(job.conclusion))
-              .map((job) => {
-                const steps = (job.steps || []).filter((step) => bad.has(step.conclusion));
-                const named = steps.map((step) => `\`${step.name}\` (${step.conclusion})`).join(', ');
-                return `- Job \`${job.name}\` (${job.conclusion}): ${named || 'no step reported a failure'}`;
-              });
-          } catch (e) {
-            core.warning(`Could not list the run's jobs, so the issue names no step: ${e.message}`);
-          }
-
-          const body = [
-            `Workflow **${context.workflow}** failed on \`${context.ref}\` (event: \`${context.eventName}\`).`,
-            '',
-            `- Run: ${runUrl}`,
-            `- Commit: \`${context.sha}\``,
-            ...(failedSteps.length > 0 ? ['', 'Failed:', ...failedSteps] : []),
-            '',
-            '_Opened automatically by the workflow failure notifier. Close this issue once the failure is resolved; the next failure will open a fresh one._',
-          ].join('\n');
-
-          // Ensure the label exists (ignore "already exists").
-          try {
-            await github.rest.issues.createLabel({
-              ...context.repo,
-              name: label,
-              color: 'B60205',
-              description: 'Automated workflow failure',
-            });
-          } catch (e) {
-            if (e.status !== 422) throw e;
-          }
-
-          // Re-use the existing open issue if there is one, else create a new one.
-          const existing = await github.rest.issues.listForRepo({
-            ...context.repo,
-            state: 'open',
-            labels: label,
-            per_page: 1,
+          const { pathToFileURL } = require('node:url');
+          const { resolve } = require('node:path');
+          const { notifyWorkflowFailure } = await import(pathToFileURL(resolve(process.env.GITHUB_WORKSPACE, 'scripts/release/notify-workflow-failure.mjs')).href);
+          await notifyWorkflowFailure({
+            github, context, core, fetch,
+            apiKey: process.env.NOTIFY_LINEAR_API_KEY,
+            teamKey: process.env.NOTIFY_LINEAR_TEAM_KEY,
+            label: process.env.NOTIFY_LABEL,
+            titlePrefix: process.env.NOTIFY_TITLE_PREFIX,
           });
-
-          if (existing.data.length > 0) {
-            const issue_number = existing.data[0].number;
-            await github.rest.issues.createComment({ ...context.repo, issue_number, body });
-            core.info(`Commented on existing issue #${issue_number}`);
-          } else {
-            const created = await github.rest.issues.create({
-              ...context.repo,
-              title,
-              body,
-              labels: [label],
-            });
-            core.info(`Opened issue #${created.data.number}`);
-          }

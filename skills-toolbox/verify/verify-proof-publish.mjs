@@ -41,6 +41,7 @@ import {
   stageAssets,
 } from './verify-media-hook.mjs'
 import { readBranchContext } from './verify-branch-context.mjs'
+import { baseProofSections } from './verify-proof-sections.mjs'
 import { afterMergeItems } from './verify-park-note.mjs'
 import { PROOF_VERDICTS, buildProofRecord, reviewSidecar } from './verify-proof-build.mjs'
 import {
@@ -358,7 +359,8 @@ export function proofNote({ headSha, proof, block }) {
 /**
  * The page's optional parts for a parked head: the proof-author's spec from `spec` (a file), the
  * media `proof-bundle` left in `mediaDir`, else what the base tree's `proof-media` extension
- * collects into a temporary directory, the git snippet resolver, the changed files and each area's paths. `temp` is
+ * collects into a temporary directory, the git snippet resolver, the changed files, each area's
+ * paths and the sections the base tree's `proof-section` extensions declare. `temp` is
  * that directory, for the caller to remove. Never throws; a part that fails is left out.
  */
 function pageExtras({
@@ -422,6 +424,18 @@ function pageExtras({
   }
   const mergeBase = gitMergeBase(range)
   if (mergeBase) extras.mergeBase = mergeBase
+  if (actions.trustedTree) {
+    const declared = baseProofSections({
+      baseSha: proof.base,
+      cwd,
+      read,
+      trustedTree: actions.trustedTree,
+      discover: actions.discover ?? discoverExtensions,
+    })
+    if (declared.sections.length)
+      extras.sections = declared.sections.map(({ instructions, ...section }) => section)
+    if (declared.problems.length) extras.sectionProblems = declared.problems
+  }
   // A spec that cannot be read is listed in the page's ?debug diagnostics, never fatal.
   if (spec !== undefined) extras.spec = readJson(spec)
   if (media?.media) {

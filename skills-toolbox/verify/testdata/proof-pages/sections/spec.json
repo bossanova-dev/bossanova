@@ -1,0 +1,293 @@
+{
+  "schema": "proof-spec/1",
+  "head": "9ff67f63e889907dd4cd48df7c2714ebe8fa611c",
+  "title": "Send texts from a dedicated sender number",
+  "reason": "The sender is read from one setting, a missing number refuses the text instead of sending it, and the one new column has a default.",
+  "risks": [
+    {
+      "id": "R1",
+      "level": "medium",
+      "title": "Texts stop until the number is set",
+      "impact": "Production refuses every text from the deploy until `SMS_SENDER_NUMBER` reaches the API pod.",
+      "guard": "The production overlay sets it in the same change.",
+      "at": {
+        "path": "api/sms.go",
+        "line": 11
+      },
+      "links": ["I1", "I3"]
+    },
+    {
+      "id": "R2",
+      "level": "low",
+      "title": "Outbox writes fail until the migration runs",
+      "impact": "A message saved between the API rollout and the migration fails to save.",
+      "guard": "The deploy runs migrations right after the rollout.",
+      "at": {
+        "path": "db/migrations/002_sender_brand.sql",
+        "line": 2
+      },
+      "links": ["I2"]
+    }
+  ],
+  "ticketFit": {
+    "summary": "Both criteria are in the code; neither has a test that sends a text.",
+    "criteria": [
+      {
+        "id": "AC1",
+        "text": "Texts come from the dedicated number",
+        "status": "unverified",
+        "evidence": [
+          {
+            "kind": "code",
+            "label": "Sender",
+            "ref": "api/sms.go:10"
+          }
+        ]
+      },
+      {
+        "id": "AC2",
+        "text": "A text with no sender number is refused",
+        "status": "unverified",
+        "evidence": [
+          {
+            "kind": "code",
+            "label": "ErrNoSender",
+            "ref": "api/sms.go:12"
+          }
+        ]
+      }
+    ]
+  },
+  "areas": [
+    {
+      "id": "migrations",
+      "name": "Database",
+      "summary": "Adds `outgoing_messages.sms_sender_brand`, a text column with a default, so existing rows need no backfill.",
+      "facts": [
+        {
+          "text": "One added column, NOT NULL with a default",
+          "flag": false
+        }
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "id": "testing",
+      "sub": "only step 1 is possible today",
+      "parts": [
+        {
+          "kind": "facts",
+          "rows": [
+            {
+              "label": "Staging",
+              "text": "Staging has no sender number, so it sends no texts. Every step runs in production.",
+              "tone": "warning"
+            },
+            {
+              "label": "Partner texts",
+              "text": "No screen sends a partner text yet. ACME-44 adds one; steps 2 and 3 wait for it.",
+              "tone": "warning"
+            }
+          ]
+        },
+        {
+          "kind": "checklist",
+          "numbered": true,
+          "items": [
+            {
+              "id": "T1",
+              "context": "Admin, production: Outbox in the menu",
+              "text": "The day after the deploy, open Outbox and look at the chart along the top.",
+              "expect": "Texts keep going out as on other days, with no quiet gap since the deploy.",
+              "tag": "after deploy",
+              "tone": "success"
+            },
+            {
+              "id": "T2",
+              "context": "Admin, production: a customer at an acme practice",
+              "text": "Send a test text to your own mobile.",
+              "expect": "It arrives from +61 400 000 000, not from the name ACME.",
+              "tag": "after ACME-44"
+            },
+            {
+              "id": "T3",
+              "context": "Admin, production: a customer at a partner practice",
+              "text": "Try to send a test text to your own mobile.",
+              "expect": "Nothing is sent. You see an error naming the partner, and no text arrives.",
+              "tag": "after ACME-44",
+              "links": ["R1"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "infra",
+      "sub": "nothing required before deploy",
+      "parts": [
+        {
+          "kind": "checklist",
+          "items": [
+            {
+              "id": "I1",
+              "group": "Before deploy",
+              "text": "Confirm the SMS account behind production's `SMS_API_KEY` owns +61 400 000 000.",
+              "tag": "production"
+            },
+            {
+              "id": "I2",
+              "group": "Deploy",
+              "text": "Deploy as usual with `bin/deploy-production.sh`, then check that `./migrate` finished.",
+              "tag": "both"
+            },
+            {
+              "id": "I3",
+              "group": "After deploy",
+              "text": "Confirm the production API pod's environment has `SMS_SENDER_NUMBER`, from `api-config`.",
+              "tag": "production"
+            },
+            {
+              "id": "I4",
+              "group": "After ACME-44",
+              "text": "Set the two `*_partner_production` variables in `terraform.tfvars.json`, then `terraform apply`.",
+              "tag": "production"
+            },
+            {
+              "id": "I5",
+              "group": "After ACME-44",
+              "text": "Redeploy with `bin/deploy-production.sh`, so the API pods read the new secret.",
+              "tag": "production"
+            }
+          ]
+        },
+        {
+          "kind": "table",
+          "title": "Settings by environment",
+          "columns": ["Setting", "Reaches the pod", "Staging", "Production"],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "text": "SMS_SENDER_NUMBER",
+                  "code": true,
+                  "note": "The acme number."
+                },
+                {
+                  "text": "api-config",
+                  "code": true,
+                  "note": "Literal in the production overlay"
+                },
+                {
+                  "text": "not set",
+                  "pill": "neutral"
+                },
+                {
+                  "text": "set here",
+                  "pill": "success"
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "text": "SMS_API_KEY\nSMS_API_SECRET",
+                  "code": true,
+                  "note": "Now also sign acme texts."
+                },
+                {
+                  "text": "api-secret",
+                  "code": true,
+                  "note": "Existing Terraform variable"
+                },
+                {
+                  "text": "existing",
+                  "pill": "neutral"
+                },
+                {
+                  "text": "existing",
+                  "pill": "neutral"
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "text": "SMS_SENDER_NUMBER_PARTNER",
+                  "code": true
+                },
+                {
+                  "text": "api-secret",
+                  "code": true,
+                  "note": "New Terraform variable"
+                },
+                {
+                  "text": "empty",
+                  "pill": "warning"
+                },
+                {
+                  "text": "empty",
+                  "pill": "warning"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "facts",
+          "title": "If a setting is missing",
+          "rows": [
+            {
+              "label": "API start",
+              "text": "Unaffected. The new settings have no default and no start-up check."
+            },
+            {
+              "label": "Acme texts",
+              "text": "With `SMS_SENDER_NUMBER` missing, a text is refused when it is queued."
+            }
+          ]
+        },
+        {
+          "kind": "table",
+          "title": "Terraform variables",
+          "note": "set in `terraform.tfvars.json`, all default to empty",
+          "columns": ["Variable", "Type", ""],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "text": "sms_sender_number_partner_production",
+                  "code": true
+                },
+                {
+                  "text": "string",
+                  "code": true
+                },
+                {
+                  "text": "not secret",
+                  "pill": "neutral"
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "text": "sms_api_key_partner_production",
+                  "code": true
+                },
+                {
+                  "text": "string",
+                  "code": true
+                },
+                {
+                  "text": "sensitive",
+                  "pill": "warning"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

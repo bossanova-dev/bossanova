@@ -81,7 +81,8 @@ and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml).
   [`notify-security-failure`](.github/actions/notify-security-failure/action.yml)
   composite action on a failed scheduled run, manual dispatch, or push to
   `staging`/`production` (PR runs are excluded — they are already visible on
-  the PR). It opens — or comments on the existing open — issue labelled
+  the PR). It opens — or comments on the existing open — Linear issue in the
+  Bossanova team labelled
   **`security-scan-failure`** (deduped to one open issue). Close it once
   resolved; the next failure opens a fresh one.
 - **Scope.** A finding fails the job, and so does a genuine workflow/infra

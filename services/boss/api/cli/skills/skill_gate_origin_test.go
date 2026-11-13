@@ -39,6 +39,18 @@ func setupOriginTipGate(t *testing.T, change string) (*Group, string, string) {
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
+	case "copy", "copy-tip":
+		path = filepath.Join(src, "skills", "boss", "toolbox", "copy.mjs")
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		data := []byte("origin tip\n")
+		if change == "copy-tip" {
+			data = fixture["skills/boss-build/SKILL.md"].Data
+		}
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			t.Fatal(err)
+		}
 	case "added":
 		path = filepath.Join(src, "skills", "boss-new", "SKILL.md")
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -184,8 +196,8 @@ func TestOriginTipGateNoLookupAtTip_BossSkills_AC7(t *testing.T) {
 	runGit(t, root, "reset", "--quiet", "--hard", "origin/HEAD")
 	original := g.skillDriftHistoryGit
 	g.skillDriftHistoryGit = func(root string, args ...string) (string, error) {
-		if args[0] == "ls-tree" {
-			t.Error("unnecessary origin listing at current checkout")
+		if args[0] == "ls-tree" || args[0] == "diff" {
+			t.Error("unnecessary origin lookup at current checkout")
 		}
 		return original(root, args...)
 	}
@@ -232,5 +244,66 @@ func TestOriginTipGateBatchesFiles_BossSkills_AC7(t *testing.T) {
 	}
 	if hashes != 1 || listings != 1 || !strings.Contains(out.String(), "2 checkout-stale path(s)") {
 		t.Fatalf("hashes=%d listings=%d output=%s", hashes, listings, &out)
+	}
+}
+
+func TestOriginTipChangedPath_BossSkills_AC245101_AC245102(t *testing.T) {
+	for _, scenario := range []struct {
+		name, change, fail, kind, direction string
+	}{
+		{"tip-read-failed", "copy-tip", "ls-tree", "unexpected", "ahead"},
+		{"differs-from-tip", "copy", "", "unexpected", "ahead"},
+		{"content", "content", "", "content", "ahead"},
+		{"changed-set-unreadable", "copy", "diff", "unexpected", "unknown"},
+		{"content-changed-set-unreadable", "content", "diff", "content", "unknown"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			g, root, dir := setupOriginTipGate(t, scenario.change)
+			rel := "boss/toolbox/copy.mjs"
+			if scenario.kind == "content" {
+				rel = "boss/SKILL.md"
+			}
+			path := filepath.Join(dir, libskillinstall.Namespace, filepath.FromSlash(rel))
+			installed := gateSkillFS()["skills/boss-build/SKILL.md"].Data
+			if err := os.WriteFile(path, installed, 0644); err != nil {
+				t.Fatal(err)
+			}
+			original := g.skillDriftHistoryGit
+			g.skillDriftHistoryGit = func(root string, args ...string) (string, error) {
+				if scenario.fail != "" && args[0] == scenario.fail {
+					return "", errors.New("git unavailable")
+				}
+				return original(root, args...)
+			}
+			var out bytes.Buffer
+			if err := g.runSkillGateWithHeal(&out, "claude", true); err == nil {
+				t.Fatalf("drift accepted: %s", &out)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(got, installed) {
+				t.Fatalf("installed copy changed: %q %v; %s", got, err, &out)
+			}
+			refusal := "reinstall withheld [downgrade]"
+			if scenario.direction == "unknown" {
+				refusal = "reinstall withheld [lost]"
+			}
+			for _, want := range []string{rel + " (" + scenario.kind + ", " + scenario.direction + ")", refusal} {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("missing %q: %s", want, &out)
+				}
+			}
+			if strings.Contains(out.String(), "healed ") {
+				t.Fatalf("unexpected heal: %s", &out)
+			}
+			payload := selectedSkillPayload{fromSource: true, srcRoot: filepath.Join(root, libskillinstall.SourceRelPath)}
+			advice, err := g.skillCheckRemedyAdvice(payload, dir, true, "claude")
+			if err != nil {
+				t.Fatal(err)
+			}
+			plain := strings.Join(advice.lines(""), "\n")
+			if !strings.Contains(plain, refusal) || strings.Contains(plain, "run `") {
+				t.Fatalf("unsafe plain-check advice: %s", plain)
+			}
+		})
 	}
 }

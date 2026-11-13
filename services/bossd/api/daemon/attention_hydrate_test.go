@@ -235,6 +235,31 @@ type openItemsEvidence struct {
 	stubEvidence
 	head  string
 	items []string
+	asks  []string
+}
+
+func (e openItemsEvidence) ParkAsks(_, head string) []string {
+	if head != e.head {
+		return nil
+	}
+	return e.asks
+}
+
+func TestAttentionHydratesFullParkAsks(t *testing.T) {
+	n := 1
+	row := &models.Session{ID: "s", RepoID: "r", State: machine.ReadyForReview, PRNumber: &n, UpdatedAt: time.Now()}
+	tracker := status.NewDisplayTracker()
+	tracker.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:ui", VerifyLabel: "low: UI, Shared record, Clearing stored refer…", HeadSHA: timelineHead})
+	s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
+	asks := []string{"UI", "Shared record", "Clearing stored referrer details", "Fourth area"}
+	s.evidence = openItemsEvidence{head: timelineHead, asks: asks}
+	resp, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := onlySession(t, resp.Msg.Sessions).GetAttention().GetAsks(); !slices.Equal(got, asks) {
+		t.Fatalf("asks = %q, want %q", got, asks)
+	}
 }
 
 func (e openItemsEvidence) OpenItems(_, head string) []string {

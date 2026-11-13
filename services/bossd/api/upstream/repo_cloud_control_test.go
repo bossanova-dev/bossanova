@@ -78,9 +78,49 @@ func TestSnapshotRepoCloudControlKeyedByRepoID(t *testing.T) {
 	}
 }
 
-// The stream writer's redaction keeps each snapshot session's effective mode
-// and plan instead of re-registering the origin-URL RepoIds, under which no
-// session repository is registered and every session reads as PRIVATE.
+func TestBuildCloudSnapshotKeysRepoCloudControlByRepoID_Sessions_AC238202(t *testing.T) {
+	client, urls := originURLSnapshotClient()
+	snap, err := BuildCloudSnapshot(t.Context(), client.stores, client.cloudControl, client.targetObjects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(snap.GetRepoIds(), urls) {
+		t.Fatalf("repo ids = %v, want origin URLs %v", snap.GetRepoIds(), urls)
+	}
+	want := map[string]pb.CloudControl{"a": pb.CloudControl_CLOUD_CONTROL_FULL, "b": pb.CloudControl_CLOUD_CONTROL_READ_ONLY}
+	if got := repoModeMap(snap.GetRepoCloudControls()); len(got) != 2 || got["a"] != want["a"] || got["b"] != want["b"] {
+		t.Fatalf("repo modes = %v", got)
+	}
+	if len(snap.GetSessions()) != 2 {
+		t.Fatalf("sessions = %v", snap.GetSessions())
+	}
+	for _, session := range snap.GetSessions() {
+		if session.GetCloudControl() != want[session.GetRepoId()] || session.GetPlan() != "plan" {
+			t.Fatalf("session %s mode/plan = %v/%q", session.GetId(), session.GetCloudControl(), session.GetPlan())
+		}
+	}
+}
+
+func TestBuildCloudSnapshotWithoutTargetsFailsClosed(t *testing.T) {
+	client, _ := originURLSnapshotClient()
+	snap, err := BuildCloudSnapshot(t.Context(), client.stores, client.cloudControl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.GetRepoCloudControls()) != 0 {
+		t.Fatalf("repo modes without targets = %v", snap.GetRepoCloudControls())
+	}
+	if len(snap.GetSessions()) != 2 {
+		t.Fatalf("sessions = %v", snap.GetSessions())
+	}
+	for _, session := range snap.GetSessions() {
+		if session.GetCloudControl() != pb.CloudControl_CLOUD_CONTROL_PRIVATE || session.GetPlan() != "" {
+			t.Fatalf("session %s mode/plan = %v/%q", session.GetId(), session.GetCloudControl(), session.GetPlan())
+		}
+	}
+}
+
+// The stream writer keeps modes and plans instead of registering origin URLs.
 func TestWriterSnapshotSessionsKeepRepoCloudControl(t *testing.T) {
 	client, _ := originURLSnapshotClient()
 	snap, err := client.buildSnapshot(t.Context())

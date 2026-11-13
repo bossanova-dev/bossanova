@@ -508,6 +508,33 @@ export const schema = object({
         'x-msg': 'commands.{1} must be a non-empty string',
       },
     }),
+    // Evidence boss-build's acceptance certification may use besides a criterion's own command
+    // (skills-toolbox/build/acceptance-evidence.mjs).
+    acceptance: object({
+      'x-msg': { type: 'acceptance must be an object when present' },
+      properties: {
+        derivedChecks: {
+          type: 'array',
+          'x-msg':
+            'acceptance.derivedChecks must be an array of {glob, command} objects whose command contains {file} or {files}',
+          items: object({
+            required: ['glob', 'command'],
+            properties: {
+              glob: nonBlankString,
+              command: { type: 'string', pattern: '\\{files?\\}' },
+            },
+            additionalProperties: false,
+          }),
+        },
+        fullGateCommands: {
+          type: 'array',
+          items: nonBlankString,
+          'x-msg': 'acceptance.fullGateCommands must be an array of non-empty command strings',
+        },
+      },
+      additionalProperties: false,
+      'x-unknown': 'warn',
+    }),
     test: object({
       'x-msg': { type: 'test must be an object when present' },
       properties: {

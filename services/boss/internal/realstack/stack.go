@@ -1,8 +1,8 @@
 // Package realstack runs isolated daemon stacks for tests.
 //
-// Fake GitHub holds use a shared Go/Node file protocol beside the gh.json spec:
-// holds/<name>.entered is atomically renamed into place with JSON {pid, argv,
-// enteredAt}, where enteredAt is a UTC RFC3339 timestamp. Names match
+// Fake GitHub holds use a shared Go/Node file protocol beside the gh.json spec,
+// with symlinks resolved: holds/<name>.entered is atomically renamed into place
+// with JSON {pid, argv, enteredAt}, where enteredAt is a UTC RFC3339 timestamp. Names match
 // ^[a-z0-9][a-z0-9-]{0,63}$. The fake emits no response until
 // holds/<name>.release exists; release may precede entry. Markers persist for the
 // run, so use a distinct name for each held invocation. BOSS_FAKE_GH_HOLD_TIMEOUT

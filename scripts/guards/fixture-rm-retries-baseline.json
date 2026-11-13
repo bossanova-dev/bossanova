@@ -86,7 +86,7 @@
   "skills-toolbox/pr-check-state.test.mjs": 2,
   "skills-toolbox/release/release-gate.test.mjs": 1,
   "skills-toolbox/remove-bossd-stop-hooks.test.mjs": 1,
-  "skills-toolbox/repair/receipt-carry.test.mjs": 2,
+  "skills-toolbox/repair/receipt-carry.test.mjs": 1,
   "skills-toolbox/retro/retro-run.test.mjs": 3,
   "skills-toolbox/retro/retro-write.test.mjs": 3,
   "skills-toolbox/review-verdict.test.mjs": 2,

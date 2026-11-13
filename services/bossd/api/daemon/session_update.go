@@ -75,7 +75,7 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	}
 	if len(branches) > 0 {
 		repo, err := s.repos.Get(ctx, sess.RepoID)
-		if err == nil {
+		if err == nil && s.sharedStorageCleanupAllowed(ctx, sess.RepoID) {
 			if reapErr := s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, branches); reapErr != nil {
 				s.logger.Warn().Err(reapErr).
 					Str("session", req.Msg.Id).

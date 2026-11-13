@@ -111,7 +111,7 @@ func (m Model) checklistNamesLevel() bool {
 	if level == pb.ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED || level != a.GetConfidenceLevel() {
 		return false
 	}
-	_, items, ok := attention.ReviewAsk(a.GetParkCodes(), a.GetParkLabel(), a.GetEvidenceUrl() != "", m.session.GetPrDisplayHeadSha())
+	_, items, ok := attention.ReviewAsk(a.GetParkCodes(), a.GetParkLabel(), a.GetAsks(), a.GetEvidenceUrl() != "", m.session.GetPrDisplayHeadSha())
 	return ok && slices.Contains(items, a.GetParkLabel())
 }
 
@@ -131,7 +131,7 @@ func (m Model) neededAsk() string {
 		}
 		return strings.Trim(a.GetSentence(), "“”")
 	case pb.AttentionKind_ATTENTION_KIND_REVIEW:
-		question, items, ok := attention.ReviewAsk(a.GetParkCodes(), a.GetParkLabel(), a.GetEvidenceUrl() != "", m.session.GetPrDisplayHeadSha())
+		question, items, ok := attention.ReviewAsk(a.GetParkCodes(), a.GetParkLabel(), a.GetAsks(), a.GetEvidenceUrl() != "", m.session.GetPrDisplayHeadSha())
 		if !ok {
 			return a.GetSentence()
 		}

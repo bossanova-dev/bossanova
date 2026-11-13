@@ -70,9 +70,10 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
-	viewerApprovals    *ViewerApprovals
-	credentialDevices  *CredentialDeviceService
-	trackerIssueLeases trackerIssueLeases
+	viewerApprovals            *ViewerApprovals
+	credentialDevices          *CredentialDeviceService
+	trackerIssueLeases         trackerIssueLeases
+	providerSessionIDDiscovery providerSessionIDDiscoveryJoin
 
 	evidenceBucketOpener  evidenceBucketOpener
 	validateBranchName    func(context.Context, string) error

@@ -131,6 +131,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 			in.ParkLabel = e.VerifyLabel
 			if s.evidence != nil && e.HeadSHA != "" {
 				in.OpenItems = s.evidence.OpenItems(row.ID, e.HeadSHA)
+				in.ParkAsks = s.evidence.ParkAsks(row.ID, e.HeadSHA)
 			}
 		}
 		s.hydrateAttentionEvidence(row.ID, e.HeadSHA, &in)

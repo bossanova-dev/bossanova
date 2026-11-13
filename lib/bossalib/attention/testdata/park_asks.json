@@ -4,6 +4,7 @@
       "always-human-path"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -16,6 +17,7 @@
       "always-human-path"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -28,6 +30,7 @@
       "human-merge"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Verify passed head abc1234. Merge it when you are ready.",
@@ -38,6 +41,7 @@
       "human-merge"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Verify passed head abc1234. Merge it when you are ready.",
@@ -48,6 +52,7 @@
       "human-review:api-contract"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -60,6 +65,7 @@
       "human-review:api-contract"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -72,6 +78,7 @@
       "human-review:asks"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -84,6 +91,7 @@
       "human-review:asks"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -96,6 +104,7 @@
       "human-review:database"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -108,6 +117,7 @@
       "human-review:database"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -120,6 +130,7 @@
       "human-review:infra"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -132,6 +143,7 @@
       "human-review:infra"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -144,6 +156,7 @@
       "human-review:judge"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -156,6 +169,7 @@
       "human-review:judge"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -168,6 +182,7 @@
       "human-review:policy"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -180,6 +195,7 @@
       "human-review:policy"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -192,6 +208,7 @@
       "human-review:security"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -204,6 +221,7 @@
       "human-review:security"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -216,6 +234,7 @@
       "human-review:size"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -228,6 +247,7 @@
       "human-review:size"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -240,6 +260,7 @@
       "human-review:ui"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -252,6 +273,7 @@
       "human-review:ui"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -264,6 +286,7 @@
       "human-review:unproven"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -276,6 +299,7 @@
       "human-review:unproven"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -288,6 +312,7 @@
       "no-receipt"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -300,6 +325,7 @@
       "no-receipt"
     ],
     "label": "the verify judge (cannot grade itself)",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -312,6 +338,7 @@
       "human-review:ui"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "https://example.com/evidence.mp4",
     "head": "abc123456789",
     "question": "Watch the evidence video, then approve these on head abc1234:",
@@ -325,6 +352,7 @@
       "human-review:database"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "abc123456789",
     "question": "Approve these on head abc1234:",
@@ -338,11 +366,191 @@
       "human-review:ui"
     ],
     "label": "",
+    "asks": null,
     "evidenceUrl": "",
     "head": "",
     "question": "Approve these on this head:",
     "items": [
       "UI change"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "moderate: UI, Shared record",
+    "asks": [
+      "UI",
+      "Shared record"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "UI",
+      "Shared record"
+    ]
+  },
+  {
+    "codes": [
+      "always-human-path",
+      "human-review:ui"
+    ],
+    "label": "low: UI, Persistent write to shared referrer record, Silent clearing of stored referrer de…",
+    "asks": [
+      "UI",
+      "Persistent write to shared referrer record",
+      "Silent clearing of stored referrer details",
+      "Fourth area"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "protected path",
+      "UI",
+      "Persistent write to shared referrer record",
+      "Silent clearing of stored referrer details",
+      "Fourth area"
+    ]
+  },
+  {
+    "codes": [
+      "always-human-path",
+      "human-review:ui"
+    ],
+    "label": "low: UI, Shared record, Clearing stored refer…",
+    "asks": [
+      "UI",
+      "Shared record"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "protected path",
+      "low: UI, Shared record, Clearing stored refer…"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "low: UI, Shared record, Clearing details +1",
+    "asks": [
+      "UI",
+      "Shared record",
+      "Clearing details",
+      "Fourth area"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "UI",
+      "Shared record",
+      "Clearing details",
+      "Fourth area"
+    ]
+  },
+  {
+    "codes": [
+      "always-human-path"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "asks": [
+      "proof-id"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "the verify judge (cannot grade itself)"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "high: UI, Shared record",
+    "asks": [
+      "UI",
+      "Shared record"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "UI",
+      "Shared record"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "low: Data + export +2",
+    "asks": [
+      "Data + export",
+      "Second area",
+      "Third area"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "low: Data + export +2"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "low: UI +9223372036854775808",
+    "asks": [
+      "UI",
+      "Second area"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "low: UI +9223372036854775808"
+    ]
+  },
+  {
+    "codes": [
+      "always-human-path",
+      "human-review:ui"
+    ],
+    "label": "low: Persistent write to shared refe…",
+    "asks": [
+      "config:shared-record"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "protected path",
+      "low: Persistent write to shared refe…"
+    ]
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "low: UI, Record, Third +3",
+    "asks": [
+      "UI",
+      "Record",
+      "Third",
+      "Fourth"
+    ],
+    "evidenceUrl": "",
+    "head": "",
+    "question": "Approve these on this head:",
+    "items": [
+      "low: UI, Record, Third +3"
     ]
   }
 ]

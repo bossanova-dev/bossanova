@@ -83,7 +83,7 @@
   "services/bossd/api/daemon/merge_session_serialize_test.go": 3,
   "services/bossd/api/daemon/note_sync_test.go": 2,
   "services/bossd/api/daemon/operator_merge_test.go": 3,
-  "services/bossd/api/daemon/provider_session_discovery_test.go": 5,
+  "services/bossd/api/daemon/provider_session_discovery_test.go": 1,
   "services/bossd/api/daemon/record_chat_test.go": 1,
   "services/bossd/api/daemon/resume_run_isolation_test.go": 2,
   "services/bossd/api/daemon/resurrect_session_stream_test.go": 4,

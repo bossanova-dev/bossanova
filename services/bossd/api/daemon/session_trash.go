@@ -64,7 +64,7 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 		if err != nil {
 			continue
 		}
-		if !domain.CloudRepoAllowed(ctx, repoID) || !s.trashCleanupAllowed(ctx, repoID) {
+		if !domain.CloudRepoAllowed(ctx, repoID) || !s.sharedStorageCleanupAllowed(ctx, repoID) {
 			continue
 		}
 		if reapErr := s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, branches); reapErr != nil {
@@ -108,12 +108,12 @@ func (s *Server) unsharedBranches(ctx context.Context, repoID, removedID string,
 	return unshared
 }
 
-func (s *Server) trashCleanupAllowed(ctx context.Context, repoID string) bool {
+func (s *Server) sharedStorageCleanupAllowed(ctx context.Context, repoID string) bool {
 	if !domain.IsCloudCommand(ctx) {
 		return true
 	}
 	repo, err := s.repos.Get(ctx, repoID)
-	if err != nil {
+	if err != nil || repo == nil {
 		return false
 	}
 	key, err := trashStorageKey(repo.LocalPath)
@@ -124,14 +124,18 @@ func (s *Server) trashCleanupAllowed(ctx context.Context, repoID string) bool {
 	// sessions or no sessions. Archived rows cannot describe that boundary.
 	repos, err := s.repos.List(ctx)
 	if err != nil {
+		s.logger.Warn().Err(err).Str("repo_id", repoID).
+			Msg("could not check registrations sharing git storage; keeping local branches")
 		return false
 	}
 	for _, protected := range repos {
-		if domain.CloudRepoAllowed(ctx, protected.ID) {
+		if protected.ID == repoID || domain.CloudRepoAllowed(ctx, protected.ID) {
 			continue
 		}
 		other, err := trashStorageKey(protected.LocalPath)
 		if err != nil || key == other {
+			s.logger.Info().Err(err).Str("repo_id", repoID).Str("protected_repo_id", protected.ID).
+				Msg("keeping local branches because git storage is shared or may be shared with a protected registration")
 			return false
 		}
 	}

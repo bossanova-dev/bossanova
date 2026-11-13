@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { loadSkillConfig, validateLocalVerification } from '../skill-config.mjs'
+import { fileStore } from '../ci-wait.mjs'
 import { certify, classify, retry } from './acceptance-retry.mjs'
 
 // Producer shapes from services/boss/api/cli/skills/skill_sync.go: the downgrade
@@ -336,4 +337,149 @@ test('certify CLI rejects missing plans and malformed bases without output, and 
     if (status === 2) assert.equal(existsSync(opts.out), false)
     else assert.deepEqual(JSON.parse(readFileSync(opts.out, 'utf8')).criteria, [])
   }
+})
+
+// Commit `files` ({path: content}) on the fixture's feature branch.
+function seed(repo, files) {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true })
+    writeFileSync(join(repo, path), content)
+  }
+  git(repo, 'add', '.')
+  git(repo, 'commit', '-m', 'seed')
+}
+// Plain scripts, not node:test files: a nested `node --test` reports to this runner, not its exit.
+const passingTest = 'process.exitCode = 0\n'
+const failingTest = 'process.exitCode = 1\n'
+const derivedConfig = JSON.stringify({
+  acceptance: { derivedChecks: [{ glob: '**/*.test.mjs', command: 'node {file}' }] },
+})
+const namedTestPlan = `## Acceptance criteria
+- [ ] the helper works (\`helper.test.mjs\`)
+- [ ] the nested helper works — test in \`pkg/nested.test.mjs\`.
+- [ ] the broken helper works (\`broken.test.mjs\`)
+- [ ] an ambiguous name proves nothing (\`dup.test.mjs\`)
+- [ ] prose only
+`
+
+test('certify derives a configured check from a criterion that names its test file', async (t) => {
+  const opts = certificationFixture(t, namedTestPlan)
+  seed(opts.repo, {
+    '.boss-skills.json': derivedConfig,
+    'tests/helper.test.mjs': passingTest,
+    'pkg/nested.test.mjs': passingTest,
+    'tests/broken.test.mjs': failingTest,
+    'a/dup.test.mjs': passingTest,
+    'b/dup.test.mjs': passingTest,
+  })
+  const result = await certify(opts)
+  assert.deepEqual(
+    result.criteria.map((c) => [c.result, c.check, c.derivedCheck ?? null, c.reason]),
+    [
+      ['met', null, 'node tests/helper.test.mjs', ''],
+      ['met', null, 'node pkg/nested.test.mjs', ''],
+      ['unmet', null, 'node tests/broken.test.mjs', 'exit 1'],
+      ['unchecked', null, null, 'no-check'],
+      ['unchecked', null, null, 'no-check'],
+    ],
+  )
+  for (const c of result.criteria.filter((c) => c.result === 'met'))
+    assert.equal(
+      validateLocalVerification(loadSkillConfig(), `## Local verification\n- ${c.evidence}\n`).ok,
+      true,
+      c.evidence,
+    )
+})
+
+test('certify derives nothing without a configured mapping', async (t) => {
+  const opts = certificationFixture(t, namedTestPlan)
+  seed(opts.repo, { 'tests/helper.test.mjs': passingTest })
+  const result = await certify(opts)
+  assert.deepEqual(
+    result.criteria.map((c) => [c.result, c.reason]),
+    Array(5).fill(['unchecked', 'no-check']),
+  )
+})
+
+const fullGatePlan = `## Acceptance criteria
+- [ ] Lint and the full suite pass — check: \`make lint && make test\`
+- [ ] the slow probe passes — check: \`sleep 600\`
+`
+function recordCiWait(dir, headSha, state) {
+  fileStore({ dir, pr: 12 }).save({
+    version: 1,
+    pr: 12,
+    headSha,
+    readings: [],
+    lastVerdict: { state, reason: 'ok', atMs: 1, trend: 'converging' },
+  })
+}
+function fullGateFixture(t) {
+  const opts = certificationFixture(t, fullGatePlan)
+  seed(opts.repo, {
+    '.boss-skills.json': JSON.stringify({ commands: { lint: 'make lint', test: 'make test' } }),
+  })
+  const ciWaitStateDir = join(opts.root, 'ci-wait')
+  const ran = []
+  const execute = async ({ command, outputFile }) => {
+    ran.push(command)
+    writeFileSync(outputFile, '')
+    return { status: null, timedOut: true }
+  }
+  return { ...opts, ciWaitStateDir, execute, ran, head: git(opts.repo, 'rev-parse', 'HEAD') }
+}
+
+test('certify meets a full-gate criterion from the recorded green CI wait on the head', async (t) => {
+  const opts = fullGateFixture(t)
+  recordCiWait(opts.ciWaitStateDir, opts.head, 'settled')
+  const result = await certify(opts)
+  assert.deepEqual(
+    result.criteria.map((c) => [c.result, c.reason]),
+    [
+      ['met', ''],
+      ['unmet', 'timeout'],
+    ],
+  )
+  assert.deepEqual(opts.ran, ['sleep 600'])
+  assert.equal(result.criteria[0].satisfiedBy, 'ci-wait')
+  assert.equal(
+    validateLocalVerification(
+      loadSkillConfig(),
+      `## Local verification\n- ${result.criteria[0].evidence}\n`,
+    ).ok,
+    true,
+  )
+})
+
+for (const [name, record] of [
+  ['no recorded wait', null],
+  ['a failed wait', (opts) => recordCiWait(opts.ciWaitStateDir, opts.head, 'failed')],
+  [
+    'a green wait on another head',
+    (opts) => recordCiWait(opts.ciWaitStateDir, 'f'.repeat(40), 'settled'),
+  ],
+])
+  test(`certify runs a full-gate criterion itself with ${name}`, async (t) => {
+    const opts = fullGateFixture(t)
+    record?.(opts)
+    const result = await certify(opts)
+    assert.deepEqual(opts.ran, ['make lint && make test', 'sleep 600'])
+    assert.equal(result.criteria[0].result, 'unmet')
+  })
+
+test('a reused review block takes recorded green CI for its full-gate timeout', async (t) => {
+  const opts = fullGateFixture(t)
+  const reviewed = await certify(opts)
+  assert.equal(reviewed.criteria[0].reason, 'timeout')
+  const reuse = join(opts.root, 'verdict.json')
+  writeFileSync(reuse, JSON.stringify({ acceptance: reviewed }))
+  recordCiWait(opts.ciWaitStateDir, opts.head, 'settled')
+  opts.ran.length = 0
+  const result = await certify({ ...opts, reuse })
+  assert.equal(result.reused, true)
+  assert.deepEqual(opts.ran, [])
+  assert.deepEqual(
+    result.criteria.map((c) => c.result),
+    ['met', 'unmet'],
+  )
 })

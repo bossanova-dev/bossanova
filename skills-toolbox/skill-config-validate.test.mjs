@@ -152,3 +152,17 @@ test('buildDefaults rejects non-boolean values and warns on unknown keys', () =>
     'skill-config: fixture.json: buildDefaults.foo is not a known key; ignored',
   ])
 })
+
+test('the acceptance block is a known key whose derived checks must name a file placeholder', () => {
+  const config = structuredClone(DEFAULT_CONFIG)
+  config.acceptance = {
+    derivedChecks: [{ glob: '**/*.test.mjs', command: 'node --test {file}' }],
+    fullGateCommands: ['make lint', 'make test'],
+  }
+  assert.deepEqual(capture(() => validateConfig(config, 'fixture.json')).warnings, [])
+  config.acceptance.derivedChecks[0].command = 'node --test'
+  assert.match(
+    capture(() => validateConfig(config, 'fixture.json')).error?.message ?? '',
+    /acceptance\.derivedChecks/,
+  )
+})

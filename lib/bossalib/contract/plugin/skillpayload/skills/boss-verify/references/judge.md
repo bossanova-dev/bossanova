@@ -15,6 +15,10 @@ security controls. Add only an area whose risk you can ground in a changed file 
 one line. The area label should describe the risk, independently of any project vocabulary.
 If the existing areas already cover the change, return no additions.
 
+When the envelope has `mergePolicy`, its rules outrank these examples. Do not add an area for a
+risk that a rule calls intended, accepted or never to raise, even when it matches an example.
+Still add an area for a risk that a rule says to raise or to hold for a person.
+
 ## Merge policy
 
 When the envelope has `mergePolicy`, its `text` contains the repository's merge rules from the

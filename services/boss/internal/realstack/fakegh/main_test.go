@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -175,8 +174,9 @@ func TestHeldEntrypoint(_ *testing.T) {
 }
 
 func TestHeldResponse(t *testing.T) {
-	for _, preReleased := range []bool{false, true} {
-		t.Run(fmt.Sprintf("preReleased=%t", preReleased), func(t *testing.T) {
+	for _, mode := range []string{"held", "pre-released", "symlink"} {
+		t.Run(mode, func(t *testing.T) {
+			preReleased := mode == "pre-released"
 			args := []string{"pr", "merge", "42"}
 			fixture := writeSpec(t, spec{Responses: []response{{Args: args, Stdout: "merged", Stderr: "detail", ExitCode: 8, Hold: "merge-42"}}})
 			holds := filepath.Join(filepath.Dir(fixture), "holds")
@@ -195,7 +195,14 @@ func TestHeldResponse(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestHeldEntrypoint$") // #nosec G204 -- current test executable
-			cmd.Env = append(os.Environ(), "FAKE_GH_HELD_ENTRYPOINT=1", "BOSS_FAKE_GH_SPEC="+fixture)
+			specPath := fixture
+			if mode == "symlink" {
+				specPath = filepath.Join(t.TempDir(), "gh.json")
+				if err := os.Symlink(fixture, specPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd.Env = append(os.Environ(), "FAKE_GH_HELD_ENTRYPOINT=1", "BOSS_FAKE_GH_SPEC="+specPath)
 			cmd.WaitDelay = time.Second
 			output, err := os.Create(filepath.Join(filepath.Dir(fixture), "stdout"))
 			if err != nil {
@@ -283,6 +290,36 @@ func TestHeldTimeout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run(args, fixture, &stdout, &stderr); code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "fake gh: hold merge-42 expired") {
 		t.Fatalf("run=(%d,%q,%q)", code, &stdout, &stderr)
+	}
+}
+
+// control-boss hands bossd HOME/gh.json, a link to the run root's spec, while its
+// scenario keeper watches and releases holds beside the run root's real file.
+func TestHeldResponseThroughLinkedSpec(t *testing.T) {
+	t.Setenv("BOSS_FAKE_GH_HOLD_TIMEOUT", "5s")
+	args := []string{"pr", "merge", "42"}
+	fixture := writeSpec(t, spec{Responses: []response{{Args: args, Stdout: "merged", Hold: "merge-42"}}})
+	holds := filepath.Join(filepath.Dir(fixture), "holds")
+	if err := os.MkdirAll(holds, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holds, "merge-42.release"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	linked := filepath.Join(home, "gh.json")
+	if err := os.Symlink(fixture, linked); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(args, linked, &stdout, &stderr); code != 0 || stdout.String() != "merged" {
+		t.Fatalf("run=(%d,%q,%q)", code, &stdout, &stderr)
+	}
+	if _, err := os.Stat(filepath.Join(holds, "merge-42.entered")); err != nil {
+		t.Fatalf("entry not beside the linked spec's target: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "holds")); !os.IsNotExist(err) {
+		t.Fatalf("holds created beside the link: %v", err)
 	}
 }
 

@@ -88,6 +88,12 @@ func run(args []string, specPath string, stdout, stderr io.Writer) int {
 var holdName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 func waitHold(specPath, name string, argv []string) error {
+	// The stack exposes its spec through HOME/gh.json, while the scenario
+	// keeper owns the real spec directory. Share that directory's hold markers.
+	specPath, err := filepath.EvalSymlinks(specPath)
+	if err != nil {
+		return fmt.Errorf("resolve fixture: %w", err)
+	}
 	timeout := 15 * time.Minute
 	if value := os.Getenv("BOSS_FAKE_GH_HOLD_TIMEOUT"); value != "" {
 		var err error
@@ -96,8 +102,14 @@ func waitHold(specPath, name string, argv []string) error {
 			return fmt.Errorf("invalid BOSS_FAKE_GH_HOLD_TIMEOUT %q", value)
 		}
 	}
-	dir := filepath.Join(filepath.Dir(specPath), "holds")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// Holds live beside the real spec: control-boss hands bossd HOME/gh.json, a
+	// link to the run root's spec, while its scenario keeper watches the run root.
+	resolved, err := filepath.EvalSymlinks(specPath)
+	if err != nil {
+		return fmt.Errorf("resolve fixture: %w", err)
+	}
+	dir := filepath.Join(filepath.Dir(resolved), "holds")
+	if err = os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create holds: %w", err)
 	}
 	data, err := json.Marshal(struct {

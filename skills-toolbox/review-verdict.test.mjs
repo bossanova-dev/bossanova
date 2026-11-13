@@ -806,6 +806,16 @@ test('acceptance validates independently of review status and survives latest-bl
   )
 })
 
+test('the certification table names a derived check instead of "no check"', () => {
+  const criteria = [
+    { id: 'AC1', result: 'met', check: null, derivedCheck: 'node --test a.test.mjs' },
+  ]
+  const report = reviewVerdict.renderReport(
+    verdictStatus(verdict([], { acceptance: { head: HEAD, tree: BASE, criteria } })),
+  )
+  assert.match(report, /\| AC1 \| met \| node --test a\.test\.mjs \(derived\) \|/)
+})
+
 test('attach-acceptance validates before changing the verdict', () => {
   const acceptance = { head: HEAD, tree: BASE, criteria: [{ id: 'AC1', result: 'met' }] }
   const files = { ...withVerdict(verdict()), '/a.json': JSON.stringify(acceptance) }

@@ -140,6 +140,7 @@ func runSnapshotPublisher(
 	closeIdle func(),
 	interval time.Duration,
 	policy upstream.CloudControlPolicy,
+	targets upstream.CommandTargetObjects,
 	logger zerolog.Logger,
 ) {
 	// attempt sends one snapshot with the given bearer token and returns the
@@ -165,7 +166,7 @@ func runSnapshotPublisher(
 		}
 		pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		snap, err := buildSnapshotForPublish(pubCtx, stores, daemonID, hostname, policy)
+		snap, err := buildSnapshotForPublish(pubCtx, stores, daemonID, hostname, policy, targets)
 		if err != nil {
 			logger.Warn().Err(err).Msg("snapshot publisher: build snapshot")
 			return
@@ -250,8 +251,8 @@ func setGitHubCredentialReporter(cfg *server.Config, src *ghtoken.Source) {
 	}
 }
 
-func buildSnapshotForPublish(ctx context.Context, stores upstream.StreamStores, daemonID, hostname string, policy upstream.CloudControlPolicy) (*bossanovav1.DaemonSnapshot, error) {
-	snap, err := upstream.BuildCloudSnapshot(ctx, stores, policy)
+func buildSnapshotForPublish(ctx context.Context, stores upstream.StreamStores, daemonID, hostname string, policy upstream.CloudControlPolicy, targets upstream.CommandTargetObjects) (*bossanovav1.DaemonSnapshot, error) {
+	snap, err := upstream.BuildCloudSnapshot(ctx, stores, policy, targets)
 	if err != nil {
 		return nil, err
 	}

@@ -15,7 +15,7 @@ import {
   parseExtensionRecord as decodeExtensionRecord,
   reuseExtensionRecord,
 } from './verify-extension-record.mjs'
-import { approvalRecord, approverEntry, approverIn } from './verify-approver.mjs'
+import { approvalDecision, approvalRecord, approverEntry, approverIn } from './verify-approver.mjs'
 export { levelAreasFor, policySurfaceHits } from './verify-path-parks.mjs'
 import {
   judgeEnvelope,
@@ -703,8 +703,8 @@ export const parseExtensionRecord = (value) => decodeExtensionRecord(value, HUMA
  * via?, reason?}`. `labels` is the ticket's current label names, or null when they could not be
  * read. `operator` is the `operatorDecision` for the head the status sits on (null when none).
  *
- * A `needs human:` park is waived only by a head-bound approval record whose codes equal the park's,
- * or by a review approval; removing the needs-human label alone is not bound to a head, so it only
+ * A `needs human:` park is waived by the head-bound approvals whose codes cover it (`covers`), or by
+ * a review approval; removing the needs-human label alone is not bound to a head, so it only
  * ever re-judges a parked defect. A legacy send-back marker on the head revokes every approval of it.
  */
 export function classifyApproval({
@@ -723,12 +723,13 @@ export function classifyApproval({
   const description = typeof status?.description === 'string' ? status.description : ''
   const park = parkOfStatus(status)
   if (park) {
-    // A park names a set; the approval waives exactly that set, and only when every code is known.
+    // A park names a set, waived only when every code is known and covered by an approval.
     // A label after the set is the operator's wording, never part of what is waived.
     if (!park.codes) return { approval: 'none' }
+    const covers = operator?.covers ?? operator?.waives ?? ''
+    if (operator?.decision === 'approved' && park.codes.every((c) => covers.split(',').includes(c)))
+      return { approval: 'policy-park-approved', waive: covers, via: 'operator-approved' }
     const waive = park.codes.join(',')
-    if (operator?.decision === 'approved' && operator.waives === waive)
-      return { approval: 'policy-park-approved', waive, via: 'operator-approved' }
     if (approved) return { approval: 'policy-park-approved', waive, via: 'review-approved' }
     return { approval: 'none' }
   }
@@ -3437,14 +3438,13 @@ export function operatorMarkers(comments) {
 
 /**
  * The operator's decision on `headSha`: the newest marker for that head (latest `at`, the larger id
- * breaking a tie) — `{decision: 'approved', waives, url}`, `{decision: 'sent-back', url}`, or
- * `{decision: null}` when no marker names it. An approve after a legacy send-back of the same
- * head re-approves it.
+ * breaking a tie) — approvalDecision's `{decision: 'approved', waives, covers, url}`, `{decision:
+ * 'sent-back', url}`, or `{decision: null}` when no marker names it. An approve after a legacy
+ * send-back of the same head re-approves it.
  */
 export function operatorDecision(markers, headSha) {
   const newest = newestFor(markers, headSha, (kind) => kind === 'approve' || kind === 'send-back')
-  if (newest?.kind === 'approve')
-    return { decision: 'approved', waives: newest.waives, url: newest.url ?? '' }
+  if (newest?.kind === 'approve') return approvalDecision(markers, newest, parseHumanReasonList)
   if (newest?.kind === 'send-back') return { decision: 'sent-back', url: newest.url ?? '' }
   return { decision: null }
 }

@@ -160,8 +160,9 @@ type CallbackInterestReader interface {
 }
 
 // BuildCloudSnapshot shares the stream's per-object redaction with the unary
-// reconciliation publisher. Ownership comes from the snapshot's local sessions.
-func BuildCloudSnapshot(ctx context.Context, stores StreamStores, policy CloudControlPolicy) (*pb.DaemonSnapshot, error) {
-	c := &StreamClient{stores: stores, cloudControl: policy}
+// reconciliation publisher, including repo-id keying and registration checks.
+// Ownership comes from the snapshot's local sessions.
+func BuildCloudSnapshot(ctx context.Context, stores StreamStores, policy CloudControlPolicy, targets CommandTargetObjects) (*pb.DaemonSnapshot, error) {
+	c := &StreamClient{stores: stores, cloudControl: policy, targetObjects: targets}
 	return c.buildSnapshot(ctx)
 }

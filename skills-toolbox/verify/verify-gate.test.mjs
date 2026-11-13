@@ -93,6 +93,7 @@ import {
   policyMarker,
   remoteSessionMarker,
 } from './verify-gate.mjs'
+import { approverMarker } from './verify-approver.mjs'
 import * as verifyGate from './verify-gate.mjs'
 import { isCannotAssess } from './verify-vocabulary.mjs'
 import { encodeJudgeRecord, parseJudgeRecord } from './verify-judge.mjs'
@@ -7302,7 +7303,7 @@ test('judge: a waiver handed over for one head is dropped when another head is j
   assert.equal(x.verdict, 'human')
 })
 
-test('approval: a record binds to its head, the exact parked codes and a trusted author', async () => {
+test('approval: a record binds to its head, codes covering the park and a trusted author', async () => {
   const run = async (comments, statuses = parkedHuman('partial-build')) => {
     const w = world({ statuses, comments })
     const r = await approval(
@@ -7318,7 +7319,17 @@ test('approval: a record binds to its head, the exact parked codes and a trusted
   assert.equal(await run([operatorComment(approveMarker(OTHER, ['partial-build']))]), 'none')
   assert.equal(
     await run([operatorComment(approveMarker(HEAD, ['partial-build', 'human-review:ui']))]),
+    'policy-park-approved',
+    'a record waiving every parked code covers the park',
+  )
+  assert.equal(await run([operatorComment(approveMarker(HEAD, ['human-review:ui']))]), 'none')
+  assert.equal(
+    await run(
+      [operatorComment(approveMarker(HEAD, ['partial-build']))],
+      parkedHuman('partial-build,human-review:ui'),
+    ),
     'none',
+    'a parked code no record waives',
   )
   assert.equal(
     await run([operatorComment(approveMarker(HEAD, ['partial-build']), { association: 'NONE' })]),
@@ -7613,6 +7624,79 @@ test('approval: only markers by an author with write access count', async () => 
   assert.equal((await approval({ pr: 7, repo: REPO }, deps(w))).approval, 'policy-park-approved')
 })
 
+test('approval: operator approvals of one head add up, so a re-judge that swaps codes stays approved', async () => {
+  const approvalBy = (kind, head, codes, opts = {}) =>
+    operatorComment(
+      `${approverMarker(kind === 'operator' ? { kind } : { kind, chat: 'chat-1' })}\n\n${approveMarker(head, codes)}`,
+      opts,
+    )
+  const read = async (park, comments, permissions) => {
+    const w = world({ statuses: parkedHuman(park), comments, permissions })
+    return approval({ pr: 7, repo: REPO }, deps(w))
+  }
+  const judgeThenUnproven = (older = {}) => [
+    approvalBy('operator', HEAD, ['human-review:judge'], { msAgo: 120_000, ...older }),
+    approvalBy('operator', HEAD, ['human-review:unproven'], { msAgo: 60_000 }),
+  ]
+
+  // #4364: the judge parked `judge`, then `unproven`, then `judge` again on one head; each park was
+  // approved, and the older approval must still cover the re-raised code.
+  const covered = await read('human-review:judge', judgeThenUnproven())
+  assert.equal(covered.approval, 'policy-park-approved')
+  assert.deepEqual(parseHumanReasonList(covered.waive), [
+    'human-review:judge',
+    'human-review:unproven',
+  ])
+  assert.equal(
+    (await read('human-review:judge,human-review:unproven', judgeThenUnproven())).approval,
+    'policy-park-approved',
+  )
+  assert.equal(
+    (await read('human-review:judge,human-review:security', judgeThenUnproven())).approval,
+    'none',
+    'a code no approval names is still parked',
+  )
+
+  // What must still never count towards the union.
+  for (const [why, comments, permissions] of [
+    [
+      'an approval of another head',
+      judgeThenUnproven().with(
+        0,
+        approvalBy('operator', OTHER, ['human-review:judge'], { msAgo: 120_000 }),
+      ),
+    ],
+    [
+      'a non-operator approver',
+      judgeThenUnproven().with(
+        0,
+        approvalBy('agent-chat', HEAD, ['human-review:judge'], { msAgo: 120_000 }),
+      ),
+    ],
+    ['an untrusted association', judgeThenUnproven({ association: 'NONE' })],
+    ['a read-only author', judgeThenUnproven({ login: 'reader' }), { reader: 'read' }],
+    [
+      'an approval a later send-back revoked',
+      [...judgeThenUnproven(), operatorComment(sendBackMarker(HEAD), { msAgo: 90_000 })],
+    ],
+  ])
+    assert.equal((await read('human-review:judge', comments, permissions)).approval, 'none', why)
+
+  // The re-judge waives the whole union: a head re-entering on a park of one approved code passes
+  // the other approved code it raises instead of parking it again.
+  const swapped = [
+    approvalBy('operator', HEAD, ['partial-build'], { msAgo: 120_000 }),
+    approvalBy('operator', HEAD, ['no-receipt'], { msAgo: 60_000 }),
+  ]
+  const j = await judge(
+    { pr: 7, repo: REPO },
+    deps(
+      world({ statuses: parkedHuman('no-receipt'), pr: { body: PARTIAL_BODY }, comments: swapped }),
+    ),
+  )
+  assert.deepEqual([j.verdict, j.reason], ['pass', 'approved'])
+})
+
 test('operatorMarkers keeps only well-formed trusted last-line markers; operatorDecision takes the newest', () => {
   const c = (body, extra = {}) => ({
     id: 1,
@@ -7650,7 +7734,7 @@ test('operatorMarkers keeps only well-formed trusted last-line markers; operator
   const m = (kind, head, at, id, waives) => ({ kind, head, at, id, waives, url: `u${id}` })
   assert.deepEqual(
     operatorDecision([m('approve', HEAD, 1, 1, 'partial-build')], HEAD.toUpperCase()),
-    { decision: 'approved', waives: 'partial-build', url: 'u1' },
+    { decision: 'approved', waives: 'partial-build', covers: 'partial-build', url: 'u1' },
   )
   assert.deepEqual(
     operatorDecision([m('send-back', HEAD, 2, 1), m('approve', HEAD, 1, 9, 'partial-build')], HEAD),
@@ -7658,7 +7742,7 @@ test('operatorMarkers keeps only well-formed trusted last-line markers; operator
   )
   assert.deepEqual(
     operatorDecision([m('approve', HEAD, 2, 2, 'partial-build'), m('send-back', HEAD, 2, 1)], HEAD),
-    { decision: 'approved', waives: 'partial-build', url: 'u2' },
+    { decision: 'approved', waives: 'partial-build', covers: 'partial-build', url: 'u2' },
     'the larger id breaks a timestamp tie',
   )
   assert.deepEqual(operatorDecision([m('send-back', OTHER, 9, 9)], HEAD), { decision: null })

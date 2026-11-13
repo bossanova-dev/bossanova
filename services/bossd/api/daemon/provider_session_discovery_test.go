@@ -123,13 +123,20 @@ func TestBackgroundProviderSessionIDDiscoveryPersistsDelayedCodexID(t *testing.T
 		AgentName:      "codex",
 	}, "/tmp/worktree", "", launchedAt, resolver, nil)
 
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.WaitForBackgroundProviderSessionIDDiscovery(waitCtx)
+	if err := waitCtx.Err(); err != nil {
+		t.Fatalf("join background discovery: %v", err)
+	}
+
 	select {
 	case got := <-store.updated:
 		if got != "codex-real-session" {
 			t.Fatalf("provider session id = %q, want codex-real-session", got)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for background provider session id persistence")
+	default:
+		t.Fatal("background provider session id was not persisted")
 	}
 
 	calls := resolver.snapshotCalls()
@@ -176,12 +183,14 @@ func TestBackgroundProviderSessionIDDiscoverySkipsWriteWhenAlreadyBound(t *testi
 		AgentName:      "codex",
 	}, "/tmp/worktree", "", time.Now(), resolver, nil)
 
-	select {
-	case got := <-store.updated:
-		t.Fatalf("wrote provider session id %q over an already-bound id (must never overwrite)", got)
-	case <-time.After(200 * time.Millisecond):
-		// No write within a comfortable multiple of the poll interval: the
-		// guard held and the goroutine returned without clobbering.
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.WaitForBackgroundProviderSessionIDDiscovery(waitCtx)
+	if err := waitCtx.Err(); err != nil {
+		t.Fatalf("join background discovery: %v", err)
+	}
+	if len(store.updated) != 0 {
+		t.Fatal("wrote a provider session id over an already-bound id")
 	}
 }
 
@@ -233,6 +242,30 @@ func TestBackfillCodexProviderSessionIDPersistsBeforeAttachResume(t *testing.T) 
 // appeared yet.
 type reasonOnlyInteractiveSessionResolver struct {
 	reason string
+}
+
+type panickingInteractiveSessionResolver struct{}
+
+func (panickingInteractiveSessionResolver) ResolveInteractiveSessionID(context.Context, string, string, string, time.Time, time.Time, bool, int) (interactiveSessionResolution, error) {
+	panic("provider discovery resolver panic")
+}
+
+func TestBackgroundProviderSessionIDDiscoveryRecoversResolverPanic_ChatPicker_AC249801__Sessions_AC249801(t *testing.T) {
+	sink := &lineSignalWriter{want: "recovered from panic in goroutine", done: make(chan struct{})}
+	s := &Server{logger: zerolog.New(sink)}
+	s.discoverProviderSessionIDInBackground(&domain.AgentChat{
+		AgentSessionID: "panic-session", AgentName: "codex",
+	}, "/tmp/worktree", "", time.Now(), panickingInteractiveSessionResolver{}, nil)
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.WaitForBackgroundProviderSessionIDDiscovery(waitCtx)
+	if err := waitCtx.Err(); err != nil {
+		t.Fatalf("join background discovery after panic: %v", err)
+	}
+	if entry := warnEntryWithMessage(sink.contents(), "recovered from panic in goroutine"); entry == nil {
+		t.Fatalf("no structured panic recovery log; log was:\n%s", sink.contents())
+	}
 }
 
 func (r reasonOnlyInteractiveSessionResolver) ResolveInteractiveSessionID(_ context.Context, _, _, _ string, _, _ time.Time, _ bool, _ int) (interactiveSessionResolution, error) {
@@ -297,10 +330,11 @@ func TestBackgroundProviderSessionIDDiscoveryLogsResolverReasonOnTimeout(t *test
 		AgentName:      "codex",
 	}, "/tmp/worktree", "", time.Now(), reasonOnlyInteractiveSessionResolver{reason: reason}, nil)
 
-	select {
-	case <-sink.done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("no discovery timeout warning was logged; log was:\n%s", sink.contents())
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.WaitForBackgroundProviderSessionIDDiscovery(waitCtx)
+	if err := waitCtx.Err(); err != nil {
+		t.Fatalf("join background discovery: %v", err)
 	}
 
 	// Assert the structured field, not merely the substring: an operator (and
@@ -377,6 +411,14 @@ func newForegroundDiscoveryTimeoutFixture(t *testing.T, resolverReason string) *
 		&fakeTmuxClient{available: true},
 		&fakeInteractiveSessionResolver{reason: resolverReason})
 	srv.logger = zerolog.New(sink)
+	t.Cleanup(func() {
+		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.WaitForBackgroundProviderSessionIDDiscovery(waitCtx)
+		if err := waitCtx.Err(); err != nil {
+			t.Errorf("join background discovery during cleanup: %v", err)
+		}
+	})
 
 	if err := srv.ensureChatTmuxSession(context.Background(), chat, false); err != nil {
 		t.Fatalf("ensureChatTmuxSession: %v", err)
@@ -568,17 +610,15 @@ func TestSendChatMessage_FirstLivePaneSendBindsCodexRollout(t *testing.T) {
 		t.Fatal("Delivered = false, want true")
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	var bound *string
-	for time.Now().Before(deadline) {
-		store.mu.Lock()
-		bound = store.updateProvider
-		store.mu.Unlock()
-		if bound != nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.WaitForBackgroundProviderSessionIDDiscovery(waitCtx)
+	if err := waitCtx.Err(); err != nil {
+		t.Fatalf("join first-send discovery: %v", err)
 	}
+	store.mu.Lock()
+	bound := store.updateProvider
+	store.mu.Unlock()
 	if bound == nil || *bound != "codex-rollout-1" {
 		t.Fatalf("provider session id = %v, want codex-rollout-1 bound after the first send", bound)
 	}
@@ -587,4 +627,15 @@ func TestSendChatMessage_FirstLivePaneSendBindsCodexRollout(t *testing.T) {
 			t.Fatalf("resolver called with %+v, want fd resolution on pane %d in %s only", call, panePID, sess.WorktreePath)
 		}
 	}
+}
+
+func TestWaitForBackgroundProviderSessionIDDiscoveryNoopWithoutDiscovery(t *testing.T) {
+	s := &Server{}
+	s.WaitForBackgroundProviderSessionIDDiscovery(context.Background())
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.WaitForBackgroundProviderSessionIDDiscovery(cancelledCtx)
+
+	s.discoverProviderSessionIDInBackground(&domain.AgentChat{AgentSessionID: "no-resolver"}, "/tmp/worktree", "", time.Now(), nil, nil)
+	s.WaitForBackgroundProviderSessionIDDiscovery(context.Background())
 }

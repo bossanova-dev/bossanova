@@ -138,6 +138,9 @@ type Input struct {
 	ParkCodes []string
 	// ParkLabel is the operator-written path label of a verify park, when known.
 	ParkLabel string
+	// ParkAsks is the full ordered ask names the verify park note recorded
+	// for the current head. The evidence reader bounds this list.
+	ParkAsks []string
 
 	QuestionChatID string
 	QuestionText   string
@@ -472,7 +475,14 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 	}
 	var proofURL string
 	var loweredBy []string
-	asks := labelAsks(in.ParkLabel)
+	// No apiversion bump: asks (served since 2026-11-01 and cleared for older
+	// pins) gains complete names and areas past the third; every client iterates
+	// it. A down-convert cannot restore a cut name a client would want. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	asks := slices.Clone(in.ParkAsks)
+	if len(asks) == 0 {
+		asks = labelAsks(in.ParkLabel)
+	}
 	if in.Proof != nil {
 		proofURL = in.Proof.URL
 		loweredBy = slices.Clone(in.Proof.LoweredBy[:min(3, len(in.Proof.LoweredBy))])

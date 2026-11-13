@@ -115,8 +115,10 @@ report selection: the most recently updated writer-authored `<!-- bs-review -->`
 valid findings trailer. It also drops stable ids with trusted verify-resolution entries marked `resolved`, only when
 the marker head is an ancestor of `HEAD` and the finding assertion head is an ancestor of that
 marker. Non-writer markers and `present` or `unsure` entries discharge nothing.
-A fix counts only when its commit is an ancestor of `HEAD`; missing or rewritten commits keep
-the finding carried. An unreadable `HEAD` is a read failure. A read failure exits `1`; never
+A posted fix counts when its commit, or a patch-equivalent of it, is in `HEAD`. Missing or
+folded historical fixes keep the finding carried. Local outcomes remain valid after a required
+rebase or fold when `blockersHead` is the head of a trusted posted blocker set on this PR with
+exactly the same ids, `pushedHead` equals `HEAD`, and the fix reaches `HEAD`. An unreadable `HEAD` is a read failure. A read failure exits `1`; never
 replace it with an empty array.
 
 Pass `--carry-findings "$CARRY_FINDINGS_FILE"` on every receipt-carry invocation, including the

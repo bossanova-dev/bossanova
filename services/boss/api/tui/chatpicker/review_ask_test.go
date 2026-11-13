@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestNeededReviewMatchesSharedAsks_ChatPicker_AC216001(t *testing.T) {
+func TestNeededReviewMatchesSharedAsks_ChatPicker_AC216001_AC235901(t *testing.T) {
 	data, err := os.ReadFile("../../../../../lib/bossalib/attention/testdata/park_asks.json")
 	if err != nil {
 		t.Fatal(err)
@@ -21,6 +21,7 @@ func TestNeededReviewMatchesSharedAsks_ChatPicker_AC216001(t *testing.T) {
 	var rows []struct {
 		Codes       []string `json:"codes"`
 		Label       string   `json:"label"`
+		Asks        []string `json:"asks"`
 		EvidenceURL string   `json:"evidenceUrl"`
 		Head        string   `json:"head"`
 		Question    string   `json:"question"`
@@ -31,7 +32,7 @@ func TestNeededReviewMatchesSharedAsks_ChatPicker_AC216001(t *testing.T) {
 	}
 	for _, r := range rows {
 		m := newTestModel(nil, context.Background(), "s", "")
-		m.session = &pb.Session{PrDisplayHeadSha: r.Head, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, ParkCodes: r.Codes, ParkLabel: r.Label, EvidenceUrl: r.EvidenceURL}}
+		m.session = &pb.Session{PrDisplayHeadSha: r.Head, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, ParkCodes: r.Codes, ParkLabel: r.Label, Asks: r.Asks, EvidenceUrl: r.EvidenceURL}}
 		lines := []string{r.Question}
 		for _, item := range r.Items {
 			lines = append(lines, "  • "+item)

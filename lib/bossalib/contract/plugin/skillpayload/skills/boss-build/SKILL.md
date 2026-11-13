@@ -958,6 +958,8 @@ below, and remove that file otherwise. The gate reads it on every later ask, so 
   The helper reuses the review's block only when its tree and criterion ids/checks match;
   otherwise it certifies fresh, including with `BOSS_BS_REVIEW=0` or a replacement review that
   omits the block. Each `met` criterion's `evidence` is its `## Local verification` bullet.
+  A criterion without a command runs the repo's `acceptance.derivedChecks` runner for a test file
+  it names; a full-gate criterion is met by this head's recorded green CI wait.
   `unmet` and `unchecked` are unmet in-scope criteria for PARTIAL, with the helper's `reason`.
   Certification folds classify/retry into the result: a passing scratch-tree retry leaves the
   pushed head, CI and reviewed head alone, follows the normal REVIEW_READY receipt and state

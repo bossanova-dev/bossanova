@@ -152,6 +152,7 @@ type headState struct {
 	// openItems is what the park note recorded as keeping the head's PR
 	// checklist open; nil when no note names this head.
 	openItems []string
+	parkAsks  []string
 	// sentBack is true when the operator's newest record on the head is a
 	// legacy send-back, which verify's merge refuses until an approval.
 	sentBack  bool
@@ -275,7 +276,7 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 	// even at the same head; only a new head on the same PR keeps latest.
 	samePR := st != nil && st.pr == obs.PRNumber
 	replaced := !samePR || !sameHead(st.head, head)
-	invalidated := st != nil && replaced && (st.entry != nil || st.proof != nil || !samePR && st.latest != nil)
+	invalidated := st != nil && replaced && (st.entry != nil || st.proof != nil || len(st.parkAsks) > 0 || !samePR && st.latest != nil)
 	if replaced {
 		next := &headState{head: head, pr: obs.PRNumber}
 		if samePR {
@@ -320,7 +321,17 @@ type headComments struct {
 	proof     *ProofRecord
 	latest    *ProofRecord
 	openItems []string
+	parkAsks  []string
 	sentBack  bool
+}
+
+func (found *headComments) readParkNote(body, head string) {
+	if items, ok := ParseOpenItems(body); found.openItems == nil && ok && sameHead(items.Head, head) {
+		found.openItems = items.Items
+	}
+	if asks, ok := ParseParkAsks(body); found.parkAsks == nil && ok && sameHead(asks.Head, head) {
+		found.parkAsks = asks.Asks
+	}
 }
 
 // schedule marks a read of st's head as started at now and returns its
@@ -355,11 +366,12 @@ func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq
 		if cur.entry != nil && entry != nil {
 			changed = cur.entry.Summary != entry.Summary || !cur.entry.RecordedAt.Equal(entry.RecordedAt)
 		}
-		changed = changed || !cur.proof.equal(found.proof) || !cur.latest.equal(found.latest) || !slices.Equal(cur.openItems, found.openItems) || cur.sentBack != found.sentBack
+		changed = changed || !cur.proof.equal(found.proof) || !cur.latest.equal(found.latest) || !slices.Equal(cur.openItems, found.openItems) || !slices.Equal(cur.parkAsks, found.parkAsks) || cur.sentBack != found.sentBack
 		cur.proof = found.proof
 		cur.latest = found.latest
 		cur.entry = entry
 		cur.openItems = found.openItems
+		cur.parkAsks = found.parkAsks
 		cur.sentBack = found.sentBack
 	}
 	onChange := r.onChange
@@ -457,9 +469,7 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 				latest, latestAt = &line, c.WrittenAt
 			}
 		}
-		if items, ok := ParseOpenItems(c.Body); found.openItems == nil && ok && sameHead(items.Head, head) {
-			found.openItems = items.Items
-		}
+		found.readParkNote(c.Body, head)
 		rec, ok := ParseOperatorRecord(c.Body)
 		if !ok || !sameHead(rec.Head, head) || !vcs.IsTrustedAuthorAssociation(c.AuthorAssociation) ||
 			slices.ContainsFunc(rec.Waives, unknownParkCode) {
@@ -540,6 +550,20 @@ func (r *Reader) OpenItems(sessionID, head string) []string {
 		return nil
 	}
 	return slices.Clone(st.openItems)
+}
+
+// ParkAsks returns full ordered ask names only for the session's current head.
+func (r *Reader) ParkAsks(sessionID, head string) []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.sessions[sessionID]
+	if st == nil || !sameHead(st.head, head) {
+		return nil
+	}
+	return slices.Clone(st.parkAsks)
 }
 
 // sameHead compares two commit SHAs case-insensitively.

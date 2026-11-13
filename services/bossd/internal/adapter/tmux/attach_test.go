@@ -324,6 +324,67 @@ func TestTerminalAttach_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestTerminalAttach_ForwardsShiftEnterAsExtendedKey(t *testing.T) {
+	skipIfNoTmux(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+
+	c, cmdFactory := newTestTmuxClient(t)
+	name := uniqueSessionName("boss-attach-shift-enter")
+	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
+
+	// Request modifyOtherKeys mode 2 after session and attach options have
+	// been configured, as an agent does when its composer starts. READY
+	// orders that request and raw input setup before we send the key.
+	if err := c.NewSession(ctx, NewSessionOpts{
+		Name:    name,
+		WorkDir: t.TempDir(),
+		Command: []string{"sh", "-c", "stty -icanon -echo; read start; printf '\\033[>4;2m'; echo READY; exec cat -v"},
+	}); err != nil {
+		t.Fatalf("create tmux session: %v", err)
+	}
+	att, err := NewTerminalAttach(ctx, AttachConfig{
+		AttachID: "shift-enter", SessionName: name, Cols: 80, Rows: 24, TmuxClient: c, CommandFactory: cmdFactory,
+	})
+	if err != nil {
+		t.Fatalf("NewTerminalAttach: %v", err)
+	}
+	t.Cleanup(func() { _ = att.Close() })
+
+	if err := att.Input([]byte("\n")); err != nil {
+		t.Fatalf("start pane key-mode request: %v", err)
+	}
+	var seen bytes.Buffer
+	readUntil := func(matches func(string) bool) {
+		t.Helper()
+		for !matches(seen.String()) {
+			select {
+			case chunk, ok := <-att.Output():
+				if !ok {
+					t.Fatalf("output closed before expected pane output; got=%q", seen.String())
+				}
+				if chunk.Lost {
+					t.Fatal("unexpected output loss")
+				}
+				seen.Write(chunk.Data)
+			case <-ctx.Done():
+				t.Fatalf("timed out waiting for pane output; got=%q", seen.String())
+			}
+		}
+	}
+	readUntil(func(output string) bool { return strings.Contains(output, "READY") })
+	seen.Reset()
+	if err := att.Input([]byte("\x1b[13;2u")); err != nil {
+		t.Fatalf("Input: %v", err)
+	}
+	readUntil(func(output string) bool {
+		// tmux >= 3.5 uses csi-u; older versions preserve Shift in xterm form.
+		return strings.Contains(output, "^[[13;2u") || strings.Contains(output, "^[[27;2;13~")
+	})
+	t.Logf("pane echoed Shift+Enter: %q", seen.String())
+}
+
 func TestTerminalAttach_Resize(t *testing.T) {
 	skipIfNoTmux(t)
 

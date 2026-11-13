@@ -91,12 +91,10 @@ func (c *StreamClient) repoCloudControl(ctx context.Context) (map[string]pb.Clou
 // cloudControlRepoIDs lists the registered repositories by database id, the
 // key grants, sessions and bosso's command targets use. The snapshot's RepoIds
 // are origin URLs for webhook routing, so they cannot key cloud control.
+// Without a target resolver, publish no modes and fail closed.
 func (c *StreamClient) cloudControlRepoIDs(ctx context.Context) ([]string, error) {
 	if c.targetObjects == nil {
-		if c.stores.Repos == nil {
-			return nil, nil
-		}
-		return c.stores.Repos.SnapshotRepoIDs(ctx)
+		return nil, nil
 	}
 	repos, err := c.targetObjects.ListTargetRepos(ctx)
 	if err != nil {

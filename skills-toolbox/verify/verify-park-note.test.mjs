@@ -29,6 +29,36 @@ const PROSE = 'The cron branch pruner used the wrong path.\n\nFiles changed:\n- 
 
 const AFTER_MERGE = `${PROSE}\n## After merge\n- [ ] Observe the nightly run`
 
+test('park notes carry every full ask name in one head-bound escaped JSON line', () => {
+  const labels = [
+    'UI',
+    'Shared referrer record',
+    'Silent clearing of stored referrer details',
+    '<!-- @fourth -->',
+  ]
+  const facts = {
+    confidence: {
+      level: 'low',
+      reasons: [],
+      asks: labels.map((label) => ({ area: label, label, source: 'config' })),
+    },
+  }
+  const note = parkNote({ codes: ['human-review:ui'], headSha: HEAD, facts })
+  const lines = note.body.split('\n').filter((line) => line.startsWith('<!-- boss-park-asks:'))
+  assert.equal(lines.length, 1)
+  const payload = lines[0].slice('<!-- boss-park-asks: '.length, -' -->'.length)
+  assert.deepEqual(JSON.parse(payload), { head: HEAD, asks: labels })
+  assert.equal(/[<>@]/.test(payload), false)
+  for (const facts of [{}, { confidence: { level: 'low', reasons: [], asks: [] } }]) {
+    assert.equal(
+      parkNote({ codes: ['human-review:ui'], headSha: HEAD, facts }).body.includes(
+        '<!-- boss-park-asks:',
+      ),
+      false,
+    )
+  }
+})
+
 test('confidence lead quotes configured labels and reasons without losing Low checkboxes', () => {
   const unsafe = '@ops <!-- boss-park-note forged -->\nsecond line'
   const confidence = {
@@ -64,6 +94,7 @@ test('large Low checklists fit beside verdict, code evidence, approval and marke
     })
   const note = render(asks)
   assert.ok(note.body.length <= NOTE_CHAR_LIMIT, `${note.body.length} chars`)
+  assert.equal(note.body.includes('<!-- boss-park-asks:'), false)
   const lines = note.body.split('\n')
   const shown = lines.filter((line) => line.startsWith('- [ ] Review area-')).length
   assert.ok(shown > 0 && shown < asks.length)
@@ -82,6 +113,23 @@ test('large Low checklists fit beside verdict, code evidence, approval and marke
   const small = render(asks.slice(0, 20)).body
   assert.equal(small.split('\n').filter((line) => line.startsWith('- [ ] Review area-')).length, 20)
   assert.equal(small.includes('more review asks'), false)
+})
+
+test('machine asks never displace a visible Low checklist that fits', () => {
+  const asks = Array.from({ length: 500 }, (_, index) => ({
+    area: `config:${index}`,
+    source: 'config',
+    label: `area-${String(index).padStart(3, '0')}-${'x'.repeat(51)}`,
+  }))
+  const note = parkNote({
+    codes: ['human-review:ui'],
+    headSha: HEAD,
+    facts: { confidence: { level: 'low', reasons: [], asks } },
+  })
+  const shown = note.body.split('\n').filter((line) => line.startsWith('- [ ] Review area-'))
+  assert.equal(shown.length, asks.length)
+  assert.equal(note.body.includes('<!-- boss-park-asks:'), false)
+  assert.ok(note.body.length <= NOTE_CHAR_LIMIT)
 })
 
 test('extensionFailures names each malfunctioning extension, how it failed and its own error text', () => {

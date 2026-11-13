@@ -1,8 +1,10 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -285,6 +287,7 @@ func (s *cleanupRepoStore) List(context.Context) ([]*models.Repo, error) {
 	for _, repo := range s.repos {
 		repos = append(repos, repo)
 	}
+	slices.SortFunc(repos, func(a, b *models.Repo) int { return cmp.Compare(a.ID, b.ID) })
 	return repos, nil
 }
 func (s *cleanupRepoStore) Update(context.Context, string, db.UpdateRepoParams) (*models.Repo, error) {

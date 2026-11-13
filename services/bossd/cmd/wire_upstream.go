@@ -561,7 +561,7 @@ func (w *daemonWiring) wireUpstream() {
 					Statuses:      snapshotStatuses,
 					Interests:     snapshotInterests,
 					AgentAccounts: snapshotAgentAccounts,
-				}, cfg.DaemonID, cfg.Hostname, reRegister, closeIdle, interval, cloudControl, log.Logger)
+				}, cfg.DaemonID, cfg.Hostname, reRegister, closeIdle, interval, cloudControl, targets, log.Logger)
 			}
 		}
 

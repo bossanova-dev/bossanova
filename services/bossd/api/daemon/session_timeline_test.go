@@ -47,6 +47,7 @@ func (s stubEvidence) LatestProof(string) (evidence.ProofRecord, bool) {
 }
 
 func (s stubEvidence) OpenItems(string, string) []string { return nil }
+func (s stubEvidence) ParkAsks(string, string) []string  { return nil }
 
 func (s stubEvidence) SentBack(string, string) bool { return false }
 

@@ -572,12 +572,7 @@ func (c *Client) bindDetachKeys(ctx context.Context, sessionName string) {
 		_ = cmd.Run()
 	}
 
-	// Enable extended-keys in "always" mode so modifier+key combos (e.g.
-	// Shift+Enter for multiline input in Claude Code) are forwarded to the
-	// application unconditionally. The default "on" mode only forwards
-	// extended keys to panes that explicitly request them via the kitty
-	// keyboard protocol activation sequence, which Claude Code does not
-	// send. "always" bypasses that requirement.
+	// Prefer unconditional modifier+key forwarding, such as Shift+Enter.
 	cmd := c.cmdFunc(ctx, "tmux", "set-option", "-t", sessionName,
 		"extended-keys", "always")
 	_ = cmd.Run()
@@ -589,12 +584,15 @@ func (c *Client) bindDetachKeys(ctx context.Context, sessionName string) {
 		"terminal-features", ",xterm*:extkeys")
 	_ = cmd.Run()
 
-	// Set extended-keys-format to csi-u so Claude Code receives CSI-u
-	// sequences (e.g. \x1b[13;2u for Shift+Enter) instead of xterm format.
-	// Claude Code's input handling expects CSI-u encoding for modifier keys.
+	// Prefer CSI-u, the encoding Claude Code expects for modified keys.
 	cmd = c.cmdFunc(ctx, "tmux", "set-option", "-g",
 		"extended-keys-format", "csi-u")
-	_ = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		// Before tmux 3.5, "always" ignores application key-mode requests
+		// after pane creation. "on" lets the agent enable extended keys.
+		cmd = c.cmdFunc(ctx, "tmux", "set-option", "-s", "extended-keys", "on")
+		_ = cmd.Run()
+	}
 
 	// Enable mouse mode so trackpad/scroll-wheel scrolling works like a
 	// normal terminal — scrolling up enters copy mode automatically and

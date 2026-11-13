@@ -203,7 +203,7 @@ function fakeSpawn(receipts, posts) {
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'receipt-carry-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
   const { git, commit } = gitIn(dir)
   git('init', '--initial-branch=main')
   git('config', 'gc.auto', '0')
@@ -927,3 +927,27 @@ test('an entry with an empty subject ends the lookback', (t) => {
   assert.deepEqual(report.reasons, ['start-head-not-receipted'])
   assert.equal(report.baselineSha, undefined)
 })
+
+for (const blocked of [false, true])
+  test(`replayed ${blocked ? 'blocked' : 'post'} reports stamp the real pushed head`, (t) => {
+    const f = fixture(t)
+    f.onMain('base.txt', 'advance\n', 'advance')
+    f.git('rebase', 'main')
+    const head = f.commit('fix.txt', 'fix\n', 'repair')
+    const carryFindings = join(f.dir, 'carried.json')
+    writeFileSync(carryFindings, '[]')
+    const first = f.run(head)
+    assert.equal(first.review.replayed, true)
+    assert.notEqual(first.review.head, head)
+    const [file] = first.review.verdictFiles
+    f.verdict(file, {
+      base: first.review.base,
+      head: first.review.head,
+      findings: [{ ...BLOCKER, severity: blocked ? 'P1' : 'P3' }],
+    })
+    const report = f.run(head, [file], {}, f.start, { carryFindings })
+    assert.equal(report.decision, blocked ? DECISIONS.BLOCKED : DECISIONS.POST)
+    const parsed = parseReportFindings(readFileSync(report.reportFile, 'utf8'))
+    assert.equal(parsed.head, head)
+    assert.equal(parsed.findings[0].assertionHead, head)
+  })

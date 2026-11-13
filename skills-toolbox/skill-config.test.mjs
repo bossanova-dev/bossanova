@@ -78,6 +78,7 @@ import {
   mergedListItems,
   parseAcceptanceCriteria,
   parsePremises,
+  parsePlanCheckItems,
   validateVerifyOnlyEvidence,
   validateLocalVerification,
   classifyCheckCommand,
@@ -5472,4 +5473,29 @@ test('ci.dependabot validates named path-scoped merge gates', () => {
       JSON.stringify(dependabot),
     )
   }
+})
+
+test('parsePlanCheckItems keeps After merge items out of the criteria certification runs', () => {
+  const plan = [
+    '## Acceptance criteria',
+    '',
+    '- [ ] the suite passes — check: `node --test a.test.mjs`',
+    '',
+    '## After merge',
+    '',
+    '- [ ] the nightly sweep fires once on main',
+    '',
+    '### Done means',
+    '',
+    '- [ ] the gate passes — check: `make lint`',
+  ].join('\n')
+  const parsed = parsePlanCheckItems(DEFAULT_CONFIG, plan)
+  assert.deepEqual(
+    parsed.criteria.map((c) => c.check),
+    ['node --test a.test.mjs', 'make lint'],
+  )
+  assert.deepEqual(
+    parsed.afterMerge.map((c) => c.text),
+    ['the nightly sweep fires once on main'],
+  )
 })

@@ -182,7 +182,10 @@ checks it). Some things help the implementer and the guards:
   `## Planning`; the contract guard resolves root-dependent checks only in that repository.
 - **One ticket, one PR.** If the plan enumerates two or more independently mergeable tasks, it is an
   epic — re-triage.
-- **Acceptance criteria** as checkboxes (`- [ ] …`), each demonstrable by a test or gate. A criterion
+- **Acceptance criteria** as checkboxes (`- [ ] …`), each ending in
+  `` — check: `<runnable command>` `` that runs the test or gate proving it. Naming a test file is not
+  enough: the build certifies a criterion only by running its command, and the contract guard blocks
+  a criterion without one (`criterion-without-check`). A criterion
   that is only true because a file needed no change is written
   `` - [ ] (verify-only) <the claim> — check: `<runnable command>` `` — the command in backticks, each
   `;`/`|`/`&&` segment starting with something runnable (not a bare path, not prose).

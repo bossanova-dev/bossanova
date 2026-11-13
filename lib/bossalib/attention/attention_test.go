@@ -48,6 +48,29 @@ func withParks(in attention.Input, codes ...string) attention.Input {
 	return in
 }
 
+func TestCompute_ParkNoteAsksTakePrecedence(t *testing.T) {
+	in := withParks(readyPR(), "human-review:ui")
+	in.ParkLabel = "low: UI, Shared record, Clearing stored refer…"
+	in.ParkAsks = []string{"UI", "Shared record", "Clearing stored referrer details", "Fourth area"}
+	in.Proof = &attention.Proof{Asks: []string{"proof-id"}}
+	if got := attention.Compute(in).GetAsks(); !slices.Equal(got, in.ParkAsks) {
+		t.Fatalf("asks = %q", got)
+	}
+	got := attention.Compute(in).GetAsks()
+	got[0] = "mutated"
+	if in.ParkAsks[0] != "UI" {
+		t.Fatal("asks alias input")
+	}
+	in.ParkAsks = nil
+	if got := attention.Compute(in).GetAsks(); !slices.Equal(got, []string{"UI", "Shared record"}) {
+		t.Fatalf("label fallback = %q", got)
+	}
+	in.ParkLabel = ""
+	if got := attention.Compute(in).GetAsks(); !slices.Equal(got, []string{"proof-id"}) {
+		t.Fatalf("proof fallback = %q", got)
+	}
+}
+
 // reviewActions is a sign-off park's REVIEW: blockedActions, then the MERGE
 // that records the approval and merges.
 func reviewActions(video bool) []pb.AttentionAction {

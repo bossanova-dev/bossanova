@@ -23,7 +23,7 @@ func TestReviewAsk(t *testing.T) {
 		{"unknown", []string{"unknown"}, "", false, "", "", nil, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			q, items, ok := ReviewAsk(tt.codes, tt.label, tt.evidence, tt.head)
+			q, items, ok := ReviewAsk(tt.codes, tt.label, nil, tt.evidence, tt.head)
 			if q != tt.question || !reflect.DeepEqual(items, tt.items) || ok != tt.ok {
 				t.Fatalf("got %q %v %v; want %q %v %v", q, items, ok, tt.question, tt.items, tt.ok)
 			}

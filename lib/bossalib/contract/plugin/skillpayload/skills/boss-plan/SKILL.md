@@ -385,7 +385,8 @@ bash <skill-dir>/toolbox/plan/boss-plan-run.sh contract-gate --run-scratch .line
 ```
 
 It fails only on a missing `## Summary` / `## Original notes`, text that is not a plan description,
-an unsubstituted placeholder, or an empty/truncated plan; everything else is a `warning:`.
+an unsubstituted placeholder, an empty/truncated plan, or a plan criterion with no `— check:`
+command (`criterion-without-check`); everything else is a `warning:`.
 For code in another repository, add `- Target repo: <owner>/<name>` under the description’s
 `## Planning` and pass `--target-root <checkout>` to `plan-contract-guard.mjs` when a matching
 checkout exists; otherwise it prints one `target-repo-not-resolved` advisory in place of per-path

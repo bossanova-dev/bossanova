@@ -3,10 +3,19 @@ package server
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/domain"
 )
+
+// providerSessionIDDiscoveryJoin retains the most recently started background
+// discovery's completion signal. Its zero value is ready for use.
+type providerSessionIDDiscoveryJoin struct {
+	mu   sync.Mutex
+	done <-chan struct{}
+}
 
 func chatResumeSessionIDForServer(chat *domain.AgentChat) string {
 	if chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
@@ -85,7 +94,7 @@ func (s *Server) discoverProviderSessionIDInBackground(chat *domain.AgentChat, w
 		return
 	}
 
-	go func() {
+	done := safego.Go(s.logger, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
@@ -161,5 +170,24 @@ func (s *Server) discoverProviderSessionIDInBackground(chat *domain.AgentChat, w
 			case <-ticker.C:
 			}
 		}
-	}()
+	})
+	s.providerSessionIDDiscovery.mu.Lock()
+	s.providerSessionIDDiscovery.done = done
+	s.providerSessionIDDiscovery.mu.Unlock()
+}
+
+// WaitForBackgroundProviderSessionIDDiscovery waits for the most recently
+// started background discovery to exit, or for ctx to be done. It is a no-op
+// when no background discovery has been started.
+func (s *Server) WaitForBackgroundProviderSessionIDDiscovery(ctx context.Context) {
+	s.providerSessionIDDiscovery.mu.Lock()
+	done := s.providerSessionIDDiscovery.done
+	s.providerSessionIDDiscovery.mu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }

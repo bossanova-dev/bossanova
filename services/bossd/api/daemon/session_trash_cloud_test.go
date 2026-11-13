@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,52 +56,10 @@ func TestEmptyTrashCloudRechecksBeforeCleanup(t *testing.T) {
 	}
 }
 
-func TestEmptyTrashCloudProtectsLinkedRegistrations(t *testing.T) {
-	for _, active := range []bool{false, true} {
-		t.Run(fmt.Sprintf("active=%t", active), func(t *testing.T) {
-			root := t.TempDir()
-			linked := t.TempDir()
-			metadata := filepath.Join(root, ".git", "worktrees", "linked")
-			if err := os.MkdirAll(metadata, 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(metadata, "commondir"), []byte("../..\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(linked, ".git"), []byte("gitdir: "+metadata+"\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			sessions := &cleanupSessionStore{sessions: map[string]*models.Session{
-				"archived": {ID: "archived", RepoID: "a", BranchName: "shared", ArchivedAt: cleanupPtr(time.Now())},
-			}}
-			if active {
-				sessions.sessions["active"] = &models.Session{ID: "active", RepoID: "b", BranchName: "shared"}
-			}
-			worktrees := &cleanupWorktreeManager{}
-			s := &Server{sessions: sessions, worktrees: worktrees, repos: &cleanupRepoStore{repos: map[string]*models.Repo{
-				"a": {ID: "a", LocalPath: root}, "b": {ID: "b", LocalPath: linked},
-			}}}
-			ctx := domain.WithCloudTarget(context.Background(), domain.CloudTarget{"repo:a": "a", "repo:b": "b"})
-			ctx = domain.WithCloudRepoCheck(ctx, func(_ context.Context, id string) bool { return id == "a" })
-			result, err := s.EmptyTrash(ctx, connect.NewRequest(&pb.EmptyTrashRequest{}))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if result.Msg.DeletedCount != 1 || !sessions.deleted["archived"] || sessions.deleted["active"] {
-				t.Fatal("incorrect session deletion")
-			}
-			if worktrees.reapLocalBranchesCalls != 0 {
-				t.Fatal("reaped storage shared with protected registration")
-			}
-		})
-	}
-}
-
-func TestTrashStorageKeyResolvesLinkedCheckout(t *testing.T) {
-	root := t.TempDir()
-	common := filepath.Join(root, ".git")
-	linked := t.TempDir()
-	metadata := filepath.Join(common, "worktrees", "linked")
+func cleanupLinkedCheckouts(t *testing.T) (string, string) {
+	t.Helper()
+	root, linked := t.TempDir(), t.TempDir()
+	metadata := filepath.Join(root, ".git", "worktrees", "linked")
 	if err := os.MkdirAll(metadata, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +69,92 @@ func TestTrashStorageKeyResolvesLinkedCheckout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(linked, ".git"), []byte("gitdir: "+metadata+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	return root, linked
+}
+
+func TestEmptyTrashCloudKeepsStorageSharedWithActiveProtected_Sessions_AC238103(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		local, active bool
+		storage       string
+		wantReaps     int
+	}{
+		{name: "active protected", active: true},
+		{name: "registration without sessions"},
+		{name: "separate storage", active: true, storage: "separate", wantReaps: 1},
+		{name: "unresolvable protected storage", active: true, storage: "missing"},
+		{name: "local IPC", local: true, active: true, wantReaps: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, linked := cleanupLinkedCheckouts(t)
+			switch tc.storage {
+			case "separate":
+				linked, _ = cleanupLinkedCheckouts(t)
+			case "missing":
+				linked = t.TempDir()
+			}
+			sessions := &cleanupSessionStore{sessions: map[string]*models.Session{
+				"archived": {ID: "archived", RepoID: "a", BranchName: "shared", ArchivedAt: cleanupPtr(time.Now())},
+			}}
+			if tc.active {
+				sessions.sessions["active"] = &models.Session{ID: "active", RepoID: "b", BranchName: "shared"}
+			}
+			worktrees := &cleanupWorktreeManager{}
+			s := &Server{sessions: sessions, worktrees: worktrees, repos: &cleanupRepoStore{repos: map[string]*models.Repo{
+				"a": {ID: "a", LocalPath: root}, "b": {ID: "b", LocalPath: linked},
+			}}}
+			ctx := context.Background()
+			if !tc.local {
+				ctx = domain.WithCloudTarget(ctx, domain.CloudTarget{"repo:a": "a", "repo:b": "b"})
+				ctx = domain.WithCloudRepoCheck(ctx, func(_ context.Context, id string) bool { return id == "a" })
+			}
+			result, err := s.EmptyTrash(ctx, connect.NewRequest(&pb.EmptyTrashRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Msg.DeletedCount != 1 || !sessions.deleted["archived"] || sessions.deleted["active"] {
+				t.Fatal("incorrect session deletion")
+			}
+			if worktrees.reapLocalBranchesCalls != tc.wantReaps {
+				t.Fatalf("reaped %d times, want %d", worktrees.reapLocalBranchesCalls, tc.wantReaps)
+			}
+		})
+	}
+}
+
+func TestRemoveSessionCloudKeepsStorageSharedWithProtected_Sessions_AC248701(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cloud", true: "local"}[local], func(t *testing.T) {
+			root, linked := cleanupLinkedCheckouts(t)
+			sessions := &cleanupSessionStore{sessions: map[string]*models.Session{
+				"removed": {ID: "removed", RepoID: "a", BranchName: "shared"},
+				"active":  {ID: "active", RepoID: "b", BranchName: "shared"},
+			}}
+			worktrees := &cleanupWorktreeManager{}
+			s := &Server{sessions: sessions, worktrees: worktrees, repos: &cleanupRepoStore{repos: map[string]*models.Repo{
+				"a": {ID: "a", LocalPath: root}, "b": {ID: "b", LocalPath: linked},
+			}}}
+			ctx, wantReaps := context.Background(), 1
+			if !local {
+				ctx = domain.WithCloudTarget(ctx, domain.CloudTarget{"repo:a": "a", "repo:b": "b", "session:removed": "a"})
+				ctx = domain.WithCloudRepoCheck(ctx, func(_ context.Context, id string) bool { return id == "a" })
+				wantReaps = 0
+			}
+			if _, err := s.RemoveSession(ctx, connect.NewRequest(&pb.RemoveSessionRequest{Id: "removed"})); err != nil {
+				t.Fatal(err)
+			}
+			if !sessions.deleted["removed"] || sessions.deleted["active"] {
+				t.Fatal("incorrect session deletion")
+			}
+			if worktrees.reapLocalBranchesCalls != wantReaps {
+				t.Fatalf("reaped %d times, want %d", worktrees.reapLocalBranchesCalls, wantReaps)
+			}
+		})
+	}
+}
+
+func TestTrashStorageKeyResolvesLinkedCheckout(t *testing.T) {
+	root, linked := cleanupLinkedCheckouts(t)
 	first, err := trashStorageKey(root)
 	if err != nil {
 		t.Fatal(err)

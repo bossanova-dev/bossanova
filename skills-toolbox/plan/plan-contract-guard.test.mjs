@@ -113,11 +113,11 @@ The floor is structural only.
 
 ## Acceptance criteria
 
-- [ ] The floor blocks flattened copies.
+- [ ] The floor blocks flattened copies — check: \`node --test skills-toolbox/plan/plan-contract-guard.test.mjs\`
 
 ## Required proof
 
-- [ ] Tests are the proof.
+- [ ] Tests are the proof — check: \`node --test skills-toolbox/plan/plan-contract-guard.test.mjs\`
 
 ## Planning
 
@@ -2417,6 +2417,77 @@ describe('declared target repository routing', () => {
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 5 })
       rmSync(target, { recursive: true, force: true, maxRetries: 5 })
+    }
+  })
+})
+
+// boss-build certifies a plan criterion only by running its `check:` command, so a criterion
+// without one stays unticked and parks a complete build as partial.
+describe('plan criteria must carry a runnable check', () => {
+  const planWith = (...criteria) =>
+    [
+      '# Plan',
+      '',
+      '## Acceptance criteria',
+      '',
+      ...criteria,
+      '',
+      '## After merge',
+      '',
+      '- [ ] the nightly sweep fires once on main',
+      '',
+    ].join('\n')
+  const missing = (plan) =>
+    checkPlanContract({ description: conformant(), plan }).blocking.filter(
+      (v) => v.code === 'criterion-without-check',
+    )
+
+  test('a criterion that only names its test file blocks the write', () => {
+    const plan = planWith(
+      '- [ ] stale findings need a resolution — test in `skills-toolbox/verify/verify-gate-blockers.test.mjs`.',
+      '- [ ] the suite passes — check: `node --test skills-toolbox/plan/plan-slug.test.mjs`',
+    )
+    const result = checkPlanContract({ description: conformant(), plan })
+    assert.equal(result.ok, false)
+    const found = missing(plan)
+    assert.equal(found.length, 1, JSON.stringify(result.blocking))
+    assert.match(found[0].message, /stale findings need a resolution/)
+  })
+
+  test('a verify-only criterion, an empty command and a ticked planned clause also block', () => {
+    const plan = planWith(
+      '- [ ] (verify-only) the label is unchanged',
+      '- [ ] the gate passes — check: ``',
+      '- [x] the build passes — check: `make build`',
+    )
+    assert.equal(missing(plan).length, 3)
+  })
+
+  test('criteria with a command, wrapped or verify-only, and After merge items pass', () => {
+    const plan = planWith(
+      '- [ ] the suite passes — check: `node --test skills-toolbox/plan/plan-slug.test.mjs`',
+      '- [ ] (verify-only) the label is unchanged',
+      '  — check: `grep -q ReadyLabel skills-toolbox/skill-config.mjs`',
+    )
+    assert.deepEqual(missing(plan), [])
+    assert.equal(checkPlanContract({ description: conformant(), plan }).ok, true)
+  })
+
+  test('the CLI refuses the write and names the code', () => {
+    const root = tempDir('plan-contract-check-')
+    try {
+      const desc = path.join(root, 'description.md')
+      const plan = path.join(root, 'plan.md')
+      writeFileSync(desc, conformant())
+      writeFileSync(plan, planWith('- [ ] the feature works (`plan-slug.test.mjs`)'))
+      const result = spawnSync(process.execPath, [GUARD, '--description', desc, '--plan', plan], {
+        cwd: root,
+        encoding: 'utf8',
+      })
+      assert.equal(result.status, 1, result.stderr)
+      assert.match(result.stderr, /\[criterion-without-check\]/)
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 })
     }
   })
 })

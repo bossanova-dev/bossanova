@@ -16,10 +16,12 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { countBehind, runGit } from '../base-drift.mjs'
+import { defaultStateDir, settledWaitOn } from '../ci/ci-wait-record.mjs'
 import { isMainModule } from '../main-module.mjs'
 import { loadSkillConfig, parsePlanCheckItems, reviewTimeDefaults } from '../skill-config.mjs'
 import { validateVerdict } from '../review-verdict.mjs'
 import { parseSkillGateOutput } from '../skill-drift-verdict.mjs'
+import { derivedCheck, isFullGateCheck } from './acceptance-evidence.mjs'
 
 const labels = (line) => [...line.matchAll(/([^\s;,]+) \(([^,()]+), ([^()]+)\)/g)]
 
@@ -255,6 +257,7 @@ export async function certify({
   budgetMs,
   deadlineMs,
   reuse,
+  ciWaitStateDir = defaultStateDir(repo),
   run = runGit,
   execute = runCommand,
   classify: classifyCommand = classify,
@@ -275,6 +278,16 @@ export async function certify({
   }
   const head = gitValue('HEAD')
   const tree = gitValue('HEAD^{tree}')
+  // CI runs the repo's full gate, so a green CI wait recorded on this head proves a criterion whose
+  // check is only that gate; re-running the whole suite inside the certification budget times out.
+  const ciGreen = settledWaitOn({ stateDir: ciWaitStateDir, headSha: head })
+  const byCi = (c) => {
+    if (!ciGreen || !isFullGateCheck(config, c.check)) return false
+    const display = c.check.replace(/`/g, '\\`').replace(/[\r\n]+/g, ' ')
+    Object.assign(c, { result: 'met', reason: '', satisfiedBy: 'ci-wait' })
+    c.evidence = `certify: \`${display}\` → met: CI settled green at ${head.slice(0, 7)} (recorded CI wait, PR #${ciGreen.pr})`
+    return true
+  }
   if (reuse) {
     try {
       const a = JSON.parse(readFileSync(reuse, 'utf8')).acceptance
@@ -293,8 +306,10 @@ export async function certify({
         a.tree === tree &&
         JSON.stringify(a.criteria.map(({ id, check }) => [id, check])) ===
           JSON.stringify(criteria.map(({ id, check }) => [id, check]))
-      )
+      ) {
+        for (const c of a.criteria) if (c.result !== 'met') byCi(c)
         return { ...a, reused: true }
+      }
     } catch (error) {
       process.stderr.write(
         `acceptance-retry: reuse unavailable: ${error.message}; certifying fresh\n`,
@@ -310,6 +325,13 @@ export async function certify({
   mkdirSync(dir, { recursive: true })
   // A unique log prefix preserves prior certification output on subsequent runs.
   const logDir = mkdtempSync(join(dir, 'acceptance-output-'))
+  let tracked
+  const trackedFiles = () => {
+    if (tracked) return tracked
+    const listed = run(repo, ['ls-files', '-z'])
+    tracked = listed.status === 0 ? listed.stdout.split('\0').filter(Boolean) : []
+    return tracked
+  }
   for (const criterion of criteria) {
     const c = {
       ...criterion,
@@ -321,9 +343,16 @@ export async function certify({
       outputFile: null,
       evidence: '',
       reason: '',
+      derivedCheck: null,
+      satisfiedBy: null,
     }
     report.criteria.push(c)
-    if (!c.check) {
+    if (byCi(c)) continue
+    // A criterion with no command that names a mapped test file runs that file's runner instead.
+    const derived = c.check ? null : derivedCheck(config, c.text, trackedFiles())
+    if (derived) c.derivedCheck = derived.command
+    const command = c.check || derived?.command
+    if (!command) {
       c.reason = 'no-check'
       continue
     }
@@ -334,7 +363,7 @@ export async function certify({
     c.outputFile = join(logDir, `${c.id}.log`)
     const result = await execute({
       repo,
-      command: c.check,
+      command,
       outputFile: c.outputFile,
       timeoutMs: Math.min(timeoutMs, remaining()),
     })
@@ -342,8 +371,8 @@ export async function certify({
     c.timedOut = result.timedOut === true
     c.tail = outputTail(c.outputFile)
     c.result = result.status === 0 && !c.timedOut && !result.error ? 'met' : 'unmet'
-    const display = c.check.replace(/`/g, '\\`').replace(/[\r\n]+/g, ' ')
-    c.evidence = `certify: \`${display}\` → ${c.timedOut ? 'timed out' : `${c.result}: exit ${c.exit}`} at ${head.slice(0, 7)}`
+    const display = command.replace(/`/g, '\\`').replace(/[\r\n]+/g, ' ')
+    c.evidence = `certify: \`${display}\` → ${c.timedOut ? 'timed out' : `${c.result}: exit ${c.exit}`} at ${head.slice(0, 7)}${derived ? ' (check derived from the named test file)' : ''}`
     if (c.result === 'met') continue
     c.reason = c.timedOut ? 'timeout' : result.error || `exit ${c.exit}`
     if (c.timedOut || result.error) continue
@@ -360,7 +389,7 @@ export async function certify({
     }
     const retryFile = join(logDir, `${c.id}-retry.log`)
     const retried = await retryCommand({
-      command: c.check,
+      command,
       repo,
       base,
       timeoutMs: Math.min(timeoutMs, remaining()),

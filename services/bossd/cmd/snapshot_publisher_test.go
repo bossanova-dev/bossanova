@@ -23,6 +23,7 @@ type fakePublishClient struct {
 	failFirstWith error
 	acceptToken   string
 	tokens        []string
+	snapshot      *bossanovav1.DaemonSnapshot
 }
 
 func (f *fakePublishClient) PublishDaemonSnapshot(
@@ -31,6 +32,7 @@ func (f *fakePublishClient) PublishDaemonSnapshot(
 ) (*connect.Response[bossanovav1.PublishDaemonSnapshotResponse], error) {
 	token := strings.TrimPrefix(req.Header().Get("Authorization"), "Bearer ")
 	f.tokens = append(f.tokens, token)
+	f.snapshot = req.Msg.GetSnapshot()
 	if len(f.tokens) == 1 && f.failFirstWith != nil {
 		return nil, f.failFirstWith
 	}
@@ -60,7 +62,7 @@ func TestRunSnapshotPublisher_SelfHealsOnAuthRejection(t *testing.T) {
 	}
 
 	runSnapshotPublisher(cancelledCtx(), client, holder, upstream.StreamStores{},
-		"daemon-1", "host-1", reReg, nil, time.Hour, nil, zerolog.Nop())
+		"daemon-1", "host-1", reReg, nil, time.Hour, nil, nil, zerolog.Nop())
 
 	if len(client.tokens) != 2 {
 		t.Fatalf("expected 2 publish attempts (fail + retry), got %d: %v", len(client.tokens), client.tokens)
@@ -81,7 +83,7 @@ func TestRunSnapshotPublisher_NoReRegisterOnSuccess(t *testing.T) {
 	client := &fakePublishClient{}
 
 	runSnapshotPublisher(cancelledCtx(), client, holder, upstream.StreamStores{},
-		"daemon-1", "host-1", reReg, nil, time.Hour, nil, zerolog.Nop())
+		"daemon-1", "host-1", reReg, nil, time.Hour, nil, nil, zerolog.Nop())
 
 	if reRegCalled {
 		t.Error("reRegister must not be called on a successful publish")
@@ -91,6 +93,27 @@ func TestRunSnapshotPublisher_NoReRegisterOnSuccess(t *testing.T) {
 	}
 	if holder.Get() != "good" {
 		t.Errorf("holder token must be unchanged, got %q", holder.Get())
+	}
+}
+
+func TestRunSnapshotPublisherKeepsRepoCloudControl_Sessions_AC238202(t *testing.T) {
+	client := &fakePublishClient{}
+	stores := upstream.StreamStores{
+		Repos: upstream.NewRepoSnapshotReader(func(context.Context) ([]string, error) {
+			return []string{"https://github.com/acme/repo"}, nil
+		}),
+		Sessions: upstream.NewSessionSnapshotReader(protoSessionListerFunc(func(context.Context) ([]*bossanovav1.Session, error) {
+			return []*bossanovav1.Session{{Id: "session", RepoId: "repo", Plan: "plan"}}, nil
+		})),
+	}
+	runSnapshotPublisher(cancelledCtx(), client, upstream.NewSessionTokenHolder("good"), stores,
+		"daemon-1", "host-1", nil, nil, time.Hour, nil, publisherTargets{}, zerolog.Nop())
+	if len(client.tokens) != 1 {
+		t.Fatalf("publish attempts = %d", len(client.tokens))
+	}
+	sessions := client.snapshot.GetSessions()
+	if len(sessions) != 1 || sessions[0].GetCloudControl() != bossanovav1.CloudControl_CLOUD_CONTROL_READ_ONLY || sessions[0].GetPlan() != "plan" {
+		t.Fatalf("published sessions = %v", sessions)
 	}
 }
 
@@ -105,7 +128,7 @@ func TestRunSnapshotPublisher_NoReRegisterOnNonAuthError(t *testing.T) {
 	}
 
 	runSnapshotPublisher(cancelledCtx(), client, holder, upstream.StreamStores{},
-		"daemon-1", "host-1", reReg, nil, time.Hour, nil, zerolog.Nop())
+		"daemon-1", "host-1", reReg, nil, time.Hour, nil, nil, zerolog.Nop())
 
 	if reRegCalled {
 		t.Error("reRegister must not be called on a non-auth error")
@@ -131,7 +154,7 @@ func TestRunSnapshotPublisher_DoesNotOverwriteConcurrentTokenRotation(t *testing
 	}
 
 	runSnapshotPublisher(cancelledCtx(), client, holder, upstream.StreamStores{},
-		"daemon-1", "host-1", reReg, nil, time.Hour, nil, zerolog.Nop())
+		"daemon-1", "host-1", reReg, nil, time.Hour, nil, nil, zerolog.Nop())
 
 	if len(client.tokens) != 2 {
 		t.Fatalf("expected 2 publish attempts (fail + retry), got %d: %v", len(client.tokens), client.tokens)
@@ -142,4 +165,17 @@ func TestRunSnapshotPublisher_DoesNotOverwriteConcurrentTokenRotation(t *testing
 	if got := holder.Get(); got != "fresh-from-stream" {
 		t.Fatalf("expected holder to keep concurrent token, got %q", got)
 	}
+}
+
+type publisherTargets struct{}
+
+func (publisherTargets) GetTarget(_ context.Context, kind, id string) (upstream.CommandTargetObject, error) {
+	if kind != "repo" || id != "repo" {
+		return upstream.CommandTargetObject{}, errors.New("unknown repo")
+	}
+	return upstream.CommandTargetObject{RepoID: "repo"}, nil
+}
+
+func (publisherTargets) ListTargetRepos(context.Context) ([]upstream.CommandTargetObject, error) {
+	return []upstream.CommandTargetObject{{RepoID: "repo"}}, nil
 }

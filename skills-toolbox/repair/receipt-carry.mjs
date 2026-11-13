@@ -394,7 +394,7 @@ export function carryReport(options, deps = {}) {
     decided.decision === DECISIONS.BLOCKED ||
     (decided.decision === DECISIONS.POST && options.carryFindings)
   if (publishesReport && stateRoot) {
-    let result = judged.result
+    let result = { ...judged.result, verdict: { ...judged.result.verdict, head } }
     if (options.carryFindings) {
       const carried = JSON.parse(readFileSync(options.carryFindings, 'utf8'))
       if (!Array.isArray(carried)) throw new Error('carry findings must be an array')

@@ -8,6 +8,10 @@
     "testReadiness": "BOSS_GATE_FORCE_UNCACHED=1 make test-full",
     "testUncached": "BOSS_GATE_FORCE_UNCACHED=1 make test-affected"
   },
+  "acceptance": {
+    "derivedChecks": [{ "glob": "**/*.test.mjs", "command": "node --test {file}" }],
+    "fullGateCommands": ["make lint", "make test", "make test-full"]
+  },
   "gateCache": {
     "eligible": {
       "test-full": {

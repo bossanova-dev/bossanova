@@ -560,6 +560,25 @@ test('a wait verdict writes nothing and does not count against the batch', () =>
   assert.deepEqual(lines(r), ['#1 skipped: wait base-ci-red', `#2 merged ${sha(902)}`])
 })
 
+test('an absent-gate wait names the checks it is holding on, from judge and from merge', () => {
+  const gates = ['.github/dependabot.yml', 'auto-assign']
+  const judged = world({
+    candidates: [candidate(1)],
+    verdicts: { 1: { verdict: 'wait', reason: 'ci-absent-gate', absentGates: gates } },
+  })
+  const [line] = lines(sweep({}, judged.deps()))
+  for (const gate of gates) assert.ok(line.includes(gate), line)
+
+  const merging = world({
+    mergeRetries: [candidate(1)],
+    mergeResults: {
+      1: { merged: false, verdict: 'wait', reason: 'ci-absent-gate', absentGates: gates },
+    },
+  })
+  const [merged] = lines(sweep({}, merging.deps()))
+  for (const gate of gates) assert.ok(merged.includes(gate), merged)
+})
+
 const EXT = { verdict: 'extensions-required', reason: 'extensions-installed' }
 
 test('with extensions: the claim is posted before routing and its token is in the message', () => {

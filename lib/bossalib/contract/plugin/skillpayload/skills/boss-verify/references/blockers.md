@@ -76,8 +76,20 @@ report under the comment limit. Only `findings` decides blockers. The judge outp
 three lists, as `reviewUnfixed`, `reviewFixed` and `reviewAcceptance`, for the proof page.
 
 The most recently updated valid report from a writer stands for subsequent heads until a newer
-report supersedes it. A repair fixing a review-finding blocker must publish a superseding review
-report that omits it or marks it fixed. A push alone does not discharge that finding.
+report supersedes it. A finding asserted on an older head first requires the independent
+resolution lens on the judged head. A push alone never discharges a finding: a resolved entry
+cites the code that removes it and a named passing regression test. `present`, `unsure`, missing
+or invalid evidence keeps the blocker. Fork heads never run the lens.
+
+The writer-authored last-line marker `<!-- boss-verify-resolution head=<40-hex> digest=<16-hex>
+v1 <base64url-json> -->` records `{version:1, head, entries}` on its own comment. Each entry names
+an id and status; resolved entries include the head file, line, test, command and zero exit code.
+The digest covers the JSON. The newest trusted entry per id applies only on that exact head;
+recording either outcome avoids repeating the lens on a later tick. A blocked post lists its
+resolved ids separately. A failed comment write is disclosed without changing the verdict.
+Resolution evidence must follow the standing report's last update; comment ids break timestamp ties.
+Repair carry consumes trusted resolved evidence with the assertion and marker ancestry checks,
+so the next superseding review report omits resolved findings.
 
 A blocked post writes a PR comment and a failure `boss/verify` status targeting it. With auto-repair
 off it also parks for a person, using the `, needs human` suffix. After two distinct blocker-mode repair rounds, a still-blocked verdict parks the PR as

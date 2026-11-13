@@ -483,3 +483,151 @@ test('sign-off is a pipeline word too', () => {
   )
   assert.equal(kept.reason, undefined)
 })
+
+/** A spec filling the declared `infra` section with one part of each kind. */
+function sectionSpec(parts, more = {}) {
+  return {
+    schema: 'proof-spec/1',
+    head: HEAD,
+    risks: [{ id: 'R1', level: 'low', title: 'Texts wait', impact: 'x', links: ['I1'] }],
+    sections: [{ id: 'infra', sub: 'nothing before deploy', parts }],
+    ...more,
+  }
+}
+const CHECKLIST = {
+  kind: 'checklist',
+  numbered: true,
+  items: [
+    {
+      id: 'I1',
+      group: 'Deploy',
+      context: 'Admin, production',
+      text: 'Deploy as usual.',
+      expect: 'The pods restart.',
+      tag: 'production',
+      tone: 'success',
+      links: ['R1'],
+    },
+  ],
+}
+const TABLE = {
+  kind: 'table',
+  title: 'Settings',
+  note: 'set in `tfvars`',
+  columns: ['Setting', 'Production'],
+  rows: [
+    {
+      cells: [
+        { text: 'SMS_FROM', code: true, note: 'The number' },
+        { text: 'set', pill: 'success' },
+      ],
+    },
+  ],
+}
+const FACTS = {
+  kind: 'facts',
+  title: 'If missing',
+  rows: [{ label: 'API start', text: 'Unaffected.', tone: 'warning' }],
+}
+const declared = { ...context, sections: ['infra', 'testing'] }
+
+test('a section keeps every part kind whole, and its items link both ways', () => {
+  const { spec: kept, dropped } = validateProofSpec(
+    sectionSpec([CHECKLIST, TABLE, FACTS]),
+    declared,
+  )
+  assert.deepEqual(dropped, [])
+  assert.deepEqual(kept.sections, [
+    {
+      id: 'infra',
+      sub: 'nothing before deploy',
+      parts: [CHECKLIST, { ...TABLE, rows: [{ cells: TABLE.rows[0].cells }] }, FACTS],
+    },
+  ])
+  assert.deepEqual(kept.risks[0].links, ['I1'], 'a risk links to a section item')
+})
+
+test('a section the repository does not declare, or fills twice, is dropped and listed', () => {
+  const value = sectionSpec([FACTS], { risks: [] })
+  value.sections.push({ id: 'infra', parts: [FACTS] }, { id: 'deploy', parts: [FACTS] })
+  const { spec: kept, dropped } = validateProofSpec(value, declared)
+  assert.deepEqual(
+    kept.sections.map((s) => s.id),
+    ['infra'],
+  )
+  assert.deepEqual(dropped, [
+    { at: 'sections[1]', reason: 'id: infra appears twice' },
+    { at: 'sections[2]', reason: 'id: deploy is not a section the repository declares' },
+  ])
+  const undeclared = validateProofSpec(sectionSpec([FACTS], { risks: [] }), context)
+  assert.equal(undeclared.spec.sections, undefined, 'no declarations, no sections')
+  assert.deepEqual(undeclared.dropped, [
+    { at: 'sections[0]', reason: 'id: infra is not a section the repository declares' },
+  ])
+})
+
+test('each section rule drops only its defective part, row or item and names why', () => {
+  const long = 'x'.repeat(301)
+  const parts = [
+    {
+      ...CHECKLIST,
+      items: [...CHECKLIST.items, { id: 'I2', text: long }, { id: 'R1', text: 'ok' }],
+    },
+    {
+      ...TABLE,
+      rows: [...TABLE.rows, { cells: ['only one'] }, { cells: ['a', { text: 'b', pill: 'pink' }] }],
+    },
+    { ...FACTS, rows: [...FACTS.rows, { label: 'l'.repeat(41), text: 't' }] },
+    { kind: 'chart', rows: [] },
+    { ...FACTS, extra: true },
+    { kind: 'table', columns: ['1', '2', '3', '4', '5', '6', '7'], rows: [] },
+    { kind: 'checklist', items: [] },
+  ]
+  const { spec: kept, dropped } = validateProofSpec(sectionSpec(parts), declared)
+  assert.equal(kept.sections[0].parts.length, 3)
+  assert.deepEqual(dropped, [
+    { at: 'sections[0].parts[0].items[1]', reason: 'text: longer than 300 characters' },
+    { at: 'sections[0].parts[0].items[2]', reason: 'id: R1 appears twice' },
+    { at: 'sections[0].parts[1].rows[1]', reason: 'cells: expected 2, one per column' },
+    {
+      at: 'sections[0].parts[1].rows[2]',
+      reason: 'cells.pill: expected one of success, warning, danger, info, neutral',
+    },
+    { at: 'sections[0].parts[2].rows[1]', reason: 'label: longer than 40 characters' },
+    { at: 'sections[0].parts[3]', reason: 'kind: expected one of checklist, table, facts' },
+    { at: 'sections[0].parts[4]', reason: 'extra: unknown key' },
+    { at: 'sections[0].parts[5]', reason: 'columns: expected 1 to 6 labels' },
+    { at: 'sections[0].parts[6]', reason: 'items: nothing to show' },
+  ])
+})
+
+test('a section caps its parts at 8 and its items at 20, and a sub at 80 characters', () => {
+  const items = Array.from({ length: 21 }, (_, i) => ({ id: `I${i + 1}`, text: 'step' }))
+  const parts = [{ kind: 'checklist', items }, ...Array.from({ length: 8 }, () => FACTS)]
+  const value = sectionSpec(parts, { risks: [] })
+  const { spec: kept, dropped } = validateProofSpec(value, declared)
+  assert.equal(kept.sections[0].parts.length, 8)
+  assert.equal(kept.sections[0].parts[0].items.length, 20)
+  assert.deepEqual(dropped, [
+    { at: 'sections[0].parts[0].items[20]', reason: 'over the cap of 20' },
+    { at: 'sections[0].parts[8]', reason: 'over the cap of 8' },
+  ])
+  const sub = sectionSpec([FACTS], { risks: [] })
+  sub.sections[0].sub = 's'.repeat(81)
+  assert.deepEqual(validateProofSpec(sub, declared).dropped, [
+    { at: 'sections[0]', reason: 'sub: longer than 80 characters' },
+  ])
+})
+
+test('a section left with no part is dropped, and a link to its items goes with it', () => {
+  const value = sectionSpec([{ kind: 'chart' }], {
+    risks: [{ id: 'R1', level: 'low', title: 't', impact: 'i', links: ['I1'] }],
+  })
+  const { spec: kept, dropped } = validateProofSpec(value, declared)
+  assert.equal(kept.sections, undefined)
+  assert.deepEqual(dropped, [
+    { at: 'sections[0].parts[0]', reason: 'kind: expected one of checklist, table, facts' },
+    { at: 'sections[0]', reason: 'parts: nothing to show' },
+    { at: 'risks[0].links', reason: 'I1 names nothing on this page' },
+  ])
+})

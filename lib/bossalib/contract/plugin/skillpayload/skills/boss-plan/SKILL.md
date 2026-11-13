@@ -140,10 +140,20 @@ A second reload means a peer install is racing; continue under the body just rea
 A blocking drift verdict, including config-validator drift, is a hard stop.
 
 Inspect `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs operations`. When it lists `writePlan`, require
-`operations --require writePlan,readPlanAttachment`; otherwise require
-`operations --require preparePlanAttachment,finalizePlanAttachment,readPlanAttachment,deletePlanAttachment`
-through the same CLI. Exit 2 names what is missing: stop before any write. Confirm the tracker
-answers a cheap read. A failed
+`operations --require writePlan,readPlanAttachment,listChildren`; otherwise require
+`operations --require preparePlanAttachment,finalizePlanAttachment,readPlanAttachment,deletePlanAttachment,listChildren`
+through the same CLI. Exit 2 names what is missing: stop before any write.
+
+When `listChildren` names the Linear command helper `tracker/linear-children.mjs`, validate its
+API credential before any ticket claim, including named tickets:
+
+```bash
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/linear-children.mjs preflight
+```
+
+A non-zero exit stops before any tracker write. This read-only viewer lookup validates the
+credential used by the mandatory child listing, separately from MCP authentication.
+Confirm the tracker answers a cheap read. A failed
 read: classify it with `--operation read` and follow its action line (a retryable edge error is not
 "tracker unreachable").
 
@@ -191,14 +201,19 @@ exit 64 means fix the call. Then run the planning claim protocol in
 [planning claims](references/planning-claims.md#claim-before-drafting). It applies to named tickets,
 single tickets, fan-out parents and epic resumes; acquire the issue lease before posting the comment claim. A planning claim must never use build scope.
 
-**Route the selected issue** — named or sweep head — after claiming: when
-`tracker/cli.mjs operations` lists `listChildren`, run
-`tracker/cli.mjs invoke-operation listChildren --args-file <file>` with `{parentId}` and use its
-hydrated `children` as the per-child payloads (no separate per-child read). Otherwise
-`list_issues parentId=<id> limit=250`, then `get_issue includeRelations=true` each child (list
-payloads truncate). Write the `{parent, children}` bundle (preserving any `relationWarnings`) to
-`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json`, and run
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs route <that file>`. Print any `relationWarnings`
+**Route the selected issue** — named or sweep head — after claiming. Enumerate the selected
+issue's hydrated children into the route bundle:
+
+```bash
+set -o pipefail
+printf '{"parentId":"%s"}\n' "<ISSUE-ID>" |
+  bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs invoke-operation listChildren --args-file /dev/stdin --result-only > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs route .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json
+```
+
+Stop on a listing failure; a failed read is never an empty child list. The unchanged
+`{parent, children, relationWarnings}` result carries complete per-child payloads.
+Print any `relationWarnings`
 in the route summary; they never stop the run. `single` ⇒ continue below;
 `fan-out` ⇒ [`references/child-fanout.md`](references/child-fanout.md) instead of the precheck and Phases
 2–5; `epic-resume` ⇒ [`references/epic.md`](references/epic.md#resume); `epic-noop` ⇒ report its
@@ -392,7 +407,7 @@ Then:
    use `result` without another write; fall back to an inline
    description only when stderr names a missing `writeDescription` op), plus labels, estimate,
    priority and the planned state. A rejected estimate: retry without it and warn. A failure
-   `classify-outcome` calls `indeterminate`, or an anchored patch rejected as missing or non-unique:
+   `classify-outcome` calls `indeterminate`:
    read the issue back before any retry; if it did not land, retry once without `--base-file`.
    If that retry fails the same way, split it: save everything except
    labels, then the merged labels in a labels-only write, and name the split in the run report.

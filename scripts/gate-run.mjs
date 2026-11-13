@@ -28,7 +28,7 @@ import {
   renderAdmissionLine,
 } from './test-infra/gate-admission-lib.mjs'
 import { gateEnvironment, gateTimeoutMs, spawnGate } from './test-infra/gate-process.mjs'
-import { gateEvidenceLine } from './test-infra/gate-log-lib.mjs'
+import { gateEvidenceLine, renderFailingLine } from './test-infra/gate-log-lib.mjs'
 import {
   extractFailedTargets,
   isolationCommandFor,
@@ -683,6 +683,7 @@ async function wait(args) {
         flaky ? FLAKY_EXIT_CODE : 1,
         [
           renderIsolationLines(isolation),
+          renderFailingLine(readLogTail(runDir)?.text ?? ''),
           renderLoadLine(readJson(runDir, 'load.json')),
           renderAdmissionLine(readJson(runDir, 'admission.json')),
           `log: ${logPath(runDir)}`,

@@ -30,6 +30,9 @@ undisclosed changes. On top of them:
   the page's Generation check; a spec for another head is ignored whole. Every snippet is quoted
   from `git diff base..head`, never from the spec. Without a usable spec the page is the
   deterministic one. The sweep's mechanical posts never dispatch the agent.
+- **Repository sections.** Each section the base tree's `proof-section` extensions declare shows
+  where they place it, filled from the spec's `sections`, with a nav entry and its own anchor
+  (`#sec-<id>`). A section the spec leaves out is not shown, and its ticks work like decisions'.
 - **Media.** `post --proof-media <dir>` reads the `proof-media/1` manifest `proof-bundle` left in
   `<dir>`; without it, the core runs the base tree's `proof-media` extension itself. Only files
   inside the extension's evidence directory are published, each as `media/<basename>`.

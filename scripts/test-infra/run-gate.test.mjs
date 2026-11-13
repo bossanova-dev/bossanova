@@ -59,6 +59,12 @@ test('run-gate preserves a genuine failure status without adding a banner', () =
   assert.doesNotMatch(run.stderr, /ENVIRONMENT FAILURE/)
 })
 
+test('run-gate keeps a red child when only its passing test name contains ENOSPC', () => {
+  const run = runChild(`console.log('ok 1 - ENOSPC recovery'); process.exitCode = 1`)
+  assert.equal(run.status, 1)
+  assert.doesNotMatch(run.stderr, /ENVIRONMENT FAILURE/)
+})
+
 test('run-gate does not relabel a later genuine failure after transient golangci contention', () => {
   const run = runChild(`
     process.stderr.write('Error: parallel golangci-lint is running\\n')

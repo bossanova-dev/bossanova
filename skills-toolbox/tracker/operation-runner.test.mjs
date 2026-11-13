@@ -204,3 +204,23 @@ test('spawn is bounded, shell-free, and cleans private arguments after a failed 
   )
   assert.equal(existsSync(argsFile), false)
 })
+
+test('result-only prints command results and refuses unexecuted MCP descriptors', async (t) => {
+  const helper = `.tracker-result-only-${process.pid}.mjs`
+  writeFileSync(
+    path.join(toolboxRoot(), helper),
+    'console.log(JSON.stringify({parent:{id:"APP-1"},children:[]}))',
+  )
+  t.after(() => rmSync(path.join(toolboxRoot(), helper), { force: true }))
+  const out = await cli(['invoke-operation', 'listChildren', '--result-only'], {
+    listChildren: { command: { helper, verb: 'list-children' } },
+  })
+  assert.equal(out.code, 0, out.stderr)
+  assert.deepEqual(JSON.parse(out.stdout), { parent: { id: 'APP-1' }, children: [] })
+  const mcp = await cli(['invoke-operation', 'getIssue', '--result-only'], {
+    getIssue: { tool: 'mcp' },
+  })
+  assert.equal(mcp.code, 2)
+  assert.equal(mcp.stdout, '')
+  assert.match(mcp.stderr, /result.*command|command.*result/)
+})

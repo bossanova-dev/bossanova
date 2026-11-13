@@ -1,3 +1,4 @@
+import { resolutionComment } from './verify-resolution.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { pathParkFacts } from './verify-path-parks.mjs'
@@ -8069,11 +8070,13 @@ test('judge and merge hold a shrinking push whose Actions workflow ran on the he
   const r = await judge({ pr: 7, repo: REPO }, deps(w))
   assert.equal(r.verdict, 'wait')
   assert.equal(r.reason, 'ci-absent-gate')
+  assert.deepEqual(r.absentGates, ['test-go'])
   const m = world({ ...opts, statuses: verifyStatus('success', 'verified') })
   const merged = await merge({ pr: 7, repo: REPO, head: HEAD }, deps(m))
   assert.equal(merged.merged, false)
   assert.equal(merged.verdict, 'wait')
   assert.equal(merged.reason, 'ci-absent-gate')
+  assert.deepEqual(merged.absentGates, ['test-go'])
   assert.equal(
     m.calls.some((c) => c.command === 'boss' && c.args[0] === 'merge'),
     false,
@@ -8200,6 +8203,68 @@ test('judge discounts untriggered workflows and successful workflow-less prior c
     headRuns: [{ workflow_runs: [{ name: 'CI', status: 'in_progress', head_sha: HEAD }] }],
   })
   assert.equal((await judge({ pr: 7, repo: REPO }, deps(running))).reason, 'ci-not-settled')
+})
+
+// freshclaim/fresh-claim#12496: the force-pushed-away prior head carried a Dependabot config check
+// (`.github/dependabot.yml`, no workflow run) that was still QUEUED when the branch moved on. The
+// green head never carries it, and nothing will ever report it on the abandoned SHA.
+test('judge and merge pass a green head whose prior head left a workflow-less check unreported', async () => {
+  const queuedApp = {
+    __typename: 'CheckRun',
+    name: '.github/dependabot.yml',
+    status: 'QUEUED',
+    conclusion: null,
+    checkSuite: { workflowRun: null },
+  }
+  const pendingStatus = { __typename: 'StatusContext', context: 'external/ci', state: 'PENDING' }
+  for (const unreported of [queuedApp, pendingStatus]) {
+    const priorHead = priorPayload([{ beforeCommit: priorCommit([unreported]).commit }])
+    const r = await judge({ pr: 7, repo: REPO }, deps(world({ priorHead })))
+    assert.equal(r.verdict, 'pass', unreported.name ?? unreported.context)
+    const m = world({ priorHead, statuses: verifyStatus('success', 'verified') })
+    await merge({ pr: 7, repo: REPO, head: HEAD }, deps(m))
+    assert.equal(
+      m.calls.some((c) => c.command === 'boss' && c.args[0] === 'merge'),
+      true,
+      unreported.name ?? unreported.context,
+    )
+  }
+  // An Actions job left queued on the prior head is still a lost gate once its workflow ran here.
+  const queuedAction = { ...priorAction, status: 'QUEUED', conclusion: null }
+  const held = world({ priorHead: priorPayload([priorCommit([queuedAction])]) })
+  const r = await judge({ pr: 7, repo: REPO }, deps(held))
+  assert.equal(r.reason, 'ci-absent-gate')
+  assert.deepEqual(r.absentGates, ['test-go'])
+})
+
+// The other #12496 shape: `assign-reviewer` runs on `opened`/`ready_for_review` only, so a pushed
+// head never gets a run of it, and its job from the opened head never comes back.
+test('judge passes a pushed head whose prior head carried a job from an open-only workflow', async () => {
+  const autoAssign = {
+    __typename: 'CheckRun',
+    name: 'auto-assign',
+    status: 'COMPLETED',
+    conclusion: 'SUCCESS',
+    checkSuite: { workflowRun: { workflow: { name: 'assign-reviewer', databaseId: 169271009 } } },
+  }
+  const priorHead = priorPayload([{ beforeCommit: priorCommit([autoAssign]).commit }])
+  const headRuns = [
+    {
+      total_count: 1,
+      workflow_runs: [
+        {
+          name: 'CI',
+          workflow_id: 26358459,
+          event: 'pull_request',
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: HEAD,
+        },
+      ],
+    },
+  ]
+  const r = await judge({ pr: 7, repo: REPO }, deps(world({ priorHead, headRuns })))
+  assert.equal(r.verdict, 'pass')
 })
 
 test('resolvePriorHead resolves complete prior sets and rejects incomplete evidence', () => {
@@ -10621,7 +10686,7 @@ const standingReport = (findings, extra = {}) =>
 test('standing writer reports expose P2 blockers and notes, with newest update superseding older heads', async () => {
   const older = standingReport([p2Review], { id: 10, msAgo: 60_000 })
   const r = await judge({ pr: 7, repo: REPO }, deps(world({ comments: [older] })))
-  assert.equal(r.verdict, 'blocked')
+  assert.equal(r.verdict, 'resolution-required')
   assert.deepEqual(
     [r.blockers[0].severity, r.blockers[0].file, r.blockers[0].line],
     ['P2', p2Review.file, 198],
@@ -10636,12 +10701,82 @@ test('standing writer reports expose P2 blockers and notes, with newest update s
     { pr: 7, repo: REPO },
     deps(world({ comments: [older, forged], permissions: { reader: 'read' } })),
   )
-  assert.equal(trusted.verdict, 'blocked')
+  assert.equal(trusted.verdict, 'resolution-required')
   const unknown = await judge(
     { pr: 7, repo: REPO },
     deps(world({ comments: [older], commentsReadFails: true })),
   )
   assert.equal(unknown.reason, 'approval-unreadable')
+})
+test('judge --resolution discharges only valid evidence on its head and excludes forks', async (t) => {
+  const dir = tmp()
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
+  const report = standingReport([p2Review])
+  const pending = await judge({ pr: 7, repo: REPO }, deps(world({ comments: [report] })))
+  const id = pending.resolutionEnvelope.findings[0].id
+  const file = jsonFile(dir, 'resolution.json', {
+    version: 1,
+    head: HEAD,
+    entries: [
+      {
+        id,
+        status: 'resolved',
+        file: p2Review.file,
+        line: 1,
+        test: 'existing regression',
+        command: 'node --test regression.test.mjs',
+        exitCode: 0,
+      },
+    ],
+  })
+  for (const [fork, policy] of [
+    [false, false],
+    [true, true],
+    [true, false],
+  ]) {
+    const w = world({
+      comments: [report],
+      ...(fork
+        ? {
+            pr: handView({ isCrossRepository: true }),
+            ...(policy ? { baseConfig: admissionText({ fork: { admit: true } }) } : {}),
+          }
+        : {}),
+    })
+    let treeReads = 0
+    const read = (cmd, args, options) =>
+      cmd === 'git' && args[0] === 'show' && args[1] === `${HEAD}:${p2Review.file}`
+        ? (treeReads++, { ok: true, output: 'fixed\n' })
+        : cmd === 'git' && args[0] === 'cat-file' && args[2] === `${HEAD}:${p2Review.file}`
+          ? { ok: true, output: 'blob' }
+          : w.read(cmd, args, options)
+    const result = await main(
+      ['judge', '--pr', '7', '--repo', REPO, '--resolution', file],
+      deps(w, { read }),
+    )
+    assert.equal(result.verdict, fork ? 'blocked' : 'judge-required')
+    assert.equal(treeReads, fork ? 0 : 1)
+  }
+  const marker = operatorComment(
+    resolutionComment(HEAD, JSON.parse(readFileSync(file, 'utf8')).entries).body,
+  )
+  const recorded = await judge({ pr: 7, repo: REPO }, deps(world({ comments: [report, marker] })))
+  assert.notEqual(recorded.verdict, 'resolution-required')
+  const w = world({ comments: [report] })
+  assert.equal(
+    (
+      await main(
+        ['judge', '--pr', '7', '--repo', REPO, '--resolution', join(dir, 'absent')],
+        deps(w),
+      )
+    ).verdict,
+    'blocked',
+  )
+  const fresh = { ...report, body: report.body.replace(`head=${OTHER}`, `head=${HEAD}`) }
+  assert.equal(
+    (await judge({ pr: 7, repo: REPO }, deps(world({ comments: [fresh] })))).verdict,
+    'blocked',
+  )
 })
 test('a v2 report carries what review fixed and certified to the judge output', async () => {
   const fixed = { ...p2Review, id: 'gone', line: 40 }
@@ -10694,7 +10829,7 @@ test('a same-head repair-exhausted park does not hide remaining review blockers'
     comments: [standingReport([p2Review])],
   })
   const result = await judge({ pr: 7, repo: REPO }, deps(w))
-  assert.equal(result.verdict, 'blocked')
+  assert.equal(result.verdict, 'resolution-required')
   assert.equal(result.blockers[0].file, p2Review.file)
   assert.equal(result.held, undefined)
 })
@@ -10974,7 +11109,7 @@ test('judge applies writer acceptance on its pinned head and candidates re-admit
   assert.equal(
     (await judge({ pr: 7, repo: REPO }, deps(world({ comments: [report, accepted(OTHER)] }))))
       .verdict,
-    'blocked',
+    'resolution-required',
   )
   const fixture = (comments) =>
     candidateWorld({

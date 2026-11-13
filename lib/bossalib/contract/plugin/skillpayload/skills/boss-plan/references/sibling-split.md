@@ -41,11 +41,22 @@ Step 2 holds `needs-human` as the exposure label while siblings are pending, wha
 says; the description already names every part, so the worst case is today's oversized-child state.
 After write-back verification (step 5), file the siblings:
 
-1. Write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json` as
-   `{sourceId, sourceTitle, parentId, siblings, existingChildren}`: `parentId` spelled as step 5's
-   read-back reports the parent, `siblings` from the adopted metadata, `existingChildren` the
-   parent's live children enumerated as Phase 1's route does (`listChildren`, or `list_issues` then
-   `get_issue` each, since list descriptions truncate).
+1. Build `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json` from the parent's
+   hydrated `listChildren` result and the adopted draft metadata. Use `parentId` exactly as step 5's
+   read-back reports it and the source title from that read-back:
+
+   ```bash
+   set -o pipefail
+   printf '{"parentId":"%s"}\n' "<PARENT-ID>" |
+     bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs invoke-operation listChildren --args-file /dev/stdin --result-only |
+     jq --arg sourceId "<ISSUE-ID>" --arg sourceTitle "<SOURCE-TITLE>" --arg parentId "<PARENT-ID>" \
+       --slurpfile metadata .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json \
+       '{sourceId:$sourceId, sourceTitle:$sourceTitle, parentId:$parentId, siblings:$metadata[0].siblings, existingChildren:.children}' > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json
+   ```
+
+   Stop on a listing failure before planning any creates. Pass the title as data, with shell quoting
+   that preserves its bytes.
+
 2. Plan the creates. Exit 1 names a truncated description (re-read that child) or two children
    claiming one key (a human keeps one); stop there with `needs-human` kept.
 

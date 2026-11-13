@@ -20,6 +20,11 @@ export const SPEC_LABEL_CHARS = 40
 export const SPEC_REASON_CHARS = 200
 export const MAX_SPEC_DECISIONS = 4
 export const MAX_SPEC_LINKS = 8
+export const MAX_SECTION_PARTS = 8
+export const MAX_SECTION_COLUMNS = 6
+export const SECTION_SUB_CHARS = 80
+/** The tones a section's pill, cell or label may take. */
+export const SECTION_TONES = Object.freeze(['success', 'warning', 'danger', 'info', 'neutral'])
 export const RISK_LEVELS = Object.freeze(['high', 'medium', 'low'])
 export const EVIDENCE_KINDS = Object.freeze(['still', 'clip', 'transcript', 'document'])
 export const CRITERION_STATUSES = Object.freeze(['done', 'unverified', 'missed', 'skipped'])
@@ -66,18 +71,25 @@ export const SEVERITY_LEVELS = Object.freeze(
  * @typedef {{id: string, name: string, summary: string, facts: {text: string, flag: boolean}[], snippets: SpecSnippet[]}} SpecArea
  * @typedef {{text: string, done: boolean}} SpecCheck
  * @typedef {{severity: string, at?: string, text: string}} SpecNote
+ * @typedef {{id: string, group?: string, context?: string, text: string, expect?: string, tag?: string, tone?: string, links: string[]}} SpecSectionItem
+ * @typedef {{text: string, note?: string, pill?: string, code?: boolean}} SpecCell
+ * @typedef {{kind: 'checklist', numbered: boolean, items: SpecSectionItem[]}
+ *   | {kind: 'table', title?: string, note?: string, columns: string[], rows: {cells: SpecCell[]}[]}
+ *   | {kind: 'facts', title?: string, rows: {label: string, text: string, tone?: string}[]}} SpecPart
+ * @typedef {{id: string, sub?: string, parts: SpecPart[]}} SpecSection
  * @typedef {{claim: string, kind: string, how: string}} SpecPlan
  * @typedef {{schema: string, head: string, title?: string, reason?: string, waiting: SpecWaiting[],
  *   risks: SpecRisk[], decisions: SpecDecision[], ticketFit?: SpecTicketFit, areas: SpecArea[],
  *   checklist: {after: SpecCheck[]}, notes: SpecNote[], evidencePlan: SpecPlan[],
- *   uncertain: string[]}} ProofSpec
+ *   uncertain: string[], sections?: SpecSection[]}} ProofSpec
  * @typedef {{head: string, changedPaths?: Iterable<string> | null, areaIds?: Iterable<string> | null,
  *   hasLine?: (path: string, line: number) => boolean | null, checks?: Iterable<string> | null,
  *   acceptance?: {id: string, result: string, head: string}[], findingIds?: Iterable<string>,
- *   addedPaths?: Iterable<string> | null}} SpecContext
+ *   addedPaths?: Iterable<string> | null, sections?: Iterable<string> | null}} SpecContext
  *   `checks` are the names of the checks that passed on the head, `acceptance` the rows review
  *   certified and `findingIds` the ids of review's findings; criterion evidence resolves to them.
  *   `addedPaths` are the changed files that gained lines; a cited test must be one when given.
+ *   `sections` are the ids of the sections the repository declares, which a spec section fills.
  */
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
@@ -157,6 +169,166 @@ function noteSeverity(value, at, dropped) {
   return ''
 }
 
+/** @param {unknown} value @param {string} field @returns {string | undefined} */
+const sectionTone = (value, field) => {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !SECTION_TONES.includes(value))
+    throw new Drop(`${field}: expected one of ${SECTION_TONES.join(', ')}`)
+  return value
+}
+/** Short text that may be empty, such as a blank table cell or column. @param {unknown} value @param {number} max @param {string} field */
+const blankable = (value, max, field) => {
+  if (typeof value !== 'string') throw new Drop(`${field}: expected text`)
+  if (value.length > max) throw new Drop(`${field}: longer than ${max} characters`)
+  return value
+}
+
+/**
+ * @typedef {{checkId: (value: unknown, field: string) => string, claim: (id: string | undefined) => void,
+ *   linkList: (value: unknown, at: string) => string[], dropped: Dropped[]}} PartContext
+ */
+
+/** One table cell: text, or text with a dim note, a pill tone or code type. @param {unknown} value @returns {SpecCell} */
+function sectionCell(value) {
+  if (typeof value === 'string') return { text: blankable(value, SPEC_TEXT_CHARS, 'cells') }
+  const c = onlyKeys(value, ['text', 'note', 'pill', 'code'], 'cells')
+  if (c.code !== undefined && typeof c.code !== 'boolean')
+    throw new Drop('cells.code: expected boolean')
+  return compact({
+    text: blankable(c.text, SPEC_TEXT_CHARS, 'cells.text'),
+    note: optText(c.note, SPEC_TEXT_CHARS, 'cells.note'),
+    pill: sectionTone(c.pill, 'cells.pill'),
+    code: c.code === true ? true : undefined,
+  })
+}
+
+/**
+ * One part of a repository section: a checklist of tickable items, a table or labelled facts.
+ * An unknown kind or key drops the part; a bad item or row drops alone, and a part left with none
+ * is dropped. Checklist item ids are claimed page-wide, like every other item id.
+ * @param {unknown} value @param {string} at @param {PartContext} ctx @returns {SpecPart}
+ */
+function sectionPart(value, at, { checkId, claim, linkList, dropped }) {
+  if (!isRecord(value)) throw new Drop('expected object')
+  if (value.kind === 'checklist') {
+    const p = onlyKeys(value, ['kind', 'numbered', 'items'])
+    if (p.numbered !== undefined && typeof p.numbered !== 'boolean')
+      throw new Drop('numbered: expected boolean')
+    const items = keepEach(
+      p.items,
+      `${at}.items`,
+      MAX_SPEC_LIST,
+      (entry, where) => {
+        const c = onlyKeys(entry, [
+          'id',
+          'group',
+          'context',
+          'text',
+          'expect',
+          'tag',
+          'tone',
+          'links',
+        ])
+        const item = compact({
+          id: checkId(c.id, 'id'),
+          group: optText(c.group, SPEC_LABEL_CHARS, 'group'),
+          context: optText(c.context, SPEC_TEXT_CHARS, 'context'),
+          text: needText(c.text, SPEC_TEXT_CHARS, 'text'),
+          expect: optText(c.expect, SPEC_TEXT_CHARS, 'expect'),
+          tag: optText(c.tag, SPEC_LABEL_CHARS, 'tag'),
+          tone: sectionTone(c.tone, 'tone'),
+          links: linkList(c.links, where),
+        })
+        claim(item.id)
+        return item
+      },
+      dropped,
+    )
+    if (!items.length) throw new Drop('items: nothing to show')
+    return { kind: 'checklist', numbered: p.numbered === true, items }
+  }
+  if (value.kind === 'table') {
+    const t = onlyKeys(value, ['kind', 'title', 'note', 'columns', 'rows'])
+    if (
+      !Array.isArray(t.columns) ||
+      t.columns.length === 0 ||
+      t.columns.length > MAX_SECTION_COLUMNS
+    )
+      throw new Drop(`columns: expected 1 to ${MAX_SECTION_COLUMNS} labels`)
+    const columns = t.columns.map((column) => blankable(column, SPEC_LABEL_CHARS, 'columns'))
+    const title = optText(t.title, SPEC_LABEL_CHARS, 'title')
+    const note = optText(t.note, SPEC_TEXT_CHARS, 'note')
+    const rows = keepEach(
+      t.rows,
+      `${at}.rows`,
+      MAX_SPEC_LIST,
+      (entry) => {
+        const r = onlyKeys(entry, ['cells'])
+        if (!Array.isArray(r.cells) || r.cells.length !== columns.length)
+          throw new Drop(`cells: expected ${columns.length}, one per column`)
+        return { cells: r.cells.map(sectionCell) }
+      },
+      dropped,
+    )
+    if (!rows.length) throw new Drop('rows: nothing to show')
+    return compact({ kind: 'table', title, note, columns, rows })
+  }
+  if (value.kind === 'facts') {
+    const f = onlyKeys(value, ['kind', 'title', 'rows'])
+    const title = optText(f.title, SPEC_LABEL_CHARS, 'title')
+    const rows = keepEach(
+      f.rows,
+      `${at}.rows`,
+      MAX_SPEC_LIST,
+      (entry) => {
+        const r = onlyKeys(entry, ['label', 'text', 'tone'])
+        return compact({
+          label: needText(r.label, SPEC_LABEL_CHARS, 'label'),
+          text: needText(r.text, SPEC_TEXT_CHARS, 'text'),
+          tone: sectionTone(r.tone, 'tone'),
+        })
+      },
+      dropped,
+    )
+    if (!rows.length) throw new Drop('rows: nothing to show')
+    return compact({ kind: 'facts', title, rows })
+  }
+  throw new Drop('kind: expected one of checklist, table, facts')
+}
+
+/**
+ * The spec's sections: each fills one section the repository declares, at most once, with at
+ * most 8 parts. A section the repository does not declare, or one left with no part, is dropped.
+ * @param {unknown} value @param {Set<string>} declared @param {PartContext} ctx @returns {SpecSection[]}
+ */
+function specSections(value, declared, ctx) {
+  const seen = new Set()
+  return keepEach(
+    value,
+    'sections',
+    MAX_SPEC_LIST,
+    (entry, at) => {
+      const s = onlyKeys(entry, ['id', 'sub', 'parts'])
+      const id = needText(s.id, SPEC_LABEL_CHARS, 'id')
+      if (!declared.has(id)) throw new Drop(`id: ${id} is not a section the repository declares`)
+      if (seen.has(id)) throw new Drop(`id: ${id} appears twice`)
+      const sub = optText(s.sub, SECTION_SUB_CHARS, 'sub')
+      if (sub !== undefined && /[\r\n]/.test(sub)) throw new Drop('sub: expected one line')
+      const parts = keepEach(
+        s.parts,
+        `${at}.parts`,
+        MAX_SECTION_PARTS,
+        (part, where) => sectionPart(part, where, ctx),
+        ctx.dropped,
+      )
+      if (!parts.length) throw new Drop('parts: nothing to show')
+      seen.add(id)
+      return compact({ id, sub, parts })
+    },
+    ctx.dropped,
+  )
+}
+
 const TOP_KEYS = Object.freeze([
   'schema',
   'head',
@@ -171,6 +343,7 @@ const TOP_KEYS = Object.freeze([
   'notes',
   'evidencePlan',
   'uncertain',
+  'sections',
 ])
 
 /**
@@ -203,6 +376,8 @@ const splitRef = (ref) => {
  * criteria. A link must name another kept item's id or a finding id, else it is dropped.
  * Line-level snippet checks need git and happen when the page quotes them. A note's severity is
  * optional; a known word becomes its P-level, and one longer than 12 characters is left out.
+ * A section fills one of the `sections` the repository declares; its checklist items take ids
+ * like any other item and link the same way.
  * @param {unknown} value @param {SpecContext} context
  * @returns {{spec: ProofSpec | null, dropped: Dropped[]}}
  */
@@ -217,6 +392,7 @@ export function validateProofSpec(
     acceptance = [],
     findingIds = [],
     addedPaths = null,
+    sections: sectionIds = null,
   },
 ) {
   /** @type {Dropped[]} */
@@ -489,6 +665,12 @@ export function validateProofSpec(
       dropped.push({ at: 'ticketFit', reason: error.message })
     }
   }
+  const sections = specSections(value.sections, new Set(sectionIds ?? []), {
+    checkId,
+    claim,
+    linkList,
+    dropped,
+  })
   // A link names a kept item or a finding, never its own item.
   /** @template {{id?: string, links: string[]}} T @param {T} item @param {string} at @returns {T} */
   const keepLinks = (item, at) => {
@@ -501,6 +683,19 @@ export function validateProofSpec(
   }
   const linkedRisks = risks.map((risk, i) => keepLinks(risk, `risks[${i}]`))
   const linkedDecisions = decisions.map((decision, i) => keepLinks(decision, `decisions[${i}]`))
+  const linkedSections = sections.map((section, i) => ({
+    ...section,
+    parts: section.parts.map((part, j) =>
+      part.kind === 'checklist'
+        ? {
+            ...part,
+            items: part.items.map((item, k) =>
+              keepLinks(item, `sections[${i}].parts[${j}].items[${k}]`),
+            ),
+          }
+        : part,
+    ),
+  }))
   const seenAreas = new Set()
   const specAreas = keepEach(
     value.areas,
@@ -628,6 +823,7 @@ export function validateProofSpec(
       notes,
       evidencePlan,
       uncertain,
+      sections: linkedSections.length ? linkedSections : undefined,
     }),
     dropped,
   }

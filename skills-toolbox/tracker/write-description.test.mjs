@@ -106,3 +106,16 @@ test('Linear declares the optional patch operation while GitHub omits it', () =>
     undefined,
   )
 })
+
+test('link-only anchor neighbourhood emits a byte-exact replacement descriptor', () =>
+  fixture((dir) => {
+    const linkedBase = '- [A-1](u1)\n- [A-2](u2)\n' + base
+    const intended = linkedBase.replace('- [A-2]', '- added\n- [A-2]')
+    fs.writeFileSync(path.join(dir, 'base.md'), linkedBase)
+    fs.writeFileSync(path.join(dir, 'body.md'), intended)
+    const result = invoke(dir, { writeDescription: replacement, patchDescription: patch })
+    assert.equal(result.code, 0)
+    assert.equal(result.descriptor.mode, 'replace')
+    assert.equal(result.descriptor.patchFallback, 'link-anchor')
+    assert.deepEqual(result.descriptor.args, { id: 'ISSUE-1', description: intended })
+  }))

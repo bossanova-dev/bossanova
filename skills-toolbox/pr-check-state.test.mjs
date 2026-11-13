@@ -887,6 +887,27 @@ test('absentGateRemedy — absent contexts that reported SUCCESS or NEUTRAL on t
   for (const v of [verdict, namesOnly, mixed]) assert.equal(provesGreenAgrees(v), true)
 })
 
+test('classifyChecks — names absent contexts that were still queued or running on the prior head', () => {
+  const head = { checks: [bucketRow('test-go', 'SUCCESS', 'pass')] }
+  const verdict = classifyChecks({
+    buckets: head,
+    priorContexts: [
+      { name: 'test-go', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: '.github/dependabot.yml', status: 'QUEUED', conclusion: null },
+      { context: 'external/ci', state: 'PENDING' },
+      { name: 'web-e2e', status: 'COMPLETED', conclusion: 'FAILURE' },
+      { name: 'flaky', status: 'IN_PROGRESS', conclusion: null },
+      { name: 'flaky', status: 'COMPLETED', conclusion: 'FAILURE' },
+    ],
+  })
+  // The classifier still holds every one of them; which to discount is the caller's call.
+  assert.equal(verdict.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(verdict.unreportedOnPrior, ['.github/dependabot.yml', 'external/ci'])
+  // A names-only prior carries no status, so it never claims a context went unreported.
+  const namesOnly = classifyChecks({ buckets: head, priorContexts: ['test-go', 'queued'] })
+  assert.deepEqual(namesOnly.unreportedOnPrior, [])
+})
+
 test('CLI classify — the absent-gate remedy is printed beside the existing reported fields', () => {
   const base = [
     'classify',

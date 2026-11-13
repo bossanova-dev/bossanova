@@ -47,6 +47,142 @@ function writeSkill(root, name, frontmatterLines) {
   return dir
 }
 
+/** A proof-section extension of boss-verify declaring `sections`, each line of the marker list. */
+function sectionsSkill(root, name, sectionLines, body = `# ${name}`) {
+  const dir = path.join(root, '.claude', 'skills', name)
+  fs.mkdirSync(dir, { recursive: true })
+  const marker = [
+    '---',
+    `name: ${name}`,
+    'x-boss-extension:',
+    '  extends: boss-verify',
+    '  role: proof-section',
+    '  sections:',
+    ...sectionLines,
+    '---',
+    '',
+    body,
+    '',
+  ]
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), marker.join('\n'))
+}
+
+test('a proof-section extension declares its sections and carries its body as instructions', () => {
+  const root = scratchRoot()
+  sectionsSkill(
+    root,
+    'boss-verify-sections',
+    [
+      '    - id: infra',
+      '      title: Infrastructure',
+      '      after: a-migrations',
+      '    - id: testing',
+      '      title: How to test it',
+      '      after: nowhere',
+    ],
+    'Fill infra with the deploy steps.',
+  )
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-verify',
+    root,
+    role: 'proof-section',
+  })
+  assert.deepEqual(skipped, [])
+  assert.equal(extensions.length, 1)
+  assert.deepEqual(extensions[0].sections, [
+    { id: 'infra', title: 'Infrastructure', after: 'a-migrations' },
+    { id: 'testing', title: 'How to test it' },
+  ])
+  assert.equal(extensions[0].instructions, 'Fill infra with the deploy steps.')
+})
+
+test('a downstream proof-section extension written as a YAML list of maps is discovered, not skipped', () => {
+  // The frontmatter shape a consuming repository ships, verbatim: a list of maps under the marker.
+  const root = scratchRoot()
+  const dir = path.join(root, '.claude', 'skills', 'boss-verify-fc-sections')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(
+    path.join(dir, 'SKILL.md'),
+    [
+      '---',
+      'name: boss-verify-fc-sections',
+      'disable-model-invocation: true',
+      "description: Freshclaim repo-local boss-verify proof-section extension. Defines two proof-page sections the core's proof author fills from this body, Infrastructure (what an operator does or must know before and after the merge is deployed) and How to test it (a plain-language checklist for a human tester). Discovered by the installed boss-verify toolbox's skill-extensions.mjs (x-boss-extension, extends boss-verify, role proof-section). Not invoked directly.",
+      'x-boss-extension:',
+      '  extends: boss-verify',
+      '  role: proof-section',
+      '  sections:',
+      '    - id: infra',
+      '      title: Infrastructure',
+      '      after: a-migrations',
+      '    - id: testing',
+      '      title: How to test it',
+      '      after: ticket',
+      '---',
+      '',
+      '# Instructions',
+      '',
+    ].join('\n'),
+  )
+  const { extensions, skipped } = discoverExtensions({ core: 'boss-verify', root })
+  assert.deepEqual(skipped, [])
+  assert.equal(extensions[0].role, 'proof-section')
+  assert.deepEqual(extensions[0].sections, [
+    { id: 'infra', title: 'Infrastructure', after: 'a-migrations' },
+    { id: 'testing', title: 'How to test it', after: 'ticket' },
+  ])
+})
+
+test('a proof-section marker with a bad or repeated id or no title is skipped as invalid-sections', () => {
+  const cases = {
+    bad: ['    - id: Infra', '      title: Infrastructure'],
+    long: ['    - id: a-very-long-section-identifier', '      title: Long'],
+    twice: ['    - id: infra', '      title: One', '    - id: infra', '      title: Two'],
+    untitled: ['    - id: infra'],
+    empty: [],
+  }
+  for (const [name, lines] of Object.entries(cases)) {
+    const root = scratchRoot()
+    sectionsSkill(root, `boss-verify-${name}`, lines)
+    const { extensions, skipped } = discoverExtensions({
+      core: 'boss-verify',
+      root,
+      role: 'proof-section',
+    })
+    assert.deepEqual(extensions, [], name)
+    assert.deepEqual(
+      skipped.map((entry) => [entry.code, entry.deliberate]),
+      [['invalid-sections', false]],
+      name,
+    )
+  }
+})
+
+test('a list under one marker key leaves the keys after it, and keys before any item, as they were', () => {
+  const { data } = parseFrontmatter(
+    [
+      '---',
+      'x-boss-extension:',
+      '  extends: boss-verify',
+      '  sections:',
+      '    - id: infra',
+      '      title: Infrastructure',
+      '  order: 5',
+      '  legacy:',
+      '    nested: kept',
+      '---',
+      '',
+    ].join('\n'),
+  )
+  assert.deepEqual(data['x-boss-extension'], {
+    extends: 'boss-verify',
+    sections: [{ id: 'infra', title: 'Infrastructure' }],
+    order: 5,
+    legacy: '',
+    nested: 'kept',
+  })
+})
+
 test('parseFrontmatter splits frontmatter from body', () => {
   const { data, body } = parseFrontmatter('---\nname: x\n---\n\nhello\n')
   assert.equal(data.name, 'x')
@@ -679,6 +815,14 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     '  role: orchestrate-classify',
     '  script: ../outside.mjs',
   ])
+  writeSkill(root, 'bs-review-badsections', [
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: proof-section',
+    '  sections:',
+    '    - id: Infra',
+    '      title: Infrastructure',
+  ])
   const emitted = new Set()
   for (const { core, role, mode } of [
     { core: 'bs-review', role: 'plan-reviewer' },
@@ -687,6 +831,7 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     { core: 'bs-review', role: 'proof-describe' },
     { core: 'bs-review', role: 'proof-publish' },
     { core: 'bs-review', role: 'proof-media' },
+    { core: 'bs-review', role: 'proof-section' },
     { core: 'bs-review', role: 'verify' },
     // A requested MODE is a property of the caller's argument, like the requested role below.
     { core: 'bs-review', role: 'plan-reviewer', mode: 'headless' },
@@ -749,6 +894,7 @@ test('exactly the non-extension and mode-not-declared skips are classified delib
     'invalid-publish',
     'invalid-release-marker',
     'invalid-script',
+    'invalid-sections',
     'malformed-frontmatter',
     'missing-marker',
     'mode-not-declared',
@@ -938,6 +1084,7 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
     'proof-describe',
     'proof-media',
     'proof-publish',
+    'proof-section',
     'release',
     'surface',
     'verify',

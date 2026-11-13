@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"testing/synctest"
@@ -78,23 +79,23 @@ func TestWorktreeReconcileRunsDaily_Sessions_AC222901(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		calls := 0
+		var calls atomic.Int32
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
 			runDailyWorktreeReconcile(ctx, func(context.Context) (session.UnrecordedWorktreeReport, error) {
-				calls++
+				calls.Add(1)
 				return session.UnrecordedWorktreeReport{}, nil
 			}, time.NewTicker(24*time.Hour))
 		}()
 		synctest.Wait()
-		if calls != 1 {
-			t.Fatalf("startup calls=%d", calls)
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("startup calls=%d", got)
 		}
 		time.Sleep(24 * time.Hour)
 		synctest.Wait()
-		if calls != 2 {
-			t.Fatalf("daily calls=%d", calls)
+		if got := calls.Load(); got != 2 {
+			t.Fatalf("daily calls=%d", got)
 		}
 		cancel()
 		<-done

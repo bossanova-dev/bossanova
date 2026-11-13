@@ -175,12 +175,10 @@ Run `parseEpicSpec` on those bytes and check `validateSpecIdentity` (stored-reco
 An unreadable or unbindable spec goes to `epicSpecRecoveryGate({parent, children, plannedState,
 epicLabel})`, which only ever answers `noop` or `abort` — never fall through to a single-ticket plan.
 
-When `tracker/cli.mjs operations` lists `listChildren`, enumerate children with
-`tracker/cli.mjs invoke-operation listChildren --args-file <file>` using `{parentId}` and use its
-hydrated `children` as the per-child payloads (no separate per-child read). Otherwise enumerate with
-`list_issues parentId=<parent> limit=250`, then `get_issue includeRelations=true` each child (list
-descriptions truncate the marker). Print any `relationWarnings` in the route summary; they never
-stop the run. Join with `reconcileEpicChildren(spec, children)`:
+Read `children` from this run's
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json`, already hydrated by the route's
+`listChildren` read. Reuse that bundle rather than enumerating again. Print any `relationWarnings`
+in the route summary; they never stop the run. Join with `reconcileEpicChildren(spec, children)`:
 
 - **aligned** — create exactly what `missing` names, drafted from the persisted metadata;
 - **one rename** (`repairs`) — on single-record storage, write nothing, report the required marker

@@ -368,6 +368,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
   // eleven → ten: lens and round retire with boss-review's lens map and round extensions.
   // proof-publish: a repository's own evidence and proof-page publisher for boss-verify.
   // proof-media: a repository's capture of a passing run on the judged head, for the proof page.
+  // proof-section: a repository's own proof-page sections and the author's instructions for them.
   // orchestrate-rules, -classify and -round: the orchestrator's prose, row-override and round roles.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
@@ -384,6 +385,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
     'proof-describe',
     'proof-media',
     'proof-publish',
+    'proof-section',
     'release',
     'surface',
     'verify',

@@ -108,7 +108,7 @@ test('resolveTrackerAdapter treats a blank LINEAR_API_ENDPOINT as unset', async 
   assert.equal(calls[0], 'https://api.linear.app/graphql')
 })
 
-test('assertConforms passes for the Linear adapter, with all 21 operations declared', () => {
+test('assertConforms passes for the Linear adapter, with all 22 operations declared', () => {
   const adapter = resolveTrackerAdapter({ env: { LINEAR_API_KEY: 'k' } })
   assert.doesNotThrow(() => assertConforms(adapter))
   // Moving extractImages/createLabel to the optional list widened what CONFORMS; it did
@@ -121,7 +121,7 @@ test('assertConforms passes for the Linear adapter, with all 21 operations decla
   // description write the planning flow saves through.
   // BOS-1393 raised the optional half to 9 with listTeams, the zero-config team listing.
   // BOS-1394 adds createIssue, the notes consumer’s issue creation descriptor.
-  assert.equal(Object.keys(adapter.operationMap).length, 21)
+  assert.equal(Object.keys(adapter.operationMap).length, 22)
   // BOS-1282 added the `classify-outcome` CLI capability and deliberately did NOT move this
   // number: classification is not something a tracker PERFORMS, so an operationMap entry for it
   // would make every already-vendored adapter non-conforming. The count not moving for it is how
@@ -129,14 +129,15 @@ test('assertConforms passes for the Linear adapter, with all 21 operations decla
   for (const key of [
     ...REQUIRED_TRACKER_OPERATIONS,
     ...OPTIONAL_TRACKER_OPERATIONS.filter(
-      (key) =>
-        !['preflight', 'writePlan', 'writeEpicSpec', 'writeSourceNotes', 'listChildren'].includes(
-          key,
-        ),
+      (key) => !['preflight', 'writePlan', 'writeEpicSpec', 'writeSourceNotes'].includes(key),
     ),
   ]) {
     assert.ok(key in adapter.operationMap, `the reference adapter must still declare ${key}`)
   }
+  assert.deepEqual(adapter.operationMap.listChildren.command, {
+    helper: 'tracker/linear-children.mjs',
+    verb: 'list-children',
+  })
   assert.equal('writePlan' in adapter.operationMap, false)
   assert.equal('writeEpicSpec' in adapter.operationMap, false)
 })

@@ -2,7 +2,10 @@ package skills
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
+
+	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 )
 
 // skillDriftHistoryLookback bounds commits touching any skill tree. Exhaustion
@@ -12,8 +15,9 @@ const skillDriftHistoryLookback = 5000
 // skillDriftHistory is lazy and batch-owned: even failed walks are performed at
 // most once per revision range, without leaking results across repositories.
 type skillDriftHistory struct {
-	head   *skillDriftHistoryIndex
-	origin *skillDriftHistoryIndex
+	head    *skillDriftHistoryIndex
+	origin  *skillDriftHistoryIndex
+	changed *skillDriftOriginChanges
 }
 
 type skillDriftHistoryIndex struct {
@@ -69,6 +73,49 @@ func (g *Group) readSkillDriftHistory(repoRoot, revRange string) *skillDriftHist
 			for _, blob := range fields[2:4] {
 				index.blobs[blob] = struct{}{}
 			}
+		}
+	}
+	return index
+}
+
+type skillDriftOriginChanges struct {
+	paths map[string]struct{}
+	err   error
+}
+
+func (g *Group) resolveSkillDriftPathAncestry(repoRoot, rel, blob string, history *skillDriftHistory) skillDriftDirection {
+	direction := g.resolveSkillDriftBlobAncestry(repoRoot, blob, history)
+	if direction != skillDriftBehind {
+		return direction
+	}
+	if history.changed == nil {
+		history.changed = g.readSkillDriftOriginChanges(repoRoot)
+	}
+	if history.changed.err != nil {
+		return skillDriftUnknown
+	}
+	if _, changed := history.changed.paths[rel]; changed {
+		return skillDriftAhead
+	}
+	return direction
+}
+
+func (g *Group) readSkillDriftOriginChanges(repoRoot string) *skillDriftOriginChanges {
+	index := &skillDriftOriginChanges{}
+	origin, err := g.skillDriftHistoryGit(repoRoot, "rev-parse", "--verify", "--quiet", "origin/HEAD")
+	if err != nil || strings.TrimSpace(origin) == "" {
+		return index
+	}
+	prefix := filepath.ToSlash(filepath.Join(libskillinstall.SourceRelPath, "skills"))
+	out, err := g.skillDriftHistoryGit(repoRoot, "diff", "--name-only", "-z", "--no-renames", "HEAD...origin/HEAD", "--", prefix)
+	index.err = err
+	if err != nil {
+		return index
+	}
+	index.paths = make(map[string]struct{})
+	for path := range strings.SplitSeq(out, "\x00") {
+		if rel, ok := strings.CutPrefix(path, prefix+"/"); ok {
+			index.paths[rel] = struct{}{}
 		}
 	}
 	return index

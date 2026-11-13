@@ -1561,3 +1561,185 @@ test('review rows the author did not restate still show beside the author criter
   const fallback = section(renderProofHtml(page, authorExtras({ spec: empty })), 'ticket')
   assert.ok(fallback.includes('<tr id="ac-ac3">'), 'no author criteria leaves review rows')
 })
+
+/** The two sections a repository declares, and a spec that fills them. */
+const DECLARED = [
+  { id: 'infra', title: 'Infrastructure', after: 'a-logic' },
+  { id: 'testing', title: 'How to test it', after: 'risks' },
+  { id: 'unfilled', title: 'Never shown' },
+]
+const sectionSpecFor = (risks) =>
+  spec({
+    risks,
+    sections: [
+      {
+        id: 'infra',
+        sub: 'one step',
+        parts: [
+          {
+            kind: 'checklist',
+            items: [
+              {
+                id: 'I1',
+                group: 'Deploy',
+                text: 'Run `./migrate`.',
+                tag: 'production',
+                links: ['R1'],
+              },
+              { id: 'I2', group: 'Deploy', text: 'Redeploy.' },
+              { id: 'I3', group: 'After', text: 'Check the pod.', tag: 'both', tone: 'info' },
+            ],
+          },
+          {
+            kind: 'table',
+            title: 'Settings',
+            columns: ['Setting', 'Production'],
+            rows: [
+              {
+                cells: [
+                  { text: 'A\nB', code: true, note: 'Two names' },
+                  { text: 'set', pill: 'success' },
+                ],
+              },
+              { cells: ['C', { text: 'empty', pill: 'neutral' }] },
+            ],
+          },
+          { kind: 'facts', rows: [{ label: 'Staging', text: 'No number.', tone: 'warning' }] },
+        ],
+      },
+      {
+        id: 'testing',
+        parts: [
+          {
+            kind: 'checklist',
+            numbered: true,
+            items: [
+              { id: 'T1', context: 'Admin', text: 'Send a text.', expect: 'It arrives.' },
+              { id: 'T2', text: 'Send another.' },
+            ],
+          },
+        ],
+      },
+    ],
+  })
+const RISK_TO_SECTION = [
+  {
+    id: 'R1',
+    level: 'medium',
+    title: 'Texts wait',
+    impact: 'Until the number is set.',
+    links: ['T1'],
+  },
+]
+
+test('a declared section sits after the section it names, with a nav entry, count and anchor', () => {
+  const html = render({
+    spec: sectionSpecFor(RISK_TO_SECTION),
+    snippet: resolver,
+    files,
+    sections: DECLARED,
+  })
+  const ids = sectionIds(html)
+  assert.equal(ids.indexOf('sec-testing'), ids.indexOf('risks') + 1, 'testing follows Risks')
+  assert.equal(ids.indexOf('sec-infra'), ids.indexOf('a-logic') + 1, 'infra follows its area')
+  assert.ok(!ids.includes('sec-unfilled'), 'a section the spec leaves out is not shown')
+  assert.deepEqual(
+    navIds(html),
+    ids.filter((id) => id !== 'debug'),
+  )
+  assert.ok(
+    html.includes('<a href="#sec-infra" class="hot">Infrastructure<span class="n">3</span></a>'),
+    'the nav counts checklist items',
+  )
+  assert.ok(
+    html.includes(
+      '<section class="sec" id="sec-infra"><h2>Infrastructure<span class="n">3 · one step</span></h2>',
+    ),
+  )
+})
+
+test('an unknown or absent anchor puts a section just before Files, and an unshown area after the areas', () => {
+  const html = render({
+    spec: sectionSpecFor([]),
+    snippet: resolver,
+    files,
+    sections: [
+      { id: 'infra', title: 'Infrastructure', after: 'a-database' },
+      { id: 'testing', title: 'How to test it' },
+    ],
+  })
+  const ids = sectionIds(html)
+  const lastArea = ids.findLastIndex((id) => id.startsWith('a-'))
+  assert.equal(ids[lastArea + 1], 'sec-infra')
+  assert.ok(ids.includes('files'), 'the page has Files')
+  assert.equal(ids[ids.indexOf('files') - 1], 'sec-testing', 'testing sits just before Files')
+})
+
+test('section items carry their own anchors and tick keys, and a risk links to one and back', () => {
+  const html = render({
+    spec: sectionSpecFor(RISK_TO_SECTION),
+    snippet: resolver,
+    files,
+    sections: DECLARED,
+  })
+  const testing = section(html, 'sec-testing')
+  assert.ok(
+    testing.includes('<div class="si tick rich" id="sec-testing-t1" data-tick="sec-testing-t1">'),
+  )
+  assert.ok(testing.includes('<span class="no">1</span>'), 'a numbered list numbers its items')
+  assert.ok(
+    testing.includes(
+      '<span class="cx">Admin</span><span class="it" id="sec-testing-t1-t">Send a text.</span><span class="ex"><b>Expect</b><span>It arrives.</span></span>',
+    ),
+  )
+  const risk = section(html, 'risks')
+  assert.ok(
+    risk.includes('<a class="lk" href="#sec-testing-t1" title="Send a text.">T1</a>'),
+    'the risk links to the step',
+  )
+  assert.ok(
+    testing.includes('<a class="lk" href="#risk-1" title="Texts wait">R1</a>'),
+    'the step links back',
+  )
+  const ticks = [...html.matchAll(/data-tick="([^"]+)"/g)].map((m) => m[1])
+  assert.equal(new Set(ticks).size, ticks.length, 'every tick key is distinct')
+  assert.ok(ticks.includes('sec-infra-i1') && ticks.includes('sec-testing-t2'))
+})
+
+test('a checklist shows its group once per run, and tables and facts keep their tones', () => {
+  const html = render({ spec: sectionSpecFor([]), snippet: resolver, files, sections: DECLARED })
+  const infra = section(html, 'sec-infra')
+  assert.deepEqual(
+    [...infra.matchAll(/<span class="g">([^<]*)<\/span>/g)].map((m) => m[1]),
+    ['Deploy', '', 'After'],
+  )
+  assert.ok(
+    infra.includes('<div class="si tick first" id="sec-infra-i3"'),
+    'a new group rules above',
+  )
+  assert.ok(infra.includes('<span class="st"><span class="pill muted">production</span></span>'))
+  assert.ok(infra.includes('<span class="pill info">both</span>'))
+  assert.ok(
+    infra.includes('<th>Setting</th><th class="pc">Production</th>'),
+    'a pill column aligns right',
+  )
+  assert.ok(
+    infra.includes(
+      '<td><span class="mono">A</span><span class="mono">B</span><div class="sn">Two names</div></td>',
+    ),
+  )
+  assert.ok(infra.includes('<td class="pc"><span class="pill muted">empty</span></td>'))
+  assert.ok(
+    infra.includes('<li><span class="k warning">Staging</span><span>No number.</span></li>'),
+  )
+})
+
+test('a page with no declared sections shows none, and a spec section with no declaration is dropped', () => {
+  const html = render({ spec: sectionSpecFor([]), snippet: resolver, files })
+  assert.ok(!sectionIds(html).some((id) => id.startsWith('sec-')))
+  assert.ok(
+    debugOf(html).includes(
+      '<li>spec sections[0]: id: infra is not a section the repository declares</li>',
+    ),
+  )
+})

@@ -125,12 +125,29 @@ function matchRules(input, rules) {
   return null
 }
 
+// Reporter headings contain test names, which may quote the very signatures under test.
+export const TEST_REPORT_LINE_PATTERNS = [
+  /^\s*(?:not )?ok \d+\b/,
+  /^\s*# Subtest: /,
+  /^\s*=== (?:RUN|PAUSE|CONT|NAME)\s/,
+  /^\s*--- (?:PASS|FAIL|SKIP):/,
+  /^\s*[✔✖﹣]/,
+]
+
+function evidenceText(input) {
+  return input
+    .split('\n')
+    .filter((line) => !TEST_REPORT_LINE_PATTERNS.some((pattern) => pattern.test(line)))
+    .join('\n')
+}
+
 export function classifyEnvironmentFailure(text) {
-  return matchRules(String(text ?? ''), ENV_FAILURE_RULES)
+  return matchRules(evidenceText(String(text ?? '')), ENV_FAILURE_RULES)
 }
 
 // Host-environment rules first, then transport: a disk-exhaustion or GPG failure is a better
 // description of the same output than "a socket timed out" when both happen to appear.
+// Both tables read evidence lines, excluding test-report headings containing names.
 //
 // Only the TRANSPORT half is withheld from a log that already reports a test failure. The host
 // rules are deliberately NOT gated that way: a disk that filled up or a GPG key that failed during
@@ -138,10 +155,11 @@ export function classifyEnvironmentFailure(text) {
 // behaviour scripts/test-infra/run-gate.mjs already depends on.
 export function classifyGateFailure(text) {
   const input = String(text ?? '')
-  const hostFailure = matchRules(input, ENV_FAILURE_RULES)
+  const evidence = evidenceText(input)
+  const hostFailure = matchRules(evidence, ENV_FAILURE_RULES)
   if (hostFailure) return hostFailure
   if (hasTestFailureMarker(input)) return null
-  return matchRules(input, TRANSPORT_FAILURE_RULES)
+  return matchRules(evidence, TRANSPORT_FAILURE_RULES)
 }
 
 /** @param {{kind?: string, remedy?: string, label?: string}} [failure] */

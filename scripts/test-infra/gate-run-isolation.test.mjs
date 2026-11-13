@@ -53,7 +53,7 @@ function until(fn) {
 test('first-run failure passes alone, preserving original status and evidence order', (t) => {
   const f = fixture(
     t,
-    `test('marker', () => { const marker = new URL('./marker', import.meta.url); if (!fs.existsSync(marker)) { fs.writeFileSync(marker, '1'); throw Error('first run') } })`,
+    `test('ENOSPC recovery', () => {}); test('marker', () => { const marker = new URL('./marker', import.meta.url); if (!fs.existsSync(marker)) { fs.writeFileSync(marker, '1'); throw Error('first run') } })`,
   )
   const result = f.wait()
   assert.equal(result.status, 95, result.stdout + result.stderr)
@@ -64,6 +64,8 @@ test('first-run failure passes alone, preserving original status and evidence or
   )
   assert.equal(fs.readFileSync(path.join(f.run, 'status'), 'utf8'), '1\n')
   assert.match(result.stdout, /isolation:.*fixture.test.mjs/)
+  assert.equal(fs.existsSync(path.join(f.run, 'isolation')), true)
+  assert.match(result.stdout, /\nfailing:.*marker/)
   assert.match(result.stdout, /\nload: /)
   assert.match(result.stdout.trim().split('\n').at(-1), /^evidence:/)
   const before = fs
@@ -76,11 +78,15 @@ test('first-run failure passes alone, preserving original status and evidence or
   )
 })
 test('always failing target reproduces alone', (t) => {
-  const f = fixture(t, `test('fails', () => { throw Error('always') })`)
+  const f = fixture(
+    t,
+    `test('ENOSPC recovery', () => {}); test('fails', () => { throw Error('always') })`,
+  )
   const result = f.wait()
   assert.equal(result.status, 1)
   assert.match(result.stdout, /^GATE FAILED \(exit 1\)/)
   assert.match(result.stdout, /isolation:.*reproduced alone/)
+  assert.match(result.stdout, /\nfailing:.*fails/)
   assert.match(result.stdout, /\nload:/)
 })
 test('bare failing command finds no target and creates no rerun logs', (t) => {

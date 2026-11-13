@@ -103,7 +103,7 @@ func (g *Group) skillGateHealFix(repoRoot, dir, base string, frozen fs.FS, entry
 		}
 	case libskillinstall.DriftContent, libskillinstall.DriftUnexpected:
 		if blob != "" && !isTopLevelSkillKey(entry.Path) {
-			direction = g.resolveSkillDriftBlobAncestry(repoRoot, blob, history)
+			direction = g.resolveSkillDriftPathAncestry(repoRoot, entry.Path, blob, history)
 		}
 	}
 	if direction != skillDriftLossless && direction != skillDriftBehind {

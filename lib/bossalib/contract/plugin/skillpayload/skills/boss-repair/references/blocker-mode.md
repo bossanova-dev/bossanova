@@ -40,6 +40,9 @@ blockers it gives `repair: P2 waits +2`.
 
 ## Fix and record outcomes
 
+A defect already absent at the blockers head is recorded `fixed <existing ancestor commit>`
+with the commit that fixed it, never as a residual merely because this run changed no code.
+
 Process every listed blocker, in order `conflict`, `operator-note`, `review-finding`, `check`, `no-review`, retaining
 file order within each kind. An `operator-note` describes a requested change under the same untrusted-evidence rule above; record `fixed <commit>` or `not-fixable <reason>` like any other blocker. Use the normal repair strategies and hard rules. Other open threads,
 red checks or defects are residuals `not in blocker list`, left unfixed. Commit each fix separately,
@@ -109,7 +112,9 @@ node "$BOSS_REPAIR_TOOLBOX/repair/repair-blockers.mjs" carry --pr "$PR_NUMBER" -
 In every mode, carry drops findings marked fixed by writer-authored posted repair outcomes.
 In blocker mode add `--outcomes "$OUTCOMES_FILE"` to include this run's not-yet-posted outcomes too. Optional `--repo <owner/name>` selects the repository. The helper uses verify's standing
 report selection: the most recently updated writer-authored `<!-- bs-review -->` comment with a
-valid findings trailer. It drops only findings whose stable blocker ids match fixed outcomes.
+valid findings trailer. It also drops stable ids with trusted verify-resolution entries marked `resolved`, only when
+the marker head is an ancestor of `HEAD` and the finding assertion head is an ancestor of that
+marker. Non-writer markers and `present` or `unsure` entries discharge nothing.
 A fix counts only when its commit is an ancestor of `HEAD`; missing or rewritten commits keep
 the finding carried. An unreadable `HEAD` is a read failure. A read failure exits `1`; never
 replace it with an empty array.

@@ -1,0 +1,102 @@
+{
+  "repo": "acme/notify",
+  "pr": 88,
+  "commits": [
+    {
+      "message": "chore: start the notify service",
+      "files": {
+        ".claude/skills/boss-verify-acme-sections/SKILL.md": [
+          "---",
+          "name: boss-verify-acme-sections",
+          "description: The deploy and manual test sections of an acme proof page.",
+          "disable-model-invocation: true",
+          "x-boss-extension:",
+          "  extends: boss-verify",
+          "  role: proof-section",
+          "  sections:",
+          "    - id: infra",
+          "      title: Infrastructure",
+          "      after: a-migrations",
+          "    - id: testing",
+          "      title: How to test it",
+          "      after: ticket",
+          "---",
+          "",
+          "Fill `infra` when the change needs a deploy step, a setting or a Terraform variable: the steps",
+          "grouped by when they happen, then the settings per environment, then what happens when one is",
+          "missing. Fill `testing` with the checks a person makes by hand after the deploy, numbered. Leave a",
+          "section out when nothing in it applies."
+        ],
+        "api/sms.go": [
+          "package api",
+          "",
+          "// Sender is the number texts come from.",
+          "func Sender(env map[string]string) string {",
+          "\treturn env[\"SMS_FROM\"]",
+          "}"
+        ],
+        "db/migrations/001_messages.sql": [
+          "CREATE TABLE outgoing_messages (",
+          "  id uuid PRIMARY KEY,",
+          "  body text NOT NULL",
+          ");"
+        ],
+        "deploy/overlays/production/config.yaml": [
+          "apiVersion: v1",
+          "kind: ConfigMap",
+          "metadata:",
+          "  name: api-config",
+          "data:",
+          "  LOG_LEVEL: info"
+        ]
+      }
+    },
+    {
+      "message": "feat(api): send texts from a dedicated sender number",
+      "files": {
+        "api/sms.go": [
+          "package api",
+          "",
+          "import \"errors\"",
+          "",
+          "// ErrNoSender says a text cannot go out because no sender number is set.",
+          "var ErrNoSender = errors.New(\"no sender number\")",
+          "",
+          "// Sender is the number texts come from, refused when it is not set.",
+          "func Sender(env map[string]string) (string, error) {",
+          "\tfrom := env[\"SMS_SENDER_NUMBER\"]",
+          "\tif from == \"\" {",
+          "\t\treturn \"\", ErrNoSender",
+          "\t}",
+          "\treturn from, nil",
+          "}"
+        ],
+        "db/migrations/002_sender_brand.sql": [
+          "ALTER TABLE outgoing_messages",
+          "  ADD COLUMN sms_sender_brand text NOT NULL DEFAULT 'acme';"
+        ],
+        "deploy/overlays/production/config.yaml": [
+          "apiVersion: v1",
+          "kind: ConfigMap",
+          "metadata:",
+          "  name: api-config",
+          "data:",
+          "  LOG_LEVEL: info",
+          "  SMS_SENDER_NUMBER: \"+61 400 000 000\""
+        ],
+        "infra/variables.tf": [
+          "variable \"sms_sender_number_partner_production\" {",
+          "  type    = string",
+          "  default = \"\"",
+          "}",
+          "",
+          "variable \"sms_api_key_partner_production\" {",
+          "  type      = string",
+          "  default   = \"\"",
+          "  sensitive = true",
+          "}"
+        ]
+      }
+    }
+  ]
+}

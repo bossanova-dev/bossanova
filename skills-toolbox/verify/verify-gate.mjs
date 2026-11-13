@@ -153,6 +153,7 @@ import {
   parseVerifyFlags,
 } from './verify-blockers.mjs'
 import { parseNotesTrailer } from './verify-notes.mjs'
+import * as resolution from './verify-resolution.mjs'
 import { recordFindingNotes } from './verify-post-notes.mjs'
 import { partitionApplicable } from './verify-applies.mjs'
 export { APPLIES_NOT_APPLICABLE_EXIT, appliesNote, partitionApplicable } from './verify-applies.mjs'
@@ -309,6 +310,7 @@ export const VERIFY_VERDICTS = Object.freeze([
   'wait',
   'extensions-required',
   'judge-required',
+  'resolution-required',
   'review-required',
   'pass',
   'defect',
@@ -769,7 +771,8 @@ export function decideVerdict(facts) {
   const conflict = f.eligibilityReasons?.includes('merge-state-dirty') === true
   if (!conflict) {
     if (f.ci?.reason === 'not-requested') return wait('ci-not-requested')
-    if (f.ci?.reason === 'absent-gate') return wait('ci-absent-gate')
+    if (f.ci?.reason === 'absent-gate')
+      return { ...wait('ci-absent-gate'), absentGates: f.ci.absentGates ?? [] }
     if (!f.ci?.settled) return wait('ci-not-settled')
     if (!f.ci?.green && f.ci?.state !== 'failing') return wait('ci-not-green-on-head')
   }
@@ -802,9 +805,12 @@ export function decideVerdict(facts) {
     conflict,
     partial: split.partial,
   })
-  const { blockers, accepted } = splitAccepted(builtBlockers, f.accepted)
+  const { blockers: unaccepted, accepted } = splitAccepted(builtBlockers, f.accepted)
+  const { blockers, ...resolved } = resolution.decideResolution(unaccepted, f)
+  Object.assign(base, resolved)
   if (accepted.length) base.accepted = accepted
   base.confidence = levelConfidence({ ...f, blockers })
+  if (resolved.verdict) return { ...base, blockers, notes }
   if (blockers.length) return { verdict: 'blocked', reason: 'blockers', ...base, blockers, notes }
 
   // Legacy protected-path approvals also cover the computed asks that used to share that code.
@@ -1232,9 +1238,11 @@ export function readCiOnHead(read, repo, pr, view, headSha, requiredChecks = [])
     requiredChecks,
   }
   const ci = judgeCiOnHead(input)
-  const reported = new Set(ci.verdict.reportedOnPrior ?? [])
+  // A workflow-less prior context has no head run to match. One that passed there (a ready-only
+  // bot) or never reported there (an app check queued when the branch moved) is not held.
+  const unheld = new Set([...ci.verdict.reportedOnPrior, ...ci.verdict.unreportedOnPrior])
   const advisory = (prior.contexts ?? [])
-    .filter((context) => !context.workflowName && reported.has(context.name ?? context.context))
+    .filter((context) => !context.workflowName && unheld.has(context.name ?? context.context))
     .map((context) => context.name ?? context.context)
   return advisory.length ? judgeCiOnHead({ ...input, structurallyAbsentContexts: advisory }) : ci
 }
@@ -1774,6 +1782,7 @@ export async function judge(options, deps = {}) {
     heads: [headSha, p.headRefOid],
   })
   const facts = {
+    pr,
     areaCaps: readAreaCaps({ read, repo, now: (deps.now ?? Date.now)(), fs: deps.capFs }),
     prState: p.state,
     isDraft: p.isDraft,
@@ -1785,6 +1794,7 @@ export async function judge(options, deps = {}) {
       green: ci.green,
       state: ci.verdict.state,
       reason: ci.verdict.reason,
+      absentGates: ci.verdict.blockingAbsent ?? [],
     },
     failedChecks: failedCiChecks(p.statusCheckRollup, ci.verdict),
     eligibilityReasons: eligibility.reasons,
@@ -1967,7 +1977,11 @@ export async function judge(options, deps = {}) {
   const report = (reportMarkers.markers ?? [])
     .filter((m) => m.kind === 'review-findings')
     .sort((a, b) => b.at - a.at || b.id - a.id)[0]
-  Object.assign(facts, reportFacts(report))
+  Object.assign(
+    facts,
+    reportFacts(report),
+    resolution.resolutionFacts(facts, report, reportMarkers.markers, options.resolution, read),
+  )
   const consulted = extensionsConsulted(facts)
   if (consulted) {
     const split = partitionApplicable(installed, context, {
@@ -2014,7 +2028,7 @@ export async function judge(options, deps = {}) {
     String(appr.headSha ?? '').toLowerCase() === headSha.toLowerCase()
       ? parseHumanReasonList(appr.park ?? '')
       : null
-  if (parked && !['wait', 'blocked'].includes(verdict.verdict)) {
+  if (parked && !['wait', 'blocked', 'resolution-required'].includes(verdict.verdict)) {
     // A review still required would raise an unusable review's `extension-failed` park again.
     const zero = decideVerdict({ ...facts, extensions: [], judgeAreas: facts.judgeAreas ?? [] })
     const markers = readMarkers()
@@ -2127,6 +2141,7 @@ function extensionRecordComment(headSha, reason, record, label) {
 
 export function parsePostOptions(options) {
   const dryRun = options.dryRun === true
+  resolution.checkResolutionOption(options, UsageError)
   const { verdict, pr } = options
   const confidence = options.confidence === undefined ? null : readJsonFile(options.confidence)
   if (options.confidence !== undefined && (verdict !== 'human' || !validConfidence(confidence)))
@@ -2629,7 +2644,12 @@ async function postSendBack(ctx, parsed, options, facts) {
   const { verdict, findings, blockers } = parsed
   const count = verdict === 'blocked' ? blockers.blockers.length : findings.length
   const mention = authorMention(facts.p)
-  const body = sendBackComment(parsed, facts, headSha, mention)
+  const body = resolution.resolvedSection(
+    sendBackComment(parsed, facts, headSha, mention),
+    options.resolution,
+    ctx,
+    facts.operatorMarkers,
+  )
   const description =
     verdict === 'blocked'
       ? blockedDescription(blockers.blockers, facts.parked)
@@ -2720,6 +2740,12 @@ export async function post(options, deps = {}) {
     const landed = result.posted || result.skipped === 'already-posted'
     return {
       ...result,
+      ...(landed
+        ? resolution.recordResolution(ctx, options.resolution, {
+            readOperatorMarkers,
+            postPrComment,
+          })
+        : {}),
       ...(landed && parsed.notes?.length ? recordFindingNotes(ctx, parsed.notes, noteDeps) : {}),
       ...(landed && parsed.notApplicable?.length
         ? { notApplicable: recordNotApplicable(ctx, parsed.notApplicable, noteDeps) }
@@ -2822,7 +2848,13 @@ export async function merge(options, deps = {}) {
   if (ci.verdict.reason === 'not-requested')
     return finish({ merged: false, verdict: 'wait', reason: 'ci-not-requested', reasons })
   if (ci.verdict.reason === 'absent-gate')
-    return finish({ merged: false, verdict: 'wait', reason: 'ci-absent-gate', reasons })
+    return finish({
+      merged: false,
+      verdict: 'wait',
+      reason: 'ci-absent-gate',
+      absentGates: ci.verdict.blockingAbsent ?? [],
+      reasons,
+    })
   if (reasons.length > 0) return finish({ merged: false, verdict: 'wait', reasons })
 
   const session = readSessionRow(read, p.url)
@@ -3296,7 +3328,7 @@ export function operatorMarkers(comments) {
       login,
       url: text(comment.html_url) ? comment.html_url : '',
     })
-    const acceptance = parseAcceptLine(last)
+    const acceptance = parseAcceptLine(last) ?? resolution.parseResolutionLine(last)
     if (acceptance && ANCHOR_REVIEW_ASSOCIATIONS.has(comment.author_association)) {
       out.push({ ...stamp(acceptance.kind, acceptance.head), ...acceptance })
       continue
@@ -4447,7 +4479,10 @@ export function parseCandidateFlags(argv) {
 // CLI.
 
 const FLAGS = Object.freeze({
-  judge: { values: ['pr', 'repo', 'extension-results', 'judge-areas', 'waive'], bools: [] },
+  judge: {
+    values: ['pr', 'repo', 'extension-results', 'judge-areas', 'resolution', 'waive'],
+    bools: [],
+  },
   post: {
     values: [
       'pr',
@@ -4455,6 +4490,7 @@ const FLAGS = Object.freeze({
       'verdict',
       'reason',
       'findings',
+      'resolution',
       'blockers',
       'notes',
       'not-applicable',
@@ -4534,6 +4570,7 @@ export function postOptionsFromArgv(argv) {
     verdict: f.verdict,
     reason: f.reason,
     findings: f.findings,
+    resolution: f.resolution,
     blockers: f.blockers,
     notes: f.notes,
     notApplicable: f['not-applicable'],
@@ -4576,6 +4613,7 @@ export async function main(argv, deps = {}) {
         repo: f.repo,
         extensionResults: f['extension-results'],
         judgeAreas: f['judge-areas'],
+        resolution: f.resolution,
         waive: f.waive,
       },
       deps,

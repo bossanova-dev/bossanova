@@ -188,12 +188,21 @@ func TestSkillDriftHistory_BossSkills_AC6_MovedToolboxHeal(t *testing.T) {
 
 func TestSkillDriftHistoryBatch(t *testing.T) {
 	g := newTestGroup()
-	for _, scenario := range []string{"behind", "ahead", "exhausted", "lossless"} {
+	for _, scenario := range []string{"behind", "ahead", "exhausted", "lossless", "changed"} {
 		t.Run(scenario, func(t *testing.T) {
 			calls := map[string]int{}
 			g.skillDriftHistoryGit = func(_ string, args ...string) (string, error) {
-				if args[0] == "hash-object" {
+				switch args[0] {
+				case "hash-object":
 					return "installed-blob", nil
+				case "rev-parse":
+					return "origin-tip", nil
+				case "diff":
+					calls["diff"]++
+					if scenario == "changed" {
+						return libskillinstall.SourceRelPath + "/skills/boss/a\x00", nil
+					}
+					return "", nil
 				}
 				rev := "HEAD"
 				for _, arg := range args {
@@ -227,9 +236,16 @@ func TestSkillDriftHistoryBatch(t *testing.T) {
 				entries[1].Kind = libskillinstall.DriftMode
 			}
 			for _, got := range g.skillDriftEntriesWithDirection("repo", "installed", entries) {
-				if got.direction != want {
-					t.Fatalf("direction = %q, want %q", got.direction, want)
+				entryWant := want
+				if scenario == "changed" && got.path == "boss/a" {
+					entryWant = skillDriftAhead
 				}
+				if got.direction != entryWant {
+					t.Fatalf("direction = %q, want %q", got.direction, entryWant)
+				}
+			}
+			if scenario == "changed" && calls["diff"] != 1 {
+				t.Fatalf("changed-path calls: %v", calls)
 			}
 			if scenario == "lossless" && len(calls) != 0 {
 				t.Fatalf("lossless history calls: %v", calls)

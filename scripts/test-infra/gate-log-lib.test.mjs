@@ -9,7 +9,37 @@ import {
   gateEvidenceLine,
   readGateLog,
   renderGateEvidence,
+  renderFailingLine,
 } from './gate-log-lib.mjs'
+
+test('failing line names failures in order, deduplicates and marks Bazel timeouts', () => {
+  const log = [
+    'ok 1 - contains FAILED: but passed',
+    '--- FAIL: TestX (0.01s)',
+    'not ok 2 - broken assertion',
+    '//pkg:test TIMEOUT in 300s',
+    '--- FAIL: TestX (0.01s)',
+    '//other:test FAILED in 1 out of 1 in 2s',
+    'FAILED: build failed',
+  ].join('\n')
+  assert.equal(
+    renderFailingLine(log),
+    'failing: --- FAIL: TestX (0.01s); not ok 2 - broken assertion; //pkg:test (timeout) (+2 more)',
+  )
+  assert.equal(
+    renderFailingLine(log, { limit: 4 }),
+    'failing: --- FAIL: TestX (0.01s); not ok 2 - broken assertion; //pkg:test (timeout); //other:test (+1 more)',
+  )
+})
+
+test('failing line reports missing names and truncates long entries', () => {
+  assert.equal(
+    renderFailingLine('ok 1 - FAILED: test passed'),
+    'failing: none named in the log tail - see log',
+  )
+  const long = `not ok 1 - ${'x'.repeat(200)}`
+  assert.equal(renderFailingLine(long), `failing: ${readGateLog(long).failureLines[0]}`)
+})
 
 // --- Fixtures: real log shapes, kept verbatim so a reworded upstream string is visible here ---
 

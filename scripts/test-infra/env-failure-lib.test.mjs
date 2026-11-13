@@ -30,6 +30,48 @@ test('the gate-boundary classifier ignores transient golangci lock contention to
   assert.equal(classifyEnvironmentFailure(`Error: ${LOCK_CONTENTION_SIGNATURE}`), null)
 })
 
+test('test-report names are not host or transport evidence', () => {
+  const headings = [
+    'ok 12 - ',
+    'not ok 12 - ',
+    '  # Subtest: ',
+    '=== RUN   ',
+    '=== PAUSE ',
+    '=== CONT  ',
+    '=== NAME  ',
+    '--- PASS: ',
+    '  --- FAIL: ',
+    '--- SKIP: ',
+    '✔ ',
+    '  ✖ ',
+    '﹣ ',
+  ]
+  const tokens = ['ENOSPC', 'gpg: signing failed', 'connection reset by peer']
+  for (const heading of headings) {
+    for (const token of tokens) {
+      for (const suffix of ['', '\nnot ok 3 - file budget\n--- FAIL: TestTiming']) {
+        const input = `${heading}${token}${suffix}`
+        assert.equal(classifyEnvironmentFailure(input), null, input)
+        assert.equal(classifyGateFailure(input), null, input)
+      }
+    }
+  }
+})
+
+test('real disk output remains evidence alongside test-report headings', async () => {
+  const { DISK_FLOOR_SIGNATURE } = await import('./disk-headroom-lib.mjs')
+  for (const diagnostic of [
+    'write /tmp/link: No space left on device',
+    "    error: 'ENOSPC: no space left on device, write'",
+    'writing file failed: No space left on device',
+    `${DISK_FLOOR_SIGNATURE}: 0 GiB`,
+  ]) {
+    const input = `ok 1 - disk test\n--- FAIL: TestWrite\n${diagnostic}`
+    assert.equal(classifyEnvironmentFailure(input)?.kind, 'disk-exhaustion', input)
+    assert.equal(classifyGateFailure(input)?.kind, 'disk-exhaustion', input)
+  }
+})
+
 test('gpg memory pressure wins over generic gpg signing classification', () => {
   assert.equal(
     classifyEnvironmentFailure('error: gpg: signing failed: Cannot allocate memory')?.kind,

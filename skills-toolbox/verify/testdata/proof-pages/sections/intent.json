@@ -1,0 +1,4 @@
+{
+  "source": "pr-body",
+  "bullets": ["Sends texts from a dedicated sender number", "Refuses a text when no number is set"]
+}

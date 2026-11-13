@@ -196,3 +196,20 @@ export function renderGateEvidence(reading) {
 export function gateEvidenceLine(text) {
   return renderGateEvidence(readGateLog(text))
 }
+
+export function renderFailingLine(text, { limit = 3 } = {}) {
+  const failures = new Set()
+  for (const line of String(text ?? '').split('\n')) {
+    const bazel = /^[ \t]*(\/\/\S+)\s+(FAILED in|TIMEOUT in)\b/.exec(line)
+    if (bazel) {
+      failures.add(`${bazel[1]}${bazel[2] === 'TIMEOUT in' ? ' (timeout)' : ''}`)
+    } else if (isFailureLine(line)) {
+      failures.add(line.trim())
+    }
+  }
+  if (failures.size === 0) return 'failing: none named in the log tail - see log'
+  const entries = [...failures]
+  const names = entries.slice(0, limit).map(truncate).join('; ')
+  const remaining = entries.length - limit
+  return `failing: ${names}${remaining > 0 ? ` (+${remaining} more)` : ''}`
+}

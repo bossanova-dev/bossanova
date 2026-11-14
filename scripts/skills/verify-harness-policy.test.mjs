@@ -112,8 +112,6 @@ function factsFor(changedPaths) {
     judgeAreas: [],
     review: policy.review,
     mergePolicy,
-    changedLines: 12,
-    sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
     policySurfaceHit: policySurfaceHits(changedPaths).length > 0,
     extensions: [],
   }

@@ -13,8 +13,6 @@ import {
 } from '../skill-config.mjs'
 import { schema } from '../skill-config-validate.generated.mjs'
 
-const SIZE = { ok: true, thresholds: { p90: 100, p99: 200 } }
-
 /** The codes a head over `paths` parks with under a review block and merge rules. */
 function codesFor(
   paths,
@@ -24,8 +22,6 @@ function codesFor(
   const facts = {
     ...pathParkFacts(paths, { review }),
     changedPaths: paths,
-    changedLines: 12,
-    sizeBaseline: SIZE,
     judgeAreas: [],
     ci: { green: true },
     ...gate,
@@ -59,8 +55,6 @@ test('with no rules a moderate head parks exactly as legacy codes do', () => {
     const facts = {
       ...pathParkFacts(paths, { review }),
       changedPaths: paths,
-      changedLines: 12,
-      sizeBaseline: SIZE,
     }
     const result = levelConfidence(facts)
     assert.deepEqual(codesFor(paths), legacyCodes(result, review), paths.join())
@@ -143,21 +137,14 @@ test('a judge-raised ask is not covered by a level-only rule', () => {
   ])
 })
 
-test('a size cause is covered only by a level-only rule for the head level', () => {
-  const big = { changedLines: 150 }
-  assert.deepEqual(codesFor(['src/a.go'], big), ['human-review:size'])
-  assert.deepEqual(codesFor(['src/a.go'], { ...big, auto: [{ level: 'high' }] }), [
-    'human-review:size',
+test('more than three asks, each covered by an area rule, is covered only by a level-only low rule', () => {
+  const paths = ['main.tf', 'api/x.proto', 'db/001.sql', 'AGENTS.md']
+  const areaRules = ['infra', 'api-contract', 'migrations', 'agent-rules'].map((area) => ({ area }))
+  assert.deepEqual(codesFor(paths, { auto: areaRules }), ['human-review:asks'])
+  assert.deepEqual(codesFor(paths, { auto: [...areaRules, { level: 'moderate' }] }), [
+    'human-review:asks',
   ])
-  assert.deepEqual(codesFor(['src/a.go'], { ...big, auto: [{ area: 'infra' }] }), [
-    'human-review:size',
-  ])
-  assert.deepEqual(codesFor(['src/a.go'], { ...big, auto: [{ level: 'moderate' }] }), [])
-  assert.deepEqual(
-    codesFor(['main.tf'], { ...big, auto: [{ area: 'infra' }] }),
-    ['human-review:size'],
-    'a covered ask leaves the size cause',
-  )
+  assert.deepEqual(codesFor(paths, { auto: [...areaRules, { level: 'low' }] }), [])
 })
 
 test('a change rule matches only the area change fact it names', () => {
@@ -221,8 +208,6 @@ test('mergeDecisions names the rule covering each ask and policyCodes records it
   const facts = {
     ...pathParkFacts(paths, { review }),
     changedPaths: paths,
-    changedLines: 12,
-    sizeBaseline: SIZE,
     judgeAreas: [],
     ci: { green: true },
     uiTests: { covered: true },
@@ -240,9 +225,7 @@ test('mergeDecisions names the rule covering each ask and policyCodes records it
 })
 
 test('cannot-assess and blocked heads keep their legacy codes', () => {
-  assert.deepEqual(codesFor(['src/a.go'], { sizeBaseline: { ok: false, error: 'x' } }), [
-    'cannot-assess',
-  ])
+  assert.deepEqual(codesFor(['src/a.go'], { changedPaths: null }), ['cannot-assess'])
   assert.deepEqual(
     codesFor(['src/a.go'], {
       blockers: [{ kind: 'ci', summary: 'red' }],

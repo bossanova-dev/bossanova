@@ -11,7 +11,6 @@ import { verifyPolicyFromConfigText } from '../skill-config.mjs'
 const HEAD = 'a'.repeat(40)
 const BASE = 'b'.repeat(40)
 const PR_URL = 'https://github.com/o/r/pull/7'
-const SIZE = { ok: true, thresholds: { p90: 100, p99: 200 } }
 const AUTO_MODERATE = { auto: [{ level: 'moderate' }, { level: 'low' }] }
 const REPO_CONFIG = readFileSync(
   fileURLToPath(new URL('../../.boss-skills.json', import.meta.url)),
@@ -28,8 +27,6 @@ function decide(paths, verifyDefaults = {}, extra = {}) {
     mergePolicy: JSON.parse(text).verifyDefaults.merge ?? null,
     changedPaths: paths,
     judgeAreas: [],
-    changedLines: 12,
-    sizeBaseline: SIZE,
     prState: 'OPEN',
     isDraft: false,
     ci: { settled: true, green: true },
@@ -142,14 +139,6 @@ test('a judge-raised ask is not covered by a level-only rule', () => {
   ]
   const r = decide(['src/a.go'], { merge: AUTO_MODERATE }, { judgeAreas })
   assert.deepEqual(outcome(r), ['human', 'human-review:judge'])
-})
-
-test('a size cause is covered only by a level-only rule for the head level', () => {
-  const big = { changedLines: 150 }
-  const under = (auto) => outcome(decide(['src/a.go'], { merge: { auto } }, big))
-  assert.deepEqual(under([{ level: 'high' }]), ['human', 'human-review:size'])
-  assert.deepEqual(under([{ area: 'infra', level: 'moderate' }]), ['human', 'human-review:size'])
-  assert.deepEqual(under([{ level: 'moderate' }]), ['pass', 'verified'])
 })
 
 test('an additive rule parks an api-contract change a describer calls breaking or failed', () => {
@@ -277,7 +266,6 @@ function fixture({ paths, baseConfig, headConfig = {} }) {
   }
   return {
     read,
-    readSizeBaseline: () => ({ ok: true, thresholds: { p90: 100, p99: 200 } }),
     now: () => Date.parse('2026-10-02T00:00:00Z'),
     discover: () => ({ extensions: [], skipped: [] }),
     trustedTree: () => ({ ok: true, root: '/trusted' }),

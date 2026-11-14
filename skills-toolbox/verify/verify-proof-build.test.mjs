@@ -37,7 +37,7 @@ const confidence = (level, asks = [], loweredBy = level === 'high' ? [] : ['area
   asks: asks.map((area) => ({ area, label: area, source: 'builtin' })),
   reasons: [],
   loweredBy,
-  health: ['size-baseline-thin'],
+  health: ['second-model-skipped'],
 })
 const judged = (overrides = {}) => ({
   verdict: 'human',
@@ -67,7 +67,7 @@ test('every level builds a record the proof contract accepts @sessions.AC248601'
   const cases = {
     high: { verdict: 'pass', confidence: confidence('high') },
     moderate: {},
-    low: { confidence: confidence('low', ['api-contract'], ['size-p99']) },
+    low: { confidence: confidence('low', ['api-contract'], ['asks-over-3']) },
     blocked: {
       verdict: 'blocked',
       blockers: [blocker],
@@ -104,7 +104,7 @@ test('asks are the asking areas in area order, under contract-valid names @sessi
     proof.confidence.loweredBy.map((r) => r.code),
     ['area-asks'],
   )
-  assert.deepEqual(proof.health, [{ code: 'size-baseline-thin', text: 'size baseline thin' }])
+  assert.deepEqual(proof.health, [{ code: 'second-model-skipped', text: 'second model skipped' }])
   assert.deepEqual(proof.review.models, [{ agent: 'review', outcome: 'ran' }])
   assert.deepEqual(proof.review.notes, ['Polish naming', 'boss-verify-ui: no UI paths'])
 })

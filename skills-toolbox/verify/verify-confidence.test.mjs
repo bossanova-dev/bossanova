@@ -7,15 +7,10 @@ import {
   STATES,
   MAX_REASONS,
   MAX_ASKS_BEFORE_LOW,
-  sizeThresholds,
 } from './verify-confidence.mjs'
 import { reviewAreas } from './verify-areas.mjs'
 
-const size = (changedLines = 0, thresholds = { p90: 100, p99: 200 }) => ({
-  changedLines,
-  baseline: { ok: true, thresholds },
-})
-const base = () => ({ evidence: { review: 'ran', collectors: [] }, size: size() })
+const base = () => ({ evidence: { review: 'ran', collectors: [] } })
 const area = (area = 'migrations', defaultAsk = 'always') => ({
   area,
   label: area,
@@ -34,18 +29,8 @@ test('ordered confidence steps and monotone caps', () => {
       ['evidence-missing'],
     ],
     [{ areas: [area()] }, 'moderate', ['area-asks']],
-    [{ size: size(101) }, 'moderate', ['size-p90']],
-    [{ size: size(201) }, 'low', ['size-p90', 'size-p99']],
     [{ areas: ['a', 'b', 'c', 'd'].map((a) => area(a)) }, 'low', ['area-asks', 'asks-over-3']],
     [{ proof: { behavior: 'unproven' } }, 'moderate', ['unproven']],
-    [
-      {
-        size: size(201),
-        proof: { behavior: 'unproven' },
-      },
-      'low',
-      ['size-p90', 'size-p99', 'unproven'],
-    ],
   ]) {
     const result = confidence({ ...base(), ...facts })
     assert.equal(result.level, level)
@@ -57,7 +42,18 @@ test('ordered confidence steps and monotone caps', () => {
     confidence({ areas: ['a', 'b', 'c', 'd'].map((a) => area(a)) }).level,
     'cannot-assess',
   )
-  assert.equal(confidence({ ...base(), size: size(100) }).level, 'high')
+})
+
+test('a head with no asks is high whatever its size, and a recorded size fact is ignored', () => {
+  const recorded = {
+    changedLines: 500_000,
+    baseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
+  }
+  for (const size of [recorded, { changedLines: 0, baseline: { ok: false, error: 'offline' } }]) {
+    const result = confidence({ ...base(), size })
+    assert.equal(result.level, 'high', JSON.stringify(size))
+    assert.deepEqual([result.loweredBy, result.reasons, result.health], [[], [], []])
+  }
 })
 
 test('missing or unreadable evidence is cannot-assess, never high', () => {
@@ -67,13 +63,7 @@ test('missing or unreadable evidence is cannot-assess, never high', () => {
     { ...assessable, evidence: { review: 'skipped', collectors: [] } },
     { ...assessable, evidence: { collectors: [] } },
     { ...assessable, evidence: {} },
-    { evidence: assessable.evidence },
-    ...[NaN, undefined, null, -1, 1.5, '10', Infinity].map((changedLines) => ({
-      ...assessable,
-      size: { ...size(), changedLines },
-    })),
-    { ...assessable, size: { changedLines: 0 } },
-    { ...assessable, size: { changedLines: 0, baseline: { ok: false, error: 'offline' } } },
+    { ...assessable, evidence: { review: 'ran', collectors: [{ name: 'x', ok: false }] } },
   ]) {
     const result = confidence(facts)
     assert.equal(result.level, 'cannot-assess', JSON.stringify(facts))
@@ -117,13 +107,10 @@ test('area policy asks even on short circuit, deduplicates and uses UI proof', (
 test('reasons prioritize the final level and name their facts', () => {
   const result = confidence({
     ...base(),
-    areas: [area('Migrations'), area('API schema'), area('Infra')],
-    size: size(2140),
+    areas: [area('Migrations'), area('API schema'), area('Infra'), area('Auth')],
   })
   assert.equal(result.reasons.length, MAX_REASONS)
-  assert.match(result.reasons[0], /2,?140/)
-  assert.match(result.reasons[0], /99/)
-  assert.match(result.reasons[0], /\b200\b/)
+  assert.match(result.reasons[0], /4 areas/)
   assert.ok(result.reasons.some((reason) => reason.includes('Migrations')))
   const config = confidence({
     ...base(),
@@ -155,11 +142,10 @@ test('approval and self report never count; warnings never cap', () => {
   const facts = {
     ...base(),
     secondModel: { ran: false },
-    size: size(10000, null),
   }
   const result = confidence(facts)
   assert.equal(result.level, 'high')
-  assert.deepEqual(result.health, ['size-baseline-thin', 'second-model-skipped'])
+  assert.deepEqual(result.health, ['second-model-skipped'])
   assert.deepEqual(
     confidence({ ...facts, approved: true, selfConfidence: 'low', arbitrary: 99 }),
     result,
@@ -194,20 +180,6 @@ test('pure deterministic evaluation accepts deeply frozen input and stable step 
     blockers: [...facts.blockers].reverse(),
   })
   for (const key of ['level', 'loweredBy', 'health']) assert.deepEqual(shuffled[key], result[key])
-})
-
-test('size thresholds use nearest rank and ignore invalid observations', () => {
-  assert.deepEqual(sizeThresholds(Array.from({ length: 100 }, (_, i) => i)), {
-    p90: 89,
-    p99: 98,
-    sample: 100,
-  })
-  assert.equal(sizeThresholds([1, 2, 3]), null)
-  assert.deepEqual(
-    sizeThresholds([0, 10, 20, -1, NaN, Infinity, 1.5, '30', null], { minSample: 3 }),
-    { p90: 20, p99: 20, sample: 3 },
-  )
-  assert.equal(sizeThresholds([], { minSample: 0 }), null)
 })
 
 test('fresh-claim schema changes ask through the real area policy', () => {
@@ -269,7 +241,6 @@ test('backtest pins the later-fix rate of every confidence outcome', () => {
       blockers: row.blockers,
       evidence: { review: row.reviewRan ? 'ran' : 'missing', collectors: [] },
       areas: row.areas.map((entry) => ({ ...entry, label: entry.area })),
-      size: size(row.changedLines, fixture.thresholds),
       proof: {
         ui: row.unprovenUi
           ? 'none'
@@ -286,9 +257,9 @@ test('backtest pins the later-fix rate of every confidence outcome', () => {
   for (const row of Object.values(table))
     row.rate = row.n ? Number(((100 * row.laterFix) / row.n).toFixed(2)) : 0
   const expected = {
-    high: { n: 148, laterFix: 4, rate: 2.7 },
-    moderate: { n: 281, laterFix: 10, rate: 3.56 },
-    low: { n: 17, laterFix: 0, rate: 0 },
+    high: { n: 156, laterFix: 4, rate: 2.56 },
+    moderate: { n: 288, laterFix: 10, rate: 3.47 },
+    low: { n: 2, laterFix: 0, rate: 0 },
     blocked: { n: 49, laterFix: 5, rate: 10.2 },
     'cannot-assess': { n: 505, laterFix: 63, rate: 12.48 },
   }

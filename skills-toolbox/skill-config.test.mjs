@@ -184,7 +184,11 @@ function scratchRepo(configJson) {
   if (configJson !== undefined) writeFileSync(join(root, '.boss-skills.json'), configJson)
   const nested = join(root, 'a', 'b')
   mkdirSync(nested, { recursive: true })
-  return { root, nested, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+  return {
+    root,
+    nested,
+    cleanup: () => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+  }
 }
 
 test('findConfigFile walks up to the repo root', () => {
@@ -722,7 +726,10 @@ test('findConfigFile terminates on a relative startDir (fixed-point guard, no in
 function markerRepo(files) {
   const dir = mkdtempSync(join(tmpdir(), 'skillcfg-detect-'))
   for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, name), contents)
-  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  return {
+    dir,
+    cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+  }
 }
 
 function withMarkers(files, fn) {
@@ -2126,7 +2133,7 @@ test('a repo with no .boss-skills.json is unconfigured (probe is false)', () => 
     const cfg = loadSkillConfig({ cwd: dir })
     assert.equal(isConfiguredForRepo(cfg), false)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2696,7 +2703,7 @@ test('classifyCheckCommand rejects a concrete Go package run filter that matches
       [],
     )
   } finally {
-    rmSync(tmp, { recursive: true, force: true })
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -3045,7 +3052,7 @@ test('classifyCheckCommand resolves make goals and path operands only when absen
       'path-operand-missing',
     )
   } finally {
-    rmSync(tmp, { recursive: true, force: true })
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 
   assert.deepEqual(classifyCheckCommand('make test-boss test-bossd lint test'), {
@@ -3315,7 +3322,7 @@ test('BOS-1358 unscoped-negative-directory-search flags a negated search over a 
     assert.match(finding.message, /tests and guards/)
     assert.match(finding.message, /--include='\*\.sql'/)
   } finally {
-    rmSync(tmp, { recursive: true, force: true })
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -3375,7 +3382,7 @@ test('BOS-1358 codes stay advisory: none is blocking, for either kind', () => {
       }
     }
   } finally {
-    rmSync(tmp, { recursive: true, force: true })
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -3425,7 +3432,7 @@ test('classifyCheckCommand requires executable files for PATH and repo-relative 
       [],
     )
   } finally {
-    rmSync(tmp, { recursive: true, force: true })
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4081,7 +4088,7 @@ test('path-operand-absent carries the operand path for a caller with more contex
     }).advisory.find((f) => f.code === 'path-operand-absent')
     assert.equal(finding.path, 'scripts/new.test.mjs')
   } finally {
-    rmSync(tmp, { recursive: true, force: true })
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4109,7 +4116,7 @@ test('a team-only tracker block gets the default server, states and pipeline lab
     assert.equal(optionalLabelName(config, 'bug'), null, 'content labels stay literal')
     assert.equal(isConfiguredForPlanning(config), true)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4135,7 +4142,7 @@ test('tracker defaults synthesize a team-less linear block that alone never conf
       0,
     )
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -5226,7 +5233,7 @@ const deferredStageCases = [
 for (const { block, patch, readers, error } of deferredStageCases) {
   test(`loadSkillConfig defers ${block} faults and its readers fail closed`, (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'skill-config-deferred-'))
-    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
     const warnings = []
     t.mock.method(console, 'warn', (line) => warnings.push(line))
     writeFileSync(join(dir, CONFIG_FILENAME), JSON.stringify(patch))
@@ -5262,7 +5269,7 @@ for (const { block, patch, readers, error } of deferredStageCases) {
 
 test('loadSkillConfig warns once for each faulted stage block in one config', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'skill-config-deferred-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const warnings = []
   t.mock.method(console, 'warn', (line) => warnings.push(line))
   const patch = Object.assign({}, ...deferredStageCases.map((entry) => entry.patch))
@@ -5277,7 +5284,7 @@ test('loadSkillConfig warns once for each faulted stage block in one config', (t
 
 test('loadSkillConfig keeps global faults fatal even alongside a deferred fault', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'skill-config-deferred-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   t.mock.method(console, 'warn', () => {})
   for (const patch of [{ planStorage: { kind: 'future' } }, { adapters: [] }]) {
     writeFileSync(

@@ -601,3 +601,133 @@ test('an absolute baseUrl or extends, or too many path patterns, gives no alias 
       JSON.stringify(config).slice(0, 80),
     )
 })
+
+const typedTests = [
+  'src/Button.test.ts',
+  'src/Button.test.tsx',
+  'src/Button.test.mts',
+  'src/Button.test.cts',
+]
+const typedCoverage = (source, test) =>
+  coverage(source, [files[0], { path: test, status: 'added' }]).covered
+
+test('TypeScript type arguments lex as code in every TypeScript test file', () => {
+  for (const typed of [
+    'const patient = (overrides: Partial<PatientFragment>) => ({ ...overrides })',
+    'const [value] = useState<string>()',
+    'const rows = list as Array<Foo>',
+    'const accept = vi.fn<(message: string) => Promise<Result>>()',
+    'const handlers = new Set<RouteHandler>()',
+    'const ok = (value: unknown): value is Record<string, unknown> => true',
+    'async function sign(page: Page): Promise<void> {}',
+    "screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ })",
+    'const nested: Promise<() => Promise<Array<Map<string, number>>>> = run()',
+    'const lt = a<b && c > d',
+  ])
+    for (const test of typedTests) {
+      assert.equal(typedCoverage(`import './Button'\n${typed}`, test), true, `${test}: ${typed}`)
+      assert.equal(
+        typedCoverage(`import './Button'\n${typed}\nvi.mock('./Button')`, test),
+        false,
+        `${test}: ${typed} then a mock`,
+      )
+    }
+})
+
+test('a .ts file holds no JSX, so angle-bracket generics and assertions are code', () => {
+  for (const typed of [
+    'const id = <T>(x: T) => x',
+    'const n = <Foo>bar',
+    'type F = <T>(x: T) => T',
+    'const label = `${<Foo>bar}`',
+  ])
+    for (const test of ['src/Button.test.ts', 'src/Button.test.mts', 'src/Button.test.cts']) {
+      assert.equal(typedCoverage(`import './Button'\n${typed}`, test), true, `${test}: ${typed}`)
+      assert.equal(
+        typedCoverage(`import './Button'\n${typed}\nvi.mock('./Button')`, test),
+        false,
+        `${test}: ${typed} then a mock`,
+      )
+    }
+})
+
+test('JSX still lexes beside type arguments and after expression keywords', () => {
+  for (const source of [
+    'const view = (props: Partial<Props>) => <Button {...props}>Merge</Button>',
+    'const id = <T,>(x: T) => x; render(<Button />)',
+    "function View(): JSX.Element { return <p>Don't merge</p> }",
+    "const views = [<p key='a'>Don't</p>, <Button key='b' />]",
+    "export default <p>Don't merge</p>",
+  ]) {
+    assert.equal(coverage(`import './Button'\n${source}`).covered, true, source)
+    assert.equal(
+      coverage(`import './Button'\n${source}\nvi.mock('./Button')`).covered,
+      false,
+      `${source} then a mock`,
+    )
+  }
+})
+
+test('JSX after a statement that ends in a word on an earlier line still lexes as JSX', () => {
+  for (const ending of [
+    'let x\n',
+    'let rendered: HTMLElement\n',
+    'type Label = string\n',
+    'let x /* a\ncomment */ ',
+  ])
+    for (const text of ["Don't", 'see //docs']) {
+      const markup = `${ending}<p>${text}</p>`
+      assert.equal(coverage(`import './Button'\n${markup}`).covered, true, markup)
+      assert.equal(
+        coverage(`import './Button'\n${markup}; vi.mock('./Button')`).covered,
+        false,
+        `${markup} then a mock`,
+      )
+    }
+  assert.equal(coverage("let x\n<p>import './Button' isn't real</p>\nconst y = 'z'").covered, false)
+})
+
+test('a TSX angle bracket that is neither an operand comparison nor closed JSX still rejects', () => {
+  for (const source of [
+    "import './Button'\nconst id = <T>(x: T) => x",
+    "import './Button'\nconst id = <T extends object>(x: T) => x",
+    "import './Button'\nrender(<Select<Option> />)",
+  ])
+    assert.equal(coverage(source).covered, false, source)
+})
+
+test('a mock that carries type arguments still disqualifies its module', () => {
+  for (const mock of ['vi.mock', 'vi.doMock', 'jest.mock', 'jest.doMock'])
+    for (const test of typedTests) {
+      for (const source of [
+        `import './Button'\n${mock}<typeof import('./Button')>('./Button', () => ({}))`,
+        `import './Button'\n${mock}<Record<string, () => void>>(import('./Button'))`,
+        `import './Button'\n${mock}<string('./Button')`,
+      ])
+        assert.equal(typedCoverage(source, test), false, `${test}: ${source}`)
+      assert.equal(
+        typedCoverage(`import './Button'\n${mock}<typeof import('./Other')>('./Other')`, test),
+        true,
+        `${test}: ${mock} of another module`,
+      )
+    }
+})
+
+test('lexer gaps that typed files now reach cannot hide a mock', () => {
+  const typed = "import './Button'\nconst [v] = useState<string>('a')\n"
+  for (const terminator of ['\r', ' ', ' '])
+    assert.equal(coverage(`${typed}// note${terminator}vi.mock('./Button')`).covered, false)
+  assert.equal(coverage(`${typed}vi.mock('.\\/Button')`).covered, false)
+  for (const regex of ["for (const c of /'/.source) {}", "if ('a' in /'/) {}", "x instanceof /'/"])
+    assert.equal(
+      coverage(`${typed}${regex}\nvi.mock('./Button')\nconst q = "'"`).covered,
+      false,
+      regex,
+    )
+  assert.equal(
+    coverage(`${typed}const of = 4\nconst n = of / 2; vi.mock('./Button')`).covered,
+    false,
+  )
+  assert.equal(coverage(`${typed}const n = x.in / 2`).covered, true)
+  assert.equal(coverage(`${typed}const n = x.in / 2; vi.mock('./Button')`).covered, false)
+})

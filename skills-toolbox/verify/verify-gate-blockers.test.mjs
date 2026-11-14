@@ -18,8 +18,6 @@ import { buildBlockers, encodeBlockerTrailer, encodeOutcomesTrailer } from './ve
 const facts = (extra = {}) => ({
   changedPaths: [],
   judgeAreas: [],
-  changedLines: 12,
-  sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
   prState: 'OPEN',
   isDraft: false,
   headSha: 'a'.repeat(40),

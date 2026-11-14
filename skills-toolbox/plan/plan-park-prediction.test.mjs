@@ -164,8 +164,6 @@ test('plan predictions match judge path reasons across policy categories and mix
       review: policy.review,
       changedPaths: paths,
       judgeAreas: [],
-      changedLines: 0,
-      sizeBaseline: { ok: true, thresholds: null },
       prState: 'OPEN',
       isDraft: false,
       ci: { settled: true, green: true },

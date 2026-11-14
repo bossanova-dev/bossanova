@@ -2,6 +2,7 @@ import { resolutionComment } from './verify-resolution.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { pathParkFacts } from './verify-path-parks.mjs'
+import { reuseExtensionRecord } from './verify-extension-record.mjs'
 import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
@@ -589,7 +590,6 @@ function deps(w, extra = {}) {
   return {
     read: w.read,
     retryStore: memoryRetryStore(),
-    readSizeBaseline: () => ({ ok: true, thresholds: { p90: 100, p99: 200 } }),
     now: () => NOW,
     randomToken: () => 'feedf00d',
     discover: () => ({ extensions: [], skipped: [] }),
@@ -2149,8 +2149,6 @@ test('judge: a recorded run is reused only under a waiver, on its own head, cove
     receipt: 'success',
     extensions: both,
     changedPaths: [],
-    changedLines: 12,
-    sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
     extensionRecord: parseExtensionRecord(RECORD),
   }
   assert.equal(decideVerdict(facts).verdict, 'extensions-required', 'a record without a waiver')
@@ -2221,10 +2219,12 @@ test('extensionRecord records only a clean run: no malfunction, finding or wait'
   )
   assert.equal(extensionRecord(agg([{ extension: EXT.name, result: failResult }])), null)
   assert.equal(extensionRecord(agg([{ extension: EXT.name, result: waitResult() }])), null)
+  const timedOut = agg([{ extension: EXT.name, optional: true, timedOut: true }])
+  assert.equal(extensionRecord(timedOut), `${EXT.name}:malfunction`, 'an optional timeout')
   assert.equal(
-    extensionRecord(agg([{ extension: EXT.name, optional: true, timedOut: true }])),
+    reuseExtensionRecord(parseExtensionRecord(`${EXT.name}:malfunction`), [EXT], [], HUMAN_REASONS),
     null,
-    'an optional extension that timed out',
+    'an approval never settles from a malfunction',
   )
   assert.equal(extensionRecord(agg([], [EXT])), null, 'an installed extension with no result')
   assert.deepEqual(parseExtensionRecord(RECORD), [
@@ -5846,8 +5846,6 @@ test('extensionsConsulted answers the same on a first judge and a re-judge', () 
     baseState: 'green',
     receipt: 'success',
     changedPaths: [],
-    changedLines: 12,
-    sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
     extensions: [{ name: 'boss-verify-x' }],
   }
   assert.equal(extensionsConsulted(facts), true)
@@ -8034,6 +8032,143 @@ test('a park raised by an extension stands while it is installed and is released
   assert.deepEqual(removed.mutating(), [])
 })
 
+// A UI park decided before any verify extension was installed: a claim sits beneath it, as a
+// judge-required run claims too, and no extension record names this head.
+const uiParkWorld = ({ policy = OLD_POLICY, comments = [] } = {}) =>
+  sweepWorld({
+    statuses: [parkStatus('needs human: human-review:ui'), claimStatus(120_000), receipt()],
+    baseConfig: UI_POLICY,
+    diff: ['web/a.tsx'],
+    comments: [operatorComment(policyMarker(HEAD, policy)), ...comments],
+  })
+const discoverProof = () => ({ extensions: [EXT] })
+
+test('a park decided before an applicable extension was installed runs it instead of standing', async () => {
+  const w = uiParkWorld()
+  const d = sweepDeps(w, { discover: discoverProof })
+  assert.deepEqual(
+    (await candidates({ repo: REPO }, d)).candidates.map((c) => c.rejudge),
+    ['policy-changed'],
+  )
+  const j = await judged(w, d)
+  assert.deepEqual(
+    [j.verdict, j.reason, j.held],
+    ['extensions-required', 'extensions-installed', undefined],
+  )
+  assert.deepEqual(j.facts.extensionsApplicable, [EXT.name])
+  assert.deepEqual(w.mutating(), [])
+})
+
+test('once the new extension has a recorded run on the head, the park it re-raised is held', async () => {
+  const dir = tmp()
+  try {
+    const w = uiParkWorld()
+    const d = sweepDeps(w, { discover: discoverProof })
+    const results = jsonFile(dir, 'r.json', [{ extension: EXT.name, result: passResult }])
+    const ran = await judge(
+      {
+        pr: 7,
+        repo: REPO,
+        extensionResults: results,
+        judgeAreas: jsonFile(dir, 'a.json', { version: 1, head: HEAD, areas: [] }),
+      },
+      d,
+    )
+    assert.deepEqual(
+      [ran.verdict, ran.reason, ran.extensionRecord],
+      ['human', 'human-review:ui', `${EXT.name}:pass`],
+    )
+    const posted = await post(
+      {
+        pr: 7,
+        head: HEAD,
+        verdict: 'human',
+        reason: ran.reason,
+        extensionRecord: ran.extensionRecord,
+        policy: ran.policyFingerprint,
+        repo: REPO,
+      },
+      d,
+    )
+    assert.deepEqual([posted.extensionRecord, posted.policyRecord], ['posted', 'posted'])
+    const again = await judged(w, d)
+    assert.deepEqual([again.verdict, again.reason, again.held], ['human', 'human-review:ui', true])
+    const next = await candidates({ repo: REPO }, d)
+    assert.deepEqual(
+      next.skipped.map((x) => [x.pr, x.reason]),
+      [[7, 'parked']],
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('a park whose applicable extensions all ran earlier on the head is held without running them', async () => {
+  const w = uiParkWorld({
+    comments: [recordComment(HEAD, `${EXT.name}:pass,${OTHER_EXT.name}:pass`)],
+  })
+  const j = await judged(w, sweepDeps(w, { discover: discoverBoth }))
+  assert.deepEqual([j.verdict, j.reason, j.held], ['human', 'human-review:ui', true])
+  // A recorded run that predates an extension installed since still runs the newcomer.
+  const grown = uiParkWorld({ comments: [recordComment(HEAD, `${OTHER_EXT.name}:pass`)] })
+  const ran = await judged(grown, sweepDeps(grown, { discover: discoverBoth }))
+  assert.equal(ran.verdict, 'extensions-required')
+})
+
+test('a park left by an optional extension that malfunctioned is held, not run again', async () => {
+  const dir = tmp()
+  try {
+    const optional = { ...EXT, optional: true }
+    const w = uiParkWorld()
+    const d = sweepDeps(w, { discover: () => ({ extensions: [optional] }) })
+    const results = jsonFile(dir, 'r.json', [
+      { extension: EXT.name, optional: true, crashed: true },
+    ])
+    const areas = jsonFile(dir, 'a.json', { version: 1, head: HEAD, areas: [] })
+    const ran = await judge({ pr: 7, repo: REPO, extensionResults: results, judgeAreas: areas }, d)
+    assert.deepEqual([ran.verdict, ran.extensionRecord], ['human', `${EXT.name}:malfunction`])
+    const posted = await post(
+      {
+        pr: 7,
+        head: HEAD,
+        verdict: 'human',
+        reason: ran.reason,
+        extensionRecord: ran.extensionRecord,
+        policy: ran.policyFingerprint,
+        repo: REPO,
+      },
+      d,
+    )
+    assert.equal(posted.extensionRecord, 'posted')
+    const again = await judged(w, d)
+    assert.deepEqual([again.verdict, again.held], ['human', true])
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('a park on a merge failure stands without running an extension no run could lift it with', async () => {
+  const w = sweepWorld({
+    statuses: [parkStatus('needs human: worktree-diverged'), claimStatus(120_000), receipt()],
+    baseConfig: UI_POLICY,
+    diff: ['web/a.tsx'],
+    comments: [operatorComment(policyMarker(HEAD, OLD_POLICY))],
+  })
+  const j = await judged(w, sweepDeps(w, { discover: discoverProof }))
+  assert.deepEqual([j.verdict, j.reason, j.held], ['human', 'worktree-diverged', true])
+})
+
+test('a park whose policy record a core that held unrun extensions wrote is re-judged', async () => {
+  // policyFingerprint of this world's base policy and EXT as cores up to v1.184.0 computed it; that
+  // core re-recorded it over parks it held without running a newly installed extension.
+  const w = uiParkWorld({ policy: '4cac808e16e6bae9' })
+  const d = sweepDeps(w, { discover: discoverProof })
+  assert.deepEqual(
+    (await candidates({ repo: REPO }, d)).candidates.map((c) => c.rejudge),
+    ['policy-changed'],
+  )
+})
+
 test('parkStillRaised attributes each code to the zero-token judge, a recorded extension, or any live one', () => {
   const rec = [
     { extension: 'a', outcome: 'pass' },
@@ -9807,8 +9942,6 @@ const ranPass = [{ extension: EXT.name, result: passResult }]
 const ranFail = [{ extension: EXT.name, result: failResult }]
 const greenFacts = (extra = {}) => ({
   changedPaths: [],
-  changedLines: 12,
-  sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
   prState: 'OPEN',
   isDraft: false,
   ci: { settled: true, green: true },
@@ -9818,19 +9951,15 @@ const greenFacts = (extra = {}) => ({
   ...extra,
 })
 
-test('confidence collectors retry twice, recover transient reads, and park persistent failure @sessions.AC208502', async () => {
+test('the changed-files collector retries twice, recovers a transient read, and parks persistent failure @sessions.AC208502', async () => {
   for (const failures of [2, 3]) {
     let attempts = 0
     const w = world()
-    const r = await judge(
-      { pr: 7, repo: REPO },
-      deps(w, {
-        readSizeBaseline: () =>
-          ++attempts <= failures
-            ? { ok: false, error: 'offline' }
-            : { ok: true, thresholds: { p90: 100, p99: 200 } },
-      }),
-    )
+    const collectorRead = (command, args, opts) =>
+      isPrFilesRead({ command, args }) && ++attempts <= failures
+        ? { ok: false, exit: 1, output: '', error: 'offline' }
+        : w.read(command, args, opts)
+    const r = await judge({ pr: 7, repo: REPO }, deps(w, { collectorRead }))
     assert.equal(attempts, 3)
     assert.equal(r.verdict, failures === 2 ? 'pass' : 'human')
     assert.equal(r.confidence.level, failures === 2 ? 'high' : 'cannot-assess')
@@ -9840,6 +9969,66 @@ test('confidence collectors retry twice, recover transient reads, and park persi
   const r = await judge({ pr: 7, repo: REPO }, deps(w))
   assert.equal(r.reason, 'cannot-assess')
   assert.equal(diffReads(w), 3)
+})
+
+test('a zero-ask head far larger than any merged PR is high and merges under a high-only rule', async () => {
+  const w = world({ pr: { additions: 400_000, deletions: 100_000 } })
+  const r = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.deepEqual([r.verdict, r.reason, r.confidence.level], ['pass', 'verified', 'high'])
+  assert.deepEqual(r.confidence.loweredBy, [])
+})
+
+test('verify reads no merged-PR history, so a repository without any is not cannot-assess', async () => {
+  const w = world()
+  const r = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.deepEqual([r.verdict, r.reason, r.confidence.level], ['pass', 'verified', 'high'])
+  const historyReads = w.calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'list')
+  assert.deepEqual(historyReads, [])
+})
+
+test('candidates: a standing park naming the retired human-review:size code is re-judged, not stranded', async () => {
+  const pr = (n) => ({
+    number: n,
+    url: `https://github.com/o/r/pull/${n}`,
+    body: ticketBody(`BOS-${n}`),
+    headRefOid: SHA_OF(n),
+    isDraft: false,
+  })
+  const w = candidateWorld({
+    tickets: [1, 2, 3].map((n) => ({
+      identifier: `BOS-${n}`,
+      labels: ['agent-build'],
+      attachments: [],
+    })),
+    prs: [pr(1), pr(2), pr(3)],
+    statuses: {
+      [SHA_OF(1)]: verifyStatus('pending', 'needs human: human-review:size · low: 4,210 lines'),
+      [SHA_OF(2)]: verifyStatus('pending', 'needs human: human-review:ui,human-review:size'),
+      [SHA_OF(3)]: verifyStatus('pending', 'needs human: human-review:ui'),
+    },
+  })
+  const r = await candidates({ repo: REPO }, candDeps(w))
+  assert.deepEqual(
+    r.candidates.map((c) => [c.pr, c.rejudge]),
+    [
+      [1, 'codes-retired'],
+      [2, 'codes-retired'],
+    ],
+  )
+  assert.deepEqual(
+    r.skipped.map((s) => [s.pr, s.reason]),
+    [[3, 'parked']],
+  )
+})
+
+test('judge: an approval recorded with the retired human-review:size code still waives the codes beside it', async () => {
+  const baseConfig = policyText({ humanReview: { ui: ['web/**'] } })
+  const codes = 'human-review:ui,human-review:size'
+  const r = await judge(
+    { pr: 7, repo: REPO, waive: codes },
+    deps(approving(world({ diff: ['web/a.tsx'], baseConfig }), codes)),
+  )
+  assert.deepEqual([r.verdict, r.reason], ['pass', 'approved'])
 })
 
 test('a cannot-assess park is discovered again and releases once evidence is readable @sessions.AC208502', async () => {
@@ -9858,16 +10047,14 @@ test('a cannot-assess park is discovered again and releases once evidence is rea
 test('a cannot-assess park after a claimed extension run releases when evidence recovers @sessions.AC208502', async () => {
   const w = sweepWorld()
   const d = sweepDeps(w, { discover: () => ({ extensions: [EXT] }) })
-  let readable = true
-  d.readSizeBaseline = () =>
-    readable ? { ok: true, thresholds: { p90: 100, p99: 200 } } : { ok: false, error: 'offline' }
   const dir = tmp()
   try {
     const results = jsonFile(dir, 'extensions.json', ranPass)
     assert.equal((await judged(w, d)).verdict, 'extensions-required')
     const claim = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, d)
     assert.equal(claim.won, true)
-    readable = false
+    const files = w.diff
+    w.diff = null
     const parked = await judge({ pr: 7, repo: REPO, extensionResults: results }, d)
     assert.equal(parked.reason, 'cannot-assess')
     assert.equal(parked.extensionRecord, undefined)
@@ -9885,7 +10072,7 @@ test('a cannot-assess park after a claimed extension run releases when evidence 
     )
     assert.equal(posted.posted, true, JSON.stringify(posted))
     assert.equal(extensionRunBeforePark(w.statuses[HEAD]), true)
-    readable = true
+    w.diff = files
     const recovered = await judged(w, d)
     assert.equal(recovered.verdict, 'extensions-required')
     assert.equal(recovered.held, undefined)
@@ -11699,48 +11886,6 @@ test('a judge park is never published if its durable record cannot be written', 
   assert.equal(result.posted, false)
   assert.equal(result.reason, 'judge-record-failed')
   assert.ok(!w.statuses[HEAD].some((status) => status.context === 'boss/verify'))
-})
-
-test('valid judge additions survive an evidence park and recovered zero-token rejudge', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'verify-judge-evidence-'))
-  try {
-    const w = world()
-    assert.equal((await rawJudge({ pr: 7 }, deps(w))).verdict, 'judge-required')
-    const file = jsonFile(dir, 'judge.json', {
-      version: 1,
-      head: HEAD,
-      areas: [{ label: 'Access', path: 'src/a.go', reason: 'Access checks removed' }],
-    })
-    const missing = await rawJudge(
-      { pr: 7, judgeAreas: file },
-      deps(w, {
-        readSizeBaseline: () => ({ ok: false, error: 'temporarily unavailable' }),
-      }),
-    )
-    assert.equal(missing.verdict, 'human')
-    assert.equal(missing.confidence.level, 'cannot-assess')
-    assert.equal(missing.reason, 'cannot-assess')
-    assert.ok(missing.judgeRecord, 'the evidence park must carry the validated additions')
-    const posted = await post(
-      {
-        pr: 7,
-        head: HEAD,
-        verdict: 'human',
-        reason: missing.reason,
-        judgeRecord: missing.judgeRecord,
-      },
-      deps(w),
-    )
-    assert.equal(posted.posted, true)
-    const recovered = await rawJudge({ pr: 7 }, deps(w))
-    assert.equal(recovered.verdict, 'human')
-    assert.equal(recovered.confidence.level, 'moderate')
-    assert.ok(
-      recovered.confidence.asks.some((ask) => ask.source === 'judge' && ask.label === 'Access'),
-    )
-  } finally {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
-  }
 })
 
 test('missing changed-file evidence cannot persist an empty assessment or replace trusted asks', async () => {

@@ -131,8 +131,6 @@
   "services/web/src/features/chat/lib/wsAttach.ts: services/bosso/internal/server/ws_attach.go",
   "services/web/src/features/chat/lib/wsAttach.ts: services/bosso/internal/server/ws_attach_upload.go",
   "services/web/src/features/repos/pages/RepoSettings.tsx: services/bosso/internal/server/proxy.go",
-  "services/web/src/features/sessions/pages/SessionDetail.tsx: services/bosso/internal/server/proxy.go",
-  "services/web/src/features/sessions/pages/Sessions.test.tsx: services/bosso/internal/server/proxy_cross_org_sessions.go",
   "services/web/src/features/webhooks/lib/webhooks.ts: services/bosso/internal/server",
   "services/web/src/features/webhooks/lib/webhooks.ts: services/bosso/internal/server/session_webhook_deliveries.go",
   "services/web/src/features/webhooks/pages/WebhookEdit.test.tsx: services/bosso/internal/server/session_webhooks.go",

@@ -396,7 +396,7 @@ test('a skipped security review is not proven; a skipped second model stays in d
   assert.ok(!outsideDebug(html).includes('codex'))
 })
 
-test('the banner reason reads as one sentence: names lower-cased mid-sentence, one size clause', () => {
+test('the banner reason reads as one sentence: names lower-cased mid-sentence', () => {
   const reason = (/** @type {string[]} */ codes, /** @type {string} */ label) =>
     bannerReason(
       /** @type {any} */ ({
@@ -412,12 +412,11 @@ test('the banner reason reads as one sentence: names lower-cased mid-sentence, o
     )
   const TEXTS = /** @type {Record<string, string>} */ ({
     'area-asks': 'It changes areas a person reviews.',
-    'size-p90': 'It is larger than nine in ten merged PRs here.',
-    'size-p99': 'It is larger than 99 in 100 merged PRs here.',
+    unproven: 'A UI or behavior change is unproven.',
   })
   assert.equal(
-    reason(['area-asks', 'size-p90', 'size-p99'], 'Revenue models'),
-    'It changes revenue models, which a person reviews, and it is larger than 99 in 100 merged PRs here.',
+    reason(['area-asks', 'unproven'], 'Revenue models'),
+    'It changes revenue models, which a person reviews, and a UI or behavior change is unproven.',
   )
   assert.equal(
     reason(['area-asks'], 'GraphQL schema'),

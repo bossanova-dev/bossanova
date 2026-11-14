@@ -6,8 +6,6 @@ import { proseFacts } from './verify-merge-prose.mjs'
 const gate = {
   changedPaths: [],
   areas: [],
-  changedLines: 1,
-  sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
 }
 const rule = {
   decision: 'human',

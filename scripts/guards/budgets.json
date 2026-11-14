@@ -355,9 +355,7 @@
       "services/web/src/features/accounts/pages/AccountsSettings.test.tsx": 2008,
       "services/web/src/features/chat/pages/ChatTerminal.test.tsx": 1763,
       "services/web/src/features/cron/pages/CronJobs.test.tsx": 1616,
-      "services/web/src/features/repos/pages/RepoSettings.test.tsx": 1730,
-      "services/web/src/features/sessions/pages/SessionDetail.test.tsx": 1713,
-      "services/web/src/features/sessions/pages/Sessions.test.tsx": 2530
+      "services/web/src/features/repos/pages/RepoSettings.test.tsx": 1730
     }
   },
   "ts-cognitive-complexity": {
@@ -386,9 +384,6 @@
       "services/web/src/features/organizations/pages/OrganizationSettings.tsx": 915,
       "services/web/src/features/repos/pages/RepoEdit.tsx": 592,
       "services/web/src/features/repos/pages/RepoSettings.tsx": 977,
-      "services/web/src/features/sessions/pages/NewSession.tsx": 1227,
-      "services/web/src/features/sessions/pages/SessionDetail.tsx": 624,
-      "services/web/src/features/sessions/pages/Sessions.tsx": 852,
       "services/web/src/features/triggers/components/TriggerFormFields.tsx": 447,
       "services/web/src/features/triggers/components/TriggerFormSections.tsx": 404,
       "services/web/src/features/triggers/pages/TriggerEdit.tsx": 421,

@@ -227,8 +227,6 @@ test('note severities never hold judge or post and remain visible', async () => 
     const judged = decideVerdict({
       changedPaths: [],
       judgeAreas: [],
-      changedLines: 12,
-      sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
       prState: 'OPEN',
       isDraft: false,
       headSha: HEAD,

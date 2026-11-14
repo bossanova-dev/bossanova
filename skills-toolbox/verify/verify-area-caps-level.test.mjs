@@ -16,8 +16,6 @@ const cap = {
 const gate = {
   changedPaths: ['services/a/code.go'],
   areas: [{ area: 'other', label: 'Other', paths: ['services/a/code.go'], defaultAsk: 'never' }],
-  changedLines: 20,
-  sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
   areaCaps: { caps: [cap], health: [] },
   range: { kind: 'full' },
 }

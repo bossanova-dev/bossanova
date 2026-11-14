@@ -9,8 +9,6 @@ const BASE = 'b'.repeat(40)
 const URL = 'https://github.com/o/r/pull/7'
 const greenFacts = {
   changedPaths: [],
-  changedLines: 12,
-  sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
   prState: 'OPEN',
   isDraft: false,
   ci: { settled: true, green: true },
@@ -102,7 +100,6 @@ export function fixture({
     calls,
     deps: {
       read,
-      readSizeBaseline: () => ({ ok: true, thresholds: { p90: 100, p99: 200 } }),
       now: () => NOW,
       discover: () => ({ extensions: [], skipped: [] }),
       trustedTree: () => ({ ok: true, root: '/trusted' }),

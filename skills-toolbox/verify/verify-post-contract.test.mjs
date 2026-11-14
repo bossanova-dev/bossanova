@@ -19,8 +19,6 @@ const REPO = 'o/r'
 const facts = (extra = {}) => ({
   changedPaths: [],
   judgeAreas: [],
-  changedLines: 12,
-  sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
   prState: 'OPEN',
   isDraft: false,
   headSha: HEAD,

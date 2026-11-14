@@ -10,13 +10,12 @@ import {
   levelLabel,
   parkLevel,
   levelNoteLead,
+  validConfidence,
 } from './verify-level.mjs'
 
 const facts = {
   changedPaths: [],
   areas: [],
-  changedLines: 20,
-  sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
   range: { kind: 'full' },
 }
 test('plain code is High; migrations ask through a legacy code', () => {
@@ -67,29 +66,44 @@ test('legacy config codes and extension asks dedupe in report order', () => {
     ['always-human-path', 'human-review:database', 'human-review:ui'],
   )
 })
-test('proof, policy, size, and missing collectors affect confidence', () => {
+test('proof, policy and missing collectors affect confidence; size does not', () => {
   assert.equal(
     levelFacts(facts, { extensionReasons: ['human-review:unproven'] }).proof.behavior,
     'unproven',
   )
   assert.equal(confidence(levelFacts({ ...facts, policySurfaceHit: true })).level, 'moderate')
-  const large = confidence(levelFacts({ ...facts, changedLines: 201 }))
-  assert.equal(large.level, 'low')
-  assert.deepEqual(legacyCodes(large), ['human-review:size'])
+  const large = levelFacts({ ...facts, changedLines: 500_000, sizeBaseline: { ok: false } })
+  assert.equal(confidence(large).level, 'high')
+  assert.equal(large.size, undefined)
+  assert.deepEqual(
+    large.evidence.collectors.map((c) => c.name),
+    ['changed-files'],
+  )
   assert.deepEqual(legacyCodes(confidence(levelFacts({ ...facts, changedPaths: null }))), [
     'cannot-assess',
   ])
-  assert.equal(levelFacts({ ...facts, range: { kind: 'delta' } }).size, undefined)
-})
-test('size-only Low labels retain the changed-line count', () => {
-  const result = confidence(levelFacts({ ...facts, changedLines: 2140 }))
-  assert.equal(levelLabel(result), 'low: 2,140 lines')
 })
 test('park levels include parks from older callers', () => {
   assert.equal(parkLevel({ codes: ['human-review:ui'], label: '' }), 'moderate')
   assert.equal(parkLevel({ codes: ['human-review:ui'], label: 'low: UI' }), 'low')
   assert.equal(parkLevel({ codes: ['cannot-assess'], label: '' }), 'cannot-assess')
   assert.equal(parkLevel({ codes: ['partial-build'], label: '' }), null)
+  assert.equal(parkLevel({ codes: ['human-review:size'], label: '' }), 'moderate')
+  assert.equal(parkLevel({ codes: ['human-review:size'], label: 'low: 4,210 lines' }), 'low')
+})
+test('a confidence recorded while size capped the level still parses', () => {
+  const recorded = {
+    level: 'low',
+    asks: [],
+    reasons: [
+      'Changes 4,210 lines, above the p99 size cutoff of 3,000 lines for merged PRs here. Splitting it would raise this.',
+    ],
+    loweredBy: ['size-p90', 'size-p99'],
+    health: ['size-baseline-stale'],
+    size: { changedLines: 4210, baseline: { ok: true, thresholds: { p90: 1000, p99: 3000 } } },
+  }
+  assert.equal(validConfidence(recorded), true)
+  assert.equal(levelLabel(recorded), `low: ${recorded.reasons[0]}`)
 })
 test('labels cap asks while Low notes retain every checklist item', () => {
   const asks = ['Migrations', 'API', 'UI', 'Dependencies'].map((area) => ({

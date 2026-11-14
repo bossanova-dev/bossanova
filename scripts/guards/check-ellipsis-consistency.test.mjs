@@ -741,7 +741,8 @@ test('a --root with a missing value or a following flag is a usage error, not a 
 test('every declared exemption baseline entry carries a reason', () => {
   const { exemptions, errors } = readExemptions()
   assert.deepEqual(errors, [])
-  assert.ok(exemptions.length > 0, 'the real exemption baseline must not read as empty')
+  const declared = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, EXEMPTIONS_BASELINE), 'utf8'))
+  assert.equal(exemptions.length, declared.length, 'every declared exemption must be read, none silently dropped')
   for (const entry of exemptions) {
     assert.equal(typeof entry.path, 'string')
     assert.ok(entry.text === null || typeof entry.text === 'string')

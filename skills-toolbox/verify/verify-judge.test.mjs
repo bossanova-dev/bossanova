@@ -191,10 +191,6 @@ test('seeded monotonicity across 500 generated fact and hostile-output combinati
     const facts = {
       areas: Object.freeze(areas),
       changedPaths: next(6) ? ['src/auth.mjs'] : null,
-      changedLines: next(350),
-      sizeBaseline: next(7)
-        ? { ok: true, thresholds: { p90: 100, p99: 250 } }
-        : { ok: false, error: 'missing' },
       blockers: next(8) ? [] : [{ kind: 'checks', summary: 'Failing checks' }],
     }
     const raw = next(5)

@@ -60,15 +60,10 @@ export function pathParkFacts(files, policy, options = {}) {
   }
 }
 
-/** Project only path-driven asks: review, collectors and size are neutral, not predictions. */
+/** Project only path-driven asks: review and collectors are neutral, not predictions. */
 export function predictPathParks(paths, policy, options = {}) {
   const facts = pathParkFacts(paths, policy, options)
-  const result = levelConfidence({
-    ...facts,
-    changedPaths: paths,
-    changedLines: 0,
-    sizeBaseline: { ok: true, thresholds: null },
-  })
+  const result = levelConfidence({ ...facts, changedPaths: paths })
   return {
     ...facts,
     codes: legacyCodes(result, policy.review),

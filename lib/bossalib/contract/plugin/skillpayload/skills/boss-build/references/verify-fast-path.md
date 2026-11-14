@@ -105,5 +105,5 @@ A human judge writes its `confidence` object to a run-temp JSON file and posts w
 `post --verdict human --confidence <file>`, adding `--judge-record <judgeRecord>` when returned
 so later ticks preserve the added asks. High merges only when a base-tip `verifyDefaults.merge`
 rule allows it and otherwise parks `human-merge`; Moderate and Low park with their level and the
-asks no rule covers. Changed-range and size-baseline collection get three attempts;
+asks no rule covers. Changed-range collection gets three attempts;
 unavailable evidence then parks as `cannot-assess` and is re-judged on the next tick.

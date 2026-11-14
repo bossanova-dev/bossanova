@@ -1,4 +1,3 @@
 [
-  "services/bossd/internal/adapter/git/worktree.go: TODO(task20): .claude/settings.local.json is plugin-owned (declared by",
-  "services/web/src/features/sessions/pages/SessionDetail.tsx: TODO: re-add the \"Transfer to…\" daemon picker once bossd"
+  "services/bossd/internal/adapter/git/worktree.go: TODO(task20): .claude/settings.local.json is plugin-owned (declared by"
 ]

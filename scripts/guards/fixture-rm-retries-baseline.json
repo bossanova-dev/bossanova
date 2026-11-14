@@ -94,7 +94,6 @@
   "skills-toolbox/review/codex-review-embed.test.mjs": 2,
   "skills-toolbox/review/codex-review.test.mjs": 39,
   "skills-toolbox/review/cross-review-lib.test.mjs": 6,
-  "skills-toolbox/skill-config.test.mjs": 14,
   "skills-toolbox/skill-drift-verdict.test.mjs": 5,
   "skills-toolbox/skill-extensions.test.mjs": 1,
   "skills-toolbox/toolbox-drift.test.mjs": 2,

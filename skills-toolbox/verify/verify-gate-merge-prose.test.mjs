@@ -50,8 +50,6 @@ function decide(paths, verifyDefaults, prosePolicy, extra = {}) {
     prosePolicy,
     changedPaths: paths,
     judgeAreas: [],
-    changedLines: 12,
-    sizeBaseline: { ok: true, thresholds: { p90: 100, p99: 200 } },
     prState: 'OPEN',
     isDraft: false,
     ci: { settled: true, green: true },
@@ -133,7 +131,6 @@ function fixture({ paths, baseConfig, headConfig = {}, root, record = 'W10' }) {
   }
   return {
     read,
-    readSizeBaseline: () => ({ ok: true, thresholds: { p90: 100, p99: 200 } }),
     now: () => Date.parse('2026-10-02T00:00:00Z'),
     discover: () => ({ extensions: [], skipped: [] }),
     trustedTree: () => ({ ok: true, root: root ?? null }),

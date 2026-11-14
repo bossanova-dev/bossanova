@@ -26,7 +26,6 @@ import {
 
 const HIGH = { auto: [{ level: 'high' }] }
 const TWO_RULES = { auto: [{ level: 'high' }, { area: 'ui', proof: 'tests' }] }
-const SIZE = { ok: true, thresholds: { p90: 100, p99: 200 } }
 const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
 
 const rowsOf = (report, candidate) => report.rows.filter((row) => row.candidate === candidate)
@@ -145,9 +144,9 @@ test('the guard refuses every writing command kind before it reaches the reader'
 
 test('a judge path that attempts a write reports it on the row and exits 1', async () => {
   const world = forge({ prs: [{ number: 3, paths: ['src/a.go'], comments: [judgeRecord(3)] }] })
-  world.deps.readSizeBaseline = ({ read }) => {
+  world.deps.trustedTree = ({ read }) => {
     read('gh', ['pr', 'comment', '3', '--body', 'replayed'])
-    return SIZE
+    return { ok: true, root: '/trusted' }
   }
   const { report, exitCode } = await main(['--repo', REPO, '--pr', '3'], world.deps)
   assert.equal(exitCode, 1)

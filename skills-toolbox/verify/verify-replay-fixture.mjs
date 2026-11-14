@@ -4,7 +4,6 @@ import { pathParkFacts } from './verify-path-parks.mjs'
 export const REPO = 'acme/widgets'
 export const BASE = 'b'.repeat(40)
 export const headOf = (pr) => String(pr).padStart(2, '0').repeat(20)
-const SIZE = { ok: true, thresholds: { p90: 100, p99: 200 } }
 const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
 const fail = () => ({ ok: false, exit: 1, output: '' })
 
@@ -131,7 +130,6 @@ export function forge({ prs, baseConfig = null, extensions = [] }) {
   }
   const deps = {
     read,
-    readSizeBaseline: () => SIZE,
     now: () => Date.parse('2026-10-02T00:00:00Z'),
     discover: () => ({ extensions, skipped: [] }),
     trustedTree: () => ({ ok: true, root: '/trusted' }),

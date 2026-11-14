@@ -23,8 +23,6 @@ for (const paths of [
       review,
       changedPaths: paths,
       judgeAreas: [],
-      changedLines: 0,
-      sizeBaseline: { ok: true, thresholds: null },
       prState: 'OPEN',
       isDraft: false,
       ci: { settled: true, green: true },

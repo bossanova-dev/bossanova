@@ -562,8 +562,10 @@ off, or with no eligible account to move to). Each event captures the session,
 provider, trigger, the account moved from and to, the reset time, and the
 outcome.
 
-Rotation history is visible in **session detail** in both the TUI and the web
-UI, and every decision also emits a structured line to the daemon log. Events
+Rotation history is visible in **session detail** in the TUI and in the web
+session's **History**, where account switches show under **Everything** (the
+default **Work** view hides them, and a give-up shows in both). Every decision
+also emits a structured line to the daemon log. Events
 record account **labels only**, never credentials.
 
 ## Terms-of-service note

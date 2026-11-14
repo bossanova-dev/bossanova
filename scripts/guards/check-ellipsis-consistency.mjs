@@ -168,12 +168,6 @@ export const IGNORED_DIRECTORIES = ['build', 'coverage', 'dist', 'node_modules',
  * for what a marker cannot reach. A `text` carries no full stops of its own: it is matched as a
  * substring, which keeps the baseline from spelling out the run it forbids.
  *
- * Why today's entries are not markers:
- *   - NewSession.test.tsx: five occurrences across three generator fixtures, all the same two
- *     lines of stdout from a user's own setup script. Five near-identical inline comments in one
- *     test file would read as noise, and the reason is a property of the fixture rather than of
- *     any one line, so it is stated once in the baseline.
- *
  * No entry for the Sentry scrub marker any more. It is machine-facing, not copy, and keeps the
  * plain spelling in lib/bossalib/kit/errortrack/scrub.go and lib/web-helpers/src/sentry-init.ts (the
  * one TS scrubber web and docs share, which docs vendors). Neither file is inside this gate's scan

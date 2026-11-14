@@ -742,7 +742,11 @@ test('every declared exemption baseline entry carries a reason', () => {
   const { exemptions, errors } = readExemptions()
   assert.deepEqual(errors, [])
   const declared = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, EXEMPTIONS_BASELINE), 'utf8'))
-  assert.equal(exemptions.length, declared.length, 'every declared exemption must be read, none silently dropped')
+  assert.equal(
+    exemptions.length,
+    declared.length,
+    'every declared exemption must be read, none silently dropped',
+  )
   for (const entry of exemptions) {
     assert.equal(typeof entry.path, 'string')
     assert.ok(entry.text === null || typeof entry.text === 'string')

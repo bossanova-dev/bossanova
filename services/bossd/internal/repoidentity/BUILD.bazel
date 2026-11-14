@@ -7,6 +7,7 @@ go_library(
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/safego",
         "//lib/bossalib/kit/vcs",
         "//services/bossd/internal/detach",
         "//services/bossd/internal/domain",

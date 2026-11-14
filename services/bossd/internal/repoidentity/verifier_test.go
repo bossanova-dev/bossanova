@@ -30,11 +30,12 @@ func TestIdentityExpiryAndFailures(t *testing.T) {
 	if !first.IsIDVerified || first.ProviderRepoID != 42 || first.Host != "github.com" || first.Name != "acme/repo" || first.LocalPath != repo.LocalPath {
 		t.Fatalf("identity: %+v", first)
 	}
-	now = now.Add(9 * time.Minute)
+	// Before the renewal window: answered from the cache, no provider read.
+	now = now.Add(identityTTL - identityRefreshAhead - time.Minute)
 	if !v.Identity(context.Background(), repo).IsIDVerified || calls != 1 {
 		t.Fatal("cache did not retain absolute lifetime")
 	}
-	now = now.Add(time.Minute)
+	now = now.Add(identityRefreshAhead + time.Minute)
 	for _, err := range []error{errors.New("404"), errors.New("unavailable"), context.DeadlineExceeded} {
 		failure = err
 		if got := v.Identity(context.Background(), repo); got.IsIDVerified || got.ProviderRepoID != 0 {
@@ -227,4 +228,68 @@ func TestVisibilityIsFreshInformationalMetadata(t *testing.T) {
 			t.Fatalf("unsupported: %+v", got)
 		}
 	}
+}
+
+func TestIdentityRenewsAheadOfExpiryWithoutWaiting(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		release := make(chan struct{})
+		v := New(identityReaderFunc(func(context.Context, string) (int64, string, error) {
+			if calls.Add(1) > 1 {
+				<-release
+			}
+			return 42, "private", nil
+		}), zerolog.Nop())
+		repo := models.Repo{OriginURL: "https://github.com/o/r"}
+		if !v.Identity(t.Context(), repo).IsIDVerified {
+			t.Fatal("first lookup unverified")
+		}
+
+		// Inside the renewal window the lookup answers from the cache at once,
+		// although the provider read it starts is held open, and a burst of
+		// lookups starts one renewal.
+		time.Sleep(identityTTL - identityRefreshAhead)
+		for range 5 {
+			if !v.Identity(t.Context(), repo).IsIDVerified {
+				t.Fatal("a valid identity waited on its renewal")
+			}
+		}
+		synctest.Wait()
+		if got := calls.Load(); got != 2 {
+			t.Fatalf("provider reads = %d, want 1 renewal after the first read", got)
+		}
+		close(release)
+		synctest.Wait()
+
+		// The renewal restarted the lifetime: past the first read's expiry the
+		// identity is still served without another read.
+		time.Sleep(identityRefreshAhead + time.Minute)
+		if !v.Identity(t.Context(), repo).IsIDVerified || calls.Load() != 2 {
+			t.Fatalf("renewed identity expired with the old one: reads=%d", calls.Load())
+		}
+	})
+}
+
+func TestIdentityFailedRenewalStillExpires(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var failure atomic.Bool
+		v := New(identityReaderFunc(func(context.Context, string) (int64, string, error) {
+			if failure.Load() {
+				return 0, "", errors.New("unavailable")
+			}
+			return 42, "private", nil
+		}), zerolog.Nop())
+		repo := models.Repo{OriginURL: "https://github.com/o/r"}
+		v.Identity(t.Context(), repo)
+		failure.Store(true)
+		time.Sleep(identityTTL - identityRefreshAhead)
+		if !v.Identity(t.Context(), repo).IsIDVerified {
+			t.Fatal("still-valid identity refused during a failing renewal")
+		}
+		synctest.Wait()
+		time.Sleep(identityRefreshAhead)
+		if v.Identity(t.Context(), repo).IsIDVerified {
+			t.Fatal("expired identity served after its renewal failed")
+		}
+	})
 }

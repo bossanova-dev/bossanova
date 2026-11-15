@@ -705,6 +705,13 @@ Kubernetes sets `BOSSO_INSTANCE_ID` from the pod name. Local or manual
 multi-instance runs must set `BOSSO_INSTANCE_ID` on each process to a distinct
 stable value.
 
+A deployment with exactly one bosso process sets
+`BOSSO_ROUTING_PROVIDER=single` and keeps `BOSSO_MULTI_INSTANCE=true`, so daemon
+tokens and ownership claims stay in Redis across restarts and
+`bosso revoke-daemon-tokens` keeps working. Give the process a fixed
+`BOSSO_INSTANCE_ID`, such as `bosso-0`. The single provider never forwards a
+request; a claim that names any other instance is treated as stale.
+
 Webhook behavior:
 
 - GitHub signs webhook payloads with the app webhook secret.

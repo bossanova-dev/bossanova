@@ -26,7 +26,6 @@ const valid = () => ({
   role: 'proof-describe',
   items: ['A change'],
   breaking: false,
-  undisclosed: [],
 })
 const area = (defaultAsk = 'never') => ({
   area: 'housekeeping',
@@ -50,7 +49,6 @@ test('description bounds and strict keys share the proof limits', () => {
     { items: [' '.repeat(2)] },
     { items: ['x'.repeat(MAX_TEXT_CHARS + 1)] },
     { items: Array(MAX_ITEMS + 1).fill('x') },
-    { undisclosed: Array(MAX_ITEMS + 1).fill('x') },
     { breaking: 1 },
     { links: Array(MAX_DESCRIBE_LINKS + 1).fill({ text: 'x', url: 'https://example.test' }) },
     ...[
@@ -110,7 +108,7 @@ function fixture(t, script) {
 test('runner resolves script under extension, runs matching areas, and sends only facts', (t) => {
   const { root, extension } = fixture(
     t,
-    `let input='';for await (const chunk of process.stdin) input+=chunk;const envelope=JSON.parse(input);process.stdout.write(JSON.stringify({ok:true,extension:envelope.extension,role:envelope.role,items:[JSON.stringify(envelope),process.cwd()],breaking:false,undisclosed:[]}))`,
+    `let input='';for await (const chunk of process.stdin) input+=chunk;const envelope=JSON.parse(input);process.stdout.write(JSON.stringify({ok:true,extension:envelope.extension,role:envelope.role,items:[JSON.stringify(envelope),process.cwd()],breaking:false}))`,
   )
   const outcomes = runDescribers({
     extensions: [extension],
@@ -128,7 +126,7 @@ test('runner resolves script under extension, runs matching areas, and sends onl
     label: 'Housekeeping',
     paths: ['README.md'],
   })
-  assert.deepEqual(input.pr, { number: 4, title: 'title', body: 'body' })
+  assert.deepEqual(input.pr, { number: 4, title: 'title' }, 'the PR body is never sent')
   assert.equal(input.baseSha, 'b'.repeat(40))
   assert.equal(input.headSha, 'a'.repeat(40))
   assert.equal(input.ask, undefined)
@@ -216,7 +214,6 @@ test('merge is deterministic, deduplicates in descriptor order and bounds lists'
       ...valid(),
       items: Array.from({ length: MAX_ITEMS }, (_, i) => `item ${i}`),
       links: [{ text: 'doc', url: 'https://example.test' }],
-      undisclosed: ['missing'],
     },
   }
   const second = {
@@ -228,31 +225,42 @@ test('merge is deterministic, deduplicates in descriptor order and bounds lists'
       ...valid(),
       items: ['item 0', 'overflow'],
       links: [{ text: 'doc', url: 'https://example.test' }],
-      undisclosed: ['missing'],
     },
   }
   const merged = describeAreas([area()], [second, first])
   assert.deepEqual(merged, describeAreas([area()], [first, second]))
   assert.deepEqual(merged.areas[0].items, first.description.items)
   assert.equal(merged.areas[0].links.length, 1)
-  assert.deepEqual(merged.undisclosed, { housekeeping: ['missing'] })
   assert.equal(merged.health[0].code, 'describer-items-truncated')
 })
 
-test('merged undisclosed lists retain the full unique union across bounded describers', () => {
-  const first = Array.from({ length: MAX_ITEMS }, (_, i) => `first ${i}`)
-  const second = Array.from({ length: MAX_ITEMS }, (_, i) => `second ${i}`)
-  const outcomes = [first, second].map((undisclosed, order) => ({
-    extension: `facts-${order}`,
-    area: 'housekeeping',
-    order,
-    ok: true,
-    description: { ...valid(), undisclosed },
-  }))
+test('a deployed describer that still sends undisclosed is accepted and the list ignored', (t) => {
+  for (const undisclosed of [['A removed command'], Array(MAX_ITEMS + 1).fill('x'), 'text'])
+    assert.deepEqual(
+      refineDescription({ ...valid(), undisclosed }),
+      [],
+      JSON.stringify(undisclosed),
+    )
+  const { root, extension } = fixture(
+    t,
+    `process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({ok:true,extension:'describe-test',role:'proof-describe',items:['A change'],breaking:false,undisclosed:['A removed command']})))`,
+  )
+  const outcomes = runDescribers({
+    extensions: [extension],
+    areas: [area()],
+    baseSha: 'b'.repeat(40),
+    headSha: 'a'.repeat(40),
+    pr: { number: 4, title: 'title' },
+    cwd: root,
+  })
+  assert.deepEqual(
+    outcomes.map((outcome) => outcome.ok),
+    [true],
+  )
   const merged = describeAreas([area()], outcomes)
-  assert.deepEqual(merged.undisclosed.housekeeping, [...first, ...second])
-  assert.deepEqual(merged.areas[0].undisclosed, [...first, ...second])
+  assert.deepEqual(merged.areas[0].items, ['A change'])
   assert.deepEqual(merged.health, [])
+  assert.doesNotMatch(JSON.stringify(merged), /A removed command|undisclosed/)
 })
 
 test('boundDescription makes any raw facts a valid bounded result', () => {
@@ -265,12 +273,13 @@ test('boundDescription makes any raw facts a valid bounded result', () => {
       ...Array.from({ length: 30 }, (_, i) => `i${i}`),
     ],
     breaking: 'yes',
+    undisclosed: ['A removed command'],
   })
   assert.deepEqual(validateResult(result, 'proof-describe').errors, [])
+  assert.deepEqual(Object.keys(result), ['ok', 'extension', 'role', 'items', 'breaking'])
   assert.equal(result.items.length, MAX_ITEMS)
   assert.equal(result.items[0], 'a b')
   assert.equal(result.breaking, false)
-  assert.deepEqual(result.undisclosed, [])
 })
 
 test('describerMain reads the envelope from stdin and rejects flags', async () => {

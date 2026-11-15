@@ -163,6 +163,9 @@ func (c *RemoteClient) UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest
 	if req.IsTrusted != nil {
 		return nil, rpcerror.WrapError(errLocalOnly("setting repo trust"))
 	}
+	if req.ServeScript != nil {
+		return nil, rpcerror.WrapError(errLocalOnly("setting a repo serve command"))
+	}
 	daemonID, err := c.resolveRemoteDaemonForRepo(ctx, req.GetId())
 	if err != nil {
 		return nil, rpcerror.WrapError(err)

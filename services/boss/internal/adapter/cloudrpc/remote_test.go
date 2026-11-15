@@ -731,10 +731,8 @@ func (f *updateRepoRecorder) ProxyUpdateRepo(_ context.Context, req *connect.Req
 	return connect.NewResponse(&pb.ProxyUpdateRepoResponse{Settings: &pb.RepoSettings{Id: req.Msg.GetRepoId()}}), nil
 }
 
-// TestRemoteClient_UpdateRepoRefusesWorktreeBaseDir pins BOS-1344: the proxy
-// surface has no worktree field, so a --remote update that sets one must fail
-// rather than report a success that changed nothing.
-func TestRemoteClient_UpdateRepoRefusesWorktreeBaseDir(t *testing.T) {
+// A remote update must reject fields the proxy cannot carry before sending RPCs.
+func TestRemoteClient_UpdateRepoRefusesLocalOnlySettings(t *testing.T) {
 	t.Parallel()
 	fake := &updateRepoRecorder{}
 	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
@@ -745,15 +743,23 @@ func TestRemoteClient_UpdateRepoRefusesWorktreeBaseDir(t *testing.T) {
 	c := NewRemote(srv.URL, "tok")
 
 	dir := "/abs/worktrees"
-	_, err := c.UpdateRepo(context.Background(), &pb.UpdateRepoRequest{Id: "repo-1", WorktreeBaseDir: &dir})
-	if err == nil {
-		t.Fatal("UpdateRepo with worktree_base_dir succeeded, want a local-only refusal")
-	}
-	if connect.CodeOf(err) != connect.CodeUnimplemented || !strings.Contains(err.Error(), "only available on a local daemon") {
-		t.Fatalf("UpdateRepo error = %v, want Unimplemented local-only refusal", err)
-	}
-	if fake.aggregatedCalls != 0 || fake.updateCalls != 0 {
-		t.Fatalf("RPCs dispatched: aggregated=%d update=%d, want 0 and 0", fake.aggregatedCalls, fake.updateCalls)
+	serve := "make serve"
+	clear := ""
+	for _, req := range []*pb.UpdateRepoRequest{
+		{Id: "repo-1", WorktreeBaseDir: &dir},
+		{Id: "repo-1", ServeScript: &serve},
+		{Id: "repo-1", ServeScript: &clear},
+	} {
+		_, err := c.UpdateRepo(context.Background(), req)
+		if err == nil {
+			t.Fatal("UpdateRepo with local-only setting succeeded, want refusal")
+		}
+		if connect.CodeOf(err) != connect.CodeUnimplemented || !strings.Contains(err.Error(), "only available on a local daemon") {
+			t.Fatalf("UpdateRepo error = %v, want Unimplemented local-only refusal", err)
+		}
+		if fake.aggregatedCalls != 0 || fake.updateCalls != 0 {
+			t.Fatalf("RPCs dispatched: aggregated=%d update=%d, want 0 and 0", fake.aggregatedCalls, fake.updateCalls)
+		}
 	}
 
 	// Control: the same fake serves a field-free update, so the zero counts

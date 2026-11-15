@@ -143,6 +143,7 @@ func TestRepoToProto(t *testing.T) {
 		DefaultBaseBranch:               "main",
 		WorktreeBaseDir:                 "/home/user/.worktrees",
 		SetupScript:                     &script,
+		ServeScript:                     &script,
 		CanAutoMerge:                    true,
 		CanAutoMergeDependabot:          true,
 		CanAutoRepair:                   true,
@@ -169,6 +170,9 @@ func TestRepoToProto(t *testing.T) {
 	}
 	if p.WorktreeBaseDir != "/home/user/.worktrees" {
 		t.Errorf("WorktreeBaseDir = %q", p.WorktreeBaseDir)
+	}
+	if p.ServeScript == nil || *p.ServeScript != "make install" {
+		t.Errorf("ServeScript = %v", p.ServeScript)
 	}
 	if p.SetupScript == nil || *p.SetupScript != "make install" {
 		t.Errorf("SetupScript = %v", p.SetupScript)

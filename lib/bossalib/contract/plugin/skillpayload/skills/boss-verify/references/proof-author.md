@@ -18,7 +18,7 @@ into the spec.
   on), `mergePolicy` when the repository has one (its `path` and `text`, read from the base
   tip), `sections` when the repository declares page sections of its own (each `id`, `title` and
   `instructions`, read from the base tip), per-file line counts in `files`, the review `areas` with describer facts (`items`,
-  `change`, `undisclosed`), the `confidence` and park `reasons`, review's `findings` (each with
+  `change`), the `confidence` and park `reasons`, review's `findings` (each with
   an `id`), `blockers` and `notes`, CI checks in `ci`, `commits`,
   `repoSettings.canAutoMerge`, `branch` when the PR merges into a branch that is not the
   `default` or is stacked on older open PRs (`stackedOn`, each carrying `shared` of its `total`
@@ -84,7 +84,7 @@ Write one JSON object to the `spec` path:
       }
     ],
     "skipped": [{ "text": "…", "why": "…", "followUp": "<ticket id, optional>" }],
-    "contradictions": ["the PR description says X, the code does Y"]
+    "contradictions": ["the ticket asks for X, the code does Y"]
   },
   "areas": [
     {
@@ -159,15 +159,15 @@ omitted. Omit anything with nothing to say.
    use the pipeline's words: verify, judge, area, ask, policy, boss-review, sign-off. The page
    rejects a reason that does.
 4. **`waiting`** says why the PR is not merging on its own. The page already lists the park
-   reasons, blockers, breaking changes and undisclosed changes from the verify record, above
+   reasons, blockers and breaking changes from the verify record, above
    anything you write. Add only a concrete reason those do not name: `canAutoMerge: false`, an area
    whose `defaultAsk` is `always`, a failing or pending check, a deploy step. Never repeat one.
 5. **`risks`** are what might go wrong if this merges as it is, most severe first. `title` is a
    short failure statement ("Old app builds drop the new status"), `impact` says who or what it
    hits, and `guard` what protects against it today, or `None.`. A changed rendered document is a
-   risk when its page count or a page caption shows a change the PR does not explain; cite the
-   template or code that renders it. `at`, when the risk has one place, is the exact head-side
-   file and line, and the file must be one the PR changes. A required step outside the PR (a
+   risk when its page count or a page caption shows a change that neither the ticket nor the diff
+   accounts for; cite the template or code that renders it. `at`, when the risk has one place, is
+   the exact head-side file and line, and the file must be one the PR changes. A required step outside the PR (a
    secret, an infrastructure change, a manual data fix) is an `after` checklist item, not a risk.
    A PR with nothing risky gets an empty list; do not pad it.
 6. **`decisions`** are the 0 to 4 things a person must actually judge, most important first: a
@@ -186,8 +186,9 @@ omitted. Omit anything with nothing to say.
      criterion done on its own. The page drops evidence that does not resolve and shows a `done`
      criterion with none left as `unverified`. Use `missed` when the code does not do it, and
      `skipped` when the PR leaves it out on purpose, with the reason in `skipped`. The page works
-     the verdict out from the criteria. List each place the PR description and the code disagree
-     in `contradictions`. Omit `ticketFit` when the bundle has no ticket.
+     the verdict out from the criteria. List each place the ticket and the code disagree in
+     `contradictions`, as "the ticket asks for X, the code does Y". Omit `ticketFit` when the
+     bundle has no ticket.
 8. **`links`** join a risk or decision to the items it concerns, by id: another risk, a
    decision, a criterion, or a bundle finding `id`. The page drops an id that names nothing.
 9. **`areas`**: one entry per bundle area that changed something a reviewer cares about, in the
@@ -225,6 +226,10 @@ omitted. Omit anything with nothing to say.
     Risks and decisions may link to section item ids too. Labels, group, tag, part titles and
     columns are at most 40 characters, `sub` 80. The page places each section where the repository
     declared it.
+
+15. **The reader never opens the PR.** Never raise a risk, decision, `waiting` reason,
+    contradiction or note about what the PR title or description says or leaves out. An empty
+    description is normal.
 
 Text is at most 300 characters per field, the title 110 and the reason 200, and each list at most
 20 entries (12 risks, 4 decisions). Ids are short, such as `R1`, `D1` and `AC1`, and each appears

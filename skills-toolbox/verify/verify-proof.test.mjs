@@ -21,7 +21,6 @@ function fixture() {
         label: 'UI',
         ask: true,
         items: ['A change'],
-        undisclosed: false,
         media: [
           {
             kind: 'video',
@@ -179,7 +178,7 @@ const invalidCases = {
     delete x.areas[0].ask
   },
   wrongBool: (x) => {
-    x.areas[0].undisclosed = 'false'
+    x.areas[0].proven = 'false'
   },
 }
 for (const [name, edit] of Object.entries(invalidCases)) {
@@ -605,11 +604,9 @@ test('selected media always validate in a proof area', () => {
 
 const proven = { proof: 'test', behaviour: true, test: 'shows a change', path: 'src/a.test.mjs' }
 
-test('claims and unmentioned are optional, validated and covered by the digest', () => {
+test('claims are optional, validated and covered by the digest', () => {
   const record = changed((x) => {
     x.whatItDoes.claims = [proven]
-    x.areas[0].unmentioned = ['Hospital.state']
-    x.areas[0].undisclosed = true
   })
   assert.deepEqual(p.validateProof(record).errors, [])
   assert.notEqual(record.digest, fixture().digest)
@@ -667,20 +664,9 @@ test('rejects claims that break the record rules', () => {
     'claim without behaviour': (x) => {
       x.whatItDoes.claims = [{ proof: 'test', test: 't', path: 'p' }]
     },
-    'unmentioned without undisclosed': (x) => {
-      x.areas[0].unmentioned = ['Hospital.state']
-    },
-    'unmentioned over the item cap': (x) => {
-      x.areas[0].undisclosed = true
-      x.areas[0].unmentioned = Array.from({ length: p.MAX_ITEMS + 1 }, (_, i) => `S.f${i}`)
-    },
   }
   for (const [name, edit] of Object.entries(cases))
     assert.equal(p.validateProof(changed(edit)).ok, false, name)
-  const empty = changed((x) => {
-    x.areas[0].unmentioned = []
-  })
-  assert.deepEqual(p.validateProof(empty).errors, [])
 })
 
 test('optional API change facts validate without changing older records', () => {

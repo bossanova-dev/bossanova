@@ -280,6 +280,7 @@ type Repo struct {
 	ShouldKeepBranchesCurrent       bool
 	IsTrusted                       bool
 	HasKeyringSecrets               bool
+	ServeScript                     *string
 }
 
 type RotationEvent struct {

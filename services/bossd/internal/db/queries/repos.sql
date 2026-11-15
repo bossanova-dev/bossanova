@@ -17,8 +17,8 @@ SELECT * FROM repos WHERE origin_url = ?;
 SELECT * FROM repos ORDER BY created_at DESC;
 
 -- name: CreateRepo :one
-INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, merge_strategy, linear_api_key, sentry_api_key, sentry_org, is_trusted, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 0, 0, 'merge', '', '', '', ?, ?, ?) RETURNING *;
+INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, serve_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, merge_strategy, linear_api_key, sentry_api_key, sentry_org, is_trusted, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 0, 0, 'merge', '', '', '', ?, ?, ?) RETURNING *;
 
 -- name: GetRepoKeyState :one
 SELECT updated_at, has_keyring_secrets FROM repos WHERE id = ?;
@@ -43,6 +43,7 @@ origin_url = COALESCE(sqlc.narg(origin_url), origin_url),
 default_base_branch = COALESCE(sqlc.narg(default_base_branch), default_base_branch),
 worktree_base_dir = COALESCE(sqlc.narg(worktree_base_dir), worktree_base_dir),
 setup_script = CASE WHEN CAST(sqlc.arg(set_setup_script) AS BOOLEAN) THEN sqlc.narg(setup_script) ELSE setup_script END,
+serve_script = CASE WHEN CAST(sqlc.arg(set_serve_script) AS BOOLEAN) THEN sqlc.narg(serve_script) ELSE serve_script END,
 can_auto_merge = COALESCE(CAST(sqlc.narg(can_auto_merge) AS BOOLEAN), can_auto_merge),
 can_auto_merge_dependabot = COALESCE(CAST(sqlc.narg(can_auto_merge_dependabot) AS BOOLEAN), can_auto_merge_dependabot),
 can_auto_repair = COALESCE(CAST(sqlc.narg(can_auto_repair) AS BOOLEAN), can_auto_repair),

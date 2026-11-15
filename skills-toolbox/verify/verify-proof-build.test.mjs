@@ -20,7 +20,6 @@ const schema = {
     { text: 'Not https', url: 'http://docs.example/schema' },
   ],
   breaking: false,
-  undisclosed: ['Drops users.legacy_id'],
 }
 const contract = {
   area: 'api-contract',
@@ -95,8 +94,6 @@ test('asks are the asking areas in area order, under contract-valid names @sessi
   assert.equal(area.label, 'API schema')
   assert.deepEqual(area.items, ['Adds the users.email column'])
   assert.deepEqual(area.links, [{ text: 'Schema docs', url: 'https://docs.example/schema' }])
-  assert.equal(area.undisclosed, true)
-  assert.deepEqual(area.unmentioned, ['Drops users.legacy_id'])
   const api = proof.areas.find((entry) => entry.name === 'api-contract')
   assert.equal(api.change, 'additive')
   assert.equal(proof.areas.find((entry) => entry.name === 'other').ask, false)

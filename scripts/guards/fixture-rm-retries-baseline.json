@@ -6,7 +6,6 @@
   ".claude/skills/verify/lib/evidence.test.mjs": 1,
   ".claude/skills/verify/lib/features.test.mjs": 1,
   ".claude/skills/verify/lib/host.test.mjs": 1,
-  ".claude/skills/verify/lib/pr-evidence.test.mjs": 1,
   ".claude/skills/verify/lib/probes.test.mjs": 1,
   ".claude/skills/verify/lib/render.test.mjs": 1,
   ".claude/skills/verify/lib/stack.test.mjs": 2,

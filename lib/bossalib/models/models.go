@@ -59,6 +59,7 @@ type Repo struct {
 	DefaultBaseBranch      string
 	WorktreeBaseDir        string
 	SetupScript            *string
+	ServeScript            *string
 	CanAutoMerge           bool
 	CanAutoMergeDependabot bool
 	CanAutoRepair          bool

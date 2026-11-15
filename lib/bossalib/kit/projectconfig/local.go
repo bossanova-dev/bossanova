@@ -513,7 +513,7 @@ func (p *planner) planTrust(status repoStatus, repoID string) {
 
 func (p *planner) planRepoCreate(change Change, t target, v *pb.ValidateRepoPathResponse) string {
 	r := p.cfg.Repo
-	reg := &pb.RegisterRepoRequest{LocalPath: t.path, DisplayName: filepath.Base(t.path), DefaultBaseBranch: v.GetDefaultBranch(), SetupScript: r.SetupScript}
+	reg := &pb.RegisterRepoRequest{LocalPath: t.path, DisplayName: filepath.Base(t.path), DefaultBaseBranch: v.GetDefaultBranch(), SetupScript: r.SetupScript, ServeScript: r.ServeScript}
 	if r.DisplayName != nil {
 		reg.DisplayName = *r.DisplayName
 	}
@@ -528,14 +528,17 @@ func (p *planner) planRepoCreate(change Change, t target, v *pb.ValidateRepoPath
 	if reg.SetupScript != nil {
 		change.Fields = append(change.Fields, FieldDiff{Field: "setupScript", New: *reg.SetupScript})
 	}
+	if reg.ServeScript != nil {
+		change.Fields = append(change.Fields, FieldDiff{Field: "serveScript", New: *reg.ServeScript})
+	}
 	// Settings RegisterRepo cannot carry are set right after registering.
 	// Every stated setting is sent: the daemon's registration defaults are not
 	// known here, so diffing against them could leave a stated value unset.
 	all, req := p.repoDiff(&pb.Repo{}, true)
-	req.DisplayName, req.SetupScript = nil, nil
+	req.DisplayName, req.SetupScript, req.ServeScript = nil, nil, nil
 	var settings []FieldDiff
 	for _, f := range all {
-		if f.Field != "displayName" && f.Field != "setupScript" {
+		if f.Field != "displayName" && f.Field != "setupScript" && f.Field != "serveScript" {
 			f.Old = ""
 			settings = append(settings, f)
 		}
@@ -570,6 +573,7 @@ func (p *planner) repoDiff(repo *pb.Repo, all bool) ([]FieldDiff, *pb.UpdateRepo
 	}
 	str("displayName", r.DisplayName, repo.GetDisplayName(), func(v *string) { req.DisplayName = v })
 	str("setupScript", r.SetupScript, repo.GetSetupScript(), func(v *string) { req.SetupScript = v })
+	str("serveScript", r.ServeScript, repo.GetServeScript(), func(v *string) { req.ServeScript = v })
 	str("sentryOrg", r.SentryOrg, repo.GetSentryOrg(), func(v *string) { req.SentryOrg = v })
 	if s := r.Settings; s != nil {
 		boolean("settings.canAutoMerge", s.CanAutoMerge, repo.GetCanAutoMerge(), func(v *bool) { req.CanAutoMerge = v })

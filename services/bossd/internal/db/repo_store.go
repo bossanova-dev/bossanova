@@ -140,7 +140,7 @@ func (s *SQLiteRepoStore) create(ctx context.Context, params CreateRepoParams) (
 	// Existing repos are intentionally left untouched (scope = new repos).
 	row, err := sqlcgen.New(conn).CreateRepo(ctx, sqlcgen.CreateRepoParams{
 		ID: id, DisplayName: params.DisplayName, LocalPath: params.LocalPath, OriginUrl: params.OriginURL,
-		DefaultBaseBranch: params.DefaultBaseBranch, WorktreeBaseDir: params.WorktreeBaseDir, SetupScript: params.SetupScript,
+		DefaultBaseBranch: params.DefaultBaseBranch, WorktreeBaseDir: params.WorktreeBaseDir, SetupScript: params.SetupScript, ServeScript: params.ServeScript,
 		IsTrusted: params.IsTrusted, CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
@@ -398,7 +398,7 @@ func (s *SQLiteRepoStore) update(ctx context.Context, q sqlcgen.DBTX, id string,
 	arg := sqlcgen.UpdateRepoParams{
 		ID: id, UpdatedAt: nextUpdatedAt(sqlutil.TimeNow(), keys.updatedAfter),
 		DisplayName: params.DisplayName, OriginUrl: params.OriginURL, DefaultBaseBranch: params.DefaultBaseBranch,
-		WorktreeBaseDir: params.WorktreeBaseDir, SetSetupScript: params.SetupScript != nil,
+		WorktreeBaseDir: params.WorktreeBaseDir, SetSetupScript: params.SetupScript != nil, SetServeScript: params.ServeScript != nil,
 		CanAutoMerge: params.CanAutoMerge, CanAutoMergeDependabot: params.CanAutoMergeDependabot,
 		CanAutoRepair: params.CanAutoRepair, CanAutoRotate: params.CanAutoRotate,
 		ShouldArchiveSessionsAfterMerge: params.ShouldArchiveSessionsAfterMerge,
@@ -408,6 +408,9 @@ func (s *SQLiteRepoStore) update(ctx context.Context, q sqlcgen.DBTX, id string,
 	}
 	if params.SetupScript != nil {
 		arg.SetupScript = *params.SetupScript
+	}
+	if params.ServeScript != nil {
+		arg.ServeScript = *params.ServeScript
 	}
 	if params.MergeStrategy != nil {
 		value := string(*params.MergeStrategy)
@@ -498,7 +501,7 @@ func (s *SQLiteRepoStore) Delete(ctx context.Context, id string) error {
 func repoFromRow(row sqlcgen.Repo) *domain.Repo {
 	return &domain.Repo{
 		ID: row.ID, DisplayName: row.DisplayName, LocalPath: row.LocalPath, OriginURL: row.OriginUrl,
-		DefaultBaseBranch: row.DefaultBaseBranch, WorktreeBaseDir: row.WorktreeBaseDir, SetupScript: row.SetupScript,
+		DefaultBaseBranch: row.DefaultBaseBranch, WorktreeBaseDir: row.WorktreeBaseDir, SetupScript: row.SetupScript, ServeScript: row.ServeScript,
 		CanAutoMerge: row.CanAutoMerge, CanAutoMergeDependabot: row.CanAutoMergeDependabot,
 		CanAutoRepair: row.CanAutoRepair, CanAutoRotate: row.CanAutoRotate,
 		ShouldArchiveSessionsAfterMerge: row.ShouldArchiveSessionsAfterMerge, CanAutoDeleteBranches: row.CanAutoDeleteBranches,

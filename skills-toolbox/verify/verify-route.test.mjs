@@ -659,6 +659,59 @@ test('the verify chat is the one boss-build arms: newest live wins, a STOPPED on
   assert.deepEqual(send.args, ['chat', 'send', 'v-new', '/boss-verify 1 --claim tok-1', '--json'])
 })
 
+test('a verify chat with no pane and no status (UNSPECIFIED) gets a new verify chat, not the send', () => {
+  const w = world({
+    verdicts: { 1: EXT },
+    sessions: [{ id: 's1', pr_url: url(1), updated_at: '2026-10-01T00:00:00Z' }],
+    chats: {
+      s1: [
+        { agent_session_id: 'v-dead', role: 'verify', title: 'verify', status: 'UNSPECIFIED' },
+        { agent_session_id: 'c1', title: 'main', status: 'IDLE' },
+      ],
+    },
+  })
+  const r = sweep({}, w.deps())
+  const sends = w.calls.filter((c) => c.args[0] === 'chat' && c.args[1] === 'send')
+  assert.deepEqual(
+    sends.map((c) => c.args[2]),
+    ['chat-new'],
+  )
+  assert.deepEqual(lines(r), ['#1 dispatched: new-verify-chat'])
+})
+
+test('a send that runs out the budget still leaves its claim release time to restore the park', () => {
+  const w = world({
+    verdicts: { 1: EXT },
+    parkBeneath: true,
+    // A slow judge leaves the candidate just above the start floor when it is dispatched.
+    ticks: { judge: DEFAULT_BUDGET_MS - START_FLOOR_MS - 2_000 },
+    sessions: [{ id: 's1', pr_url: url(1), updated_at: '2026-10-01T00:00:00Z' }],
+    chats: { s1: [{ agent_session_id: 'chat-v', title: 'verify', status: 'IDLE' }] },
+  })
+  // The send hangs until its own timeout spends the budget; the release needs 3 s of gh calls.
+  const RELEASE_COST_MS = 3_000
+  const run = (cmd, args, options = {}) => {
+    if (cmd === BOSS && args[0] === 'chat' && args[1] === 'send') {
+      w.calls.push({ cmd, args: [...args], timeoutMs: options.timeoutMs })
+      w.clock += options.timeoutMs
+      return { ok: false, error: 'ETIMEDOUT', exit: null, output: '' }
+    }
+    if (cmd === NODE && args[1] === 'post' && args.includes('--release')) {
+      if ((options.timeoutMs ?? 0) < RELEASE_COST_MS) {
+        w.calls.push({ cmd, args: [...args], timeoutMs: options.timeoutMs })
+        w.clock += options.timeoutMs
+        return { ok: false, error: 'ETIMEDOUT', exit: null, output: '' }
+      }
+      w.clock += RELEASE_COST_MS
+    }
+    return w.run(cmd, args, options)
+  }
+  const r = sweep({}, w.deps({ run }))
+  assert.deepEqual(lines(r), [
+    '#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT; park restored)',
+  ])
+})
+
 test('no live session: a detached boss new --pr whose stdio is not the gate’s', () => {
   const w = world({ verdicts: { 1: EXT }, sessions: [] })
   const r = sweep({}, w.deps())

@@ -2374,8 +2374,12 @@ type Repo struct {
 	// state, never persisted; false everywhere else, including without an
 	// upstream.
 	IsMissingWebhooks bool `protobuf:"varint,26,opt,name=is_missing_webhooks,json=isMissingWebhooks,proto3" json:"is_missing_webhooks,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Long-running command that boss session serve starts. Additive optional
+	// field: older clients ignore it; no version transform is needed.
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
+	ServeScript   *string `protobuf:"bytes,27,opt,name=serve_script,json=serveScript,proto3,oneof" json:"serve_script,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Repo) Reset() {
@@ -2553,6 +2557,13 @@ func (x *Repo) GetIsMissingWebhooks() bool {
 		return x.IsMissingWebhooks
 	}
 	return false
+}
+
+func (x *Repo) GetServeScript() string {
+	if x != nil && x.ServeScript != nil {
+		return *x.ServeScript
+	}
+	return ""
 }
 
 // SecretUpdate carries a secret mutation. value is required iff action == SET
@@ -8930,7 +8941,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\tR\x06detail\x129\n" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAtB\v\n" +
-	"\t_reset_at\"\xd2\a\n" +
+	"\t_reset_at\"\x8b\b\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -8959,8 +8970,10 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"sentry_org\x18\x12 \x01(\tR\tsentryOrg\x12\x1d\n" +
 	"\n" +
 	"is_trusted\x18\x19 \x01(\bR\tisTrusted\x12.\n" +
-	"\x13is_missing_webhooks\x18\x1a \x01(\bR\x11isMissingWebhooksB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x14\x10\x15J\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"g\n" +
+	"\x13is_missing_webhooks\x18\x1a \x01(\bR\x11isMissingWebhooks\x12&\n" +
+	"\fserve_script\x18\x1b \x01(\tH\x01R\vserveScript\x88\x01\x01B\x0f\n" +
+	"\r_setup_scriptB\x0f\n" +
+	"\r_serve_scriptJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x14\x10\x15J\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"g\n" +
 	"\fSecretUpdate\x122\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1a.bossanova.v1.SecretActionR\x06action\x12\x19\n" +
 	"\x05value\x18\x02 \x01(\tH\x00R\x05value\x88\x01\x01B\b\n" +

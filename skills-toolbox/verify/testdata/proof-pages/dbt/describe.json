@@ -9,7 +9,6 @@
         "Adds columns gross_cents, refund_cents, net_cents"
       ],
       "breaking": false,
-      "undisclosed": ["Materialises fct_daily_revenue incrementally"],
       "blocks": [
         {
           "kind": "table",
@@ -76,7 +75,6 @@
         "Tests refund_id as unique and not null"
       ],
       "breaking": false,
-      "undisclosed": [],
       "blocks": [
         {
           "kind": "table",

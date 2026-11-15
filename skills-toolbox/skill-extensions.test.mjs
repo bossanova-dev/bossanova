@@ -2308,17 +2308,20 @@ test('proof-describe discovery preserves script metadata and rejects invalid mar
   }
 })
 
-test('proof-describe validateResult enforces strict fields', () => {
+test('proof-describe validateResult enforces strict fields and ignores a legacy undisclosed list', () => {
   const result = {
     ok: true,
     extension: 'facts',
     role: 'proof-describe',
     items: [],
     breaking: false,
-    undisclosed: [],
   }
   assert.equal(validateResult(result, 'proof-describe').ok, true)
+  assert.equal(validateResult({ ...result, undisclosed: ['x'] }, 'proof-describe').ok, true)
   assert.equal(validateResult({ ...result, ask: false }, 'proof-describe').ok, false)
+  const withoutItems = { ...result }
+  delete withoutItems.items
+  assert.equal(validateResult(withoutItems, 'proof-describe').ok, false)
 })
 
 test('proof-publish discovery keeps the publish script and skips invalid markers', () => {

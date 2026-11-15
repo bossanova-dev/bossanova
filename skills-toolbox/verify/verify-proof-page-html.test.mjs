@@ -32,7 +32,6 @@ function input(areas = ['ui', 'logic'], { ask = ['logic'] } = {}) {
         label: { ui: 'UI', logic: 'Logic' }[name] ?? name,
         ask: ask.includes(name),
         items: [`${name} fact`],
-        undisclosed: false,
         media: [],
         proven: false,
       })),
@@ -309,13 +308,11 @@ test('a spec or manifest for another head is ignored, and only debug says so', (
   assert.match(region(html, '<p class="reason">', '</p>'), /totals need a person/)
 })
 
-test('without a spec, a breaking API change and unmentioned changes are the risks', () => {
+test('without a spec, a breaking API change is the one risk, and nothing judges the PR description', () => {
   const page = input(['logic'])
   Object.assign(page.proof.areas[0], {
     change: 'breaking',
     changeReasons: ['field removed'],
-    undisclosed: true,
-    unmentioned: ['Cart.total'],
   })
   page.proof = withDigest(page.proof)
   const html = renderProofHtml(page)
@@ -325,12 +322,8 @@ test('without a spec, a breaking API change and unmentioned changes are the risk
       '<div class="item" id="risk-1"><div class="hd"><span class="pill danger">high</span><div class="q">Breaking API change in Logic</div></div><ul class="facts"><li>field removed</li>',
     ),
   )
-  assert.ok(
-    risks.includes(
-      '<div class="item" id="risk-2"><div class="hd"><span class="pill warning">medium</span><div class="q">The PR description doesn&#39;t mention the logic change</div></div><ul class="facts"><li>Cart.total</li>',
-    ),
-  )
-  assert.ok(html.includes('<h2>Risks<span class="n">2 · 1 high, 1 medium</span></h2>'))
+  assert.ok(html.includes('<h2>Risks<span class="n">1 · 1 high</span></h2>'))
+  assert.doesNotMatch(html, /description/i)
   assert.ok(section(html, 'a-logic').includes('<span class="pill danger">breaking</span>'))
 })
 
@@ -339,8 +332,6 @@ test('banner risk links resolve to the risks on the page, in the Risks section o
   Object.assign(page.proof.areas[0], {
     change: 'breaking',
     changeReasons: ['field removed'],
-    undisclosed: true,
-    unmentioned: ['Cart.total'],
   })
   page.proof = withDigest(page.proof)
   const html = renderProofHtml(page, {
@@ -365,13 +356,7 @@ test('banner risk links resolve to the risks on the page, in the Risks section o
   )
   assert.deepEqual(
     items.map((m) => m[2]),
-    [
-      'Breaking API change in Logic',
-      'High one',
-      'The PR description doesn&#39;t mention the logic change',
-      'Medium one',
-      'Low one',
-    ],
+    ['Breaking API change in Logic', 'High one', 'Medium one', 'Low one'],
     'high, then medium and low, record before spec within a level',
   )
 })

@@ -107,6 +107,26 @@ describe('pickVerifyChat', () => {
     )
   })
 
+  it('passes over a chat with no pane and no status (UNSPECIFIED) for an older live one', () => {
+    const chats = [
+      {
+        agent_session_id: 'live',
+        role: 'verify',
+        status: 'IDLE',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+      {
+        agent_session_id: 'dead',
+        role: 'verify',
+        status: 'UNSPECIFIED',
+        created_at: '2026-02-01T00:00:00Z',
+      },
+      { agent_session_id: 'dead2', role: 'verify', status: 'CHAT_STATUS_UNSPECIFIED' },
+    ]
+    assert.equal(pickVerifyChat(chats).agent_session_id, 'live')
+    assert.equal(pickVerifyChat(chats.slice(1)), null)
+  })
+
   it('matches the title trimmed and case-insensitively, like the verify router always has', () => {
     assert.equal(
       pickVerifyChat([{ agent_session_id: 'v', title: ' Verify ' }]).agent_session_id,

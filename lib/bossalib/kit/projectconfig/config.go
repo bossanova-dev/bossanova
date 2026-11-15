@@ -118,6 +118,7 @@ type Repo struct {
 	DisplayName       *string       `json:"displayName,omitempty"`
 	DefaultBaseBranch *string       `json:"defaultBaseBranch,omitempty"`
 	SetupScript       *string       `json:"setupScript,omitempty"`
+	ServeScript       *string       `json:"serveScript,omitempty"`
 	SentryOrg         *string       `json:"sentryOrg,omitempty"`
 	Settings          *RepoSettings `json:"settings,omitempty"`
 	Secrets           *RepoSecrets  `json:"secrets,omitempty"`

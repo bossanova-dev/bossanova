@@ -39,6 +39,10 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 		return nil, err
 	}
 
+	serveScript, err := s.repoServeScript(msg.ServeScript)
+	if err != nil {
+		return nil, err
+	}
 	var setupScript *string
 	if msg.SetupScript != nil {
 		setupScript = msg.SetupScript
@@ -55,6 +59,7 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 		DefaultBaseBranch: msg.DefaultBaseBranch,
 		WorktreeBaseDir:   worktreeBaseDir,
 		SetupScript:       setupScript,
+		ServeScript:       serveScript,
 		IsTrusted:         msg.GetIsTrusted(),
 	})
 	if err != nil {
@@ -79,6 +84,11 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 	}
 	if !filepath.IsAbs(msg.LocalPath) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("local_path must be absolute"))
+	}
+
+	serveScript, err := s.repoServeScript(msg.ServeScript)
+	if err != nil {
+		return nil, err
 	}
 
 	// Resolve the worktree base before cloning so a bad value never leaves a
@@ -129,6 +139,7 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 		DefaultBaseBranch: msg.DefaultBaseBranch,
 		WorktreeBaseDir:   worktreeBaseDir,
 		SetupScript:       setupScript,
+		ServeScript:       serveScript,
 		IsTrusted:         msg.GetIsTrusted(),
 	})
 	if err != nil {
@@ -218,7 +229,14 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
+	serveScript, err := s.repoServeScript(msg.ServeScript)
+	if err != nil {
+		return nil, err
+	}
 	params := domain.UpdateRepoParams{}
+	if msg.ServeScript != nil {
+		params.ServeScript = &serveScript
+	}
 	if msg.DisplayName != nil {
 		params.DisplayName = msg.DisplayName
 	}
@@ -376,4 +394,17 @@ func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRe
 	}
 
 	return connect.NewResponse(&pb.ListRepoPRsResponse{PullRequests: pbPRs}), nil
+}
+
+func (s *Server) repoServeScript(value *string) (*string, error) {
+	if value == nil || *value == "" {
+		return nil, nil
+	}
+	if s.validateRepoScript == nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("repo script validator is not configured"))
+	}
+	if err := s.validateRepoScript(*value); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("serve_script: %w", err))
+	}
+	return value, nil
 }

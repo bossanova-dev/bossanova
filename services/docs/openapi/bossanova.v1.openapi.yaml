@@ -8000,6 +8000,11 @@ components:
             - boolean
             - "null"
           title: is_trusted
+        serveScript:
+          type:
+            - string
+            - "null"
+          title: serve_script
       title: CloneAndRegisterRepoRequest
       additionalProperties: false
     bossanova.v1.CloneAndRegisterRepoResponse:
@@ -19907,6 +19912,11 @@ components:
           description: |-
             Register the repository as trusted (see Repo.is_trusted). Absent or false
              registers it untrusted.
+        serveScript:
+          type:
+            - string
+            - "null"
+          title: serve_script
       title: RegisterRepoRequest
       additionalProperties: false
     bossanova.v1.RegisterRepoResponse:
@@ -20293,6 +20303,15 @@ components:
              other repos. False for an origin that is not a github.com owner/name. Live
              state, never persisted; false everywhere else, including without an
              upstream.
+        serveScript:
+          type:
+            - string
+            - "null"
+          title: serve_script
+          description: |-
+            Long-running command that boss session serve starts. Additive optional
+             field: older clients ignore it; no version transform is needed.
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
       title: Repo
       additionalProperties: false
       description: Repo represents a registered Git repository.
@@ -25777,6 +25796,12 @@ components:
           description: |-
             Local trust toggle (see Repo.is_trusted). Deliberately absent from the
              stream UpdateRepoCommand: the orchestrator must not be able to flip it.
+        serveScript:
+          type:
+            - string
+            - "null"
+          title: serve_script
+          description: Absent leaves the command unchanged; empty clears it.
       title: UpdateRepoRequest
       additionalProperties: false
     bossanova.v1.UpdateRepoResponse:

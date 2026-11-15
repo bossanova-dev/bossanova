@@ -21,6 +21,7 @@ type repoSettings struct {
 	MergeStrategy                   string  `json:"mergeStrategy"`
 	WorktreeBaseDir                 string  `json:"worktreeBaseDir"`
 	SetupScript                     *string `json:"setupScript"`
+	ServeScript                     *string `json:"serveScript"`
 	SentryOrg                       string  `json:"sentryOrg"`
 	HasLinearAPIKey                 bool    `json:"hasLinearApiKey"`
 	HasSentryAuthToken              bool    `json:"hasSentryAuthToken"`
@@ -34,7 +35,7 @@ func repoSettingsFor(c Client, r *pb.Repo) repoSettings {
 		CanAutoMergeDependabot: r.CanAutoMergeDependabot, CanAutoRepair: r.CanAutoRepair,
 		ShouldArchiveSessionsAfterMerge: r.ShouldArchiveSessionsAfterMerge,
 		CanAutoDeleteBranches:           r.CanAutoDeleteBranches, ShouldKeepBranchesCurrent: r.ShouldKeepBranchesCurrent,
-		MergeStrategy: r.MergeStrategy, WorktreeBaseDir: r.WorktreeBaseDir, SetupScript: r.SetupScript,
+		MergeStrategy: r.MergeStrategy, WorktreeBaseDir: r.WorktreeBaseDir, SetupScript: r.SetupScript, ServeScript: r.ServeScript,
 		SentryOrg: r.SentryOrg, HasLinearAPIKey: r.LinearApiKey != "", HasSentryAuthToken: r.SentryApiKey != "",
 	}
 	if _, remote := c.(*cloudrpc.RemoteClient); !remote {

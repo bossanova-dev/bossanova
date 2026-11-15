@@ -360,6 +360,17 @@ test('the api and dbt fixtures carry describer output that renders every block k
   assert.deepEqual(labels, ['Database', 'Manual steps', 'API', 'Security', 'Old clients'])
 })
 
+test('an API change the PR description never names raises no risk or section about the description', (t) => {
+  const describe = JSON.parse(readFileSync(join(FIXTURES_DIR, 'api', 'describe.json'), 'utf8'))
+  const legacy = Object.values(describe)
+    .flat()
+    .flatMap((result) => result.undisclosed ?? [])
+  assert.deepEqual(legacy, ['Adds InvoiceStatus.OVERDUE'], 'a deployed describer still sends one')
+  const html = fixturePage(t, 'api').html
+  assert.ok(section(html, 'a-api-contract'), 'the API contract area is on the page')
+  assert.doesNotMatch(html, /PR description|Not in the description|doesn&#39;t mention/)
+})
+
 test('a describe file the gate would reject fails the render with its first error', (t) => {
   const dir = scratch(t)
   const range = buildFixtureRepo('api', join(dir, 'repo'))
@@ -370,7 +381,6 @@ test('a describe file the gate would reject fails the render with its first erro
     role: 'proof-describe',
     items: [],
     breaking: false,
-    undisclosed: [],
     blocks: [{ kind: 'chart' }],
   }
   writeFileSync(describe, JSON.stringify({ 'api-contract': [result] }))

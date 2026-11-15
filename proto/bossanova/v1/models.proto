@@ -207,6 +207,10 @@ message Repo {
   // state, never persisted; false everywhere else, including without an
   // upstream.
   bool is_missing_webhooks = 26;
+  // Long-running command that boss session serve starts. Additive optional
+  // field: older clients ignore it; no version transform is needed.
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
+  optional string serve_script = 27;
 }
 
 // MergeStrategy is the merge method used when auto-merging PRs. Mirrors the

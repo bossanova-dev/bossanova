@@ -9,7 +9,6 @@
         "Backfills due_on as sent_at plus 30 days"
       ],
       "breaking": false,
-      "undisclosed": [],
       "blocks": [
         {
           "kind": "table",

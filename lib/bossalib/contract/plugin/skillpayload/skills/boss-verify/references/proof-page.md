@@ -8,8 +8,7 @@ output:
   judge listed blockers.
 - **What it does.** The verify-intent record from `--intent`, else `unknown`.
 - **Areas.** One per judge area, then one per ask no judge area carries. Each has a label,
-  describer items and links, the change class and the changes the description never mentions. A
-  core record carries no media.
+  describer items and links, and the change class. A core record carries no media.
 - **Review.** The build review and each extension that ran, the blockers with `file:line`, and
   the finding and not-applicable notes.
 - **Health.** The judge's health codes. They describe the pipeline, not the PR, so the page shows
@@ -21,8 +20,8 @@ Only a `human` verdict waits on a person, so only it gets a page. A `pass` merge
 or `defect` head is repaired, which moves it: their proof note keeps the level with a null page,
 and nothing is uploaded.
 
-A parked head's page always shows the record's park reasons, blockers, breaking changes and
-undisclosed changes. On top of them:
+A parked head's page always shows the record's park reasons, blockers and breaking changes. On
+top of them:
 
 - **The proof-author spec.** `post --proof-spec <file>` adds the `proof-spec/1` the
   [proof-author](proof-author.md) wrote from the `proof-bundle` output: a title, risks, area

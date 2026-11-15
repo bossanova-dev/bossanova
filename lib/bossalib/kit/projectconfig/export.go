@@ -155,6 +155,9 @@ func exportRepo(r *pb.Repo, origin string) Repo {
 	if r.SetupScript != nil {
 		out.SetupScript = ptr(r.GetSetupScript())
 	}
+	if r.ServeScript != nil {
+		out.ServeScript = ptr(r.GetServeScript())
+	}
 	if v := r.GetSentryOrg(); v != "" {
 		out.SentryOrg = ptr(v)
 	}

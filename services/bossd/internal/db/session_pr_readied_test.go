@@ -128,7 +128,11 @@ func TestSessionPRReadiedMigration(t *testing.T) {
 	if err := dbtest.RunUpTo(database, migrations, previous); err != nil {
 		t.Fatal(err)
 	}
-	repo := createTestRepo(t, NewRepoStore(database))
+	// Seed the historical schema without depending on current store queries.
+	const repoID = "ready-stamp-repo"
+	if _, err := database.Exec("INSERT INTO repos (id, display_name, local_path, origin_url, worktree_base_dir) VALUES (?, 'repo', '/tmp/repo', 'https://example.test/repo.git', '/tmp/worktrees')", repoID); err != nil {
+		t.Fatal(err)
+	}
 	const updated = "2026-10-31T00:32:37Z"
 	for _, tc := range []struct {
 		id    string
@@ -137,7 +141,7 @@ func TestSessionPRReadiedMigration(t *testing.T) {
 	}{
 		{"ready", machine.ReadyForReview, 42}, {"repairing", machine.GreenDraft, 43}, {"no-pr", machine.ReadyForReview, nil},
 	} {
-		_, err := database.Exec("INSERT INTO sessions (id,repo_id,title,worktree_path,branch_name,base_branch,state,pr_number,updated_at) VALUES (?,?,?,'/tmp/stamp',?,'main',?,?,?)", tc.id, repo.ID, tc.id, tc.id, int(tc.state), tc.pr, updated)
+		_, err := database.Exec("INSERT INTO sessions (id,repo_id,title,worktree_path,branch_name,base_branch,state,pr_number,updated_at) VALUES (?,?,?,'/tmp/stamp',?,'main',?,?,?)", tc.id, repoID, tc.id, tc.id, int(tc.state), tc.pr, updated)
 		if err != nil {
 			t.Fatal(err)
 		}

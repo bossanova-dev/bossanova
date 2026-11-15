@@ -141,6 +141,7 @@ func repoToProto(r *models.Repo) *pb.Repo {
 	if r.SetupScript != nil {
 		p.SetupScript = protoStringPtr(r.SetupScript)
 	}
+	p.ServeScript = protoStringPtr(r.ServeScript)
 	return p
 }
 

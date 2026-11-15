@@ -77,6 +77,7 @@ type Server struct {
 
 	evidenceBucketOpener  evidenceBucketOpener
 	validateBranchName    func(context.Context, string) error
+	validateRepoScript    func(string) error
 	repos                 repoStore
 	sessions              sessionStore
 	agentChats            agentChatStore
@@ -376,6 +377,8 @@ type Config struct {
 	// ValidateBranchName checks git branch syntax before session creation.
 	// Required for session creation; the composition root supplies the git adapter.
 	ValidateBranchName func(context.Context, string) error
+	// ValidateRepoScript validates the stored structured command format.
+	ValidateRepoScript func(string) error
 
 	// AgentLogsDir is the daemon-owned directory containing live agent logs.
 	AgentLogsDir          string
@@ -685,6 +688,7 @@ func New(cfg Config) *Server {
 		environmentOverlay:    cfg.EnvironmentOverlay,
 		verifyProofKeys:       cfg.VerifyProofKeys,
 		validateBranchName:    cfg.ValidateBranchName,
+		validateRepoScript:    cfg.ValidateRepoScript,
 		repos:                 cfg.Repos,
 		sessions:              cfg.Sessions,
 		agentChats:            cfg.AgentChats,

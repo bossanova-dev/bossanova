@@ -14,6 +14,7 @@ type CreateRepoParams struct {
 	DefaultBaseBranch string
 	WorktreeBaseDir   string
 	SetupScript       *string
+	ServeScript       *string
 	// IsTrusted registers the repo as trusted (models.Repo.IsTrusted); the
 	// zero value registers it untrusted.
 	IsTrusted bool
@@ -25,6 +26,7 @@ type UpdateRepoParams struct {
 	DefaultBaseBranch      *string
 	WorktreeBaseDir        *string
 	SetupScript            **string // double pointer: nil = don't update, *nil = set to NULL
+	ServeScript            **string // double pointer: nil = don't update, *nil = set to NULL
 	CanAutoMerge           *bool
 	CanAutoMergeDependabot *bool
 	CanAutoRepair          *bool

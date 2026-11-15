@@ -113,6 +113,7 @@ go_test(
         "repo_keyring_secrets_migration_test.go",
         "repo_secret_vault_test.go",
         "repo_secrets_test.go",
+        "repo_serve_script_test.go",
         "repo_store_test.go",
         "resume_attempt_store_test.go",
         "resume_budget_key_migration_test.go",

@@ -18,7 +18,11 @@ export function checkPartGuides({ repoRoot = REPO_ROOT } = {}) {
     (file) => file.includes('/') && /\/(AGENTS|CLAUDE)\.md$/.test(file),
   )
   const modes = new Map(
-    execFileSync('git', ['ls-files', '--stage', '-z'], { cwd: repoRoot, encoding: 'utf8' })
+    execFileSync('git', ['ls-files', '--stage', '-z'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      maxBuffer: 64 << 20,
+    })
       .split('\0')
       .filter(Boolean)
       .map((entry) => {

@@ -406,3 +406,12 @@ func writeLegacyScript(worktreePath, content string) (string, error) {
 	}
 	return path, nil
 }
+
+// ValidateStored checks a stored command without requiring a worktree.
+func ValidateStored(stored string) error {
+	spec, err := Parse(stored)
+	if err != nil {
+		return err
+	}
+	return spec.Validate()
+}

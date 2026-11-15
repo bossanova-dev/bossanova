@@ -38,7 +38,9 @@ export const VERIFY_CALLBACK_EXPIRY = '7d'
 export const CALL_TIMEOUT_MS = 30_000
 export const EXIT_USAGE = 64
 
-const STOPPED = 'STOPPED'
+// A STOPPED chat has ended. UNSPECIFIED is what `boss chats --json` reports for a chat with no
+// live pane that the daemon never tracked: a send would wake it inside the caller's deadline.
+const NOT_LIVE = new Set(['STOPPED', 'UNSPECIFIED'])
 const text = (value) => typeof value === 'string' && value.trim() !== ''
 
 // ---------------------------------------------------------------------------------------------
@@ -91,8 +93,8 @@ const createdMs = (chat) => {
 /**
  * The PR session's verify chat, or null: the newest chat whose role is `verify`; failing that, the
  * newest chat with no role titled `verify` (trimmed, case-insensitive). A chat with any other role
- * is never the verify chat, whatever its title. Candidates need an id and must not be STOPPED. Ties
- * keep the listing's order.
+ * is never the verify chat, whatever its title. Candidates need an id and must not be STOPPED or
+ * UNSPECIFIED. Ties keep the listing's order.
  */
 export function pickVerifyChat(chats) {
   if (!Array.isArray(chats)) return null
@@ -100,7 +102,7 @@ export function pickVerifyChat(chats) {
   let byTitle = null
   for (const chat of chats) {
     if (!chat || typeof chat !== 'object') continue
-    if (!text(chat.agent_session_id) || normalizeStatus(chat.status) === STOPPED) continue
+    if (!text(chat.agent_session_id) || NOT_LIVE.has(normalizeStatus(chat.status))) continue
     const role = typeof chat.role === 'string' ? chat.role.trim().toLowerCase() : ''
     if (role === VERIFY_CHAT_ROLE) {
       if (!byRole || createdMs(chat) > createdMs(byRole)) byRole = chat

@@ -152,6 +152,9 @@ func printRepoSettings(w io.Writer, c Client, repo *pb.Repo) {
 	if repo.SetupScript != nil {
 		_, _ = fmt.Fprintf(w, "  Setup:    %s\n", *repo.SetupScript)
 	}
+	if repo.ServeScript != nil {
+		_, _ = fmt.Fprintf(w, "  Serve:    %s\n", *repo.ServeScript)
+	}
 	_, _ = fmt.Fprintf(w, "  Worktree base:          %s\n", repo.WorktreeBaseDir)
 	_, _ = fmt.Fprintf(w, "  Mark ready on green:    %v\n", repo.CanAutoMerge)
 	_, _ = fmt.Fprintf(w, "  Auto-merge Dependabot:  %v\n", repo.CanAutoMergeDependabot)
@@ -182,6 +185,11 @@ func buildRepoUpdateRequest(cmd *cobra.Command, repoID string) (*pb.UpdateRepoRe
 	if cmd.Flags().Changed("setup-script") {
 		v, _ := cmd.Flags().GetString("setup-script")
 		req.SetupScript = &v
+		anyChanged = true
+	}
+	if cmd.Flags().Changed("serve-script") {
+		v, _ := cmd.Flags().GetString("serve-script")
+		req.ServeScript = &v
 		anyChanged = true
 	}
 	if cmd.Flags().Changed("merge-strategy") {
@@ -233,7 +241,7 @@ func buildRepoUpdateRequest(cmd *cobra.Command, repoID string) (*pb.UpdateRepoRe
 	}
 
 	if !anyChanged {
-		return nil, fmt.Errorf("no flags provided — use --name, --setup-script, --merge-strategy, --worktree-base-dir, --trusted, or boolean flags; run \"boss repo show %s\" to see the current settings", repoID)
+		return nil, fmt.Errorf("no flags provided — use --name, --setup-script, --serve-script, --merge-strategy, --worktree-base-dir, --trusted, or boolean flags; run \"boss repo show %s\" to see the current settings", repoID)
 	}
 	return req, nil
 }

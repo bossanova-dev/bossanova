@@ -108,6 +108,7 @@ Update repository settings
 - `--no-auto-repair` — Disable automatic repair
 - `--no-delete-branches` — Disable deleting local branches after archiving
 - `--no-keep-branches-current` — Disable proactively rebasing in-flight session branches when the base advances
+- `--serve-script` — Set serve script (empty string to clear)
 - `--setup-script` — Set setup script (empty string to clear)
 - `--trusted` — Trust this repository's own configuration: Codex project trust, Claude project configuration, and proof secrets for its sessions (--trusted=false revokes)
 - `--worktree-base-dir` — Set the absolute directory new session worktrees are created under (applies to new sessions)

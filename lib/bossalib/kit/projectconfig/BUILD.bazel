@@ -60,6 +60,7 @@ go_test(
         "reconcile_test.go",
         "repository_config_test.go",
         "schema_gen_test.go",
+        "serve_script_test.go",
         "validate_test.go",
     ],
     # keep: TestSchemaGenerated reads the package's .go sources for the doc comments

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 
+	"github.com/recurser/bossd/internal/adapter/setupscript"
+
 	"github.com/recurser/bossd/internal/adapter/dotenv"
 	"github.com/recurser/bossd/internal/adapter/factoryversions"
 	"github.com/recurser/bossd/internal/adapter/verifybridge"
@@ -65,6 +67,7 @@ func (w *daemonWiring) wireDaemon() {
 		NewVerifyVerbs:        func(env []string) server.VerifyVerbs { return &verifybridge.Bridge{Env: env} },
 		EnvironmentOverlay:    dotenv.OverlayWithRepo,
 		ValidateBranchName:    gitpkg.ValidateBranchName,
+		ValidateRepoScript:    setupscript.ValidateStored,
 		VerifyProofKeys:       proofenv.Keys(),
 		BootstrapRunner:       bootstrapRunner,
 		AgentLogsDir:          w.agentLogsDir,

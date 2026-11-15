@@ -3,10 +3,8 @@ import assert from 'node:assert/strict'
 import {
   CLAIM_PROOFS_SCHEMA,
   acceptClaimProofs,
-  addedApiSymbols,
   capForClaims,
   validateClaimProofs,
-  unmentioned,
 } from './verify-claims.mjs'
 import { MAX_LOWERED_BY, MAX_TEXT_CHARS } from './verify-proof.mjs'
 
@@ -213,105 +211,4 @@ test('capForClaims stays within MAX_LOWERED_BY', () => {
   const capped = capForClaims(confidence('low', full), [unprovenBehaviour])
   assert.equal(capped.loweredBy.length, MAX_LOWERED_BY)
   assert.ok(capped.loweredBy.some((r) => r.code === 'unproven-claim'))
-})
-
-test('addedApiSymbols qualifies GraphQL fields by their enclosing type', () => {
-  const headText = [
-    '# The hospital',
-    'type Hospital {',
-    '  id: ID!',
-    '  state: String',
-    '  wards(first: Int): [Ward!]!',
-    '}',
-    '',
-    'input WardFilter {',
-    '  open: Boolean',
-    '}',
-    'enum Color {',
-    '  RED',
-    '}',
-  ].join('\n')
-  assert.deepEqual(
-    addedApiSymbols({ path: 'schema/hospital.graphql', headText, addedLines: [4, 5] }),
-    ['Hospital.state', 'Hospital.wards'],
-  )
-  assert.deepEqual(
-    addedApiSymbols({ path: 'schema/hospital.graphqls', headText, addedLines: [8, 9, 10, 12] }),
-    ['WardFilter', 'Color.RED'],
-  )
-})
-
-test('addedApiSymbols qualifies proto fields by their message and reports top-level declarations', () => {
-  const headText = [
-    'syntax = "proto3";',
-    'package shop.v1;',
-    'service OrderService {',
-    '  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);',
-    '}',
-    'message Order {',
-    '  string id = 1;',
-    '  optional string note = 2;',
-    '  oneof payment {',
-    '    string card = 3;',
-    '  }',
-    '  repeated Line lines = 4;',
-    '}',
-    'enum Status {',
-    '  STATUS_UNSPECIFIED = 0;',
-    '  STATUS_OPEN = 1;',
-    '}',
-    'message Refund {',
-    '  string id = 1;',
-    '}',
-  ].join('\n')
-  assert.deepEqual(
-    addedApiSymbols({
-      path: 'proto/shop.proto',
-      headText,
-      addedLines: [4, 8, 10, 12, 16, 18, 19, 20],
-    }),
-    ['GetOrder', 'Order.note', 'Order.card', 'Order.lines', 'Status.STATUS_OPEN', 'Refund'],
-  )
-})
-
-test('addedApiSymbols returns nothing for OpenAPI and other formats', () => {
-  const headText = 'paths:\n  /orders:\n    get:\n      operationId: listOrders\n'
-  assert.deepEqual(
-    addedApiSymbols({ path: 'api/openapi.yaml', headText, addedLines: [1, 2, 3, 4] }),
-    [],
-  )
-  assert.deepEqual(
-    addedApiSymbols({ path: 'src/order.go', headText: 'type Order struct {}', addedLines: [1] }),
-    [],
-  )
-})
-
-test('unmentioned flags a symbol unless both of its parts or the whole name appear', () => {
-  const facts = ['Hospital.state']
-  assert.deepEqual(unmentioned({ facts, texts: ['Adds wards to the hospital page'] }), facts)
-  assert.deepEqual(unmentioned({ facts, texts: ['`Hospital.state` is now readable'] }), [])
-  assert.deepEqual(unmentioned({ facts, texts: ['The hospital', 'exposes its STATE'] }), [])
-  assert.deepEqual(unmentioned({ facts, texts: ['Hospital statement'] }), facts)
-})
-
-test('unmentioned flags a new top-level API symbol by its own name, bare or qualified', () => {
-  const symbols = ['GetOrder', 'Refund', 'Order.note']
-  assert.deepEqual(unmentioned({ symbols, texts: ['Tidies things'] }), symbols)
-  assert.deepEqual(
-    unmentioned({ symbols, texts: ['Adds the GetOrder rpc and a `Refund` message'] }),
-    ['Order.note'],
-  )
-  assert.deepEqual(unmentioned({ symbols, texts: ['getorder, refund and order note'] }), [])
-})
-
-test('unmentioned flags a describer item whose salient tokens are absent and never a token-free item', () => {
-  const facts = ['Adds the `retryCount` column', 'Renames user_id', '5 additive GraphQL fields']
-  assert.deepEqual(unmentioned({ facts, texts: ['Tidies the schema', 'Keeps exports'] }), [
-    'Adds the `retryCount` column',
-    'Renames user_id',
-  ])
-  assert.deepEqual(
-    unmentioned({ facts, texts: ['Counts retries in retryCount; drops USER_ID'] }),
-    [],
-  )
 })

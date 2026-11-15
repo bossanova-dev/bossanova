@@ -154,7 +154,7 @@ test('an additive rule parks an api-contract change a describer calls breaking o
   const ok = (breaking) => ({
     ...describer,
     ok: true,
-    description: { items: ['field removed'], links: [], undisclosed: [], breaking },
+    description: { items: ['field removed'], links: [], breaking },
   })
   assert.deepEqual(outcome(decide(['api/x.proto'], { merge }, described([ok(false)]))), [
     'pass',
@@ -330,7 +330,6 @@ test('judge explains breaking and failed describers over an additive schema diff
               description: {
                 items: ['Removed credential field'],
                 links: [],
-                undisclosed: [],
                 breaking: true,
               },
             }),

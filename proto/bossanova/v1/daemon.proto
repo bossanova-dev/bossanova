@@ -548,6 +548,7 @@ message RegisterRepoRequest {
   // Register the repository as trusted (see Repo.is_trusted). Absent or false
   // registers it untrusted.
   optional bool is_trusted = 6;
+  optional string serve_script = 7;
 }
 
 message RegisterRepoResponse {
@@ -562,6 +563,7 @@ message CloneAndRegisterRepoRequest {
   string worktree_base_dir = 5;
   optional string setup_script = 6;
   optional bool is_trusted = 7;
+  optional string serve_script = 8;
 }
 
 message CloneAndRegisterRepoResponse {
@@ -617,6 +619,8 @@ message UpdateRepoRequest {
   // Local trust toggle (see Repo.is_trusted). Deliberately absent from the
   // stream UpdateRepoCommand: the orchestrator must not be able to flip it.
   optional bool is_trusted = 23;
+  // Absent leaves the command unchanged; empty clears it.
+  optional string serve_script = 24;
 }
 
 message UpdateRepoResponse {

@@ -32,8 +32,8 @@ func (q *Queries) CountRepos(ctx context.Context) (int64, error) {
 }
 
 const createRepo = `-- name: CreateRepo :one
-INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, merge_strategy, linear_api_key, sentry_api_key, sentry_org, is_trusted, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 0, 0, 'merge', '', '', '', ?, ?, ?) RETURNING id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets
+INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, serve_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, merge_strategy, linear_api_key, sentry_api_key, sentry_org, is_trusted, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 0, 0, 'merge', '', '', '', ?, ?, ?) RETURNING id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets, serve_script
 `
 
 type CreateRepoParams struct {
@@ -44,6 +44,7 @@ type CreateRepoParams struct {
 	DefaultBaseBranch string
 	WorktreeBaseDir   string
 	SetupScript       *string
+	ServeScript       *string
 	IsTrusted         bool
 	CreatedAt         string
 	UpdatedAt         string
@@ -58,6 +59,7 @@ func (q *Queries) CreateRepo(ctx context.Context, arg CreateRepoParams) (Repo, e
 		arg.DefaultBaseBranch,
 		arg.WorktreeBaseDir,
 		arg.SetupScript,
+		arg.ServeScript,
 		arg.IsTrusted,
 		arg.CreatedAt,
 		arg.UpdatedAt,
@@ -86,6 +88,7 @@ func (q *Queries) CreateRepo(ctx context.Context, arg CreateRepoParams) (Repo, e
 		&i.ShouldKeepBranchesCurrent,
 		&i.IsTrusted,
 		&i.HasKeyringSecrets,
+		&i.ServeScript,
 	)
 	return i, err
 }
@@ -175,7 +178,7 @@ func (q *Queries) DeleteRepoWorkflows(ctx context.Context, repoID string) error 
 }
 
 const getRepo = `-- name: GetRepo :one
-SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets FROM repos WHERE id = ?
+SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets, serve_script FROM repos WHERE id = ?
 `
 
 func (q *Queries) GetRepo(ctx context.Context, id string) (Repo, error) {
@@ -204,12 +207,13 @@ func (q *Queries) GetRepo(ctx context.Context, id string) (Repo, error) {
 		&i.ShouldKeepBranchesCurrent,
 		&i.IsTrusted,
 		&i.HasKeyringSecrets,
+		&i.ServeScript,
 	)
 	return i, err
 }
 
 const getRepoByLocalPath = `-- name: GetRepoByLocalPath :one
-SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets FROM repos WHERE local_path = ?
+SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets, serve_script FROM repos WHERE local_path = ?
 `
 
 func (q *Queries) GetRepoByLocalPath(ctx context.Context, localPath string) (Repo, error) {
@@ -238,12 +242,13 @@ func (q *Queries) GetRepoByLocalPath(ctx context.Context, localPath string) (Rep
 		&i.ShouldKeepBranchesCurrent,
 		&i.IsTrusted,
 		&i.HasKeyringSecrets,
+		&i.ServeScript,
 	)
 	return i, err
 }
 
 const getRepoByOriginURL = `-- name: GetRepoByOriginURL :one
-SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets FROM repos WHERE origin_url = ?
+SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets, serve_script FROM repos WHERE origin_url = ?
 `
 
 func (q *Queries) GetRepoByOriginURL(ctx context.Context, originUrl string) (Repo, error) {
@@ -272,6 +277,7 @@ func (q *Queries) GetRepoByOriginURL(ctx context.Context, originUrl string) (Rep
 		&i.ShouldKeepBranchesCurrent,
 		&i.IsTrusted,
 		&i.HasKeyringSecrets,
+		&i.ServeScript,
 	)
 	return i, err
 }
@@ -310,7 +316,7 @@ func (q *Queries) GetRepoKeys(ctx context.Context, id string) (GetRepoKeysRow, e
 }
 
 const listRepos = `-- name: ListRepos :many
-SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets FROM repos ORDER BY created_at DESC
+SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets, serve_script FROM repos ORDER BY created_at DESC
 `
 
 func (q *Queries) ListRepos(ctx context.Context) ([]Repo, error) {
@@ -345,6 +351,7 @@ func (q *Queries) ListRepos(ctx context.Context) ([]Repo, error) {
 			&i.ShouldKeepBranchesCurrent,
 			&i.IsTrusted,
 			&i.HasKeyringSecrets,
+			&i.ServeScript,
 		); err != nil {
 			return nil, err
 		}
@@ -438,21 +445,22 @@ origin_url = COALESCE(?2, origin_url),
 default_base_branch = COALESCE(?3, default_base_branch),
 worktree_base_dir = COALESCE(?4, worktree_base_dir),
 setup_script = CASE WHEN CAST(?5 AS BOOLEAN) THEN ?6 ELSE setup_script END,
-can_auto_merge = COALESCE(CAST(?7 AS BOOLEAN), can_auto_merge),
-can_auto_merge_dependabot = COALESCE(CAST(?8 AS BOOLEAN), can_auto_merge_dependabot),
-can_auto_repair = COALESCE(CAST(?9 AS BOOLEAN), can_auto_repair),
-can_auto_rotate = COALESCE(CAST(?10 AS BOOLEAN), can_auto_rotate),
-should_archive_sessions_after_merge = COALESCE(CAST(?11 AS BOOLEAN), should_archive_sessions_after_merge),
-can_auto_delete_branches = COALESCE(CAST(?12 AS BOOLEAN), can_auto_delete_branches),
-should_keep_branches_current = COALESCE(CAST(?13 AS BOOLEAN), should_keep_branches_current),
-merge_strategy = COALESCE(?14, merge_strategy),
-sentry_org = COALESCE(?15, sentry_org),
-is_trusted = COALESCE(CAST(?16 AS BOOLEAN), is_trusted),
-linear_api_key = CASE WHEN CAST(?17 AS BOOLEAN) THEN ?18 ELSE linear_api_key END,
-sentry_api_key = CASE WHEN CAST(?17 AS BOOLEAN) THEN ?19 ELSE sentry_api_key END,
-has_keyring_secrets = CASE WHEN CAST(?17 AS BOOLEAN) THEN CAST(?20 AS BOOLEAN) ELSE has_keyring_secrets END,
-updated_at = ?21
-WHERE id = ?22 RETURNING id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets
+serve_script = CASE WHEN CAST(?7 AS BOOLEAN) THEN ?8 ELSE serve_script END,
+can_auto_merge = COALESCE(CAST(?9 AS BOOLEAN), can_auto_merge),
+can_auto_merge_dependabot = COALESCE(CAST(?10 AS BOOLEAN), can_auto_merge_dependabot),
+can_auto_repair = COALESCE(CAST(?11 AS BOOLEAN), can_auto_repair),
+can_auto_rotate = COALESCE(CAST(?12 AS BOOLEAN), can_auto_rotate),
+should_archive_sessions_after_merge = COALESCE(CAST(?13 AS BOOLEAN), should_archive_sessions_after_merge),
+can_auto_delete_branches = COALESCE(CAST(?14 AS BOOLEAN), can_auto_delete_branches),
+should_keep_branches_current = COALESCE(CAST(?15 AS BOOLEAN), should_keep_branches_current),
+merge_strategy = COALESCE(?16, merge_strategy),
+sentry_org = COALESCE(?17, sentry_org),
+is_trusted = COALESCE(CAST(?18 AS BOOLEAN), is_trusted),
+linear_api_key = CASE WHEN CAST(?19 AS BOOLEAN) THEN ?20 ELSE linear_api_key END,
+sentry_api_key = CASE WHEN CAST(?19 AS BOOLEAN) THEN ?21 ELSE sentry_api_key END,
+has_keyring_secrets = CASE WHEN CAST(?19 AS BOOLEAN) THEN CAST(?22 AS BOOLEAN) ELSE has_keyring_secrets END,
+updated_at = ?23
+WHERE id = ?24 RETURNING id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets, serve_script
 `
 
 type UpdateRepoParams struct {
@@ -462,6 +470,8 @@ type UpdateRepoParams struct {
 	WorktreeBaseDir                 *string
 	SetSetupScript                  bool
 	SetupScript                     *string
+	SetServeScript                  bool
+	ServeScript                     *string
 	CanAutoMerge                    *bool
 	CanAutoMergeDependabot          *bool
 	CanAutoRepair                   *bool
@@ -488,6 +498,8 @@ func (q *Queries) UpdateRepo(ctx context.Context, arg UpdateRepoParams) (Repo, e
 		arg.WorktreeBaseDir,
 		arg.SetSetupScript,
 		arg.SetupScript,
+		arg.SetServeScript,
+		arg.ServeScript,
 		arg.CanAutoMerge,
 		arg.CanAutoMergeDependabot,
 		arg.CanAutoRepair,
@@ -529,6 +541,7 @@ func (q *Queries) UpdateRepo(ctx context.Context, arg UpdateRepoParams) (Repo, e
 		&i.ShouldKeepBranchesCurrent,
 		&i.IsTrusted,
 		&i.HasKeyringSecrets,
+		&i.ServeScript,
 	)
 	return i, err
 }

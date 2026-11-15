@@ -55,6 +55,23 @@ test('part-guides requires both filesystem and tracked symlink modes', (t) => {
   assert.equal(run(root).status, 0)
 })
 
+test('part-guides reads an index listing larger than the default 1 MiB exec buffer', (t) => {
+  const root = guideFixture(t)
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: root, input: '' })
+    .toString()
+    .trim()
+  const pad = 'p'.repeat(200)
+  const entries = Array.from({ length: 5000 }, (_, i) => `100644 ${blob}\tpad/${i}-${pad}\n`)
+  execFileSync('git', ['update-index', '--index-info'], { cwd: root, input: entries.join('') })
+  const listing = execFileSync('git', ['ls-files', '--stage', '-z'], {
+    cwd: root,
+    maxBuffer: 64 << 20,
+  })
+  assert.ok(listing.length > 1024 * 1024, `fixture listing is only ${listing.length} bytes`)
+  const result = run(root)
+  assert.equal(result.status, 0, result.stderr)
+})
+
 test('part-guides rejects absent, untracked and wrongly targeted siblings', (t) => {
   const root = guideFixture(t)
   const sibling = path.join(root, 'services/example/CLAUDE.md')

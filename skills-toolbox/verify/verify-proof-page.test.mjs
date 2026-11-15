@@ -40,7 +40,6 @@ function fixture(count = 1) {
         label: `Area ${i}`,
         ask: true,
         items: ['Inspect result'],
-        undisclosed: false,
         media: [],
         proven: false,
       })),
@@ -396,7 +395,6 @@ test('view text reaches both outputs including checked areas and escaped facts',
     label: 'Checked label',
     ask: false,
     items: ['Checked fact < & >'],
-    undisclosed: false,
     media: [],
     proven: true,
   })
@@ -556,7 +554,7 @@ test('park verdict sidecars reject invalid codes, labels and unknown keys', () =
   }
 })
 
-// One bullet of each claim status and one "Not in the description" entry, all with hostile text.
+// One bullet of each claim status, all with hostile text.
 function claimed() {
   const input = fixture()
   input.proof.whatItDoes = {
@@ -572,12 +570,10 @@ function claimed() {
     code: 'unproven-claim',
     text: '1 behaviour claim(s) unproven.',
   })
-  input.proof.areas[0].undisclosed = true
-  input.proof.areas[0].unmentioned = ['Hospital.state <x>']
   return resign(input)
 }
 
-test('each bullet shows its claim status and each area its unmentioned changes in one view', () => {
+test('each bullet shows its claim status in one view', () => {
   const input = claimed()
   const view = proofView(input)
   const what = view.sections.find((entry) => entry.title === 'What it does')
@@ -586,20 +582,11 @@ test('each bullet shows its claim status and each area its unmentioned changes i
     'Sends the invoice (proven by clip: Sends *the* invoice at 1:05)',
     'Keeps the export (unproven: no test <named>)',
   ])
-  const missing = view.sections.find((entry) => entry.title === 'Not in the description')
-  assert.deepEqual(missing.lists, [{ label: 'Area 0', items: ['Hospital.state <x>'] }])
   const html = renderProofHtml(input)
   const comment = renderProofComment(input)
-  assert.ok(comment.includes('Not in the description'))
   assert.ok(comment.includes('proven by test shows &lt;balance&gt;'))
-  assert.ok(comment.includes('Hospital.state &lt;x&gt;'))
   assert.ok(comment.includes('unproven: no test &lt;named&gt;'))
   assert.ok(comment.includes('proven by clip: Sends \\*the\\* invoice at 1:05)'))
-  assert.ok(
-    pageSection(html, 'risks').includes(
-      '<div class="q">The PR description doesn&#39;t mention the area 0 change</div></div><ul class="facts"><li>Hospital.state &lt;x&gt;</li>',
-    ),
-  )
   const gaps = regionUntilNext(bannerOf(html), '<ul class="glist gaps">', '</ul>')
   assert.ok(gaps.includes('Keeps the export: no test &lt;named&gt;'), 'the unproven claim')
   assert.ok(!gaps.includes('balance') && !gaps.includes('invoice'), 'proven claims are not gaps')
@@ -609,13 +596,12 @@ test('each bullet shows its claim status and each area its unmentioned changes i
     )
 })
 
-test('a bullet without a claim keeps its text and no unmentioned list means no section', () => {
+test('a bullet without a claim keeps its text', () => {
   const input = fixture()
   const view = proofView(input)
   assert.deepEqual(view.sections.find((entry) => entry.title === 'What it does').bullets, [
     'Useful change',
   ])
-  assert.ok(!view.sections.some((entry) => entry.title === 'Not in the description'))
   const unproven = claimed()
   unproven.proof.whatItDoes.claims[2] = { proof: 'unproven', behaviour: false }
   resign(unproven)

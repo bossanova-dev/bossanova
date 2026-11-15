@@ -144,7 +144,6 @@ test('trusted describers monotonically classify tree facts and failures', (t) =>
               extension: extension.name,
               items: ['contract incompatible'],
               breaking: true,
-              undisclosed: [],
             }),
           }
         : spawnSync(command, args, options)
@@ -200,7 +199,6 @@ test('describers run over the no-sign-off area and their items land on it withou
         extension: extension.name,
         items: ['model a drops a column'],
         breaking: true,
-        undisclosed: [],
       }),
     }
   }
@@ -348,7 +346,6 @@ test('a migrations describer runs on the head and its table block reaches the pa
         extension: extension.name,
         items: ['Adds invoices.due_on'],
         breaking: false,
-        undisclosed: [],
         blocks: [table],
       }),
     }

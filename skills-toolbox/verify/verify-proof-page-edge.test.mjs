@@ -75,7 +75,6 @@ function proof({ whatItDoes, notes, docsAsk = false } = {}) {
     label,
     ask,
     items,
-    undisclosed: false,
     media: [],
     proven: false,
   })

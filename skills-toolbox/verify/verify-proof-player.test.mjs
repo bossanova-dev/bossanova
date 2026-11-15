@@ -203,7 +203,7 @@ function parsePage(html) {
   return doc
 }
 
-/** The rendered page: a UI area with two clips and stills, one undisclosed change and ticks. */
+/** The rendered page: a UI area with two clips and stills, one breaking change and ticks. */
 function pageHtml({ media = true } = {}) {
   const proof = withDigest({
     schema: 'boss-proof/1',
@@ -223,8 +223,8 @@ function pageHtml({ media = true } = {}) {
         label: 'UI',
         ask: true,
         items: ['ui fact'],
-        undisclosed: true,
-        unmentioned: ['Basket.total'],
+        change: 'breaking',
+        changeReasons: ['Basket.total removed'],
         media: [],
         proven: false,
       },
@@ -628,7 +628,6 @@ test('a page with one screenshot has no Previous or Next buttons', () => {
             label: 'UI',
             ask: true,
             items: ['ui fact'],
-            undisclosed: false,
             media: [],
             proven: false,
           },

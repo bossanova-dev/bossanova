@@ -292,7 +292,6 @@
   "services/bosso/api/orchestrator:CloudActionTelemetryInterceptor",
   "services/bosso/api/orchestrator:Handler.entitlementInterceptor",
   "services/bosso/api/routing:NewKubernetesAdapter",
-  "services/bosso/api/routing:NewUnsupportedAdapter",
   "services/bosso/api/webhook:Registry.Get",
   "services/bosso/cmd:newDrip",
   "services/bosso/cmd:ownerRoutingAdapter",

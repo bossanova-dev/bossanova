@@ -1566,6 +1566,15 @@ export async function ensureDurableCoverage({ state, ticketId, io, now = '', act
   }
 
   const reason = [armError, subError].filter(Boolean).join('; ')
+  // Keep whatever DID verify. A child with no PR yet cannot hold callbacks, but its verified
+  // subscription is still live coverage; dropping it here re-subscribes on every later cycle.
+  s = normalizeEpicState({
+    ...s,
+    watches: {
+      ...s.watches,
+      [ticketId]: { ...(s.watches[ticketId] ?? {}), callbacks, subscription },
+    },
+  })
   const fallback = (await io.scheduleFallbackWake({ ticketId, reason })) ?? null
   s = recordWatchFailure(s, { ticketId, reason, fallback, at: now, blocked: false })
   actions.push(

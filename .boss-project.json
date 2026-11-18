@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "project": "bossanova",
+  "repo": {
+    "originUrl": "https://github.com/bossanova-dev/bossanova",
+    "defaultBaseBranch": "main"
+  }
+}

@@ -85,22 +85,35 @@ func (s *Server) HydrateAttentionForStream(ctx context.Context, p *pb.Session) {
 	s.hydrateAttention(ctx, p, attentionDeps{row: row, display: display, chats: chats})
 }
 
+// hydrateLatestProof serves the PR's newest proof record: its page, or, for a
+// record without one, its proof note's block. A page holds everything the
+// block does, so the block is served only when there is no page.
+func (s *Server) hydrateLatestProof(p *pb.Session, row *models.Session) {
+	if s.evidence == nil || row.PRNumber == nil {
+		return
+	}
+	proof, ok := s.evidence.LatestProof(row.ID)
+	switch {
+	case !ok:
+	case proof.Page != "":
+		p.PrProofUrl, p.PrProofHeadSha = proof.Page, proof.Head
+	case proof.Summary != "":
+		p.PrProofSummary, p.PrProofHeadSha = proof.Summary, proof.Head
+	}
+}
+
 // hydrateAttention supplies Session.attention, and the PR's base and stack,
 // last in GetSession, ListSessions, and streamSessionHydrator.Hydrate; it
 // never writes the legacy display fields.
 // The additive field already has its compatibility transform (SessionAttentionChange).
 func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentionDeps) {
-	p.PrProofDigest, p.PrProofUrl, p.PrProofHeadSha = "", "", ""
+	p.PrProofDigest, p.PrProofUrl, p.PrProofHeadSha, p.PrProofSummary = "", "", "", ""
 	row := d.row
 	s.hydratePRStack(p, row)
 	if row == nil {
 		return
 	}
-	if s.evidence != nil && row.PRNumber != nil {
-		if proof, ok := s.evidence.LatestProof(row.ID); ok && proof.Page != "" {
-			p.PrProofUrl, p.PrProofHeadSha = proof.Page, proof.Head
-		}
-	}
+	s.hydrateLatestProof(p, row)
 	in := attention.Input{HasPR: row.PRNumber != nil, PRState: attention.PRStateOpen, DismissedAlertKey: row.DismissedAlertKey, StateSince: row.UpdatedAt, HasTrackerLink: p.GetTrackerUrl() != ""}
 	if row.StateEnteredAt != nil {
 		in.StateSince = *row.StateEnteredAt

@@ -5,6 +5,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { join, resolve } from 'node:path'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 
+process.env.BOSS_GATE_OUTCOME_FILE = join(tempDir('gate-outcome-suite-'), 'outcomes.tsv')
+
 const toolbox = resolve('skills-toolbox')
 const runner = join(toolbox, 'plan/boss-plan-run.sh')
 const issue = 'TCK-1'
@@ -291,4 +293,104 @@ test('child dispatch names preserve uppercase tracker identifiers across mark an
   )
   assert.equal(waited.status, 0, waited.stderr)
   assert.ok(JSON.parse(waited.stdout).includes(name))
+})
+
+test('children-input preserves hydrated payloads for routes, epic bundles and sibling creates', (t) => {
+  const f = fixture(t)
+  const fake = join(f.dir, 'input-toolbox')
+  mkdirSync(join(fake, 'tracker'), { recursive: true })
+  mkdirSync(join(fake, 'plan'))
+  const parent = { id: 'TCK-9', title: 'Parent', description: 'complete parent' }
+  const children = [{ id: issue, description: 'complete child' }]
+  writeFileSync(
+    join(fake, 'tracker/cli.mjs'),
+    'if(process.env.FAIL_LIST)process.exit(23);console.log(process.env.CHILDREN_JSON)',
+  )
+  writeFileSync(
+    join(fake, 'plan/plan-child-fanout.mjs'),
+    'import fs from "node:fs"; console.log(fs.readFileSync(process.argv.at(-1),"utf8"))',
+  )
+  const run = (mode, fail = false) =>
+    spawnSync(
+      '/bin/bash',
+      [
+        join(toolbox, 'plan/run-steps/children-input.sh'),
+        '--mode',
+        mode,
+        '--run-scratch',
+        f.dir,
+        '--issue',
+        issue,
+        '--parent',
+        parent.id,
+        '--source-title',
+        'Literal $value `title`',
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          BOSS_PLAN_TOOLBOX: fake,
+          CHILDREN_JSON: JSON.stringify({ parent, children, relationWarnings: ['warning'] }),
+          FAIL_LIST: fail ? '1' : '',
+        },
+      },
+    )
+  f.put('draft-metadata.json', JSON.stringify({ siblings: [{ key: 'b', title: 'Next' }] }))
+  for (const mode of ['fanout', 'epic', 'siblings']) {
+    const r = run(mode)
+    assert.equal(r.status, 0, r.stderr)
+  }
+  assert.deepEqual(JSON.parse(readFileSync(f.file('fanout-route.json'))), {
+    parent,
+    children,
+    relationWarnings: ['warning'],
+  })
+  assert.deepEqual(JSON.parse(readFileSync(f.file('epic-reverify-payload-parent.json'))), parent)
+  assert.deepEqual(JSON.parse(readFileSync(f.file('siblings-in.json'))), {
+    sourceId: issue,
+    sourceTitle: 'Literal $value `title`',
+    parentId: parent.id,
+    siblings: [{ key: 'b', title: 'Next' }],
+    existingChildren: children,
+  })
+  f.put('siblings-in.json', 'preserve prior artifact')
+  assert.equal(run('siblings', true).status, 23)
+  assert.equal(readFileSync(f.file('siblings-in.json'), 'utf8'), 'preserve prior artifact')
+  assert.equal(run('unknown').status, 64)
+})
+
+test('epic-reverify-bundle reads the saved draft payload before building its bundle', (t) => {
+  const f = fixture(t)
+  const fake = join(f.dir, 'bundle-toolbox')
+  mkdirSync(join(fake, 'plan'), { recursive: true })
+  writeFileSync(
+    join(fake, 'bs-run-sentinel.mjs'),
+    'if(process.env.FAIL_READ)process.exit(21);console.log(JSON.stringify({payload:{epic:true,childIds:["TCK-2"]}}))',
+  )
+  writeFileSync(
+    join(fake, 'plan/plan-run-guards.mjs'),
+    'console.log(JSON.stringify(JSON.parse(process.argv.at(-1))));process.exit(Number(process.env.GUARD_STATUS || 0))',
+  )
+  const run = (extra = {}) =>
+    spawnSync(
+      '/bin/bash',
+      [
+        join(toolbox, 'plan/run-steps/epic-reverify-bundle.sh'),
+        '--run-scratch',
+        f.dir,
+        '--run-dir',
+        f.values.RUN_DIR,
+        '--run-id',
+        f.values.RUN_ID,
+      ],
+      { encoding: 'utf8', env: { ...process.env, BOSS_PLAN_TOOLBOX: fake, ...extra } },
+    )
+  const result = run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout), { epic: true, childIds: ['TCK-2'] })
+  assert.equal(run({ GUARD_STATUS: '3' }).status, 3)
+  const failed = run({ FAIL_READ: '1' })
+  assert.equal(failed.status, 21)
+  assert.equal(failed.stdout, '')
 })

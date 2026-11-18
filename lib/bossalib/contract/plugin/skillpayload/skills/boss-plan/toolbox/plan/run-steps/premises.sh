@@ -20,7 +20,7 @@ if node - "$prefix.premises.json" <<'NODE'
 const p = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'))
 process.exit(Array.isArray(p) && p.length === 0 ? 0 : 1)
 NODE
-then printf '{}\n' >"$prefix.premise-states.json"; fi
+then node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" premise-states --premises "$prefix.premises.json" --out-file "$prefix.premise-states.json"; fi
 rc=0
 report=$(node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" premises "$prefix.premises.json" "$prefix.premise-states.json" --annotate "$description" --annotate "$plan" 2>&1) || rc=$?
 changed=0 merge=0

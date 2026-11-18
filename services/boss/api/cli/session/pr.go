@@ -36,8 +36,9 @@ func (g *Group) PRCmd() *cobra.Command {
 			"In the TUI, [m]erge on a review row records this same approval and merges at once; this\n" +
 			"command is the escape hatch for a park the TUI offers no merge for.\n\n" +
 			"The daemon runs it on its own host, in the PR session's worktree, with the repo's stored\n" +
-			"tracker credentials, so it works from any machine that reaches the daemon. It refuses to\n" +
-			"run inside an agent chat: approving a park is the operator's call.",
+			"tracker credentials, so it works from any machine that reaches the daemon. You or any\n" +
+			"agent chat may run it, and the approval record names the chat; a process the daemon\n" +
+			"itself started may not.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return g.runPrVerb(cmd, args[0], func(ctx context.Context, c Client, opts prOptions) error {

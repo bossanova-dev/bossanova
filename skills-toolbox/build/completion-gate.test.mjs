@@ -754,7 +754,8 @@ test('fast path re-derives authorization rather than trusting the envelope boole
   )
 })
 test('fast path: extensions-required claims, returns the envelope, then judges with results', (t) => {
-  const extensionEnvelope = { pr: { number: 42 }, headSha: HEAD, changedPaths: ['a.go'] }
+  const extensionEnvelope = { pr: { number: 42 }, headSha: HEAD, changedPaths: ['ui/Panel.tsx'] }
+  const extensionUiFiles = ['ui/Panel.tsx']
   let phase = 1
   const h = fastHarness(t, {
     judge: () =>
@@ -764,6 +765,7 @@ test('fast path: extensions-required claims, returns the envelope, then judges w
             reason: 'extensions-installed',
             headSha: HEAD,
             extensionEnvelope,
+            extensionUiFiles,
           }
         : { verdict: 'pass', reason: 'verified', headSha: HEAD },
     post: (args) =>
@@ -776,6 +778,7 @@ test('fast path: extensions-required claims, returns the envelope, then judges w
     action: 'extensions-required',
     token: 'tok',
     extensionEnvelope,
+    extensionUiFiles,
   })
   assert.equal(h.record(), null, 'a won claim writes no record')
   assert.deepEqual(h.state.calls, [judge(), postCall('claim')])

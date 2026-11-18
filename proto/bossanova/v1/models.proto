@@ -258,6 +258,8 @@ message RepoSettings {
   bool has_linear_key = 9;
   bool has_sentry_key = 10;
   google.protobuf.Timestamp updated_at = 11; // echoed for optimistic concurrency
+  // Long-running command that starts the repository services.
+  optional string serve_script = 13;
 }
 
 // HTTPEndpoint is a single verified, machine-local web endpoint for a session:
@@ -624,8 +626,15 @@ message Session {
   // their existing behavior. See
   // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
   string pr_proof_url = 89;
-  // Head the pr_proof_url record was made for (40 hex), or empty.
+  // Head the pr_proof_url or pr_proof_summary record was made for (40 hex),
+  // or empty.
   string pr_proof_head_sha = 90;
+  // Markdown block of the PR's latest core proof note, set only when that
+  // record has no proof page, with the head that pr_proof_head_sha names;
+  // empty otherwise. No dated API bump or transform: the field is additive and
+  // older clients ignore it. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  string pr_proof_summary = 96;
   // The verify sign-off park on the PR's current head, as attention shows it
   // when nothing outranks the park: its confidence level, asks, lowered-by
   // reasons, proof URL and park time. Set whatever attention is, so a park
@@ -652,6 +661,21 @@ message Session {
   // clients ignore them without changing their existing behavior. See
   // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
   repeated StackedPullRequest pr_stacked_on = 94;
+
+  // Live links reported by the session's running serve command, ordered by name.
+  // Transport-only, never persisted; empty when no command has reported links,
+  // and blanked in private cloud-control mode. No dated API bump or transform:
+  // additive, so older clients ignore it without changing existing behavior. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  repeated ServiceLink service_links = 97;
+}
+
+// ServiceLink is one service reported by a session's serve command.
+message ServiceLink {
+  // Short display name.
+  string name = 1;
+  // Absolute https URL chosen by the serve command.
+  string url = 2;
 }
 
 // StackedPullRequest is an open PR another PR is stacked on, so reviewing it
@@ -1141,8 +1165,7 @@ enum ChatRole {
   CHAT_ROLE_REPAIR      = 2; // the repair plugin's chat
   CHAT_ROLE_VERIFY      = 3; // the verify stage's chat
   CHAT_ROLE_OPERATOR    = 4; // a chat a person opened, or one started on their behalf
-  // an orchestrating chat the operator started; bossd may grant it verify
-  // approval and operator merge (settings key coordinator_approval_grant)
+  // an orchestrating chat; like OPERATOR, automation never replaces it
   CHAT_ROLE_COORDINATOR = 5;
 }
 

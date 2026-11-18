@@ -50,11 +50,12 @@ func (w *daemonWiring) wireDaemon() {
 
 	daemonConfig := server.Config{
 		Callers:                       w.callerAuthority(),
-		CallerGrants:                  callerGrants(&w.settings, log.Logger),
 		CredentialDevices:             w.credentialDevices,
 		ViewerApprovals:               w.viewerApprovals,
 		TrackerIssueLeaseUpstream:     w.trackerIssueLeaseUpstream,
 		TrackerIssueLeaseSessionToken: w.trackerIssueLeaseSessionToken,
+		ProofCheckRuns:                w.proofCheckRuns,
+		ProofCheckRunSessionToken:     w.trackerIssueLeaseSessionToken,
 		CredentialPublisher: func(ctx context.Context, syncedID, localID string) error {
 			if w.credentialSync == nil {
 				return nil

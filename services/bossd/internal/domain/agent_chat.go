@@ -14,8 +14,8 @@ const (
 	AgentChatRoleRepair   AgentChatRole = "repair"
 	AgentChatRoleVerify   AgentChatRole = "verify"
 	AgentChatRoleOperator AgentChatRole = "operator"
-	// AgentChatRoleCoordinator is an orchestrating chat the operator started.
-	// Only an operator may create one; the coordinator approval grant names it.
+	// AgentChatRoleCoordinator is an orchestrating chat. Like an operator chat,
+	// automation never replaces it.
 	AgentChatRoleCoordinator AgentChatRole = "coordinator"
 )
 

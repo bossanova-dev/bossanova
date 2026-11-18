@@ -2,9 +2,17 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   FIXTURES_DIR,
   buildFixtureRepo,
@@ -12,6 +20,7 @@ import {
   renderPr,
   synthesizeJudge,
 } from './verify-proof-render-pr.mjs'
+import { collectProofMedia } from './verify-media-hook.mjs'
 import { proofPlayerScript } from './verify-proof-page.mjs'
 import { region } from '../../scripts/test-infra/gate-region-lib.mjs'
 
@@ -435,4 +444,232 @@ test('the sections fixture shows the base commit declared sections where it plac
     section(html, 'risks').includes('<a class="lk" href="#sec-infra-i1" title="'),
     'a risk links to an infra step',
   )
+})
+
+/**
+ * A two-commit repository whose head changes billing rates, and an extensions checkout beside it:
+ * its config makes billing an always-review area, and it holds a describer for that area, a
+ * section and, when `media` is given, a media script.
+ * @param {{after: (fn: () => void) => void}} t @param {{media?: boolean}} [options]
+ */
+function extensionsPair(t, { media = false } = {}) {
+  const dir = scratch(t)
+  const repo = join(dir, 'repo')
+  const ext = join(dir, 'ext')
+  const git = (cwd, args) => {
+    const out = spawnSync(
+      'git',
+      ['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+      {
+        cwd,
+        encoding: 'utf8',
+        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+      },
+    )
+    assert.equal(out.status, 0, out.stderr)
+    return out.stdout.trim()
+  }
+  const write = (root, file, text) => {
+    mkdirSync(dirname(join(root, file)), { recursive: true })
+    writeFileSync(join(root, file), text)
+  }
+  const who = ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid']
+  mkdirSync(repo)
+  git(repo, ['init', '--quiet', '--initial-branch=main'])
+  write(repo, '.boss-skills.json', '{}\n')
+  write(repo, 'billing/rates.txt', 'basic 10\n')
+  git(repo, ['add', '--all'])
+  git(repo, [...who, 'commit', '--quiet', '-m', 'start'])
+  write(repo, 'billing/rates.txt', 'basic 12\n')
+  git(repo, ['add', '--all'])
+  git(repo, [...who, 'commit', '--quiet', '-m', 'raise the basic rate'])
+  mkdirSync(ext)
+  git(ext, ['init', '--quiet', '--initial-branch=main'])
+  write(
+    ext,
+    '.boss-skills.json',
+    JSON.stringify({ verifyDefaults: { alwaysReview: { 'Billing rules': ['billing/**'] } } }),
+  )
+  const skill = (name, marker) =>
+    write(
+      ext,
+      `.claude/skills/${name}/SKILL.md`,
+      [
+        '---',
+        `name: ${name}`,
+        'x-boss-extension:',
+        '  extends: boss-verify',
+        ...marker,
+        '---',
+        '',
+        `# ${name}`,
+        '',
+      ].join('\n'),
+    )
+  skill('boss-verify-billing-facts', [
+    '  role: proof-describe',
+    '  describe: describe.mjs',
+    '  areas: config:billing-rules',
+  ])
+  write(
+    ext,
+    '.claude/skills/boss-verify-billing-facts/describe.mjs',
+    `process.stdout.write(${JSON.stringify(
+      JSON.stringify({
+        ok: true,
+        role: 'proof-describe',
+        extension: 'boss-verify-billing-facts',
+        items: ['Raises the basic plan rate'],
+        breaking: false,
+        blocks: [
+          {
+            kind: 'table',
+            name: 'plan_rates',
+            relation: 'table',
+            change: 'changed',
+            columns: [{ name: 'basic', type: 'integer', change: 'changed' }],
+          },
+        ],
+        signals: [
+          { key: 'rates', label: 'Rates', state: 'review', summary: 'The basic rate rises' },
+        ],
+      }),
+    )})\n`,
+  )
+  skill('boss-verify-billing-sections', [
+    '  role: proof-section',
+    '  sections:',
+    '    - id: rollout',
+    '      title: Rollout',
+  ])
+  if (media) {
+    skill('boss-verify-billing-media', ['  role: proof-media', '  media: media.mjs'])
+    write(
+      ext,
+      '.claude/skills/boss-verify-billing-media/media.mjs',
+      [
+        "import fs from 'node:fs'",
+        "import path from 'node:path'",
+        "const envelope = JSON.parse(fs.readFileSync(0, 'utf8'))",
+        "for (const f of ['rates.mp4', 'rates.png']) fs.writeFileSync(path.join(envelope.evidenceDir, f), f)",
+        'process.stdout.write(JSON.stringify({',
+        "  schema: 'proof-media/1', head: envelope.headSha, transcripts: [],",
+        "  clips: [{ id: 'head-0', side: 'head', title: 'The new rate', file: 'rates.mp4', durationMs: 2000,",
+        "    chapters: [{ atMs: 0, caption: 'Start' }], stills: [{ file: 'rates.png', caption: 'The rate' }] }],",
+        '}))',
+        '',
+      ].join('\n'),
+    )
+  }
+  const head = git(repo, ['rev-parse', 'HEAD'])
+  const spec = join(dir, 'spec.json')
+  writeFileSync(
+    spec,
+    JSON.stringify({
+      schema: 'proof-spec/1',
+      head,
+      sections: [
+        {
+          id: 'rollout',
+          parts: [{ kind: 'checklist', items: [{ id: 'R1', text: 'Tell support the new rate.' }] }],
+        },
+      ],
+    }),
+  )
+  return { dir, repo, ext, spec, base: 'main~1', head: 'main' }
+}
+
+/** @param {string} file */
+const readInventoryFile = (file) => JSON.parse(readFileSync(file, 'utf8'))
+
+test('--extensions reads the review policy, describers and sections from the checkout it names', (t) => {
+  const pair = extensionsPair(t)
+  const range = { cwd: pair.repo, base: pair.base, head: pair.head, spec: pair.spec }
+  const withExt = join(pair.dir, 'with.json')
+  renderPr({ ...range, out: join(pair.dir, 'with'), extensions: pair.ext, inventory: withExt })
+  const after = readInventoryFile(withExt)
+  assert.equal(after.schema, 'proof-inventory/1')
+  assert.ok(after.items.includes('Raises the basic plan rate'), JSON.stringify(after))
+  assert.deepEqual(after.blocks, [{ kind: 'table', title: 'plan_rates' }])
+  assert.ok(after.signals.includes('Rates'))
+  assert.ok(after.sections.some((id) => id.startsWith('a-') && id.includes('billing')))
+  assert.ok(after.sections.includes('sec-rollout'))
+  const html = readFileSync(join(pair.dir, 'with', 'index.html'), 'utf8')
+  assert.ok(html.includes('Raises the basic plan rate'), 'the page shows what the inventory lists')
+  assert.ok(html.includes('Tell support the new rate.'))
+
+  const withoutExt = join(pair.dir, 'without.json')
+  renderPr({ ...range, out: join(pair.dir, 'without'), inventory: withoutExt })
+  const before = readInventoryFile(withoutExt)
+  assert.ok(!before.items.includes('Raises the basic plan rate'))
+  assert.deepEqual(before.blocks, [])
+  assert.ok(!before.signals.includes('Rates'))
+  assert.ok(!before.sections.some((id) => id.includes('billing') || id === 'sec-rollout'))
+})
+
+test('--extensions collects the checkout media when asked, and renders without clips when none is configured', (t) => {
+  const pair = extensionsPair(t, { media: true })
+  const collectMedia = (request) => collectProofMedia({ ...request, read: () => ({ ok: false }) })
+  const range = {
+    cwd: pair.repo,
+    base: pair.base,
+    head: pair.head,
+    extensions: pair.ext,
+    collectMedia,
+  }
+  const out = join(pair.dir, 'page')
+  const inventory = join(pair.dir, 'inv.json')
+  const rendered = renderPr({ ...range, out, inventory })
+  assert.equal(rendered.mediaReason, undefined)
+  assert.deepEqual(readInventoryFile(inventory).clips, ['media/rates.mp4', 'media/rates.png'])
+  assert.deepEqual(readdirSync(join(out, 'media')).sort(), ['rates.mp4', 'rates.png'])
+
+  rmSync(join(pair.ext, '.claude/skills/boss-verify-billing-media'), {
+    recursive: true,
+    maxRetries: 3,
+  })
+  const bare = renderPr({ ...range, out: join(pair.dir, 'bare'), inventory })
+  assert.equal(bare.mediaReason, 'not-configured')
+  assert.deepEqual(readInventoryFile(inventory).clips, [])
+})
+
+test('--extensions naming a missing directory, or given with --fixture, is a usage error that writes nothing', (t) => {
+  const pair = extensionsPair(t)
+  const out = join(pair.dir, 'out')
+  const args = ['--repo', pair.repo, '--base', pair.base, '--head', pair.head, '--out', out]
+  for (const ext of [join(pair.dir, 'nowhere'), join(pair.dir)]) {
+    const failed = run([...args, '--extensions', ext])
+    assert.equal(failed.status, 2)
+    assert.ok(failed.stderr.includes(`--extensions ${ext}`), failed.stderr)
+  }
+  const mixed = run(['--fixture', 'api', '--extensions', pair.ext, '--out', out])
+  assert.equal(mixed.status, 2)
+  assert.ok(mixed.stderr.includes('--fixture takes only --out'))
+  assert.equal(existsSync(out), false)
+  const ok = run([...args, '--extensions', pair.ext, '--inventory', join(pair.dir, 'inv.json')])
+  assert.equal(ok.status, 0, ok.stderr)
+  assert.ok(
+    readInventoryFile(join(pair.dir, 'inv.json')).items.includes('Raises the basic plan rate'),
+  )
+})
+
+test('--inventory lists what the page carries, from the model its HTML is rendered from', (t) => {
+  const dir = scratch(t)
+  const range = buildFixtureRepo('mobile', join(dir, 'repo'))
+  const root = join(FIXTURES_DIR, 'mobile')
+  const inventory = join(dir, 'inv', 'mobile.json')
+  renderPr({
+    cwd: join(dir, 'repo'),
+    ...range,
+    judge: join(root, 'judge.json'),
+    media: join(root, 'media', 'media.json'),
+    out: join(dir, 'page'),
+    inventory,
+  })
+  const listed = readInventoryFile(inventory)
+  const html = readFileSync(join(dir, 'page', 'index.html'), 'utf8')
+  assert.ok(listed.clips.length > 0)
+  for (const clip of listed.clips) assert.ok(html.includes(clip), `the page shows ${clip}`)
+  for (const id of listed.sections) assert.ok(sectionIds(html).includes(id), `the page has #${id}`)
+  for (const item of listed.items) assert.ok(html.includes(item.split(' ').at(-1)), item)
 })

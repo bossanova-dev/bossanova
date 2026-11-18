@@ -269,23 +269,22 @@
     "subjects": {
       "scripts/guards/check-ellipsis-consistency.mjs": 1021,
       "scripts/guards/check-price-parity.mjs": 1055,
-      "scripts/guards/check-skill-shell.mjs": 6465,
+      "scripts/guards/check-skill-shell.mjs": 6463,
       "scripts/sweeps/bs-security-findings.mjs": 1113,
       "skills-toolbox/bs-dispatch-await.mjs": 1048,
-      "skills-toolbox/epic/epic-driver.mjs": 1657,
+      "skills-toolbox/epic/epic-driver.mjs": 1666,
       "skills-toolbox/plan/plan-contract-guard.mjs": 1688,
-      "skills-toolbox/plan/plan-deps-lib.mjs": 2106,
+      "skills-toolbox/plan/plan-deps-lib.mjs": 2177,
       "skills-toolbox/plan/plan-epic-lib.mjs": 1040,
-      "skills-toolbox/plan/plan-image-guard.mjs": 1413,
-      "skills-toolbox/plan/plan-run-guards.mjs": 1146,
-      "skills-toolbox/plan/plan-writeback-verify.mjs": 1298,
+      "skills-toolbox/plan/plan-image-guard.mjs": 1414,
+      "skills-toolbox/plan/plan-run-guards.mjs": 1189,
+      "skills-toolbox/plan/plan-writeback-verify.mjs": 1147,
       "skills-toolbox/pr-check-state.mjs": 1314,
       "skills-toolbox/retro/retro-notes.mjs": 1349,
-      "skills-toolbox/skill-config.mjs": 3808,
-      "skills-toolbox/tracker/cli.mjs": 1054,
-      "skills-toolbox/tracker/linear.mjs": 1123,
-      "skills-toolbox/verify/verify-gate.mjs": 4700,
-      "skills-toolbox/verify/verify-route.mjs": 1158
+      "skills-toolbox/skill-config.mjs": 3815,
+      "skills-toolbox/tracker/cli.mjs": 1058,
+      "skills-toolbox/verify/verify-gate.mjs": 4575,
+      "skills-toolbox/verify/verify-route.mjs": 1189
     }
   },
   "test-file-size": {

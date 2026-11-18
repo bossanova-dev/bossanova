@@ -134,6 +134,7 @@ type daemonWiring struct {
 	viewerApprovalStore            *db.ViewerDeviceApprovalStore
 	credentialDevices              *server.CredentialDeviceService
 	trackerIssueLeaseUpstream      server.TrackerIssueLeaseUpstream
+	proofCheckRuns                 server.ProofCheckRuns
 	trackerIssueLeaseSessionToken  func() string
 	credentialEnrollment           *credentialEnrollmentWorker
 	credentialSync                 *daemonCredentialSync

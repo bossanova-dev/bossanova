@@ -2504,15 +2504,15 @@ func writeSettingsFile(t *testing.T, body string) string {
 	return p
 }
 
-// managed_mcp_tools and disabled_managed_mcp_servers only ever shaped the MCP
-// config bossd wrote for each spawn. Boss no longer writes one — each harness
-// discovers servers natively and the repo declares them — so both keys are
-// retired. An operator whose settings.json still carries them must keep
-// loading: they are now unknown keys, which encoding/json ignores, so there is
-// no migration. This fails if a future change makes unknown keys a load error
-// without also handling the retired names.
-func TestLoadFromIgnoresRetiredManagedMcpKeys(t *testing.T) {
-	p := writeSettingsFile(t, `{"default_agent":"claude","managed_mcp_tools":["get_session"],"disabled_managed_mcp_servers":["boss"]}`)
+// managed_mcp_tools and disabled_managed_mcp_servers shaped the MCP config bossd
+// no longer writes (each harness discovers servers natively); every agent chat
+// now holds what coordinator_approval_grant gated. All three keys are retired.
+// An operator whose settings.json still carries them must keep loading: they
+// are now unknown keys, which encoding/json ignores, so there is no migration.
+// This fails if a future change makes unknown keys a load error without also
+// handling the retired names.
+func TestLoadFromIgnoresRetiredKeys(t *testing.T) {
+	p := writeSettingsFile(t, `{"default_agent":"claude","managed_mcp_tools":["get_session"],"disabled_managed_mcp_servers":["boss"],"coordinator_approval_grant":"off"}`)
 	s, err := LoadFrom(p)
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)

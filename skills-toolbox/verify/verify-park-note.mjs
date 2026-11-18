@@ -303,6 +303,8 @@ const FAILURE_WORDS = Object.freeze({
   'timed-out': 'timed out',
   crashed: 'crashed or returned nothing',
   'reported-failure': 'reported a failure',
+  'extension-deps-missing':
+    'could not load its packages (the trusted base tree has no dependency install)',
   'pass-without-evidence': 'passed without citing any evidence',
   'malformed-result': 'returned a result verify cannot read',
 })
@@ -311,12 +313,13 @@ const FAILURE_WORDS = Object.freeze({
  * The malfunctioning extensions in an `--extension-results` array, one line each: its name, how it
  * failed, and the error text it reported, if any. Null when the results are not an array.
  */
-export function extensionFailures(results) {
+export function extensionFailures(results, { depsMissing = false } = {}) {
   if (!Array.isArray(results)) return null
   const out = []
   for (const entry of results) {
     if (!entry || typeof entry !== 'object') continue
     const outcome = classifyVerifyOutcome({
+      depsMissing,
       result: entry.result,
       timedOut: entry.timedOut === true,
       crashed: entry.crashed === true,
@@ -328,6 +331,22 @@ export function extensionFailures(results) {
     out.push(`\`${quote(name)}\` ${FAILURE_WORDS[outcome.reason] ?? quote(outcome.reason)}${error}`)
   }
   return out
+}
+
+/** A bounded, cause-first note for grouping extension malfunctions across PRs. */
+export function extensionFailedNoteBody(pr, results) {
+  const failures = extensionFailures(results)
+  let cause
+  if (failures === null) {
+    cause = 'The failing extension was not identified because verify had no extension results'
+  } else if (failures.length === 0) {
+    cause =
+      'The failing extension was not identified: no entry in the results failed; an installed extension that left no result, or an unusable verify review, still counts as a failure'
+  } else {
+    cause = failures.slice(0, 3).join('; ')
+    if (failures.length > 3) cause += `; …and ${failures.length - 3} more`
+  }
+  return `${cause} — verify extension malfunction on PR #${pr}`
 }
 
 const UNREADABLE_POLICY_WORDS = Object.freeze({
@@ -441,7 +460,9 @@ function evidenceFor(code, facts, holds) {
   }
   if (code === 'no-receipt') return ['No automated build and review has passed on this commit.']
   if (code === 'extension-failed') {
-    const failures = extensionFailures(facts.extensionResults)
+    const failures = extensionFailures(facts.extensionResults, {
+      depsMissing: facts.trustedDepsMissing,
+    })
     if (failures === null)
       return ["The extensions' results were not available when this comment was written."]
     return failures.length > 0

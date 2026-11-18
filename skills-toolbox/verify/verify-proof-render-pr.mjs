@@ -4,10 +4,22 @@
 // the built-in areas decide the asks, and the level says the review never ran. Given `--pr` on a
 // checkout whose origin is a forge repository, the branch notice is read from that forge. The
 // sections the page carries are the ones the base commit's `proof-section` extensions declare.
+// `--extensions <checkout>` puts another tree of the same repository in the base tree's place: its
+// review policy, its describers, its sections and, given `--pr` on a forge checkout, its media.
+// `--inventory <file>` writes what the page carries, for `inventory-diff` to compare.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  mkdirSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { reviewAreas } from './verify-areas.mjs'
@@ -17,6 +29,7 @@ import { describeAreas, refineDescription } from './verify-describe.mjs'
 import { readChangedFiles, runTool } from './verify-diff.mjs'
 import {
   MEDIA_DIR,
+  collectProofMedia,
   containedSize,
   pageAssets,
   stageAssets,
@@ -25,7 +38,9 @@ import {
 import { discoverExtensions } from '../skill-extensions.mjs'
 import { buildProofRecord } from './verify-proof-build.mjs'
 import { baseProofSections } from './verify-proof-sections.mjs'
-import { proofPlayerScript, renderProofHtml } from './verify-proof-page.mjs'
+import { proofInventory } from './verify-proof-inventory.mjs'
+import { proofPageModel, proofPlayerScript } from './verify-proof-page.mjs'
+import { renderPageHtml } from './verify-proof-page-html.mjs'
 import { proofPageInput } from './verify-proof-publish.mjs'
 import {
   contextResolver,
@@ -36,11 +51,13 @@ import {
 } from './verify-proof-snippet.mjs'
 import { PAGE_OBJECT } from './verify-publish-hook.mjs'
 import { reviewPolicyFromBlock } from './verify-review-policy.mjs'
-import { dbtProjectRoots } from './verify-tree-facts.mjs'
+import { dbtProjectRoots, treeAreaFacts } from './verify-tree-facts.mjs'
 
 export const FIXTURES_DIR = fileURLToPath(new URL('./testdata/proof-pages/', import.meta.url))
-export const USAGE =
-  'Usage: verify-proof-page.mjs render-pr (--repo <checkout> --base <ref> --head <ref> [--pr <n>] [--judge <file>] [--intent <file>] [--describe <file>] [--spec <file>] [--media <file>] | --fixture <name>) --out <dir>'
+export const USAGE = [
+  'Usage: verify-proof-page.mjs render-pr (--repo <checkout> --base <ref> --head <ref> [--pr <n>] [--judge <file>] [--intent <file>] [--describe <file>] [--spec <file>] [--media <file>] [--extensions <checkout>] [--inventory <file>] | --fixture <name>) --out <dir>',
+  '--extensions runs the describe, section and media scripts of the checkout it names: use it only on a checkout you trust.',
+].join('\n')
 // Fixture commits are an hour apart from this instant, so their SHAs never change.
 const FIXTURE_EPOCH = 1767258000
 const FIXTURE_ENV = {
@@ -56,10 +73,16 @@ const FIXTURE_ENV = {
  * @typedef {{message: string, files: Record<string, string[] | null>}} FixtureCommit
  *   A file whose lines are null is deleted in that commit.
  * @typedef {{repo: string, pr: number, commits: FixtureCommit[]}} FixtureRepo
+ * @typedef {import('./verify-media-hook.mjs').MediaOutcome} MediaOutcome
+ * @typedef {(request: {repo: string, pr: number, headSha: string, baseSha: string, dir: string,
+ *   cwd: string, trustedTree: () => {ok: boolean, root?: string}}) => MediaOutcome} CollectMedia
  * @typedef {{cwd: string, base: string, head: string, name?: string, pr?: number, judge?: string,
  *   intent?: string, describe?: string, spec?: string, media?: string, out: string,
- *   branch?: import('./verify-proof-page.mjs').BranchContext | null, generatedAt?: string}} RenderPrOptions
+ *   branch?: import('./verify-proof-page.mjs').BranchContext | null, generatedAt?: string,
+ *   extensions?: string, inventory?: string, collectMedia?: CollectMedia}} RenderPrOptions
  *   `describe` maps a judged area id to the proof-describe results its describers wrote.
+ *   `extensions` is a checkout whose config and extensions stand in for the base tree's.
+ *   `collectMedia` runs that checkout's `proof-media` extension when no `media` file is given.
  */
 
 /** @param {string} cwd @param {string[]} args */
@@ -92,23 +115,46 @@ function repoSlug(cwd) {
 }
 
 /**
- * A judge output for a head no judge saw: the areas the gate would detect, with the base tree's
- * `verifyDefaults` review areas, and the confidence that follows when the review is missing.
- * @param {{cwd: string, base: string, head: string}} range
+ * A judge output for a head no judge saw: the areas the gate would detect, with the trusted tree's
+ * `verifyDefaults` review areas, and the confidence that follows when the review is missing. The
+ * trusted tree is `trustedRoot` when given, else commit `base`. With `describers`, every area is
+ * described from `trustedRoot` the way the gate describes it.
+ * @param {{cwd: string, base: string, head: string, trustedRoot?: string, describers?: boolean,
+ *   pr?: number}} range
  */
-export function synthesizeJudge({ cwd, base, head }) {
+export function synthesizeJudge({ cwd, base, head, trustedRoot, describers = false, pr = 1 }) {
   const files = readChangedFiles({ baseSha: base, headSha: head, cwd })
   let block = null
   try {
-    block = JSON.parse(git(cwd, ['show', `${base}:.boss-skills.json`]) ?? 'null')?.verifyDefaults
+    const text =
+      trustedRoot === undefined
+        ? git(cwd, ['show', `${base}:.boss-skills.json`])
+        : readFileSync(join(trustedRoot, '.boss-skills.json'), 'utf8')
+    block = JSON.parse(text ?? 'null')?.verifyDefaults
   } catch {
-    // An unreadable config reviews like no config, as the gate treats it.
+    // An unreadable or missing config reviews like no config, as the gate treats it.
   }
-  const paths = files.flatMap((file) =>
-    file.previousPath ? [file.path, file.previousPath] : [file.path],
-  )
-  const dbtRoots = dbtProjectRoots({ cwd, shas: [base, head], paths })
-  const { areas } = reviewAreas(files, reviewPolicyFromBlock(block), { dbtRoots })
+  const review = reviewPolicyFromBlock(block)
+  let areas
+  if (describers && trustedRoot !== undefined) {
+    // The gate's files are the forge's: `filename` and `previous_filename`.
+    const forgeFiles = files.map(({ path, previousPath, ...rest }) => ({
+      ...rest,
+      filename: path,
+      ...(previousPath ? { previous_filename: previousPath } : {}),
+    }))
+    areas = treeAreaFacts(
+      forgeFiles,
+      { review },
+      { baseSha: base, headSha: head, cwd, trustedRoot, pr: { number: pr, title: '' } },
+    ).areas
+  } else {
+    const paths = files.flatMap((file) =>
+      file.previousPath ? [file.path, file.previousPath] : [file.path],
+    )
+    const dbtRoots = dbtProjectRoots({ cwd, shas: [base, head], paths })
+    areas = reviewAreas(files, review, { dbtRoots }).areas
+  }
   return {
     verdict: 'human',
     headSha: head,
@@ -120,9 +166,16 @@ export function synthesizeJudge({ cwd, base, head }) {
 
 /**
  * The sections commit `base` declares, read from a throwaway extraction of its tree, as the gate
- * reads its trusted tree. @param {string} cwd @param {string} base
+ * reads its trusted tree, or the sections `trustedRoot` declares when given.
+ * @param {string} cwd @param {string} base @param {string} [trustedRoot]
  */
-function declaredSections(cwd, base) {
+function declaredSections(cwd, base, trustedRoot) {
+  if (trustedRoot !== undefined)
+    return baseProofSections({
+      baseSha: base,
+      trustedTree: () => ({ ok: true, root: trustedRoot }),
+      discover: discoverExtensions,
+    })
   const dir = mkdtempSync(join(tmpdir(), 'proof-base-tree-'))
   try {
     return baseProofSections({
@@ -177,8 +230,25 @@ function withDescriptions(judged, file) {
 }
 
 /**
- * Write `index.html`, `player.js` and the media the page names into `out`. The base is the merge
- * base of `base` and `head`, as the gate diffs it. Returns the range it rendered.
+ * `dir` as an absolute path when it is a directory holding a `.git` entry, else a usage error.
+ * @param {string} dir
+ */
+function extensionsCheckout(dir) {
+  const root = resolve(dir)
+  let ok = false
+  try {
+    ok = statSync(root).isDirectory() && existsSync(join(root, '.git'))
+  } catch {
+    // A missing directory is the same usage error as a directory that is not a checkout.
+  }
+  if (!ok) throw new Error(`--extensions ${dir}: not a checkout with a .git entry\n${USAGE}`)
+  return root
+}
+
+/**
+ * Write `index.html`, `player.js` and the media the page names into `out`, and the page's
+ * inventory to `inventory` when given. The base is the merge base of `base` and `head`, as the
+ * gate diffs it. Returns the range it rendered, and why a collected page has no media.
  * @param {RenderPrOptions} options
  */
 export function renderPr({
@@ -195,13 +265,25 @@ export function renderPr({
   out,
   branch,
   generatedAt,
+  extensions,
+  inventory,
+  collectMedia,
 }) {
+  const trustedRoot = extensions === undefined ? undefined : extensionsCheckout(extensions)
   const head = commit(cwd, headRef, '--head')
   commit(cwd, baseRef, '--base')
   const base = git(cwd, ['merge-base', baseRef, head])?.trim()
   if (!base) throw new Error(`--base ${baseRef}: no merge base with ${head}`)
   let judged
-  if (judge === undefined) judged = synthesizeJudge({ cwd, base, head })
+  if (judge === undefined)
+    judged = synthesizeJudge({
+      cwd,
+      base,
+      head,
+      trustedRoot,
+      describers: describe === undefined,
+      pr,
+    })
   else {
     const raw = readJson(judge)
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw))
@@ -247,24 +329,54 @@ export function renderPr({
     areas: built.areas.map((area) => ({ name: area.name, paths: area.paths })),
     ...(generatedAt ? { generatedAt } : {}),
   }
-  const declared = declaredSections(cwd, base)
+  const declared = declaredSections(cwd, base, trustedRoot)
   if (declared.sections.length)
     extras.sections = declared.sections.map(({ instructions, ...section }) => section)
   if (declared.problems.length) extras.sectionProblems = declared.problems
   if (spec !== undefined) extras.spec = readJson(spec)
-  const mediaDir = media === undefined ? '' : dirname(media)
+  let mediaDir = media === undefined ? '' : dirname(media)
   let manifest = null
-  if (media !== undefined) {
-    extras.media = readJson(media)
-    extras.mediaSize = containedSize(mediaDir)
-    manifest = validateMediaIn(extras.media, head, mediaDir).media
+  /** @type {string | undefined} */
+  let mediaReason
+  let temp = null
+  try {
+    if (media !== undefined) {
+      extras.media = readJson(media)
+      extras.mediaSize = containedSize(mediaDir)
+      manifest = validateMediaIn(extras.media, head, mediaDir).media
+    } else if (trustedRoot !== undefined && collectMedia) {
+      temp = mkdtempSync(join(tmpdir(), 'proof-media-'))
+      const outcome = collectMedia({
+        repo: slug,
+        pr,
+        headSha: head,
+        baseSha: base,
+        dir: temp,
+        cwd,
+        trustedTree: () => ({ ok: true, root: trustedRoot }),
+      })
+      mediaReason = outcome.reason
+      if (outcome.media) {
+        mediaDir = temp
+        extras.media = outcome.media
+        extras.mediaSize = containedSize(temp)
+        manifest = outcome.media
+      }
+    }
+    const model = proofPageModel(input, extras)
+    const html = renderPageHtml(model)
+    mkdirSync(out, { recursive: true })
+    rmSync(join(out, MEDIA_DIR), { recursive: true, force: true, maxRetries: 3 })
+    stageAssets(pageAssets(manifest, mediaDir, proofPlayerScript()), out)
+    writeFileSync(join(out, PAGE_OBJECT), html)
+    if (inventory !== undefined) {
+      mkdirSync(dirname(inventory), { recursive: true })
+      writeFileSync(inventory, `${JSON.stringify(proofInventory(model), null, 2)}\n`)
+    }
+  } finally {
+    if (temp) rmSync(temp, { recursive: true, force: true, maxRetries: 3 })
   }
-  const html = renderProofHtml(input, extras)
-  mkdirSync(out, { recursive: true })
-  rmSync(join(out, MEDIA_DIR), { recursive: true, force: true, maxRetries: 3 })
-  stageAssets(pageAssets(manifest, mediaDir, proofPlayerScript()), out)
-  writeFileSync(join(out, PAGE_OBJECT), html)
-  return { base, head, name: slug }
+  return { base, head, name: slug, ...(mediaReason ? { mediaReason } : {}) }
 }
 
 /** The committed fixture names. */
@@ -378,6 +490,8 @@ export function renderPrCli(args) {
       describe: { type: 'string' },
       spec: { type: 'string' },
       media: { type: 'string' },
+      extensions: { type: 'string' },
+      inventory: { type: 'string' },
       fixture: { type: 'string' },
       out: { type: 'string' },
     },
@@ -394,11 +508,18 @@ export function renderPrCli(args) {
     throw new Error(`--pr ${rest.pr}: expected a positive integer`)
   const { repo, base, head, ...files } = rest
   const slug = repoSlug(repo)
-  const branch =
-    rest.pr === undefined || slug.startsWith('local/')
-      ? undefined
-      : readBranchContext({ read: checkoutReader(repo), repo: slug, pr })
-  return renderPr({ ...files, cwd: repo, base, head, pr, out, branch })
+  const forge = rest.pr !== undefined && !slug.startsWith('local/')
+  if (files.extensions !== undefined) extensionsCheckout(files.extensions)
+  const branch = forge
+    ? readBranchContext({ read: checkoutReader(repo), repo: slug, pr })
+    : undefined
+  /** @type {CollectMedia | undefined} */
+  const collectMedia = forge
+    ? (request) => collectProofMedia({ ...request, read: checkoutReader(repo), run: spawnSync })
+    : undefined
+  const rendered = renderPr({ ...files, cwd: repo, base, head, pr, out, branch, collectMedia })
+  if (rendered.mediaReason) process.stderr.write(`proof-media: ${rendered.mediaReason}\n`)
+  return rendered
 }
 
 /**

@@ -1,8 +1,8 @@
-// The `proof-section` extension role: a repository declares proof-page sections of its own in
-// its extension's marker, and the extension's body tells the proof author what goes in them. The
-// core knows only the generic parts a section is filled from (see `validateProofSpec`); what a
-// section is about is the repository's business. Like every proof extension, the declaration is
-// read only from the trusted base tree, so a PR can never rewrite its own instructions.
+// Proof sections come from repository extensions or core packs. Repo declarations override packs
+// by id and come first; trusted base config may hide either. A PR cannot rewrite its instructions.
+import fs from 'node:fs'
+import path from 'node:path'
+
 export const SECTION_ROLE = 'proof-section'
 export const SECTION_ID = /^[a-z][a-z0-9-]{1,23}$/
 export const SECTION_TITLE_CHARS = 40
@@ -18,6 +18,8 @@ export const CORE_ANCHORS = Object.freeze([
   'files',
 ])
 export const AREA_ANCHOR = /^a-[a-z0-9][a-z0-9:-]*$/
+/** Known packs may be hidden even when the running core ships no section extensions. */
+export const PACK_SECTION_IDS = Object.freeze(['testing', 'deploy'])
 
 /**
  * @typedef {{id: string, title: string, after?: string}} SectionDeclaration
@@ -34,6 +36,15 @@ export const sectionInstructions = (body) => {
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+/** Section ids hidden by literal false in the trusted base config. @param {unknown} config */
+export function hiddenSectionIds(config) {
+  const defaults = isRecord(config) ? config.proofDefaults : undefined
+  const sections = isRecord(defaults) ? defaults.sections : undefined
+  return isRecord(sections)
+    ? Object.keys(sections).filter((id) => SECTION_ID.test(id) && sections[id] === false)
+    : []
+}
 
 /**
  * A marker's `sections` list: each entry a valid `id` and a one-line `title` of at most 40
@@ -65,26 +76,46 @@ export function parseSectionsMarker(value) {
 }
 
 /**
- * The sections the discovered `proof-section` extensions declare, in discovery order, each with
- * its extension's instructions. A section whose id an earlier extension already declared is
- * dropped and named in `problems`.
- * @param {{name: string, sections?: SectionDeclaration[], instructions?: string}[]} extensions
+ * Repo sections precede built-ins, preserving each group's discovery order. Repo ids silently
+ * replace packs; other collisions are named in `problems`. Hidden ids remove either source.
+ * @param {{name: string, builtin?: boolean, sections?: SectionDeclaration[], instructions?: string}[]} extensions
+ * @param {{hidden?: string[]}} options
  * @returns {{sections: DeclaredSection[], problems: string[]}}
  */
-export function readProofSections(extensions) {
+export function readProofSections(extensions, { hidden = [] } = {}) {
   /** @type {DeclaredSection[]} */
   const sections = []
   /** @type {string[]} */
   const problems = []
-  for (const extension of extensions)
+  const repoIds = new Set()
+  const ordered = [
+    ...extensions.filter((extension) => !extension.builtin),
+    ...extensions.filter((extension) => extension.builtin),
+  ]
+  for (const extension of ordered)
     for (const section of extension.sections ?? []) {
+      if (extension.builtin && repoIds.has(section.id)) continue
       if (sections.some((kept) => kept.id === section.id)) {
         problems.push(`sections: ${extension.name} declares ${section.id} again, dropped`)
         continue
       }
       sections.push({ ...section, instructions: extension.instructions ?? '' })
+      if (!extension.builtin) repoIds.add(section.id)
     }
-  return { sections, problems }
+  for (const id of hidden)
+    if (!sections.some((section) => section.id === id) && !PACK_SECTION_IDS.includes(id))
+      problems.push(`sections: proofDefaults.sections hides ${id}, which nothing declares`)
+  return { sections: sections.filter((section) => !hidden.includes(section.id)), problems }
+}
+
+/** @param {string} root @returns {unknown} */
+function loadBaseConfig(root) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(root, '.boss-skills.json'), 'utf8'))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {}
+    throw error
+  }
 }
 
 /**
@@ -92,10 +123,17 @@ export function readProofSections(extensions) {
  * (`discoverExtensions`); the tree is never the PR head. Never throws: an unavailable tree
  * declares nothing and says so in `problems`.
  * @param {{baseSha: string, cwd?: string, read?: unknown, trustedTree: (options: {baseSha: string, cwd?: string, read?: any}) => {ok: boolean, root?: string} | null | undefined,
- *   discover: (options: {core: string, role: string, root: string}) => {extensions?: any[]}}} options
+ *   discover: (options: {core: string, role: string, root: string}) => {extensions?: any[]}, loadConfig?: (root: string) => unknown}} options
  * @returns {{sections: DeclaredSection[], problems: string[]}}
  */
-export function baseProofSections({ baseSha, cwd, read, trustedTree, discover }) {
+export function baseProofSections({
+  baseSha,
+  cwd,
+  read,
+  trustedTree,
+  discover,
+  loadConfig = loadBaseConfig,
+}) {
   try {
     const trusted = trustedTree({ baseSha, cwd, read })
     if (!trusted?.ok || !trusted.root)
@@ -105,7 +143,16 @@ export function baseProofSections({ baseSha, cwd, read, trustedTree, discover })
       role: SECTION_ROLE,
       root: trusted.root,
     })
-    return readProofSections(extensions)
+    /** @type {unknown} */
+    let config = {}
+    const problems = []
+    try {
+      config = loadConfig(trusted.root)
+    } catch {
+      problems.push('sections: the base config could not be read')
+    }
+    const result = readProofSections(extensions, { hidden: hiddenSectionIds(config) })
+    return { sections: result.sections, problems: [...result.problems, ...problems] }
   } catch {
     return { sections: [], problems: ['sections: the base tree could not be read'] }
   }

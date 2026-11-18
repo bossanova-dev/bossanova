@@ -655,8 +655,8 @@ func TestHandleCreateSession_DependabotTaskLeavesAgentResolutionToSessionCreator
 	if got := capturedOpts.AgentName; got != "" {
 		t.Fatalf("AgentName = %q, want empty so SessionCreator applies daemon default", got)
 	}
-	if got := capturedOpts.SkipSetupScript; !got {
-		t.Fatalf("SkipSetupScript = false, want true for dependabot task")
+	if capturedOpts.SkipSetupScript {
+		t.Fatalf("SkipSetupScript = true, want false so the fix session gets the repo's dependencies")
 	}
 	if got := capturedOpts.HeadBranch; got != "dependabot/npm_and_yarn/apollo-client-4.2.2" {
 		t.Fatalf("HeadBranch = %q, want dependabot branch", got)
@@ -2623,7 +2623,7 @@ func TestRouteTask_MappingError_DequeuesNext(t *testing.T) {
 
 // --- SkipSetupScript tests ---
 
-func TestRouteTask_CreateSession_DependabotLabel_SetsSkipSetupScript(t *testing.T) {
+func TestRouteTask_CreateSession_DependabotLabel_RunsSetupScript(t *testing.T) {
 	var capturedOpts CreateSessionOpts
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
@@ -2646,8 +2646,8 @@ func TestRouteTask_CreateSession_DependabotLabel_SetsSkipSetupScript(t *testing.
 		Labels:         []string{"dependabot", "npm"},
 	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"}, "dependabot")
 
-	if !capturedOpts.SkipSetupScript {
-		t.Error("expected SkipSetupScript=true for task with dependabot label")
+	if capturedOpts.SkipSetupScript {
+		t.Error("expected SkipSetupScript=false for task with dependabot label")
 	}
 	if !capturedOpts.PreventDuplicateActiveSession {
 		t.Error("expected PreventDuplicateActiveSession=true for task with dependabot label")

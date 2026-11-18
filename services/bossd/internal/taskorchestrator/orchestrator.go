@@ -836,6 +836,9 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 		baseBranch = "main"
 	}
 	isDependabotTask := strings.HasPrefix(task.GetExternalId(), "dependabot:") || slices.Contains(task.GetLabels(), "dependabot")
+	// Dependabot fix sessions run the repo's setup script like any other
+	// session: the agent edits code and finalize pushes it through the repo's
+	// own pre-push hooks, which need the dependencies the script installs.
 	opts := CreateSessionOpts{
 		RepoID:                        repo.id,
 		Title:                         task.GetTitle(),
@@ -843,7 +846,6 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 		Detach:                        strings.TrimSpace(task.GetPlan()) != "",
 		BaseBranch:                    baseBranch,
 		HeadBranch:                    task.GetExistingBranch(),
-		SkipSetupScript:               isDependabotTask && !repo.verifyOwnsMerge,
 		PreventDuplicateActiveSession: isDependabotTask,
 	}
 

@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -61,6 +62,17 @@ test('runner locates its own toolbox through symlinks and forwards literal argv 
   })
   assert.equal(linked.status, 23, linked.stderr)
   assert.equal(linked.stdout, result.stdout)
+})
+
+test('installer top-level skill symlink exports the canonical toolbox root', (t) => {
+  const { root, toolbox, run } = fixture(t)
+  const target = join(root, 'skills/namespace/boss-plan')
+  mkdirSync(join(root, 'skills/namespace'))
+  renameSync(join(root, 'skills/boss-plan'), target)
+  symlinkSync('namespace/boss-plan', join(root, 'skills/boss-plan'))
+  const result = run('node', 'plan/echo-args.mjs')
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(JSON.parse(result.stdout).toolbox, realpathSync(toolbox))
 })
 
 test('runner rejects invalid helpers and steps without executing anything', (t) => {

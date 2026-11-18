@@ -462,6 +462,7 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 			found.entry = &Entry{Summary: summary, RecordedAt: c.WrittenAt}
 		}
 		if line, ok := ParseProof(c.Body); ok {
+			line.Summary = proofNoteSummary(c.Body)
 			if proof == nil && sameHead(line.Head, head) {
 				proof, proofAt = &line, c.WrittenAt
 			}

@@ -73,6 +73,17 @@ test('resolveBossBinary falls back to the repo build ./bin/boss last', () => {
   assert.equal(result.path, path.join(root, 'bin', 'boss'))
 })
 
+test('resolveBossBinary skips the repo build in managed sessions', () => {
+  const fs = fakeFs({ '/repo/.git': EXEC, '/repo/bin/boss': EXEC })
+  const result = resolveBossBinary(
+    { BOSS_SESSION_ID: 'session', PATH: '' },
+    { fs, cwd: '/repo/services/boss' },
+  )
+  assert.equal(result.ok, false)
+  assert.equal(result.path, null)
+  assert.match(result.reason, /repo build.*managed session/)
+})
+
 test('resolveBossBinary reports BOSS_BIN by name when it points at a nonexistent path', () => {
   // The stale-worktree case: BOSS_BIN names a path that no longer exists and
   // nothing else resolves. The reason must name BOSS_BIN so the log says WHY.
@@ -124,7 +135,7 @@ test('resolveBossBinary returns ok:false when no candidate resolves anywhere', (
   assert.equal(result.path, null)
   assert.match(result.reason, /BOSS_BIN is unset/)
   assert.match(result.reason, /PATH/)
-  assert.match(result.reason, /bin[/\\]boss/)
+  assert.match(result.reason, /repo build.*managed session/)
 })
 
 test('resolveBossBinary never spawns the resolved binary', () => {

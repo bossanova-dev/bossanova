@@ -1,12 +1,17 @@
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { classifyHeadStatus, post, postOptionsFromArgv, tickFingerprint } from './verify-gate.mjs'
 import { CLAIM_STALE_AFTER_MS, claimState } from './verify-vocabulary.mjs'
 import {
   CLAIM_EXPIRED_REASON,
+  CLAIM_HOLDER_WINDOW_MS,
+  claimHoldersAt,
+  fileClaimHolders,
+  staleClaimNote,
   REMOTE_ORPHAN_AFTER_MS,
   claimForVerdict,
   claimWake,
@@ -74,6 +79,7 @@ function world(opts = {}) {
     spawns: [],
     sends: [],
     tokens: 0,
+    notes: [],
   }
   const prs = opts.prs ?? [1]
   const verdicts = opts.verdicts ?? {}
@@ -151,12 +157,25 @@ function world(opts = {}) {
     const dry = rest.includes('--dry-run')
     const current = w.statuses[pr] ?? null
     if (verdict === 'claim') {
+      if (rest.includes('--release')) return ok({ released: opts.restorePark === true })
       const state = claimState(current, { now: w.clock })
       if (state.kind === 'foreign') return ok({ won: false, reason: 'claim-held' })
       if (rest.includes('--takeover') && state.kind !== 'stale')
         return ok({ won: false, reason: 'not-expired' })
       const next = `tok-${++w.tokens}`
-      if (!dry) setStatus(pr, 'pending', `verifying… ${next}`)
+      if (!dry) {
+        if (state.kind === 'stale' && opts.holderFile)
+          w.notes.push(
+            staleClaimNote({
+              token: state.token,
+              pr,
+              status: current,
+              now: w.clock,
+              holder: claimHoldersAt(opts.holderFile).get(state.token),
+            }),
+          )
+        setStatus(pr, 'pending', `verifying… ${next}`)
+      }
       return ok({
         won: true,
         token: next,
@@ -198,12 +217,13 @@ function world(opts = {}) {
       if (args[0] === 'ls' && args.includes('--all-daemons'))
         return opts.fleetFails ? fail() : ok({ sessions: opts.fleet ?? [] })
       if (args[0] === 'ls') return ok({ sessions: opts.sessions ?? [] })
-      if (args[0] === 'chats') return ok({ chats: [] })
+      if (args[0] === 'chats') return ok({ chats: opts.chats ?? [] })
       if (args[0] === 'chat' && args[1] === 'new')
         return ok({ chat: { agent_session_id: 'chat-new', session_id: args[2], title: 'verify' } })
       if (args[0] === 'chat' && args[1] === 'send') {
         // The session receives the message and writes nothing: the run that claimed is killed.
         w.sends.push(args[3])
+        if (opts.sendFails) return fail('send-error')
         return ok({ delivery: { delivered: true, delivery_state: 'DELIVERY_STATE_SUBMITTED' } })
       }
       return fail('unexpected-boss')
@@ -853,4 +873,112 @@ test('an orphan the start floor held back never leaves the tick quiet', (t) => {
     `waiting: ${CLAIM_EXPIRED_REASON}`,
     'the next tick replaces it',
   )
+})
+
+test('holder records merge, prune and tolerate unavailable or corrupt state across worktrees', () => {
+  const dir = tempDir('verify-holders-')
+  const file = join(dir, 'boss-verify', 'claim-holders.json')
+  const store = claimHoldersAt(file)
+  assert.equal(store.get('missing'), null)
+  assert.equal(store.merge('old', { session: 'gone' }, T0 - CLAIM_HOLDER_WINDOW_MS - 1), true)
+  store.merge('first', { pr: 1, session: 's1' }, T0)
+  store.merge('first', { chat: 'chat1', outcome: 'dispatched' }, T0 + 1)
+  assert.equal(store.get('old'), null)
+  assert.equal(store.get('first').session, 's1')
+  const fromWorktree = fileClaimHolders({
+    read: () => ({ ok: true, output: dir }),
+    cwd: '/elsewhere',
+  })
+  assert.equal(fromWorktree.get('first').chat, 'chat1')
+  writeFileSync(file, 'invalid')
+  assert.equal(store.get('first'), null)
+  assert.equal(store.merge('new', { pr: 2 }, T0), true)
+  const broken = claimHoldersAt(file, {
+    fs: {
+      readFileSync() {
+        throw Error('read')
+      },
+      mkdirSync() {
+        throw Error('write')
+      },
+    },
+  })
+  assert.equal(broken.get('new'), null)
+  assert.equal(broken.merge('new', {}, T0), false)
+  assert.equal(
+    fileClaimHolders({
+      read() {
+        throw Error('git')
+      },
+    }).get('new'),
+    null,
+  )
+})
+
+for (const route of [
+  'existing-verify-chat',
+  'new-verify-chat',
+  'new-session',
+  'failed',
+  'failed-restored',
+  'dry-run',
+]) {
+  test(`sweep records claim attribution for ${route}`, () => {
+    const dir = tempDir('verify-dispatch-holder-')
+    const file = join(dir, 'claim-holders.json')
+    const w = world({
+      sessions: route === 'new-session' ? [] : [{ id: 's1', pr_url: url(1) }],
+      chats:
+        route === 'existing-verify-chat'
+          ? [{ agent_session_id: 'chat-old', role: 'verify', status: 'WAITING' }]
+          : [],
+      verdicts: { 1: { verdict: 'extensions-required', reason: 'extensions-installed' } },
+      sendFails: route.startsWith('failed'),
+      restorePark: route === 'failed-restored',
+    })
+    const result = sweep(
+      { dryRun: route === 'dry-run' },
+      w.deps({ stateFile: join(dir, 'sweep-state.json') }),
+    )
+    if (route === 'dry-run') {
+      assert.equal(existsSync(file), false)
+      return
+    }
+    const entry = claimHoldersAt(file).get('tok-1')
+    assert.ok(entry)
+    if (route.startsWith('failed')) {
+      assert.equal(entry.outcome, 'dispatch-unknown')
+      assert.equal(entry.why, 'send-error')
+      assert.equal(entry.released, route === 'failed-restored')
+    } else {
+      assert.equal(result.summary.dispatched, 1)
+      assert.equal(entry.outcome, 'dispatched')
+      assert.equal(entry.route, route)
+      if (route === 'new-session') {
+        assert.ok(entry.log)
+        assert.equal(entry.session, undefined)
+        assert.equal(entry.chat, undefined)
+      } else {
+        assert.equal(entry.session, 's1')
+        assert.equal(entry.chat, route === 'existing-verify-chat' ? 'chat-old' : 'chat-new')
+      }
+    }
+  })
+}
+
+test('an expired sweep claim note reads the previous dispatch from the shared file', () => {
+  const dir = tempDir('verify-takeover-holder-')
+  const holderFile = join(dir, 'claim-holders.json')
+  const w = world({
+    holderFile,
+    sessions: [{ id: 's1', pr_url: url(1) }],
+    verdicts: { 1: { verdict: 'extensions-required', reason: 'extensions-installed' } },
+  })
+  const deps = w.deps({ stateFile: join(dir, 'sweep-state.json') })
+  sweep({}, deps)
+  w.clock += CLAIM_STALE_AFTER_MS + MIN
+  sweep({}, deps)
+  assert.equal(w.notes.length, 1)
+  for (const fact of ['chat-new', 's1', 'dispatched', 'new-verify-chat'])
+    assert.ok(w.notes[0].includes(fact), fact)
 })

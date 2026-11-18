@@ -1,0 +1,68 @@
+{
+  "schema": "proof-media/1",
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source": {
+    "kind": "ci-artifact",
+    "url": "https://github.com/freshclaim/fresh-claim/actions/runs/12"
+  },
+  "clips": [
+    {
+      "id": "dashboard-proof-1",
+      "side": "head",
+      "title": "dashboard-proof-1",
+      "file": "dashboard-proof-1.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "dashboard-proof-1.png",
+          "caption": "Result"
+        }
+      ]
+    },
+    {
+      "id": "dashboard-proof-2",
+      "side": "head",
+      "title": "dashboard-proof-2",
+      "file": "dashboard-proof-2.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "dashboard-proof-2.png",
+          "caption": "Result"
+        }
+      ]
+    },
+    {
+      "id": "dashboard-plain",
+      "side": "head",
+      "title": "dashboard-plain",
+      "file": "dashboard-plain.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "dashboard-plain.png",
+          "caption": "Result"
+        }
+      ]
+    }
+  ],
+  "transcripts": []
+}

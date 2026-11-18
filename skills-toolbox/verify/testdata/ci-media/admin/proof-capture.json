@@ -1,0 +1,14 @@
+{
+  "schema": "proof-capture/1",
+  "clips": {
+    "admin-proof": {
+      "spec": "e2e/admin.spec.ts",
+      "files": ["src/admin.tsx"]
+    },
+    "admin-plain": {
+      "spec": "e2e/admin.spec.ts",
+      "files": ["src/admin.tsx"]
+    }
+  },
+  "plain": ["admin-plain"]
+}

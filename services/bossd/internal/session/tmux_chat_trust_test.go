@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/rs/zerolog"
 )
@@ -112,5 +115,53 @@ func TestFailStartBestEffortPreservesPaneEvidence_Sessions_AC119(t *testing.T) {
 				t.Fatalf("pane tail = %q", got)
 			}
 		})
+	}
+}
+
+func TestResolveSessionFacts_UntrustedRepoIgnoresCommittedBinBoss(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	wt := t.TempDir()
+	if err := os.Mkdir(filepath.Join(wt, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bossPath := filepath.Join(wt, "bin", "boss")
+	if err := os.WriteFile(bossPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := ResolveSessionFacts(&models.Session{ID: "untrusted", WorktreePath: wt}, "chat", "claude", nil)
+	if f.BossBin != "" {
+		t.Errorf("untrusted worktree binary resolved: %q", f.BossBin)
+	}
+	if value, ok := managedSessionEnv(f)["BOSS_BIN"]; ok {
+		t.Errorf("untrusted worktree binary exported: %q", value)
+	}
+	prompt := bossSessionContext(f)
+	if strings.Contains(prompt, bossPath) || strings.Contains(prompt, "./bin/boss") || strings.Contains(prompt, "make build") {
+		t.Errorf("untrusted prompt advertises a worktree binary: %q", prompt)
+	}
+}
+
+func TestManagedChatBinaryTrust_Sessions_AC253501__ChatPicker_AC253501(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	wt := t.TempDir()
+	if err := os.Mkdir(filepath.Join(wt, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bossPath := filepath.Join(wt, "bin", "boss")
+	if err := os.WriteFile(bossPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sess := &models.Session{ID: "session", WorktreePath: wt}
+	for _, repo := range []*models.Repo{nil, {}, {IsTrusted: true}} {
+		env := ManagedSessionEnv(sess, "chat", "claude", nil, repo)
+		prompt, _ := BuildAppendSystemPrompt(sess, "chat", "claude", "", repo)
+		trusted := repo != nil && repo.IsTrusted
+		if trusted {
+			if env["BOSS_BIN"] != bossPath || !strings.Contains(prompt, bossPath+" env") {
+				t.Errorf("trusted repo lost its binary: env=%q, prompt=%q", env["BOSS_BIN"], prompt)
+			}
+		} else if env["BOSS_BIN"] != "" || strings.Contains(prompt, bossPath) || strings.Contains(prompt, "./bin/boss") {
+			t.Errorf("untrusted repo advertised a worktree binary: env=%q, prompt=%q", env["BOSS_BIN"], prompt)
+		}
 	}
 }

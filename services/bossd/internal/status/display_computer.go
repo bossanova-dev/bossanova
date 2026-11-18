@@ -188,6 +188,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 			pbSess.DisplaySettingUp = e.SettingUp
 			pbSess.DisplayMerging = e.Merging
 			pbSess.ArchivePending = e.Archiving
+			hydrateServiceLinks(pbSess, e)
 			pbSess.PrMergeable = e.Mergeable
 		}
 	}
@@ -471,5 +472,12 @@ func workflowStatusToProto(s domain.WorkflowStatus) pb.WorkflowStatus {
 		return pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED
 	default:
 		return pb.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED
+	}
+}
+
+func hydrateServiceLinks(p *pb.Session, e *DisplayEntry) {
+	p.ServiceLinks = make([]*pb.ServiceLink, len(e.ServiceLinks))
+	for i, link := range e.ServiceLinks {
+		p.ServiceLinks[i] = &pb.ServiceLink{Name: link.Name, Url: link.URL}
 	}
 }

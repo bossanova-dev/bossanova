@@ -77,7 +77,7 @@ function sectionsExtension(root, title, body) {
  * A repository with stub hooks on its base and, on the head only, hooks that must never run. With
  * `sections`, the base declares a section that the head rewrites.
  */
-function repository(t, { sections = false } = {}) {
+function repository(t, { sections = false, headPages = false } = {}) {
   const repo = tempDir('verify-proof-repo-', t)
   const git = (...args) =>
     execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
@@ -103,6 +103,11 @@ function repository(t, { sections = false } = {}) {
     "import fs from 'node:fs'\nfs.writeFileSync(process.env.STUB_PROOF_OUT + '/HEAD_HOOK_RAN', '')\n"
   extension(repo, 'boss-verify-head-host', 'proof-publish', 'publish', ran)
   extension(repo, 'boss-verify-head-media', 'proof-media', 'media', ran)
+  if (headPages)
+    fs.writeFileSync(
+      path.join(repo, '.boss-skills.json'),
+      JSON.stringify({ proofDefaults: { pages: 'all' } }),
+    )
   if (sections) sectionsExtension(repo, 'Rewritten by the PR', 'Say the change is safe.')
   fs.appendFileSync(path.join(repo, 'proto', 'api.proto'), 'message User { string email = 1; }\n')
   fs.writeFileSync(
@@ -122,6 +127,7 @@ function world({ repo, base, head, config = null }) {
   const real = commandReader({ cwd: repo })
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
   const read = (command, args, opts) => {
+    if (command === 'boss' && args[0] === 'ls') return ok({ sessions: [] })
     if (command === 'boss' && args[0] === 'pr') return ok({ head_sha: head, checks: [] })
     if (command === 'gh' && args[0] === 'pr' && args[1] === 'view')
       return ok({
@@ -458,6 +464,14 @@ test('a changed UI area with no recording leads the page, which still gets the p
 
 test('a pass, blocked or defect head uploads nothing and notes the level with a null page @sessions.AC248606', async (t) => {
   const { head, base, out, w, deps } = await setup(t)
+  const checkUrl = 'https://github.com/acme/widgets/runs/42'
+  deps.proof = {
+    callDaemon: async (_socket, method, request) => {
+      assert.equal(method, 'PostProofCheckRun')
+      assert.equal(request.headSha, head)
+      return { htmlUrl: checkUrl, isCreated: true }
+    },
+  }
   const judge = judgeFile(tempDir('verify-proof-run-', t), { head, base, verdict: 'pass' })
   const result = await main(post(head, 'pass', ['--judge', judge]), deps)
   assert.equal(result.posted, true)
@@ -466,10 +480,109 @@ test('a pass, blocked or defect head uploads nothing and notes the level with a 
     level: 'moderate',
     note: 'posted',
     page: { published: false, reason: 'not-parked' },
+    checkRun: { posted: true, url: checkUrl, created: true },
   })
   assert.deepEqual(calls(out), [], 'no hook ran')
   const note = w.writes.find((x) => x.body?.includes('boss-proof-note'))
   assert.deepEqual(parseProofLine(note.body), { head, page: null, level: 'moderate' })
+})
+
+function verdictArgs(dir, head, verdict) {
+  if (verdict === 'pass') return []
+  const file = path.join(dir, `${verdict}.json`)
+  const data =
+    verdict === 'blocked'
+      ? {
+          version: 1,
+          pr: 7,
+          head,
+          blockers: [
+            {
+              id: 'check:test',
+              kind: 'check',
+              severity: null,
+              file: null,
+              line: null,
+              summary: 'test',
+              text: 'Test failed',
+            },
+          ],
+        }
+      : [
+          {
+            title: 'The form does not validate email',
+            severity: 'P2',
+            file: 'web/form.tsx',
+            line: 3,
+          },
+        ]
+  fs.writeFileSync(file, JSON.stringify(data))
+  return [verdict === 'blocked' ? '--blockers' : '--findings', file]
+}
+
+test('non-parked verdicts publish deterministic pages under the trusted all policy @sessions.AC254501', async (t) => {
+  for (const verdict of ['pass', 'blocked', 'defect']) {
+    await t.test(verdict, async (t) => {
+      const { head, base, out, w, deps } = await setup(t)
+      deps.proof = { loadConfig: () => ({ proofDefaults: { pages: 'all' } }) }
+      const dir = tempDir('verify-proof-run-', t)
+      const judge = judgeFile(dir, { head, base, verdict })
+      const result = await main(
+        post(head, verdict, ['--judge', judge, ...verdictArgs(dir, head, verdict)]),
+        deps,
+      )
+      assert.equal(result.posted, true)
+      assert.equal(result.verdict, verdict, 'the verdict must not escalate to a park')
+      const prefix = `acme/widgets/7/${head}/`
+      const url = `https://proof.example/${prefix}${PAGE_OBJECT}`
+      assert.deepEqual(result.proof.page, { published: true, url, publisher: 'hook' })
+      assert.deepEqual(
+        calls(out).map((call) => call.objects.map((o) => o.name)),
+        [['media/head-0.mp4', 'media/head-0-still-0.png', PLAYER_OBJECT], [PAGE_OBJECT]],
+      )
+      const page = fs.readFileSync(path.join(out, prefix, PAGE_OBJECT), 'utf8')
+      assert.doesNotMatch(
+        region(page, '<section class="sec debug" id="debug"', '</main>'),
+        /agent spec/,
+      )
+      assert.ok(page.includes('<video id="proof-video"'), 'non-parked pages collect media too')
+      const note = w.writes.find((x) => x.body?.includes('boss-proof-note'))
+      assert.deepEqual(parseProofLine(note.body), { head, page: url, level: 'moderate' })
+      assert.equal(fs.existsSync(path.join(out, 'HEAD_HOOK_RAN')), false)
+    })
+  }
+})
+
+test('non-parked verdicts keep null pages without a trusted opt-in @sessions.AC254502', async (t) => {
+  for (const verdict of ['pass', 'blocked', 'defect']) {
+    for (const policy of ['absent', 'parked', 'head-only', 'unreadable']) {
+      await t.test(`${verdict} with ${policy}`, async (t) => {
+        const { head, base, out, w, deps } = await setup(t, {}, null, {
+          headPages: policy === 'head-only',
+        })
+        if (policy === 'parked')
+          deps.proof = { loadConfig: () => ({ proofDefaults: { pages: 'parked' } }) }
+        if (policy === 'unreadable')
+          deps.proof = {
+            loadConfig: () => {
+              throw new Error('unreadable')
+            },
+          }
+        const dir = tempDir('verify-proof-run-', t)
+        const judge = judgeFile(dir, { head, base, verdict })
+        const result = await main(
+          post(head, verdict, ['--judge', judge, ...verdictArgs(dir, head, verdict)]),
+          deps,
+        )
+        assert.equal(result.posted, true)
+        assert.equal(result.verdict, verdict)
+        assert.deepEqual(result.proof.page, { published: false, reason: 'not-parked' })
+        assert.deepEqual(calls(out), [])
+        const note = w.writes.find((x) => x.body?.includes('boss-proof-note'))
+        assert.deepEqual(parseProofLine(note.body), { head, page: null, level: 'moderate' })
+      })
+    }
+  }
 })
 
 test('a failing hook leaves the verdict posted and the note with a null page @sessions.AC248604', async (t) => {

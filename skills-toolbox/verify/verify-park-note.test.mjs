@@ -14,6 +14,7 @@ import {
   afterMergeItems,
   afterMergeNote,
   extensionFailures,
+  extensionFailedNoteBody,
   parkNote,
   parkVerdict,
   restatesCategory,
@@ -167,6 +168,35 @@ test('extensionFailures names each malfunctioning extension, how it failed and i
   )
   assert.equal(extensionFailures(undefined), null)
   assert.equal(extensionFailures(null), null)
+})
+
+test('extension failure notes lead with bounded causes on one line', () => {
+  const results = [
+    { extension: 'evidence', result: { ok: false, error: 'missing\nproof' } },
+    { extension: 'slow', timedOut: true },
+    { extension: 'gone', crashed: true },
+    { extension: 'fourth', crashed: true },
+    { extension: 'fifth', crashed: true },
+  ]
+  const body = extensionFailedNoteBody(3381, results)
+  for (const text of ['evidence', 'missing proof', 'slow', 'timed out', 'gone', 'crashed', '3381'])
+    assert.ok(body.includes(text), text)
+  assert.ok(body.indexOf('evidence') < body.indexOf('3381'))
+  assert.equal(body.includes('fourth'), false)
+  assert.equal(body.includes('fifth'), false)
+  assert.match(body, /2 more/)
+  assert.equal(body.includes('\n'), false)
+})
+
+test('extension failure notes distinguish unavailable results from results without failures', () => {
+  const unavailable = extensionFailedNoteBody(3381, null)
+  const empty = extensionFailedNoteBody(3381, [])
+  assert.notEqual(unavailable, empty)
+  for (const body of [unavailable, empty]) {
+    assert.ok(body.length > 0)
+    assert.ok(body.includes('3381'))
+    assert.equal(body.includes('\n'), false)
+  }
 })
 
 test('every park code verify can raise has plain words', () => {
@@ -622,4 +652,10 @@ test('parkNote opens with the verdict and says each labelled issue once', () => 
   const mixed = parkNote({ codes: ['repair-exhausted', 'human-review:ui'], headSha: HEAD }).body
   assert.ok(mixed.startsWith('**Not verified · blocked · automatic repair gave up on this PR**'))
   assert.ok(mixed.includes('- A UI change.'))
+})
+
+test('missing dependencies explain why a required extension crashed', () => {
+  const lines = extensionFailures([{ extension: 'checks', crashed: true }], { depsMissing: true })
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /could not load its packages/)
 })

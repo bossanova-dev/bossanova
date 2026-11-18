@@ -5733,6 +5733,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.UpdateTriggerResponse'
+  /bossanova.v1.OrchestratorService/UpsertProofCheckRun:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UpsertProofCheckRun
+      description: |-
+        UpsertProofCheckRun creates or updates the one "boss/proof" GitHub check
+         run on head_sha of the repository named by repo_origin_url. bosso writes it
+         with the GitHub App's own key, because only an App can create a check run.
+         The run is always completed with a neutral conclusion: it reports
+         evidence and never gates, and the caller cannot choose its name, status or
+         conclusion. Re-posting the same head updates the existing run in place.
+         It admits the same callers as IssueGitHubInstallationToken: a daemon token
+         whose owner may receive the repository's GitHub events. Every other caller
+         or repository is PermissionDenied with one fixed message. An invalid head,
+         title, summary or details URL is InvalidArgument. FailedPrecondition with
+         the message "checks write not granted" means the App installation has not
+         been granted checks write yet.
+         A new RPC is additive, so it needs no dated apiversion bump
+         (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+      operationId: bossanova.v1.OrchestratorService.UpsertProofCheckRun
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UpsertProofCheckRunRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UpsertProofCheckRunResponse'
 components:
   schemas:
     bossanova.v1.APIToken:
@@ -16714,6 +16764,40 @@ components:
           title: tasks
       title: PollTasksResponse
       additionalProperties: false
+    bossanova.v1.PostProofCheckRunRequest:
+      type: object
+      properties:
+        repo:
+          type: string
+          title: repo
+          description: owner/name
+        headSha:
+          type: string
+          title: head_sha
+          description: 40 lowercase hex characters
+        title:
+          type: string
+          title: title
+        summary:
+          type: string
+          title: summary
+        detailsUrl:
+          type: string
+          title: details_url
+      title: PostProofCheckRunRequest
+      additionalProperties: false
+      description: PostProofCheckRunRequest mirrors proof to a registered GitHub repository.
+    bossanova.v1.PostProofCheckRunResponse:
+      type: object
+      properties:
+        htmlUrl:
+          type: string
+          title: html_url
+        isCreated:
+          type: boolean
+          title: is_created
+      title: PostProofCheckRunResponse
+      additionalProperties: false
     bossanova.v1.PreflightHeadlessRunRequest:
       type: object
       properties:
@@ -19252,6 +19336,15 @@ components:
         expectedUpdatedAt:
           title: expected_updated_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        serveScript:
+          type:
+            - string
+            - "null"
+          title: serve_script
+          description: |-
+            Optional: absent leaves the command unchanged; empty clears it.
+             Additive: older clients omit this field and retain existing behavior, so no
+             version transform is needed. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: ProxyUpdateRepoRequest
       additionalProperties: false
       description: |-
@@ -20471,6 +20564,12 @@ components:
           title: updated_at
           description: echoed for optimistic concurrency
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        serveScript:
+          type:
+            - string
+            - "null"
+          title: serve_script
+          description: Long-running command that starts the repository services.
       title: RepoSettings
       additionalProperties: false
       description: |-
@@ -21735,6 +21834,20 @@ components:
       type: object
       title: SeparateSyncedAgentAccountsResponse
       additionalProperties: false
+    bossanova.v1.ServiceLink:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: Short display name.
+        url:
+          type: string
+          title: url
+          description: Absolute https URL chosen by the serve command.
+      title: ServiceLink
+      additionalProperties: false
+      description: ServiceLink is one service reported by a session's serve command.
     bossanova.v1.Session:
       type: object
       properties:
@@ -22326,7 +22439,18 @@ components:
         prProofHeadSha:
           type: string
           title: pr_proof_head_sha
-          description: Head the pr_proof_url record was made for (40 hex), or empty.
+          description: |-
+            Head the pr_proof_url or pr_proof_summary record was made for (40 hex),
+             or empty.
+        prProofSummary:
+          type: string
+          title: pr_proof_summary
+          description: |-
+            Markdown block of the PR's latest core proof note, set only when that
+             record has no proof page, with the head that pr_proof_head_sha names;
+             empty otherwise. No dated API bump or transform: the field is additive and
+             older clients ignore it. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
         verifyPark:
           title: verify_park
           description: |-
@@ -22365,6 +22489,17 @@ components:
              Transport-only, never persisted.
              No dated API bump or transform: the three fields are additive and older
              clients ignore them without changing their existing behavior. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        serviceLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ServiceLink'
+          title: service_links
+          description: |-
+            Live links reported by the session's running serve command, ordered by name.
+             Transport-only, never persisted; empty when no command has reported links,
+             and blanked in private cloud-control mode. No dated API bump or transform:
+             additive, so older clients ignore it without changing existing behavior. See
              docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: Session
       additionalProperties: false
@@ -25689,6 +25824,12 @@ components:
         expectedUpdatedAt:
           title: expected_updated_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        serveScript:
+          type:
+            - string
+            - "null"
+          title: serve_script
+          description: 'Optional: absent leaves the command unchanged; empty clears it.'
       title: UpdateRepoCommand
       additionalProperties: false
       description: |-
@@ -26212,6 +26353,63 @@ components:
       title: UploadEvidenceResponse
       additionalProperties: false
       description: UploadEvidenceResponse is returned only after every object was uploaded.
+    bossanova.v1.UpsertProofCheckRunRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: |-
+            The repository's origin URL, canonicalised like
+             IssueGitHubInstallationTokenRequest.repo_origin_url.
+        headSha:
+          type: string
+          title: head_sha
+          description: The full 40-character hex commit SHA the run is attached to.
+        title:
+          type: string
+          title: title
+          description: 'The run''s output title: non-empty, at most 255 characters.'
+        summary:
+          type: string
+          title: summary
+          description: |-
+            The run's output summary in Markdown: non-empty, at most 65,535
+             characters (GitHub's output.summary limit).
+        detailsUrl:
+          type: string
+          title: details_url
+          description: |-
+            Optional link to the proof page: empty, or an https URL of at most 2,048
+             characters.
+      title: UpsertProofCheckRunRequest
+      additionalProperties: false
+      description: |-
+        UpsertProofCheckRunRequest is the proof a daemon posts as the head's
+         "boss/proof" check run.
+    bossanova.v1.UpsertProofCheckRunResponse:
+      type: object
+      properties:
+        checkRunId:
+          type:
+            - integer
+            - string
+          title: check_run_id
+          format: int64
+          description: GitHub's id for the check run.
+        htmlUrl:
+          type: string
+          title: html_url
+          description: The check run's page on GitHub.
+        isCreated:
+          type: boolean
+          title: is_created
+          description: |-
+            True when this call created the run; false when it updated an existing
+             one.
+      title: UpsertProofCheckRunResponse
+      additionalProperties: false
+      description: UpsertProofCheckRunResponse identifies the check run bosso wrote.
     bossanova.v1.UsageModelWindow:
       type: object
       properties:

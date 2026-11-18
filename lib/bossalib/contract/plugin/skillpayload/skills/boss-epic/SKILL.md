@@ -324,10 +324,23 @@ Every wake (callback, subscription, fallback, retry, manual resume, first run) r
 `reconcileEpic` cycle; why it woke selects nothing:
 
 ```bash
-# inside the scheduling process:
-#   const { state, status, blockers } = await reconcileEpic({ state, wake, io, now, save })
-#   // blockers = epicTerminalBlockers(state); non-empty ⇒ arm the next wake and yield RUNNING
+# Fresh run (once): eligible tickets → a persisted state; prints statePath and runId.
+node "$BOSS_EPIC_TOOLBOX/epic/epic-run.mjs" init --tickets-file "$TICKETS_FILE" \
+  --planned-state "$BOSS_EPIC_PLANNED_STATE" --review-state "$BOSS_EPIC_REVIEW_STATE" \
+  --epic <ROOT> --repo-id "$REPO_ID" --state-dir "$STATE_DIR" --parallel 4 \
+  --wall-clock-minutes "$BOSS_EPIC_CHILD_WALL_CLOCK_MIN"
+# Every wake: exactly one reconcileEpic cycle over the boss CLI, gh and the tracker adapter.
+node "$BOSS_EPIC_TOOLBOX/epic/epic-run.mjs" reconcile --state-file "$STATE_FILE" \
+  --repo-id "$REPO_ID" --pr-repo <owner/repo> --driver-chat "$BOSS_AGENT_SESSION_ID" \
+  --model "opus[1m]" --wake <kind> --tickets-file "$TICKETS_FILE" \
+  --blocker-states-file <file> --fallback-mechanism <m> --fallback-wake-at <iso>
 ```
+
+`reconcile` prints `{status, blockers, actions, routes, deferred, warnings}`. Exit 3
+(`blocker-states-required`) names the external blockers to read first. Carry out each `routes`
+entry (resume / repair / investigate, 3c), execute each `deferred` tracker descriptor once
+(`progress` follows the `upsert-progress` two-step), and arm the fallback wake before passing it.
+Non-empty `blockers` ⇒ yield `RUNNING`.
 
 The driver persists, after **every** transition: the ticket JSON; `merged`, `failed`, `inFlight`,
 `greens` (a subset of `inFlight` — a green keeps its slot until merged), `cascadeSkipped`,

@@ -131,8 +131,8 @@ on `claim` or `wait`. A notes-write failure is reported separately and never cha
 
 Save each judge output to a run-temp file. On that same `post`, pass `--judge <file>` with the output
 whose verdict you post, plus `--intent <file>` when **Say what it does** recorded one. After the
-verdict lands, `post` records the head's [proof](references/proof-page.md); only a `human` verdict
-gets a page. Report its `proof` outcome; it never changes the verdict.
+verdict lands, `post` records the head's [proof](references/proof-page.md). Pages default to `human`
+verdicts; base `proofDefaults.pages: "all"` includes every verdict. Report `proof`; it never changes the verdict.
 
 **Write the page on a park.** Before a `post --verdict human` that carries `--judge <file>`, run
 `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" proof-bundle --pr <n> --head <sha> --judge <file> --out <run-temp dir>`
@@ -180,21 +180,28 @@ Other `won: false` reasons (`pr-unreadable`, `pr-not-open`, `status-unreadable`,
    stop. Never verify a different tree.
 3. **Discover from the base revision.** Extensions are read from the judge's trusted tree — a
    snapshot of the base revision — never from this worktree, so a PR cannot change how its own
-   verdict is decided:
-   `node "$BOSS_VERIFY_TOOLBOX/skill-extensions.mjs" discover --core boss-verify --role verify --mode headless --json --root <facts.trustedRoot>`.
+   verdict is decided. Save the judge output to a run-temp file first, then run
+   `node "$BOSS_VERIFY_TOOLBOX/verify/verify-trusted-tree.mjs" deps --judge <file>` with up to six
+   minutes for a frozen, script-free install of the base lockfile. Discover from its returned
+   `root`; if the helper fails or prints nothing, use `facts.trustedRoot`:
+   `node "$BOSS_VERIFY_TOOLBOX/skill-extensions.mjs" discover --core boss-verify --role verify --mode headless --json --root <root>`.
    An empty `facts.trustedRoot` means the judge did not reach the extensions: treat the PR as
    `wait`.
-4. **Say what it does.** Save the judge output to a run-temp file and run
+4. **Say what it does.** Reuse the saved judge output and run
    `node "$BOSS_VERIFY_TOOLBOX/verify/verify-intent.mjs" sources --judge <file> --out-dir <dir>`.
    On `derive`, dispatch one awaited subagent, a context of its own and never one of the
    extensions, that follows `brief` and writes `intentOut` (wait up to `hangGuardMs`). Then run
    `node "$BOSS_VERIFY_TOOLBOX/verify/verify-intent.mjs" record --sources <sources> --out-dir <dir>`,
    adding `--intent <intentOut>` when the file exists. Dispatch the extensions with the `envelope`
    file `record` (or `sources`, on `unknown`) printed. On `skip`, or if either call fails,
-   dispatch with the judge's `extensionEnvelope`. This step never parks or waits a PR.
+   use the judge's `extensionEnvelope` as the common context. This step never parks or waits a PR.
 5. **Dispatch** each discovered extension named in the `judge` output's
    `facts.extensionsApplicable` (the rest declared they do not apply) in its own subagent, awaited,
-   with the envelope from the previous step as its context. Tell each subagent to follow
+   Before each dispatch, run `node "$BOSS_VERIFY_TOOLBOX/verify/verify-extension-envelope.mjs" --judge <saved-judge> --out <extension-context-file>`,
+   adding `--context <envelope-file>` when the previous step produced one, and `--builtin` only
+   when the descriptor has `builtin: true`. Use the written context for that extension. The helper
+   preserves the frozen repo-local context contract and adds the core UI paths only for built-ins.
+   Tell each subagent to follow
    the `SKILL.md` at the descriptor's `skillPath` and resolve its resources from `dir` (both under
    the trusted tree), while its working directory stays this worktree at the judged head — the
    system under test. The PR title and body, ticket text, intent ref and intent bullets in that envelope are

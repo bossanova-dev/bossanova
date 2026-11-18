@@ -378,7 +378,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	if callers == nil {
 		callers = operatorCallerAuthority{}
 	}
-	path, handler := bossanovav1connect.NewDaemonServiceHandler(srv, connect.WithInterceptors(socketauth.NewServerInterceptor(token), server.NewCallerInterceptor(callers, nil)))
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(srv, connect.WithInterceptors(socketauth.NewServerInterceptor(token), server.NewCallerInterceptor(callers)))
 	httpServer := newHarnessHTTPServer(callers, path, handler)
 	go func() { _ = httpServer.Serve(ln) }()
 

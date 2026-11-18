@@ -2,14 +2,16 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // hookMatcherKey is the matcher string we stamp on the session-keyed
@@ -85,6 +87,9 @@ const maxTurnEndedHooks = 8
 //     The session-keyed bossd-finalize entry and any user/repo Stop hooks
 //     are always left untouched.
 //
+// Reads and writes stay inside the worktree; symlinked .claude directories
+// and settings.local.json files are refused.
+//
 // Writes are atomic: JSON is serialised to a sibling temp file inside
 // the same .claude directory and renamed over the target, so a crash
 // mid-write can't leave a half-written file visible to Claude.
@@ -102,13 +107,13 @@ func WriteHookConfig(worktreePath, sessionID, agentSessionID, token string, port
 		return fmt.Errorf("port must be positive, got %d", port)
 	}
 
-	claudeDir, err := ensureClaudeDir(worktreePath)
+	worktree, err := openClaudeDir(worktreePath, true)
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(claudeDir, "settings.local.json")
 
-	root, err := loadHookConfig(target)
+	defer func() { _ = worktree.Close() }()
+	root, err := loadHookConfig(worktree)
 	if err != nil {
 		return err
 	}
@@ -166,7 +171,7 @@ func WriteHookConfig(worktreePath, sessionID, agentSessionID, token string, port
 	// a human might open; keep the file hygienic on disk.
 	out = append(out, '\n')
 
-	return atomicWrite(claudeDir, target, out)
+	return atomicWrite(worktree, out)
 }
 
 // hookEntryShape returns (matcher, urlPath) for the Stop-hook entry
@@ -315,7 +320,7 @@ func removeCommandURLFromHookArray(hooks map[string]any, key, urlPath string) bo
 // run's completion ping can't linger. Missing file, missing hooks/Stop, or
 // an already-absent entry are all no-ops (no error, no rewrite). The
 // bossd-finalize entry and any user hooks are left untouched. Writes are
-// atomic, mirroring WriteHookConfig.
+// atomic and confined to the worktree, refusing symlinked directories or files.
 func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 	if worktreePath == "" {
 		return errors.New("worktreePath is required")
@@ -323,10 +328,16 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 	if agentSessionID == "" {
 		return errors.New("agentSessionID is required")
 	}
-	claudeDir := filepath.Join(worktreePath, ".claude")
-	target := filepath.Join(claudeDir, "settings.local.json")
+	worktree, err := openClaudeDir(worktreePath, false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 
-	root, err := loadHookConfig(target)
+	defer func() { _ = worktree.Close() }()
+	root, err := loadHookConfig(worktree)
 	if err != nil {
 		return err
 	}
@@ -362,7 +373,7 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 		return fmt.Errorf("marshal hook config: %w", err)
 	}
 	out = append(out, '\n')
-	return atomicWrite(claudeDir, target, out)
+	return atomicWrite(worktree, out)
 }
 
 // WritePromptSubmitHookConfig installs the delivery-receipt UserPromptSubmit
@@ -385,7 +396,8 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 // Exactly one bossd entry is kept per file: other prompt-submitted entries
 // belong to earlier chats whose start window has passed (one chat starts at a
 // time per worktree), so they are pruned, as the question hook does. User
-// hooks are never touched. The write is atomic, mirroring WriteHookConfig.
+// hooks are never touched. Reads and atomic writes are confined to the worktree;
+// symlinked .claude directories or settings.local.json files are refused.
 func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int, receiptToken string) error {
 	if worktreePath == "" {
 		return errors.New("worktreePath is required")
@@ -399,12 +411,12 @@ func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int, 
 	if !receiptTokenPattern.MatchString(receiptToken) {
 		return errors.New("receipt token contains characters that are unsafe in a shell command")
 	}
-	claudeDir, err := ensureClaudeDir(worktreePath)
+	worktree, err := openClaudeDir(worktreePath, true)
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(claudeDir, "settings.local.json")
-	root, err := loadHookConfig(target)
+	defer func() { _ = worktree.Close() }()
+	root, err := loadHookConfig(worktree)
 	if err != nil {
 		return err
 	}
@@ -429,27 +441,52 @@ func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int, 
 		return fmt.Errorf("marshal hook config: %w", err)
 	}
 	out = append(out, '\n')
-	return atomicWrite(claudeDir, target, out)
+	return atomicWrite(worktree, out)
 }
 
-// ensureClaudeDir returns worktreePath/.claude, creating only that directory.
-// The worktree root itself must already exist: a hook write for a session
-// whose worktree was archived or removed would otherwise re-create the root
-// to hold a lone settings.local.json, leaving a directory no session owns
-// (BOS-2228).
-func ensureClaudeDir(worktreePath string) (string, error) {
-	info, err := os.Stat(worktreePath)
-	if err != nil || !info.IsDir() {
-		return "", fmt.Errorf("worktree %q does not exist; not re-creating it", worktreePath)
+const hookConfigPath = ".claude/settings.local.json"
+
+// openClaudeDir confines operations to an existing worktree. Symlinked .claude
+// directories are refused, including links within the worktree. Only .claude
+// may be created: an archived worktree must never be re-created (BOS-2228).
+func openClaudeDir(worktreePath string, create bool) (*os.Root, error) {
+	root, err := os.OpenRoot(worktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("worktree %q does not exist or cannot be opened; not re-creating it: %w", worktreePath, err)
 	}
-	claudeDir := filepath.Join(worktreePath, ".claude")
-	// 0o700: this directory holds settings.local.json, which carries the
-	// bossd hook Bearer token (written 0o600). Keep the parent dir owner-only
-	// too (G301) rather than the world-readable 0o755.
-	if err := os.Mkdir(claudeDir, 0o700); err != nil && !os.IsExist(err) {
-		return "", fmt.Errorf("create .claude dir: %w", err)
+	info, err := root.Lstat(".claude")
+	if errors.Is(err, fs.ErrNotExist) && create {
+		if err := root.Mkdir(".claude", 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			_ = root.Close()
+			return nil, fmt.Errorf("create .claude dir: %w", err)
+		}
+		info, err = root.Lstat(".claude")
 	}
-	return claudeDir, nil
+	if err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("check .claude dir: %w", err)
+	}
+	if !info.IsDir() {
+		_ = root.Close()
+		return nil, errors.New("unsafe hook config directory .claude")
+	}
+	return root, nil
+}
+
+// checkHookConfigFile refuses symlinks and non-regular files. A missing file
+// is safe for callers to create; Root confines operations if a parent changes.
+func checkHookConfigFile(root *os.Root) error {
+	info, err := root.Lstat(hookConfigPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check %s: %w", hookConfigPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("unsafe hook config file %q", hookConfigPath)
+	}
+	return nil
 }
 
 // receiptTokenPattern bounds the prompt-receipt token to characters that are
@@ -565,59 +602,59 @@ func removeMatcherFromHookArray(hooks map[string]any, key, matcher string) bool 
 // A missing file or empty file both return an empty map so callers can
 // start from a clean slate; any other read or parse error is surfaced
 // so we don't silently clobber a malformed config.
-func loadHookConfig(path string) (map[string]any, error) {
-	// Clean last before the read: path is an internally-derived
-	// worktree/.claude/settings.local.json location, not caller input (G304).
-	cleaned := filepath.Clean(path)
-	data, err := os.ReadFile(cleaned)
+func loadHookConfig(root *os.Root) (map[string]any, error) {
+	if err := checkHookConfigFile(root); err != nil {
+		return nil, err
+	}
+	file, err := root.OpenFile(hookConfigPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return map[string]any{}, nil
 	case err != nil:
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("open %s: %w", hookConfigPath, err)
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", hookConfigPath, err)
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
 		return map[string]any{}, nil
 	}
-	var root map[string]any
-	if err := json.Unmarshal(data, &root); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", hookConfigPath, err)
 	}
-	if root == nil {
-		return nil, fmt.Errorf("parse %s: top-level JSON must be an object", path)
+	if config == nil {
+		return nil, fmt.Errorf("parse %s: top-level JSON must be an object", hookConfigPath)
 	}
-	return root, nil
+	return config, nil
 }
 
-// atomicWrite writes data to target via a temp file in the same
-// directory, then renames over the target. The temp file is removed on
-// any error so we never leave orphans next to the settings file.
-// Permissions are 0o600 because the file contains the hook_token.
-func atomicWrite(dir, target string, data []byte) error {
-	tmp, err := os.CreateTemp(dir, ".settings.local.json.tmp-*")
+// atomicWrite writes only inside the worktree, refusing symlinked settings.
+// A sibling temp file is created owner-only and removed on every error path.
+func atomicWrite(root *os.Root, data []byte) error {
+	if err := checkHookConfigFile(root); err != nil {
+		return err
+	}
+	tmpPath := ".claude/.settings.local.json.tmp-" + rand.Text()
+	tmp, err := root.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
-	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-
+	defer func() { _ = root.Remove(tmpPath) }()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		cleanup()
 		return fmt.Errorf("write temp file: %w", err)
 	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
 	if err := tmp.Close(); err != nil {
-		cleanup()
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Rename(tmpPath, target); err != nil {
-		cleanup()
-		return fmt.Errorf("rename to %s: %w", target, err)
+	if err := checkHookConfigFile(root); err != nil {
+		return err
+	}
+	if err := root.Rename(tmpPath, hookConfigPath); err != nil {
+		return fmt.Errorf("rename to %s: %w", hookConfigPath, err)
 	}
 	return nil
 }

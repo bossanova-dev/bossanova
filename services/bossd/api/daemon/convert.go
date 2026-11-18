@@ -58,6 +58,10 @@ func HydrateDisplayEntry(p *pb.Session, e *status.DisplayEntry) {
 	p.DisplaySettingUp = e.SettingUp
 	p.DisplayMerging = e.Merging
 	p.ArchivePending = e.Archiving
+	p.ServiceLinks = make([]*pb.ServiceLink, len(e.ServiceLinks))
+	for i, link := range e.ServiceLinks {
+		p.ServiceLinks[i] = &pb.ServiceLink{Name: link.Name, Url: link.URL}
+	}
 	p.PrMergeable = e.Mergeable
 	p.PrAddedLineCount = clampInt32(e.AddedLineCount)
 	p.PrDeletedLineCount = clampInt32(e.DeletedLineCount)
@@ -194,6 +198,9 @@ func repoToRepoSettings(r *models.Repo) *pb.RepoSettings {
 	}
 	if r.SetupScript != nil {
 		settings.SetupScript = protoStringPtr(r.SetupScript)
+	}
+	if r.ServeScript != nil {
+		settings.ServeScript = protoStringPtr(r.ServeScript)
 	}
 	return settings
 }

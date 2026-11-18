@@ -516,6 +516,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
+import { runnerFormFindings } from './skill-shell-runner-form.mjs'
 
 // The two AUTHORING roots. Deliberately NOT scanned, for the same reason
 // `scripts/guards/check-skill-symbols.mjs` gives: `.codex/skills/` is a generated mirror, gated for
@@ -541,7 +542,7 @@ const FENCE_CLOSE = /^(`{3,}|~{3,})[ \t]*$/
 const PLACEHOLDER = /(?<!<)<(?![<\s(])[^<>\n]*>/g
 
 // A line ending in an ODD number of backslashes continues onto the next one.
-const LINE_CONTINUES = /(^|[^\\])(\\\\)*\\$/
+export const LINE_CONTINUES = /(^|[^\\])(\\\\)*\\$/
 
 // Words that may precede the real command word inside a segment; skipping them widens the glob
 // rule's reach (`then find …`) and cannot introduce a false positive. The keywords that OPEN a
@@ -3457,7 +3458,7 @@ function consumeBacktick(line, from, word, state) {
   return i
 }
 
-function tokenizeShellLine(line, state = { quote: null, substDepth: 0, substQuote: null }) {
+export function tokenizeShellLine(line, state = { quote: null, substDepth: 0, substQuote: null }) {
   state.substDepth ??= 0
   state.substQuote ??= null
   state.backtick ??= false
@@ -3516,15 +3517,18 @@ function tokenizeShellLine(line, state = { quote: null, substDepth: 0, substQuot
       // not suppress pathname expansion within it: `result="$(rm -f a*.log b*.tmp)"` carries the
       // same unmatched-glob abort as the bare form. Consuming the whole quoted span first hid it.
       if (ch === '$' && line[i + 1] === '(') {
+        state.runnerFormReasons?.add('command-substitution')
         i = consumeSubstitution(line, i + 1, current, state)
         continue
       }
       if (ch === '`') {
+        state.runnerFormReasons?.add('command-substitution')
         state.backtick = true
         i = consumeBacktick(line, i + 1, current, state)
         continue
       }
       if (ch === '"') quote = null
+      if (ch === '$' && line[i + 1] === '{') state.runnerFormReasons?.add('parameter-expansion')
       continue
     }
 
@@ -3547,12 +3551,6 @@ function tokenizeShellLine(line, state = { quote: null, substDepth: 0, substQuot
     // `wordOpen` is authoritative here: the tokenizer already knows whether a word is open, which
     // is exactly the boundary the predicate asks about.
     if (startsComment(line, i, { wordOpen: current !== null })) {
-      // Record the comment so callers can read an opt-out marker written in it, keyed by the
-      // PHYSICAL line offset the caller set before this call. A single carried scalar would be
-      // wrong twice over: a logical line joined from several physical lines produces one call for
-      // many offsets, and an unterminated quote or substitution carries `state` across calls with
-      // no natural reset point, so the last comment seen would leak forward onto later lines.
-      //
       // Opt-in, because the key is only meaningful to a caller that maintains `state.lineOffset`.
       // Every other caller in this file leaves it undefined, so recording unconditionally wrote
       // each of them a one-entry map at key 0 that the next line overwrote — dead for them, and a
@@ -3565,18 +3563,16 @@ function tokenizeShellLine(line, state = { quote: null, substDepth: 0, substQuot
       }
       break // comment runs to end of line
     }
-    // `$(…)`, and likewise the process substitutions `<(…)` / `>(…)`, are part of the surrounding
-    // WORD rather than top-level operators — the shell passes each as one argument to the same
-    // command. Splitting on their parens would end the `rm` segment of
-    // `rm -f $(prefix) a*.log b*.tmp` before either glob, hiding the very multi-glob form the rule
-    // exists to catch. Consumed whole, nesting- and quote-aware; glob characters INSIDE are not the
-    // outer command's to expand, so they are deliberately not marked (a false negative, never a
-    // false positive). A bare `(` stays a subshell operator.
+    if (ch === '$' && line[i + 1] === '(') state.runnerFormReasons?.add('command-substitution')
+    if (ch === '$' && line[i + 1] === '{') state.runnerFormReasons?.add('parameter-expansion')
+    if (ch === '<' && line[i + 1] === '<') state.runnerFormReasons?.add('heredoc')
+    // Substitutions stay in their surrounding word; nested globs belong to the subshell.
     if (ch === '(' && current !== null && /[$<>]$/.test(current.raw)) {
       i = consumeSubstitution(line, i, current, state)
       continue
     }
     if (ch === '`') {
+      state.runnerFormReasons?.add('command-substitution')
       start().raw += ch
       state.backtick = true
       i = consumeBacktick(line, i + 1, current, state)
@@ -3698,7 +3694,7 @@ function tokenizeShellLine(line, state = { quote: null, substDepth: 0, substQuot
 //
 // Quote removal ONLY, never expansion: `$RM` and `"$RM"` both survive as `$RM`, which matches
 // nothing. So this widens the rule by exactly the words whose LITERAL text spells a removal.
-function removeQuotes(word) {
+export function removeQuotes(word) {
   let out = ''
   for (let i = 0; i < word.length; i++) {
     const ch = word[i]
@@ -6185,7 +6181,7 @@ function makeBashRunner(tmpDir) {
  * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `mixed-glob-removal` / `option-glob` /
  * `word-split` / `zsh-special-scalar` / `pipeline-status` / `trailing-conditional-status` /
  * `inert-guard` / `gh-body-interpolation` / `gh-body-file-interpolation` /
- * `node-eval-interpolation` / `bare-positional` / `unguarded-removal`, plus `missing-bash` when the gate fails closed.
+ * `node-eval-interpolation` / `bare-positional` / `unguarded-removal` / `runner-form`, plus `missing-bash` when the gate fails closed.
  */
 export async function checkSkillShellInRepo(repoRoot, deps = {}) {
   const fsImpl = deps.fs || fs
@@ -6201,7 +6197,9 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
     if (!fsImpl.existsSync(absRoot)) continue
     for (const file of findSkillMarkdownFiles(absRoot, deps)) {
       const rel = path.relative(repoRoot, file)
-      for (const block of extractFencedBlocks(fsImpl.readFileSync(file, 'utf8'))) {
+      const markdown = fsImpl.readFileSync(file, 'utf8')
+      findings.push(...runnerFormFindings(rel, markdown))
+      for (const block of extractFencedBlocks(markdown)) {
         if (!block.terminated) {
           findings.push({
             file: rel,

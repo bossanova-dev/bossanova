@@ -19,6 +19,9 @@ Start the receipt, then acquire its issue lease before posting any comment:
 
 ```bash
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs start --receipt "$CLAIM_RECEIPT" --issue <ISSUE-ID>
+```
+
+```bash
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs acquire --receipt "$CLAIM_RECEIPT"
 ```
 
@@ -42,6 +45,9 @@ the owner evidence helper, then arbitration:
 
 ```sh
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh node session/claim-owner-status.mjs --comments "$CLAIM_COMMENTS" --claim-receipt "$CLAIM_RECEIPT" --out "$CLAIM_LIVENESS" --issue "<ISSUE-ID>" --release-forfeited-leases
+```
+
+```sh
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs verdict --receipt "$CLAIM_RECEIPT" --comments "$CLAIM_COMMENTS" --liveness "$CLAIM_LIVENESS"
 ```
 

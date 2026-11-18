@@ -19,6 +19,7 @@ import {
   MAX_DESCRIBE_OUTPUT_BYTES,
 } from './verify-describe.mjs'
 import { MAX_BLOCKS, MAX_OPERATION_CHARS, locatedRisks } from './verify-describe-blocks.mjs'
+import { gitFixture } from './verify-git-fixture.mjs'
 
 const valid = () => ({
   ok: true,
@@ -603,4 +604,86 @@ test('boundDescription passes typed facts through for the core to validate', () 
   assert.deepEqual(validateResult(result, 'proof-describe').errors, [])
   assert.deepEqual(result.blocks, facts.blocks)
   assert.ok(!Object.hasOwn(boundDescription('x', { items: [] }), 'blocks'))
+})
+
+test('a describer sees BOSS_VERIFY_TOOLBOX for the running core over a stale inherited value', (t) => {
+  const { root, extension } = fixture(
+    t,
+    `process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({ok:true,extension:'describe-test',role:'proof-describe',items:[process.env.BOSS_VERIFY_TOOLBOX],breaking:false})))`,
+  )
+  const stale = path.join(root, 'stale-toolbox')
+  for (const env of [undefined, { ...process.env, BOSS_VERIFY_TOOLBOX: stale }]) {
+    const [outcome] = runDescribers({
+      extensions: [extension],
+      areas: [area()],
+      baseSha: 'b'.repeat(40),
+      headSha: 'a'.repeat(40),
+      pr: {},
+      cwd: root,
+      env,
+    })
+    assert.equal(outcome.ok, true, outcome.reason)
+    const [toolbox] = outcome.description.items
+    assert.notEqual(toolbox, stale)
+    assert.ok(fs.statSync(path.join(toolbox, 'verify', 'describer-kit.mjs')).isFile())
+  }
+})
+
+test('a describer importing the kit through BOSS_VERIFY_TOOLBOX returns accepted area facts', (t) => {
+  const repo = gitFixture(t)
+  repo.write({ 'README.md': 'old\n', 'web/page.tsx': 'a\n' })
+  const baseSha = repo.commit('base')
+  repo.write({ 'README.md': 'new\n', 'web/page.tsx': 'b\n' })
+  const headSha = repo.commit('head')
+  const { extension } = fixture(
+    t,
+    [
+      "import { pathToFileURL } from 'node:url'",
+      'const kit = await import(pathToFileURL(`${process.env.BOSS_VERIFY_TOOLBOX}/verify/describer-kit.mjs`).href)',
+      'await kit.describerMain(kit.envelopeDescriber(({ allChanges }) => [',
+      "  ...allChanges.map((c) => kit.item('docs', `${c.status} ${c.path}`, [c.path])),",
+      "  kit.blockFact('docs', { kind: 'steps', steps: ['Read it'] }, ['README.md']),",
+      "  kit.blockFact('docs', { kind: 'nope' }, ['README.md']),",
+      ']))',
+    ].join('\n'),
+  )
+  const outcomes = runDescribers({
+    extensions: [extension],
+    areas: [area()],
+    baseSha,
+    headSha,
+    pr: { number: 1 },
+    cwd: repo.dir,
+  })
+  assert.equal(outcomes.length, 1)
+  assert.equal(outcomes[0].ok, true, outcomes[0].reason)
+  assert.deepEqual(outcomes[0].description.items, ['M README.md'])
+  assert.deepEqual(outcomes[0].description.blocks, [{ kind: 'steps', steps: ['Read it'] }])
+})
+
+test('checks envelope is optional, unique, ordered and bounded', (t) => {
+  const { root, extension } = fixture(t, '')
+  const seen = []
+  const run = (_command, _args, opts) => {
+    seen.push(JSON.parse(opts.input))
+    return { status: 0, stdout: JSON.stringify(valid()) }
+  }
+  const options = { extensions: [extension], areas: [area()], cwd: root, run }
+  runDescribers(options)
+  assert.equal(Object.hasOwn(seen[0], 'checks'), false)
+  runDescribers({
+    ...options,
+    checks: [
+      'build',
+      'build',
+      'x'.repeat(MAX_TEXT_CHARS + 1),
+      ...Array.from({ length: 120 }, (_, i) => 'check' + i),
+    ],
+  })
+  assert.equal(seen[1].checks.length, 100)
+  assert.equal(seen[1].checks[0], 'build')
+  assert.equal(seen[1].checks[1].length, MAX_TEXT_CHARS)
+  assert.equal(seen[1].checks[2], 'check0')
+  runDescribers({ ...options, checks: [] })
+  assert.deepEqual(seen[2].checks, [])
 })

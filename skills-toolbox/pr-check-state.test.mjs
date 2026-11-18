@@ -22,6 +22,7 @@ import {
   ABSENT_GATE_REMEDIES,
   absentGateRemedy,
   PROVENANCE_CONTEXTS,
+  EVIDENCE_CONTEXTS,
   partitionProvenance,
   PROVES_GREEN_REASONS,
   provesGreen,
@@ -681,6 +682,44 @@ const receiptStatus = (state = 'SUCCESS') => ({
 test('PROVENANCE_CONTEXTS is frozen and names exactly boss/build', () => {
   assert.ok(Object.isFrozen(PROVENANCE_CONTEXTS))
   assert.deepEqual([...PROVENANCE_CONTEXTS], ['boss/build'])
+})
+
+test('EVIDENCE_CONTEXTS is frozen and names boss/proof separately from provenance', () => {
+  assert.ok(Object.isFrozen(EVIDENCE_CONTEXTS))
+  assert.deepEqual([...EVIDENCE_CONTEXTS], ['boss/proof'])
+})
+
+test('a prior-head proof check never holds the next head at an absent gate', () => {
+  for (const priorContexts of [
+    ['test-go', 'boss/proof'],
+    {
+      statusCheckRollup: [
+        { __typename: 'CheckRun', name: 'test-go', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { __typename: 'CheckRun', name: 'boss/proof', status: 'COMPLETED', conclusion: 'NEUTRAL' },
+      ],
+    },
+  ]) {
+    const verdict = classifyChecks({
+      checkRuns: { check_runs: [checkRun('test-go', 'completed', 'success')] },
+      priorContexts,
+    })
+    assert.equal(verdict.state, CHECK_STATES.GREEN)
+    assert.deepEqual(verdict.absent, [])
+  }
+})
+
+test('proof checks neither pass a no-gate set nor fail or delay a passing gate', () => {
+  for (const conclusion of ['success', 'neutral', 'failure', null]) {
+    const proof = checkRun('boss/proof', conclusion ? 'completed' : 'in_progress', conclusion)
+    const alone = classifyChecks({ checkRuns: { check_runs: [proof] } })
+    assert.equal(alone.state, CHECK_STATES.UNKNOWN)
+    assert.equal(alone.passed, 0)
+    assert.equal(provesGreen(alone), false)
+    const alongside = classifyChecks({
+      checkRuns: { check_runs: [proof, checkRun('test-go', 'completed', 'success')] },
+    })
+    assert.equal(alongside.state, CHECK_STATES.GREEN)
+  }
 })
 
 test('classifyChecks — a prior-head boss/build receipt missing from the head is green/ok, not absent-gate', () => {

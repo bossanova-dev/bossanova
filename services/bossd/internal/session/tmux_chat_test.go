@@ -3593,7 +3593,7 @@ func TestBuildAppendSystemPromptFacts(t *testing.T) {
 // TestBossSessionContext_AdvertisesExactlyExportedIdentifiers).
 func TestBuildAppendSystemPrompt_NeverAdvertisesBossMcpTools(t *testing.T) {
 	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: t.TempDir()}
-	text, classes := BuildAppendSystemPrompt(sess, "chat-1", "claude", config.SubagentDispatchGrantAlways)
+	text, classes := BuildAppendSystemPrompt(sess, "chat-1", "claude", config.SubagentDispatchGrantAlways, nil)
 	if strings.Contains(text, "mcp__boss__") {
 		t.Fatalf("prompt must not advertise mcp__boss__*:\n%s", text)
 	}
@@ -3673,11 +3673,11 @@ func TestResolveRepoLocalBoss(t *testing.T) {
 	}
 }
 
-// TestResolveSessionFacts_RepoLocalBossFallback proves ResolveSessionFacts wires
+// TestResolveSessionFacts_TrustedRepoUsesRepoLocalBoss proves ResolveSessionFacts wires
 // the repo-local fallback: with no trusted `boss` resolvable (PATH neutralized)
 // but the session worktree carrying an executable bin/boss, BossBin is the repo
 // build. Neither trusted nor repo-local → BossBin stays "".
-func TestResolveSessionFacts_RepoLocalBossFallback(t *testing.T) {
+func TestResolveSessionFacts_TrustedRepoUsesRepoLocalBoss(t *testing.T) {
 	// Neutralize PATH so config.ResolveTrustedExecutable("boss") returns "".
 	t.Setenv("PATH", t.TempDir())
 
@@ -3691,14 +3691,14 @@ func TestResolveSessionFacts_RepoLocalBossFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: wt}
-	f := ResolveSessionFacts(sess, "agent-1", "claude")
+	f := ResolveSessionFacts(sess, "agent-1", "claude", &models.Repo{IsTrusted: true})
 	if f.BossBin != bossPath {
 		t.Fatalf("expected repo-local fallback BossBin=%q, got %q", bossPath, f.BossBin)
 	}
 
 	// A worktree with no repo build resolves nothing.
 	noBuild := &models.Session{ID: "s2", WorktreePath: t.TempDir()}
-	if f := ResolveSessionFacts(noBuild, "agent-2", "claude"); f.BossBin != "" {
+	if f := ResolveSessionFacts(noBuild, "agent-2", "claude", &models.Repo{IsTrusted: true}); f.BossBin != "" {
 		t.Fatalf("no trusted or repo-local boss should leave BossBin empty, got %q", f.BossBin)
 	}
 }
@@ -3725,7 +3725,7 @@ func TestBossSessionContext_BossBinAdvertisedWhenResolved(t *testing.T) {
 // the guidance names the `make build` + `./bin/boss` fallback instead of an
 // advertised-but-empty var.
 func TestBossSessionContext_BossBinOmittedWhenUnresolved(t *testing.T) {
-	got := bossSessionContext(Facts{SessionID: "s"})
+	got := bossSessionContext(Facts{SessionID: "s", RepoTrusted: true})
 	if strings.Contains(got, "BOSS_BIN") {
 		t.Fatalf("unresolved prompt must not advertise BOSS_BIN: %q", got)
 	}
@@ -3823,7 +3823,7 @@ func TestResolveSessionFacts(t *testing.T) {
 	sess := &models.Session{
 		ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt", Title: "Manual",
 	}
-	f := ResolveSessionFacts(sess, "agent-99", "claude")
+	f := ResolveSessionFacts(sess, "agent-99", "claude", nil)
 	if f.SessionID != "s1" || f.AgentSessionID != "agent-99" ||
 		f.RepoID != "r1" || f.Agent != "claude" || f.Worktree != "/wt" {
 		t.Fatalf("identifiers not threaded: %+v", f)
@@ -3836,20 +3836,20 @@ func TestResolveSessionFacts(t *testing.T) {
 	}
 
 	// agentName param wins over sess.AgentName.
-	fCross := ResolveSessionFacts(sess, "agent-99", "codex")
+	fCross := ResolveSessionFacts(sess, "agent-99", "codex", nil)
 	if fCross.Agent != "codex" {
 		t.Fatalf("explicit agentName should win over sess.AgentName: got %q, want %q", fCross.Agent, "codex")
 	}
 
 	// empty agentName falls back to sess.AgentName.
-	fFallback := ResolveSessionFacts(sess, "agent-99", "")
+	fFallback := ResolveSessionFacts(sess, "agent-99", "", nil)
 	if fFallback.Agent != "claude" {
 		t.Fatalf("empty agentName should fall back to sess.AgentName: got %q, want %q", fFallback.Agent, "claude")
 	}
 
 	job := "cron-42"
 	cron := &models.Session{ID: "s2", Title: "Nightly", CronJobID: &job}
-	cf := ResolveSessionFacts(cron, "agent-1", "")
+	cf := ResolveSessionFacts(cron, "agent-1", "", nil)
 	if !cf.IsCron || cf.CronJobID != "cron-42" || cf.CronName != "Nightly" {
 		t.Fatalf("cron facts wrong: %+v", cf)
 	}
@@ -3858,7 +3858,7 @@ func TestResolveSessionFacts(t *testing.T) {
 func TestManagedSessionEnv(t *testing.T) {
 	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt", Title: "Manual"}
 	// Pass "codex" as the chat agent to verify the param wins over sess.AgentName ("claude").
-	env := ManagedSessionEnv(sess, "agent-7", "codex", nil)
+	env := ManagedSessionEnv(sess, "agent-7", "codex", nil, nil)
 	for k, want := range map[string]string{
 		"BOSS_SESSION_ID":       "s1",
 		"BOSS_AGENT_SESSION_ID": "agent-7",
@@ -3880,14 +3880,14 @@ func TestManagedSessionEnv(t *testing.T) {
 	}
 
 	// Empty agentName falls back to sess.AgentName.
-	envFallback := ManagedSessionEnv(sess, "agent-7", "", nil)
+	envFallback := ManagedSessionEnv(sess, "agent-7", "", nil, nil)
 	if envFallback["BOSS_AGENT"] != "claude" {
 		t.Fatalf("empty agentName should fall back to sess.AgentName: got %q, want %q", envFallback["BOSS_AGENT"], "claude")
 	}
 
 	job := "cron-42"
 	cron := &models.Session{ID: "s2", Title: "Nightly", CronJobID: &job}
-	cenv := ManagedSessionEnv(cron, "agent-1", "", nil)
+	cenv := ManagedSessionEnv(cron, "agent-1", "", nil, nil)
 	if cenv["BOSS_CRON"] != "true" || cenv["BOSS_UNATTENDED"] != "true" || cenv["BOSS_CRON_JOB_ID"] != "cron-42" || cenv["BOSS_CRON_NAME"] != "Nightly" {
 		t.Fatalf("cron env wrong: %v", cenv)
 	}
@@ -3904,7 +3904,7 @@ func TestManagedSessionEnv_UnattendedWithoutCronJob(t *testing.T) {
 		"detach":          {ID: "s10", Title: "Plan run", Detach: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			env := ManagedSessionEnv(sess, "agent-9", "claude", nil)
+			env := ManagedSessionEnv(sess, "agent-9", "claude", nil, nil)
 			for _, k := range []string{"BOSS_CRON", "BOSS_UNATTENDED"} {
 				if env[k] != "true" {
 					t.Fatalf("%s session must set %s=true, got %q", name, k, env[k])
@@ -3956,7 +3956,7 @@ func TestMergeEnv_ManagedKeysWin(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			base := ManagedSessionEnv(tc.sess, "agent-x", "", nil)
+			base := ManagedSessionEnv(tc.sess, "agent-x", "", nil, nil)
 			merged := mergeEnv(base, overlay)
 
 			// Managed key wins on conflict.
@@ -3995,7 +3995,7 @@ func TestLifecycleTmuxEnvIncludesProofOverlay(t *testing.T) {
 	}})
 
 	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt"}
-	env := mergeEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName, nil), l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
+	env := mergeEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName, nil, nil), l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
 
 	if env["PROOF_ANTHROPIC_API_KEY"] != "secret-anthropic" {
 		t.Errorf("proof secrets missing from tmux env: %v", env)
@@ -4126,7 +4126,7 @@ func TestBuildAppendSystemPromptClasses(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-1", "claude", tc.grant)
+			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-1", "claude", tc.grant, nil)
 			if strings.Join(classes, ",") != strings.Join(tc.wantClasses, ",") {
 				t.Fatalf("classes = %v, want %v", classes, tc.wantClasses)
 			}
@@ -4156,12 +4156,12 @@ func TestBuildAppendSystemPromptClasses(t *testing.T) {
 // empty suffix would still report a class, and bossd would log a drop for an
 // instruction it never built.
 func TestBuildAppendSystemPromptNilSession(t *testing.T) {
-	text, classes := BuildAppendSystemPrompt(nil, "agent-1", "claude", config.SubagentDispatchGrantAlways)
+	text, classes := BuildAppendSystemPrompt(nil, "agent-1", "claude", config.SubagentDispatchGrantAlways, nil)
 	if text != "" || classes != nil {
 		t.Fatalf("nil session = (%q, %v), want empty text and nil classes", text, classes)
 	}
 
-	text, classes = BuildAppendSystemPrompt(&models.Session{ID: "s1"}, "agent-1", "claude", config.SubagentDispatchGrantAlways)
+	text, classes = BuildAppendSystemPrompt(&models.Session{ID: "s1"}, "agent-1", "claude", config.SubagentDispatchGrantAlways, nil)
 	if text == "" || len(classes) == 0 {
 		t.Fatalf("plain session = (%q, %v), want a non-empty suffix and its class", text, classes)
 	}
@@ -4254,7 +4254,7 @@ func TestBuildAppendSystemPrompt_SubagentGrantMatrix(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-882", "claude", tc.grant)
+			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-882", "claude", tc.grant, nil)
 
 			hasAttended := strings.Contains(text, attendedSubagentDirective)
 			hasUnattended := strings.Contains(text, unattendedSubagentDirective)
@@ -4475,7 +4475,7 @@ func TestResolveSubagentGrantForSpawn(t *testing.T) {
 // BuildAppendSystemPrompt directly with each mode. A parameter only one value
 // is ever passed to is not a knob, it is noise (and `unparam` says so).
 func appendSystemPromptText(sess *models.Session, agentSessionID, agentName string) string {
-	text, _ := BuildAppendSystemPrompt(sess, agentSessionID, agentName, config.SubagentDispatchGrantAlways)
+	text, _ := BuildAppendSystemPrompt(sess, agentSessionID, agentName, config.SubagentDispatchGrantAlways, &models.Repo{IsTrusted: true})
 	return text
 }
 
@@ -4817,7 +4817,7 @@ func TestManagedSessionEnv_ZeroOutputMarker(t *testing.T) {
 		"attended quick chat":  {&models.Session{ID: "s4", Title: "Chat", IsQuickChat: true}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, ok := ManagedSessionEnv(tc.sess, "agent-1", "claude", nil)[zeroOutputEnvKey]
+			got, ok := ManagedSessionEnv(tc.sess, "agent-1", "claude", nil, nil)[zeroOutputEnvKey]
 			if tc.want && got != "true" {
 				t.Fatalf("%s = %q, want true", zeroOutputEnvKey, got)
 			}

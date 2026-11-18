@@ -75,17 +75,19 @@ type Server struct {
 	trackerIssueLeases         trackerIssueLeases
 	providerSessionIDDiscovery providerSessionIDDiscoveryJoin
 
-	evidenceBucketOpener  evidenceBucketOpener
-	validateBranchName    func(context.Context, string) error
-	validateRepoScript    func(string) error
-	repos                 repoStore
-	sessions              sessionStore
-	agentChats            agentChatStore
-	taskMappings          taskMappingFailureReader
-	cronJobs              cronJobStore
-	factoryRepoChecker    *verifyjob.Checker
-	factoryHealthVersions func(context.Context, string) (string, string, bool, error)
-	resumeAttempts        resumeAttemptReader
+	evidenceBucketOpener      evidenceBucketOpener
+	proofCheckRuns            ProofCheckRuns
+	proofCheckRunSessionToken func() string
+	validateBranchName        func(context.Context, string) error
+	validateRepoScript        func(string) error
+	repos                     repoStore
+	sessions                  sessionStore
+	agentChats                agentChatStore
+	taskMappings              taskMappingFailureReader
+	cronJobs                  cronJobStore
+	factoryRepoChecker        *verifyjob.Checker
+	factoryHealthVersions     func(context.Context, string) (string, string, bool, error)
+	resumeAttempts            resumeAttemptReader
 	// pendingTrackerMerges queues post-merge tracker writes that did not land,
 	// for retryPendingTrackerMerges. Nil means a failed one is only reported.
 	pendingTrackerMerges pendingTrackerMergeStore
@@ -274,7 +276,6 @@ type Server struct {
 	listener              net.Listener
 	srv                   *http.Server
 	callers               CallerAuthority
-	callerGrants          domain.CallerGrants
 	agentLogsDir          string
 	// protectedRoots is the symlink-resolved protected-root list the startup
 	// diagnostic derived (BOS-725). The doctor check unions it with its own
@@ -356,9 +357,6 @@ var (
 // Config holds all dependencies for creating a new Server.
 type Config struct {
 	Callers CallerAuthority
-	// CallerGrants extends operator capabilities to chat roles at the socket
-	// caller gate (the coordinator approval grant); nil grants nothing.
-	CallerGrants domain.CallerGrants
 
 	ViewerApprovals   *ViewerApprovals
 	CredentialDevices *CredentialDeviceService
@@ -368,12 +366,14 @@ type Config struct {
 	// TrackerIssueLeaseNow defaults to time.Now.
 	TrackerIssueLeaseNow func() time.Time
 
-	EvidenceBucketOpener evidenceBucketOpener
-	ChatTmux             ChatTmuxSpawner
-	ProtectedRootsProbe  domain.TCCProbe
-	NewVerifyVerbs       func([]string) VerifyVerbs
-	EnvironmentOverlay   func(map[string]string, string, *domain.Repo) map[string]string
-	VerifyProofKeys      []string
+	EvidenceBucketOpener      evidenceBucketOpener
+	ProofCheckRuns            ProofCheckRuns
+	ProofCheckRunSessionToken func() string
+	ChatTmux                  ChatTmuxSpawner
+	ProtectedRootsProbe       domain.TCCProbe
+	NewVerifyVerbs            func([]string) VerifyVerbs
+	EnvironmentOverlay        func(map[string]string, string, *domain.Repo) map[string]string
+	VerifyProofKeys           []string
 	// ValidateBranchName checks git branch syntax before session creation.
 	// Required for session creation; the composition root supplies the git adapter.
 	ValidateBranchName func(context.Context, string) error
@@ -682,7 +682,6 @@ func New(cfg Config) *Server {
 	srv := &Server{
 		chatTmux:              cfg.ChatTmux,
 		callers:               cfg.Callers,
-		callerGrants:          cfg.CallerGrants,
 		protectedRootsProbe:   cfg.ProtectedRootsProbe,
 		verifyVerbsFactory:    cfg.NewVerifyVerbs,
 		environmentOverlay:    cfg.EnvironmentOverlay,
@@ -702,15 +701,17 @@ func New(cfg Config) *Server {
 		githubCallbacks:      cfg.GithubCallbacks,
 		telemetry:            cfg.Telemetry,
 
-		broadcasts:             cfg.Broadcasts,
-		broadcastResolver:      cfg.BroadcastResolver,
-		broadcastEgress:        cfg.BroadcastEgress,
-		daemonID:               cfg.DaemonID,
-		notes:                  cfg.Notes,
-		evidenceBucketOpener:   cfg.EvidenceBucketOpener,
-		noteSyncStates:         cfg.NoteSyncStates,
-		noteSyncWorker:         cfg.NoteSyncWorker,
-		broadcastSubscriptions: cfg.BroadcastSubscriptions,
+		broadcasts:                cfg.Broadcasts,
+		broadcastResolver:         cfg.BroadcastResolver,
+		broadcastEgress:           cfg.BroadcastEgress,
+		daemonID:                  cfg.DaemonID,
+		notes:                     cfg.Notes,
+		evidenceBucketOpener:      cfg.EvidenceBucketOpener,
+		proofCheckRuns:            cfg.ProofCheckRuns,
+		proofCheckRunSessionToken: cfg.ProofCheckRunSessionToken,
+		noteSyncStates:            cfg.NoteSyncStates,
+		noteSyncWorker:            cfg.NoteSyncWorker,
+		broadcastSubscriptions:    cfg.BroadcastSubscriptions,
 
 		accounts:                cfg.Accounts,
 		rotationEngine:          cfg.RotationEngine,
@@ -912,7 +913,7 @@ func (s *Server) Listen(socketPath string) error {
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(s, connect.WithInterceptors(
 		socketauth.NewServerInterceptor(token),
-		NewCallerInterceptor(s.callers, s.callerGrants),
+		NewCallerInterceptor(s.callers),
 		errortrack.Interceptor(),
 	))
 	mux.Handle(path, withStreamingWriteDeadlineOverride(handler))
@@ -1003,7 +1004,6 @@ func (s *Server) ValidateRepoPath(ctx context.Context, req *connect.Request[pb.V
 			ErrorMessage: "path is required",
 		}), nil
 	}
-
 	// Check path exists and is a directory.
 	info, err := os.Stat(localPath)
 	if err != nil {

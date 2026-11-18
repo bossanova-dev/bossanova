@@ -500,7 +500,7 @@ func TestCloudSubscribeURLIgnoresLocalWebPortForRemoteCloud(t *testing.T) {
 	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
 	t.Setenv("BOSS_WEB_URL", "")
 	t.Setenv("BOSS_WEB_PORT", "5151")
-	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-k8s.bossanova.dev")
+	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator.bossanova.dev")
 	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
 
 	if got, want := CloudSubscribeURL(""), "https://app.bossanova.dev/subscribe?source=cli"; got != want {

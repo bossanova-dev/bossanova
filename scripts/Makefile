@@ -134,6 +134,7 @@ lint:
 	@node guards/check-web-css-colours.mjs
 	@node guards/check-settings-readiness-figure.mjs
 	@node guards/check-exec-waitdelay.mjs
+	@node guards/check-go-work-sum-churn.mjs
 	@node guards/check-timing-bounds.mjs
 	@node guards/check-email-course.mjs
 	@node guards/check-price-parity.mjs

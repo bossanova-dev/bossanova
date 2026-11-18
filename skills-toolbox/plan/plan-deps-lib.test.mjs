@@ -45,6 +45,7 @@ const CONFIG = DEFAULT_CONFIG
 // A caller-resolved state-name -> role map. The module never guesses these: the
 // role vocabulary is the tracker adapter's, supplied per run.
 const STATE_ROLES = {
+  Todo: 'unplanned',
   Planned: 'planned',
   'In Progress': 'inProgress',
   'In Review': 'inReview',
@@ -1846,6 +1847,7 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
       }),
       classify({ candidate: candidate({ labels: ['Epic'] }) }),
       classify({ candidate: candidate({ stateName: 'Backlog' }) }),
+      classify({ candidate: candidate({ stateName: 'Todo' }), logicalDependency: true }),
       classify({ subjectAreas: [], candidateAreas: [] }),
       classify({ subjectAreas: ['app/api'], candidateAreas: ['app/web'] }),
       classify({
@@ -1904,6 +1906,7 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
   // produce them — they are emitted by `planDependencyEdges` over the whole
   // candidate set — and each is pinned by its own test below.
   const SET_LEVEL_REASONS = [
+    'logical-dependency-dropped',
     'hot-overlap',
     'declared-related-unresolved',
     'no-candidates-compared',
@@ -3788,4 +3791,145 @@ test('repository wide paths suppress generated overlap while skill sources still
   for (const area of paths) assert.equal(areasOverlap([area], [area], options).overlap, false, area)
   const source = 'lib/bossalib/contract/plugin/skillpayload/skills/boss-build/SKILL.md'
   assert.equal(areasOverlap([source], [source], options).overlap, true)
+})
+
+test('logical intent on Unplanned candidates preserves both blocking directions', () => {
+  const inbound = classify({ candidate: candidate({ stateName: 'Todo' }), logicalDependency: true })
+  assert.equal(inbound.edge, 'blockedBy')
+  assert.equal(inbound.reason, 'prerequisite-unplanned')
+  assert.deepEqual(inbound.write, { id: 'uuid-subject', blockedBy: ['uuid-candidate'] })
+  assert.deepEqual(
+    [inbound.note.severity, inbound.note.destination, inbound.note.reason],
+    ['warning', 'planning', 'prerequisite-unplanned'],
+  )
+  const outbound = classify({
+    candidate: candidate({ stateName: 'Todo' }),
+    logicalDependency: { direction: 'blocks' },
+  })
+  assert.equal(outbound.reason, 'oriented-by-logical')
+  assert.deepEqual(outbound.write, { id: 'uuid-candidate', blockedBy: ['uuid-subject'] })
+  assert.equal(outbound.note, null)
+  assert.equal(classify({ candidate: candidate({ stateName: 'Todo' }) }).note, null)
+  const started = classify({
+    subject: subject({ stateName: 'In Progress', stateType: 'started' }),
+    candidate: candidate({ stateName: 'Todo' }),
+    logicalDependency: true,
+  })
+  assert.equal(started.reason, 'downgraded-subject-started')
+})
+
+test('non-schedulable candidates explain dropped logical intent and declared relations', () => {
+  const dropped = classify({
+    candidate: candidate({ stateName: 'Backlog' }),
+    logicalDependency: true,
+  })
+  assert.equal(dropped.reason, 'candidate-not-schedulable')
+  assert.equal(dropped.note.severity, 'warning')
+  assert.equal(dropped.note.destination, 'risks')
+  for (const stateName of ['Todo', 'Backlog']) {
+    const declared = classify({ candidate: candidate({ stateName }), source: 'declared-related' })
+    assert.equal(declared.edge, 'none')
+    assert.equal(declared.note.severity, 'info')
+    assert.equal(declared.note.destination, 'planning')
+  }
+})
+
+test('truthy logical verdicts never vanish across roles, states, directions and sources', () => {
+  for (const stateName of ['Planned', 'In Progress', 'In Review', 'Todo', 'Backlog', 'Unknown']) {
+    for (const stateType of ['unstarted', 'started', 'completed', 'canceled']) {
+      for (const direction of ['blockedBy', 'blocks']) {
+        for (const source of ['backlog-scan', 'declared-related']) {
+          const result = planDependencyEdges({
+            subject: { ...subject(), areas: ['app/api/x.go'] },
+            candidates: [{ ...candidate({ stateName, stateType }), areas: ['app/ui/y.go'] }],
+            logicalDependencies: { 'TCK-2': { direction } },
+            declaredRelatedIds: source === 'declared-related' ? ['TCK-2'] : [],
+            stateRoles: STATE_ROLES,
+            epicLabel: 'Epic',
+          })
+          const row = [...result.edges, ...result.skipped].find((r) => r.identifier === 'TCK-2')
+          assert.ok(
+            row.edge !== 'none' ||
+              row.note ||
+              row.reason === 'candidate-cleared' ||
+              result.notes.some((n) => n.candidate === 'TCK-2'),
+            JSON.stringify({ stateName, stateType, direction, source }),
+          )
+        }
+      }
+    }
+  }
+})
+
+test('set backstop reports unknown and quietly rejected logical verdicts', () => {
+  const run = (over = {}) =>
+    planDependencyEdges({
+      subject: { ...subject(), areas: ['app/api/x.go'] },
+      candidates: [],
+      stateRoles: STATE_ROLES,
+      epicLabel: 'Epic',
+      ...over,
+    })
+  const cases = [
+    { logicalDependencies: { 'TCK-99': true } },
+    { declaredRelatedIds: ['TCK-99'], logicalDependencies: { 'TCK-99': true } },
+    { candidates: [subject()], logicalDependencies: { 'TCK-1': true } },
+    { candidates: [candidate()], excludeIds: ['TCK-2'], logicalDependencies: { 'TCK-2': true } },
+    {
+      candidates: [candidate()],
+      subject: subject({ parentId: 'TCK-2' }),
+      logicalDependencies: { 'TCK-2': true },
+    },
+    {
+      candidates: [candidate({ labels: ['Epic'] })],
+      candidateSetComplete: true,
+      logicalDependencies: { 'TCK-2': true },
+    },
+    {
+      candidates: [candidate({ labels: ['Epic'] })],
+      childrenByParentId: { 'uuid-candidate': [] },
+      logicalDependencies: { 'TCK-2': true },
+    },
+  ]
+  for (const input of cases) {
+    const notes = run(input).notes.filter((n) => n.reason === 'logical-dependency-dropped')
+    assert.equal(notes.length, 1, JSON.stringify(input))
+    assert.equal(notes[0].severity, 'warning')
+    assert.equal(notes[0].destination, 'risks')
+    assert.equal(notes[0].candidate, Object.keys(input.logicalDependencies)[0])
+  }
+  assert.equal(
+    run({
+      candidates: [candidate({ stateType: 'completed' })],
+      logicalDependencies: { 'TCK-2': { direction: 'blocks' } },
+    }).notes.filter((n) => n.reason === 'logical-dependency-dropped').length,
+    0,
+  )
+})
+
+test('validator refuses unfetched logical verdicts and accepts known aliases and children', () => {
+  const report = validateDependencyScanInput(
+    scanPayload({ logicalDependencies: { 'TCK-99': true } }),
+  )
+  assert.deepEqual(
+    report.defects.map((d) => [d.code, d.id]),
+    [['logical-dependency-not-fetched', 'tck-99']],
+  )
+  assert.match(report.defects[0].remedy, /regardless of state/)
+  for (const logicalDependencies of [
+    { 'TCK-99': false },
+    { ' tCk-2 ': true },
+    { 'uuid-subject': true },
+  ]) {
+    assert.equal(validateDependencyScanInput(scanPayload({ logicalDependencies })).ok, true)
+  }
+  assert.equal(
+    validateDependencyScanInput(
+      scanPayload({
+        logicalDependencies: { 'TCK-77': true },
+        childrenByParentId: { 'uuid-p': [candidate({ identifier: 'TCK-77', id: 'uuid-77' })] },
+      }),
+    ).ok,
+    true,
+  )
 })

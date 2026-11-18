@@ -4,11 +4,20 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { decideOpenPrHold, holdComment, runCli } from './open-pr-hold.mjs'
-import { DEFAULT_CONFIG, mergeConfig } from '../skill-config.mjs'
+import {
+  DEFAULT_CONFIG,
+  DEFAULT_TRACKER_STATES,
+  mergeConfig,
+  stageSelectionQuery,
+} from '../skill-config.mjs'
+import { decideNoChangeDisposition } from './no-change-disposition.mjs'
+import { createGithubAdapter } from '../tracker/github.mjs'
 
 const config = mergeConfig(DEFAULT_CONFIG, {
   adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
-  trackerConfig: { demo: { labels: { agentBuild: 'build', needsHuman: 'human' } } },
+  trackerConfig: {
+    demo: { labels: { agentBuild: 'build', agentPlan: 'plan' }, states: DEFAULT_TRACKER_STATES },
+  },
 })
 const path = 'services/mobile/src/Choice.tsx'
 const issue = { id: 'uuid', identifier: 'ABC-1', description: `## Key changes\n- \`${path}\`` }
@@ -159,7 +168,7 @@ test('CLI holds without writes and clear --apply does not write', async (t) => {
   assert.equal(r.code, 0)
 })
 
-test('apply writes once with labels, bounded evidence and stable marker, without a state', async (t) => {
+test('a PR with no ticket sends the issue back to planning, with bounded evidence and a stable marker', async (t) => {
   const calls = []
   const r = await run(t, ['--apply'], {
     adapter: {
@@ -171,10 +180,12 @@ test('apply writes once with labels, bounded evidence and stable marker, without
   })
   assert.equal(r.code, 3)
   assert.equal(r.out.outcome, 'ok')
-  assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0].addLabels, ['human'])
-  assert.deepEqual(calls[0].removeLabels, ['build'])
-  assert.equal(calls[0].stateName, undefined)
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls[0].addLabels, ['plan'])
+  assert.deepEqual(calls[1].removeLabels, ['build'])
+  assert.equal(calls[0].addBlockedBy, undefined)
+  assert.equal(calls[0].stateName, DEFAULT_TRACKER_STATES.unplanned)
+  assert.match(calls[0].comment, /#42 has no open ticket/)
   assert.match(calls[0].marker, /#42/)
   for (const text of ['#42', pr.url, path])
     assert.ok(calls[0].comment.toLowerCase().includes(text.toLowerCase()))
@@ -194,7 +205,7 @@ test('changed overlap sets publish fresh comments while identical sets deduplica
   const comments = []
   const adapter = {
     async applyIssueWrites(writes) {
-      if (!comments.some((body) => body.includes(writes.marker)))
+      if (writes.comment && !comments.some((body) => body.includes(writes.marker)))
         comments.push(`${writes.comment}\n${writes.marker}`)
       return { outcome: 'ok' }
     },
@@ -235,11 +246,213 @@ test('failed and indeterminate writes are never retried; missing capabilities fa
   assert.equal(
     (
       await run(t, ['--apply'], {
-        config: mergeConfig(config, { trackerConfig: { demo: { labels: { needsHuman: null } } } }),
+        config: mergeConfig(config, { trackerConfig: { demo: { labels: { agentPlan: null } } } }),
+        adapter: { applyIssueWrites: () => assert.fail('an unresolved label must not write') },
       })
     ).code,
     4,
   )
+})
+
+test('a PR whose ticket is open becomes a blocker and keeps the build label', async (t) => {
+  const data = (ticketIds) =>
+    JSON.stringify({
+      ...snapshot,
+      pullRequests: [
+        { ...pr, ticketIds },
+        { ...pr, number: 43, url: 'https://example.test/pull/43', ticketIds: ['ABC-9'] },
+      ],
+    })
+  const states = {
+    'ABC-7': { type: 'started' },
+    'ABC-8': { type: 'unstarted' },
+    'ABC-9': { type: 'started' },
+  }
+  const calls = []
+  const adapter = {
+    readIssueState: async (id) => ({ identifier: id, state: states[id] }),
+    async applyIssueWrites(writes) {
+      calls.push(writes)
+      return { outcome: 'ok' }
+    },
+  }
+  const r = await run(t, ['--apply'], { adapter }, { snapshot: data(['ABC-8', 'ABC-7']) })
+  assert.equal(r.code, 3)
+  assert.deepEqual(calls[0].addBlockedBy, ['ABC-7', 'ABC-8', 'ABC-9'])
+  assert.equal(calls[0].addLabels, undefined)
+  assert.equal(calls[0].removeLabels, undefined)
+  assert.equal(calls[0].stateName, undefined)
+  assert.match(calls[0].comment, /Blocked by ABC-7, ABC-8, ABC-9/)
+  assert.match(calls[0].marker, /#42, #43/)
+})
+
+test('a held PR whose ticket already blocks this issue sends it back to planning', async (t) => {
+  // Selection let the ticket through despite that edge (an In Review soft-clear or a named run),
+  // so keeping the build label would claim and hold it again on every run.
+  const calls = []
+  const adapter = {
+    readIssueState: async (id) => ({ identifier: id, state: { type: 'started' } }),
+    readBlockers: async (ids) => ids.map((id) => ({ id, blockers: [{ id: 'abc-7' }] })),
+    async applyIssueWrites(writes) {
+      calls.push(writes)
+      return { outcome: 'ok' }
+    },
+  }
+  const data = (ids) =>
+    JSON.stringify({
+      ...snapshot,
+      pullRequests: [
+        { ...pr, ticketIds: ids },
+        { ...pr, number: 43, url: 'https://example.test/pull/43', ticketIds: ['ABC-9'] },
+      ],
+    })
+  assert.equal((await run(t, ['--apply'], { adapter }, { snapshot: data(['ABC-7']) })).code, 3)
+  assert.deepEqual(calls[0].addBlockedBy, ['ABC-9'])
+  assert.deepEqual(calls[0].addLabels, ['plan'])
+  assert.equal(calls[0].stateName, DEFAULT_TRACKER_STATES.unplanned)
+  assert.deepEqual(calls[1].removeLabels, ['build'])
+  calls.length = 0
+  // A PR with a further open ticket still gains a new edge, which can hold the build.
+  assert.equal(
+    (await run(t, ['--apply'], { adapter }, { snapshot: data(['ABC-7', 'ABC-8']) })).code,
+    3,
+  )
+  assert.deepEqual(calls[0].addBlockedBy, ['ABC-7', 'ABC-8', 'ABC-9'])
+  assert.equal(calls[0].addLabels, undefined)
+  assert.equal(calls.length, 1)
+})
+
+test('a done, unreadable or unreadable-capability ticket counts as no ticket', async (t) => {
+  const adapters = [
+    { readIssueState: async () => ({ state: { type: 'completed' } }) },
+    { readIssueState: async () => ({ state: { type: 'canceled' } }) },
+    { readIssueState: async () => Promise.reject(new Error('not found')) },
+    {},
+  ]
+  for (const extra of adapters) {
+    const calls = []
+    const adapter = {
+      ...extra,
+      async applyIssueWrites(writes) {
+        calls.push(writes)
+        return { outcome: 'ok' }
+      },
+    }
+    const data = JSON.stringify({ ...snapshot, pullRequests: [{ ...pr, ticketIds: ['ABC-7'] }] })
+    assert.equal((await run(t, ['--apply'], { adapter }, { snapshot: data })).code, 3)
+    assert.equal(calls[0].addBlockedBy, undefined)
+    assert.deepEqual(calls[0].addLabels, ['plan'])
+  }
+})
+
+test('a hold with no open ticket lands where plan selection picks it up after Step 12', async (t) => {
+  const own = mergeConfig(DEFAULT_CONFIG, {
+    adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
+    trackerConfig: {
+      demo: {
+        labels: { agentBuild: 'build', agentPlan: 'plan' },
+        states: { ...DEFAULT_TRACKER_STATES, unplanned: 'Ideas', inProgress: 'Doing' },
+      },
+    },
+  })
+  const calls = []
+  const adapter = {
+    async applyIssueWrites(writes) {
+      calls.push(writes)
+      return { outcome: 'ok' }
+    },
+  }
+  assert.equal((await run(t, ['--apply'], { config: own, adapter })).code, 3)
+  // The claimed ticket entered at Todo and sits In Progress while the hold writes land.
+  const tracker = { state: calls[0].stateName ?? 'Doing', labels: new Set(['build']) }
+  for (const call of calls) {
+    call.addLabels?.forEach((label) => tracker.labels.add(label))
+    call.removeLabels?.forEach((label) => tracker.labels.delete(label))
+  }
+  // Step 12 reads the state the hold left; a restore moves the ticket back to its entry state.
+  const step12 = decideNoChangeDisposition(
+    {
+      claimVerdict: 'WON',
+      currentState: tracker.state,
+      head: null,
+      tree: null,
+      baseTree: null,
+      worktreeClean: true,
+    },
+    own,
+  )
+  if (step12.disposition === 'restore') tracker.state = 'Todo'
+  const plan = stageSelectionQuery(own, 'plan')
+  assert.equal(tracker.state, plan.state)
+  assert.ok(plan.requireLabels.every((label) => tracker.labels.has(label)))
+  assert.ok(!tracker.labels.has('build'))
+})
+
+test('a replan hold that fails partway still leaves the ticket in a queue after Step 12', async (t) => {
+  // Each label, comment and state change is its own sequential tracker write; any one can fail.
+  for (let failAt = 0; failAt <= 4; failAt++) {
+    const ticket = { state: DEFAULT_TRACKER_STATES.inProgress, labels: new Set(['build']) }
+    let writes = 0
+    const lands = () => writes++ !== failAt
+    const adapter = {
+      async applyIssueWrites(w) {
+        for (const label of w.addLabels ?? []) {
+          if (!lands()) return { outcome: 'failed' }
+          ticket.labels.add(label)
+        }
+        for (const label of w.removeLabels ?? []) {
+          if (!lands()) return { outcome: 'failed' }
+          ticket.labels.delete(label)
+        }
+        if (w.comment && !lands()) return { outcome: 'failed' }
+        if (w.stateName) {
+          if (!lands()) return { outcome: 'failed' }
+          ticket.state = w.stateName
+        }
+        return { outcome: 'ok' }
+      },
+    }
+    const r = await run(t, ['--apply'], { adapter })
+    assert.equal(r.code, failAt === 4 ? 3 : 4)
+    const step12 = decideNoChangeDisposition(
+      {
+        claimVerdict: 'WON',
+        currentState: ticket.state,
+        head: null,
+        tree: null,
+        baseTree: null,
+        worktreeClean: true,
+      },
+      config,
+    )
+    if (step12.disposition === 'restore') ticket.state = DEFAULT_TRACKER_STATES.planned
+    const queued = ['build', 'plan']
+      .map((stage) => stageSelectionQuery(config, stage))
+      .some((q) => q.state === ticket.state && q.requireLabels.every((l) => ticket.labels.has(l)))
+    assert.ok(queued, `failAt ${failAt}: ${ticket.state} ${[...ticket.labels]}`)
+  }
+})
+
+test('mixed PRs write blockers and send the issue back to planning together', async (t) => {
+  const calls = []
+  const adapter = {
+    readIssueState: async () => ({ state: { type: 'started' } }),
+    async applyIssueWrites(writes) {
+      calls.push(writes)
+      return { outcome: 'ok' }
+    },
+  }
+  const data = JSON.stringify({
+    ...snapshot,
+    pullRequests: [
+      { ...pr, ticketIds: ['ABC-7'] },
+      { ...pr, number: 50, url: 'https://example.test/pull/50' },
+    ],
+  })
+  assert.equal((await run(t, ['--apply'], { adapter }, { snapshot: data })).code, 3)
+  assert.deepEqual(calls[0].addBlockedBy, ['ABC-7'])
+  assert.deepEqual(calls[0].addLabels, ['plan'])
+  assert.match(calls[0].comment, /#50 has no open ticket/)
 })
 
 test('unreadable and invalid inputs fail open without adapter writes', async (t) => {
@@ -280,4 +493,34 @@ test('strict arguments require plan and issue', async () => {
     ['check', '--wat'],
   ])
     assert.equal((await runCli(argv)).code, 64)
+})
+
+test('on the GitHub tracker a PR whose ticket is open becomes a blocker', async (t) => {
+  const views = {
+    7: { number: 7, state: 'OPEN', labels: [{ name: 'boss:in-progress' }] },
+    8: { number: 8, state: 'CLOSED', stateReason: 'COMPLETED', labels: [] },
+  }
+  const github = createGithubAdapter({
+    config: { trackerConfig: { github: { repository: 'acme/tasks' } } },
+    spawn: (_cmd, args) => ({ status: 0, stdout: JSON.stringify(views[args[2]]) }),
+  })
+  const calls = []
+  const adapter = {
+    ...github,
+    async applyIssueWrites(writes) {
+      calls.push(writes)
+      return { outcome: 'ok' }
+    },
+  }
+  const data = JSON.stringify({
+    ...snapshot,
+    pullRequests: [
+      { ...pr, ticketIds: ['GH-7'] },
+      { ...pr, number: 43, url: 'https://example.test/pull/43', ticketIds: ['GH-8'] },
+    ],
+  })
+  const subject = JSON.stringify({ ...issue, id: 'GH-1', identifier: 'GH-1' })
+  assert.equal((await run(t, ['--apply'], { adapter }, { snapshot: data, issue: subject })).code, 3)
+  assert.deepEqual(calls[0].addBlockedBy, ['GH-7'])
+  assert.match(calls[0].comment, /#43 has no open ticket/)
 })

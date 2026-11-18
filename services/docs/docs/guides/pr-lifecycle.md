@@ -22,8 +22,9 @@ where you sit inside it.
    setting `enabled: false` for the `repair` entry in
    [`settings.json`](../reference/settings.md).
 5. **Review.** Reviewers comment as they normally would. If the repo
-   has `auto-address-reviews` enabled, the daemon dispatches a
-   follow-up session to address review feedback automatically.
+   has **Automatic repair** enabled (the default), the repair session
+   addresses requested changes, replies on each review thread and resolves it.
+   The same setting covers failing checks, conflicts and review feedback.
 6. **Merge.** Dependabot PRs auto-merge once checks pass when
    `auto-merge-dependabot` is enabled (the default for new repos). The
    one exception is a repository with an enabled verify-stage cron job
@@ -77,3 +78,5 @@ parallel sessions on the same repo. See
   archived chat.
 - Want to be notified when a PR merges, closes, or passes checks → see
   [GitHub PR callbacks](./github-callbacks.md).
+- Want a worked example and a comparison with the Claude Code Action → see
+  [Fix failing CI with Claude Code and Codex](https://bossanova.dev/fix-failing-ci).

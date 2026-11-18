@@ -23,6 +23,9 @@ export const VENDOR_MAP = {
   'boss-retro': [
     'skill-pin.mjs',
     'verify/verify-escapes-trace.mjs',
+    // runDescribers runs here too, so describers need the kit (see boss-verify).
+    'verify/describer-kit.mjs',
+    'verify/verify-ci-media.mjs',
     'verify/verify-area-caps-sync.mjs',
     'boss-binary.mjs',
     'bs-dispatch-await.mjs',
@@ -59,12 +62,14 @@ export const VENDOR_MAP = {
     'skill-config.mjs',
   ],
   'boss-build': [
+    'verify/verify-ci-media.mjs',
     'skill-pin.mjs',
     'verification-receipt.mjs',
     'issue-lease.mjs',
     'ci/ci-request.mjs',
     'build/blocker-verdict.mjs',
     'build/acceptance-retry.mjs',
+    'build/no-change-disposition.mjs',
     'base-drift.mjs',
     'boss-binary.mjs',
     'bossd-present.mjs',
@@ -77,6 +82,8 @@ export const VENDOR_MAP = {
     // finalize's tag injector loads this helper by path.
     'commit-work-predicate.mjs',
     'build/completion-gate.mjs',
+    // runDescribers runs here too, so describers need the kit (see boss-verify).
+    'verify/describer-kit.mjs',
     'cron-gates/boss-build.mjs',
     'finalize/cli.mjs',
     'finalize/push-branch.mjs',
@@ -134,6 +141,8 @@ export const VENDOR_MAP = {
     'pr-check-state.mjs',
     'epic/progress-comment.mjs',
     'epic/epic-cli.mjs',
+    'epic/epic-io.mjs',
+    'epic/epic-run.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
     'skill-config.mjs',
@@ -147,7 +156,6 @@ export const VENDOR_MAP = {
     'session/claim-owner-status.mjs',
     'plan/plan-open-prs.mjs',
     'issue-lease.mjs',
-    'plan/boss-plan-env.sh',
     'plan/boss-plan-run.sh',
     'plan/run-steps/',
     'bs-dispatch-await.mjs',
@@ -174,6 +182,7 @@ export const VENDOR_MAP = {
     'plan/plan-sibling-split.mjs',
     'plan/plan-slug.mjs',
     'plan/plan-writeback-verify.mjs',
+    'tracker/reference-forms.mjs',
     'plan/plan-section-append.mjs',
     'selection.mjs',
     'session/session-self-archive.mjs',
@@ -185,6 +194,7 @@ export const VENDOR_MAP = {
     'tracker/cli.mjs',
   ],
   'boss-repair': [
+    'verify/verify-ci-media.mjs',
     'skill-drift-verdict.mjs',
     'toolbox-drift.mjs',
     'skill-pin.mjs',
@@ -206,6 +216,8 @@ export const VENDOR_MAP = {
     'verify/verify-draft.mjs',
     'verify/verify-gate.mjs',
     'skill-config.mjs',
+    // runDescribers runs here too, so describers need the kit (see boss-verify).
+    'verify/describer-kit.mjs',
     'skill-extensions.mjs',
     'stage-chain.mjs',
     'worktree-state.mjs',
@@ -234,6 +246,7 @@ export const VENDOR_MAP = {
     'stage-chain.mjs',
     'verify/verify-draft.mjs',
     'verify/verify-gate.mjs',
+    'verify/verify-trusted-tree.mjs',
     'verify/verify-await.mjs',
     'verify/verify-followups.mjs',
     'verify/verify-session.mjs',
@@ -244,11 +257,27 @@ export const VENDOR_MAP = {
     'verify/verify-areas.mjs',
     'verify/verify-claims.mjs',
     'verify/verify-describe.mjs',
+    // Describers import the kit through BOSS_VERIFY_TOOLBOX, which runDescribers points at this
+    // payload; no toolbox module imports it.
+    'verify/describer-kit.mjs',
     // The built-in proof-describe extensions run these directly; no toolbox module imports them.
     'verify/verify-describe-dependencies.mjs',
     'verify/verify-describe-deletions.mjs',
     'verify/verify-describe-moves.mjs',
+    // Built-in CI media is invoked by its extension, not a toolbox import.
+    'verify/verify-ci-media.mjs',
+    'verify/verify-ui-recording.mjs',
+    // export copies these into adopting repos; no toolbox module imports them.
+    'verify/verify-proof-capture.mjs',
+    'verify/verify-proof-steps.mjs',
     'verify/verify-describe-protos.mjs',
+    'verify/verify-describe-go.mjs',
+    'verify/verify-describe-graphql.mjs',
+    'verify/verify-describe-tests.mjs',
+
+    'verify/verify-describe-dbt.mjs',
+    'verify/verify-describe-terraform.mjs',
+    'verify/verify-describe-workflows.mjs',
     'verify/verify-intent.mjs',
     'verify/verify-proof.mjs',
     'verify/verify-proof-page.mjs',
@@ -381,6 +410,31 @@ export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) 
         writeFileSync(dest, srcBuf)
       }
       chmodSync(dest, srcMode) // preserve the +x bit on worktree-lock.sh
+    }
+  }
+  // Inline verify runs from a pinned consumer core, which cannot resolve sibling skills.
+  const extension = 'extensions/boss-verify-ci-media'
+  const extensionRoot = join(rootFor('boss-verify'), 'boss-verify', extension)
+  for (const file of copiedFiles(extensionRoot)) {
+    const source = join(extensionRoot, file)
+    for (const skill of ['boss-build', 'boss-repair', 'boss-retro']) {
+      const destRoot = rootFor(skill)
+      if (check && !existsSync(destRoot)) continue
+      const dest = join(destRoot, skill, extension, file)
+      const content = readFileSync(source)
+      const mode = statSync(source).mode & 0o777
+      const matches =
+        existsSync(dest) &&
+        readFileSync(dest).equals(content) &&
+        (statSync(dest).mode & 0o777) === mode
+      if (matches) continue
+      changed = true
+      if (check) differences.push(`extension mismatch: ${skill}/${extension}/${file}`)
+      else {
+        mkdirSync(dirname(dest), { recursive: true })
+        writeFileSync(dest, content)
+        chmodSync(dest, mode)
+      }
     }
   }
   // Nothing verified (every destination root stripped, e.g. a public mirror missing

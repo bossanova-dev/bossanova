@@ -1,0 +1,38 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import http from 'node:http'
+import path from 'node:path'
+import { once } from 'node:events'
+import { test } from 'node:test'
+import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
+import { daemonUnary } from './verify-daemon-rpc.mjs'
+
+test('daemon RPC preserves proof-check and evidence refusal reasons', async (t) => {
+  const dir = tempDir('proof-rpc-', t)
+  const socket = path.join(dir, 'd.sock')
+  fs.writeFileSync(path.join(dir, 'bossd.token'), 'local-test-token')
+  const server = http.createServer((req, res) => {
+    assert.equal(req.headers.authorization, 'Bearer local-test-token')
+    const proof = req.url.endsWith('/PostProofCheckRun')
+    res.writeHead(412, {
+      'content-type': 'application/json',
+      [proof ? 'Bossd-Proof-Check-Reason' : 'Bossd-Evidence-Reason']: proof
+        ? 'checks-not-granted'
+        : 'pages-disabled',
+    })
+    res.end(JSON.stringify({ code: 'failed_precondition' }))
+  })
+  server.listen(socket)
+  await once(server, 'listening')
+  t.after(() => new Promise((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))))
+  for (const [method, reason] of [
+    ['PostProofCheckRun', 'checks-not-granted'],
+    ['UploadEvidence', 'pages-disabled'],
+  ]) {
+    await assert.rejects(daemonUnary(socket, method), (error) => {
+      assert.equal(error.code, 'failed_precondition')
+      assert.equal(error.reason, reason)
+      return true
+    })
+  }
+})

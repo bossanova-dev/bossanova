@@ -85,11 +85,11 @@ endif
 ifneq ($(wildcard services/web/package.json),)
 ## test-web-e2e: Opt-in/release-tier web Playwright Tier-1 faked E2E suite.
 ## NOT part of the default test/test-web/test-smoke graph — it rebuilds the VITE_E2E
-## bundle and needs chrome-headless-shell and full chromium, so it stays opt-in and matches the release-only CI job.
+## bundle and needs chrome-headless-shell, full Chromium and WebKit, so it stays opt-in and matches the release-only CI job.
 test-web-e2e: $(WEB_DEPS_STAMP)
 	@# Best-effort browser install (mirrors setup-worktree) — never fatal so the target itself
 	@# is correct even where the browser can't be fetched.
-	( cd services/web && pnpm exec playwright install chromium chromium-headless-shell ) || echo "playwright install chromium chromium-headless-shell failed (non-fatal)";
+	( cd services/web && pnpm exec playwright install chromium chromium-headless-shell webkit ) || echo "playwright install chromium chromium-headless-shell webkit failed (non-fatal)";
 	$(MAKE) -C services/web test-e2e
 endif
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import {
@@ -10,6 +10,7 @@ import {
   decideVerdict,
   aggregateExtensions,
   readOperatorMarkers,
+  recordNote,
 } from './verify-gate.mjs'
 import { buildBlockers } from './verify-blockers.mjs'
 
@@ -129,6 +130,38 @@ const status = {
   description: 'verified',
   updated_at: '2026-10-01T00:00:00Z',
 }
+
+test('extension-failed posts record the failing names and reported error in one note', async () => {
+  const result = await post(
+    {
+      ...options,
+      verdict: 'human',
+      reason: 'extension-failed',
+      dryRun: true,
+      extensionResults: inputFile([
+        { extension: 'boss-verify-evidence', result: { ok: false, error: 'missing proof' } },
+        { extension: 'slow-extension', timedOut: true },
+      ]),
+    },
+    world().deps,
+  )
+  const notes = result.writes.filter((w) => w.kind === 'note' && w.trigger === 'extension-failed')
+  assert.equal(notes.length, 1)
+  for (const text of ['boss-verify-evidence', 'missing proof', 'slow-extension', 'timed out', '7'])
+    assert.ok(notes[0].body.includes(text), text)
+  assert.equal(notes[0].body.includes('\n'), false)
+})
+
+test('extension-failed posts without results still record one explanatory note', async () => {
+  const result = await post(
+    { ...options, verdict: 'human', reason: 'extension-failed', dryRun: true },
+    world().deps,
+  )
+  const notes = result.writes.filter((w) => w.kind === 'note' && w.trigger === 'extension-failed')
+  assert.equal(notes.length, 1)
+  assert.ok(notes[0].body.includes('7'))
+  assert.match(notes[0].body, /not identified/)
+})
 
 test('notes are rejected for claim and wait and require an array', async () => {
   for (const verdict of ['claim', 'wait'])
@@ -492,4 +525,116 @@ test('post confidence files carry policy holds without rejecting malformed entri
     w.deps,
   )
   assert.match(JSON.stringify(result), /Billing requires human review/)
+})
+
+test('recordNote keeps the full body and verify identity when notes-record is present', () => {
+  assert.ok(existsSync(new globalThis.URL('../notes-record.mjs', import.meta.url)))
+  const calls = []
+  const body = '-- ' + 'claim holder and dispatch attribution '.repeat(12)
+  const result = recordNote(
+    { trigger: 'review-request-failed', body, pr: 7, headSha: HEAD },
+    {
+      read: (command, args, options) => {
+        calls.push({ command, args, options })
+        return { ok: true }
+      },
+    },
+  )
+  assert.deepEqual(result, { recorded: true, via: 'boss-notes' })
+  assert.deepEqual(calls, [
+    {
+      command: 'boss',
+      args: [
+        'notes',
+        'add',
+        '--tag',
+        'verify',
+        '--tag',
+        'improvement',
+        '--idempotency-key',
+        `verify:review-request-failed:7:${HEAD.slice(0, 12)}`,
+        '--json',
+        '--',
+        body,
+      ],
+      options: { json: true },
+    },
+  ])
+})
+
+test('recordNote honours success and failed or unreadable results and contains throws', () => {
+  const note = { trigger: 'review-request-failed', body: 'request failed', pr: 7, headSha: HEAD }
+  for (const response of [
+    { ok: true },
+    { ok: false, error: 'exit-1' },
+    { ok: false, error: 'json' },
+  ]) {
+    assert.equal(recordNote(note, { read: () => response }).recorded, response.ok)
+  }
+  assert.deepEqual(
+    recordNote(note, {
+      read: () => {
+        throw new Error('unavailable')
+      },
+    }),
+    {
+      recorded: false,
+      via: 'error',
+    },
+  )
+})
+
+test('post reports whether its note was recorded and dry runs do not record', async () => {
+  for (const [dryRun, recorded] of [
+    [false, false],
+    [false, true],
+    [true, undefined],
+  ]) {
+    const w = world({
+      status: {
+        context: 'boss/verify',
+        state: 'pending',
+        description: 'verifying… 0ld0ld00',
+        updated_at: '2026-10-01T00:00:00Z',
+      },
+    })
+    const noteCalls = []
+    let claimed = false
+    const read = (command, args, options) => {
+      if (
+        command === 'gh' &&
+        args.includes('--method') &&
+        args.some((arg) => arg.startsWith('description=verifying'))
+      )
+        claimed = true
+      if (claimed && command === 'gh' && args[1]?.includes('/statuses')) {
+        const payload = [
+          [
+            {
+              context: 'boss/verify',
+              state: 'pending',
+              description: 'verifying… feedf00d',
+              updated_at: '2026-10-02T00:00:00Z',
+            },
+          ],
+        ]
+        return { ok: true, payload, output: JSON.stringify(payload) }
+      }
+      if (command === 'boss' && args[0] === 'notes') {
+        noteCalls.push(args)
+        return { ok: recorded }
+      }
+      return w.deps.read(command, args, options)
+    }
+    const result = await post(
+      { ...options, verdict: 'claim', dryRun, token: 'feedf00d' },
+      { ...w.deps, read },
+    )
+    const note = result.writes.find((entry) => entry.kind === 'note')
+    assert.equal(note?.trigger, 'stale-claim-taken-over')
+    assert.equal(note.recorded, recorded)
+    assert.equal(Object.hasOwn(note, 'recorded'), !dryRun)
+    assert.equal(noteCalls.length, dryRun ? 0 : 1)
+    assert.equal(result.won, true)
+  }
 })

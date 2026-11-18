@@ -56,14 +56,13 @@ func forwardedFrom(p domain.CallerPrincipal) string {
 }
 
 // logApprover adds the principal an approval or merge ran for to ev, so the
-// daemon log names a granted chat by its chat and session ids.
+// daemon log names an approving agent chat by its chat and session ids.
 func logApprover(ev *zerolog.Event, p domain.CallerPrincipal) *zerolog.Event {
 	ev = ev.Str("caller_kind", string(p.Kind))
 	if p.Kind == domain.CallerAgentChat {
 		ev = ev.Str("caller_role", string(p.Role)).
 			Str("caller_agent_session_id", p.AgentSessionID).
-			Str("caller_session_id", p.SessionID).
-			Bool("role_grant", true)
+			Str("caller_session_id", p.SessionID)
 	}
 	if p.Forwarded {
 		ev = ev.Str("forwarded_from", forwardedFrom(p))

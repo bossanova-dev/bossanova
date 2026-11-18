@@ -35,44 +35,20 @@ const (
 	CapabilityVerifyApprove  CallerCapability = "verify.approve"
 	CapabilityVerifyFollowUp CallerCapability = "verify.follow-up"
 	CapabilityOperatorMerge  CallerCapability = "verify.operator-merge"
-	// CapabilityCreateCoordinatorChat creates a chat with the coordinator role.
-	// It stays operator-only, so a granted role cannot be minted by the chats
-	// it would outrank.
-	CapabilityCreateCoordinatorChat CallerCapability = "chat.create-coordinator"
 )
 
-var operatorCapabilities = []CallerCapability{
-	CapabilityVerifyAccept, CapabilityVerifyApprove, CapabilityVerifyFollowUp,
-	CapabilityOperatorMerge, CapabilityCreateCoordinatorChat,
+// capabilitiesByKind is what each attested caller kind holds. Any agent chat,
+// whatever its role, may approve a verify park and run an operator merge;
+// accepting a blocker and following up notes stay with the operator. A daemon
+// child or an unattested caller holds nothing.
+var capabilitiesByKind = map[CallerKind][]CallerCapability{
+	CallerOperator:  {CapabilityVerifyAccept, CapabilityVerifyApprove, CapabilityVerifyFollowUp, CapabilityOperatorMerge},
+	CallerAgentChat: {CapabilityVerifyApprove, CapabilityOperatorMerge},
 }
 
-// CallerGrantKey scopes a grant to a principal kind and role.
-type CallerGrantKey struct {
-	Kind CallerKind
-	Role AgentChatRole
-}
-
-// CallerGrants extends the operator's default capabilities. An empty table grants nothing.
-type CallerGrants map[CallerGrantKey][]CallerCapability
-
-// CoordinatorApprovalGrants is the shipped coordinator approval grant: an agent
-// chat with the coordinator role may approve a verify park and run an operator
-// merge. It grants nothing to any other role or kind.
-func CoordinatorApprovalGrants() CallerGrants {
-	return CallerGrants{
-		{Kind: CallerAgentChat, Role: AgentChatRoleCoordinator}: {CapabilityVerifyApprove, CapabilityOperatorMerge},
-	}
-}
-
-// HasCapability applies the default operator grant and an optional role grant.
-func (p CallerPrincipal) HasCapability(capability CallerCapability, grants CallerGrants) bool {
-	if p.Kind == CallerOperator {
-		return slices.Contains(operatorCapabilities, capability)
-	}
-	if p.Kind != CallerAgentChat {
-		return false
-	}
-	return slices.Contains(grants[CallerGrantKey{Kind: p.Kind, Role: p.Role}], capability)
+// HasCapability reports whether the principal's kind holds capability.
+func (p CallerPrincipal) HasCapability(capability CallerCapability) bool {
+	return slices.Contains(capabilitiesByKind[p.Kind], capability)
 }
 
 // CallerOrigin is what a forwarding client asserts about the process it runs

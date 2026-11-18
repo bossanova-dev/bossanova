@@ -145,7 +145,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		// One repo lookup per spawn: the trust decision (Repo) and the env
 		// overlay (chatSpawnEnv) both read this value (BOS-1562).
 		repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "wake chat", s.logger)
-		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, session.ResolveSubagentGrantForSpawn(s.logger))
+		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, session.ResolveSubagentGrantForSpawn(s.logger), repo)
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
 			Chat:                      chat,
 			WorktreePath:              sess.WorktreePath,

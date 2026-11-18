@@ -1281,6 +1281,35 @@ test('premises --annotate writes nothing on premise-limit, premise-unresolved or
   }
 })
 
+test('premises CLI rejects malformed input shapes without changing annotations', (t) => {
+  const dir = tempDir('premise-shapes-', t)
+  const premises = path.join(dir, 'premises.json')
+  const states = path.join(dir, 'states.json')
+  const annotation = path.join(dir, 'description.md')
+  for (const [input, live] of [
+    ...[
+      [],
+      null,
+      { states: { 'BOS-1': 'Done' } },
+      { 'BOS-1': { name: 'Done' } },
+      { 'BOS-1': '' },
+    ].map((live) => [[{ id: 'BOS-1', state: 'Todo' }], live]),
+    ...[{}, [{ id: '' }], [{ id: 'BOS-1' }]].map((input) => [input, {}]),
+  ]) {
+    writeFileSync(premises, JSON.stringify(input))
+    writeFileSync(states, JSON.stringify(live))
+    writeFileSync(annotation, 'unchanged')
+    const result = spawnSync(
+      process.execPath,
+      [GUARD, 'premises', premises, states, '--annotate', annotation],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, 1, JSON.stringify([input, live]))
+    assert.match(result.stderr, /unreadable-input/)
+    assert.equal(readFileSync(annotation, 'utf8'), 'unchanged')
+  }
+})
+
 test('premises CLI reports zero verification coverage for an empty declared set', () => {
   const dir = tempDir('plan-run-guards-')
   const premisesPath = path.join(dir, 'premises.json')
@@ -1888,6 +1917,49 @@ const depsRow = (over = {}) => ({
 
 const depsCandidate = (over = {}) =>
   depsRow({ id: 'uuid-2', identifier: 'TCK-2', title: 'Candidate', source: 'state', ...over })
+
+test('deps: subject-description-stale refuses changed areas but accepts normalized saved areas', () => {
+  const savedDescription = depsDescription(['- `app/api/x.go`: edit TCK-2 and field_name'])
+  const input = {
+    payload: {},
+    subjectId: 'TCK-1',
+    config: { ...DEFAULT_CONFIG, ...DEPS_CONFIG },
+    rootEntries: { dirs: ['app'], files: [] },
+    rows: [depsRow({ description: 'Pre-plan notes' })],
+  }
+  const stale = runDependencyScan({ ...input, savedDescription })
+  assert.equal(stale.status, 'refused')
+  assert.deepEqual(
+    stale.refusals.map(({ code }) => code),
+    ['subject-description-stale'],
+  )
+  assert.match(stale.refusals[0].message, /TCK-1/)
+  const normalized = savedDescription
+    .replaceAll('- ', '* ')
+    .replace('field_name', 'field\\_name')
+    .replace('TCK-2', '[TCK-2](https://tracker.example/issue/TCK-2)')
+    .trimEnd()
+  assert.equal(
+    runDependencyScan({ ...input, rows: [depsRow({ description: normalized })], savedDescription })
+      .status,
+    'ok',
+  )
+  assert.equal(runDependencyScan(input).status, 'ok')
+})
+
+test('deps: saved descriptions accept the same change areas in a different order', () => {
+  const bullets = ['- `app/api/x.go`: edit the handler', '- `app/ui/y.go`: edit the view']
+  const result = runDependencyScan({
+    payload: {},
+    subjectId: 'TCK-1',
+    config: { ...DEFAULT_CONFIG, ...DEPS_CONFIG },
+    rootEntries: { dirs: ['app'], files: [] },
+    rows: [depsRow({ description: depsDescription(bullets) })],
+    savedDescription: depsDescription([...bullets].reverse()),
+  })
+  assert.equal(result.status, 'ok')
+  assert.deepEqual([...result.subject.areas].sort(), ['app/api/x.go', 'app/ui/y.go'])
+})
 
 const gitIn = (cwd, ...args) =>
   spawnSync(
@@ -2581,4 +2653,32 @@ test('epic-reverify-bundle: defects remove stale bundles and never hydrate from 
     readdirSync(fixture.runDir).filter((file) => file.endsWith('.tmp')),
     [],
   )
+})
+
+test('deps: links an Unplanned logical prerequisite and refuses an unfetched verdict', () => {
+  const dir = depsRepo()
+  const rows = [
+    depsRow(),
+    depsCandidate({
+      stateName: 'Todo',
+      stateType: 'unstarted',
+      source: 'id',
+      description: depsDescription(['- `app/ui/y.go`: edit the view']),
+    }),
+  ]
+  const res = runDeps(dir, {
+    rows,
+    payload: {
+      logicalDependencies: { 'TCK-2': { direction: 'blockedBy', note: 'needs the API' } },
+    },
+  })
+  assert.equal(res.status, 0, res.stderr)
+  const out = JSON.parse(res.stdout)
+  assert.equal(out.edges.length, 1)
+  assert.deepEqual(out.edges[0].write, { id: 'uuid-1', blockedBy: ['uuid-2'] })
+  assert.ok(out.notes.some((n) => n.reason === 'prerequisite-unplanned'))
+  assert.equal(out.verdict.verdict, 'linked')
+  const refused = runDeps(dir, { rows, payload: { logicalDependencies: { 'TCK-99': true } } })
+  assert.equal(refused.status, 1)
+  assert.match(refused.stderr, /logical-dependency-not-fetched/)
 })

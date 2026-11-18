@@ -34,6 +34,7 @@ test('terminal routes cover exactly the four published outcomes', () => {
   assert.deepEqual(OPTIONAL_ROUTE_TOKENS, [
     'blocked-pr-left-draft',
     'entry-state-restored',
+    'already-satisfied-closed',
     'no-change-breadcrumb-written',
     'pr-merged-by-completion',
   ])
@@ -235,4 +236,21 @@ test('REVIEW_READY without review-gate-passed, or with it after pr-ready, is uns
   const outOfOrder = assertRouteSatisfied('REVIEW_READY', late)
   assert.equal(outOfOrder.ok, false)
   assert.equal(outOfOrder.error, 'obligations out of order')
+})
+
+test('already-satisfied close is exclusive with restoring and belongs only to NO_CHANGE', () => {
+  const stamps = TERMINAL_ROUTES.NO_CHANGE.map((token) => ({ token }))
+  stamps.push({ token: 'already-satisfied-closed' })
+  assert.equal(assertRouteSatisfied('NO_CHANGE', stamps).ok, true)
+  const conflict = assertRouteSatisfied('NO_CHANGE', [...stamps, { token: 'entry-state-restored' }])
+  assert.equal(conflict.honestOutcome, 'ROUTE_UNSATISFIED')
+  assert.equal(conflict.error, 'conflicting no-change dispositions')
+  for (const outcome of ['REVIEW_READY', 'PARTIAL', 'BLOCKED']) {
+    const result = assertRouteSatisfied(outcome, [
+      ...TERMINAL_ROUTES[outcome].map((token) => ({ token })),
+      { token: 'already-satisfied-closed' },
+    ])
+    assert.equal(result.honestOutcome, 'ROUTE_UNSATISFIED')
+    assert.equal(result.error, 'already-satisfied-closed outside NO_CHANGE')
+  }
 })

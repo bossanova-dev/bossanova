@@ -149,7 +149,7 @@ casing), and add the `agent-question` label.
 Drafting resolves through the first tier that succeeds:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role draft --mode headless --json
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role draft --mode headless --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --json
 ```
 
 (missing helper ⇒ treat it as `{"extensions":[],"skipped":[]}`). Record each `skipped` entry whose

@@ -56,12 +56,13 @@ export function refineVerify(envelope) {
   return errors
 }
 
-// Every reason classifyVerifyOutcome can return. The five malfunction reasons stay distinct from a
+// Every reason classifyVerifyOutcome can return. The six malfunction reasons stay distinct from a
 // valid `fail` so the verify stage can route a broken extension to a human rather than to repair.
 export const VERIFY_OUTCOME_REASONS = Object.freeze([
   'timed-out',
   'crashed',
   'reported-failure',
+  'extension-deps-missing',
   'pass-without-evidence',
   'malformed-result',
   'abstain',
@@ -82,14 +83,15 @@ export const VERIFY_UNTRUSTED_TEXT_FIELDS = Object.freeze([
   'intent.bullets',
 ])
 const VERIFY_CONTEXT_KEYS = Object.freeze(['pr', 'headSha', 'baseSha', 'changedPaths', 'ticket'])
-const VERIFY_CONTEXT_OPTIONAL_KEYS = Object.freeze(['range', 'intent'])
+const VERIFY_CONTEXT_OPTIONAL_KEYS = Object.freeze(['range', 'intent', 'uiFiles'])
 const VERIFY_RANGE_KEYS = Object.freeze(['kind', 'anchorSha'])
 const VERIFY_RANGE_KINDS = Object.freeze(['full', 'delta'])
 const FULL_SHA = /^[0-9a-f]{40}$/i
 
 // Validates the verify role's envelope context `{pr, headSha, baseSha, changedPaths, ticket}` plus
-// the optional `range: {kind: 'full'|'delta', anchorSha}`, which says whether `changedPaths` is the
-// whole PR or its delta since an approval anchor (`anchorSha` may be null only on `full`). Any other
+// optional `uiFiles` (the core UI area paths) and `range: {kind: 'full'|'delta', anchorSha}`.
+// The range says whether `changedPaths` is the whole PR or its delta since an approval anchor
+// (`anchorSha` may be null only on `full`). Any other
 // top-level key is an error, so a caller cannot smuggle instructions in beside the data.
 // Returns `{ok, errors}` and never throws.
 export function validateVerifyContext(context) {
@@ -121,6 +123,18 @@ export function validateVerifyContext(context) {
     else
       context.changedPaths.forEach((entry, idx) => {
         if (!nonEmptyString(entry)) errors.push(`changedPaths ${idx} must be a non-empty string`)
+      })
+  }
+  if ('uiFiles' in context) {
+    if (!Array.isArray(context.uiFiles)) errors.push('uiFiles must be an array')
+    else
+      context.uiFiles.forEach((entry, idx) => {
+        if (
+          !nonEmptyString(entry) ||
+          !Array.isArray(context.changedPaths) ||
+          !context.changedPaths.includes(entry)
+        )
+          errors.push(`uiFiles ${idx} must name a changed path`)
       })
   }
   if ('ticket' in context && context.ticket !== null) {

@@ -1,0 +1,41 @@
+{
+  "schema": "proof-media/1",
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source": {
+    "kind": "ci-artifact",
+    "url": "https://github.com/freshclaim/fresh-claim/actions/runs/13"
+  },
+  "clips": [],
+  "transcripts": [],
+  "documents": [
+    {
+      "id": "statement",
+      "side": "head",
+      "title": "Statement",
+      "file": "statement.pdf",
+      "pageCount": 1,
+      "pages": [
+        {
+          "file": "statement.png",
+          "page": 1,
+          "caption": "Statement page"
+        }
+      ]
+    },
+    {
+      "id": "statement-base",
+      "side": "base",
+      "title": "Statement",
+      "file": "statement-base.pdf",
+      "pageCount": 1,
+      "pages": [
+        {
+          "file": "statement-base.png",
+          "page": 1,
+          "caption": "Statement page"
+        }
+      ],
+      "pairs": "statement"
+    }
+  ]
+}

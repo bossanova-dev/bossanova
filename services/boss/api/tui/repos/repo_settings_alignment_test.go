@@ -56,7 +56,7 @@ func TestRepoSettingsValueColumnsStayStable(t *testing.T) {
 	collapsed := viewString(m)
 	m.sentryExpanded = true
 	expanded := viewString(m)
-	for _, key := range []string{"Name", "Setup command", "Organization", "Merge strategy"} {
+	for _, key := range []string{"Name", "Setup command", "Serve command", "Organization", "Merge strategy"} {
 		if got, want := repoValueColumn(t, expanded, key), repoValueColumn(t, expanded, "Name"); got != want {
 			t.Errorf("%s value column %d, want %d", key, got, want)
 		}

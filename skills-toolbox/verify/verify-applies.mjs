@@ -2,6 +2,7 @@
 // extensions by its exit code, keeping the optional one-line note a not-applicable check printed.
 import { join } from 'node:path'
 import { validNotApplicable } from './verify-not-applicable.mjs'
+import { extensionEnvelopeFor } from './verify-extension-envelope.mjs'
 
 const text = (value) => typeof value === 'string' && value.trim() !== ''
 
@@ -44,28 +45,30 @@ export function appliesNote(output) {
  * Splits discovered verify extensions into `{applicable, notApplicable, notes}` by running each
  * declared `applies` script with node, the would-be extension envelope on stdin. The script is
  * resolved under `root` (the trusted base tree) when given, so it and everything it imports are
- * base code, while the process cwd stays the checkout for its git reads. An extension with no
+ * base code, while built-in checks resolve under their installed directory. The process cwd
+ * stays the checkout for its git reads. An extension with no
  * `applies` always applies. Only the exit code decides applicability; `notes` is
  * `[{extension, note}]`, in discovery order, for each not-applicable extension whose output
  * carried a usable note.
  *
- * @param {Array<{name?: string, applies?: string}>} extensions
+ * @param {Array<{name?: string, applies?: string, builtin?: boolean, dir?: string}>} extensions
  * @param {unknown} context the extension envelope, sent as JSON on stdin
- * @param {{read: Function, nodeBin?: string, root?: string | null}} deps
+ * @param {{read: Function, nodeBin?: string, root?: string | null, uiFiles?: string[]}} deps
  * @returns {{applicable: object[], notApplicable: object[], notes: {extension: string, note: string}[]}}
  */
 export function partitionApplicable(
   extensions,
   context,
-  { read, nodeBin = process.execPath, root = null },
+  { read, nodeBin = process.execPath, root = null, uiFiles },
 ) {
   const applicable = []
   const notApplicable = []
   const notes = []
   for (const ext of extensions) {
+    const scriptRoot = ext?.builtin === true ? ext.dir : root
     const result = text(ext?.applies)
-      ? read(nodeBin, [text(root) ? join(root, ext.applies) : ext.applies], {
-          input: JSON.stringify(context),
+      ? read(nodeBin, [text(scriptRoot) ? join(scriptRoot, ext.applies) : ext.applies], {
+          input: JSON.stringify(extensionEnvelopeFor(ext, context, uiFiles)),
         })
       : null
     const skip = result?.exit === APPLIES_NOT_APPLICABLE_EXIT

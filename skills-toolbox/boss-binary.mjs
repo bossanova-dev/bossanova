@@ -1,7 +1,7 @@
 // skills-toolbox/boss-binary.mjs
 // Single source of truth for "is the `boss` CLI actually reachable from here?".
 // The skills resolve the binary by hand in three different places (an explicit
-// $BOSS_BIN override, `boss` on PATH, the repo build at ./bin/boss); this module
+// $BOSS_BIN override, `boss` on PATH, and the repo build outside managed sessions); this module
 // is that resolution, once, as a pure function over an injected fs so a caller —
 // or a test — never has to touch the machine's real PATH.
 //
@@ -93,7 +93,7 @@ export function repoRootFrom(startDir, fsImpl) {
  * Order — the first candidate that is an existing, executable, regular file wins:
  *   1. `$BOSS_BIN` (an explicit operator override; blank is treated as unset)
  *   2. `boss` on `$PATH`
- *   3. `<repo root of deps.cwd>/bin/boss` (the repo build)
+ *   3. `<repo root of deps.cwd>/bin/boss` (outside managed sessions only)
  *
  * A candidate that fails is simply the next candidate's turn — never a throw. When
  * every candidate fails, `reason` names each one that was tried and why it lost, so
@@ -144,6 +144,12 @@ export function resolveBossBinary(env = process.env, deps = {}) {
       : `no executable ${BOSS_BINARY_NAME} in ${pathEntries.length} PATH ` +
           `${pathEntries.length === 1 ? 'entry' : 'entries'}`,
   )
+
+  // In managed sessions the daemon's BOSS_BIN carries its repository trust decision.
+  if (env.BOSS_SESSION_ID) {
+    notes.push('the repo build is not used inside a managed session')
+    return { path: null, ok: false, reason: unusableReason(notes) }
+  }
 
   // 3. The repo build. Relative to the repo the caller is in, not to the process's
   //    incidental cwd inside it. The cwd is read HERE and not at the top: `process.cwd()`

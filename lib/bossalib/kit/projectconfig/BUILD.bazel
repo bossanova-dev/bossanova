@@ -72,7 +72,10 @@ go_test(
             "*.go",
         ],
         exclude = ["*_test.go"],
-    ) + ["//:.boss-project.json"],
+    ) + [
+        "//:.boss-project.json",
+        "//:.boss-project.json.public",
+    ],
     embed = [":projectconfig"],
     deps = [
         "//lib/bossalib/daemonstate",

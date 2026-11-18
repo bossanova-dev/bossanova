@@ -16,9 +16,11 @@ output:
 
 ## Which verdicts get a page
 
-Only a `human` verdict waits on a person, so only it gets a page. A `pass` merges and a `blocked`
-or `defect` head is repaired, which moves it: their proof note keeps the level with a null page,
-and nothing is uploaded.
+By default (`proofDefaults.pages: "parked"`), only a `human` verdict gets a page. A `pass`,
+`blocked` or `defect` note keeps the level with a null page and uploads nothing. With
+`proofDefaults.pages: "all"` in the trusted base tree's config, every terminal verdict gets a
+page. A PR cannot enable pages for itself. Non-parked pages use the deterministic content, with
+no proof-author spec or park reasons; the proof-author agent still runs only on a park.
 
 A parked head's page always shows the record's park reasons, blockers and breaking changes. On
 top of them:
@@ -63,15 +65,27 @@ it. The first publisher that applies uploads them:
 1. The first `proof-publish` hook on the trusted base tree. The core never reads a hook from the PR
    head. The hook gets a private temporary `evidenceDir` and two calls: the media and the player
    first, with ten minutes, then `index.html` alone, with two minutes.
-2. Else the daemon's evidence upload, when the base tree's `.boss-skills.json` sets
+2. Else the built-in `access-put` publisher, when the trusted base tree sets
+   `publishConfig.proof.kind: "access-put"`. It PUTs media, player, then page to
+   `<baseUrl>/_publish/<owner>/<repo>/<pr>/<head>/<name>`. Credentials come from
+   `PROOF_ACCESS_CLIENT_ID` and `PROOF_ACCESS_CLIENT_SECRET`, falling back on macOS to the
+   same-named generic-password accounts under `keychainService` (default `boss-proof-publish`).
+   `baseUrl` must be HTTPS without userinfo, query or fragment; redirects are refused.
+3. Else the daemon's evidence upload, when the base tree's `.boss-skills.json` sets
    `publishConfig.proof`. The media and player go in calls of at most 64 objects, then the page.
    The daemon accepts a page or player only when its destination enables pages.
-3. Else no page is uploaded and `page` stays `null`.
+4. Else no page is uploaded and `page` stays `null`.
 
 The page never goes up before its media, so a served page never links a missing file. Then
 `post` leaves one proof note per head. The note holds the comment block, which is the page when
 none was uploaded, and the `<!-- boss-proof: … -->` line the daemon reads for the head's page and
 level. The note is rewritten in place only when its content changes.
+
+After recording a note, verify mirrors its comment block (or one-line lead) into a `boss/proof`
+GitHub check run through the daemon, with the proof page as its details URL when one exists.
+This also shows proof in the checks list when no publisher is configured. A repository opts out
+with `proofDefaults.fallback: "none"` in its trusted base config. The check never gates a merge;
+a failed check publication is reported without changing the note or verdict.
 
 ## A repo's own proof wins
 

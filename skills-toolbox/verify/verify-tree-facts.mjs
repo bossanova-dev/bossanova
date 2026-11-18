@@ -191,6 +191,7 @@ export function treeAreaFacts(files, policy, options = {}) {
     discover = discoverExtensions,
     env = process.env,
     pr,
+    checks,
   } = options
   const paths = files.flatMap((file) =>
     typeof file === 'string' ? [file] : [file.filename, file.previous_filename].filter(Boolean),
@@ -216,6 +217,7 @@ export function treeAreaFacts(files, policy, options = {}) {
         baseSha: mergeBase ?? baseSha,
         headSha,
         pr,
+        checks,
         cwd,
         env,
         run,

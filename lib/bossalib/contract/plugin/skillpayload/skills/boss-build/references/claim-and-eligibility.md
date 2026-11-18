@@ -29,8 +29,8 @@ Whenever giving the ticket back, release only this run's token, best-effort and 
 node "$BOSS_BUILD_TOOLBOX/issue-lease.mjs" release --scope build --issue '<TICKET-ID>' --token "$TOKEN" || true
 ```
 
-Release on claim `LOST`, before every `NO_WINNER` retry, on Step 6's `clean` nothing-built path, and
-on every Step 12 terminal path, including success. Skip release if Step 3 never generated a token
+Release on claim `LOST`, before every `NO_WINNER` retry, and on every Step 12 terminal path,
+including the Step 6 `clean` nothing-built route and success. Skip release if Step 3 never generated a token
 for a selected ticket. Releasing a peer-held or unavailable lease with this run's token is safe;
 never release the peer's token.
 

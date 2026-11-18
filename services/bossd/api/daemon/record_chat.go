@@ -192,6 +192,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *domain.AgentCh
 				Msg("legacy provider session id discovery ambiguous before attach")
 		}
 	}
+	repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
 	defaultAccountID := ""
 	sessionEnvFunc := func() (map[string]string, error) {
 		defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
@@ -214,14 +215,11 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *domain.AgentCh
 			return nil, err
 		}
 		return mergeManagedOverAccount(
-			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName, s.gitHubUsageShim),
+			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName, s.gitHubUsageShim, repo),
 			accountEnv,
 		), nil
 	}
-	// One repo lookup per spawn: the trust decision (Repo) and the env overlay
-	// below both read this value (BOS-1562).
-	repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
-	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, session.ResolveSubagentGrantForSpawn(s.logger))
+	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, session.ResolveSubagentGrantForSpawn(s.logger), repo)
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
 		Chat:                      chat,
 		WorktreePath:              sess.WorktreePath,

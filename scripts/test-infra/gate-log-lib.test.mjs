@@ -41,6 +41,57 @@ test('failing line reports missing names and truncates long entries', () => {
   assert.equal(renderFailingLine(long), `failing: ${readGateLog(long).failureLines[0]}`)
 })
 
+test('Node spec failures name failed cases without counting passing names or the header', () => {
+  const log = [
+    '✔ mentions ✖ marker (0.241667ms) (0.3ms)',
+    '✖ marker (0.241667ms)',
+    '  ✖ nested failure (1.5ms)',
+    'ℹ tests 3',
+    'ℹ pass 1',
+    'ℹ fail 2',
+    'ℹ duration_ms 49.48075',
+    '',
+    '✖ failing tests:',
+    '',
+    'test at /tmp/fixture.test.mjs:1:30',
+    '✖ marker (0.241667ms)',
+  ].join('\n')
+  assert.equal(renderFailingLine(log), 'failing: ✖ marker (0.241667ms); ✖ nested failure (1.5ms)')
+  assert.deepEqual(readGateLog(log).failureLines, [
+    '✖ marker (0.241667ms)',
+    '✖ nested failure (1.5ms)',
+    '✖ marker (0.241667ms)',
+  ])
+  assert.deepEqual(readGateLog(log).postSummaryFailures, [])
+})
+
+test('Node spec failures keep their names without counting passes or summary headings', () => {
+  const failed = '✖ marker (0.137417ms)'
+  const nested = '  ✖ nested failure (12ms)'
+  const log = [
+    '✔ passes with ✖ quoted (0.546083ms)',
+    failed,
+    nested,
+    '﹣ skipped (0.067584ms) # SKIP',
+    'ℹ fail 2',
+    '✖ failing tests:',
+    failed,
+    '✖ todo (0.2ms) # TODO',
+  ].join('\n')
+  assert.deepEqual(readGateLog(log).failureLines, [failed, nested.trim(), failed])
+  assert.equal(renderFailingLine(log), `failing: ${failed}; ${nested.trim()}`)
+  assert.equal(renderFailingLine(log, { limit: 1 }), `failing: ${failed} (+1 more)`)
+  assert.equal(readGateLog('✔ passing (1ms)\n✖ failing tests:\nℹ fail 0').failureLines.length, 0)
+})
+
+test('colored Node spec failures are named and retain the summary bound', () => {
+  const long = `✖ ${'x'.repeat(200)} (1ms)`
+  const log = `\u001b[31m✖ marker (1ms)\u001b[39m\r\n${long}`
+  assert.equal(readGateLog(log).failureLines[0], '✖ marker (1ms)')
+  assert.equal(renderFailingLine(log, { limit: 1 }), 'failing: ✖ marker (1ms) (+1 more)')
+  assert.equal(readGateLog(log).failureLines[1].length, 123)
+})
+
 // --- Fixtures: real log shapes, kept verbatim so a reworded upstream string is visible here ---
 
 const BAZEL_FULLY_CACHED = [

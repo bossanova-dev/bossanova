@@ -9,6 +9,7 @@ go_library(
         "repo_routing.go",
         "repo_settings.go",
         "repo_settings_rows.go",
+        "repo_settings_scripts.go",
     ],
     importpath = "github.com/recurser/boss/api/tui/repos",
     visibility = ["//visibility:public"],
@@ -41,6 +42,7 @@ go_test(
         "repo_settings_alignment_test.go",
         "repo_settings_organization_test.go",
         "repo_settings_sentry_test.go",
+        "repo_settings_serve_test.go",
         "repo_settings_test.go",
     ],
     embed = [":repos"],
@@ -54,6 +56,7 @@ go_test(
         "@land_charm_bubbles_v2//table",
         "@land_charm_bubbletea_v2//:bubbletea",
         "@land_charm_lipgloss_v2//:lipgloss",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 

@@ -727,9 +727,9 @@ export function selectTargets(files, { generatedConsumers = resolveGeneratedCons
     // `go` directive, so both sides of that comparison are script-gate inputs. Neither is
     // reached by anything else here: go.work is a bazel graph-wide trigger (it forces a
     // FULL Go run) but selects no script target, and services/*/Dockerfile.k8s is built
-    // only by the staging and production release workflows, so no module rule claims it.
+    // only by scripts/release/vultr/deploy-vultr.sh at deploy time, so no module rule claims it.
     // Without this rule a workspace Go bump runs green locally and on every PR, and fails
-    // at release time -- the 1.25 -> 1.26 drift this gate was written for. No `continue`:
+    // at deploy time -- the 1.25 -> 1.26 drift this gate was written for. No `continue`:
     // go.work must still reach its graph-wide Go selection.
     // Root Makefile edits must run the script gates that read its targets. Keep
     // smoke explicitly: adding scripts must not suppress the previous fallback.

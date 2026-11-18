@@ -717,6 +717,148 @@ test('discoverExtensions reports a reasoned skip when SKILL.md is absent', () =>
 // classification in the helper only helps if a new `skipped.push` cannot arrive unclassified — this
 // drives discovery through a fixture reproducing every code and fails when an emitted code is absent
 // from the exported table.
+function peerRunFixture() {
+  const root = scratchRoot()
+  const runScratch = path.join(root, '.linear-plans', 'run-A')
+  const peer = path.join(root, '.linear-plans', 'run-B')
+  fs.mkdirSync(runScratch, { recursive: true })
+  fs.mkdirSync(peer)
+  writeSkill(root, 'bs-plan-single', [
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: draft',
+    '  singleWriter: true',
+  ])
+  return { root, runScratch, peer, now: Date.now() }
+}
+
+test('single-writer discovery skips a live sibling deliberately and exposes the declaration', () => {
+  const fixture = peerRunFixture()
+  const options = { core: 'bs-plan', role: 'draft', ...fixture }
+  const result = discoverExtensions(options)
+  assert.equal(result.extensions.length, 0)
+  assert.equal(result.skipped[0].code, 'peer-run-active')
+  assert.equal(result.skipped[0].deliberate, true)
+  assert.match(result.skipped[0].reason, /run-B/)
+  fs.rmSync(fixture.peer, { recursive: true, maxRetries: 3 })
+  assert.equal(discoverExtensions(options).extensions[0].singleWriter, true)
+})
+
+test('single-writer discovery uses immediate entry activity and expires stale peers', () => {
+  const fixture = peerRunFixture()
+  const old = new Date(fixture.now - 31 * 60 * 1000)
+  const heartbeat = path.join(fixture.peer, 'heartbeat')
+  fs.writeFileSync(heartbeat, '')
+  fs.utimesSync(fixture.peer, old, old)
+  const options = { core: 'bs-plan', ...fixture }
+  assert.equal(discoverExtensions(options).skipped[0].code, 'peer-run-active')
+  fs.utimesSync(heartbeat, old, old)
+  assert.equal(discoverExtensions(options).extensions.length, 1)
+})
+
+test('single-writer discovery retains peer activity when a listed child disappears', (t) => {
+  const fixture = peerRunFixture()
+  const heartbeat = path.join(fixture.peer, 'heartbeat')
+  fs.writeFileSync(heartbeat, '')
+  const old = new Date(fixture.now - 31 * 60 * 1000)
+  fs.utimesSync(fixture.peer, old, old)
+  const readdir = fs.readdirSync
+  t.mock.method(fs, 'readdirSync', (directory, ...args) => {
+    const entries = readdir(directory, ...args)
+    return directory === fixture.peer ? ['.heartbeat.tmp', ...entries] : entries
+  })
+  const result = discoverExtensions({ core: 'bs-plan', ...fixture })
+  assert.equal(result.extensions.length, 0)
+  assert.equal(result.skipped[0].code, 'peer-run-active')
+})
+
+test('single-writer discovery ignores unrelated siblings and symlinks', () => {
+  const fixture = peerRunFixture()
+  fs.renameSync(fixture.peer, path.join(path.dirname(fixture.peer), 'other-dir'))
+  fs.symlinkSync('other-dir', path.join(path.dirname(fixture.peer), 'run-C'), 'dir')
+  assert.equal(discoverExtensions({ core: 'bs-plan', ...fixture }).extensions.length, 1)
+})
+
+test('peer checking is opt-in for both caller and extension and tolerates missing parents', () => {
+  const fixture = peerRunFixture()
+  const options = { core: 'bs-plan', root: fixture.root }
+  assert.equal(discoverExtensions(options).extensions[0].singleWriter, true)
+  writeSkill(fixture.root, 'bs-plan-parallel', [
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: draft',
+  ])
+  const result = discoverExtensions({ ...options, runScratch: fixture.runScratch })
+  assert.equal(result.extensions.length, 1)
+  assert.equal('singleWriter' in result.extensions[0], false)
+  assert.equal(
+    discoverExtensions({ ...options, runScratch: path.join(fixture.root, 'missing/run-A') })
+      .extensions.length,
+    2,
+  )
+})
+
+test('mode exclusion precedes single-writer peer exclusion', () => {
+  const fixture = peerRunFixture()
+  writeSkill(fixture.root, 'bs-plan-single', [
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: draft',
+    '  singleWriter: true',
+    '  modes: interactive',
+  ])
+  assert.equal(
+    discoverExtensions({ core: 'bs-plan', mode: 'headless', ...fixture }).skipped[0].code,
+    'mode-not-declared',
+  )
+})
+
+test('committed CE draft declaration skips interactive discovery with a live peer', () => {
+  const fixture = peerRunFixture()
+  const result = discoverExtensions({
+    core: 'boss-plan',
+    role: 'draft',
+    root: process.cwd(),
+    mode: 'interactive',
+    runScratch: fixture.runScratch,
+    now: fixture.now,
+  })
+  assert.equal(
+    result.skipped.find((entry) => entry.name === 'boss-plan-compound-engineering')?.code,
+    'peer-run-active',
+  )
+})
+
+test('single-writer CLI checks peers and rejects a missing run-scratch value', () => {
+  const fixture = peerRunFixture()
+  const args = ['discover', '--core', 'bs-plan', '--root', fixture.root, '--json', '--run-scratch']
+  const result = runCli([...args, path.relative(process.cwd(), fixture.runScratch)])
+  assert.equal(result.status, 0)
+  assert.equal(JSON.parse(result.stdout).skipped[0].code, 'peer-run-active')
+  const bare = runCli(args)
+  assert.equal(bare.status, 2)
+  assert.match(bare.stderr, /requires a directory/)
+})
+
+test('singleWriter marker accepts only true declarations', () => {
+  for (const value of [true, 'true', 'TRUE']) {
+    assert.equal(
+      extensionMarker({ 'x-boss-extension': { extends: 'a', role: 'draft', singleWriter: value } })
+        .singleWriter,
+      true,
+    )
+  }
+  for (const value of [false, 'false', 1, undefined]) {
+    assert.equal(
+      'singleWriter' in
+        extensionMarker({
+          'x-boss-extension': { extends: 'a', role: 'draft', singleWriter: value },
+        }),
+      false,
+    )
+  }
+})
+
 test('every skip discoverExtensions can emit carries a classified code', () => {
   const root = scratchRoot()
   const writeRaw = (name, text) => {
@@ -823,8 +965,28 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     '    - id: Infra',
     '      title: Infrastructure',
   ])
+  writeSkill(root, 'bs-review-single', [
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: plan-reviewer',
+    '  singleWriter: true',
+  ])
+  const runScratch = path.join(root, '.linear-plans/run-A')
+  fs.mkdirSync(runScratch, { recursive: true })
+  fs.mkdirSync(path.join(root, '.linear-plans/run-B'))
   const emitted = new Set()
+  const builtinDir = path.join(scratchRoot(), 'extensions')
+  writeBuiltin(builtinDir, 'boss-verify-disabled', 'verify', 'boss-verify')
+  fs.writeFileSync(
+    path.join(root, '.boss-skills.json'),
+    JSON.stringify({
+      proofDefaults: {
+        builtins: { 'boss-verify-disabled': false, 'boss-verify-missing': false },
+      },
+    }),
+  )
   for (const { core, role, mode } of [
+    { core: 'boss-verify', role: 'verify' },
     { core: 'bs-review', role: 'plan-reviewer' },
     { core: 'bs-review', role: 'orchestrate-classify' },
     { core: 'bs-review', role: 'release' },
@@ -844,7 +1006,7 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     // named `bs-plan` can ever enumerate a `bs-review-*` directory, so it stays reportable.
     { core: 'bs', role: 'plan-reviewer' },
   ]) {
-    const { skipped } = discoverExtensions({ core, root, role, mode })
+    const { skipped } = discoverExtensions({ core, root, role, mode, runScratch, builtinDir })
     for (const entry of skipped) {
       assert.ok(
         entry.code in SKIP_REASONS,
@@ -873,17 +1035,21 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
   )
 })
 
-test('exactly the non-extension and mode-not-declared skips are classified deliberate', () => {
-  // A `deliberate: true` skip is the contract working: the directory is a same-prefix skill that is
-  // not an extension of THIS core, so reporting it would cry wolf on every run. Everything else is a
-  // misconfiguration a core MUST record. This partition is the whole point of the field, so it is
-  // pinned name-exact rather than by count.
+test('configuration, non-extension and eligibility skips are classified deliberate', () => {
+  // Config disables, declared eligibility and unrelated helpers are deliberate skips.
   const deliberate = Object.entries(SKIP_REASONS)
     .filter(([, spec]) => spec.deliberate)
     .map(([code]) => code)
     .sort()
-  assert.deepEqual(deliberate, ['extends-other-core', 'missing-marker', 'mode-not-declared'])
+  assert.deepEqual(deliberate, [
+    'disabled-by-config',
+    'extends-other-core',
+    'missing-marker',
+    'mode-not-declared',
+    'peer-run-active',
+  ])
   assert.deepEqual(Object.keys(SKIP_REASONS).sort(), [
+    'disabled-by-config',
     'extends-other-core',
     'extends-unrelated-core',
     'incomplete-marker',
@@ -899,6 +1065,8 @@ test('exactly the non-extension and mode-not-declared skips are classified delib
     'missing-marker',
     'mode-not-declared',
     'no-skill-md',
+    'peer-run-active',
+    'unknown-builtin',
     'unknown-requested-role',
     'unreadable-frontmatter',
     'wrong-role',
@@ -1523,20 +1691,59 @@ test('CLI discover --mode filters, and an unknown --mode exits 2 before scanning
   assert.ok(help.stdout.includes('--mode'), 'usage must document --mode')
 })
 
-function writeBuiltin(builtinDir, name, role) {
+function writeBuiltin(builtinDir, name, role, core = 'boss-plan') {
   const dir = path.join(builtinDir, name)
   fs.mkdirSync(dir, { recursive: true })
-  const fm = [
-    '---',
-    'x-boss-extension:',
-    '  extends: boss-plan',
-    `  role: ${role}`,
-    '---',
-    '',
-  ].join('\n')
+  const fm = ['---', 'x-boss-extension:', `  extends: ${core}`, `  role: ${role}`, '---', ''].join(
+    '\n',
+  )
   fs.writeFileSync(path.join(dir, 'EXTENSION.md'), fm)
   return dir
 }
+
+test('repo-local proof media precedes the shipped CI media built-in', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-verify-custom-media', [
+    'x-boss-extension:',
+    '  extends: boss-verify',
+    '  role: proof-media',
+    '  media: media.mjs',
+  ])
+  const builtinDir = path.resolve(
+    'lib/bossalib/contract/plugin/skillpayload/skills/boss-verify/extensions',
+  )
+  const { extensions } = discoverExtensions({
+    root,
+    core: 'boss-verify',
+    role: 'proof-media',
+    builtinDir,
+  })
+  assert.deepEqual(
+    extensions.map(({ name, order }) => [name, order]),
+    [
+      ['boss-verify-custom-media', 100],
+      ['boss-verify-ci-media', 1000],
+    ],
+  )
+  assert.equal(extensions[1].builtin, true)
+  assert.equal(extensions[1].media, 'media.mjs')
+})
+
+test('shipped UI recording verifier is optional with an applicability check', () => {
+  const { extensions } = discoverExtensions({
+    root: scratchRoot(),
+    core: 'boss-verify',
+    role: 'verify',
+    builtinDir: path.resolve(
+      'lib/bossalib/contract/plugin/skillpayload/skills/boss-verify/extensions',
+    ),
+  })
+  const recording = extensions.find(({ name }) => name === 'boss-verify-ui-recording')
+  assert.ok(recording)
+  assert.equal(recording.builtin, true)
+  assert.equal(recording.optional, true)
+  assert.equal(recording.applies, 'applies.mjs')
+})
 
 test('discoverExtensions includes a core-shipped built-in extension, marked builtin', () => {
   const root = scratchRoot()
@@ -1590,6 +1797,102 @@ test('a missing built-in directory is a no-op', () => {
     extensions: [],
     skipped: [],
   })
+})
+
+function proofBuiltins(config) {
+  const root = scratchRoot()
+  const builtinDir = path.join(scratchRoot(), 'extensions')
+  fs.writeFileSync(path.join(root, '.boss-skills.json'), JSON.stringify(config))
+  for (const name of ['boss-verify-first', 'boss-verify-second']) {
+    writeBuiltin(builtinDir, name, 'verify', 'boss-verify')
+  }
+  return { root, builtinDir, core: 'boss-verify' }
+}
+
+test('proofDefaults.builtins disables only the named built-in before marker parsing', () => {
+  const options = proofBuiltins({ proofDefaults: { builtins: { 'boss-verify-first': false } } })
+  fs.writeFileSync(path.join(options.builtinDir, 'boss-verify-first/EXTENSION.md'), 'broken')
+  const result = discoverExtensions(options)
+  assert.deepEqual(
+    result.extensions.map((entry) => entry.name),
+    ['boss-verify-second'],
+  )
+  assert.deepEqual(result.skipped, [
+    {
+      name: 'boss-verify-first',
+      code: 'disabled-by-config',
+      deliberate: true,
+      reason: 'disabled by proofDefaults.builtins',
+    },
+  ])
+})
+
+test('proofDefaults.builtins false still lets a repo-local replacement run', () => {
+  const options = proofBuiltins({ proofDefaults: { builtins: { 'boss-verify-first': false } } })
+  writeSkill(options.root, 'boss-verify-first', [
+    'x-boss-extension:',
+    '  extends: boss-verify',
+    '  role: verify',
+  ])
+  const result = discoverExtensions(options)
+  assert.equal(result.extensions.length, 2)
+  assert.equal(
+    result.extensions.find((entry) => entry.name === 'boss-verify-first').builtin,
+    undefined,
+  )
+  assert.deepEqual(result.skipped, [])
+})
+
+test('proofDefaults.builtins true and non-boolean values leave built-ins on', () => {
+  for (const value of [true, 'false', null, 0]) {
+    const result = discoverExtensions(
+      proofBuiltins({ proofDefaults: { builtins: { 'boss-verify-first': value } } }),
+    )
+    assert.equal(result.extensions.length, 2)
+    assert.deepEqual(result.skipped, [])
+  }
+})
+
+test('proofDefaults.builtins ignores names outside boss-verify-', () => {
+  const root = scratchRoot()
+  fs.writeFileSync(
+    path.join(root, '.boss-skills.json'),
+    JSON.stringify({ proofDefaults: { builtins: { 'boss-plan-ce': false } } }),
+  )
+  const builtinDir = path.join(scratchRoot(), 'extensions')
+  writeBuiltin(builtinDir, 'boss-plan-ce', 'draft')
+  assert.equal(discoverExtensions({ root, builtinDir, core: 'boss-plan' }).extensions.length, 1)
+})
+
+test('proofDefaults.builtins reports unknown names only for a readable verify built-in root', () => {
+  const options = proofBuiltins({ proofDefaults: { builtins: { 'boss-verify-missing': true } } })
+  assert.deepEqual(discoverExtensions(options).skipped, [
+    {
+      name: 'boss-verify-missing',
+      code: 'unknown-builtin',
+      deliberate: false,
+      reason: 'proofDefaults.builtins names no built-in extension of boss-verify',
+    },
+  ])
+  assert.deepEqual(
+    discoverExtensions({ ...options, builtinDir: path.join(options.root, 'absent') }).skipped,
+    [],
+  )
+  assert.deepEqual(discoverExtensions({ ...options, core: 'boss-build' }).skipped, [])
+})
+
+test('builtinExtensions false wins over proofDefaults.builtins', () => {
+  const options = proofBuiltins({
+    builtinExtensions: false,
+    proofDefaults: {
+      builtins: {
+        'boss-verify-first': true,
+        'boss-verify-second': false,
+        'boss-verify-missing': false,
+      },
+    },
+  })
+  assert.deepEqual(discoverExtensions(options), { extensions: [], skipped: [] })
 })
 
 // BOS-1386: the `verify` role — result validation, outcome classification, the `optional` marker
@@ -2473,5 +2776,68 @@ test('only a valid pass citing recording evidence is recorded', () => {
   assert.equal(
     classifyVerifyOutcome({ result: verifyResult({ ok: false, evidence: [recording] }) }).recorded,
     undefined,
+  )
+})
+
+test('missing trusted dependencies label crashes and reported failures without changing verdict policy', () => {
+  for (const optional of [false, true]) {
+    for (const malfunction of [
+      { crashed: true },
+      { result: { ok: false, error: 'missing package' } },
+    ]) {
+      const r = classifyVerifyOutcome({ ...malfunction, optional, depsMissing: true })
+      assert.equal(r.reason, 'extension-deps-missing')
+      assert.equal(r.outcome, optional ? 'abstain' : 'failed')
+    }
+  }
+  assert.equal(classifyVerifyOutcome({ timedOut: true, depsMissing: true }).reason, 'timed-out')
+  assert.ok(VERIFY_OUTCOME_REASONS.includes('extension-deps-missing'))
+  for (const result of [
+    verifyResult(),
+    failResult(),
+    verifyResult({ verdict: 'human', reason: 'human-review:security' }),
+    verifyResult({ verdict: 'wait', reason: 'stack-busy' }),
+    verifyResult({ verdict: 'abstain', evidence: [] }),
+  ]) {
+    const original = classifyVerifyOutcome({ result })
+    assert.notEqual(original.reason, 'malformed-result')
+    assert.deepEqual(classifyVerifyOutcome({ result, depsMissing: true }), original)
+  }
+})
+
+test('shipped CI media follows a repo-local media extension and can be disabled by name', () => {
+  const root = scratchRoot()
+  const local = writeSkill(root, 'boss-verify-local-media', [
+    'x-boss-extension:',
+    '  extends: boss-verify',
+    '  role: proof-media',
+    '  media: media.mjs',
+  ])
+  fs.writeFileSync(path.join(local, 'media.mjs'), '')
+  const opts = {
+    root,
+    core: 'boss-verify',
+    role: 'proof-media',
+    builtinDir: path.resolve(
+      'lib/bossalib/contract/plugin/skillpayload/skills/boss-verify/extensions',
+    ),
+  }
+  const { extensions } = discoverExtensions(opts)
+  assert.deepEqual(
+    extensions.map(({ name, order }) => [name, order]),
+    [
+      ['boss-verify-local-media', 100],
+      ['boss-verify-ci-media', 1000],
+    ],
+  )
+  assert.equal(extensions[1].builtin, true)
+  assert.equal(extensions[1].media, 'media.mjs')
+  fs.writeFileSync(
+    path.join(root, '.boss-skills.json'),
+    JSON.stringify({ proofDefaults: { builtins: { 'boss-verify-ci-media': false } } }),
+  )
+  assert.deepEqual(
+    discoverExtensions(opts).extensions.map(({ name }) => name),
+    ['boss-verify-local-media'],
   )
 })

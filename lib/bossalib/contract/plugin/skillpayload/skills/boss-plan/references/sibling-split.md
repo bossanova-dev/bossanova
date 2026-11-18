@@ -46,12 +46,7 @@ After write-back verification (step 5), file the siblings:
    read-back reports it and the source title from that read-back:
 
    ```bash
-   set -o pipefail
-   printf '{"parentId":"%s"}\n' "<PARENT-ID>" |
-     bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs invoke-operation listChildren --args-file /dev/stdin --result-only |
-     jq --arg sourceId "<ISSUE-ID>" --arg sourceTitle "<SOURCE-TITLE>" --arg parentId "<PARENT-ID>" \
-       --slurpfile metadata .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json \
-       '{sourceId:$sourceId, sourceTitle:$sourceTitle, parentId:$parentId, siblings:$metadata[0].siblings, existingChildren:.children}' > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh children-input --mode siblings --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --parent <PARENT-ID> --source-title '<SOURCE-TITLE>'
    ```
 
    Stop on a listing failure before planning any creates. Pass the title as data, with shell quoting

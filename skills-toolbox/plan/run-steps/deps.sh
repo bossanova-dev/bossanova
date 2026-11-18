@@ -14,4 +14,5 @@ prefix="$scratch/$issue"
 trap 'rm -f -- "$prefix.deps-in.json"' EXIT
 set --
 if [ -f "$prefix.open-prs.json" ]; then set -- --open-prs "$prefix.open-prs.json"; fi
+if [ -f "$prefix.image-guard-final.md" ]; then set -- "$@" --saved-description "$prefix.image-guard-final.md"; fi
 node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" deps "$prefix.deps-in.json" "$prefix.candidates.json" --subject "$issue" "$@"

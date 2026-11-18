@@ -222,6 +222,97 @@ const merge = object({
   additionalProperties: false,
 })
 
+const proofDefaults = object({
+  'x-msg': 'proofDefaults must be an object when present',
+  'x-unknown': 'warn',
+  additionalProperties: false,
+  properties: {
+    pages: {
+      enum: ['parked', 'all'],
+      'x-msg': 'proofDefaults.pages must be "parked" or "all" when present',
+    },
+    builtins: object({
+      'x-msg': 'proofDefaults.builtins must be an object when present',
+      'x-unknown': 'warn',
+      additionalProperties: false,
+      patternProperties: {
+        '^boss-verify-[a-z0-9][a-z0-9-]*$': {
+          type: 'boolean',
+          'x-msg': 'proofDefaults.builtins.{2} must be true or false',
+        },
+      },
+    }),
+    sections: object({
+      'x-msg': 'proofDefaults.sections must be an object when present',
+      'x-unknown': 'warn',
+      additionalProperties: false,
+      patternProperties: {
+        '^[a-z][a-z0-9-]{1,23}$': {
+          type: 'boolean',
+          'x-msg': 'proofDefaults.sections.{2} must be true or false',
+        },
+      },
+    }),
+    dbt: object({
+      'x-msg': 'proofDefaults.dbt must be an object when present',
+      'x-unknown': 'warn',
+      additionalProperties: false,
+      properties: {
+        piiTerms: {
+          type: 'array',
+          items: nonBlankString,
+          'x-msg': 'proofDefaults.dbt.piiTerms must be an array of non-blank strings',
+        },
+      },
+    }),
+    media: object({
+      'x-msg': 'proofDefaults.media must be an object when present',
+      'x-unknown': 'warn',
+      additionalProperties: false,
+      properties: {
+        sources: {
+          type: 'array',
+          maxItems: 8,
+          items: object({
+            additionalProperties: false,
+            'x-unknown': 'warn',
+            'x-msg': 'proofDefaults.media.sources.{3} must be an object',
+            required: ['suite', 'workflow', 'job', 'artifact'],
+            properties: {
+              suite: {
+                type: 'string',
+                pattern: '^[a-z][a-z0-9-]{0,23}$',
+                'x-msg':
+                  'proofDefaults.media.sources.{3}.suite must be a lower-case suite name of at most 24 characters',
+              },
+              workflow: {
+                type: 'string',
+                pattern: '^[A-Za-z0-9._-]+\\.ya?ml$',
+                'x-msg':
+                  'proofDefaults.media.sources.{3}.workflow must be a YAML workflow file name',
+              },
+              job: {
+                ...nonBlankString,
+                'x-msg': 'proofDefaults.media.sources.{3}.job must be a non-blank string',
+              },
+              artifact: {
+                type: 'string',
+                pattern: '\\{head\\}',
+                'x-msg': 'proofDefaults.media.sources.{3}.artifact must contain {head}',
+              },
+            },
+          }),
+          'x-msg': 'proofDefaults.media.sources must be an array of at most 8 sources',
+        },
+      },
+    }),
+    fallback: {
+      enum: ['check-run', 'none'],
+      'x-msg': 'proofDefaults.fallback must be "check-run" or "none" when present',
+    },
+  },
+})
+
 const verifyDefaults = object({
   'x-msg': { type: 'verifyDefaults must be an object when present' },
   // Open on purpose: an older tree ignores a knob a newer one added.
@@ -362,11 +453,26 @@ const trackerAdapter = object({
 
 const publishAdapter = object({
   'x-msg': { type: 'publishConfig.{1} must be an object' },
-  required: ['bucket', 'baseUrl'],
+  required: ['baseUrl'],
   properties: {
+    kind: {
+      enum: ['daemon', 'access-put'],
+      'x-msg': 'publishConfig.{1}.kind must be "daemon" or "access-put"',
+    },
+    keychainService: {
+      ...nonEmptyString,
+      'x-msg': 'publishConfig.{1}.keychainService must be a non-empty string',
+    },
     bucket: { ...nonEmptyString, 'x-msg': 'publishConfig.{1}.bucket must be a non-empty string' },
     baseUrl: { ...nonEmptyString, 'x-msg': 'publishConfig.{1}.baseUrl must be a non-empty string' },
   },
+  allOf: [
+    {
+      if: { not: { properties: { kind: { const: 'access-put' } }, required: ['kind'] } },
+      then: { required: ['bucket'], properties: { bucket: true } },
+      'x-msg': 'publishConfig.{1}.bucket must be a non-empty string',
+    },
+  ],
 })
 
 const planDependencyList = (key) => ({
@@ -501,6 +607,7 @@ export const schema = object({
       'x-unknown': 'warn',
     }),
     verifyDefaults,
+    proofDefaults,
     commands: object({
       'x-msg': { type: 'commands must be an object when present' },
       additionalProperties: {

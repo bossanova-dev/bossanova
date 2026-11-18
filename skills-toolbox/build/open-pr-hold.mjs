@@ -10,8 +10,9 @@ import {
   readOpenPrsSnapshot,
   validateOpenPrsSnapshot,
 } from '../plan/plan-open-prs.mjs'
-import { labelName, loadSkillConfig, optionalLabelName } from '../skill-config.mjs'
+import { labelName, loadSkillConfig, stateName } from '../skill-config.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
+import { BLOCKER_CLEARED_STATE_TYPES } from '../tracker/blocker-clearance.mjs'
 
 export const HOLD_MARKER_PREFIX = 'boss-build open-PR overlap hold'
 
@@ -80,13 +81,50 @@ export function decideOpenPrHold({ config, issue, planText, snapshot, ownPr, roo
   }
 }
 
-/** @param {{overlaps: {number: number, url: string, shared: string[], level: string, planned: boolean}[]}} decision */
-export function holdComment(decision) {
-  const held = decision.overlaps
+/** The open PRs that hold a build: unplanned file-level overlaps, by PR number.
+ * @param {{overlaps: {number: number, url: string, shared: string[], level: string, planned: boolean, ticketIds?: string[]}[]}} decision */
+export const heldPullRequests = (decision) =>
+  decision.overlaps
     .filter((pr) => pr.level === 'file' && !pr.planned)
     .sort((a, b) => a.number - b.number)
+
+/** Pure split of the held PRs. A PR whose ticket is still open becomes a blocker of this issue, so
+ * the build waits for that ticket. A PR with no open ticket sends this issue back to planning, and
+ * so does one whose open tickets already block this issue: selection let the issue through despite
+ * those edges (an In Review soft-clear or a named run), so they cannot keep it out of the build queue.
+ * @param {ReturnType<typeof decideOpenPrHold>} decision
+ * @param {Map<string, {type?: string}|null>} ticketStates state per PR ticket id; null when unreadable
+ * @param {Set<string>} [existingBlockers] upper-cased ids already blocking this issue */
+export function splitHeldPullRequests(decision, ticketStates, existingBlockers = new Set()) {
+  const blockers = new Set()
+  const untracked = []
+  for (const pr of heldPullRequests(decision)) {
+    const open = (pr.ticketIds ?? []).filter((id) => {
+      const state = ticketStates.get(id)
+      return state && !BLOCKER_CLEARED_STATE_TYPES.has(state.type)
+    })
+    if (open.some((id) => !existingBlockers.has(id.toUpperCase())))
+      open.forEach((id) => blockers.add(id))
+    else untracked.push(pr)
+  }
+  return { blockers: [...blockers].sort(), untracked }
+}
+
+/** @param {ReturnType<typeof decideOpenPrHold>} decision
+ * @param {{blockers: string[], untracked: {number: number}[]}} [split] */
+export function holdComment(decision, split = { blockers: [], untracked: [] }) {
+  const held = heldPullRequests(decision)
+  const untracked = split.untracked.map((pr) => `#${pr.number}`).join(', ')
   return [
-    'Build held: unplanned file overlap with open PRs. Record the intended sequencing in the plan or description before restoring the build label.',
+    'Build held: open PRs change the same files as this plan.',
+    ...(split.blockers.length
+      ? [`Blocked by ${split.blockers.join(', ')}; the build resumes when they are done.`]
+      : []),
+    ...(untracked
+      ? [
+          `${untracked} has no open ticket, so this goes back to planning; re-plan it once that PR merges.`,
+        ]
+      : []),
     ...held
       .slice(0, 5)
       .map(
@@ -158,23 +196,53 @@ export async function runCli(argv, deps = {}) {
   if (decision.route === 'clear') return { code: 0, out: decision }
   if (!values.apply) return { code: 3, out: decision }
   try {
-    const needsHuman = optionalLabelName(config, 'needsHuman')
-    if (!needsHuman) throw new Error('needsHuman label role is not configured')
     const adapter = deps.adapter === undefined ? resolveTrackerAdapter({ env }) : deps.adapter
     if (typeof adapter?.applyIssueWrites !== 'function')
       throw new Error('the tracker adapter has no applyIssueWrites capability')
-    const numbers = decision.overlaps
-      .filter((pr) => pr.level === 'file' && !pr.planned)
-      .map((pr) => pr.number)
-      .sort((a, b) => a - b)
-    const writes = {
-      issueId: String(issue.id ?? issue.identifier),
-      removeLabels: [labelName(config, 'agentBuild')],
-      addLabels: [needsHuman],
-      comment: holdComment(decision),
-      marker: `${HOLD_MARKER_PREFIX}: ${numbers.map((n) => `#${n}`).join(', ')};`,
+    const held = heldPullRequests(decision)
+    const ticketStates = new Map()
+    for (const id of new Set(held.flatMap((pr) => pr.ticketIds ?? []))) {
+      // Without a readable open ticket a blocker could never clear, so that PR counts as untracked.
+      if (typeof adapter.readIssueState !== 'function') break
+      ticketStates.set(
+        id,
+        await adapter.readIssueState(id).then(
+          (r) => r?.state ?? null,
+          () => null,
+        ),
+      )
     }
-    const result = await adapter.applyIssueWrites(writes)
+    const issueId = String(issue.id ?? issue.identifier)
+    // Unreadable edges count as none, so the hold still writes the blocker edge.
+    const existingBlockers = new Set()
+    if (typeof adapter.readBlockers === 'function' && ticketStates.size)
+      try {
+        const [row] = await adapter.readBlockers([issueId])
+        for (const blocker of row?.blockers ?? [])
+          if (blocker?.id) existingBlockers.add(String(blocker.id).toUpperCase())
+      } catch {}
+    const split = splitHeldPullRequests(decision, ticketStates, existingBlockers)
+    const replan = split.untracked.length > 0
+    const buildLabel = replan ? labelName(config, 'agentBuild') : null
+    const writes = {
+      issueId,
+      ...(split.blockers.length ? { addBlockedBy: split.blockers } : {}),
+      ...(replan
+        ? {
+            addLabels: [labelName(config, 'agentPlan')],
+            // Leaving In Progress also makes Step 12 leave the state rather than restore Todo.
+            stateName: stateName(config, 'unplanned'),
+          }
+        : {}),
+      comment: holdComment(decision, split),
+      marker: `${HOLD_MARKER_PREFIX}: ${held.map((pr) => `#${pr.number}`).join(', ')};`,
+    }
+    // Trackers apply each write in turn and stop at the first failure. Removing the build label
+    // only after the state move lands keeps a partial hold in one queue: it is still a build
+    // candidate when Step 12 restores Todo, and a planning candidate once it is unplanned.
+    let result = await adapter.applyIssueWrites(writes)
+    if (replan && result?.outcome === 'ok')
+      result = await adapter.applyIssueWrites({ issueId, removeLabels: [buildLabel] })
     const outcome = result?.outcome ?? 'failed'
     return {
       code: outcome === 'ok' ? 3 : 4,

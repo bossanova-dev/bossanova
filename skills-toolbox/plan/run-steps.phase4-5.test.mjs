@@ -253,6 +253,35 @@ test('open-prs: reuses the drafter snapshot without fetching', (t) => {
   assert.equal(readFileSync(f.file('open-prs.json'), 'utf8'), 'existing snapshot bytes')
 })
 
+test('deps: subject-description-stale refuses stale rows and skips an absent final description', (t) => {
+  const f = fixture(t)
+  const savedDescription = `${description}\n## Key changes\n\n- \`app/example.txt\`: edit\n`
+  const row = {
+    source: 'id',
+    id: 'uuid-1',
+    identifier: issue,
+    title: 'Work',
+    description: '',
+    stateName: 'Planned',
+    stateType: 'unstarted',
+    parentId: null,
+    labels: [],
+  }
+  f.put('image-guard-final.md', savedDescription)
+  for (const state of ['stale', 'fresh', 'absent']) {
+    if (state === 'absent') rmSync(f.file('image-guard-final.md'))
+    f.put(
+      'candidates.json',
+      JSON.stringify([{ ...row, description: state === 'fresh' ? savedDescription : '' }]),
+    )
+    f.put('deps-in.json', '{}')
+    const r = f.run('deps')
+    assert.equal(r.status, state === 'stale' ? 1 : 0, r.stderr)
+    if (state === 'stale') assert.match(r.stderr, /subject-description-stale/)
+    assert.equal(existsSync(f.file('deps-in.json')), false)
+  }
+})
+
 test('premise-repass: records changed annotation and merges the existing report', (t) => {
   const f = fixture(t)
   f.put('premises.json', JSON.stringify([{ id: 'TCK-2', state: 'Todo' }]))

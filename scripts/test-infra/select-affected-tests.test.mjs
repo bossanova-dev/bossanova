@@ -144,12 +144,12 @@ test('selectTargets maps script changes to script tests', () => {
 
 test('selectTargets maps script workflow and codegen inputs to script tests', () => {
   for (const file of [
-    '.github/workflows/test-bosso-production-deployment.yml',
     '.github/workflows/test-docs.yml',
     '.github/workflows/test-marketing.yml',
     '.github/workflows/test-plugin-distribution.yml',
     '.github/workflows/test-proto.yml',
     '.github/workflows/test-scripts.yml',
+    '.github/workflows/test-terraform.yml',
     '.github/workflows/test-web.yml',
     'buf.gen.yaml',
   ]) {

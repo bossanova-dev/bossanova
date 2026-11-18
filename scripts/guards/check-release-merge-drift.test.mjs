@@ -6,12 +6,7 @@ import path from 'node:path'
 import { after, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import {
-  findReleaseDrift,
-  releaseOwnership,
-  renderVerdict,
-  stripImagePins,
-} from './check-release-merge-drift.mjs'
+import { findReleaseDrift, releaseOwnership, renderVerdict } from './check-release-merge-drift.mjs'
 
 const script = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -54,33 +49,10 @@ function makeRepo() {
   return { dir, git, commit }
 }
 
-const STAGING_OVERLAY = 'infra/kustomize/overlays/staging/kustomization.yml'
-
-// The shape of the real overlay: two sed-pinned image tags plus config the release never writes.
-function kustomization(tag, { patches = ['patch-configmap-bosso.yml'] } = {}) {
-  return [
-    'images:',
-    '  - name: example/bosso',
-    `    newTag: '${tag}'  # bosso`,
-    '  - name: example/mcp-gateway',
-    `    newTag: '${tag}'  # mcp-gateway`,
-    'patches:',
-    ...patches.map((patch) => `  - path: ${patch}`),
-    '',
-  ].join('\n')
-}
-
-// What main carries in the files a release later touches.
-const MAIN_TREE = {
-  [STAGING_OVERLAY]: kustomization('1.2.2'),
-  'infra/kustomize/overlays/staging/patch-configmap-bosso.yml': 'origins: strict\n',
-}
-
 // What perform-staging-release.yml / perform-production-release.yml commit onto a release branch.
 const RELEASE_COMMIT = {
   'CHANGELOG.md': '# v1.2.3\n',
   '.VERSION': '1.2.3\n',
-  [STAGING_OVERLAY]: kustomization('1.2.3'),
   'services/marketing/src/content/changelog/1.2.3.md': 'release notes\n',
 }
 
@@ -93,7 +65,7 @@ function releaseMerge(repo, branch, head) {
 
 test('a plain promotion of main passes, with only release-owned files differing', () => {
   const repo = makeRepo()
-  repo.commit('base', { 'a.go': 'a1\n', ...MAIN_TREE })
+  repo.commit('base', { 'a.go': 'a1\n' })
   repo.git('checkout', '-q', '-b', 'staging')
   repo.commit('release v1.2.3', RELEASE_COMMIT)
   repo.git('checkout', '-q', 'main')
@@ -127,7 +99,7 @@ test('a release branch that kept a hunk main reverted is flagged (the #3095 rout
 
 test('a fix cherry-picked onto the release candidate passes (the release-fix procedure)', () => {
   const repo = makeRepo()
-  repo.commit('base', { 'a.go': 'a1\n', 'fix.go': 'broken\n', ...MAIN_TREE })
+  repo.commit('base', { 'a.go': 'a1\n', 'fix.go': 'broken\n' })
   repo.git('checkout', '-q', '-b', 'staging')
   repo.commit('release v1.2.3', RELEASE_COMMIT)
   repo.git('checkout', '-q', 'main')
@@ -149,7 +121,7 @@ test('a fix cherry-picked onto the release candidate passes (the release-fix pro
 
 test('the CLI exits 1 naming the drifted file and how to fix it, and 0 when clean', () => {
   const repo = makeRepo()
-  repo.commit('base', { 'keep.go': 'main\n', ...MAIN_TREE })
+  repo.commit('base', { 'keep.go': 'main\n' })
   repo.git('checkout', '-q', '-b', 'staging')
   repo.commit('hand edit on the release branch', { 'keep.go': 'release-only\n', ...RELEASE_COMMIT })
   repo.git('checkout', '-q', 'main')
@@ -174,7 +146,7 @@ test('the CLI exits 1 naming the drifted file and how to fix it, and 0 when clea
 
 test('a depth-2 clone of the merge commit, as release-drift checks out, holds what the CLI reads', () => {
   const repo = makeRepo()
-  repo.commit('base', { 'keep.go': 'main\n', ...MAIN_TREE })
+  repo.commit('base', { 'keep.go': 'main\n' })
   repo.git('checkout', '-q', '-b', 'staging')
   repo.commit('hand edit on the release branch', { 'keep.go': 'release-only\n' })
   repo.commit('release v1.2.3', RELEASE_COMMIT)
@@ -203,7 +175,6 @@ test('a depth-2 clone of the merge commit, as release-drift checks out, holds wh
   })
   assert.equal(run.status, 1, run.stderr)
   assert.match(run.stderr, /^ {2}- keep\.go$/m)
-  assert.doesNotMatch(run.stderr, /^ {2}- infra\//m, 'pin-only overlay blobs read in the clone')
 })
 
 test('the CLI refuses to run without --head', () => {
@@ -211,95 +182,28 @@ test('the CLI refuses to run without --head', () => {
   assert.equal(run.status, 2)
 })
 
-test('a release branch that kept an old overlay patch is flagged, though the release writes its overlay', () => {
-  const repo = makeRepo()
-  repo.commit('base', { 'a.go': 'a1\n', ...MAIN_TREE })
-  repo.git('checkout', '-q', '-b', 'staging')
-  repo.commit('release v1.2.3', RELEASE_COMMIT)
-  repo.commit('hand edit on the release branch', {
-    'infra/kustomize/overlays/staging/patch-configmap-bosso.yml': 'origins: any\n',
-  })
-  repo.git('checkout', '-q', 'main')
-  const head = repo.commit('feature', { 'a.go': 'a2\n' })
-  const merge = releaseMerge(repo, 'staging', head)
-
-  assert.deepEqual(findReleaseDrift({ head, merge, cwd: repo.dir }), [
-    'infra/kustomize/overlays/staging/patch-configmap-bosso.yml',
-  ])
-})
-
-test('a kustomization.yml edit beyond its pinned tags is flagged', () => {
-  const repo = makeRepo()
-  repo.commit('base', { 'a.go': 'a1\n', ...MAIN_TREE })
-  repo.git('checkout', '-q', '-b', 'staging')
-  repo.commit('release v1.2.3', RELEASE_COMMIT)
-  repo.commit('hand edit adds a patch on the release branch', {
-    [STAGING_OVERLAY]: kustomization('1.2.3', {
-      patches: ['patch-configmap-bosso.yml', 'patch-hpa-bosso.yml'],
-    }),
-  })
-  repo.git('checkout', '-q', 'main')
-  const head = repo.commit('feature', { 'a.go': 'a2\n' })
-  const merge = releaseMerge(repo, 'staging', head)
-
-  assert.deepEqual(findReleaseDrift({ head, merge, cwd: repo.dir }), [STAGING_OVERLAY])
-})
-
-test('a kustomization.yml the release branch has and the head lacks is flagged', () => {
+// The release workflows used to pin image tags into this overlay. Release branches that still
+// carry it after main deleted it have drifted like any other file.
+test('a retired image-pin overlay the release branch kept and the head lacks is flagged', () => {
+  const overlay = 'infra/kustomize/overlays/staging/kustomization.yml'
   const repo = makeRepo()
   repo.commit('base', { 'a.go': 'a1\n' })
   repo.git('checkout', '-q', '-b', 'staging')
-  repo.commit('release v1.2.3', RELEASE_COMMIT)
+  repo.commit('release v1.2.3', { ...RELEASE_COMMIT, [overlay]: "newTag: '1.2.3'  # bosso\n" })
   repo.git('checkout', '-q', 'main')
   const head = repo.commit('feature', { 'a.go': 'a2\n' })
   const merge = releaseMerge(repo, 'staging', head)
 
-  assert.deepEqual(findReleaseDrift({ head, merge, cwd: repo.dir }), [STAGING_OVERLAY])
+  assert.deepEqual(findReleaseDrift({ head, merge, cwd: repo.dir }), [overlay])
 })
 
-test('stripImagePins blanks only the sed-pinned newTag lines', () => {
-  assert.equal(stripImagePins(kustomization('1.2.2')), stripImagePins(kustomization('9.9.9-rc.1')))
-  assert.equal(
-    stripImagePins(`    newTag: "1.0"  # bosso\n`),
-    stripImagePins(`    newTag: '2.0'  # bosso\n`),
-  )
-  const unpinned = `    newTag: '1.0'  # redis\n`
-  assert.equal(stripImagePins(unpinned), unpinned)
-  assert.notEqual(
-    stripImagePins(kustomization('1.0')),
-    stripImagePins(kustomization('1.0', { patches: [] })),
-  )
-})
-
-test('stripImagePins blanks exactly the span the release sed rewrites', () => {
-  const pin = (line) => stripImagePins(`${line}\n`)
-  assert.equal(pin(`    newTag: '1.0' # bosso`), pin(`    newTag: '2.0'  # bosso`))
-  assert.equal(pin(`    newTag: '1.0'# mcp-gateway`), pin(`    newTag: '2.0'  # mcp-gateway`))
-  for (const line of [
-    `    newTag: '1.0'\t# bosso`,
-    `    newTag: '1.0'  # bossonova`,
-    `    newTag: '1.0'  # bosso, pinned by hand`,
-    `    newTag: '1.0'  # mcp-gateway-canary`,
-  ]) {
-    assert.equal(pin(line), `${line}\n`, `not a sed pin line: ${JSON.stringify(line)}`)
-  }
-  assert.notEqual(pin(`    newTag: '1.0'  # bosso `), pin(`    newTag: '1.0'  # bosso`))
-})
-
-test('release ownership is exact for files and kustomization.yml, directory-bounded for changelogs', () => {
+test('release ownership is exact for files, directory-bounded for changelogs', () => {
   assert.equal(releaseOwnership('CHANGELOG.md'), 'file')
+  assert.equal(releaseOwnership('.VERSION'), 'file')
   assert.equal(releaseOwnership('services/marketing/src/content/changelog/1.2.3.md'), 'dir')
-  assert.equal(
-    releaseOwnership('infra/kustomize/overlays/production/kustomization.yml'),
-    'image-pins',
-  )
-  assert.equal(releaseOwnership('infra/kustomize/overlays/staging/kustomization.yml'), 'image-pins')
-  assert.equal(releaseOwnership('infra/kustomize/overlays/staging/patch-configmap-bosso.yml'), null)
-  assert.equal(releaseOwnership('infra/kustomize/overlays/production/patch-hpa-bosso.yml'), null)
   assert.equal(releaseOwnership('docs/CHANGELOG.md'), null)
   assert.equal(releaseOwnership('.VERSION.bak'), null)
-  assert.equal(releaseOwnership('infra/kustomize/overlays/staging-canary/kustomization.yml'), null)
-  assert.equal(releaseOwnership('infra/kustomize/base/kustomization.yml'), null)
+  assert.equal(releaseOwnership('infra/kustomize/overlays/staging/kustomization.yml'), null)
 })
 
 test('renderVerdict passes only an empty drift list', () => {

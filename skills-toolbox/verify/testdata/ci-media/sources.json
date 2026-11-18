@@ -1,0 +1,32 @@
+{
+  "proofDefaults": {
+    "media": {
+      "sources": [
+        {
+          "suite": "mobile",
+          "workflow": "mobile-e2e-test.yml",
+          "job": "proof-capture",
+          "artifact": "proof-media-{head}"
+        },
+        {
+          "suite": "admin",
+          "workflow": "e2e-test.yml",
+          "job": "proof-capture-admin",
+          "artifact": "proof-media-admin-{head}"
+        },
+        {
+          "suite": "dashboard",
+          "workflow": "e2e-test.yml",
+          "job": "proof-capture-dashboard",
+          "artifact": "proof-media-dashboard-{head}"
+        },
+        {
+          "suite": "pdf",
+          "workflow": "pdf-test.yml",
+          "job": "pdf-proof",
+          "artifact": "proof-media-pdf-{head}"
+        }
+      ]
+    }
+  }
+}

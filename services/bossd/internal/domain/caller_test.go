@@ -22,69 +22,43 @@ func TestClassifyCaller(t *testing.T) {
 }
 
 func TestCallerCapabilities(t *testing.T) {
-	for _, kind := range []CallerKind{CallerOperator, CallerAgentChat, CallerDaemonChild, CallerUnattested} {
-		p := CallerPrincipal{Kind: kind, Role: AgentChatRoleOperator}
-		if got := p.HasCapability(CapabilityVerifyApprove, nil); got != (kind == CallerOperator) {
-			t.Fatalf("%s: %v", kind, got)
-		}
-	}
-	grants := CallerGrants{{Kind: CallerAgentChat, Role: AgentChatRoleVerify}: {CapabilityVerifyApprove}}
-	p := CallerPrincipal{Kind: CallerAgentChat, Role: AgentChatRoleVerify}
-	if !p.HasCapability(CapabilityVerifyApprove, grants) || p.HasCapability(CapabilityOperatorMerge, grants) {
-		t.Fatal("grant does not scope capability")
-	}
-}
-
-func TestAcceptRequiresItsOwnOperatorCapability(t *testing.T) {
-	for _, kind := range []CallerKind{CallerOperator, CallerAgentChat, CallerDaemonChild, CallerUnattested} {
-		p := CallerPrincipal{Kind: kind, Role: AgentChatRoleVerify}
-		if p.HasCapability(CapabilityVerifyAccept, nil) != (kind == CallerOperator) {
-			t.Fatalf("accept capability for %s", kind)
-		}
-	}
-	p := CallerPrincipal{Kind: CallerAgentChat, Role: AgentChatRoleVerify}
-	grants := CallerGrants{{Kind: p.Kind, Role: p.Role}: {CapabilityVerifyApprove}}
-	if p.HasCapability(CapabilityVerifyAccept, grants) {
-		t.Fatal("approval grant also allowed acceptance")
-	}
-}
-
-func TestCoordinatorApprovalGrantIsRoleScoped(t *testing.T) {
-	grants := CoordinatorApprovalGrants()
-	for _, role := range []AgentChatRole{AgentChatRoleCoordinator, AgentChatRoleOperator, AgentChatRoleBuild, AgentChatRoleRepair, AgentChatRoleVerify, AgentChatRoleUnknown} {
-		p := CallerPrincipal{Kind: CallerAgentChat, Role: role}
-		want := role == AgentChatRoleCoordinator
-		for _, c := range []CallerCapability{CapabilityVerifyApprove, CapabilityOperatorMerge} {
-			if p.HasCapability(c, grants) != want {
-				t.Fatalf("%s %s: want %v", role, c, want)
+	approveAndMerge := []CallerCapability{CapabilityVerifyApprove, CapabilityOperatorMerge}
+	operatorOnly := []CallerCapability{CapabilityVerifyAccept, CapabilityVerifyFollowUp}
+	roles := []AgentChatRole{AgentChatRoleBuild, AgentChatRoleRepair, AgentChatRoleVerify, AgentChatRoleOperator, AgentChatRoleCoordinator, AgentChatRoleUnknown}
+	for _, role := range roles {
+		chat := CallerPrincipal{Kind: CallerAgentChat, Role: role}
+		for _, c := range approveAndMerge {
+			if !chat.HasCapability(c) {
+				t.Fatalf("agent chat with role %q lacks %s", role, c)
 			}
 		}
-		for _, c := range []CallerCapability{CapabilityVerifyAccept, CapabilityVerifyFollowUp, CapabilityCreateCoordinatorChat} {
-			if p.HasCapability(c, grants) {
-				t.Fatalf("%s gained %s", role, c)
+		for _, c := range operatorOnly {
+			if chat.HasCapability(c) {
+				t.Fatalf("agent chat with role %q holds %s", role, c)
 			}
 		}
 	}
-	for _, kind := range []CallerKind{CallerDaemonChild, CallerUnattested} {
-		if (CallerPrincipal{Kind: kind, Role: AgentChatRoleCoordinator}).HasCapability(CapabilityVerifyApprove, grants) {
-			t.Fatalf("%s gained the coordinator grant", kind)
+	for _, c := range append(approveAndMerge, operatorOnly...) {
+		if !(CallerPrincipal{Kind: CallerOperator}).HasCapability(c) {
+			t.Fatalf("operator lacks %s", c)
 		}
-	}
-	if !(CallerPrincipal{Kind: CallerOperator}).HasCapability(CapabilityCreateCoordinatorChat, nil) {
-		t.Fatal("operator cannot create a coordinator chat")
+		for _, kind := range []CallerKind{CallerDaemonChild, CallerUnattested, "missing"} {
+			if (CallerPrincipal{Kind: kind, Role: AgentChatRoleCoordinator}).HasCapability(c) {
+				t.Fatalf("%s holds %s", kind, c)
+			}
+		}
 	}
 }
 
 func TestCapToOriginOnlyLowers(t *testing.T) {
 	operator := CallerPrincipal{Kind: CallerOperator, PID: 7}
-	grants := CoordinatorApprovalGrants()
 	cases := []struct {
 		origin  CallerOrigin
 		kind    CallerKind
 		approve bool
 	}{
 		{CallerOrigin{Kind: CallerOperator, Host: "a"}, CallerOperator, true},
-		{CallerOrigin{Kind: CallerAgentChat, AgentSessionID: "chat-1", SessionID: "s-1", Role: AgentChatRoleBuild}, CallerAgentChat, false},
+		{CallerOrigin{Kind: CallerAgentChat, AgentSessionID: "chat-1", SessionID: "s-1", Role: AgentChatRoleBuild}, CallerAgentChat, true},
 		{CallerOrigin{Kind: CallerAgentChat, AgentSessionID: "chat-2", Role: AgentChatRoleCoordinator}, CallerAgentChat, true},
 		{CallerOrigin{Kind: CallerDaemonChild}, CallerDaemonChild, false},
 		{CallerOrigin{Kind: CallerUnattested}, CallerUnattested, false},
@@ -92,7 +66,7 @@ func TestCapToOriginOnlyLowers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		got := operator.CapToOrigin(&tc.origin)
-		if got.Kind != tc.kind || !got.Forwarded || got.HasCapability(CapabilityVerifyApprove, grants) != tc.approve {
+		if got.Kind != tc.kind || !got.Forwarded || got.HasCapability(CapabilityVerifyApprove) != tc.approve {
 			t.Fatalf("%+v: %+v", tc.origin, got)
 		}
 		if tc.kind == CallerAgentChat && (got.AgentSessionID != tc.origin.AgentSessionID || got.Role != tc.origin.Role) {

@@ -44,6 +44,7 @@ import {
 } from './verify-sweep-state.mjs'
 import {
   claimForVerdict,
+  claimHoldersAt,
   releaseClaim,
   remoteOrphan,
   takeOverExpiredClaim,
@@ -349,14 +350,22 @@ export function routeCandidate(
     let note = rows.length > 1 ? `newest of ${rows.length} live sessions` : undefined
     const chats = run(boss, ['chats', '--json', session.id], { json: true, timeoutMs: timeout() })
     if (!chats.ok || !Array.isArray(chats.payload?.chats))
-      return { route: 'chats-unreadable', ok: false, why: chats.error ?? 'unreadable', note }
+      return {
+        route: 'chats-unreadable',
+        ok: false,
+        why: chats.error ?? 'unreadable',
+        note,
+        sessionId: session.id,
+      }
     const verify = pickVerifyChat(chats.payload.chats)
-    const finish = (route, sent, routedChats) => {
+    const finish = (route, sent, routedChats, chatId) => {
       const cleanup = sent.ok
         ? supersedeRoutedCallbacks({ run, boss, timeout, pr, head: headSha, chats: routedChats })
         : ''
       return {
         route,
+        sessionId: session.id,
+        chatId,
         ok: sent.ok,
         why: sent.why,
         note: [note, cleanup].filter(Boolean).join('; ') || undefined,
@@ -366,7 +375,7 @@ export function routeCandidate(
     if (verify && !chatIsBusy(verify)) {
       if (dryRun) return { route: 'existing-verify-chat', ok: true, note }
       const sent = sendVerify(run, boss, verify.agent_session_id, message, timeout())
-      return finish('existing-verify-chat', sent, chats.payload.chats)
+      return finish('existing-verify-chat', sent, chats.payload.chats, verify.agent_session_id)
     }
     if (dryRun) return { route: 'new-verify-chat', ok: true, note }
     const created = run(boss, verifyChatArgv(session.id, nextVerifyTitle(chats.payload.chats)), {
@@ -375,12 +384,20 @@ export function routeCandidate(
     })
     const chatId = created.payload?.chat?.agent_session_id
     if (!created.ok || !text(chatId))
-      return { route: 'new-verify-chat', ok: false, why: created.error ?? 'no-chat-id', note }
+      return {
+        route: 'new-verify-chat',
+        ok: false,
+        why: created.error ?? 'no-chat-id',
+        note,
+        sessionId: session.id,
+      }
     const sent = sendVerify(run, boss, chatId, message, timeout())
-    return finish('new-verify-chat', sent, [
-      ...chats.payload.chats,
-      { ...created.payload.chat, role: 'verify' },
-    ])
+    return finish(
+      'new-verify-chat',
+      sent,
+      [...chats.payload.chats, { ...created.payload.chat, role: 'verify' }],
+      chatId,
+    )
   }
   const argv = newSessionArgv({
     pr,
@@ -534,7 +551,8 @@ export function sweep(options = {}, deps = {}) {
   let stateFile
   const statePath = () =>
     stateFile === undefined
-      ? (stateFile = deps.stateFile ?? sweepStatePath(run, cwd, timeout()))
+      ? (stateFile =
+          deps.stateFile !== undefined ? deps.stateFile : sweepStatePath(run, cwd, timeout()))
       : stateFile
   const admissionFile = () => statePath() && join(dirname(statePath()), 'verify-admission.json')
   const forget = () => {
@@ -736,13 +754,26 @@ export function sweep(options = {}, deps = {}) {
           spawnDetached(cmd, args, { env, cwd, logDir, now }, { spawn }),
       },
     )
-    const { route, note, log, argv } = routed
+    const { route, note, log, argv, sessionId, chatId } = routed
+    const remember = (outcome, extra = {}) => {
+      if (dryRun) return
+      try {
+        const path = statePath()
+        claimHoldersAt(path ? join(dirname(path), 'claim-holders.json') : null, { fs }).merge(
+          claimed.token,
+          { route, session: sessionId, chat: chatId, log, outcome, ...extra },
+          now(),
+        )
+      } catch {}
+    }
     const detail = [why, note, log ? `log ${log}` : ''].filter(Boolean).join('; ')
     if (!routed.ok) {
       const back = releaseClaim(gate, { pr: c.pr, head, token: claimed.token, repoArgs, dry })
+      remember('dispatch-unknown', { why: routed.why ?? 'failed', released: back })
       const why = `${routed.why ?? 'failed'}${back ? '; park restored' : ''}`
       return record(c.pr, 'skipped', `dispatch-unknown: ${route} (${why})`, { route })
     }
+    remember('dispatched')
     const line = `dispatched: ${route}${detail ? ` (${detail})` : ''}${dryRun ? ' (dry-run)' : ''}`
     record(c.pr, 'dispatched', line, { route, ...(dryRun && argv ? { argv } : {}) })
   }

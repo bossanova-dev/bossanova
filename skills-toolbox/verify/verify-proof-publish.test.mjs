@@ -5,8 +5,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { operatorMarkers } from './verify-gate.mjs'
+import { loadSkillConfig } from '../skill-config.mjs'
 import {
   discoverProofPublisher,
+  proofPagesFor,
+  readProofPages,
   proofAfterPost,
   proofNote,
   recordHeadProof,
@@ -18,6 +21,229 @@ import { PAGE_OBJECT } from './verify-publish-hook.mjs'
 
 const HEAD = 'a'.repeat(40)
 const BASE = 'b'.repeat(40)
+
+test('every recorded proof note mirrors its lead and final page to a check run', async () => {
+  for (const publisher of [null, { kind: 'hook', extension: { name: 'host' } }]) {
+    const { result, notes, checkRuns } = await run({
+      env: { BOSS_SOCKET: '/daemon.sock' },
+      overrides: { discoverPublisher: () => ({ publisher, reason: 'not-configured' }) },
+    })
+    assert.equal(checkRuns.length, 1)
+    const page = publisher ? `https://proof.example/acme/widgets/7/${HEAD}/index.html` : ''
+    assert.deepEqual(checkRuns[0], {
+      socket: '/daemon.sock',
+      method: 'PostProofCheckRun',
+      message: {
+        repo: 'acme/widgets',
+        headSha: HEAD,
+        title: 'Proof: moderate',
+        summary: notes[0].note.body.split('\n\n<!-- boss-proof:')[0],
+        detailsUrl: page,
+      },
+      options: { timeoutMs: 15_000 },
+    })
+    assert.deepEqual(result.checkRun, {
+      posted: true,
+      url: 'https://github.com/acme/widgets/runs/1',
+      created: true,
+    })
+  }
+})
+
+test('non-parked verdicts mirror their one-line proof after posted, updated or current notes', async () => {
+  for (const verdict of ['pass', 'blocked', 'defect']) {
+    for (const outcome of ['posted', 'updated', 'current']) {
+      const { result, checkRuns } = await run({
+        judgement: { ...judged, verdict },
+        overrides: { recordHeadNote: () => ({ outcome }) },
+      })
+      assert.equal(result.note, outcome)
+      assert.equal(checkRuns.length, 1)
+      assert.match(
+        checkRuns[0].message.summary,
+        /^Verify's proof for `aaaaaaaaaaaa` is \*\*moderate\*\*\.$/,
+      )
+      assert.equal(checkRuns[0].message.detailsUrl, '')
+    }
+  }
+})
+
+test('proof checks honor only the trusted base opt-out and default on unreadable config', async () => {
+  for (const fallback of ['none', 'check-run']) {
+    const { result, checkRuns } = await run({
+      overrides: {
+        trustedTree: ({ baseSha }) => {
+          assert.equal(baseSha, BASE)
+          return { ok: true, root: '/base' }
+        },
+        loadConfig: (root) => {
+          assert.equal(root, '/base', 'the head config cannot disable its own proof')
+          return { proofDefaults: { fallback } }
+        },
+      },
+    })
+    assert.equal(checkRuns.length, fallback === 'none' ? 0 : 1)
+    if (fallback === 'none')
+      assert.deepEqual(result.checkRun, { posted: false, reason: 'fallback-disabled' })
+  }
+  const unreadable = await run({
+    overrides: {
+      trustedTree: () => ({ ok: true, root: '/base' }),
+      loadConfig: () => {
+        throw new Error('config unreadable')
+      },
+    },
+  })
+  assert.equal(unreadable.checkRuns.length, 1)
+})
+
+test('proof checks skip dry runs, failed notes, unreadable comments and repository proof', async () => {
+  const dry = await run({ dryRun: true })
+  assert.deepEqual(dry.result.checkRun, { posted: false, reason: 'dry-run' })
+  assert.equal(dry.checkRuns.length, 0)
+  for (const options of [
+    { readable: false },
+    { markers: [{ kind: 'repo-proof', head: HEAD }] },
+    { overrides: { recordHeadNote: () => ({ outcome: 'failed' }) } },
+  ]) {
+    const result = await run(options)
+    assert.equal(result.checkRuns.length, 0)
+    assert.equal(result.result.recorded, false)
+  }
+})
+
+test('proof check refusals and transport failures never undo a recorded note', async () => {
+  const failures = [
+    ...[
+      'not-signed-in',
+      'repo-not-registered',
+      'no-installation',
+      'checks-not-granted',
+      'upload-failed',
+    ].map((reason) => [{ reason, code: 'failed_precondition' }, reason]),
+    [{ code: 'unimplemented' }, 'daemon-unsupported'],
+    [new Error('socket closed'), 'check-run-failed'],
+    [null, 'check-run-failed'],
+  ]
+  for (const [error, reason] of failures) {
+    const { result, notes } = await run({
+      overrides: {
+        callDaemon: async () => {
+          throw error
+        },
+      },
+    })
+    assert.equal(result.recorded, true)
+    assert.equal(notes.length, 1)
+    assert.deepEqual(result.checkRun, { posted: false, reason })
+  }
+})
+
+test('access-put is selected only by trusted base config and hooks still win @sessions.AC256201', (t) => {
+  const trusted = tempDir('access-trusted-', t)
+  const checkout = tempDir('access-head-', t)
+  fs.writeFileSync(
+    path.join(checkout, '.boss-skills.json'),
+    JSON.stringify({
+      publishConfig: { proof: { kind: 'access-put', baseUrl: 'https://untrusted.example' } },
+    }),
+  )
+  const common = { baseSha: BASE, cwd: checkout, trustedTree: () => ({ ok: true, root: trusted }) }
+  const proof = { kind: 'access-put', baseUrl: 'https://proof.example', keychainService: 'my-host' }
+  const loadConfig = (root) => {
+    assert.equal(root, trusted)
+    return { publishConfig: { proof } }
+  }
+  assert.equal(discoverProofPublisher(common).publisher, null)
+  assert.deepEqual(discoverProofPublisher({ ...common, loadConfig }).publisher, proof)
+  for (const baseUrl of [
+    'http://proof.example',
+    'https://user:pass@proof.example',
+    'https://proof.example?key=value',
+    'https://proof.example#fragment',
+    'not-url',
+  ]) {
+    assert.deepEqual(
+      discoverProofPublisher({
+        ...common,
+        loadConfig: () => ({ publishConfig: { proof: { ...proof, baseUrl } } }),
+      }),
+      { publisher: null, reason: 'invalid-publish-config' },
+    )
+  }
+  for (const kind of [undefined, 'daemon']) {
+    assert.deepEqual(
+      discoverProofPublisher({
+        ...common,
+        loadConfig: () => ({
+          publishConfig: { proof: { kind, baseUrl: 'https://proof.example', bucket: 'proof' } },
+        }),
+      }).publisher,
+      { kind: 'daemon' },
+    )
+  }
+  hook(trusted, 'boss-verify-base-hook')
+  assert.equal(discoverProofPublisher({ ...common, loadConfig }).publisher.kind, 'hook')
+})
+
+test('proof page policy defaults to parked and rejects deferred faults @sessions.AC254502', (t) => {
+  for (const config of [
+    undefined,
+    {},
+    { proofDefaults: { pages: 'parked' } },
+    { proofDefaults: { pages: true } },
+  ])
+    assert.equal(proofPagesFor(config), 'parked')
+  assert.equal(proofPagesFor({ proofDefaults: { pages: 'all' } }), 'all')
+  const root = tempDir('proof-policy-', t)
+  fs.writeFileSync(
+    path.join(root, '.boss-skills.json'),
+    JSON.stringify({ proofDefaults: { pages: 'all', builtins: false } }),
+  )
+  const config = loadSkillConfig({ cwd: root })
+  assert.throws(() => proofPagesFor(config), /proofDefaults/)
+  assert.equal(
+    readProofPages({
+      baseSha: BASE,
+      trustedTree: () => ({ ok: true, root: '/base' }),
+      loadConfig: () => config,
+    }),
+    'parked',
+  )
+})
+
+test('proof page policy reads only the trusted root and falls back on unavailable inputs @sessions.AC254502', () => {
+  const input = {
+    baseSha: BASE,
+    cwd: '/head',
+    read: () => {},
+    trustedTree: ({ baseSha }) => {
+      assert.equal(baseSha, BASE)
+      return { ok: true, root: '/base' }
+    },
+    loadConfig: (root) => {
+      assert.equal(root, '/base')
+      return { proofDefaults: { pages: 'all' } }
+    },
+  }
+  assert.equal(readProofPages(input), 'all')
+  for (const override of [
+    { trustedTree: undefined },
+    { trustedTree: () => null },
+    { trustedTree: () => ({ ok: false }) },
+    {
+      trustedTree: () => {
+        throw new Error('tree unavailable')
+      },
+    },
+    {
+      loadConfig: () => {
+        throw new Error('config unavailable')
+      },
+    },
+  ])
+    assert.equal(readProofPages({ ...input, ...override }), 'parked')
+})
 const judged = {
   verdict: 'human',
   reasons: ['human-review:api-contract'],
@@ -50,10 +276,12 @@ async function run({
   overrides = {},
   missing = new Set(),
   judgement = judged,
+  dryRun = false,
 } = {}) {
   const uploads = []
   const notes = []
   const calls = []
+  const checkRuns = []
   const read = (command, args) => {
     if (command === 'git') calls.push(args.join(' '))
     if (command === 'git' && args[0] === 'cat-file')
@@ -69,9 +297,22 @@ async function run({
     throw new Error(`unexpected ${command} ${args.join(' ')}`)
   }
   const result = await recordHeadProof(
-    { read, repo: 'acme/widgets', pr: 7, headSha: HEAD, judged: judgement, cwd: '/repo', env },
+    {
+      read,
+      repo: 'acme/widgets',
+      pr: 7,
+      headSha: HEAD,
+      judged: judgement,
+      cwd: '/repo',
+      env,
+      dryRun,
+    },
     {
       readOperatorMarkers: () => (readable ? { readable: true, markers } : { readable: false }),
+      callDaemon: async (socket, method, message, options) => {
+        checkRuns.push({ socket, method, message, options })
+        return { htmlUrl: 'https://github.com/acme/widgets/runs/1', isCreated: true }
+      },
       recordHeadNote: (_read, note) => {
         notes.push(note)
         return { outcome: 'posted', url: 'https://github.com/acme/widgets/pull/7#c1' }
@@ -86,7 +327,7 @@ async function run({
       ...overrides,
     },
   )
-  return { result, uploads, notes, calls }
+  return { result, uploads, notes, calls, checkRuns }
 }
 
 test('a parked verdict uploads the page and notes the proof line carrying its URL @sessions.AC248601', async () => {
@@ -100,6 +341,14 @@ test('a parked verdict uploads the page and notes the proof line carrying its UR
   assert.deepEqual(uploads[0].target, { repo: 'acme/widgets', pr: 7, headSha: HEAD })
   assert.equal(notes[0].kind, 'proof-note')
   assert.deepEqual(parseProofLine(notes[0].note.body), { head: HEAD, page: url, level: 'moderate' })
+})
+
+test('proof recording forwards injected Access transport and keychain readers', async () => {
+  const fetchImpl = () => {}
+  const readKeychain = () => null
+  const { uploads } = await run({ overrides: { fetchImpl, readKeychain } })
+  assert.equal(uploads[0].fetchImpl, fetchImpl)
+  assert.equal(uploads[0].readKeychain, readKeychain)
 })
 
 test('a parked page shows what review fixed and how the ticket criteria checked out', async () => {
@@ -156,6 +405,8 @@ test('a standing note that says the same thing is reused without a second upload
   const again = await run({ markers: [standing] })
   assert.equal(again.uploads.length, 0)
   assert.equal(again.notes.length, 0)
+  assert.equal(again.checkRuns.length, 1, 'a reused note still mirrors its proof to checks')
+  assert.equal(again.checkRuns[0].message.detailsUrl, standing.page)
   assert.deepEqual(again.result.page, { published: true, url: standing.page, reused: true })
   const changed = await run({ markers: [standing], diff: `${DIFF}+message Team {}\n` })
   assert.equal(changed.uploads.length, 1, 'a changed page is uploaded again')
@@ -185,6 +436,36 @@ test('a page that carries a credential is never uploaded and the note carries no
     diff: `${DIFF}+hunter2-hunter2\n`,
   })
   assert.equal(named.result.page.reason, 'page-contains-secret')
+})
+
+test('a refused keychain secret never reaches the proof note @sessions.AC256203', async () => {
+  const token = 'private-publisher-token-abc'
+  let fetchCalls = 0
+  const { result, notes } = await run({
+    diff: `${DIFF}+${token}\n`,
+    overrides: {
+      discoverPublisher: () => ({
+        publisher: { kind: 'access-put', baseUrl: 'https://proof.example' },
+      }),
+      uploadPage: (input) => uploadProofPage({ ...input, platform: 'darwin' }),
+      readKeychain: ({ account }) =>
+        account === 'PROOF_ACCESS_CLIENT_SECRET' ? token : 'publisher-client',
+      fetchImpl: () => {
+        fetchCalls++
+        throw new Error('a secret-bearing page must not be sent')
+      },
+    },
+  })
+  assert.deepEqual(result.page, { published: false, reason: 'page-contains-secret' })
+  assert.equal(fetchCalls, 0)
+  assert.equal(result.recorded, true)
+  assert.equal(notes.length, 1)
+  assert.ok(!notes[0].note.body.includes(token))
+  assert.deepEqual(parseProofLine(notes[0].note.body), {
+    head: HEAD,
+    page: null,
+    level: 'moderate',
+  })
 })
 
 test('no failure inside the proof escapes it @sessions.AC248604', async () => {

@@ -224,3 +224,20 @@ func TestStartChatRun_UnauthorizedRepairLeavesAgentOwnedBlockerToReclaim(t *test
 		t.Fatalf("replaced %v without the plugin's idle authorization", got)
 	}
 }
+
+func TestStartChatRunRoleKeepsTheNamedRole(t *testing.T) {
+	for _, tc := range []struct {
+		role    bossanovav1.ChatRole
+		command string
+		want    domain.AgentChatRole
+	}{
+		{bossanovav1.ChatRole_CHAT_ROLE_COORDINATOR, "", domain.AgentChatRoleCoordinator},
+		{bossanovav1.ChatRole_CHAT_ROLE_REPAIR, "", domain.AgentChatRoleRepair},
+		{bossanovav1.ChatRole_CHAT_ROLE_UNSPECIFIED, "/boss-repair", domain.AgentChatRoleRepair},
+		{bossanovav1.ChatRole_CHAT_ROLE_UNSPECIFIED, "", domain.AgentChatRoleUnknown},
+	} {
+		if got := startChatRunRole(&bossanovav1.StartChatRunHostRequest{Role: tc.role, Command: tc.command}); got != tc.want {
+			t.Errorf("startChatRunRole(%v, %q) = %q, want %q", tc.role, tc.command, got, tc.want)
+		}
+	}
+}

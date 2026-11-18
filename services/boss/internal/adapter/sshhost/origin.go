@@ -62,8 +62,7 @@ func assertOrigin(resp *pb.DescribeCallerResponse, describeErr error, getenv fun
 		}
 	}
 	if chat := strings.TrimSpace(getenv("BOSS_AGENT_SESSION_ID")); chat != "" {
-		// The environment cannot attest a role, so the chat asserts none and
-		// holds no role grant on the remote daemon.
+		// The environment cannot attest a role, so the chat asserts none.
 		a.Kind = callerorigin.KindAgentChat
 		a.AgentSessionID, a.SessionID = chat, strings.TrimSpace(getenv("BOSS_SESSION_ID"))
 	}

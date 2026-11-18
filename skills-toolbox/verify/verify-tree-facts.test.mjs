@@ -386,3 +386,41 @@ test('a migrations describer runs on the head and its table block reaches the pa
   )
   assert.ok(section.includes('<td class="cn">due_on</td>'))
 })
+
+test('tree facts hand passed checks to the describer envelope', (t) => {
+  const fixture = change(t, { 'README.md': 'before' }, { 'README.md': 'after' })
+  writeFileSync(path.join(fixture.cwd, 'describe.mjs'), '')
+  const seen = []
+  const extension = {
+    name: 'test-checks',
+    dir: fixture.cwd,
+    describe: 'describe.mjs',
+    describeAreas: ['housekeeping'],
+  }
+  treeAreaFacts(['README.md'], verifyPolicyFromConfigText('{}'), {
+    ...fixture,
+    baseSha: fixture.mergeBase,
+    trustedRoot: fixture.cwd,
+    checks: ['unit'],
+    discover: () => ({ extensions: [extension], skipped: [] }),
+    run: (command, args, options) => {
+      if (command !== process.execPath) return spawnSync(command, args, options)
+      const envelope = JSON.parse(options.input)
+      seen.push(envelope)
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          role: 'proof-describe',
+          extension: extension.name,
+          breaking: false,
+          items: [],
+        }),
+      }
+    },
+  })
+  assert.deepEqual(
+    seen.map((e) => e.checks),
+    [['unit']],
+  )
+})

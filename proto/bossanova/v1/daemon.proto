@@ -20,6 +20,10 @@ service DaemonService {
 
   // Upload finished evidence through daemon-held credentials.
   rpc UploadEvidence(UploadEvidenceRequest) returns (UploadEvidenceResponse);
+  // Post a proof check through the daemon's session credentials. This additive
+  // local RPC needs no dated API bump; see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  rpc PostProofCheckRun(PostProofCheckRunRequest) returns (PostProofCheckRunResponse);
   // GetFactoryHealth reads host-local factory problems for one repository.
   rpc GetFactoryHealth(GetFactoryHealthRequest) returns (GetFactoryHealthResponse);
 
@@ -3083,4 +3087,18 @@ message RepoCloudControl {
   // Informational, locally verified metadata; never used to decide authority.
   string visibility = 11;
   bool is_suggested = 12;
+}
+
+// PostProofCheckRunRequest mirrors proof to a registered GitHub repository.
+message PostProofCheckRunRequest {
+  string repo = 1; // owner/name
+  string head_sha = 2; // 40 lowercase hex characters
+  string title = 3;
+  string summary = 4;
+  string details_url = 5;
+}
+
+message PostProofCheckRunResponse {
+  string html_url = 1;
+  bool is_created = 2;
 }

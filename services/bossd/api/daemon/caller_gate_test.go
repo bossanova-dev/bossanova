@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"net"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,7 +10,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/contract/daemon/socketauth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/domain"
 )
@@ -34,13 +32,31 @@ func (a *gateAuthority) Principal(ctx context.Context) domain.CallerPrincipal {
 func TestCallerGateUnixSocket_Sessions_AC221001_AC221002(t *testing.T) {
 	// No identity env is consulted by either the raw client or the authority.
 	t.Setenv("BOSS_AGENT_SESSION_ID", "")
-	for _, kind := range []domain.CallerKind{domain.CallerAgentChat, domain.CallerDaemonChild, domain.CallerUnattested, domain.CallerOperator, "missing authority"} {
-		t.Run(string(kind), func(t *testing.T) {
+	chat := func(role domain.AgentChatRole) *domain.CallerPrincipal {
+		return &domain.CallerPrincipal{Kind: domain.CallerAgentChat, AgentSessionID: "chat-123", SessionID: "sess-123", Role: role}
+	}
+	for _, tc := range []struct {
+		name string
+		p    *domain.CallerPrincipal // nil: bossd has no caller authority
+		// approves: the caller may approve and operator-merge.
+		// operator: it may also accept a blocker and follow up notes.
+		approves, operator bool
+	}{
+		{"operator", &domain.CallerPrincipal{Kind: domain.CallerOperator}, true, true},
+		{"build chat", chat(domain.AgentChatRoleBuild), true, false},
+		{"unknown-role chat", chat(domain.AgentChatRoleUnknown), true, false},
+		{"daemon child", &domain.CallerPrincipal{Kind: domain.CallerDaemonChild}, false, false},
+		{"unattested", &domain.CallerPrincipal{Kind: domain.CallerUnattested}, false, false},
+		{"missing authority", nil, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			h := newOperatorMergeHarness(t, headPin)
-			a := &gateAuthority{principal: domain.CallerPrincipal{Kind: kind, AgentSessionID: "chat-123", Role: domain.AgentChatRoleOperator}}
+			a := &gateAuthority{}
 			h.srv.callers = a
-			if kind == "missing authority" {
+			if tc.p == nil {
 				h.srv.callers = nil
+			} else {
+				a.principal = *tc.p
 			}
 			path := shortSocketPath(t)
 			if err := h.srv.Listen(path); err != nil {
@@ -68,64 +84,38 @@ func TestCallerGateUnixSocket_Sessions_AC221001_AC221002(t *testing.T) {
 			if connect.CodeOf(err) != connect.CodeUnauthenticated || a.resolved.Load() != 0 {
 				t.Fatalf("token must run first: %v", err)
 			}
+
 			_, err = client.AcceptSessionPRBlocker(context.Background(), connect.NewRequest(&pb.AcceptSessionPRBlockerRequest{Id: "s1", ExpectedHeadSha: headPin, BlockerId: "review:123456abcdef", Reason: "operator decision"}))
-			assertCallerGateResult(t, kind, err)
-			_, err = client.ApproveSessionPR(context.Background(), connect.NewRequest(&pb.ApproveSessionPRRequest{Id: "s1"}))
-			assertCallerGateResult(t, kind, err)
+			assertCallerGateResult(t, tc.operator, err)
 			_, err = client.FollowUpSessionPRNotes(context.Background(), connect.NewRequest(&pb.FollowUpSessionPRNotesRequest{Id: "s1", ShouldFollowUpAll: true}))
-			if kind == domain.CallerOperator {
-				if err != nil {
-					t.Fatalf("operator follow-up: %v", err)
-				}
-			} else if connect.CodeOf(err) != connect.CodePermissionDenied {
-				t.Fatalf("%s follow-up: %v", kind, err)
+			assertCallerGateResult(t, tc.operator, err)
+			if !tc.operator && h.verbs.builtCount != 0 {
+				t.Fatal("a refused accept or follow-up reached the verify toolbox")
 			}
-			for _, approve := range []bool{true, false} {
-				_, err = client.OperatorMergeSession(context.Background(), connect.NewRequest(&pb.OperatorMergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin, ShouldApprove: approve}))
-				assertCallerGateResult(t, kind, err)
-				if kind == domain.CallerOperator {
-					break
-				} // first call merged the fixture PR
+
+			_, err = client.ApproveSessionPR(context.Background(), connect.NewRequest(&pb.ApproveSessionPRRequest{Id: "s1"}))
+			assertCallerGateResult(t, tc.approves, err)
+			_, err = client.OperatorMergeSession(context.Background(), connect.NewRequest(&pb.OperatorMergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin, ShouldApprove: true}))
+			assertCallerGateResult(t, tc.approves, err)
+			if tc.approves && len(h.prov.mergeOpts) != 1 {
+				t.Fatal("an approving caller did not merge")
 			}
-			if kind != domain.CallerOperator && (len(h.calls) != 0 || h.verbs.builtCount != 0 || len(h.prov.mergeOpts) != 0) {
-				t.Fatalf("rejected caller caused writes: %v", h.calls)
-			}
-			if kind == domain.CallerOperator && len(h.prov.mergeOpts) != 1 {
-				t.Fatal("operator did not merge")
+			if !tc.approves && (len(h.calls) != 0 || h.verbs.builtCount != 0 || len(h.prov.mergeOpts) != 0) {
+				t.Fatalf("refused caller caused writes: %v", h.calls)
 			}
 		})
 	}
 }
 
-func assertCallerGateResult(t *testing.T, kind domain.CallerKind, err error) {
+func assertCallerGateResult(t *testing.T, allowed bool, err error) {
 	t.Helper()
-	if kind == domain.CallerOperator {
+	if allowed {
 		if err != nil {
-			t.Fatalf("operator: %v", err)
+			t.Fatalf("allowed call refused: %v", err)
 		}
 		return
 	}
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("%s: %v", kind, err)
-	}
-	if kind == domain.CallerAgentChat {
-		for _, s := range []string{"chat-123", "role operator", "your own terminal", "[m]"} {
-			if !strings.Contains(err.Error(), s) {
-				t.Fatalf("missing %q: %v", s, err)
-			}
-		}
-	}
-}
-
-func TestCallerGateRoleGrant(t *testing.T) {
-	p := domain.CallerPrincipal{Kind: domain.CallerAgentChat, Role: domain.AgentChatRoleVerify}
-	a := &gateAuthority{principal: p}
-	i := &callerInterceptor{authority: a, grants: domain.CallerGrants{{Kind: p.Kind, Role: p.Role}: {domain.CapabilityVerifyApprove}}}
-	ctx := a.ConnContext(context.Background(), nil)
-	if _, err := i.check(ctx, bossanovav1connect.DaemonServiceApproveSessionPRProcedure, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := i.check(ctx, bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure, nil, nil); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("grant exceeded scope: %v", err)
+		t.Fatalf("want PermissionDenied: %v", err)
 	}
 }

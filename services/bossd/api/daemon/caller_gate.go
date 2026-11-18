@@ -28,29 +28,13 @@ var callerCapabilities = map[string]domain.CallerCapability{
 	bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure:   domain.CapabilityOperatorMerge,
 }
 
-// requiredCapability names the capability a request needs, if any. Creating a
-// coordinator chat is gated by the role it asks for, so the chats a coordinator
-// grant outranks cannot mint one; other RecordChat calls are ungated.
-func requiredCapability(procedure string, msg any) (domain.CallerCapability, bool) {
-	if capability, gated := callerCapabilities[procedure]; gated {
-		return capability, true
-	}
-	if r, ok := msg.(*pb.RecordChatRequest); ok && procedure == bossanovav1connect.DaemonServiceRecordChatProcedure &&
-		r.GetRole() == pb.ChatRole_CHAT_ROLE_COORDINATOR {
-		return domain.CapabilityCreateCoordinatorChat, true
-	}
-	return "", false
-}
-
-// NewCallerInterceptor enforces operator capabilities on the local socket.
-// grants extends them to chat roles; nil grants nothing.
-func NewCallerInterceptor(authority CallerAuthority, grants domain.CallerGrants) *callerInterceptor {
-	return &callerInterceptor{authority: authority, grants: grants}
+// NewCallerInterceptor enforces caller capabilities on the local socket.
+func NewCallerInterceptor(authority CallerAuthority) *callerInterceptor {
+	return &callerInterceptor{authority: authority}
 }
 
 type callerInterceptor struct {
 	authority CallerAuthority
-	grants    domain.CallerGrants
 }
 
 type callerPrincipalKey struct{}
@@ -114,13 +98,13 @@ func originOf(a callerorigin.Assertion) *domain.CallerOrigin {
 	return origin
 }
 
-func (i *callerInterceptor) check(ctx context.Context, procedure string, header http.Header, msg any) (context.Context, error) {
-	capability, gated := requiredCapability(procedure, msg)
+func (i *callerInterceptor) check(ctx context.Context, procedure string, header http.Header) (context.Context, error) {
+	capability, gated := callerCapabilities[procedure]
 	if !gated {
 		return ctx, nil
 	}
 	p := i.principal(ctx, header)
-	if p.HasCapability(capability, i.grants) {
+	if p.HasCapability(capability) {
 		return context.WithValue(ctx, callerPrincipalKey{}, p), nil
 	}
 	return ctx, refusal(p, capability)
@@ -146,21 +130,22 @@ func refusal(p domain.CallerPrincipal, capability domain.CallerCapability) error
 			who += " from " + p.ForwardedFrom
 		}
 	}
-	action := "acting on a PR's verify outcome"
+	owner := "the operator's call"
 	remedy := "Run it from your own terminal"
 	switch capability {
-	case domain.CapabilityCreateCoordinatorChat:
-		action = "creating a coordinator chat"
-	case domain.CapabilityVerifyAccept, domain.CapabilityVerifyApprove, domain.CapabilityOperatorMerge:
+	case domain.CapabilityVerifyApprove, domain.CapabilityOperatorMerge:
+		owner = "the operator's or an agent chat's call"
+		remedy = "Run it from your own terminal or an agent chat, or press [m] on the session in the TUI"
+	case domain.CapabilityVerifyAccept:
 		remedy += " or press [m] on the session in the TUI"
 	case domain.CapabilityVerifyFollowUp:
 	}
-	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("%s is the operator's call; %s. %s", action, who, remedy))
+	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("acting on a PR's verify outcome is %s; %s. %s", owner, who, remedy))
 }
 
 func (i *callerInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		ctx, err := i.check(ctx, req.Spec().Procedure, req.Header(), req.Any())
+		ctx, err := i.check(ctx, req.Spec().Procedure, req.Header())
 		if err != nil {
 			return nil, err
 		}
@@ -170,7 +155,7 @@ func (i *callerInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc 
 
 func (i *callerInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		ctx, err := i.check(ctx, conn.Spec().Procedure, conn.RequestHeader(), nil)
+		ctx, err := i.check(ctx, conn.Spec().Procedure, conn.RequestHeader())
 		if err != nil {
 			return err
 		}

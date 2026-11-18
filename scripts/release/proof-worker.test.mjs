@@ -106,7 +106,7 @@ function secure(response) {
   assert.equal(response.headers.get('Cache-Control'), 'private, max-age=300')
   assert.equal(
     response.headers.get('Content-Security-Policy'),
-    "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors https://app.bossanova.dev https://app-staging.bossanova.dev",
   )
 }
 test('Access rejects missing, malformed, bad signature, algorithm, unknown kid and invalid claims without reading R2', async () => {

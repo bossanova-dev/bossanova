@@ -42,7 +42,7 @@ func TestManagedSessionEnvLabelsGHCallsBySessionKind_GitHubUsage_AC220401(t *tes
 		{name: "interactive", sess: &models.Session{ID: "s5"}, want: "session:interactive"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			env := ManagedSessionEnv(tc.sess, "agent-1", "claude", shim)
+			env := ManagedSessionEnv(tc.sess, "agent-1", "claude", shim, nil)
 			if got := env[ghusage.EnvLabel]; got != tc.want {
 				t.Fatalf("label = %q, want %q", got, tc.want)
 			}
@@ -60,7 +60,7 @@ func TestManagedSessionEnvLabelsGHCallsBySessionKind_GitHubUsage_AC220401(t *tes
 }
 
 func TestManagedSessionEnvWithoutWrapperSetsNoMeteringEnv(t *testing.T) {
-	env := ManagedSessionEnv(&models.Session{ID: "s1"}, "agent-1", "claude", nil)
+	env := ManagedSessionEnv(&models.Session{ID: "s1"}, "agent-1", "claude", nil, nil)
 	for _, key := range []string{"PATH", ghusage.EnvReal, ghusage.EnvDir, ghusage.EnvLabel, ghusage.EnvClaudeEnvFile} {
 		if v, ok := env[key]; ok {
 			t.Errorf("%s = %q without an installed wrapper", key, v)
@@ -77,7 +77,7 @@ func TestWorktreeDotenvCannotOverrideTheMeteredPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	sess := &models.Session{ID: "s1", WorktreePath: worktree}
-	env := dotenv.OverlayWithRepo(meteredSessionEnv(ResolveSessionFacts(sess, "agent-1", "claude"), shim), worktree, &models.Repo{IsTrusted: true})
+	env := dotenv.OverlayWithRepo(meteredSessionEnv(ResolveSessionFacts(sess, "agent-1", "claude", nil), shim), worktree, &models.Repo{IsTrusted: true})
 	if first := strings.SplitN(env["PATH"], string(os.PathListSeparator), 2)[0]; first != binDir {
 		t.Fatalf("PATH = %q, want the gh wrapper dir first", env["PATH"])
 	}

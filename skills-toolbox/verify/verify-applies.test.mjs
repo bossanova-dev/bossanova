@@ -1,6 +1,31 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { APPLIES_NOT_APPLICABLE_EXIT, appliesNote, partitionApplicable } from './verify-applies.mjs'
+import { extensionEnvelopeFor } from './verify-extension-envelope.mjs'
+import { validateVerifyContext as validateLegacyContext } from './fixtures/legacy-verify-context.mjs'
+
+test('per-extension contexts preserve approval deltas and intent for the frozen legacy contract', () => {
+  const context = {
+    pr: { number: 7 },
+    headSha: 'a'.repeat(40),
+    baseSha: 'b'.repeat(40),
+    changedPaths: ['ui/Panel.tsx'],
+    ticket: null,
+    range: { kind: 'delta', anchorSha: 'c'.repeat(40) },
+    intent: { source: 'unknown', bullets: [] },
+  }
+  const extended = { ...context, uiFiles: ['ui/Panel.tsx'] }
+  assert.equal(validateLegacyContext(extended).ok, false)
+  const local = extensionEnvelopeFor({}, extended, ['ui/Panel.tsx'])
+  assert.deepEqual(local, context)
+  assert.equal(validateLegacyContext(local).ok, true)
+  assert.deepEqual(extensionEnvelopeFor({ builtin: true }, context, extended.uiFiles), extended)
+  assert.deepEqual(extended.uiFiles, ['ui/Panel.tsx'])
+})
 
 test('appliesNote takes the last JSON line note and ignores earlier log lines', () => {
   assert.equal(
@@ -101,4 +126,29 @@ test('partitionApplicable resolves checks under the trusted root', () => {
     },
   )
   assert.deepEqual(runs, ['/trusted/gate/applies.mjs'])
+})
+
+test('built-in checks run from their directory while local checks use the trusted root', (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'applies-roots-'))
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 }))
+  const root = path.join(tmp, 'base')
+  const dir = path.join(tmp, 'installed')
+  for (const folder of [root, dir]) fs.mkdirSync(folder)
+  fs.writeFileSync(path.join(root, 'applies.mjs'), 'process.exitCode = 0\n')
+  fs.writeFileSync(path.join(dir, 'applies.mjs'), 'process.exitCode = 10\n')
+  const builtin = { name: 'builtin', builtin: true, dir, applies: 'applies.mjs' }
+  const local = { name: 'local', dir, applies: 'applies.mjs' }
+  const result = partitionApplicable(
+    [builtin, local],
+    {},
+    {
+      root,
+      read: (command, args, options) => {
+        const child = spawnSync(command, args, { ...options, encoding: 'utf8' })
+        return { exit: child.status, output: child.stdout }
+      },
+    },
+  )
+  assert.deepEqual(result.notApplicable, [builtin])
+  assert.deepEqual(result.applicable, [local])
 })

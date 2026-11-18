@@ -183,7 +183,7 @@ func TestLogUndeliveredInstructionsSilentWhenDelivered(t *testing.T) {
 // field added to the record, which is how a body leak would actually arrive.
 func TestLogUndeliveredInstructionsOmitsPromptBody(t *testing.T) {
 	sess := unattendedCronSession("s-secret")
-	text, classes := BuildAppendSystemPrompt(sess, "agent-secret", "codex", config.SubagentDispatchGrantAlways)
+	text, classes := BuildAppendSystemPrompt(sess, "agent-secret", "codex", config.SubagentDispatchGrantAlways, nil)
 	if text == "" || len(classes) == 0 {
 		t.Fatalf("fixture must build a non-empty prompt, got text=%q classes=%v", text, classes)
 	}
@@ -257,7 +257,7 @@ func TestReportUndeliveredInstructionsSubagentGrant(t *testing.T) {
 // do — naming the class only, never the directive body.
 func TestLogUndeliveredInstructionsNamesSubagentGrant(t *testing.T) {
 	sess := &models.Session{ID: "s-attended", Title: "Manual"}
-	text, classes := BuildAppendSystemPrompt(sess, "agent-attended", "claude", config.SubagentDispatchGrantAlways)
+	text, classes := BuildAppendSystemPrompt(sess, "agent-attended", "claude", config.SubagentDispatchGrantAlways, nil)
 	if !slices.Contains(classes, InstructionClassSubagentGrant) {
 		t.Fatalf("fixture must build the attended grant, got classes=%v", classes)
 	}

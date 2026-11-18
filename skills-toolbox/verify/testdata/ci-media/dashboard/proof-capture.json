@@ -1,0 +1,18 @@
+{
+  "schema": "proof-capture/1",
+  "clips": {
+    "dashboard-proof-1": {
+      "spec": "e2e/dashboard.spec.ts",
+      "files": ["src/dashboard.tsx"]
+    },
+    "dashboard-proof-2": {
+      "spec": "e2e/dashboard.spec.ts",
+      "files": ["src/dashboard.tsx"]
+    },
+    "dashboard-plain": {
+      "spec": "e2e/dashboard.spec.ts",
+      "files": ["src/dashboard.tsx"]
+    }
+  },
+  "plain": ["dashboard-plain"]
+}

@@ -1136,6 +1136,8 @@ message UpdateRepoCommand {
   SecretUpdate linear_key = 9;
   SecretUpdate sentry_key = 10;
   google.protobuf.Timestamp expected_updated_at = 11;
+  // Optional: absent leaves the command unchanged; empty clears it.
+  optional string serve_script = 13;
 }
 
 // RemoveRepoCommand asks the daemon to remove a repo. Successful responses

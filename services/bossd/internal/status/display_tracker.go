@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,9 @@ type DisplayEntry struct {
 	// can't clobber it. Surfaced on Session.archive_pending so the TUI renders
 	// "Archiving…" only when the daemon actually has an archive running (BOS-425).
 	Archiving bool
-	HeadSHA   string
+	// ServiceLinks are live serve-command links, never persisted.
+	ServiceLinks []ServiceLink
+	HeadSHA      string
 	// Mergeable is the PR's last-polled mergeability (nil unknown / true
 	// mergeable / false conflicting), surfaced on Session.pr_mergeable so a
 	// conflict-after-green is readable without a merge attempt. Refreshed by
@@ -142,6 +145,10 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	if existed {
 		archiving = oldEntry.Archiving
 	}
+	var serviceLinks []ServiceLink
+	if existed {
+		serviceLinks = oldEntry.ServiceLinks
+	}
 	var receiptHeadSHA string
 	if existed {
 		receiptHeadSHA = oldEntry.ReceiptHeadSHA
@@ -169,6 +176,7 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		SettingUp:           settingUp,
 		Merging:             t.mergeHolds[sessionID] > 0,
 		Archiving:           archiving,
+		ServiceLinks:        serviceLinks,
 		HeadSHA:             info.HeadSHA,
 		Mergeable:           info.Mergeable,
 		AddedLineCount:      info.AddedLineCount,
@@ -238,29 +246,13 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 	if !ok {
 		return nil
 	}
-	return &DisplayEntry{
-		Status:              e.Status,
-		HasBuildReceipt:     e.HasBuildReceipt,
-		IsPartial:           e.IsPartial,
-		ReceiptHeadSHA:      e.ReceiptHeadSHA,
-		HasFailures:         e.HasFailures,
-		HasChangesRequested: e.HasChangesRequested,
-		ChangesRequestedBy:  e.ChangesRequestedBy,
-		IsRepairing:         e.IsRepairing,
-		SettingUp:           e.SettingUp,
-		Merging:             e.Merging,
-		Archiving:           e.Archiving,
-		HeadSHA:             e.HeadSHA,
-		Mergeable:           e.Mergeable,
-		AddedLineCount:      e.AddedLineCount,
-		DeletedLineCount:    e.DeletedLineCount,
-		ChangedFileCount:    e.ChangedFileCount,
-		VerifyReason:        e.VerifyReason,
-		VerifyLabel:         e.VerifyLabel,
-		BlockedRunWorkingAt: e.BlockedRunWorkingAt,
-		UpdatedAt:           e.UpdatedAt,
-		Restored:            e.Restored,
-	}
+	return e.clone()
+}
+
+func (e *DisplayEntry) clone() *DisplayEntry {
+	entry := *e
+	entry.ServiceLinks = slices.Clone(e.ServiceLinks)
+	return &entry
 }
 
 // GetBatch returns entries for multiple session IDs.
@@ -273,29 +265,7 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 		if !ok {
 			continue
 		}
-		result[id] = &DisplayEntry{
-			Status:              e.Status,
-			HasBuildReceipt:     e.HasBuildReceipt,
-			IsPartial:           e.IsPartial,
-			ReceiptHeadSHA:      e.ReceiptHeadSHA,
-			HasFailures:         e.HasFailures,
-			HasChangesRequested: e.HasChangesRequested,
-			ChangesRequestedBy:  e.ChangesRequestedBy,
-			IsRepairing:         e.IsRepairing,
-			SettingUp:           e.SettingUp,
-			Merging:             e.Merging,
-			Archiving:           e.Archiving,
-			HeadSHA:             e.HeadSHA,
-			Mergeable:           e.Mergeable,
-			AddedLineCount:      e.AddedLineCount,
-			DeletedLineCount:    e.DeletedLineCount,
-			ChangedFileCount:    e.ChangedFileCount,
-			VerifyReason:        e.VerifyReason,
-			VerifyLabel:         e.VerifyLabel,
-			BlockedRunWorkingAt: e.BlockedRunWorkingAt,
-			UpdatedAt:           e.UpdatedAt,
-			Restored:            e.Restored,
-		}
+		result[id] = e.clone()
 	}
 	return result
 }
@@ -458,7 +428,7 @@ func (e *DisplayEntry) isEmpty() bool {
 	return e.Status == vcs.DisplayStatusUnspecified &&
 		!e.HasFailures && !e.HasChangesRequested &&
 		!e.IsRepairing && !e.SettingUp && !e.Merging && !e.Archiving && e.HeadSHA == "" &&
-		e.BlockedRunWorkingAt.IsZero()
+		e.BlockedRunWorkingAt.IsZero() && len(e.ServiceLinks) == 0
 }
 
 // SetOnChange sets the callback function that is called when a display status changes.
@@ -470,9 +440,9 @@ func (t *DisplayTracker) SetOnChange(fn func(sessionID string, oldEntry, newEntr
 	t.onChange = fn
 }
 
-// SetOnAttentionChange wires publication for partial marker or PR size changes
-// without changing the legacy display status. Set calls it after recomputation,
-// outside the tracker lock, so publishers can hydrate the current session.
+// SetOnAttentionChange wires publication for partial marker, PR size or service
+// link changes without changing the legacy display status. It runs after
+// recomputation, outside the tracker lock, so publishers can hydrate the session.
 func (t *DisplayTracker) SetOnAttentionChange(fn func(sessionID string)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

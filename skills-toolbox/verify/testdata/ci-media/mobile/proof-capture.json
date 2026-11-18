@@ -1,0 +1,14 @@
+{
+  "schema": "proof-capture/1",
+  "clips": {
+    "mobile-proof": {
+      "spec": "e2e/mobile.spec.ts",
+      "files": ["src/mobile.tsx"]
+    },
+    "mobile-plain": {
+      "spec": "e2e/mobile.spec.ts",
+      "files": ["src/mobile.tsx"]
+    }
+  },
+  "plain": ["mobile-plain"]
+}

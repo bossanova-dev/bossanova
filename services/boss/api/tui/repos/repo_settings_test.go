@@ -115,6 +115,7 @@ func TestRepoSettings_CollapsedNavigationSkipsChildRows(t *testing.T) {
 	expectedRows := []rowID{
 		repoSettingsRowName,
 		repoSettingsRowSetupScript,
+		repoSettingsRowServeScript,
 		repoSettingsRowMergeStrategy,
 		repoSettingsRowIsTrusted,
 		repoSettingsRowCanAutoMerge,
@@ -165,6 +166,7 @@ func TestRepoSettings_ExpandedNavigationIncludesChildRows(t *testing.T) {
 	expectedRows := []rowID{
 		repoSettingsRowName,
 		repoSettingsRowSetupScript,
+		repoSettingsRowServeScript,
 		repoSettingsRowMergeStrategy,
 		repoSettingsRowIsTrusted,
 		repoSettingsRowCanAutoMerge,
@@ -710,6 +712,7 @@ func TestRepoSettings_VisibleRowsOrderMatchesRender(t *testing.T) {
 	want := []rowID{
 		repoSettingsRowName,
 		repoSettingsRowSetupScript,
+		repoSettingsRowServeScript,
 		repoSettingsRowMergeStrategy,
 		repoSettingsRowIsTrusted,
 		repoSettingsRowCanAutoMerge,

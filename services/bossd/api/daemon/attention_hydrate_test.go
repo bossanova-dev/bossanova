@@ -138,18 +138,22 @@ func (e latestProofEvidence) LatestProof(string) (evidence.ProofRecord, bool) {
 // A parked PR whose chat the operator starts reads in progress, so its
 // attention drops the park's proof page; the session still serves the PR's
 // newest proof page, and the head it was made for, on every read surface.
-func TestAttentionProofURL_ServedWhileAChatWorks(t *testing.T) {
+// A record without a page serves its proof note's block in its place.
+func TestAttentionProofURL_ServedWhileAChatWorks_Sessions_AC255701(t *testing.T) {
 	page, older := "https://proof.example/12", strings.Repeat("b", 40)
 	digest := "sha256:" + strings.Repeat("c", 64)
+	summary := "## Verify\n\n- **AC1** proven"
 	for _, tc := range []struct {
-		name              string
-		latest            *evidence.ProofRecord
-		wantURL, wantHead string
+		name                           string
+		latest                         *evidence.ProofRecord
+		wantURL, wantHead, wantSummary string
 	}{
-		{"current head", &evidence.ProofRecord{Head: timelineHead, Page: page, Digest: digest}, page, timelineHead},
-		{"older head", &evidence.ProofRecord{Head: older, Page: page, Digest: digest}, page, older},
-		{"no page", &evidence.ProofRecord{Head: timelineHead, Digest: digest}, "", ""},
-		{"no record", nil, "", ""},
+		{"current head", &evidence.ProofRecord{Head: timelineHead, Page: page, Digest: digest}, page, timelineHead, ""},
+		{"older head", &evidence.ProofRecord{Head: older, Page: page, Digest: digest}, page, older, ""},
+		{"page with a summary", &evidence.ProofRecord{Head: timelineHead, Page: page, Digest: digest, Summary: summary}, page, timelineHead, ""},
+		{"summary without a page", &evidence.ProofRecord{Head: older, Digest: digest, Summary: summary}, "", older, summary},
+		{"no page", &evidence.ProofRecord{Head: timelineHead, Digest: digest}, "", "", ""},
+		{"no record", nil, "", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := 12
@@ -170,14 +174,14 @@ func TestAttentionProofURL_ServedWhileAChatWorks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			streamed := &pb.Session{Id: row.ID, PrProofUrl: "stale", PrProofHeadSha: "stale"}
+			streamed := &pb.Session{Id: row.ID, PrProofUrl: "stale", PrProofHeadSha: "stale", PrProofSummary: "stale"}
 			s.HydrateAttentionForStream(t.Context(), streamed)
 			for _, got := range []*pb.Session{onlySession(t, listed.Msg.Sessions), fetched.Msg.Session, streamed} {
 				if kind := got.GetAttention().GetKind(); kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || got.GetAttention().GetProofUrl() != "" {
 					t.Fatalf("attention = %v; want in progress with no park proof page", got.GetAttention())
 				}
-				if got.GetPrProofUrl() != tc.wantURL || got.GetPrProofHeadSha() != tc.wantHead {
-					t.Fatalf("pr_proof_url=%q pr_proof_head_sha=%q; want %q, %q", got.GetPrProofUrl(), got.GetPrProofHeadSha(), tc.wantURL, tc.wantHead)
+				if got.GetPrProofUrl() != tc.wantURL || got.GetPrProofHeadSha() != tc.wantHead || got.GetPrProofSummary() != tc.wantSummary {
+					t.Fatalf("pr_proof_url=%q pr_proof_head_sha=%q pr_proof_summary=%q; want %q, %q, %q", got.GetPrProofUrl(), got.GetPrProofHeadSha(), got.GetPrProofSummary(), tc.wantURL, tc.wantHead, tc.wantSummary)
 				}
 			}
 		})

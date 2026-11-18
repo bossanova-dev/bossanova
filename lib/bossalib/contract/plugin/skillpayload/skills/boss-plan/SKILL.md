@@ -66,10 +66,11 @@ The runner locates its own toolbox, independent of the current directory or othe
 
 ```bash
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh node <helper.mjs> [args …]
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh <step> [--flag value …]
 ```
 
-Blocks that still begin with the old preamble are being migrated; run them as written in a bash tool shell.
+```bash
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh <step> [--flag value …]
+```
 
 | Question                                     | Ask                                                                                   |
 | -------------------------------------------- | ------------------------------------------------------------------------------------- |
@@ -195,7 +196,7 @@ First report the phase: `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node sta
   pick another / cancel); headless takes the head. An empty queue reports and stops.
 
 **Claim before routing.** Run
-`node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-issue --id <ISSUE-ID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`.
+`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <ISSUE-ID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`.
 Exit 0 continues; exit 2 uses the [snapshot fallback](references/planning-claims.md#claim-before-drafting);
 exit 64 means fix the call. Then run the planning claim protocol in
 [planning claims](references/planning-claims.md#claim-before-drafting). It applies to named tickets,
@@ -205,10 +206,7 @@ single tickets, fan-out parents and epic resumes; acquire the issue lease before
 issue's hydrated children into the route bundle:
 
 ```bash
-set -o pipefail
-printf '{"parentId":"%s"}\n' "<ISSUE-ID>" |
-  bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs invoke-operation listChildren --args-file /dev/stdin --result-only > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs route .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh children-input --mode fanout --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --parent <ISSUE-ID>
 ```
 
 Stop on a listing failure; a failed read is never an empty child list. The unchanged
@@ -342,11 +340,19 @@ with `bs-dispatch-await.mjs wait --leg-deadline` per
 ([premise protocol](references/headless-dispatch.md#premise-drift-is-reconciled-not-appended)):
 
 ```bash
+bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs premise-states --premises .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premise-states.json
+```
+
+Exit 0 generates the fresh bare map (for example `{"TCK-1": "In Review"}`); on exit 2, write that exact
+shape from one fresh `getIssue` read per premise id. Any other exit takes SAFE with no writes.
+Then run the guard:
+
+```bash
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh premises --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --plan .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md --description .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md
 ```
 
-When `premises.json` is absent, write the sentinel payload's `premises` array (or `[]`) there
-with the file tool before calling `premises`. The step persists its exit status and report in
+When `<ISSUE-ID>.premises.json` is absent, write the sentinel payload's `premises` array (or `[]`) there
+with the file tool before generating states. The guard step persists its exit status and report in
 `<ISSUE-ID>.premise-report.json`; `writeback-verify` enforces that verdict across shell calls.
 Non-zero ⇒ no writes. Drift is annotated (`- Premise drift: …`) and named in the report.
 
@@ -446,6 +452,7 @@ Then:
    ```
 
    Read the stderr line (`subjectAreas`, unresolved tokens, verdict) before writing anything.
+   On `subject-description-stale`, re-run step a after the description save, rewrite the consumed scan input and classify again; report a second consecutive refusal as _could not evaluate_ (tracker read lag).
    d. Act on the result: write each `edge.write` with `appendDependency` (append-only); `relatedTo`
    edges with `appendRelatedTo` when the adapter has it, else a `## Planning` note; `notes` under
    their declared destination (`planning` → `## Planning`, `risks` → `## Risks`); `questions` under `## Open Questions` plus `agent-question`. A `skipped` entry
@@ -474,9 +481,17 @@ Then:
    Check the receipt UUID and `settled`. If false, never edit or save from this read: take the same
    labels-only branch as `writePlan` above, retain dependency notes and questions in the run report,
    and name the read lag there. Leave `image-guard-final.md` holding step 3's saved bytes. If true,
-   copy `image-guard-base.md` to `image-guard-final.md`, re-read premise states and run the second
-   pass below. On the run-wide `getIssue` fallback, byte-copy its stored description into the same
+   copy `image-guard-base.md` to `image-guard-final.md`, regenerate premise states into the same file
+   and run the second pass below. On the run-wide `getIssue` fallback, byte-copy its stored description into the same
    base and final files without a receipt, as before:
+
+   ```bash
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs premise-states --premises .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premise-states.json
+   ```
+
+   Exit 0 continues; exit 2 requires a fresh `getIssue` read per premise id and the same bare map.
+   Any other exit stops further writes and retains scratch, following the second-pass failure
+   protocol. A failed export deletes the earlier state file; never reuse first-pass states.
 
    ```bash
    bash <skill-dir>/toolbox/plan/boss-plan-run.sh premise-repass --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID>

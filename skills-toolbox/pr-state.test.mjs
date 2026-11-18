@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { spawn, spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 import {
   FALLBACK_LABELS,
@@ -665,4 +670,219 @@ test('view and session-pr CLI: argv is parsed strictly per verb', () => {
   assert.throws(() => main(['view', '--pr', 'x']), UsageError)
   assert.throws(() => main(['view', '--field', '.state']), UsageError)
   assert.throws(() => main(['view', '--repo', 'acme/widgets']), UsageError)
+})
+
+function leaseFixture(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-repair-lease-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  let now = Date.parse('2026-01-01T00:00:00Z')
+  const io = fakeIo({ bossAnswer: () => json(viewEnvelope()) })
+  const deps = { ...io.deps, leaseDir: dir, now: () => now }
+  const run = (holder, action, head, extra = {}) =>
+    main(['repair-lease', action, '--pr', '7', ...(head ? ['--head', head] : [])], {
+      ...deps,
+      ...extra,
+      env: { ...ENV, BOSS_AGENT_SESSION_ID: holder },
+    })
+  return {
+    dir,
+    io,
+    deps,
+    run,
+    advance: (ms) => {
+      now += ms
+    },
+  }
+}
+
+test('repair lease: acquire refreshes, refuses peers, expires and releases only its owner', (t) => {
+  const f = leaseFixture(t)
+  const first = f.run('one', 'acquire', HEAD)
+  assert.equal(first.exit, 0)
+  assert.equal(first.out.status, 'acquired')
+  f.advance(1000)
+  const refreshed = f.run('one', 'acquire', OTHER)
+  assert.equal(refreshed.out.status, 'refreshed')
+  assert.ok(refreshed.out.expiresAt > first.out.expiresAt)
+  const peer = f.run('two', 'acquire', HEAD)
+  assert.deepEqual(
+    [peer.exit, peer.out.status, peer.out.holder, peer.out.head],
+    [3, 'foreign', 'one', OTHER],
+  )
+  assert.equal(f.run('two', 'release').exit, 0)
+  assert.equal(f.run('two', 'rebaseline', HEAD).exit, 3)
+  assert.equal(f.run('two', 'check').out.status, 'not-held')
+  assert.ok(fs.existsSync(path.join(f.dir, 'pr-7.json')))
+  f.advance(45 * 60 * 1000)
+  assert.equal(f.run('two', 'acquire', HEAD).out.status, 'acquired')
+  f.run('one', 'release')
+  assert.equal(f.run('two', 'rebaseline', OTHER).out.head, OTHER)
+  f.run('two', 'release')
+  assert.equal(fs.existsSync(path.join(f.dir, 'pr-7.json')), false)
+})
+
+test('repair lease: malformed records stay foreign until their mtime expires', (t) => {
+  const f = leaseFixture(t)
+  const file = path.join(f.dir, 'pr-7.json')
+  for (const content of ['{', '{}', JSON.stringify({ holder: 'one', expiresAt: 'tomorrow' })]) {
+    fs.writeFileSync(file, content)
+    fs.utimesSync(file, new Date(f.deps.now()), new Date(f.deps.now()))
+    const peer = f.run('two', 'acquire', HEAD)
+    assert.deepEqual([peer.exit, peer.out.status, peer.out.holder], [3, 'foreign', 'unknown'])
+  }
+  f.advance(45 * 60 * 1000)
+  assert.equal(f.run('two', 'acquire', HEAD).exit, 0)
+})
+
+test('repair lease: check uses a fresh head, fails closed and rebaseline updates the comparison', (t) => {
+  const f = leaseFixture(t)
+  f.run('one', 'acquire', HEAD)
+  assert.equal(f.run('one', 'check').out.status, 'held')
+  assert.ok(f.io.spawns.at(-1).args.includes('--fresh'))
+  f.run('one', 'rebaseline', OTHER)
+  const moved = f.run('one', 'check')
+  assert.deepEqual([moved.exit, moved.out.status, moved.out.freshHead], [3, 'head-moved', HEAD])
+  const down = fakeIo({ bossAnswer: () => failure('RESOURCE_EXHAUSTED', 'resource_exhausted') })
+  const unreadable = f.run('one', 'check', null, down.deps)
+  assert.equal(unreadable.exit, 1)
+  assert.notEqual(unreadable.out.status, 'held')
+  f.advance(45 * 60 * 1000)
+  assert.equal(f.run('one', 'check').out.status, 'not-held')
+})
+
+test('repair lease: deterministic interleaving admits only one acquire', (t) => {
+  const f = leaseFixture(t)
+  let peer
+  const winner = f.run('one', 'acquire', HEAD, {
+    afterLeaseRead: () => {
+      peer = f.run('two', 'acquire', OTHER)
+    },
+  })
+  assert.equal([winner, peer].filter((r) => r.exit === 0).length, 1)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.dir, 'pr-7.json'))).holder, 'one')
+})
+
+test('repair lease: a crashed lock expires without losing mutual exclusion', (t) => {
+  const f = leaseFixture(t)
+  const lock = path.join(f.dir, 'pr-7.json.lock')
+  fs.mkdirSync(lock)
+  const marker = path.join(lock, 'crashed')
+  fs.writeFileSync(marker, '')
+  fs.utimesSync(marker, new Date(0), new Date(0))
+  assert.equal(f.run('one', 'acquire', HEAD).out.status, 'acquired')
+  assert.equal(f.run('two', 'acquire', OTHER).out.status, 'foreign')
+})
+
+test('repair lease: stale recovery cannot remove a replacement owner lock', (t) => {
+  const f = leaseFixture(t)
+  const lock = path.join(f.dir, 'pr-7.json.lock')
+  fs.mkdirSync(lock)
+  const oldMarker = path.join(lock, 'crashed')
+  fs.writeFileSync(oldMarker, '')
+  fs.utimesSync(oldMarker, new Date(0), new Date(0))
+  let replaced = false
+  const result = f.run('one', 'acquire', HEAD, {
+    afterStaleLockRead: () => {
+      if (replaced) return
+      replaced = true
+      fs.unlinkSync(oldMarker)
+      fs.rmdirSync(lock)
+      fs.mkdirSync(lock)
+      fs.writeFileSync(path.join(lock, 'replacement'), '')
+    },
+  })
+  assert.equal(replaced, true)
+  assert.notEqual(result.exit, 0)
+  assert.deepEqual(fs.readdirSync(lock), ['replacement'])
+})
+
+test('repair lease: an incumbent waits out peer contention to check, rebaseline and release', (t) => {
+  const f = leaseFixture(t)
+  f.run('one', 'acquire', HEAD)
+  const lock = path.join(f.dir, 'pr-7.json.lock')
+  for (const action of ['check', 'rebaseline', 'release']) {
+    fs.mkdirSync(lock)
+    const marker = path.join(lock, 'peer')
+    fs.writeFileSync(marker, '')
+    let waits = 0
+    const result = f.run('one', action, action === 'rebaseline' ? OTHER : undefined, {
+      repairLockWait: () => {
+        waits++
+        fs.unlinkSync(marker)
+        fs.rmdirSync(lock)
+      },
+    })
+    assert.equal(waits, 1)
+    assert.equal(result.exit, 0)
+    assert.equal(result.out.status, action === 'release' ? 'released' : 'held')
+  }
+  assert.equal(fs.existsSync(path.join(f.dir, 'pr-7.json')), false)
+})
+
+test('repair lease: persistent lock contention is unreadable and never a successful release', (t) => {
+  const f = leaseFixture(t)
+  f.run('one', 'acquire', HEAD)
+  const lock = path.join(f.dir, 'pr-7.json.lock')
+  fs.mkdirSync(lock)
+  fs.writeFileSync(path.join(lock, 'peer'), '')
+  const result = f.run('one', 'release', undefined, { repairLockWait: () => {} })
+  assert.equal(result.exit, 1)
+  assert.equal(result.out.status, 'unreadable')
+  assert.ok(fs.existsSync(path.join(f.dir, 'pr-7.json')))
+})
+
+test('repair lease: concurrent CLI processes have exactly one winner across worktrees', async (t) => {
+  const f = leaseFixture(t)
+  assert.equal(spawnSync('git', ['init', '-q', f.dir]).status, 0)
+  const cli = fileURLToPath(new URL('./pr-state.mjs', import.meta.url))
+  const runs = await Promise.all(
+    Array.from(
+      { length: 8 },
+      (_, i) =>
+        new Promise((resolve, reject) => {
+          const child = spawn(
+            process.execPath,
+            [cli, 'repair-lease', 'acquire', '--pr', '7', '--head', HEAD],
+            {
+              cwd: f.dir,
+              env: { ...process.env, BOSS_AGENT_SESSION_ID: `holder-${i}` },
+            },
+          )
+          let stdout = ''
+          let stderr = ''
+          child.stdout.on('data', (chunk) => {
+            stdout += chunk
+          })
+          child.stderr.on('data', (chunk) => {
+            stderr += chunk
+          })
+          child.on('error', reject)
+          child.on('close', (exit) => resolve({ exit, stdout, stderr }))
+        }),
+    ),
+  )
+  assert.equal(runs.filter((r) => r.exit === 0).length, 1, JSON.stringify(runs))
+  assert.ok(
+    runs.every((r) => r.exit === 0 || r.exit === 3),
+    JSON.stringify(runs),
+  )
+  const winner = JSON.parse(runs.find((r) => r.exit === 0).stdout)
+  const record = JSON.parse(fs.readFileSync(path.join(f.dir, '.git/boss-repair/lease/pr-7.json')))
+  assert.equal(record.holder, winner.holder)
+})
+
+test('repair lease: filesystem errors fail closed and usage errors remain usage errors', (t) => {
+  const f = leaseFixture(t)
+  const file = path.join(f.dir, 'not-a-directory')
+  fs.writeFileSync(file, '')
+  const bad = f.run('one', 'acquire', HEAD, { leaseDir: path.join(file, 'lease') })
+  assert.equal(bad.exit, 1)
+  for (const args of [
+    ['repair-lease', '--pr', '7'],
+    ['repair-lease', 'bogus', '--pr', '7'],
+    ['repair-lease', 'acquire', '--pr', '7'],
+    ['repair-lease', 'check'],
+    ['repair-lease', 'check', '--pr', '7', '--head', HEAD],
+  ])
+    assert.throws(() => main(args, f.deps), UsageError)
 })

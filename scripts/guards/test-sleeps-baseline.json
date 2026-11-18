@@ -234,7 +234,7 @@
   "services/bosso/api/orchestrator/webhooks/e2e_session_webhook_test.go": 4,
   "services/bosso/api/orchestrator/webhooks/session_webhook_deliveries_test.go": 1,
   "services/bosso/api/orchestrator/webhooks/webhook_e2e_test.go": 2,
-  "services/bosso/api/routing/kubernetes_test.go": 2,
+  "services/bosso/api/routing/peer_test.go": 2,
   "services/bosso/api/webhook/registry_handler_test.go": 3,
   "services/bosso/api/webhook/replay_regression_test.go": 1,
   "services/bosso/api/webhook/stripe_deletion_test.go": 3,

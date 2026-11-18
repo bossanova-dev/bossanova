@@ -43,8 +43,13 @@
 //
 // Node builtins only — this runs in dependency-light cron worktrees.
 
-import { readFileSync, realpathSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { fencedLineMap, indentedCodeMap, inlineCodeEnd, mapProseLines } from '../markdown-prose.mjs'
+import {
+  canonicalizeBareReferences,
+  canonicalizePullRequestReferences,
+} from '../tracker/reference-forms.mjs'
+import { formatHelperProvenance, runToolboxProvenance } from './plan-run-toolbox.mjs'
 
 import { loadReadReceipt, applyReadReceipt } from './plan-writeback-receipt.mjs'
 import { createGateRecorder } from '../gate-outcome.mjs'
@@ -86,75 +91,6 @@ export const WRITEBACK_CAUSES = Object.freeze({
   UNSETTLED: 'unsettled',
   MERGED_LIST_ITEM: 'merged-list-item',
 })
-
-/**
- * Mark every line that is FENCED, the opening and closing fences included. Both transforms below
- * skip literal text, and both used to carry their own copy of this scanner — including the two
- * edge cases a bare boolean toggle gets wrong: CommonMark closes a fence only with the SAME
- * character at >= the opening length, so a `~~~` line does not close a ```` block, and the
- * four-backtick wrapper this repo's docs use to quote a markdown block containing a fence is not
- * closed by the inner ```. Two copies of that would drift the next time one is corrected, inside a
- * gate whose whole job is that nothing else observes what landed on the tracker. An unclosed fence
- * deliberately swallows the rest of the document: the text is literal until proven otherwise.
- */
-const fencedLineMap = (lines) => {
-  const FENCE_OPEN = /^[ \t]{0,3}(`{3,}|~{3,})/
-  const FENCE_CLOSE = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/
-  const literal = lines.map(() => false)
-  let fence = null
-  for (let i = 0; i < lines.length; i += 1) {
-    if (fence) {
-      literal[i] = true
-      const close = FENCE_CLOSE.exec(lines[i])
-      if (close && close[1][0] === fence.char && close[1].length >= fence.length) fence = null
-      continue
-    }
-    const open = FENCE_OPEN.exec(lines[i])
-    if (open) {
-      literal[i] = true
-      fence = { char: open[1][0], length: open[1].length }
-    }
-  }
-  return literal
-}
-
-const indentedCodeMap = (lines, literal) => {
-  const INDENTED = /^(?: {4}| {0,3}\t)/
-  const ATX_HEADING = /^[ \t]{0,3}#{1,6}(?:[ \t]|$)/
-  const code = lines.map(() => false)
-  for (let i = 0; i < lines.length; i += 1) {
-    if (literal[i] || lines[i].trim() === '' || !INDENTED.test(lines[i])) continue
-    const prev = i - 1
-    code[i] =
-      prev < 0 ||
-      lines[prev].trim() === '' ||
-      code[prev] ||
-      literal[prev] ||
-      ATX_HEADING.test(lines[prev])
-  }
-  return code
-}
-
-const inlineCodeEnd = (line, i) => {
-  let open = i
-  while (open < line.length && line[open] === '`') open += 1
-  const width = open - i
-  let close = -1
-  for (let j = open; j < line.length;) {
-    if (line[j] !== '`') {
-      j += 1
-      continue
-    }
-    let k = j
-    while (k < line.length && line[k] === '`') k += 1
-    if (k - j === width) {
-      close = k
-      break
-    }
-    j = k
-  }
-  return close === -1 ? open : close
-}
 
 /**
  * One line with measured tracker escapes removed outside inline code spans.
@@ -244,96 +180,8 @@ const unwrapLinkDestinations = (line) => {
   return out
 }
 
-const mapProseLines = (text, transform) => {
-  const lines = String(text).split('\n')
-  const literal = fencedLineMap(lines)
-  const code = indentedCodeMap(lines, literal)
-  return lines.map((line, i) => (literal[i] || code[i] ? line : transform(line))).join('\n')
-}
-
 const delimiterShaped = (line) =>
   line.includes('|') && /^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)*[ \t]*:?-+:?[ \t]*\|?[ \t]*$/.test(line)
-
-const referenceLinkAt = (line, start) => {
-  if (line[start] !== '[') return null
-  let depth = 1
-  let end = start + 1
-  for (; end < line.length && depth > 0; end += 1) {
-    if (line[end] === '\\') end += 1
-    else if (line[end] === '[') depth += 1
-    else if (line[end] === ']') depth -= 1
-  }
-  if (depth !== 0) return null
-  const label = line.slice(start + 1, end - 1)
-  const labelEnd = end
-  if (line[end] !== '(') return { end, label, destination: null }
-  const destinationStart = ++end
-  const angled = line[end] === '<'
-  if (angled) {
-    const close = line.indexOf('>', end + 1)
-    if (close < 0) return { end: labelEnd, label, destination: null }
-    end = close + 1
-  }
-  depth = 1
-  for (; end < line.length && depth > 0; end += 1) {
-    if (line[end] === '\\') end += 1
-    else if (line[end] === '(') depth += 1
-    else if (line[end] === ')') depth -= 1
-  }
-  if (depth !== 0) return { end: labelEnd, label, destination: null }
-  const raw = line.slice(destinationStart, end - 1)
-  const destination = angled ? /^<([^<>\s]+)>$/.exec(raw)?.[1] : /^[^<>\s]+$/.exec(raw)?.[0]
-  return { end, label, destination }
-}
-
-const unwrapBareReferences = (line) => {
-  if (/^ {0,3}\[[^\]]+\]:/.test(line)) return line
-  let out = ''
-  for (let i = 0; i < line.length;) {
-    if (line[i] === '\\' || line[i] === '`') {
-      const end = line[i] === '`' ? inlineCodeEnd(line, i) : i + 2
-      const escapedLink = line[i] === '\\' && referenceLinkAt(line, i + 1)
-      const literalEnd = escapedLink ? escapedLink.end : end
-      out += line.slice(i, literalEnd)
-      i = literalEnd
-      continue
-    }
-    const link = referenceLinkAt(line, i)
-    if (link) {
-      const { label, destination } = link
-      let identifier = false
-      try {
-        const url = new URL(destination)
-        identifier =
-          /^https?:$/.test(url.protocol) &&
-          /^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]*$/.test(label) &&
-          url.pathname.split('/').includes(label)
-      } catch {
-        /* Not an absolute URL: cannot be an identifier autolink. */
-      }
-      // Side-agnostic: deletion of an authored domain/identifier link also compares equal.
-      const self = /^https?:\/\//.test(label) && destination === label
-      const domain =
-        /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+(?:[:/][^\s]*)?$/.test(label) &&
-        (destination === 'http://' + label || destination === 'https://' + label)
-      const plainLabel = /^[^\s\[\]<>`]+$/.test(label)
-      out +=
-        line[i - 1] !== '!' && plainLabel && (self || domain || identifier)
-          ? label
-          : line.slice(i, link.end)
-      i = link.end
-      continue
-    }
-    const angle = /^<(https?:\/\/[^<>\s]+)>/.exec(line.slice(i))
-    if (angle) {
-      out += angle[1]
-      i += angle[0].length
-      continue
-    }
-    out += line[i++]
-  }
-  return out
-}
 
 // Backticks are punctuation: CommonMark permits these delimiter runs only beside
 // whitespace, punctuation or a boundary on their outside edge.
@@ -444,7 +292,8 @@ const collapseTablePadding = (text) => {
 // alike without knowing which one the tracker reshaped. Each is idempotent.
 export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   'table-cell-padding-collapse': collapseTablePadding,
-  'bare-reference-autolinking': (text) => mapProseLines(text, unwrapBareReferences),
+  'bare-reference-autolinking': canonicalizeBareReferences,
+  'pull-request-reference-autolinking': canonicalizePullRequestReferences,
   'code-span-bold-unwrapping': (text) => mapProseLines(text, unwrapBoldCode),
   // Escapes before `_`, `*`, `[`, `]`, `~`, `#` and backticks were measured in tracker writes, including a Next.js
   // dynamic-route path and a bracketed label. Other characters were not measured. The canonical
@@ -863,6 +712,7 @@ export const DESCRIPTION_TRANSFORM_ORDER = Object.freeze([
   'backslash-escape-insertion',
   'link-destination-angle-bracket-wrapping',
   'bare-reference-autolinking',
+  'pull-request-reference-autolinking',
   'unordered-list-marker-substitution',
   'emphasis-delimiter-whitespace-migration',
   'emphasis-span-restructuring',
@@ -1228,11 +1078,10 @@ function main() {
   gateRecorder.record(result.exitCode === 0 ? 'pass' : 'fire', result.cause ?? result.verdict)
 
   console.log(`writeback-verdict: ${result.verdict}`)
-  // Provenance: WHICH copy of this helper measured the verdict. A stale installed
-  // toolbox once decided a verdict that a note then blamed on the input, and nothing recorded which
-  // copy ran. Additive only: the verdict line above keeps its exact form for the callers that grep
-  // it, and a refusal returns before this point, so it still prints neither line.
-  console.log(`plan-writeback-verify: helper ${realpathSync(fileURLToPath(import.meta.url))}`)
+  // Name the helper and canonical run toolbox without changing the verdict or refusal output.
+  console.log(
+    formatHelperProvenance('plan-writeback-verify:', runToolboxProvenance(import.meta.url)),
+  )
   console.log(`plan-writeback-verify: ${result.reason}`)
 
   // An advisory verdict is a PASS that must still be seen. Put it on stderr too, and say plainly

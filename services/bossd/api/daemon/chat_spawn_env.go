@@ -68,7 +68,7 @@ func (s *Server) chatSpawnEnv(
 	}
 	return s.environmentOverlay(
 		mergeManagedOverAccount(
-			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName, s.gitHubUsageShim),
+			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName, s.gitHubUsageShim, repo),
 			accountEnv,
 		),
 		sess.WorktreePath,

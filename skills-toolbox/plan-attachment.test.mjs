@@ -1039,8 +1039,12 @@ test('no non-test module under skills-toolbox/ guards on the runtime-dependent p
     `scan set must reach subdirectory entry points, got: ${relativePaths.join(', ')}`,
   )
 
-  const offenders = modules.filter((absolute) =>
-    readFileSync(absolute, 'utf8').includes(FORBIDDEN_GUARD),
+  // The copy-out capture CLI deliberately requires Node >=24.2 and has no toolbox imports.
+  // Direct, imported and symlinked execution: skills-toolbox/verify/verify-proof-capture.test.mjs.
+  const copyOutCapture = join(TOOLBOX_ROOT, 'verify', 'verify-proof-capture.mjs')
+  const offenders = modules.filter(
+    (absolute) =>
+      absolute !== copyOutCapture && readFileSync(absolute, 'utf8').includes(FORBIDDEN_GUARD),
   )
   assert.deepEqual(
     offenders.map((absolute) => relative(TOOLBOX_ROOT, absolute).split(sep).join('/')),

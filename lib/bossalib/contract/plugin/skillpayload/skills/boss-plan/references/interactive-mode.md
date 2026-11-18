@@ -159,13 +159,13 @@ arbitrary machines, so it may only write where it owns the ground.
 
 ## Phase 4 — Resolve the draft/review step (interactive only)
 
-Run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role draft --mode interactive --json`
+Run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role draft --mode interactive --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --json`
 and read both `extensions` and `skipped`; record every
 `skipped` entry whose `deliberate` is `false` as
 `extension <name>: skipped (<reason>)` in the autonomous decisions. Key that on the entry's own
-`deliberate` field, never on the text of `reason`. A `deliberate: true` entry is a same-prefix skill
-that is not an extension of this core — a markerless helper, or one extending another core — and is
-never reported. Recording is all that is due: a discovery skip is never fatal and never changes
+`deliberate` field, never on the text of `reason`. Deliberate skips are otherwise unreported.
+For `code: peer-run-active`, tell the user which live peer run blocked the
+Tier-1 extension. Recording is all that is due: a discovery skip is never fatal and never changes
 control flow; the tiers below still resolve exactly as documented.
 If the helper is missing in an installed public skill payload, treat discovery as
 `{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.

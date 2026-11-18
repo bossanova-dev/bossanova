@@ -32,7 +32,7 @@ Starts a brand-new live chat inside an existing session, reusing that session's 
 
 - `--agent` — Agent plugin to run (empty inherits the session's agent)
 - `--json` — Emit the new chat as a machine-readable JSON envelope
-- `--role` — Purpose of the new chat: operator, coordinator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator or coordinator one. Only the operator may create a coordinator chat; unless coordinator_approval_grant is off, it may approve verify parks and merge (default: operator)
+- `--role` — Purpose of the new chat: operator, coordinator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator or coordinator one (default: operator)
 - `--title` — Title for the new chat
 
 ```bash

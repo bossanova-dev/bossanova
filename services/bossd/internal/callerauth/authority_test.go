@@ -126,8 +126,8 @@ func TestAuthorityLinkedPaneSessions(t *testing.T) {
 			if tc.want == domain.CallerAgentChat && got.AgentSessionID != "chat" {
 				t.Fatalf("wrong chat: %+v", got)
 			}
-			if tc.want != domain.CallerOperator && got.HasCapability(domain.CapabilityVerifyApprove, nil) {
-				t.Fatalf("unexpected approval capability: %+v", got)
+			if tc.want != domain.CallerOperator && got.HasCapability(domain.CapabilityVerifyAccept) {
+				t.Fatalf("unexpected operator capability: %+v", got)
 			}
 		})
 	}

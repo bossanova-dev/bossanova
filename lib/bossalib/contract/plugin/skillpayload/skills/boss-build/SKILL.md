@@ -36,8 +36,9 @@ summary (cost extraction matches a line-leading token).
 - `NO_CHANGE` — no eligible candidate, a named ticket with nothing to build from, claim lost with
   no runner-up, a foreign branch carrying other work, a peer already holding the worktree lock, a
   named ticket verify would not admit, started without approval, an unplanned file-level overlap with an open
-  PR (held as needs-human), or nothing committable after claiming (ticket
-  restored to its entry state).
+  PR (its open ticket becomes a blocker; with none, back to the planning queue), or nothing
+  committable after claiming (ticket restored to its entry state, or closed to `.done` when Step 6
+  certifies the scope already on the base).
 
 An existing PR/branch (bossd's bootstrap draft, an empty PR, or a prior run's work) is **adopted and
 resumed**, not a stop condition.
@@ -73,8 +74,8 @@ A `moveState` / `writeComment` response echoes the issue before the write; it is
 proof that the write landed or failed. Read claim visibility with `read-claim-comments` and
 confirm state moves with `await-state`.
 
-**State-move confirmation.** After the Step 6 entry-state restore, Step 9 move to `.inReview`,
-Step 10 unwind to `.inProgress`, and Step 12 `NO_CHANGE` restore, run
+**State-move confirmation.** After the Step 9 move to `.inReview`, Step 10 unwind to `.inProgress`,
+and Step 12 `NO_CHANGE` restore or already-satisfied close, run
 `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" await-state --id <issue-uuid> --state <resolved-target-name>`.
 An unsettled receipt requires re-sending the same absolute `moveState` once and awaiting again.
 If still unsettled, record
@@ -114,6 +115,7 @@ Once Preflight has pinned, read `references/…` and `agents/…` from `$BOSS_BU
 | Which repo-local extensions exist?                                     | `node skill-extensions.mjs discover --core boss-build --role <role> --json`                                                                             |
 | Do the plan’s citations and premises still hold?                       | `node plan-recheck.mjs <plan> [--root <dir>]`                                                                                                           |
 | Is a failed criterion only "checkout behind origin"? Re-run it rebased | `node build/acceptance-retry.mjs classify\|retry\|certify …`                                                                                            |
+| What happens to a nothing-built ticket?                                | `node build/no-change-disposition.mjs decide …`                                                                                                         |
 | Did the base move under me?                                            | `node base-drift.mjs check …`                                                                                                                           |
 | Push the branch, with retry and a rescue ref                           | `node finalize/push-branch.mjs --branch <name> [--base <ref>] [--expect-remote <sha>]` <!-- ci-request: skip helper reference; routes below request --> |
 | Request configured heavy CI once per verified draft head               | `node ci/ci-request.mjs request --pr <n> --head <sha>`                                                                                                  |
@@ -503,8 +505,7 @@ comment arbitration. Release it best-effort whenever this run gives the ticket b
 node "$BOSS_BUILD_TOOLBOX/issue-lease.mjs" release --scope build --issue '<TICKET-ID>' --token "$TOKEN" || true
 ```
 
-Use that release on `LOST`, before every `NO_WINNER` retry, the Step 6 nothing-built path, and every
-Step 12 terminal path. Release only this run's token, never the peer's.
+Use that release on `LOST`, before every `NO_WINNER` retry, and every Step 12 terminal path. Release only this run's token, never the peer's.
 
 ```bash
 BODY="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-comment --token "$TOKEN" --session-id "${BOSS_SESSION_ID:-}")" || { echo "BLOCKED: claim body"; exit 1; }
@@ -616,7 +617,9 @@ Record every overlap, planned or not, and every warning under `## Premise discha
 Exit 69 records `could not evaluate open PRs (<reason>)` and proceeds; a truncated snapshot
 must carry its warning rather than being described as clean. Only an unplanned file-level overlap
 holds a fresh run: exits 3 and 4 stop `NO_CHANGE` through Step 12 before implementation, even
-when label writes failed (exit 4). On resume run without `--apply`, record overlaps and continue
+when tracker writes failed (exit 4). With `--apply`, each held PR whose ticket is still open
+becomes a blocker of this ticket, which keeps its build label and waits; a held PR with no open
+ticket swaps the build label for the planning-queue label. On resume run without `--apply`, record overlaps and continue
 even on exit 3. On a fresh hold whose writes landed, the helper's marker comment supplies the
 Step 12 breadcrumb; if they did not land, that breadcrumb names the held PRs and shared files.
 
@@ -714,8 +717,20 @@ node "$BOSS_BUILD_TOOLBOX/worktree-state.mjs" --base "$REVIEW_BASE" \
   --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 ```
 
-`clean` ⇒ nothing was built: restore the entry state and apply State-move confirmation above, delete the claim, release your issue lease,
-Step 12 `NO_CHANGE`.
+`clean` ⇒ nothing was built: keep the claim and lease until Step 12. Fetch the base and compare
+`HEAD^{tree}` with `$BASE_REF^{tree}`. Only after a successful fetch, equal trees and a clean
+worktree, certify on this head without `--reuse`:
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/build/acceptance-retry.mjs" certify --plan "$PLAN_FILE" \
+  --base "$BASE_REMOTE/$BASE_BRANCH" \
+  --out "$(git rev-parse --git-dir)/boss-build/no-change-acceptance-$BLI_RUNID.json"
+```
+
+A failed fetch, unequal trees or failed certification supplies no acceptance file to Step 12.
+Re-read claim comments, run `claim-verdict` while this run's claim still exists, and read the
+current state with `getIssue`. Continue directly to Step 12 `NO_CHANGE`; Step 6 makes no state
+move, claim deletion or lease release.
 `unknown` ⇒ `BLOCKED`. `dirty` ⇒ commit what this run touched (path-scoped) so the review sees it.
 Whenever `worktree-state.mjs` returns `unknown`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger evidence-unknown --where "boss-build worktree-state"` (never fatal).
 
@@ -1053,7 +1068,7 @@ Tokens:
 `review-gate-passed`, `pr-ready`; `PARTIAL` — `partial-gate-satisfied`, `pr-ready`,
 `do-not-merge-marked`; every route — `claim-deleted`, `notes-before-lock-release`,
 `stop-hooks-removed`, `completion-phase-done`, `lock-released`; optional — `blocked-pr-left-draft`,
-`entry-state-restored`,
+`entry-state-restored`, `already-satisfied-closed`,
 `no-change-breadcrumb-written`, `pr-merged-by-completion`.
 
 ## Step 10: Settle
@@ -1085,16 +1100,35 @@ reproduces it. Continue to Step 12.
 Every route that took the lock ends here, `foreign` included. Decide `OUTCOME` first; nothing below
 may change it.
 
+- On `NO_CHANGE` for a resolved ticket, decide **before deleting the claim**. Refresh the base;
+  re-read claim comments and run `claim-verdict` now (carry contended liveness evidence as in
+  Step 3), then read the current state with `getIssue`. Run:
+
+  ```bash
+  node "$BOSS_BUILD_TOOLBOX/build/no-change-disposition.mjs" decide \
+    --base "$BASE_REF" --claim-verdict <WON|LOST|NO_WINNER|unknown> --current-state <name> \
+    [--acceptance <run-scoped Step 6 certification file>]
+  ```
+
+  Supply `--acceptance` only when Step 6 certified this run and both base fetches succeeded.
+  Missing or unknown evidence never authorizes a close. Apply its disposition:
+  - `close`: move to `targetState` (configured `.done`), confirm with `await-state`, and stamp
+    `already-satisfied-closed`. Leave one breadcrumb naming the base, short SHA, criterion count
+    and each criterion id with its command (`check` or `derivedCheck`), without output or secrets.
+    The terminal summary says `already satisfied on <base>@<sha7>; closed to <done-state>`.
+  - `restore`: restore the entry state with `moveState`, confirm with `await-state`, and stamp
+    `entry-state-restored`.
+  - `leave`: make no state move (peer owns the ticket or its state is not ours).
+
+  Every disposition leaves exactly one short breadcrumb naming the route and `reason`; update it
+  on a repeat and stamp `no-change-breadcrumb-written`. On an open-PR hold, use the helper's marker
+  comment when its writes landed; otherwise name held PRs and shared files. An unsettled close or
+  restore warns as above; `OUTCOME` stays `NO_CHANGE`. Never stamp both close and restore.
+
 - Delete this run's claim comment by the read-derived `ownClaimId` if it still exists.
 - If Step 3 generated `TOKEN` for a resolved ticket, release its issue lease on every terminal path:
   `node "$BOSS_BUILD_TOOLBOX/issue-lease.mjs" release --scope build --issue '<TICKET-ID>' --token "$TOKEN" || true`.
   Use that ticket's id; this is best-effort and never fatal, including after a successful build.
-- On `NO_CHANGE` for a resolved ticket: restore the entry state with `moveState` unless another
-  runner owns the ticket or the state is not one this run produced, and leave exactly one short
-  breadcrumb comment naming the branch that fired and why (update it on a repeat; no transcripts,
-  output or secrets). On an open-PR hold, the helper's marker comment is the breadcrumb when its
-  writes landed; otherwise name the held PRs and shared files in the breadcrumb. Apply State-move
-  confirmation above; an unsettled restore is a warning.
 - Unless `BOSS_NOTES_SUPPRESSED=1`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" flush --core boss-build --outcome "$OUTCOME" --mode "<mode>"` once (unsampled, never fatal), then continue.
 - **Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Run
   `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" roll --core boss-build --consume`; it reuses Step 6.5’s

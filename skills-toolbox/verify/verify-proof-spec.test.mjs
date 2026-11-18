@@ -631,3 +631,33 @@ test('a section left with no part is dropped, and a link to its items goes with 
     { at: 'risks[0].links', reason: 'I1 names nothing on this page' },
   ])
 })
+
+test('Python test names prove a spec criterion while fixtures remain name-based', async () => {
+  const { isTestFile } = await import('./verify-proof-spec.mjs')
+  for (const file of [
+    'x_test.go',
+    'a.test.ts',
+    'a.spec.js',
+    '__tests__/a.js',
+    'test_parse.py',
+    'pkg/parse_test.py',
+    'testdata/x_test.go',
+  ])
+    assert.equal(isTestFile(file), true, file)
+  for (const file of ['testdata/input.json', 'tests/fixtures/data.yaml', 'parse.py'])
+    assert.equal(isTestFile(file), false, file)
+  const input = spec()
+  input.ticketFit.criteria = [
+    {
+      id: 'AC1',
+      text: 'parses',
+      status: 'done',
+      evidence: [{ kind: 'test', label: 'parses', ref: 'test_parse.py:1' }],
+    },
+  ]
+  const result = validateProofSpec(input, {
+    ...context,
+    changedPaths: [...context.changedPaths, 'test_parse.py'],
+  })
+  assert.equal(result.spec.ticketFit.criteria[0].status, 'done')
+})

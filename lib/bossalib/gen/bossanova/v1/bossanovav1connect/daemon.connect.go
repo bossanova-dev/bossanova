@@ -43,6 +43,9 @@ const (
 	// DaemonServiceUploadEvidenceProcedure is the fully-qualified name of the DaemonService's
 	// UploadEvidence RPC.
 	DaemonServiceUploadEvidenceProcedure = "/bossanova.v1.DaemonService/UploadEvidence"
+	// DaemonServicePostProofCheckRunProcedure is the fully-qualified name of the DaemonService's
+	// PostProofCheckRun RPC.
+	DaemonServicePostProofCheckRunProcedure = "/bossanova.v1.DaemonService/PostProofCheckRun"
 	// DaemonServiceGetFactoryHealthProcedure is the fully-qualified name of the DaemonService's
 	// GetFactoryHealth RPC.
 	DaemonServiceGetFactoryHealthProcedure = "/bossanova.v1.DaemonService/GetFactoryHealth"
@@ -384,6 +387,10 @@ type DaemonServiceClient interface {
 	DescribeCaller(context.Context, *connect.Request[v1.DescribeCallerRequest]) (*connect.Response[v1.DescribeCallerResponse], error)
 	// Upload finished evidence through daemon-held credentials.
 	UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error)
+	// Post a proof check through the daemon's session credentials. This additive
+	// local RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	PostProofCheckRun(context.Context, *connect.Request[v1.PostProofCheckRunRequest]) (*connect.Response[v1.PostProofCheckRunResponse], error)
 	// GetFactoryHealth reads host-local factory problems for one repository.
 	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
 	// Repo management
@@ -803,6 +810,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceUploadEvidenceProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("UploadEvidence")),
+			connect.WithClientOptions(opts...),
+		),
+		postProofCheckRun: connect.NewClient[v1.PostProofCheckRunRequest, v1.PostProofCheckRunResponse](
+			httpClient,
+			baseURL+DaemonServicePostProofCheckRunProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("PostProofCheckRun")),
 			connect.WithClientOptions(opts...),
 		),
 		getFactoryHealth: connect.NewClient[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse](
@@ -1479,6 +1492,7 @@ type daemonServiceClient struct {
 	resolveContext                       *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
 	describeCaller                       *connect.Client[v1.DescribeCallerRequest, v1.DescribeCallerResponse]
 	uploadEvidence                       *connect.Client[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse]
+	postProofCheckRun                    *connect.Client[v1.PostProofCheckRunRequest, v1.PostProofCheckRunResponse]
 	getFactoryHealth                     *connect.Client[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse]
 	validateRepoPath                     *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
 	registerRepo                         *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
@@ -1605,6 +1619,11 @@ func (c *daemonServiceClient) DescribeCaller(ctx context.Context, req *connect.R
 // UploadEvidence calls bossanova.v1.DaemonService.UploadEvidence.
 func (c *daemonServiceClient) UploadEvidence(ctx context.Context, req *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error) {
 	return c.uploadEvidence.CallUnary(ctx, req)
+}
+
+// PostProofCheckRun calls bossanova.v1.DaemonService.PostProofCheckRun.
+func (c *daemonServiceClient) PostProofCheckRun(ctx context.Context, req *connect.Request[v1.PostProofCheckRunRequest]) (*connect.Response[v1.PostProofCheckRunResponse], error) {
+	return c.postProofCheckRun.CallUnary(ctx, req)
 }
 
 // GetFactoryHealth calls bossanova.v1.DaemonService.GetFactoryHealth.
@@ -2174,6 +2193,10 @@ type DaemonServiceHandler interface {
 	DescribeCaller(context.Context, *connect.Request[v1.DescribeCallerRequest]) (*connect.Response[v1.DescribeCallerResponse], error)
 	// Upload finished evidence through daemon-held credentials.
 	UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error)
+	// Post a proof check through the daemon's session credentials. This additive
+	// local RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	PostProofCheckRun(context.Context, *connect.Request[v1.PostProofCheckRunRequest]) (*connect.Response[v1.PostProofCheckRunResponse], error)
 	// GetFactoryHealth reads host-local factory problems for one repository.
 	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
 	// Repo management
@@ -2589,6 +2612,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceUploadEvidenceProcedure,
 		svc.UploadEvidence,
 		connect.WithSchema(daemonServiceMethods.ByName("UploadEvidence")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServicePostProofCheckRunHandler := connect.NewUnaryHandler(
+		DaemonServicePostProofCheckRunProcedure,
+		svc.PostProofCheckRun,
+		connect.WithSchema(daemonServiceMethods.ByName("PostProofCheckRun")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceGetFactoryHealthHandler := connect.NewUnaryHandler(
@@ -3265,6 +3294,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDescribeCallerHandler.ServeHTTP(w, r)
 		case DaemonServiceUploadEvidenceProcedure:
 			daemonServiceUploadEvidenceHandler.ServeHTTP(w, r)
+		case DaemonServicePostProofCheckRunProcedure:
+			daemonServicePostProofCheckRunHandler.ServeHTTP(w, r)
 		case DaemonServiceGetFactoryHealthProcedure:
 			daemonServiceGetFactoryHealthHandler.ServeHTTP(w, r)
 		case DaemonServiceValidateRepoPathProcedure:
@@ -3506,6 +3537,10 @@ func (UnimplementedDaemonServiceHandler) DescribeCaller(context.Context, *connec
 
 func (UnimplementedDaemonServiceHandler) UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UploadEvidence is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) PostProofCheckRun(context.Context, *connect.Request[v1.PostProofCheckRunRequest]) (*connect.Response[v1.PostProofCheckRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.PostProofCheckRun is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error) {

@@ -82,8 +82,8 @@ func TestFollowUpSessionPRNotes_ErrorsAndRefusal(t *testing.T) {
 func TestFollowUpCallerGate_Sessions_AC213803(t *testing.T) {
 	for _, kind := range []domain.CallerKind{domain.CallerOperator, domain.CallerAgentChat, domain.CallerDaemonChild, domain.CallerUnattested} {
 		a := &gateAuthority{principal: domain.CallerPrincipal{Kind: kind, AgentSessionID: "chat-follow"}}
-		i := NewCallerInterceptor(a, nil)
-		_, err := i.check(a.ConnContext(context.Background(), nil), bossanovav1connect.DaemonServiceFollowUpSessionPRNotesProcedure, nil, nil)
+		i := NewCallerInterceptor(a)
+		_, err := i.check(a.ConnContext(context.Background(), nil), bossanovav1connect.DaemonServiceFollowUpSessionPRNotesProcedure, nil)
 		if kind == domain.CallerOperator {
 			if err != nil {
 				t.Fatal(err)

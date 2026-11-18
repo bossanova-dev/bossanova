@@ -714,6 +714,25 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "none";
   }
+  // UpsertProofCheckRun creates or updates the one "boss/proof" GitHub check
+  // run on head_sha of the repository named by repo_origin_url. bosso writes it
+  // with the GitHub App's own key, because only an App can create a check run.
+  // The run is always completed with a neutral conclusion: it reports
+  // evidence and never gates, and the caller cannot choose its name, status or
+  // conclusion. Re-posting the same head updates the existing run in place.
+  // It admits the same callers as IssueGitHubInstallationToken: a daemon token
+  // whose owner may receive the repository's GitHub events. Every other caller
+  // or repository is PermissionDenied with one fixed message. An invalid head,
+  // title, summary or details URL is InvalidArgument. FailedPrecondition with
+  // the message "checks write not granted" means the App installation has not
+  // been granted checks write yet.
+  // A new RPC is additive, so it needs no dated apiversion bump
+  // (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+  rpc UpsertProofCheckRun(UpsertProofCheckRunRequest) returns (UpsertProofCheckRunResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -1842,6 +1861,10 @@ message ProxyUpdateRepoRequest {
   SecretUpdate linear_key = 10;
   SecretUpdate sentry_key = 11;
   google.protobuf.Timestamp expected_updated_at = 12;
+  // Optional: absent leaves the command unchanged; empty clears it.
+  // Additive: older clients omit this field and retain existing behavior, so no
+  // version transform is needed. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  optional string serve_script = 14;
 }
 message ProxyUpdateRepoResponse { RepoSettings settings = 1; }
 
@@ -2412,6 +2435,35 @@ message IssueGitHubInstallationTokenResponse {
   // level is read: the token never carries a write permission, so a write
   // must use another credential.
   map<string, string> permissions = 5;
+}
+
+// UpsertProofCheckRunRequest is the proof a daemon posts as the head's
+// "boss/proof" check run.
+message UpsertProofCheckRunRequest {
+  // The repository's origin URL, canonicalised like
+  // IssueGitHubInstallationTokenRequest.repo_origin_url.
+  string repo_origin_url = 1;
+  // The full 40-character hex commit SHA the run is attached to.
+  string head_sha = 2;
+  // The run's output title: non-empty, at most 255 characters.
+  string title = 3;
+  // The run's output summary in Markdown: non-empty, at most 65,535
+  // characters (GitHub's output.summary limit).
+  string summary = 4;
+  // Optional link to the proof page: empty, or an https URL of at most 2,048
+  // characters.
+  string details_url = 5;
+}
+
+// UpsertProofCheckRunResponse identifies the check run bosso wrote.
+message UpsertProofCheckRunResponse {
+  // GitHub's id for the check run.
+  int64 check_run_id = 1;
+  // The check run's page on GitHub.
+  string html_url = 2;
+  // True when this call created the run; false when it updated an existing
+  // one.
+  bool is_created = 3;
 }
 
 message SyncDaemonNotesResponse {

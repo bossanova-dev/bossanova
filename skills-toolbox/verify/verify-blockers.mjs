@@ -394,6 +394,7 @@ export function aggregateBlockerExtensions(
   installed,
   classifyVerifyOutcome,
   HUMAN_REASONS,
+  { depsMissing = false } = {},
 ) {
   const declaredReasons = new Map()
   for (const ext of Array.isArray(installed) ? installed : [])
@@ -417,6 +418,7 @@ export function aggregateBlockerExtensions(
   const outcomes = entries.map((entry) => ({
     extension: text(entry.extension) ? entry.extension : '(unnamed)',
     ...classifyVerifyOutcome({
+      depsMissing,
       result: entry.result,
       timedOut: entry.timedOut === true,
       crashed: entry.crashed === true,

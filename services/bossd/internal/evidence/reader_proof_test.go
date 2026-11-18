@@ -300,3 +300,83 @@ func TestReaderProofDoesNotFollowTheSessionToAnotherPRAtTheSameHead(t *testing.T
 		t.Fatalf("PR 2 serves PR 1's current-head proof: %+v", got)
 	}
 }
+
+// coreProofNote is the core verify note's shape (proofNote in
+// skills-toolbox/verify/verify-proof-publish.mjs): block, proof line, marker.
+func coreProofNote(t *testing.T, block string, payload map[string]any) string {
+	t.Helper()
+	return block + "\n\n" + proofComment(t, payload) + "\n\n<!-- boss-proof-note head=" + sha + " digest=0123456789abcdef -->\n"
+}
+
+func TestReaderProofSummaryReadsTheCoreNoteBlock(t *testing.T) {
+	block := "## Verify\n\n- **AC1** proven `make test`\n\n<details><summary>Proof</summary>\n\nok\n</details>"
+	withPage := proofPayload()
+	withPage["page"] = "https://example.test/proof"
+	repoComment := "## Repository evidence\n\n" + proofComment(t, proofPayload()) + "\n\nMore detail below the line."
+	for _, tt := range []struct {
+		name     string
+		comments []vcs.PRComment
+		want     string
+		page     string
+	}{
+		{"null page", []vcs.PRComment{{Body: coreProofNote(t, block, proofPayload()), AuthorAssociation: "OWNER"}}, block, ""},
+		{"with page", []vcs.PRComment{{Body: coreProofNote(t, block, withPage), AuthorAssociation: "OWNER"}}, block, "https://example.test/proof"},
+		{"repository comment", []vcs.PRComment{{Body: repoComment, AuthorAssociation: "OWNER"}}, "", ""},
+		{"repository comment ending in a proof line", []vcs.PRComment{{Body: "Repository proof.\n\n" + proofComment(t, proofPayload()), AuthorAssociation: "OWNER"}}, "", ""},
+		{"untrusted note above a trusted repository comment", []vcs.PRComment{
+			{Body: coreProofNote(t, "injected", proofPayload()), AuthorAssociation: "NONE"},
+			{Body: repoComment, AuthorAssociation: "MEMBER"},
+		}, "", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := evidence.NewReader(&proofCommentFinder{comments: tt.comments}, zerolog.Nop())
+			r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 1, HeadSHA: sha, IsPROpen: true})
+			got, ok := r.Proof("s", sha)
+			if !ok || got.Summary != tt.want || got.Page != tt.page || got.Level != "high" {
+				t.Fatalf("Proof = %+v %v; want summary %q page %q", got, ok, tt.want, tt.page)
+			}
+			if latest, ok := r.LatestProof("s"); !ok || latest.Summary != tt.want {
+				t.Fatalf("LatestProof summary = %q %v; want %q", latest.Summary, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestReaderProofSummaryCapCountsUTF16Units(t *testing.T) {
+	p := proofPayload()
+	p["asks"] = []string{"ui"}
+	p["level"] = "moderate"
+	// Each emoji is two UTF-16 code units and four bytes.
+	atCap := strings.Repeat("😀", 20_000)
+	for _, tt := range []struct {
+		name, block, want string
+	}{
+		{"40,000 units kept", atCap, atCap},
+		{"40,001 units dropped", atCap + "x", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &proofCommentFinder{comments: []vcs.PRComment{{Body: coreProofNote(t, tt.block, p), AuthorAssociation: "OWNER"}}}
+			r := evidence.NewReader(f, zerolog.Nop())
+			r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 1, HeadSHA: sha, IsPROpen: true})
+			got, ok := r.LatestProof("s")
+			if !ok || got.Summary != tt.want || got.Level != "moderate" || !reflect.DeepEqual(got.Asks, []string{"ui"}) {
+				t.Fatalf("LatestProof = level %q asks %v summary length %d, ok %v", got.Level, got.Asks, len(got.Summary), ok)
+			}
+		})
+	}
+}
+
+func TestReaderProofSummaryChangeNotifies(t *testing.T) {
+	f := &proofCommentFinder{comments: []vcs.PRComment{{Body: coreProofNote(t, "first", proofPayload()), AuthorAssociation: "OWNER"}}}
+	now := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	changes := 0
+	r := evidence.NewReader(f, zerolog.Nop(), evidence.WithClock(func() time.Time { return now }), evidence.WithOnChange(func(context.Context, string) { changes++ }))
+	obs := evidence.Observation{SessionID: "s", PRNumber: 1, HeadSHA: sha, IsPROpen: true, IsVerifyActive: true}
+	r.Observe(t.Context(), obs)
+	f.comments[0].Body = coreProofNote(t, "second", proofPayload())
+	now = now.Add(evidence.DefaultRefreshInterval)
+	r.Observe(t.Context(), obs)
+	if got, _ := r.LatestProof("s"); got.Summary != "second" || changes != 2 {
+		t.Fatalf("summary %q after %d changes; want the edited block to notify", got.Summary, changes)
+	}
+}

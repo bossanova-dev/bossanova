@@ -429,7 +429,7 @@ func (a App) updateRouted(msg tea.Msg) (tea.Model, tea.Cmd) {
 // Pointer receiver purely to avoid copying the ~20-sub-model App on the key
 // path: this reads App and mutates nothing, and is NOT one of the Update-arm
 // handler shapes the doc comment above describes.
-func (a *App) aliasCtrlXToEsc(key tea.KeyPressMsg) tea.Msg {
+func (a *App) aliasCtrlXToEsc(key tea.KeyPressMsg) tea.KeyPressMsg {
 	if key.String() != "ctrl+x" {
 		return key
 	}

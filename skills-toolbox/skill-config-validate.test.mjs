@@ -8,11 +8,41 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { DEFAULT_CONFIG, validateConfig } from './skill-config.mjs'
+import { SECTION_ID } from './verify/verify-proof-sections.mjs'
 
 const GENERATED = join(
   dirname(fileURLToPath(import.meta.url)),
   'skill-config-validate.generated.mjs',
 )
+
+test('publish adapters accept access-put without bucket and retain daemon requirements @sessions.AC256204', () => {
+  const check = (proof) =>
+    capture(() =>
+      validateConfig(
+        { ...structuredClone(DEFAULT_CONFIG), publishConfig: { proof } },
+        'fixture.json',
+      ),
+    )
+  const baseUrl = 'https://proof.example'
+  for (const proof of [
+    { kind: 'access-put', baseUrl },
+    { kind: 'access-put', baseUrl, keychainService: 'my-proof-host', extra: true },
+    { kind: 'daemon', baseUrl, bucket: 'proof' },
+    { baseUrl, bucket: 'proof' },
+  ]) {
+    const result = check(proof)
+    assert.equal(result.error, undefined)
+    assert.deepEqual(result.warnings, [])
+  }
+  for (const proof of [
+    { kind: 'access-put' },
+    { kind: 'access-put', baseUrl, keychainService: '' },
+    { kind: 'daemon', baseUrl },
+    { baseUrl },
+    { kind: 'unknown', baseUrl, bucket: 'proof' },
+  ])
+    assert.match(check(proof).error?.message ?? '', /publishConfig/)
+})
 // Any static or dynamic import, re-export, or require call. Ordinary words such as `required`
 // do not match.
 const MODULE_LOAD =
@@ -30,6 +60,115 @@ function capture(run) {
     console.warn = originalWarn
   }
 }
+
+test('proofDefaults warns on unknown keys and rejects malformed values', () => {
+  const valid = {
+    pages: 'all',
+    builtins: { 'boss-verify-protos': false },
+    sections: { infra: true },
+    dbt: { piiTerms: ['email'] },
+    media: {
+      sources: [{ suite: 'ui', workflow: 'ui.yml', job: 'proof', artifact: 'media-{head}' }],
+    },
+    fallback: 'none',
+  }
+  const check = (proofDefaults, options) =>
+    capture(() =>
+      validateConfig(
+        { ...structuredClone(DEFAULT_CONFIG), proofDefaults },
+        'fixture.json',
+        options,
+      ),
+    )
+  assert.deepEqual(check(valid).warnings, [])
+  assert.equal(check(valid).error, undefined)
+  const unknown = check({
+    mystery: true,
+    builtins: { 'boss-plan-notes': false },
+    dbt: { extra: true },
+    sections: { Bad_Id: true },
+    media: { extra: true },
+  })
+  assert.equal(unknown.error, undefined)
+  for (const key of [
+    'mystery',
+    'builtins.boss-plan-notes',
+    'dbt.extra',
+    'sections.Bad_Id',
+    'media.extra',
+  ]) {
+    assert.ok(
+      unknown.warnings.some((warning) =>
+        warning.includes(`proofDefaults.${key} is not a known key; ignored`),
+      ),
+    )
+  }
+  for (const value of [
+    null,
+    [],
+    false,
+    { pages: 'some' },
+    { fallback: true },
+    { builtins: { 'boss-verify-protos': 'no' } },
+    { builtins: [] },
+    { sections: { infra: 1 } },
+    { dbt: { piiTerms: [' '] } },
+    { dbt: { piiTerms: 'email' } },
+    { media: { sources: [false] } },
+  ]) {
+    assert.match(check(value).error?.message ?? '', /proofDefaults/)
+  }
+})
+
+test('proofDefaults patterned values report the failing key in errors and deferred warnings', () => {
+  for (const [block, key] of [
+    ['builtins', 'boss-verify-protos'],
+    ['sections', 'infra'],
+  ]) {
+    const config = {
+      ...structuredClone(DEFAULT_CONFIG),
+      proofDefaults: { [block]: { [key]: 'no' } },
+    }
+    const message = `proofDefaults.${block}.${key} must be true or false`
+    const strict = capture(() => validateConfig(config, 'fixture.json'))
+    assert.equal(
+      strict.error?.message,
+      `skill-config: invalid config from fixture.json: ${message}`,
+    )
+    const deferred = capture(() =>
+      validateConfig(config, 'fixture.json', { deferStageBlocks: true }),
+    )
+    assert.equal(deferred.error, undefined)
+    assert.deepEqual(deferred.warnings, [
+      `skill-config: deferred proofDefaults: skill-config: invalid config from fixture.json: ${message}; run boss skills install`,
+    ])
+  }
+})
+
+test('proofDefaults faults defer as a stage block', () => {
+  const result = capture(() =>
+    validateConfig(
+      { ...structuredClone(DEFAULT_CONFIG), proofDefaults: { pages: 'some' } },
+      'fixture.json',
+      { deferStageBlocks: true },
+    ),
+  )
+  assert.equal(result.error, undefined)
+  assert.ok(result.warnings.some((warning) => warning.includes('deferred proofDefaults:')))
+})
+
+test('proofDefaults.sections accepts SECTION_ID-shaped ids and warns on others', () => {
+  for (const id of ['aa', 'a0', 'a-', 'a'.repeat(24), 'a', 'A0', 'Bad_Id', 'a'.repeat(25)]) {
+    const result = capture(() =>
+      validateConfig(
+        { ...structuredClone(DEFAULT_CONFIG), proofDefaults: { sections: { [id]: true } } },
+        'fixture.json',
+      ),
+    )
+    assert.equal(result.error, undefined)
+    assert.equal(result.warnings.length, SECTION_ID.test(id) ? 0 : 1, id)
+  }
+})
 
 test('the generated validator imports and runs alone in an empty directory', async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'skill-config-validate-')))
@@ -165,4 +304,37 @@ test('the acceptance block is a known key whose derived checks must name a file 
     capture(() => validateConfig(config, 'fixture.json')).error?.message ?? '',
     /acceptance\.derivedChecks/,
   )
+})
+
+test('proof media sources warn on unknown keys and reject malformed fields and overflow', () => {
+  const source = { suite: 'ui', workflow: 'ui.yaml', job: 'proof', artifact: 'media-{head}' }
+  const check = (sources) =>
+    capture(() =>
+      validateConfig(
+        { ...structuredClone(DEFAULT_CONFIG), proofDefaults: { media: { sources } } },
+        'fixture.json',
+      ),
+    )
+  assert.deepEqual(check([source]).warnings, [])
+  assert.equal(check([source]).error, undefined)
+  const unknown = check([{ ...source, typo: true }])
+  assert.equal(unknown.error, undefined)
+  assert.ok(unknown.warnings.some((w) => w.includes('typo')))
+  for (const field of ['suite', 'workflow', 'job', 'artifact']) {
+    assert.ok(check([{ ...source, [field]: 2 }]).error, field)
+    const missing = { ...source }
+    delete missing[field]
+    assert.ok(check([missing]).error, field)
+  }
+  for (const bad of [
+    { suite: '../ui' },
+    { suite: 'u'.repeat(25) },
+    { workflow: 'ui.txt' },
+    { workflow: '../ui.yml' },
+    { job: ' ' },
+    { artifact: 'proof' },
+  ])
+    assert.ok(check([{ ...source, ...bad }]).error, JSON.stringify(bad))
+  assert.ok(check(Array.from({ length: 9 }, () => source)).error)
+  assert.equal(check(Array.from({ length: 8 }, () => source)).error, undefined)
 })

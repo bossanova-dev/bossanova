@@ -103,6 +103,7 @@ go_test(
     srcs = [
         "account_inventory_test.go",
         "account_sync_test.go",
+        "adapters_serve_test.go",
         "adapters_test.go",
         "auth_state_test.go",
         "cloud_control_test.go",

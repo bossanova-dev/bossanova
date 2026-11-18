@@ -346,6 +346,7 @@ for (const privateRoot of [
   'lib/ui-tokens',
   'lib/web-helpers',
   'infra',
+  'scripts/release/deploy',
 ]) {
   test('rejects private root ' + privateRoot + ' in intermediate history', () => {
     const { dir, base } = initRepo()
@@ -375,5 +376,43 @@ for (const basename of ['AGENTS.md', 'CLAUDE.md']) {
     const result = runGuard(dir, base)
     assert.equal(result.code, 1, result.stderr)
     assert.ok(result.stderr.includes('forbidden path: ' + guide), result.stderr)
+  })
+}
+
+test('rejects the project config public source variant', () => {
+  const { dir, base } = initRepo()
+  commit(dir, { '.boss-project.json.public': '{}' }, 'source variant')
+  assert.equal(runGuard(dir, base).code, 1)
+})
+
+for (const key of ['daemons', 'crons', 'Daemons', 'CRONS', 'daemonſ', 'cronſ']) {
+  test('rejects a published project config declaring ' + key, () => {
+    const { dir, base } = initRepo()
+    commit(dir, { '.boss-project.json': JSON.stringify({ [key]: [] }) }, 'fleet config')
+    removeFile(dir, '.boss-project.json', 'remove private config')
+    const result = runGuard(dir, base)
+    assert.equal(result.code, 1, result.stderr)
+    assert.match(result.stderr, /private fleet configuration/)
+  })
+}
+
+test('accepts a published project config without fleet declarations', () => {
+  const { dir, base } = initRepo()
+  commit(
+    dir,
+    {
+      '.boss-project.json':
+        '{"version":1,"project":"public-example","repo":{"originUrl":"https://github.com/example/public"}}',
+    },
+    'public config',
+  )
+  assert.equal(runGuard(dir, base).code, 0)
+})
+
+for (const config of ['{"crons"\n: []}', '{"\\u0064aemons": []}']) {
+  test('rejects fleet declarations regardless of JSON key encoding: ' + config, () => {
+    const { dir, base } = initRepo()
+    commit(dir, { '.boss-project.json': config }, 'encoded fleet config')
+    assert.equal(runGuard(dir, base).code, 1)
   })
 }

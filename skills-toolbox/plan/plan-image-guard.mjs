@@ -15,6 +15,8 @@
 // Node builtins only — this runs in dependency-light cron worktrees.
 
 import { readFileSync } from 'node:fs'
+import { loadSkillConfig, toleratedDescriptionTransforms } from '../skill-config.mjs'
+import { normalizeReferenceForms } from '../tracker/reference-forms.mjs'
 
 import { createGateRecorder } from '../gate-outcome.mjs'
 import { isMainModule } from '../main-module.mjs'
@@ -1124,22 +1126,28 @@ export function originalNotesBodies(markdown) {
   })
 }
 
-function originalNotesBody(markdown, originalText) {
+function originalNotesBody(markdown, originalText, tolerated) {
   const candidates = originalNotesBodies(markdown)
   if (candidates.length === 0) return null
-  const original = canonicalizeImageUrls(originalText, { redactExternalCredentials: false })
+  const original = normalizeReferenceForms(
+    canonicalizeImageUrls(originalText, { redactExternalCredentials: false }),
+    tolerated,
+  )
   // The copied source can itself contain an unfenced `## Original notes` heading. Select the
   // wrapper candidate whose complete payload matches the canonicalized source, not a nested one.
   return (
     candidates.find(
       (candidate) =>
-        canonicalizeImageUrls(candidate, { redactExternalCredentials: false }) === original,
+        normalizeReferenceForms(
+          canonicalizeImageUrls(candidate, { redactExternalCredentials: false }),
+          tolerated,
+        ) === original,
     ) ?? candidates[0]
   )
 }
 
-function verifyVerbatimOriginalNotes(originalText, rewrittenText) {
-  const notes = originalNotesBody(rewrittenText, originalText)
+function verifyVerbatimOriginalNotes(originalText, rewrittenText, tolerated) {
+  const notes = originalNotesBody(rewrittenText, originalText, tolerated)
   if (notes === null) {
     return 'plan-image-guard: ## Original notes section is missing from the rewritten description'
   }
@@ -1171,8 +1179,14 @@ function verifyVerbatimOriginalNotes(originalText, rewrittenText) {
   }
   // The safe source's credential redaction is itself meaningful. Only raw image parity erases
   // credential values; Original notes must keep redacted references verbatim.
-  const original = canonicalizeImageUrls(originalText, { redactExternalCredentials: false })
-  const rewritten = canonicalizeImageUrls(notes, { redactExternalCredentials: false })
+  const original = normalizeReferenceForms(
+    canonicalizeImageUrls(originalText, { redactExternalCredentials: false }),
+    tolerated,
+  )
+  const rewritten = normalizeReferenceForms(
+    canonicalizeImageUrls(notes, { redactExternalCredentials: false }),
+    tolerated,
+  )
   if (original === rewritten) return null
 
   const rewrittenLines = rewritten.split('\n')
@@ -1298,6 +1312,7 @@ function main() {
     requireUnsignedUploads,
     printOriginalNotes,
   } = parseImageGuardArgs(process.argv.slice(2))
+  const tolerated = toleratedDescriptionTransforms(loadSkillConfig({ cwd: process.cwd() }))
   const originalText = readFileSync(original, 'utf8')
   const rewrittenText = readFileSync(rewritten, 'utf8')
 
@@ -1306,7 +1321,7 @@ function main() {
   // after the heading and inherit the separator-newline off-by-one. It writes nothing and gates
   // nothing: every other flag is ignored while this one is set.
   if (printOriginalNotes) {
-    const body = originalNotesBody(rewrittenText, originalText)
+    const body = originalNotesBody(rewrittenText, originalText, tolerated)
     if (body === null) {
       console.error(
         'plan-image-guard: no `## Original notes` section found outside fenced code — ' +
@@ -1338,7 +1353,7 @@ function main() {
   }
 
   if (requireVerbatim) {
-    const mismatch = verifyVerbatimOriginalNotes(originalText, rewrittenText)
+    const mismatch = verifyVerbatimOriginalNotes(originalText, rewrittenText, tolerated)
     if (mismatch) {
       console.error(mismatch)
       process.exitCode = 1

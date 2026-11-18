@@ -176,6 +176,12 @@ func TestReleasedRepairMergeFailure(t *testing.T) {
 		}
 	})
 }
+
+// TestDependabotSetupScript pins that every Dependabot fix session runs the
+// repo's setup script, whoever owns the merge. The session edits code and
+// finalize pushes it through the repo's own pre-push hooks, which typecheck
+// against installed dependencies; a worktree the setup script never ran in
+// has none, so the push fails (madverts-core, 2026-11-18).
 func TestDependabotSetupScript(t *testing.T) {
 	for _, factory := range []bool{false, true} {
 		for _, rebase := range []bool{false, true} {
@@ -188,7 +194,7 @@ func TestDependabotSetupScript(t *testing.T) {
 			called := false
 			o.sessionCreator = &mockSessionCreatorOrch{createFn: func(_ context.Context, opts CreateSessionOpts) (*models.Session, error) {
 				called = true
-				if opts.SkipSetupScript == factory {
+				if opts.SkipSetupScript {
 					t.Errorf("factory=%v rebase=%v skip=%v", factory, rebase, opts.SkipSetupScript)
 				}
 				return &models.Session{ID: "new"}, nil

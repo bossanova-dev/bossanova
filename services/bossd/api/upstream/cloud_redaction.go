@@ -104,6 +104,7 @@ func (r *cloudRedactor) redactContent(ctx context.Context, obj proto.Message) bo
 		}
 		if mode == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
 			value.Plan = ""
+			value.ServiceLinks = nil
 		}
 		return true
 	case *pb.AgentChatMetadata:

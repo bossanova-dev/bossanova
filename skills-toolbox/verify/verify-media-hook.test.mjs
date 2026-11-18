@@ -72,6 +72,46 @@ console.error(${JSON.stringify(SECRET)})
 process.stdout.write(JSON.stringify({ ...${JSON.stringify(manifest())}, head: envelope.headSha }))
 `
 
+test('every vendored proof renderer discovers the built-in CI media hook', async (t) => {
+  const root = tempDir('media-builtins-', t)
+  for (const core of ['boss-build', 'boss-repair', 'boss-retro', 'boss-verify']) {
+    const { collectProofMedia: vendoredCollect } = await import(
+      new URL(
+        `../../lib/bossalib/contract/plugin/skillpayload/skills/${core}/toolbox/verify/verify-media-hook.mjs`,
+        import.meta.url,
+      )
+    )
+    let calls = 0
+    const outcome = vendoredCollect({
+      repo: 'acme/widgets',
+      pr: 7,
+      headSha: HEAD,
+      baseSha: BASE,
+      dir: tempDir('media-builtins-out-', t),
+      cwd: root,
+      read: () => ({ ok: false }),
+      trustedTree: () => ({ ok: true, root }),
+      run: (_command, args, options) => {
+        calls++
+        assert.equal(path.basename(path.dirname(args[0])), 'boss-verify-ci-media')
+        const envelope = JSON.parse(options.input)
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'proof-media/1',
+            head: envelope.headSha,
+            clips: [],
+            transcripts: [],
+          }),
+        }
+      },
+    })
+    assert.equal(calls, 1, core)
+    assert.equal(outcome.extension, 'boss-verify-ci-media', core)
+    assert.ok(outcome.media, core)
+  }
+})
+
 test('the first proof-media extension by order fills the directory and its manifest is validated', (t) => {
   const outcome = collect(t, tree(t, WRITES, { extra: true }))
   assert.equal(outcome.reason, undefined)
@@ -196,4 +236,11 @@ test('documents reach the page assets and the manifest under media/, and the bun
   ])
   assert.ok(!JSON.stringify(summary).includes('.pdf'), 'the summary names no file')
   assert.equal(Object.hasOwn(mediaSummary({ media: null, dropped: [], dir }), 'documents'), false)
+})
+
+test('exit 10 means not configured and retains extension name', (t) => {
+  const outcome = collect(t, tree(t, 'process.exit(10)\n'))
+  assert.equal(outcome.reason, 'not-configured')
+  assert.equal(outcome.extension, 'boss-verify-media')
+  assert.equal(outcome.media, null)
 })

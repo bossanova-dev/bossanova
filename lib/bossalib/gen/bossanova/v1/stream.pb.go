@@ -6457,8 +6457,10 @@ type UpdateRepoCommand struct {
 	LinearKey                       *SecretUpdate          `protobuf:"bytes,9,opt,name=linear_key,json=linearKey,proto3" json:"linear_key,omitempty"`
 	SentryKey                       *SecretUpdate          `protobuf:"bytes,10,opt,name=sentry_key,json=sentryKey,proto3" json:"sentry_key,omitempty"`
 	ExpectedUpdatedAt               *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=expected_updated_at,json=expectedUpdatedAt,proto3" json:"expected_updated_at,omitempty"`
-	unknownFields                   protoimpl.UnknownFields
-	sizeCache                       protoimpl.SizeCache
+	// Optional: absent leaves the command unchanged; empty clears it.
+	ServeScript   *string `protobuf:"bytes,13,opt,name=serve_script,json=serveScript,proto3,oneof" json:"serve_script,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpdateRepoCommand) Reset() {
@@ -6573,6 +6575,13 @@ func (x *UpdateRepoCommand) GetExpectedUpdatedAt() *timestamppb.Timestamp {
 		return x.ExpectedUpdatedAt
 	}
 	return nil
+}
+
+func (x *UpdateRepoCommand) GetServeScript() string {
+	if x != nil && x.ServeScript != nil {
+		return *x.ServeScript
+	}
+	return ""
 }
 
 // RemoveRepoCommand asks the daemon to remove a repo. Successful responses
@@ -11223,7 +11232,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12%\n" +
 	"\x0eshould_refresh\x18\x02 \x01(\bR\rshouldRefresh\")\n" +
 	"\x0eGetRepoCommand\x12\x17\n" +
-	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"\xc7\x06\n" +
+	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"\x80\a\n" +
 	"\x11UpdateRepoCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x00R\vdisplayName\x88\x01\x01\x12&\n" +
@@ -11240,7 +11249,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\n" +
 	"sentry_key\x18\n" +
 	" \x01(\v2\x1a.bossanova.v1.SecretUpdateR\tsentryKey\x12J\n" +
-	"\x13expected_updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\x11expectedUpdatedAtB\x0f\n" +
+	"\x13expected_updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\x11expectedUpdatedAt\x12&\n" +
+	"\fserve_script\x18\r \x01(\tH\bR\vserveScript\x88\x01\x01B\x0f\n" +
 	"\r_display_nameB\x0f\n" +
 	"\r_setup_scriptB\x11\n" +
 	"\x0f_merge_strategyB\x11\n" +
@@ -11248,7 +11258,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x1a_can_auto_merge_dependabotB\x12\n" +
 	"\x10_can_auto_repairB&\n" +
 	"$_should_archive_sessions_after_mergeB\r\n" +
-	"\v_sentry_org\",\n" +
+	"\v_sentry_orgB\x0f\n" +
+	"\r_serve_script\",\n" +
 	"\x11RemoveRepoCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"-\n" +
 	"\x12ListRepoPRsCommand\x12\x17\n" +

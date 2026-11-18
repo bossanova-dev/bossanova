@@ -27,12 +27,13 @@ import { classifyLines, pushPaths } from '../dev/workflow-yaml-lib.mjs'
 const repoRoot = path.dirname(fileURLToPath(new URL('../../Makefile', import.meta.url)))
 
 export const workflowRouteRules = [
-  { workflow: 'test-bosso-production-deployment.yml', requiredTarget: null },
   { workflow: 'test-docs.yml', requiredTarget: null },
   { workflow: 'test-hermes-plugin.yml', requiredTarget: 'test-hermes-plugin' },
   { workflow: 'test-marketing.yml', requiredTarget: 'test-web' },
   { workflow: 'test-plugin-distribution.yml', requiredTarget: null },
   { workflow: 'test-proto.yml', requiredTarget: null },
+  // Terraform fmt and validate have no worktree-local make target.
+  { workflow: 'test-terraform.yml', requiredTarget: null },
   { workflow: 'test-warehouse.yml', requiredTarget: 'test-warehouse' },
   // Playwright real-stack has no worktree-local make target; it boots bossd + bosso.
   { workflow: 'test-web-real-stack.yml', requiredTarget: null },
@@ -43,12 +44,8 @@ export const workflowRouteExemptions = [
   {
     workflow: 'test-web.yml',
     pattern: 'skills-toolbox/verify/verify-proof-player.mjs',
-    reason: 'the proof player runs inside the web review frame, so test-web e2e drives it; its unit tests stay in test-scripts',
-  },
-  {
-    workflow: 'test-bosso-production-deployment.yml',
-    pattern: 'services/bosso/**',
-    reason: 'deployment smoke has no worktree-local make target',
+    reason:
+      'the proof player runs inside the web review frame, so test-web e2e drives it; its unit tests stay in test-scripts',
   },
   {
     workflow: 'test-docs.yml',

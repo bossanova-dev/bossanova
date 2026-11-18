@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const runner = fileURLToPath(new URL('../gate-run.mjs', import.meta.url))
 function call(args, env = {}) {
@@ -16,19 +16,33 @@ function call(args, env = {}) {
     timeout: 20000,
   })
 }
-function fixture(t, body, env = {}) {
+function fixture(t, body, env = {}, loadRatio = 0) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-isolation-test-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const preload = path.join(dir, 'load reading.mjs')
+  fs.writeFileSync(
+    preload,
+    `import os from 'node:os'; const load = os.availableParallelism() * ${loadRatio}; os.loadavg = () => [load, load, load];`,
+  )
+  const childEnv = {
+    ...env,
+    NODE_OPTIONS:
+      `${env.NODE_OPTIONS ?? process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(preload).href}`.trim(),
+  }
+  const fixtureCall = (args) => call(args, childEnv)
+  let run = ''
+  t.after(() => {
+    if (run) {
+      fixtureCall(['stop', run])
+      fs.rmSync(run, { recursive: true, force: true, maxRetries: 3 })
+    }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  })
   const file = path.join(dir, 'fixture.test.mjs')
   fs.writeFileSync(file, `import test from 'node:test'; import fs from 'node:fs';\n${body}`)
-  const start = call(['start', '--', process.execPath, '--test', file], env)
+  const start = fixtureCall(['start', '--', process.execPath, '--test', file])
   assert.equal(start.status, 0, start.stderr)
-  const run = start.stdout.split('\n')[0]
-  t.after(() => {
-    call(['stop', run])
-    fs.rmSync(run, { recursive: true, force: true })
-  })
-  return { dir, file, run, wait: () => call(['wait', '--timeout', '15000', run]) }
+  run = start.stdout.split('\n')[0]
+  return { dir, file, run, wait: () => fixtureCall(['wait', '--timeout', '15000', run]) }
 }
 function alive(pid) {
   try {
@@ -50,44 +64,72 @@ function until(fn) {
   }
   assert.fail('condition did not arrive')
 }
-test('first-run failure passes alone, preserving original status and evidence order', (t) => {
+function assertLoad(f, result, ratio) {
+  const load = JSON.parse(fs.readFileSync(path.join(f.run, 'load.json'), 'utf8'))
+  for (const phase of ['gate', 'isolation']) {
+    assert.equal(load[phase].peak, load.cpus * ratio)
+    assert.equal(load[phase].mean, load.cpus * ratio)
+  }
+  const level = ratio >= 1 ? 'heavy' : 'normal'
+  assert.ok(result.stdout.includes(`(${ratio.toFixed(2)}x ${level})`), result.stdout)
+}
+
+for (const loadRatio of [0, 2]) {
+  test(`first-run failure passes alone, preserving original status and evidence order (${loadRatio}x load)`, (t) => {
+    const f = fixture(
+      t,
+      `test('ENOSPC recovery', () => {}); test('marker', () => { const marker = new URL('./marker', import.meta.url); if (!fs.existsSync(marker)) { fs.writeFileSync(marker, '1'); throw Error('first run') } })`,
+      {},
+      loadRatio,
+    )
+    const result = f.wait()
+    assertLoad(f, result, loadRatio)
+    assert.equal(result.status, 95, result.stdout + result.stderr)
+    assert.equal(result.stdout.split('\n')[0], 'GATE FLAKY-UNDER-LOAD (exit 1)')
+    assert.equal(
+      fs.readFileSync(path.join(f.run, 'verdict'), 'utf8'),
+      'GATE FLAKY-UNDER-LOAD (exit 1)\n',
+    )
+    assert.equal(fs.readFileSync(path.join(f.run, 'status'), 'utf8'), '1\n')
+    assert.match(result.stdout, /isolation:.*fixture.test.mjs/)
+    assert.equal(fs.existsSync(path.join(f.run, 'isolation')), true)
+    assert.match(result.stdout, /\nfailing:.*marker/)
+    assert.match(result.stdout, /\nload: /)
+    assert.match(result.stdout.trim().split('\n').at(-1), /^evidence:/)
+    const before = fs
+      .readdirSync(f.run)
+      .map((name) => [name, fs.statSync(path.join(f.run, name)).mtimeMs])
+    assert.match(call(['stop', f.run]).stdout, /^GATE FLAKY-UNDER-LOAD/)
+    assert.deepEqual(
+      fs.readdirSync(f.run).map((name) => [name, fs.statSync(path.join(f.run, name)).mtimeMs]),
+      before,
+    )
+  })
+  test(`always failing target reproduces alone (${loadRatio}x load)`, (t) => {
+    const f = fixture(
+      t,
+      `test('ENOSPC recovery', () => {}); test('fails', () => { throw Error('always') })`,
+      {},
+      loadRatio,
+    )
+    const result = f.wait()
+    assertLoad(f, result, loadRatio)
+    assert.equal(result.status, 1)
+    assert.match(result.stdout, /^GATE FAILED \(exit 1\)/)
+    assert.match(result.stdout, /isolation:.*reproduced alone/)
+    assert.match(result.stdout, /\nfailing:.*fails/)
+    assert.match(result.stdout, /\nload:/)
+  })
+}
+test('fixture load injection preserves other Node options', (t) => {
   const f = fixture(
     t,
-    `test('ENOSPC recovery', () => {}); test('marker', () => { const marker = new URL('./marker', import.meta.url); if (!fs.existsSync(marker)) { fs.writeFileSync(marker, '1'); throw Error('first run') } })`,
+    `import assert from 'node:assert/strict'; test('other options', () => assert.equal(process.title, 'gate-load-fixture'))`,
+    { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --title=gate-load-fixture`.trim() },
   )
   const result = f.wait()
-  assert.equal(result.status, 95, result.stdout + result.stderr)
-  assert.equal(result.stdout.split('\n')[0], 'GATE FLAKY-UNDER-LOAD (exit 1)')
-  assert.equal(
-    fs.readFileSync(path.join(f.run, 'verdict'), 'utf8'),
-    'GATE FLAKY-UNDER-LOAD (exit 1)\n',
-  )
-  assert.equal(fs.readFileSync(path.join(f.run, 'status'), 'utf8'), '1\n')
-  assert.match(result.stdout, /isolation:.*fixture.test.mjs/)
-  assert.equal(fs.existsSync(path.join(f.run, 'isolation')), true)
-  assert.match(result.stdout, /\nfailing:.*marker/)
-  assert.match(result.stdout, /\nload: /)
-  assert.match(result.stdout.trim().split('\n').at(-1), /^evidence:/)
-  const before = fs
-    .readdirSync(f.run)
-    .map((name) => [name, fs.statSync(path.join(f.run, name)).mtimeMs])
-  assert.match(call(['stop', f.run]).stdout, /^GATE FLAKY-UNDER-LOAD/)
-  assert.deepEqual(
-    fs.readdirSync(f.run).map((name) => [name, fs.statSync(path.join(f.run, name)).mtimeMs]),
-    before,
-  )
-})
-test('always failing target reproduces alone', (t) => {
-  const f = fixture(
-    t,
-    `test('ENOSPC recovery', () => {}); test('fails', () => { throw Error('always') })`,
-  )
-  const result = f.wait()
-  assert.equal(result.status, 1)
-  assert.match(result.stdout, /^GATE FAILED \(exit 1\)/)
-  assert.match(result.stdout, /isolation:.*reproduced alone/)
-  assert.match(result.stdout, /\nfailing:.*fails/)
-  assert.match(result.stdout, /\nload:/)
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.run, 'load.json'), 'utf8')).gate.peak, 0)
 })
 test('bare failing command finds no target and creates no rerun logs', (t) => {
   const f = fixture(t, `process.exit(1)`)

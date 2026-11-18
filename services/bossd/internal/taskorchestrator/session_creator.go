@@ -43,7 +43,7 @@ type CreateSessionOpts struct {
 	Plan            string
 	BaseBranch      string
 	HeadBranch      string // if non-empty, checks out existing branch (e.g. dependabot PR branch)
-	SkipSetupScript bool   // if true, skip running the repo's setup script (e.g. for dependabot PRs)
+	SkipSetupScript bool   // if true, skip running the repo's setup script (cron jobs that opt out)
 	PRNumber        *int
 	PRURL           *string
 	AgentName       string // Agent plugin name; empty means use the daemon default agent.

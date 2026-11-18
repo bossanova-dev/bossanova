@@ -1,0 +1,2 @@
+# A reusable module pins no provider build; each root configuration keeps its own lock file.
+.terraform.lock.hcl

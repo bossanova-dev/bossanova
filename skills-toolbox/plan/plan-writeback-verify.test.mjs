@@ -40,6 +40,8 @@ import {
 
 // Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
 process.env.BOSS_GATE_OUTCOME_FILE = path.join(tempDir('gate-outcome-suite-'), 'outcomes.tsv')
+const CLI_ENV = { ...process.env }
+delete CLI_ENV.BOSS_PLAN_TOOLBOX
 const HELPER = fileURLToPath(new URL('./plan-writeback-verify.mjs', import.meta.url))
 const SKILL_CONFIG_SOURCE = fileURLToPath(new URL('../skill-config.mjs', import.meta.url))
 const UPLOAD = 'https://uploads.linear.app/abc-123/screenshot.png'
@@ -263,7 +265,7 @@ function runCli(intendedText, storedText, { omitStored = false } = {}) {
     process.execPath,
     [HELPER, '--intended', intended, '--stored', stored],
     // Run from the repo root so the CLI resolves this repo's declared tolerance set.
-    { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)) },
+    { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)), env: CLI_ENV },
   )
   return { res, intended, stored }
 }
@@ -515,7 +517,7 @@ function runCliRecording(intendedText, storedText, outcomes) {
   return spawnSync(process.execPath, [HELPER, '--intended', intended, '--stored', stored], {
     encoding: 'utf8',
     cwd: fileURLToPath(new URL('../..', import.meta.url)),
-    env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes },
+    env: { ...CLI_ENV, BOSS_GATE_OUTCOME_FILE: outcomes },
   })
 }
 
@@ -589,7 +591,7 @@ test('an unreadable stored description records one fire line and stays non-zero'
     {
       encoding: 'utf8',
       cwd: fileURLToPath(new URL('../..', import.meta.url)),
-      env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes },
+      env: { ...CLI_ENV, BOSS_GATE_OUTCOME_FILE: outcomes },
     },
   )
   assert.notEqual(res.status, 0)
@@ -1897,12 +1899,32 @@ test('CLI: a SYMLINKED helper reports the file that actually ran', () => {
   const intended = path.join(dir, 'intended.md')
   writeFileSync(intended, description())
   const res = spawnSync(process.execPath, [link, '--intended', intended, '--stored', intended], {
+    env: CLI_ENV,
     encoding: 'utf8',
     cwd: fileURLToPath(new URL('../..', import.meta.url)),
   })
   assert.equal(res.status, 0, res.stderr)
   assert.ok(stdoutLines(res).includes(HELPER_LINE), res.stdout)
   assert.ok(!res.stdout.includes(`helper ${link}`), 'not the symlink path')
+})
+
+test('CLI: a symlinked run toolbox agrees with the canonical helper provenance', () => {
+  const dir = tempDir('plan-writeback-verify-toolbox-')
+  const toolbox = fileURLToPath(new URL('..', import.meta.url))
+  const link = path.join(dir, 'toolbox')
+  symlinkSync(toolbox, link)
+  const intended = path.join(dir, 'intended.md')
+  writeFileSync(intended, description())
+  const res = spawnSync(process.execPath, [HELPER, '--intended', intended, '--stored', intended], {
+    encoding: 'utf8',
+    cwd: fileURLToPath(new URL('../..', import.meta.url)),
+    env: { ...CLI_ENV, BOSS_PLAN_TOOLBOX: link },
+  })
+  assert.equal(res.status, 0, res.stderr)
+  const lines = stdoutLines(res)
+  const verdict = lines.indexOf('writeback-verdict: byte-exact')
+  assert.ok(verdict >= 0, res.stdout)
+  assert.equal(lines[verdict + 1], `${HELPER_LINE} (run toolbox ${realpathSync(toolbox)})`)
 })
 
 // ---------------------------------------------------------------------------

@@ -1,3 +1,6 @@
+import { memoryClaimHolders } from './verify-stale-claim.mjs'
+import { parseEnvelope as recordingEnvelope } from './verify-ui-recording.mjs'
+import { extensionEnvelopeFor } from './verify-extension-envelope.mjs'
 import { resolutionComment } from './verify-resolution.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -6,6 +9,7 @@ import { reuseExtensionRecord } from './verify-extension-record.mjs'
 import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -590,6 +594,7 @@ function deps(w, extra = {}) {
   return {
     read: w.read,
     retryStore: memoryRetryStore(),
+    claimHolders: memoryClaimHolders(),
     now: () => NOW,
     randomToken: () => 'feedf00d',
     discover: () => ({ extensions: [], skipped: [] }),
@@ -1214,6 +1219,27 @@ test('the extension envelope lists a renamed file under both its names', async (
     'docs/x.md',
     '.claude/skills/verify/features/x.md',
   ])
+})
+
+test('the recording envelope preserves the core UI area across pure renames', async () => {
+  const w = world({
+    diff: [
+      { filename: 'ui/Panel.tsx', status: 'modified', changes: 2 },
+      { filename: 'ui/New.tsx', previous_filename: 'ui/Old.tsx', status: 'renamed', changes: 0 },
+    ],
+  })
+  const r = await judge({ pr: 7, repo: REPO }, deps(w, { discover: () => ({ extensions: [EXT] }) }))
+  assert.equal(r.verdict, 'extensions-required')
+  assert.equal(Object.hasOwn(r.extensionEnvelope, 'uiFiles'), false)
+  assert.deepEqual(r.extensionUiFiles, ['ui/Panel.tsx'])
+  const builtin = extensionEnvelopeFor({ builtin: true }, r.extensionEnvelope, r.extensionUiFiles)
+  assert.deepEqual(recordingEnvelope(JSON.stringify(builtin)).uiFiles, ['ui/Panel.tsx'])
+  assert.deepEqual(validateVerifyContext(r.extensionEnvelope), { ok: true, errors: [] })
+  assert.equal(
+    validateVerifyContext({ ...r.extensionEnvelope, uiFiles: ['ui/Other.tsx'] }).ok,
+    false,
+  )
+  assert.equal(validateVerifyContext({ ...r.extensionEnvelope, changedPaths: null }).ok, false)
 })
 
 const diffReads = (w) => w.calls.filter(isPrFilesRead).length
@@ -2998,6 +3024,104 @@ test('post claim takes over a stale claim with a note but not a fresh foreign on
   assert.equal(r2.won, false)
   assert.equal(r2.reason, 'claim-held')
   assert.equal(fresh.mutating().length, 0)
+})
+
+const staleHolderWorld = (updatedAt = iso(41 * 60_000)) =>
+  world({
+    statuses: [
+      {
+        context: 'boss/verify',
+        state: 'pending',
+        description: 'verifying… 0ld0ld00',
+        updated_at: updatedAt,
+      },
+      receipt(),
+    ],
+  })
+
+test('claim takeover attributes the stale holder and dispatch without changing the note key', async () => {
+  const claimHolders = memoryClaimHolders()
+  claimHolders.merge(
+    '0ld0ld00',
+    {
+      session: 'session-old',
+      chat: 'chat-old',
+      route: 'existing-verify-chat',
+      outcome: 'dispatched',
+    },
+    NOW,
+  )
+  const w = staleHolderWorld()
+  const r = await post(
+    { pr: 7, head: HEAD, verdict: 'claim', repo: REPO },
+    deps(w, { claimHolders }),
+  )
+  assert.equal(r.won, true)
+  const body = w.notes()[0].args.at(-1)
+  assert.ok(body.startsWith('took over a stale verify claim 0ld0ld00 on PR #7'))
+  for (const fact of ['41m', 'session-old', 'chat-old', 'dispatched', 'existing-verify-chat'])
+    assert.ok(body.includes(fact), fact)
+  assert.equal(w.notes().length, 1)
+})
+
+test('claim takeover names missing holder and invalid age, surviving throwing stores', async () => {
+  for (const claimHolders of [
+    memoryClaimHolders(),
+    {
+      get() {
+        throw Error('read')
+      },
+      merge() {
+        throw Error('write')
+      },
+    },
+  ]) {
+    const w = staleHolderWorld('invalid')
+    const r = await post(
+      { pr: 7, head: HEAD, verdict: 'claim', repo: REPO },
+      deps(w, { claimHolders }),
+    )
+    assert.equal(r.won, true)
+    assert.match(w.notes()[0].args.at(-1), /age unknown/)
+    assert.match(w.notes()[0].args.at(-1), /unrecorded/)
+  }
+})
+
+test('only a won non-dry claim records its session and chat', async () => {
+  const env = { BOSS_SESSION_ID: 'session-new', BOSS_AGENT_SESSION_ID: 'chat-new' }
+  const claimHolders = memoryClaimHolders()
+  const w = world()
+  await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, deps(w, { claimHolders, env }))
+  const stored = claimHolders.get('feedf00d')
+  assert.equal(stored.pr, 7)
+  assert.equal(stored.head, HEAD)
+  assert.equal(stored.claimedAt, NOW)
+  assert.equal(stored.session, env.BOSS_SESSION_ID)
+  assert.equal(stored.chat, env.BOSS_AGENT_SESSION_ID)
+  for (const [options, w] of [
+    [{ dryRun: true }, world()],
+    [{}, world({ race: 'cafe0001' })],
+    [
+      {},
+      world({
+        statuses: [
+          {
+            context: 'boss/verify',
+            state: 'pending',
+            description: 'verifying… other',
+            updated_at: iso(1000),
+          },
+        ],
+      }),
+    ],
+  ]) {
+    const store = memoryClaimHolders()
+    await post(
+      { pr: 7, head: HEAD, verdict: 'claim', repo: REPO, ...options },
+      deps(w, { claimHolders: store, env }),
+    )
+    assert.equal(store.get('feedf00d'), null)
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -5932,6 +6056,144 @@ test('judge runs applies as node <trustedRoot>/<applies>', async () => {
   )
 })
 
+test('legacy base extensions execute UI applies and verify with their frozen context contract', async () => {
+  const { repo } = gitRepo()
+  const snapshots = tmp()
+  const installed = tmp()
+  try {
+    mkdirSync(join(repo, 'lib'))
+    mkdirSync(join(repo, 'scripts'))
+    copyFileSync(
+      new URL('./fixtures/legacy-verify-context.mjs', import.meta.url),
+      join(repo, 'lib/context.mjs'),
+    )
+    const parse = [
+      "import fs from 'node:fs'",
+      "import { validateVerifyContext } from '../lib/context.mjs'",
+      "const input = JSON.parse(fs.readFileSync(0, 'utf8'))",
+      'const context = input.context ?? input',
+      'const valid = validateVerifyContext(context)',
+      'if (!valid.ok) { console.error(valid.errors.join("; ")); process.exit(2) }',
+      'if (!context.changedPaths.includes("ui/Panel.tsx")) process.exit(3)',
+    ]
+    writeFileSync(join(repo, 'scripts/applies.mjs'), [...parse, 'process.exit(0)'].join('\n'))
+    writeFileSync(
+      join(repo, 'scripts/verify.mjs'),
+      [
+        ...parse,
+        'console.log(JSON.stringify({ok:true, role:"verify", extension:"boss-verify-legacy", verdict:"pass", evidence:[{kind:"test",ref:"ui/Panel.tsx"}], findings:[], summary:"UI checked"}))',
+      ].join('\n'),
+    )
+    writeVerifyExtension(repo, 'boss-verify-legacy', { applies: 'scripts/applies.mjs' })
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-q', '-m', 'legacy base')
+    const base = materializeTrustedTree({
+      baseSha: git(repo, 'rev-parse', 'HEAD'),
+      cwd: repo,
+      tmpRoot: snapshots,
+    })
+    assert.equal(base.ok, true)
+    writeFileSync(
+      join(repo, 'lib/context.mjs'),
+      `export {validateVerifyContext} from ${JSON.stringify(new URL('./verify-contract.mjs', import.meta.url).href)}\n`,
+    )
+    writeFileSync(
+      join(installed, 'applies.mjs'),
+      [
+        "import fs from 'node:fs'",
+        "const c = JSON.parse(fs.readFileSync(0, 'utf8'))",
+        'process.exit(JSON.stringify(c.uiFiles) === JSON.stringify(["ui/Panel.tsx"]) ? 0 : 2)',
+      ].join('\n'),
+    )
+    const builtin = {
+      name: 'builtin-recording',
+      builtin: true,
+      dir: installed,
+      applies: 'applies.mjs',
+    }
+    const w = world({
+      diff: [
+        { filename: 'ui/Panel.tsx', status: 'modified', changes: 2 },
+        { filename: 'ui/New.tsx', previous_filename: 'ui/Old.tsx', status: 'renamed', changes: 0 },
+      ],
+    })
+    const real = commandReader({ cwd: repo })
+    const runs = []
+    const read = (command, args, opts) => {
+      if (command !== process.execPath) return w.read(command, args, opts)
+      const result = real(command, args, opts)
+      runs.push(result)
+      return result
+    }
+    const r = await judge(
+      { pr: 7, repo: REPO },
+      deps(w, {
+        read,
+        cwd: repo,
+        trustedTree: () => base,
+        discover: () => ({
+          extensions: [
+            ...discoverExtensions({
+              root: base.root,
+              core: 'boss-verify',
+              role: 'verify',
+              builtinDir: null,
+            }).extensions.filter((e) => e.name === 'boss-verify-legacy'),
+            builtin,
+          ],
+        }),
+      }),
+    )
+    assert.equal(r.verdict, 'extensions-required')
+    assert.deepEqual(
+      runs.map((run) => run.exit),
+      [0, 0],
+    )
+    assert.deepEqual(r.facts.extensionsApplicable, ['boss-verify-legacy', builtin.name])
+    const judgeFile = join(repo, 'judge.json')
+    const contextFile = join(repo, 'intent.json')
+    writeFileSync(judgeFile, JSON.stringify(r))
+    writeFileSync(
+      contextFile,
+      JSON.stringify({ ...r.extensionEnvelope, intent: { source: 'unknown', bullets: [] } }),
+    )
+    const select = (isBuiltin) => {
+      const out = join(repo, isBuiltin ? 'builtin.json' : 'legacy.json')
+      const selected = spawnSync(
+        process.execPath,
+        [
+          new URL('./verify-extension-envelope.mjs', import.meta.url).pathname,
+          '--judge',
+          judgeFile,
+          '--context',
+          contextFile,
+          '--out',
+          out,
+          ...(isBuiltin ? ['--builtin'] : []),
+        ],
+        { encoding: 'utf8' },
+      )
+      assert.equal(selected.status, 0, selected.stderr)
+      return JSON.parse(readFileSync(out, 'utf8'))
+    }
+    const legacy = select(false)
+    assert.equal(Object.hasOwn(legacy, 'uiFiles'), false)
+    const verified = spawnSync(process.execPath, [join(base.root, 'scripts/verify.mjs')], {
+      cwd: repo,
+      encoding: 'utf8',
+      input: JSON.stringify({ role: 'verify', core: 'boss-verify', context: legacy }),
+    })
+    assert.equal(verified.status, 0, verified.stderr)
+    assert.equal(JSON.parse(verified.stdout).verdict, 'pass')
+    const selectedBuiltin = select(true)
+    assert.deepEqual(selectedBuiltin.intent, legacy.intent)
+    assert.deepEqual(recordingEnvelope(JSON.stringify(selectedBuiltin)).uiFiles, ['ui/Panel.tsx'])
+  } finally {
+    for (const dir of [repo, snapshots, installed])
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
 test('a head-only edit to what an applies script imports changes nothing; cwd stays the checkout', async () => {
   const head = tmp()
   const base = tmp()
@@ -7002,21 +7264,20 @@ test('approve --for-merge on an unparked head records an approval that waives no
   assert.equal(plain.reason, 'no-standing-park')
 })
 
-test('an approval under the coordinator grant names the chat and still waives the park', async () => {
+test('an agent chat approval names the chat and still waives the park', async () => {
   const w = world({ statuses: parkedHuman('partial-build') })
   const env = {
     BOSS_APPROVER_KIND: 'agent-chat',
-    BOSS_APPROVER_ROLE: 'coordinator',
-    BOSS_APPROVER_CHAT: 'chat-coord',
-    BOSS_APPROVER_SESSION: 'sess-coord',
+    BOSS_APPROVER_ROLE: 'build',
+    BOSS_APPROVER_CHAT: 'chat-build',
+    BOSS_APPROVER_SESSION: 'sess-build',
     BOSS_APPROVER_FORWARDED_FROM: 'laptop',
   }
   const r = await approve({ pr: 7, repo: REPO }, deps(w, { env }))
   assert.equal(r.approved, true)
   const [body] = commentBodies(w)
   const lines = body.split('\n\n')
-  assert.match(lines[0], /coordinator chat `chat-coord` \(session `sess-coord`\)/)
-  assert.match(lines[0], /coordinator approval grant/)
+  assert.match(lines[0], /build chat `chat-build` \(session `sess-build`\)/)
   assert.equal(
     lines.at(-1),
     approveMarker(HEAD, ['partial-build']),
@@ -7025,9 +7286,9 @@ test('an approval under the coordinator grant names the chat and still waives th
   const [entry] = operatorMarkers(w.comments).filter((m) => m.kind === 'approve')
   assert.deepEqual(entry.approver, {
     kind: 'agent-chat',
-    role: 'coordinator',
-    chat: 'chat-coord',
-    session: 'sess-coord',
+    role: 'build',
+    chat: 'chat-build',
+    session: 'sess-build',
     forwardedFrom: 'laptop',
   })
   const operator = operatorDecision(operatorMarkers(w.comments), HEAD)
@@ -12413,4 +12674,55 @@ test('partial coverage remains a clean review for the verify judge', () => {
   const body = '## Review coverage\n\npartial: security (thread limit)\n'
   assert.equal(cleanReviewBody(body), true)
   assert.equal(cleanReviewBody(`${body}\n## Review findings\n- [ ] real defect`), false)
+})
+
+test('judge infers missing packages for tree extensions without ever installing', async () => {
+  const dir = tmp()
+  const root = join(dir, 'base')
+  mkdirSync(root)
+  writeFileSync(join(root, 'pnpm-lock.yaml'), '')
+  const results = join(dir, 'results.json')
+  const ext = {
+    name: 'package-check',
+    dir: join(root, '.claude/skills/package-check'),
+    optional: true,
+  }
+  writeFileSync(results, JSON.stringify([{ extension: ext.name, optional: true, crashed: true }]))
+  const spawns = []
+  const injected = (extension) =>
+    deps(world(), {
+      trustedTree: () => ({ ok: true, root }),
+      discover: () => ({ extensions: [extension], skipped: [] }),
+      ensureTrustedDeps: () => assert.fail('judge attempted deps preparation'),
+      install: () => assert.fail('judge attempted package installation'),
+      spawn: (bin) => {
+        spawns.push(bin)
+        assert.ok(!['pnpm', 'npm'].includes(bin))
+        return { status: 0, stdout: '' }
+      },
+    })
+  try {
+    const r = await judge({ pr: 7, repo: REPO, extensionResults: results }, injected(ext))
+    assert.equal(r.extensions.outcomes[0].reason, 'extension-deps-missing')
+    assert.ok(
+      r.notes.some((note) => note.trigger === 'evidence-unknown' && note.body.includes(ext.name)),
+    )
+    assert.equal(
+      spawns.some((bin) => ['pnpm', 'npm'].includes(bin)),
+      false,
+    )
+    mkdirSync(root + '-deps')
+    const reused = await judge({ pr: 7, repo: REPO, extensionResults: results }, injected(ext))
+    assert.equal(reused.extensions.outcomes[0].reason, 'crashed')
+    rmSync(root + '-deps', { recursive: true, force: true, maxRetries: 3 })
+    writeFileSync(results, JSON.stringify([{ extension: ext.name, crashed: true }]))
+    const required = await judge(
+      { pr: 7, repo: REPO, extensionResults: results },
+      injected({ ...ext, optional: false }),
+    )
+    assert.equal(required.extensions.outcomes[0].reason, 'extension-deps-missing')
+    assert.ok(required.reason.includes('extension-failed'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
 })

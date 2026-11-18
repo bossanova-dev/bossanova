@@ -1,0 +1,68 @@
+{
+  "schema": "proof-media/1",
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source": {
+    "kind": "ci-artifact",
+    "url": "https://github.com/freshclaim/fresh-claim/actions/runs/10"
+  },
+  "clips": [
+    {
+      "id": "mobile-proof",
+      "side": "head",
+      "title": "mobile-proof",
+      "file": "mobile-proof.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "mobile-proof.png",
+          "caption": "Result"
+        }
+      ]
+    },
+    {
+      "id": "mobile-plain",
+      "side": "head",
+      "title": "mobile-plain",
+      "file": "mobile-plain.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "mobile-plain.png",
+          "caption": "Result"
+        }
+      ]
+    },
+    {
+      "id": "mobile-omitted",
+      "side": "head",
+      "title": "mobile-omitted",
+      "file": "mobile-omitted.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "mobile-omitted.png",
+          "caption": "Result"
+        }
+      ]
+    }
+  ],
+  "transcripts": []
+}

@@ -72,10 +72,6 @@ docs/handoffs/
 /.config/
 /config/
 
-# Kubernetes secrets
-infra/kustomize/overlays/*/.env-bosso
-infra/kustomize/overlays/*/.env-mcp
-
 # Bazel
 /bazel-*
 .bazelrc.user

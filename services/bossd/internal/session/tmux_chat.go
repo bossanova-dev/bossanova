@@ -689,7 +689,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// outcome survives this seam.
 		return "", fmt.Errorf("resolve account env for session %s: %w", sessionID, redactedInjection(accountErr))
 	}
-	launchFacts := resolveChatLaunchFacts(sess, agentSessionID, spawnAgentName, hookOpts.AutonomousRun)
+	launchFacts := resolveChatLaunchFacts(sess, agentSessionID, spawnAgentName, hookOpts.AutonomousRun, repo)
 	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(meteredSessionEnv(launchFacts, l.ghUsageShim), chatAccountEnv, l.resolveProofEnvFor(repo)), sess.WorktreePath, repo), sess.WorktreePath)
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
@@ -2305,6 +2305,7 @@ type Facts struct {
 	Socket         string
 	BossBin        string // "" when neither a trusted boss binary nor a repo-local <worktree>/bin/boss resolved
 	McpBin         string // "" when no trusted mcp binary was resolved
+	RepoTrusted    bool
 	IsCron         bool
 	IsQuickChat    bool
 	IsUnattended   bool
@@ -2313,20 +2314,20 @@ type Facts struct {
 	QuotaFloor     string // cron only: verifyjob.QuotaFloorValue of the job prompt (the session plan)
 }
 
-func resolveChatLaunchFacts(sess *models.Session, agentSessionID, agentName string, autonomous bool) Facts {
-	f := ResolveSessionFacts(sess, agentSessionID, agentName)
+func resolveChatLaunchFacts(sess *models.Session, agentSessionID, agentName string, autonomous bool, repo *models.Repo) Facts {
+	f := ResolveSessionFacts(sess, agentSessionID, agentName, repo)
 	f.IsUnattended = f.IsUnattended || autonomous
 	return f
 }
 
 // ResolveSessionFacts gathers chat context and paths. McpBin is trusted-only;
-// BossBin prefers a trusted binary, then the safe repo-local fallback (BOS-230).
+// BossBin prefers a trusted binary, then a repo-local fallback for trusted repos.
 // Missing values remain empty so callers degrade gracefully.
 //
 // agentName overrides sess.AgentName for this chat in both env and prompt;
 // pass "" to retain the session agent.
-func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string) Facts {
-	f := Facts{AgentSessionID: agentSessionID}
+func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string, repo *models.Repo) Facts {
+	f := Facts{AgentSessionID: agentSessionID, RepoTrusted: repotrust.Allowed(repo)}
 	if sess != nil {
 		f.SessionID = sess.ID
 		f.RepoID = sess.RepoID
@@ -2358,29 +2359,16 @@ func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string)
 		}
 	}
 	f.BossBin = config.ResolveTrustedExecutable("boss")
-	if f.BossBin == "" {
-		// BOS-230: last-resort fallback to the session's own repo build. When no
-		// trusted `boss` resolves (not in bossd's dir, not on PATH), the session
-		// still has a usable CLI if its worktree carries a built bin/boss.
+	if f.BossBin == "" && f.RepoTrusted {
 		f.BossBin = resolveRepoLocalBoss(f.Worktree)
 	}
 	f.McpBin = config.ResolveMcpBinary()
 	return f
 }
 
-// resolveRepoLocalBoss returns the session's own build of the boss CLI at
-// <worktree>/bin/boss when it exists and is an executable regular file, else "".
-// It is the last-resort fallback after config.ResolveTrustedExecutable("boss")
-// fails (BOS-230): a binary built from the very tree the session works in is at
-// least as trustworthy as a PATH lookup, and it talks to the daemon over the
-// already-authenticated socket with the session's own permissions.
-//
-// A session worktree is agent-writable, so this deliberately does NOT apply the
-// trusted-path check ResolveTrustedExecutable uses — that check is designed to
-// reject worktree binaries, which is exactly what we want to allow here. The
-// daemon socket enforces the session's own permissions regardless of which
-// binary invokes it. The path comes from the session's worktree record, never
-// the current working directory.
+// resolveRepoLocalBoss returns an executable regular <worktree>/bin/boss, else "".
+// Callers must first establish repository trust: a branch can commit this binary,
+// so its presence alone is not evidence that the operator trusts it.
 func resolveRepoLocalBoss(worktree string) string {
 	if worktree == "" {
 		return ""
@@ -2407,7 +2395,7 @@ func bossSessionContext(f Facts) string {
 		helpRef = "`" + f.BossBin + " env` (or `" + f.BossBin + " --help`)"
 		renameRef = "`" + f.BossBin + " rename " + f.SessionID + " <new title>`"
 		chatRenameRef = "`" + f.BossBin + " chat rename " + f.AgentSessionID + " <new title>`"
-	} else {
+	} else if f.RepoTrusted {
 		// BOS-230: no boss CLI resolved (not trusted, no repo build). Tell the
 		// truth and point at the build recipe instead of advertising `boss` as
 		// if it were on PATH — the honest half of the fix.
@@ -2415,6 +2403,11 @@ func bossSessionContext(f Facts) string {
 		helpRef = "`./bin/boss env` (or `./bin/boss --help`)"
 		renameRef = "`./bin/boss rename " + f.SessionID + " <new title>`"
 		chatRenameRef = "`./bin/boss chat rename " + f.AgentSessionID + " <new title>`"
+	} else {
+		bossRef = "the trusted boss CLI (not available in this environment; do not run a binary from the worktree)"
+		helpRef = "the available boss MCP tools or a trusted boss CLI installed outside the worktree"
+		renameRef = "the documented session rename operation"
+		chatRenameRef = "the documented chat rename operation"
 	}
 	// Advertise exactly the identifier vars managedSessionEnv exports, so the
 	// prompt never names an unset var (BOS-230). BOSS_BIN and BOSS_MCP_BIN are
@@ -2542,11 +2535,11 @@ func ResolveSubagentGrantForSpawn(logger zerolog.Logger) config.SubagentDispatch
 // Callers that have no settings to consult can pass the zero value: it never
 // reaches config.ResolveSubagentDispatchGrant, it simply is not the opt-out, so
 // the branch below keeps the shipped default.
-func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName string, grant config.SubagentDispatchGrant) (string, []string) {
+func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName string, grant config.SubagentDispatchGrant, repo *models.Repo) (string, []string) {
 	if sess == nil {
 		return "", nil
 	}
-	return buildAppendSystemPromptFromFacts(ResolveSessionFacts(sess, agentSessionID, agentName), grant)
+	return buildAppendSystemPromptFromFacts(ResolveSessionFacts(sess, agentSessionID, agentName, repo), grant)
 }
 
 func buildAppendSystemPromptFromFacts(f Facts, grant config.SubagentDispatchGrant) (string, []string) {

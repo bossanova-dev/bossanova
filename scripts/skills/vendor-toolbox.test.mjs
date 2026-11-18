@@ -693,6 +693,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       // decides wrongly — the exact shape of the bug it closes, since the invariant was previously
       // prose nothing ever read.
       'epic/epic-driver.mjs',
+      'epic/epic-io.mjs',
+      'epic/epic-run.mjs',
       'linear-claim.mjs',
       'linear-deps-lib.mjs',
       'linear-gate-lib.mjs',
@@ -740,6 +742,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/github.mjs',
       'tracker/linear-children.mjs',
       'tracker/linear-issue-create.mjs',
+      // linear.mjs re-exports applyIssueWrites from linear-issue-writes.mjs.
+      'tracker/linear-issue-writes.mjs',
       'tracker/linear-planned-query.mjs',
       'tracker/linear-rank-facts.mjs',
       'tracker/linear-settle-reads.mjs',
@@ -750,6 +754,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/outcome.mjs',
       'tracker/plan-candidates.mjs',
       'tracker/preflight.mjs',
+      'tracker/premise-states.mjs',
       'tracker/read-description.mjs',
       'tracker/read-issue.mjs',
       'tracker/issue-snapshot.mjs',
@@ -1096,6 +1101,33 @@ test('vendorToolbox copies bytes and --check detects drift', () => {
   assert.equal(existsSync(obsolete), false)
   assert.equal(vendorToolbox({ sourceRoot, skillsRoot, check: true }).changed, false)
   rmSync(root, { recursive: true, force: true })
+})
+
+test('vendorToolbox keeps CI media entry points beside every proof renderer', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'vt-media-'))
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }))
+  const sourceRoot = join(root, 'skills-toolbox')
+  const skillsRoot = join(root, 'skills')
+  for (const file of ALL_SOURCES) {
+    mkdirSync(dirname(join(sourceRoot, file)), { recursive: true })
+    writeFileSync(join(sourceRoot, file), '')
+  }
+  const extension = 'extensions/boss-verify-ci-media'
+  const canonical = join(skillsRoot, 'boss-verify', extension)
+  mkdirSync(canonical, { recursive: true })
+  writeFileSync(join(canonical, 'EXTENSION.md'), 'fixture marker\n')
+  writeFileSync(join(canonical, 'media.mjs'), 'export const media = true\n')
+  vendorToolbox({ sourceRoot, skillsRoot, check: false })
+  assert.equal(vendorToolbox({ sourceRoot, skillsRoot, check: true }).changed, false)
+  for (const core of ['boss-build', 'boss-repair', 'boss-retro']) {
+    const entry = join(skillsRoot, core, extension, 'media.mjs')
+    assert.equal(readFileSync(entry, 'utf8'), 'export const media = true\n')
+    writeFileSync(entry, 'tampered\n')
+    assert.equal(vendorToolbox({ sourceRoot, skillsRoot, check: true }).changed, true)
+    assert.equal(readFileSync(entry, 'utf8'), 'tampered\n')
+    vendorToolbox({ sourceRoot, skillsRoot, check: false })
+    assert.equal(readFileSync(entry, 'utf8'), 'export const media = true\n')
+  }
 })
 
 test('vendorToolbox copies directory roots, detects drift and prunes retired source files', (t) => {

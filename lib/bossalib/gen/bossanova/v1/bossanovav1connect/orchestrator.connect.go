@@ -340,6 +340,9 @@ const (
 	// OrchestratorServiceIssueGitHubInstallationTokenProcedure is the fully-qualified name of the
 	// OrchestratorService's IssueGitHubInstallationToken RPC.
 	OrchestratorServiceIssueGitHubInstallationTokenProcedure = "/bossanova.v1.OrchestratorService/IssueGitHubInstallationToken"
+	// OrchestratorServiceUpsertProofCheckRunProcedure is the fully-qualified name of the
+	// OrchestratorService's UpsertProofCheckRun RPC.
+	OrchestratorServiceUpsertProofCheckRunProcedure = "/bossanova.v1.OrchestratorService/UpsertProofCheckRun"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -800,6 +803,21 @@ type OrchestratorServiceClient interface {
 	// message, so the answer reveals nothing about other tenants. The token is
 	// held in memory only on both sides: bosso never logs, audits or stores it.
 	IssueGitHubInstallationToken(context.Context, *connect.Request[v1.IssueGitHubInstallationTokenRequest]) (*connect.Response[v1.IssueGitHubInstallationTokenResponse], error)
+	// UpsertProofCheckRun creates or updates the one "boss/proof" GitHub check
+	// run on head_sha of the repository named by repo_origin_url. bosso writes it
+	// with the GitHub App's own key, because only an App can create a check run.
+	// The run is always completed with a neutral conclusion: it reports
+	// evidence and never gates, and the caller cannot choose its name, status or
+	// conclusion. Re-posting the same head updates the existing run in place.
+	// It admits the same callers as IssueGitHubInstallationToken: a daemon token
+	// whose owner may receive the repository's GitHub events. Every other caller
+	// or repository is PermissionDenied with one fixed message. An invalid head,
+	// title, summary or details URL is InvalidArgument. FailedPrecondition with
+	// the message "checks write not granted" means the App installation has not
+	// been granted checks write yet.
+	// A new RPC is additive, so it needs no dated apiversion bump
+	// (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+	UpsertProofCheckRun(context.Context, *connect.Request[v1.UpsertProofCheckRunRequest]) (*connect.Response[v1.UpsertProofCheckRunResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -1667,6 +1685,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("IssueGitHubInstallationToken")),
 			connect.WithClientOptions(opts...),
 		),
+		upsertProofCheckRun: connect.NewClient[v1.UpsertProofCheckRunRequest, v1.UpsertProofCheckRunResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUpsertProofCheckRunProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UpsertProofCheckRun")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -2104,6 +2128,7 @@ type orchestratorServiceClient struct {
 	listCredentialAgentAccounts            *connect.Client[v1.ListCredentialAgentAccountsRequest, v1.ListCredentialAgentAccountsResponse]
 	syncDaemonNotes                        *connect.Client[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse]
 	issueGitHubInstallationToken           *connect.Client[v1.IssueGitHubInstallationTokenRequest, v1.IssueGitHubInstallationTokenResponse]
+	upsertProofCheckRun                    *connect.Client[v1.UpsertProofCheckRunRequest, v1.UpsertProofCheckRunResponse]
 	proxyStreamChats                       *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken                       *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream                         *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -2678,6 +2703,11 @@ func (c *orchestratorServiceClient) IssueGitHubInstallationToken(ctx context.Con
 	return c.issueGitHubInstallationToken.CallUnary(ctx, req)
 }
 
+// UpsertProofCheckRun calls bossanova.v1.OrchestratorService.UpsertProofCheckRun.
+func (c *orchestratorServiceClient) UpsertProofCheckRun(ctx context.Context, req *connect.Request[v1.UpsertProofCheckRunRequest]) (*connect.Response[v1.UpsertProofCheckRunResponse], error) {
+	return c.upsertProofCheckRun.CallUnary(ctx, req)
+}
+
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
 func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error) {
 	return c.proxyStreamChats.CallServerStream(ctx, req)
@@ -3248,6 +3278,21 @@ type OrchestratorServiceHandler interface {
 	// message, so the answer reveals nothing about other tenants. The token is
 	// held in memory only on both sides: bosso never logs, audits or stores it.
 	IssueGitHubInstallationToken(context.Context, *connect.Request[v1.IssueGitHubInstallationTokenRequest]) (*connect.Response[v1.IssueGitHubInstallationTokenResponse], error)
+	// UpsertProofCheckRun creates or updates the one "boss/proof" GitHub check
+	// run on head_sha of the repository named by repo_origin_url. bosso writes it
+	// with the GitHub App's own key, because only an App can create a check run.
+	// The run is always completed with a neutral conclusion: it reports
+	// evidence and never gates, and the caller cannot choose its name, status or
+	// conclusion. Re-posting the same head updates the existing run in place.
+	// It admits the same callers as IssueGitHubInstallationToken: a daemon token
+	// whose owner may receive the repository's GitHub events. Every other caller
+	// or repository is PermissionDenied with one fixed message. An invalid head,
+	// title, summary or details URL is InvalidArgument. FailedPrecondition with
+	// the message "checks write not granted" means the App installation has not
+	// been granted checks write yet.
+	// A new RPC is additive, so it needs no dated apiversion bump
+	// (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+	UpsertProofCheckRun(context.Context, *connect.Request[v1.UpsertProofCheckRunRequest]) (*connect.Response[v1.UpsertProofCheckRunResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -4111,6 +4156,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("IssueGitHubInstallationToken")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceUpsertProofCheckRunHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUpsertProofCheckRunProcedure,
+		svc.UpsertProofCheckRun,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UpsertProofCheckRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -4647,6 +4698,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceSyncDaemonNotesHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueGitHubInstallationTokenProcedure:
 			orchestratorServiceIssueGitHubInstallationTokenHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUpsertProofCheckRunProcedure:
+			orchestratorServiceUpsertProofCheckRunHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -5172,6 +5225,10 @@ func (UnimplementedOrchestratorServiceHandler) SyncDaemonNotes(context.Context, 
 
 func (UnimplementedOrchestratorServiceHandler) IssueGitHubInstallationToken(context.Context, *connect.Request[v1.IssueGitHubInstallationTokenRequest]) (*connect.Response[v1.IssueGitHubInstallationTokenResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.IssueGitHubInstallationToken is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) UpsertProofCheckRun(context.Context, *connect.Request[v1.UpsertProofCheckRunRequest]) (*connect.Response[v1.UpsertProofCheckRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UpsertProofCheckRun is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

@@ -59,6 +59,7 @@ go_test(
         "claude_trust_test.go",
         "conformance_test.go",
         "exitstatus_test.go",
+        "hookconfig_security_test.go",
         "hookconfig_test.go",
         "limit_test.go",
         "live_mcpsurface_test.go",

@@ -1,0 +1,49 @@
+{
+  "schema": "proof-media/1",
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source": {
+    "kind": "ci-artifact",
+    "url": "https://github.com/freshclaim/fresh-claim/actions/runs/11"
+  },
+  "clips": [
+    {
+      "id": "admin-proof",
+      "side": "head",
+      "title": "admin-proof",
+      "file": "admin-proof.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "admin-proof.png",
+          "caption": "Result"
+        }
+      ]
+    },
+    {
+      "id": "admin-plain",
+      "side": "head",
+      "title": "admin-plain",
+      "file": "admin-plain.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "admin-plain.png",
+          "caption": "Result"
+        }
+      ]
+    }
+  ],
+  "transcripts": []
+}

@@ -463,3 +463,33 @@ test('planClaims reads paginated comments only for surviving candidates', async 
     /unsupported query key/,
   )
 })
+
+test('readIssueState reads one issue and reports its workflow state like Linear', async () => {
+  const views = {
+    7: raw(7, ['boss:in-progress']),
+    8: { ...raw(8), state: 'CLOSED', stateReason: 'COMPLETED' },
+    9: { ...raw(9), state: 'CLOSED', stateReason: 'NOT_PLANNED' },
+    10: raw(10, []),
+  }
+  const adapter = createGithubAdapter({
+    config,
+    spawn: (_cmd, args) => {
+      if (args[0] !== 'issue' || args[1] !== 'view') throw new Error(`unexpected ${args.join(' ')}`)
+      return { status: 0, stdout: JSON.stringify(views[args[2]]) }
+    },
+  })
+  assert.deepEqual(await adapter.readIssueState('GH-7'), {
+    id: 'GH-7',
+    identifier: 'GH-7',
+    state: { name: 'boss:in-progress', type: 'started' },
+  })
+  assert.deepEqual((await adapter.readIssueState('#8')).state, {
+    name: 'closed:completed',
+    type: 'completed',
+  })
+  assert.deepEqual((await adapter.readIssueState('GH-9')).state, {
+    name: 'closed:not-planned',
+    type: 'canceled',
+  })
+  await assert.rejects(adapter.readIssueState('GH-10'), /no single workflow state/)
+})

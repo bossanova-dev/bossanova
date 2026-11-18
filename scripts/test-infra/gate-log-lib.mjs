@@ -15,6 +15,8 @@
 // Purity is the point: every reading above is exercised from a fixture string in
 // scripts/test-infra/gate-log-lib.test.mjs without spawning Bazel, `make`, or a test runner.
 
+import { stripVTControlCharacters } from 'node:util'
+
 // The four answers R1 demands. `unknown` is a first-class answer, never a pass-equivalent: a log
 // with no Bazel leg says nothing at all about what re-ran, and rendering that as "cached" or as
 // "ok" is the exact substitution this reader exists to remove.
@@ -72,6 +74,8 @@ export const FAILURE_LINE_PATTERNS = Object.freeze([
   /^FAIL\b/,
   /^not ok\b/,
   /^FAILED: /,
+  // Node's spec reporter repeats failed cases after its summary; exclude its header.
+  /^[ \t]*✖ .+ \(\d+(?:\.\d+)?ms\)\s*$/,
 ])
 
 const DETAIL_LIMIT = 120
@@ -133,7 +137,7 @@ function readShardFailures(text) {
 }
 
 export function readGateLog(text) {
-  const input = String(text ?? '')
+  const input = stripVTControlCharacters(String(text ?? ''))
   const lines = input.split('\n')
 
   const lastSummaryIndex = lines.reduce(
@@ -199,7 +203,7 @@ export function gateEvidenceLine(text) {
 
 export function renderFailingLine(text, { limit = 3 } = {}) {
   const failures = new Set()
-  for (const line of String(text ?? '').split('\n')) {
+  for (const line of stripVTControlCharacters(String(text ?? '')).split('\n')) {
     const bazel = /^[ \t]*(\/\/\S+)\s+(FAILED in|TIMEOUT in)\b/.exec(line)
     if (bazel) {
       failures.add(`${bazel[1]}${bazel[2] === 'TIMEOUT in' ? ' (timeout)' : ''}`)

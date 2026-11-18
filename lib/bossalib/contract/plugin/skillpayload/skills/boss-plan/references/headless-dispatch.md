@@ -14,8 +14,13 @@ Immediately after a drafter returns, run its fresh recheck before metadata adopt
 
 Phase 2’s classifier persists the sentinel array to
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json` before the first guard.
-For empty premises, write `{}` to `premise-states.json`; both guard inputs must exist.
-For a non-empty sentinel `premises` array, use fresh `getIssue` reads at both write boundaries.
+At both write boundaries, run `tracker/cli.mjs premise-states --premises <premises-file> --out-file
+<states-file>` through the runner's `node` verb. It writes `<ISSUE-ID>.premise-states.json` as a bare
+id-to-state map, for example `{"TCK-1": "In Review"}`; empty premises produce `{}` without a tracker
+read. On exit 2, use one fresh `getIssue` read per premise id and write that exact map. Any other
+exit takes SAFE on the first pass, or stops further writes and retains scratch on the second.
+The exporter deletes the state file on a read or write failure, so a stale first-pass file cannot
+answer the second pass. Both guard inputs must exist; any other shape is `unreadable-input`.
 The first pass runs after the secret gate and before image parity: `--annotate` updates the
 description artifact and `$PLAN_FILE`, so the image guard copies annotated bytes and every later
 gate checks the text that will be saved. The orchestrator never hand-appends drift lines.
@@ -23,7 +28,7 @@ gate checks the text that will be saved. The orchestrator never hand-appends dri
 Before composing step 4(f), settle the stored description into `image-guard-base` and copy it to
 `image-guard-final` only when settled (otherwise take the labels-only branch); retain the base
 for `write-description --base-file`, then re-read the
-premise ids and overwrite the same `premise-states` file. Reconcile that read-back, then save when
+premise ids through `premise-states` and overwrite the same state file. Reconcile that read-back, then save when
 the dependency verdict requests recording or reconciliation changed its bytes. Keep the annotated
 read-back as the save's intended bytes; fetching it again would discard the second pass. This
 also catches a resolved premise, whose old annotations must be removed. Do not re-annotate the
@@ -131,10 +136,7 @@ prepare its inputs through the adapter command before the step-4 block runs:
    supplies the parent snapshot:
 
    ```bash
-   set -o pipefail
-   printf '{"parentId":"%s"}\n' "<EPIC-PARENT-ID>" |
-     bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs invoke-operation listChildren --args-file /dev/stdin --result-only > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-children.json
-   jq '.parent' .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-children.json > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify-payload-parent.json
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh children-input --mode epic --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --parent <EPIC-PARENT-ID>
    ```
 
    Stop on a listing failure; never treat a refused or partial listing as no children.
@@ -142,11 +144,7 @@ prepare its inputs through the adapter command before the step-4 block runs:
 2. Build the bundle from those saved payloads and the sentinel's ids:
 
    ```bash
-   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-   RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
-   node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" epic-reverify-bundle \
-     --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> \
-     --payload "$(node "$RUN_SENTINEL" read "<RUN_DIR>" "<RUN_ID>" draft | jq -c '.payload // {}')"
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh epic-reverify-bundle --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --run-dir <RUN_DIR> --run-id <RUN_ID>
    ```
 
    Exit 0 prints the bundle path, live children, coverage gaps and `storedDescriptions` paths;
@@ -217,7 +215,7 @@ into a shell command; apostrophes, dollar signs and backticks must remain unchan
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh adopt-metadata --returned .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-returned.json --metadata .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json --run-dir <RUN_DIR> --plan-path <PLAN_PATH> --run-scratch .linear-plans/run-<RUN-SCRATCH-ID>
 ```
 
-The runner reads the returned file and validates it with `plan-run-guards.mjs adopt-metadata`.
+The runner validates the returned file with `plan-run-guards.mjs adopt-metadata`, which decodes the transport’s HTML escaping once, so write the object exactly as received and never un-escape it by hand.
 The guard normalizes cosmetic fields — label spelling, estimate, priority, optional fields — and
 writes the normalized object to the `draft-metadata` file, printing a `warning:` line for each
 change. It fails when the plan path or description is missing or unusable, and refuses a dispatch

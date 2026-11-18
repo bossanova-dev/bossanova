@@ -51,6 +51,7 @@ export const TERMINAL_ROUTES = Object.freeze({
 export const OPTIONAL_ROUTE_TOKENS = Object.freeze([
   'blocked-pr-left-draft',
   'entry-state-restored',
+  'already-satisfied-closed',
   'no-change-breadcrumb-written',
   'pr-merged-by-completion',
 ])
@@ -120,6 +121,14 @@ export function assertRouteSatisfied(outcome, receiptOrStamps) {
   const seen = new Set(stampTokens)
   const unknown = [...seen].filter((token) => !KNOWN_TOKENS.has(token)).sort()
   const missing = owed.filter((token) => !seen.has(token))
+  if (seen.has('already-satisfied-closed')) {
+    const error = seen.has('entry-state-restored')
+      ? 'conflicting no-change dispositions'
+      : outcome !== 'NO_CHANGE'
+        ? 'already-satisfied-closed outside NO_CHANGE'
+        : null
+    if (error) return { ok: false, honestOutcome: 'ROUTE_UNSATISFIED', missing, unknown, error }
+  }
   let ordered = 0
   for (const token of stampTokens) {
     if (token === owed[ordered]) ordered += 1

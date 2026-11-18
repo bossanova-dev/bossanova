@@ -57,8 +57,8 @@ func (s *Server) ApproveSessionPR(ctx context.Context, req *connect.Request[pb.A
 	return connect.NewResponse(&pb.ApproveSessionPRResponse{Result: approveResultProto(r)}), nil
 }
 
-// logApproval records who asked for an approval and how it ended. Under the
-// coordinator grant the line names the chat and its session.
+// logApproval records who asked for an approval and how it ended. For an
+// agent chat the line names the chat and its session.
 func (s *Server) logApproval(id string, pr int, approver domain.CallerPrincipal, r domain.VerifyApproveResult, err error) {
 	outcome := "not approved"
 	switch {

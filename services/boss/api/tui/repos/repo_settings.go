@@ -94,6 +94,7 @@ const (
 
 	repoSettingsRowName
 	repoSettingsRowSetupScript
+	repoSettingsRowServeScript
 	repoSettingsRowOrganization
 	repoSettingsRowMergeStrategy
 	repoSettingsRowIsTrusted
@@ -327,6 +328,7 @@ type RepoSettingsModel struct {
 	editingField      rowID
 	nameInput         textinput.Model
 	setupInput        textinput.Model
+	serveInput        textinput.Model
 	linearAPIKeyInput textinput.Model
 	sentryAPIKeyInput textinput.Model
 	sentryOrgInput    textinput.Model
@@ -343,6 +345,10 @@ func NewRepoSettingsModel(c SettingsClient, ctx context.Context, repoID string) 
 	si := textinput.New()
 	si.Placeholder = "Optional, e.g. make setup"
 	si.SetWidth(60)
+
+	serve := textinput.New()
+	serve.Placeholder = "Optional, e.g. make serve"
+	serve.SetWidth(60)
 
 	aki := textinput.New()
 	aki.Placeholder = "lin_api_…"
@@ -363,6 +369,7 @@ func NewRepoSettingsModel(c SettingsClient, ctx context.Context, repoID string) 
 		editingField:      repoSettingsRowNone,
 		nameInput:         ni,
 		setupInput:        si,
+		serveInput:        serve,
 		linearAPIKeyInput: aki,
 		sentryAPIKeyInput: ski,
 		sentryOrgInput:    soi,
@@ -412,6 +419,7 @@ func (m RepoSettingsModel) visibleRows() []rowID {
 	rows := []rowID{
 		repoSettingsRowName,
 		repoSettingsRowSetupScript,
+		repoSettingsRowServeScript,
 	}
 	if m.organizationRowVisible() {
 		rows = append(rows, repoSettingsRowOrganization)
@@ -526,6 +534,7 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.repo = msg.Repo
 		m.nameInput.SetValue(m.repo.DisplayName)
 		m.setupInput.SetValue(m.repo.GetSetupScript())
+		m.serveInput.SetValue(m.repo.GetServeScript())
 		m.initExpansionState()
 		// Note: API key is NOT pre-filled (always full replace for security)
 		//
@@ -689,6 +698,8 @@ func (m RepoSettingsModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.nameInput, cmd = m.nameInput.Update(msg)
 	case repoSettingsRowSetupScript:
 		m.setupInput, cmd = m.setupInput.Update(msg)
+	case repoSettingsRowServeScript:
+		m.serveInput, cmd = m.serveInput.Update(msg)
 	case repoSettingsRowLinearAPIKey:
 		m.linearAPIKeyInput, cmd = m.linearAPIKeyInput.Update(msg)
 	case repoSettingsRowSentryAPIKey:
@@ -726,6 +737,12 @@ func (m RepoSettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 			Id:          m.repoID,
 			SetupScript: &val,
 		})
+	case repoSettingsRowServeScript:
+		val := strings.TrimSpace(m.serveInput.Value())
+		m.editingField = repoSettingsRowNone
+		m.err = nil
+		m.serveInput.Blur()
+		return m, m.saveSettings(&pb.UpdateRepoRequest{Id: m.repoID, ServeScript: &val})
 	case repoSettingsRowLinearAPIKey:
 		val := strings.TrimSpace(m.linearAPIKeyInput.Value())
 		m.editingField = repoSettingsRowNone
@@ -771,6 +788,11 @@ func (m RepoSettingsModel) cancelEdit() RepoSettingsModel {
 		if m.repo != nil {
 			m.setupInput.SetValue(m.repo.GetSetupScript())
 		}
+	case repoSettingsRowServeScript:
+		m.serveInput.Blur()
+		if m.repo != nil {
+			m.serveInput.SetValue(m.repo.GetServeScript())
+		}
 	case repoSettingsRowLinearAPIKey:
 		m.linearAPIKeyInput.Blur()
 		m.linearAPIKeyInput.SetValue("") // Always empty (full replace)
@@ -802,6 +824,9 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	case repoSettingsRowSetupScript:
 		m.editingField = repoSettingsRowSetupScript
 		return m, m.setupInput.Focus()
+	case repoSettingsRowServeScript:
+		m.editingField = repoSettingsRowServeScript
+		return m, m.serveInput.Focus()
 	case repoSettingsRowOrganization:
 		if !m.organizationRowVisible() {
 			return m, nil
@@ -1288,7 +1313,7 @@ func (m RepoSettingsModel) View() tea.View {
 	cur := m.currentRow()
 
 	keyWidth := ui.KeyColumnWidth(
-		ui.KeyValue{Key: "Name"}, ui.KeyValue{Key: "Setup command"},
+		ui.KeyValue{Key: "Name"}, ui.KeyValue{Key: "Setup command"}, ui.KeyValue{Key: "Serve command"},
 		ui.KeyValue{Key: "Organization"}, ui.KeyValue{Key: "Merge strategy"},
 	)
 	childKeyWidth := ui.KeyColumnWidth(ui.KeyValue{Key: "API key"}, ui.KeyValue{Key: "Organization slug"})
@@ -1309,23 +1334,7 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	// Row 1: Setup command
-	if m.editingField == repoSettingsRowSetupScript {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Setup command:"))
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.setupInput.View()))
-		b.WriteString("\n")
-	} else {
-		val := m.repo.GetSetupScript()
-		if val == "" {
-			val = "(none)"
-		}
-		b.WriteString(ui.RenderFieldRow(
-			cur == repoSettingsRowSetupScript,
-			ui.KeyValueLine("Setup command", val, keyWidth, rowWidth),
-		))
-		b.WriteString("\n")
-	}
+	b.WriteString(m.renderScriptRows(cur, keyWidth, rowWidth))
 
 	// Row 2: Organization. Present only for a signed-in user with a mappable
 	// repo — visibleRows() and this block are gated on the same predicate, so

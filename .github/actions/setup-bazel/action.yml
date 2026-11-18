@@ -12,7 +12,7 @@ runs:
     # consecutive go-test runs on PR #3005). The timeout scaling gives the
     # first, uncached fetch room to finish on a slow transfer.
     # Nightly smoke warms the main-scoped cache that fresh feature branches restore.
-    - uses: bazel-contrib/setup-bazel@104e3eea9447cdaa4b00d0fb46191a3985d26ab3 # 0.19.1
+    - uses: bazel-contrib/setup-bazel@f34d6a05eae3c24acab7fa54587492daeaeffdab # 0.19.2
       with:
         bazelisk-cache: true
         repository-cache: true

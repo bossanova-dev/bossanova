@@ -3,6 +3,6 @@
   "private": true,
   "packageManager": "pnpm@11.22.0",
   "devDependencies": {
-    "wrangler": "4.158.0"
+    "wrangler": "4.160.1"
   }
 }

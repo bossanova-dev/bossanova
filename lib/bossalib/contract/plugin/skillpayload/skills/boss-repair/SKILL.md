@@ -71,20 +71,21 @@ BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
 BOSS_REPAIR_PROBE="$BOSS_REPAIR_PIN/scripts/review-feedback-probe.js"
 ```
 
-| Question                                         | Ask                                                                                      |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| Is the worktree clean?                           | `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"`                                         |
-| Rename an identifier across files                | `node "$BOSS_REPAIR_TOOLBOX/rename-symbol.mjs" --from <A> --to <B> [--path <p>] …`       |
-| Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …`                              |
-| What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                                              |
-| Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`                                   |
-| This session's PR number                         | `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" session-pr --field number`                     |
-| Head, base, draft, mergeability, merge state     | `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" view [--pr <n>] [--field <name>]`              |
-| What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …`                              |
-| Read the `boss/build` receipt                    | `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" read …`                                   |
-| Carry the receipt to the pushed head             | `node "$BOSS_REPAIR_TOOLBOX/repair/receipt-carry.mjs" …` (step 4)                        |
-| Read, name and report verify blockers            | `node "$BOSS_REPAIR_TOOLBOX/repair/repair-blockers.mjs" brief\|rename\|outcomes\|carry…` |
-| Put the session worktree on the pushed head      | `node "$BOSS_REPAIR_TOOLBOX/worktree-sync.mjs" sync …`                                   |
+| Question                                         | Ask                                                                                                              |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Claim / re-check / release the PR repair lease   | `pr-state.mjs repair-lease acquire\|check\|rebaseline\|release --pr <n>` (`--head <sha>` for acquire/rebaseline) |
+| Is the worktree clean?                           | `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"`                                                                 |
+| Rename an identifier across files                | `node "$BOSS_REPAIR_TOOLBOX/rename-symbol.mjs" --from <A> --to <B> [--path <p>] …`                               |
+| Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …`                                                      |
+| What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                                                                      |
+| Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`                                                           |
+| This session's PR number                         | `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" session-pr --field number`                                             |
+| Head, base, draft, mergeability, merge state     | `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" view [--pr <n>] [--field <name>]`                                      |
+| What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …`                                                      |
+| Read the `boss/build` receipt                    | `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" read …`                                                           |
+| Carry the receipt to the pushed head             | `node "$BOSS_REPAIR_TOOLBOX/repair/receipt-carry.mjs" …` (step 4)                                                |
+| Read, name and report verify blockers            | `node "$BOSS_REPAIR_TOOLBOX/repair/repair-blockers.mjs" brief\|rename\|outcomes\|carry…`                         |
+| Put the session worktree on the pushed head      | `node "$BOSS_REPAIR_TOOLBOX/worktree-sync.mjs" sync …`                                                           |
 
 `worktree-state.mjs` exists because a command-rewriting shell hook can make `git status` print a
 fabricated clean result. Its `unknown` verdict is never clean; confirm with `/usr/bin/git status
@@ -121,18 +122,23 @@ judgement.
 3. **Force-push only with a lease, and only over your own rebase.** After a rebase, push with
    `git push --force-with-lease`. Never force-push over commits someone else pushed. <!-- ci-request: skip rule statement; step 4 requests after pushing -->
 
-4. **Don't push a CI fix onto a head that moved.** Note the PR head SHA when you start
-   (`node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" view --fresh --field headRefOid`). Just before pushing a fix for a
-   check failure, re-read it the same way (`--fresh`: a cached head can hide another actor's push); if someone else moved the head, that CI result is stale — keep your commit, don't push
-   it, and report it as built but unpushed. Your own pushes don't count: re-baseline after each one.
-   Review-feedback fixes don't depend on CI, so they are not affected.
-   If someone else moved the head, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger human-push-on-agent-pr --where "boss-repair push guard"` (never fatal).
+4. **Check ownership before every push, for every fix kind.** Run
+   `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" repair-lease check --pr "$PR_NUMBER"`.
+   Exit `3` (`head-moved` or `not-held`) withholds the push: keep local commits, report them as
+   built but unpushed, and run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger human-push-on-agent-pr --where "boss-repair push guard"` (never fatal).
+   Exit `1` withholds the push as residual `repair-lease-unreadable`; exit `2` is a usage bug.
+   In blocker mode these become `push withheld: head moved` or `push withheld: repair-lease-unreadable`.
+   End the pass with exit zero on either residual; Watch ends `blocked`.
 
 5. **Confirm your commits actually landed.** After pushing, `git fetch origin <branch>` and check
    that every commit you pushed is an ancestor of `origin/<branch>`
    (`git merge-base --is-ancestor <sha> origin/<branch>`). `Everything up-to-date` is not proof — it
    is also what you see when someone else moved your local HEAD. If local and remote have diverged,
    do not push and do not force-push; report it.
+   After a confirmed push, run
+   `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" repair-lease rebaseline --pr "$PR_NUMBER" --head "<pushed sha>"`.
+   A non-zero result stops further work as residual `repair-lease-unreadable` (exit `1`) or
+   `repair-lease-held` (exit `3`); Watch ends `blocked`.
    On local/remote divergence, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger human-push-on-agent-pr --where "boss-repair push guard"` (never fatal).
 
 6. **Unobserved is never green.** Read checks only through `pr-check-state.mjs classify`: `green`
@@ -163,7 +169,27 @@ judgement.
 
 ## A repair pass
 
-1. **Assess.** Run the pre-pin block first, then resolve the pinned probe above. Report the phase (`node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" phase repairing`, never fatal), then record the PR head SHA as `START_SHA`.
+1. **Assess.** Run the pre-pin block first, then resolve the pinned probe above. Before the phase
+   report or any repair work, resolve the PR, record its fresh head, and acquire its repair lease:
+
+   ```bash
+   BOSS_REPAIR_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-repair/${BOSS_AGENT_SESSION_ID:-local}"
+   BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_PIN/toolbox"
+   [ -f "$BOSS_REPAIR_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-repair skill pin missing - re-run the first block"; exit 1; }
+   PR_NUMBER="$(node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" session-pr --field number)"
+   test -n "$PR_NUMBER" || exit 1
+   START_SHA="$(node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" view --pr "$PR_NUMBER" --fresh --field headRefOid)"
+   test -n "$START_SHA" || exit 1
+   LEASE_STATUS=0
+   LEASE_JSON="$(node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" repair-lease acquire --pr "$PR_NUMBER" --head "$START_SHA")" || LEASE_STATUS=$?
+   ```
+
+   Exit `0` admits the pass. Exit `3` ends Default/blocker mode immediately as residual
+   `repair-lease-held`, naming the returned holder and head, with exit zero; Watch ends its loop
+   immediately as `blocked` with that reason. Do not wait for CI or spend another repair attempt.
+   Exit `1` ends the same way with residual `repair-lease-unreadable`, without repairing.
+   Exit `2` is a usage bug and a true stop. Only after acquisition report the phase
+   (`node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" phase repairing`, never fatal).
    First load verify's blockers for that head:
 
    ```bash
@@ -187,7 +213,12 @@ judgement.
 
 2. **Repair** the whole ordered list in blocker mode. In the default assessment, repair review feedback first (its content does not go stale), then conflicts, then failing
    checks (re-check the head per rule 4 before acting on CI). See the notes below for each.
-3. **Verify locally.** Run the repo's formatter, then resolve the fix gates:
+3. **Verify locally.** Before formatting or running any local gate, for every repair kind, run
+   `node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" repair-lease check --pr "$PR_NUMBER"`.
+   On exit `3`, skip gates and push, keep commits as built but unpushed, record the rule 4
+   `human-push-on-agent-pr` note, and end as residual `head-moved` or `repair-lease-held`.
+   On exit `1`, do the same with residual `repair-lease-unreadable`. Both exit zero; Watch ends
+   `blocked`. Exit `2` is a usage bug. After exit `0`, run the repo's formatter and resolve gates:
 
    ```bash
    FIX_ROUND_GATES=$(BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, fixRoundGates } = await import(pathToFileURL(process.env.BOSS_REPAIR_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(fixRoundGates(loadSkillConfig())))')
@@ -294,7 +325,8 @@ Rename this chat with the helper's `title` when `BOSS_AGENT_SESSION_ID` is set; 
 non-fatal. Commit each fix separately and push once after all fixes. Rules 1–8 still apply; if rule 4
 withholds the push because the head moved, every outcome is `not-fixable` with reason
 `push withheld: head moved`. A `no-review` item is fixed only when step 4 posts the build receipt;
-otherwise use receipt-carry's reasons. Validate all per-id outcomes with `repair-blockers.mjs
+otherwise use receipt-carry's reasons. When rule 4 withholds a push on an unreadable lease,
+use `push withheld: repair-lease-unreadable` for every outcome. Validate all per-id outcomes with `repair-blockers.mjs
 outcomes` and post its rendered comment by file; correct an invalid file and validate again.
 The [blocker protocol](references/blocker-mode.md) defines the title, outcomes and publication.
 
@@ -453,6 +485,11 @@ Every pass ends in one of these:
 Never exit non-zero to signal "something remains": the plugin counts that as a failed attempt,
 abandons its in-session retry, and backs off a branch that was never broken.
 
+Once the terminal outcome is decided, release this holder's lease before post-terminal notes:
+`node "$BOSS_REPAIR_TOOLBOX/pr-state.mjs" repair-lease release --pr "$PR_NUMBER"` (best-effort).
+Default and blocker mode release at each pass end. Watch holds it across passes and releases
+once when the loop ends, including `blocked`; a true stop can leave it to expire.
+
 Report concisely:
 
 - **Problem** — what was wrong (or "nothing").
@@ -472,7 +509,10 @@ Report concisely:
 
 Run passes in a loop, at most **5 repair passes**:
 
-1. At the start of each pass, re-read the PR head. If it is not a fast-forward of the head the
+1. At the start of each pass, run step 1's lease acquisition before assessment. A foreign or
+   unreadable lease ends the loop immediately as `blocked` with `repair-lease-held` (name holder
+   and head) or `repair-lease-unreadable`, exit zero. Do not wait on CI in this case.
+   Re-read the PR head. If it is not a fast-forward of the head the
    previous pass started from (`git merge-base --is-ancestor <previous> <current>`), someone rewrote
    the branch: discard everything the earlier passes concluded and re-derive from the new head,
    except when `git rev-parse <previous>^{tree}` equals `git rev-parse <current>^{tree}` and both

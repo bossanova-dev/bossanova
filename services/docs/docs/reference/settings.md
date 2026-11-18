@@ -63,23 +63,22 @@ are configured via environment variables. See
 
 ## Top-level fields
 
-| Field                        | Type   | Default                     | Description                                                                                                                                                              |
-| ---------------------------- | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `worktree_base_dir`          | string | `~/.bossanova/worktrees`    | Directory where per-session git worktrees are created. Auto-created on load.                                                                                             |
-| `app_data_dir`               | string | platform default            | Absolute directory for local daemon data: `bossd.db`, `bossd.lock`, profile plugin discovery, and default socket placement.                                              |
-| `socket_path`                | string | derived from data directory | Absolute path to the local `bossd` Unix-domain socket. If unset and `app_data_dir` is set, defaults to `app_data_dir/bossd.sock`.                                        |
-| `default_agent`              | string | `claude`                    | Name of the default agent plugin used for new sessions.                                                                                                                  |
-| `skills_declined`            | bool   | `false`                     | Set after the user declines the one-time skills install prompt so it's not shown again.                                                                                  |
-| `daemon_name`                | string | machine hostname            | Display name this daemon advertises in the web daemon picker. Set with `boss settings --daemon-name`; blank resets to the machine hostname. Restart the daemon to apply. |
-| `poll_interval_seconds`      | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                                                                 |
-| `plugins`                    | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                                                         |
-| `repair`                     | object | defaults below              | Repair plugin configuration.                                                                                                                                             |
-| `tmux_delivery`              | object | defaults below              | Composer-readiness deadlines for message delivery into an agent pane. See [`tmux_delivery` fields](#tmux_delivery-fields).                                               |
-| `notes`                      | object | defaults below              | Note retention: how long notes are kept and how many each repo holds. See [`notes` fields](#notes-fields).                                                               |
-| `proof_upload`               | object | absent                      | Destination of the built-in verify evidence uploader. See [`proof_upload` fields](#proof_upload-fields).                                                                 |
-| `daemon_path_extra`          | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                                                  |
-| `subagent_dispatch_grant`    | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below.                         |
-| `coordinator_approval_grant` | string | `on`                        | Whether a coordinator chat is allowed to approve verify parks and merge. See [`coordinator_approval_grant`](#coordinator_approval_grant) below.                          |
+| Field                     | Type   | Default                     | Description                                                                                                                                                              |
+| ------------------------- | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `worktree_base_dir`       | string | `~/.bossanova/worktrees`    | Directory where per-session git worktrees are created. Auto-created on load.                                                                                             |
+| `app_data_dir`            | string | platform default            | Absolute directory for local daemon data: `bossd.db`, `bossd.lock`, profile plugin discovery, and default socket placement.                                              |
+| `socket_path`             | string | derived from data directory | Absolute path to the local `bossd` Unix-domain socket. If unset and `app_data_dir` is set, defaults to `app_data_dir/bossd.sock`.                                        |
+| `default_agent`           | string | `claude`                    | Name of the default agent plugin used for new sessions.                                                                                                                  |
+| `skills_declined`         | bool   | `false`                     | Set after the user declines the one-time skills install prompt so it's not shown again.                                                                                  |
+| `daemon_name`             | string | machine hostname            | Display name this daemon advertises in the web daemon picker. Set with `boss settings --daemon-name`; blank resets to the machine hostname. Restart the daemon to apply. |
+| `poll_interval_seconds`   | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                                                                 |
+| `plugins`                 | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                                                         |
+| `repair`                  | object | defaults below              | Repair plugin configuration.                                                                                                                                             |
+| `tmux_delivery`           | object | defaults below              | Composer-readiness deadlines for message delivery into an agent pane. See [`tmux_delivery` fields](#tmux_delivery-fields).                                               |
+| `notes`                   | object | defaults below              | Note retention: how long notes are kept and how many each repo holds. See [`notes` fields](#notes-fields).                                                               |
+| `proof_upload`            | object | absent                      | Destination of the built-in verify evidence uploader. See [`proof_upload` fields](#proof_upload-fields).                                                                 |
+| `daemon_path_extra`       | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                                                  |
+| `subagent_dispatch_grant` | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below.                         |
 
 ## Daemon PATH
 
@@ -405,45 +404,6 @@ chats started afterwards. Chats already running keep the grant they were
 launched with; start a new chat (or wake a sleeping one, which re-spawns it)
 to pick up the change.
 
-## `coordinator_approval_grant`
-
-Approving a parked PR (`boss pr approve`) and an operator merge are the
-operator's call: `bossd` refuses both from any agent chat. The one exception is
-a **coordinator** chat, an orchestrating chat you start yourself with
-`boss chat new --role coordinator`. By default a coordinator chat is allowed to approve a
-verify park and run an operator merge, so an orchestrator you set going
-lands work without waiting on you. It gains nothing else: accepting a blocker
-and filing verify follow-ups stay yours, and no other chat role gains anything.
-
-Only you create coordinator chats: `bossd` refuses `--role coordinator` from
-inside any agent chat, so no chat promotes another.
-
-Every approval or merge a coordinator makes names it. The approval record on
-the PR says which chat and session approved it, and `bossd`'s log line carries
-the chat id (`caller_agent_session_id`) and session id (`caller_session_id`).
-
-| Value | Effect                                                                |
-| ----- | --------------------------------------------------------------------- |
-| `on`  | **Default.** Coordinator chats approve verify parks and merge.        |
-| `off` | Opt out. No chat approves or merges; only you do, from your terminal. |
-
-```json
-{
-  "coordinator_approval_grant": "off"
-}
-```
-
-The key is absent from a fresh `settings.json` and behaves as `on`. An
-unrecognised value is treated as `off`, and `bossd` logs a warning naming it:
-the only reason to set the key is to change the default, so a typo must not
-leave the grant in place. Edit this key in `settings.json` directly; it is not
-in the boss settings form. `bossd` reads it at startup, so run
-`boss daemon restart` after changing it.
-
-The same rules hold across `boss --host`. A call forwarded from another machine
-carries the identity of whoever made it there: your own terminal stays you, a
-coordinator chat keeps its grant, and any other agent chat is refused.
-
 ## Development profile
 
 To run a development build beside the Homebrew build, keep a profile in the
@@ -540,7 +500,7 @@ hardcoded default.
 | `BOSSO_MIGRATIONS_DATABASE_URL` | Direct Postgres connection string for Goose migrations; **required**. Production bypasses PgBouncer because migrations require session-level DDL.                                                                                                                                |
 | `BOSSO_MULTI_INSTANCE`          | `true` runs bosso as more than one replica                                                                                                                                                                                                                                       |
 | `BOSSO_ADDR`                    | Listen address (default `:8080`)                                                                                                                                                                                                                                                 |
-| `BOSSO_INSTANCE_ID`             | Distinct stable identity per bosso process; set from the pod name on Kubernetes, must be set manually for local multi-instance runs                                                                                                                                              |
+| `BOSSO_INSTANCE_ID`             | Distinct stable identity per bosso process; must be set on each process for multi-instance runs                                                                                                                                                                                  |
 
 #### Local development database
 
@@ -638,8 +598,7 @@ Setup uses Members access to check that the person connecting an organization
 installation is an admin of that organization. When you add a permission, each
 organization owner must approve the update on their installation before setup
 verifies them. Run `bosso check-github-app` to compare the live App's permissions
-and webhook subscriptions with the set the code requires. The staging and
-production verify scripts run this check automatically.
+and webhook subscriptions with the set the code requires.
 
 Subscribe to these events:
 
@@ -653,44 +612,21 @@ Subscribe to these events:
 
 Required environment variables:
 
-| Terraform Cloud variable                 | Kubernetes runtime env            | Source                                                                     |
-| ---------------------------------------- | --------------------------------- | -------------------------------------------------------------------------- |
-| `TF_VAR_bosso_github_app_id`             | `BOSSO_GITHUB_APP_ID`             | GitHub App settings page, App ID                                           |
-| `TF_VAR_bosso_github_app_slug`           | `BOSSO_GITHUB_APP_SLUG`           | GitHub App URL slug                                                        |
-| `TF_VAR_bosso_github_app_private_key`    | `BOSSO_GITHUB_APP_PRIVATE_KEY`    | GitHub App private key PEM, stored as one escaped env value                |
-| `TF_VAR_bosso_github_app_webhook_secret` | `BOSSO_GITHUB_APP_WEBHOOK_SECRET` | Webhook secret configured on the GitHub App                                |
-| `TF_VAR_bosso_github_app_callback_url`   | `BOSSO_GITHUB_APP_CALLBACK_URL`   | Frontend setup route, for example `https://app.bossanova.dev/github/setup` |
-| `TF_VAR_bosso_github_app_client_id`      | `BOSSO_GITHUB_APP_CLIENT_ID`      | GitHub App settings page, Client ID                                        |
-| `TF_VAR_bosso_github_app_client_secret`  | `BOSSO_GITHUB_APP_CLIENT_SECRET`  | GitHub App generated client secret                                         |
+| Runtime env                       | Source                                                                     |
+| --------------------------------- | -------------------------------------------------------------------------- |
+| `BOSSO_GITHUB_APP_ID`             | GitHub App settings page, App ID                                           |
+| `BOSSO_GITHUB_APP_SLUG`           | GitHub App URL slug                                                        |
+| `BOSSO_GITHUB_APP_PRIVATE_KEY`    | GitHub App private key PEM, stored as one escaped env value                |
+| `BOSSO_GITHUB_APP_WEBHOOK_SECRET` | Webhook secret configured on the GitHub App                                |
+| `BOSSO_GITHUB_APP_CALLBACK_URL`   | Frontend setup route, for example `https://app.bossanova.dev/github/setup` |
+| `BOSSO_GITHUB_APP_CLIENT_ID`      | GitHub App settings page, Client ID                                        |
+| `BOSSO_GITHUB_APP_CLIENT_SECRET`  | GitHub App generated client secret                                         |
 
-Mark the private key, webhook secret, and client secret as sensitive in
-Terraform Cloud. Terraform stores the desired GitHub App values for
-configuration wiring and exposes the runtime values through the
-`kubernetes_secret_bosso` output. Do not pass secret values as command-line
-arguments; process argv can be inspected.
+Keep the private key, webhook secret, and client secret in an encrypted secret
+store, never in plain-text configuration. Do not pass secret values as
+command-line arguments; process argv can be inspected.
 
-```bash
-cd infra/kustomize
-./pull-secrets.sh production
-```
-
-For staging, run `./pull-secrets.sh staging`. The generated `.env-bosso` file is
-gitignored and must not be committed.
-
-### Bosso GKE Runtime
-
-Bosso runs on GKE with Cloud SQL Postgres, Redis, Google Artifact Registry, and
-the Google external ALB. Terraform writes the Kubernetes secret values:
-
-```bash
-BOSSO_DB_DRIVER=postgres
-BOSSO_DATABASE_URL=postgres://...
-BOSSO_MIGRATIONS_DATABASE_URL=postgres://...
-BOSSO_MULTI_INSTANCE=true
-BOSSO_REDIS_URL=redis://bs-redis-service.<namespace>.svc.cluster.local:6379/0
-BOSSO_ROUTING_PROVIDER=kubernetes
-BOSSO_WEBHOOK_ROUTING_URL=http://bs-bosso-service.<namespace>.svc.cluster.local:80
-```
+### Bosso runtime
 
 Generate each `BOSSO_INTERNAL_ROUTING_TOKEN` as a high-entropy secret, for
 example with `openssl rand -base64 32`, and set the same value on every bosso
@@ -701,8 +637,7 @@ owns the target daemon stream.
 Use this token only for internal routed delivery between bosso
 instances; it is separate from the GitHub App webhook secret.
 
-Kubernetes sets `BOSSO_INSTANCE_ID` from the pod name. Local or manual
-multi-instance runs must set `BOSSO_INSTANCE_ID` on each process to a distinct
+Multi-instance runs must set `BOSSO_INSTANCE_ID` on each process to a distinct
 stable value.
 
 A deployment with exactly one bosso process sets
@@ -711,6 +646,33 @@ tokens and ownership claims stay in Redis across restarts and
 `bosso revoke-daemon-tokens` keeps working. Give the process a fixed
 `BOSSO_INSTANCE_ID`, such as `bosso-0`. The single provider never forwards a
 request; a claim that names any other instance is treated as stale.
+
+A deployment with several bosso processes sets `BOSSO_ROUTING_PROVIDER=dns`
+and `BOSSO_ROUTING_PEER_ADDRESS` to a `host:port` that contains `{instance}`
+once. A process that receives a request for a daemon another instance owns
+forwards it over plaintext HTTP/2 to that address, with `{instance}` replaced
+by the owner's `BOSSO_INSTANCE_ID`. For example, use
+`{instance}.bosso-headless.bosso.svc.cluster.local:8080` behind a Kubernetes
+headless service, or `{instance}:8080` on a network that resolves instance IDs
+as hostnames. Instance IDs must be lowercase DNS labels. bosso refuses to start
+when the template is missing or puts `{instance}` anywhere but the host.
+
+bosso listens only for plaintext HTTP/2 (h2c) on `BOSSO_ADDR`. Put a reverse
+proxy in front of it to terminate TLS, and have the proxy refuse
+`/internal/*` and `/webhooks/internal/*`, which only bosso instances call on
+each other. bosso itself answers 404 on those paths to any request that
+carries `X-Forwarded-For` or `Forwarded`. It cannot tell a proxy that adds
+neither header from a peer, so behind such a proxy the shared
+`BOSSO_INTERNAL_ROUTING_TOKEN` is the only check left. Point
+`BOSSO_WEBHOOK_ROUTING_URL` at the bosso instances directly, never through the
+proxy.
+
+Per-client rate limits key on the connecting address, so set
+`BOSSO_TRUSTED_PROXY_CIDRS` to the proxy's addresses, as comma-separated CIDRs,
+to have bosso read the client from `X-Forwarded-For`. When the proxy also
+appends addresses after the client's, set `BOSSO_TRUSTED_PROXY_APPENDED_HOPS`
+to how many (default `0`). Unset, bosso trusts no proxy and keys every request
+on its transport peer.
 
 Webhook behavior:
 

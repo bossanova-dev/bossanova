@@ -15,8 +15,8 @@ import (
 // agentName is the running agent for this chat. It takes precedence over
 // sess.AgentName, so a codex chat spawned from a claude session correctly
 // reports BOSS_AGENT=codex. Pass "" to fall back to sess.AgentName.
-func ManagedSessionEnv(sess *models.Session, agentSessionID, agentName string, gh *ghusage.Shim) map[string]string {
-	return meteredSessionEnv(ResolveSessionFacts(sess, agentSessionID, agentName), gh)
+func ManagedSessionEnv(sess *models.Session, agentSessionID, agentName string, gh *ghusage.Shim, repo *models.Repo) map[string]string {
+	return meteredSessionEnv(ResolveSessionFacts(sess, agentSessionID, agentName, repo), gh)
 }
 
 // meteredSessionEnv is managedSessionEnv with the gh wrapper first on PATH.

@@ -214,8 +214,8 @@ func TestSettingsRowsKeepTheirLeftColumn(t *testing.T) {
 
 // repoSettingsChildRowView renders repository settings with both integrations
 // configured — so Linear and Sentry open expanded (initExpansionState) and their
-// indented child rows are navigable — with the cursor parked on cursorRow.
-func repoSettingsChildRowView(t *testing.T, cursorRow int) string {
+// indented child rows are navigable — with the cursor parked on the final child.
+func repoSettingsChildRowView(t *testing.T) string {
 	t.Helper()
 	stub := &repoSettingsFake{repos: []*pb.Repo{{
 		Id:           "repo-1",
@@ -227,11 +227,14 @@ func repoSettingsChildRowView(t *testing.T, cursorRow int) string {
 	m := repos.NewRepoSettingsModel(stub, context.Background(), "repo-1")
 	loaded, _ := m.Update(m.Init()())
 	rm := loaded.(repos.RepoSettingsModel)
-	for range cursorRow {
+	for {
+		view := rm.View().Content
 		next, _ := rm.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 		rm = next.(repos.RepoSettingsModel)
+		if rm.View().Content == view {
+			return view
+		}
 	}
-	return rm.View().Content
 }
 
 // TestSettingsChildRowsCarryFocusGutter closes the last hole in ask #1: repository
@@ -248,7 +251,7 @@ func TestSettingsChildRowsCarryFocusGutter(t *testing.T) {
 		wantHeaderTextColumn  = 4
 	)
 
-	view := repoSettingsChildRowView(t, 13)
+	view := repoSettingsChildRowView(t)
 
 	cursorLine := renderedLineContaining(t, view, "Organization slug:")
 	idx := strings.IndexRune(cursorLine, focusGutterGlyph)
@@ -304,7 +307,7 @@ func TestSettingsValueRowsShareAColumn_Settings_AC8__RepoSettings_AC3(t *testing
 	m := settings.NewGeneralSettingsModel(client, context.Background(), nil)
 	loaded, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 80})
 	general := loaded.(settings.GeneralSettingsModel).View().Content
-	repository := repoSettingsChildRowView(t, 13)
+	repository := repoSettingsChildRowView(t)
 	for _, tc := range []struct {
 		name, view string
 		keys       []string

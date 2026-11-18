@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parseGraphqlSchema, graphqlSchemaChanges } from './verify-graphql-diff.mjs'
+import {
+  parseGraphqlSchema,
+  graphqlSchemaChanges,
+  graphqlSchemaFindings,
+} from './verify-graphql-diff.mjs'
 
 /** @param {string} text */
 function schema(text) {
@@ -173,4 +177,100 @@ test('removing directive repeatability breaks existing uses, while adding it is 
   assert.equal(diff(single, repeatable).breaking.length, 0)
   assert.ok(diff(single, repeatable).additive.length)
   assert.equal(parseGraphqlSchema(`${single} ${repeatable}`).ok, false)
+})
+
+test('findings preserve the comparator projection, order and display risk', () => {
+  const before = schema('type Q { x(a: ID): ID gone: String } enum E { A B } union U = A | B')
+  const after = schema(
+    'type Q { x(a: ID! b: Int): String fresh: ID } enum E { A C } union U = A | C scalar New',
+  )
+  const findings = graphqlSchemaFindings(before, after)
+  assert.deepEqual(graphqlSchemaChanges(before, after), {
+    breaking: [
+      'Q.x type changed (ID → String)',
+      'Q.x.a became non-null',
+      'Q.gone removed',
+      'E.B removed',
+      'U.B removed',
+    ],
+    additive: ['Q.x.b added', 'Q.fresh added', 'E.C added', 'U.C added', 'New added'],
+  })
+  assert.deepEqual(graphqlSchemaChanges(before, after), {
+    breaking: findings.filter((f) => f.class === 'breaking').map((f) => f.text),
+    additive: findings.filter((f) => f.class !== 'breaking').map((f) => f.text),
+  })
+  assert.deepEqual(
+    findings.filter((f) => f.class === 'dangerous').map((f) => [f.kind, f.type, f.member]),
+    [
+      ['member-added', 'E', 'C'],
+      ['member-added', 'U', 'C'],
+    ],
+  )
+  assert.deepEqual(
+    findings.slice(0, 4).map((f) => [f.kind, f.pass, f.typeIndex, f.fieldIndex, f.field]),
+    [
+      ['field-type-changed', 0, 0, 0, 'x'],
+      ['argument-changed', 0, 0, 0, 'x'],
+      ['argument-added', 0, 0, 0, 'x'],
+      ['field-removed', 0, 0, 1, 'gone'],
+    ],
+  )
+  assert.deepEqual(
+    findings.find((f) => f.text === 'Q.fresh added'),
+    {
+      class: 'safe',
+      kind: 'field-added',
+      type: 'Q',
+      field: 'fresh',
+      text: 'Q.fresh added',
+      pass: 1,
+      typeIndex: 0,
+      fieldIndex: 1,
+    },
+  )
+})
+
+test('field directives print values while arguments discard their directives', () => {
+  const parsed = schema(
+    'type Q { x(a: ID @tag): ID @goField(forceResolver: true) @authenticate @data(list: [1, 2], obj: {a: 1}) } input I { a: ID @tag }',
+  )
+  assert.deepEqual(parsed.types.Q.fields.x.directives, [
+    '@goField(forceResolver: true)',
+    '@authenticate',
+    '@data(list: [1, 2], obj: {a: 1})',
+  ])
+  assert.deepEqual(parsed.types.I.fields.a.directives, ['@tag'])
+  assert.equal(parsed.types.Q.fields.x.args.a.directives, undefined)
+  assert.deepEqual(diff('type Q { x: ID }', 'type Q { x: ID @tag }'), {
+    breaking: [],
+    additive: [],
+  })
+})
+
+test('findings cover definition, member, field, argument, default and root changes', () => {
+  const pairs = [
+    ['scalar X', '', 'type-removed'],
+    ['', 'scalar X', 'type-added'],
+    ['scalar X', 'enum X { A }', 'kind-changed'],
+    ['input I { x: Int = 1 }', 'input I { x: Int = 2 }', 'default-changed'],
+    ['type Q { x(a: Int): Int }', 'type Q { x: Int }', 'argument-removed'],
+    ['type Q { x: Int }', 'type Q { x(a: Int): Int }', 'argument-added'],
+    ['type Q { x(a: Int): Int }', 'type Q { x(a: String): Int }', 'argument-changed'],
+    ['type Q implements N { x: Int }', 'type Q { x: Int }', 'interface-removed'],
+    ['type Q { x: Int }', 'type Q implements N { x: Int }', 'interface-added'],
+    ['directive @tag on FIELD', 'directive @tag repeatable on FIELD', 'repeatable-changed'],
+    ['schema { query: A }', 'schema { query: B }', 'root-changed'],
+    ['', 'schema { query: A }', 'root-added'],
+  ]
+  for (const [old, next, kind] of pairs) {
+    const findings = graphqlSchemaFindings(schema(old), schema(next))
+    assert.ok(
+      findings.some((f) => f.kind === kind),
+      kind,
+    )
+    assert.deepEqual(diff(old, next), {
+      breaking: findings.filter((f) => f.class === 'breaking').map((f) => f.text),
+      additive: findings.filter((f) => f.class !== 'breaking').map((f) => f.text),
+    })
+  }
 })

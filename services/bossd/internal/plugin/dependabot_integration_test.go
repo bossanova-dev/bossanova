@@ -508,12 +508,10 @@ func TestE2E_Dependabot_CreateSessionForMajorBump(t *testing.T) {
 	if opts.HeadBranch != "dependabot/npm_and_yarn/express-5.0.0" {
 		t.Errorf("CreateSession HeadBranch = %q, want the dependabot branch", opts.HeadBranch)
 	}
-	// Plugin labels the task with "dependabot", which handleCreateSession
-	// keys on to set SkipSetupScript=true. If the label plumbing breaks,
-	// the session would run the repo's setup script against a PR branch
-	// the setup script doesn't know about — a real production hazard.
-	if !opts.SkipSetupScript {
-		t.Errorf("CreateSession SkipSetupScript = false, want true for dependabot tasks")
+	// The fix session edits code and finalize pushes it through the repo's
+	// pre-push hooks, so it needs the dependencies the setup script installs.
+	if opts.SkipSetupScript {
+		t.Errorf("CreateSession SkipSetupScript = true, want false for dependabot fix sessions")
 	}
 	// parsePRNumberFromExternalID pulls the trailing integer from the
 	// external ID; a regression where that parsing breaks would leave

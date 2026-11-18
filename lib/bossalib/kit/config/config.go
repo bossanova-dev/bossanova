@@ -1129,13 +1129,10 @@ type Settings struct {
 	CloudControl      string                  `json:"cloud_control,omitempty"`
 	CloudControlRepos []CloudControlRepoGrant `json:"cloud_control_repos,omitempty"`
 	// SubagentDispatchGrant selects which chats get the bounded subagent-dispatch
-	// prompt grant (empty: "always"); CoordinatorApprovalGrant selects whether a
-	// coordinator chat may approve verify parks and merge (empty: "on"). Both are
-	// raw strings rather than their typed modes so an unknown value round-trips
-	// through settings.json untouched; parseSubagentDispatchGrant and
-	// parseCoordinatorApprovalGrant are the only places a value becomes a mode.
-	SubagentDispatchGrant    string `json:"subagent_dispatch_grant,omitempty"`
-	CoordinatorApprovalGrant string `json:"coordinator_approval_grant,omitempty"`
+	// prompt grant (empty: "always"). It is a raw string rather than its typed
+	// mode so an unknown value round-trips through settings.json untouched;
+	// parseSubagentDispatchGrant is the only place a value becomes a mode.
+	SubagentDispatchGrant string `json:"subagent_dispatch_grant,omitempty"`
 }
 
 // UnmarshalJSON accepts the managed_accounts block and, for backward

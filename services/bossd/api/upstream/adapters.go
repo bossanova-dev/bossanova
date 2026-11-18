@@ -765,6 +765,7 @@ func (a *CommandHandlerAdapter) UpdateRepo(ctx context.Context, msg *pb.UpdateRe
 		Id:                              msg.GetRepoId(),
 		DisplayName:                     msg.DisplayName,
 		SetupScript:                     msg.SetupScript,
+		ServeScript:                     msg.ServeScript,
 		CanAutoMerge:                    msg.CanAutoMerge,
 		CanAutoMergeDependabot:          msg.CanAutoMergeDependabot,
 		CanAutoRepair:                   msg.CanAutoRepair,

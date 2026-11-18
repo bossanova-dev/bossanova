@@ -17,12 +17,11 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 )
 
-// serveGated serves h's daemon on a real socket with the given attribution and
-// grants, and returns a client that sends origin (when non-nil) on every call.
-func serveGated(t *testing.T, h *operatorMergeHarness, p domain.CallerPrincipal, grants domain.CallerGrants, origin *callerorigin.Assertion) bossanovav1connect.DaemonServiceClient {
+// serveGated serves h's daemon on a real socket with the given attribution,
+// and returns a client that sends origin (when non-nil) on every call.
+func serveGated(t *testing.T, h *operatorMergeHarness, p domain.CallerPrincipal, origin *callerorigin.Assertion) bossanovav1connect.DaemonServiceClient {
 	t.Helper()
 	h.srv.callers = &gateAuthority{principal: p}
-	h.srv.callerGrants = grants
 	path := shortSocketPath(t)
 	if err := h.srv.Listen(path); err != nil {
 		t.Fatal(err)
@@ -73,73 +72,50 @@ func approverEnv(env []string) map[string]string {
 	return out
 }
 
-func TestCoordinatorGrant_ApprovesAndMergesAndNamesTheChat(t *testing.T) {
-	t.Setenv("BOSS_APPROVER_KIND", "operator") // an inherited value must not leak into the record
-	h := newOperatorMergeHarness(t, headPin)
-	client := serveGated(t, h, coordinatorChat, domain.CoordinatorApprovalGrants(), nil)
+func TestAgentChatApprovesAndMergesAndNamesTheChat(t *testing.T) {
+	for _, role := range []domain.AgentChatRole{domain.AgentChatRoleBuild, domain.AgentChatRoleUnknown, domain.AgentChatRoleCoordinator} {
+		t.Run("role "+string(role), func(t *testing.T) {
+			t.Setenv("BOSS_APPROVER_KIND", "operator") // an inherited value must not leak into the record
+			h := newOperatorMergeHarness(t, headPin)
+			p := domain.CallerPrincipal{Kind: domain.CallerAgentChat, AgentSessionID: "chat-a", SessionID: "sess-a", Role: role}
+			client := serveGated(t, h, p, nil)
 
-	if err := approveS1(client, false); err != nil {
-		t.Fatalf("coordinator approve: %v", err)
+			if err := approveS1(client, false); err != nil {
+				t.Fatalf("agent chat approve: %v", err)
+			}
+			want := map[string]string{
+				"BOSS_APPROVER_KIND": "agent-chat", "BOSS_APPROVER_ROLE": string(role),
+				"BOSS_APPROVER_CHAT": "chat-a", "BOSS_APPROVER_SESSION": "sess-a",
+			}
+			if got := approverEnv(h.verbs.env); !maps.Equal(got, want) {
+				t.Fatalf("approval record approver = %v, want %v", got, want)
+			}
+			if err := mergeS1(client); err != nil {
+				t.Fatalf("agent chat merge: %v", err)
+			}
+			if len(h.prov.mergeOpts) != 1 {
+				t.Fatal("agent chat did not merge")
+			}
+			if got := approverEnv(h.verbs.env); !maps.Equal(got, want) {
+				t.Fatalf("merge approval approver = %v, want %v", got, want)
+			}
+		})
 	}
-	want := map[string]string{
-		"BOSS_APPROVER_KIND": "agent-chat", "BOSS_APPROVER_ROLE": "coordinator",
-		"BOSS_APPROVER_CHAT": "chat-coord", "BOSS_APPROVER_SESSION": "sess-coord",
-	}
-	if got := approverEnv(h.verbs.env); !maps.Equal(got, want) {
-		t.Fatalf("approval record approver = %v, want %v", got, want)
-	}
-	if err := mergeS1(client); err != nil {
-		t.Fatalf("coordinator merge: %v", err)
-	}
-	if len(h.prov.mergeOpts) != 1 {
-		t.Fatal("coordinator did not merge")
-	}
-	if got := approverEnv(h.verbs.env); !maps.Equal(got, want) {
-		t.Fatalf("merge approval approver = %v, want %v", got, want)
-	}
-	// The grant covers approval and merge only.
+}
+
+func TestAgentChatCannotAcceptOrFollowUp(t *testing.T) {
+	h := newOperatorMergeHarness(t, headPin)
+	client := serveGated(t, h, domain.CallerPrincipal{Kind: domain.CallerAgentChat, AgentSessionID: "chat-a", Role: domain.AgentChatRoleCoordinator}, nil)
 	_, err := client.AcceptSessionPRBlocker(context.Background(), connect.NewRequest(&pb.AcceptSessionPRBlockerRequest{Id: "s1", ExpectedHeadSha: headPin, BlockerId: "review:123456abcdef", Reason: "x"}))
-	if connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("coordinator accept: %v", err)
+	if connect.CodeOf(err) != connect.CodePermissionDenied || !strings.Contains(err.Error(), "chat-a") {
+		t.Fatalf("agent chat accept: %v", err)
 	}
 	_, err = client.FollowUpSessionPRNotes(context.Background(), connect.NewRequest(&pb.FollowUpSessionPRNotesRequest{Id: "s1", ShouldFollowUpAll: true}))
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("coordinator follow-up: %v", err)
+		t.Fatalf("agent chat follow-up: %v", err)
 	}
-}
-
-func TestCoordinatorGrant_OptOutRefuses(t *testing.T) {
-	h := newOperatorMergeHarness(t, headPin)
-	client := serveGated(t, h, coordinatorChat, nil, nil)
-	for name, call := range map[string]func() error{
-		"approve": func() error { return approveS1(client, false) },
-		"merge":   func() error { return mergeS1(client) },
-	} {
-		if err := call(); connect.CodeOf(err) != connect.CodePermissionDenied || !strings.Contains(err.Error(), "role coordinator") {
-			t.Fatalf("%s with the grant withheld: %v", name, err)
-		}
-	}
-	if h.verbs.builtCount != 0 || len(h.prov.mergeOpts) != 0 {
-		t.Fatal("a refused coordinator caused writes")
-	}
-}
-
-func TestCoordinatorGrant_OtherRolesRefused(t *testing.T) {
-	for _, role := range []domain.AgentChatRole{domain.AgentChatRoleOperator, domain.AgentChatRoleBuild, domain.AgentChatRoleRepair, domain.AgentChatRoleVerify, domain.AgentChatRoleUnknown} {
-		t.Run(string(role), func(t *testing.T) {
-			h := newOperatorMergeHarness(t, headPin)
-			p := domain.CallerPrincipal{Kind: domain.CallerAgentChat, AgentSessionID: "chat-x", Role: role}
-			client := serveGated(t, h, p, domain.CoordinatorApprovalGrants(), nil)
-			if err := approveS1(client, true); connect.CodeOf(err) != connect.CodePermissionDenied {
-				t.Fatalf("approve: %v", err)
-			}
-			if err := mergeS1(client); connect.CodeOf(err) != connect.CodePermissionDenied {
-				t.Fatalf("merge: %v", err)
-			}
-			if h.verbs.builtCount != 0 || len(h.prov.mergeOpts) != 0 {
-				t.Fatal("a refused role caused writes")
-			}
-		})
+	if h.verbs.builtCount != 0 {
+		t.Fatal("a refused agent chat reached the verify toolbox")
 	}
 }
 
@@ -147,35 +123,51 @@ func TestCoordinatorGrant_OtherRolesRefused(t *testing.T) {
 // joins no chat pane and does not contain the daemon.
 var sshdOperator = domain.CallerPrincipal{Kind: domain.CallerOperator, PID: 4242}
 
-func TestForwardedAgentChatIsCapped(t *testing.T) {
-	for _, role := range []string{"build", "operator", ""} {
+func TestForwardedAgentChatApprovesAsAnAgentChat(t *testing.T) {
+	for _, role := range []string{"build", "coordinator", ""} {
 		t.Run("role "+role, func(t *testing.T) {
 			h := newOperatorMergeHarness(t, headPin)
 			origin := &callerorigin.Assertion{Kind: callerorigin.KindAgentChat, AgentSessionID: "chat-remote", SessionID: "sess-remote", Role: role, Host: "laptop"}
-			client := serveGated(t, h, sshdOperator, domain.CoordinatorApprovalGrants(), origin)
-			// The reported gap: even a read-only dry run was not refused.
-			err := approveS1(client, true)
-			if connect.CodeOf(err) != connect.CodePermissionDenied {
-				t.Fatalf("forwarded dry-run approve: %v", err)
+			client := serveGated(t, h, sshdOperator, origin)
+			if err := approveS1(client, false); err != nil {
+				t.Fatalf("forwarded agent chat approve: %v", err)
 			}
-			for _, s := range []string{"chat-remote", "forwarded", "laptop"} {
-				if !strings.Contains(err.Error(), s) {
-					t.Fatalf("refusal missing %q: %v", s, err)
-				}
+			want := map[string]string{
+				"BOSS_APPROVER_KIND": "agent-chat", "BOSS_APPROVER_ROLE": role, "BOSS_APPROVER_CHAT": "chat-remote",
+				"BOSS_APPROVER_SESSION": "sess-remote", "BOSS_APPROVER_FORWARDED_FROM": "laptop",
 			}
-			if err := mergeS1(client); connect.CodeOf(err) != connect.CodePermissionDenied {
-				t.Fatalf("forwarded merge: %v", err)
+			if got := approverEnv(h.verbs.env); !maps.Equal(got, want) {
+				t.Fatalf("approver = %v, want %v", got, want)
 			}
-			if h.verbs.builtCount != 0 || len(h.prov.mergeOpts) != 0 {
-				t.Fatal("a capped forwarded call caused writes")
+			if err := mergeS1(client); err != nil || len(h.prov.mergeOpts) != 1 {
+				t.Fatalf("forwarded agent chat merge: %v", err)
+			}
+			// It holds no more than a local agent chat.
+			_, err := client.FollowUpSessionPRNotes(context.Background(), connect.NewRequest(&pb.FollowUpSessionPRNotesRequest{Id: "s1", ShouldFollowUpAll: true}))
+			if connect.CodeOf(err) != connect.CodePermissionDenied || !strings.Contains(err.Error(), "laptop") {
+				t.Fatalf("forwarded agent chat follow-up: %v", err)
 			}
 		})
 	}
 }
 
+func TestForwardedDaemonChildIsCapped(t *testing.T) {
+	h := newOperatorMergeHarness(t, headPin)
+	client := serveGated(t, h, sshdOperator, &callerorigin.Assertion{Kind: callerorigin.KindDaemonChild, Host: "laptop"})
+	if err := approveS1(client, true); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("forwarded daemon child dry-run approve: %v", err)
+	}
+	if err := mergeS1(client); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("forwarded daemon child merge: %v", err)
+	}
+	if h.verbs.builtCount != 0 || len(h.prov.mergeOpts) != 0 {
+		t.Fatal("a capped forwarded call caused writes")
+	}
+}
+
 func TestForwardedMalformedOriginFailsClosed(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
-	client := serveGated(t, h, sshdOperator, domain.CoordinatorApprovalGrants(), &callerorigin.Assertion{Kind: "root"})
+	client := serveGated(t, h, sshdOperator, &callerorigin.Assertion{Kind: "root"})
 	if err := approveS1(client, true); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatalf("malformed origin: %v", err)
 	}
@@ -183,7 +175,7 @@ func TestForwardedMalformedOriginFailsClosed(t *testing.T) {
 
 func TestForwardedOperatorStillWorks(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
-	client := serveGated(t, h, sshdOperator, nil, &callerorigin.Assertion{Kind: callerorigin.KindOperator, Host: "laptop"})
+	client := serveGated(t, h, sshdOperator, &callerorigin.Assertion{Kind: callerorigin.KindOperator, Host: "laptop"})
 	if err := approveS1(client, false); err != nil {
 		t.Fatalf("forwarded operator approve: %v", err)
 	}
@@ -195,85 +187,57 @@ func TestForwardedOperatorStillWorks(t *testing.T) {
 	}
 }
 
-func TestForwardedCoordinatorKeepsTheGrant(t *testing.T) {
-	h := newOperatorMergeHarness(t, headPin)
-	origin := &callerorigin.Assertion{Kind: callerorigin.KindAgentChat, AgentSessionID: "chat-coord", SessionID: "sess-coord", Role: "coordinator", Host: "laptop"}
-	client := serveGated(t, h, sshdOperator, domain.CoordinatorApprovalGrants(), origin)
-	if err := approveS1(client, false); err != nil {
-		t.Fatalf("forwarded coordinator approve: %v", err)
-	}
-	want := map[string]string{
-		"BOSS_APPROVER_KIND": "agent-chat", "BOSS_APPROVER_ROLE": "coordinator", "BOSS_APPROVER_CHAT": "chat-coord",
-		"BOSS_APPROVER_SESSION": "sess-coord", "BOSS_APPROVER_FORWARDED_FROM": "laptop",
-	}
-	if got := approverEnv(h.verbs.env); !maps.Equal(got, want) {
-		t.Fatalf("approver = %v, want %v", got, want)
-	}
-	if err := mergeS1(client); err != nil || len(h.prov.mergeOpts) != 1 {
-		t.Fatalf("forwarded coordinator merge: %v", err)
-	}
-}
-
-func TestOriginCannotRaiseALocalChat(t *testing.T) {
+func TestOriginCannotRaiseALocalCaller(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
 	build := domain.CallerPrincipal{Kind: domain.CallerAgentChat, AgentSessionID: "chat-local", Role: domain.AgentChatRoleBuild}
-	for _, origin := range []callerorigin.Assertion{
-		{Kind: callerorigin.KindOperator},
-		{Kind: callerorigin.KindAgentChat, AgentSessionID: "chat-local", Role: "coordinator"},
+	for _, tc := range []struct {
+		local  domain.CallerPrincipal
+		origin callerorigin.Assertion
+	}{
+		{domain.CallerPrincipal{Kind: domain.CallerDaemonChild}, callerorigin.Assertion{Kind: callerorigin.KindOperator}},
+		{domain.CallerPrincipal{Kind: domain.CallerDaemonChild}, callerorigin.Assertion{Kind: callerorigin.KindAgentChat, AgentSessionID: "chat-local"}},
+		{domain.CallerPrincipal{Kind: domain.CallerUnattested}, callerorigin.Assertion{Kind: callerorigin.KindOperator}},
+		{build, callerorigin.Assertion{Kind: callerorigin.KindOperator}},
 	} {
-		h.srv.callers = &gateAuthority{principal: build}
-		i := NewCallerInterceptor(h.srv.callers, domain.CoordinatorApprovalGrants())
+		h.srv.callers = &gateAuthority{principal: tc.local}
+		i := NewCallerInterceptor(h.srv.callers)
 		header := http.Header{}
-		origin.Set(header)
+		tc.origin.Set(header)
 		ctx := h.srv.callers.ConnContext(context.Background(), nil)
-		if _, err := i.check(ctx, bossanovav1connect.DaemonServiceApproveSessionPRProcedure, header, nil); connect.CodeOf(err) != connect.CodePermissionDenied {
-			t.Fatalf("%+v raised a local build chat: %v", origin, err)
+		_, err := i.check(ctx, bossanovav1connect.DaemonServiceAcceptSessionPRBlockerProcedure, header)
+		if connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatalf("%+v raised local %s to accept: %v", tc.origin, tc.local.Kind, err)
 		}
 	}
 }
 
-func TestCreatingACoordinatorChatIsOperatorOnly(t *testing.T) {
-	procedure := bossanovav1connect.DaemonServiceRecordChatProcedure
-	coordinator := &pb.RecordChatRequest{SessionId: "s1", AgentSessionId: "a", Role: pb.ChatRole_CHAT_ROLE_COORDINATOR}
-	build := &pb.RecordChatRequest{SessionId: "s1", AgentSessionId: "a", Role: pb.ChatRole_CHAT_ROLE_BUILD}
-	cases := []struct {
-		p       domain.CallerPrincipal
-		allowed bool
-	}{
-		{domain.CallerPrincipal{Kind: domain.CallerOperator}, true},
-		{coordinatorChat, false},
-		{domain.CallerPrincipal{Kind: domain.CallerAgentChat, Role: domain.AgentChatRoleBuild}, false},
-		{domain.CallerPrincipal{Kind: domain.CallerDaemonChild}, false},
-		{domain.CallerPrincipal{Kind: domain.CallerUnattested}, false},
-	}
-	for _, tc := range cases {
-		a := &gateAuthority{principal: tc.p}
-		i := NewCallerInterceptor(a, domain.CoordinatorApprovalGrants())
-		ctx := a.ConnContext(context.Background(), nil)
-		_, err := i.check(ctx, procedure, http.Header{}, coordinator)
-		if tc.allowed != (err == nil) {
-			t.Fatalf("%s create coordinator: %v", tc.p.Kind, err)
-		}
-		if err != nil && !strings.Contains(err.Error(), "creating a coordinator chat") {
-			t.Fatalf("refusal wording: %v", err)
-		}
-		if _, err := i.check(ctx, procedure, http.Header{}, build); err != nil {
-			t.Fatalf("%s create build chat was gated: %v", tc.p.Kind, err)
-		}
-	}
-	// A forwarded agent chat cannot create one either.
-	a := &gateAuthority{principal: sshdOperator}
-	i := NewCallerInterceptor(a, domain.CoordinatorApprovalGrants())
-	header := http.Header{}
-	callerorigin.Assertion{Kind: callerorigin.KindAgentChat, AgentSessionID: "remote", Role: "coordinator"}.Set(header)
-	if _, err := i.check(a.ConnContext(context.Background(), nil), procedure, header, coordinator); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("forwarded chat created a coordinator: %v", err)
+func TestAnyCallerCreatesACoordinatorChat(t *testing.T) {
+	for _, p := range []domain.CallerPrincipal{
+		{Kind: domain.CallerOperator},
+		{Kind: domain.CallerAgentChat, AgentSessionID: "chat-build", SessionID: "s1", Role: domain.AgentChatRoleBuild},
+		{Kind: domain.CallerAgentChat, AgentSessionID: "chat-coord", SessionID: "s1", Role: domain.AgentChatRoleCoordinator},
+	} {
+		t.Run(string(p.Kind)+" "+string(p.Role), func(t *testing.T) {
+			h := newOperatorMergeHarness(t, headPin)
+			h.srv.agentChats = &recordChatStoreFake{}
+			h.srv.initDeferrers()
+			client := serveGated(t, h, p, nil)
+			resp, err := client.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
+				SessionId: "s1", AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e71", Role: pb.ChatRole_CHAT_ROLE_COORDINATOR,
+			}))
+			if err != nil {
+				t.Fatalf("create coordinator chat: %v", err)
+			}
+			if got := resp.Msg.GetChat().GetRole(); got != pb.ChatRole_CHAT_ROLE_COORDINATOR {
+				t.Fatalf("recorded role = %v, want coordinator", got)
+			}
+		})
 	}
 }
 
 func TestDescribeCallerReportsTheAttribution(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
-	client := serveGated(t, h, coordinatorChat, nil, nil)
+	client := serveGated(t, h, coordinatorChat, nil)
 	resp, err := client.DescribeCaller(context.Background(), connect.NewRequest(&pb.DescribeCallerRequest{}))
 	if err != nil {
 		t.Fatal(err)

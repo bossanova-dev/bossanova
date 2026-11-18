@@ -1715,3 +1715,12 @@ func (*fakeSessionStore) SetDismissedAlert(context.Context, string, string, time
 func (f *fakeSessionStore) SetTrackerRank(context.Context, string, string, *string, models.TrackerRank) (bool, error) {
 	return false, nil
 }
+
+func TestRepoToRepoSettingsServeScript_Sessions_AC250601(t *testing.T) {
+	for _, script := range []*string{nil, goproto.String("pnpm dev"), goproto.String("")} {
+		got := repoToRepoSettings(&models.Repo{ID: "repo", ServeScript: script}).ServeScript
+		if (got == nil) != (script == nil) || (got != nil && *got != *script) {
+			t.Fatalf("settings ServeScript = %v, want %v", got, script)
+		}
+	}
+}

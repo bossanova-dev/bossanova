@@ -14,6 +14,14 @@ import (
 // ProofMarker opens a machine-readable proof line.
 const ProofMarker = "<!-- boss-proof:"
 
+// proofNoteMarker matches the core proof note's last line, mirroring
+// PROOF_NOTE_MARKER in skills-toolbox/verify/verify-proof-publish.mjs.
+var proofNoteMarker = regexp.MustCompile(`^<!-- boss-proof-note head=[0-9a-fA-F]{40} digest=[0-9a-f]{16} -->$`)
+
+// maxSummaryUnits is the writer's MAX_COMMENT_BLOCK_CHARS, in UTF-16 code
+// units like JavaScript string.length.
+const maxSummaryUnits = 40_000
+
 // ProofSchema is the supported proof marker version.
 const ProofSchema = "boss-proof/1"
 
@@ -34,6 +42,9 @@ type ProofLine struct {
 	Asks      []string
 	LoweredBy []string
 	Digest    string
+	// Summary is the Markdown block of a core proof note; empty for any
+	// other comment shape and for a block over maxSummaryUnits.
+	Summary string
 }
 
 // Media is a legacy evidence video attached to a proof record.
@@ -52,6 +63,7 @@ type ProofRecord struct {
 	Asks       []string
 	LoweredBy  []string
 	Digest     string
+	Summary    string
 	Media      []Media
 	Legacy     bool
 	RecordedAt time.Time
@@ -62,7 +74,7 @@ func (p *ProofRecord) equal(other *ProofRecord) bool {
 		return p == other
 	}
 	return p.Head == other.Head && p.Page == other.Page && p.Level == other.Level &&
-		p.Digest == other.Digest && p.Legacy == other.Legacy && p.RecordedAt.Equal(other.RecordedAt) &&
+		p.Digest == other.Digest && p.Summary == other.Summary && p.Legacy == other.Legacy && p.RecordedAt.Equal(other.RecordedAt) &&
 		slices.Equal(p.LoweredBy, other.LoweredBy) && slices.Equal(p.Asks, other.Asks) && slices.Equal(p.Media, other.Media)
 }
 
@@ -138,11 +150,41 @@ func parseProofPayload(payload string) (ProofLine, bool) {
 // isHTTPSURL matches the proof writer's URL contract. Its character cap uses
 // UTF-16 code units, matching JavaScript string.length.
 func isHTTPSURL(raw string) bool {
-	if len(utf16.Encode([]rune(raw))) > 2048 || strings.ContainsFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || r == '\ufeff' }) {
+	if utf16Len(raw) > 2048 || strings.ContainsFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || r == '\ufeff' }) {
 		return false
 	}
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
+// utf16Len counts s in UTF-16 code units, as JavaScript string.length does.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+	return n
+}
+
+// proofNoteSummary returns the Markdown block of a core proof note: the text
+// before its last proof line, trimmed. A body whose last non-empty line is not
+// the note marker, such as a repository evidence comment, has none, and a
+// block longer than the writer's cap is dropped.
+func proofNoteSummary(body string) string {
+	lines := strings.Split(body, "\n")
+	last := ""
+	for i := len(lines) - 1; i >= 0 && last == ""; i-- {
+		last = strings.TrimSpace(lines[i])
+	}
+	at := strings.LastIndex(body, ProofMarker)
+	if !proofNoteMarker.MatchString(last) || at < 0 {
+		return ""
+	}
+	summary := strings.TrimSpace(body[:at])
+	if utf16Len(summary) > maxSummaryUnits {
+		return ""
+	}
+	return summary
 }
 
 func buildRecord(proof *ProofLine, proofAt time.Time, legacy *Entry) *ProofRecord {
@@ -154,6 +196,7 @@ func buildRecord(proof *ProofLine, proofAt time.Time, legacy *Entry) *ProofRecor
 		record.Head, record.Page, record.Level = proof.Head, proof.Page, proof.Level
 		record.LoweredBy = slices.Clone(proof.LoweredBy)
 		record.Asks, record.Digest, record.RecordedAt = slices.Clone(proof.Asks), proof.Digest, proofAt
+		record.Summary = proof.Summary
 	} else {
 		record.Head, record.Legacy, record.RecordedAt = legacy.Summary.Head, true, legacy.RecordedAt
 	}

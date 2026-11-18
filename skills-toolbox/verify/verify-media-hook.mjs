@@ -17,6 +17,7 @@ import { PROOF_MEDIA_SCHEMA, mediaName, validateProofMedia } from './verify-proo
 import { PLAYER_OBJECT, runHookScript, scriptPath } from './verify-publish-hook.mjs'
 
 export const MEDIA_ROLE = 'proof-media'
+export const MEDIA_NOT_CONFIGURED_EXIT = 10
 // Long enough to download one CI artifact; the sweep runs it detached, off its post budget.
 export const MEDIA_HOOK_TIMEOUT_MS = 5 * 60 * 1000
 export const MAX_MEDIA_OUTPUT_BYTES = 256 * 1024
@@ -105,7 +106,11 @@ export function collectProofMedia({
       timeoutMs,
       maxBytes: MAX_MEDIA_OUTPUT_BYTES,
     })
-    if ('reason' in ran) return none(ran.reason, named)
+    if ('reason' in ran)
+      return none(
+        ran.reason === `exit:${MEDIA_NOT_CONFIGURED_EXIT}` ? 'not-configured' : ran.reason,
+        named,
+      )
     let parsed
     try {
       parsed = JSON.parse(ran.stdout)

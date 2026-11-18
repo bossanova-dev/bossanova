@@ -33,7 +33,7 @@ trap 'echo "Leak guard aborted: a git producer failed — refusing to certify th
 BASE="${1:?usage: check-mirror-leaks.sh <base-ref> <head-ref>}"
 HEAD="${2:?usage: check-mirror-leaks.sh <base-ref> <head-ref>}"
 
-FORBIDDEN_PATH_RE='^(scripts/(release/)?public-export\.test\.mjs$|experiments(/|$)|services/(bosso|web|marketing)(/|$)|lib/ui-tokens(/|$)|lib/web-helpers(/|$)|infra(/|$)|deploy(/|$)|\.sops\.yaml$|scripts/release/vultr(/|$)|\.(claude|codex|husky|beads)(/|$)|docker-compose\.yml$|TODOS\.md$|HANDOFF\.md$|PRODUCT\.md$|DESIGN\.md$)|^(AGENTS\.md|CLAUDE\.md|bossd-plugin-[^/]+|\.env\.example\.public|plans/|docs/|services/mcp-gateway/|services/warehouse/)|(^|/)(AGENTS|CLAUDE)\.md$'
+FORBIDDEN_PATH_RE='^(scripts/(release/)?public-export\.test\.mjs$|experiments(/|$)|services/(bosso|web|marketing)(/|$)|lib/ui-tokens(/|$)|lib/web-helpers(/|$)|infra(/|$)|deploy(/|$)|\.sops\.yaml$|scripts/release/(vultr|deploy)(/|$)|\.boss-project\.json\.public$|\.(claude|codex|husky|beads)(/|$)|docker-compose\.yml$|TODOS\.md$|HANDOFF\.md$|PRODUCT\.md$|DESIGN\.md$)|^(AGENTS\.md|CLAUDE\.md|bossd-plugin-[^/]+|\.env\.example\.public|plans/|docs/|services/mcp-gateway/|services/warehouse/)|(^|/)(AGENTS|CLAUDE)\.md$'
 
 # Private env-var assignment prefixes. Only meaningful inside .env* files, so we
 # never false-match these tokens where they legitimately appear in source code.
@@ -97,6 +97,17 @@ for sha in $shas; do
       leak=1
     fi
   done <<<"$paths"
+
+  if grep -qFx '.boss-project.json' <<<"$paths"; then
+    blob="$(git show "$sha:.boss-project.json")"
+    # Decode and case-fold keys as the config reader does when matching fields.
+    # Keep the producer status visible, then match through a here-string.
+    project_keys="$(python3 -c 'import json, sys; print("\n".join(key.casefold() for key in json.load(sys.stdin)))' <<<"$blob")"
+    if grep -qE '^(daemons|crons)$' <<<"$project_keys"; then
+      echo "LEAK ${sha:0:12}: private fleet configuration in .boss-project.json" >&2
+      leak=1
+    fi
+  fi
 
   # Reuse the already status-checked $paths rather than re-running `git ls-tree`:
   # grepping the variable keeps the `|| true` scoped to the grep alone (it must

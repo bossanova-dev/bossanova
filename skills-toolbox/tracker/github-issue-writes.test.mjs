@@ -205,3 +205,49 @@ test('GitHub failed issue read reports failed without writes', async () => {
   assert.match(result.reason, /issue-read-failed/)
   assert.deepEqual(mutations, [])
 })
+
+test('addBlockedBy goes through appendDependency and classifies its failures', async () => {
+  const { githubApplyIssueWrites } = await import('./github-issue-writes.mjs')
+  const { indeterminateWriteError } = await import('./outcome.mjs')
+  const context = (appendDependency) => ({
+    relations: { localNumber: () => 3, appendDependency },
+    issue: () => ({}),
+    fields: '',
+    normalizeTicket: () => ({ id: '3', identifier: '#3', labels: ['agent-build'] }),
+    states: {},
+    openRoles: [],
+    resolveLabel: (name) => name,
+  })
+  const seen = []
+  const ok = await githubApplyIssueWrites(
+    { issueId: '#3', addBlockedBy: ['#7', '#8'] },
+    context(async (args) => {
+      seen.push(args)
+      return { id: '#3', blockedBy: ['#7', '#8'] }
+    }),
+  )
+  assert.equal(ok.outcome, 'ok')
+  assert.deepEqual(seen, [{ id: '#3', blockedBy: ['#7', '#8'] }])
+  assert.deepEqual(
+    ok.applied.map((a) => [a.kind, a.identifier]),
+    [
+      ['addBlockedBy', '#7'],
+      ['addBlockedBy', '#8'],
+    ],
+  )
+  for (const [error, outcome] of [
+    [new Error('github tracker: self dependency is not allowed'), 'failed'],
+    [
+      indeterminateWriteError('github tracker: add #7 blocks #3', new Error('HTTP 504')),
+      'indeterminate',
+    ],
+  ]) {
+    const r = await githubApplyIssueWrites(
+      { issueId: '#3', addBlockedBy: ['#7'], comment: 'held' },
+      context(async () => Promise.reject(error)),
+    )
+    assert.equal(r.outcome, outcome)
+    assert.match(r.reason, /^addBlockedBy: /)
+    assert.deepEqual(r.applied, [])
+  }
+})

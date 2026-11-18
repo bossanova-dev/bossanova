@@ -81,7 +81,7 @@ func (g *group) chatCmd() *cobra.Command {
 		},
 	}
 	newChat.Flags().String("title", "", "Title for the new chat")
-	newChat.Flags().String("role", "operator", "Purpose of the new chat: operator, coordinator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator or coordinator one. Only the operator may create a coordinator chat; unless coordinator_approval_grant is off, it may approve verify parks and merge")
+	newChat.Flags().String("role", "operator", "Purpose of the new chat: operator, coordinator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator or coordinator one")
 	newChat.Flags().String("agent", "", "Agent plugin to run (empty inherits the session's agent)")
 	newChat.Flags().Bool(cliutil.JSONFlagName, false, "Emit the new chat as a machine-readable JSON envelope")
 

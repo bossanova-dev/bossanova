@@ -1,0 +1,182 @@
+{
+  "clips": [
+    {
+      "id": "mobile-proof",
+      "side": "head",
+      "title": "mobile-proof",
+      "file": "mobile/mobile-proof.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "mobile/mobile-proof.png",
+          "caption": "Result"
+        }
+      ],
+      "files": ["src/mobile.tsx"]
+    },
+    {
+      "id": "admin-proof",
+      "side": "head",
+      "title": "admin-proof",
+      "file": "admin/admin-proof.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "admin/admin-proof.png",
+          "caption": "Result"
+        }
+      ],
+      "files": ["src/admin.tsx"]
+    },
+    {
+      "id": "dashboard-proof-1",
+      "side": "head",
+      "title": "dashboard-proof-1",
+      "file": "dashboard/dashboard-proof-1.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "dashboard/dashboard-proof-1.png",
+          "caption": "Result"
+        }
+      ],
+      "files": ["src/dashboard.tsx"]
+    },
+    {
+      "id": "dashboard-proof-2",
+      "side": "head",
+      "title": "dashboard-proof-2",
+      "file": "dashboard/dashboard-proof-2.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "dashboard/dashboard-proof-2.png",
+          "caption": "Result"
+        }
+      ],
+      "files": ["src/dashboard.tsx"]
+    },
+    {
+      "id": "mobile-plain",
+      "side": "head",
+      "title": "mobile-plain",
+      "file": "mobile/mobile-plain.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "mobile/mobile-plain.png",
+          "caption": "Result"
+        }
+      ],
+      "files": ["src/mobile.tsx"]
+    },
+    {
+      "id": "admin-plain",
+      "side": "head",
+      "title": "admin-plain",
+      "file": "admin/admin-plain.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "admin/admin-plain.png",
+          "caption": "Result"
+        }
+      ],
+      "files": ["src/admin.tsx"]
+    },
+    {
+      "id": "dashboard-plain",
+      "side": "head",
+      "title": "dashboard-plain",
+      "file": "dashboard/dashboard-plain.mp4",
+      "durationMs": 3000,
+      "chapters": [
+        {
+          "atMs": 0,
+          "caption": "Start"
+        }
+      ],
+      "stills": [
+        {
+          "file": "dashboard/dashboard-plain.png",
+          "caption": "Result"
+        }
+      ],
+      "files": ["src/dashboard.tsx"]
+    }
+  ],
+  "documents": [
+    {
+      "id": "statement",
+      "side": "head",
+      "title": "Statement",
+      "file": "pdf/statement.pdf",
+      "pageCount": 1,
+      "pages": [
+        {
+          "file": "pdf/statement.png",
+          "page": 1,
+          "caption": "Statement page"
+        }
+      ]
+    },
+    {
+      "id": "statement-base",
+      "side": "base",
+      "title": "Statement",
+      "file": "pdf/statement-base.pdf",
+      "pageCount": 1,
+      "pages": [
+        {
+          "file": "pdf/statement-base.png",
+          "page": 1,
+          "caption": "Statement page"
+        }
+      ],
+      "pairs": "statement"
+    }
+  ],
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "schema": "proof-media/1",
+  "source": {
+    "kind": "ci-artifact",
+    "url": "https://github.com/freshclaim/fresh-claim/actions/runs/12"
+  },
+  "transcripts": []
+}

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
+import { baseProofSections } from '../../skills-toolbox/verify/verify-proof-sections.mjs'
 
 import {
   DEFAULT_EXTENSION_ROOTS,
@@ -393,6 +394,82 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
   assert.deepEqual(ROLE_SCHEMAS.notes, ['tag', 'body', 'noteId'])
   assert.deepEqual(ROLE_SCHEMAS.knowledge, ['path', 'title', 'kind'])
   assert.deepEqual(ROLE_SCHEMAS.draft, ['planPath'])
+})
+
+const sectionPackDir = path.resolve(
+  import.meta.dirname,
+  '../../lib/bossalib/contract/plugin/skillpayload/skills/boss-verify/extensions',
+)
+
+test('published section packs declare testing and deploy', () => {
+  const root = scratchRoot()
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-verify',
+    role: 'proof-section',
+    root,
+    builtinDir: sectionPackDir,
+  })
+  assert.deepEqual(skipped, [])
+  assert.deepEqual(
+    extensions.map(({ name, builtin, sections }) => ({ name, builtin, sections })),
+    [
+      {
+        name: 'boss-verify-section-deploy',
+        builtin: true,
+        sections: [{ id: 'deploy', title: 'Before and after merge', after: 'findings' }],
+      },
+      {
+        name: 'boss-verify-section-testing',
+        builtin: true,
+        sections: [{ id: 'testing', title: 'How to test it', after: 'ticket' }],
+      },
+    ],
+  )
+  assert.ok(extensions.every(({ instructions }) => instructions.trim().length > 0))
+})
+
+test('a repo testing section replaces the pack and trusted config hides it', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-verify-acme-sections', [
+    'name: boss-verify-acme-sections',
+    'x-boss-extension:',
+    '  extends: boss-verify',
+    '  role: proof-section',
+    '  sections:',
+    '    - id: testing',
+    '      title: Repo testing',
+    '      after: ticket',
+  ])
+  const read = () =>
+    baseProofSections({
+      baseSha: 'base',
+      trustedTree: () => ({ ok: true, root }),
+      discover: (options) => discoverExtensions({ ...options, builtinDir: sectionPackDir }),
+    })
+  const before = read()
+  assert.deepEqual(before.problems, [])
+  assert.deepEqual(
+    before.sections.map(({ id, title }) => ({ id, title })),
+    [
+      { id: 'testing', title: 'Repo testing' },
+      { id: 'deploy', title: 'Before and after merge' },
+    ],
+  )
+  assert.equal(before.sections[0].instructions, '# boss-verify-acme-sections')
+  fs.writeFileSync(
+    path.join(root, '.boss-skills.json'),
+    JSON.stringify({ proofDefaults: { sections: { testing: false } } }),
+  )
+  assert.deepEqual(
+    read().sections.map(({ id }) => id),
+    ['deploy'],
+  )
+  assert.deepEqual(read().problems, [])
+  fs.writeFileSync(path.join(root, '.boss-skills.json'), '{bad json')
+  assert.deepEqual(read(), {
+    sections: [],
+    problems: ['sections: the base tree could not be read'],
+  })
 })
 
 test('published built-in notes extensions are discoverable for each terminal core', () => {

@@ -306,7 +306,7 @@ func (f *prCallerFake) ListSessions(ctx context.Context, req *pb.ListSessionsReq
 }
 
 func TestPrApproveSurfacesDaemonPermissionDenied(t *testing.T) {
-	f := &prFake{sessions: []*pb.Session{prSession("s-a", 7, originA, "/wt/a")}, approveErr: rpcerror.WrapError(connect.NewError(connect.CodePermissionDenied, errors.New("agent chat chat-123 (role build); run from your own terminal")))}
+	f := &prFake{sessions: []*pb.Session{prSession("s-a", 7, originA, "/wt/a")}, approveErr: rpcerror.WrapError(connect.NewError(connect.CodePermissionDenied, errors.New("bossd attributed this call to a daemon child; run it from your own terminal or an agent chat")))}
 	g := New(func(*cobra.Command) (Client, error) { return &prCallerFake{prFake: f}, nil }, Options{Getenv: func(string) string { t.Fatal("approve read client environment"); return "" }})
 	cmd, out := prTestCmd(true)
 	cmd.Flags().Bool("dry-run", false, "")

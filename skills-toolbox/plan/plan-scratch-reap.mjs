@@ -6,8 +6,15 @@
 import { existsSync, lstatSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { isMainModule } from '../main-module.mjs'
-import { PLAN_SCRATCH_IGNORE_FILE } from './plan-scratch-paths.mjs'
+import {
+  PLAN_SCRATCH_IGNORE_FILE,
+  PLAN_PIN_DIR_PREFIX,
+  RUN_SCRATCH_DIR_PREFIX,
+} from './plan-scratch-paths.mjs'
 
+export const UNATTENDED_PLAN_PIN_MARKER = '.unattended'
+export const COMPLETED_PLAN_PIN_MARKER = '.completed'
+export const STALE_PLAN_PIN_TTL_MS = 6 * 60 * 60 * 1000
 export const STALE_PLAN_SCRATCH_TTL_MS = 24 * 60 * 60 * 1000
 
 function report(onReport, msg) {
@@ -53,9 +60,10 @@ function reapEntry(path, isDir, removed, failed, onReport) {
  * could never reach it, which is exactly how the legacy `children/` directory
  * became permanently unreachable.
  *
- * TTL semantics are unchanged and apply to the entry itself: a directory whose
- * own mtime is younger than the TTL is kept, so a live run's scratch is never
- * removed out from under it.
+ * Unattended or completed pins can expire by age. Interactive and unknown
+ * owners may resume before completion after an arbitrarily long pause, so keep
+ * their pins and paired run scratch. Reapable pins use six idle hours; runner calls refresh
+ * their root mtime. Other entries use the scratch TTL.
  * @param {string} dir
  * @param {{now?: number, ttlMs?: number, onReport?: (msg: string) => void}} [opts]
  * @returns {{removed: string[], failed: string[]}}
@@ -93,7 +101,21 @@ export function reapPlanScratch(dir = '.linear-plans', opts = {}) {
     // Anything that is neither a regular file nor a directory (a socket, a
     // symlink to elsewhere) is left alone: it is not something this contract
     // creates, so removing it would be acting outside the sweep's remit.
-    if ((!st.isFile() && !isDir) || now - st.mtimeMs < ttlMs) continue
+    const pinPath = name.startsWith(PLAN_PIN_DIR_PREFIX)
+      ? path
+      : name.startsWith(RUN_SCRATCH_DIR_PREFIX)
+        ? join(dir, PLAN_PIN_DIR_PREFIX + name.slice(RUN_SCRATCH_DIR_PREFIX.length))
+        : null
+    if (
+      isDir &&
+      pinPath &&
+      existsSync(pinPath) &&
+      !existsSync(join(pinPath, UNATTENDED_PLAN_PIN_MARKER)) &&
+      !existsSync(join(pinPath, COMPLETED_PLAN_PIN_MARKER))
+    )
+      continue
+    const entryTtlMs = isDir && name.startsWith(PLAN_PIN_DIR_PREFIX) ? STALE_PLAN_PIN_TTL_MS : ttlMs
+    if ((!st.isFile() && !isDir) || now - st.mtimeMs < entryTtlMs) continue
     reapEntry(path, isDir, removed, failed, opts.onReport)
   }
   return { removed, failed }

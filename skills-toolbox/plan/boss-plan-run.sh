@@ -11,6 +11,10 @@ while [ -L "$RUN_SOURCE" ]; do
 done
 BOSS_PLAN_TOOLBOX=$(cd -P -- "$(dirname -- "$RUN_SOURCE")/.." && pwd -P)
 BOSS_SKILLS_HOME=$(cd -P -- "$(dirname -- "$(dirname -- "$BOSS_PLAN_TOOLBOX")")" && pwd -P)
+# Keep the parent pin root alive, including calls after run-scratch cleanup.
+if [ -f "$BOSS_SKILLS_HOME/boss-plan/.boss-skill-pin.json" ]; then
+  touch -c -- "$BOSS_SKILLS_HOME" || true
+fi
 export BOSS_PLAN_TOOLBOX BOSS_SKILLS_HOME
 steps_dir="$BOSS_PLAN_TOOLBOX"/plan/run-steps
 usage() { echo 'boss-plan-run: usage: node <helper.mjs> [args …] | steps | <step> [flags …]' >&2; exit 64; }

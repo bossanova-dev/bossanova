@@ -455,14 +455,17 @@ create a `boss-build/<ticket-id>` branch off the base first
 ## Step 2.5: Ours to adopt, or foreign?
 
 ```bash
-# Stays on gh: the ownership judgement reads the PR title and body, which the daemon does not carry.
-PR_JSON="$(gh pr list --head "$SESSION_BRANCH" --state open \
-  --json number,title,body,headRefName,state)"
 BOSS_BUILD_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-build/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_BUILD_TOOLBOX="$BOSS_BUILD_PIN/toolbox"
 [ -f "$BOSS_BUILD_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-build skill pin missing - re-run Preflight"; exit 1; }
+# Quota-aware gh read: ownership needs the title and body, which the daemon does not carry.
+PR_JSON="$(node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" head-pr --branch "$SESSION_BRANCH")" || {
+  echo "BLOCKED: session PR lookup unreadable" >&2; exit 1;
+}
 PR_NUMBER="$(node "$BOSS_BUILD_TOOLBOX/build/pr-ownership.mjs" number --pr-json "$PR_JSON")"
 ```
+
+A failed lookup is BLOCKED on a host read; it never routes as **fresh**.
 
 Judge ownership from the branch name, `[<ISSUE-ID>]` in the PR title, `Tracker issue: <url>` in its
 body, and real commits ahead of `$BASE_REF` (ignoring bossd's empty bootstrap commit):

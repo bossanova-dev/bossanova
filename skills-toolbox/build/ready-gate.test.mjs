@@ -308,9 +308,29 @@ function gateHarness(
       return { status: 0, stdout: `${head}\n` }
     }
     if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: 'feat\n' }
+    if (command === 'git' && args[0] === 'remote' && args[1] === '-v')
+      return { status: 0, stdout: 'origin\thttps://github.com/acme/widgets.git (fetch)\n' }
+    if (command === 'gh' && args[0] === 'repo') {
+      calls.at(-1).push(`label=${opts?.env?.BOSS_GH_USAGE_LABEL}`)
+      return { status: 0, stdout: '' }
+    }
     if (command === 'gh' && args[0] === 'pr') {
       calls.at(-1).push(`label=${opts?.env?.BOSS_GH_USAGE_LABEL}`)
-      if (args[1] === 'list') return out(prBase ? [{ number: 7, url: '' }] : [])
+      if (args[1] === 'list')
+        return out(
+          prBase
+            ? [
+                {
+                  number: 7,
+                  title: 'Change',
+                  body: '',
+                  headRefName: 'feat',
+                  state: 'OPEN',
+                  url: 'https://github.com/acme/widgets/pull/7',
+                },
+              ]
+            : [],
+        )
       if (args[1] === 'view') return out({ number: 7, baseRefName: prBase })
     }
     if (command === 'git' && args[0] === 'symbolic-ref')
@@ -318,7 +338,16 @@ function gateHarness(
     if (command === 'git' && args[0] === 'merge-base') return { status: 0, stdout: MERGED }
     assert.fail(`unexpected command ${command} ${args.join(' ')}`)
   }
-  return { dir, calls, deps: { spawn, cwd: dir, bossBin: FAKE_BOSS } }
+  return {
+    dir,
+    calls,
+    deps: {
+      spawn,
+      cwd: dir,
+      bossBin: FAKE_BOSS,
+      env: { PATH: process.env.PATH, HOME: dir, USERPROFILE: dir, GH_CONFIG_DIR: dir },
+    },
+  }
 }
 const ghCalls = (h) => h.calls.filter(([c]) => c === 'gh')
 test('readyGateReport: reviewed head is HEAD — ready without reading the base', (t) => {
@@ -382,6 +411,7 @@ test('readyGateReport: an UNAVAILABLE daemon reads the base through labelled gh'
   assert.deepEqual(
     gh.map((call) => [call.slice(1, 3).join(' '), call.at(-1)]),
     [
+      ['repo set-default', 'label=fallback:pr-state'],
       ['pr list', 'label=fallback:pr-state'],
       ['pr view', 'label=fallback:pr-state'],
     ],

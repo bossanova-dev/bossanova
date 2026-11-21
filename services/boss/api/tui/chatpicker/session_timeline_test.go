@@ -1304,7 +1304,7 @@ func sweepFoldKeepsTheFirstFold(t *testing.T, cases int) {
 		for i, k := range candidates {
 			picked[i] = steps[k]
 		}
-		folded, _ := fitTimelineRows(timelineStepRows(picked, timelineDayLabels(picked, now, false), titleWidth, avail), candidates, len(steps), slices.Index(candidates, pin), budget)
+		folded, _ := fitTimelineRows(timelineStepRows(picked, timelineDayLabels(picked, now, false), titleWidth, avail), candidates, len(steps), slices.Index(candidates, pin), budget, avail)
 		kept, rows := foldTimelineSteps(steps, candidates, pin, now, titleWidth, avail, budget)
 		if !slices.Equal(kept, folded) {
 			t.Fatalf("avail %d, budget %d, pin %d: first fold kept %v, relabelled fold kept %v:\n%s", avail, budget, pin, folded, kept, rows)

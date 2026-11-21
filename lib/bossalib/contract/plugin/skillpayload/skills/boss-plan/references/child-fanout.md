@@ -18,7 +18,7 @@ ticket / cancel", with `init`'s order and skip reasons. "One ticket" returns to 
 `agent-question`); headless runs skip the question.
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh fanout-init --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --parallel <N>
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh fanout-init --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --parallel <N>
 ```
 
 `<N>` is the `parallel` the Phase 1 `args` verb printed. `init` prints the planning order, the skipped
@@ -28,7 +28,7 @@ context, one sentinel name per child: `child-<CHILD-ID>`.
 
 ### 2. Launch, hold, settle — until `next` says `complete`
 
-Run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs next .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-ledger.json`. It prints
+Run `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs next .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-ledger.json`. It prints
 `{launch, poll, complete, inFlight, queued}` and stamps the polled child, so polls round-robin.
 
 **Launch** every id in `launch`, each in this order:
@@ -36,11 +36,11 @@ Run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.
 1. Its scratch: the ledger child's `scratch` when set (a transport retry reuses every path), else a
    fresh `mktemp -d .linear-plans/run-XXXXXXXX`. Its suffix is the child's `<CHILD-SCRATCH-ID>`.
 2. Its description snapshot, exactly as Phase 2 step 2 does for one ticket:
-   `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-description --id <CHILD-UUID> --out-file .linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.image-guard-orig.md`
+   `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-description --id <CHILD-UUID> --out-file .linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.image-guard-orig.md`
    (`uuid` from the ledger; exit 2 ⇒ byte-copy the hydrated `get_issue` description; exit 64 or a
    receipt for another id ⇒ `record <CHILD-ID> failed --reason snapshot` and skip the dispatch).
-3. `bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-mark --run-dir <RUN_DIR> --name child-<CHILD-ID>`, then
-   `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs record .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-ledger.json <CHILD-ID> dispatched --scratch .linear-plans/run-<CHILD-SCRATCH-ID>`
+3. `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh dispatch-mark --run-dir <RUN_DIR> --name child-<CHILD-ID>`, then
+   `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs record .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-ledger.json <CHILD-ID> dispatched --scratch .linear-plans/run-<CHILD-SCRATCH-ID>`
    **before** dispatching a `general-purpose` subagent on the orchestrator's model with the
    [brief](#child-planner-brief) and Phase 0's `<RECON-REF>` as `RECON_REF`, so a dispatch-tool error finds the child `dispatched` and earns its
    transport retry.
@@ -49,7 +49,7 @@ Run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.
 child is in flight — the Stop-hook hazard `headless-dispatch.md` documents):
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-wait --run-dir <RUN_DIR> --run-id <RUN_ID> --name child-<CHILD-ID> --heartbeat .linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.dispatch-heartbeat.json --budget 25000
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh dispatch-wait --run-dir <RUN_DIR> --run-id <RUN_ID> --name child-<CHILD-ID> --heartbeat .linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.dispatch-heartbeat.json --budget 25000
 ```
 
 Route on its exit code with the `headless-dispatch.md` table: `98`, `95` or a harness kill ⇒ back to `next`;
@@ -60,10 +60,10 @@ otherwise `record <CHILD-ID> failed --reason transport` — the helper re-queues
 death fails it. There is no inline fallback here: a failed child stays `agent-plan` and a re-run picks it up.
 
 **Settle** on the tracker, not on the child's word. Run
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <CHILD-UUID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<CHILD-ID>.precheck.json`.
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <CHILD-UUID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<CHILD-ID>.precheck.json`.
 Exit 0 continues; exit 2 uses the [snapshot fallback](planning-claims.md#claim-before-drafting);
 exit 64 means fix the call. Then
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs idempotence <that file> --selected-id <CHILD-ID>`.
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs idempotence <that file> --selected-id <CHILD-ID>`.
 Only `action: "noop"` is `record <CHILD-ID> planned`; anything else is
 `record <CHILD-ID> failed --reason <the guard's reasons, comma-joined>` (prefix the `disposition`
 reason when the sentinel never became publishable). Keep the child's returned `outcome` for cleanup.
@@ -72,14 +72,14 @@ reason when the sentinel never became publishable). Keep the child's returned `o
 
 When `next` says `complete`: `get_issue` the parent fresh (parent-flip needs labels) into
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json` and run
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs parent-flip .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-ledger.json <that file>`. `flip: true` with
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs parent-flip .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-ledger.json <that file>`. `flip: true` with
 `write: true` ⇒ one `save_issue` carrying exactly `labels` (the whole merged set) and, when non-null,
 `state` — never the description, estimate or attachments — then read it back; a mismatch is a
 failed run (report it, exit non-zero, Phase 7 outcome `failed`) even when every child planned.
 `flip: false` ⇒ no parent write; print its `reasons`.
 
 Report (Phase 6) the `summary` verb's rows as a table — id, title, `planned` / `failed: <reason>` /
-`skipped: <reason>` — plus the parent-flip result. Then clean up: `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs cleanup
+`skipped: <reason>` — plus the parent-flip result. Then clean up: `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs cleanup
 "<RUN_DIR>"`, remove `.linear-plans/run-<RUN-SCRATCH-ID>`, and remove each failed child's scratch
 unless that child returned `outcome: "drift"` (its scratch is then the only copy of the intended
 bytes; name it in the report). A planned child's own Phase 5 already removed its scratch.
@@ -92,15 +92,17 @@ is `planned` when `ok` and the parent write (if any) verified, else `failed`.
 You plan **one** child of an epic, unattended, inside an awaited subagent the boss-plan orchestrator
 dispatched. Never call `AskUserQuestion`.
 
-**Inputs:** `RECON_REF` (the orchestrator's Phase 0 ref); `CHILD-ID`, its title and UUID; your scratch directory
+**Inputs:** `PIN_DIR` (`<PIN-DIR>`), the parent run's pin, passed explicitly and never re-derived from the child scratch id; `RECON_REF` (the orchestrator's Phase 0 ref); `CHILD-ID`, its title and UUID; your scratch directory
 `.linear-plans/run-<CHILD-SCRATCH-ID>/` — use `<CHILD-SCRATCH-ID>` wherever the brief or SKILL.md says
 `<RUN-SCRATCH-ID>` and `CHILD-ID` wherever they say `<ISSUE-ID>`; the snapshot path; `PLAN_PATH`, computed with `plan-slug.mjs plan-path` from the child run id
 and precheck payload (use exactly as given);
 `RUN_SENTINEL` / `RUN_DIR` / `RUN_ID` and your sentinel name `child-<CHILD-ID>`; `parentId`;
 `siblingIds`; `earlierSiblings`; `plannedSiblings`.
 
+Children share the parent's captured payload and never create a new pin.
+
 0. **Select and claim the child** — run
-   `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <CHILD-UUID> --out-file .linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.precheck.json` before drafting.
+   `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <CHILD-UUID> --out-file .linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.precheck.json` before drafting.
    Exit 0 continues; exit 2 uses the [snapshot fallback](planning-claims.md#claim-before-drafting);
    exit 64 means fix the call. Keep that
    selection snapshot unchanged through both rechecks; the description snapshot is a separate
@@ -133,7 +135,7 @@ and precheck payload (use exactly as given);
 5. **Sentinel, last** — only when Phase 4 completed:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs write <RUN_DIR> <RUN_ID> child-<CHILD-ID> ok '{"issueId":"<CHILD-ID>","outcome":"planned"}'
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs write <RUN_DIR> <RUN_ID> child-<CHILD-ID> ok '{"issueId":"<CHILD-ID>","outcome":"planned"}'
    ```
 
    Write nothing on failure — an absent sentinel is the safe outcome.

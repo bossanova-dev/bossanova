@@ -217,3 +217,44 @@ test('a run id that is not a safe path segment is refused, and no id pins the lo
   assert.equal(verifyPin({ ...f, env: {} }).status, 0)
   assert.equal(verifyPin({ ...f, env: chat('chat-other') }).status, 2)
 })
+
+test('explicit pin root creates, verifies and removes independently of git and chat id', (t) => {
+  const f = fixture(t)
+  const pinRoot = path.join(f.root, 'run-pin')
+  const cli = fileURLToPath(new URL('./skill-pin.mjs', import.meta.url))
+  const run = (verb) =>
+    spawnSync(
+      process.execPath,
+      [
+        cli,
+        verb,
+        '--skill',
+        f.skill,
+        '--skills-home',
+        f.skillsHome,
+        '--pin-root',
+        pinRoot,
+        '--git-dir',
+        f.gitDir,
+      ],
+      {
+        cwd: f.root,
+        encoding: 'utf8',
+        env: { ...process.env, BOSS_AGENT_SESSION_ID: 'chat-a' },
+      },
+    )
+  assert.equal(run('verify').status, 2)
+  const created = run('create')
+  assert.equal(created.status, 0, created.stderr)
+  const dir = path.join(pinRoot, f.skill)
+  assert.equal(JSON.parse(created.stdout).skillDir, dir)
+  assert.equal(pinDir(f.gitDir, f.skill, 'chat-a', pinRoot), dir)
+  assert.ok(fs.existsSync(path.join(dir, '.boss-skill-pin.json')))
+  assert.equal(fs.existsSync(path.join(f.gitDir, 'boss-skill-pins')), false)
+  assert.equal(run('verify').status, 0)
+  fs.chmodSync(path.join(dir, 'SKILL.md'), 0o644)
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), 'tamper')
+  assert.equal(run('verify').status, 1)
+  assert.equal(run('remove').status, 0)
+  assert.equal(fs.existsSync(dir), false)
+})

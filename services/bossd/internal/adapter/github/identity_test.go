@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -99,14 +101,14 @@ func TestVerifyPassedAtHeadReadsOnlyNamedCommit(t *testing.T) {
 		pages string
 		pass  bool
 	}{
-		{name: "pass after another context", pages: `[{"context":"CI","state":"success"}][{"context":"boss/verify","state":"success","description":"verified (approved)"}]`, pass: true},
-		{name: "human hold", pages: `[{"context":"boss/verify","state":"success","description":"needs human: human-review:ui"}]`},
-		{name: "missing", pages: `[{"context":"CI","state":"success"}]`},
+		{name: "pass after another context", pages: `{"statuses":[{"context":"CI","state":"success"}]}{"statuses":[{"context":"boss/verify","state":"success","description":"verified (approved)"}]}`, pass: true},
+		{name: "human hold", pages: `{"statuses":[{"context":"boss/verify","state":"success","description":"needs human: human-review:ui"}]}`},
+		{name: "missing", pages: `{"statuses":[{"context":"CI","state":"success"}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			endpoint := "repos/o/r/commits/" + testSHA + "/status?per_page=100"
 			p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
-				want := []string{"api", endpoint, "--paginate", "--jq", ".statuses"}
+				want := []string{"api", endpoint, "--paginate"}
 				if !slices.Equal(args, want) {
 					t.Errorf("gh arguments = %v, want %v", args, want)
 				}
@@ -458,9 +460,7 @@ func TestDefaultRunGHSetsTheTokenOnlyOnTheGHProcess(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "parent-github-token")
 	ctx := context.Background()
 
-	userP := New(zerolog.Nop())
-	userP.SetInstallationTokens(&fakeTokenSource{})
-	out, err := userP.GetFailedCheckLogs(ctx, testOrigin, "1")
+	out, err := defaultRunGH(ctx, "api", "logs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,9 +468,7 @@ func TestDefaultRunGHSetsTheTokenOnlyOnTheGHProcess(t *testing.T) {
 		t.Fatalf("user login gh saw %q, want the inherited env %q", out, want)
 	}
 
-	p := New(zerolog.Nop())
-	p.SetInstallationTokens(installationSource(nil))
-	out, err = p.GetFailedCheckLogs(ctx, testOrigin, "1")
+	out, err = defaultRunGH(withIdentity(ctx, ghIdentity{token: testInstallTok}), "api", "logs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,9 +491,12 @@ func TestDefaultRunGHWithoutATokenKeepsTheInheritedEnv(t *testing.T) {
 }
 
 func TestFailedInstallationCallErrorOmitsTheToken(t *testing.T) {
-	writeStubGH(t, "gh: HTTP 500: server error")
+	e, _ := testAPIExecutor(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"message":"server error"}`)
+	})
 	var logs bytes.Buffer
-	p := New(zerolog.New(&logs))
+	p := New(zerolog.New(&logs), WithRunGH(e.run))
 	p.SetInstallationTokens(installationSource(nil))
 	_, err := p.GetFailedCheckLogs(context.Background(), testOrigin, "1")
 	if err == nil || !strings.Contains(err.Error(), "server error") {

@@ -10,6 +10,8 @@ the plan file, the description artifact and the sentinel. Only the epic path wri
 
 ## Inputs
 
+- `PIN_DIR` — the parent run's captured boss-plan skill directory; substitute it for `<PIN-DIR>` in every call.
+
 - `RECON_REF` — Phase 0's measured code ref; `HEAD` means current, another ref supplies the
   fresher code. Treat a missing value from an older orchestrator as `HEAD`.
 
@@ -23,10 +25,10 @@ the plan file, the description artifact and the sentinel. Only the epic path wri
 - `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID` — the run-file sentinel you write your outcome to. `RUN_DIR` is
   under `$TMPDIR` and is not where scratch goes.
 - `<RUN-SCRATCH-ID>` — every local file you write goes in `.linear-plans/run-<RUN-SCRATCH-ID>/`,
-  under a name `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-scratch-paths.mjs families` declares. Never invent a
+  under a name `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-scratch-paths.mjs families` declares. Never invent a
   scratch name or write scratch anywhere else.
 
-`<skill-dir>` is the boss-plan core directory supplied by the orchestrator. Substitute its absolute
+`<PIN-DIR>` is the pinned boss-plan core directory supplied by the orchestrator. Substitute its absolute
 path in every runner call; the runner resolves its toolbox without caller-side setup.
 
 ## Heartbeat
@@ -37,13 +39,13 @@ The first tool call beats. Wrap recon commands with `beat`; batch independent re
 runner’s heartbeat verb between long steps:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-dispatch-await.mjs beat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --interval 30000 -- git status --short
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node bs-dispatch-await.mjs beat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --interval 30000 -- git status --short
 ```
 
 Anything longer than a beat interval is wrapped in `beat`, which returns the command's status:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-dispatch-await.mjs beat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --interval 30000 -- test-runner path/to/direct-test
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node bs-dispatch-await.mjs beat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --interval 30000 -- test-runner path/to/direct-test
 ```
 
 Never beat from a background loop that outlives your work.
@@ -106,15 +108,15 @@ priority, otherwise rank against the planned backlog.
   `plan-open-prs.mjs overlap` to compare the draft's Key changes paths before they have a description:
 
   ```bash
-  bash <skill-dir>/toolbox/plan/boss-plan-run.sh open-prs --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID>
+  bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh open-prs --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID>
   ```
 
   ```bash
-  bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --team <team> --id <ISSUE-ID>
+  bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --team <team> --id <ISSUE-ID>
   ```
 
   ```bash
-  bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-open-prs.mjs overlap --open-prs .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.open-prs.json --subject <ISSUE-ID> --paths "<draft-paths-comma-separated>" --candidates .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json
+  bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-open-prs.mjs overlap --open-prs .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.open-prs.json --subject <ISSUE-ID> --paths "<draft-paths-comma-separated>" --candidates .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json
   ```
 
   Read each overlapping PR's diff (`gh pr diff <number>`, restricted to the shared files), design
@@ -149,14 +151,14 @@ casing), and add the `agent-question` label.
 Drafting resolves through the first tier that succeeds:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role draft --mode headless --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --json
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role draft --mode headless --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --json
 ```
 
 (missing helper ⇒ treat it as `{"extensions":[],"skipped":[]}`). Record each `skipped` entry whose
 `deliberate` is `false` as `extension <name>: skipped (<reason>)`. Create a run temp dir first:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh run-tmp create
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh run-tmp create
 ```
 
 - **Tier 1 — draft extensions.** Run each one **inline in this context**, following the `SKILL.md`
@@ -256,7 +258,7 @@ one blank line after that heading, to the `description` family file shown below.
 snapshot with this step; only the file path crosses the return channel (which HTML-escapes `<`, `>`, `&`):
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh append-original-notes --body .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md --snapshot .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh append-original-notes --body .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md --snapshot .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md
 ```
 
 Keep `## Original notes` byte-for-byte from the snapshot, except that upload URLs are written
@@ -281,7 +283,7 @@ builds the sentinel payload; any failure prevents an `ok` write. Add `--allow-em
 when the handed-in description was genuinely empty:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh draft-verify --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --plan <PLAN_PATH> --run-dir <RUN_DIR> --run-id <RUN_ID>
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh draft-verify --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --plan <PLAN_PATH> --run-dir <RUN_DIR> --run-id <RUN_ID>
 ```
 
 Epic — no plan file; the payload carries the epic's ids and artifact paths ([`epic.md`](epic.md)
@@ -292,7 +294,7 @@ without requiring a parent plan file. The shared manifest verifier must pass bef
 a failure leaves no publishable sentinel:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh epic-verify --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --run-dir <RUN_DIR> --run-id <RUN_ID> --child <CHILD-ID>=<key>
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh epic-verify --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --run-dir <RUN_DIR> --run-id <RUN_ID> --child <CHILD-ID>=<key>
 ```
 
 Write nothing if you could not produce the plan: an absent sentinel is the safe outcome.

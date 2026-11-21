@@ -5,7 +5,9 @@ export default {
   wiring: { make: 'lint-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
   scans: [
     'scripts/**/*.mjs',
+    'scripts/**/*.cjs',
     'skills-toolbox/**/*.mjs',
+    'skills-toolbox/**/*.cjs',
     'scripts/guards/cli-flag-parsers-baseline.json',
   ],
   baseline: 'scripts/guards/cli-flag-parsers-baseline.json',

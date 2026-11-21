@@ -52,6 +52,14 @@ test('a new hand-rolled parser fails and names parseArgs as the fix', () => {
   assert.match(failures[0], /parseArgs` from 'node:util'/)
 })
 
+test('YAML document separator lookups are not CLI flag reads', () => {
+  for (const method of ['startsWith', 'includes', 'indexOf', 'has', 'get']) {
+    assert.equal(classifySource(`text.${method}('---')`), null)
+    assert.ok(classifySource(`args.${method}('--')`))
+    assert.ok(classifySource(`args.${method}('--json')`))
+  }
+})
+
 test('a strict parseArgs CLI and a baselined parser both pass', () => {
   const root = fixture({ 'scripts/strict.mjs': STRICT_PARSE, 'scripts/legacy.mjs': HAND_ROLLED }, [
     'scripts/legacy.mjs',

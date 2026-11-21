@@ -29,7 +29,7 @@ const OWN_FILE = path.join('scripts/guards', 'check-cli-flag-parsers.mjs')
 const FLAG_READS = [
   /(?:===|!==|\bcase)\s*(['"`])--[A-Za-z]/,
   /(['"`])--[A-Za-z][\w-]*=?\1\s*(?:===|!==)/,
-  /\.(?:startsWith|includes|indexOf|has|get)\(\s*(['"`])--/,
+  /\.(?:startsWith|includes|indexOf|has|get)\(\s*(['"`])--(?!-)/,
 ]
 const STRICT_FALSE = /\bstrict\s*:\s*false\b/
 const EXEMPT =

@@ -16,7 +16,7 @@ dispatched as an awaited subagent (no human gating).
    `skipped`:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role plan-reviewer --json
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role plan-reviewer --json
    ```
 
    Pass `--role plan-reviewer` so a same-prefix extension that extends `boss-plan` but declares the
@@ -41,7 +41,7 @@ dispatched as an awaited subagent (no human gating).
    Before the first extension, create one context for this whole pass:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh sentinel-ctx
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh sentinel-ctx
    ```
 
    Load the extension by **reading the descriptor's `skillPath` from disk** (`dir` is its directory),
@@ -55,13 +55,13 @@ dispatched as an awaited subagent (no human gating).
    its scratch directory:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh ext-paths --run-scratch-id <RUN-SCRATCH-ID> --issue <ISSUE-ID> --name <extension-name>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh ext-paths --run-scratch-id <RUN-SCRATCH-ID> --issue <ISSUE-ID> --name <extension-name>
    ```
 
    Immediately before each dispatch attempt, record its timestamp (retain it across wait re-arms):
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-mark --run-dir <RUN_DIR> --name ext-plan-reviewer-<name>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh dispatch-mark --run-dir <RUN_DIR> --name ext-plan-reviewer-<name>
    ```
 
    Use the printed `runTmp` and `outPath` values in the `plan-reviewer` **invocation envelope**:
@@ -85,12 +85,12 @@ dispatched as an awaited subagent (no human gating).
    The heartbeat uses the declared family
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.ext-plan-reviewer-<name>.heartbeat.json`.
    The orchestrator wraps the extension instructions in a worker brief that supplies the concrete
-   `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID`, `EXT_NAME`, `EXT_HEARTBEAT` and toolbox paths and requires:
+   `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID`, `EXT_NAME`, `EXT_HEARTBEAT` and the pinned toolbox path `<PIN-DIR>/toolbox` and requires:
 
-   - Beat `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-dispatch-await.mjs heartbeat "$EXT_HEARTBEAT"`
+   - Beat `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node bs-dispatch-await.mjs heartbeat "$EXT_HEARTBEAT"`
      at start and between long steps; only the worker writes this liveness signal.
    - After writing `outPath`, write the terminal sentinel:
-     `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs write "$RUN_DIR" "$RUN_ID" "ext-plan-reviewer-$EXT_NAME" ok`.
+     `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs write "$RUN_DIR" "$RUN_ID" "ext-plan-reviewer-$EXT_NAME" ok`.
      If no envelope could be produced, write the same sentinel with kind `failed`.
    - Remain read-only: never edit the plan, index or HEAD. Only scratch and sentinel writes are
      permitted. The extension's own instructions and envelope contract are unchanged.
@@ -98,7 +98,7 @@ dispatched as an awaited subagent (no human gating).
    **Hold the dispatch in-turn.** Re-arm this foreground call while the dispatch is open:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-wait --run-dir <RUN_DIR> --run-id <RUN_ID> --name ext-plan-reviewer-<name> --heartbeat <EXT_HEARTBEAT> --leg-deadline --budget 590000
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh dispatch-wait --run-dir <RUN_DIR> --run-id <RUN_ID> --name ext-plan-reviewer-<name> --heartbeat <EXT_HEARTBEAT> --leg-deadline --budget 590000
    ```
 
    A harness that cannot raise its tool timeout omits `--budget` (the default is `110000` ms).
@@ -113,13 +113,13 @@ dispatched as an awaited subagent (no human gating).
    A returned object arriving at any tool boundary also ends the hold and proceeds to step 3.
    Under Codex, `wait_agent` is the hold, followed by one `wait` call as in Phase 2.
    After the last extension has been validated and folded or skipped, clean this pass's context
-   with `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs cleanup "$RUN_DIR"`.
+   with `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs cleanup "$RUN_DIR"`.
 
 3. **Validate + fold or skip.** Validate `outPath` after every terminal exit, including `96`
    (timed out) and `97` (abandoned), or a returned object:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs validate --role plan-reviewer --file <outPath>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs validate --role plan-reviewer --file <outPath>
    ```
 
    On a missing file or non-zero exit, record `extension <name>: skipped (<reason>)` and continue —
@@ -127,7 +127,7 @@ dispatched as an awaited subagent (no human gating).
    `abandoned` on `97`, otherwise the validation failure. A valid envelope is folded even after
    `96` or `97`; sentinel kind and transport outcome never replace envelope validation.
    For a valid envelope, fold an item supplying a whole contract section by
-   body file into both artifacts with `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-fold-section.mjs fold --heading <heading> --body-file <file> --plan <planPath> --description <descriptionSummary.path>`;
+   body file into both artifacts with `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-fold-section.mjs fold --heading <heading> --body-file <file> --plan <planPath> --description <descriptionSummary.path>`;
    it places the section by contract order and edits the description on disk, so no separate
    metadata refresh is needed. Fold other `plan-reviewer` `items`
    (`{ severity, section, title, detail }`) into the drafting agent's quality pass, and route

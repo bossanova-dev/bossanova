@@ -4,6 +4,9 @@ go_library(
     name = "github",
     srcs = [
         "actionable_errors.go",
+        "api_exec.go",
+        "api_exec_output.go",
+        "api_exec_request.go",
         "background_floor.go",
         "conditional.go",
         "identity.go",
@@ -35,6 +38,7 @@ go_library(
 go_test(
     name = "github_test",
     srcs = [
+        "api_exec_test.go",
         "background_floor_test.go",
         "conditional_test.go",
         "identity_test.go",

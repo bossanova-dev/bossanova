@@ -519,7 +519,7 @@ test('view: falls back to labelled gh exactly for a missing daemon or binary', (
       ghAnswer: (args) => (args[1] === 'view' ? json(ghViewPayload) : assert.fail(args.join(' '))),
     })
     const res = main(['view', '--pr', '7'], io.deps)
-    const gh = recorded(io).filter(([cmd]) => cmd === 'gh')
+    const gh = recorded(io).filter(([cmd, args]) => cmd === 'gh' && args[0] !== 'repo')
     if (want === 'gh') {
       assert.equal(res.exit, 0, name)
       assert.equal(res.out.source, 'gh-fallback', name)
@@ -560,7 +560,12 @@ test('view: an envelope without a head SHA is a failed read, never a gh retry', 
 
 // sessionIo answers `boss env`, `boss show` and `boss pr state` from the given bodies, `git branch`
 // with `feat`, and `gh pr list` with one open PR.
-function sessionIo({ env, show, binary = true, list = [{ number: 9, url: 'https://gh/pr/9' }] }) {
+function sessionIo({
+  env,
+  show,
+  binary = true,
+  list = [{ number: 9, url: 'https://gh/pr/9', state: 'OPEN' }],
+}) {
   const io = fakeIo({
     binary,
     bossAnswer: (args) => {
@@ -568,20 +573,47 @@ function sessionIo({ env, show, binary = true, list = [{ number: 9, url: 'https:
       if (args[0] === 'show') return show
       return json(viewEnvelope({ pr_number: Number(args[2]) }))
     },
-    ghAnswer: (args) =>
-      args[1] === 'list' ? json(list) : assert.fail(`unexpected gh ${args.join(' ')}`),
+    ghAnswer: (args) => {
+      if (args[0] === 'repo') return { status: 0, stdout: '' }
+      return args[1] === 'list' ? json(list) : assert.fail(`unexpected gh ${args.join(' ')}`)
+    },
   })
   const spawn = io.deps.spawn
   io.deps.spawn = (cmd, args, opts) => {
+    if (cmd === 'ssh') return { error: { code: 'ENOENT' } }
     if (cmd !== 'git') return spawn(cmd, args, opts)
     io.spawns.push({ cmd, args, opts })
-    return { status: 0, stdout: 'feat\n' }
+    return {
+      status: 0,
+      stdout:
+        args[0] === 'branch' ? 'feat\n' : 'origin\thttps://github.com/acme/widgets.git (fetch)\n',
+    }
   }
   return io
 }
 const SESSION = json({ session: { session_id: 'sess-1', repo_id: 'r1' } })
 const shown = (prNumber, prUrl = '') =>
   json({ session: { id: 'sess-1', pr_number: prNumber, pr_url: prUrl } })
+
+test('landed preserves merge evidence through either GitHub quota', () => {
+  const url = 'https://github.com/acme/widgets/pull/7'
+  for (const fallback of [false, true]) {
+    const io = fakeIo({
+      ghAnswer: (args) => {
+        if (fallback && args[0] === 'api') return { status: 1, stderr: 'API rate limit exceeded' }
+        return json(
+          args[0] === 'api'
+            ? { number: 7, html_url: url, state: 'closed', merged: true, merge_commit_sha: HEAD }
+            : { number: 7, url, state: 'MERGED', mergeCommit: { oid: HEAD } },
+        )
+      },
+    })
+    const result = main(['landed', '--url', url], io.deps)
+    assert.equal(result.exit, 0)
+    assert.equal(result.out.merged, true)
+    assert.equal(result.out.mergeCommit, HEAD)
+  }
+})
 
 test('session-pr: the session record answers with no gh spawn', () => {
   const io = sessionIo({ env: SESSION, show: shown(7, 'https://gh/pr/7') })
@@ -619,13 +651,24 @@ test('session-pr: no session, no recorded PR or no daemon reads labelled gh pr l
       { number: 9, url: 'https://gh/pr/9', source: 'gh-fallback', fallbackReason: reason },
       name,
     )
-    const gh = recorded(io).filter(([cmd]) => cmd === 'gh')
+    const gh = recorded(io).filter(([cmd, args]) => cmd === 'gh' && args[0] !== 'repo')
     assert.deepEqual(
       gh,
       [
         [
           'gh',
-          ['pr', 'list', '--head', 'feat', '--state', 'open', '--json', 'number,url'],
+          [
+            'pr',
+            'list',
+            '--head',
+            'feat',
+            '--state',
+            'open',
+            '--json',
+            'number,title,body,headRefName,state,url',
+            '--repo',
+            'github.com/acme/widgets',
+          ],
           FALLBACK_LABELS.PR_STATE,
         ],
       ],

@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   existsSync,
+  chmodSync,
   lstatSync,
   mkdirSync,
   symlinkSync,
@@ -11,7 +12,13 @@ import {
   utimesSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { reapPlanScratch, STALE_PLAN_SCRATCH_TTL_MS } from './plan-scratch-reap.mjs'
+import { spawnSync } from 'node:child_process'
+import {
+  reapPlanScratch,
+  STALE_PLAN_SCRATCH_TTL_MS,
+  STALE_PLAN_PIN_TTL_MS,
+  UNATTENDED_PLAN_PIN_MARKER,
+} from './plan-scratch-reap.mjs'
 
 const staleDate = () => new Date(Date.now() - STALE_PLAN_SCRATCH_TTL_MS - 1000)
 
@@ -149,4 +156,47 @@ test('reaping stale scratch preserves its ignore file while removing stale runs'
   assert.equal(readFileSync(ignore, 'utf8'), '# boss-plan scratch\n*\n')
   assert.equal(existsSync(run), false)
   assert.deepEqual(result, { removed: [run], failed: [] })
+})
+
+test('reaper removes idle read-only pins after six hours and keeps live pins and younger run scratch', () => {
+  const root = tempDir('plan-pin-reap-')
+  const idle = join(root, 'pin-idle'),
+    live = join(root, 'pin-live'),
+    run = join(root, 'run-live')
+  for (const dir of [idle, live, run]) {
+    mkdirSync(dir)
+    writeFileSync(join(dir, 'payload'), 'payload')
+    chmodSync(join(dir, 'payload'), 0o444)
+  }
+  writeFileSync(join(idle, UNATTENDED_PLAN_PIN_MARKER), '')
+  writeFileSync(join(live, UNATTENDED_PLAN_PIN_MARKER), '')
+  const now = Date.now()
+  const old = new Date(now - STALE_PLAN_PIN_TTL_MS - 1000)
+  utimesSync(idle, old, old)
+  utimesSync(run, old, old)
+  assert.deepEqual(reapPlanScratch(root, { now }), { removed: [idle], failed: [] })
+  assert.equal(existsSync(idle), false)
+  assert.equal(existsSync(live), true)
+  assert.equal(existsSync(run), true)
+})
+
+test('an interactive or unknown owner can resume its pinned runner after a long pause', () => {
+  const root = tempDir('plan-pin-paused-')
+  const pin = join(root, 'pin-paused')
+  const run = join(root, 'run-paused')
+  mkdirSync(pin)
+  mkdirSync(run)
+  const runner = join(pin, 'runner.mjs')
+  writeFileSync(runner, "process.stdout.write('resumed')")
+  writeFileSync(join(run, 'plan.md'), 'pending confirmation')
+  const now = Date.now()
+  const old = new Date(now - 30 * STALE_PLAN_SCRATCH_TTL_MS)
+  utimesSync(pin, old, old)
+  utimesSync(run, old, old)
+
+  assert.deepEqual(reapPlanScratch(root, { now }), { removed: [], failed: [] })
+  const resumed = spawnSync(process.execPath, [runner], { encoding: 'utf8' })
+  assert.equal(resumed.status, 0, resumed.stderr)
+  assert.equal(resumed.stdout, 'resumed')
+  assert.equal(readFileSync(join(run, 'plan.md'), 'utf8'), 'pending confirmation')
 })

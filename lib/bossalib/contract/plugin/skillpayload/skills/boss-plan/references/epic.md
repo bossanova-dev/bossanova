@@ -70,7 +70,7 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.plan.md` and its composed description to
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.description.md`. After its premise
    re-check and before the secret, image and contract gates, run
-   `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-park-prediction.mjs annotate --description .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.description.md --plan .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.plan.md --json`.
+   `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-park-prediction.mjs annotate --description .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.description.md --plan .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.plan.md --json`.
    Copy each child plan's `agentBuild` verdict and `openQuestions` back onto its spec entry; a
    predicted park never sets `agentBuild` to `false`. Report its predicted codes and labels in Phase 6 (`serializeEpicSpec` defaults a missing `agentBuild` to `true` and
    derives `agent-question` from `openQuestions`). Re-run
@@ -117,7 +117,7 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
      only then applies its state label. A failed or unverified link leaves an inert issue with no
      workflow-state label; report the orphan number and stop without exposure.
      Immediately after creation (or adoption), before plan storage, run
-     `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-draft-manifest.mjs stage-child --run-id <RUN-SCRATCH-ID> --parent <ISSUE-ID> --child <CHILD-ID> --description <description-file>`.
+     `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-draft-manifest.mjs stage-child --run-id <RUN-SCRATCH-ID> --parent <ISSUE-ID> --child <CHILD-ID> --description <description-file>`.
      Use the child's **identifier**, the same value used in `childIds`, rather than its spec key.
      For a created or rewritten child, pass the exact saved description bytes. The helper stages the
      id-keyed triple and prints its paths in order: `image-guard-orig`, `attachment-guard-orig`,
@@ -131,10 +131,10 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
      those exact bytes and re-run the guards.
      Rename `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.plan.md` to
      the path printed by
-     `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-scratch-paths.mjs path <RUN-SCRATCH-ID> child-plan parentId=<ISSUE-ID> key=<key>`:
+     `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-scratch-paths.mjs path <RUN-SCRATCH-ID> child-plan parentId=<ISSUE-ID> key=<key>`:
      `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-child-<key>.md`.
      The basename has no child id or title slug. Before plan storage, run
-     `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <CHILD-UUID> --out-file .linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.precheck.json`.
+     `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <CHILD-UUID> --out-file .linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.precheck.json`.
      Exit 0 continues; exit 2 uses the [snapshot fallback](planning-claims.md#claim-before-drafting);
      exit 64 means fix the call. Claim the child
      through `planning-claims.md`; recheck against that snapshot, never the parent's, and release

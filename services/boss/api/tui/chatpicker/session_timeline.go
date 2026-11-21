@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,6 +18,7 @@ import (
 	"github.com/recurser/bossalib/attention"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // timelineKey is what the cached timeline was fetched for. labelInputs is
@@ -169,12 +171,12 @@ func blockedParkNeeded(a *pb.SessionAttention) string {
 }
 
 // timelineSteps is the session's history, oldest first: the daemon's dated
-// steps merged by time with the session's account rotations, including sessions
-// without an attention row.
+// steps merged by time with the session's account rotations and consecutive
+// identical entries collapsed, including sessions without an attention row.
 func (m Model) timelineSteps() []*pb.TimelineStep {
 	a := m.session.GetAttention()
 	if len(m.timeline) == 0 {
-		return mergeRotationSteps(nil, m.session.GetRotationEvents())
+		return collapseRepeatedSteps(mergeRotationSteps(nil, m.session.GetRotationEvents()))
 	}
 	// Attention replaces the daemon's current step at its time and place,
 	// except a park awaiting a fix or answer: keep that history and put the
@@ -190,7 +192,37 @@ func (m Model) timelineSteps() []*pb.TimelineStep {
 		wait := &pb.TimelineStep{At: a.GetSince(), Title: title, Detail: detail, State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT}
 		steps = placeWait(steps, wait, a.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW)
 	}
-	return mergeRotationSteps(steps, m.session.GetRotationEvents())
+	return collapseRepeatedSteps(mergeRotationSteps(steps, m.session.GetRotationEvents()))
+}
+
+func collapseRepeatedSteps(steps []*pb.TimelineStep) []*pb.TimelineStep {
+	minute := func(step *pb.TimelineStep) string {
+		if step.GetAt() == nil {
+			return ""
+		}
+		return step.GetAt().AsTime().Local().Format("2006-01-02 15:04")
+	}
+	out := make([]*pb.TimelineStep, 0, len(steps))
+	for i := 0; i < len(steps); {
+		first := steps[i]
+		next := i + 1
+		if first.GetState() != pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT {
+			for next < len(steps) {
+				step := steps[next]
+				if first.GetTitle() != step.GetTitle() || first.GetDetail() != step.GetDetail() || first.GetState() != step.GetState() || minute(first) != minute(step) {
+					break
+				}
+				next++
+			}
+		}
+		if count := next - i; count > 1 {
+			first = proto.CloneOf(first)
+			first.Title = fmt.Sprintf("%s ×%d", first.GetTitle(), count)
+		}
+		out = append(out, first)
+		i = next
+	}
+	return out
 }
 
 func placeWait(steps []*pb.TimelineStep, wait *pb.TimelineStep, keepPark bool) []*pb.TimelineStep {
@@ -377,7 +409,7 @@ func foldTimelineSteps(steps []*pb.TimelineStep, candidates []int, pin int, now 
 		return picked
 	}
 	fit := func(at []int, days []string) ([]int, [][]string) {
-		return fitTimelineRows(timelineStepRows(pick(at), days, titleWidth, avail), at, len(steps), slices.Index(at, pin), budget)
+		return fitTimelineRows(timelineStepRows(pick(at), days, titleWidth, avail), at, len(steps), slices.Index(at, pin), budget, avail)
 	}
 	days := timelineDayLabels(pick(candidates), now, false)
 	folded, _ := fit(candidates, days)
@@ -414,8 +446,12 @@ func timelineStepRows(steps []*pb.TimelineStep, days []string, titleWidth, avail
 			detail = ""
 		}
 		head := fmt.Sprintf("  %s  %s ", at, glyph)
-		title := step.GetTitle() + strings.Repeat(" ", titleWidth-ansi.StringWidth(step.GetTitle())) + "  "
 		indent := ansi.StringWidth(head)
+		label := step.GetTitle()
+		if avail > 0 {
+			label = timelineStepTitle(label, max(0, avail-indent))
+		}
+		title := label + strings.Repeat(" ", max(0, titleWidth-ansi.StringWidth(label))) + "  "
 		// An unsized model has no width to wrap to, and fitProseLine leaves its
 		// lines whole.
 		parts := []string{strings.Join(strings.Fields(detail), " ")}
@@ -429,6 +465,29 @@ func timelineStepRows(steps []*pb.TimelineStep, days []string, titleWidth, avail
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// timelineStepTitle keeps a collapsed entry's count visible when its title
+// needs eliding; otherwise the timeline would present many events as one.
+// A negative available width leaves an unsized model's title whole.
+func timelineStepTitle(title string, avail int) string {
+	i := strings.LastIndex(title, " ×")
+	if avail < 0 || i < 0 {
+		return title
+	}
+	count, err := strconv.Atoi(title[i+len(" ×"):])
+	if err != nil || count < 2 {
+		return title
+	}
+	countText := title[i+1:]
+	if ansi.StringWidth(countText) > avail {
+		return ""
+	}
+	tail := "…" + title[i:]
+	if ansi.StringWidth(tail) > avail {
+		return countText
+	}
+	return ansi.Truncate(title, avail, tail)
 }
 
 // timelineMaxSteps is the most steps the timeline shows, however tall the
@@ -528,8 +587,9 @@ func (m Model) timelineRowBudget() int {
 // then the most recent others while they fit. Each step is cut to
 // timelineMaxStepRows, then the longest kept step loses a line at a time until
 // the rows fit, and each cut step's last line ends with an ellipsis. It returns
-// the kept steps' indices into the timeline and their rows.
-func fitTimelineRows(rows [][]string, at []int, total, pin, budget int) ([]int, [][]string) {
+// the kept steps' indices into the timeline and their rows. The available
+// width reserves room for the marker without eliding a collapsed count.
+func fitTimelineRows(rows [][]string, at []int, total, pin, budget, avail int) ([]int, [][]string) {
 	trimmed := make([]bool, len(rows))
 	for i, row := range rows {
 		if len(row) > timelineMaxStepRows {
@@ -579,7 +639,8 @@ func fitTimelineRows(rows [][]string, at []int, total, pin, budget int) ([]int, 
 	}
 	for i, row := range rows {
 		if trimmed[i] {
-			row[len(row)-1] += "…"
+			last := len(row) - 1
+			row[last] = timelineStepTitle(row[last], avail-1) + "…"
 		}
 	}
 	return indices, rows

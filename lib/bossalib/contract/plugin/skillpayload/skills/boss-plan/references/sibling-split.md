@@ -15,7 +15,7 @@ suggested split, `needs-human`):
 - the ticket has a parent;
 - its honest size is ≥ 5 and it is not atomic (an atomic 5 keeps `- Atomic-5:`);
 - the orchestrator passed `allowSiblingSplit: true`. It passes it only for a parented issue when
-  `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs operations --require createIssue,appendDependency`
+  `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs operations --require createIssue,appendDependency`
   exits 0, on the single-ticket route and to each fan-out child planner. A child drafted inside
   [`epic.md`](epic.md) build step 2 never gets it: that decomposition is already being shaped;
 - the other parts number 1 to `SIBLING_MAX` (5). More means the source was epic-sized: use
@@ -46,7 +46,7 @@ After write-back verification (step 5), file the siblings:
    read-back reports it and the source title from that read-back:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh children-input --mode siblings --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --parent <PARENT-ID> --source-title '<SOURCE-TITLE>'
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh children-input --mode siblings --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --parent <PARENT-ID> --source-title '<SOURCE-TITLE>'
    ```
 
    Stop on a listing failure before planning any creates. Pass the title as data, with shell quoting
@@ -56,7 +56,7 @@ After write-back verification (step 5), file the siblings:
    claiming one key (a human keeps one); stop there with `needs-human` kept.
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs plan --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --out-dir .linear-plans/run-<RUN-SCRATCH-ID>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs plan --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --out-dir .linear-plans/run-<RUN-SCRATCH-ID>
    ```
 
    It prints `{creates: [{key, title, estimate, bodyFile}], reused: {key: id}}`, `creates` in
@@ -67,7 +67,7 @@ After write-back verification (step 5), file the siblings:
    carries the planning-queue label, so the normal sweep plans it later with its own recon:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs create-issue --title "<title>" --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-<key>.md --state-role unplanned --label-role agentPlan --label "<content label>" --parent <PARENT-ID>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs create-issue --title "<title>" --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-<key>.md --state-role unplanned --label-role agentPlan --label "<content label>" --parent <PARENT-ID>
    ```
 
    Repeat `--label` for each of the source's content labels. Execute an emitted `{tool, args}`
@@ -85,15 +85,15 @@ After write-back verification (step 5), file the siblings:
    a missing edge rather than re-writing it.
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs edges --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --created .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-created.json > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs edges --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --created .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-created.json > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json
    ```
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs fetch-blocker-graph --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.blocker-graph.json --id <ISSUE-ID> --id <endpoint>…
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs fetch-blocker-graph --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.blocker-graph.json --id <ISSUE-ID> --id <endpoint>…
    ```
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-blocker-graph.mjs screen --writes .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json --graph .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.blocker-graph.json --subject <ISSUE-ID>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-blocker-graph.mjs screen --writes .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json --graph .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.blocker-graph.json --subject <ISSUE-ID>
    ```
 
 5. Read every sibling back (`get_issue`, or `listChildren` on the parent), write
@@ -102,7 +102,7 @@ After write-back verification (step 5), file the siblings:
    carries its marker:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs verify --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --read-back .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-readback.json
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs verify --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --read-back .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-readback.json
    ```
 
 6. Only on exit 0, and only when the drafter's `agentBuild` was true, flip the source's exposure

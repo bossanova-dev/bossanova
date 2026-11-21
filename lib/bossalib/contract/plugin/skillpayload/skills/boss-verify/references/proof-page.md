@@ -38,8 +38,10 @@ top of them:
   `<dir>`; without it, the core runs the base tree's `proof-media` extension itself. Only files
   inside the extension's evidence directory are published, each as `media/<basename>`.
 - **Player.** Every page loads the static `player.js` beside it, with or without media. It drives
-  the video, the still lightbox and section links that add no Back entry in a framed review tab,
-  and does nothing it has no element for. The page loads no other script and works without it.
+  the video, the lightbox and section links that add no Back entry in a framed review tab, and
+  does nothing it has no element for. The lightbox opens screenshots and, from each video's "Open
+  large" button, video; its fullscreen button opens the media in a new tab where the page may not
+  go fullscreen. The page loads no other script and works without it.
 - **Documents.** Rendered `documents` show under Evidence, Documents: each head document's title,
   page count and a plain "Download PDF" link, with its page images opening in the lightbox, and
   base and head pages side by side when a base document pairs with it. The page never embeds a PDF.
@@ -60,21 +62,32 @@ of any credential-named environment variable. A page with a hit is never uploade
 ## Where the page goes
 
 The page is `index.html` under `<owner>/<repo>/<pr>/<head>/`, with its media and player beside
-it. The first publisher that applies uploads them:
+it. The first publisher that applies uploads them; only the trusted base tree is read:
 
 1. The first `proof-publish` hook on the trusted base tree. The core never reads a hook from the PR
    head. The hook gets a private temporary `evidenceDir` and two calls: the media and the player
    first, with ten minutes, then `index.html` alone, with two minutes.
-2. Else the built-in `access-put` publisher, when the trusted base tree sets
+2. Else no page, when the base `.boss-skills.json` is unreadable (`config-unreadable`) or sets
+   `publishConfig.proof: false` (`opted-out`).
+3. Else the built-in `access-put` publisher, when the trusted base tree sets
    `publishConfig.proof.kind: "access-put"`. It PUTs media, player, then page to
    `<baseUrl>/_publish/<owner>/<repo>/<pr>/<head>/<name>`. Credentials come from
    `PROOF_ACCESS_CLIENT_ID` and `PROOF_ACCESS_CLIENT_SECRET`, falling back on macOS to the
    same-named generic-password accounts under `keychainService` (default `boss-proof-publish`).
    `baseUrl` must be HTTPS without userinfo, query or fragment; redirects are refused.
-3. Else the daemon's evidence upload, when the base tree's `.boss-skills.json` sets
-   `publishConfig.proof`. The media and player go in calls of at most 64 objects, then the page.
-   The daemon accepts a page or player only when its destination enables pages.
-4. Else no page is uploaded and `page` stays `null`.
+4. Else the daemon's evidence upload with destination `LOCAL_OR_HOSTED`, when the base tree sets a
+   `publishConfig.proof` block: the daemon's own bucket, which must enable pages, else the
+   daemon's hosted proof host.
+5. Else the daemon's evidence upload with destination `HOSTED` (publisher `hosted`): the daemon's
+   hosted proof host only.
+
+Both daemon uploads send the media, the player and the page (last) in one call when they fit 64
+objects, with the media timeout; a larger page goes as 64-object media calls, then the page alone.
+A hosted page is linked through the URL the daemon returns, not under the bucket prefix. A page
+that is not uploaded keeps `page` `null` and records why: `opted-out`, `config-unreadable`,
+`not-configured`, `quota-exhausted` or `over-limit` (the hosted host refused it), or
+`daemon-unsupported` (a daemon too old to return a hosted page). An `over-limit` page is not
+retried.
 
 The page never goes up before its media, so a served page never links a missing file. Then
 `post` leaves one proof note per head. The note holds the comment block, which is the page when

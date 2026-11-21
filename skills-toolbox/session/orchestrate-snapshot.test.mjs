@@ -5,6 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
+import { FINISH_CHAT_TITLE } from './orchestrate-finish.mjs'
 import {
   AUTOMATION_GRACE,
   applyGrace,
@@ -67,14 +68,39 @@ test('a policy park is verified as far as policy allows and waits on the operato
   }
 })
 
-test('a deliberate partial build waits on the operator, since a fresh head would park again', () => {
-  for (const reason of ['partial-build', 'partial-build,human-review:ui']) {
+test('a partial build is sent back to finish, whatever other codes its park carries', () => {
+  for (const reason of [
+    'partial-build',
+    'partial-build,human-review:ui',
+    'partial-build,repair-exhausted',
+  ]) {
     const verdict = classify({}, [stoppedChat], prState(parked(reason, 'partial 1/8')))
-    assert.equal(verdict.action, 'awaiting-operator', reason)
+    assert.equal(verdict.action, 'finish-build', reason)
   }
-  // Beside a mechanical code it still needs that code cleared first.
-  const mixed = prState(parked('partial-build,repair-exhausted'))
-  assert.equal(classify({}, [stoppedChat], mixed).action, 'refresh-park')
+})
+
+test('the finish chat resumes the build of the session’s ticket in the agent’s syntax', () => {
+  const verdict = { action: 'finish-build', why: 'partial-build · partial 1/8' }
+  const claude = remedy(verdict, {
+    host: 'build-host',
+    session: session({ agent: 'claude', title: 'BOS-42: add the widget' }),
+    pr: 12,
+  })
+  assert.match(claude, /^boss --host build-host chat new s1 --role operator /)
+  assert.match(claude, /boss --host build-host chat send --json <chat-id> '\/boss-build BOS-42 /)
+  assert.match(claude, /#12\b/)
+  assert.match(claude, /BLOCKED/)
+  const codex = remedy(verdict, {
+    host: '',
+    session: session({ agent: 'codex', title: 'widget', tracker_id: 'GIG-7' }),
+    pr: 12,
+  })
+  assert.match(codex, /^boss chat new s1 --role operator /)
+  assert.match(codex, /'\$boss-build GIG-7 /)
+  // With no ticket to name, it never sends a bare invocation that would claim the next ticket.
+  const unnamed = remedy(verdict, { host: '', session: session({ title: 'widget' }), pr: 12 })
+  assert.doesNotMatch(unnamed, /'\$boss-build(?! [A-Z][A-Z0-9]*-\d)/)
+  assert.doesNotMatch(unnamed, /boss new\b/)
 })
 
 test('a repair-exhausted park whose checks now read green is stale and needs a fresh head', () => {
@@ -707,10 +733,58 @@ test('idle chats on a finished or operator-parked PR are not stuck', () => {
   const quiet = [olderChat, chatRow()]
   assert.equal(classify({}, quiet, prState()).action, 'done')
   assert.equal(classify({}, quiet, prState(parked('human-review:ui'))).action, 'awaiting-operator')
+  assert.equal(classify({}, quiet, prState(parked('partial-build'))).action, 'finish-build')
   // Handed off with checks still running: verify takes it from here.
   const handedOff = prState({ checks: [], check_verdict: { state: 'pending', pending_count: 1 } })
   assert.equal(classify({}, quiet, handedOff).action, 'wait-ci')
   assert.equal(classify({ state: 'MERGED' }, quiet, null).action, 'skip')
+})
+
+// The chat a finish-build `next` opens, as `boss chats --json` lists it.
+const finishChat = (over = {}) =>
+  chatRow({
+    agent_session_id: 'c-finish',
+    title: FINISH_CHAT_TITLE,
+    role: 'operator',
+    created_at: '2026-11-07T08:50:00Z',
+    last_output_at: '2026-11-07T08:55:00Z',
+    last_substantive_output_at: '2026-11-07T08:55:00Z',
+    ...over,
+  })
+
+test('a partial build is sent one finish chat: never beside a live chat or a recent finish', () => {
+  const pr = prState(parked('partial-build', 'partial 1/8'))
+  assert.equal(classify({}, [liveChat], pr).action, 'working')
+  const recent = classifySession({ session: session(), chats: [finishChat()], pr, now: NOW })
+  assert.equal(recent.action, 'grace')
+  assert.equal(remedy(recent, { host: '', session: session(), pr: 12 }), '')
+})
+
+test('a finish chat that ended with the partial park standing goes to the operator', () => {
+  const pr = prState(parked('partial-build', 'partial 1/8'))
+  const ended = finishChat({
+    created_at: '2026-11-07T06:00:00Z',
+    last_output_at: '2026-11-07T07:00:00Z',
+    last_substantive_output_at: '2026-11-07T07:00:00Z',
+  })
+  for (const s of [
+    {},
+    { state: 'BLOCKED', blocked_reason: 'BLOCKED: the vendor API has no sandbox' },
+  ]) {
+    const verdict = classifySession({ session: session(s), chats: [ended], pr, now: NOW })
+    assert.equal(verdict.action, 'awaiting-operator', s.state ?? 'not blocked')
+    assert.match(verdict.why, /c-finish/)
+  }
+  const blocked = classifySession({
+    session: session({
+      state: 'BLOCKED',
+      blocked_reason: 'BLOCKED: the vendor API has no sandbox',
+    }),
+    chats: [ended],
+    pr,
+    now: NOW,
+  })
+  assert.match(blocked.why, /vendor API has no sandbox/)
 })
 
 test('a chat showing a dialog is read, then approved or nudged', () => {
@@ -726,6 +800,18 @@ test('a chat showing a dialog is read, then approved or nudged', () => {
   // The orchestrator's own question chats wait on the operator on purpose.
   const own = chatRow({ status: 'QUESTION', title: 'question: q1 · release' })
   assert.notEqual(classify(building, [liveChat, own], null).action, 'question-chat')
+})
+
+test('a finished verify chat left at QUESTION on a policy-parked head awaits the operator', () => {
+  const verifyChat = chatRow({ agent_session_id: 'c-verify', role: 'verify', status: 'QUESTION' })
+  for (const reason of ['always-human-path', 'human-review:ui,human-review:security']) {
+    const pr = prState(parked(reason))
+    assert.equal(classify({}, [verifyChat], pr).action, 'awaiting-operator', reason)
+  }
+  // A park an agent can clear does not hide the dialog.
+  const mechanical = prState(parked('repair-exhausted'))
+  assert.equal(classify({}, [verifyChat], mechanical).action, 'question-chat')
+  assert.equal(classify({}, [verifyChat], prState()).action, 'question-chat')
 })
 
 test('a run blocked on an infrastructure red has its cap waived and finishes the hand-off', () => {

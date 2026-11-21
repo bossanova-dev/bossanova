@@ -77,14 +77,6 @@ func assertFinalizeTelemetry(t *testing.T, recorder *finalizeTelemetryRecorder, 
 	}
 }
 
-func TestTelemetryAgentIsBounded(t *testing.T) {
-	for input, want := range map[string]string{"claude": "claude", "codex": "codex", "opencode": "opencode", "customer-plugin-name": "other", "": "other"} {
-		if got := telemetryAgent(input); got != want {
-			t.Errorf("telemetryAgent(%q) = %q, want %q", input, got, want)
-		}
-	}
-}
-
 func TestFinalizeSessionTelemetryNilClientPreservesNoChangesResult(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()

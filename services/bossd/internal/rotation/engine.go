@@ -220,7 +220,7 @@ func WithTelemetry(client libtelemetry.Client) Option {
 // chat switch succeeds.
 func (e *Engine) CaptureProactiveRotation(ctx context.Context, provider string) {
 	daemontelemetry.Capture(ctx, e.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
-		"rotation_reason": "proactive", "provider": telemetryProvider(provider), "status": "rotated",
+		"rotation_reason": "proactive", "provider": daemontelemetry.AgentName(provider), "status": "rotated",
 	})
 }
 
@@ -231,17 +231,8 @@ func (e *Engine) CaptureReactiveRotation(ctx context.Context, provider, reason s
 		reason = "usage_limit"
 	}
 	daemontelemetry.Capture(ctx, e.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
-		"rotation_reason": reason, "provider": telemetryProvider(provider), "status": "rotated",
+		"rotation_reason": reason, "provider": daemontelemetry.AgentName(provider), "status": "rotated",
 	})
-}
-
-func telemetryProvider(provider string) string {
-	switch provider {
-	case "claude", "codex", "opencode":
-		return provider
-	default:
-		return "other"
-	}
 }
 
 // Option configures an Engine.

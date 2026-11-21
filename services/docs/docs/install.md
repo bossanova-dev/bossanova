@@ -20,7 +20,9 @@ name points Homebrew at the Bossanova tap during install.
   use. The bundled `claude` plugin requires the
   [Claude Code CLI](https://claude.ai/download); the bundled `codex`
   plugin requires the
-  [OpenAI Codex CLI](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started).
+  [OpenAI Codex CLI](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started);
+  the bundled `antigravity` plugin requires the
+  [Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli), `agy`.
   The `opencode` plugin is installed too, but it is experimental and stays off
   until you opt in via `experimental_plugins` in `settings.json`.
 - [GitHub CLI](https://cli.github.com/): required for PR operations.
@@ -71,8 +73,9 @@ Run `boss repair doctor`. It checks that the daemon can find a working
 agent plugin and reports any failures it sees.
 
 If the `agent runner client wired` check fails, confirm that at least
-one plugin binary (`bossd-plugin-claude` or `bossd-plugin-codex`) sits
-next to `bossd` or in the Homebrew plugin directory. Then make sure the
-matching CLI (`claude` or `codex`) is on `bossd`'s `PATH`. Re-run
+one plugin binary (`bossd-plugin-claude`, `bossd-plugin-codex` or
+`bossd-plugin-antigravity`) sits next to `bossd` or in the Homebrew plugin
+directory. Then make sure the matching CLI (`claude`, `codex` or `agy`) is on
+`bossd`'s `PATH`. Re-run
 `boss repair doctor` and confirm all checks pass before launching
 `boss`.

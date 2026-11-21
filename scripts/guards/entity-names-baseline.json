@@ -6,6 +6,7 @@
   "go:lib/bossalib/gitremote/retry.go:AttemptsError.Unwrap",
   "go:lib/bossalib/kit/vcs/attention.go:AttentionReasonBlockedMaxAttempts",
   "go:lib/bossalib/machine/machine.go:MaxAttempts",
+  "go:plugins/bossd-plugin-antigravity/server.go:Server.StopRun",
   "go:plugins/bossd-plugin-claude/server.go:Server.StopRun",
   "go:plugins/bossd-plugin-codex/server.go:Server.StopRun",
   "go:plugins/bossd-plugin-opencode/server.go:Server.StopRun",

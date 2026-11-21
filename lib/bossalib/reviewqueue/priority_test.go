@@ -61,13 +61,12 @@ func TestPrioritySortMixedRows_Sessions_AC239501(t *testing.T) {
 		ranked("high-more", 2, "2026-11-01", 3), ranked("urgent", 1, "", 0),
 		newSession("unranked-old", parkedAt(1)),
 	}
-	rows := make([]*pb.ReviewQueueRow, 0, len(sessions)+1)
-	rows = append(rows, &pb.ReviewQueueRow{Session: ranked("audit", 1, "2026-01-01", 100), IsAuditSample: true})
+	rows := make([]*pb.ReviewQueueRow, 0, len(sessions))
 	for _, s := range sessions {
 		rows = append(rows, &pb.ReviewQueueRow{Session: s})
 	}
 	Sort(rows, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_PRIORITY)
-	want := []string{"urgent", "high-more", "high-less", "high-late", "high-undated", "low", "none", "unranked-old", "unranked-new", "audit"}
+	want := []string{"urgent", "high-more", "high-less", "high-late", "high-undated", "low", "none", "unranked-old", "unranked-new"}
 	if got := rowIDs(rows); !slices.Equal(got, want) {
 		t.Fatalf("order=%v want %v", got, want)
 	}

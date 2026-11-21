@@ -25,6 +25,7 @@ func (g *Group) SessionCmd() *cobra.Command {
 	checks.Flags().Int32("limit", 5, "Number of snapshots to show (newest first)")
 	checks.Flags().Bool(cliutil.JSONFlagName, false, "Emit a stable JSON schema instead of text")
 	cmd.AddCommand(checks)
+	cmd.AddCommand(g.sessionServeCmd())
 	cmd.AddCommand(g.sessionPhaseCmd())
 	cmd.AddCommand(g.sessionFinishCmd())
 	mcp := &cobra.Command{
@@ -131,9 +132,12 @@ func (g *Group) NewCmd() *cobra.Command {
 			return g.runNew(cmd)
 		},
 	}
-	cmd.Flags().String("agent", "", "Override default agent plugin for this session (e.g. claude, opencode)")
+	cmd.Flags().String("agent", "", "Override default agent plugin for this session (e.g. claude, codex, antigravity)")
 	cmd.Flags().String("repo", "", "Repository id, name, or local path (enables non-interactive mode when combined with --prompt)")
 	cmd.Flags().String("prompt", "", "Initial prompt / plan for the session (enables non-interactive mode when combined with --repo)")
+	cmd.Flags().String("base-branch", "",
+		"Branch to cut the session's worktree from and open its draft PR against (empty = the repo's default base branch). "+
+			"Must exist on origin. Mutually exclusive with --pr and --quick-chat. Non-interactive --repo + --prompt path only")
 	cmd.Flags().String("title", "", "Session title (optional, auto-derived from prompt when absent)")
 	cmd.Flags().String("model", "", "Agent model id to run this session under (e.g. an Opus id); empty = agent default")
 	cmd.Flags().String("effort", "", "Agent reasoning effort to run this session under; empty = agent default")

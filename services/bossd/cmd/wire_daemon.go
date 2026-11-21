@@ -62,12 +62,13 @@ func (w *daemonWiring) wireDaemon() {
 			}
 			return w.credentialSync.Publish(ctx, syncedID, localID)
 		},
-		EvidenceBucketOpener:  r2upload.New(proofenvkeyring.New(log.Logger)),
+		EvidenceBucketOpener:  evidenceDestinations{Uploader: r2upload.New(proofenvkeyring.New(log.Logger)), hosted: w.hostedProof},
 		ChatTmux:              w.tmuxClient,
 		ProtectedRootsProbe:   tccprobe.Probe,
 		NewVerifyVerbs:        func(env []string) server.VerifyVerbs { return &verifybridge.Bridge{Env: env} },
 		EnvironmentOverlay:    dotenv.OverlayWithRepo,
 		ValidateBranchName:    gitpkg.ValidateBranchName,
+		RemoteBranchExists:    gitpkg.RemoteBranchExists,
 		ValidateRepoScript:    setupscript.ValidateStored,
 		VerifyProofKeys:       proofenv.Keys(),
 		BootstrapRunner:       bootstrapRunner,
@@ -172,10 +173,12 @@ func (w *daemonWiring) wireDaemon() {
 				},
 			})
 		},
-		Logger:         log.Logger,
-		FileLimitSoft:  achievedFileLimitSoft,
-		EndpointReader: sessionPortsTracker,
-		ProtectedRoots: w.startupProtectedRoots,
+		Logger:             log.Logger,
+		FileLimitSoft:      achievedFileLimitSoft,
+		EndpointReader:     sessionPortsTracker,
+		SessionServeRunner: w.serveRunner,
+		ServeTmuxName:      w.serveRunner.LiveTmuxName,
+		ProtectedRoots:     w.startupProtectedRoots,
 	}
 	setGitHubCredentialReporter(&daemonConfig, w.githubCredentials)
 	w.srv = server.New(daemonConfig)

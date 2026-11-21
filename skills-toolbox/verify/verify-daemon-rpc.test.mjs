@@ -36,3 +36,36 @@ test('daemon RPC preserves proof-check and evidence refusal reasons', async (t) 
     })
   }
 })
+
+test('daemon RPC exposes the evidence limit headers, undefined when absent', async (t) => {
+  const dir = tempDir('proof-rpc-limit-', t)
+  const socket = path.join(dir, 'd.sock')
+  fs.writeFileSync(path.join(dir, 'bossd.token'), 'local-test-token')
+  let limited = true
+  const server = http.createServer((_req, res) => {
+    res.writeHead(429, {
+      'content-type': 'application/json',
+      'Bossd-Evidence-Reason': 'over-limit',
+      ...(limited
+        ? { 'Bossd-Evidence-Limit': 'file-bytes', 'Bossd-Evidence-Limit-Max': '5242880' }
+        : {}),
+    })
+    res.end(JSON.stringify({ code: 'resource_exhausted' }))
+  })
+  server.listen(socket)
+  await once(server, 'listening')
+  t.after(() => new Promise((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))))
+  for (const [on, limit, limitMax] of [
+    [true, 'file-bytes', '5242880'],
+    [false, undefined, undefined],
+  ]) {
+    limited = on
+    await assert.rejects(daemonUnary(socket, 'UploadEvidence'), (error) => {
+      assert.deepEqual(
+        [error.code, error.reason, error.limit, error.limitMax],
+        ['resource_exhausted', 'over-limit', limit, limitMax],
+      )
+      return true
+    })
+  }
+})

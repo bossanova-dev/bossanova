@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/reviewqueue"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/evidence"
@@ -97,55 +97,47 @@ func TestListReviewQueueServesHydratedParks_Sessions_AC209001(t *testing.T) {
 	}
 }
 
-func (f repoScopedSessionStore) ListWithRepo(ctx context.Context, repoID string) ([]*db.SessionWithRepo, error) {
-	rows, err := f.listSessionsSessionStoreFake.ListWithRepo(ctx, repoID)
-	out := make([]*db.SessionWithRepo, 0, len(rows))
-	for _, row := range rows {
-		if row.RepoID == repoID {
-			out = append(out, row)
-		}
-	}
-	return out, err
+// archivedReadForbidden fails the test if the queue reads archived sessions.
+type archivedReadForbidden struct {
+	repoScopedSessionStore
+	t *testing.T
 }
-func (f repoScopedSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
-	for _, row := range f.sessions {
-		if row.ID == id {
-			return row, nil
-		}
-	}
-	return nil, domain.ErrNotFound
+
+func (f archivedReadForbidden) ListWithRepo(ctx context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+	f.t.Error("ListReviewQueue read archived sessions")
+	return f.repoScopedSessionStore.ListWithRepo(ctx, repoID)
 }
-func TestListReviewQueueAudit_Sessions_AC213601(t *testing.T) {
-	origin := "https://github.com/recurser/repo"
-	n := 1
-	for !reviewqueue.IsAuditSample(origin, int32(n)) {
-		n++
-	}
+
+// Merged PRs are never queue rows, whatever their merged proof level and
+// whether or not they are archived, and they add nothing to the counts.
+func TestListReviewQueueListsNoMergedPR(t *testing.T) {
 	now := time.Now()
 	recent := now.Add(-time.Hour)
-	old := now.Add(-reviewqueue.AuditWindow - time.Hour)
-	rows := []*models.Session{
-		{ID: "audit", RepoID: "r", State: machine.Merged, PRNumber: &n, StateEnteredAt: &recent, ArchivedAt: &now},
-		{ID: "expired", RepoID: "r", State: machine.Merged, PRNumber: &n, StateEnteredAt: &old, ArchivedAt: &now},
-		{ID: "elsewhere", RepoID: "other", State: machine.Merged, PRNumber: &n, StateEnteredAt: &recent, ArchivedAt: &now},
+	var rows []*models.Session
+	for i := range 20 {
+		n := i + 1
+		rows = append(rows,
+			&models.Session{ID: fmt.Sprintf("merged-%d", n), RepoID: "r", State: machine.Merged, PRNumber: &n, StateEnteredAt: &recent, UpdatedAt: now},
+			&models.Session{ID: fmt.Sprintf("archived-%d", n), RepoID: "r", State: machine.Merged, PRNumber: &n, StateEnteredAt: &recent, ArchivedAt: &now, UpdatedAt: now},
+		)
 	}
 	tracker := status.NewDisplayTracker()
 	for _, row := range rows {
 		tracker.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusMerged, HeadSHA: timelineHead})
 	}
 	s := newListSessionsDisplayStatusTestServer(rows, nil, tracker, nil)
-	s.sessions = repoScopedSessionStore{s.sessions.(*listSessionsSessionStoreFake)}
+	s.sessions = archivedReadForbidden{repoScopedSessionStore{s.sessions.(*listSessionsSessionStoreFake)}, t}
 	s.evidence = attentionProofEvidence{record: evidence.ProofRecord{Head: timelineHead, Level: "high"}}
 	got, err := s.ListReviewQueue(t.Context(), connect.NewRequest(&pb.ListReviewQueueRequest{RepoId: "r"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Msg.Rows) != 1 || got.Msg.Rows[0].GetSession().GetId() != "audit" || !got.Msg.Rows[0].GetIsAuditSample() {
-		t.Fatal(got.Msg)
+	if len(got.Msg.GetRows()) != 0 {
+		t.Fatalf("rows = %v, want none", got.Msg.GetRows())
 	}
-	for _, c := range got.Msg.LevelCounts {
-		if c.SessionCount != 0 {
-			t.Fatal("audit counted")
+	for _, c := range got.Msg.GetLevelCounts() {
+		if c.GetSessionCount() != 0 {
+			t.Fatalf("count %v = %d, want 0", c.GetConfidenceLevel(), c.GetSessionCount())
 		}
 	}
 }

@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "setupscript",
-    srcs = ["setupscript.go"],
+    srcs = [
+        "argv.go",
+        "setupscript.go",
+    ],
     importpath = "github.com/recurser/bossd/internal/adapter/setupscript",
     visibility = ["//visibility:public"],
     deps = ["//lib/bossalib/contract/plugin/loginshell"],
@@ -11,6 +14,7 @@ go_library(
 go_test(
     name = "setupscript_test",
     srcs = [
+        "argv_test.go",
         "perms_unix_test.go",
         "setupscript_test.go",
     ],

@@ -156,6 +156,15 @@ const (
 	// DaemonServiceSwitchSessionAgentAccountProcedure is the fully-qualified name of the
 	// DaemonService's SwitchSessionAgentAccount RPC.
 	DaemonServiceSwitchSessionAgentAccountProcedure = "/bossanova.v1.DaemonService/SwitchSessionAgentAccount"
+	// DaemonServiceStartSessionServeProcedure is the fully-qualified name of the DaemonService's
+	// StartSessionServe RPC.
+	DaemonServiceStartSessionServeProcedure = "/bossanova.v1.DaemonService/StartSessionServe"
+	// DaemonServiceStopSessionServeProcedure is the fully-qualified name of the DaemonService's
+	// StopSessionServe RPC.
+	DaemonServiceStopSessionServeProcedure = "/bossanova.v1.DaemonService/StopSessionServe"
+	// DaemonServiceGetSessionServeProcedure is the fully-qualified name of the DaemonService's
+	// GetSessionServe RPC.
+	DaemonServiceGetSessionServeProcedure = "/bossanova.v1.DaemonService/GetSessionServe"
 	// DaemonServiceArchiveSessionProcedure is the fully-qualified name of the DaemonService's
 	// ArchiveSession RPC.
 	DaemonServiceArchiveSessionProcedure = "/bossanova.v1.DaemonService/ArchiveSession"
@@ -485,6 +494,10 @@ type DaemonServiceClient interface {
 	// resuming the prior conversation cross-account when feasible, else fresh.
 	// A mid-turn (WORKING) chat is refused unless force is set (operator confirm).
 	SwitchSessionAgentAccount(context.Context, *connect.Request[v1.SwitchSessionAgentAccountRequest]) (*connect.Response[v1.SwitchSessionAgentAccountResponse], error)
+	// Local serve lifecycle; additive daemon-only RPCs do not change the versioned orchestrator API.
+	StartSessionServe(context.Context, *connect.Request[v1.StartSessionServeRequest]) (*connect.Response[v1.StartSessionServeResponse], error)
+	StopSessionServe(context.Context, *connect.Request[v1.StopSessionServeRequest]) (*connect.Response[v1.StopSessionServeResponse], error)
+	GetSessionServe(context.Context, *connect.Request[v1.GetSessionServeRequest]) (*connect.Response[v1.GetSessionServeResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	// FinishUnattendedRun is an unattended run telling bossd it is done. bossd
@@ -1040,6 +1053,24 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("SwitchSessionAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
+		startSessionServe: connect.NewClient[v1.StartSessionServeRequest, v1.StartSessionServeResponse](
+			httpClient,
+			baseURL+DaemonServiceStartSessionServeProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("StartSessionServe")),
+			connect.WithClientOptions(opts...),
+		),
+		stopSessionServe: connect.NewClient[v1.StopSessionServeRequest, v1.StopSessionServeResponse](
+			httpClient,
+			baseURL+DaemonServiceStopSessionServeProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("StopSessionServe")),
+			connect.WithClientOptions(opts...),
+		),
+		getSessionServe: connect.NewClient[v1.GetSessionServeRequest, v1.GetSessionServeResponse](
+			httpClient,
+			baseURL+DaemonServiceGetSessionServeProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetSessionServe")),
+			connect.WithClientOptions(opts...),
+		),
 		archiveSession: connect.NewClient[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse](
 			httpClient,
 			baseURL+DaemonServiceArchiveSessionProcedure,
@@ -1530,6 +1561,9 @@ type daemonServiceClient struct {
 	setSessionTrackerRank                *connect.Client[v1.SetSessionTrackerRankRequest, v1.SetSessionTrackerRankResponse]
 	refreshSessionPR                     *connect.Client[v1.RefreshSessionPRRequest, v1.RefreshSessionPRResponse]
 	switchSessionAgentAccount            *connect.Client[v1.SwitchSessionAgentAccountRequest, v1.SwitchSessionAgentAccountResponse]
+	startSessionServe                    *connect.Client[v1.StartSessionServeRequest, v1.StartSessionServeResponse]
+	stopSessionServe                     *connect.Client[v1.StopSessionServeRequest, v1.StopSessionServeResponse]
+	getSessionServe                      *connect.Client[v1.GetSessionServeRequest, v1.GetSessionServeResponse]
 	archiveSession                       *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
 	finishUnattendedRun                  *connect.Client[v1.FinishUnattendedRunRequest, v1.FinishUnattendedRunResponse]
 	resurrectSession                     *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
@@ -1809,6 +1843,21 @@ func (c *daemonServiceClient) RefreshSessionPR(ctx context.Context, req *connect
 // SwitchSessionAgentAccount calls bossanova.v1.DaemonService.SwitchSessionAgentAccount.
 func (c *daemonServiceClient) SwitchSessionAgentAccount(ctx context.Context, req *connect.Request[v1.SwitchSessionAgentAccountRequest]) (*connect.Response[v1.SwitchSessionAgentAccountResponse], error) {
 	return c.switchSessionAgentAccount.CallUnary(ctx, req)
+}
+
+// StartSessionServe calls bossanova.v1.DaemonService.StartSessionServe.
+func (c *daemonServiceClient) StartSessionServe(ctx context.Context, req *connect.Request[v1.StartSessionServeRequest]) (*connect.Response[v1.StartSessionServeResponse], error) {
+	return c.startSessionServe.CallUnary(ctx, req)
+}
+
+// StopSessionServe calls bossanova.v1.DaemonService.StopSessionServe.
+func (c *daemonServiceClient) StopSessionServe(ctx context.Context, req *connect.Request[v1.StopSessionServeRequest]) (*connect.Response[v1.StopSessionServeResponse], error) {
+	return c.stopSessionServe.CallUnary(ctx, req)
+}
+
+// GetSessionServe calls bossanova.v1.DaemonService.GetSessionServe.
+func (c *daemonServiceClient) GetSessionServe(ctx context.Context, req *connect.Request[v1.GetSessionServeRequest]) (*connect.Response[v1.GetSessionServeResponse], error) {
+	return c.getSessionServe.CallUnary(ctx, req)
 }
 
 // ArchiveSession calls bossanova.v1.DaemonService.ArchiveSession.
@@ -2291,6 +2340,10 @@ type DaemonServiceHandler interface {
 	// resuming the prior conversation cross-account when feasible, else fresh.
 	// A mid-turn (WORKING) chat is refused unless force is set (operator confirm).
 	SwitchSessionAgentAccount(context.Context, *connect.Request[v1.SwitchSessionAgentAccountRequest]) (*connect.Response[v1.SwitchSessionAgentAccountResponse], error)
+	// Local serve lifecycle; additive daemon-only RPCs do not change the versioned orchestrator API.
+	StartSessionServe(context.Context, *connect.Request[v1.StartSessionServeRequest]) (*connect.Response[v1.StartSessionServeResponse], error)
+	StopSessionServe(context.Context, *connect.Request[v1.StopSessionServeRequest]) (*connect.Response[v1.StopSessionServeResponse], error)
+	GetSessionServe(context.Context, *connect.Request[v1.GetSessionServeRequest]) (*connect.Response[v1.GetSessionServeResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	// FinishUnattendedRun is an unattended run telling bossd it is done. bossd
@@ -2842,6 +2895,24 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("SwitchSessionAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceStartSessionServeHandler := connect.NewUnaryHandler(
+		DaemonServiceStartSessionServeProcedure,
+		svc.StartSessionServe,
+		connect.WithSchema(daemonServiceMethods.ByName("StartSessionServe")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceStopSessionServeHandler := connect.NewUnaryHandler(
+		DaemonServiceStopSessionServeProcedure,
+		svc.StopSessionServe,
+		connect.WithSchema(daemonServiceMethods.ByName("StopSessionServe")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceGetSessionServeHandler := connect.NewUnaryHandler(
+		DaemonServiceGetSessionServeProcedure,
+		svc.GetSessionServe,
+		connect.WithSchema(daemonServiceMethods.ByName("GetSessionServe")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceArchiveSessionHandler := connect.NewUnaryHandler(
 		DaemonServiceArchiveSessionProcedure,
 		svc.ArchiveSession,
@@ -3370,6 +3441,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceRefreshSessionPRHandler.ServeHTTP(w, r)
 		case DaemonServiceSwitchSessionAgentAccountProcedure:
 			daemonServiceSwitchSessionAgentAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceStartSessionServeProcedure:
+			daemonServiceStartSessionServeHandler.ServeHTTP(w, r)
+		case DaemonServiceStopSessionServeProcedure:
+			daemonServiceStopSessionServeHandler.ServeHTTP(w, r)
+		case DaemonServiceGetSessionServeProcedure:
+			daemonServiceGetSessionServeHandler.ServeHTTP(w, r)
 		case DaemonServiceArchiveSessionProcedure:
 			daemonServiceArchiveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceFinishUnattendedRunProcedure:
@@ -3689,6 +3766,18 @@ func (UnimplementedDaemonServiceHandler) RefreshSessionPR(context.Context, *conn
 
 func (UnimplementedDaemonServiceHandler) SwitchSessionAgentAccount(context.Context, *connect.Request[v1.SwitchSessionAgentAccountRequest]) (*connect.Response[v1.SwitchSessionAgentAccountResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SwitchSessionAgentAccount is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) StartSessionServe(context.Context, *connect.Request[v1.StartSessionServeRequest]) (*connect.Response[v1.StartSessionServeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.StartSessionServe is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) StopSessionServe(context.Context, *connect.Request[v1.StopSessionServeRequest]) (*connect.Response[v1.StopSessionServeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.StopSessionServe is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetSessionServe(context.Context, *connect.Request[v1.GetSessionServeRequest]) (*connect.Response[v1.GetSessionServeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetSessionServe is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error) {

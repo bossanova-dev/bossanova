@@ -39,7 +39,17 @@ func panePIDForChat(ctx context.Context, tmuxer tmuxSpawner, tmuxName string) in
 	return pid
 }
 
-// backfillCodexProviderSessionID binds a codex chat that has no provider id yet.
+// mintsProviderSessionOnFirstTurn reports whether an agent creates its provider
+// session only when the chat's first turn is submitted, not at launch. Codex
+// writes its rollout and Antigravity creates its conversation on the first
+// turn, so a chat opened without a prompt outlives launch-time discovery and
+// must be bound after a send or at attach.
+func mintsProviderSessionOnFirstTurn(agentName string) bool {
+	return agentName == "codex" || agentName == "antigravity"
+}
+
+// backfillLateProviderSessionID binds a chat whose agent mints its provider
+// session on the first turn and that has no provider id yet.
 //
 // panePID is the chat's LIVE pane pid where one exists, and 0 otherwise. It used
 // to be hard-coded to 0, which — combined with the allowLegacyBackfill flag
@@ -50,8 +60,8 @@ func panePIDForChat(ctx context.Context, tmuxer tmuxSpawner, tmuxName string) in
 // fd resolution on the case most likely to succeed: the process is alive and has
 // long since opened its rollout. allowLegacyBackfill stays true because the scan
 // remains the fallback for chats with no live pane.
-func (s *Server) backfillCodexProviderSessionID(ctx context.Context, chat *domain.AgentChat, worktreePath string, panePID int, resolver interactiveSessionResolver) (bool, string, error) {
-	if chat == nil || chat.AgentName != "codex" || chat.ProviderSessionID != nil || chat.CreatedAt.IsZero() || resolver == nil {
+func (s *Server) backfillLateProviderSessionID(ctx context.Context, chat *domain.AgentChat, worktreePath string, panePID int, resolver interactiveSessionResolver) (bool, string, error) {
+	if chat == nil || !mintsProviderSessionOnFirstTurn(chat.AgentName) || chat.ProviderSessionID != nil || chat.CreatedAt.IsZero() || resolver == nil {
 		return false, "", nil
 	}
 	legacyLaunchedAfter := chat.CreatedAt.Add(-5 * time.Minute)

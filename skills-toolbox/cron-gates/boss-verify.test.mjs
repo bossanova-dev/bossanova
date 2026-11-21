@@ -693,3 +693,31 @@ test('resuming local sessions waits for stale cap refresh before discovery or me
     ['post', 'merge'],
   )
 })
+
+for (const error of ['ETIMEDOUT', 'exit-1']) {
+  test(`cron reports failed judges (${error}) with dry-run and fallback precedence`, () => {
+    const timingOut = (opts) => {
+      const w = world({ candidates: [1, 2], ...opts })
+      const run = w.deps.run
+      w.deps.run = (cmd, args) =>
+        cmd === NODE && args[1] === 'judge'
+          ? { ok: false, error, exit: null, output: '' }
+          : run(cmd, args)
+      return w
+    }
+    const failed = gate(timingOut())
+    assert.equal(failed.exitCode, 69)
+    assert.deepEqual(
+      failed.lines.filter((line) => line.includes('judge failed for')),
+      [`boss-verify gate: judge failed for 2 candidate(s): #1 (${error}), #2 (${error})`],
+    )
+    const dry = gate(timingOut(), ['--dry-run'])
+    assert.equal(dry.exitCode, 1)
+    assert.ok(dry.lines.some((line) => line.includes('judge failed for 2 candidate(s)')))
+    assert.equal(
+      gate(timingOut({ boss: { ok: false, path: null, reason: 'no boss' } })).exitCode,
+      0,
+    )
+    assert.equal(gate(world()).exitCode, 1)
+  })
+}

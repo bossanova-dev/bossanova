@@ -1,0 +1,30 @@
+module github.com/recurser/bossd-plugin-antigravity
+
+go 1.26.0
+
+require (
+	github.com/google/uuid v1.6.0
+	github.com/hashicorp/go-plugin v1.8.0
+	github.com/recurser/bossalib v0.0.0
+	github.com/rs/zerolog v1.35.1
+	google.golang.org/grpc v1.85.0
+	google.golang.org/protobuf v1.36.12
+)
+
+require (
+	connectrpc.com/connect v1.21.1 // indirect
+	github.com/fatih/color v1.13.0 // indirect
+	github.com/getsentry/sentry-go v0.50.0 // indirect
+	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/hashicorp/go-hclog v1.6.3 // indirect
+	github.com/hashicorp/yamux v0.1.2 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/oklog/run v1.1.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
+)
+
+replace github.com/recurser/bossalib => ../../lib/bossalib

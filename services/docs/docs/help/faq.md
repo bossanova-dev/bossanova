@@ -41,9 +41,10 @@ See [How It Works](../how-it-works.md) for the components and the worktree lifec
 ### Do I need a separate Claude Code subscription or API key?
 
 Yes. Bring your own. The bundled `claude` plugin manages a Claude Code
-subprocess, and the bundled `codex` plugin manages an OpenAI Codex CLI
-subprocess. They do not log in for you. If you can run `claude` or
-`codex` from a terminal, the matching plugin can drive it. See
+subprocess, the bundled `codex` plugin manages an OpenAI Codex CLI
+subprocess, and the bundled `antigravity` plugin manages an Antigravity CLI
+(`agy`) subprocess. They do not log in for you. If you can run `claude`,
+`codex` or `agy` from a terminal, the matching plugin can drive it. See
 [Plugins](../plugins.md) for the contract.
 
 The same model will hold for the future OpenCode plugin: each
@@ -77,17 +78,17 @@ off rather than spin.
 
 ### Why does the daemon need an agent plugin to start sessions?
 
-Bossd itself doesn't know how to talk to Claude, Codex, or OpenCode. That
-job lives in an agent plugin: `bossd-plugin-claude` for Claude Code,
-`bossd-plugin-codex` for OpenAI Codex CLI, and `bossd-plugin-opencode`
-on the roadmap. The plugin
+Bossd itself doesn't know how to talk to Claude, Codex, Antigravity, or
+OpenCode. That job lives in an agent plugin: `bossd-plugin-claude` for Claude
+Code, `bossd-plugin-codex` for OpenAI Codex CLI, `bossd-plugin-antigravity` for
+the Antigravity CLI, and `bossd-plugin-opencode` on the roadmap. The plugin
 satisfies the `AgentRunnerService` gRPC contract and owns the subprocess
 lifecycle for its agent.
 
 If no agent plugin loads, `bossd` stays healthy but every session-start
 attempt fails fast with `no AgentRunner plugin loaded; install
 bossd-plugin-claude (or another agent runner) and restart`.
-Bossanova ships the `claude` and `codex` plugins today; install the
+Bossanova ships the `claude`, `codex` and `antigravity` plugins today; install the
 matching agent CLI first.
 
 ## Cloud, privacy, and local-only
@@ -186,6 +187,7 @@ For step-by-step reproduction guidance, see
 
 ### What agents does Bossanova support?
 
-Bossanova supports Claude Code through `bossd-plugin-claude` and OpenAI Codex
-CLI through `bossd-plugin-codex`. OpenCode support is coming soon through
+Bossanova supports Claude Code through `bossd-plugin-claude`, OpenAI Codex
+CLI through `bossd-plugin-codex`, and the Antigravity CLI through
+`bossd-plugin-antigravity`. OpenCode support is coming soon through
 `bossd-plugin-opencode`.

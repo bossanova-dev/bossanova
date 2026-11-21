@@ -154,7 +154,7 @@ test('access-put is selected only by trusted base config and hooks still win @se
     assert.equal(root, trusted)
     return { publishConfig: { proof } }
   }
-  assert.equal(discoverProofPublisher(common).publisher, null)
+  assert.deepEqual(discoverProofPublisher(common).publisher, { kind: 'hosted' })
   assert.deepEqual(discoverProofPublisher({ ...common, loadConfig }).publisher, proof)
   for (const baseUrl of [
     'http://proof.example',
@@ -277,6 +277,7 @@ async function run({
   missing = new Set(),
   judgement = judged,
   dryRun = false,
+  input = {},
 } = {}) {
   const uploads = []
   const notes = []
@@ -306,6 +307,7 @@ async function run({
       cwd: '/repo',
       env,
       dryRun,
+      ...input,
     },
     {
       readOperatorMarkers: () => (readable ? { readable: true, markers } : { readable: false }),
@@ -425,6 +427,105 @@ test('a failed upload still notes the level, with a null page @sessions.AC248602
   })
 })
 
+/** A proof-media dir holding two head clips: a.mp4 (100 bytes) and b.mp4 (300 bytes). */
+function twoClips(t) {
+  const dir = tempDir('proof-fit-media-', t)
+  const clip = (id, bytes) => {
+    fs.writeFileSync(path.join(dir, `${id}.mp4`), 'x'.repeat(bytes))
+    return {
+      id,
+      side: 'head',
+      title: `Clip ${id}`,
+      file: `${id}.mp4`,
+      durationMs: 5000,
+      chapters: [],
+      stills: [],
+    }
+  }
+  const media = {
+    schema: 'proof-media/1',
+    head: HEAD,
+    clips: [clip('a', 100), clip('b', 300)],
+    transcripts: [],
+  }
+  fs.writeFileSync(path.join(dir, 'media.json'), JSON.stringify(media))
+  return dir
+}
+const OVER = (kind, max) => ({ ok: false, reason: 'over-limit', limit: { kind, max } })
+const PAGE_URL = `https://proof.example/acme/widgets/7/${HEAD}/index.html`
+/** Upload answers in order, then success. */
+const answers = (...list) => {
+  let n = 0
+  return () => list[n++] ?? { ok: true, url: PAGE_URL }
+}
+
+test('an over-limit refusal publishes the fitted page with its note and omitted count @sessions.AC261202', async (t) => {
+  const mediaDir = twoClips(t)
+  const { result, uploads, notes } = await run({
+    input: { mediaDir },
+    upload: answers(OVER('file-count', 3)),
+  })
+  assert.equal(uploads.length, 2)
+  assert.deepEqual(
+    uploads[0].assets.map((a) => a.name),
+    ['media/a.mp4', 'media/b.mp4', 'player.js'],
+  )
+  assert.ok(!uploads[0].html.includes('data-omitted'))
+  assert.deepEqual(
+    uploads[1].assets.map((a) => a.name),
+    ['media/a.mp4', 'player.js'],
+  )
+  assert.ok(uploads[1].html.includes('<div class="bnotice stacked" data-omitted="1">'))
+  assert.deepEqual(result.page, {
+    published: true,
+    url: PAGE_URL,
+    publisher: 'hook',
+    omittedMedia: 1,
+  })
+  assert.equal(parseProofLine(notes[0].note.body).page, PAGE_URL)
+})
+
+test('a fit that drops every media file publishes a page with no media problem @sessions.AC261202', async (t) => {
+  const { result, uploads } = await run({
+    input: { mediaDir: twoClips(t) },
+    upload: answers(OVER('file-count', 2)),
+  })
+  assert.deepEqual(
+    uploads[1].assets.map((a) => a.name),
+    ['player.js'],
+  )
+  assert.ok(uploads[1].html.includes('data-omitted="2"'))
+  assert.ok(
+    !uploads[1].html.includes('proof-media/1 manifest'),
+    'diagnostics name no media problem',
+  )
+  assert.equal(result.page.omittedMedia, 2)
+})
+
+test('an over-limit refusal with no limit, or with no media to drop, keeps the null page and the note @sessions.AC261202', async (t) => {
+  const bare = await run({
+    input: { mediaDir: twoClips(t) },
+    upload: answers({ ok: false, reason: 'over-limit' }),
+  })
+  assert.deepEqual(
+    [bare.uploads.length, bare.result.page],
+    [1, { published: false, reason: 'over-limit' }],
+  )
+  const none = await run({ upload: answers(OVER('file-count', 1)) })
+  assert.deepEqual(
+    [none.uploads.length, none.result.page],
+    [1, { published: false, reason: 'over-limit' }],
+  )
+  for (const { result, notes } of [bare, none]) {
+    assert.equal(result.recorded, true)
+    assert.deepEqual(parseProofLine(notes[0].note.body), {
+      head: HEAD,
+      page: null,
+      level: 'moderate',
+    })
+  }
+})
+
 test('a page that carries a credential is never uploaded and the note carries no excerpt @sessions.AC248602', async () => {
   const token = 'ghp_' + 'x'.repeat(36)
   const { result, uploads, notes } = await run({ diff: `${DIFF}+const key = "${token}"\n` })
@@ -521,8 +622,8 @@ test('the publisher is read from the trusted base tree, never the checkout @sess
   hook(checkout, 'boss-verify-head-hook')
   const trustedTree = ({ baseSha }) =>
     baseSha === BASE ? { ok: true, root: trusted } : { ok: false }
-  const none = discoverProofPublisher({ baseSha: BASE, cwd: checkout, trustedTree })
-  assert.deepEqual(none, { publisher: null, reason: 'not-configured' })
+  const hosted = discoverProofPublisher({ baseSha: BASE, cwd: checkout, trustedTree })
+  assert.deepEqual(hosted, { publisher: { kind: 'hosted' } })
   const daemon = discoverProofPublisher({
     baseSha: BASE,
     cwd: checkout,

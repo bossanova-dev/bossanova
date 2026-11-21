@@ -10,6 +10,8 @@ import (
 // ModalDetector checks whether a pane is showing a modal rather than a composer.
 type ModalDetector func(context.Context, []byte) (bool, error)
 type SendHooks struct {
+	// FreshPane marks the first submit into a pane the daemon just launched.
+	FreshPane bool
 	// BeforeSubmit runs after the payload is staged and immediately before the
 	// first Enter, for external observation baselines.
 	BeforeSubmit func()

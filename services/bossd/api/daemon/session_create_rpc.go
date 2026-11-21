@@ -138,6 +138,10 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo %s has no default base branch; update repo settings before creating a session", repo.ID))
 	}
 
+	if err := s.checkRequestedBaseBranch(ctx, msg, repo.LocalPath, needsWorktree); err != nil {
+		return err
+	}
+
 	// BOS-289: guard against a ticket whose PR already merged (or is in flight on
 	// a sibling branch with no live session row). Scan GitHub for a PR carrying
 	// the tracker's "[<id>]" title tag in an open or merged state and short-

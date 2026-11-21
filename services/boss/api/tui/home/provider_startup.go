@@ -81,6 +81,7 @@ func ApplyProviderOnboarding(settings config.Settings, installedPlugins, enabled
 	if dangerousModeDefault {
 		config.SetPluginConfigBool(&next, "claude", "dangerously_skip_permissions", true)
 		config.SetPluginConfigBool(&next, "codex", "dangerously_bypass_approvals_and_sandbox", true)
+		config.SetPluginConfigBool(&next, "antigravity", "dangerously_skip_permissions", true)
 	}
 	return next, !reflect.DeepEqual(settings, next)
 }

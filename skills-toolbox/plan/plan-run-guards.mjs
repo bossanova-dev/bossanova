@@ -38,7 +38,9 @@ import {
   validateDependencyScanInput,
   withScanDefaults,
 } from './plan-deps-lib.mjs'
+import { screenDependencyResult } from './plan-deps-screen.mjs'
 import { runEpicReverifyBundle } from './plan-epic-reverify-bundle.mjs'
+import { renderPlanningLines } from './plan-deps-notes.mjs'
 import { CHILD_MAX_ESTIMATE, parseEpicSpec } from './plan-epic-lib.mjs'
 import { EPIC_REVERIFY_CLASS, epicReverifyVerdict } from './plan-epic-phase25.mjs'
 import { RUN_SCRATCH_DIR_PREFIX, planScratchPath, planScratchToken } from './plan-scratch-paths.mjs'
@@ -625,7 +627,7 @@ function candidateRowDefect(row) {
  *
  * @param {{payload: unknown, rows: unknown, subjectId: string, config: object,
  *   rootEntries: {dirs: string[], files: string[], knownFiles?: string[]}, openPullRequests?: object,
- *   savedDescription?: string}} input
+ *   savedDescription?: string, graph?: object}} input
  * @returns {{status: 'refused', refusals: {code: string, message: string}[]} |
  *   {status: 'defects', defects: {code: string, id: string, remedy: string}[]} |
  *   {status: 'ok', result: object, verdict: object, subject: object}}
@@ -638,6 +640,7 @@ export function runDependencyScan({
   rootEntries,
   openPullRequests,
   savedDescription,
+  graph,
 }) {
   const refusals = []
   const refuse = (code, message) => refusals.push({ code, message })
@@ -755,6 +758,12 @@ export function runDependencyScan({
     result.notes.push(...prs.notes)
     result.skipped.push(...prs.skipped)
   }
+  const screened = screenDependencyResult(result, {
+    graph,
+    subjectId,
+    subjectAgentBuild: payload.subjectAgentBuild,
+  })
+  if (screened) return screened
   return { status: 'ok', result, verdict: dependencyScanVerdict(result), subject: subjectScan }
 }
 
@@ -995,10 +1004,12 @@ function runGuardVerb(argv) {
           subject: { type: 'string' },
           'open-prs': { type: 'string' },
           'saved-description': { type: 'string' },
+          graph: { type: 'string' },
         },
       })
       const scan = runDependencyScan({
         payload: readJSON(first),
+        graph: values.graph ? readJSON(values.graph) : undefined,
         openPullRequests: values['open-prs'] ? readOpenPrsSnapshot(values['open-prs']) : undefined,
         savedDescription: values['saved-description']
           ? readFileSync(values['saved-description'], 'utf8')
@@ -1022,9 +1033,11 @@ function runGuardVerb(argv) {
         `subjectAreas ${JSON.stringify(subject.areas)} unresolved ${JSON.stringify(subject.unresolved)}` +
           ` referenced ${JSON.stringify(subject.referenced)} candidatesWithoutAreas ` +
           `${result.candidatesWithoutAreas} ${verdict.verdict} compared=${verdict.compared}` +
-          ` edges=${verdict.edges} ${verdict.reasons}\n`,
+          ` edges=${verdict.edges} cycleSkips=${result.screen?.cycleSkips ?? 0} held=${result.screen?.held ?? 0} ${verdict.reasons}\n`,
       )
-      process.stdout.write(`${JSON.stringify({ ...result, verdict })}\n`)
+      process.stdout.write(
+        `${JSON.stringify({ ...result, verdict, planningLines: renderPlanningLines(result) })}\n`,
+      )
       return { verb, code: 0, reason: verdict.verdict }
     }
     if (command === 'epic-reverify-bundle') {
@@ -1121,7 +1134,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-receipt <path> --comments <file|json> [--liveness <file|json>]] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify-bundle --run-scratch <dir> --payload <json> | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID> [--open-prs <file>]\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-receipt <path> --comments <file|json> [--liveness <file|json>]] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify-bundle --run-scratch <dir> --payload <json> | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID> [--open-prs <file>] [--graph <file>]\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

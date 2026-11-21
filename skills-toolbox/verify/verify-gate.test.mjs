@@ -2729,6 +2729,32 @@ test('judge after an approval: a rebase over base migrations with unchanged patc
   assert.deepEqual(r.facts.range, { kind: 'delta', anchorSha: ANCHOR })
 })
 
+test('judge preserves an operator approval through a conflict block and context-only rebase', async () => {
+  for (const realChange of [false, true]) {
+    const rebased = cfile(
+      'web/a.tsx',
+      UI_PATCH.replace('return x', 'return baseChange') + (realChange ? '\n+ // real change' : ''),
+    )
+    const w = world({
+      graphql: anchorPayload({
+        timeline: [commitNode(ANCHOR, verifyCtx('blocked: conflict', iso(1), 'FAILURE'))],
+      }),
+      baseConfig: policyText({ alwaysHumanPaths: ['web/**'], humanReview: { ui: ['web/**'] } }),
+      comments: [
+        operatorComment(approveMarker(ANCHOR, ['always-human-path', 'human-review:ui']), {
+          msAgo: 60000,
+        }),
+      ],
+      diff: ['web/a.tsx'],
+      compare: { [ANCHOR]: [UI_FILE], [HEAD]: [rebased], [`${ANCHOR}...${HEAD}`]: [rebased] },
+    })
+    const r = await judge({ pr: 7, repo: REPO }, deps(w))
+    assert.equal(r.verdict, realChange ? 'human' : 'pass')
+    assert.deepEqual(r.facts.range, { kind: 'delta', anchorSha: ANCHOR })
+    if (realChange) assert.match(r.reason, /always-human-path|human-review:ui/)
+  }
+})
+
 test('judge after an approval: a .boss-skills.json push parks every category', async () => {
   const config = cfile('.boss-skills.json', '@@ -1 +1 @@\n-{}\n+{"x":1}')
   const w = approvedWorld({
@@ -2979,7 +3005,10 @@ test('post claim --release re-posts the park beneath only its own claim', async 
   const [foreign, none] = await release([claim('cafe0001'), park])
   assert.deepEqual([foreign.released, foreign.reason, none], [false, 'not-mine', []])
   const [bare, kept] = await release([claim('feedf00d')])
-  assert.deepEqual([bare.released, bare.reason, kept], [false, 'no-park', []])
+  assert.deepEqual(
+    [bare.released, kept],
+    [true, [{ state: 'pending', description: 'waiting: dispatch-unknown', target: undefined }]],
+  )
   await assert.rejects(
     post({ pr: 7, head: HEAD, verdict: 'claim', release: true, repo: REPO }, deps(world())),
     UsageError,
@@ -6883,9 +6912,10 @@ test('post observes its own writes: the claim read-back and the stale-label clea
   const claim = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, deps(w))
   assert.deepEqual([claim.won, claim.token], [true, 'feedf00d'])
   const naive = world()
+  const naiveCache = cachedReader(naive.read)
   const lost = await post(
     { pr: 7, head: HEAD, verdict: 'claim', repo: REPO },
-    deps(naive, { read: cachedReader(naive.read) }),
+    deps(naive, { read: (...args) => naiveCache(...args), sleep: () => {} }),
   )
   assert.equal(lost.won, false, 'a naive cache hides the claim it just posted')
 

@@ -17,7 +17,11 @@ func TestBuildUpstreamHTTPClient_HTTPSPreservesProxy(t *testing.T) {
 	t.Setenv("NO_PROXY", "")
 
 	c := BuildUpstreamHTTPClient("https://orchestrator.bossanova.dev")
-	tr, ok := c.Transport.(*http.Transport)
+	wrapped, ok := c.Transport.(*RedialTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want *RedialTransport", c.Transport)
+	}
+	tr, ok := wrapped.Current().(*http.Transport)
 	if !ok {
 		t.Fatalf("https:// path: expected *http.Transport, got %T", c.Transport)
 	}
@@ -113,7 +117,11 @@ func TestWorkOSRefreshHTTPClientHasHalfOpenDetection(t *testing.T) {
 // knobs, so a dev daemon behaves like production.
 func TestBuildUpstreamHTTPClient_H2CKeepalive(t *testing.T) {
 	c := BuildUpstreamHTTPClient("http://localhost:8080")
-	tr, ok := c.Transport.(*http2.Transport)
+	wrapped, ok := c.Transport.(*RedialTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want *RedialTransport", c.Transport)
+	}
+	tr, ok := wrapped.Current().(*http2.Transport)
 	if !ok {
 		t.Fatalf("http:// path: expected *http2.Transport, got %T", c.Transport)
 	}

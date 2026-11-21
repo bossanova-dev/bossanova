@@ -977,7 +977,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// so the operator can see exactly what was attempted even when the
 	// agent never came up.
 	if err := l.injectTmuxChatInput(ctx, tmuxName, logPath, true, input, cmdResp, client, spawnAgentName, providerSessionID, sessionID, agentSessionID); err != nil {
-		pane, err := l.classifyClaudeStartFailure(ctx, spawnAgentName, sess.WorktreePath, tmuxName, err)
+		pane, err := l.classifyStartFailure(ctx, spawnAgentName, sess.WorktreePath, tmuxName, err)
 		// An INFORMATIONAL payload never fails a launch that otherwise
 		// succeeded: the pane is up and correctly wired, and stamping
 		// "(failed to start)" on it would mislabel a healthy chat — worse,
@@ -1165,7 +1165,7 @@ func (l *Lifecycle) bindProviderSessionID(ctx context.Context, agentSessionID, p
 	// the resolution that produced this id may have all but spent. Throwing
 	// away a found id because the budget that bounded the search also bounded
 	// the write is exactly the failure this avoids (the same reasoning as
-	// server.backfillCodexProviderSessionID).
+	// server.backfillLateProviderSessionID).
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDPersistTimeout)
 	defer cancel()
 
@@ -2463,8 +2463,8 @@ func installedSkillDriftWarning(f Facts) string {
 		return ""
 	}
 	agent := libskillinstall.AgentClaude
-	if f.Agent == string(libskillinstall.AgentCodex) {
-		agent = libskillinstall.AgentCodex
+	if a := libskillinstall.Agent(f.Agent); a == libskillinstall.AgentCodex || a == libskillinstall.AgentAntigravity {
+		agent = a
 	}
 	dir, err := libskillinstall.DirForAgent(agent)
 	if err != nil {

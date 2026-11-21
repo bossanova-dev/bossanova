@@ -23,15 +23,6 @@ func (l *Lifecycle) now() time.Time {
 	return time.Now()
 }
 
-func telemetryProvider(provider string) string {
-	switch provider {
-	case "claude", "codex", "opencode":
-		return provider
-	default:
-		return "other"
-	}
-}
-
 // SetClockForTest overrides the sweep's time source. Test-only; production
 // leaves it nil so now() uses the wall clock.
 func (l *Lifecycle) SetClockForTest(fn func() time.Time) { l.clock = fn }
@@ -160,7 +151,7 @@ func (l *Lifecycle) redispatchParkedRotation(ctx context.Context, session *model
 		l.logger.Info().Str("session", session.ID).Str("next_account_id", outcome.NextAccount.ID).
 			Msg("parked-rotation sweep: resume-at reached; redispatched under fresh account")
 		daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
-			"rotation_reason": "usage_limit", "provider": telemetryProvider(b.Provider), "status": "rotated",
+			"rotation_reason": "usage_limit", "provider": daemontelemetry.AgentName(b.Provider), "status": "rotated",
 		})
 		return true
 

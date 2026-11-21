@@ -208,9 +208,9 @@ func TestBackfillCodexProviderSessionIDPersistsBeforeAttachResume(t *testing.T) 
 		CreatedAt:      createdAt,
 	}
 
-	ok, reason, err := s.backfillCodexProviderSessionID(context.Background(), chat, "/tmp/worktree", 0, resolver)
+	ok, reason, err := s.backfillLateProviderSessionID(context.Background(), chat, "/tmp/worktree", 0, resolver)
 	if err != nil {
-		t.Fatalf("backfillCodexProviderSessionID: %v", err)
+		t.Fatalf("backfillLateProviderSessionID: %v", err)
 	}
 	if !ok || reason != "" {
 		t.Fatalf("ok/reason = %v/%q, want true/empty", ok, reason)
@@ -572,13 +572,22 @@ func TestWakeChat_AlreadyBoundChatIsNotRewritten(t *testing.T) {
 
 // TestSendChatMessage_FirstLivePaneSendBindsCodexRollout reproduces a codex chat
 // opened with `boss chat new` and first prompted later by `boss chat send` (or a
-// callback). Codex creates its rollout on the thread's first turn, so the
+// callback). Codex (and Antigravity) create their session on the first turn, so the
 // launch-time discovery window had long expired and nothing re-ran discovery:
 // the chat stayed unbound and `boss chat show` reported "codex rollout not yet
 // discovered" for a chat that had completed a turn. The send must start a
 // discovery that binds through the pane's own process (fd resolution), never
 // the time-window scan that can bind a sibling's rollout (BOS-290).
-func TestSendChatMessage_FirstLivePaneSendBindsCodexRollout(t *testing.T) {
+func TestSendChatMessage_FirstLivePaneSendBindsLateProviderSession(t *testing.T) {
+	for _, agentName := range []string{"codex", "antigravity"} {
+		t.Run(agentName, func(t *testing.T) {
+			assertFirstSendBindsProviderSession(t, agentName)
+		})
+	}
+}
+
+func assertFirstSendBindsProviderSession(t *testing.T, agentName string) {
+	t.Helper()
 	oldTimeout := providerSessionIDBackgroundDiscoveryTimeout
 	oldInterval := providerSessionIDBackgroundDiscoveryPollInterval
 	providerSessionIDBackgroundDiscoveryTimeout = 5 * time.Second
@@ -589,10 +598,10 @@ func TestSendChatMessage_FirstLivePaneSendBindsCodexRollout(t *testing.T) {
 	}()
 
 	const panePID = 4242
-	chat := &domain.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex", CreatedAt: time.Now().Add(-time.Hour)}
+	chat := &domain.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: agentName, CreatedAt: time.Now().Add(-time.Hour)}
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
 	tmuxer := &fakeTmuxClient{available: true, hasSession: true, panePID: panePID}
-	resolver := &fakeInteractiveSessionResolver{byPanePID: map[int]string{panePID: "codex-rollout-1"}}
+	resolver := &fakeInteractiveSessionResolver{byPanePID: map[int]string{panePID: agentName + "-session-1"}}
 	s := newSendMessageTestServer(t, chat, sess, tmuxer)
 	s.logger = zerolog.Nop()
 	s.wakeHook.resolver = resolver
@@ -619,8 +628,8 @@ func TestSendChatMessage_FirstLivePaneSendBindsCodexRollout(t *testing.T) {
 	store.mu.Lock()
 	bound := store.updateProvider
 	store.mu.Unlock()
-	if bound == nil || *bound != "codex-rollout-1" {
-		t.Fatalf("provider session id = %v, want codex-rollout-1 bound after the first send", bound)
+	if bound == nil || *bound != agentName+"-session-1" {
+		t.Fatalf("provider session id = %v, want %s-session-1 bound after the first send", bound, agentName)
 	}
 	for _, call := range resolver.snapshotResolverCalls() {
 		if call.allowLegacyBackfill || call.panePID != panePID || call.workDir != sess.WorktreePath {

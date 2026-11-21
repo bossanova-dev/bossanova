@@ -178,6 +178,9 @@ func TestNormalizeSpinner_SpinnerPresent(t *testing.T) {
 		{name: "claude live spinner", content: "⏺ Working on it\n" + claudeSpinner("Working", "3s"), want: true},
 		{name: "codex live spinner", content: "• Ran make test\n" + codexSpinner("3s"), want: true},
 		{name: "codex live spinner with nbsp padding", content: "• Working (3s • esc to interrupt)", want: true},
+		{name: "antigravity live spinner", content: "> fix it\n⣟  Editing files...\n" + strings.Repeat("─", 40) + "\n>\n" + strings.Repeat("─", 40) + "\nesc to cancel\n", want: true},
+		{name: "a child's braille spinner in another agent's pane", content: "⠋  Installing dependencies...\n" + strings.Repeat("─", 40) + "\n❯ \n" + strings.Repeat("─", 40) + "\n? for shortcuts\n", want: false},
+		{name: "braille output that is not agy's row", content: "⣟ plot legend\n⣿⣿ 42%\n", want: false},
 		{name: "background agent wait", content: "⏺ Dispatching\n✻ Waiting for 2 background agents to finish", want: true},
 		{
 			name:    "spinner below trailing blank pane rows still counts",
@@ -208,6 +211,32 @@ func TestNormalizeSpinner_SpinnerPresent(t *testing.T) {
 // TestNormalizeSpinner_PreservesLineCount keeps the normalized buffer the same
 // shape as the capture it came from, so a future caller that slices a tail off
 // it sees the same window the raw capture would give.
+// TestNormalizeSpinner_AntigravityCapturedPanes reads real agy 1.5.13 panes
+// (testdata/antigravity_panes_provenance.txt): two frames of one turn differ
+// only in the braille frame, and the idle pane after the turn has no spinner.
+func TestNormalizeSpinner_AntigravityCapturedPanes(t *testing.T) {
+	a := readCapturedPane(t, "antigravity_spinner_a_plain.txt")
+	b := readCapturedPane(t, "antigravity_spinner_b_plain.txt")
+	if bytes.Equal(a, b) {
+		t.Fatal("redraw frames must differ raw")
+	}
+	normA, presentA := NormalizeSpinner(a)
+	normB, presentB := NormalizeSpinner(b)
+	if !presentA || !presentB {
+		t.Errorf("spinnerPresent = %v, %v; want both live", presentA, presentB)
+	}
+	if !bytes.Equal(normA, normB) {
+		t.Error("a braille frame change must not read as substantive output")
+	}
+	idle, idlePresent := NormalizeSpinner(readCapturedPane(t, "antigravity_idle_after_turn_plain.txt"))
+	if idlePresent {
+		t.Error("the idle pane after the turn must not have a live spinner")
+	}
+	if bytes.Equal(idle, normA) {
+		t.Error("the finished turn must read as substantive output")
+	}
+}
+
 func TestNormalizeSpinner_PreservesLineCount(t *testing.T) {
 	content := "⏺ one\n" + claudeSpinner("Working", "3s") + "\n⏺ two\n"
 	norm, _ := NormalizeSpinner([]byte(content))

@@ -10,7 +10,10 @@ import {
   prLevelDelta,
   selectChangedRange,
 } from './verify-range.mjs'
-import { levelAreasFor } from './verify-gate.mjs'
+import { levelAreasFor, operatorDecision } from './verify-gate.mjs'
+import { approvalRangeMarkers } from './verify-range.mjs'
+import { gitFixture } from './verify-git-fixture.mjs'
+import { spawnSync } from 'node:child_process'
 const HEAD = 'a'.repeat(40)
 const BASE = 'b'.repeat(40)
 const REPO = 'o/r'
@@ -243,9 +246,11 @@ test('prLevelDelta: shifted hunk headers are not a change; a changed hunk is', (
   assert.deepEqual(prLevelDelta([UI_FILE], [shifted]), [])
   const changed = cfile('web/a.tsx', `${UI_PATCH}\n+  // more`)
   assert.deepEqual(prLevelDelta([UI_FILE], [changed]), ['web/a.tsx'])
-  // The hunk header's trailing context is part of the patch, so a different function is a change.
+  // Context and the enclosing signature do not belong to the PR's own lines.
   const moved = cfile('web/a.tsx', UI_PATCH.replace('export function App()', 'function Other()'))
-  assert.deepEqual(prLevelDelta([UI_FILE], [moved]), ['web/a.tsx'])
+  assert.deepEqual(prLevelDelta([UI_FILE], [moved]), [])
+  const context = cfile('web/a.tsx', UI_PATCH.replace('return x', 'return baseChange'))
+  assert.deepEqual(prLevelDelta([UI_FILE], [context]), [])
 })
 
 test('prLevelDelta: one-side paths, status changes and patchless blobs', () => {
@@ -255,8 +260,8 @@ test('prLevelDelta: one-side paths, status changes and patchless blobs', () => {
   const bin = cfile('img/logo.png', undefined, { sha: '1'.repeat(40) })
   assert.deepEqual(prLevelDelta([bin], [bin]), [])
   assert.deepEqual(prLevelDelta([bin], [{ ...bin, sha: '2'.repeat(40) }]), ['img/logo.png'])
-  // A patch on one side only falls back to the blob.
-  assert.deepEqual(prLevelDelta([UI_FILE], [{ ...UI_FILE, patch: undefined }]), [])
+  // A missing patch requires a resolver, even when the blobs match.
+  assert.deepEqual(prLevelDelta([UI_FILE], [{ ...UI_FILE, patch: undefined }]), ['web/a.tsx'])
   assert.deepEqual(prLevelDelta([bin], [{ ...bin, sha: undefined }]), ['img/logo.png'])
 })
 
@@ -551,4 +556,144 @@ test('selectChangedRange retains reverted paths omitted by a rewritten-head comp
   assert.ok(result.files.some((file) => file.filename === reverted.filename))
   const { areas } = levelAreasFor(result.files, { review: { alwaysReview: [], noSignOff: [] } })
   assert.equal(areas.find((area) => area.paths.includes(reverted.filename))?.defaultAsk, 'always')
+})
+
+test('operator approval anchors survive a verify block, but not a later operator send-back', () => {
+  const approval = {
+    kind: 'approve',
+    head: ANCHOR,
+    at: NOW - 60000,
+    id: 1,
+    waives: 'always-human-path,human-review:ui',
+  }
+  const payload = anchorPayload({
+    timeline: [commitNode(ANCHOR, verifyCtx('blocked: conflict', iso(1), 'FAILURE'))],
+  })
+  const select = (markers, headSha = HEAD) => {
+    const w = world({ graphql: payload, compare: { [ANCHOR]: [UI_FILE], [HEAD]: [UI_FILE] } })
+    return selectChangedRange(w.read, {
+      repo: REPO,
+      pr: 7,
+      baseSha: BASE,
+      headSha,
+      readRevocations: () => approvalRangeMarkers({ readable: true, markers }, operatorDecision),
+    })
+  }
+  assert.deepEqual(select([approval]).range, { kind: 'delta', anchorSha: ANCHOR })
+  const blocker = (kind, at = NOW) => ({
+    kind: 'blockers',
+    head: ANCHOR,
+    at,
+    id: 2,
+    blockerFile: { blockers: [{ kind }] },
+  })
+  assert.equal(select([approval, blocker('conflict')]).range.kind, 'delta')
+  assert.equal(select([approval, blocker('operator-note')]).range.kind, 'full')
+  assert.equal(select([approval, blocker('operator-note', NOW - 120000)]).range.kind, 'delta')
+  assert.equal(
+    select([approval, { kind: 'send-back', head: ANCHOR, at: NOW, id: 3 }]).range.kind,
+    'full',
+  )
+  assert.equal(select([{ ...approval, waives: '' }]).range.kind, 'full')
+  assert.equal(select([approval], ANCHOR).range.kind, 'full')
+  const revoked = approvalRangeMarkers(
+    { readable: true, markers: [blocker('operator-note')] },
+    operatorDecision,
+  )
+  for (const p of [
+    approvedAt(ANCHOR),
+    anchorPayload({ reviews: [reviewNode(ANCHOR, 'APPROVED', iso(60000))] }),
+  ])
+    assert.equal(resolveApprovalAnchor(p, revoked).sha, null)
+  const newer = { head: OLDER, at: NOW - 1000, waives: 'human-review:ui' }
+  assert.equal(resolveApprovalAnchor(approvedAt(ANCHOR), { approvals: [newer] }).sha, OLDER)
+})
+
+test('own-line projection retains changed lines and their newline markers, ignoring context markers', () => {
+  const delta = (a, b) => prLevelDelta([cfile('f', a)], [cfile('f', b)])
+  assert.deepEqual(delta('@@ x @@\n-old\n+new', '@@ y @@\n context\n-old\n+new'), [])
+  assert.deepEqual(delta('-old\n+new', '-old\n+new\n\\ No newline at end of file'), ['f'])
+  assert.deepEqual(delta(' context\n\\ No newline at end of file\n+new', ' context\n+new'), [])
+  assert.deepEqual(delta('-old\n+new', '-other\n+new'), ['f'])
+  assert.deepEqual(delta('-old\n+new', '+new'), ['f'])
+})
+
+test('patchless resolver compares both sides and fails closed on unavailable own changes', () => {
+  const a = cfile('generated.gql', undefined, { sha: 'old' })
+  const b = { ...a, sha: 'new' }
+  const calls = []
+  assert.deepEqual(
+    prLevelDelta([a], [b], {
+      ownChange: (file, side) => {
+        calls.push([file, side])
+        return '+same'
+      },
+    }),
+    [],
+  )
+  assert.deepEqual(calls, [
+    [a, 'anchor'],
+    [b, 'head'],
+  ])
+  for (const ownChange of [
+    () => null,
+    () => {
+      throw new Error('unreadable')
+    },
+  ])
+    assert.deepEqual(prLevelDelta([a], [b], { ownChange }), ['generated.gql'])
+})
+
+test('replay: approved then blocked and rebased keeps an empty own-line delta, including patchless files', (t) => {
+  const repo = gitFixture(t)
+  repo.write({ 'web/a.tsx': 'base context\nold\n', 'generated.gql': 'base generated\nold\n' })
+  const initial = repo.commit('base')
+  repo.write({ 'web/a.tsx': 'base context\nnew\n', 'generated.gql': 'base generated\nnew\n' })
+  const anchor = repo.commit('approved')
+  repo.git('checkout', '--detach', initial)
+  repo.write({ 'web/a.tsx': 'changed context\nold\n', 'generated.gql': 'changed generated\nold\n' })
+  const baseSha = repo.commit('base advances')
+  repo.write({ 'web/a.tsx': 'changed context\nnew\n', 'generated.gql': 'changed generated\nnew\n' })
+  const headSha = repo.commit('rebased')
+  const files = (sha, context) => [
+    cfile('web/a.tsx', `@@ -1,2 +1,2 @@ ${context}\n ${context}\n-old\n+new`),
+    cfile('generated.gql', undefined, { sha: repo.git('rev-parse', `${sha}:generated.gql`) }),
+  ]
+  const w = world({
+    graphql: anchorPayload({
+      timeline: [commitNode(anchor, verifyCtx('blocked: conflict', iso(1), 'FAILURE'))],
+    }),
+    compare: {
+      [anchor]: files(anchor, 'base context'),
+      [headSha]: files(headSha, 'changed context'),
+    },
+  })
+  const gitRead = (command, args, options) => {
+    if (command !== 'git') return w.read(command, args, options)
+    const r = spawnSync(command, args, { cwd: repo.dir, encoding: 'utf8' })
+    return { ok: r.status === 0, output: r.stdout }
+  }
+  const readRevocations = () => ({
+    readable: true,
+    revoked: () => false,
+    approvals: [{ head: anchor, at: NOW, waives: 'human-review:ui' }],
+  })
+  const select = (read) =>
+    selectChangedRange(read, { repo: REPO, pr: 7, baseSha, headSha, readRevocations })
+  assert.deepEqual(select(gitRead).paths, [])
+  assert.deepEqual(select(gitRead).range, { kind: 'delta', anchorSha: anchor })
+  for (const fail of ['cat-file', 'merge-base', 'diff']) {
+    const r = select((command, args, options) =>
+      command === 'git' && args[0] === fail
+        ? { ok: false, output: '' }
+        : gitRead(command, args, options),
+    )
+    assert.deepEqual(r.paths, ['generated.gql'], fail)
+  }
+  const binary = select((command, args, options) =>
+    command === 'git' && args[0] === 'diff'
+      ? { ok: true, output: 'Binary files a/generated.gql and b/generated.gql differ' }
+      : gitRead(command, args, options),
+  )
+  assert.deepEqual(binary.paths, ['generated.gql'])
 })

@@ -16,6 +16,7 @@ import {
   canonicalizePullRequestReferences,
   normalizeReferenceForms,
   REFERENCE_TRANSFORM_IDS,
+  unmodelledReferenceTokens,
 } from './reference-forms.mjs'
 
 const ISSUE_URL = 'https://linear.app/demo/issue/ABC-1199/title'
@@ -26,6 +27,191 @@ const issueElement = `<issue id="x" label="ABC-1199" href="${ISSUE_URL}" />`
 const prElement = `<pull-request href="${PR_URL}" label="owner/repo#4135" id="y" />`
 const ALL = new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS)
 const WITHOUT = new Set([...ALL].filter((id) => !REFERENCE_TRANSFORM_IDS.includes(id)))
+
+test('unmodelled reference scanner returns missing transforms in document order', () => {
+  const rewrites = REFERENCE_TRANSFORM_IDS
+  assert.deepEqual(
+    unmodelledReferenceTokens('See #12, APP-34 and <!-- APP-56 -->.', {
+      rewrites,
+      tolerated: new Set(),
+    }),
+    [
+      { token: '#12', transform: rewrites[1] },
+      { token: 'APP-34', transform: rewrites[0] },
+      { token: 'APP-56', transform: rewrites[0] },
+    ],
+  )
+  assert.deepEqual(unmodelledReferenceTokens('APP-34 #12', { rewrites, tolerated: ALL }), [])
+  assert.deepEqual(
+    unmodelledReferenceTokens('APP-34 #12', { rewrites: [], tolerated: WITHOUT }),
+    [],
+  )
+  assert.deepEqual(
+    unmodelledReferenceTokens('APP-34 #12', {
+      rewrites,
+      tolerated: new Set([rewrites[0]]),
+    }),
+    [{ token: '#12', transform: rewrites[1] }],
+  )
+})
+
+test('unmodelled reference scanner ignores code, links, URLs and non-reference hashes', () => {
+  const text = [
+    '`APP-1 #1` ``APP-2 #2``',
+    '`APP-21',
+    '#21`',
+    '```md',
+    'APP-3 #3',
+    '```',
+    '',
+    '    APP-4 #4',
+    '',
+    '[APP-5 #5](https://example.com/APP-6#6 "title")',
+    '[APP-7][ref] <https://example.com/APP-8#8>',
+    '',
+    '[ref]: https://example.com/APP-9#9',
+    'https://example.com/APP-10#10 www.example.com/APP-11#11',
+    '# Heading C# a#12 /#13 &#14 #0 APP-0 xAPP-15 APP-16x',
+    '<issue label="APP-17" id="x" />',
+    '<pull-request label="owner/repo#18" id="y" />',
+    '> ~~~',
+    '> APP-19 #19',
+    '> ~~~',
+    'Prose APP-20 #20',
+  ].join('\n')
+  assert.deepEqual(
+    unmodelledReferenceTokens(text, {
+      rewrites: REFERENCE_TRANSFORM_IDS,
+      tolerated: new Set(),
+    }),
+    [
+      { token: 'APP-20', transform: REFERENCE_TRANSFORM_IDS[0] },
+      { token: '#20', transform: REFERENCE_TRANSFORM_IDS[1] },
+    ],
+  )
+})
+
+test('unmodelled reference scanner distinguishes bracketed prose from defined shortcut links', () => {
+  assert.deepEqual(
+    unmodelledReferenceTokens('[APP-1] [APP-2]\n\n[APP-2]: https://example.com', {
+      rewrites: REFERENCE_TRANSFORM_IDS,
+      tolerated: new Set(),
+    }),
+    [{ token: 'APP-1', transform: REFERENCE_TRANSFORM_IDS[0] }],
+  )
+})
+
+test('unmodelled reference scanner requires definitions for full and collapsed reference links', () => {
+  const options = { rewrites: REFERENCE_TRANSFORM_IDS, tolerated: new Set() }
+  for (const text of ['[APP-123][missing]', '[APP-123][', '[APP-123][]']) {
+    assert.deepEqual(
+      unmodelledReferenceTokens(text, options),
+      [{ token: 'APP-123', transform: REFERENCE_TRANSFORM_IDS[0] }],
+      text,
+    )
+  }
+  assert.deepEqual(unmodelledReferenceTokens('[APP-123][APP-456]', options), [
+    { token: 'APP-123', transform: REFERENCE_TRANSFORM_IDS[0] },
+    { token: 'APP-456', transform: REFERENCE_TRANSFORM_IDS[0] },
+  ])
+  assert.deepEqual(
+    unmodelledReferenceTokens(
+      '[APP-123][REF] [APP-123][] [APP-123]\n\n[ref]: https://example.com\n[APP-123]: https://example.com',
+      options,
+    ),
+    [],
+  )
+  assert.deepEqual(
+    unmodelledReferenceTokens('[APP-123][ref](APP-456)\n\n[ref]: https://example.com', options),
+    [{ token: 'APP-456', transform: REFERENCE_TRANSFORM_IDS[0] }],
+  )
+})
+
+test('unmodelled reference scanner keeps adjacent inline-link destinations literal', () => {
+  const options = { rewrites: REFERENCE_TRANSFORM_IDS, tolerated: new Set() }
+  for (const text of [
+    '[first](https://example.com)[ref](APP-123)\n\n[ref]: https://example.com',
+    '[first](https://example.com)[ref](#123)\n\n[ref]: https://example.com',
+    '[first](https://example.com)[APP-456](APP-123)\n\n[APP-456]: https://example.com',
+    '[first](https://example.com)[ref](APP-123)',
+  ])
+    assert.deepEqual(unmodelledReferenceTokens(text, options), [], text)
+  assert.deepEqual(
+    unmodelledReferenceTokens(
+      '[first](https://example.com)[ref](APP-123) APP-789\n\n[ref]: https://example.com',
+      options,
+    ),
+    [{ token: 'APP-789', transform: REFERENCE_TRANSFORM_IDS[0] }],
+  )
+})
+
+test('unmodelled reference scanner scans compact HTML comments', () => {
+  assert.deepEqual(
+    unmodelledReferenceTokens('<!--APP-123--><!--#123--> <https://example.com/APP-456#456>', {
+      rewrites: REFERENCE_TRANSFORM_IDS,
+      tolerated: new Set(),
+    }),
+    [
+      { token: 'APP-123', transform: REFERENCE_TRANSFORM_IDS[0] },
+      { token: '#123', transform: REFERENCE_TRANSFORM_IDS[1] },
+    ],
+  )
+})
+
+test('unmodelled reference scanner keeps inline code within prose blocks', () => {
+  const options = { rewrites: REFERENCE_TRANSFORM_IDS, tolerated: new Set() }
+  const expected = [
+    { token: 'APP-123', transform: REFERENCE_TRANSFORM_IDS[0] },
+    { token: '#123', transform: REFERENCE_TRANSFORM_IDS[1] },
+  ]
+  for (const text of [
+    'Literal `\n\nAPP-123 #123\n\nAnother `',
+    'Literal `\n~~~\nsample\n~~~\nAPP-123 #123\nAnother `',
+    'Literal `\n\n    sample\n\nAPP-123 #123\nAnother `',
+  ])
+    assert.deepEqual(unmodelledReferenceTokens(text, options), expected, text)
+  assert.deepEqual(unmodelledReferenceTokens('Literal `APP-123\n#123`', options), [])
+})
+
+test('reference definitions do not interrupt an existing multiline code paragraph', () => {
+  const options = { rewrites: REFERENCE_TRANSFORM_IDS, tolerated: new Set() }
+  for (const definition of ['[ref]: https://example.com', '[APP-456]: https://example.com']) {
+    assert.deepEqual(
+      unmodelledReferenceTokens(`Literal \`\n${definition}\nAPP-123 #123\nAnother \``, options),
+      [],
+    )
+  }
+  assert.deepEqual(
+    unmodelledReferenceTokens('Paragraph\n[APP-456]: https://example.com\n\n[APP-456]', options),
+    [
+      { token: 'APP-456', transform: REFERENCE_TRANSFORM_IDS[0] },
+      { token: 'APP-456', transform: REFERENCE_TRANSFORM_IDS[0] },
+    ],
+  )
+  for (const prefix of ['', '\n', '# Heading\n', 'Paragraph\n---\n', '***\n', '___\n', '- - -\n']) {
+    assert.deepEqual(
+      unmodelledReferenceTokens(`${prefix}[APP-456]: https://example.com\n\n[APP-456]`, options),
+      [],
+    )
+  }
+})
+
+test('inline code does not cross heading or thematic-break blocks', () => {
+  const options = { rewrites: REFERENCE_TRANSFORM_IDS, tolerated: new Set() }
+  const expected = [
+    { token: 'APP-123', transform: REFERENCE_TRANSFORM_IDS[0] },
+    { token: '#123', transform: REFERENCE_TRANSFORM_IDS[1] },
+  ]
+  for (const block of ['# Heading', '---', '===', '***', '___', '- - -']) {
+    assert.deepEqual(
+      unmodelledReferenceTokens(`Literal \`\n${block}\nAPP-123 #123\nAnother \``, options),
+      expected,
+      block,
+    )
+  }
+  assert.deepEqual(unmodelledReferenceTokens('# APP-123 #123', options), expected)
+  assert.deepEqual(unmodelledReferenceTokens('# `APP-123 #123`', options), [])
+})
 const guard = fileURLToPath(new URL('../plan/plan-image-guard.mjs', import.meta.url))
 const dir = tempDir('reference-forms-')
 process.env.BOSS_GATE_OUTCOME_FILE = path.join(dir, 'outcomes.tsv')

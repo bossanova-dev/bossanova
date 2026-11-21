@@ -74,7 +74,7 @@ func (s *Server) hydrateSessionEndpoints(chats []*domain.AgentChat, p *pb.Sessio
 	if !s.endpointNamespaceGate(clientNS) {
 		return
 	}
-	snap := sessionEndpointSnapshot(sess, chats)
+	snap := s.endpointSnapshot(sess, chats)
 	p.HttpEndpoints = endpointsToProto(s.endpointReader.Get(snap))
 }
 
@@ -99,7 +99,7 @@ func (s *Server) hydrateSessionEndpointsBatch(
 		if sess == nil {
 			continue
 		}
-		snaps = append(snaps, sessionEndpointSnapshot(sess, chatsBySession[p.Id]))
+		snaps = append(snaps, s.endpointSnapshot(sess, chatsBySession[p.Id]))
 	}
 	byID := s.endpointReader.GetBatch(snaps)
 	for _, p := range pbSessions {
@@ -107,4 +107,14 @@ func (s *Server) hydrateSessionEndpointsBatch(
 			p.HttpEndpoints = endpointsToProto(eps)
 		}
 	}
+}
+
+func (s *Server) endpointSnapshot(sess *models.Session, chats []*domain.AgentChat) domain.SessionSnapshot {
+	snap := sessionEndpointSnapshot(sess, chats)
+	if s.serveTmuxName != nil {
+		if name := s.serveTmuxName(sess.ID); name != "" {
+			snap.TmuxNames = append(snap.TmuxNames, name)
+		}
+	}
+	return snap
 }

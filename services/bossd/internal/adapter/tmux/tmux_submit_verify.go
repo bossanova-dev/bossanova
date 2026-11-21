@@ -1548,49 +1548,6 @@ func lineStillAtPrompt(pane, line string) bool {
 	return !multiLineSubmitted(pane, line)
 }
 
-// promptMarkers are the leading glyphs an agent's input box renders. Shared by
-// hasPromptMarker and composerContent so the list lives in one place.
-var promptMarkers = []string{"❯", "›", "┃", ">"}
-
-// composerMarkerIdx returns the index of the live input box's prompt-marker
-// row, or -1 if none is present. Everything below it is footer, statusline or
-// menu chrome, so submission checks scan from this row. Shared by
-// lineStillAtPrompt and multiLineSubmitted.
-//
-// A Claude prompt row opening the box between the bottom two rules is the input
-// box. Claude draws its slash-command menu below that box and marks the
-// selected entry with the same "❯" (testdata/panes/claude_typed_slash_menu_real.txt),
-// so the bottom-most marker row is the input box only when no such box is drawn.
-func composerMarkerIdx(lines []string) int {
-	if top, bottom, ok := inputBoxRules(lines); ok && top+1 < bottom && strings.HasPrefix(strings.TrimSpace(lines[top+1]), sendPlanReadyMarker) {
-		return top + 1
-	}
-	for i := len(lines) - 1; i >= 0; i-- {
-		if hasPromptMarker(strings.TrimSpace(lines[i])) {
-			return i
-		}
-	}
-	return -1
-}
-
-// hasPromptMarker reports whether a trimmed pane row begins with one of the
-// input-box prompt indicators.
-func hasPromptMarker(text string) bool {
-	_, ok := composerContent(text)
-	return ok
-}
-
-// composerContent returns the text a prompt-marker row carries after its glyph,
-// and whether the row was a prompt-marker row at all.
-func composerContent(trimmed string) (string, bool) {
-	for _, marker := range promptMarkers {
-		if rest, ok := strings.CutPrefix(trimmed, marker); ok {
-			return strings.TrimSpace(rest), true
-		}
-	}
-	return "", false
-}
-
 // collapsedPastePlaceholderRe matches a composer whose content LEADS with the
 // placeholder an agent renders in place of a long paste, taken from real
 // captures (testdata/panes/capture_paste.sh):

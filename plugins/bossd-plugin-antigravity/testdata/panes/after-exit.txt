@@ -1,0 +1,50 @@
+Resume with -c (or command below):
+agy --conversation=fef1705c-2c93-4efe-918c-af234da233ea
+
+
+      ▄▀▀▄        Antigravity CLI 1.5.13
+     ▀▀▀▀▀▀       user@example.com (Google AI Pro)
+    ▀▀▀▀▀▀▀▀      Gemini 4 Neon (Medium)
+   ▄▀▀    ▀▀▄     /tmp/project
+  ▄▀▀      ▀▀▄
+
+────────────────────────────────────────────────────────────
+> Create a file named hello.txt in the current directory
+  containing exactly the word hi, using your file writing tool.
+  Then reply with the word done.
+
+○ Thought for 4.6s (Attempting to create the file `hello.txt` with the content "hi". If successful, will respond with "done".)
+● Edited 1 file (hello.txt) (ctrl+o to expand)
+
+  done
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Resume with -c (or command below):
+agy --conversation=fef1705c-2c93-4efe-918c-af234da233ea
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Pane is dead (status 0, Fri Nov 20 19:20:14 2026)

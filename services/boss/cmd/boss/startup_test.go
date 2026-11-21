@@ -283,6 +283,18 @@ func TestEnabledAgentProvidersUsesLoadedAgentMetadata(t *testing.T) {
 	}
 }
 
+// The preflight runs `command -v` on what it returns, and Antigravity's
+// plugin is named antigravity while its CLI is agy.
+func TestEnabledAgentProvidersProbesAntigravityByItsCommand(t *testing.T) {
+	settings := config.Settings{Plugins: []config.PluginConfig{{Name: "antigravity", Enabled: true}}}
+
+	got := enabledAgentProviders(settings, []rpc.AgentInfo{{Name: "antigravity"}}, "antigravity")
+
+	if !reflect.DeepEqual(got, []string{"agy"}) {
+		t.Fatalf("enabledAgentProviders = %v, want [agy]", got)
+	}
+}
+
 func TestEnabledAgentProvidersFiltersSelectedSessionAgent(t *testing.T) {
 	settings := config.Settings{
 		Plugins: []config.PluginConfig{

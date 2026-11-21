@@ -1,6 +1,6 @@
 export default {
   id: 'web-iframe-sandbox',
-  rule: 'Web frames: JSX iframes, sandbox at most scripts and popups, allow=""; none in injected HTML.',
+  rule: 'Web frames: JSX iframes, sandbox <= scripts+popups, allow <= fullscreen; no injected HTML.',
   command: 'node scripts/guards/check-web-iframe-sandbox.mjs',
   wiring: { make: 'lint-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
   scans: ['services/web/src/**/*.ts', 'services/web/src/**/*.tsx'],

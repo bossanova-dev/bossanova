@@ -14,6 +14,7 @@ import record from './registry/web-iframe-sandbox.mjs'
 // Popups are allowed so a proof host's sign-in link can open a tab: the app's
 // Cross-Origin-Opener-Policy: same-origin gives that tab no opener, and
 // services/web/e2e/review-screen.spec.ts proves the tab cannot reach the app.
+// Fullscreen is the only browser feature a frame may be delegated.
 const ALLOWED_SANDBOX_TOKENS = new Set([
   'allow-scripts',
   'allow-popups',
@@ -22,6 +23,14 @@ const ALLOWED_SANDBOX_TOKENS = new Set([
 // <object>, <embed> and <frame> take no sandbox, so they cannot frame safely.
 const FRAMING_TAGS = new Set(['iframe', 'object', 'embed', 'frame'])
 const FRAMING_MARKUP = /<(iframe|object|embed|frame)/i
+// Compared exactly: an allowlist suffix or a second feature is a wider grant.
+const ALLOWED_ALLOW_VALUES = new Set(['', 'fullscreen'])
+// Each delegates `fullscreen *` beside whatever allow says.
+const LEGACY_FULLSCREEN = new Set([
+  'allowfullscreen',
+  'webkitallowfullscreen',
+  'mozallowfullscreen',
+])
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 function literalText(initializer) {
@@ -52,9 +61,15 @@ function iframeProblem(element) {
   if (lowered.has('allow-popups-to-escape-sandbox') && !lowered.has('allow-popups')) {
     return 'sandbox grants allow-popups-to-escape-sandbox without allow-popups, which it needs'
   }
-  return literalText(attribute(element, 'allow')?.initializer) === ''
+  const legacy = element.attributes.properties.find(
+    (property) =>
+      ts.isJsxAttribute(property) && LEGACY_FULLSCREEN.has(property.name.getText().toLowerCase()),
+  )
+  if (legacy)
+    return `sets ${legacy.name.getText()}; delegate fullscreen with allow="fullscreen" only`
+  return ALLOWED_ALLOW_VALUES.has(literalText(attribute(element, 'allow')?.initializer))
     ? null
-    : 'must set allow="" to delegate no permissions'
+    : 'must set allow="" or allow="fullscreen" to delegate at most fullscreen'
 }
 
 // A non-literal __html cannot be checked, so it fails like a non-literal sandbox.
@@ -123,12 +138,12 @@ if (isMainModule(import.meta.url)) {
   if (failures.length) {
     console.error(failures.join('\n'))
     console.error(
-      'Frame untrusted pages only with a JSX <iframe allow=""> whose sandbox grants at most allow-scripts allow-popups allow-popups-to-escape-sandbox.',
+      'Frame untrusted pages only with a JSX <iframe> with allow="" or allow="fullscreen" whose sandbox grants at most allow-scripts allow-popups allow-popups-to-escape-sandbox.',
     )
     process.exitCode = 1
   } else {
     console.log(
-      'OK: every web frame is an <iframe> sandboxed to allow-scripts and popups at most, with allow=""',
+      'OK: every web frame is an <iframe> sandboxed to allow-scripts and popups at most, with allow="" or allow="fullscreen"',
     )
   }
 }

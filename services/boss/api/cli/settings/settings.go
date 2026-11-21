@@ -31,7 +31,7 @@ func (g *Group) SettingsCmd() *cobra.Command {
 	_ = cmd.Flags().MarkHidden("rotation")
 	_ = cmd.Flags().MarkHidden("no-rotation")
 	cmd.Flags().String("worktree-dir", "", "Set worktree base directory")
-	cmd.Flags().String("default-agent", "", "Set the default agent plugin (e.g. claude, opencode)")
+	cmd.Flags().String("default-agent", "", "Set the default agent plugin (e.g. claude, codex, antigravity)")
 	cmd.Flags().Int("poll-interval", 0, "Set poll interval in seconds (0 = default)")
 	cmd.Flags().String("daemon-name", "", "Set the daemon display name (blank resets to the machine hostname; restart the daemon to apply)")
 	cmd.Flags().String("cloud-control", "", "Cloud control: default, private, read-only or full (takes effect immediately; no restart needed)")

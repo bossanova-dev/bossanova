@@ -39,9 +39,10 @@ const SourceRelPath = "lib/bossalib/contract/plugin/skillpayload"
 type Agent string
 
 const (
-	AgentClaude Agent = "claude"
-	AgentCodex  Agent = "codex"
-	AgentHermes Agent = "hermes"
+	AgentClaude      Agent = "claude"
+	AgentCodex       Agent = "codex"
+	AgentHermes      Agent = "hermes"
+	AgentAntigravity Agent = "antigravity"
 )
 
 // DefaultDir returns the global Claude skills directory (~/.claude/skills).
@@ -78,6 +79,10 @@ func DirForAgent(agent Agent) (string, error) {
 		return filepath.Join(home, ".codex", "skills"), nil
 	case AgentHermes:
 		return HermesSkillsDir(filepath.Join(home, ".hermes")), nil
+	case AgentAntigravity:
+		// agy's documented global skill directory; it follows the top-level
+		// symlinks into the bossanova namespace.
+		return filepath.Join(home, ".gemini", "config", "skills"), nil
 	default:
 		return "", fmt.Errorf("unsupported agent %q", agent)
 	}

@@ -1,0 +1,86 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "bossd-plugin-antigravity_lib",
+    srcs = [
+        "classify.go",
+        "interactive.go",
+        "launch.go",
+        "main.go",
+        "oneshot.go",
+        "pane.go",
+        "plugin.go",
+        "procfiles.go",
+        "prtitle.go",
+        "resolve.go",
+        "runner.go",
+        "server.go",
+        "store.go",
+        "stream.go",
+        "transcript.go",
+        "usage.go",
+    ],
+    importpath = "github.com/recurser/bossd-plugin-antigravity",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//lib/bossalib/contract/plugin/agenterr",
+        "//lib/bossalib/contract/plugin/agentruntime",
+        "//lib/bossalib/contract/plugin/childenv",
+        "//lib/bossalib/contract/plugin/jsonlscan",
+        "//lib/bossalib/contract/plugin/loginshell",
+        "//lib/bossalib/contract/plugin/plugin",
+        "//lib/bossalib/contract/plugin/plugin/hostclient",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_binary(
+    name = "bossd-plugin-antigravity",
+    embed = [":bossd-plugin-antigravity_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "bossd-plugin-antigravity_test",
+    srcs = [
+        "classify_test.go",
+        "conformance_test.go",
+        "helpers_test.go",
+        "interactive_test.go",
+        "live_test.go",
+        "pane_test.go",
+        "prtitle_test.go",
+        "resolve_test.go",
+        "runner_test.go",
+        "transcript_test.go",
+        "usage_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":bossd-plugin-antigravity_lib"],
+    deps = [
+        "//lib/bossalib/contract/plugin/agenterr",
+        "//lib/bossalib/contract/plugin/agentruntime",
+        "//lib/bossalib/contract/plugin/plugin/agentrunnertest",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+# Production sources consumed by the host environment-policy guard.
+filegroup(
+    name = "env_policy_sources",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//services/bossd/internal/plugin:__pkg__"],
+)

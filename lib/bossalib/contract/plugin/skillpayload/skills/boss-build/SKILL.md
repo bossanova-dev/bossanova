@@ -35,8 +35,7 @@ summary (cost extraction matches a line-leading token).
   criterion alone is not BLOCKED.
 - `NO_CHANGE` — no eligible candidate, a named ticket with nothing to build from, claim lost with
   no runner-up, a foreign branch carrying other work, a peer already holding the worktree lock, a
-  named ticket verify would not admit, started without approval, an unplanned file-level overlap with an open
-  PR (its open ticket becomes a blocker; with none, back to the planning queue), or nothing
+  named ticket verify would not admit, started without approval, or nothing
   committable after claiming (ticket restored to its entry state, or closed to `.done` when Step 6
   certifies the scope already on the base).
 
@@ -110,7 +109,7 @@ Once Preflight has pinned, read `references/…` and `agents/…` from `$BOSS_BU
 | Who won the ticket claim?                                              | `node tracker/cli.mjs claim-verdict …`                                                                                                                  |
 | Which PR belongs to this branch?                                       | `node build/pr-ownership.mjs number --pr-json <json>`                                                                                                   |
 | What does this ticket build from?                                      | `node plan-attachment.mjs build-source <issue-json> [<plan-out>]`                                                                                       |
-| Does an open PR collide with this plan?                                | `node build/open-pr-hold.mjs check --plan <plan> --issue-json <issue> [--pr <n>] [--apply]`                                                             |
+| Does an open PR collide with this plan?                                | `node build/open-pr-overlap.mjs check --plan <plan> --issue-json <issue> [--pr <n>]`                                                                    |
 | Would verify admit this named ticket?                                  | `node build/named-admission.mjs check\|apply …`                                                                                                         |
 | Which repo-local extensions exist?                                     | `node skill-extensions.mjs discover --core boss-build --role <role> --json`                                                                             |
 | Do the plan’s citations and premises still hold?                       | `node plan-recheck.mjs <plan> [--root <dir>]`                                                                                                           |
@@ -216,16 +215,24 @@ if [ "${BOSS_BUILD_CONTINUE:-}" != 1 ]; then
   rm -rf "$(git rev-parse --git-dir)/boss-build/review" "$(git rev-parse --git-dir)/boss-build/review-verdict.json"
 fi
 SESSION_BRANCH="$(git branch --show-current)"
-BASE_UPSTREAM="$(git rev-parse --abbrev-ref "$SESSION_BRANCH@{upstream}" 2>/dev/null)"
-BASE_REMOTE="${BASE_UPSTREAM%%/*}"
-BASE_BRANCH="${BASE_UPSTREAM#*/}"
-if [ -z "$BASE_UPSTREAM" ] || [ "$BASE_REMOTE" = "$BASE_UPSTREAM" ] || [ "$BASE_BRANCH" = "$SESSION_BRANCH" ]; then
-  BASE_BRANCH="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)"
-  BASE_REMOTE="origin"
+if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+  done
 fi
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
+export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
+BASE_UPSTREAM="$(git rev-parse --abbrev-ref "$SESSION_BRANCH@{upstream}" 2>/dev/null)"
+if ! BASE_RESOLUTION="$(node "$BOSS_BUILD_TOOLBOX/build/base-branch.mjs" resolve \
+  --session-branch "$SESSION_BRANCH" --upstream "$BASE_UPSTREAM" --session-id "${BOSS_SESSION_ID:-}")"; then
+  echo "NO_CHANGE: unable to resolve the base branch" >&2
+  exit 0
+fi
+IFS=$'\t' read -r BASE_REMOTE BASE_BRANCH BASE_SOURCE <<< "$BASE_RESOLUTION"
 # BASE_BRANCH is the GitHub API/base-name value only. Git ownership and range decisions must use
 # BASE_REF from its tracking remote, never a bare local branch ref that can be stale in a newly
-# provisioned worktree. An untracked branch uses the default branch at origin.
+# provisioned worktree. The helper prefers the session base, then the PR, upstream and default.
 BASE_REF="refs/remotes/$BASE_REMOTE/$BASE_BRANCH"
 if ! git fetch "$BASE_REMOTE" "+refs/heads/$BASE_BRANCH:$BASE_REF"; then
   echo "NO_CHANGE: unable to resolve remote base ref $BASE_REF" >&2
@@ -236,14 +243,6 @@ if ! BASE_SHA="$(git rev-parse --verify "$BASE_REF^{commit}")"; then
   exit 0
 fi
 
-if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-    if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-  done
-fi
-test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
-export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
 # Report installed skill drift before tracker writes or worktree mutation.
 # skill-drift-verdict.mjs decides severity: a stale record warns, an absent
 # capability stops. Without a boss CLI, use the warning helper so drift is not
@@ -599,7 +598,7 @@ Before Step 5, run `node "$BOSS_BUILD_TOOLBOX/plan-recheck.mjs" "$PLAN_FILE"` ag
 worktree. Its JSON verdict determines the action: `current` → proceed; `drifted` → use the reported
 locations and record them under `## Autonomous decisions`; `stale` → apply rule 2 and record the
 departure in `## Premise discharge`; `unknown` → re-check the cited paths and symbols by hand and
-record that fallback. Re-run every `not-evaluated` premise by hand. The citation verdict does not block implementation; the open-PR hold below is the exception.
+record that fallback. Re-run every `not-evaluated` premise by hand. The citation verdict does not block implementation.
 When the plan states no acceptance criteria, derive them from what it says done looks like. When the
 plan is an attachment, ignore the ticket's `## Original notes` (that is pre-planning history).
 
@@ -608,20 +607,14 @@ Re-check in-flight work once, after the citation recheck:
 ```bash
 OWN_PR="${PR_NUMBER:-$(node "$BOSS_BUILD_TOOLBOX/pr-state.mjs" session-pr --field number 2>/dev/null)}"
 # Stays on gh: the daemon has no list-open-PRs-with-files read; the helper labels its gh call.
-# Set FRESH_ROUTE=1 only for Step 2.5's fresh route; leave it empty on resume.
-node "$BOSS_BUILD_TOOLBOX/build/open-pr-hold.mjs" check --plan "$PLAN_FILE" --issue-json "$ISSUE_JSON" \
-  ${OWN_PR:+--pr "$OWN_PR"} ${FRESH_ROUTE:+--apply}
+node "$BOSS_BUILD_TOOLBOX/build/open-pr-overlap.mjs" check --plan "$PLAN_FILE" --issue-json "$ISSUE_JSON" \
+  ${OWN_PR:+--pr "$OWN_PR"}
 ```
 
-Record every overlap, planned or not, and every warning under `## Premise discharge`.
-Exit 69 records `could not evaluate open PRs (<reason>)` and proceeds; a truncated snapshot
-must carry its warning rather than being described as clean. Only an unplanned file-level overlap
-holds a fresh run: exits 3 and 4 stop `NO_CHANGE` through Step 12 before implementation, even
-when tracker writes failed (exit 4). With `--apply`, each held PR whose ticket is still open
-becomes a blocker of this ticket, which keeps its build label and waits; a held PR with no open
-ticket swaps the build label for the planning-queue label. On resume run without `--apply`, record overlaps and continue
-even on exit 3. On a fresh hold whose writes landed, the helper's marker comment supplies the
-Step 12 breadcrumb; if they did not land, that breadcrumb names the held PRs and shared files.
+Record every overlap, planned or unplanned, with its shared files, and every warning under
+`## Premise discharge` and in the PR body. Exit 69 records
+`could not evaluate open PRs (<reason>)`. A truncated snapshot must carry its warning rather than
+being described as clean. Continue to Step 5 on every exit; an overlap is a rebase to expect.
 
 ## Step 5: Implement
 
@@ -1121,9 +1114,7 @@ may change it.
   - `leave`: make no state move (peer owns the ticket or its state is not ours).
 
   Every disposition leaves exactly one short breadcrumb naming the route and `reason`; update it
-  on a repeat and stamp `no-change-breadcrumb-written`. On an open-PR hold, use the helper's marker
-  comment when its writes landed; otherwise name held PRs and shared files. An unsettled close or
-  restore warns as above; `OUTCOME` stays `NO_CHANGE`. Never stamp both close and restore.
+  on a repeat and stamp `no-change-breadcrumb-written`.
 
 - Delete this run's claim comment by the read-derived `ownClaimId` if it still exists.
 - If Step 3 generated `TOKEN` for a resolved ticket, release its issue lease on every terminal path:

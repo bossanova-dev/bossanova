@@ -264,3 +264,21 @@ func TestEndpointsToProto(t *testing.T) {
 		t.Fatalf("endpointsToProto = %+v, want only the in-range 8080 endpoint", out)
 	}
 }
+
+func TestEndpointSnapshotIncludesLiveServePane(t *testing.T) {
+	sess := &models.Session{ID: "session", WorktreePath: "/worktree"}
+	srv := &Server{serveTmuxName: func(id string) string {
+		if id != "session" {
+			t.Fatalf("id=%q", id)
+		}
+		return "boss-repo-session-serve"
+	}}
+	snap := srv.endpointSnapshot(sess, nil)
+	if len(snap.TmuxNames) != 1 || snap.TmuxNames[0] != "boss-repo-session-serve" {
+		t.Fatalf("snapshot=%+v", snap)
+	}
+	srv.serveTmuxName = func(string) string { return "" }
+	if snap = srv.endpointSnapshot(sess, nil); len(snap.TmuxNames) != 0 {
+		t.Fatalf("stopped serve retained: %+v", snap)
+	}
+}

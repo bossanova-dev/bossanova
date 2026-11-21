@@ -21,7 +21,7 @@ code{font:.9em var(--mono);color:var(--text-h);background:var(--bg-code);border:
 a.tk{color:inherit;text-decoration:underline;text-decoration-color:var(--border-strong);text-underline-offset:2px}
 a.tk:hover{color:var(--accent-h)}
 h1,h2,h3,h4{color:var(--text-h);margin:0}
-.wrap{max-width:1080px;margin:0 auto;padding:24px 24px 96px}
+.wrap{max-width:808px;margin:0 auto;padding:24px 24px 96px}
 .dim{color:var(--text-dim)}
 .pill{display:inline-flex;align-items:center;font-size:11px;font-weight:600;letter-spacing:.08em;padding:4px 10px;margin-block:-3px;border:1px solid transparent;border-radius:var(--radius-pill);white-space:nowrap;line-height:1.4;flex-shrink:0;color:color-mix(in oklab,var(--text) 70%,var(--text-dim));background:var(--bg-elev-3)}
 .pill.success{color:var(--success);background:var(--success-bg)}
@@ -304,6 +304,13 @@ details.fg>summary:hover{background:var(--bg-elev-1)}
 .lb-stage img{margin:auto;display:block;flex-shrink:0;border-radius:var(--radius);box-shadow:var(--shadow-pop);background:var(--bg-elev-2)}
 .lb-stage.can-zoom img{cursor:zoom-in}
 .lb-stage.full img{cursor:zoom-out}
+.lb-stage [hidden]{display:none}
+.lb-stage video{margin:auto;display:block;max-width:100%;max-height:100%;border-radius:var(--radius);background:var(--bg-elev-2)}
+.lb-stage:fullscreen{background:var(--bg)}
+.vbox{position:relative}
+.media .vbox{display:inline-block;max-width:100%}
+.vbox .vopen{display:none;position:absolute;top:8px;right:8px}
+.proof-js .vbox .vopen{display:inline-flex}
 @media (max-width:560px){.cl.grp{grid-template-columns:0 auto auto minmax(0,1fr) auto auto}.si>.g{grid-column:1/-1;padding:0 0 4px}.si>.g:empty{display:none}.si>.st{grid-column:4;justify-self:start;margin:4px 0 0}ul.kv li{grid-template-columns:1fr;gap:2px}}
 @media (max-width:640px){.wrap{padding:16px 16px 64px}.banner{padding:14px 16px 6px}.sig .r{grid-template-columns:1fr auto}.sig .r .v{grid-column:1/-1;grid-row:2}.banner{--lbl-w:76px}.player,.txcols{grid-template-columns:1fr}.frow{grid-template-columns:minmax(0,1fr) 32px 56px 52px 48px;gap:8px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}`

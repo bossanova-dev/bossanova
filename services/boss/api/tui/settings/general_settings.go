@@ -205,7 +205,7 @@ func mergeDiscoveredAgentPlugins(settings config.Settings, discovered []config.P
 	}
 	byName := make(map[string]config.PluginConfig, len(discovered))
 	for _, plugin := range discovered {
-		if plugin.Name == "claude" || plugin.Name == "codex" {
+		if _, ok := ui.ProviderFor(plugin.Name); ok {
 			byName[plugin.Name] = plugin
 		}
 	}
@@ -247,12 +247,12 @@ func mergeAvailableAgentInfos(settings config.Settings, loaded []rpc.AgentInfo) 
 
 	wanted := map[string]bool{}
 	for _, plugin := range settings.Plugins {
-		if plugin.Name == "claude" || plugin.Name == "codex" {
+		if _, ok := ui.ProviderFor(plugin.Name); ok {
 			wanted[plugin.Name] = true
 		}
 	}
 	for _, name := range settings.KnownAgentProviders {
-		if name == "claude" || name == "codex" {
+		if _, ok := ui.ProviderFor(name); ok {
 			wanted[name] = true
 		}
 	}
@@ -265,13 +265,12 @@ func mergeAvailableAgentInfos(settings config.Settings, loaded []rpc.AgentInfo) 
 		}
 	}
 
-	order := []string{"claude", "codex"}
 	out := make([]rpc.AgentInfo, 0, len(byName))
 	seen := map[string]bool{}
-	for _, name := range order {
-		if agent, ok := byName[name]; ok {
+	for _, provider := range ui.Providers {
+		if agent, ok := byName[provider.Plugin]; ok {
 			out = append(out, agent)
-			seen[name] = true
+			seen[provider.Plugin] = true
 		}
 	}
 	for _, agent := range loaded {
@@ -281,65 +280,6 @@ func mergeAvailableAgentInfos(settings config.Settings, loaded []rpc.AgentInfo) 
 		}
 	}
 	return out
-}
-
-func fallbackAgentInfos() []rpc.AgentInfo {
-	return []rpc.AgentInfo{
-		{
-			Name: "claude",
-			UserSettings: []rpc.UserSetting{
-				{
-					Key:          "dangerously_skip_permissions",
-					Label:        "Skip permission prompts",
-					Description:  "Pass --dangerously-skip-permissions to claude. Use only in trusted worktrees.",
-					Type:         rpc.SettingTypeBool,
-					DefaultValue: "false",
-				},
-				{
-					Key:          "model",
-					Label:        "Model",
-					Description:  "Fallback claude --model for runs without their own. Empty uses the claude CLI default.",
-					Type:         rpc.SettingTypeString,
-					DefaultValue: "",
-				},
-			},
-		},
-		{
-			Name: "codex",
-			UserSettings: []rpc.UserSetting{
-				{
-					Key:           "sandbox",
-					Label:         "Sandbox mode",
-					Description:   "Codex --sandbox mode. Empty uses codex default (no --sandbox flag passed).",
-					Type:          rpc.SettingTypeEnum,
-					AllowedValues: []string{"", "read-only", "workspace-write", "danger-full-access"},
-					DefaultValue:  "",
-				},
-				{
-					Key:           "approval",
-					Label:         "Approval policy",
-					Description:   "Codex --ask-for-approval policy. Empty uses codex default (no flag passed).",
-					Type:          rpc.SettingTypeEnum,
-					AllowedValues: []string{"", "untrusted", "on-failure", "on-request", "never"},
-					DefaultValue:  "",
-				},
-				{
-					Key:          "model",
-					Label:        "Model",
-					Description:  "Codex --model selection. Empty uses codex default.",
-					Type:         rpc.SettingTypeString,
-					DefaultValue: "",
-				},
-				{
-					Key:          "dangerously_bypass_approvals_and_sandbox",
-					Label:        "Bypass approvals & sandbox (dangerous)",
-					Description:  "Pass --dangerously-bypass-approvals-and-sandbox to codex. Overrides sandbox/approval. Use only in trusted worktrees.",
-					Type:         rpc.SettingTypeBool,
-					DefaultValue: "false",
-				},
-			},
-		},
-	}
 }
 
 func enabledAgentNames(settings config.Settings, agents []rpc.AgentInfo) []string {

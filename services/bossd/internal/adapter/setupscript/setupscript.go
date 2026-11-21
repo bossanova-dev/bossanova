@@ -25,8 +25,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/recurser/bossalib/contract/plugin/loginshell"
 )
 
 // Type discriminates the Spec shape.
@@ -221,15 +219,9 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) (time.Duration, err
 		output = os.Stderr
 	}
 
-	argv, err := s.buildArgv(opts)
+	argv, err := s.BuildArgv(opts, "setup.sh")
 	if err != nil {
 		return 0, err
-	}
-	// Run through the user's login shell when configured so version-manager
-	// shims land on PATH (see ExecuteOpts.LoginShell). Unsupported/empty shells
-	// fall through to direct execution.
-	if opts.LoginShell != "" && loginshell.IsSupported(opts.LoginShell) {
-		argv = loginshell.Wrap(opts.LoginShell, loginshell.Flags(opts.LoginShell), argv)
 	}
 	// #nosec G204 -- runs the operator-configured setup_script, optionally wrapped in a login shell; local-trust
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
@@ -328,7 +320,7 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) (time.Duration, err
 // filesystem-scoped validation (path traversal under the worktree, Makefile
 // existence) along the way. The caller may wrap the argv through a login shell
 // before building the *exec.Cmd.
-func (s Spec) buildArgv(opts ExecuteOpts) ([]string, error) {
+func (s Spec) buildArgv(opts ExecuteOpts, legacyName string) ([]string, error) {
 	switch s.Type {
 	case TypeMake:
 		mfPath := filepath.Join(opts.WorktreePath, "Makefile")
@@ -351,7 +343,7 @@ func (s Spec) buildArgv(opts ExecuteOpts) ([]string, error) {
 		return append([]string{s.Argv[0]}, s.Argv[1:]...), nil
 
 	case TypeLegacy:
-		scriptPath, err := writeLegacyScript(opts.WorktreePath, s.LegacyScript)
+		scriptPath, err := writeLegacyScriptNamed(opts.WorktreePath, s.LegacyScript, legacyName)
 		if err != nil {
 			return nil, err
 		}
@@ -389,11 +381,15 @@ func resolveInsideWorktree(worktree, rel string) (string, error) {
 // <worktree>/.boss/setup.sh with a shebang and mode 0600, then returns the
 // absolute path. The script is run via `sh <path>`, so it needs no exec bit.
 func writeLegacyScript(worktreePath, content string) (string, error) {
+	return writeLegacyScriptNamed(worktreePath, content, "setup.sh")
+}
+
+func writeLegacyScriptNamed(worktreePath, content, name string) (string, error) {
 	dir := filepath.Join(worktreePath, ".boss")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("%w: create .boss dir: %w", ErrInvalidSpec, err)
 	}
-	path := filepath.Join(dir, "setup.sh")
+	path := filepath.Join(dir, name)
 	body := content
 	if !strings.HasPrefix(body, "#!") {
 		body = "#!/bin/sh\nset -e\n" + body

@@ -1,0 +1,8 @@
+Captured: 2026-11-20
+1.5.13 (Antigravity CLI, agy)
+tmux 3.8
+Plain: capture-pane -p, fresh temporary working directory.
+spinner_a/spinner_b: two frames of one turn, same transcript, different braille frame.
+idle_after_turn: the same session after the turn ended.
+folder_trust_real: first launch in an untrusted folder, no keys sent.
+Scrubbed: the account email is replaced with operator@example.com; nothing else edited.

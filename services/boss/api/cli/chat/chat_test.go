@@ -201,6 +201,17 @@ func TestChatSendJSONFailureIsAnErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestChatSendJSONNotSubmittedHasStableCode_Sessions_AC261701(t *testing.T) {
+	out, err := chatSendJSONOutput(t, &chatSendRecorder{err: rpcerror.WrapError(connect.NewError(connect.CodeInternal, errors.New("send message (delivery state: not submitted): DELIVERY_NOT_SUBMITTED: pending")))})
+	if err == nil {
+		t.Fatal("a refused send must fail the command")
+	}
+	var env cliutil.JSONErrorEnvelope
+	if jsonErr := json.Unmarshal([]byte(out), &env); jsonErr != nil || env.Error.Code != "DELIVERY_NOT_SUBMITTED" {
+		t.Fatalf("stdout = %q, want DELIVERY_NOT_SUBMITTED", out)
+	}
+}
+
 func TestChatSendWakeIfAsleepFlag(t *testing.T) {
 	t.Run("omitted flag still wakes a sleeping chat", func(t *testing.T) {
 		c := &chatSendRecorder{}

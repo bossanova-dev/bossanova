@@ -84,12 +84,13 @@ boss-verify gate: merged=1 parked=1 dispatched=2 skipped=1 deferred=1
 
 ## Exit codes
 
-| Exit | Meaning                                                                                                                                                                                                   |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `1`  | Nothing to do, or every candidate handled. The run is recorded `gated` and **no session starts** — the normal outcome.                                                                                    |
-| `1`  | Fail closed: a missing configured tracker credential (`LINEAR_API_KEY` for Linear; the host's `gh` login for GitHub), an unreadable config, a failed tracker read or open-PR read, or a refused argument. |
-| `1`  | `--dry-run`, always: it writes and dispatches nothing and prints the routes it would take.                                                                                                                |
-| `0`  | `undispatchable:` — a candidate needed the `boss` CLI and it was unreachable from the gate. Cron starts the `/boss-verify` sweep.                                                                         |
+| Exit | Meaning                                                                                                                                                                                                                                                                                                   |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `1`  | Nothing to do, or every candidate handled. The run is recorded `gated` and **no session starts** — the normal outcome.                                                                                                                                                                                    |
+| `1`  | Fail closed: a missing configured tracker credential (`LINEAR_API_KEY` for Linear; the host's `gh` login for GitHub), an unreadable config, a failed tracker read or open-PR read, or a refused argument.                                                                                                 |
+| `1`  | `--dry-run`, always: it writes and dispatches nothing and prints the routes it would take.                                                                                                                                                                                                                |
+| `69` | In cron mode, any candidate judge failed (timeout or error), except under `--dry-run` or the `undispatchable` fallback. The verdict is unknown: the scheduler records `gate_failed`, the cron shows FAILED, and the daemon WARN log carries the one-line `judge failed for …` summary. No session starts. |
+| `0`  | `undispatchable:` — a candidate needed the `boss` CLI and it was unreachable from the gate. Cron starts the `/boss-verify` sweep.                                                                                                                                                                         |
 
 The gate fires a session only on that last row: the session's own environment carries the `boss`
 binary and daemon socket, and its sweep routes exactly as the gate would have. A host whose `boss`

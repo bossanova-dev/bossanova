@@ -16,8 +16,8 @@ merge** with minimal hand-holding.
 
 `boss skills install` extracts the suite into the global skill directory of every
 supported agent whose CLI is on `PATH`: Claude Code (`~/.claude/skills`), Codex
-(`~/.codex/skills`) and Hermes Agent (`~/.hermes/skills`, or `$HERMES_HOME/skills`
-when `HERMES_HOME` is set).
+(`~/.codex/skills`), Antigravity (`~/.gemini/config/skills`) and Hermes Agent
+(`~/.hermes/skills`, or `$HERMES_HOME/skills` when `HERMES_HOME` is set).
 
 Every skill is built as a **project-agnostic core** plus a few pluggable seams, so
 the same suite runs in any repository. The Bossanova-specific coupling (the issue

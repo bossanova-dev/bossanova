@@ -19,7 +19,7 @@ flowchart TD
     User([You]) -->|manages sessions| Boss["boss — Terminal UI"]
     Boss <-->|gRPC: state, config| Bossd["bossd — daemon"]
     Bossd -->|creates + removes| Worktrees["git worktrees<br/>(one per session)"]
-    Bossd <-->|gRPC events| Agent["Agent plugins<br/>claude · codex"]
+    Bossd <-->|gRPC events| Agent["Agent plugins<br/>claude · codex · antigravity"]
     Bossd <-->|gRPC events| Tasks["Task-source plugins<br/>linear · sentry"]
     Bossd <-->|gRPC events| Automation["Automation plugins<br/>dependabot · repair"]
     Agent -->|runs coding-agent CLI in| Worktrees
@@ -36,7 +36,8 @@ flowchart TD
   subscribe to bossd events. There are two flavors:
   - _Agent plugins_ own a coding-agent CLI subprocess for each
     session. The bundled `claude` plugin runs Claude Code, and the
-    bundled `codex` plugin runs OpenAI Codex CLI. `opencode` is
+    bundled `codex` plugin runs OpenAI Codex CLI, and the bundled
+    `antigravity` plugin runs the Antigravity CLI (`agy`). `opencode` is
     bundled too but experimental: it stays off until you opt in via
     `experimental_plugins`. The daemon needs at least one agent plugin
     loaded to start sessions.

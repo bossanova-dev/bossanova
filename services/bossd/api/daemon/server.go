@@ -70,6 +70,7 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
+	freshChatPanes             freshChatPanes
 	viewerApprovals            *ViewerApprovals
 	credentialDevices          *CredentialDeviceService
 	trackerIssueLeases         trackerIssueLeases
@@ -79,6 +80,7 @@ type Server struct {
 	proofCheckRuns            ProofCheckRuns
 	proofCheckRunSessionToken func() string
 	validateBranchName        func(context.Context, string) error
+	remoteBranchExists        func(context.Context, string, string) (bool, error)
 	validateRepoScript        func(string) error
 	repos                     repoStore
 	sessions                  sessionStore
@@ -264,9 +266,11 @@ type Server struct {
 	onSessionUpdated      func(context.Context, *pb.Session)
 	logger                zerolog.Logger
 	fileLimitSoft         uint64
+	sessionServeRunner    SessionServeRunner
 	// endpointReader and endpointNamespaceGate back the BOS-473 opt-in local
 	// endpoint hydration. endpointReader is nil-safe (no hydration when unset);
 	// endpointNamespaceGate is always non-nil after New (platform default).
+	serveTmuxName         func(string) string
 	endpointReader        SessionEndpointReader
 	endpointNamespaceGate func(clientNS string) bool
 	passthroughStats      passthroughStatsProvider // nil until SetPassthroughStatsProvider; BOS-483
@@ -377,6 +381,9 @@ type Config struct {
 	// ValidateBranchName checks git branch syntax before session creation.
 	// Required for session creation; the composition root supplies the git adapter.
 	ValidateBranchName func(context.Context, string) error
+
+	// RemoteBranchExists distinguishes a missing origin branch from a failed probe.
+	RemoteBranchExists func(context.Context, string, string) (bool, error)
 	// ValidateRepoScript validates the stored structured command format.
 	ValidateRepoScript func(string) error
 
@@ -556,11 +563,13 @@ type Config struct {
 	// FileLimitSoft is the RLIMIT_NOFILE soft limit the daemon achieved at
 	// startup (0 = unknown/non-unix). RepairDoctor surfaces a WARN when it is
 	// below the safe floor (BOS-465).
-	FileLimitSoft uint64
+	FileLimitSoft      uint64
+	SessionServeRunner SessionServeRunner
 	// EndpointReader supplies verified machine-local HTTP endpoints for opted-in
 	// local session reads (BOS-473), backed by the sessionports tracker in
 	// cmd/main.go. Optional/nil-safe: when nil, GetSession/ListSessions never
 	// hydrate Session.http_endpoints.
+	ServeTmuxName  func(string) string
 	EndpointReader SessionEndpointReader
 	// EndpointNamespaceGate overrides the platform network-namespace check used
 	// to gate endpoint hydration (a test seam). Nil selects the platform default
@@ -687,6 +696,7 @@ func New(cfg Config) *Server {
 		environmentOverlay:    cfg.EnvironmentOverlay,
 		verifyProofKeys:       cfg.VerifyProofKeys,
 		validateBranchName:    cfg.ValidateBranchName,
+		remoteBranchExists:    cfg.RemoteBranchExists,
 		validateRepoScript:    cfg.ValidateRepoScript,
 		repos:                 cfg.Repos,
 		sessions:              cfg.Sessions,
@@ -770,6 +780,8 @@ func New(cfg Config) *Server {
 		onSessionUpdated:      cfg.OnSessionUpdated,
 		logger:                cfg.Logger,
 		fileLimitSoft:         cfg.FileLimitSoft,
+		sessionServeRunner:    cfg.SessionServeRunner,
+		serveTmuxName:         cfg.ServeTmuxName,
 		endpointReader:        cfg.EndpointReader,
 		agentLogsDir:          cfg.AgentLogsDir,
 		protectedRoots:        cfg.ProtectedRoots,
@@ -994,8 +1006,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// --- Repo Validation ---
-
 func (s *Server) ValidateRepoPath(ctx context.Context, req *connect.Request[pb.ValidateRepoPathRequest]) (*connect.Response[pb.ValidateRepoPathResponse], error) {
 	localPath := req.Msg.LocalPath
 	if localPath == "" {
@@ -1126,12 +1136,4 @@ func isSubdirOf(child, parent string) bool {
 	// Ensure parent ends with separator for prefix matching.
 	parentPrefix := parent + string(filepath.Separator)
 	return len(child) > len(parentPrefix) && child[:len(parentPrefix)] == parentPrefix
-}
-
-// checkBranchName also supports the zero-value Server used by focused handlers.
-func (s *Server) checkBranchName(ctx context.Context, name string) error {
-	if s.validateBranchName != nil {
-		return s.validateBranchName(ctx, name)
-	}
-	return fmt.Errorf("branch name validator is not configured")
 }

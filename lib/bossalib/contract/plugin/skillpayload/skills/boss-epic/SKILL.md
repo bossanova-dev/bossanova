@@ -143,11 +143,12 @@ Persist only ticket JSON and id lists.
 ## Phase 0 — Preflight
 
 1. **Arguments** — `parseEpicArgs` returns `{mode, parentId, parentIds, ids, parallel, agent,
-assumeCleared, assumeClearedAndMerge, selectionFlags?}` (`--label`/`--exclude-label` and the other
+assumeCleared, assumeClearedAndMerge, selectionFlags?, baseBranch?}` (`--label`/`--exclude-label` and the other
    selection flags are filters, never refs): one positional is a parent, several are an explicit list,
    repeated `--epic <REF>` select several roots (never mixed with positionals). Refs may be ids or
    pasted Linear URLs. `--parallel` 1..8 (default 4), `--agent` (default `claude`), `--team`
-   (tracker team, step 3).
+   (tracker team, step 3). `--base-branch <branch>` selects the base for every child worktree
+   and PR; omitted, children use the repo default base. The named branch must exist on origin.
    `--assume-cleared <ref>` unparks a blocked dependent for launch only;
    `--assume-cleared-and-merge <ref>` also lets the merge step pass that blocker. A throw stops
    `BLOCKED: <message>`.
@@ -324,20 +325,24 @@ Every wake (callback, subscription, fallback, retry, manual resume, first run) r
 `reconcileEpic` cycle; why it woke selects nothing:
 
 ```bash
+# Set BASE_BRANCH to the parsed baseBranch when supplied; leave it empty otherwise.
+BASE_ARGS=()
+if [ -n "${BASE_BRANCH:-}" ]; then BASE_ARGS=(--base-branch "$BASE_BRANCH"); fi
 # Fresh run (once): eligible tickets → a persisted state; prints statePath and runId.
 node "$BOSS_EPIC_TOOLBOX/epic/epic-run.mjs" init --tickets-file "$TICKETS_FILE" \
   --planned-state "$BOSS_EPIC_PLANNED_STATE" --review-state "$BOSS_EPIC_REVIEW_STATE" \
   --epic <ROOT> --repo-id "$REPO_ID" --state-dir "$STATE_DIR" --parallel 4 \
-  --wall-clock-minutes "$BOSS_EPIC_CHILD_WALL_CLOCK_MIN"
+  --wall-clock-minutes "$BOSS_EPIC_CHILD_WALL_CLOCK_MIN" "${BASE_ARGS[@]}"
 # Every wake: exactly one reconcileEpic cycle over the boss CLI, gh and the tracker adapter.
 node "$BOSS_EPIC_TOOLBOX/epic/epic-run.mjs" reconcile --state-file "$STATE_FILE" \
   --repo-id "$REPO_ID" --pr-repo <owner/repo> --driver-chat "$BOSS_AGENT_SESSION_ID" \
   --model "opus[1m]" --wake <kind> --tickets-file "$TICKETS_FILE" \
-  --blocker-states-file <file> --fallback-mechanism <m> --fallback-wake-at <iso>
+  --blocker-states-file <file> --fallback-mechanism <m> --fallback-wake-at <iso> "${BASE_ARGS[@]}"
 ```
 
 `reconcile` prints `{status, blockers, actions, routes, deferred, warnings}`. Exit 3
-(`blocker-states-required`) names the external blockers to read first. Carry out each `routes`
+(`blocker-states-required`) names the external blockers to read first. `base-branch-mismatch`
+refuses a different base before a resumed cycle; launches always use the persisted base. Carry out each `routes`
 entry (resume / repair / investigate, 3c), execute each `deferred` tracker descriptor once
 (`progress` follows the `upsert-progress` two-step), and arm the fallback wake before passing it.
 Non-empty `blockers` ⇒ yield `RUNNING`.
@@ -489,7 +494,8 @@ still open`); only `--assume-cleared-and-merge` clears this gate. Otherwise:
 1. `merge_session {id: <session_id>, confirm: true}` — `confirm` is mandatory.
 2. Success ⇒ confirm `MERGED`, move the ticket to Done, fold it into `merged` (and
    `externallyCleared` for an adopted non-node child), then refresh the driver's checkout
-   (`git fetch origin <base>` and `git rebase --no-fork-point FETCH_HEAD`; skip with a note if it is
+   (`git fetch origin <base>` and `git rebase --no-fork-point FETCH_HEAD`; `<base>` is the run’s
+   persisted base when named, otherwise the repo default; skip with a note if it is
    not on the base or is dirty).
 3. `FailedPrecondition "PR is not passing"` or a conflict (a sibling merge invalidated it) ⇒ back to
    a repair round; the first such demotion gets one extra round outside the cap of four.
@@ -580,5 +586,5 @@ resume without the previous turn.
 Put the children in the planned state with `agent-build` (a `boss-plan` plan attachment is optional;
 boss-build builds from the title and description otherwise). Then
 `/boss-epic <TICKET>` (a parent id or URL), `/boss-epic <A> <B> …` (a list), or `--epic <A> --epic
-<B>` (several roots), with optional `--parallel N`, `--agent <name>` and the `--assume-cleared*`
+<B>` (several roots), with optional `--parallel N`, `--agent <name>`, `--base-branch <branch>` and the `--assume-cleared*`
 overrides.

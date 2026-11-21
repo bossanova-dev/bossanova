@@ -10,6 +10,7 @@ const ACTION_ORDER = [
   'upstream-red',
   'mark-ready',
   'refresh-park',
+  'finish-build',
   'ask-operator',
   'repair',
   'verify',

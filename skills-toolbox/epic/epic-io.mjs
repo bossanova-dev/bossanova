@@ -380,6 +380,7 @@ export function createEpicIo({
         '--json',
       ]
       if (isNonEmptyString(model)) args.push('--model', model)
+      if (isNonEmptyString(state.baseBranch)) args.push('--base-branch', state.baseBranch)
       if (isNonEmptyString(trackerSource)) args.push('--tracker-source', trackerSource)
       const url = ticket.url ?? ticketUrls[ticket.id]
       if (isNonEmptyString(url)) args.push('--tracker-url', url)

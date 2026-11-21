@@ -27,6 +27,9 @@ type MockWorktreeManager struct {
 	ReapLocalBranchesCalls        []reapLocalBranchesCall
 	PurgeWorktreeCalls            []purgeWorktreeCall
 	DeleteLocalBranchCalls        []string
+	RemoteBranchExistsCalls       []remoteBranchProbeCall
+	RemoteBranches                map[string]bool
+	RemoteBranchExistsErr         error
 
 	// DeleteLocalBranchErr is returned by DeleteLocalBranch when non-nil.
 	DeleteLocalBranchErr error
@@ -194,6 +197,7 @@ type purgeWorktreeCall struct {
 func NewMockWorktreeManager() *MockWorktreeManager {
 	return &MockWorktreeManager{
 		DetectOriginURLResult: "https://github.com/test/repo.git",
+		RemoteBranches:        map[string]bool{"main": true, "dev": true},
 	}
 }
 

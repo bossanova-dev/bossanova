@@ -299,7 +299,6 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		t.Fatal("timed out waiting for the realtime poller's initial poll")
 	}
 
-	// Server.
 	h := &Harness{}
 	mockAgentClient := &MockAgentClient{Name: "claude"}
 	mockCodexClient := &MockAgentClient{Name: "codex"}
@@ -309,6 +308,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		NewVerifyVerbs:      func(env []string) server.VerifyVerbs { return &verifybridge.Bridge{Env: env} },
 		EnvironmentOverlay:  dotenv.OverlayWithRepo,
 		ValidateBranchName:  gitpkg.ValidateBranchName,
+		RemoteBranchExists:  gitMock.RemoteBranchExists,
 		VerifyProofKeys:     proofenv.Keys(),
 		Repos:               repos,
 		Sessions:            sessions,

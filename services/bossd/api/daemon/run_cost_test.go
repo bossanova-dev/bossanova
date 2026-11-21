@@ -19,14 +19,14 @@ type fakeAgentRunStore struct {
 	started     []domain.AgentRun
 	stopped     []string
 	ops         []string
-	telemetry   []fakeAgentRunTelemetry
+	telemetry   []agentRunTelemetryRecord
 	ctxErrs     []error
 	deadlines   []time.Time
 
 	recordTelemetryHook func(context.Context)
 }
 
-type fakeAgentRunTelemetry struct {
+type agentRunTelemetryRecord struct {
 	runID     string
 	telemetry domain.AgentRunTelemetry
 }
@@ -70,7 +70,7 @@ func (f *fakeAgentRunStore) RecordTelemetry(ctx context.Context, runID string, t
 	f.ctxErrs = append(f.ctxErrs, ctx.Err())
 	deadline, _ := ctx.Deadline()
 	f.deadlines = append(f.deadlines, deadline)
-	f.telemetry = append(f.telemetry, fakeAgentRunTelemetry{runID: runID, telemetry: telemetry})
+	f.telemetry = append(f.telemetry, agentRunTelemetryRecord{runID: runID, telemetry: telemetry})
 	if f.recordTelemetryHook != nil {
 		f.recordTelemetryHook(ctx)
 	}

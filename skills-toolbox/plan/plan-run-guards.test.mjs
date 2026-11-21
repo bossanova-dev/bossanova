@@ -1994,12 +1994,17 @@ function depsRepo() {
   return dir
 }
 
-function runDeps(dir, { payload = {}, rows, subject = 'TCK-1', outcomes } = {}) {
+function runDeps(dir, { payload = {}, rows, subject = 'TCK-1', outcomes, graph } = {}) {
   const payloadPath = path.join(dir, 'deps-in.json')
   const rowsPath = path.join(dir, 'candidates.json')
   writeFileSync(payloadPath, JSON.stringify(payload))
   writeFileSync(rowsPath, typeof rows === 'string' ? rows : JSON.stringify(rows))
   const args = [GUARD, 'deps', payloadPath, rowsPath, '--subject', subject]
+  if (graph) {
+    const graphPath = path.join(dir, 'graph.json')
+    writeFileSync(graphPath, JSON.stringify(graph))
+    args.push('--graph', graphPath)
+  }
   return spawnSync(process.execPath, args, {
     cwd: dir,
     encoding: 'utf8',
@@ -2034,13 +2039,16 @@ test('deps: classifies the subject from the candidates file and prints verdict a
   assert.equal(out.verdict.verdict, 'related-only')
   assert.equal(out.candidateSetComplete, true)
   assert.equal(out.compared, 1, 'the subject row is rejected at rung 1, never compared')
+  assert.deepEqual(out.planningLines, [
+    'Related, non-blocking file overlap (rebase risk only): TCK-2 (shared: app/api/x.go).',
+  ])
   assert.deepEqual(
     out.edges.map((edge) => [edge.identifier, edge.edge]),
     [['TCK-2', 'relatedTo']],
   )
   assert.match(
     res.stderr,
-    /^subjectAreas \["app\/api\/x\.go"\] unresolved \[\] referenced \[\] candidatesWithoutAreas 0 related-only compared=1 edges=1 $/m,
+    /^subjectAreas \["app\/api\/x\.go"\] unresolved \[\] referenced \[\] candidatesWithoutAreas 0 related-only compared=1 edges=1 cycleSkips=0 held=0 $/m,
   )
   assert.deepEqual(recordedOutcomes(outcomes), [['plan-run-guards.deps', 'pass', 'related-only']])
 })
@@ -2101,7 +2109,7 @@ test('deps: a candidates file holding only the subject is a clean no-candidates 
   assert.equal(out.verdict.verdict, 'no-candidates')
   assert.equal(out.verdict.recordToDescription, false)
   assert.deepEqual(out.verdict.reasons, [])
-  assert.match(res.stderr, / no-candidates compared=0 edges=0 $/m)
+  assert.match(res.stderr, / no-candidates compared=0 edges=0 cycleSkips=0 held=0 $/m)
 })
 
 test('deps: a --state-narrowed candidates file is could-not-evaluate, not no-candidates', () => {
@@ -2668,6 +2676,20 @@ test('deps: links an Unplanned logical prerequisite and refuses an unfetched ver
   ]
   const res = runDeps(dir, {
     rows,
+    graph: {
+      seeds: ['TCK-1', 'TCK-2'],
+      maxNodes: 100,
+      complete: true,
+      nodes: rows.map((row) => ({
+        id: row.id,
+        identifier: row.identifier,
+        stateType: row.stateType,
+        parentId: null,
+        blocks: [],
+        blockedBy: [],
+        relationsComplete: true,
+      })),
+    },
     payload: {
       logicalDependencies: { 'TCK-2': { direction: 'blockedBy', note: 'needs the API' } },
     },

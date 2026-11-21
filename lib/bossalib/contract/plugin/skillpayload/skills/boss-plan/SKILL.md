@@ -422,10 +422,11 @@ Then:
    settled read-back supplies that evidence. After the description save, copy `image-guard-new.md`
    to `image-guard-final.md`: that file always holds the bytes of the run's last description save,
    including when step 4(f) is skipped.
-4. **Link dependencies** — I/O only; `plan/plan-deps-lib.mjs` decides every edge:
+4. **Link dependencies** — `plan/plan-deps-lib.mjs` classifies each edge; the blocker-graph screen decides which blocking writes survive:
 
    a. Fetch candidates (planned, in-progress, in-review, plus every related id):
    `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --team <team> --id <ISSUE-ID> --id <related id>…`.
+   Relations come from the separate blocker graph, not candidate rows.
    Read only the receipt and `jq -r '.[] | [.identifier, .title, .stateName] | @tsv'`; a
    non-zero exit means _could not evaluate_. Reuse the drafter's open-PR snapshot when present;
    otherwise run `plan-open-prs.mjs fetch` once:
@@ -445,7 +446,12 @@ Then:
    of relations.
    c. Write the scan input to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json`
    (`declaredRelatedIds`, `logicalDependencies`, optional `childrenByParentId`, plus any
-   `moduleRoots`/`repoWideTokens`/`areaAliases` overrides — no `subject`) and classify:
+   `moduleRoots`/`repoWideTokens`/`areaAliases` overrides, optional boolean `subjectAgentBuild` — no `subject`) and classify.
+   The runner fetches `tracker/cli.mjs fetch-blocker-graph` into
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.blocker-graph.json`, seeded with the subject and
+   every logical dependency, and passes `--graph` to `deps`. A failed fetch means cycle safety
+   _could not be evaluated_. On `blocker-graph-required`, record every proposed logical write as
+   an open question with `agent-question`; write no blocking edge.
 
    ```bash
    bash <skill-dir>/toolbox/plan/boss-plan-run.sh deps --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID>
@@ -454,20 +460,25 @@ Then:
    Read the stderr line (`subjectAreas`, unresolved tokens, verdict) before writing anything.
    On `subject-description-stale`, re-run step a after the description save, rewrite the consumed scan input and classify again; report a second consecutive refusal as _could not evaluate_ (tracker read lag).
    d. Act on the result: write each `edge.write` with `appendDependency` (append-only); `relatedTo`
-   edges with `appendRelatedTo` when the adapter has it, else a `## Planning` note; `notes` under
-   their declared destination (`planning` → `## Planning`, `risks` → `## Risks`); `questions` under `## Open Questions` plus `agent-question`. A `skipped` entry
+   edges with `appendRelatedTo` when the adapter has it; write `planningLines` verbatim under
+   `## Planning`, one `--item` each (also the overlap record when `appendRelatedTo` is unavailable),
+   and `notes` whose destination is `risks` under `## Risks`; `questions` under `## Open Questions`
+   plus `agent-question`. A `skipped` entry
    with `expandChildren` true — add its children as `--id` and re-run (at most twice, excluding
    parents already expanded). An `open-pr-ticket-unfetched` skip adds its id as `--id` and re-runs
-   fetch-candidates plus deps once, reusing the snapshot. Record `open-pr-overlap` notes at their
-   destination and `open-prs-truncated` warnings as-is. `no-candidates` is a clean result: record nothing.
+   fetch-candidates plus deps once, reusing the snapshot. Record `open-prs-truncated` warnings as-is.
+   `no-candidates` is a clean result: record nothing.
+   `screen: would-close-cycle` retains the edge record with `write: null` and a risks note naming
+   the path. `blocker-graph-incomplete` or `blocker-graph-missing-node` holds the write as a
+   question: re-fetch once with the named ids or a higher `--max-nodes`, then re-run `deps --graph`.
+   Transitive upstream warnings go to risks; downstream warnings go to planning and, when
+   escalated, questions. The stderr summary reports `cycleSkips` and `held` counts.
    `could-not-evaluate` is reported as such, never as "no dependencies"; an unresolved area is
    code-marked or declared in `moduleRoots` and re-run.
-   e. Before each blocking write, read both tickets' relations and skip a write that would form a
-   cycle. A blocker whose PR is merged (`gh pr view <url> --json state,mergeCommit`) gets
-   `landed: {evidence}` and a re-run instead. Pass those reads to `transitiveBlockWarnings`:
-   upstream ⇒ a `- Transitive-block warning:` line; downstream ⇒ a note (escalated also as a
-   question). After each relation write, re-read **both** sides; record a missing edge, never
-   re-write it.
+   e. The screen walks live downstream and parent edges plus writes accepted earlier in the same
+   set; only its surviving `edge.write` values may be written. A blocker whose PR is merged
+   (`gh pr view <url> --json state,mergeCommit`) gets `landed: {evidence}` and a re-run instead.
+   After each relation write, re-read **both** sides; record a missing edge, never re-write it.
    f. Skip this entire stored-description second pass on a tracker declaring `writePlan`; retain
    dependency notes and questions in the run report and save any added `agent-question` label
    without a description. Otherwise, only when `verdict.recordToDescription` is true or the second
@@ -501,7 +512,7 @@ Then:
    it matches the stored list marker and skips existing items:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-section-append.mjs --file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md --heading Planning --item "Dependencies: blocks <ID>; blocked by <ID>" --item "<note>"
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-section-append.mjs --file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md --heading Planning --item "Dependencies: blocks <ID>; blocked by <ID>" --item "<planning line>"
    ```
 
    ```bash

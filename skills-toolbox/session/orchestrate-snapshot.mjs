@@ -23,6 +23,12 @@ import { parseArgs } from 'node:util'
 
 import { isMainModule } from '../main-module.mjs'
 import { discoverExtensions, validateResult } from '../skill-extensions.mjs'
+import {
+  FINISH_CHAT_TITLE,
+  finishBuild,
+  finishMessage,
+  PARTIAL_BUILD,
+} from './orchestrate-finish.mjs'
 import { DEFAULT_STATE_DIR, holdRows, readOutage } from './orchestrate-outage.mjs'
 import { paneVerb } from './orchestrate-pane.mjs'
 import { printTable } from './orchestrate-table.mjs'
@@ -72,18 +78,12 @@ export function draftHold(timeline = []) {
   return { holder: byVerify ? 'verify' : 'operator', repaired }
 }
 
-// Park codes only the operator settles: those a verify policy raises on purpose, and
-// `partial-build`, a PR built partially on purpose (merge the part, or continue) that a fresh head
-// would park again. Every other code in verify-gate.mjs HUMAN_REASONS records something mechanical
-// (repair-exhausted, worktree-unsynced, no-receipt, ...) that an agent can clear by giving verify a
-// fresh head.
+// Park codes only the operator settles: those a verify policy raises on purpose. `partial-build`
+// is neither theirs nor mechanical: the session is sent back to finish the build (`finish-build`).
+// Every other code in verify-gate.mjs HUMAN_REASONS records something mechanical (repair-exhausted,
+// worktree-unsynced, no-receipt, ...) that an agent can clear by giving verify a fresh head.
 function isOperatorPark(code) {
-  return (
-    code === 'always-human-path' ||
-    code === 'human-merge' ||
-    code === 'partial-build' ||
-    code.startsWith('human-review:')
-  )
+  return code === 'always-human-path' || code === 'human-merge' || code.startsWith('human-review:')
 }
 
 function parkCodes(reason = '') {
@@ -285,8 +285,11 @@ export function classifySession({
     return { action: 'skip', why: 'terminal' }
   if (pr && pr.state !== 'open')
     return { action: 'stale-session', why: `PR is ${pr.state || 'unreadable'}` }
+  const progress = classifyProgress({ session, chats, pr, residual, cronJob, now })
   const asking = questionChats(chats)
-  if (asking.length) {
+  // A head already parked for the operator outranks a QUESTION status: a finished verify chat
+  // that posted the park can sit at QUESTION with no dialog on its pane.
+  if (asking.length && progress.action !== 'awaiting-operator') {
     const more = asking.length > 1 ? ` (+${asking.length - 1} more)` : ''
     return {
       action: 'question-chat',
@@ -294,7 +297,6 @@ export function classifySession({
       chat: asking[0].agent_session_id,
     }
   }
-  const progress = classifyProgress({ session, chats, pr, residual, cronJob, now })
   const handedOff = Boolean(pr && !pr.is_draft && pr.has_build_receipt)
   const stuck = NUDGEABLE.has(progress.action) && !handedOff ? stalledChat(chats, now) : null
   if (!stuck) return progress
@@ -365,8 +367,12 @@ function classifyProgress({ session, chats, pr, residual, cronJob, now }) {
     )
   }
   if (phase.kind === 'needs_human') {
-    const mechanical = parkCodes(phase.reason).filter((code) => !isOperatorPark(code))
+    const codes = parkCodes(phase.reason)
     const label = phase.label ? ` · ${phase.label}` : ''
+    // Finishing the build pushes a fresh head, which also clears any mechanical code beside it.
+    if (codes.includes(PARTIAL_BUILD))
+      return finishBuild({ session, chats, why: `${phase.reason}${label}`, now })
+    const mechanical = codes.filter((code) => !isOperatorPark(code))
     if (!mechanical.length) return verdict('awaiting-operator', `${phase.reason}${label}`)
     if (live.length) return working(`parked ${mechanical.join(',')}`)
     if (checks.state === 'pending')
@@ -411,8 +417,8 @@ export function remedy({ action, why, chat: chatId, cause }, { host, session, pr
   const skill = (name) => (session.agent === 'codex' ? `$${name}` : `/${name}`)
   const quote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`
   const send = (id, message) => `${boss} chat send --json ${id || '<chat-id>'} ${quote(message)}`
-  const chat = (role, message) =>
-    `${boss} chat new ${session.id} --role ${role} --title '${role}: orchestrator' --json  # then: ${send('', message)}`
+  const chat = (role, message, title = `${role}: orchestrator`) =>
+    `${boss} chat new ${session.id} --role ${role} --title ${quote(title)} --json  # then: ${send('', message)}`
   const pane = (flag) =>
     `node ${SNAPSHOT_SCRIPT} pane --chat ${chatId || '<chat-id>'}${host ? ` --host ${host}` : ''}${flag}`
   switch (action) {
@@ -444,6 +450,8 @@ export function remedy({ action, why, chat: chatId, cause }, { host, session, pr
       )
     case 'verify':
       return chat('verify', `${skill('boss-verify')} ${pr ?? ''}`)
+    case 'finish-build':
+      return chat('operator', finishMessage({ session, pr, why, skill }), FINISH_CHAT_TITLE)
     case 'mark-ready':
       return `gh pr ready ${pr} -R <repo>  # the armed verify callback then fires`
     default:

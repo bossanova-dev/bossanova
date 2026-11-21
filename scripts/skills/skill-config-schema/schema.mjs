@@ -475,6 +475,17 @@ const publishAdapter = object({
   ],
 })
 
+// `publishConfig.proof: false` opts out of the hosted proof fallback. A non-object fails only the
+// `type` or `not` keyword here, since publishAdapter's object rules ignore non-objects, so a
+// malformed object keeps its specific message instead of collapsing into an anyOf.
+const PROOF_SHAPE = 'publishConfig.proof must be an object or false'
+const proofPublishAdapter = {
+  ...publishAdapter,
+  type: ['object', 'boolean'],
+  not: { const: true, 'x-msg': PROOF_SHAPE },
+  'x-msg': { type: PROOF_SHAPE },
+}
+
 const planDependencyList = (key) => ({
   type: 'array',
   'x-msg': `planDependencies.${key} must be an array`,
@@ -716,6 +727,7 @@ export const schema = object({
     }),
     publishConfig: object({
       'x-msg': { type: 'publishConfig must be an object' },
+      properties: { proof: proofPublishAdapter },
       additionalProperties: publishAdapter,
     }),
     planStorage: object({

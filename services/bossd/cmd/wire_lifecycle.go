@@ -14,6 +14,7 @@ import (
 
 func (w *daemonWiring) wireLifecycle() {
 	w.lifecycle = session.NewLifecycle(w.sessions, w.repos, w.agentChats, w.cronJobs, w.worktrees, w.agentRunner, w.tmuxClient, w.ghProvider, log.Logger)
+	w.wireServe()
 	w.lifecycle.SetTelemetry(w.telemetryClient)
 	w.lifecycle.SetUnrecordedWorktreePaths(sessionports.WorktreeProcessPaths{}, w.tmuxClient)
 	// The lifecycle constructor defaults to a hermetic no-op proof env resolver

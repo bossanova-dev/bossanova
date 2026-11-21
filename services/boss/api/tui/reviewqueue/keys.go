@@ -50,7 +50,7 @@ func (m Model) key(k tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, func() tea.Msg { return openResultMsg{Err: m.openURL(target)} }
 	case "m":
-		if row == nil || row.GetIsAuditSample() || m.action.MergeUnresolved() || m.mergePending != nil {
+		if row == nil || m.action.MergeUnresolved() || m.mergePending != nil {
 			return m, nil
 		}
 		if _, ok := ui.AttentionBinding(s, "m", false); !ok {

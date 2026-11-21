@@ -71,6 +71,7 @@ go_test(
         "//plugins/bossd-plugin-sentry:env_policy_sources",  # keep
         "//plugins/bossd-plugin-repair:env_policy_sources",  # keep
         "//plugins/bossd-plugin-opencode:env_policy_sources",  # keep
+        "//plugins/bossd-plugin-antigravity:env_policy_sources",  # keep
 
         # keep: prebuilt plugin binaries + migrations staged into runfiles; the
         # harness resolves them via the BOSS_PLUGIN_BIN_* env vars below

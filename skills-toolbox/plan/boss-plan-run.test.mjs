@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import {
   cpSync,
@@ -15,6 +16,8 @@ import {
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+
+process.env.BOSS_GATE_OUTCOME_FILE = join(tempDir('gate-outcome-suite-'), 'outcomes.tsv')
 
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'boss-plan-run-test-')))
@@ -202,3 +205,51 @@ for (const shell of ['zsh', 'fish']) {
     assert.equal(result.stdout, run('steps').stdout)
   })
 }
+
+test('deps fetches logical endpoints, passes the graph, and drops stale graphs on read failure', (t) => {
+  const { root, toolbox, run } = fixture(t)
+  const scratch = join(root, 'scratch'),
+    prefix = join(scratch, 'APP-1')
+  mkdirSync(scratch)
+  mkdirSync(join(toolbox, 'tracker'))
+  writeFileSync(
+    join(toolbox, 'tracker/cli.mjs'),
+    `
+    import fs from 'node:fs';
+    const args=process.argv.slice(2);
+    fs.writeFileSync(${JSON.stringify(join(root, 'fetch-args.json'))},JSON.stringify(args));
+    if(fs.existsSync(${JSON.stringify(join(root, 'fail'))}))process.exit(2);
+    fs.writeFileSync(args[args.indexOf('--out-file')+1],JSON.stringify({fresh:true}));
+    console.log(JSON.stringify({outcome:'blocker-graph-written'}));
+  `,
+  )
+  writeFileSync(
+    join(toolbox, 'plan/plan-run-guards.mjs'),
+    `
+    import fs from 'node:fs';
+    const args=process.argv.slice(2),i=args.indexOf('--graph');
+    console.log(JSON.stringify({args,graph:i<0?null:JSON.parse(fs.readFileSync(args[i+1],'utf8'))}));
+  `,
+  )
+  const scan = () => {
+    writeFileSync(
+      prefix + '.deps-in.json',
+      JSON.stringify({ logicalDependencies: { 'APP-2': { direction: 'blockedBy' } } }),
+    )
+    return run('deps', '--run-scratch', scratch, '--issue', 'APP-1')
+  }
+  const result = scan()
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout).graph, { fresh: true })
+  assert.deepEqual(JSON.parse(readFileSync(join(root, 'fetch-args.json'), 'utf8')).slice(-4), [
+    '--id',
+    'APP-1',
+    '--id',
+    'APP-2',
+  ])
+  writeFileSync(join(root, 'fail'), '')
+  const failed = scan()
+  assert.equal(failed.status, 0, failed.stderr)
+  assert.equal(JSON.parse(failed.stdout).graph, null)
+  assert.ok(!existsSync(prefix + '.blocker-graph.json'))
+})

@@ -174,6 +174,35 @@ Refresh one session's cached pull request status
 
 - `--pr` — Pull request number to refresh (default: 0)
 
+### `boss session serve`
+
+Run the repo serve command and report its service links
+
+### `boss session serve start [session-id] [flags]`
+
+Start the repo serve command
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of text
+- `--wait` — Wait for at least one service link (for example 30s) (default: 0s)
+
+### `boss session serve status [session-id] [flags]`
+
+Show serve state and service links
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of text
+
+### `boss session serve stop [session-id] [flags]`
+
+Stop the repo serve command
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of text
+
 ### `boss session set-rank <session-id> <issue-id> [flags]`
 
 Store a linked ticket's tracker rank (local daemon only)

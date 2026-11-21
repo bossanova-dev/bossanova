@@ -53,7 +53,7 @@ View or update global settings
 - `--cloud-control-owner` — Set each registered repo under <host/owner>=<default|private|read-only|full> (repeatable)
 - `--cloud-control-repo` — Set a registered repo grant: <origin, display name or checkout>=<default|private|read-only|full> (repeatable)
 - `--daemon-name` — Set the daemon display name (blank resets to the machine hostname; restart the daemon to apply)
-- `--default-agent` — Set the default agent plugin (e.g. claude, opencode)
+- `--default-agent` — Set the default agent plugin (e.g. claude, codex, antigravity)
 - `--managed-accounts` — Enable managed accounts (bossd credential rotation)
 - `--no-managed-accounts` — Disable managed accounts (use the terminal's own login)
 - `--no-skip-permissions` — Disable Claude --dangerously-skip-permissions

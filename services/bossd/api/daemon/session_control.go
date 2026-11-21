@@ -201,6 +201,12 @@ func (s *Server) CloseSession(ctx context.Context, req *connect.Request[pb.Close
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
+	if s.lifecycle != nil {
+		if err := s.lifecycle.StopServeSession(ctx, req.Msg.Id); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+
 	closedState := int(machine.Closed)
 	if _, err := s.sessions.Update(ctx, req.Msg.Id, domain.UpdateSessionParams{
 		State: &closedState,

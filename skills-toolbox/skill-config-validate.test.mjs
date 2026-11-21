@@ -43,6 +43,41 @@ test('publish adapters accept access-put without bucket and retain daemon requir
   ])
     assert.match(check(proof).error?.message ?? '', /publishConfig/)
 })
+
+test('publishConfig.proof accepts false, refuses other non-objects and keeps object messages @sessions.AC261106', () => {
+  const check = (proof, adapter = 'proof') =>
+    capture(() =>
+      validateConfig(
+        { ...structuredClone(DEFAULT_CONFIG), publishConfig: { [adapter]: proof } },
+        'fixture.json',
+      ),
+    )
+  const accepted = check(false)
+  assert.equal(accepted.error, undefined)
+  assert.deepEqual(accepted.warnings, [])
+  const message = (proof, adapter) =>
+    String(check(proof, adapter).error?.message).replace(
+      /^skill-config: invalid config from fixture\.json: /,
+      '',
+    )
+  for (const proof of [true, null, 'off', 1])
+    assert.equal(message(proof), 'publishConfig.proof must be an object or false', String(proof))
+  const baseUrl = 'https://proof.example'
+  assert.equal(
+    message({ kind: 'access-put' }),
+    'publishConfig.proof.baseUrl must be a non-empty string',
+  )
+  assert.equal(
+    message({ kind: 'daemon', baseUrl }),
+    'publishConfig.proof.bucket must be a non-empty string',
+  )
+  assert.equal(
+    message({ kind: 'unknown', baseUrl, bucket: 'proof' }),
+    'publishConfig.proof.kind must be "daemon" or "access-put"',
+  )
+  // Only the proof block may be false.
+  assert.equal(message(false, 'store'), 'publishConfig.store must be an object')
+})
 // Any static or dynamic import, re-export, or require call. Ordinary words such as `required`
 // do not match.
 const MODULE_LOAD =

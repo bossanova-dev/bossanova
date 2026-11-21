@@ -415,6 +415,8 @@ func modelSuggestions(agent string) []string {
 	switch strings.TrimSpace(agent) {
 	case "codex":
 		return []string{"gpt-5-codex"}
+	case "antigravity":
+		return []string{"gemini-4-neon-medium", "gemini-4-neon-high", "gemini-3.8-flash-medium", "claude-opus-5-5-high", "claude-sonnet-5-5-medium"}
 	default: // claude (and daemon default)
 		return []string{"opus", "sonnet", "haiku"}
 	}

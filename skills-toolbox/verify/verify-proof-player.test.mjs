@@ -203,8 +203,13 @@ function parsePage(html) {
   return doc
 }
 
-/** The rendered page: a UI area with two clips and stills, one breaking change and ticks. */
-function pageHtml({ media = true } = {}) {
+const ORIGIN = 'https://proof.example/acme/edge/9'
+
+/**
+ * The rendered page: a UI area with two clips and stills, its own inline video, one breaking
+ * change and ticks.
+ */
+function pageHtml({ media = true, inline = true } = {}) {
   const proof = withDigest({
     schema: 'boss-proof/1',
     repo: 'acme/edge',
@@ -225,13 +230,23 @@ function pageHtml({ media = true } = {}) {
         items: ['ui fact'],
         change: 'breaking',
         changeReasons: ['Basket.total removed'],
-        media: [],
+        media: inline
+          ? [
+              {
+                kind: 'video',
+                url: `${ORIGIN}/inline.mp4`,
+                poster: `${ORIGIN}/inline.png`,
+                caption: 'Inline clip',
+                durationMs: 3_000,
+              },
+            ]
+          : [],
         proven: false,
       },
     ],
     review: { models: [{ agent: 'reviewer', outcome: 'ran' }], blockers: [], notes: [] },
     health: [],
-    page: null,
+    page: inline ? `${ORIGIN}/index.html` : null,
   })
   const clip = (id, title, chapters) => ({
     id,
@@ -287,6 +302,8 @@ function memoryStorage(entries = {}) {
 /**
  * Runs player.js on the rendered page. `search` and `hash` are the URL's, `storage` the window's
  * localStorage (a getter that throws when it is `'throws'`), and `before` edits the DOM first.
+ * `fullscreen` is the document's `fullscreenEnabled` (left absent when undefined); `'rejects'`
+ * enables it but refuses every request.
  */
 function page({
   html = pageHtml(),
@@ -296,6 +313,7 @@ function page({
   storage = memoryStorage(),
   before = () => {},
   now = null,
+  fullscreen = undefined,
 } = {}) {
   const doc = parsePage(html)
   const history = {
@@ -322,6 +340,11 @@ function page({
       },
     })
   else win.localStorage = storage
+  win.opened = []
+  win.open = (...args) => {
+    win.opened.push(args)
+    return null
+  }
   const parent = {
     posted: [],
     postMessage(message, targetOrigin) {
@@ -331,11 +354,11 @@ function page({
   win.top = framed ? parent : win
   win.parent = framed ? parent : win
   doc.defaultView = win
-  const video = doc.getElementById('proof-video')
-  if (video)
-    Object.assign(video, {
+  for (const media of doc.querySelectorAll('video'))
+    Object.assign(media, {
       currentTime: 0,
       plays: 0,
+      loads: 0,
       paused: true,
       play() {
         this.plays++
@@ -345,7 +368,30 @@ function page({
       pause() {
         this.paused = true
       },
+      load() {
+        this.loads++
+      },
     })
+  const video = doc.getElementById('proof-video')
+  /** Every element a fullscreen request named, in order. */
+  const requests = []
+  if (fullscreen !== undefined) doc.fullscreenEnabled = fullscreen !== false
+  Object.assign(doc, {
+    fullscreenElement: null,
+    exits: 0,
+    exitFullscreen() {
+      doc.exits++
+      doc.fullscreenElement = null
+      return Promise.resolve()
+    },
+  })
+  for (const el of doc.querySelectorAll('#lb-stage, #lb-video'))
+    el.requestFullscreen = function () {
+      requests.push(this)
+      if (fullscreen === 'rejects') return Promise.reject(new Error('denied'))
+      doc.fullscreenElement = this
+      return Promise.resolve()
+    }
   const stage = doc.getElementById('lb-stage')
   if (stage) Object.assign(stage, { clientWidth: 1000, clientHeight: 800 })
   before(doc)
@@ -408,6 +454,9 @@ function page({
     img,
     stage,
     zoom: doc.getElementById('lb-zoom'),
+    full: doc.getElementById('lb-full'),
+    big: doc.getElementById('lb-video'),
+    requests,
     shut: doc.getElementById('lb-close'),
     prev: doc.getElementById('lb-prev'),
     next: doc.getElementById('lb-next'),
@@ -568,15 +617,17 @@ test('Tab cycles only the lightbox buttons that are enabled', () => {
   p.key('Tab')
   assert.ok(p.doc.activeElement === p.zoom)
   p.key('Tab')
+  assert.ok(p.doc.activeElement === p.full)
+  p.key('Tab')
   assert.ok(p.doc.activeElement === p.shut)
   p.key('Tab', { shiftKey: true })
-  assert.ok(p.doc.activeElement === p.zoom)
+  assert.ok(p.doc.activeElement === p.full)
   const small = page()
   openShot(small, 400, 300)
   small.key('Tab')
   assert.ok(small.doc.activeElement === small.next)
   small.key('Tab')
-  assert.ok(small.doc.activeElement === small.shut, 'a disabled Full size button is skipped')
+  assert.ok(small.doc.activeElement === small.full, 'a disabled Full size button is skipped')
   small.key('Escape')
   assert.equal(small.key('Tab'), false, 'a closed lightbox leaves Tab to the page')
 })
@@ -697,6 +748,7 @@ test('a chapter on another clip switches source, then seeks once its metadata lo
   assert.equal(video.src, 'media/head-1.mp4')
   assert.equal(video.poster, 'media/head-1-still.png')
   assert.equal(video.dataset.clip, '1')
+  assert.equal(video.dataset.cap, 'Checkout', 'the lightbox caption names the playing clip')
   assert.equal(label.textContent, 'Checkout')
   assert.equal(video.plays, 0)
   video.fire('loadedmetadata')
@@ -761,7 +813,11 @@ test('in-page links never navigate: a banner risk link scrolls and only tries to
 })
 
 test('on a page with no video the player still handles links and lightboxes, and touches no video', () => {
-  const html = pageHtml({ media: false }).replace(
+  const bare = page({ html: pageHtml({ media: false, inline: false }) })
+  assert.ok(bare.lb === null && bare.big === null, 'no screenshot and no video, no lightbox')
+  assert.equal(bare.click(bare.$('section.banner a')), true)
+  assert.equal(bare.key('Escape'), false)
+  const html = pageHtml({ media: false, inline: false }).replace(
     '<script src="player.js"',
     '<a class="shot" href="media/one.png" data-cap="One"><img src="media/one.png" alt="One"></a><div class="lb" id="lb" hidden><div class="lb-bar"><div class="lb-cap" id="lb-cap"></div><button class="iconbtn" id="lb-zoom" type="button"></button><button class="iconbtn" id="lb-close" type="button"></button></div><div class="lb-stage" id="lb-stage"><img id="lb-img" alt=""></div></div><script src="player.js"',
   )
@@ -917,4 +973,152 @@ test('the footer time reads in the reader time zone, with how long ago it was', 
   )
   const bad = page({ html: html.replaceAll(at, 'not a time') })
   assert.equal(bad.$('time').textContent, 'not a time', 'an unreadable time is left alone')
+})
+
+/** Clicks the "Open large" button beside `media`, through the icon inside it. */
+const openLarge = (p, media) => {
+  const button = media.closest('.vbox').querySelector('button.vopen')
+  p.click(button.querySelector('svg'))
+  return button
+}
+/** Lets a settled promise's handlers run. */
+const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+test('Open large shows the chapter video in the lightbox from where it was, and closing hands the time back', () => {
+  const p = page()
+  p.video.currentTime = 3.5
+  p.video.paused = false
+  const button = openLarge(p, p.video)
+  assert.equal(p.lb.hidden, false)
+  assert.equal(p.lb.getAttribute('aria-label'), 'Video')
+  assert.equal([p.img.hidden, p.big.hidden].join(), 'true,false', 'the video replaces the image')
+  assert.equal(p.big.getAttribute('src'), 'media/head-0.mp4')
+  assert.equal(p.big.getAttribute('poster'), 'media/head-0-still.png')
+  assert.equal(p.doc.getElementById('lb-cap').textContent, 'Basket', 'no size or percent')
+  assert.equal(p.video.paused, true, 'the page copy pauses')
+  assert.equal(p.big.plays, 1, 'the large copy starts')
+  assert.deepEqual([p.zoom.disabled, p.prev.disabled, p.next.disabled], [true, true, true])
+  assert.ok(p.doc.activeElement === p.shut, 'focus moves to Close')
+  p.big.fire('loadedmetadata')
+  assert.equal(p.big.currentTime, 3.5, 'it starts where the page copy was')
+  p.big.currentTime = 7
+  p.key('Escape')
+  assert.equal(p.lb.hidden, true)
+  assert.equal(p.big.paused, true)
+  assert.equal(p.big.getAttribute('src'), null, 'the large copy is unloaded')
+  assert.equal(p.big.loads, 1, 'and stops downloading')
+  assert.equal(p.big.hidden, true)
+  assert.equal(p.video.currentTime, 7, 'the page copy takes the time back')
+  assert.equal(p.video.paused, true, 'and stays paused')
+  assert.equal(p.video.plays, 0)
+  assert.ok(p.doc.activeElement === button, 'focus returns to the Open large button')
+})
+
+test('an inline video opens with its own caption, and a close before it loads keeps the page time', () => {
+  const p = page()
+  const inline = p.$('figure.media video')
+  assert.equal(inline.getAttribute('data-cap'), 'Inline clip')
+  inline.currentTime = 2
+  openLarge(p, inline)
+  assert.equal(p.big.getAttribute('src'), `${ORIGIN}/inline.mp4`)
+  assert.equal(p.big.getAttribute('poster'), `${ORIGIN}/inline.png`)
+  assert.equal(p.doc.getElementById('lb-cap').textContent, 'Inline clip')
+  p.click(p.shut)
+  assert.equal(inline.currentTime, 2, 'an unloaded lightbox video never rewinds the page copy')
+  const shot = openShot(p, 1872, 768)
+  assert.equal(p.lb.getAttribute('aria-label'), 'Screenshot', 'a screenshot after a video')
+  assert.equal([p.img.hidden, p.big.hidden].join(), 'false,true')
+  assert.equal(p.img.src, shot.getAttribute('href'))
+  assert.equal(p.zoom.disabled, false)
+  assert.equal(p.key('ArrowRight'), true, 'arrows step screenshots again')
+})
+
+test('in video mode the video keeps its clicks and arrows, and Tab reaches it', () => {
+  const p = page()
+  openLarge(p, p.video)
+  p.click(p.big)
+  assert.equal(p.lb.hidden, false, 'a click on the video never closes the lightbox')
+  assert.equal(p.key('ArrowRight'), false, 'the arrows are left to seek')
+  assert.equal(p.key('ArrowLeft'), false)
+  p.key('Tab')
+  assert.ok(p.doc.activeElement === p.big, 'Tab from Close reaches the video')
+  p.key('Tab')
+  assert.ok(p.doc.activeElement === p.full, 'the disabled zoom and arrows are skipped')
+  p.key('Tab')
+  assert.ok(p.doc.activeElement === p.shut)
+  p.click(p.stage)
+  assert.equal(p.lb.hidden, true, 'a click beside the video still closes it')
+})
+
+test('Fullscreen enlarges the stage for a screenshot and the video for a video', () => {
+  const p = page({ fullscreen: true })
+  openShot(p, 1872, 768)
+  assert.equal(p.full.getAttribute('title'), 'Fullscreen')
+  p.click(p.full.querySelector('svg'))
+  assert.deepEqual(p.requests, [p.stage], 'the stage, so zoom and scroll still work')
+  assert.equal(p.lb.hidden, false)
+  p.doc.fullscreenElement = null
+  p.key('Escape')
+  openLarge(p, p.video)
+  p.click(p.full)
+  assert.deepEqual(p.requests, [p.stage, p.big])
+  assert.deepEqual(p.win.opened, [], 'no new tab when fullscreen works')
+})
+
+test('without fullscreen, or when it is refused, Fullscreen opens the media in a new tab', async () => {
+  for (const fullscreen of [false, undefined]) {
+    const p = page({ fullscreen })
+    const shot = openShot(p, 1872, 768)
+    assert.equal(p.full.getAttribute('title'), 'Open in a new tab', String(fullscreen))
+    p.click(p.full)
+    p.key('Escape')
+    openLarge(p, p.video)
+    p.click(p.full)
+    assert.deepEqual(p.win.opened, [
+      [shot.getAttribute('href'), '_blank', 'noopener,noreferrer'],
+      ['media/head-0.mp4', '_blank', 'noopener,noreferrer'],
+    ])
+    assert.deepEqual(p.requests, [], 'no fullscreen is requested')
+  }
+  const refused = page({ fullscreen: 'rejects' })
+  openLarge(refused, refused.video)
+  refused.click(refused.full)
+  assert.deepEqual(refused.requests, [refused.big])
+  await settle()
+  assert.deepEqual(refused.win.opened, [['media/head-0.mp4', '_blank', 'noopener,noreferrer']])
+})
+
+test('Escape leaves fullscreen first and the next one closes; closing exits fullscreen', () => {
+  const p = page({ fullscreen: true })
+  openShot(p, 1872, 768)
+  p.click(p.full)
+  assert.ok(p.doc.fullscreenElement === p.stage)
+  assert.equal(p.key('Escape'), true)
+  assert.equal(p.doc.exits, 1)
+  assert.equal(p.lb.hidden, false, 'the first Escape only leaves fullscreen')
+  p.key('Escape')
+  assert.equal(p.lb.hidden, true, 'the next one closes')
+  assert.equal(p.doc.exits, 1)
+  openLarge(p, p.video)
+  p.click(p.full)
+  p.click(p.shut)
+  assert.equal(p.doc.exits, 2, 'Close leaves fullscreen too')
+  assert.equal(p.lb.hidden, true)
+})
+
+test('a fullscreen change refits the screenshot to the new stage', () => {
+  const p = page({ fullscreen: true })
+  openShot(p, 1872, 768)
+  assert.equal(p.img.style.width, '936px')
+  Object.assign(p.stage, { clientWidth: 2000, clientHeight: 1200 })
+  for (const listener of p.doc.listeners.fullscreenchange) listener({})
+  assert.equal(p.img.style.width, '1872px', 'the bigger stage fits it at actual size')
+})
+
+test('after a clip switch, Open large names and plays the clip now showing', () => {
+  const p = page()
+  p.buttons[2].fire('click')
+  openLarge(p, p.video)
+  assert.equal(p.doc.getElementById('lb-cap').textContent, 'Checkout')
+  assert.equal(p.big.getAttribute('src'), 'media/head-1.mp4')
 })

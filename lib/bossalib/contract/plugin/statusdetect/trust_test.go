@@ -22,6 +22,7 @@ func TestIsFolderTrustPrompt(t *testing.T) {
 		{"styled CRLF", "\x1b[31m❯ No, exit\x1b[0m\r\n\x1b[2m  Yes, I trust this folder\x1b[0m\r\n", true},
 		{"only trust", "Yes, I trust this folder\n❯ \n", false},
 		{"only exit", "❯ No, exit\n", false},
+		{"antigravity cursor", "Do you trust the contents of this project?\n\n> Yes, I trust this folder\n  No, exit\n", true},
 		{"quoted prose", "⏺ Select \"Yes, I trust this folder\" to continue.\n❯ \n", false},
 		{"prose both phrases", "⏺ Yes, I trust this folder\n⏺ No, exit\n❯ \n", false},
 		{"suffix", "Yes, I trust this folder eventually\nNo, exit\n", false},
@@ -50,7 +51,7 @@ func TestIsFolderTrustPromptFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := name == "claude_folder_trust_real.txt" || name == "claude_folder_trust_styled_real.txt"
+			want := name == "claude_folder_trust_real.txt" || name == "claude_folder_trust_styled_real.txt" || name == "antigravity_folder_trust_real.txt"
 			if got := IsFolderTrustPrompt(data); got != want {
 				t.Fatalf("IsFolderTrustPrompt fixture = %v, want %v", got, want)
 			}

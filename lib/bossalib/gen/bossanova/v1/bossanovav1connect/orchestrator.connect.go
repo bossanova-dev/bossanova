@@ -343,6 +343,15 @@ const (
 	// OrchestratorServiceUpsertProofCheckRunProcedure is the fully-qualified name of the
 	// OrchestratorService's UpsertProofCheckRun RPC.
 	OrchestratorServiceUpsertProofCheckRunProcedure = "/bossanova.v1.OrchestratorService/UpsertProofCheckRun"
+	// OrchestratorServiceStartProofUploadProcedure is the fully-qualified name of the
+	// OrchestratorService's StartProofUpload RPC.
+	OrchestratorServiceStartProofUploadProcedure = "/bossanova.v1.OrchestratorService/StartProofUpload"
+	// OrchestratorServicePutProofObjectProcedure is the fully-qualified name of the
+	// OrchestratorService's PutProofObject RPC.
+	OrchestratorServicePutProofObjectProcedure = "/bossanova.v1.OrchestratorService/PutProofObject"
+	// OrchestratorServiceMintProofViewLinkProcedure is the fully-qualified name of the
+	// OrchestratorService's MintProofViewLink RPC.
+	OrchestratorServiceMintProofViewLinkProcedure = "/bossanova.v1.OrchestratorService/MintProofViewLink"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -403,6 +412,12 @@ const (
 	// OrchestratorServiceRenameOrganizationProcedure is the fully-qualified name of the
 	// OrchestratorService's RenameOrganization RPC.
 	OrchestratorServiceRenameOrganizationProcedure = "/bossanova.v1.OrchestratorService/RenameOrganization"
+	// OrchestratorServiceGetOrganizationProofHostingProcedure is the fully-qualified name of the
+	// OrchestratorService's GetOrganizationProofHosting RPC.
+	OrchestratorServiceGetOrganizationProofHostingProcedure = "/bossanova.v1.OrchestratorService/GetOrganizationProofHosting"
+	// OrchestratorServiceSetOrganizationProofHostingProcedure is the fully-qualified name of the
+	// OrchestratorService's SetOrganizationProofHosting RPC.
+	OrchestratorServiceSetOrganizationProofHostingProcedure = "/bossanova.v1.OrchestratorService/SetOrganizationProofHosting"
 	// OrchestratorServiceListOrganizationMembersProcedure is the fully-qualified name of the
 	// OrchestratorService's ListOrganizationMembers RPC.
 	OrchestratorServiceListOrganizationMembersProcedure = "/bossanova.v1.OrchestratorService/ListOrganizationMembers"
@@ -818,6 +833,39 @@ type OrchestratorServiceClient interface {
 	// A new RPC is additive, so it needs no dated apiversion bump
 	// (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
 	UpsertProofCheckRun(context.Context, *connect.Request[v1.UpsertProofCheckRunRequest]) (*connect.Response[v1.UpsertProofCheckRunResponse], error)
+	// StartProofUpload reserves one hosted proof page for a pull request head.
+	// Only a daemon may call it. bosso resolves the organization from the repo,
+	// requires its own cloud access and hosted-proof opt-in (FailedPrecondition),
+	// and validates the manifest (InvalidArgument). Limits are ResourceExhausted
+	// with a ProofUploadLimitExceeded detail. Returns page identity, never a URL.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	StartProofUpload(context.Context, *connect.Request[v1.StartProofUploadRequest]) (*connect.Response[v1.StartProofUploadResponse], error)
+	// PutProofObject writes one file of a hosted proof page started with
+	// StartProofUpload. It authenticates the daemon session; a user token is
+	// Unauthenticated. bosso re-resolves the organization from repo_origin_url
+	// and the daemon owner's membership, and the upload must belong to that
+	// organization and repository (NotFound otherwise), so a daemon of another
+	// organization cannot write under this organization's label. name and the
+	// exact content size must match the upload's manifest (InvalidArgument).
+	// The upload completes when every manifest entry is written; clients send
+	// index.html last. Rewriting an entry of a completed upload is refused,
+	// except that resending an already written name of a completed upload
+	// answers success without writing, so a retried final call is idempotent.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	PutProofObject(context.Context, *connect.Request[v1.PutProofObjectRequest]) (*connect.Response[v1.PutProofObjectResponse], error)
+	// MintProofViewLink returns a short-lived signed link to the newest
+	// completed hosted proof page of one pull request, for a signed-in user who
+	// is a member of the organization that uploaded it. Only a user scope gets a
+	// link; a daemon is PermissionDenied. A malformed repository, PR number or
+	// head is InvalidArgument. Every miss (another organization's page, no
+	// upload, an incomplete or deleted upload) is the same NotFound. With no
+	// view key or host configured, the call is Unavailable. The link carries a
+	// view signature, never the caller's token.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	MintProofViewLink(context.Context, *connect.Request[v1.MintProofViewLinkRequest]) (*connect.Response[v1.MintProofViewLinkResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -871,6 +919,14 @@ type OrchestratorServiceClient interface {
 	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
 	CreateOrganization(context.Context, *connect.Request[v1.CreateOrganizationRequest]) (*connect.Response[v1.CreateOrganizationResponse], error)
 	RenameOrganization(context.Context, *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error)
+	// GetOrganizationProofHosting reports whether the organization has opted in to
+	// hosted proof pages, who turned it on and when, and whether the organization's
+	// own cloud access currently allows turning it on.
+	GetOrganizationProofHosting(context.Context, *connect.Request[v1.GetOrganizationProofHostingRequest]) (*connect.Response[v1.GetOrganizationProofHostingResponse], error)
+	// SetOrganizationProofHosting turns hosted proof pages on or off for the
+	// caller's active organization. Owner only. Turning on requires the
+	// organization's own cloud access to be active; turning off never does.
+	SetOrganizationProofHosting(context.Context, *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error)
 	ListOrganizationMembers(context.Context, *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error)
 	InviteOrganizationMember(context.Context, *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error)
 	RemoveOrganizationMember(context.Context, *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error)
@@ -1691,6 +1747,24 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("UpsertProofCheckRun")),
 			connect.WithClientOptions(opts...),
 		),
+		startProofUpload: connect.NewClient[v1.StartProofUploadRequest, v1.StartProofUploadResponse](
+			httpClient,
+			baseURL+OrchestratorServiceStartProofUploadProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("StartProofUpload")),
+			connect.WithClientOptions(opts...),
+		),
+		putProofObject: connect.NewClient[v1.PutProofObjectRequest, v1.PutProofObjectResponse](
+			httpClient,
+			baseURL+OrchestratorServicePutProofObjectProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("PutProofObject")),
+			connect.WithClientOptions(opts...),
+		),
+		mintProofViewLink: connect.NewClient[v1.MintProofViewLinkRequest, v1.MintProofViewLinkResponse](
+			httpClient,
+			baseURL+OrchestratorServiceMintProofViewLinkProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("MintProofViewLink")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -1809,6 +1883,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceRenameOrganizationProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("RenameOrganization")),
+			connect.WithClientOptions(opts...),
+		),
+		getOrganizationProofHosting: connect.NewClient[v1.GetOrganizationProofHostingRequest, v1.GetOrganizationProofHostingResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetOrganizationProofHostingProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationProofHosting")),
+			connect.WithClientOptions(opts...),
+		),
+		setOrganizationProofHosting: connect.NewClient[v1.SetOrganizationProofHostingRequest, v1.SetOrganizationProofHostingResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSetOrganizationProofHostingProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SetOrganizationProofHosting")),
 			connect.WithClientOptions(opts...),
 		),
 		listOrganizationMembers: connect.NewClient[v1.ListOrganizationMembersRequest, v1.ListOrganizationMembersResponse](
@@ -2129,6 +2215,9 @@ type orchestratorServiceClient struct {
 	syncDaemonNotes                        *connect.Client[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse]
 	issueGitHubInstallationToken           *connect.Client[v1.IssueGitHubInstallationTokenRequest, v1.IssueGitHubInstallationTokenResponse]
 	upsertProofCheckRun                    *connect.Client[v1.UpsertProofCheckRunRequest, v1.UpsertProofCheckRunResponse]
+	startProofUpload                       *connect.Client[v1.StartProofUploadRequest, v1.StartProofUploadResponse]
+	putProofObject                         *connect.Client[v1.PutProofObjectRequest, v1.PutProofObjectResponse]
+	mintProofViewLink                      *connect.Client[v1.MintProofViewLinkRequest, v1.MintProofViewLinkResponse]
 	proxyStreamChats                       *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken                       *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream                         *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -2149,6 +2238,8 @@ type orchestratorServiceClient struct {
 	getOrganization                        *connect.Client[v1.GetOrganizationRequest, v1.GetOrganizationResponse]
 	createOrganization                     *connect.Client[v1.CreateOrganizationRequest, v1.CreateOrganizationResponse]
 	renameOrganization                     *connect.Client[v1.RenameOrganizationRequest, v1.RenameOrganizationResponse]
+	getOrganizationProofHosting            *connect.Client[v1.GetOrganizationProofHostingRequest, v1.GetOrganizationProofHostingResponse]
+	setOrganizationProofHosting            *connect.Client[v1.SetOrganizationProofHostingRequest, v1.SetOrganizationProofHostingResponse]
 	listOrganizationMembers                *connect.Client[v1.ListOrganizationMembersRequest, v1.ListOrganizationMembersResponse]
 	inviteOrganizationMember               *connect.Client[v1.InviteOrganizationMemberRequest, v1.InviteOrganizationMemberResponse]
 	removeOrganizationMember               *connect.Client[v1.RemoveOrganizationMemberRequest, v1.RemoveOrganizationMemberResponse]
@@ -2708,6 +2799,21 @@ func (c *orchestratorServiceClient) UpsertProofCheckRun(ctx context.Context, req
 	return c.upsertProofCheckRun.CallUnary(ctx, req)
 }
 
+// StartProofUpload calls bossanova.v1.OrchestratorService.StartProofUpload.
+func (c *orchestratorServiceClient) StartProofUpload(ctx context.Context, req *connect.Request[v1.StartProofUploadRequest]) (*connect.Response[v1.StartProofUploadResponse], error) {
+	return c.startProofUpload.CallUnary(ctx, req)
+}
+
+// PutProofObject calls bossanova.v1.OrchestratorService.PutProofObject.
+func (c *orchestratorServiceClient) PutProofObject(ctx context.Context, req *connect.Request[v1.PutProofObjectRequest]) (*connect.Response[v1.PutProofObjectResponse], error) {
+	return c.putProofObject.CallUnary(ctx, req)
+}
+
+// MintProofViewLink calls bossanova.v1.OrchestratorService.MintProofViewLink.
+func (c *orchestratorServiceClient) MintProofViewLink(ctx context.Context, req *connect.Request[v1.MintProofViewLinkRequest]) (*connect.Response[v1.MintProofViewLinkResponse], error) {
+	return c.mintProofViewLink.CallUnary(ctx, req)
+}
+
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
 func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error) {
 	return c.proxyStreamChats.CallServerStream(ctx, req)
@@ -2806,6 +2912,16 @@ func (c *orchestratorServiceClient) CreateOrganization(ctx context.Context, req 
 // RenameOrganization calls bossanova.v1.OrchestratorService.RenameOrganization.
 func (c *orchestratorServiceClient) RenameOrganization(ctx context.Context, req *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error) {
 	return c.renameOrganization.CallUnary(ctx, req)
+}
+
+// GetOrganizationProofHosting calls bossanova.v1.OrchestratorService.GetOrganizationProofHosting.
+func (c *orchestratorServiceClient) GetOrganizationProofHosting(ctx context.Context, req *connect.Request[v1.GetOrganizationProofHostingRequest]) (*connect.Response[v1.GetOrganizationProofHostingResponse], error) {
+	return c.getOrganizationProofHosting.CallUnary(ctx, req)
+}
+
+// SetOrganizationProofHosting calls bossanova.v1.OrchestratorService.SetOrganizationProofHosting.
+func (c *orchestratorServiceClient) SetOrganizationProofHosting(ctx context.Context, req *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error) {
+	return c.setOrganizationProofHosting.CallUnary(ctx, req)
 }
 
 // ListOrganizationMembers calls bossanova.v1.OrchestratorService.ListOrganizationMembers.
@@ -3293,6 +3409,39 @@ type OrchestratorServiceHandler interface {
 	// A new RPC is additive, so it needs no dated apiversion bump
 	// (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
 	UpsertProofCheckRun(context.Context, *connect.Request[v1.UpsertProofCheckRunRequest]) (*connect.Response[v1.UpsertProofCheckRunResponse], error)
+	// StartProofUpload reserves one hosted proof page for a pull request head.
+	// Only a daemon may call it. bosso resolves the organization from the repo,
+	// requires its own cloud access and hosted-proof opt-in (FailedPrecondition),
+	// and validates the manifest (InvalidArgument). Limits are ResourceExhausted
+	// with a ProofUploadLimitExceeded detail. Returns page identity, never a URL.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	StartProofUpload(context.Context, *connect.Request[v1.StartProofUploadRequest]) (*connect.Response[v1.StartProofUploadResponse], error)
+	// PutProofObject writes one file of a hosted proof page started with
+	// StartProofUpload. It authenticates the daemon session; a user token is
+	// Unauthenticated. bosso re-resolves the organization from repo_origin_url
+	// and the daemon owner's membership, and the upload must belong to that
+	// organization and repository (NotFound otherwise), so a daemon of another
+	// organization cannot write under this organization's label. name and the
+	// exact content size must match the upload's manifest (InvalidArgument).
+	// The upload completes when every manifest entry is written; clients send
+	// index.html last. Rewriting an entry of a completed upload is refused,
+	// except that resending an already written name of a completed upload
+	// answers success without writing, so a retried final call is idempotent.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	PutProofObject(context.Context, *connect.Request[v1.PutProofObjectRequest]) (*connect.Response[v1.PutProofObjectResponse], error)
+	// MintProofViewLink returns a short-lived signed link to the newest
+	// completed hosted proof page of one pull request, for a signed-in user who
+	// is a member of the organization that uploaded it. Only a user scope gets a
+	// link; a daemon is PermissionDenied. A malformed repository, PR number or
+	// head is InvalidArgument. Every miss (another organization's page, no
+	// upload, an incomplete or deleted upload) is the same NotFound. With no
+	// view key or host configured, the call is Unavailable. The link carries a
+	// view signature, never the caller's token.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	MintProofViewLink(context.Context, *connect.Request[v1.MintProofViewLinkRequest]) (*connect.Response[v1.MintProofViewLinkResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -3346,6 +3495,14 @@ type OrchestratorServiceHandler interface {
 	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
 	CreateOrganization(context.Context, *connect.Request[v1.CreateOrganizationRequest]) (*connect.Response[v1.CreateOrganizationResponse], error)
 	RenameOrganization(context.Context, *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error)
+	// GetOrganizationProofHosting reports whether the organization has opted in to
+	// hosted proof pages, who turned it on and when, and whether the organization's
+	// own cloud access currently allows turning it on.
+	GetOrganizationProofHosting(context.Context, *connect.Request[v1.GetOrganizationProofHostingRequest]) (*connect.Response[v1.GetOrganizationProofHostingResponse], error)
+	// SetOrganizationProofHosting turns hosted proof pages on or off for the
+	// caller's active organization. Owner only. Turning on requires the
+	// organization's own cloud access to be active; turning off never does.
+	SetOrganizationProofHosting(context.Context, *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error)
 	ListOrganizationMembers(context.Context, *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error)
 	InviteOrganizationMember(context.Context, *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error)
 	RemoveOrganizationMember(context.Context, *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error)
@@ -4162,6 +4319,24 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("UpsertProofCheckRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceStartProofUploadHandler := connect.NewUnaryHandler(
+		OrchestratorServiceStartProofUploadProcedure,
+		svc.StartProofUpload,
+		connect.WithSchema(orchestratorServiceMethods.ByName("StartProofUpload")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServicePutProofObjectHandler := connect.NewUnaryHandler(
+		OrchestratorServicePutProofObjectProcedure,
+		svc.PutProofObject,
+		connect.WithSchema(orchestratorServiceMethods.ByName("PutProofObject")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceMintProofViewLinkHandler := connect.NewUnaryHandler(
+		OrchestratorServiceMintProofViewLinkProcedure,
+		svc.MintProofViewLink,
+		connect.WithSchema(orchestratorServiceMethods.ByName("MintProofViewLink")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -4280,6 +4455,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceRenameOrganizationProcedure,
 		svc.RenameOrganization,
 		connect.WithSchema(orchestratorServiceMethods.ByName("RenameOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetOrganizationProofHostingHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetOrganizationProofHostingProcedure,
+		svc.GetOrganizationProofHosting,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationProofHosting")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSetOrganizationProofHostingHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSetOrganizationProofHostingProcedure,
+		svc.SetOrganizationProofHosting,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SetOrganizationProofHosting")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceListOrganizationMembersHandler := connect.NewUnaryHandler(
@@ -4700,6 +4887,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceIssueGitHubInstallationTokenHandler.ServeHTTP(w, r)
 		case OrchestratorServiceUpsertProofCheckRunProcedure:
 			orchestratorServiceUpsertProofCheckRunHandler.ServeHTTP(w, r)
+		case OrchestratorServiceStartProofUploadProcedure:
+			orchestratorServiceStartProofUploadHandler.ServeHTTP(w, r)
+		case OrchestratorServicePutProofObjectProcedure:
+			orchestratorServicePutProofObjectHandler.ServeHTTP(w, r)
+		case OrchestratorServiceMintProofViewLinkProcedure:
+			orchestratorServiceMintProofViewLinkHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -4740,6 +4933,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceCreateOrganizationHandler.ServeHTTP(w, r)
 		case OrchestratorServiceRenameOrganizationProcedure:
 			orchestratorServiceRenameOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetOrganizationProofHostingProcedure:
+			orchestratorServiceGetOrganizationProofHostingHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSetOrganizationProofHostingProcedure:
+			orchestratorServiceSetOrganizationProofHostingHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListOrganizationMembersProcedure:
 			orchestratorServiceListOrganizationMembersHandler.ServeHTTP(w, r)
 		case OrchestratorServiceInviteOrganizationMemberProcedure:
@@ -5231,6 +5428,18 @@ func (UnimplementedOrchestratorServiceHandler) UpsertProofCheckRun(context.Conte
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UpsertProofCheckRun is not implemented"))
 }
 
+func (UnimplementedOrchestratorServiceHandler) StartProofUpload(context.Context, *connect.Request[v1.StartProofUploadRequest]) (*connect.Response[v1.StartProofUploadResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.StartProofUpload is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) PutProofObject(context.Context, *connect.Request[v1.PutProofObjectRequest]) (*connect.Response[v1.PutProofObjectResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.PutProofObject is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) MintProofViewLink(context.Context, *connect.Request[v1.MintProofViewLinkRequest]) (*connect.Response[v1.MintProofViewLinkResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.MintProofViewLink is not implemented"))
+}
+
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyStreamChats is not implemented"))
 }
@@ -5309,6 +5518,14 @@ func (UnimplementedOrchestratorServiceHandler) CreateOrganization(context.Contex
 
 func (UnimplementedOrchestratorServiceHandler) RenameOrganization(context.Context, *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RenameOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetOrganizationProofHosting(context.Context, *connect.Request[v1.GetOrganizationProofHostingRequest]) (*connect.Response[v1.GetOrganizationProofHostingResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetOrganizationProofHosting is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SetOrganizationProofHosting(context.Context, *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SetOrganizationProofHosting is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ListOrganizationMembers(context.Context, *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error) {

@@ -840,6 +840,8 @@ func agentDisplayName(name string) string {
 		return "Codex"
 	case "opencode":
 		return "OpenCode"
+	case "antigravity":
+		return "Antigravity"
 	case "":
 		return "agent"
 	default:

@@ -11,21 +11,19 @@ import (
 	"cmp"
 	"slices"
 	"strings"
-	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/vcs"
 )
 
-// Build returns waiting rows followed by recent merged High audit samples,
-// and one header count
-// per ConfidenceLevel in enum order. Audit rows never contribute to counts.
+// Build returns the waiting rows and one header count per ConfidenceLevel in
+// enum order.
 //
 // A session is a row when it is open, not archived, has a PR, and its Park is a
 // verify park: REVIEW or FIX carrying park codes. A code-less FIX is an
 // ordinary fault, not a park. An open, non-archived PR session that is merging
 // now counts as HIGH without becoming a row, even while its park codes linger,
-// since nobody is waiting on it.
+// since nobody is waiting on it. A merged or closed session is never a row.
 //
 // No dated apiversion bump for listing a sign-off park whose chat asks or
 // works, and why: ListReviewQueue reaches the boss TUI, which can point at a
@@ -35,14 +33,18 @@ import (
 // from the attention. A transform dropping the row again would restore the
 // defect this corrects: a PR parked for a person missing from the queue. See
 // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
-func Build(sessions []*pb.Session, sort pb.ReviewQueueSort, now time.Time) ([]*pb.ReviewQueueRow, []*pb.ReviewQueueLevelCount) {
+//
+// No dated apiversion bump for no longer listing merged High PRs as audit
+// rows (BOS-2597), and why: the same two clients are reached the same way,
+// the boss TUI through a bossd of another version and the web through
+// version-skewed bosso. Both read the retired audit flag per row, so with no
+// audit rows served an older client shows none, and it decodes the absent
+// field as false. A down-convert putting audit rows back would restore the
+// dead merged rows this removes, so no transform or gate is wanted.
+func Build(sessions []*pb.Session, sort pb.ReviewQueueSort) ([]*pb.ReviewQueueRow, []*pb.ReviewQueueLevelCount) {
 	rows := make([]*pb.ReviewQueueRow, 0)
 	counts := make(map[pb.ConfidenceLevel]int32)
 	for _, sess := range sessions {
-		if isAuditRow(sess, now) {
-			rows = append(rows, &pb.ReviewQueueRow{Session: sess, ConfidenceLevel: pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH, IsAuditSample: true})
-			continue
-		}
 		if !isOpenPR(sess) {
 			continue
 		}
@@ -60,20 +62,13 @@ func Build(sessions []*pb.Session, sort pb.ReviewQueueSort, now time.Time) ([]*p
 	return rows, levelCounts(counts)
 }
 
-// Sort puts audits after waiting rows, newest merge first. Waiting rows use
-// the requested sort, with a total tie-break: the
-// oldest park, then the normalized origin URL, then the PR number, then the
-// session id. UNSPECIFIED sorts as MOST_CONFIDENT, and rows without a level sort
+// Sort orders rows by the requested sort, with a total tie-break: the oldest
+// park, then the normalized origin URL, then the PR number, then the session
+// id. UNSPECIFIED sorts as MOST_CONFIDENT, and rows without a level sort
 // last under both confidence sorts. PRIORITY orders tracker tier, deadline and
 // tickets unblocked, with unranked sessions after ranked ones.
 func Sort(rows []*pb.ReviewQueueRow, sort pb.ReviewQueueSort) {
 	slices.SortStableFunc(rows, func(left, right *pb.ReviewQueueRow) int {
-		if order := compareAudit(left, right); order != 0 {
-			return order
-		}
-		if left.GetIsAuditSample() && right.GetIsAuditSample() {
-			return 0
-		}
 		if order := compareBySort(left, right, sort); order != 0 {
 			return order
 		}

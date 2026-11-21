@@ -36,12 +36,13 @@ test('selectTargets scopes bossd Go changes to the changed package', () => {
   ])
 })
 
-test('shared agent runner conformance changes rerun all four callers', () => {
+test('shared agent runner conformance changes rerun all five callers', () => {
   for (const file of [
     'lib/bossalib/contract/plugin/plugin/agentrunnertest/agentrunnertest.go',
     'lib/bossalib/contract/plugin/plugin/agentrunnertest/agentrunnertest_test.go',
   ]) {
     assert.deepEqual(selectTargets([file]), [
+      { kind: 'make', target: 'test-antigravity', env: {} },
       { kind: 'make', target: 'test-claude', env: {} },
       { kind: 'make', target: 'test-codex', env: {} },
       { kind: 'make', target: 'test-opencode', env: {} },
@@ -56,6 +57,7 @@ test('shared agent runner conformance changes rerun all four callers', () => {
       full: false,
       patterns: [
         '//lib/bossalib/...',
+        '//plugins/bossd-plugin-antigravity/...',
         '//plugins/bossd-plugin-claude/...',
         '//plugins/bossd-plugin-codex/...',
         '//plugins/bossd-plugin-opencode/...',

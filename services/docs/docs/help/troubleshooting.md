@@ -144,19 +144,20 @@ agent plugin) sits in one of those locations:
 which bossd
 which bossd-plugin-claude
 which bossd-plugin-codex
+which bossd-plugin-antigravity
 ```
 
 If the plugin binary is missing or in a different directory, build it
 (`make plugins`) or install the package so it lands next to `bossd`,
-then restart the daemon. Install the matching agent CLI (`claude` or
-`codex`) and make sure it is on `bossd`'s `PATH`.
+then restart the daemon. Install the matching agent CLI (`claude`,
+`codex` or `agy`) and make sure it is on `bossd`'s `PATH`.
 
 ### Agent subprocess crashed
 
 The selected agent plugin owns the agent CLI subprocess; if it crashes,
 the session's chat stops producing output. The plugin's log line will
 record the exit. Check the daemon log for entries tagged with the
-plugin name (`claude` or `codex`), then archive and recreate the
+plugin name (`claude`, `codex` or `antigravity`), then archive and recreate the
 session.
 
 Archive the broken session:

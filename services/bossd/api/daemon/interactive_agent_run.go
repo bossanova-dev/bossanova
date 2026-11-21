@@ -14,11 +14,15 @@ import (
 )
 
 func (s *Server) recordInteractiveAgentRunStart(ctx context.Context, sess *models.Session, chat *domain.AgentChat, startedAt time.Time) {
-	if s.agentRuns == nil || sess == nil || chat == nil || chat.AgentSessionID == "" {
+	if sess == nil || chat == nil || chat.AgentSessionID == "" {
 		return
 	}
 	if startedAt.IsZero() {
 		startedAt = time.Now()
+	}
+	s.markFreshChatPane(chat.AgentSessionID, startedAt)
+	if s.agentRuns == nil {
+		return
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), interactiveAgentRunRecordTimeout)
 	s.recordStaleInteractiveAgentRunStopped(cleanupCtx, sess, chat, startedAt)

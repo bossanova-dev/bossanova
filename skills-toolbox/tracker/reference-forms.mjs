@@ -1,4 +1,4 @@
-import { inlineCodeEnd, mapProseLines } from '../markdown-prose.mjs'
+import { fencedLineMap, indentedCodeMap, inlineCodeEnd, mapProseLines } from '../markdown-prose.mjs'
 
 /** Reference transform order, shared by the pre-write and post-write description gates. */
 export const REFERENCE_TRANSFORM_IDS = Object.freeze([
@@ -18,7 +18,7 @@ const absoluteHttp = (destination) => {
   }
 }
 
-const referenceLinkAt = (line, start) => {
+const referenceLinkAt = (line, start, labelOnly = false) => {
   if (line[start] !== '[') return null
   let depth = 1
   let end = start + 1
@@ -30,7 +30,7 @@ const referenceLinkAt = (line, start) => {
   if (depth !== 0) return null
   const label = line.slice(start + 1, end - 1)
   const labelEnd = end
-  if (line[end] !== '(') return { end, label, destination: null }
+  if (labelOnly || line[end] !== '(') return { end, label, destination: null }
   const destinationStart = ++end
   const angled = line[end] === '<'
   if (angled) {
@@ -152,4 +152,69 @@ export function normalizeReferenceForms(text, tolerated) {
   if (tolerated.has(REFERENCE_TRANSFORM_IDS[0])) out = canonicalizeBareReferences(out)
   if (tolerated.has(REFERENCE_TRANSFORM_IDS[1])) out = canonicalizePullRequestReferences(out)
   return out
+}
+
+/** Find bare references whose tracker rewrite is outside the repo's tolerated set. */
+export function unmodelledReferenceTokens(text, { rewrites, tolerated }) {
+  const missing = new Set(rewrites.filter((id) => !tolerated.has(id)))
+  const tokens = []
+  if (missing.size === 0) return tokens
+  const lines = String(text ?? '').split('\n')
+  const literal = fencedLineMap(lines)
+  const code = indentedCodeMap(lines, literal)
+  const definitions = new Set()
+  const referenceLabel = (label) => label.trim().replace(/\s+/g, ' ').toLowerCase()
+  let paragraph = false
+  const prose = lines.map((line, index) => {
+    if (literal[index] || code[index] || line.trim() === '') {
+      paragraph = false
+      return ''
+    }
+    // Reference definitions cannot interrupt a paragraph, including its multiline code spans.
+    const definition = !paragraph && /^ {0,3}\[([^\]]+)\]:/.exec(line)
+    if (definition) {
+      definitions.add(referenceLabel(definition[1]))
+      return ''
+    }
+    const heading = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:=+|-+)[ \t]*$)/.test(line)
+    const thematicBreak = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(line)
+    paragraph = !heading && !thematicBreak
+    return heading || thematicBreak ? `\n${line}\n` : line
+  })
+  for (const line of prose.join('\n').split(/\n[ \t]*\n/)) {
+    for (let i = 0; i < line.length;) {
+      if (line[i] === '`') {
+        i = inlineCodeEnd(line, i)
+        continue
+      }
+      const bracket = referenceLinkAt(line, i)
+      const inline = bracket && line[bracket.end - 1] === ')'
+      const reference = bracket && !inline && referenceLinkAt(line, bracket.end, true)
+      const referenceEnd =
+        reference && definitions.has(referenceLabel(reference.label || bracket.label))
+          ? reference.end
+          : null
+      const link =
+        bracket && (inline || referenceEnd || definitions.has(referenceLabel(bracket.label)))
+          ? { end: referenceEnd ?? bracket.end }
+          : null
+      const mention = mentionAt(line, i, 'issue') || mentionAt(line, i, 'pull-request')
+      const url = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)[^\s<>]+/.exec(line.slice(i))
+      const autolink = /^<(?!!--)[^<>\s]+>/.exec(line.slice(i))
+      if (link || mention || url || autolink) {
+        i = link?.end ?? mention?.end ?? i + (url || autolink)[0].length
+        continue
+      }
+      const rest = line.slice(i)
+      const issue = !/\w/.test(line[i - 1] ?? '') && /^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]*\b/.exec(rest)
+      const pr = !/[\w/&]/.test(line[i - 1] ?? '') && /^#[1-9][0-9]*\b/.exec(rest)
+      const token = issue || pr
+      if (token) {
+        const transform = REFERENCE_TRANSFORM_IDS[issue ? 0 : 1]
+        if (missing.has(transform)) tokens.push({ token: token[0], transform })
+        i += token[0].length
+      } else i += 1
+    }
+  }
+  return tokens
 }

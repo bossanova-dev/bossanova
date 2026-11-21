@@ -18,6 +18,7 @@ import (
 	"github.com/recurser/boss/api/tui/home"
 
 	"github.com/recurser/boss/api/tui/repos"
+	"github.com/recurser/boss/api/tui/ui"
 
 	"github.com/recurser/boss/api/cli/cliutil"
 
@@ -256,11 +257,6 @@ type agentPreflightClient interface {
 // concurrently precisely because this call blocks boss's first frame.
 var checkAgentsResolvableForPreflight = preflight.CheckAgentsResolvable
 
-var cliBackedAgentProviders = map[string]bool{
-	"claude": true,
-	"codex":  true,
-}
-
 func runAgentPreflights(ctx context.Context, cmd *cobra.Command, c agentPreflightClient, settings config.Settings, sessionID string) error {
 	// The probe runs `command -v <agent>` in a login shell *here*, against a
 	// worktree path the daemon reported. Neither is local when the daemon is
@@ -357,10 +353,11 @@ func enabledAgentProviders(settings config.Settings, loadedAgents []rpc.AgentInf
 		if agentName != "" && plugin.Name != agentName {
 			continue
 		}
-		if !plugin.Enabled || !agentProviders[plugin.Name] || !cliBackedAgentProviders[plugin.Name] || seen[plugin.Name] {
+		provider, cliBacked := ui.ProviderFor(plugin.Name)
+		if !plugin.Enabled || !agentProviders[plugin.Name] || !cliBacked || seen[plugin.Name] {
 			continue
 		}
-		agents = append(agents, plugin.Name)
+		agents = append(agents, provider.Command)
 		seen[plugin.Name] = true
 	}
 	return agents

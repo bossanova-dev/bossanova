@@ -887,6 +887,7 @@ func TestAssetNames(t *testing.T) {
 	want := []string{
 		"boss-darwin-arm64",
 		"bossd-darwin-arm64",
+		"bossd-plugin-antigravity-darwin-arm64",
 		"bossd-plugin-claude-darwin-arm64",
 		"bossd-plugin-codex-darwin-arm64",
 		"bossd-plugin-dependabot-darwin-arm64",

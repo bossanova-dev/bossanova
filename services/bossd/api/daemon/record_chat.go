@@ -173,7 +173,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *domain.AgentCh
 		// request-scoped values while escaping its cancellation, matching
 		// proxy_server.go's failover-commit idiom.
 		backfillCtx, cancelBackfill := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDLegacyBackfillTimeout)
-		_, reason, backfillErr := s.backfillCodexProviderSessionID(backfillCtx, chat, sess.WorktreePath,
+		_, reason, backfillErr := s.backfillLateProviderSessionID(backfillCtx, chat, sess.WorktreePath,
 			panePIDForChat(ctx, deps.Tmux, tmuxName), deps.Resolver)
 		cancelBackfill()
 		// Keep an already-live pane attachable even if discovery fails. If a

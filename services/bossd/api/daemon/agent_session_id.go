@@ -10,12 +10,12 @@ import (
 // validateAgentSessionID refuses an agent_session_id that an agent plugin could
 // turn into a broader filesystem lookup than the one chat it names: glob
 // metacharacters and path separators for every agent, and anything but a
-// canonical lowercase UUID for Claude and Codex.
+// canonical lowercase UUID for Claude, Codex and Antigravity.
 func validateAgentSessionID(agentName, id string) error {
 	if strings.ContainsAny(id, `*?[]\/`) || strings.Contains(id, "..") {
 		return fmt.Errorf("agent_session_id %q contains a path separator or glob metacharacter", id)
 	}
-	if (agentName == "codex" || agentName == "claude") && !agentsession.IsCanonicalUUID(id) {
+	if (agentName == "codex" || agentName == "claude" || agentName == "antigravity") && !agentsession.IsCanonicalUUID(id) {
 		return fmt.Errorf("agent_session_id %q for a %s chat must be a canonical lowercase UUID", id, agentName)
 	}
 	return nil

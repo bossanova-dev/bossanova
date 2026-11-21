@@ -304,6 +304,7 @@ func (f credentialCommandForwarder) PublishLocal(ctx context.Context, id string)
 func (w *daemonWiring) wireCredentialDistribution(cfg *upstream.Config, client bossanovav1connect.OrchestratorServiceClient, sessionTokenHolder *upstream.SessionTokenHolder, identityKey ed25519.PrivateKey, authToken string) {
 	w.trackerIssueLeaseUpstream = client
 	w.proofCheckRuns = proofCheckRunClient{rpc: client}
+	w.hostedProof = &hostedProofClient{rpc: client, token: sessionTokenHolder.Get, reviewOrigin: reviewAppOrigin(cfg.OrchestratorURL)}
 	w.trackerIssueLeaseSessionToken = sessionTokenHolder.Get
 	namespace := credentialUserNamespace(authToken)
 	var pinned credsync.PinLookup

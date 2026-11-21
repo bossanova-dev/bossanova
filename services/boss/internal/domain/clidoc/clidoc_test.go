@@ -120,6 +120,10 @@ func TestRegistryBuilderPreservesSessionAndChatDocumentation(t *testing.T) {
 				"daemon provides one, streams setup progress to stderr until setup " +
 				"settles, then exits. Combine with --detach (implicit when both flags are set) for " +
 				"scripting. Use --agent to override the default agent plugin.\n\n" +
+				"Base branch: --base-branch names the origin branch to cut the worktree from " +
+				"and target with its draft PR. Omit it to use the repo's default base. " +
+				"It requires --repo and --prompt and cannot be combined with --pr or --quick-chat. " +
+				"The daemon refuses a base missing from origin before creating a session or worktree.\n\n" +
 				"Launching a session to run work unattended: supplying a prompt " +
 				"launches the agent headlessly so the work actually runs — that is " +
 				"the path's own behaviour, not something --detach causes. " +

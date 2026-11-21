@@ -52,7 +52,16 @@ var baseline = Policy{
 	Prefixes: []string{"LC_", "XDG_", "BOSS_", "BOSSD_"},
 }
 
+// antigravityPolicy covers Antigravity's documented Gemini API key, endpoint
+// and ADC variables. Its OAuth token lives in the OS keyring, which on Linux is
+// reached over the D-Bus session bus (XDG_RUNTIME_DIR rides the baseline).
+var antigravityPolicy = Policy{
+	Names:    []string{"DBUS_SESSION_BUS_ADDRESS", "CLOUDSDK_CONFIG"},
+	Prefixes: []string{"GEMINI_", "GOOGLE_", "AGY_"},
+}
+
 var pluginPolicies = map[string]Policy{
+	"antigravity": antigravityPolicy,
 	"claude": {
 		Names:    []string{"CLOUD_ML_REGION", "GOOGLE_APPLICATION_CREDENTIALS", "CLAUDE_CONFIG_DIR"},
 		Prefixes: []string{"ANTHROPIC_", "CLAUDE_CODE_", "AWS_", "VERTEX_REGION_"},

@@ -146,8 +146,7 @@ function world(opts = {}) {
       if (verb === 'post') {
         const verdict = flag('verdict')
         const dry = rest.includes('--dry-run')
-        if (verdict === 'claim' && rest.includes('--release'))
-          return ok({ released: opts.parkBeneath === true })
+        if (verdict === 'claim' && rest.includes('--release')) return ok({ released: true })
         if (verdict === 'claim') {
           const lost = opts.claimLost?.includes(pr)
           return ok({ ...(dry ? { dryRun: true } : {}), won: !lost, token: 'tok-1' })
@@ -175,7 +174,8 @@ function world(opts = {}) {
       }
       if (args[0] === 'session' && args[1] === 'set-rank')
         return opts.rankFails ? fail('rank-write-failed') : ok({})
-      if (args[0] === 'chats') return ok({ chats: opts.chats?.[args[2]] ?? [] })
+      if (args[0] === 'chats')
+        return ok({ chats: opts.chatRead ? opts.chatRead() : (opts.chats?.[args[2]] ?? []) })
       if (args[0] === 'chat' && args[1] === 'new')
         return ok({ chat: { agent_session_id: 'chat-new', session_id: args[2], title: 'verify' } })
       if (args[0] === 'chat' && args[1] === 'send') {
@@ -707,9 +707,7 @@ test('a send that runs out the budget still leaves its claim release time to res
     return w.run(cmd, args, options)
   }
   const r = sweep({}, w.deps({ run }))
-  assert.deepEqual(lines(r), [
-    '#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT; park restored)',
-  ])
+  assert.deepEqual(lines(r), ['#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT; released)'])
 })
 
 test('no live session: a detached boss new --pr whose stdio is not the gate’s', () => {
@@ -758,7 +756,7 @@ test('a send that times out is dispatch-unknown and is not retried', () => {
     chats: { s1: [{ agent_session_id: 'chat-v', title: 'verify' }] },
   })
   const r = sweep({}, w.deps())
-  assert.deepEqual(lines(r), ['#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT)'])
+  assert.deepEqual(lines(r), ['#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT; released)'])
   assert.equal(w.calls.filter((c) => c.args[1] === 'send').length, 1)
 })
 
@@ -786,13 +784,13 @@ test('only a submitted or queued delivery counts as dispatched', () => {
     '#1 dispatched: existing-verify-chat',
   ])
   assert.deepEqual(route(delivery(false, 'DELIVERY_STATE_UNCONFIRMED')), [
-    '#1 dispatch-unknown: existing-verify-chat (DELIVERY_STATE_UNCONFIRMED)',
+    '#1 dispatch-unknown: existing-verify-chat (DELIVERY_STATE_UNCONFIRMED; released)',
   ])
   assert.deepEqual(route({ ok: false, error: 'unreadable-json', exit: 0, output: 'sent' }), [
-    '#1 dispatch-unknown: existing-verify-chat (unreadable-json)',
+    '#1 dispatch-unknown: existing-verify-chat (unreadable-json; released)',
   ])
   assert.deepEqual(route({ ok: true, payload: { agent_session_id: 'chat-v' }, exit: 0 }), [
-    '#1 dispatch-unknown: existing-verify-chat (unreadable-delivery)',
+    '#1 dispatch-unknown: existing-verify-chat (unreadable-delivery; released)',
   ])
 })
 
@@ -2896,9 +2894,7 @@ for (const parkBeneath of [true, false]) {
         [true, 'tok-1'],
       ],
     )
-    assert.deepEqual(lines(r), [
-      `#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT${parkBeneath ? '; park restored' : ''})`,
-    ])
+    assert.deepEqual(lines(r), [`#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT; released)`])
   })
 }
 
@@ -3137,4 +3133,67 @@ test('quiet ticks reconcile later session-only rank changes and newly linked ses
   const failed = tick([{ ...rankSession, trackerRank: undefined }], true)
   assert.equal(failed.result.rankRefreshes[0].outcome, 'failed')
   assert.equal(storedFp(file), null)
+})
+
+test('unknown sends keep the claim only when the verify chat starts within the bound', () => {
+  for (const starts of [true, false]) {
+    let reads = 0
+    const options = {
+      verdicts: { 1: EXT },
+      sendTimesOut: true,
+      ...LIVE_SESSION,
+      chatRead: () => [
+        {
+          agent_session_id: 'chat-v',
+          title: 'verify',
+          status: starts && ++reads >= 3 ? 'WORKING' : 'IDLE',
+        },
+      ],
+    }
+    const w = world(options)
+    const r = sweep({}, w.deps())
+    assert.deepEqual(lines(r), [
+      starts
+        ? '#1 dispatched: existing-verify-chat (confirmed after ETIMEDOUT)'
+        : '#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT; released)',
+    ])
+    assert.equal(
+      w.posts().some((v) => v.includes('--release')),
+      !starts,
+    )
+    if (!starts) {
+      options.sendTimesOut = false
+      assert.equal(sweep({}, w.deps()).records[0].outcome, 'dispatched')
+    }
+  }
+})
+
+test('a never-created chat releases immediately and the next sweep dispatches', () => {
+  const w = world({ verdicts: { 1: EXT }, sessions: LIVE_SESSION.sessions, chats: {} })
+  let failed = false
+  const run = (cmd, args, options) => {
+    if (cmd === BOSS && args[0] === 'chat' && args[1] === 'new' && !failed) {
+      failed = true
+      return { ok: false, error: 'INTERNAL', exit: 1, output: '' }
+    }
+    return w.run(cmd, args, options)
+  }
+  assert.deepEqual(lines(sweep({}, w.deps({ run }))), [
+    '#1 dispatch-unknown: new-verify-chat (INTERNAL; released)',
+  ])
+  assert.deepEqual(w.sleeps, [])
+  assert.equal(sweep({}, w.deps({ run })).records[0].outcome, 'dispatched')
+})
+
+test('the route records an unconfirmed gate claim separately from a lost race', () => {
+  const w = world({ verdicts: { 1: EXT }, ...LIVE_SESSION })
+  const run = (cmd, args, options) =>
+    cmd === NODE && args[1] === 'post' && args.includes('claim')
+      ? { ok: true, payload: { won: false, reason: 'claim-unconfirmed', released: true } }
+      : w.run(cmd, args, options)
+  assert.deepEqual(lines(sweep({}, w.deps({ run }))), ['#1 skipped: claim unconfirmed (released)'])
+  assert.equal(
+    w.calls.some((c) => c.cmd === BOSS && c.args[0] === 'chat'),
+    false,
+  )
 })

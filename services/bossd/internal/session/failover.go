@@ -942,6 +942,6 @@ func (l *Lifecycle) captureFailoverRotation(ctx context.Context, r domain.Failov
 		reason = "error"
 	}
 	daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
-		"rotation_reason": reason, "provider": telemetryProvider(r.Provider), "status": "rotated",
+		"rotation_reason": reason, "provider": daemontelemetry.AgentName(r.Provider), "status": "rotated",
 	})
 }

@@ -636,3 +636,80 @@ func TestNewForceFlagSendsForce_Sessions_AC214304(t *testing.T) {
 		})
 	}
 }
+
+func TestNewDetachRequestBaseBranch_Sessions_AC261401(t *testing.T) {
+	for _, base := range []string{"integration", ""} {
+		t.Run(map[bool]string{true: "explicit", false: "default"}[base != ""], func(t *testing.T) {
+			client := &verifyOnlyCreateClient{}
+			g := New(func(*cobra.Command) (Client, error) { return client, nil }, Options{})
+			cmd := g.NewCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			args := []string{"--repo", "repo-1", "--prompt", "work", "--defer-pr"}
+			if base != "" {
+				args = append(args, "--base-branch", base)
+			}
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if client.request == nil || client.request.GetBaseBranch() != base || !client.request.GetDeferPr() {
+				t.Fatalf("request = %v, want base_branch=%q and defer_pr=true", client.request, base)
+			}
+		})
+	}
+}
+
+func TestValidateBaseBranchFlag_Sessions_AC261402(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"existing PR", []string{"--repo", "r", "--prompt", "p", "--base-branch", "integration", "--pr", "3"}},
+		{"quick chat", []string{"--repo", "r", "--prompt", "p", "--base-branch", "integration", "--quick-chat"}},
+		{"empty", []string{"--repo", "r", "--prompt", "p", "--base-branch="}},
+		{"whitespace", []string{"--repo", "r", "--prompt", "p", "--base-branch", " \t "}},
+		{"interactive", []string{"--base-branch", "integration"}},
+		{"missing prompt", []string{"--repo", "r", "--base-branch", "integration"}},
+		{"missing repo", []string{"--prompt", "p", "--base-branch", "integration"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contacted := false
+			g := New(func(*cobra.Command) (Client, error) { contacted = true; return nil, nil }, Options{})
+			cmd := g.NewCmd()
+			cmd.SetArgs(tc.args)
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			err := cmd.Execute()
+			if err == nil || cliutil.ErrorCodeFor(err) != cliutil.CodeInvalidArgument {
+				t.Fatalf("error = %v, want INVALID_ARGUMENT", err)
+			}
+			if contacted {
+				t.Fatal("invalid base branch flags contacted the daemon")
+			}
+		})
+	}
+}
+
+func TestNewBaseBranchRejectedBeforeRPC(t *testing.T) {
+	client := &verifyOnlyCreateClient{}
+	g := New(func(*cobra.Command) (Client, error) { return client, nil }, Options{})
+	cmd := g.NewCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"--repo", "r", "--prompt", "p", "--base-branch", "integration", "--pr", "3", "--json"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	if err == nil || cliutil.ErrorCodeFor(err) != cliutil.CodeInvalidArgument {
+		t.Fatalf("error = %v, want INVALID_ARGUMENT", err)
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &envelope); err != nil || envelope.Error.Code != string(cliutil.CodeInvalidArgument) {
+		t.Fatalf("output = %s, error = %v, want INVALID_ARGUMENT envelope", output.Bytes(), err)
+	}
+	if client.request != nil {
+		t.Fatalf("invalid flags created a session: %v", client.request)
+	}
+}

@@ -887,6 +887,7 @@ func TestRecordChat_FileTranscriptAgentsRequireCanonicalUUID(t *testing.T) {
 		{"claude override", strPtr("claude"), "codex"},
 		{"claude inherited", nil, "claude"},
 		{"claude default", nil, ""},
+		{"antigravity inherited", nil, "antigravity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, id := range []string{"*", "agent-1", "0199A3C1-7B2E-7D40-9C55-1A2B3C4D5E6F", "{" + valid + "}", valid + "x"} {

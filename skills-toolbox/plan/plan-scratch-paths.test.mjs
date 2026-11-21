@@ -18,6 +18,7 @@ import {
   planScratchPath,
   planScratchToken,
   runScratchDir,
+  runPinDir,
 } from './plan-scratch-paths.mjs'
 
 test('runScratchDir addresses scratch by run, under the scratch root', () => {
@@ -719,5 +720,29 @@ test('claim receipt is declared for templated and concrete run paths', () => {
     '.linear-plans/run-test/ABC-1.claim-receipt.json',
   ]) {
     assert.deepEqual(planScratchToken(token).families, ['claim-receipt'])
+  }
+})
+
+test('pin paths use the run id and confine nested payload paths to boss-plan', () => {
+  assert.equal(runPinDir('abc123'), '.linear-plans/pin-abc123')
+  assert.equal(runPinDir('abc123', 'other'), 'other/pin-abc123')
+  for (const bad of ['', '..', 'a/b']) assert.throws(() => runPinDir(bad))
+  const cli = spawnSync(
+    process.execPath,
+    ['skills-toolbox/plan/plan-scratch-paths.mjs', 'pin-dir', 'abc123'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(cli.status, 0, cli.stderr)
+  assert.equal(cli.stdout.trim(), '.linear-plans/pin-abc123')
+  assert.equal(planScratchToken('.linear-plans/pin-<RUN-SCRATCH-ID>').kind, 'pin')
+  assert.equal(
+    planScratchToken('.linear-plans/pin-abc123/boss-plan/toolbox/plan/boss-plan-run.sh').ok,
+    true,
+  )
+  for (const bad of [
+    '.linear-plans/pin-abc123/other',
+    '.linear-plans/pin-abc123/boss-plan/../other',
+  ]) {
+    assert.equal(planScratchToken(bad).ok, false, bad)
   }
 })

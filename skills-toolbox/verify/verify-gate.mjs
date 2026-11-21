@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { confirmClaimOrWithdraw, releaseOwnClaim } from './verify-claim-confirm.mjs'
+import { cachedReader, operatorReads } from './verify-read-rounds.mjs'
+export { cachedReader, WARM_CONCURRENCY } from './verify-read-rounds.mjs'
 import { CLAIM_RELEASE_REASONS } from './verify-vocabulary.mjs'
 import { materializeTrustedTree, isDirectory, trustedDepsMissing } from './verify-trusted-tree.mjs'
 export {
@@ -455,52 +457,6 @@ function readResult(response, { json, raw }) {
     }
   if (json && payload === undefined) return { ok: false, error: 'unreadable-json', exit: 0, output }
   return { ok: true, payload, output, exit: 0 }
-}
-
-// How many reads `warm` runs at once: enough to hide per-call latency, few enough to stay well
-// inside GitHub's concurrent-request limits.
-export const WARM_CONCURRENCY = 8
-
-/**
- * A reader that runs each distinct read once, for a command that never writes, so a scan that asks
- * for the same statuses, permission or PR twice pays once. `warm(calls)` runs a batch of
- * `[command, args, opts]` reads concurrently through `readAsync` and caches the results, which the
- * synchronous reads then return; without `readAsync` it does nothing. A failed read is cached
- * too, so one scan sees one answer for each read.
- */
-export function cachedReader(read, readAsync = null, { concurrency = WARM_CONCURRENCY } = {}) {
-  const cache = new Map()
-  const keyOf = (command, args, opts) => JSON.stringify([command, args, opts ?? {}])
-  const cached = (command, args, opts) => {
-    const key = keyOf(command, args, opts)
-    if (!cache.has(key)) cache.set(key, read(command, args, opts))
-    return cache.get(key)
-  }
-  cached.warms = readAsync !== null
-  cached.uncached = read.uncached ?? read
-  cached.warm = async (calls) => {
-    if (!readAsync) return
-    const pending = new Map()
-    for (const [command, args, opts] of calls) {
-      const key = keyOf(command, args, opts)
-      if (!cache.has(key)) pending.set(key, [command, args, opts])
-    }
-    const queue = [...pending]
-    const worker = async () => {
-      for (let next = queue.shift(); next; next = queue.shift()) {
-        const [key, [command, args, opts]] = next
-        let result
-        try {
-          result = await readAsync(command, args, opts)
-        } catch {
-          continue // left to the synchronous read
-        }
-        if (!cache.has(key)) cache.set(key, result)
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker))
-  }
-  return cached
 }
 
 const GH_FIELD_FLAGS = new Set(['-f', '-F', '--field', '--raw-field', '--input'])
@@ -982,9 +938,9 @@ export function readPr(read, pr, repo) {
 
 // The `[command, args, opts]` of each read the candidate scan warms, shared with the code that makes
 // the read so the two cannot drift into different cache keys.
-const prReadCall = (pr, repo) => [
+const prReadCall = (pr, repo, fields = PR_FIELDS) => [
   'gh',
-  ['pr', 'view', String(pr), ...(text(repo) ? ['--repo', repo] : []), '--json', PR_FIELDS],
+  ['pr', 'view', String(pr), ...(text(repo) ? ['--repo', repo] : []), '--json', fields],
   { json: true },
 ]
 export const commentsReadCall = (repo, pr) => [
@@ -3406,9 +3362,11 @@ export function readOperatorDecision(
   return { readable: true, ...operatorDecision(markers.markers, headSha) }
 }
 
+const operatorPrCall = (pr, repo) => prReadCall(pr, repo, 'state,headRefOid,body')
+
 // The open PR and its head for an operator verb, or the refusal to return.
 function operatorPr(read, pr, repo) {
-  const view = readPr(read, pr, repo)
+  const view = read(...operatorPrCall(pr, repo))
   if (!view.ok)
     return { refusal: { reason: 'pr-unreadable', detail: readFailureDetail('gh', view) } }
   const p = view.payload ?? {}
@@ -3506,11 +3464,16 @@ function approverRefusal(read, repo) {
  * Returns `{attempted, approvalUrl?}` when the record took effect, plus `reason` when it did not;
  * `attempted` says whether the post was made at all.
  */
-function postApproval(read, { pr, repo, headSha, codes, holds, body }) {
-  const before = stillStands(read, pr, repo, headSha, holds)
+async function postApproval(read, rounds, beforeRead, { pr, repo, headSha, codes, holds, body }) {
+  const before = stillStands(beforeRead, pr, repo, headSha, holds)
   if (before !== 'stands') return { attempted: false, reason: before }
   const posted = postPrComment(read, repo, pr, body)
-  const settled = settleApproval(read, pr, repo, { headSha, waives: codes.join(','), holds })
+  const fresh = await rounds.round([
+    operatorPrCall(pr, repo),
+    statusReadCall(headSha, repo),
+    commentsReadCall(repo, pr),
+  ])
+  const settled = settleApproval(fresh, pr, repo, { headSha, waives: codes.join(','), holds })
   const approvalUrl = settled.url || posted
   const out = { attempted: true, ...(approvalUrl ? { approvalUrl } : {}) }
   if (settled.state === 'effective') return out
@@ -3548,11 +3511,29 @@ export async function approve(options, deps = {}) {
   const repo = repoFor(read, options.repo)
   const writes = []
   const finish = (result) => (dryRun ? { dryRun: true, ...result, writes } : { ...result, writes })
-  const { p, headSha, refusal } = operatorPr(read, options.pr, repo)
+  const rounds = operatorReads(
+    read,
+    deps.readAsync ?? (deps.read ? null : asyncCommandReader(deps)),
+    {
+      sticky: (cmd, args) =>
+        cmd === 'gh' &&
+        args[0] === 'api' &&
+        (args[1] === 'user' || /\/collaborators\/[^/]+\/permission$/.test(args[1])),
+    },
+  )
+  const { p, headSha, refusal } = operatorPr(
+    await rounds.round([operatorPrCall(options.pr, repo)]),
+    options.pr,
+    repo,
+  )
   if (refusal) return finish({ approved: false, ...refusal })
   if (pin.head !== null && headSha !== pin.head)
     return finish({ approved: false, reason: 'head-moved', headSha })
-  const standing = readStandingStatus(read, headSha, repo)
+  const statusRead = await rounds.round([
+    statusReadCall(headSha, repo),
+    ['gh', ['api', 'user'], { json: true }],
+  ])
+  const standing = readStandingStatus(statusRead, headSha, repo)
   if (!standing.readable) return finish({ approved: false, reason: 'status-unreadable', headSha })
   const status = standing.status
   const description = typeof status?.description === 'string' ? status.description : ''
@@ -3579,7 +3560,7 @@ export async function approve(options, deps = {}) {
     holds = (s) => !parkOf(s)
   } else {
     const operator = isVerified(status)
-      ? readOperatorDecision(read, repo, options.pr, headSha)
+      ? readOperatorDecision(statusRead, repo, options.pr, headSha)
       : null
     if (operator && !operator.readable)
       return finish({ approved: false, reason: 'comments-unreadable', headSha })
@@ -3593,9 +3574,22 @@ export async function approve(options, deps = {}) {
   const waives = codes.join(',')
   const signOff = !park && pin.forMerge ? 'merge' : null
   const lift = park ? {} : signOff ? { signOff } : { lifted: 'sent-back' }
-  const refusedApprover = approverRefusal(read, repo)
+  const login = viewerLogin(statusRead)
+  const beforeRead = await rounds.round([
+    operatorPrCall(options.pr, repo),
+    statusReadCall(headSha, repo),
+    ...(login
+      ? [
+          [
+            'gh',
+            ['api', `${apiRepo(repo)}/collaborators/${encodeURIComponent(login)}/permission`],
+            { json: true },
+          ],
+        ]
+      : []),
+  ])
+  const refusedApprover = approverRefusal(beforeRead, repo)
   if (refusedApprover) return finish({ approved: false, reason: refusedApprover, waives, headSha })
-
   const ticket = parseTicketLine(p.body)
   const names = trackerNames(deps)
   const labelRemoval = { issueId: ticket?.id ?? '', removeLabels: [names.needsHuman] }
@@ -3607,7 +3601,7 @@ export async function approve(options, deps = {}) {
     return finish({ approved: false, planned: true, waives, headSha, ...lift })
   }
 
-  const posted = postApproval(read, {
+  const posted = await postApproval(read, rounds, beforeRead, {
     pr: options.pr,
     repo,
     headSha,
@@ -3621,8 +3615,14 @@ export async function approve(options, deps = {}) {
     return finish({ approved: false, reason: posted.reason, waives, headSha, ...lift, ...url })
   const approved = { approved: true, waives, headSha, ...url, ...lift }
   if (!park) return finish(approved)
-  const tracker = await removeNeedsHumanLabel(deps, ticket, labelRemoval, () =>
-    stillStands(read, options.pr, repo, headSha, holds),
+  const tracker = await removeNeedsHumanLabel(deps, ticket, labelRemoval, async () =>
+    stillStands(
+      await rounds.round([operatorPrCall(options.pr, repo), statusReadCall(headSha, repo)]),
+      options.pr,
+      repo,
+      headSha,
+      holds,
+    ),
   )
   if (tracker.attempted) writes.push(labelWrite)
   return finish({
@@ -3654,7 +3654,7 @@ async function removeNeedsHumanLabel(
     return { attempted: false, outcome: 'absent' }
   // What stood is gone: the label is deliberately left on (`skipped`). A re-read that failed
   // leaves the removal undone for a person to finish (`unavailable`).
-  const verdict = stands()
+  const verdict = await stands()
   if (verdict !== 'stands')
     return {
       attempted: false,

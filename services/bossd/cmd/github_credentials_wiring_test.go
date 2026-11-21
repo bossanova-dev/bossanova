@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -166,30 +169,37 @@ func TestInstallationTokenSourceMapsNWOToOrigin(t *testing.T) {
 }
 
 // TestGitHubProviderRunsReadsWithTheMintedToken wires the real provider to a
-// signed-in source and a stub gh, and checks a read's gh process sees the
-// minted installation token while the daemon's own env is untouched.
+// signed-in source. The pooled HTTP request carries the minted token while
+// the daemon's environment stays untouched.
 func TestGitHubProviderRunsReadsWithTheMintedToken(t *testing.T) {
-	dir := t.TempDir()
-	stub := "#!/bin/sh\necho \"GH_TOKEN=${GH_TOKEN-unset}\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o700); err != nil { // #nosec G306 -- test fixture must be executable
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+"/usr/bin:/bin")
 	t.Setenv("GH_TOKEN", "operator-token")
-
+	var authorization string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		_, _ = fmt.Fprint(w, "job logs")
+	}))
+	defer srv.Close()
+	transport := srv.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.ServerName = "example.com"
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+	}
+	transport.Proxy = nil
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = oldTransport; transport.CloseIdleConnections() })
 	rpc := &recordingInstallationTokenRPC{resp: installationTokenResponse("ghs_wired")}
 	p := github.New(zerolog.Nop())
 	p.SetInstallationTokens(installationTokenSource{src: signedInGitHubCredentials(rpc)})
-
 	out, err := p.GetFailedCheckLogs(context.Background(), "git@github.com:owner/repo.git", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "GH_TOKEN=ghs_wired\n" {
-		t.Fatalf("gh saw %q, want the minted installation token", out)
+	if out != "job logs" || authorization != "Bearer ghs_wired" {
+		t.Fatal("pooled request did not use the minted token")
 	}
-	if got := os.Getenv("GH_TOKEN"); got != "operator-token" {
-		t.Fatalf("daemon GH_TOKEN = %q after the call, want it unchanged", got)
+	if os.Getenv("GH_TOKEN") != "operator-token" {
+		t.Fatal("daemon token environment changed")
 	}
 }
 

@@ -183,7 +183,21 @@ function gitIn(dir) {
 // fallback; gh answers `boss/build` reads from `receipts` and records each post.
 function fakeSpawn(receipts, posts) {
   const gh = (args) => {
-    if (args[0] === 'pr' && args[1] === 'list') return { status: 0, stdout: '[{"number":7}]' }
+    if (args[0] === 'repo') return { status: 0, stdout: '' }
+    if (args[0] === 'pr' && args[1] === 'list')
+      return {
+        status: 0,
+        stdout: JSON.stringify([
+          {
+            number: 7,
+            title: 'Change',
+            body: '',
+            headRefName: 'feature',
+            state: 'OPEN',
+            url: 'https://github.com/acme/widgets/pull/7',
+          },
+        ]),
+      }
     if (args[0] === 'pr') return { status: 0, stdout: '{"baseRefName":"main"}' }
     if (args.includes('POST')) {
       posts.push(args)
@@ -197,8 +211,14 @@ function fakeSpawn(receipts, posts) {
   }
   return (command, args, options) => {
     if (basename(command) === 'boss') return { status: null, error: { code: 'ENOENT' } }
+    if (command === 'git' && args[0] === 'remote' && args[1] === '-v')
+      return { status: 0, stdout: 'origin\thttps://github.com/acme/widgets.git (fetch)\n' }
     return command === 'gh' ? gh(args) : spawnSync(command, args, options)
   }
+}
+
+function fixtureEnv(dir) {
+  return { PATH: process.env.PATH, HOME: dir, USERPROFILE: dir, GH_CONFIG_DIR: dir }
 }
 
 function fixture(t) {
@@ -224,7 +244,7 @@ function fixture(t) {
   const run = (head, reviewVerdicts = [], config = {}, startSha = start, options = {}) =>
     carryReport(
       { startSha, head, reviewVerdicts, ...options },
-      { spawn, cwd: dir, loadConfig: () => config },
+      { spawn, cwd: dir, env: fixtureEnv(dir), loadConfig: () => config },
     )
   // A push from this repository moves the remote-tracking ref and logs it.
   const pushed = (sha) =>
@@ -671,7 +691,10 @@ function remoteFixture(t) {
     return { dir, ...gitIn(dir) }
   }
   const run = (cwd, startSha, head, reviewVerdicts = []) =>
-    carryReport({ startSha, head, reviewVerdicts }, { spawn, cwd, loadConfig: () => ({}) })
+    carryReport(
+      { startSha, head, reviewVerdicts },
+      { spawn, cwd, env: fixtureEnv(root), loadConfig: () => ({}) },
+    )
   const trackingLog = (dir) =>
     gitIn(dir).git('reflog', 'show', '--format=%gs', 'refs/remotes/origin/feature').split('\n')
   return {

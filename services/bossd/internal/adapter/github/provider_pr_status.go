@@ -185,7 +185,7 @@ func (p *Provider) VerifyPassedAtHead(ctx context.Context, repoPath, sha string)
 		return false, fmt.Errorf("confirm verify pass: invalid repository or commit SHA")
 	}
 	ctx = withRoute(ctx, "VerifyPassedAtHead", nwo)
-	out, err := p.gh(ctx, "api", fmt.Sprintf("repos/%s/commits/%s/status?per_page=100", nwo, sha), "--paginate", "--jq", ".statuses")
+	out, err := p.gh(ctx, "api", fmt.Sprintf("repos/%s/commits/%s/status?per_page=100", nwo, sha), "--paginate")
 	if err != nil {
 		return false, fmt.Errorf("get commit statuses: %w", err)
 	}
@@ -193,14 +193,18 @@ func (p *Provider) VerifyPassedAtHead(ctx context.Context, repoPath, sha string)
 		Context string `json:"context"`
 		checkRow
 	}
-	rows, err := decodePaginatedPages[statusRow](out, "commit statuses")
+	pages, err := decodePaginatedObjects[struct {
+		Statuses []statusRow `json:"statuses"`
+	}](out, "commit statuses")
 	if err != nil {
 		return false, err
 	}
-	for _, row := range rows {
-		if row.Context == vcs.VerifyStatusContext {
-			row.Name = row.Context
-			return vcs.VerifyPassed(p.buildCheckSet([]checkRow{row.checkRow}).Checks), nil
+	for _, page := range pages {
+		for _, row := range page.Statuses {
+			if row.Context == vcs.VerifyStatusContext {
+				row.Name = row.Context
+				return vcs.VerifyPassed(p.buildCheckSet([]checkRow{row.checkRow}).Checks), nil
+			}
 		}
 	}
 	return false, nil

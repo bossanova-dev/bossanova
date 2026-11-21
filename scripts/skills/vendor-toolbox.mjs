@@ -153,6 +153,7 @@ export const VENDOR_MAP = {
     'tracker/preflight.mjs',
   ],
   'boss-plan': [
+    'skill-pin.mjs',
     'plan/plan-checkout-freshness.mjs',
     'session/claim-owner-status.mjs',
     'plan/plan-open-prs.mjs',

@@ -1,4 +1,4 @@
-.PHONY: db-production db-staging release split stage-release
+.PHONY: db-production db-staging deploy-production deploy-staging release split stage-release
 
 DB_PROJECT_ID ?= madverts-production
 DB_INSTANCE ?= madverts-production
@@ -62,6 +62,14 @@ db-staging:
 
 db-production:
 	$(call db_proxy,bossanova_production,production)
+
+## deploy-staging: Build and deploy bosso and mcp-gateway to the staging Vultr VM
+deploy-staging:
+	scripts/release/vultr/deploy-vultr.sh staging
+
+## deploy-production: Build and deploy bosso and mcp-gateway to the production Vultr VM
+deploy-production:
+	scripts/release/vultr/deploy-vultr.sh production
 
 ## release: Trigger the production release workflow (creates a PR from main → production)
 release:

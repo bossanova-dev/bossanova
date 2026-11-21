@@ -125,7 +125,7 @@ func WithUsageRecorder(r UsageRecorder) ProviderOption {
 func New(logger zerolog.Logger, opts ...ProviderOption) *Provider {
 	p := &Provider{
 		logger:  logger,
-		runGH:   defaultRunGH,
+		runGH:   newAPIExecutor(apiExecConfig{}).run,
 		sleepFn: time.Sleep,
 		nowFn:   time.Now,
 		afterFn: time.After,

@@ -208,6 +208,7 @@ lint:
 # must match scripts/skills/skill-config-schema/schema.mjs byte-for-byte. Unstamped: the generated file
 # is not in lint-scripts.mjs's stamp key, so a stamp would be warm on a hand edit to it.
 	@node skills/skill-config-schema/build.mjs --check
+	@node skills/gh-hosts-parser/build.mjs --check
 
 ## test: Run script tests
 test:

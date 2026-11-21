@@ -20,7 +20,7 @@
 // Prints one JSON line `{"verdict","reason","sessionId"[,"log"][,"finishOutcome"][,"detail"]}` and
 // exits 0 on every decision — the step is never fatal. Exit 64 only on a usage error.
 //
-// Node built-ins plus ./main-module.mjs and ./boss-binary.mjs only.
+// Completed pins remain available through this final helper, then become TTL-reapable.
 
 import { execFile as defaultExecFile, spawn as defaultSpawn } from 'node:child_process'
 import defaultFs from 'node:fs'
@@ -29,6 +29,7 @@ import path from 'node:path'
 
 import { resolveBossBinary } from '../boss-binary.mjs'
 import { isMainModule } from '../main-module.mjs'
+import { COMPLETED_PLAN_PIN_MARKER } from '../plan/plan-scratch-reap.mjs'
 
 // Outcomes that mean the planning run is completely finished and left nothing to inspect.
 export const FINISHED_OUTCOMES = Object.freeze(['planned', 'noop', 'epic', 'empty-queue'])
@@ -292,7 +293,7 @@ export async function launchDetachedArchive({
  * Gather the inputs, decide, and act. Every side effect is injected so tests never touch a real
  * daemon, PATH or repository.
  */
-export async function runSelfArchive(opts, deps = {}) {
+async function decideAndRunSelfArchive(opts, deps = {}) {
   const env = deps.env ?? process.env
   const fs = deps.fs ?? defaultFs
   const execFile = deps.execFile ?? defaultExecFile
@@ -347,6 +348,30 @@ export async function runSelfArchive(opts, deps = {}) {
     return { ...skip('error', String(error?.message ?? error)), sessionId }
   }
   return { ...decision, sessionId, log }
+}
+
+export async function runSelfArchive(opts, deps = {}) {
+  const result = await decideAndRunSelfArchive(opts, deps)
+  const env = deps.env ?? process.env
+  const fs = deps.fs ?? defaultFs
+  const cwd = deps.cwd ?? process.cwd()
+  const pinRoot = env.BOSS_SKILLS_HOME
+  if (
+    FINISHED_OUTCOMES.includes(opts.outcome) &&
+    result.verdict !== 'ask' &&
+    !fs.existsSync(path.resolve(cwd, opts.runScratch)) &&
+    pinRoot &&
+    fs.existsSync(path.join(pinRoot, 'boss-plan/.boss-skill-pin.json'))
+  ) {
+    try {
+      fs.writeFileSync(path.join(pinRoot, COMPLETED_PLAN_PIN_MARKER), '')
+      const now = new Date(deps.now ?? Date.now())
+      fs.utimesSync(pinRoot, now, now)
+    } catch (error) {
+      return { ...result, pinReleaseWarning: String(error?.message ?? error) }
+    }
+  }
+  return result
 }
 
 async function main(argv) {

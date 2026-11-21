@@ -3,6 +3,9 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs'
+import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
+import { reapPlanScratch, STALE_PLAN_PIN_TTL_MS } from '../plan/plan-scratch-reap.mjs'
 
 import {
   DEFAULT_DELAY_MS,
@@ -410,6 +413,41 @@ const OPTS = {
 }
 
 describe('runSelfArchive', () => {
+  it('releases completed planning pins while retaining confirmation waits and unfinished runs', async () => {
+    for (const [name, options, overrides, scratchExists, released] of [
+      ['confirmed', { confirmed: true }, { BOSS_UNATTENDED: '', BOSS_CRON: '' }, false, true],
+      ['unmanaged', {}, { BOSS_SESSION_ID: '' }, false, true],
+      ['suppressed', { suppressed: true }, {}, false, true],
+      ['daemon', {}, { BOSS_CRON_JOB_ID: 'cron-1' }, false, true],
+      ['waiting', {}, { BOSS_UNATTENDED: '', BOSS_CRON: '' }, false, false],
+      ['unfinished', { outcome: 'blocked' }, {}, false, false],
+      ['retained', {}, {}, true, false],
+    ]) {
+      const root = tempDir('plan-pin-terminal-')
+      const pin = path.join(root, 'pin-' + name)
+      mkdirSync(path.join(pin, 'boss-plan'), { recursive: true })
+      writeFileSync(path.join(pin, 'boss-plan/.boss-skill-pin.json'), '{}')
+      const { deps } = harness({
+        env: baseEnv({ BOSS_BIN: BOSS, BOSS_SKILLS_HOME: pin, ...overrides }),
+        scratchExists,
+      })
+      const now = Date.now()
+      deps.now = now
+      const fakeExists = deps.fs.existsSync
+      deps.fs = {
+        ...deps.fs,
+        existsSync: (p) => (p.startsWith(root) ? existsSync(p) : fakeExists(p)),
+        writeFileSync,
+        utimesSync,
+      }
+      await runSelfArchive({ ...OPTS, ...options }, deps)
+      assert.equal(existsSync(pin), true, name)
+      const reaped = reapPlanScratch(root, { now: now + STALE_PLAN_PIN_TTL_MS + 1000 })
+      assert.equal(existsSync(pin), !released, name)
+      assert.equal(reaped.removed.length, released ? 1 : 0, name)
+    }
+  })
+
   it('archive spawns a detached, unref-ed /bin/sh outside the worktree with the resolved binary and session id', async () => {
     const { deps, calls } = harness()
     const result = await runSelfArchive(OPTS, deps)

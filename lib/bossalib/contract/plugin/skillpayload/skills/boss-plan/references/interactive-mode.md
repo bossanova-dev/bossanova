@@ -124,7 +124,7 @@ arbitrary machines, so it may only write where it owns the ground.
 
 1. Create the run scratch and compute the design-doc path inside it:
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh run-tmp create --design <ISSUE-ID>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh run-tmp create --design <ISSUE-ID>
    ```
    Substitute the ticket's own id for `<ISSUE-ID>`. The step prints `RUN_TMP` and `DESIGN_DOC`.
    `RUN_TMP` is the `runTmp` you pass to every Phase 4 dispatch; `mktemp -d` makes it unique per run,
@@ -159,7 +159,7 @@ arbitrary machines, so it may only write where it owns the ground.
 
 ## Phase 4 — Resolve the draft/review step (interactive only)
 
-Run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role draft --mode interactive --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --json`
+Run `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node skill-extensions.mjs discover --core boss-plan --role draft --mode interactive --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --json`
 and read both `extensions` and `skipped`; record every
 `skipped` entry whose `deliberate` is `false` as
 `extension <name>: skipped (<reason>)` in the autonomous decisions. Key that on the entry's own
@@ -257,7 +257,7 @@ the approved spec:
 
 **The worker self-verifies, and its prose is never evidence.** Require the worker to run the
 plan-contract guard from the repo worktree root per child before returning:
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-contract-guard.mjs --description "<absolute-runTmp>/batch-draft/<key>.description.md" --plan "<absolute-runTmp>/batch-draft/<key>.md" --module-roots "<tracked-top-level-paths-comma-separated>"`.
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-contract-guard.mjs --description "<absolute-runTmp>/batch-draft/<key>.description.md" --plan "<absolute-runTmp>/batch-draft/<key>.md" --module-roots "<tracked-top-level-paths-comma-separated>"`.
 Pass absolute draft paths because `runTmp` can be outside the repo. Never report success while any run exits non-zero. Do not read
 its claim of validation ("all N validated") either way: the orchestrator's own per-child gate run
 below stays the verdict.
@@ -269,11 +269,11 @@ its draft-metadata object from its `children[<key>]` entry plus `planPath` (its 
 `{"path": …}` form, which the guard accepts only for a declared `description` artifact under
 `.linear-plans/run-<RUN-SCRATCH-ID>/` and these drafts live under `runTmp` — write it to
 `<runTmp>/batch-draft/<key>.draft-metadata.json`, and run
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs metadata <runTmp>/batch-draft/<key>.draft-metadata.json` — the same bounded-metadata guard the
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs metadata <runTmp>/batch-draft/<key>.draft-metadata.json` — the same bounded-metadata guard the
 single-ticket path runs, so an unknown key, a non-boolean `agentBuild` or a non-single-ticket
 estimate fails identically here. Then run the plan-contract guard
-(`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-contract-guard.mjs --description <desc> --plan <plan> --module-roots "<tracked-top-level-paths-comma-separated>"`), the image
-guard (`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-image-guard.mjs --require-verbatim …`), and the secret gate,
+(`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-contract-guard.mjs --description <desc> --plan <plan> --module-roots "<tracked-top-level-paths-comma-separated>"`), the image
+guard (`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-image-guard.mjs --require-verbatim …`), and the secret gate,
 per child, **before the first tracker write**. One dispatch drafting ten plans is precisely where a
 late plan degrades, so these are the gates that must not be batched.
 
@@ -318,7 +318,7 @@ In addition to the plan file, remove the run scratch you created in Phase 3 — 
 design doc and every per-dispatch draft target (headless has no design doc to remove):
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh run-tmp remove --path "<the exact RUN_TMP path recorded in Phase 3>"
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh run-tmp remove --path "<the exact RUN_TMP path recorded in Phase 3>"
 ```
 
 Substitute the **literal** run-scratch path you recorded in Phase 3 — do not recompute it (the
@@ -338,3 +338,5 @@ re-planning. A LOST claim on a named ticket reports the peer and proceeds only a
 confirmation. That override continues unclaimed and omits `--claim-receipt` from subsequent rechecks;
 it never fabricates a WON verdict. Recheck after drafting and immediately before attachment prepare,
 and release through the receipt on every terminal path.
+
+Pass `PIN_DIR=<PIN-DIR>` and the pinned toolbox path `<PIN-DIR>/toolbox` to every extension dispatch.

@@ -3,7 +3,7 @@
 ## Claim before drafting
 
 Read `tracker/cli.mjs operations` and require `readComments,writeComment`. Before routing a selected
-issue, run `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <ISSUE-ID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`.
+issue, run `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <ISSUE-ID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`.
 Exit 0 continues; exit 64 means fix the call.
 
 On exit 2, execute the tracker adapter's `getIssue` operation and save the bare object. Keep identity
@@ -18,11 +18,11 @@ path in each shell call; never carry ownership state in shell variables or inven
 Start the receipt, then acquire its issue lease before posting any comment:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs start --receipt "$CLAIM_RECEIPT" --issue <ISSUE-ID>
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs start --receipt "$CLAIM_RECEIPT" --issue <ISSUE-ID>
 ```
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs acquire --receipt "$CLAIM_RECEIPT"
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs acquire --receipt "$CLAIM_RECEIPT"
 ```
 
 - Exit 0 (`acquired`): retain the lease for the whole planning run; continue to the comment claim.
@@ -36,19 +36,19 @@ bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs acquire 
 The lease defaults to 7200 seconds. Per-child epic claims use their own receipt under their
 own run scratch; the parent keeps its lease until the parent run ends.
 Then format the comment with
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs comment --receipt "$CLAIM_RECEIPT" --session-id "${BOSS_SESSION_ID:-}"`.
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs comment --receipt "$CLAIM_RECEIPT" --session-id "${BOSS_SESSION_ID:-}"`.
 Post that body through `writeComment`, then immediately persist its returned id with
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs record-comment --receipt "$CLAIM_RECEIPT" --id <COMMENT-ID>`.
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs record-comment --receipt "$CLAIM_RECEIPT" --id <COMMENT-ID>`.
 Every later step reads ownership from the receipt. Re-read `readComments` into
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.claim-comments.json` and run
 the owner evidence helper, then arbitration:
 
 ```sh
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node session/claim-owner-status.mjs --comments "$CLAIM_COMMENTS" --claim-receipt "$CLAIM_RECEIPT" --out "$CLAIM_LIVENESS" --issue "<ISSUE-ID>" --release-forfeited-leases
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node session/claim-owner-status.mjs --comments "$CLAIM_COMMENTS" --claim-receipt "$CLAIM_RECEIPT" --out "$CLAIM_LIVENESS" --issue "<ISSUE-ID>" --release-forfeited-leases
 ```
 
 ```sh
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs verdict --receipt "$CLAIM_RECEIPT" --comments "$CLAIM_COMMENTS" --liveness "$CLAIM_LIVENESS"
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs verdict --receipt "$CLAIM_RECEIPT" --comments "$CLAIM_COMMENTS" --liveness "$CLAIM_LIVENESS"
 ```
 
 `CLAIM_COMMENTS` names the fresh `claim-comments` scratch file; `CLAIM_LIVENESS` is this run's
@@ -74,7 +74,7 @@ Planning claims never use build scope.
 Release always includes the lease, even when no comment was posted or deletion is unavailable:
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs release --receipt "$CLAIM_RECEIPT"
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-claim.mjs release --receipt "$CLAIM_RECEIPT"
 ```
 
 The helper prints `{lease,commentId}` and records the release in the receipt. Use that printed
@@ -91,14 +91,14 @@ on terminal paths.
 
 After the drafter returns, before metadata adoption or Phase 4 gates, and again immediately before
 each attachment prepare after all reviewers and gates, run
-`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <ISSUE-ID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.recheck.json`.
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <ISSUE-ID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.recheck.json`.
 Exit 0 continues; exit 2 uses the fallback above; exit 64 means fix the call. Refresh comments into
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.claim-comments.json` as well. When holding a planning
 claim, refresh `CLAIM_LIVENESS` through the owner evidence helper above. Keep the original
 selection payload unchanged. Child planners use these names under their own run scratch and their
 own selected issue id; the parent claim remains held until the parent run ends.
 
-Invoke `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs recheck "$PRECHECK" "$RECHECK" --selected-id "<ISSUE-ID>"`.
+Invoke `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs recheck "$PRECHECK" "$RECHECK" --selected-id "<ISSUE-ID>"`.
 `PRECHECK` is the original selection artifact and `RECHECK` the new bare payload. If the run holds
 a planning claim, append `--claim-receipt "$CLAIM_RECEIPT" --comments "$CLAIM_COMMENTS" --liveness "$CLAIM_LIVENESS"`.
 Omit the claim receipt on the unsupported-adapter or confirmed interactive override route.

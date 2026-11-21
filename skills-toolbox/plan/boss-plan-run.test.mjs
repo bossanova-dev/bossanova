@@ -3,6 +3,8 @@ import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import {
   cpSync,
+  statSync,
+  utimesSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -252,4 +254,42 @@ test('deps fetches logical endpoints, passes the graph, and drops stale graphs o
   assert.equal(failed.status, 0, failed.stderr)
   assert.equal(JSON.parse(failed.stdout).graph, null)
   assert.ok(!existsSync(prefix + '.blocker-graph.json'))
+})
+
+test('runner refreshes its pin root only when the skill carries a pin record', (t) => {
+  const { root, toolbox, run } = fixture(t)
+  const skillsHome = join(root, 'skills')
+  const old = new Date('2000-01-01T00:00:00Z')
+  utimesSync(skillsHome, old, old)
+  assert.equal(run('node', 'plan/echo-args.mjs').status, 0)
+  assert.equal(statSync(skillsHome).mtimeMs, old.getTime())
+  writeFileSync(join(toolbox, '../.boss-skill-pin.json'), '{}')
+  assert.equal(run('node', 'plan/echo-args.mjs').status, 0)
+  assert.ok(statSync(skillsHome).mtimeMs > old.getTime())
+})
+
+test('pin creation opts only unattended runs into age-based reaping', (t) => {
+  const { root, toolbox } = fixture(t)
+  writeFileSync(
+    join(toolbox, 'skill-pin.mjs'),
+    "import{mkdirSync}from'node:fs';mkdirSync(process.argv[process.argv.indexOf('--pin-root')+1],{recursive:true})",
+  )
+  for (const [id, unattended, cron, expires] of [
+    ['interactive', '', '', false],
+    ['headless', 'true', '', true],
+    ['legacy', '', 'true', true],
+    ['override', 'false', 'true', false],
+  ]) {
+    const result = spawnSync(
+      'bash',
+      [join(toolbox, 'plan/boss-plan-run.sh'), 'pin', '--run-scratch', '.linear-plans/run-' + id],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, BOSS_UNATTENDED: unattended, BOSS_CRON: cron },
+      },
+    )
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(existsSync(join(root, '.linear-plans/pin-' + id, '.unattended')), expires)
+  }
 })

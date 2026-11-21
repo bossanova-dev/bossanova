@@ -81,6 +81,7 @@ go_test(
         "review_ask_test.go",
         "session_raise_test.go",
         "session_timeline_chats_test.go",
+        "session_timeline_long_test.go",
         "session_timeline_park_test.go",
         "session_timeline_test.go",
         "telemetry_fixture_test.go",
@@ -137,6 +138,7 @@ go_test(
         "testdata/chatpicker-timeline-review-24.golden",
         "testdata/chatpicker-timeline-review.golden",
         "testdata/chatpicker-timeline-rotations.golden",
+        "testdata/chatpicker-timeline-long-multiday.golden",
     ],
     deps = [
         "//lib/bossalib/attention",

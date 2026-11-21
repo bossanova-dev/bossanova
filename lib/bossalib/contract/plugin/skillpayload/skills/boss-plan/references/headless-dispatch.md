@@ -65,7 +65,7 @@ output file (a symlink or a stub whose mtime and size never move), and never thr
    retry included:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-mark --run-dir <RUN_DIR>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh dispatch-mark --run-dir <RUN_DIR>
    ```
 
    The `draft` sentinel is written only when the drafter finishes, so without a caller-held clock every re-armed
@@ -78,7 +78,7 @@ output file (a symlink or a stub whose mtime and size never move), and never thr
    spans the observed drafter beat gaps (up to about seven minutes), so no observed gap outlasts it.
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh dispatch-wait --run-dir <RUN_DIR> --run-id <RUN_ID> --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --budget 590000
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh dispatch-wait --run-dir <RUN_DIR> --run-id <RUN_ID> --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --budget 590000
    ```
 
    Harnesses that cannot raise the tool timeout omit `--budget`, keeping the 110000 ms default
@@ -128,7 +128,7 @@ accepts a child as planned only when `plan-run-guards.mjs idempotence` over a fr
 
 ### Hydrate the epic reverify before step 4's block runs
 
-Step 4 accepts an epic only on `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs epic-reverify`, and
+Step 4 accepts an epic only on `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-run-guards.mjs epic-reverify`, and
 that verb reads files, never the tracker. Once the sentinel reports `payload.epic == true`,
 prepare its inputs through the adapter command before the step-4 block runs:
 
@@ -136,7 +136,7 @@ prepare its inputs through the adapter command before the step-4 block runs:
    supplies the parent snapshot:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh children-input --mode epic --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --parent <EPIC-PARENT-ID>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh children-input --mode epic --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --parent <EPIC-PARENT-ID>
    ```
 
    Stop on a listing failure; never treat a refused or partial listing as no children.
@@ -144,7 +144,7 @@ prepare its inputs through the adapter command before the step-4 block runs:
 2. Build the bundle from those saved payloads and the sentinel's ids:
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh epic-reverify-bundle --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --run-dir <RUN_DIR> --run-id <RUN_ID>
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh epic-reverify-bundle --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --run-dir <RUN_DIR> --run-id <RUN_ID>
    ```
 
    Exit 0 prints the bundle path, live children, coverage gaps and `storedDescriptions` paths;
@@ -152,7 +152,7 @@ prepare its inputs through the adapter command before the step-4 block runs:
    On exit 3, fix each defect's saved input, re-save the payload and run the verb once more.
    If it still exits 3, report `epic reverify bundle defect — needs a human; run scratch kept`,
    release this run's planning claim, and clean up only the sentinel with
-   `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs cleanup <RUN_DIR>`
+   `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs cleanup <RUN_DIR>`
    (the step-4 needs-human arm); retain the run scratch. When `unhydratedChildIds` is non-empty,
    refresh the listing in step 1 and rerun the verb once. Never edit the bundle by hand. Coverage gaps do not decide the epic's class; `epic-reverify` does.
    A fallback payload without a positive parent link remains a coverage gap: identity alone
@@ -160,7 +160,7 @@ prepare its inputs through the adapter command before the step-4 block runs:
 
 3. Read every description into the exact paths printed under `storedDescriptions`: `parent` and
    every entry in `children`, including live children absent from the sentinel's `childIds`.
-   Use `bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-description --id <UUID> --out-file <path>`
+   Use `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-description --id <UUID> --out-file <path>`
    on the run's one route (`references/plan-storage.md`; on the `getIssue` fallback route, copy
    the returned description byte-for-byte to the same path). On the single-record route the
    parent is different: read its one `Implementation plan (<ISSUE-ID>)` overview record through
@@ -212,7 +212,7 @@ trusted as input, and the orchestrator writes it after the dispatch returns. Do 
 into a shell command; apostrophes, dollar signs and backticks must remain unchanged.
 
 ```bash
-bash <skill-dir>/toolbox/plan/boss-plan-run.sh adopt-metadata --returned .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-returned.json --metadata .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json --run-dir <RUN_DIR> --plan-path <PLAN_PATH> --run-scratch .linear-plans/run-<RUN-SCRATCH-ID>
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh adopt-metadata --returned .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-returned.json --metadata .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json --run-dir <RUN_DIR> --plan-path <PLAN_PATH> --run-scratch .linear-plans/run-<RUN-SCRATCH-ID>
 ```
 
 The runner validates the returned file with `plan-run-guards.mjs adopt-metadata`, which decodes the transport’s HTML escaping once, so write the object exactly as received and never un-escape it by hand.

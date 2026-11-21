@@ -4,7 +4,6 @@
   "scripts/gate-run.mjs",
   "scripts/guards/check-doc-make-targets.mjs",
   "scripts/guards/check-ellipsis-consistency.mjs",
-  "scripts/guards/check-email-course.mjs",
   "scripts/guards/check-go-format.mjs",
   "scripts/guards/check-price-parity.mjs",
   "scripts/guards/check-public-mirror-workflows.mjs",

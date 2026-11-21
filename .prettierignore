@@ -55,3 +55,6 @@ lib/bossalib/attention/testdata/row_status.json
 # The roadmap folder is written by the ls-roadmap CLI: `render` rewrites the page and model and
 # `apply` rewrites roadmap.json keys, so prettier would fight the next run.
 docs/roadmap/
+
+# Import-free third-party YAML bundle, pinned by gh-hosts-parser/build.mjs --check.
+**/gh-hosts.generated.cjs

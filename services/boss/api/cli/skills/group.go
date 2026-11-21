@@ -54,6 +54,7 @@ func New(factory ClientFactory, cfg Config) *Group {
 		{name: "Claude", command: "claude", agent: libskillinstall.AgentClaude},
 		{name: "Codex", command: "codex", agent: libskillinstall.AgentCodex},
 		{name: "Hermes", command: "hermes", agent: libskillinstall.AgentHermes},
+		{name: "Antigravity", command: "agy", agent: libskillinstall.AgentAntigravity},
 	}
 	g.skillPayloadGit = checkoutGitOutput
 	g.InitIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }

@@ -2,6 +2,7 @@ go 1.26.7
 
 use (
 	./lib/bossalib
+	./plugins/bossd-plugin-antigravity
 	./plugins/bossd-plugin-claude
 	./plugins/bossd-plugin-codex
 	./plugins/bossd-plugin-dependabot

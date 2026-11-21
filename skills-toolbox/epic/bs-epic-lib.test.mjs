@@ -1977,3 +1977,23 @@ test('normalizeTicket carries assignee, creator and project ids from every issue
     [undefined, undefined, undefined],
   )
 })
+
+test('parseEpicArgs carries one base branch through every input mode', () => {
+  for (const refs of [['APP-1'], ['APP-1', 'APP-2'], ['--epic', 'APP-1', '--epic', 'APP-2']]) {
+    assert.equal(parseEpicArgs([...refs, '--base-branch', 'integration']).baseBranch, 'integration')
+    assert.equal(Object.hasOwn(parseEpicArgs(refs), 'baseBranch'), false)
+  }
+})
+
+test('parseEpicArgs rejects missing, malformed and repeated base branch values', () => {
+  for (const args of [
+    [],
+    ['--agent'],
+    [''],
+    [' '],
+    ['feature branch'],
+    ['integration', '--base-branch', 'other'],
+  ]) {
+    assert.throws(() => parseEpicArgs(['APP-1', '--base-branch', ...args]), /--base-branch/)
+  }
+})

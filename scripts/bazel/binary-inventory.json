@@ -13,6 +13,7 @@
     "proof-scenario": "//services/boss/cmd/proof-scenario:proof-scenario"
   },
   "plugins": {
+    "bossd-plugin-antigravity": "//plugins/bossd-plugin-antigravity:bossd-plugin-antigravity",
     "bossd-plugin-claude": "//plugins/bossd-plugin-claude:bossd-plugin-claude",
     "bossd-plugin-codex": "//plugins/bossd-plugin-codex:bossd-plugin-codex",
     "bossd-plugin-dependabot": "//plugins/bossd-plugin-dependabot:bossd-plugin-dependabot",

@@ -92,7 +92,8 @@ func locate(getenv func(string) string, home, rel string) (string, error) {
 	if home != "" {
 		candidates = append(candidates,
 			filepath.Join(home, ".claude", "skills", rel),
-			filepath.Join(home, ".codex", "skills", rel))
+			filepath.Join(home, ".codex", "skills", rel),
+			filepath.Join(home, ".gemini", "config", "skills", rel))
 	}
 	for _, c := range candidates {
 		if info, err := os.Stat(c); err == nil && info.Mode().IsRegular() {

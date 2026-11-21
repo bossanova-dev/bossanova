@@ -26,11 +26,12 @@ There are three flavors:
 
 ### Agent plugins
 
-| Plugin     | Status                | Purpose                                                                                                                |
-| ---------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `claude`   | Available             | Owns the [Claude Code](https://claude.ai/download) subprocess for each session.                                        |
-| `codex`    | Available             | Owns the [OpenAI Codex CLI](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started) subprocess. |
-| `opencode` | Experimental (opt-in) | Owns the [OpenCode](https://opencode.ai) CLI subprocess for each session.                                              |
+| Plugin        | Status                | Purpose                                                                                                                |
+| ------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `claude`      | Available             | Owns the [Claude Code](https://claude.ai/download) subprocess for each session.                                        |
+| `codex`       | Available             | Owns the [OpenAI Codex CLI](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started) subprocess. |
+| `antigravity` | Available             | Owns the [Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli) (`agy`) subprocess.                |
+| `opencode`    | Experimental (opt-in) | Owns the [OpenCode](https://opencode.ai) CLI subprocess for each session.                                              |
 
 `opencode` is installed but not loaded by default; it is still alpha. Add it to
 `experimental_plugins` in `settings.json` and restart the daemon to turn it on:

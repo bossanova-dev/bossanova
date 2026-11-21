@@ -14,6 +14,7 @@ const goModuleMakefiles = [
   'services/boss/Makefile',
   'services/bossd/Makefile',
   'services/bosso/Makefile',
+  'plugins/bossd-plugin-antigravity/Makefile',
   'plugins/bossd-plugin-claude/Makefile',
   'plugins/bossd-plugin-codex/Makefile',
   'plugins/bossd-plugin-dependabot/Makefile',

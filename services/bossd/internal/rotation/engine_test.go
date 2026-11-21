@@ -112,14 +112,6 @@ func TestCaptureProactiveRotationTelemetry(t *testing.T) {
 	}
 }
 
-func TestTelemetryProviderIsBounded(t *testing.T) {
-	for input, want := range map[string]string{"claude": "claude", "codex": "codex", "opencode": "opencode", "plugin-x": "other", "": "other"} {
-		if got := telemetryProvider(input); got != want {
-			t.Errorf("telemetryProvider(%q) = %q, want %q", input, got, want)
-		}
-	}
-}
-
 func TestDecideOrdering(t *testing.T) {
 	ok := domain.AgentAccountHealthOK
 	failed := domain.AgentAccountHealthFailed

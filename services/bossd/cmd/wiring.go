@@ -42,6 +42,7 @@ import (
 	"github.com/recurser/bossd/internal/prstate"
 	"github.com/recurser/bossd/internal/resume"
 	"github.com/recurser/bossd/internal/rotation"
+	"github.com/recurser/bossd/internal/serve"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/session/checkpolicy"
 	"github.com/recurser/bossd/internal/status"
@@ -57,6 +58,7 @@ var _ upstream.RepoReadInvalidator = (*github.Provider)(nil)
 // It is allocated once and never copied: callbacks capture the same slots that
 // later stages populate, including the atomic server publications.
 type daemonWiring struct {
+	serveRunner                    *serve.Runner
 	opts                           runOpts
 	alreadyRunning                 bool
 	cleanups                       []func()
@@ -135,6 +137,7 @@ type daemonWiring struct {
 	credentialDevices              *server.CredentialDeviceService
 	trackerIssueLeaseUpstream      server.TrackerIssueLeaseUpstream
 	proofCheckRuns                 server.ProofCheckRuns
+	hostedProof                    *hostedProofClient
 	trackerIssueLeaseSessionToken  func() string
 	credentialEnrollment           *credentialEnrollmentWorker
 	credentialSync                 *daemonCredentialSync

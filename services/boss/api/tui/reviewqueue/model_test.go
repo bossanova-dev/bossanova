@@ -84,14 +84,13 @@ func TestQueueHealthAndPartialFailures_Sessions_AC209303(t *testing.T) {
 	}
 }
 
-func TestQueueAuditSizeAndHealthLayout(t *testing.T) {
-	audit := queueRow("audit", pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH, 0, 10)
-	audit.IsAuditSample = true
-	audit.Session.PrChangedFileCount = 0
-	m := queueModel(&queueScreenClient{}, audit)
+func TestQueueUnknownSizeAndHealthLayout(t *testing.T) {
+	unsized := queueRow("unsized", pb.ConfidenceLevel_CONFIDENCE_LEVEL_HIGH, 0, 10)
+	unsized.Session.PrChangedFileCount = 0
+	m := queueModel(&queueScreenClient{}, unsized)
 	rendered := strings.Join(m.table.Rows()[0], "|")
-	if !strings.Contains(rendered, "sample") || !strings.Contains(rendered, "|—|") {
-		t.Fatalf("audit and unknown size: %s", rendered)
+	if !strings.Contains(rendered, "|—|") {
+		t.Fatalf("unknown size: %s", rendered)
 	}
 	rows := make([]*pb.ReviewQueueRow, 50)
 	for i := range rows {

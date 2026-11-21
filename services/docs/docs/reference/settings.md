@@ -181,6 +181,14 @@ an agent explicitly.
 | ------------------------------ | --------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dangerously_skip_permissions` | string `"true"` / `"false"` | `"false"` (omit for default) | Pass `--dangerously-skip-permissions` to the Claude Code CLI invoked by the `claude` plugin. Off by default. Toggle via `boss settings --skip-permissions` / `--no-skip-permissions`, or in the boss TUI settings view. |
 
+## `antigravity` plugin `config` keys
+
+| Key                            | Type                        | Default   | Description                                                                                                  |
+| ------------------------------ | --------------------------- | --------- | ------------------------------------------------------------------------------------------------------------ |
+| `dangerously_skip_permissions` | string `"true"` / `"false"` | `"false"` | Pass `--dangerously-skip-permissions` to the Antigravity CLI (`agy`).                                        |
+| `mode`                         | string                      | `""`      | Pass `--mode` to `agy`: `accept-edits`, `auto` or `plan`. Empty passes no flag.                              |
+| `model`                        | string                      | `""`      | Fallback `--model` for runs without their own, such as `gemini-4-neon-medium`. Empty uses the `agy` default. |
+
 ## `repair` fields
 
 | Field                    | Type   | Default       | Description                                              |
@@ -217,6 +225,8 @@ It writes with the operator's upload token from the OS keyring
 token is scoped to one bucket, so one daemon has one destination. A repo that
 hosts its own proof pages uses a `proof-publish` hook instead, with its own
 credentials.
+A repo that sets `publishConfig.proof` uses this bucket first, and the daemon's
+hosted proof host when this block is incomplete.
 
 | Field             | Type   | Default | Description                                                                                                  |
 | ----------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------ |

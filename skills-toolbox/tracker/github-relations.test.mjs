@@ -589,3 +589,54 @@ test('GitHub gate treats green review blockers as possible selection work withou
     assert.equal(result, !isDraft)
   }
 })
+
+test('blocker graph maps fully paginated GitHub dependencies and parent edges', async () => {
+  const a = raw(1, { issue_dependencies_summary: { total_blocked_by: 0, total_blocking: 1 } })
+  const b = raw(2, { issue_dependencies_summary: { total_blocked_by: 1, total_blocking: 0 } })
+  const p = raw(3, { state: 'closed', state_reason: 'completed' })
+  const { adapter } = harness({
+    rows: [a, b, p],
+    blockers: { 2: [a] },
+    blocking: { 1: [b] },
+    parent: { 2: p },
+  })
+  const graph = await adapter.readBlockerGraph({ ids: ['GH-1'] })
+  assert.equal(graph.complete, true)
+  assert.deepEqual(
+    graph.nodes.map((n) => n.identifier),
+    ['GH-1', 'GH-2', 'GH-3'],
+  )
+  assert.deepEqual(graph.nodes[0].blocks, [
+    { id: 'GH-2', identifier: 'GH-2', stateType: 'unstarted' },
+  ])
+  assert.equal(graph.nodes[1].parentId, 'GH-3')
+})
+
+test('blocker graph canonicalizes supported GitHub issue references before walking', async () => {
+  const { adapter } = harness()
+  const graph = await adapter.readBlockerGraph({
+    ids: [
+      '1',
+      '#1',
+      'GH-1',
+      'https://github.com/acme/tasks/issues/1',
+      'https://api.github.com/repos/acme/tasks/issues/1',
+    ],
+  })
+  assert.deepEqual(graph.seeds, ['GH-1'])
+  assert.deepEqual(
+    graph.nodes.map((node) => node.identifier),
+    ['GH-1'],
+  )
+  assert.equal(graph.complete, true)
+
+  const foreign = raw(2, { html_url: 'https://github.com/other/tasks/issues/2' })
+  const foreignAdapter = harness({ rows: [foreign] }).adapter
+  const foreignGraph = await foreignAdapter.readBlockerGraph({ ids: [foreign.html_url] })
+  assert.deepEqual(foreignGraph.seeds, [foreign.html_url])
+  assert.equal(foreignGraph.nodes[0].identifier, foreign.html_url)
+  await assert.rejects(
+    async () => adapter.readBlockerGraph({ ids: ['https://example.com/acme/tasks/issues/1'] }),
+    /foreign repository/,
+  )
+})

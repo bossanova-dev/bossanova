@@ -41,7 +41,7 @@ Check installed boss skills against this binary and checkout sources
 
 **Flags:**
 
-- `--agent` — Restrict to one agent: claude, codex or hermes (default: all on PATH)
+- `--agent` — Restrict to one agent: claude, codex, hermes or agy (default: all on PATH)
 - `--gate` — Fail only when installed skills drift from checkout source for paths not edited by this branch
 - `--heal` — With gate, repair unedited lossless or behind drift from authenticated default-branch bytes
 
@@ -51,7 +51,7 @@ Install or refresh boss skills (fresh-installs missing trees); --force reinstall
 
 **Flags:**
 
-- `--agent` — Restrict to one agent: claude, codex or hermes (default: all on PATH)
+- `--agent` — Restrict to one agent: claude, codex, hermes or agy (default: all on PATH)
 - `--force` — Reinstall (Extract) unconditionally, even when current
 - `--set-aside` — Preserve installed drift in skill-backups before reinstalling (implies force)
 
@@ -61,4 +61,4 @@ Refresh installed boss skills from the selected checkout or embedded payload (up
 
 **Flags:**
 
-- `--agent` — Restrict to one agent: claude, codex or hermes (default: all on PATH)
+- `--agent` — Restrict to one agent: claude, codex, hermes or agy (default: all on PATH)

@@ -15,6 +15,9 @@ import (
 // a session and keyed in the dispatcher's runner registry.
 const agentNameCodex = "codex"
 
+// agentNameAntigravity is the plugin name of the Antigravity agent runner.
+const agentNameAntigravity = "antigravity"
+
 // headlessCapabilityProfileFor selects the profile from the resolved agent and
 // tracker adapter, after checking the launch's interactivity signals. GitHub's
 // command transport validates its tracker through skill preflight rather than MCP.

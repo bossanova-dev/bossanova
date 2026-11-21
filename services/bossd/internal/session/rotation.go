@@ -295,7 +295,7 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 				return false
 			}
 			daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
-				"rotation_reason": "usage_limit", "provider": telemetryProvider(b.Provider), "status": "rotated",
+				"rotation_reason": "usage_limit", "provider": daemontelemetry.AgentName(b.Provider), "status": "rotated",
 			})
 			detail := ""
 			if resetPtr != nil {

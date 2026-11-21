@@ -109,8 +109,9 @@ func TestOnboardingTogglingProviderUpdatesSelection(t *testing.T) {
 
 func TestOnboardingDoesNotAdvanceWithNoSelectedProviders(t *testing.T) {
 	m := NewProviderSelectionModel(Providers, map[string]bool{
-		"claude": false,
-		"codex":  false,
+		"claude":      false,
+		"codex":       false,
+		"antigravity": false,
 	})
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Text: "enter"})
@@ -137,8 +138,8 @@ func TestOnboardingDoneReturnsSelectedPlugins(t *testing.T) {
 		t.Fatalf("expected Done() = true after enter; m = %+v", m)
 	}
 	got := m.SelectedPlugins()
-	if len(got) != 2 || got[0] != "claude" || got[1] != "codex" {
-		t.Fatalf("SelectedPlugins() = %v, want [claude codex]", got)
+	if len(got) != 3 || got[0] != "claude" || got[1] != "codex" || got[2] != "antigravity" {
+		t.Fatalf("SelectedPlugins() = %v, want [claude codex antigravity]", got)
 	}
 }
 
@@ -232,7 +233,7 @@ func TestOnboardingDangerousModeEscSkipsWithoutCancel(t *testing.T) {
 	if m.DangerousModeDefault() {
 		t.Error("skipping dangerous mode should leave it disabled")
 	}
-	if got := m.SelectedPlugins(); len(got) != 2 {
+	if got := m.SelectedPlugins(); len(got) != len(Providers) {
 		t.Errorf("provider selection should be preserved after skip, got %v", got)
 	}
 }

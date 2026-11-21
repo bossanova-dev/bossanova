@@ -29,9 +29,10 @@
 // session timeline reads only this cache, so merging must not erase the
 // evidence step) for as long as its session is listed, and only a new head
 // replaces it. A session neither listed nor observed since the previous
-// cycle — archived or deleted — keeps its proof record for the audit window
-// after it first leaves the listing. A state with no proof record is dropped
-// at that cycle. Listing or observing a session again resets its audit window.
+// cycle — archived or deleted — keeps its proof record for the proof retention
+// window after it first leaves the listing. A state with no proof record is
+// dropped at that cycle. Listing or observing a session again resets its proof
+// retention window.
 package evidence
 
 import (
@@ -45,7 +46,6 @@ import (
 
 	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/kit/vcs"
-	"github.com/recurser/bossalib/reviewqueue"
 )
 
 // DefaultRefreshInterval bounds how often one head's comments are re-read.
@@ -56,6 +56,10 @@ const DefaultRefreshInterval = 5 * time.Minute
 // subprocess, a long paginated comment list) would stall every session's
 // display status, not just this one's.
 const DefaultReadTimeout = 30 * time.Second
+
+// proofRetention is how long an unlisted, unobserved session keeps its proof
+// record after its first missed cycle.
+const proofRetention = 7 * 24 * time.Hour
 
 // CommentFinder is the PR comment read the reader needs; vcs.Provider
 // satisfies it.
@@ -180,8 +184,8 @@ type headState struct {
 	// cycle is the Reader's cycle count when the session was last observed,
 	// so Retain keeps a session observed after the cycle listed sessions.
 	cycle uint64
-	// unlistedAt starts the audit window when neither listing nor observation
-	// keeps this state live. Listing or observation clears it.
+	// unlistedAt starts the proof retention window when neither listing nor
+	// observation keeps this state live. Listing or observation clears it.
 	unlistedAt time.Time
 }
 
@@ -384,8 +388,8 @@ func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq
 // Retain keeps listed sessions and those observed since the previous cycle.
 // The display poller calls it once per cycle with all non-archived sessions,
 // regardless of PR state. Unlisted, unobserved states with proof survive for
-// reviewqueue.AuditWindow from their first missed cycle; states without proof
-// are dropped immediately. Listing or observing a session resets the window.
+// proofRetention from their first missed cycle; states without proof are
+// dropped immediately. Listing or observing a session resets the window.
 // Sparing a session observed since the previous cycle protects one created
 // after that cycle listed sessions. A read in flight for a dropped state
 // finds it gone and stores nothing.
@@ -408,7 +412,7 @@ func (r *Reader) Retain(live map[string]struct{}) {
 		if st.unlistedAt.IsZero() {
 			st.unlistedAt = now
 		}
-		if now.Sub(st.unlistedAt) >= reviewqueue.AuditWindow {
+		if now.Sub(st.unlistedAt) >= proofRetention {
 			delete(r.sessions, id)
 		}
 	}

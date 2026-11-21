@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "session",
     srcs = [
+        "base_branch.go",
         "command.go",
         "group.go",
         "organizations_fixture_e2e.go",  # keep: shared e2e-tagged organization fixture parsing
@@ -12,6 +13,7 @@ go_library(
         "pr_state.go",
         "pr_state_json.go",
         "pr_wait.go",
+        "serve.go",
         "session.go",
         "session_checks.go",
         "session_finish.go",
@@ -67,6 +69,7 @@ go_test(
         "pr_test.go",
         "pr_wait_test.go",
         "repo_resolve_test.go",
+        "serve_test.go",
         "session_finish_test.go",
         "session_json_test.go",
         "session_mcp_test.go",

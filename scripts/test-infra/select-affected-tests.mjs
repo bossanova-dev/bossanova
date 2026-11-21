@@ -13,6 +13,7 @@ export const moduleRules = [
   { root: 'services/bosso/', target: 'test-bosso-postgres' },
   { root: 'services/mcp/', target: 'test-mcp' },
   { root: 'services/mcp-gateway/', target: 'test-mcp-gateway' },
+  { root: 'plugins/bossd-plugin-antigravity/', target: 'test-antigravity' },
   { root: 'plugins/bossd-plugin-claude/', target: 'test-claude' },
   { root: 'plugins/bossd-plugin-codex/', target: 'test-codex' },
   { root: 'plugins/bossd-plugin-dependabot/', target: 'test-dependabot' },
@@ -27,7 +28,7 @@ export const moduleRules = [
 // This is a SEPARATE map from the make `moduleRules` above: it maps a changed
 // file to the set of `//<module>/...` bazel patterns the PR CI job runs instead
 // of the whole `//...` graph. It includes mcp / mcp-gateway / stub-runner (which
-// the local make map omits) because all 14 Go modules have `go_test` targets, so
+// the local make map omits) because all 15 Go modules have `go_test` targets, so
 // `bazel test //<module>/...` is always a SAFE (never exit-4) selection.
 //
 // Fail-safe posture: err toward MORE testing, never less. Any file that cannot be
@@ -42,6 +43,7 @@ const bazelGoModuleRules = [
   { root: 'services/bosso/', pattern: '//services/bosso/...' },
   { root: 'services/mcp/', pattern: '//services/mcp/...' },
   { root: 'services/mcp-gateway/', pattern: '//services/mcp-gateway/...' },
+  { root: 'plugins/bossd-plugin-antigravity/', pattern: '//plugins/bossd-plugin-antigravity/...' },
   { root: 'plugins/bossd-plugin-claude/', pattern: '//plugins/bossd-plugin-claude/...' },
   { root: 'plugins/bossd-plugin-codex/', pattern: '//plugins/bossd-plugin-codex/...' },
   { root: 'plugins/bossd-plugin-dependabot/', pattern: '//plugins/bossd-plugin-dependabot/...' },
@@ -81,6 +83,7 @@ export const externalInputRules = [
     match: (f) => f.startsWith('lib/bossalib/contract/plugin/plugin/agentrunnertest/'),
     samplePath: 'lib/bossalib/contract/plugin/plugin/agentrunnertest/agentrunnertest.go',
     patterns: [
+      '//plugins/bossd-plugin-antigravity/...',
       '//plugins/bossd-plugin-claude/...',
       '//plugins/bossd-plugin-codex/...',
       '//plugins/bossd-plugin-opencode/...',

@@ -76,7 +76,7 @@ func TestQueueMergePinsDisplayedHeadAndParkCodes_Sessions_AC209302(t *testing.T)
 }
 
 func TestQueueMergeRefusesMovedAndUnofferedHeads(t *testing.T) {
-	for _, tc := range []string{"moved", "unoffered", "audit", "fresh-unoffered"} {
+	for _, tc := range []string{"moved", "unoffered", "fresh-unoffered"} {
 		t.Run(tc, func(t *testing.T) {
 			row := queueRow("merge", pb.ConfidenceLevel_CONFIDENCE_LEVEL_MODERATE, 1, 10)
 			row.Session.Attention.Actions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE}
@@ -86,8 +86,6 @@ func TestQueueMergeRefusesMovedAndUnofferedHeads(t *testing.T) {
 				c.session.PrDisplayHeadSha = "new-head"
 			case "unoffered":
 				row.Session.Attention.Actions = nil
-			case "audit":
-				row.IsAuditSample = true
 			case "fresh-unoffered":
 				c.session.Attention.Actions = nil
 			}
@@ -102,7 +100,7 @@ func TestQueueMergeRefusesMovedAndUnofferedHeads(t *testing.T) {
 			if tc == "moved" && m.status != ui.HeadMovedError(42).Error() {
 				t.Fatalf("moved head status: %q", m.status)
 			}
-			if (tc == "unoffered" || tc == "audit") && c.sessionReads != 0 {
+			if tc == "unoffered" && c.sessionReads != 0 {
 				t.Fatal("unoffered merge fetched session")
 			}
 		})

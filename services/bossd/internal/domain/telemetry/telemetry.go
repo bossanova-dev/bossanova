@@ -11,6 +11,17 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// AgentName bounds an agent or provider name to the first-party runners so a
+// customer plugin's name never becomes an event property value.
+func AgentName(name string) string {
+	switch name {
+	case "claude", "codex", "opencode", "antigravity":
+		return name
+	default:
+		return "other"
+	}
+}
+
 // Client applies telemetry settings changed through UpdateSettings without
 // requiring a daemon restart. All daemon services share this client.
 type Client struct {

@@ -801,6 +801,8 @@ type StreamClient struct {
 	logger           zerolog.Logger
 	metrics          Metrics
 	clock            Clock
+	jitter           func(time.Duration) time.Duration
+	redialer         interface{ Redial() }
 	coalesceWindow   time.Duration
 	refreshInterval  time.Duration
 	refreshThreshold time.Duration
@@ -821,13 +823,13 @@ type StreamClient struct {
 	reconnectCh chan struct{}
 
 	// connected flips to true once Send(snapshot) succeeds on a stream.
-	// Reset across reconnects so the backoff resets only on a fresh
-	// successful handshake, not on dial-level flakes.
-	mu        sync.Mutex
-	connected bool
+	// The separate upstreamProven latch governs retry backoff.
+	mu             sync.Mutex
+	connected      bool
+	upstreamProven bool
 	// streamOpen is the LIVE connectivity bit, distinct from `connected`.
-	// `connected` is a latch the backoff logic reads AFTER openStream has
-	// returned ("did the last attempt reach snapshot-accepted?"), so it must
+	// `connected` records the local Send success for auth-wedge inference
+	// after openStream returns, so it must
 	// survive the teardown; a diagnostic that reused it would report
 	// `stream connected: true` for the whole reconnect backoff gap, which is
 	// exactly when an operator runs `boss daemon doctor`. streamOpen is
@@ -974,6 +976,7 @@ func (c *StreamClient) clearAuthFailure() {
 func (c *StreamClient) noteUpstreamAccepted() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.upstreamProven = true
 	c.resetAuthFailureLocked()
 }
 
@@ -1024,6 +1027,10 @@ func (c *StreamClient) resetAuthFailureLocked() {
 // StreamClientConfig bundles the constructor inputs. Pointer fields are
 // optional; leaving them nil picks a sensible default.
 type StreamClientConfig struct {
+	// Jitter chooses a reconnect wait from its ceiling; nil selects equal jitter.
+	Jitter func(time.Duration) time.Duration
+	// Redialer replaces the shared connection pool after repeated failed attempts.
+	Redialer interface{ Redial() }
 	// TerminalSealingSupported is a presentation hint, never an authorization input.
 	TerminalSealingSupported bool
 	TargetObjects            CommandTargetObjects
@@ -1173,6 +1180,8 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		logger:           cfg.Logger.With().Str("component", "stream-client").Logger(),
 		metrics:          metrics,
 		clock:            clock,
+		jitter:           cfg.Jitter,
+		redialer:         cfg.Redialer,
 		coalesceWindow:   window,
 		refreshInterval:  refreshInterval,
 		refreshThreshold: refreshThreshold,
@@ -1185,11 +1194,11 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 
 // Run is the reconnect outer loop. It returns only when ctx is cancelled.
 // On every stream-close error the loop backs off (1s → 30s cap) before
-// retrying. Successful stream completion (Send of snapshot + at least
-// one round-trip) resets the backoff to 1s so a one-off flake doesn't
-// escalate.
+// retrying. An inbound command or 30 seconds open proves upstream acceptance
+// and resets the backoff to 1s.
 func (c *StreamClient) Run(ctx context.Context) {
 	backoff := streamInitialBackoff
+	unprovenFailures := 0
 	// The "we're in a sustained CodeUnauthenticated loop where ReRegister also
 	// can't recover" state used to be a local bool. It now lives on the client
 	// under c.mu (authFailingSince / authStuckStreak) because the GetAuthState
@@ -1225,11 +1234,7 @@ func (c *StreamClient) Run(ctx context.Context) {
 
 		c.markDisconnected()
 		err := c.openStream(ctx)
-		// authWedged is set by the default arm below when this attempt died
-		// on credentials we could not repair. It is hoisted out of the switch
-		// because the exponential ramp at the bottom of the loop needs it:
-		// see the comment there.
-		authWedged := false
+		proven := c.attemptProven()
 		switch {
 		case ctx.Err() != nil:
 			return
@@ -1244,10 +1249,7 @@ func (c *StreamClient) Run(ctx context.Context) {
 			// misleading reconnect warning and an unnecessary backoff delay.
 			continue
 		case err == nil:
-			// Stream closed cleanly (server shutdown etc). Reset backoff
-			// and try again immediately — this is usually a recycle, not
-			// a sustained outage.
-			backoff = streamInitialBackoff
+			backoff = resetStreamBackoff(backoff, false, proven)
 			c.clearAuthFailure()
 		default:
 			c.metrics.IncStreamError(err)
@@ -1294,7 +1296,6 @@ func (c *StreamClient) Run(ctx context.Context) {
 				rotated = c.tryReRegister(ctx, !note.Escalate)
 				hotRetry = rotated && note.First
 			}
-			authWedged = authFailed && !hotRetry
 			// Reduce log spam on a sustained auth loop while refusing to go
 			// permanently silent. The first failure of a run warns; the
 			// repeats drop to debug; every authWedgeWarnBudget suppressed
@@ -1349,39 +1350,21 @@ func (c *StreamClient) Run(ctx context.Context) {
 			default:
 				c.logger.Warn().Err(err).Dur("backoff", backoff).Msg("stream closed, reconnecting")
 			}
-			// Reset backoff only when we actually progressed:
-			//   - non-auth error after a real handshake (one-off flake)
-			//   - the FIRST auth error of a run where ReRegister got us a
-			//     fresh token (plausible recovery; retry now while the token
-			//     is hot). Only the first: a rotation that keeps happening on
-			//     every iteration is a rotate-and-reject loop, not progress,
-			//     and pinning the backoff at 1s there tight-loops against
-			//     bosso and blows the log budget this change exists to bound.
-			// A bare CodeUnauthenticated where ReRegister also failed
-			// means we're stuck on bad credentials. wasConnected() is
-			// misleading there because Send(snapshot) succeeds locally
-			// before bosso's header-only auth rejection arrives, so
-			// every attempt looks "connected" and would reset the
-			// backoff to 1s — that's what was filling the log.
-			switch {
-			case hotRetry:
-				backoff = streamInitialBackoff
-			case !authFailed && c.wasConnected():
-				backoff = streamInitialBackoff
-				// Same evidence, second conclusion: this attempt reached
-				// snapshot-accepted and then died of something that was NOT
-				// an auth rejection, so whatever wedge was running has ended.
-				// markConnected can no longer draw that conclusion for us —
-				// it fires before the rejection is observable — so it is
-				// drawn here, where `authFailed` is actually known.
+			backoff = resetStreamBackoff(backoff, hotRetry, proven)
+			// Keep the existing auth-wedge recovery inference independent of retry policy.
+			if !authFailed && c.wasConnected() {
 				c.clearAuthFailure()
 			}
+
 		}
 
 		if ctx.Err() != nil {
 			return
 		}
 
+		unprovenFailures = c.redialAfterAttempt(unprovenFailures, proven)
+		wait := c.reconnectWait(backoff)
+		c.logger.Debug().Dur("backoff", backoff).Dur("wait", wait).Msg("stream reconnect wait")
 		select {
 		case <-ctx.Done():
 			return
@@ -1391,26 +1374,11 @@ func (c *StreamClient) Run(ctx context.Context) {
 			// reconnect happens immediately with the fresh token.
 			backoff = streamInitialBackoff
 			continue
-		case <-c.clock.After(backoff):
+		case <-c.clock.After(wait):
 		}
 
-		// Exponential ramp, capped at streamMaxBackoff. Grow when the last
-		// attempt was a dead-on-arrival failure (no handshake) — and also when
-		// it died on credentials we could not repair, even though it DID reach
-		// the handshake. That second clause is the same trap the backoff-reset
-		// switch above already documents, arriving one branch later: bosso
-		// checks auth on the headers and reports it via Receive, so the
-		// snapshot Send of a wedged daemon succeeds and wasConnected() reads
-		// true on every attempt. Ramping on wasConnected() alone therefore
-		// pins a wedged daemon at the 1s initial backoff forever — the tight
-		// reconnect loop this cap exists to prevent, and 24x the log volume
-		// the suppression budget is sized against, since that budget counts
-		// loop iterations rather than wall-clock time.
-		if !c.wasConnected() || authWedged {
-			backoff *= 2
-			if backoff > streamMaxBackoff {
-				backoff = streamMaxBackoff
-			}
+		if !proven {
+			backoff = min(backoff*2, streamMaxBackoff)
 			c.metrics.IncReconnect()
 		}
 	}
@@ -1462,10 +1430,6 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 		}
 	}
 
-	// Mark connected only after a successful handshake. The outer loop
-	// uses this to decide whether to reset backoff on the next error, so the
-	// latch has to outlive this function — only the live-connectivity bit is
-	// dropped on the way out.
 	c.markConnected()
 	defer c.markStreamClosed()
 
@@ -1685,8 +1649,7 @@ func (c *StreamClient) tryReRegister(ctx context.Context, suppressFailureWarn bo
 }
 
 // markConnected / markDisconnected / wasConnected are the tiny state
-// machine that tells Run whether the last attempt reached the "snapshot
-// accepted" point. Backoff resets only when this is true.
+// machine that records the local snapshot send for auth-wedge inference.
 //
 // It deliberately does NOT clear the auth-wedge state. Reaching this point
 // means our own Send(snapshot) returned nil, which is a purely LOCAL fact:
@@ -1711,12 +1674,12 @@ func (c *StreamClient) markDisconnected() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.connected = false
+	c.upstreamProven = false
 	c.streamOpen = false
 	c.streamOpenedAt = time.Time{}
 }
 
-// markStreamClosed drops only the live-connectivity bit, leaving `connected`
-// latched for the backoff decision Run makes right after openStream returns.
+// markStreamClosed drops live connectivity and preserves the attempt latches.
 //
 // A stream that lasted at least streamAuthSustainedFor also clears the wedge
 // state on the way out, and it does so BEFORE Run classifies the error that
@@ -1728,6 +1691,7 @@ func (c *StreamClient) markStreamClosed() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.streamSustainedLocked() {
+		c.upstreamProven = true
 		c.resetAuthFailureLocked()
 	}
 	c.streamOpen = false

@@ -19,6 +19,7 @@ import (
 )
 
 var pluginBins = []string{
+	"bossd-plugin-antigravity",
 	"bossd-plugin-claude",
 	"bossd-plugin-codex",
 	"bossd-plugin-dependabot",

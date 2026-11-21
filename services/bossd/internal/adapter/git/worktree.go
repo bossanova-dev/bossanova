@@ -1667,6 +1667,11 @@ func runGitRemote(ctx context.Context, dir string, args ...string) (string, erro
 				Msg("retrying git remote operation after a transient failure")
 		}
 		out, lastErr = runGitRemoteFn(ctx, dir, args...)
+		// ls-remote's no-match status is a terminal answer, even when stderr
+		// also contains a transport warning the retry classifier recognizes.
+		if verb == "ls-remote" && remoteRefAbsent(lastErr) {
+			return nil
+		}
 		return lastErr
 	})
 	if err != nil {
@@ -1704,7 +1709,7 @@ func runGitRemote(ctx context.Context, dir string, args ...string) (string, erro
 		}
 		return "", err
 	}
-	return out, nil
+	return out, lastErr
 }
 
 // branchExists checks whether a local branch ref exists. It is a thin alias
@@ -1712,11 +1717,6 @@ func runGitRemote(ctx context.Context, dir string, args ...string) (string, erro
 // one implementation.
 func branchExists(ctx context.Context, repoPath, branch string) bool {
 	return refExists(ctx, repoPath, "refs/heads/"+branch)
-}
-
-func remoteBranchExists(ctx context.Context, repoPath, branch string) bool {
-	_, err := runGitRemote(ctx, repoPath, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+branch)
-	return err == nil
 }
 
 // remoteBranchesWithPrefix returns the set of origin branch names beginning with

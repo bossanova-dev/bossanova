@@ -669,8 +669,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
   assert.deepEqual(
     VENDORED_FILES['boss-epic'].sort(),
     [
-      // boss-binary.mjs backs callbacksAvailable's executable check; callback/adapter.mjs
-      // imports it, so it ships wherever the adapter does.
+      // callback/adapter.mjs ships its executable check, boss-binary.mjs.
       'boss-binary.mjs',
       'bossd-present.mjs',
       'bs-dispatch-await.mjs',
@@ -685,7 +684,6 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'check-command-shell.mjs',
       // ci/pr-state-envelope.mjs is imported by pr-check-state.mjs for `classify --pr-state`.
       'ci/pr-state-envelope.mjs',
-      // ci/required-checks.mjs (BOS-2231) is imported by pr-check-state.mjs and skill-config.mjs.
       'ci/required-checks.mjs',
       'epic/dag-scheduler.mjs',
       // epic-driver.mjs (BOS-1271) is the executable lifecycle authority the SKILL body calls by
@@ -699,6 +697,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'linear-deps-lib.mjs',
       'linear-gate-lib.mjs',
       'main-module.mjs',
+      'markdown-prose.mjs',
       'notes-record.mjs',
       'epic/merge-eligibility.mjs',
       'plan-attachment.mjs',
@@ -724,6 +723,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/adapter-core.mjs',
       'tracker/adapter.mjs',
       'tracker/blocker-clearance.mjs',
+      'tracker/blocker-graph.mjs',
+      'tracker/blocker-graph-verb.mjs',
       'tracker/cli.mjs',
       'tracker/description-patch.mjs',
       'tracker/github-comment.mjs',
@@ -740,6 +741,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/github-relations.mjs',
       'tracker/github-verbs.mjs',
       'tracker/github.mjs',
+      'tracker/linear-blocker-graph.mjs',
       'tracker/linear-children.mjs',
       'tracker/linear-issue-create.mjs',
       // linear.mjs re-exports applyIssueWrites from linear-issue-writes.mjs.
@@ -757,6 +759,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/premise-states.mjs',
       'tracker/read-description.mjs',
       'tracker/read-issue.mjs',
+      'tracker/reference-forms.mjs',
       'tracker/issue-snapshot.mjs',
       'tracker/linear-issue-snapshot.mjs',
       'tracker/settle-read.mjs',

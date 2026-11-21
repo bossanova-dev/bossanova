@@ -134,6 +134,7 @@ type questionSignalReader interface {
 // Lifecycle orchestrates worktree creation, Claude process management,
 // and state machine transitions for coding sessions.
 type Lifecycle struct {
+	serveStopper   ServeStopper
 	runResumeGates keyedgate.Registry
 	runResumeStore db.ResumeAttemptStore
 	sessions       db.SessionStore
@@ -4146,7 +4147,9 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	}
 
 	// Kill all per-chat tmux sessions.
-	_ = l.killAllChatTmuxSessions(ctx, sessionID)
+	if err := l.stopServicesForArchive(ctx, sessionID); err != nil {
+		return err
+	}
 
 	// Also kill the legacy per-session tmux session if it exists.
 	if session.TmuxSessionName != nil {
@@ -4552,6 +4555,10 @@ func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) err
 // stopped. Explicit StopSession consumes errors; other cleanup callers remain
 // best-effort and rely on the logged failures.
 func (l *Lifecycle) killAllChatTmuxSessions(ctx context.Context, sessionID string) error {
+	return errors.Join(l.StopServeSession(ctx, sessionID), l.killChatTmuxSessions(ctx, sessionID))
+}
+
+func (l *Lifecycle) killChatTmuxSessions(ctx context.Context, sessionID string) error {
 	if l.agentChats == nil {
 		return nil
 	}

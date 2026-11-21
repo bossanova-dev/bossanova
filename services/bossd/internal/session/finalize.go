@@ -323,19 +323,10 @@ func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string, trig
 		outcome = "error"
 	}
 	daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventSessionFinalized, map[string]any{
-		"outcome": outcome, "agent": telemetryAgent(session.AgentName), "unattended": isUnattendedSession(session),
+		"outcome": outcome, "agent": daemontelemetry.AgentName(session.AgentName), "unattended": isUnattendedSession(session),
 	})
 
 	return result, nil
-}
-
-func telemetryAgent(name string) string {
-	switch name {
-	case "claude", "codex", "opencode":
-		return name
-	default:
-		return "other"
-	}
 }
 
 // markFinalizePRReady marks the session's PR ready for review, unless the run

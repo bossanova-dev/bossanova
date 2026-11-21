@@ -1056,6 +1056,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.GetOrganizationNoteQuotaResponse'
+  /bossanova.v1.OrchestratorService/GetOrganizationProofHosting:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetOrganizationProofHosting
+      description: |-
+        GetOrganizationProofHosting reports whether the organization has opted in to
+         hosted proof pages, who turned it on and when, and whether the organization's
+         own cloud access currently allows turning it on.
+      operationId: bossanova.v1.OrchestratorService.GetOrganizationProofHosting
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetOrganizationProofHostingRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetOrganizationProofHostingResponse'
   /bossanova.v1.OrchestratorService/GetRepoOrganization:
     post:
       tags:
@@ -2197,6 +2236,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListWebhookConfigsResponse'
+  /bossanova.v1.OrchestratorService/MintProofViewLink:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: MintProofViewLink
+      description: |-
+        MintProofViewLink returns a short-lived signed link to the newest
+         completed hosted proof page of one pull request, for a signed-in user who
+         is a member of the organization that uploaded it. Only a user scope gets a
+         link; a daemon is PermissionDenied. A malformed repository, PR number or
+         head is InvalidArgument. Every miss (another organization's page, no
+         upload, an incomplete or deleted upload) is the same NotFound. With no
+         view key or host configured, the call is Unavailable. The link carries a
+         view signature, never the caller's token.
+         This additive RPC needs no dated API bump; see
+         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+      operationId: bossanova.v1.OrchestratorService.MintProofViewLink
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.MintProofViewLinkRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.MintProofViewLinkResponse'
   /bossanova.v1.OrchestratorService/ProxyAddAgentAccount:
     post:
       tags:
@@ -4707,6 +4792,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.PutAgentCredentialKeySealsResponse'
+  /bossanova.v1.OrchestratorService/PutProofObject:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: PutProofObject
+      description: |-
+        PutProofObject writes one file of a hosted proof page started with
+         StartProofUpload. It authenticates the daemon session; a user token is
+         Unauthenticated. bosso re-resolves the organization from repo_origin_url
+         and the daemon owner's membership, and the upload must belong to that
+         organization and repository (NotFound otherwise), so a daemon of another
+         organization cannot write under this organization's label. name and the
+         exact content size must match the upload's manifest (InvalidArgument).
+         The upload completes when every manifest entry is written; clients send
+         index.html last. Rewriting an entry of a completed upload is refused,
+         except that resending an already written name of a completed upload
+         answers success without writing, so a retried final call is idempotent.
+         This additive RPC needs no dated API bump; see
+         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+      operationId: bossanova.v1.OrchestratorService.PutProofObject
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.PutProofObjectRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.PutProofObjectResponse'
   /bossanova.v1.OrchestratorService/RefreshCloudEntitlements:
     post:
       tags:
@@ -5343,6 +5477,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.SetOrganizationMemberRoleResponse'
+  /bossanova.v1.OrchestratorService/SetOrganizationProofHosting:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SetOrganizationProofHosting
+      description: |-
+        SetOrganizationProofHosting turns hosted proof pages on or off for the
+         caller's active organization. Owner only. Turning on requires the
+         organization's own cloud access to be active; turning off never does.
+      operationId: bossanova.v1.OrchestratorService.SetOrganizationProofHosting
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SetOrganizationProofHostingRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SetOrganizationProofHostingResponse'
   /bossanova.v1.OrchestratorService/SetRepoOrganization:
     post:
       tags:
@@ -5381,6 +5554,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.SetRepoOrganizationResponse'
+  /bossanova.v1.OrchestratorService/StartProofUpload:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: StartProofUpload
+      description: |-
+        StartProofUpload reserves one hosted proof page for a pull request head.
+         Only a daemon may call it. bosso resolves the organization from the repo,
+         requires its own cloud access and hosted-proof opt-in (FailedPrecondition),
+         and validates the manifest (InvalidArgument). Limits are ResourceExhausted
+         with a ProofUploadLimitExceeded detail. Returns page identity, never a URL.
+         This additive RPC needs no dated API bump; see
+         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+      operationId: bossanova.v1.OrchestratorService.StartProofUpload
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.StartProofUploadRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.StartProofUploadResponse'
   /bossanova.v1.OrchestratorService/SubscribeToNewsletter:
     post:
       tags:
@@ -11157,6 +11373,15 @@ components:
       title: EventNotification
       additionalProperties: false
       description: EventNotification wraps all possible plugin events in a oneof.
+    bossanova.v1.EvidenceDestination:
+      type: string
+      title: EvidenceDestination
+      enum:
+        - EVIDENCE_DESTINATION_UNSPECIFIED
+        - EVIDENCE_DESTINATION_LOCAL
+        - EVIDENCE_DESTINATION_LOCAL_OR_HOSTED
+        - EVIDENCE_DESTINATION_HOSTED
+      description: EvidenceDestination says where UploadEvidence may publish.
     bossanova.v1.EvidenceObject:
       type: object
       properties:
@@ -11909,6 +12134,22 @@ components:
           $ref: '#/components/schemas/bossanova.v1.OrganizationNote'
       title: GetOrganizationNoteResponse
       additionalProperties: false
+    bossanova.v1.GetOrganizationProofHostingRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: GetOrganizationProofHostingRequest
+      additionalProperties: false
+    bossanova.v1.GetOrganizationProofHostingResponse:
+      type: object
+      properties:
+        proofHosting:
+          title: proof_hosting
+          $ref: '#/components/schemas/bossanova.v1.OrganizationProofHosting'
+      title: GetOrganizationProofHostingResponse
+      additionalProperties: false
     bossanova.v1.GetOrganizationRequest:
       type: object
       properties:
@@ -12234,6 +12475,22 @@ components:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: GetSessionResponse
+      additionalProperties: false
+    bossanova.v1.GetSessionServeRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: GetSessionServeRequest
+      additionalProperties: false
+    bossanova.v1.GetSessionServeResponse:
+      type: object
+      properties:
+        serve:
+          title: serve
+          $ref: '#/components/schemas/bossanova.v1.SessionServe'
+      title: GetSessionServeResponse
       additionalProperties: false
     bossanova.v1.GetSessionStatusesCommand:
       type: object
@@ -14830,6 +15087,38 @@ components:
       description: |-
         MergeStrategy is the merge method used when auto-merging PRs. Mirrors the
          domain values in lib/bossalib/models (merge / rebase / squash).
+    bossanova.v1.MintProofViewLinkRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: The repository's origin URL, canonicalized as StartProofUpload does.
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        headSha:
+          type: string
+          title: head_sha
+          description: |-
+            The head the page was made for; empty means the newest completed upload
+             for the pull request.
+      title: MintProofViewLinkRequest
+      additionalProperties: false
+      description: MintProofViewLinkRequest names one pull request's hosted proof page.
+    bossanova.v1.MintProofViewLinkResponse:
+      type: object
+      properties:
+        viewUrl:
+          type: string
+          title: view_url
+          description: https://<org label>.<uploads domain>/v1.<exp>.<sig>/<token>/
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: MintProofViewLinkResponse
+      additionalProperties: false
     bossanova.v1.MoveDirection:
       type: string
       title: MoveDirection
@@ -16293,6 +16582,32 @@ components:
          ResourceExhausted error a write returns when the organization's quota for
          the current window is spent, so a client can show usage and the reset time
          without a second call.
+    bossanova.v1.OrganizationProofHosting:
+      type: object
+      properties:
+        isEnabled:
+          type: boolean
+          title: is_enabled
+        enabledAt:
+          title: enabled_at
+          description: Unset while off.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        enabledByUserId:
+          type: string
+          title: enabled_by_user_id
+          description: |-
+            bosso-local users.id of the owner who turned it on; empty while off or
+             when that user has been deleted.
+        isAvailable:
+          type: boolean
+          title: is_available
+          description: |-
+            Whether the organization's own cloud access is active, so an owner could
+             turn it on now. Judged on this organization alone, never folded over the
+             caller's other organizations.
+      title: OrganizationProofHosting
+      additionalProperties: false
+      description: OrganizationProofHosting is an organization's hosted proof pages opt-in.
     bossanova.v1.OrganizationRepoReadFailure:
       type: object
       properties:
@@ -16961,6 +17276,91 @@ components:
          that applies project trust (Codex) applies every decision the same way on
          every request that carries it, and refuses a value it does not recognise; a
          runner whose agent has no project-trust gate ignores the field.
+    bossanova.v1.ProofManifestEntry:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        sizeBytes:
+          type:
+            - integer
+            - string
+          title: size_bytes
+          format: int64
+      title: ProofManifestEntry
+      additionalProperties: false
+      description: ProofManifestEntry declares one file before any proof bytes are uploaded.
+    bossanova.v1.ProofUploadLimit:
+      type: string
+      title: ProofUploadLimit
+      enum:
+        - PROOF_UPLOAD_LIMIT_UNSPECIFIED
+        - PROOF_UPLOAD_LIMIT_FILE_COUNT
+        - PROOF_UPLOAD_LIMIT_FILE_BYTES
+        - PROOF_UPLOAD_LIMIT_PAGE_BYTES
+        - PROOF_UPLOAD_LIMIT_ORG_PAGES_PER_HOUR
+        - PROOF_UPLOAD_LIMIT_ORG_PAGES_PER_DAY
+        - PROOF_UPLOAD_LIMIT_ORG_BYTES_PER_DAY
+        - PROOF_UPLOAD_LIMIT_GLOBAL_BYTES_PER_DAY
+    bossanova.v1.ProofUploadLimitExceeded:
+      type: object
+      properties:
+        limit:
+          title: limit
+          $ref: '#/components/schemas/bossanova.v1.ProofUploadLimit'
+        maxValue:
+          type:
+            - integer
+            - string
+          title: max_value
+          format: int64
+        actualValue:
+          type:
+            - integer
+            - string
+          title: actual_value
+          format: int64
+      title: ProofUploadLimitExceeded
+      additionalProperties: false
+      description: |-
+        ProofUploadLimitExceeded accompanies ResourceExhausted. The global breaker
+         carries zero values so aggregate traffic across organizations is not exposed.
+    bossanova.v1.ProofUploadLimits:
+      type: object
+      properties:
+        allowedExtensions:
+          type: array
+          items:
+            type: string
+          title: allowed_extensions
+        maxFileCount:
+          type: integer
+          title: max_file_count
+          format: int32
+        maxFileBytes:
+          type:
+            - integer
+            - string
+          title: max_file_bytes
+          format: int64
+        maxPageBytes:
+          type:
+            - integer
+            - string
+          title: max_page_bytes
+          format: int64
+        maxPathDepth:
+          type: integer
+          title: max_path_depth
+          format: int32
+        maxPathLength:
+          type: integer
+          title: max_path_length
+          format: int32
+      title: ProofUploadLimits
+      additionalProperties: false
+      description: ProofUploadLimits describes page shape; quota windows are reported on refusal.
     bossanova.v1.ProxyAddAgentAccountRequest:
       type: object
       properties:
@@ -19492,6 +19892,43 @@ components:
       type: object
       title: PutAgentCredentialKeySealsResponse
       additionalProperties: false
+    bossanova.v1.PutProofObjectRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+        uploadId:
+          type: string
+          title: upload_id
+        name:
+          type: string
+          title: name
+          description: The manifest name; content must be exactly its declared size.
+        content:
+          type: string
+          title: content
+          format: byte
+      title: PutProofObjectRequest
+      additionalProperties: false
+      description: PutProofObjectRequest carries one file of a started proof upload.
+    bossanova.v1.PutProofObjectResponse:
+      type: object
+      properties:
+        writtenFileCount:
+          type: integer
+          title: written_file_count
+          format: int32
+        fileCount:
+          type: integer
+          title: file_count
+          format: int32
+        isCompleted:
+          type: boolean
+          title: is_completed
+          description: True once every manifest entry has been written.
+      title: PutProofObjectResponse
+      additionalProperties: false
     bossanova.v1.RateLimitPlanStatus:
       type: string
       title: RateLimitPlanStatus
@@ -20992,10 +21429,6 @@ components:
             The level the queue ranks and counts the row by: the attention's
              confidence_level, or BLOCKED for a blocked park that carries none.
           $ref: '#/components/schemas/bossanova.v1.ConfidenceLevel'
-        isAuditSample:
-          type: boolean
-          title: is_audit_sample
-          description: A merged High PR selected for audit, excluded from level_counts.
       title: ReviewQueueRow
       additionalProperties: false
       description: ReviewQueueRow is one PR parked by verify for a person.
@@ -22851,6 +23284,29 @@ components:
              no terminal frame and a CodeDeadlineExceeded.
       title: SessionResurrected
       additionalProperties: false
+    bossanova.v1.SessionServe:
+      type: object
+      properties:
+        isRunning:
+          type: boolean
+          title: is_running
+        serviceLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ServiceLink'
+          title: service_links
+        lastError:
+          type: string
+          title: last_error
+        startedAt:
+          title: started_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        tmuxSessionName:
+          type: string
+          title: tmux_session_name
+      title: SessionServe
+      additionalProperties: false
+      description: SessionServe is the latest snapshot of the repository serve command.
     bossanova.v1.SessionSetupSettled:
       type: object
       properties:
@@ -23202,6 +23658,25 @@ components:
           $ref: '#/components/schemas/bossanova.v1.OrganizationMember'
       title: SetOrganizationMemberRoleResponse
       additionalProperties: false
+    bossanova.v1.SetOrganizationProofHostingRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        isEnabled:
+          type: boolean
+          title: is_enabled
+      title: SetOrganizationProofHostingRequest
+      additionalProperties: false
+    bossanova.v1.SetOrganizationProofHostingResponse:
+      type: object
+      properties:
+        proofHosting:
+          title: proof_hosting
+          $ref: '#/components/schemas/bossanova.v1.OrganizationProofHosting'
+      title: SetOrganizationProofHostingResponse
+      additionalProperties: false
     bossanova.v1.SetRepairStatusRequest:
       type: object
       properties:
@@ -23524,6 +23999,43 @@ components:
           description: Daemon-minted agent_runs.id for plugins that can report counters.
       title: StartChatRunHostResponse
       additionalProperties: false
+    bossanova.v1.StartProofUploadRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        headSha:
+          type: string
+          title: head_sha
+        manifest:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ProofManifestEntry'
+          title: manifest
+      title: StartProofUploadRequest
+      additionalProperties: false
+    bossanova.v1.StartProofUploadResponse:
+      type: object
+      properties:
+        uploadId:
+          type: string
+          title: upload_id
+        orgLabel:
+          type: string
+          title: org_label
+        pageToken:
+          type: string
+          title: page_token
+        limits:
+          title: limits
+          $ref: '#/components/schemas/bossanova.v1.ProofUploadLimits'
+      title: StartProofUploadResponse
+      additionalProperties: false
     bossanova.v1.StartRepairWorkflowRequest:
       type: object
       title: StartRepairWorkflowRequest
@@ -23542,6 +24054,22 @@ components:
           title: detail
           description: detail is a one-line human-readable summary (prior status, action taken).
       title: StartRepairWorkflowResponse
+      additionalProperties: false
+    bossanova.v1.StartSessionServeRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: StartSessionServeRequest
+      additionalProperties: false
+    bossanova.v1.StartSessionServeResponse:
+      type: object
+      properties:
+        serve:
+          title: serve
+          $ref: '#/components/schemas/bossanova.v1.SessionServe'
+      title: StartSessionServeResponse
       additionalProperties: false
     bossanova.v1.StartWorkflowRequest:
       type: object
@@ -23636,6 +24164,22 @@ components:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: StopSessionResponse
+      additionalProperties: false
+    bossanova.v1.StopSessionServeRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: StopSessionServeRequest
+      additionalProperties: false
+    bossanova.v1.StopSessionServeResponse:
+      type: object
+      properties:
+        serve:
+          title: serve
+          $ref: '#/components/schemas/bossanova.v1.SessionServe'
+      title: StopSessionServeResponse
       additionalProperties: false
     bossanova.v1.SubscribeToNewsletterRequest:
       type: object
@@ -26333,6 +26877,13 @@ components:
         headSha:
           type: string
           title: head_sha
+        destination:
+          title: destination
+          description: |-
+            destination says where the daemon may publish. UNSPECIFIED means LOCAL.
+             A hosted page needs pr_number, head_sha and index.html in one call,
+             because the hosted proof host takes the whole manifest before any byte.
+          $ref: '#/components/schemas/bossanova.v1.EvidenceDestination'
       title: UploadEvidenceRequest
       additionalProperties: false
       description: UploadEvidenceRequest identifies artifacts in a registered workspace.
@@ -26350,6 +26901,16 @@ components:
           items:
             type: string
           title: object_keys
+        pageUrl:
+          type: string
+          title: page_url
+          description: |-
+            page_url is set only for a hosted page: the review app's page for the PR
+             head. A hosted page leaves key_prefix and public_base_url empty.
+        destination:
+          title: destination
+          description: 'destination is the one used: LOCAL or HOSTED.'
+          $ref: '#/components/schemas/bossanova.v1.EvidenceDestination'
       title: UploadEvidenceResponse
       additionalProperties: false
       description: UploadEvidenceResponse is returned only after every object was uploaded.

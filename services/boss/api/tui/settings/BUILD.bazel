@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "settings",
     srcs = [
+        "agent_fallbacks.go",
         "client.go",
         "cloudpromo.go",
         "general_settings.go",
@@ -41,6 +42,7 @@ go_test(
         "cloudpromo_test.go",
         "general_settings_alignment_test.go",
         "general_settings_cloud_control_test.go",
+        "general_settings_providers_test.go",
         "general_settings_repo_cloud_test.go",
         "general_settings_test.go",
         "session_settings_test.go",

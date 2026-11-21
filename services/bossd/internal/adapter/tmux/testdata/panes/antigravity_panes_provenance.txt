@@ -1,0 +1,6 @@
+Antigravity CLI (agy) 1.5.13, tmux 3.8, capture-pane -p (styled: -p -e).
+slash_menu: 160x40 pane after one turn ("Reply with the single word ok."), "/agents" typed, menu open.
+approval_modal, idle_after_turn, paste_multiline_stuck: 200x50 pane, the "Create a file named
+hello.txt" turn: the approval menu before an answer, the idle pane after the turn, and the
+three-line prompt bracket-pasted before Enter.
+Scrubbed: the account email is replaced with operator@example.com; nothing else edited.

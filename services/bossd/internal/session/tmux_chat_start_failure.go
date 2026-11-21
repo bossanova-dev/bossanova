@@ -9,18 +9,22 @@ import (
 	"github.com/recurser/bossd/internal/detach"
 )
 
-// ClaudeFolderTrustPendingError names a boot dialog while preserving the delivery
+// FolderTrustPendingError names a boot dialog while preserving the delivery
 // refusal for callers that classify the original sentinel or outcome.
-type ClaudeFolderTrustPendingError struct {
+type FolderTrustPendingError struct {
+	Agent string
 	Path  string
 	Cause error
 }
 
-func (e *ClaudeFolderTrustPendingError) Error() string {
+func (e *FolderTrustPendingError) Error() string {
+	if e.Agent == agentNameAntigravity {
+		return fmt.Sprintf("Antigravity folder-trust prompt pending for %s; the antigravity plugin pre-trusts the worktree, so check its version, or run agy in that path once and choose \"Yes, I trust this folder\": %v", e.Path, e.Cause)
+	}
 	return fmt.Sprintf("Claude folder-trust prompt pending for %s; boss accepts Claude folder trust only for trusted repos (boss repo update <repo-id> --trusted); otherwise run claude in that path once and choose \"Yes, I trust this folder\": %v", e.Path, e.Cause)
 }
 
-func (e *ClaudeFolderTrustPendingError) Unwrap() error { return e.Cause }
+func (e *FolderTrustPendingError) Unwrap() error { return e.Cause }
 
 type failedStartPane struct {
 	text string
@@ -66,13 +70,13 @@ func failedStartPaneTail(pane string) string {
 	return text
 }
 
-func (l *Lifecycle) classifyClaudeStartFailure(ctx context.Context, agentName, workDir, tmuxName string, cause error) (*failedStartPane, error) {
-	if agentName != "claude" {
+func (l *Lifecycle) classifyStartFailure(ctx context.Context, agentName, workDir, tmuxName string, cause error) (*failedStartPane, error) {
+	if agentName != "claude" && agentName != agentNameAntigravity {
 		return nil, cause
 	}
 	pane := l.captureFailedStartPane(ctx, tmuxName)
 	if pane.err == nil && statusdetect.IsFolderTrustPrompt([]byte(pane.text)) {
-		return pane, &ClaudeFolderTrustPendingError{Path: workDir, Cause: cause}
+		return pane, &FolderTrustPendingError{Agent: agentName, Path: workDir, Cause: cause}
 	}
 	return pane, cause
 }

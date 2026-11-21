@@ -7,7 +7,17 @@ import {
   normalizeCallbackRow,
   pullFromRest,
 } from './epic-io.mjs'
-import { reconcileProviderOutcomes, runReconcile } from './epic-run.mjs'
+import {
+  main,
+  readStateFile,
+  reconcileProviderOutcomes,
+  runInit,
+  runReconcile,
+  writeStateFile,
+} from './epic-run.mjs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 const NOW = '2026-01-01T12:00:00.000Z'
 const ticket = (id, blockedBy = []) => ({
@@ -113,6 +123,7 @@ test('createSession launches the implement command unattended and waits for a la
   assert.equal(flag('--tracker-source'), 'linear')
   assert.equal(flag('--tracker-url'), 'https://tracker.example/A')
   assert.ok(args.includes('--tmux-unattended'))
+  assert.equal(args.includes('--base-branch'), false)
 })
 
 test('a delivered callback reads as absent so the cycle re-arms it; leased stays coverage', () => {
@@ -447,4 +458,134 @@ test('check triggers follow the head check runs, not the daemon display status',
     'checks_passed_ready',
     'checks_failed',
   ])
+})
+
+test('init persists a verified origin base and refuses missing or unreadable branches without state writes', async () => {
+  for (const status of [0, 2, 128]) {
+    const writes = []
+    const calls = []
+    const values = {
+      'tickets-file': 'tickets',
+      'planned-state': 'Planned',
+      epic: 'ROOT',
+      'repo-id': 'repo-1',
+      'state-dir': '/state',
+      'base-branch': 'integration',
+      now: NOW,
+    }
+    const result = runInit(values, {
+      config: { adapters: { tracker: 'linear' }, trackerConfig: {} },
+      readJson: () => [ticket('A')],
+      exec: (cmd, args) => {
+        calls.push([cmd, args])
+        return { status, stdout: 'abc123\trefs/heads/integration\n', stderr: '' }
+      },
+      writeState: (file, state) => writes.push({ file, state }),
+    })
+    if (status === 0) {
+      assert.equal((await result).outcome, 'initialized')
+      assert.equal(writes[0].state.baseBranch, 'integration')
+    } else {
+      await assert.rejects(
+        result,
+        status === 2 ? /does not exist on origin/ : /could not verify base branch/,
+      )
+      assert.equal(writes.length, 0)
+    }
+    assert.deepEqual(calls, [
+      ['git', ['ls-remote', '--exit-code', '--heads', 'origin', 'refs/heads/integration']],
+    ])
+  }
+})
+
+test('a resumed reconcile launches every ready child against the persisted base', async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'epic-base-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const file = path.join(dir, 'state.json')
+  writeStateFile(file, baseState([ticket('A'), ticket('B')], { baseBranch: 'integration' }))
+  const { exec, calls } = fakeExec({
+    ls: () => JSON.stringify({ sessions: [] }),
+    new: (args) =>
+      JSON.stringify({
+        session: { id: `sess-${args[args.indexOf('--tracker-id') + 1]}`, chat_id: 'chat' },
+      }),
+    show: () =>
+      JSON.stringify({ session: { state: 'IMPLEMENTING_PLAN', display_status: 'draft' } }),
+    chats: () => JSON.stringify({ chats: [{ agent_session_id: 'chat', status: 'WORKING' }] }),
+    'broadcast subscribe': () => JSON.stringify({ id: 'sub', state: 'active' }),
+    'broadcast subscriptions': () => JSON.stringify([]),
+  })
+  const result = await runReconcile(
+    {
+      'state-file': file,
+      'repo-id': 'repo-1',
+      'pr-repo': 'owner/repo',
+      'driver-chat': 'driver-chat',
+      now: NOW,
+    },
+    {
+      config: {},
+      env: {},
+      adapter: mcpAdapter,
+      exec,
+      sleep: () => {},
+      upsertProgress: async () => ({ results: [] }),
+    },
+  )
+  assert.deepEqual(result.inFlight, ['A', 'B'])
+  const launches = calls.filter((call) => call.args[0] === 'new')
+  assert.equal(launches.length, 2)
+  for (const { args } of launches) {
+    const baseFlag = args.indexOf('--base-branch')
+    assert.notEqual(baseFlag, -1)
+    assert.equal(args[baseFlag + 1], 'integration')
+  }
+  assert.equal(readStateFile(file).baseBranch, 'integration')
+})
+
+test('reconcile refuses to switch the base, including a run originally started without one', async () => {
+  for (const baseBranch of ['', 'integration']) {
+    const state = baseState([ticket('A')], { baseBranch })
+    const result = await main(
+      [
+        'reconcile',
+        '--state-file',
+        'f',
+        '--repo-id',
+        'r',
+        '--pr-repo',
+        'o/r',
+        '--driver-chat',
+        'c',
+        '--base-branch',
+        'other',
+      ],
+      {
+        readState: () => state,
+        exec: () => {
+          throw new Error('a rejected cycle must not execute commands')
+        },
+        writeState: () => {
+          throw new Error('a rejected cycle must not write state')
+        },
+      },
+    )
+    assert.notEqual(result.exitCode, 0)
+    assert.equal(JSON.parse(result.stdout).outcome, 'base-branch-mismatch')
+  }
+})
+
+test('init requires an exact origin ref even when ls-remote matches a glob', async () => {
+  await assert.rejects(
+    runInit(
+      { 'base-branch': 'integrat*' },
+      {
+        exec: () => ({ status: 0, stdout: 'abc123\trefs/heads/integration\n', stderr: '' }),
+        writeState: () => {
+          throw new Error('an absent branch must not write state')
+        },
+      },
+    ),
+    /does not exist on origin/,
+  )
 })

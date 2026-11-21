@@ -119,15 +119,17 @@ type ChatTmuxSpawner interface {
 // renders when it is ready to accept input. It gates the submit-verified send
 // path (SendChatMessage) so it waits for the right agent's composer rather than
 // timing out on the wrong glyph. Mirrors each agent plugin's
-// BuildInteractiveCommandResponse ReadyMarker (claude "❯", codex "›"); an
-// unknown or empty agent name falls back to the claude marker — the same "" →
-// "claude" legacy default used elsewhere in this package.
+// BuildInteractiveCommandResponse ReadyMarker; an unknown or empty agent name
+// falls back to the claude marker — the same "" → "claude" legacy default used
+// elsewhere in this package.
 func chatReadyMarker(agentName string) string {
 	switch agentName {
 	case "codex":
 		return "›"
 	case "opencode":
 		return "┃"
+	case "antigravity":
+		return ">"
 	default:
 		return "❯"
 	}
@@ -146,8 +148,6 @@ func chatCommandPrefix(agentName string) string {
 	switch agentName {
 	case "codex":
 		return "$"
-	case "opencode":
-		return "/"
 	default:
 		return "/"
 	}

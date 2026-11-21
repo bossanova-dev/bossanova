@@ -30,6 +30,12 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 		return connect.NewResponse(&pb.RemoveSessionResponse{}), nil
 	}
 
+	if s.lifecycle != nil {
+		if err := s.lifecycle.StopServeSession(ctx, sess.ID); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+
 	// Notify the task orchestrator BEFORE deleting, because sessions.Delete
 	// nullifies task_mappings.session_id, making GetBySessionID unable to
 	// find the mapping afterward.

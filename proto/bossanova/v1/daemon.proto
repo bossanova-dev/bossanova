@@ -123,6 +123,11 @@ service DaemonService {
   // A mid-turn (WORKING) chat is refused unless force is set (operator confirm).
   rpc SwitchSessionAgentAccount(SwitchSessionAgentAccountRequest) returns (SwitchSessionAgentAccountResponse);
 
+  // Local serve lifecycle; additive daemon-only RPCs do not change the versioned orchestrator API.
+  rpc StartSessionServe(StartSessionServeRequest) returns (StartSessionServeResponse);
+  rpc StopSessionServe(StopSessionServeRequest) returns (StopSessionServeResponse);
+  rpc GetSessionServe(GetSessionServeRequest) returns (GetSessionServeResponse);
+
   // Archive / resurrect
   rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse);
   // FinishUnattendedRun is an unattended run telling bossd it is done. bossd
@@ -2897,6 +2902,23 @@ message UploadEvidenceRequest {
   // rejected.
   int32 pr_number = 3;
   string head_sha = 4;
+  // destination says where the daemon may publish. UNSPECIFIED means LOCAL.
+  // A hosted page needs pr_number, head_sha and index.html in one call,
+  // because the hosted proof host takes the whole manifest before any byte.
+  EvidenceDestination destination = 5;
+}
+
+// EvidenceDestination says where UploadEvidence may publish.
+enum EvidenceDestination {
+  // Treated as LOCAL, so callers that predate the hosted host are unchanged.
+  EVIDENCE_DESTINATION_UNSPECIFIED = 0;
+  // Only the daemon's own proof_upload bucket.
+  EVIDENCE_DESTINATION_LOCAL = 1;
+  // The daemon's own bucket when proof_upload is complete, else the hosted
+  // proof host.
+  EVIDENCE_DESTINATION_LOCAL_OR_HOSTED = 2;
+  // Only the hosted proof host; the repo configured no destination of its own.
+  EVIDENCE_DESTINATION_HOSTED = 3;
 }
 
 // EvidenceObject names one published object and its path relative to evidence_dir.
@@ -2910,6 +2932,11 @@ message UploadEvidenceResponse {
   string key_prefix = 1;
   string public_base_url = 2;
   repeated string object_keys = 3;
+  // page_url is set only for a hosted page: the review app's page for the PR
+  // head. A hosted page leaves key_prefix and public_base_url empty.
+  string page_url = 4;
+  // destination is the one used: LOCAL or HOSTED.
+  EvidenceDestination destination = 5;
 }
 
 message RenewAgentCredentialDeviceEnrollmentRequest {}
@@ -3101,4 +3128,31 @@ message PostProofCheckRunRequest {
 message PostProofCheckRunResponse {
   string html_url = 1;
   bool is_created = 2;
+}
+
+// SessionServe is the latest snapshot of the repository serve command.
+message SessionServe {
+  bool is_running = 1;
+  repeated ServiceLink service_links = 2;
+  string last_error = 3;
+  google.protobuf.Timestamp started_at = 4;
+  string tmux_session_name = 5;
+}
+message StartSessionServeRequest {
+  string session_id = 1;
+}
+message StartSessionServeResponse {
+  SessionServe serve = 1;
+}
+message StopSessionServeRequest {
+  string session_id = 1;
+}
+message StopSessionServeResponse {
+  SessionServe serve = 1;
+}
+message GetSessionServeRequest {
+  string session_id = 1;
+}
+message GetSessionServeResponse {
+  SessionServe serve = 1;
 }

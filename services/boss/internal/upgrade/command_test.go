@@ -786,6 +786,7 @@ func TestRunUpgradeRewritesInstalledPluginPathsPreservingEnabledState(t *testing
 	if saveCount != 1 {
 		t.Fatalf("g.saveSettings called %d times, want 1", saveCount)
 	}
+	assertPluginSaved(t, saved, "antigravity", filepath.Join(currentPluginDir, "bossd-plugin-antigravity"), true)
 	assertPluginSaved(t, saved, "claude", filepath.Join(currentPluginDir, "bossd-plugin-claude"), false)
 	assertPluginSaved(t, saved, "codex", filepath.Join(currentPluginDir, "bossd-plugin-codex"), false)
 	assertPluginSaved(t, saved, "dependabot", filepath.Join(currentPluginDir, "bossd-plugin-dependabot"), true)

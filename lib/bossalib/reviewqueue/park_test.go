@@ -44,7 +44,7 @@ func TestBuildFollowsTheVerifyParkWhateverTheChatDoes_Sessions_AC209001(t *testi
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := proto.Clone(tc.session)
-			rows, counts := Build([]*pb.Session{tc.session}, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED, parkBase)
+			rows, counts := Build([]*pb.Session{tc.session}, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_UNSPECIFIED)
 			if got := len(rows) == 1; got != tc.isRow {
 				t.Fatalf("row = %v, want %v (rows %v)", got, tc.isRow, rowIDs(rows))
 			}
@@ -73,7 +73,7 @@ func TestSortUsesTheParkTime_Sessions_AC209002(t *testing.T) {
 		signedOff("asking-older", high, 10, pb.AttentionKind_ATTENTION_KIND_QUESTION),
 	}
 	for _, sort := range []pb.ReviewQueueSort{pb.ReviewQueueSort_REVIEW_QUEUE_SORT_MOST_CONFIDENT, pb.ReviewQueueSort_REVIEW_QUEUE_SORT_OLDEST} {
-		rows, _ := Build(sessions, sort, parkBase)
+		rows, _ := Build(sessions, sort)
 		if got, want := rowIDs(rows), []string{"asking-older", "idle-newer"}; !slices.Equal(got, want) {
 			t.Fatalf("%v order = %v, want %v", sort, got, want)
 		}

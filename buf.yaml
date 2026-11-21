@@ -44,6 +44,12 @@ modules:
           - proto/bossanova/v1/daemon.proto
         FIELD_NO_DELETE:
           - proto/bossanova/v1/daemon.proto
+          # models.proto (BOS-2597): a retired ReviewQueueRow field was
+          # deleted by reserving its number and name. The reserve-aware rule
+          # added above still covers this file, so only a deletion that
+          # reserves its number passes; renumbering, retyping and renames stay
+          # enforced, and orchestrator.proto keeps FILE at full strength.
+          - proto/bossanova/v1/models.proto
         # stream.proto is the bossd<->bosso stream contract. The CloudControl
         # enum moved to models.proto (same package, same wire numbers) so
         # Session.cloud_control can name it: models.proto cannot import

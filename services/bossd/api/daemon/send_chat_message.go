@@ -188,16 +188,16 @@ func deliveryConfirmation(sendErr error, willSubmit, receiptSeen bool) string {
 	}
 }
 
-// bindCodexRolloutAfterSend starts provider session discovery for a codex chat
-// that is still unbound once a message reaches its pane. Codex creates its
-// rollout on a thread's first turn, not at launch, so a chat opened with
+// bindLateProviderSessionAfterSend starts provider session discovery for a chat
+// that is still unbound once a message reaches its pane. Codex and Antigravity
+// create their session on the first turn, not at launch, so a chat opened with
 // `boss chat new` and prompted later outlives the launch-time discovery window
 // and stays unbound until its next wake. sentAt as the launch floor confines
 // binding to the pane's own open rollout: the time-window fallback rejects every
 // thread started before the send, this one included, so it can never bind a
 // sibling's older rollout in the same worktree (BOS-290).
-func (s *Server) bindCodexRolloutAfterSend(chat *domain.AgentChat, worktreePath, tmuxName string, sentAt time.Time, tmuxer tmuxSpawner) {
-	if chat.AgentName != "codex" || (chat.ProviderSessionID != nil && *chat.ProviderSessionID != "") {
+func (s *Server) bindLateProviderSessionAfterSend(chat *domain.AgentChat, worktreePath, tmuxName string, sentAt time.Time, tmuxer tmuxSpawner) {
+	if !mintsProviderSessionOnFirstTurn(chat.AgentName) || (chat.ProviderSessionID != nil && *chat.ProviderSessionID != "") {
 		return
 	}
 	s.discoverProviderSessionIDInBackground(chat, worktreePath, tmuxName, sentAt, s.chatSpawnDeps().Resolver, tmuxer)
@@ -446,10 +446,11 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	}
 	sentAt := time.Now()
 	sendErr := spawner.SendMessageWithHooks(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName),
-		domain.SendHooks{BeforeSubmit: beforeSubmit, Submitted: submitted, ReceiptRequired: receiptRequired})
+		domain.SendHooks{FreshPane: s.isFreshChatSubmit(chat.AgentSessionID, willSubmit, isLive), BeforeSubmit: beforeSubmit, Submitted: submitted, ReceiptRequired: receiptRequired})
 	if receiptOverridesOutcome(sendErr, submitted) {
 		sendErr = nil
 	}
+	s.settleFreshChatPane(chat.AgentSessionID, willSubmit, sendErr)
 	deliveryOutcome := domain.OutcomeOf(sendErr).String()
 	if sendErr == nil && !willSubmit {
 		deliveryOutcome = "prefilled"
@@ -466,7 +467,7 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	if willSubmit {
 		switch domain.OutcomeOf(sendErr) {
 		case domain.OutcomeSubmitted, domain.OutcomeQueued, domain.OutcomeUnconfirmed:
-			s.bindCodexRolloutAfterSend(chat, sess.WorktreePath, tmuxName, sentAt, spawner)
+			s.bindLateProviderSessionAfterSend(chat, sess.WorktreePath, tmuxName, sentAt, spawner)
 		case domain.OutcomeNotSubmitted, domain.OutcomeBlockedByModal, domain.OutcomeComposerOccupied, domain.OutcomeUnclassified:
 			// Nothing reached the agent, so it started no turn to write a rollout for.
 		}
@@ -552,7 +553,7 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			// state in the message so the distinction survives an error-only surface
 			// (the proxied bossanova.v1 path, which does not carry delivery_state).
 			return nil, connect.NewError(connect.CodeInternal,
-				fmt.Errorf("send message (delivery state: %s): %w", domain.OutcomeNotSubmitted, err))
+				fmt.Errorf("send message (delivery state: %s): DELIVERY_NOT_SUBMITTED: %w", domain.OutcomeNotSubmitted, err))
 		default:
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send message: %w", err))
 		}

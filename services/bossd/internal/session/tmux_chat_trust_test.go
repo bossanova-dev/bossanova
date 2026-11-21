@@ -15,6 +15,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/tmux"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/rs/zerolog"
 )
 
@@ -65,6 +66,35 @@ func TestStartTmuxChatNamesClaudeFolderTrust_Sessions_AC118(t *testing.T) {
 			assertNothingDelivered(t, h)
 		})
 	}
+}
+
+// Antigravity's trust dialog marks its selection with ">", the same glyph as
+// its composer, so the start must still end as a named trust failure.
+func TestStartTmuxChatNamesAntigravityFolderTrust(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newStartTmuxChatHarness(t)
+	h.sessions.sessions["sess-1"].AgentName = "antigravity"
+	h.lc.SetAgents(map[string]agent.RunnerClient{"antigravity": h.agentFake})
+	h.agentFake.ReadyMarker = ">"
+	h.tmuxFake.capturePaneOutput = "Accessing workspace:\n\n/tmp/repo\n\nDo you trust the contents of this project?\n\n" +
+		"Antigravity CLI requires permission to read, edit, and execute files here.\n\n> Yes, I trust this folder\n  No, exit\n\n" +
+		"  ↑/↓ Navigate · enter Confirm\n" + strings.Repeat("\n", 30)
+	h.agentFake.HasQuestionPromptFunc = func(*bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
+		return &bossanovav1.HasQuestionPromptResponse{BlocksInput: true}, nil
+	}
+	_, err := h.lc.startAgentWithRetry(t.Context(), "sess-1", io.Discard, &agentStartRetry{}, func() (string, error) {
+		return h.lc.StartTmuxChat(t.Context(), "sess-1", ChatInput{Prompt: "do the thing", Delivery: DeliverySubmit}, "T", HookOpts{})
+	})
+	var trust *FolderTrustPendingError
+	if !errors.As(err, &trust) || trust.Agent != "antigravity" || trust.Path != "/tmp/worktrees/test/sess-1" {
+		t.Fatalf("error = %v; want an antigravity folder-trust failure for the worktree", err)
+	}
+	if !errors.Is(err, tmux.ErrBlockedByModal) {
+		t.Fatalf("cause lost: %v", err)
+	}
+	assertNothingDelivered(t, h)
 }
 
 func TestFailStartBestEffortPreservesPaneEvidence_Sessions_AC119(t *testing.T) {

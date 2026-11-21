@@ -54,6 +54,20 @@ var spinnerGlyphs = map[rune]bool{
 // from ordinary bullets; custom multi-word spinner verbs are allowed.
 var claudeLiveSpinnerRe = regexp.MustCompile(`(?m)^[ \t]*[·✻✽✢✳✶∗*] [^…\n]+… \((?:[0-9]+h )?(?:[0-9]+m )?[0-9]+s(?: · [^\n]*)?\)[ \t]*$`)
 
+// antigravityLiveSpinnerRe matches Antigravity's working row: a braille frame,
+// two spaces and a status that ends in "..." ("⡿  Generating..."). agy erases
+// the row when the turn ends, so the row on the current screen is live.
+var antigravityLiveSpinnerRe = regexp.MustCompile(`(?m)^[ \t]*[\x{2800}-\x{28FF}]  \S[^\n]*\.\.\.[ \t]*$`)
+
+// antigravityWorkingFooterRe is the footer agy shows while a turn runs. Child
+// processes print braille spinners too, so the row counts as agy's only beside
+// this footer.
+var antigravityWorkingFooterRe = regexp.MustCompile(`(?m)^esc to cancel\b`)
+
+func antigravitySpinnerIsLive(tail []byte) bool {
+	return antigravityLiveSpinnerRe.Match(tail) && antigravityWorkingFooterRe.Match(tail)
+}
+
 // claudeSpinnerIsLive shares the current-row freshness rule between both
 // detectors: only a completed-turn summary below the last spinner retires it.
 func claudeSpinnerIsLive(tail []byte) bool {
@@ -130,7 +144,7 @@ func classifySpinnerLine(line []byte) int {
 	// "· Working (3s · esc to interrupt)" with U+00B7 separators and codex
 	// renders "• Working (3s • esc to interrupt)" with U+2022. Matching the
 	// phrase rather than the punctuation is what makes one rule serve both.
-	if claudeLiveSpinnerRe.Match(line) || escToInterruptRe.Match(line) || waitingForBackgroundAgentRe.Match(line) {
+	if claudeLiveSpinnerRe.Match(line) || escToInterruptRe.Match(line) || waitingForBackgroundAgentRe.Match(line) || antigravityLiveSpinnerRe.Match(line) {
 		return spinnerLive
 	}
 	if claudeRunningToolRe.Match(line) {
@@ -226,7 +240,7 @@ func NormalizeSpinner(data []byte) (normalized []byte, spinnerPresent bool) {
 	}
 
 	tail := LastNLines(bytes.TrimRight(spaced, " \t\r\n"), workingTailLines)
-	spinnerPresent = escToInterruptRe.Match(tail) || claudeSpinnerIsLive(tail) || backgroundAgentFooterIsLive(tail)
+	spinnerPresent = escToInterruptRe.Match(tail) || claudeSpinnerIsLive(tail) || backgroundAgentFooterIsLive(tail) || antigravitySpinnerIsLive(tail)
 
 	return out.Bytes(), spinnerPresent
 }

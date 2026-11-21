@@ -80,6 +80,9 @@ func TestInjectLoginShell_AgentPluginsOnly(t *testing.T) {
 	if got := injectLoginShell("claude", nil, settings); got["login_shell"] != "/opt/homebrew/bin/fish" {
 		t.Fatalf("claude should get login_shell, got %q", got["login_shell"])
 	}
+	if got := injectLoginShell("antigravity", nil, settings); got["login_shell"] != "/opt/homebrew/bin/fish" {
+		t.Fatalf("antigravity should get login_shell, got %q", got["login_shell"])
+	}
 	if got := injectLoginShell("opencode", nil, settings); got["login_shell"] != "/opt/homebrew/bin/fish" {
 		t.Fatalf("known agent provider should get login_shell, got %q", got["login_shell"])
 	}

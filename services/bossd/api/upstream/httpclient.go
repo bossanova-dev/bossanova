@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -41,6 +42,9 @@ const (
 const (
 	h2cDialTimeout   = 30 * time.Second
 	h2cDialKeepAlive = 30 * time.Second
+	// Match net/http's default idle lifetime so retired h2c pools drain once
+	// requests that were active during Redial finish.
+	h2cIdleConnTimeout = 90 * time.Second
 )
 
 // h2cDialer builds the bounded dialer used by the cleartext h2c transport.
@@ -60,25 +64,59 @@ func h2cDialer() *net.Dialer {
 // context.WithTimeout instead. Half-open detection is handled by the HTTP/2
 // keepalive above, not by a blunt client timeout.
 func BuildUpstreamHTTPClient(orchestratorURL string) *http.Client {
-	if strings.HasPrefix(orchestratorURL, "http://") {
-		tr := &http2.Transport{
-			ReadIdleTimeout: HTTP2ReadIdleTimeout,
-			PingTimeout:     HTTP2PingTimeout,
+	return &http.Client{Transport: newRedialTransport(func() http.RoundTripper {
+		if strings.HasPrefix(orchestratorURL, "http://") {
+			return &http2.Transport{
+				IdleConnTimeout: h2cIdleConnTimeout, //nolint:staticcheck // Standalone h2c pools need their own idle lifetime until this transport migrates to net/http.
+				ReadIdleTimeout: HTTP2ReadIdleTimeout,
+				PingTimeout:     HTTP2PingTimeout,
+				AllowHTTP:       true,
+				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+					return h2cDialer().DialContext(ctx, network, addr)
+				},
+			}
 		}
-		// Cleartext h2c (local dev against http://localhost:8080). Over
-		// plain HTTP, Go's default transport stays on HTTP/1.1 and bosso's
-		// h2c handler rejects bidi with HTTP 505, so force HTTP/2 with a
-		// plain (non-TLS) dialer. The dialer is bounded (h2cDialer) so a
-		// reconnect to an unreachable peer fails fast instead of hanging.
-		tr.AllowHTTP = true
-		tr.DialTLSContext = func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return h2cDialer().DialContext(ctx, network, addr)
-		}
-		return &http.Client{Transport: tr}
-	}
+		tr, _ := buildHTTPSUpstreamTransport()
+		return tr
+	})}
+}
 
-	tr, _ := buildHTTPSUpstreamTransport()
-	return &http.Client{Transport: tr}
+// RedialTransport replaces the connection pool for subsequent requests without
+// interrupting requests still using the previous pool.
+type RedialTransport struct {
+	factory func() http.RoundTripper
+	current atomic.Pointer[transportGeneration]
+}
+
+type transportGeneration struct{ transport http.RoundTripper }
+
+func newRedialTransport(factory func() http.RoundTripper) *RedialTransport {
+	tr := &RedialTransport{factory: factory}
+	tr.current.Store(&transportGeneration{transport: factory()})
+	return tr
+}
+
+// Current returns the transport used by new requests.
+func (t *RedialTransport) Current() http.RoundTripper { return t.current.Load().transport }
+
+// RoundTrip sends a request through the current connection pool.
+func (t *RedialTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.Current().RoundTrip(req)
+}
+
+// Redial forces subsequent requests to establish connections in a fresh pool.
+func (t *RedialTransport) Redial() {
+	old := t.current.Swap(&transportGeneration{transport: t.factory()})
+	closeTransportIdleConnections(old.transport)
+}
+
+// CloseIdleConnections closes idle connections in the current pool.
+func (t *RedialTransport) CloseIdleConnections() { closeTransportIdleConnections(t.Current()) }
+
+func closeTransportIdleConnections(tr http.RoundTripper) {
+	if closer, ok := tr.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }
 
 func buildHTTPSUpstreamTransport() (*http.Transport, *http2.Transport) {

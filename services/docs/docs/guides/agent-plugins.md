@@ -1,6 +1,6 @@
 ---
 title: Agent Plugins
-description: Choose and configure the Claude Code, OpenAI Codex, or OpenCode agent plugin.
+description: Choose and configure the Claude Code, OpenAI Codex, Antigravity, or OpenCode agent plugin.
 slug: /guides/agent-runners
 ---
 
@@ -14,11 +14,12 @@ creation, repo setup, PR polling, and plugin dispatch.
 
 ## Bundled plugins
 
-| Agent    | Plugin                  | CLI        | Status                |
-| -------- | ----------------------- | ---------- | --------------------- |
-| Claude   | `bossd-plugin-claude`   | `claude`   | Available             |
-| Codex    | `bossd-plugin-codex`    | `codex`    | Available             |
-| OpenCode | `bossd-plugin-opencode` | `opencode` | Experimental (opt-in) |
+| Agent       | Plugin                     | CLI        | Status                |
+| ----------- | -------------------------- | ---------- | --------------------- |
+| Claude      | `bossd-plugin-claude`      | `claude`   | Available             |
+| Codex       | `bossd-plugin-codex`       | `codex`    | Available             |
+| Antigravity | `bossd-plugin-antigravity` | `agy`      | Available             |
+| OpenCode    | `bossd-plugin-opencode`    | `opencode` | Experimental (opt-in) |
 
 `bossd-plugin-opencode` is installed with bossanova but is **not loaded** by
 default; it is still alpha. Opt in by adding it to `experimental_plugins` in
@@ -42,6 +43,11 @@ Install and authenticate the CLI for the agent you intend to use:
 - OpenAI Codex CLI: install from the
   [OpenAI Codex CLI guide](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started),
   then confirm `codex` works in a terminal.
+- Antigravity CLI: install with
+  `curl -fsSL https://antigravity.google/cli/install.sh | bash` (see the
+  [Antigravity CLI quickstart](https://antigravity.google/docs/getting-started?tab=cli)),
+  then confirm `agy` works in a terminal. The plugin is named `antigravity`;
+  its CLI is `agy`.
 - OpenCode: install from [opencode.ai](https://opencode.ai), then confirm
   `opencode` works in a terminal.
 
@@ -59,8 +65,8 @@ Unattended sessions:
 }
 ```
 
-Use `claude` to make Claude Code the default, or `codex` to make OpenAI Codex
-CLI the default. The daemon refuses to start sessions when no agent plugin is
+Use `claude` to make Claude Code the default, `codex` to make OpenAI Codex
+CLI the default, or `antigravity` to make the Antigravity CLI the default. The daemon refuses to start sessions when no agent plugin is
 loaded.
 
 ## Verify plugins are loaded
@@ -80,10 +86,31 @@ binary sits next to `bossd` or in the Homebrew plugin directory:
 which bossd
 which bossd-plugin-claude
 which bossd-plugin-codex
+which bossd-plugin-antigravity
 which bossd-plugin-opencode
 ```
 
 Then restart `bossd` and run the doctor again.
+
+## Antigravity
+
+The Antigravity plugin (`bossd-plugin-antigravity`) drives Google's
+[Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli),
+`agy`. Select it with the agent name `antigravity`.
+
+Its settings, under `plugins[]` with `"name": "antigravity"`:
+
+| Key                            | Effect                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `dangerously_skip_permissions` | Passes `--dangerously-skip-permissions` to `agy`.                                                             |
+| `mode`                         | Passes `--mode` (`accept-edits`, `auto` or `plan`).                                                           |
+| `model`                        | Fallback `--model` for runs without their own, such as `gemini-4-neon-medium`. Run `agy models` for the list. |
+
+`agy` keeps its sign-in token in the operating system keyring. Sign in once by
+running `agy` in a terminal on the machine that runs `bossd`. A Gemini API key
+(`GEMINI_API_KEY`) or Application Default Credentials (`AGY_ADC_AUTH`) also
+reach the CLI. Boss skills for Antigravity install to
+`~/.gemini/config/skills`. Antigravity has no managed accounts.
 
 ## OpenCode
 

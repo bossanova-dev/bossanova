@@ -8,6 +8,7 @@ go_library(
         "github_read_credential.go",
         "github_usage.go",
         "local.go",
+        "local_serve.go",
         "netns_linux.go",
         "netns_other.go",
         "pr_state.go",

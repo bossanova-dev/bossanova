@@ -1034,8 +1034,9 @@ message ReviewQueueRow {
   // The level the queue ranks and counts the row by: the attention's
   // confidence_level, or BLOCKED for a blocked park that carries none.
   ConfidenceLevel confidence_level = 2;
-  // A merged High PR selected for audit, excluded from level_counts.
-  bool is_audit_sample = 3;
+  // BOS-2597 removed audit samples: no queue lists a merged PR.
+  reserved 3;
+  reserved "is_audit_sample";
 }
 
 // ReviewQueueLevelCount is the review queue header count for one level.

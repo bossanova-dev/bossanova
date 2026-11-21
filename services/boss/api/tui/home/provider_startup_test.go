@@ -216,13 +216,15 @@ func TestApplyProviderOnboardingDangerousModeEnablesClaudeAndCodex(t *testing.T)
 	discovered := []config.PluginConfig{
 		{Name: "claude", Path: "/plugins/bossd-plugin-claude"},
 		{Name: "codex", Path: "/plugins/bossd-plugin-codex"},
+		{Name: "antigravity", Path: "/plugins/bossd-plugin-antigravity"},
 	}
 	providers := []ui.Provider{
 		testProvider("Claude", "claude", "claude"),
 		testProvider("Codex", "codex", "codex"),
+		testProvider("Antigravity", "antigravity", "agy"),
 	}
 
-	got, changed := ApplyProviderOnboarding(settings, []string{"claude", "codex"}, []string{"claude"}, true, discovered, providers)
+	got, changed := ApplyProviderOnboarding(settings, []string{"claude", "codex", "antigravity"}, []string{"claude"}, true, discovered, providers)
 
 	if !changed {
 		t.Fatal("Changed = false, want true")
@@ -232,6 +234,9 @@ func TestApplyProviderOnboardingDangerousModeEnablesClaudeAndCodex(t *testing.T)
 	}
 	if !config.PluginConfigBool(&got, "codex", "dangerously_bypass_approvals_and_sandbox") {
 		t.Fatalf("codex dangerously_bypass_approvals_and_sandbox not enabled: %+v", got.Plugins)
+	}
+	if !config.PluginConfigBool(&got, "antigravity", "dangerously_skip_permissions") {
+		t.Fatalf("antigravity dangerously_skip_permissions not enabled: %+v", got.Plugins)
 	}
 }
 

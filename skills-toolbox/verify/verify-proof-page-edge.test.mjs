@@ -289,13 +289,16 @@ test('#9 #10 #11 every screenshot loads lazily and opens its own image in the on
   for (const [, href, src] of shots)
     assert.equal(href, src, 'without the script it opens the image')
   const box = region(html, '<div class="lb" id="lb" hidden', '<script')
-  for (const id of ['lb-cap', 'lb-zoom', 'lb-close', 'lb-stage', 'lb-img'])
+  for (const id of ['lb-cap', 'lb-zoom', 'lb-full', 'lb-close', 'lb-stage', 'lb-img', 'lb-video'])
     assert.ok(box.includes(`id="${id}"`), id)
   assert.equal(html.split('id="lb"').length, 2, 'one lightbox for every screenshot')
 })
 
 test('#13 a clip with no poster shows its first still', () => {
-  assert.match(page(), /<video id="proof-video"[^>]* poster="media\/head-0-0.png">/)
+  assert.match(
+    page(),
+    /<div class="vbox"><video id="proof-video"[^>]* poster="media\/head-0-0.png"><\/video><button class="iconbtn vopen"/,
+  )
 })
 
 test('#15 before and after images share one height so their captions line up', () => {
@@ -518,4 +521,11 @@ test('display caps cut at a word boundary and end in an ellipsis', () => {
   assert.ok(words.startsWith(`${capped.slice(0, -1)} `), 'the cut falls between two words')
   assert.equal(capText(TOKEN, 40).length, 40, 'an unbroken token is cut mid-token')
   assert.equal(capText('short', 40), 'short')
+})
+
+test('the content column is capped at 808px on desktop and keeps 16px gutters on a narrow screen', () => {
+  assert.match(rule('.wrap'), /max-width:808px/)
+  assert.equal(rule('*'), '*{box-sizing:border-box}', 'the cap includes the side padding')
+  const narrow = regionUntilNext(PROOF_STYLE, '@media (max-width:640px){', '\n')
+  assert.ok(narrow.includes('.wrap{padding:16px 16px 64px}'), 'narrow screens keep tight gutters')
 })

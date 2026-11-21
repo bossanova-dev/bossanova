@@ -12,8 +12,8 @@ type Provider struct {
 }
 
 // Providers is the static list rendered by the onboarding screen.
-// Order matches the install order recommended in docs (Claude first, Codex
-// second). New providers should be appended here as plugins are added.
+// Order matches the install order recommended in docs (Claude, Codex, then
+// Antigravity).
 var Providers = []Provider{
 	{
 		Name:        "Claude",
@@ -31,4 +31,22 @@ var Providers = []Provider{
 		InstallURL:  "https://github.com/openai/codex",
 		Description: "OpenAI's Codex CLI",
 	},
+	{
+		Name:        "Antigravity",
+		Plugin:      "antigravity",
+		Command:     "agy",
+		InstallCmd:  "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+		InstallURL:  "https://antigravity.google/docs/getting-started?tab=cli",
+		Description: "Google's Antigravity CLI",
+	},
+}
+
+// ProviderFor returns the provider whose plugin is named plugin.
+func ProviderFor(plugin string) (Provider, bool) {
+	for _, p := range Providers {
+		if p.Plugin == plugin {
+			return p, true
+		}
+	}
+	return Provider{}, false
 }

@@ -11,6 +11,7 @@ go_library(
         "mock_agent.go",
         "mock_agent_runner.go",
         "mock_git.go",
+        "mock_git_remote_branch.go",
         "mock_vcs.go",
         "state_observer.go",
         "stub_provider.go",
@@ -55,6 +56,7 @@ go_library(
 go_test(
     name = "testharness_test",
     srcs = [
+        "e2e_base_branch_test.go",
         "e2e_blocked_run_test.go",
         "e2e_cron2_test.go",
         "e2e_cron_test.go",

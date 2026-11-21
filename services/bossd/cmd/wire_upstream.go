@@ -488,7 +488,9 @@ func (w *daemonWiring) wireUpstream() {
 		cloudControl := upstream.NewCloudControlPolicy(log.Logger)
 		cloudControl.RepoIdentities = targets
 		terminalSealing := upstream.TerminalSealingConfig{DaemonID: cfg.DaemonID, IdentityKey: identityKey, Approvals: w.viewerApprovals}
+		redialer, _ := httpClient.Transport.(interface{ Redial() })
 		w.streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
+			Redialer:                 redialer,
 			CloudControl:             cloudControl,
 			TargetObjects:            targets,
 			TerminalSealingSupported: terminalSealing.IsAvailable(),
@@ -509,7 +511,10 @@ func (w *daemonWiring) wireUpstream() {
 			TokenProvider:  tokenProvider,
 			CommandHandler: cmdHandler,
 			UsageShare:     w.usageShare,
-			UsageRecorder:  w.accounts,
+			UsageRecorder: sharedUsageCooldownRecorder{
+				store: w.accounts, logger: log.Logger, now: time.Now,
+				staleness: w.settings.ManagedAccounts.UsageStalenessWindow(),
+			},
 			Webhooks: upstream.NewWebhookDispatcherWithEmitterAndReviewComments(w.displayPoller, emitter, w.ghProvider, log.Logger).
 				WithCloudControl(cloudControl).
 				WithWebhookTargets(targets).

@@ -2553,11 +2553,11 @@ func TestRunSkillSyncWithoutHermesLeavesHermesDirUntouched(t *testing.T) {
 func TestSkillInstallAgentChoicesNamesEveryTarget(t *testing.T) {
 	g := newTestGroup()
 
-	if got, want := g.skillInstallAgentChoices(), "claude, codex or hermes"; got != want {
+	if got, want := g.skillInstallAgentChoices(), "claude, codex, hermes or agy"; got != want {
 		t.Fatalf("skillInstallAgentChoices() = %q, want %q", got, want)
 	}
 	err := g.validateSkillAgentFilter("gemini")
-	if err == nil || !strings.Contains(err.Error(), "want claude, codex or hermes") {
+	if err == nil || !strings.Contains(err.Error(), "want claude, codex, hermes or agy") {
 		t.Fatalf("validateSkillAgentFilter(gemini) = %v, want the full agent list", err)
 	}
 	if err := g.validateSkillAgentFilter("hermes"); err != nil {

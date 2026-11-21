@@ -1,3 +1,5 @@
+import { walkBlockerGraph } from './blocker-graph.mjs'
+import { linearReadBlockerGraphNode } from './linear-blocker-graph.mjs'
 import { LINEAR_LIST_CHILDREN_OPERATION } from './linear-children.mjs'
 import { linearReadIssueSnapshot } from './linear-issue-snapshot.mjs'
 import { LIST_PLANNED_QUERY, LIST_PLAN_CANDIDATES_QUERY } from './linear-planned-query.mjs'
@@ -777,6 +779,10 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
     blockerVerdict,
     claimScopes: ['build', 'plan'],
     planClaimSelection: true,
+    referenceRewrites: Object.freeze([
+      'bare-reference-autolinking',
+      'pull-request-reference-autolinking',
+    ]),
     formatClaimComment,
     resolveClaim: (comments, myToken, options = null) =>
       resolveClaimVerdict(comments, myToken, options),
@@ -807,6 +813,12 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
     },
     readClaimComments: (issueId) =>
       linearReadClaimComments({ apiKey, fetchImpl, endpoint, issueId }),
+    readBlockerGraph: ({ ids, maxNodes }) =>
+      walkBlockerGraph({
+        seeds: ids,
+        maxNodes,
+        readNode: (issueId) => linearReadBlockerGraphNode({ apiKey, fetchImpl, endpoint, issueId }),
+      }),
     readIssueState: (issueId) => linearReadIssueState({ apiKey, fetchImpl, endpoint, issueId }),
     readDescription: (issueId) => linearReadDescription({ apiKey, fetchImpl, endpoint, issueId }),
     readIssueSnapshot: (issueId) =>

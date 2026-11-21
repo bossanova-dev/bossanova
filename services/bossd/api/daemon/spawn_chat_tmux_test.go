@@ -1102,6 +1102,7 @@ func TestChatAgentConventions(t *testing.T) {
 		{name: "claude", readyMarker: "❯", commandPrefix: "/"},
 		{name: "codex", readyMarker: "›", commandPrefix: "$"},
 		{name: "opencode", readyMarker: "┃", commandPrefix: "/"},
+		{name: "antigravity", readyMarker: ">", commandPrefix: "/"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

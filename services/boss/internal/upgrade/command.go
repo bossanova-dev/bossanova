@@ -57,6 +57,7 @@ func (g *Runner) checkUpgradeExplicitly(ctx context.Context, out io.Writer, curr
 }
 
 var installedPluginNames = []string{
+	"antigravity",
 	"claude",
 	"codex",
 	"dependabot",

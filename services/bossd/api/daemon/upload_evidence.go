@@ -24,8 +24,18 @@ import (
 // EvidenceReasonHeader names the machine-readable upload precondition response header.
 const EvidenceReasonHeader = "Bossd-Evidence-Reason"
 
+// EvidenceLimitHeader names the hosted page-shape limit an over-limit refusal
+// hit, and EvidenceLimitMaxHeader carries bosso's maximum for it.
+const (
+	EvidenceLimitHeader    = "Bossd-Evidence-Limit"
+	EvidenceLimitMaxHeader = "Bossd-Evidence-Limit-Max"
+)
+
 const evidenceUploadCeiling = 10 * time.Minute
 const evidenceObjectSizeCap = 300 * 1024 * 1024
+
+// evidenceObjectsPerCall caps one UploadEvidence call, and so one hosted page.
+const evidenceObjectsPerCall = 64
 
 // evidencePageName is the proof page object and evidencePlayerName the static
 // script it links; both are accepted only under the deterministic prefix and
@@ -47,6 +57,10 @@ var (
 func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.UploadEvidenceRequest]) (*connect.Response[pb.UploadEvidenceResponse], error) {
 	ctx, cancel := context.WithTimeout(ctx, evidenceUploadCeiling)
 	defer cancel()
+	destination := req.Msg.Destination
+	if _, known := pb.EvidenceDestination_name[int32(destination)]; !known {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unknown evidence destination"))
+	}
 	deterministic, err := evidenceKeyed(req.Msg.PrNumber, req.Msg.HeadSha)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -71,17 +85,35 @@ func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.Upl
 	if page && !deterministic {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("index.html and player.js require pr_number and head_sha"))
 	}
+	if destination == pb.EvidenceDestination_EVIDENCE_DESTINATION_HOSTED {
+		return s.publishHosted(ctx, repo, req.Msg, files, deterministic)
+	}
 	prefix, err := evidencePrefix(repo, req.Msg.PrNumber, req.Msg.HeadSha, deterministic)
 	if err != nil {
 		return nil, err
 	}
-	if s.evidenceBucketOpener == nil {
-		return nil, evidenceOpenError(domain.ErrEvidenceUploadNotConfigured)
+	var bucket domain.EvidenceBucket
+	err = domain.ErrEvidenceUploadNotConfigured
+	if s.evidenceBucketOpener != nil {
+		bucket, err = s.evidenceBucketOpener.OpenEvidenceBucket()
 	}
-	bucket, err := s.evidenceBucketOpener.OpenEvidenceBucket()
 	if err != nil {
+		if destination == pb.EvidenceDestination_EVIDENCE_DESTINATION_LOCAL_OR_HOSTED && evidenceDestinationMissing(err) {
+			return s.publishHosted(ctx, repo, req.Msg, files, deterministic)
+		}
 		return nil, evidenceOpenError(err)
 	}
+	return s.publishLocal(ctx, bucket, prefix, files, page)
+}
+
+// evidenceDestinationMissing reports an opener error meaning the daemon's own
+// proof_upload destination is absent rather than broken.
+func evidenceDestinationMissing(err error) bool {
+	return errors.Is(err, domain.ErrEvidenceDestinationNotConfigured) || errors.Is(err, domain.ErrEvidenceUploadNotConfigured)
+}
+
+// publishLocal writes every object to the daemon's own bucket under prefix.
+func (s *Server) publishLocal(ctx context.Context, bucket domain.EvidenceBucket, prefix string, files []evidenceUploadFile, page bool) (*connect.Response[pb.UploadEvidenceResponse], error) {
 	if page && !bucket.PagesEnabled() {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("proof pages are not enabled for this destination"))
 	}
@@ -94,7 +126,7 @@ func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.Upl
 		}
 		keys = append(keys, key)
 	}
-	return connect.NewResponse(&pb.UploadEvidenceResponse{KeyPrefix: prefix, PublicBaseUrl: bucket.PublicBaseURL(), ObjectKeys: keys}), nil
+	return connect.NewResponse(&pb.UploadEvidenceResponse{KeyPrefix: prefix, PublicBaseUrl: bucket.PublicBaseURL(), ObjectKeys: keys, Destination: pb.EvidenceDestination_EVIDENCE_DESTINATION_LOCAL}), nil
 }
 
 // evidenceOpenError maps a destination failure to its RPC error without the
@@ -219,8 +251,8 @@ func validateEvidenceObjects(root *os.Root, objects []*pb.EvidenceObject) (files
 			}
 		}
 	}()
-	if len(objects) == 0 || len(objects) > 64 {
-		return nil, errors.New("evidence must contain 1 to 64 objects")
+	if len(objects) == 0 || len(objects) > evidenceObjectsPerCall {
+		return nil, fmt.Errorf("evidence must contain 1 to %d objects", evidenceObjectsPerCall)
 	}
 	seen := map[string]bool{}
 	for _, object := range objects {

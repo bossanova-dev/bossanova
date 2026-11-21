@@ -152,6 +152,8 @@ test('the four previously unnamed artifacts are declared families', () => {
   for (const family of [
     'attachment-guard-orig', // the guard safe source, once written as `<safe-orig.md>`
     'description', // the composed description, once `<new.md>` and a bare mktemp
+    'blocker-graph',
+    'sibling-edges',
     'deps-input', // the dependency-scan input, once `<the scratch JSON file you just wrote>`
     'epic-overview', // the epic parent overview, once composed with no path at all
   ]) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -284,4 +285,37 @@ func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID strin
 	if s.onSessionDeleted != nil {
 		s.onSessionDeleted(ctx, sessionID)
 	}
+}
+
+// checkRequestedBaseBranch runs before locks or persistence, only for a create
+// that explicitly names a base for a new worktree.
+func (s *Server) checkRequestedBaseBranch(ctx context.Context, msg *pb.CreateSessionRequest, repoPath string, needsWorktree bool) error {
+	if !needsWorktree || msg.PrNumber != nil || strings.TrimSpace(msg.BaseBranch) == "" {
+		return nil
+	}
+	if err := s.checkBranchName(ctx, msg.BaseBranch); err != nil {
+		if errors.Is(err, domain.ErrInvalidBranchName) {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("base_branch: %w", err))
+		}
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if s.remoteBranchExists == nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("remote branch probe is not configured"))
+	}
+	exists, err := s.remoteBranchExists(ctx, repoPath, msg.BaseBranch)
+	if err != nil {
+		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("could not verify base_branch %q on origin: %w", msg.BaseBranch, err))
+	}
+	if !exists {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("base_branch %q does not exist on origin", msg.BaseBranch))
+	}
+	return nil
+}
+
+// checkBranchName also supports the zero-value Server used by focused handlers.
+func (s *Server) checkBranchName(ctx context.Context, name string) error {
+	if s.validateBranchName != nil {
+		return s.validateBranchName(ctx, name)
+	}
+	return fmt.Errorf("branch name validator is not configured")
 }

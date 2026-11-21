@@ -209,6 +209,7 @@ export function createEpicState({
   runId,
   epicId,
   repoId = '',
+  baseBranch = '',
   agent = '',
   parallel = 1,
   plannedState = '',
@@ -223,6 +224,7 @@ export function createEpicState({
     runId,
     epicId,
     repoId,
+    baseBranch,
     agent,
     parallel,
     plannedState,
@@ -262,6 +264,7 @@ export function normalizeEpicState(state = {}) {
     runId: isNonEmptyString(state.runId) ? state.runId : '',
     epicId: isNonEmptyString(state.epicId) ? state.epicId : '',
     repoId: typeof state.repoId === 'string' ? state.repoId : '',
+    baseBranch: typeof state.baseBranch === 'string' ? state.baseBranch : '',
     agent: typeof state.agent === 'string' ? state.agent : '',
     parallel: Number.isFinite(state.parallel) && state.parallel > 0 ? state.parallel : 1,
     plannedState: typeof state.plannedState === 'string' ? state.plannedState : '',
@@ -659,10 +662,6 @@ export function transitionToDone(state) {
     status: EPIC_RUN_STATUSES.DONE,
   })
 }
-
-// ---------------------------------------------------------------------------
-// Transitions (pure: (state, input) -> state)
-// ---------------------------------------------------------------------------
 
 /**
  * Record a launch or an adoption as ONE transaction: identity, in-flight membership, and the

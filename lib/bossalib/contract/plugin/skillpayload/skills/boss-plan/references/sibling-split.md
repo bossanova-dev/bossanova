@@ -76,13 +76,24 @@ After write-back verification (step 5), file the siblings:
    every key's id, created and reused, to
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-created.json` as `{key: id}`.
 
-4. Wire the edges with `appendDependency`, each `{issue, blockedBy}` meaning `issue` is blocked by
-   `blockedBy`. They are additive; never delete a relation. As in step 4e, read both sides before
-   each write and skip one that would form a cycle, then re-read both sides and record a missing edge
-   rather than re-writing it.
+4. Screen sibling edges before writing. Save the edge proposals to
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json`, fetch a fresh blocker graph
+   seeded with every proposal's `issue` and `blockedBy`, then run the shared screen. Write only
+   `accepted` with `appendDependency` (each `{id, blockedBy: [ids]}`). Edges are additive; never
+   delete a relation. Record cycle skips and held writes as Phase 4 step 4(d) describes. A failed
+   graph fetch or screen writes no blocking edge. Re-read both sides after each write and record
+   a missing edge rather than re-writing it.
 
    ```bash
-   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs edges --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --created .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-created.json
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs edges --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --created .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-created.json > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json
+   ```
+
+   ```bash
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs fetch-blocker-graph --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.blocker-graph.json --id <ISSUE-ID> --id <endpoint>…
+   ```
+
+   ```bash
+   bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-blocker-graph.mjs screen --writes .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json --graph .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.blocker-graph.json --subject <ISSUE-ID>
    ```
 
 5. Read every sibling back (`get_issue`, or `listChildren` on the parent), write
@@ -105,6 +116,6 @@ the `verify` problems, and whether the exposure flipped.
 ## Fan-out child planners
 
 A child planner ([`child-fanout.md`](child-fanout.md)) may create new sibling shells under the
-parent and write edges to and from them, each behind step 4e's cycle check: nobody else knows the
+parent and write edges to and from them, each behind the blocker-graph screen: nobody else knows the
 new shells yet, so no concurrent planner can write an opposing edge. Every other rule in its brief
 stands.

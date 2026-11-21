@@ -5578,10 +5578,8 @@ type ReviewQueueRow struct {
 	// The level the queue ranks and counts the row by: the attention's
 	// confidence_level, or BLOCKED for a blocked park that carries none.
 	ConfidenceLevel ConfidenceLevel `protobuf:"varint,2,opt,name=confidence_level,json=confidenceLevel,proto3,enum=bossanova.v1.ConfidenceLevel" json:"confidence_level,omitempty"`
-	// A merged High PR selected for audit, excluded from level_counts.
-	IsAuditSample bool `protobuf:"varint,3,opt,name=is_audit_sample,json=isAuditSample,proto3" json:"is_audit_sample,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ReviewQueueRow) Reset() {
@@ -5626,13 +5624,6 @@ func (x *ReviewQueueRow) GetConfidenceLevel() ConfidenceLevel {
 		return x.ConfidenceLevel
 	}
 	return ConfidenceLevel_CONFIDENCE_LEVEL_UNSPECIFIED
-}
-
-func (x *ReviewQueueRow) GetIsAuditSample() bool {
-	if x != nil {
-		return x.IsAuditSample
-	}
-	return false
 }
 
 // ReviewQueueLevelCount is the review queue header count for one level.
@@ -9372,11 +9363,10 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\fBlockerTally\x12\x1a\n" +
 	"\bseverity\x18\x01 \x01(\tR\bseverity\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12#\n" +
-	"\rblocker_count\x18\x03 \x01(\x05R\fblockerCount\"\xb3\x01\n" +
+	"\rblocker_count\x18\x03 \x01(\x05R\fblockerCount\"\xa2\x01\n" +
 	"\x0eReviewQueueRow\x12/\n" +
 	"\asession\x18\x01 \x01(\v2\x15.bossanova.v1.SessionR\asession\x12H\n" +
-	"\x10confidence_level\x18\x02 \x01(\x0e2\x1d.bossanova.v1.ConfidenceLevelR\x0fconfidenceLevel\x12&\n" +
-	"\x0fis_audit_sample\x18\x03 \x01(\bR\risAuditSample\"\x86\x01\n" +
+	"\x10confidence_level\x18\x02 \x01(\x0e2\x1d.bossanova.v1.ConfidenceLevelR\x0fconfidenceLevelJ\x04\b\x03\x10\x04R\x0fis_audit_sample\"\x86\x01\n" +
 	"\x15ReviewQueueLevelCount\x12H\n" +
 	"\x10confidence_level\x18\x01 \x01(\x0e2\x1d.bossanova.v1.ConfidenceLevelR\x0fconfidenceLevel\x12#\n" +
 	"\rsession_count\x18\x02 \x01(\x05R\fsessionCount\"\xdf\x02\n" +

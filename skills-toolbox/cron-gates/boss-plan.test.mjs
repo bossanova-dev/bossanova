@@ -225,3 +225,33 @@ test('a full claimed batch preserves existence when a free issue may be beyond t
     assert.equal(result.hasWork, count >= 250)
   }
 })
+
+test('reference-aware gates exclude unmodelled queues without claim support and respect full batches', async () => {
+  const config = configWith()
+  config.trackerConfig.demo.descriptionNormalization = { tolerated: [] }
+  for (const count of [1, 249, 250]) {
+    const tracker = {
+      referenceRewrites: ['pull-request-reference-autolinking'],
+      hasWork: async () => true,
+      selectPlanned: async () =>
+        Array.from({ length: count }, (_, index) => ({
+          identifier: `APP-${index + 1}`,
+          description: 'See #7.',
+        })),
+    }
+    const result = await evaluateBossPlanGate({ config, tracker })
+    assert.equal(result.hasWork, count === 250)
+    if (!result.hasWork) {
+      assert.match(result.reason, /APP-1/)
+      assert.match(result.reason, /#7/)
+      assert.match(result.reason, /pull-request-reference-autolinking/)
+    }
+  }
+  const tracker = {
+    referenceRewrites: ['pull-request-reference-autolinking'],
+    hasWork: async () => true,
+    selectPlanned: async () => [{ identifier: 'APP-1', description: '#7' }],
+  }
+  config.trackerConfig.demo.descriptionNormalization.tolerated = tracker.referenceRewrites
+  assert.equal((await evaluateBossPlanGate({ config, tracker })).hasWork, true)
+})

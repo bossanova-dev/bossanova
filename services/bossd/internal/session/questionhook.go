@@ -64,13 +64,14 @@ const (
 // resolution treats an empty session AgentName as "the default agent, or the
 // sole loaded runner" (agent.Dispatcher.resolveByName), so an opencode-only
 // install legitimately starts runs with AgentName == "" — an allow-list keyed on
-// the stored name would silently disarm the hook there. Naming the two agents we
+// the stored name would silently disarm the hook there. Naming the agents we
 // know ignore the keys keeps the hook armed for everything else, where the
 // plugin-side gate (installQuestionHook, which no-ops unless both keys are
 // present) is the functional backstop.
 var questionHookOptOutAgents = map[string]bool{
-	"claude": true,
-	"codex":  true,
+	"antigravity": true,
+	"claude":      true,
+	"codex":       true,
 }
 
 // withQuestionHookEnv overlays the loopback question-hook context onto a

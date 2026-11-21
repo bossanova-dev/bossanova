@@ -273,7 +273,7 @@ func injectSessionStartReadyDeadline(cfg map[string]string, settings config.Sett
 }
 
 func isAgentProviderPlugin(pluginName string, settings config.Settings) bool {
-	if pluginName == "codex" || pluginName == "claude" {
+	if pluginName == "codex" || pluginName == "claude" || pluginName == "antigravity" {
 		return true
 	}
 	for _, known := range settings.KnownAgentProviders {

@@ -6580,61 +6580,55 @@ func TestCancelBackgroundDraftPRUnblocksTheJoin(t *testing.T) {
 // the worktree — so an archive that removes that directory first corrupts the
 // create and can leave a remote branch and PR behind a session that is gone.
 func TestStopBackgroundDraftPRIsCalledBeforeTeardownTouchesTheWorktree(t *testing.T) {
-	ctx := context.Background()
-	sessions, wt, _, lc := newBackgroundDraftPRFixture(t)
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		sessions, wt, _, lc := newBackgroundDraftPRFixture(t)
 
-	// Record which happened first. Asserting only that the archive completed
-	// would still pass with the stop moved AFTER worktrees.MarkArchived — i.e.
-	// against the very regression this test names.
-	var orderMu sync.Mutex
-	var order []string
-	note := func(event string) {
-		orderMu.Lock()
-		order = append(order, event)
-		orderMu.Unlock()
-	}
+		// Record which happened first. Asserting only that the archive completed
+		// would still pass with the stop moved AFTER worktrees.MarkArchived — i.e.
+		// against the very regression this test names.
+		var orderMu sync.Mutex
+		var order []string
+		note := func(event string) {
+			orderMu.Lock()
+			order = append(order, event)
+			orderMu.Unlock()
+		}
 
-	parked := make(chan struct{})
-	wt.verifyCurrentBranchCtxHook = func(stepCtx context.Context) {
-		close(parked)
-		<-stepCtx.Done()
-		note("step-cancelled")
-	}
-	wt.archiveHook = func() { note("worktree-archived") }
+		parked := make(chan struct{})
+		wt.verifyCurrentBranchCtxHook = func(stepCtx context.Context) {
+			close(parked)
+			<-stepCtx.Done()
+			note("step-cancelled")
+		}
+		wt.archiveHook = func() { note("worktree-archived") }
 
-	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
-		t.Fatalf("StartSession: %v", err)
-	}
-	<-parked
+		if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+			t.Fatalf("StartSession: %v", err)
+		}
+		<-parked
 
-	sess := sessions.sessions["sess-1"]
-	sess.WorktreePath = "/tmp/worktrees/repo/sess-1"
+		sess := sessions.sessions["sess-1"]
+		sess.WorktreePath = "/tmp/worktrees/repo/sess-1"
 
-	done := make(chan error, 1)
-	go func() { done <- lc.ArchiveSession(ctx, "sess-1") }()
-
-	select {
-	case err := <-done:
-		if err != nil {
+		if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
 			t.Fatalf("ArchiveSession: %v", err)
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("ArchiveSession did not complete: it must cancel the in-flight draft PR create, not wait it out")
-	}
 
-	// Cancelled and unwound: nothing is left to race the worktree removal.
-	joinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := lc.WaitForBackgroundDraftPR(joinCtx, "sess-1"); err != nil {
-		t.Fatalf("background draft PR still in flight after archive: %v", err)
-	}
+		// Cancelled and unwound: nothing is left to race the worktree removal.
+		joinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := lc.WaitForBackgroundDraftPR(joinCtx, "sess-1"); err != nil {
+			t.Fatalf("background draft PR still in flight after archive: %v", err)
+		}
 
-	orderMu.Lock()
-	defer orderMu.Unlock()
-	want := []string{"step-cancelled", "worktree-archived"}
-	if len(order) != len(want) || order[0] != want[0] || order[1] != want[1] {
-		t.Fatalf("event order = %v, want %v: the create must be stopped before its worktree is removed", order, want)
-	}
+		orderMu.Lock()
+		defer orderMu.Unlock()
+		want := []string{"step-cancelled", "worktree-archived"}
+		if len(order) != len(want) || order[0] != want[0] || order[1] != want[1] {
+			t.Fatalf("event order = %v, want %v: the create must be stopped before its worktree is removed", order, want)
+		}
+	})
 }
 
 // TestClearStaleDraftPRInFlightReasons pins the daemon-restart sweep. The
@@ -10839,8 +10833,7 @@ func TestStartSession_QuestionHookEnvSkipsNonConsumingAgents(t *testing.T) {
 		agentName string
 		wantArmed bool
 	}{
-		{"claude", false},
-		{"codex", false},
+		{"claude", false}, {"codex", false}, {"antigravity", false},
 		{"opencode", true},
 		// Unknown/unset agents stay armed: the plugin-side gate
 		// (installQuestionHook) is the functional backstop, and an opencode-only

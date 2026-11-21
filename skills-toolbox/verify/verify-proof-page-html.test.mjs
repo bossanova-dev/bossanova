@@ -216,7 +216,7 @@ test('media becomes one player with chapters per clip, screenshots for the light
   const html = render({ media: media() })
   assert.ok(
     html.includes(
-      '<video id="proof-video" data-clip="0" controls playsinline preload="metadata" src="media/head-0.mp4" poster="media/head-0-still.png">',
+      '<div class="vbox"><video id="proof-video" data-clip="0" data-cap="Basket" controls playsinline preload="metadata" src="media/head-0.mp4" poster="media/head-0-still.png"></video><button class="iconbtn vopen" type="button" title="Open large" aria-label="Open video large">',
     ),
   )
   const buttons = [
@@ -246,7 +246,72 @@ test('media becomes one player with chapters per clip, screenshots for the light
   assert.equal(html.match(/<script[^>]*>/g)?.join(), '<script src="player.js" defer>')
   assert.ok(html.endsWith('<script src="player.js" defer></script></body></html>'))
   assert.ok(!/\son\w+\s*=|\sstyle=/.test(html), 'no inline handlers or style attributes')
-  assert.ok(!render({}).includes('id="lb"'), 'a page with no screenshot has no lightbox')
+  assert.ok(!render({}).includes('id="lb"'), 'a page with neither screenshot nor video has none')
+})
+
+/** The `d` path of the icon on the lightbox button with this id. */
+const iconPath = (html, id) =>
+  new RegExp(`id="${id}"[^>]*><svg[^>]*><path d="([^"]+)"`).exec(html)?.[1]
+
+test('every video opens large from its own button, and the lightbox offers fullscreen', () => {
+  const clips = render({ media: media() })
+  const box = region(clips, '<div class="lb" id="lb" hidden', '<script')
+  for (const id of ['lb-full', 'lb-video', 'lb-prev', 'lb-next'])
+    assert.ok(box.includes(`id="${id}"`), id)
+  assert.ok(
+    box.includes('<video id="lb-video" controls playsinline preload="metadata" hidden></video>'),
+  )
+  assert.ok(
+    precedes(box, 'id="lb-zoom"', 'id="lb-full"') && precedes(box, 'id="lb-full"', 'id="lb-close"'),
+  )
+  assert.ok(box.includes('title="Fullscreen" aria-label="Fullscreen"'))
+  const zoom = iconPath(clips, 'lb-zoom')
+  const full = iconPath(clips, 'lb-full')
+  assert.ok(zoom && full && zoom !== full, 'fullscreen and full size draw different glyphs')
+
+  // An area's own inline video, on a page with no screenshot at all.
+  const page = input(['logic'])
+  page.proof.page = 'https://proof.example/acme/shop/7/index.html'
+  page.proof.areas[0].media = [
+    {
+      kind: 'video',
+      url: 'https://proof.example/acme/shop/7/round.mp4',
+      poster: 'https://proof.example/acme/shop/7/round.png',
+      caption: 'Rounding <once>',
+      durationMs: 4_000,
+    },
+  ]
+  page.proof = withDigest(page.proof)
+  const inline = renderProofHtml(page)
+  assert.ok(
+    inline.includes(
+      '<figure class="media"><div class="vbox"><video controls preload="none" src="https://proof.example/acme/shop/7/round.mp4" poster="https://proof.example/acme/shop/7/round.png" data-cap="Rounding &lt;once&gt;"></video><button class="iconbtn vopen"',
+    ),
+  )
+  assert.ok(!inline.includes('class="shot"'))
+  const alone = region(inline, '<div class="lb" id="lb" hidden', '<script')
+  assert.ok(alone.includes('aria-label="Video"'), 'a video-only lightbox is named for video')
+  for (const id of ['lb-full', 'lb-video', 'lb-zoom', 'lb-close'])
+    assert.ok(alone.includes(`id="${id}"`), id)
+  assert.ok(
+    !alone.includes('id="lb-prev"') && !alone.includes('id="lb-next"'),
+    'arrows step screenshots only',
+  )
+  assert.equal(
+    (inline.match(/<video /g)?.length ?? 0) - 1,
+    inline.match(/<div class="vbox"><video /g)?.length,
+    'every page video but the lightbox one sits in a vbox',
+  )
+  assert.ok(!/\son\w+\s*=|\sstyle=/.test(inline), 'no inline handlers or style attributes')
+})
+
+test('the open-large button stays hidden until the player runs, whatever the button rules say', () => {
+  assert.ok(
+    precedes(PROOF_STYLE, '.iconbtn{', '.vbox .vopen{display:none'),
+    'the hide rule follows .iconbtn{display:inline-flex}, so it wins without the script',
+  )
+  assert.ok(PROOF_STYLE.includes('.proof-js .vbox .vopen{display:inline-flex}'))
+  assert.ok(PROOF_STYLE.includes('.lb-stage [hidden]{display:none}'), 'hidden beats img display')
 })
 
 test('evidence sits in the UI section a person reviews, else in its own section', () => {
@@ -258,6 +323,27 @@ test('evidence sits in the UI section a person reviews, else in its own section'
   assert.ok(!sectionIds(reviewed).includes('evidence'))
   assert.ok(section(reviewed, 'a-ui').includes('<video id="proof-video"'))
   assert.ok(!section(reviewed, 'a-logic').includes('class="shot"'))
+})
+
+test('media left off the page by the host limits shows a not-hosted notice first in the evidence @sessions.AC261203', () => {
+  const notice = /<div class="bnotice stacked" data-omitted="(\d+)">[\s\S]*?<\/div><\/div>/
+  const fitted = section(render({ media: media(), omittedMedia: 3 }), 'evidence')
+  assert.equal(notice.exec(fitted)?.[1], '3')
+  assert.equal(
+    fitted.indexOf('<div'),
+    fitted.indexOf('<div class="bnotice stacked" data-omitted="3">'),
+    'the notice comes first',
+  )
+  assert.ok(fitted.includes('3 evidence files were not hosted'))
+  assert.ok(fitted.includes('<video id="proof-video"'), 'the media that fit still shows')
+  const one = section(render({ omittedMedia: 1 }), 'evidence')
+  assert.ok(one.includes('1 evidence file was not hosted'), 'the section shows with no media left')
+  assert.equal(notice.exec(one)?.[1], '1')
+  for (const omittedMedia of [0, undefined, -2, 1.5, '3'])
+    assert.ok(
+      !render({ media: media(), omittedMedia }).includes('data-omitted'),
+      `no notice for ${omittedMedia}`,
+    )
 })
 
 test('a changed UI area with no head clip is listed as not proven', () => {

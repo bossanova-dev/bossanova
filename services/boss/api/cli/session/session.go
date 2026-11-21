@@ -152,6 +152,7 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 	agentName, _ := cmd.Flags().GetString("agent")
 	repo, _ := cmd.Flags().GetString("repo")
 	prompt, _ := cmd.Flags().GetString("prompt")
+	baseBranch, _ := cmd.Flags().GetString("base-branch")
 	title, _ := cmd.Flags().GetString("title")
 	model, _ := cmd.Flags().GetString("model")
 	effort, _ := cmd.Flags().GetString("effort")
@@ -185,6 +186,9 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 	if cmd.Flags().Changed("pr") {
 		n, _ := cmd.Flags().GetInt32("pr")
 		prNumber = &n
+	}
+	if err := validateBaseBranchFlag(baseBranch, cmd.Flags().Changed("base-branch"), prNumber, quickChat, repo != "" && prompt != ""); err != nil {
+		return cliutil.EmitJSONFailure(cmd, asJSON, err)
 	}
 
 	// Reject an unknown --tracker-source before any RPC is issued, on BOTH the
@@ -247,6 +251,7 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 	if repo != "" && prompt != "" {
 		return g.runNewDetach(cmd, newSessionOpts{
 			RepoID:         repo,
+			BaseBranch:     baseBranch,
 			Prompt:         prompt,
 			Title:          title,
 			AgentName:      agentName,
@@ -289,7 +294,8 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 // invisible at the call site and silently sends the URL as the id.
 func newDetachRequest(opts newSessionOpts) *pb.CreateSessionRequest {
 	req := &pb.CreateSessionRequest{
-		RepoId: opts.RepoID,
+		RepoId:     opts.RepoID,
+		BaseBranch: opts.BaseBranch,
 		// Verbatim. The daemon only auto-submits an unattended prompt when it is
 		// one trimmed line starting with `/` or `$`, so the CLI must not wrap,
 		// prefix, trim or reflow it on the way in.
@@ -349,12 +355,13 @@ func newDetachRequest(opts newSessionOpts) *pb.CreateSessionRequest {
 // CreateSessionRequest builder. Named fields, not positional arguments — see
 // newDetachRequest.
 type newSessionOpts struct {
-	RepoID    string
-	Prompt    string
-	Title     string
-	AgentName string
-	Model     string
-	Effort    string
+	RepoID     string
+	BaseBranch string
+	Prompt     string
+	Title      string
+	AgentName  string
+	Model      string
+	Effort     string
 	// Account carries flag PRESENCE: nil = absent, non-nil (even "") = explicit.
 	Account *string
 	// TmuxUnattended requests a durable tmux-hosted pane that survives a daemon

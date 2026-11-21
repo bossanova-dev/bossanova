@@ -1388,3 +1388,18 @@ test('dry run: launch -> wake -> one merge -> dependent launch -> terminal, RUNN
   assert.equal(reloaded.status, EPIC_RUN_STATUSES.DONE)
   assert.deepEqual(epicTerminalBlockers(reloaded), [])
 })
+
+test('base branch survives normalization and persistence, while legacy states have no base', () => {
+  const fs = makeFs()
+  const state = baseState({ baseBranch: 'integration' })
+  assert.equal(state.baseBranch, 'integration')
+  assert.deepEqual(normalizeEpicState(state), state)
+  saveEpicState(state, { dir: '/store', fs })
+  assert.equal(
+    loadEpicState({ epicId: EPIC, runId: 'run-1', dir: '/store', fs }).baseBranch,
+    'integration',
+  )
+  for (const value of [undefined, null, 123]) {
+    assert.equal(normalizeEpicState({ ...state, baseBranch: value }).baseBranch, '')
+  }
+})

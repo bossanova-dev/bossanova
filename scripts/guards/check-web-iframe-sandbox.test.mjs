@@ -139,6 +139,42 @@ test('accepts allow={""}', (t) => {
   assert.equal(run(t, frame('sandbox="allow-scripts"', 'allow={""}')).status, 0)
 })
 
+for (const allow of ['allow="fullscreen"', 'allow={"fullscreen"}']) {
+  test(`accepts ${allow}`, (t) => {
+    assert.equal(run(t, frame(`sandbox="${granted}"`, allow)).status, 0)
+  })
+}
+
+for (const value of [
+  'camera',
+  'microphone',
+  'geolocation',
+  'autoplay',
+  'picture-in-picture',
+  'display-capture',
+  'payment',
+  'fullscreen; camera',
+  'camera; fullscreen',
+  'fullscreen *',
+  "fullscreen 'src'",
+  'Fullscreen',
+  ' fullscreen',
+]) {
+  test(`rejects allow="${value}"`, (t) => {
+    const result = run(t, frame(`sandbox="${granted}"`, `allow="${value}"`))
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Seed\.tsx:2: <iframe> must set allow=/)
+  })
+}
+
+for (const legacy of ['allowFullScreen', 'allowfullscreen', 'webkitallowfullscreen']) {
+  test(`rejects ${legacy} beside allow=""`, (t) => {
+    const result = run(t, frame(`sandbox="${granted}" ${legacy}`))
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, new RegExp(`Seed\\.tsx:2: <iframe> sets ${legacy}; delegate`))
+  })
+}
+
 test('rejects an <object> created outside JSX', (t) => {
   assert.equal(run(t, "document.createElement('OBJECT')\n", 'services/web/src/seed.ts').status, 1)
 })

@@ -641,6 +641,7 @@ func TestDirForAgent(t *testing.T) {
 	}{
 		{name: "claude", agent: AgentClaude, want: filepath.Join(home, ".claude", "skills")},
 		{name: "codex", agent: AgentCodex, want: filepath.Join(home, ".codex", "skills")},
+		{name: "antigravity", agent: AgentAntigravity, want: filepath.Join(home, ".gemini", "config", "skills")},
 		{name: "hermes default", agent: AgentHermes, want: filepath.Join(home, ".hermes", "skills")},
 		{name: "hermes absolute HERMES_HOME", agent: AgentHermes, hermesHome: hermesHome, want: filepath.Join(hermesHome, "skills")},
 		{name: "hermes relative HERMES_HOME ignored", agent: AgentHermes, hermesHome: "relative/hermes", want: filepath.Join(home, ".hermes", "skills")},

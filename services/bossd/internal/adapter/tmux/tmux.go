@@ -100,6 +100,7 @@ const (
 	sendPlanDefaultPollInterval = 100 * time.Millisecond
 	sendPlanReadyMarker         = "❯"
 	codexReadyMarker            = "›"
+	antigravityReadyMarker      = ">"
 
 	// sendPlanDefaultReadyAttempts is the floor a delivery falls back to when
 	// its options name no attempt count — one attempt, i.e. exactly today's
@@ -280,27 +281,6 @@ func NewClient(opts ...Option) *Client {
 func (c *Client) Available(ctx context.Context) bool {
 	cmd := c.cmdFunc(ctx, "tmux", "-V")
 	return cmd.Run() == nil
-}
-
-// NewSessionOpts configures a new tmux session.
-type NewSessionOpts struct {
-	Name    string   // Session name (required)
-	WorkDir string   // Working directory (required)
-	Command []string // Command to run in session (required)
-	Width   int      // Initial width (defaults to 200)
-	Height  int      // Initial height (defaults to 50)
-	// Env sets session-environment variables (tmux `new-session -e KEY=VALUE`)
-	// so the launched command — and any later window opened in the session —
-	// inherits them. Used to mark cron-spawned sessions with BOSS_CRON=true.
-	// The values reach tmux on stdin, never on the process argv, because they
-	// include credentials and argv is world-readable through ps (BOS-1511).
-	Env map[string]string
-	// RemainOnExit arms `remain-on-exit on` on the session after creation so a
-	// pane whose process exits stays present (marked pane_dead) with its final
-	// screen intact rather than collapsing the session. bossd uses this for chat
-	// panes so a fast-exiting agent's output can be captured at death before the
-	// pane is reaped (BOS-477).
-	RemainOnExit bool
 }
 
 // ErrCommandTooLong reports a new-session command too large for tmux to
@@ -537,6 +517,12 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 		return fmt.Errorf("failed to create tmux session %q: %w", opts.Name, err)
 	}
 
+	if opts.ExitOnCompletion {
+		if err := c.requireExitOnCompletion(ctx, opts.Name); err != nil {
+			return err
+		}
+	}
+
 	// Bind Ctrl+X and Ctrl+] as additional detach keys scoped to this session.
 	c.bindDetachKeys(ctx, opts.Name)
 
@@ -544,7 +530,7 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 	// with its final screen intact, letting bossd capture a fast-exiting agent's
 	// output at death before reaping it (BOS-477). Best-effort like the other
 	// session options in bindDetachKeys — losing it must not abort a chat launch.
-	if opts.RemainOnExit {
+	if opts.RemainOnExit && !opts.ExitOnCompletion {
 		cmd := c.cmdFunc(ctx, "tmux", "set-option", "-t", opts.Name, "remain-on-exit", "on")
 		_ = cmd.Run()
 	}
@@ -1150,11 +1136,12 @@ func (c *Client) captureVisibleStyled(ctx context.Context, sessionName string) (
 // aggressive timeouts so neither production budget gates them, and an injected
 // positive deadline always wins over the client's configured one.
 type sendPlanOpts struct {
-	deadline         time.Duration
-	pollInterval     time.Duration
-	readyMarker      string
-	submitVerifyWait time.Duration
-	submitVerifyTick time.Duration
+	freshPaneDeadline time.Time
+	deadline          time.Duration
+	pollInterval      time.Duration
+	readyMarker       string
+	submitVerifyWait  time.Duration
+	submitVerifyTick  time.Duration
 
 	// readyAttempts is how many times the READINESS WAIT — and nothing else —
 	// may run before the delivery fails. It bounds only waitForReadyMarker,
@@ -1617,11 +1604,7 @@ type SendHooks = domain.SendHooks
 // SendMessageWithHooks is SendMessageWithModal with the caller's SendHooks
 // bound to this one delivery.
 func (c *Client) SendMessageWithHooks(ctx context.Context, sessionName, text string, submit bool, readyMarker string, detector ModalDetector, hooks SendHooks) error {
-	opts := c.sendDeliveryOpts(readyMarker, WillSubmit(submit, text), detector)
-	opts.beforeSubmit = hooks.BeforeSubmit
-	opts.submitted = hooks.Submitted
-	opts.receiptRequired = hooks.ReceiptRequired && hooks.Submitted != nil
-	return c.sendPlan(ctx, sessionName, text, opts)
+	return c.sendMessageWithDeliveryHooks(ctx, sessionName, text, submit, readyMarker, detector, hooks)
 }
 
 // sendPlan is the test-injectable variant of SendPlan that accepts custom
@@ -1643,7 +1626,7 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	// retry in waitForReadyMarkerWithAttempts covers; every line below it has
 	// already touched the pane.
 	if err := c.waitForReadyMarkerWithAttempts(ctx, sessionName, opts); err != nil {
-		return err
+		return opts.classifyReadyFailure(err)
 	}
 
 	// Step 2: deliver the payload into the composer WITHOUT submitting. A
@@ -1763,7 +1746,7 @@ func (c *Client) withdrawUnsubmitted(ctx context.Context, sessionName string, dr
 	if OutcomeOf(sendErr) != OutcomeNotSubmitted {
 		return sendErr
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), withdrawBudget)
+	ctx, cancel := deliveryCleanupContext(ctx, withdrawBudget)
 	defer cancel()
 	result := func(end error) error {
 		return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; %w", sendErr, end))
@@ -1949,6 +1932,7 @@ func (c *Client) typeLineAwaitDrawn(ctx context.Context, sessionName, line strin
 	}
 	needsTyping, partialSeen, prefixLen := true, false, 0
 	for attempt, wait := range opts.typedDrawWaits {
+		wait = opts.freshDrawWait(wait)
 		if needsTyping {
 			if err := c.typeLiteralLineNoEnter(ctx, sessionName, line); err != nil {
 				return err
@@ -1963,14 +1947,14 @@ func (c *Client) typeLineAwaitDrawn(ctx context.Context, sessionName, line strin
 		switch {
 		case err != nil:
 			verdict = fmt.Errorf("read composer after typing into tmux session %q, so no Enter was sent: %w", sessionName, err)
-		case attempt == len(opts.typedDrawWaits)-1:
+		case attempt == len(opts.typedDrawWaits)-1 || opts.freshDrawExpired():
 			verdict = fmt.Errorf("command was not submitted to tmux session %q: the composer did not draw the typed line within %s over %d attempts, so no Enter was sent; partial draw seen: %t; it last showed %s", sessionName, typedDrawBudget(opts), len(opts.typedDrawWaits), partialSeen, composerRowsForError(draw.rows))
 		}
 		if verdict == nil && draw.growing && draw.prefixLen > 0 {
 			needsTyping, prefixLen = false, draw.prefixLen
 			continue
 		}
-		clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), typedLineClearTimeout)
+		clearCtx, cancel := deliveryCleanupContext(ctx, typedLineClearTimeout)
 		clearErr := c.clearTypedLine(clearCtx, sessionName, line)
 		cancel()
 		if verdict != nil || clearErr != nil {

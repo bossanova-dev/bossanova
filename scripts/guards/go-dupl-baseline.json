@@ -9,6 +9,7 @@
       "kit/bossmcp/tools_mutating.go|kit/bossmcp/tools_mutating.go": 1,
       "kit/projectconfig/cloud_apply.go|kit/projectconfig/local_apply.go": 1
     },
+    "plugins/bossd-plugin-antigravity": {},
     "plugins/bossd-plugin-claude": {},
     "plugins/bossd-plugin-codex": {},
     "plugins/bossd-plugin-dependabot": {},

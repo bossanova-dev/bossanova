@@ -190,7 +190,6 @@
   "services/bossd/internal/session/display_poller_test.go": 3,
   "services/bossd/internal/session/failover_cooldown_test.go": 2,
   "services/bossd/internal/session/hookless_completion_parked_test.go": 1,
-  "services/bossd/internal/session/lifecycle_test.go": 1,
   "services/bossd/internal/session/orphan_resume_test.go": 1,
   "services/bossd/internal/session/poller_test.go": 3,
   "services/bossd/internal/session/reconcile_test.go": 5,

@@ -86,6 +86,8 @@ const (
 	// commit. It travels as FailedPrecondition, like a gate refusal, so the
 	// token is the only discriminator.
 	CodeHeadMismatch = "HEAD_MISMATCH"
+	// CodeDeliveryNotSubmitted means no payload was submitted and retry is safe.
+	CodeDeliveryNotSubmitted = "DELIVERY_NOT_SUBMITTED"
 )
 
 // The stable `--json` SUCCESS-outcome vocabulary for `boss daemon restart`.
@@ -129,6 +131,7 @@ const (
 var daemonErrorTokens = []string{
 	CodeMergeStrategyIncompatible,
 	CodeHeadMismatch,
+	CodeDeliveryNotSubmitted,
 }
 
 // cliError tags an error with a stable envelope code while leaving its message

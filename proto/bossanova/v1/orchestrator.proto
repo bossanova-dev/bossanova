@@ -733,6 +733,51 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "none";
   }
+  // StartProofUpload reserves one hosted proof page for a pull request head.
+  // Only a daemon may call it. bosso resolves the organization from the repo,
+  // requires its own cloud access and hosted-proof opt-in (FailedPrecondition),
+  // and validates the manifest (InvalidArgument). Limits are ResourceExhausted
+  // with a ProofUploadLimitExceeded detail. Returns page identity, never a URL.
+  // This additive RPC needs no dated API bump; see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  rpc StartProofUpload(StartProofUploadRequest) returns (StartProofUploadResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
+    option (bossanova.v1.permission) = "none";
+  }
+  // PutProofObject writes one file of a hosted proof page started with
+  // StartProofUpload. It authenticates the daemon session; a user token is
+  // Unauthenticated. bosso re-resolves the organization from repo_origin_url
+  // and the daemon owner's membership, and the upload must belong to that
+  // organization and repository (NotFound otherwise), so a daemon of another
+  // organization cannot write under this organization's label. name and the
+  // exact content size must match the upload's manifest (InvalidArgument).
+  // The upload completes when every manifest entry is written; clients send
+  // index.html last. Rewriting an entry of a completed upload is refused,
+  // except that resending an already written name of a completed upload
+  // answers success without writing, so a retried final call is idempotent.
+  // This additive RPC needs no dated API bump; see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  rpc PutProofObject(PutProofObjectRequest) returns (PutProofObjectResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // MintProofViewLink returns a short-lived signed link to the newest
+  // completed hosted proof page of one pull request, for a signed-in user who
+  // is a member of the organization that uploaded it. Only a user scope gets a
+  // link; a daemon is PermissionDenied. A malformed repository, PR number or
+  // head is InvalidArgument. Every miss (another organization's page, no
+  // upload, an incomplete or deleted upload) is the same NotFound. With no
+  // view key or host configured, the call is Unavailable. The link carries a
+  // view signature, never the caller's token.
+  // This additive RPC needs no dated API bump; see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  rpc MintProofViewLink(MintProofViewLinkRequest) returns (MintProofViewLinkResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "sessions:read";
+  }
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -871,6 +916,22 @@ service OrchestratorService {
   rpc RenameOrganization(RenameOrganizationRequest) returns (RenameOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "organization:admin";
+  }
+  // GetOrganizationProofHosting reports whether the organization has opted in to
+  // hosted proof pages, who turned it on and when, and whether the organization's
+  // own cloud access currently allows turning it on.
+  rpc GetOrganizationProofHosting(GetOrganizationProofHostingRequest) returns (GetOrganizationProofHostingResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "organization:read";
+  }
+  // SetOrganizationProofHosting turns hosted proof pages on or off for the
+  // caller's active organization. Owner only. Turning on requires the
+  // organization's own cloud access to be active; turning off never does.
+  rpc SetOrganizationProofHosting(SetOrganizationProofHostingRequest) returns (SetOrganizationProofHostingResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
     option (bossanova.v1.permission) = "organization:admin";
   }
   rpc ListOrganizationMembers(ListOrganizationMembersRequest) returns (ListOrganizationMembersResponse) {
@@ -2466,6 +2527,87 @@ message UpsertProofCheckRunResponse {
   bool is_created = 3;
 }
 
+// ProofManifestEntry declares one file before any proof bytes are uploaded.
+message ProofManifestEntry {
+  string name = 1;
+  int64 size_bytes = 2;
+}
+
+message StartProofUploadRequest {
+  string repo_origin_url = 1;
+  int32 pr_number = 2;
+  string head_sha = 3;
+  repeated ProofManifestEntry manifest = 4;
+}
+
+// ProofUploadLimits describes page shape; quota windows are reported on refusal.
+message ProofUploadLimits {
+  repeated string allowed_extensions = 1;
+  int32 max_file_count = 2;
+  int64 max_file_bytes = 3;
+  int64 max_page_bytes = 4;
+  int32 max_path_depth = 5;
+  int32 max_path_length = 6;
+}
+
+message StartProofUploadResponse {
+  string upload_id = 1;
+  string org_label = 2;
+  string page_token = 3;
+  ProofUploadLimits limits = 4;
+}
+
+// PutProofObjectRequest carries one file of a started proof upload.
+message PutProofObjectRequest {
+  string repo_origin_url = 1;
+  string upload_id = 2;
+  // The manifest name; content must be exactly its declared size.
+  string name = 3;
+  bytes content = 4;
+}
+
+message PutProofObjectResponse {
+  int32 written_file_count = 1;
+  int32 file_count = 2;
+  // True once every manifest entry has been written.
+  bool is_completed = 3;
+}
+
+// MintProofViewLinkRequest names one pull request's hosted proof page.
+message MintProofViewLinkRequest {
+  // The repository's origin URL, canonicalized as StartProofUpload does.
+  string repo_origin_url = 1;
+  int32 pr_number = 2;
+  // The head the page was made for; empty means the newest completed upload
+  // for the pull request.
+  string head_sha = 3;
+}
+
+message MintProofViewLinkResponse {
+  // https://<org label>.<uploads domain>/v1.<exp>.<sig>/<token>/
+  string view_url = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+enum ProofUploadLimit {
+  PROOF_UPLOAD_LIMIT_UNSPECIFIED = 0;
+  PROOF_UPLOAD_LIMIT_FILE_COUNT = 1;
+  PROOF_UPLOAD_LIMIT_FILE_BYTES = 2;
+  PROOF_UPLOAD_LIMIT_PAGE_BYTES = 3;
+  PROOF_UPLOAD_LIMIT_ORG_PAGES_PER_HOUR = 4;
+  PROOF_UPLOAD_LIMIT_ORG_PAGES_PER_DAY = 5;
+  PROOF_UPLOAD_LIMIT_ORG_BYTES_PER_DAY = 6;
+  PROOF_UPLOAD_LIMIT_GLOBAL_BYTES_PER_DAY = 7;
+}
+
+// ProofUploadLimitExceeded accompanies ResourceExhausted. The global breaker
+// carries zero values so aggregate traffic across organizations is not exposed.
+message ProofUploadLimitExceeded {
+  ProofUploadLimit limit = 1;
+  int64 max_value = 2;
+  int64 actual_value = 3;
+}
+
 message SyncDaemonNotesResponse {
   // Exactly one result per request item, in request order.
   repeated NoteSyncResult results = 1;
@@ -2901,6 +3043,37 @@ message RenameOrganizationRequest {
 
 message RenameOrganizationResponse {
   Organization organization = 1;
+}
+
+// OrganizationProofHosting is an organization's hosted proof pages opt-in.
+message OrganizationProofHosting {
+  bool is_enabled = 1;
+  // Unset while off.
+  google.protobuf.Timestamp enabled_at = 2;
+  // bosso-local users.id of the owner who turned it on; empty while off or
+  // when that user has been deleted.
+  string enabled_by_user_id = 3;
+  // Whether the organization's own cloud access is active, so an owner could
+  // turn it on now. Judged on this organization alone, never folded over the
+  // caller's other organizations.
+  bool is_available = 4;
+}
+
+message GetOrganizationProofHostingRequest {
+  string organization_id = 1;
+}
+
+message GetOrganizationProofHostingResponse {
+  OrganizationProofHosting proof_hosting = 1;
+}
+
+message SetOrganizationProofHostingRequest {
+  string organization_id = 1;
+  bool is_enabled = 2;
+}
+
+message SetOrganizationProofHostingResponse {
+  OrganizationProofHosting proof_hosting = 1;
 }
 
 message ListOrganizationMembersRequest {

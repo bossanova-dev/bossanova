@@ -42,7 +42,7 @@ func (m Model) footer() string {
 		if webURL(queue.Park(r.GetSession()).GetProofUrl()) {
 			hints = append(hints, "[p]roof")
 		}
-		if _, ok := ui.AttentionBinding(r.GetSession(), "m", false); ok && !r.GetIsAuditSample() && !m.action.MergeUnresolved() {
+		if _, ok := ui.AttentionBinding(r.GetSession(), "m", false); ok && !m.action.MergeUnresolved() {
 			hints = append(hints, "[m]erge")
 		}
 		if r.GetConfidenceLevel() == pb.ConfidenceLevel_CONFIDENCE_LEVEL_BLOCKED {
@@ -92,13 +92,8 @@ func (m *Model) buildTable() {
 		s := r.GetSession()
 		park := queue.Park(s)
 		level := ui.ConfidenceCell(r.GetConfidenceLevel(), park.GetAsks(), park.GetLoweredBy())
-		since := park.GetSince()
-		if r.GetIsAuditSample() {
-			level += " sample"
-			since = s.GetStateEnteredAt()
-		}
 		wait := "—"
-		if since != nil {
+		if since := park.GetSince(); since != nil {
 			wait = ui.RelTimeAgo(since.AsTime())
 		}
 		size := "—"

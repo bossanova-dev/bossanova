@@ -51,6 +51,7 @@ go_test(
         "phase_test.go",
         "recomputing_stores_test.go",
         "repair_lease_test.go",
+        "serve_reaper_test.go",
         "service_links_computer_test.go",
         "service_links_test.go",
         "tmux_idle_reap_test.go",

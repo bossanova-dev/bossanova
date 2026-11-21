@@ -102,7 +102,7 @@ func newRegistry() map[string]Prose {
 				"daemon provides one, streams setup progress to stderr until setup " +
 				"settles, then exits. Combine with " +
 				"--detach (implicit when both flags are set) for scripting. Use " +
-				"--agent to override the default agent plugin.\n\n" +
+				"--agent to override the default agent plugin.\n\n" + newSessionBaseBranchLong +
 				"Launching a session to run work unattended: supplying a prompt " +
 				"launches the agent headlessly so the work actually runs — that is " +
 				"the path's own behaviour, not something --detach causes. " +

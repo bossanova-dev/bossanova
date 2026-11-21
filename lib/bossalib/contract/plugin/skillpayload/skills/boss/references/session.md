@@ -93,6 +93,8 @@ Create a new coding session
 
 Launches the interactive session creation flow. When both --repo and --prompt are provided the command runs non-interactively: it creates the session, prints the session-id to stdout as soon as the session exists, prints chat-id later if the daemon provides one, streams setup progress to stderr until setup settles, then exits. Combine with --detach (implicit when both flags are set) for scripting. Use --agent to override the default agent plugin.
 
+Base branch: --base-branch names the origin branch to cut the worktree from and target with its draft PR. Omit it to use the repo's default base. It requires --repo and --prompt and cannot be combined with --pr or --quick-chat. The daemon refuses a base missing from origin before creating a session or worktree.
+
 Launching a session to run work unattended: supplying a prompt launches the agent headlessly so the work actually runs — that is the path's own behaviour, not something --detach causes. The CLI and the MCP `create_session` tool now share this default. `create_session` applies the same rule: a prompt-carrying call defaults to headless and reports agent_launched=true, while attended:true creates the session idle awaiting a human `boss attach` (agent_launched=false). Prefer the default for programmatic/unattended launches. Such a run is unattended: bossd sets BOSS_UNATTENDED=true (and its legacy spelling BOSS_CRON=true) in the agent's environment, so skills that branch on it (boss-plan, boss-epic) take their headless branch and never wait on a human. No flag or env override is needed, and writing "headless" into the prompt changes nothing.
 
 --detach vs --tmux-unattended: they are NOT alternatives. The non-interactive --repo + --prompt path always detaches, so --detach is a no-op there and only affects flag parsing; it governs whether this command attaches a chat pane before it exits, never how or where the session is hosted. --tmux-unattended is the distinct durable-pane option: it hosts the session in a tmux pane that survives a daemon restart and is attach-safe, which is what a child session that must outlive the daemon needs. Both can be set at once, and the daemon carries them as independent fields.
@@ -104,7 +106,8 @@ Use --json on the non-interactive path for a machine-readable envelope instead o
 **Flags:**
 
 - `--account` — Account id or label to run this session under (empty = system default)
-- `--agent` — Override default agent plugin for this session (e.g. claude, opencode)
+- `--agent` — Override default agent plugin for this session (e.g. claude, codex, antigravity)
+- `--base-branch` — Branch to cut the session's worktree from and open its draft PR against (empty = the repo's default base branch). Must exist on origin. Mutually exclusive with --pr and --quick-chat. Non-interactive --repo + --prompt path only
 - `--defer-pr` — Open no draft PR up front; a PR is opened at finalize only if the run produced commits. For runs not expected to change the repository. Pair with --tmux-unattended so a restart cannot strand commits before finalize. Non-interactive --repo + --prompt path only
 - `--detach` — A no-op on the non-interactive --repo + --prompt path, which always runs unattended (BOSS_UNATTENDED=true; skills take their headless branch), prints session-id as soon as the session exists, prints chat-id later if the daemon provides one, and streams setup progress on stderr; --tmux-unattended is the distinct durable-pane option
 - `--effort` — Agent reasoning effort to run this session under; empty = agent default

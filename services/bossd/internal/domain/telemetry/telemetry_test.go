@@ -7,6 +7,14 @@ import (
 	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 )
 
+func TestAgentNameIsBounded(t *testing.T) {
+	for input, want := range map[string]string{"claude": "claude", "codex": "codex", "opencode": "opencode", "antigravity": "antigravity", "agy": "other", "customer-plugin-name": "other", "": "other"} {
+		if got := AgentName(input); got != want {
+			t.Errorf("AgentName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestConfigFromSettingsDisabledByDefault(t *testing.T) {
 	cfg := ConfigFromSettings(config.DefaultSettings())
 	if cfg.Enabled {

@@ -102,6 +102,7 @@ test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does 
     'readIssueSnapshot',
     'readClaimComments',
     'readIssueState',
+    'readBlockerGraph',
     'selectMarked',
     'selectCandidates',
     'applyIssueWrites',
@@ -793,7 +794,7 @@ test('applyIssueCreate is optional but must be callable when present', () => {
 })
 
 test('settling reads are optional and callable when declared', () => {
-  for (const name of ['readClaimComments', 'readIssueState']) {
+  for (const name of ['readClaimComments', 'readIssueState', 'readBlockerGraph']) {
     assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(validOperationMap())))
     assert.doesNotThrow(() =>
       assertConforms({

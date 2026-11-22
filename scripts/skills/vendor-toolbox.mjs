@@ -155,6 +155,7 @@ export const VENDOR_MAP = {
   'boss-plan': [
     'skill-pin.mjs',
     'plan/plan-checkout-freshness.mjs',
+    'plan/plan-draft-tier.mjs',
     'session/claim-owner-status.mjs',
     'plan/plan-open-prs.mjs',
     'issue-lease.mjs',

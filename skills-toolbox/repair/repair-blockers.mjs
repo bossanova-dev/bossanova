@@ -11,7 +11,7 @@ import {
   validateOutcomeFile,
   encodeOutcomesTrailer,
 } from '../verify/verify-blockers.mjs'
-import { commandReader, readOperatorMarkers } from '../verify/verify-gate.mjs'
+import { commandReader, readOperatorMarkers, repoFor } from '../verify/verify-gate.mjs'
 import { resolutionMarkersAfter } from '../verify/verify-resolution.mjs'
 
 const line = (value) => typeof value === 'string' && value.trim() !== '' && !/[\r\n]/.test(value)
@@ -272,13 +272,12 @@ export async function main(argv, { read = commandReader(), git = runGit } = {}) 
   if (command === 'carry') {
     const pr = Number(values.pr)
     if (!Number.isSafeInteger(pr) || pr < 1) throw new TypeError('invalid --pr')
-    const repoRead = values.repo
-      ? null
-      : read('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'])
-    const repo = values.repo ?? (repoRead?.ok ? repoRead.output : null)
+    const degraded = []
+    const repo = repoFor(read, values.repo, degraded)
     if (!repo) throw new Error('cannot read repository')
-    const result = readOperatorMarkers(read, repo, pr)
-    if (!result.readable) throw new Error('cannot read standing review report')
+    const result = readOperatorMarkers(read, repo, pr, degraded)
+    if (!result.readable || !('markers' in result))
+      throw new Error('cannot read standing review report')
     const standing = (result.markers ?? [])
       .filter((m) => m.kind === 'review-findings')
       .sort((a, b) => b.at - a.at || b.id - a.id)[0]
@@ -321,7 +320,7 @@ export async function main(argv, { read = commandReader(), git = runGit } = {}) 
         ),
       ) + '\n',
     )
-    return JSON.stringify({ out: values.out }) + '\n'
+    return JSON.stringify({ out: values.out, ...(degraded.length ? { degraded } : {}) }) + '\n'
   }
   const blockers = checkedBlockers(jsonFile(values.blockers))
   if (command === 'brief') return blockerBrief(blockers)

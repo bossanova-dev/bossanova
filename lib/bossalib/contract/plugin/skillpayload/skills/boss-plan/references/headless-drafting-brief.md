@@ -75,14 +75,13 @@ Triage precedes code recon: use only the ticket, its evidence attachments and ci
   `- Oversized-child: <why not atomic; suggested sibling split>` bullet in the description's
   `## Planning` (the plan may repeat it) and `agentBuild: false`.
 
-The triage estimate selects exactly one depth tier; Step 2 stays within it. Keep a reporter-set
-priority, otherwise rank against the planned backlog.
+After triage, select and record the drafting tier; keep recon, tests and the plan within the
+limits it prints. Re-triage runs `select` again. Keep a reporter-set priority, otherwise rank
+against the planned backlog.
 
-| Estimate       | Recon                                                                       | Test execution                                  | Plan                                                             |
-| -------------- | --------------------------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------- |
-| 0–1 (light)    | Named files and their direct tests                                          | None                                            | Short: problem, change, acceptance criteria, `## Original notes` |
-| 2–3 (standard) | Adds the touched module's conventions and one consumer per changed contract | At most one targeted run, wrapped in `beat`     | Current shape                                                    |
-| ≥ 5 / epic     | Full recon; epic per `epic.md`                                              | Targeted runs as needed, each wrapped in `beat` | Full, or epic                                                    |
+```bash
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-draft-tier.mjs select --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --estimate <n>
+```
 
 ## Step 2 — Recon
 
@@ -97,9 +96,8 @@ priority, otherwise rank against the planned backlog.
   union, let the attachment win where it lists more, and say in the plan how many items you scoped.
 - **View screenshots** with the tracker adapter's image-extract capability; markdown image text shows
   no pixels.
-- **Read within the selected tier.** Light reads named files and direct tests; standard adds module
-  conventions and one consumer per changed contract; full adds documented solutions, the project
-  glossary and remaining relevant code. Ground claims in real symbols (`path:line`); invent nothing.
+- **Read within the selected tier.** Follow `select`'s recon scope. Ground claims in real symbols
+  (`path:line`); invent nothing.
 - **Recon reads code, never executes test suites.** Test selection is settled by reading. Only a
   scope question reading cannot settle may use the tier's targeted-run allowance, wrapped in `beat`.
   Batch independent reads into one Bash call with its leading heartbeat.
@@ -131,8 +129,8 @@ priority, otherwise rank against the planned backlog.
 - **Only cited numbers and coordinates are re-measured.** A supplied count, size or `path:line`
   needs one enumerating command when the plan cites it in a premise, criterion or reference. Drop
   uncited numbers instead of re-deriving them; drop or re-cite coordinates that no longer resolve.
-- **Escalation is explicit.** A recon fact that raises the estimate triggers re-triage to the next
-  tier before deeper recon; never silently deepen.
+- **Escalation is explicit.** A recon fact that raises the estimate triggers re-triage and `select`
+  before deeper recon.
 
 ## Step 3 — Decide what a reviewer would ask
 
@@ -283,8 +281,11 @@ builds the sentinel payload; any failure prevents an `ok` write. Add `--allow-em
 when the handed-in description was genuinely empty:
 
 ```bash
-bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh draft-verify --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --plan <PLAN_PATH> --run-dir <RUN_DIR> --run-id <RUN_ID>
+bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh draft-verify --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --plan <PLAN_PATH> --estimate <final-estimate> --run-dir <RUN_DIR> --run-id <RUN_ID>
 ```
+
+`draft-tier-missing`, `draft-tier-stale` and `plan-over-tier-budget` refuse publication; re-select
+or trim before retrying.
 
 Epic — no plan file; the payload carries the epic's ids and artifact paths ([`epic.md`](epic.md)
 lists what each must hold). Use this epic-specific step instead, repeating `--child <CHILD-ID>=<key>` in topological order.
@@ -316,7 +317,7 @@ Strict JSON, repo-relative paths, never plan text:
 ```
 
 `labels` are content labels (`bug`, `feature`, `improvement`, `docs` — any spelling; the guard maps
-them). `estimate` is 0/1/2/3/5. `priority` is 1–4. `descriptionSummary` is the Step 7 artifact by
+them). `estimate` is 0/1/2/3/5, matching the final estimate passed to `draft-verify`. `priority` is 1–4. `descriptionSummary` is the Step 7 artifact by
 reference (an inline string is still accepted for older extensions). The orchestrator derives
 `agent-build` / `needs-human` and `agent-question` itself.
 

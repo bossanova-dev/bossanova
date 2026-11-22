@@ -8,7 +8,7 @@ Write a detected .boss-skills.json for this repository
 
 **Flags:**
 
-- `--agent` — Agent for the pipeline cron jobs: claude or codex (default: claude when both qualify)
+- `--agent` — Agent for the pipeline cron jobs: claude, codex or antigravity (default: the first that qualifies, in that order)
 - `--allow-branch` — Apply .boss-project.json from a checkout that is not on the repo's default branch
 - `--assignee-me` — Include only my tickets when no shared assignee filter exists
 - `--create-labels` — Create missing required tracker labels

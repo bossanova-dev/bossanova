@@ -105,6 +105,9 @@ func TestFactoryStageTable(t *testing.T) {
 		if fc, err := r.Resolve("build", " Codex "); err != nil || fc.Agent != "codex" || fc.Prompt != "$boss-build" {
 			t.Fatalf("codex: %+v %v", fc, err)
 		}
+		if fc, err := r.Resolve("build", "antigravity"); err != nil || fc.Agent != "antigravity" || fc.Prompt != "/boss-build" || fc.GateCommand != "" {
+			t.Fatalf("antigravity: %+v %v", fc, err)
+		}
 		if _, err := r.Resolve("build", "gemini"); err == nil {
 			t.Fatal("an agent with no skill spelling must not resolve")
 		}

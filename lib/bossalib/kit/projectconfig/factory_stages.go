@@ -40,11 +40,16 @@ var factoryStageTable = FactoryStageTable{
 // order.
 func DefaultFactoryStages() FactoryStageTable { return slices.Clone(factoryStageTable) }
 
-// Agents a factory stage knows the skill spelling of.
+// Agents a factory stage knows the skill spelling of. The CLI's cron agent
+// table (services/boss/api/cli/skills/cron_agents.go) lists the same agents with
+// their host facts; this module cannot import it.
 const (
-	agentClaude = "claude"
-	agentCodex  = "codex"
+	agentClaude      = "claude"
+	agentCodex       = "codex"
+	agentAntigravity = "antigravity"
 )
+
+var factoryAgents = []string{agentClaude, agentCodex, agentAntigravity}
 
 // Prompt is the stage's job prompt for agent: Codex invokes a skill as
 // `$skill`, every other agent (Claude included) as `/skill`.
@@ -106,8 +111,8 @@ func (t FactoryStageTable) DefaultSchedule(stage string) (string, bool) {
 }
 
 // HostFreeFactory resolves factory crons from the stage table alone: the
-// prompt in the agent's skill spelling (`/skill` for Claude, `$skill` for
-// Codex) and the default schedule, with no gate and no preflight, since only
+// prompt in the agent's skill spelling (`$skill` for Codex, `/skill` for the
+// others) and the default schedule, with no gate and no preflight, since only
 // the host that runs the cron can resolve its own paths. An omitted agent is
 // Claude.
 func HostFreeFactory(stages []FactoryStage) FactoryResolver {
@@ -122,11 +127,10 @@ func (h hostFreeFactory) Resolve(stage, agent string) (FactoryCron, error) {
 		return FactoryCron{}, ErrUnknownFactoryStage
 	}
 	agent = strings.ToLower(strings.TrimSpace(agent))
-	switch agent {
-	case "":
+	if agent == "" {
 		agent = agentClaude
-	case agentClaude, agentCodex:
-	default:
+	}
+	if !slices.Contains(factoryAgents, agent) {
 		return FactoryCron{}, fmt.Errorf("agent %q cannot run pipeline cron jobs", agent)
 	}
 	return FactoryCron{Skill: st.Skill, Agent: agent, Prompt: st.Prompt(agent), DefaultSchedule: st.DefaultSchedule}, nil

@@ -25,6 +25,49 @@ import { main as gateMain, readyGateReport } from './build/ready-gate.mjs'
 const SCRIPT_PATH = fileURLToPath(new URL('./commit-status.mjs', import.meta.url))
 const SHA = 'a'.repeat(40)
 
+test('receipt reads fall back after REST refusal and remain unknown when both quotas refuse', () => {
+  for (const state of ['SUCCESS', null, 'refused']) {
+    let calls = 0
+    const spawn = (_command, args) => {
+      calls++
+      if (args[1] !== 'graphql' || state === 'refused')
+        return { status: 1, stderr: 'API rate limit exceeded' }
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          data: {
+            repository: {
+              object: {
+                status:
+                  state === null
+                    ? null
+                    : {
+                        contexts: [
+                          {
+                            context: 'boss/build',
+                            state,
+                            description: 'ok',
+                            createdAt: '2026-01-01T00:00:00Z',
+                          },
+                        ],
+                      },
+              },
+            },
+          },
+        }),
+      }
+    }
+    const { result } = main(['read', '--sha', SHA, '--context', 'boss/build'], { spawn })
+    assert.equal(
+      result.verdict,
+      state === null ? 'absent' : state === 'refused' ? 'unknown' : 'present',
+    )
+    assert.equal(calls, 2)
+    if (state !== 'refused') assert.equal(result.degraded.transport, 'graphql')
+    if (state === 'SUCCESS') assert.equal(result.state, 'success')
+  }
+})
+
 // A fake spawn that records every call and answers with the queued result.
 function fakeSpawn(result = { status: 0, stdout: '{}', stderr: '' }) {
   const calls = []

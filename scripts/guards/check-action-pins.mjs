@@ -48,6 +48,10 @@ export const WRAPPED_ACTIONS = new Map([
   ['bazel-contrib/setup-bazel', '.github/actions/setup-bazel/action.yml'],
   ['pnpm/action-setup', '.github/actions/setup-pnpm/action.yml'],
 ])
+const REPLACED_ACTIONS = new Map([
+  ['vale-cli/vale-action', 'scripts/dev/ensure-vale.sh'],
+  ['lycheeverse/lychee-action', 'scripts/dev/ensure-lychee.sh'],
+])
 
 // Workflows that cannot move their write grant down to a job, one `<workflow path> — <reason>`
 // entry each. The list is read from this repository, never from a `--root` tree under test.
@@ -147,12 +151,21 @@ function usesFindings(file, lines) {
     if (ref === null) continue
     const problem = usesProblem(ref)
     if (problem) findings.push({ file, line: entry.line, message: problem })
-    const wrapper = WRAPPED_ACTIONS.get(ref.split('@')[0])
+    const action = ref.split('@')[0]
+    const installer = REPLACED_ACTIONS.get(action)
+    if (installer) {
+      findings.push({
+        file,
+        line: entry.line,
+        message: `${action} has a release-only download with no fallback; use \`${installer}\``,
+      })
+    }
+    const wrapper = WRAPPED_ACTIONS.get(action)
     if (wrapper && file !== wrapper) {
       findings.push({
         file,
         line: entry.line,
-        message: `direct ${ref.split('@')[0]} bypasses its repository-owned composite; use \`./${path.posix.dirname(wrapper)}\``,
+        message: `direct ${action} bypasses its repository-owned composite; use \`./${path.posix.dirname(wrapper)}\``,
       })
     }
   }

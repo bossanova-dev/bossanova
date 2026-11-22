@@ -11,6 +11,8 @@ unless the PR carries the admission policy’s repair label:
 - **Prompt:** `/boss-verify`.
 - **Gate command** (cwd = the repo root):
 
+<!-- pre-pin: scheduler-time cron gate, before any run exists -->
+
 ```
 BOSS_VERIFY_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-verify/toolbox"
 if [ ! -d "$BOSS_VERIFY_TOOLBOX" ]; then BOSS_VERIFY_TOOLBOX="$HOME/.codex/skills/boss-verify/toolbox"; fi

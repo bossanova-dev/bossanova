@@ -24,6 +24,8 @@ Run this pre-pin block first, once per run:
 Every helper ships in this skill's `toolbox/` (and the review probe in `scripts/`). Shell state does
 not survive between tool calls, so resolve the paths in each block that uses them:
 
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
 ```bash
 BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
 if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
@@ -448,24 +450,15 @@ Before you push, save the current head's check set as the prior:
 (a bare JSON array of names is still accepted): a path-filtered push can shrink the check set, and
 without the previous set the classifier cannot tell "all gates passed" from "fewer gates ran"
 (`provesGreen` stays false). Its conclusions name the `reported-on-prior-head` remedy, and a
-rollup that names each check's workflow (both the daemon's and the gh fallback's do) lets the classifier drop a
+rollup that names each check's workflow (the daemon, GraphQL and REST fallback all do) lets the classifier drop a
 context whose workflow did not run on the new head (`notTriggered`). A head workflow run still
 queued or running holds the verdict at `pending`.
 
-**GraphQL quota.** GitHub's GraphQL quota runs out before REST. When the reader reported
-`source: gh-fallback` and that `gh` read was rate-limited, use REST and say so in the report (start
-the line with `DEGRADED_READ`). A daemon `RESOURCE_EXHAUSTED` is `DEGRADED_READ` too: wait it out,
-never re-read through `gh`:
-
-| Question     | REST                                                                     |
-| ------------ | ------------------------------------------------------------------------ |
-| Head SHA     | `gh api repos/OWNER/REPO/pulls/PR_NUM -q .head.sha`                      |
-| Base ref     | `gh api repos/OWNER/REPO/pulls/PR_NUM -q .base.ref`                      |
-| Mergeability | `gh api repos/OWNER/REPO/pulls/PR_NUM -q '.mergeable, .mergeable_state'` |
-| Check runs   | `gh api repos/OWNER/REPO/commits/HEAD_SHA/check-runs --paginate`         |
-
-REST `mergeable: null` / `mergeable_state: unknown` and a check run with an empty `conclusion` are
-unobserved. A degraded read can make a verdict worse, never better.
+`pr-state.mjs` reads fall back across GitHub's GraphQL and REST quotas themselves; report a
+reading carrying `degraded` on a line starting `DEGRADED_READ`. A daemon
+`RESOURCE_EXHAUSTED` is `DEGRADED_READ` too: wait it out, never re-read through `gh`.
+Unobserved values (`mergeable: UNKNOWN`, `reviewDecision: null`, or a check with no conclusion)
+never count as a pass.
 
 ## Ending a pass
 

@@ -414,8 +414,8 @@ function recordCiWait(dir, headSha, state) {
     lastVerdict: { state, reason: 'ok', atMs: 1, trend: 'converging' },
   })
 }
-function fullGateFixture(t) {
-  const opts = certificationFixture(t, fullGatePlan)
+function fullGateFixture(t, plan = fullGatePlan) {
+  const opts = certificationFixture(t, plan)
   seed(opts.repo, {
     '.boss-skills.json': JSON.stringify({ commands: { lint: 'make lint', test: 'make test' } }),
   })
@@ -482,4 +482,44 @@ test('a reused review block takes recorded green CI for its full-gate timeout', 
     result.criteria.map((c) => c.result),
     ['met', 'unmet'],
   )
+})
+
+const inlineGatePlan = '## Acceptance criteria\n- [ ] `make lint && make test` pass.\n'
+test('certify recognizes an affirmative inline full gate and reuses head-matched CI', async (t) => {
+  const opts = fullGateFixture(t, inlineGatePlan)
+  recordCiWait(opts.ciWaitStateDir, opts.head, 'settled')
+  const result = await certify(opts)
+  assert.equal(result.criteria[0].result, 'met')
+  assert.equal(result.criteria[0].satisfiedBy, 'ci-wait')
+  assert.deepEqual(opts.ran, [])
+})
+
+test('an inline full gate must still run when green CI belongs to another head', async (t) => {
+  const opts = fullGateFixture(t, inlineGatePlan)
+  recordCiWait(opts.ciWaitStateDir, 'f'.repeat(40), 'settled')
+  const result = await certify(opts)
+  assert.deepEqual(opts.ran, ['make lint && make test'])
+  assert.equal(result.criteria[0].result, 'unmet')
+})
+
+test('inline inference never executes unconfigured, incidental or negated commands', async (t) => {
+  const rows = [
+    '`make unknown` passes.',
+    '`make lint; make test` pass.',
+    '`make lint && make test && echo done` pass.',
+    'Do not run `make lint && make test`.',
+    '`make lint && make test` need not pass.',
+    'The text mentions `make lint && make test` pass.',
+  ]
+  const opts = fullGateFixture(
+    t,
+    `## Acceptance criteria\n${rows.map((row) => `- [ ] ${row}`).join('\n')}\n`,
+  )
+  recordCiWait(opts.ciWaitStateDir, opts.head, 'settled')
+  const result = await certify(opts)
+  assert.deepEqual(
+    result.criteria.map((c) => [c.result, c.reason]),
+    rows.map(() => ['unchecked', 'no-check']),
+  )
+  assert.deepEqual(opts.ran, [])
 })

@@ -4,6 +4,7 @@ go_library(
     name = "skills",
     srcs = [
         "contracts.go",
+        "cron_agents.go",
         "group.go",
         "init.go",
         "init_cron.go",

@@ -102,6 +102,8 @@ After the pin exists, read `references/…`, `scripts/…` and `extensions/…` 
 
 ## 1. Scope
 
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
 ```bash
 BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
 if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi

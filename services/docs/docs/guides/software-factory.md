@@ -271,7 +271,9 @@ boss cron ls --repo "$REPO_ID" --json
 The first skill token in a prompt names the stage, so keep it exactly as shown.
 Codex users replace `$HOME/.claude/skills` with `$HOME/.codex/skills` in the gate
 paths and write the prompts as `$boss-plan`, `$boss-build`, `$boss-verify`,
-`$boss-release` and `$boss-retro`. Schedules use the daemon's timezone unless you pass `--tz`. Leave
+`$boss-release` and `$boss-retro`. Antigravity users replace `$HOME/.claude/skills`
+with `$HOME/.gemini/config/skills` and keep the `/` prompts; Antigravity runs only
+a trusted repository. Schedules use the daemon's timezone unless you pass `--tz`. Leave
 [Zero output](./cron-jobs.md#zero-output) off on every stage job: each one
 needs a worktree.
 

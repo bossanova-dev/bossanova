@@ -207,6 +207,8 @@ git branch --show-current
 command -v git; command -v gh; gh auth status
 ```
 
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
 ```bash
 START_SHA="$(git rev-parse HEAD)"
 # A continuation needs the reviewed-head and route history it is reconciling.

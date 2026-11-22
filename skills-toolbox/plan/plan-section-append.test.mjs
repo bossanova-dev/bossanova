@@ -9,6 +9,8 @@ import { runCli } from '../tracker/cli.mjs'
 import { applyDescriptionPatch } from '../tracker/description-patch.mjs'
 import { buildLinearOperationMap } from '../tracker/linear.mjs'
 import { region } from '../../scripts/test-infra/gate-region-lib.mjs'
+import { openPullRequestOverlaps } from './plan-open-prs.mjs'
+import { inertReferences } from './plan-inert-references.mjs'
 
 for (const marker of ['*', '-', '+']) {
   test(`append continues a ${marker} list and skips repeated items`, () => {
@@ -18,9 +20,9 @@ for (const marker of ['*', '-', '+']) {
     assert.deepEqual(result, {
       text: text.replace(
         `${marker} Scope: bounded`,
-        `${marker} Scope: bounded\n${marker} Dependencies: blocks X-1\n${marker} A note`,
+        `${marker} Scope: bounded\n${marker} Dependencies: blocks \`X-1\`\n${marker} A note`,
       ),
-      appended: options.items,
+      appended: ['Dependencies: blocks `X-1`', 'A note'],
       skipped: [],
       marker,
       created: false,
@@ -28,7 +30,7 @@ for (const marker of ['*', '-', '+']) {
     assert.deepEqual(appendSectionBullets(result.text, options), {
       ...result,
       appended: [],
-      skipped: options.items,
+      skipped: ['Dependencies: blocks `X-1`', 'A note'],
     })
   })
 }
@@ -233,7 +235,8 @@ test('Planning and Open Questions appends reach Linear as safe description delta
       }
       assert.equal(reconstructed, body)
       const inserted = ops.map((op) => op.text ?? op.new_string).join('\n')
-      for (const item of [...planning.items, ...questions.items]) assert.ok(inserted.includes(item))
+      for (const item of [...planning.items, ...questions.items])
+        assert.ok(inserted.includes(inertReferences(item)))
       // Headings and fence delimiters are shared syntax; protect the existing prose.
       const protectedLines = [summary, ...original.split('\n')].filter(
         (line) => line && !line.startsWith('## ') && !line.startsWith('```'),
@@ -247,6 +250,67 @@ test('Planning and Open Questions appends reach Linear as safe description delta
     assert.equal(unchanged.args.patch, undefined)
     assert.equal(unchanged.args.description, body)
   }
+})
+
+test('CLI renders overlap and dependency references inert without changing Original notes', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'plan-inert-cli-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const file = join(dir, 'description.md')
+  const original = '## Original notes\n\nABC-12 #4175 https://example.invalid/raw\n'
+  writeFileSync(file, '## Planning\n\n- Contract: v1\n\n' + original)
+  const note = openPullRequestOverlaps({
+    subjectIdentifier: 'ABC-1',
+    subjectAreas: ['app/api/x.go'],
+    candidateIdentifiers: ['ABC-12'],
+    snapshot: {
+      listTruncated: false,
+      pullRequests: [
+        {
+          number: 4175,
+          url: 'https://github.com/owner/repo/pull/4175',
+          title: '[ABC-12] Handler',
+          headRefName: 'build-12',
+          isDraft: true,
+          files: ['app/api/x.go'],
+          filesTruncated: false,
+          ticketIds: ['ABC-12'],
+        },
+      ],
+    },
+  }).notes[0].text
+  const expected = [
+    'Open PR `#4175` (`https://github.com/owner/repo/pull/4175`) for `ABC-12` overlaps at file level (shared: app/api/x.go).',
+    'Dependencies: blocked by `ABC-12`',
+  ]
+  const run = () =>
+    spawnSync(
+      process.execPath,
+      [
+        'skills-toolbox/plan/plan-section-append.mjs',
+        '--file',
+        file,
+        '--heading',
+        'Planning',
+        '--item',
+        note,
+        '--item',
+        'Dependencies: blocked by ABC-12',
+      ],
+      { encoding: 'utf8' },
+    )
+  const result = run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout).appended, expected)
+  const body = readFileSync(file, 'utf8')
+  assert.equal(region(body, '## Original notes'), original)
+  for (const line of expected) {
+    assert.ok(body.includes(`- ${line}\n`))
+    assert.doesNotMatch(line.replace(/`[^`]*`/g, ''), /https?:\/\/|#\d+|\b[A-Z]+-\d+\b/)
+  }
+  const repeated = run()
+  assert.equal(repeated.status, 0, repeated.stderr)
+  assert.deepEqual(JSON.parse(repeated.stdout).skipped, expected)
+  assert.equal(readFileSync(file, 'utf8'), body)
 })
 
 for (const marker of ['-', '*', '+']) {

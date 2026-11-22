@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { isMainModule } from '../main-module.mjs'
+import { inertReferences } from './plan-inert-references.mjs'
 
 /** @param {string} text */
 function contentLines(text) {
@@ -112,6 +113,7 @@ export function appendSectionBullets(text, { heading, items }) {
     throw new Error('heading must name an editable section')
   if (items.some((item) => !item.trim() || /[\r\n]/.test(item)))
     throw new Error('items must be non-empty single lines')
+  items = items.map(inertReferences)
   const lines = contentLines(text)
   const header = lines.find((line) => line.heading === heading)
   const end = header

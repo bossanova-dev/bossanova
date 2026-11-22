@@ -35,6 +35,8 @@ fork-point heuristic can silently drop this run's commits after a force-push). N
 
 The orchestrator runs this pre-pin block before dispatching or taking the inline fallback:
 
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
 ```bash
 BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
 if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi

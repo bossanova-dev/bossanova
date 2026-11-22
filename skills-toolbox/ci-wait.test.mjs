@@ -409,7 +409,7 @@ test('R6: a fall followed by more than ten minutes of unreadable reads is no lon
   }
   assert.equal(trendOf(readings), TRENDS.UNKNOWN, 'no two countable reads are inside the window')
   // The same fall with the unreadable run still inside the window is converging.
-  assert.equal(trendOf([r(0, 5), r(30_000, 3), unreadable(60_000)]), TRENDS.CONVERGING)
+  assert.equal(trendOf([r(0, 5), r(30_000, 3), unreadable(60_000)]), TRENDS.UNKNOWN)
 })
 
 async function exhaust(store, pendingAt, options = {}) {

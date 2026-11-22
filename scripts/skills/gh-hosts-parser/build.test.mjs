@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import hostsParser from '../../../skills-toolbox/ci/gh-hosts.generated.cjs'
+const LOAD_TOLERANT_WAIT_MS = 30_000
+
 const { hostKeys } = hostsParser
 import { OUTPUT_FILE, run } from './build.mjs'
 
@@ -44,7 +46,7 @@ test('the copied parser runs under plain Node without packages or credential out
     cwd: dir,
     env: { HOME: dir },
     encoding: 'utf8',
-    timeout: 10000,
+    timeout: LOAD_TOLERANT_WAIT_MS,
   })
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(JSON.parse(result.stdout), ['github.com'])

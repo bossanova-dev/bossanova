@@ -28,7 +28,7 @@ func TestAccountRegisterReauthUnderHostNamesTheReauthRemedy(t *testing.T) {
 	m := newRegisterModel(t, client, ex)
 	m.homeDir = func() (string, error) { return t.TempDir(), nil }
 
-	m, _ = m.beginReauth("acct-codex-9")
+	m, _ = m.beginReauth("acct-codex-9", "codex")
 
 	var flowErr error
 	select {
@@ -67,4 +67,38 @@ func TestAccountRegisterReauthUnderHostNamesTheReauthRemedy(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("flow goroutine leaked after a policy refusal")
 	}
+}
+
+func TestAccountRegisterBeginReauthAntigravityLaunchesAntigravityFlow(t *testing.T) {
+	withHostDestination(t, "deploy@build-box.invalid")
+
+	client := &regAcctClient{}
+	ex := &regExec{proc: newRegScriptedProc([]string{"should never be read"}, nil)}
+	m := newRegisterModel(t, client, ex)
+	m.homeDir = func() (string, error) { return t.TempDir(), nil }
+
+	m, _ = m.beginReauth("acct-ag-7", "antigravity")
+
+	if m.provider != "antigravity" {
+		t.Fatalf("provider = %q, want antigravity", m.provider)
+	}
+	if m.reauthAccountID != "acct-ag-7" {
+		t.Fatalf("reauthAccountID = %q, want acct-ag-7", m.reauthAccountID)
+	}
+
+	flowErr := <-m.donec
+	upd, _ := m.Update(FlowDoneMsg{Err: flowErr})
+	m = upd.(AgentAccountRegisterModel)
+
+	if m.state != registerStateError || m.err == nil {
+		t.Fatalf("expected antigravity refusal on error screen; state=%d err=%v", m.state, m.err)
+	}
+	msg := m.err.Error()
+	if !strings.Contains(msg, "antigravity registration runs `agy`") {
+		t.Errorf("refusal %q must come from the antigravity flow, not codex", msg)
+	}
+	if !strings.Contains(msg, "boss account reauth acct-ag-7") {
+		t.Errorf("refusal %q must carry the reauth command for acct-ag-7", msg)
+	}
+	<-m.flowDone
 }

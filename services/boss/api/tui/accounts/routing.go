@@ -43,8 +43,8 @@ func (m AgentAccountRegisterModel) FlowRunning() bool             { return m.flo
 func (m AgentAccountRegisterModel) ReauthAgentAccountID() string  { return m.reauthAccountID }
 func (m *AgentAccountRegisterModel) ClearReauthAgentAccountID()   { m.reauthAccountID = "" }
 func (m AgentAccountRegisterModel) FlowVerdictLine() string       { return m.flowVerdictLine() }
-func (m AgentAccountRegisterModel) BeginReauth(id string) (AgentAccountRegisterModel, tea.Cmd) {
-	return m.beginReauth(id)
+func (m AgentAccountRegisterModel) BeginReauth(id, provider string) (AgentAccountRegisterModel, tea.Cmd) {
+	return m.beginReauth(id, provider)
 }
 
 func (m AgentAccountsListModel) ConfirmActive() bool                   { return m.confirm.Active }

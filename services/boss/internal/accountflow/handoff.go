@@ -16,6 +16,7 @@ const handoffWaitDelay = 5 * time.Second
 // claudeWalkthrough streams and waits exactly as it does for osProc.
 type handoffProc struct {
 	cmd   *exec.Cmd
+	tee   io.Writer
 	lines chan string
 
 	// closeOut closes the write half of the output pipe once the child has
@@ -69,6 +70,89 @@ const relayIdleFlush = 120 * time.Millisecond
 // enough that a line repeated much later still gets shown.
 const relayDedupeWindow = 32
 
+// relayDisplayWriter writes deduplicated, masked display lines to the terminal
+// while preserving intentional paragraph breaks and spacing around URLs.
+//
+// shown de-duplicates over a WINDOW of recent display lines, not just the
+// previous one. `claude setup-token` repaints its whole frame on every
+// spinner tick and its frame is multi-line, so the output alternates
+// banner/spinner/banner/spinner — a single-slot check never matches and the
+// banner is relayed once per tick, burying the sign-in URL and the code
+// prompt. Observed in the first live run (BOS-848).
+type relayDisplayWriter struct {
+	tee       io.Writer
+	shown     map[string]struct{}
+	order     []string
+	hasOutput bool
+	lastBlank bool
+}
+
+func newRelayDisplayWriter(tee io.Writer) *relayDisplayWriter {
+	return &relayDisplayWriter{
+		tee:   tee,
+		shown: make(map[string]struct{}, relayDedupeWindow),
+		order: make([]string, 0, relayDedupeWindow),
+	}
+}
+
+func (w *relayDisplayWriter) show(text string, newline bool) {
+	if w.tee == nil {
+		return
+	}
+	display, ok := RelayDisplayLine(text)
+	if !ok {
+		// Preserve intentional paragraph breaks printed by the child CLI,
+		// collapsing consecutive blank lines and ignoring leading ones.
+		if newline && w.hasOutput && !w.lastBlank {
+			_, _ = io.WriteString(w.tee, "\n")
+			w.lastBlank = true
+		}
+		return
+	}
+	display, ok = rewriteHandoffPromptLine(display)
+	if !ok {
+		return
+	}
+	if _, dup := w.shown[display]; dup {
+		return
+	}
+	w.shown[display] = struct{}{}
+	w.order = append(w.order, display)
+	// Bounded so a long walkthrough cannot grow this without limit, and so a
+	// line repeated much later can still be shown again.
+	if len(w.order) > relayDedupeWindow {
+		delete(w.shown, w.order[0])
+		w.order = w.order[1:]
+	}
+	isURL := strings.HasPrefix(display, "https://") || strings.HasPrefix(display, "http://")
+	if isURL && w.hasOutput && !w.lastBlank {
+		_, _ = io.WriteString(w.tee, "\n")
+	}
+	if newline {
+		display += "\n"
+	}
+	_, _ = io.WriteString(w.tee, display)
+	w.hasOutput = true
+	w.lastBlank = false
+	if isURL && newline {
+		_, _ = io.WriteString(w.tee, "\n")
+		w.lastBlank = true
+	}
+}
+
+// rewriteHandoffPromptLine normalizes agy's SSH-mode OAuth prompt lines.
+// Because boss runs agy with SSH_CLIENT=1, there is no local auto-auth
+// callback; the operator always copies and pastes the authorization code.
+func rewriteHandoffPromptLine(display string) (string, bool) {
+	if strings.HasPrefix(display, "Waiting for authentication") {
+		return "", false
+	}
+	if strings.HasPrefix(display, "Or, paste the authorization code") {
+		return "Paste" + strings.TrimPrefix(display, "Or, paste"), true
+	}
+	return display, true
+}
+
 // maskedRelay pumps the child's output to two places at once: RAW into the
 // lines channel, because agentcred.ParseClaudeSetupTokenOutput has to see the
 // real token to extract it; and MASKED to the operator's terminal, which is the
@@ -105,42 +189,10 @@ func (p *handoffProc) maskedRelay(r io.Reader, tee io.Writer) {
 	}()
 
 	var pending string
-	// shown de-duplicates over a WINDOW of recent display lines, not just the
-	// previous one. `claude setup-token` repaints its whole frame on every
-	// spinner tick and its frame is multi-line, so the output alternates
-	// banner/spinner/banner/spinner — a single-slot check never matches and the
-	// banner is relayed once per tick, burying the sign-in URL and the code
-	// prompt. Observed in the first live run (BOS-848).
-	shown := make(map[string]struct{}, relayDedupeWindow)
-	order := make([]string, 0, relayDedupeWindow)
-
-	show := func(text string, newline bool) {
-		if tee == nil {
-			return
-		}
-		display, ok := RelayDisplayLine(text)
-		if !ok {
-			return
-		}
-		if _, dup := shown[display]; dup {
-			return
-		}
-		shown[display] = struct{}{}
-		order = append(order, display)
-		// Bounded so a long walkthrough cannot grow this without limit, and so a
-		// line repeated much later can still be shown again.
-		if len(order) > relayDedupeWindow {
-			delete(shown, order[0])
-			order = order[1:]
-		}
-		if newline {
-			display += "\n"
-		}
-		_, _ = io.WriteString(tee, display)
-	}
+	display := newRelayDisplayWriter(tee)
 
 	emitLine := func(line string) {
-		show(line, true)
+		display.show(line, true)
 		// RAW on the channel: ParseClaudeSetupTokenOutput needs the real token.
 		p.lines <- line
 	}
@@ -152,7 +204,7 @@ func (p *handoffProc) maskedRelay(r io.Reader, tee io.Writer) {
 		}
 		// No trailing newline — a partial line is a prompt awaiting input on the
 		// same row (`Paste code here if prompted >`).
-		show(pending, false)
+		display.show(pending, false)
 		pending = ""
 	}
 
@@ -217,7 +269,7 @@ func newHandoffCommand(ctx context.Context, name string, args, env []string, tee
 	cmd.WaitDelay = handoffWaitDelay
 	// cmd.Stdin intentionally nil — see the doc comment.
 
-	proc := &handoffProc{cmd: cmd, lines: make(chan string, 64), waited: make(chan struct{})}
+	proc := &handoffProc{cmd: cmd, tee: tee, lines: make(chan string, 64), waited: make(chan struct{})}
 	go proc.maskedRelay(pr, tee)
 	// Closing the writer on exit is what EOFs the relay and closes lines.
 	proc.closeOut = func() { _ = pw.Close() }
@@ -240,7 +292,12 @@ func NewHandoffProc(ctx context.Context, name string, args, env []string, tee io
 	_, proc := newHandoffCommand(ctx, name, args, env, tee)
 	return proc
 }
-func (p *handoffProc) Run() error { return p.cmd.Run() }
+func (p *handoffProc) Run() error {
+	if p.tee != nil {
+		_, _ = io.WriteString(p.tee, "\n")
+	}
+	return p.cmd.Run()
+}
 func (p *handoffProc) SetStdin(r io.Reader) {
 	if p.cmd.Stdin == nil {
 		p.cmd.Stdin = r

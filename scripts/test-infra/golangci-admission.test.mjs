@@ -9,7 +9,7 @@ import { tempDir } from './test-tmpdir.mjs'
 import { runGolangciSync, golangciAdmissionConfig } from './golangci-admission.mjs'
 
 const LOAD_TOLERANT_WAIT_MS = 60_000
-const CHILD_TIMEOUT_MS = 5_000
+const CHILD_TIMEOUT_MS = 30_000
 
 function fixture(t) {
   const dir = tempDir('golangci-admission-', t)

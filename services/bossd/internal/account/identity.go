@@ -27,8 +27,28 @@ func DeriveIdentity(ctx context.Context, provider, label string, credential []by
 		return deriveCodexIdentity(credential)
 	case domain.AgentAccountProviderClaude:
 		return deriveClaudeIdentity(ctx, label, credential, org)
+	case domain.AgentAccountProviderAntigravity:
+		return deriveAntigravityIdentity(credential)
 	default:
 		return noIdentity()
+	}
+}
+
+func deriveAntigravityIdentity(credential []byte) domain.AgentAccountIdentity {
+	var payload struct {
+		IDTokenEmail string `json:"id_token_email"`
+	}
+	if json.Unmarshal(credential, &payload) != nil {
+		return noIdentity()
+	}
+	email := strings.ToLower(strings.TrimSpace(payload.IDTokenEmail))
+	if email == "" {
+		return noIdentity()
+	}
+	digest := sha256.Sum256([]byte("antigravity\x00" + email))
+	return domain.AgentAccountIdentity{
+		Kind:   domain.AgentAccountIdentityKindAntigravityUser,
+		Digest: hex.EncodeToString(digest[:]),
 	}
 }
 

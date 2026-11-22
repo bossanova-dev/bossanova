@@ -4,6 +4,8 @@
 // literal goes red when the host is loaded, not when the code is wrong. Eleven recorded incidents
 // (BOS-1252) share that shape: parallel Bazel, `-race`, or a shared CI runner stretches a correct
 // implementation past a hardcoded limit and burns an autonomous run on a false negative.
+// BOS-2522 also rejects subprocess timeout options below 30 s, including same-file numeric
+// constants. node:test registration options are separate test-runner hang guards and are excluded.
 //
 // The rule has two mechanically decidable discriminators:
 //
@@ -40,7 +42,9 @@ const repoRoot = path.resolve(scriptDir, '../..')
 
 const DEFAULT_ROOTS = [repoRoot]
 
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.claude', 'dist', 'build', 'bin'])
+const SKIP_DIRS = new Set(['.git', '.worktrees', 'node_modules', '.claude', 'dist', 'build', 'bin'])
+
+export const SUBPROCESS_DEADLINE_FLOOR_MS = 30_000
 
 // The corpus BOS-1252 scopes the gate to: every `**/*_test.go` and every `**/*.test.mjs`.
 export function defaultIsTestSource(basename) {
@@ -356,6 +360,89 @@ function annotationReasonNear(rawLines, line) {
   return null
 }
 
+// Evaluate only numeric arithmetic, without executing source from a scanned file. Null means a
+// non-literal; NaN means numeric-looking syntax we cannot decide and must report.
+function numericDeadline(expression) {
+  const text = expression.trim()
+  if (!/^[\d_\s.+*/%()-]+$/.test(text) || !/\d/.test(text)) return null
+  const tokens = text.match(/\d[\d_]*(?:\.[\d_]+)?|[.+*/%()-]/g) ?? []
+  let at = 0
+  function atom() {
+    const token = tokens[at++]
+    if (token === '+' || token === '-') return (token === '-' ? -1 : 1) * atom()
+    if (token === '(') {
+      const value = sum()
+      if (tokens[at++] !== ')') return NaN
+      return value
+    }
+    return token && /^\d(?:_?\d)*(?:\.\d(?:_?\d)*)?$/.test(token)
+      ? Number(token.replaceAll('_', ''))
+      : NaN
+  }
+  function product() {
+    let value = atom()
+    while (['*', '/', '%'].includes(tokens[at])) {
+      const operator = tokens[at++]
+      const right = atom()
+      value = operator === '*' ? value * right : operator === '/' ? value / right : value % right
+    }
+    return value
+  }
+  function sum() {
+    let value = product()
+    while (['+', '-'].includes(tokens[at])) {
+      const operator = tokens[at++]
+      const right = product()
+      value = operator === '+' ? value + right : value - right
+    }
+    return value
+  }
+  const value = sum()
+  return at === tokens.length && Number.isFinite(value) ? value : NaN
+}
+
+function isTestRegistrationOption(source, index) {
+  const stack = []
+  for (let at = 0; at < index; at += 1) {
+    const ch = source[at]
+    if (OPEN[ch]) stack.push({ ch, at })
+    else if (CLOSE.has(ch)) stack.pop()
+  }
+  const object = stack.pop()
+  const call = stack.pop()
+  if (object?.ch !== '{' || call?.ch !== '(') return false
+  // The object must be a direct argument; a nested object or callback body does not qualify.
+  if (!/[,(]\s*$/.test(source.slice(0, object.at))) return false
+  return /(?:^|[^\w$.])(?:test|it|describe|suite|t\.test)(?:\.(?:skip|only|todo))?\s*$/.test(
+    source.slice(0, call.at),
+  )
+}
+
+function findSubprocessDeadlines(source) {
+  const constants = new Map()
+  for (const match of source.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*/g)) {
+    const expression = readOperand(source, match.index + match[0].length, [',', ';', '\n']).text
+    const value = numericDeadline(expression)
+    if (value !== null) constants.set(match[1], value)
+  }
+  const found = []
+  for (const match of source.matchAll(/[,{]\s*timeout\s*:/g)) {
+    const index = match.index + match[0].indexOf('timeout')
+    if (isTestRegistrationOption(source, index)) continue
+    const expression = readOperand(source, match.index + match[0].length, [
+      ',',
+      ';',
+      '\n',
+    ]).text.trim()
+    const value = constants.has(expression)
+      ? constants.get(expression)
+      : numericDeadline(expression)
+    if (value !== null && (!Number.isFinite(value) || value < SUBPROCESS_DEADLINE_FLOOR_MS))
+      found.push({ index, value })
+  }
+  return found
+}
+
 export function analyzeSource({ file, contents, language }) {
   const violations = []
   const rawLines = contents.split('\n')
@@ -373,6 +460,18 @@ export function analyzeSource({ file, contents, language }) {
   }
 
   const source = stripCommentsAndStrings(contents)
+  if (language === 'js') {
+    for (const deadline of findSubprocessDeadlines(source)) {
+      const line = lineNumberAt(contents, deadline.index)
+      if (annotationReasonNear(rawLines, line)) continue
+      violations.push({
+        kind: 'short-subprocess-deadline',
+        file,
+        line,
+        message: `${file}:${line} subprocess timeout ${deadline.value} ms; use a named load-tolerant deadline >= ${SUBPROCESS_DEADLINE_FLOOR_MS} ms (numeric-looking deadlines must be evaluable)`,
+      })
+    }
+  }
   for (const comparison of findComparisons(source, { language })) {
     if (!failsWhenSlow(comparison)) continue
     const line = lineNumberAt(contents, comparison.index)
@@ -445,11 +544,11 @@ export function checkTimingBounds(options = {}) {
     console.error('Found wall-clock bounds that a loaded host can flip red on its own:')
     for (const violation of violations) console.error(`  - ${violation.message}`)
     console.error(
-      'Remedy: derive the bound from a named budget already in scope (`elapsed > 2*modalBudget`) — naming a constant that is itself a bare literal satisfies this gate but not a reviewer — or, where no in-scope budget exists, annotate the site with `// timing-bound: <reason naming the external resource>`.',
+      'Remedy: derive elapsed-time bounds from a named budget; raise subprocess deadlines to a named load-tolerant constant >= 30000 ms. An exceptional site needs `// timing-bound: <reason naming the external resource>`.',
     )
     return false
   }
-  console.log('OK: no bare-literal fail-when-too-slow wall-clock bounds in test sources')
+  console.log('OK: no bare-literal wall-clock bounds or short subprocess deadlines in test sources')
   return true
 }
 

@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { ENV_FAILURE_EXIT_CODE } from './env-failure-lib.mjs'
 
+const LOAD_TOLERANT_WAIT_MS = 30_000
+
 const runGate = fileURLToPath(new URL('./run-gate.mjs', import.meta.url))
 
 function runChild(source, env = {}) {
@@ -20,7 +22,7 @@ function runChild(source, env = {}) {
     {
       encoding: 'utf8',
       env: childEnv,
-      timeout: 10000,
+      timeout: LOAD_TOLERANT_WAIT_MS,
       maxBuffer: 8 * 1024 * 1024,
     },
   )

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/recurser/boss/internal/accountflow"
 	"github.com/recurser/boss/internal/daemonlife"
@@ -179,22 +180,47 @@ func (g *group) runAccountAddClaude(cmd *cobra.Command) error {
 	})
 }
 
-// runAccountAddCodex drives the interactive `boss account add codex` device
-// flow. Codex has no token-stdin path (it needs an interactive browser
-// round-trip), so --token-stdin is rejected up front.
-func (g *group) runAccountAddCodex(cmd *cobra.Command) error {
-	// Codex has no pasted-token shape at all, so the guard always applies.
+type interactiveAddFlags struct {
+	label    string
+	timeout  time.Duration
+	priority int32
+}
+
+func (g *group) prepareInteractiveAdd(cmd *cobra.Command, provider, binName, binFlag, tokenStdinErr string) (accountflow.AgentBin, interactiveAddFlags, error) {
 	op := addRegistration(false)
 	if err := g.requireLocalRegistration(cmd, op); err != nil {
-		return err
+		return accountflow.AgentBin{}, interactiveAddFlags{}, err
 	}
 	if tokenStdin, _ := cmd.Flags().GetBool("token-stdin"); tokenStdin {
-		return errors.New("--token-stdin is not supported for codex; codex registration uses an interactive device flow")
+		return accountflow.AgentBin{}, interactiveAddFlags{}, errors.New(tokenStdinErr)
 	}
 	if err := guardInteractiveStdin(op); err != nil {
-		return err
+		return accountflow.AgentBin{}, interactiveAddFlags{}, err
 	}
-	bin, err := g.resolveAgentBin(cmd, "codex", "--codex-bin", "codex")
+	bin, err := g.resolveAgentBin(cmd, binName, binFlag, provider)
+	if err != nil {
+		return accountflow.AgentBin{}, interactiveAddFlags{}, err
+	}
+	label, _ := cmd.Flags().GetString("label")
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	priority, _ := cmd.Flags().GetInt32("priority")
+	return bin, interactiveAddFlags{label: label, timeout: timeout, priority: priority}, nil
+}
+
+func (g *group) runAccountAddCodex(cmd *cobra.Command) error {
+	return g.runAccountAddInteractive(cmd, "codex")
+}
+
+// runAccountAddInteractive drives the interactive `boss account add` login flow
+// for providers without a --token-stdin escape hatch (codex, antigravity).
+func (g *group) runAccountAddInteractive(cmd *cobra.Command, provider string) error {
+	binName, binFlag, tokenErr := "codex", "--codex-bin",
+		"--token-stdin is not supported for codex; codex registration uses an interactive device flow"
+	if provider == "antigravity" {
+		binName, binFlag, tokenErr = "agy", "",
+			"--token-stdin is not supported for antigravity; antigravity registration uses an interactive OAuth flow"
+	}
+	bin, flags, err := g.prepareInteractiveAdd(cmd, provider, binName, binFlag, tokenErr)
 	if err != nil {
 		return err
 	}
@@ -202,34 +228,36 @@ func (g *group) runAccountAddCodex(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	label, _ := cmd.Flags().GetString("label")
-	timeout, _ := cmd.Flags().GetDuration("timeout")
-	priority, _ := cmd.Flags().GetInt32("priority")
+	execRunner := accountflow.NewOSExec()
+	prompter := accountflow.NewIOPrompter(cmd.InOrStdin(), cmd.OutOrStdout())
+	if provider == "antigravity" {
+		return accountflow.RunAntigravityAdd(cmd.Context(), accountflow.AntigravityOptions{
+			AgyBin:   bin.Path,
+			BinEnv:   bin.Env,
+			Exec:     execRunner,
+			Prompter: prompter,
+			Client:   c,
+			Timeout:  flags.timeout,
+			Label:    flags.label,
+			Priority: flags.priority,
+		})
+	}
 	return accountflow.RunCodexAdd(cmd.Context(), accountflow.CodexOptions{
 		CodexBin: bin.Path,
 		BinEnv:   bin.Env,
-		Exec:     accountflow.NewOSExec(),
-		Prompter: accountflow.NewIOPrompter(cmd.InOrStdin(), cmd.OutOrStdout()),
+		Exec:     execRunner,
+		Prompter: prompter,
 		Client:   c,
-		Timeout:  timeout,
-		Label:    label,
-		Priority: priority,
+		Timeout:  flags.timeout,
+		Label:    flags.label,
+		Priority: flags.priority,
 	})
 }
 
 // runAccountReauth drives `boss account reauth <id>`: re-run the provider's
-// interactive device login and hand the fresh credential to the EXISTING
-// account rather than registering a second one (BOS-1142).
-//
-// Thin by design — it resolves the client and the flags, and the flow itself
-// is a pure function over the narrow AgentAccountClient seam so it stays testable
-// without a daemon.
+// interactive login and hand the fresh credential to the EXISTING account
+// rather than registering a second one (BOS-1142).
 func (g *group) runAccountReauth(cmd *cobra.Command, id string) error {
-	// The device login needs an interactive TTY and writes a credential to the
-	// local machine, so the same local-registration and stdin guards the codex
-	// add path uses apply here too — but declared as a REAUTH, so each refusal
-	// prints the remedy that repairs this account instead of the add remedy,
-	// which would register a second one and leave the failed binding as it is.
 	op := reauthRegistration(id)
 	if err := g.requireLocalRegistration(cmd, op); err != nil {
 		return err
@@ -237,15 +265,38 @@ func (g *group) runAccountReauth(cmd *cobra.Command, id string) error {
 	if err := guardInteractiveStdin(op); err != nil {
 		return err
 	}
-	bin, err := g.resolveAgentBin(cmd, "codex", "--codex-bin", id)
-	if err != nil {
-		return err
-	}
 	c, err := g.newClient(cmd)
 	if err != nil {
 		return err
 	}
 	timeout, _ := cmd.Flags().GetDuration("timeout")
+	provider := "codex"
+	if accounts, lerr := c.ListAgentAccounts(cmd.Context(), "", false); lerr == nil {
+		for _, a := range accounts {
+			if a.GetId() == strings.TrimSpace(id) && strings.EqualFold(a.GetProvider(), "antigravity") {
+				provider = "antigravity"
+				break
+			}
+		}
+	}
+	if provider == "antigravity" {
+		bin, err := g.resolveAgentBin(cmd, "agy", "", id)
+		if err != nil {
+			return err
+		}
+		return accountflow.RunAntigravityReauth(cmd.Context(), accountflow.AntigravityOptions{
+			AgyBin:   bin.Path,
+			BinEnv:   bin.Env,
+			Exec:     accountflow.NewOSExec(),
+			Prompter: accountflow.NewIOPrompter(cmd.InOrStdin(), cmd.OutOrStdout()),
+			Client:   c,
+			Timeout:  timeout,
+		}, id)
+	}
+	bin, err := g.resolveAgentBin(cmd, "codex", "--codex-bin", id)
+	if err != nil {
+		return err
+	}
 	return accountflow.RunCodexReauth(cmd.Context(), accountflow.CodexOptions{
 		CodexBin: bin.Path,
 		BinEnv:   bin.Env,

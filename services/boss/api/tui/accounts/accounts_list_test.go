@@ -721,8 +721,8 @@ func TestAccountsListReauthKeyDispatchesOnceAndIsGuarded(t *testing.T) {
 	if !ok {
 		t.Fatalf("[R] produced %T, want a switchViewMsg", cmd())
 	}
-	if msg.View != ui.ViewAgentAccountRegister || msg.ReauthAccountID != "acct-bad" {
-		t.Fatalf("switch = %+v, want the register view in reauth mode for acct-bad", msg)
+	if msg.View != ui.ViewAgentAccountRegister || msg.ReauthAccountID != "acct-bad" || msg.ReauthProvider != "codex" {
+		t.Fatalf("switch = %+v, want the register view in reauth mode for codex acct-bad", msg)
 	}
 	if msg.ReturnView != ui.ViewAgentAccounts {
 		t.Fatalf("returnView = %v, want ViewAgentAccounts", msg.ReturnView)
@@ -733,6 +733,27 @@ func TestAccountsListReauthKeyDispatchesOnceAndIsGuarded(t *testing.T) {
 	_, cmd2 := m.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
 	if cmd2 != nil {
 		t.Fatalf("second [R] press dispatched %T, want it suppressed while in flight", cmd2())
+	}
+}
+
+func TestAccountsListReauthKeyDispatchesAntigravityProvider(t *testing.T) {
+	ag := &pb.AgentAccount{Id: "acct-ag", Provider: "antigravity", Label: "Antigravity", Status: "active", Health: "ok"}
+	stub := &accountsStub{accounts: []*pb.AgentAccount{ag}}
+	m := seedAccountsList(t, stub)
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if cmd == nil {
+		t.Fatal("[R] on antigravity account produced no command")
+	}
+	msg, ok := cmd().(ui.SwitchViewMsg)
+	if !ok {
+		t.Fatalf("[R] produced %T, want a switchViewMsg", cmd())
+	}
+	if msg.View != ui.ViewAgentAccountRegister || msg.ReauthAccountID != "acct-ag" || msg.ReauthProvider != "antigravity" {
+		t.Fatalf("switch = %+v, want register view in antigravity reauth mode for acct-ag", msg)
+	}
+	if msg.ReturnView != ui.ViewAgentAccounts {
+		t.Fatalf("returnView = %v, want ViewAgentAccounts", msg.ReturnView)
 	}
 }
 

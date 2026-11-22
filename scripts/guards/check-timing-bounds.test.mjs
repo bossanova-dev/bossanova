@@ -207,6 +207,112 @@ test('an annotation two lines above does not reach the bound', () => {
 // carrying the very assertion shape the gate rejects. The fixture the gate scans is fully rendered.
 const jsUpperBound = (limit) => `assert.ok(elapsed < ${limit}, \`too slow: \${elapsed}\`)\n`
 
+for (const [name, body] of [
+  ['literal child deadline', 'spawnSync(cmd, args, { timeout: 5000 })'],
+  [
+    'same-file constant',
+    'const CHILD_TIMEOUT_MS = 5_000\nrunHelper([], { timeout: CHILD_TIMEOUT_MS })',
+  ],
+  ['arithmetic literal', 'spawnSync(cmd, [], { timeout: (2 + 3) * 1000 })'],
+  ['standalone options', "const opts = { encoding: 'utf8', timeout: 10_000 }"],
+]) {
+  test(`short subprocess deadline fires: ${name}`, () => {
+    const violations = scanFixture({ 'child.test.mjs': body })
+    assert.equal(violations.length, 1)
+    assert.equal(violations[0].kind, 'short-subprocess-deadline')
+  })
+}
+
+for (const value of [
+  '30_000',
+  '120000',
+  'IMPORTED_TIMEOUT',
+  'opts.timeout',
+  "'5m'",
+  '() => 100',
+  '{ timeout: true }',
+  'true',
+]) {
+  test(`non-short or non-literal subprocess deadline passes: ${value}`, () => {
+    assert.deepEqual(
+      scanFixture({ 'child.test.mjs': `spawnSync(cmd, [], { timeout: ${value} })` }),
+      [],
+    )
+  })
+}
+
+test('a same-file constant at the deadline floor passes', () => {
+  assert.deepEqual(
+    scanFixture({ 'child.test.mjs': 'const WAIT = 30_000\nspawnSync(cmd, [], { timeout: WAIT })' }),
+    [],
+  )
+})
+
+for (const callee of [
+  'test',
+  'it',
+  'describe',
+  'suite',
+  'test.skip',
+  'it.only',
+  'describe.todo',
+  't.test',
+]) {
+  test(`node:test registration deadline passes: ${callee}`, () => {
+    assert.deepEqual(
+      scanFixture({ 'child.test.mjs': `${callee}('x', { timeout: 5000 }, () => {})` }),
+      [],
+    )
+  })
+}
+
+test('a child deadline inside a node:test callback still fires', () => {
+  const violations = scanFixture({
+    'child.test.mjs': "test('x', () => { spawnSync(cmd, [], { timeout: 5000 }) })",
+  })
+  assert.equal(violations.length, 1)
+})
+
+test('timeoutMs and Go timeout fields are outside the subprocess rule', () => {
+  assert.deepEqual(
+    scanFixture({
+      'child.test.mjs': 'helper({ timeoutMs: 10 })',
+      'child_test.go': goTest(['opts := Options{Timeout: 5 * time.Second}']),
+    }),
+    [],
+  )
+})
+
+test('subprocess annotations excuse only a non-empty reason', () => {
+  assert.deepEqual(
+    scanFixture({
+      'child.test.mjs':
+        '// timing-bound: tests child cancellation\nspawnSync(cmd, [], { timeout: 5000 })',
+    }),
+    [],
+  )
+  const violations = scanFixture({
+    'child.test.mjs': '// timing-bound:\nspawnSync(cmd, [], { timeout: 5000 })',
+  })
+  assert.ok(violations.some((v) => v.kind === 'short-subprocess-deadline'))
+  assert.ok(violations.some((v) => v.kind === 'empty-annotation'))
+})
+
+test('numeric-looking deadlines rejected by the evaluator fail closed', () => {
+  const violations = scanFixture({ 'child.test.mjs': 'spawnSync(cmd, [], { timeout: 1 / 0 })' })
+  assert.equal(violations.length, 1)
+})
+
+test('the scan excludes ignored build worktrees', () => {
+  assert.deepEqual(
+    scanFixture({
+      '.worktrees/other/child.test.mjs': 'spawnSync(cmd, [], { timeout: 5000 })',
+      'clean.test.mjs': '',
+    }),
+    [],
+  )
+})
+
 test('JS bare numeric literal upper bound fires', () => {
   const violations = scanFixture({ 'pkg/thing.test.mjs': jsUpperBound('3_000') })
   assert.equal(violations.length, 1)

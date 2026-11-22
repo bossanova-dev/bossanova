@@ -111,8 +111,8 @@ func accountToJSON(a *pb.AgentAccount) accountJSON {
 }
 
 // validAccountProviders is the set of providers `boss account add` accepts. It
-// mirrors the agent-runner providers the daemon knows about (claude, codex).
-var validAccountProviders = map[string]bool{"claude": true, "codex": true}
+// mirrors the agent-runner providers the daemon knows about (claude, codex, antigravity).
+var validAccountProviders = map[string]bool{"claude": true, "codex": true, "antigravity": true}
 
 func (g *group) runAccountLS(cmd *cobra.Command) error {
 	c, err := g.newClient(cmd)
@@ -573,8 +573,8 @@ func (g *group) runAccountAddDispatch(cmd *cobra.Command, args []string) error {
 	switch provider {
 	case "claude":
 		return g.runAccountAddClaude(cmd)
-	case "codex":
-		return g.runAccountAddCodex(cmd)
+	case "codex", "antigravity":
+		return g.runAccountAddInteractive(cmd, provider)
 	default:
 		// Unreachable: resolveAddProvider already rejected unknown providers.
 		return fmt.Errorf("unknown provider %q", provider)
@@ -876,7 +876,7 @@ func readCredentialFlag(cmd *cobra.Command) ([]byte, error) {
 
 // trimmedProviderList renders the accepted providers for help text.
 func trimmedProviderList() string {
-	return strings.Join([]string{"claude", "codex"}, "|")
+	return strings.Join([]string{"antigravity", "claude", "codex"}, "|")
 }
 
 // Client is the account command group's transport surface.

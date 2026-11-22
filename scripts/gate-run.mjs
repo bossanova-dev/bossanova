@@ -37,6 +37,13 @@ import {
   renderLoadLine,
 } from './test-infra/gate-isolation-lib.mjs'
 
+import {
+  claimReuse,
+  recordRunTree,
+  reuseContext,
+  writeFileAtomic,
+} from './test-infra/gate-reuse-lib.mjs'
+
 export const VERDICTS = Object.freeze({
   passed: 'GATE PASSED',
   flakyPrefix: 'GATE FLAKY-UNDER-LOAD (exit ',
@@ -72,12 +79,6 @@ function usage(exitCode = 2) {
   process.exit(exitCode)
 }
 
-function writeFileAtomic(file, content) {
-  const tmp = `${file}.${process.pid}.tmp`
-  fs.writeFileSync(tmp, content)
-  fs.renameSync(tmp, file)
-}
-
 function logBestEffort(logFd, line) {
   try {
     fs.writeSync(logFd, line)
@@ -108,7 +109,7 @@ function wasStopped(runDir) {
 // The evidence line is appended LAST and never touches the first line or the durable `verdict`
 // bytes, so every documented consumer contract — `VERDICTS`, `cat <run-dir>/verdict` — is byte-for
 // -byte what it was before BOS-1276.
-function emitVerdict(runDir, firstLine, exitCode, extraLines = []) {
+function emitVerdict(runDir, firstLine, exitCode, extraLines = [], evidenceDir = runDir) {
   if (runDir) {
     try {
       writeFileAtomic(path.join(runDir, 'verdict'), `${firstLine}\n`)
@@ -117,7 +118,7 @@ function emitVerdict(runDir, firstLine, exitCode, extraLines = []) {
       // copy is a bonus, never a precondition for reporting the outcome.
     }
   }
-  process.stdout.write([firstLine, ...extraLines, evidenceLine(runDir), ''].join('\n'))
+  process.stdout.write([firstLine, ...extraLines, evidenceLine(evidenceDir), ''].join('\n'))
   process.exit(exitCode)
 }
 
@@ -275,8 +276,23 @@ function start(args) {
   const command = sep >= 0 ? args.slice(sep + 1) : args
   if (command.length === 0) usage()
 
+  const context = process.env.BOSS_GATE_REUSE === '0' ? { key: null } : reuseContext(command)
   const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-gate-'))
   fs.writeFileSync(path.join(runDir, 'cmd'), `${command.join('\0')}\n`)
+  fs.writeFileSync(path.join(runDir, 'pid'), `${process.pid}\n`)
+  const reuse = claimReuse(context, runDir)
+  if (reuse.kind !== 'fresh') {
+    fs.writeFileSync(path.join(runDir, 'reuse.json'), JSON.stringify(reuse))
+    const pid = readPid(reuse.from)
+    fs.writeFileSync(path.join(runDir, 'pid'), `${pid}\n`)
+    const kind = reuse.kind === 'join' ? 'joined live' : 'reused passed'
+    process.stderr.write(
+      `gate-run: ${kind} run ${reuse.from} (${command.join(' ')} -> ${context.canonical.join(' ')} at tree ${context.treeHash.slice(0, 12)})\n`,
+    )
+    process.stdout.write(`${runDir}\n${pid}\n${logPath(reuse.from)}\n`)
+    return
+  }
+  if (context.key) fs.writeFileSync(path.join(runDir, 'reuse-key'), context.key)
 
   const logFd = fs.openSync(logPath(runDir), 'a')
   const supervisor = spawn(
@@ -556,6 +572,7 @@ async function supervise(args) {
   } catch (error) {
     logBestEffort(logFd, `gate-run preflight unavailable: ${error.message}\n`)
   }
+  recordRunTree(runDir, 'start')
   const finishGateLoad = loadSampler(load, 'gate', runDir, logFd)
   const original =
     wasStopped(runDir) || interruptedSignal
@@ -642,32 +659,49 @@ async function supervise(args) {
     }
     releaseGateSlot(admission)
     fs.closeSync(logFd)
+    recordRunTree(runDir, 'end')
     writeFileAtomic(path.join(runDir, 'status'), `${original.exit}\n`)
   }
 }
 
 async function wait(args) {
-  const { timeoutMs, runDir } = parseWaitArgs(args)
+  const { timeoutMs, runDir: callerDir } = parseWaitArgs(args)
+  const reuse = readJson(callerDir, 'reuse.json')
+  let runDir = reuse && !wasStopped(callerDir) ? reuse.from : callerDir
+  const emit = (firstLine, exitCode, extra = []) =>
+    emitVerdict(
+      callerDir,
+      firstLine,
+      exitCode,
+      [
+        ...extra,
+        ...(reuse
+          ? [`reused: ${reuse.kind === 'join' ? 'joined live' : 'passed'} run ${reuse.from}`]
+          : []),
+      ],
+      reuse?.from ?? runDir,
+    )
   const deadline = Date.now() + timeoutMs
-  const statusPath = path.join(runDir, 'status')
 
   while (Date.now() <= deadline) {
+    if (reuse && wasStopped(callerDir)) runDir = callerDir
+    const statusPath = path.join(runDir, 'status')
     if (fs.existsSync(statusPath)) {
       const status = Number.parseInt(fs.readFileSync(statusPath, 'utf8').trim(), 10)
       if (status === 0) {
-        emitVerdict(runDir, VERDICTS.passed, 0)
+        emit(VERDICTS.passed, 0)
       }
       const exitStatus = Number.isInteger(status) ? status : 1
       if (wasStopped(runDir)) {
-        emitVerdict(runDir, `${VERDICTS.stoppedPrefix}${exitStatus})`, STOPPED_EXIT_CODE, [
-          `log: ${logPath(runDir)}`,
+        emit(`${VERDICTS.stoppedPrefix}${exitStatus})`, STOPPED_EXIT_CODE, [
+          `log: ${logPath(reuse?.from ?? runDir)}`,
         ])
       }
       // Only a NON-ZERO status is classified, and only over the bounded tail, so a green gate is
       // never re-read and a test whose own output mentions a timeout cannot flip a pass.
       const classification = classifyGateFailure(readLogTail(runDir)?.text ?? '')
       if (classification) {
-        emitVerdict(runDir, `${VERDICTS.environmentPrefix}${exitStatus})`, ENV_FAILURE_EXIT_CODE, [
+        emit(`${VERDICTS.environmentPrefix}${exitStatus})`, ENV_FAILURE_EXIT_CODE, [
           renderLoadLine(readJson(runDir, 'load.json')),
           renderAdmissionLine(readJson(runDir, 'admission.json')),
           `kind: ${classification.kind}${classification.remedy ? ` - ${classification.remedy}` : ''}`,
@@ -677,8 +711,7 @@ async function wait(args) {
       }
       const isolation = readJson(runDir, 'isolation.json')
       const flaky = isolation?.decision === 'flaky-under-load'
-      emitVerdict(
-        runDir,
+      emit(
         `${flaky ? VERDICTS.flakyPrefix : VERDICTS.failedPrefix}${exitStatus})`,
         flaky ? FLAKY_EXIT_CODE : 1,
         [
@@ -694,7 +727,7 @@ async function wait(args) {
     const pid = readPid(runDir)
     if (!Number.isInteger(pid) || !isPidAlive(pid)) {
       const vanishedTail = readLogTail(runDir)
-      emitVerdict(runDir, VERDICTS.vanished, 97, [
+      emit(VERDICTS.vanished, 97, [
         ...(vanishedTail ? [unknownCauseLine(runDir)] : []),
         `log: ${logPath(runDir)}`,
       ])
@@ -702,10 +735,7 @@ async function wait(args) {
     await new Promise((resolve) => setTimeout(resolve, POLL_MS))
   }
 
-  emitVerdict(runDir, VERDICTS.stillRunning, 98, [
-    unknownCauseLine(runDir),
-    `log: ${logPath(runDir)}`,
-  ])
+  emit(VERDICTS.stillRunning, 98, [unknownCauseLine(runDir), `log: ${logPath(runDir)}`])
 }
 
 function readStatus(runDir) {
@@ -773,6 +803,26 @@ async function pollForStatus(runDir, childPid, untilMs) {
 async function stop(args) {
   if (args.length !== 1) usage()
   const runDir = args[0]
+
+  const reuse = readJson(runDir, 'reuse.json')
+  if (reuse && readStatus(runDir) === null) {
+    const sourceStatus = readStatus(reuse.from)
+    if (reuse.kind === 'reuse-passed' || sourceStatus !== null) {
+      process.stdout.write(
+        `${verdictLineForStatus(sourceStatus ?? 1, wasStopped(reuse.from))}\nreused: ${reuse.kind === 'join' ? 'joined live' : 'passed'} run ${reuse.from}\n${evidenceLine(reuse.from)}\n`,
+      )
+      return
+    }
+    writeFileAtomic(stoppedMarkerPath(runDir), `${new Date().toISOString()}\n`)
+    writeFileAtomic(path.join(runDir, 'status'), '143\n')
+    emitVerdict(
+      runDir,
+      verdictLineForStatus(143, true),
+      0,
+      [`reused: joined live run ${reuse.from}`],
+      reuse.from,
+    )
+  }
 
   const existing = readStatus(runDir)
   if (existing !== null) {

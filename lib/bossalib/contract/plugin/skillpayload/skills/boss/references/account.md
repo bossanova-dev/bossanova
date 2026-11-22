@@ -16,7 +16,7 @@ Register an agent account
 - `--credential-file` — Read the credential from a file (or '-' for stdin); preferred over --token
 - `--label` — Human label, unique per provider (required for the non-interactive flag path)
 - `--priority` — Sort order; lower = preferred (default: 0)
-- `--provider` — Account provider (claude|codex) (or pass as a positional arg)
+- `--provider` — Account provider (antigravity|claude|codex) (or pass as a positional arg)
 - `--timeout` — Deadline for an interactive registration walkthrough (default: 10m0s)
 - `--token` — Credential token (prefer --credential-file - or stdin to keep it out of shell history)
 - `--token-stdin` — claude only: read the setup token from stdin instead of running the walkthrough

@@ -44,8 +44,8 @@ const (
 	registerStateError
 )
 
-// registerProviders is the ordered provider chooser.
-var registerProviders = []string{"claude", "codex"}
+// registerProviders is the ordered provider chooser (alphabetical).
+var registerProviders = []string{"antigravity", "claude", "codex"}
 
 // progressTailMax bounds how many trailing Say lines the progress log renders so
 // a long walkthrough stays concise (acceptance: bounded log tail).
@@ -300,12 +300,15 @@ func (m AgentAccountRegisterModel) handleProviderKey(msg tea.KeyMsg) (tea.Model,
 }
 
 // beginReauth switches the model into in-place reauthentication for accountID
-// and launches the codex flow immediately. There is no provider chooser step:
-// the account already has a provider, and the flow replaces that account's
-// credential rather than registering a new one.
-func (m AgentAccountRegisterModel) beginReauth(accountID string) (AgentAccountRegisterModel, tea.Cmd) {
+// and launches the matching provider's reauth flow immediately. There is no
+// provider chooser step: the account already has a provider, and the flow
+// replaces that account's credential rather than registering a new one.
+func (m AgentAccountRegisterModel) beginReauth(accountID, provider string) (AgentAccountRegisterModel, tea.Cmd) {
+	if provider == "" {
+		provider = accountReauthProvider
+	}
 	m.reauthAccountID = accountID
-	return m.startFlow(accountReauthProvider)
+	return m.startFlow(provider)
 }
 
 // startFlow wires the bridge prompter and launches RunClaudeAdd / RunCodexAdd on
@@ -353,7 +356,7 @@ func (m AgentAccountRegisterModel) startFlow(provider string) (AgentAccountRegis
 		if pe := proofRegisterExec(); pe != nil {
 			// e2e proof builds only; nil in every production binary.
 			exec = pe
-		} else if prov == "claude" && remote == "" {
+		} else if (prov == "claude" || prov == "antigravity") && remote == "" {
 			m.execBridge = newTUIExec(flowCtx)
 			exec = m.execBridge
 		} else {
@@ -387,6 +390,22 @@ func (m AgentAccountRegisterModel) startFlow(provider string) (AgentAccountRegis
 				err = accountflow.RunCodexReauth(flowCtx, opts, reauthID)
 			} else {
 				err = accountflow.RunCodexAdd(flowCtx, opts)
+			}
+		case "antigravity":
+			if remote != "" {
+				donec <- antigravityRemoteRefusal(remote, reauthID)
+				return
+			}
+			opts := accountflow.AntigravityOptions{
+				Exec:     exec,
+				Prompter: prompter,
+				Client:   client,
+				HomeDir:  home,
+			}
+			if reauthID != "" {
+				err = accountflow.RunAntigravityReauth(flowCtx, opts, reauthID)
+			} else {
+				err = accountflow.RunAntigravityAdd(flowCtx, opts)
 			}
 		default: // claude
 			opts := accountflow.ClaudeOptions{
@@ -457,6 +476,17 @@ func codexRemoteRefusal(destination, reauthAccountID string) error {
 	}
 	return &registrationRefusedError{msg: fmt.Sprintf(
 		"codex registration runs `codex login` on this machine, not on %s, and this machine need not have the codex CLI at all. "+
+			"Run `%s` in a shell on %s instead.",
+		destination, remedy, destination)}
+}
+
+func antigravityRemoteRefusal(destination, reauthAccountID string) error {
+	remedy := "boss account add antigravity"
+	if reauthAccountID != "" {
+		remedy = "boss account reauth " + reauthAccountID
+	}
+	return &registrationRefusedError{msg: fmt.Sprintf(
+		"antigravity registration runs `agy` on this machine, not on %s, and this machine need not have the agy CLI at all. "+
 			"Run `%s` in a shell on %s instead.",
 		destination, remedy, destination)}
 }

@@ -430,6 +430,20 @@ func (m *materializerAdapter) MaterializeAgentAccount(ctx context.Context, accou
 		}
 		return materialized.Env, nil
 	}
+	if string(acct.Provider) == "antigravity" {
+		if m.codex == nil {
+			return nil, fmt.Errorf("materialize antigravity account: %w: no home-dir materializer is wired",
+				account.ErrInjectionUndetermined)
+		}
+		materialized, _, err := m.codex.MaterializeAntigravity(ctx, accountID)
+		if err != nil {
+			if isUndeterminedLocalMaterializeError(err) {
+				return nil, fmt.Errorf("materialize antigravity account: %w: %w", account.ErrInjectionUndetermined, err)
+			}
+			return nil, fmt.Errorf("materialize antigravity account: %w", err)
+		}
+		return materialized.Env, nil
+	}
 	client, ok := m.client(string(acct.Provider))
 	if !ok {
 		// Undetermined rather than invalid: no plugin is loaded for this
@@ -590,10 +604,11 @@ func isUndeterminedLocalMaterializeError(err error) bool {
 
 // RemoveMaterialization deletes the on-disk credential materialization for a
 // removed account, so no plaintext credential outlives the account row. Only
-// codex materializes anything on disk (claude is env-only), so every other
-// provider — and an unconfigured codex leg — is a nil-error no-op; an unknown
-// provider must not reach the materializer, which rejects it. A real failure is
-// returned so the caller can fail closed rather than orphan a credential file.
+// codex and antigravity materialize credentials on disk (claude is env-only),
+// so every other provider — and an unconfigured materializer leg — is a
+// nil-error no-op; an unknown provider must not reach the materializer, which
+// rejects it. A real failure is returned so the caller can fail closed rather
+// than orphan a credential file.
 //
 // It is deliberately NOT part of account.Materializer: that interface is the
 // spawn seam, and removal is not a spawn capability. Callers reach this method
@@ -601,11 +616,11 @@ func isUndeterminedLocalMaterializeError(err error) bool {
 // same pattern the daemon already uses for the usage-probe capability. Errors
 // carry only path components and identifiers, never credential bytes.
 func (m *materializerAdapter) RemoveMaterialization(ctx context.Context, provider, accountID string) error {
-	if provider != "codex" || m.codex == nil {
+	if (provider != "codex" && provider != "antigravity") || m.codex == nil {
 		return nil
 	}
 	if err := m.codex.RemoveAgentAccount(ctx, provider, accountID); err != nil {
-		return fmt.Errorf("remove codex materialization: %w", err)
+		return fmt.Errorf("remove %s materialization: %w", provider, err)
 	}
 	return nil
 }

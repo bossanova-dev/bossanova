@@ -14,8 +14,11 @@ import {
   areaOf,
   main,
   fetchAgentPrs,
+  hydrateApprovalParks,
+  MAX_APPROVAL_HISTORY_READS,
 } from './retro-signals.mjs'
 import { parseNote } from './retro-notes.mjs'
+import { readArgs } from '../commit-status.mjs'
 
 const at = '2026-10-07T00:00:00.000Z'
 const author = { login: 'operator', __typename: 'User' }
@@ -56,6 +59,129 @@ const comment = (body = 'Please handle the error', who = author, file = 'src/lib
   createdAt: at,
 })
 const thread = (...comments) => ({ comments: { nodes: comments } })
+function approvedPr(number = 1) {
+  const p = pr(number, [status('boss/verify', 'SUCCESS', 'verified (approved)')])
+  p.headRefOid = number.toString(16).padStart(40, '0')
+  p.commits.nodes[0].commit.oid = p.headRefOid
+  return p
+}
+const historyStatus = (description, created_at, state = 'success', context = 'boss/verify') => ({
+  context,
+  state,
+  description,
+  created_at,
+})
+const approvalStatus = historyStatus('verified (approved)', '2026-10-06T03:00:00Z')
+const historyRun = (history) => () => ({ status: 0, stdout: JSON.stringify([history]) })
+
+test('approval hydration uses the latest preceding verify park and shared paginated read', () => {
+  const p = approvedPr()
+  const history = [
+    historyStatus('needs human: later-park', '2026-10-06T04:00:00Z'),
+    approvalStatus,
+    historyStatus('needs human: no-receipt · operator label', '2026-10-06T02:00:00Z'),
+    historyStatus('needs human: unrelated', '2026-10-06T02:30:00Z', 'pending', 'other'),
+    historyStatus('needs human: ledger-open', '2026-10-06T01:00:00Z'),
+    historyStatus('verified (approved)', '2026-10-06T00:00:00Z'),
+  ]
+  const got = hydrateApprovalParks(
+    [p],
+    { repo: 'owner/repo' },
+    {
+      run: (cmd, args) => {
+        assert.equal(cmd, 'gh')
+        assert.deepEqual(args, readArgs({ sha: p.headRefOid, repo: 'owner/repo' }))
+        return historyRun(history)()
+      },
+    },
+  )
+  assert.equal(got.truncated, false)
+  assert.equal(got.prs[0].commits.nodes[0].commit.approvedOver, 'no-receipt')
+  assert.equal(p.commits.nodes[0].commit.approvalHistoryRead, undefined)
+  assert.deepEqual(
+    collectParks(got.prs).notes.map((n) => n.where),
+    ['boss/verify approval: verified-approved over no-receipt'],
+  )
+})
+test('history without a preceding park records unrecorded; unread approval emits nothing', () => {
+  const p = approvedPr()
+  assert.equal(collectParks([p]).notes.length, 0)
+  const got = hydrateApprovalParks(
+    [p],
+    { repo: 'owner/repo' },
+    { run: historyRun([approvalStatus]) },
+  )
+  assert.equal(got.prs[0].commits.nodes[0].commit.approvedOver, null)
+  assert.deepEqual(
+    collectParks(got.prs).notes.map((n) => n.where),
+    ['boss/verify approval: verified-approved over unrecorded'],
+  )
+})
+test('approval hydration normalises REST failure states for defect and blocked parks', () => {
+  for (const code of ['defect', 'blocked']) {
+    const got = hydrateApprovalParks(
+      [approvedPr()],
+      { repo: 'owner/repo' },
+      {
+        run: historyRun([
+          approvalStatus,
+          historyStatus(`${code}: 1 finding(s), needs human`, '2026-10-06T02:00:00Z', 'failure'),
+        ]),
+      },
+    )
+    assert.equal(got.prs[0].commits.nodes[0].commit.approvedOver, code)
+    assert.equal(
+      collectParks(got.prs).notes[0].where,
+      `boss/verify approval: verified-approved over ${code}`,
+    )
+  }
+})
+test('history reads cap approved commits and emit no occurrence for unread commits', () => {
+  let reads = 0
+  const got = hydrateApprovalParks(
+    Array.from({ length: MAX_APPROVAL_HISTORY_READS + 1 }, (_, i) => approvedPr(i + 1)),
+    { repo: 'owner/repo' },
+    {
+      run: () => {
+        reads++
+        return historyRun([approvalStatus])()
+      },
+    },
+  )
+  assert.equal(reads, MAX_APPROVAL_HISTORY_READS)
+  assert.equal(got.truncated, true)
+  assert.ok(got.prs.slice(0, -1).every((p) => p.commits.nodes[0].commit.approvalHistoryRead))
+  assert.equal(got.prs.at(-1).commits.nodes[0].commit.approvalHistoryRead, undefined)
+  assert.equal(collectParks([got.prs.at(-1)]).notes.length, 0)
+})
+test('history hydration skips out-of-window PRs and commits without an approved rollup', () => {
+  const p = approvedPr()
+  p.updatedAt = '2026-09-01T00:00:00Z'
+  const q = approvedPr(2)
+  q.updatedAt = '2026-11-01T00:00:00Z'
+  const prs = [p, q, pr(3)]
+  const got = hydrateApprovalParks(
+    prs,
+    { repo: 'owner/repo', start: '2026-10-01', end: '2026-10-31' },
+    { run: () => assert.fail('no history read expected') },
+  )
+  assert.equal(got.truncated, false)
+  assert.equal(got.prs[0], p)
+  assert.equal(got.prs[1], q)
+})
+test('malformed status-history payloads are classified as graphql-error', () => {
+  for (const stdout of ['{', '{}', '[null]', '[[{"context":"boss/verify"}]]']) {
+    assert.throws(
+      () =>
+        hydrateApprovalParks(
+          [approvedPr()],
+          { repo: 'owner/repo' },
+          { run: () => ({ status: 0, stdout }) },
+        ),
+      { reason: 'graphql-error' },
+    )
+  }
+})
 
 test('review starters include the PR author, exclude replies, bots and configured agent authors', () => {
   const p = pr()
@@ -91,6 +217,10 @@ test('park reasons include unknown codes, defects and the two approval paths', (
   const p = pr(1, [status('boss/verify', 'PENDING', 'needs human: repair-exhausted')])
   const q = pr(2, [status('boss/verify', 'FAILURE', 'defect: 1 finding(s), needs human')])
   const r = pr(3, [status('boss/verify', 'SUCCESS', 'verified (approved)')])
+  Object.assign(r.commits.nodes[0].commit, {
+    approvalHistoryRead: true,
+    approvedOver: 'no-receipt',
+  })
   const s = pr(4, [status('boss/verify', 'PENDING', 'needs human: future-reason')])
   s.state = 'MERGED'
   const t = pr(5, [status('boss/verify', 'SUCCESS', 'verified')])
@@ -99,9 +229,9 @@ test('park reasons include unknown codes, defects and the two approval paths', (
     [
       'boss/verify needs human: repair-exhausted',
       'boss/verify needs human: defect',
-      'boss/verify approval: verified-approved',
+      'boss/verify approval: verified-approved over no-receipt',
       'boss/verify needs human: future-reason',
-      'boss/verify approval: merged-by-human',
+      'boss/verify approval: merged-by-human over future-reason',
     ],
   )
 })
@@ -110,7 +240,10 @@ test('a merged PR whose head carries a green park counts merged-by-human', () =>
   p.state = 'MERGED'
   assert.deepEqual(
     collectParks([p]).notes.map((n) => n.where),
-    ['boss/verify needs human: human-review:ui', 'boss/verify approval: merged-by-human'],
+    [
+      'boss/verify needs human: human-review:ui',
+      'boss/verify approval: merged-by-human over human-review:ui',
+    ],
   )
 })
 test('a labelled park groups by its codes, not its label', () => {
@@ -311,6 +444,57 @@ function harness({ prs = [], log = '', changedRun, watermark, bossAvailable = tr
 }
 const revertLog = (subject, body = '', sha = 'a'.repeat(40)) =>
   `${sha}\0${at}\0${subject}\0${body}\0\x1e`
+
+test('failed approval history skips parks without notes or watermark advancement', () => {
+  const h = harness({
+    prs: [approvedPr()],
+    changedRun: (cmd, args) =>
+      cmd === 'gh' && args[1]?.includes('/statuses?')
+        ? { status: 1, stderr: 'API rate limit exceeded' }
+        : undefined,
+  })
+  const result = h.invoke('--only', 'parks')
+  assert.equal(result.collectors.parks.status, 'skipped')
+  assert.equal(result.collectors.parks.reason, 'rate-limited')
+  assert.equal(h.notes.size, 0)
+  assert.equal(JSON.parse(h.files.get('/git/boss-retro-signals.json')).collectors.parks, undefined)
+})
+test('parks hydration records approval codes and holds the watermark at the history cap', () => {
+  const h = harness({
+    prs: Array.from({ length: MAX_APPROVAL_HISTORY_READS + 1 }, (_, i) => approvedPr(i + 1)),
+    changedRun: (cmd, args) =>
+      cmd === 'gh' && args[1]?.includes('/statuses?')
+        ? historyRun([
+            approvalStatus,
+            historyStatus('needs human: no-receipt', '2026-10-06T02:00:00Z'),
+          ])()
+        : undefined,
+  })
+  const result = h.invoke('--only', 'parks')
+  assert.equal(result.truncated, true)
+  assert.equal(result.collectors.parks.status, 'ok')
+  assert.ok(h.notes.size > 0)
+  assert.equal(
+    h.calls.filter((c) => c.cmd === 'gh' && c.args[1]?.includes('/statuses?')).length,
+    MAX_APPROVAL_HISTORY_READS,
+  )
+  assert.equal(JSON.parse(h.files.get('/git/boss-retro-signals.json')).collectors.parks, undefined)
+})
+test('collect reads approval history only for agent PRs in the parks collector', () => {
+  const p = approvedPr()
+  const nonAgent = approvedPr(2)
+  nonAgent.commits.nodes[0].commit.statusCheckRollup.contexts.nodes.shift()
+  const h = harness({
+    prs: [p, nonAgent],
+    changedRun: (cmd, args) =>
+      cmd === 'gh' && args[1]?.includes('/statuses?') ? historyRun([approvalStatus])() : undefined,
+  })
+  h.invoke('--only', 'ci')
+  assert.equal(h.calls.filter((c) => c.args[1]?.includes('/statuses?')).length, 0)
+  const result = h.invoke('--dry-run', '--only', 'parks')
+  assert.equal(h.calls.filter((c) => c.args[1]?.includes('/statuses?')).length, 1)
+  assert.equal(result.planned[0].where, 'boss/verify approval: verified-approved over unrecorded')
+})
 
 for (const [shape, subject, body] of [
   ['sha', 'Revert change', `This reverts commit ${'b'.repeat(40)}`],

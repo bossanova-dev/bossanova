@@ -61,13 +61,49 @@ func TestKeychainStoreTreatsMissingFileRecordsAsSignedOut(t *testing.T) {
 	}
 }
 
+func TestKeychainStoreSharesSingleReadAcrossInstances(t *testing.T) {
+	ring := &fileLikeTokenKeyring{items: map[string]keyring.Item{}}
+	cache := &tokenCache{}
+	s1 := &KeychainStore{ring: ring, cache: cache}
+	s2 := &KeychainStore{ring: ring, cache: cache}
+
+	want := &Tokens{AccessToken: "access-1", Email: "user@example.com", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := s1.Save(want); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	// Reset cache entry so the first Load() hits the keyring once.
+	cache.hasEntry = false
+
+	got1, err := s1.Load()
+	if err != nil || got1.AccessToken != want.AccessToken {
+		t.Fatalf("s1.Load() = (%+v, %v)", got1, err)
+	}
+	got2, err := s2.Load()
+	if err != nil || got2.AccessToken != want.AccessToken {
+		t.Fatalf("s2.Load() = (%+v, %v)", got2, err)
+	}
+	if ring.getCalls != 1 {
+		t.Fatalf("ring.Get called %d times, want 1", ring.getCalls)
+	}
+
+	// Delete invalidates the cache so a subsequent Load sees the missing key.
+	if err := s1.Delete(); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, err := s2.Load(); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("s2.Load() after Delete() error = %v, want fs.ErrNotExist", err)
+	}
+}
+
 // fileLikeTokenKeyring mirrors the file backend's missing-item behavior:
 // Remove reports fs.ErrNotExist rather than keyring.ErrKeyNotFound.
 type fileLikeTokenKeyring struct {
-	items map[string]keyring.Item
+	items    map[string]keyring.Item
+	getCalls int
 }
 
 func (r *fileLikeTokenKeyring) Get(key string) (keyring.Item, error) {
+	r.getCalls++
 	item, ok := r.items[key]
 	if !ok {
 		return keyring.Item{}, fs.ErrNotExist

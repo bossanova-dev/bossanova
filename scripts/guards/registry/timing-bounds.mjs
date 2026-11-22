@@ -1,6 +1,6 @@
 export default {
   id: 'timing-bounds',
-  rule: 'No test asserts an upper bound on measured wall-clock time against a bare numeric literal.',
+  rule: 'Tests avoid literal wall-clock upper bounds and child-process deadlines below 30 seconds.',
   command: 'node scripts/guards/check-timing-bounds.mjs',
   wiring: { make: 'lint-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
   scans: ['**/*_test.go', '**/*.test.mjs'],

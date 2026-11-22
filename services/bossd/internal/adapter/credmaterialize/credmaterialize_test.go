@@ -2059,7 +2059,7 @@ func TestMaterializeConcurrentNoRace(t *testing.T) {
 			// Write atomically (as codex/atomicWriteFile does) so a concurrent
 			// persist-back read on the shared dir never sees a torn file — the
 			// point under test is serialized saves, not a non-atomic test writer.
-			if err := atomicWriteFile(filepath.Join(res.HomeDir, authFileName), refreshed, 0o600); err != nil {
+			if err := atomicWriteFile(filepath.Join(res.HomeDir, authFileName), refreshed); err != nil {
 				t.Errorf("rewrite auth.json: %v", err)
 				return
 			}

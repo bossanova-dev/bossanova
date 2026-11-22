@@ -57,6 +57,7 @@ go_test(
         "pane_test.go",
         "prtitle_test.go",
         "resolve_test.go",
+        "rotation_test.go",
         "runner_test.go",
         "transcript_test.go",
         "usage_test.go",

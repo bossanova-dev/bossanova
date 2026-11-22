@@ -155,7 +155,11 @@ const accountReauthProvider = "codex"
 
 // accountReauthSupported reports whether [R]eauth can run for this account.
 func accountReauthSupported(a *pb.AgentAccount) bool {
-	return a != nil && a.GetProvider() == accountReauthProvider
+	if a == nil {
+		return false
+	}
+	p := a.GetProvider()
+	return p == accountReauthProvider || p == "antigravity"
 }
 
 // accountReauthUnsupportedStatus is the in-place refusal shown when [R] is

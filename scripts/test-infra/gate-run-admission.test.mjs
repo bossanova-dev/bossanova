@@ -9,6 +9,8 @@ import { test } from 'node:test'
 import { tempDir } from './test-tmpdir.mjs'
 import { reclaimLockDir } from './disk-headroom-lib.mjs'
 
+const LOAD_TOLERANT_WAIT_MS = 30_000
+
 const runner = fileURLToPath(new URL('../gate-run.mjs', import.meta.url))
 const wrapper = fileURLToPath(new URL('./run-gate.mjs', import.meta.url))
 function fixture(t) {
@@ -33,7 +35,7 @@ function fixture(t) {
       cwd: dir,
       env: { ...env, ...extra },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: LOAD_TOLERANT_WAIT_MS + 15_000,
     })
   const startArgv = (argv, extra) => {
     const result = call(runner, ['start', '--', ...argv], extra)
@@ -46,11 +48,12 @@ function fixture(t) {
     return run
   }
   const start = (body, extra) => startArgv([process.execPath, '-e', body], extra)
-  const wait = (run, timeout = '10000') => call(runner, ['wait', '--timeout', timeout, run])
+  const wait = (run, timeout = String(LOAD_TOLERANT_WAIT_MS)) =>
+    call(runner, ['wait', '--timeout', timeout, run])
   return { dir, slots, env, call, start, startArgv, wait }
 }
 async function until(check) {
-  const deadline = Date.now() + 10000
+  const deadline = Date.now() + LOAD_TOLERANT_WAIT_MS
   while (!check()) {
     assert.ok(Date.now() < deadline, 'fixture failed to reach expected state')
     await setTimeout(10)

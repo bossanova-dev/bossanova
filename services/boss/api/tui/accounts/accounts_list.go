@@ -414,11 +414,13 @@ func (m AgentAccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd
 			m.setStatus(accountReauthUnsupportedStatus(acct.GetProvider()), true)
 			return m, nil
 		}
+		provider := acct.GetProvider()
 		m.reauthing[id] = true
 		return m, func() tea.Msg {
 			return ui.SwitchViewMsg{
 				View:            ui.ViewAgentAccountRegister,
 				ReauthAccountID: id,
+				ReauthProvider:  provider,
 				ReturnView:      ui.ViewAgentAccounts,
 			}
 		}

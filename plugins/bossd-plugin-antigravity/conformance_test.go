@@ -14,7 +14,6 @@ func TestAgentRunnerConformance(t *testing.T) {
 		Client: agentrunnertest.Serve(t, s),
 		Unsupported: []string{
 			bossanovav1.AgentRunnerService_PreflightHeadlessRun_FullMethodName,
-			bossanovav1.AgentRunnerService_MaterializeAgentAccount_FullMethodName,
 			bossanovav1.AgentRunnerService_DescribeMCPSurface_FullMethodName,
 		},
 	})

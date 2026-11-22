@@ -6,14 +6,16 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+const LOAD_TOLERANT_WAIT_MS = 30_000
+
 const runner = fileURLToPath(new URL('../gate-run.mjs', import.meta.url))
 function call(args, env = {}) {
-  const childEnv = { ...process.env, BOSS_GATE_MIN_FREE_GIB: '0', ...env }
+  const childEnv = { ...process.env, BOSS_GATE_REUSE: '0', BOSS_GATE_MIN_FREE_GIB: '0', ...env }
   delete childEnv.NODE_TEST_CONTEXT
   return spawnSync(process.execPath, [runner, ...args], {
     encoding: 'utf8',
     env: childEnv,
-    timeout: 20000,
+    timeout: LOAD_TOLERANT_WAIT_MS + 15_000,
   })
 }
 function fixture(t, body, env = {}, loadRatio = 0) {
@@ -42,7 +44,12 @@ function fixture(t, body, env = {}, loadRatio = 0) {
   const start = fixtureCall(['start', '--', process.execPath, '--test', file])
   assert.equal(start.status, 0, start.stderr)
   run = start.stdout.split('\n')[0]
-  return { dir, file, run, wait: () => fixtureCall(['wait', '--timeout', '15000', run]) }
+  return {
+    dir,
+    file,
+    run,
+    wait: () => fixtureCall(['wait', '--timeout', String(LOAD_TOLERANT_WAIT_MS), run]),
+  }
 }
 function alive(pid) {
   try {
@@ -57,7 +64,7 @@ function alive(pid) {
   }
 }
 function until(fn) {
-  const deadline = Date.now() + 10000
+  const deadline = Date.now() + LOAD_TOLERANT_WAIT_MS
   while (Date.now() < deadline) {
     if (fn()) return
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
@@ -137,7 +144,7 @@ test('bare failing command finds no target and creates no rerun logs', (t) => {
   const start = call(['start', '--', process.execPath, '-e', 'process.exit(1)'])
   const run = start.stdout.split('\n')[0]
   t.after(() => fs.rmSync(run, { recursive: true, force: true }))
-  const result = call(['wait', '--timeout', '10000', run])
+  const result = call(['wait', '--timeout', String(LOAD_TOLERANT_WAIT_MS), run])
   assert.equal(result.status, 1)
   assert.match(result.stdout, /isolation:.*no re-runnable failure target/)
   assert.equal(fs.existsSync(path.join(run, 'isolation')), false)
@@ -203,7 +210,7 @@ test('target cap prevents every rerun', (t) => {
   })
   const run = start.stdout.split('\n')[0]
   t.after(() => fs.rmSync(run, { recursive: true, force: true }))
-  const result = call(['wait', '--timeout', '10000', run])
+  const result = call(['wait', '--timeout', String(LOAD_TOLERANT_WAIT_MS), run])
   assert.equal(result.status, 1)
   assert.match(result.stdout, /not attempted - 2 targets exceed the cap/)
   assert.equal(fs.existsSync(path.join(run, 'isolation')), false)

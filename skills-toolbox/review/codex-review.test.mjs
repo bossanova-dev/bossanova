@@ -1183,7 +1183,7 @@ test('CLI: auth diagnostics preserve probe tokens and run failure status (codex)
         env,
         cwd: dir,
         encoding: 'utf8',
-        timeout: 5000,
+        timeout: LOAD_TOLERANT_WAIT_MS,
       })
       assert.equal(res.status, 0)
       assert.equal(res.stdout, `${token}\n`)
@@ -1191,7 +1191,7 @@ test('CLI: auth diagnostics preserve probe tokens and run failure status (codex)
       const review = spawnSync(
         process.execPath,
         [SCRIPT_PATH, 'run', '--base', 'abc', '--head', 'def', '--repo', dir],
-        { env, encoding: 'utf8', timeout: 5000 },
+        { env, encoding: 'utf8', timeout: LOAD_TOLERANT_WAIT_MS },
       )
       assert.equal(review.status, code)
       if (code !== 0)
@@ -1281,7 +1281,11 @@ test('CLI: exit-zero empty review keeps generic failure despite auth stderr (cod
     const res = spawnSync(
       process.execPath,
       [SCRIPT_PATH, 'run', '--base', 'abc', '--head', 'def', '--repo', dir],
-      { env: { ...process.env, BOSS_CODEX_BIN: bin }, encoding: 'utf8', timeout: 5000 },
+      {
+        env: { ...process.env, BOSS_CODEX_BIN: bin },
+        encoding: 'utf8',
+        timeout: LOAD_TOLERANT_WAIT_MS,
+      },
     )
     assert.equal(res.status, 1)
     assert.ok(res.stderr.startsWith('codex-review: codex exec failed'), res.stderr)

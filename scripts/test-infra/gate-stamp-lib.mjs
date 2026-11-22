@@ -78,13 +78,8 @@ export function resolveBaseCommit(repoRoot, baseRef) {
   }).trim()
 }
 
-export function expansionVersions(env = process.env) {
-  const goVersion = safeOutput('go', ['version'])
-  const bazelVersion = safeOutput('bazel', ['version'])
+export function expansionEnv(env = process.env) {
   return {
-    node: process.version,
-    go: goVersion,
-    bazel: bazelVersion,
     RACE: env.RACE || '',
     BOSS_NO_BAZEL: env.BOSS_NO_BAZEL || '',
     BAZEL_TEST_FLAGS: env.BAZEL_TEST_FLAGS || '',
@@ -93,6 +88,15 @@ export function expansionVersions(env = process.env) {
     MAKEOVERRIDES: env.MAKEOVERRIDES || '',
     // Native targets pass it to `go test`; Bazel targets map it to patterns. Neither scoped run is whole-module.
     GO_TEST_PACKAGES: env.GO_TEST_PACKAGES || '',
+  }
+}
+
+export function expansionVersions(env = process.env) {
+  return {
+    node: process.version,
+    go: safeOutput('go', ['version']),
+    bazel: safeOutput('bazel', ['version']),
+    ...expansionEnv(env),
   }
 }
 

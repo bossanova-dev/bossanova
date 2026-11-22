@@ -95,3 +95,25 @@ func TestDeriveClaudeIdentity_Accounts_AC225501_AC225502(t *testing.T) {
 		}
 	}
 }
+
+func TestDeriveAntigravityIdentity(t *testing.T) {
+	got := DeriveIdentity(context.Background(), "antigravity", "work", []byte(`{"id_token_email":"  USER@Example.com "}`), nil)
+	digest := sha256.Sum256([]byte("antigravity\x00user@example.com"))
+	want := domain.AgentAccountIdentity{
+		Kind:   domain.AgentAccountIdentityKindAntigravityUser,
+		Digest: hex.EncodeToString(digest[:]),
+	}
+	if got != want || !got.IsConfident() {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	none := domain.AgentAccountIdentity{Kind: domain.AgentAccountIdentityKindNone}
+	for name, cred := range map[string]string{
+		"missing email": `{"token":{"refresh_token":"r"}}`,
+		"blank email":   `{"id_token_email":"  "}`,
+		"garbage":       `not-json`,
+	} {
+		if got := DeriveIdentity(context.Background(), "antigravity", "work", []byte(cred), nil); got != none || got.IsConfident() {
+			t.Errorf("%s: got %+v, want none", name, got)
+		}
+	}
+}

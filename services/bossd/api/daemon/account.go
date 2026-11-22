@@ -698,6 +698,20 @@ func validateCredentialBlob(provider string, blob []byte) error {
 			}
 		}
 		return nil
+	case domain.AgentAccountProviderAntigravity:
+		var payload struct {
+			Token struct {
+				AccessToken  string `json:"access_token"`
+				RefreshToken string `json:"refresh_token"`
+			} `json:"token"`
+		}
+		if err := json.Unmarshal(blob, &payload); err != nil {
+			return fmt.Errorf("antigravity credential is not valid JSON")
+		}
+		if strings.TrimSpace(payload.Token.RefreshToken) == "" && strings.TrimSpace(payload.Token.AccessToken) == "" {
+			return fmt.Errorf("antigravity credential missing token.refresh_token or token.access_token")
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown provider: %s", provider)
 	}
@@ -737,12 +751,46 @@ func normalizeCredentialBlobForSave(provider string, blob []byte) []byte {
 }
 
 func sameCredential(provider string, left, right []byte) bool {
-	if domain.AgentAccountProvider(provider) == domain.AgentAccountProviderClaude {
+	switch domain.AgentAccountProvider(provider) {
+	case domain.AgentAccountProviderClaude:
 		return bytes.Equal(bytes.TrimSpace(left), bytes.TrimSpace(right))
+	case domain.AgentAccountProviderAntigravity:
+		leftTokens, leftOK := antigravityCredentialTokens(left)
+		rightTokens, rightOK := antigravityCredentialTokens(right)
+		return leftOK && rightOK && leftTokens == rightTokens
+	default:
+		leftTokens, leftOK := codexCredentialTokens(left)
+		rightTokens, rightOK := codexCredentialTokens(right)
+		return leftOK && rightOK && leftTokens == rightTokens
 	}
-	leftTokens, leftOK := codexCredentialTokens(left)
-	rightTokens, rightOK := codexCredentialTokens(right)
-	return leftOK && rightOK && leftTokens == rightTokens
+}
+
+type antigravityCredentialKey struct {
+	access  string
+	refresh string
+	email   string
+}
+
+func antigravityCredentialTokens(blob []byte) (antigravityCredentialKey, bool) {
+	var payload struct {
+		Token struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		} `json:"token"`
+		IDTokenEmail string `json:"id_token_email"`
+	}
+	if err := json.Unmarshal(blob, &payload); err != nil {
+		return antigravityCredentialKey{}, false
+	}
+	key := antigravityCredentialKey{
+		access:  strings.TrimSpace(payload.Token.AccessToken),
+		refresh: strings.TrimSpace(payload.Token.RefreshToken),
+		email:   strings.ToLower(strings.TrimSpace(payload.IDTokenEmail)),
+	}
+	if key.refresh == "" && key.access == "" {
+		return antigravityCredentialKey{}, false
+	}
+	return key, true
 }
 
 type codexCredentialKey struct {
@@ -800,7 +848,7 @@ func isReservedAccountLabel(label string) bool {
 
 func validAccountProvider(p string) bool {
 	switch domain.AgentAccountProvider(p) {
-	case domain.AgentAccountProviderClaude, domain.AgentAccountProviderCodex:
+	case domain.AgentAccountProviderClaude, domain.AgentAccountProviderCodex, domain.AgentAccountProviderAntigravity:
 		return true
 	default:
 		return false

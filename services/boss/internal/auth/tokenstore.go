@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"sync"
 	"time"
 
 	"github.com/99designs/keyring"
@@ -123,10 +124,37 @@ type TokenStore interface {
 	Delete() error
 }
 
+// keychainCacheTTL bounds how long an in-process KeychainStore caches a Load()
+// result across callers in the same boss invocation. Multiple startup paths
+// (auth manager, CLI telemetry, TUI telemetry, cloud client) each open a
+// KeychainStore and read workos-tokens-v1; without process-wide serialization
+// and short-TTL caching, macOS Keychain pops up one modal prompt per caller on
+// every freshly built local binary.
+const keychainCacheTTL = 30 * time.Second
+
+type tokenCache struct {
+	mu        sync.Mutex
+	hasEntry  bool
+	fetchedAt time.Time
+	tokens    *Tokens
+	err       error
+}
+
+var sharedKeychainCache = &tokenCache{}
+
+func cloneTokens(t *Tokens) *Tokens {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	return &cp
+}
+
 // KeychainStore persists tokens in the OS keychain (macOS Keychain,
 // Linux secret-service, Windows credential manager).
 type KeychainStore struct {
-	ring keyring.Keyring
+	ring  keyring.Keyring
+	cache *tokenCache
 }
 
 // NewKeychainStore opens a keyring backed by the OS credential store. The
@@ -150,13 +178,17 @@ func NewKeychainStore(allowInsecure bool) (*KeychainStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open keyring: %w", err)
 	}
-	return &KeychainStore{ring: ring}, nil
+	return &KeychainStore{ring: ring, cache: sharedKeychainCache}, nil
 }
 
 // Save writes an authoritative versioned record before retiring the legacy
 // migration record. A legacy cleanup error remains visible to callers: the
 // new state is durable, but an older writer could otherwise still race it.
 func (s *KeychainStore) Save(tokens *Tokens) error {
+	if s.cache != nil {
+		s.cache.mu.Lock()
+		defer s.cache.mu.Unlock()
+	}
 	data, err := json.Marshal(tokenRecord{Version: tokenRecordV1, Tokens: *tokens})
 	if err != nil {
 		return fmt.Errorf("marshal tokens: %w", err)
@@ -172,6 +204,12 @@ func (s *KeychainStore) Save(tokens *Tokens) error {
 	if err := s.ring.Remove(tokenKey); err != nil && !tokenKeyMissing(err) {
 		return err
 	}
+	if s.cache != nil {
+		s.cache.hasEntry = true
+		s.cache.fetchedAt = time.Now()
+		s.cache.tokens = cloneTokens(tokens)
+		s.cache.err = nil
+	}
 	return nil
 }
 
@@ -182,6 +220,28 @@ func (s *KeychainStore) Save(tokens *Tokens) error {
 // Any other Get failure (typically a passphrase mismatch after the
 // keyringutil rollout) is wrapped with ErrCredentialsUnreadable.
 func (s *KeychainStore) Load() (*Tokens, error) {
+	if s.cache == nil {
+		return s.loadUncached()
+	}
+	s.cache.mu.Lock()
+	defer s.cache.mu.Unlock()
+	if s.cache.hasEntry && time.Since(s.cache.fetchedAt) < keychainCacheTTL {
+		return cloneTokens(s.cache.tokens), s.cache.err
+	}
+	tokens, err := s.loadUncached()
+	// Cache successful loads and definitive missing-record results so repeated
+	// startup callers share a single OS keychain access. Transient/unreadable
+	// errors are not cached so a subsequent retry can succeed.
+	if err == nil || tokenKeyMissing(err) {
+		s.cache.hasEntry = true
+		s.cache.fetchedAt = time.Now()
+		s.cache.tokens = cloneTokens(tokens)
+		s.cache.err = err
+	}
+	return cloneTokens(tokens), err
+}
+
+func (s *KeychainStore) loadUncached() (*Tokens, error) {
 	item, err := s.ring.Get(versionedTokenKey)
 	if err != nil {
 		if !tokenKeyMissing(err) {
@@ -218,6 +278,13 @@ func (s *KeychainStore) loadLegacy() (*Tokens, error) {
 // cleanup fails, callers retain a known authoritative state rather than
 // reporting logout while old writers can still restore credentials.
 func (s *KeychainStore) Delete() error {
+	if s.cache != nil {
+		s.cache.mu.Lock()
+		defer s.cache.mu.Unlock()
+		s.cache.hasEntry = false
+		s.cache.tokens = nil
+		s.cache.err = nil
+	}
 	legacyErr := s.ring.Remove(tokenKey)
 	if legacyErr != nil && !tokenKeyMissing(legacyErr) {
 		return legacyErr

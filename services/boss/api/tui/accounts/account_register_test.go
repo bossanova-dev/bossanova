@@ -1062,7 +1062,7 @@ func TestAccountRegisterBeginReauthSkipsTheProviderChooser(t *testing.T) {
 	m := newRegisterModel(t, client, ex)
 	m.homeDir = func() (string, error) { return dir, nil }
 
-	m, _ = m.beginReauth("acct-codex-1")
+	m, _ = m.beginReauth("acct-codex-1", "codex")
 
 	if m.state == registerStateProvider {
 		t.Fatalf("reauth must not present the provider chooser; state=%d", m.state)

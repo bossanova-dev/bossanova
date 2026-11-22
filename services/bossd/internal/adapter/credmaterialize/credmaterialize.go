@@ -131,12 +131,13 @@ type PersistBack func(ctx context.Context) error
 // Materializer writes per-account credentials under a base dir and persists
 // agent-side refreshes back to a CredentialStore.
 type Materializer struct {
-	baseDir        string
-	store          CredentialStore
-	logger         zerolog.Logger
-	locks          keyedMutex
-	broker         *RefreshBroker
-	brokerRequired bool
+	baseDir             string
+	antigravityBaseHome string
+	store               CredentialStore
+	logger              zerolog.Logger
+	locks               keyedMutex
+	broker              *RefreshBroker
+	brokerRequired      bool
 }
 
 // Option configures a Materializer.
@@ -285,7 +286,7 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 				Msg("credmaterialize: codex auth.json has no tokens.account_id and the id_token carries no chatgpt_account_id to derive one from; codex cannot recover from a 401 without it")
 		}
 
-		if err := atomicWriteFile(authPath, authBlob, 0o600); err != nil {
+		if err := atomicWriteFile(authPath, authBlob); err != nil {
 			return fmt.Errorf("write codex auth.json at %q: %w", authPath, err)
 		}
 
@@ -971,7 +972,7 @@ func authHashPath(authPath string) string {
 func (m *Materializer) recordAuthWrite(authPath string, sum [sha256.Size]byte) {
 	path := authHashPath(authPath)
 	record := []byte(hex.EncodeToString(sum[:]))
-	writeRecord := func() error { return atomicWriteFile(path, record, 0o600) }
+	writeRecord := func() error { return atomicWriteFile(path, record) }
 	err := writeRecord()
 	if err != nil {
 		// A rename can replace a file but never a directory, so a restored or
@@ -1086,6 +1087,17 @@ func (m *Materializer) RemoveAgentAccount(ctx context.Context, provider, account
 			return fmt.Errorf("remove codex account dir for %q: %w", accountID, err)
 		}
 		return nil
+	case providerAntigravity:
+		unlock := m.locks.Lock(lockKey(providerAntigravity, accountID))
+		defer unlock()
+		dir := m.antigravityAccountDir(accountID)
+		if err := m.assertNoSymlinkChain(m.baseDir, m.accountsRoot(), filepath.Dir(dir)); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("remove antigravity account dir for %q: %w", accountID, err)
+		}
+		return nil
 	case providerClaude:
 		return nil
 	default:
@@ -1177,7 +1189,7 @@ func hasCanonicalCacheTagSignature(existing []byte) bool {
 // it over path, so a concurrent reader never observes a half-written file. The
 // temp file is cleaned up on any error before the rename. Mirrors
 // session.atomicWriteFile.
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+func atomicWriteFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -1190,7 +1202,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		cleanup()
 		return err
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		cleanup()
 		return err

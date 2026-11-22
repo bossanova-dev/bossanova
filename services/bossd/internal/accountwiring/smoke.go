@@ -353,6 +353,12 @@ func (r *SmokeRunner) materialize(ctx context.Context, accountID, provider strin
 			return credmaterialize.Materialized{}, nil, fmt.Errorf("materialize codex account: %w", err)
 		}
 		return mat, persist, nil
+	case "antigravity":
+		mat, persist, err := r.materializer.MaterializeAntigravity(ctx, accountID)
+		if err != nil {
+			return credmaterialize.Materialized{}, nil, fmt.Errorf("materialize antigravity account: %w", err)
+		}
+		return mat, persist, nil
 	default:
 		return credmaterialize.Materialized{}, nil, fmt.Errorf("credential verification unavailable: unknown provider %q", provider)
 	}

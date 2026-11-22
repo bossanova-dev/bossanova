@@ -288,7 +288,25 @@ func (s *Server) ProbeProgressLiveness(_ context.Context, req *bossanovav1.Probe
 
 func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
 	return &bossanovav1.RotationCapabilityResponse{
-		SupportsRotation: false,
-		AuthKind:         bossanovav1.AuthKind_AUTH_KIND_NONE,
+		SupportsRotation: true,
+		AuthKind:         bossanovav1.AuthKind_AUTH_KIND_HOME_DIR,
+	}, nil
+}
+
+// MaterializeAgentAccount turns the stored antigravity OAuth token JSON into a
+// per-account HOME file spec (mode 0600) plus SSH_CLIENT=1 so agy bypasses the
+// OS keyring and reads its file-based token store under HOME. The blob is NEVER
+// logged.
+func (s *Server) MaterializeAgentAccount(_ context.Context, req *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{
+		Env: map[string]string{
+			"SSH_CLIENT": "1",
+		},
+		Files: []*bossanovav1.MaterializedFile{{
+			RelativePath: ".gemini/antigravity-cli/antigravity-oauth-token",
+			Content:      req.GetCredentialBlob(),
+			Mode:         0o600,
+		}},
+		HomeDirEnvKey: "HOME",
 	}, nil
 }

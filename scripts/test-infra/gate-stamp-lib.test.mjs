@@ -244,3 +244,21 @@ test('expansionVersions includes make-expansion variables', () => {
   assert.equal(versions.BAZEL_TEST_EXTRA_FLAGS, '--nocache_test_results')
   assert.equal(versions.MAKEOVERRIDES, 'BOSS_NO_BAZEL=1')
 })
+
+test('expansionVersions retains exactly the existing stamp inputs', () => {
+  assert.deepEqual(
+    Object.keys(expansionVersions({})).sort(),
+    [
+      'node',
+      'go',
+      'bazel',
+      'RACE',
+      'BOSS_NO_BAZEL',
+      'BAZEL_TEST_FLAGS',
+      'BAZEL_TEST_EXTRA_FLAGS',
+      'MAKEFLAGS',
+      'MAKEOVERRIDES',
+      'GO_TEST_PACKAGES',
+    ].sort(),
+  )
+})

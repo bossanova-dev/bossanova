@@ -4,6 +4,7 @@ go_library(
     name = "credmaterialize",
     srcs = [
         "ambientauth.go",
+        "antigravity.go",
         "credmaterialize.go",
         "hardlinks_other.go",
         "hardlinks_unix.go",
@@ -30,6 +31,7 @@ go_test(
     name = "credmaterialize_test",
     srcs = [
         "ambientauth_test.go",
+        "antigravity_test.go",
         "codexauth_complete_test.go",
         "credmaterialize_test.go",
         "projection_dangling_test.go",

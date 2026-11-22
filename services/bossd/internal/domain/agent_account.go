@@ -10,8 +10,9 @@ import (
 type AgentAccountProvider string
 
 const (
-	AgentAccountProviderClaude AgentAccountProvider = "claude"
-	AgentAccountProviderCodex  AgentAccountProvider = "codex"
+	AgentAccountProviderClaude      AgentAccountProvider = "claude"
+	AgentAccountProviderCodex       AgentAccountProvider = "codex"
+	AgentAccountProviderAntigravity AgentAccountProvider = "antigravity"
 )
 
 // AgentAccountStatus is the enabled/disabled state of an account.
@@ -147,8 +148,9 @@ type UsageSnapshot struct {
 type AgentAccountIdentityKind string
 
 const (
-	AgentAccountIdentityKindNone      AgentAccountIdentityKind = "none"
-	AgentAccountIdentityKindCodexUser AgentAccountIdentityKind = "codex_user"
+	AgentAccountIdentityKindNone            AgentAccountIdentityKind = "none"
+	AgentAccountIdentityKindCodexUser       AgentAccountIdentityKind = "codex_user"
+	AgentAccountIdentityKindAntigravityUser AgentAccountIdentityKind = "antigravity_user"
 	// AgentAccountIdentityKindClaudeOrganizationLabel digests the Anthropic organization
 	// id together with the normalized account label. The org alone names an
 	// organization, not a person, so the label keeps two seats on one Team org
@@ -167,7 +169,9 @@ type AgentAccountIdentity struct {
 // IsConfident reports whether the identity is strong enough to link accounts
 // across daemons without a user decision.
 func (i AgentAccountIdentity) IsConfident() bool {
-	return i.Kind == AgentAccountIdentityKindCodexUser || i.Kind == AgentAccountIdentityKindClaudeOrganizationLabel
+	return i.Kind == AgentAccountIdentityKindCodexUser ||
+		i.Kind == AgentAccountIdentityKindAntigravityUser ||
+		i.Kind == AgentAccountIdentityKindClaudeOrganizationLabel
 }
 
 // AgentAccount is registry metadata for one provider login used by account rotation.

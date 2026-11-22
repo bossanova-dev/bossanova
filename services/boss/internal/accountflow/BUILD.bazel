@@ -4,6 +4,7 @@ go_library(
     name = "accountflow",
     srcs = [
         "agentbin.go",
+        "antigravity.go",
         "claude.go",
         "client.go",
         "codex.go",
@@ -26,6 +27,7 @@ go_test(
     name = "accountflow_test",
     srcs = [
         "agentbin_test.go",
+        "antigravity_test.go",
         "claude_test.go",
         "codex_test.go",
         "exec_test.go",

@@ -14,6 +14,7 @@ import { CACHE_STATES } from '../test-infra/gate-log-lib.mjs'
 
 // These lifecycle tests must not inspect or reclaim the host's caches.
 process.env.BOSS_GATE_MIN_FREE_GIB = '0'
+process.env.BOSS_GATE_REUSE = '0'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const GATE_RUN = path.join(REPO_ROOT, 'scripts/gate-run.mjs')
@@ -486,6 +487,7 @@ test('self-relaunch works from a helper path containing spaces', () => {
   const toolboxDir = path.join(root, 'skills-toolbox')
   fs.mkdirSync(path.join(scriptsDir, 'test-infra'), { recursive: true })
   fs.mkdirSync(path.join(scriptsDir, 'dev'))
+  fs.mkdirSync(path.join(scriptsDir, 'lint'))
   fs.mkdirSync(toolboxDir)
   fs.copyFileSync(GATE_RUN, path.join(scriptsDir, 'gate-run.mjs'))
   fs.copyFileSync(
@@ -511,6 +513,9 @@ test('self-relaunch works from a helper path containing spaces', () => {
     'test-infra/golangci-admission.mjs',
     'test-infra/golangci-toolchain.mjs',
     'test-infra/gate-process.mjs',
+    'test-infra/gate-reuse-lib.mjs',
+    'test-infra/gate-stamp-lib.mjs',
+    'lint/lint-stamp-lib.mjs',
     'dev/clean-go-build-cache.mjs',
   ]) {
     fs.copyFileSync(path.join(REPO_ROOT, 'scripts', name), path.join(scriptsDir, name))

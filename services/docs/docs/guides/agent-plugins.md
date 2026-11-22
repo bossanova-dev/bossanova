@@ -106,11 +106,12 @@ Its settings, under `plugins[]` with `"name": "antigravity"`:
 | `mode`                         | Passes `--mode` (`accept-edits`, `auto` or `plan`).                                                           |
 | `model`                        | Fallback `--model` for runs without their own, such as `gemini-4-neon-medium`. Run `agy models` for the list. |
 
-`agy` keeps its sign-in token in the operating system keyring. Sign in once by
-running `agy` in a terminal on the machine that runs `bossd`. A Gemini API key
-(`GEMINI_API_KEY`) or Application Default Credentials (`AGY_ADC_AUTH`) also
-reach the CLI. Boss skills for Antigravity install to
-`~/.gemini/config/skills`. Antigravity has no managed accounts.
+`agy` keeps its default sign-in token in the operating system keyring. Sign in once by
+running `agy` in a terminal on the machine that runs `bossd`, or register managed
+Antigravity accounts for automatic rotation and cross-daemon syncing with
+`boss account add antigravity`. A Gemini API key (`GEMINI_API_KEY`) or
+Application Default Credentials (`AGY_ADC_AUTH`) also reach the CLI. Boss skills
+for Antigravity install to `~/.gemini/config/skills`.
 
 ## OpenCode
 

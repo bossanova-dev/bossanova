@@ -834,6 +834,44 @@ func TestMaterializer_RemoveMaterializationPurgesCodexDir(t *testing.T) {
 	}
 }
 
+func TestMaterializer_RemoveMaterializationPurgesAntigravityDir(t *testing.T) {
+	appDataDir := t.TempDir()
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"app_data_dir":`+strconv.Quote(appDataDir)+`}`), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	t.Setenv("HOME", t.TempDir())
+
+	acct := &domain.AgentAccount{
+		ID:       "antigravity-1",
+		Provider: "antigravity",
+		Label:    "Antigravity",
+		Status:   domain.AgentAccountStatusActive,
+	}
+	store := &spyStore{accounts: map[string]*domain.AgentAccount{acct.ID: acct}}
+	m := NewMaterializer(
+		map[string]agent.RunnerClient{},
+		store,
+		&fakeCreds{blob: []byte(`{"token":{"access_token":"ag-access","refresh_token":"ag-refresh"}}`)},
+		zerolog.Nop(),
+	)
+	if _, err := m.MaterializeAgentAccount(context.Background(), acct.ID); err != nil {
+		t.Fatalf("MaterializeAgentAccount: %v", err)
+	}
+	dir := filepath.Join(appDataDir, "accounts", "antigravity", acct.ID)
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("materialized antigravity dir missing before removal: %v", err)
+	}
+
+	if err := removerFor(t, m).RemoveMaterialization(context.Background(), "antigravity", acct.ID); err != nil {
+		t.Fatalf("RemoveMaterialization: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("antigravity account dir still present after removal: %v", err)
+	}
+}
+
 // Any non-codex provider is a no-op: no error, and nothing on disk is touched.
 // An unknown provider must not reach credmaterialize.RemoveAgentAccount, which
 // rejects it with "unknown provider".

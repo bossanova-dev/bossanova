@@ -311,7 +311,7 @@ func captureCodexCredential(ctx context.Context, o *CodexOptions, rerunCmd strin
 		o.HomeDir = func() (string, error) { return tempDir("boss-account-codex-*") }
 	}
 
-	dir, cleanup, err := isolatedCodexHome(o)
+	dir, cleanup, err := isolatedTempHome(o.HomeDir, o.Prompter, "CODEX_HOME")
 	if err != nil {
 		return nil, err
 	}
@@ -343,30 +343,27 @@ func captureCodexCredential(ctx context.Context, o *CodexOptions, rerunCmd strin
 	return stored, nil
 }
 
-// isolatedCodexHome creates the private CODEX_HOME the device login writes
-// auth.json into, and returns the cleanup that MUST run on every exit path — a
-// leaked temp dir here is a leaked live credential.
-func isolatedCodexHome(o *CodexOptions) (string, func(), error) {
-	dir, err := o.HomeDir()
+// isolatedTempHome creates a private 0700 temp home directory for an isolated
+// login flow and returns the cleanup that MUST run on every exit path.
+func isolatedTempHome(homeDir func() (string, error), prompter Prompter, label string) (string, func(), error) {
+	dir, err := homeDir()
 	if err != nil {
 		return "", nil, err
 	}
-	// The dir MUST pre-exist and be private before spawn (auth.json holds live
-	// tokens).
+	// The dir MUST pre-exist and be private before spawn (credentials live here).
 	// dir is a directory: 0700 is least-privilege and owner-execute is required
-	// to traverse the CODEX_HOME dir, so a stricter 0600 would make it unusable.
-	// #nosec G302 -- Chmod(dir,0o700) on the private CODEX_HOME cred dir; 0700 is least-privilege
+	// to traverse the dir, so a stricter 0600 would make it unusable.
+	// #nosec G302 -- Chmod(dir,0o700) on the private temp cred dir; 0700 is least-privilege
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	if err := os.Chmod(dir, 0o700); err != nil {
-		// The dir exists but could not be secured, so it must still go.
 		if rerr := os.RemoveAll(dir); rerr != nil {
-			o.Prompter.Say("warning: could not remove temp CODEX_HOME %s (delete it manually — it may hold credentials): %v", dir, rerr)
+			prompter.Say("warning: could not remove temp %s %s (delete it manually — it may hold credentials): %v", label, dir, rerr)
 		}
-		return "", nil, fmt.Errorf("could not secure temp CODEX_HOME %s: %w", dir, err)
+		return "", nil, fmt.Errorf("could not secure temp %s %s: %w", label, dir, err)
 	}
 	return dir, func() {
 		if rerr := os.RemoveAll(dir); rerr != nil {
-			o.Prompter.Say("warning: could not remove temp CODEX_HOME %s (delete it manually — it may hold credentials): %v", dir, rerr)
+			prompter.Say("warning: could not remove temp %s %s (delete it manually — it may hold credentials): %v", label, dir, rerr)
 		}
 	}, nil
 }

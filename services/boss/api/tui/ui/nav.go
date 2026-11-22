@@ -54,11 +54,13 @@ type SwitchViewMsg struct {
 	FirstRepo      bool             // true when add-repo was opened from the zero-repo home empty state (return home on cancel)
 	Account        *pb.AgentAccount // selected account carrier for ViewAgentAccountEdit (BOS-266)
 	AgentAccountID string           // agent account to select once the list loads (ViewAgentAccounts only)
-	// reauthAccountID switches ViewAgentAccountRegister into in-place
+	// ReauthAccountID switches ViewAgentAccountRegister into in-place
 	// reauthentication for that account instead of adding a new one
 	// (BOS-1142): the provider chooser is skipped and the flow replaces the
-	// existing row's credential.
+	// existing row's credential. ReauthProvider selects the matching provider
+	// reauth flow (e.g. "codex", "antigravity").
 	ReauthAccountID string
+	ReauthProvider  string
 }
 
 type RepoAddCompletedMsg struct {

@@ -238,7 +238,11 @@ func (s *Server) resolveAccountLabel(ctx context.Context, requested, agentName s
 }
 
 func (s *Server) findAccountLabelProvider(ctx context.Context, requested, agentName string) (string, bool) {
-	for _, provider := range []domain.AgentAccountProvider{domain.AgentAccountProviderClaude, domain.AgentAccountProviderCodex} {
+	for _, provider := range []domain.AgentAccountProvider{
+		domain.AgentAccountProviderClaude,
+		domain.AgentAccountProviderCodex,
+		domain.AgentAccountProviderAntigravity,
+	} {
 		if string(provider) == agentName {
 			continue
 		}

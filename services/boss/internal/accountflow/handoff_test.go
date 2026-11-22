@@ -232,3 +232,22 @@ func TestMaskedRelaySuppressesRepaintNoise(t *testing.T) {
 		t.Errorf("the sign-in URL must survive normalisation:\n%s", shown)
 	}
 }
+
+func TestMaskedRelayPreservesParagraphBreaksAndSpacesURLs(t *testing.T) {
+	pr, pw := newPipePair()
+	proc := &handoffProc{lines: make(chan string, 16), waited: make(chan struct{})}
+	tee := &syncBuf{}
+	go proc.maskedRelay(pr, tee)
+
+	// ellipsis: literal-dots ok (simulates external CLI output)
+	_, _ = pw.Write([]byte("Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth?x=1\n\n\nWaiting for authentication (timeout 60s)...\nOr, paste the authorization code here and press Enter:\n"))
+	_ = pw.Close()
+
+	for range proc.Lines() {
+	}
+
+	want := "Authentication required. Please visit the URL to log in:\n\nhttps://accounts.google.com/o/oauth2/auth?x=1\n\nPaste the authorization code here and press Enter:\n"
+	if got := tee.String(); got != want {
+		t.Fatalf("relayed output =\n%q\nwant:\n%q", got, want)
+	}
+}

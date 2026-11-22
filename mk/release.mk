@@ -63,13 +63,13 @@ db-staging:
 db-production:
 	$(call db_proxy,bossanova_production,production)
 
-## deploy-staging: Build and deploy bosso and mcp-gateway to the staging Vultr VM
+## deploy-staging: Pull CI-built bosso and mcp-gateway images from GAR and deploy to staging (optional TAG=<tag>)
 deploy-staging:
-	scripts/release/vultr/deploy-vultr.sh staging
+	scripts/release/vultr/deploy-vultr.sh staging $(TAG)
 
-## deploy-production: Build and deploy bosso and mcp-gateway to the production Vultr VM
+## deploy-production: Pull CI-built bosso and mcp-gateway images from GAR and deploy to production (optional TAG=<tag>)
 deploy-production:
-	scripts/release/vultr/deploy-vultr.sh production
+	scripts/release/vultr/deploy-vultr.sh production $(TAG)
 
 ## release: Trigger the production release workflow (creates a PR from main → production)
 release:

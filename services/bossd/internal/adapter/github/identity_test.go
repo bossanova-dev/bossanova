@@ -534,7 +534,7 @@ func TestLedgerRecordsTheCallIdentity_GitHubUsage_AC226501(t *testing.T) {
 	t.Parallel()
 	usage := &fakeUsageRecorder{}
 	gh := &tokenGH{reply: func(args []string, token string) (string, error) {
-		if token != "" && args[0] == "pr" && args[1] == "merge" {
+		if token != "" && len(args) > 3 && args[0] == "api" && strings.HasSuffix(args[3], "/merge") {
 			t.Errorf("merge ran with the installation token")
 		}
 		return "{}", nil
@@ -546,7 +546,8 @@ func TestLedgerRecordsTheCallIdentity_GitHubUsage_AC226501(t *testing.T) {
 
 	want := []recordedUsage{
 		{label: "daemon:unattributed", quota: "core", identity: "installation:42"},
-		{label: "daemon:unattributed", quota: "graphql", identity: "user"},
+		{label: "daemon:unattributed", quota: "core", identity: "user"},
+		{label: "daemon:unattributed", quota: "core", identity: "user"},
 	}
 	usage.mu.Lock()
 	defer usage.mu.Unlock()

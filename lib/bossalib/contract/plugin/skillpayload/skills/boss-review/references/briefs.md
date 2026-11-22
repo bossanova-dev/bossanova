@@ -101,6 +101,9 @@ change code: return the evidence that refutes it. Return, per finding: `id`, `fi
 `fixCommit` (sha) or the refutation, and the test commands you ran with their terminal receipt
 summaries and `verificationReceipts` ids. Run each targeted test in the foreground through
 `node "$BOSS_REVIEW_TOOLBOX/verification-receipt.mjs" run --dispatch review-fix --id <finding-id>-<n> -- <cmd>`.
+Run formatters, codegen and autofix first through `run --writes`, before final gates and commits.
+Start a gate only after every writer has exited, never alongside one. Before returning, `check`
+can confirm the dispatch's receipts are still fresh.
 Use lowercase safe receipt ids. Reuse the same id for completed expected-red and green runs of
 the same command; await each run before replacing its receipt and report the expected failure
 in the summary. Distinct commands use distinct ids. Await every command; never return while one

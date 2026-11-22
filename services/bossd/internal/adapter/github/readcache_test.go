@@ -35,7 +35,7 @@ func countingPRView() *scriptedGH {
 func TestCachedReadsShareOneFetch(t *testing.T) {
 	clock := newFakeClock()
 	gh := countingPRView()
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	for i := 0; i < 4; i++ {
@@ -63,7 +63,7 @@ func TestCachedReadsShareOneFetch(t *testing.T) {
 func TestUncachedReadAlwaysFetchesAndRefreshes(t *testing.T) {
 	clock := newFakeClock()
 	gh := countingPRView()
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	_, _ = p.GetPRStatus(bg, "o/r", 7) // v1, cached
@@ -84,7 +84,7 @@ func TestUncachedReadAlwaysFetchesAndRefreshes(t *testing.T) {
 func TestInvalidatePRDropsCachedState(t *testing.T) {
 	clock := newFakeClock()
 	gh := countingPRView()
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	_, _ = p.GetPRStatus(bg, "o/r", 7)
@@ -124,7 +124,7 @@ func TestInvalidationBeatsAnInFlightFetch(t *testing.T) {
 		}
 		return fmt.Sprintf(`{"state":"OPEN","isDraft":true,"title":"v%d","reviews":[]}`, call), nil
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	done := make(chan struct{})
@@ -151,7 +151,7 @@ func TestCachedReadsCoalesceConcurrentCallers(t *testing.T) {
 		<-release
 		return emptySnapshot, nil
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	var wg sync.WaitGroup
@@ -184,7 +184,7 @@ func TestCachedReadErrorsAreNotCached(t *testing.T) {
 		}
 		return emptySnapshot, nil
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	if _, err := p.ListOpenPRs(bg, "o/r"); err == nil {
@@ -201,7 +201,7 @@ func TestCachedReadErrorsAreNotCached(t *testing.T) {
 func TestCachedReadsReturnIndependentCopies(t *testing.T) {
 	clock := newFakeClock()
 	gh := countingPRView()
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	first, _ := p.GetPRStatus(bg, "o/r", 7)
@@ -228,7 +228,7 @@ func TestCachedBranchHeadReadsShareOneFetchPerBranch(t *testing.T) {
 		mu.Unlock()
 		return fmt.Sprintf(`{"object":{"sha":"tip-%d"}}`, n), nil
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	for i := 0; i < 3; i++ {
@@ -281,7 +281,7 @@ func TestReserveReadDoesNotJoinRefusedStandardFlight_Callbacks_AC222201(t *testi
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
-	p = New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now),
+	p = New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now),
 		WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
 	standard := vcs.WithCachedReads(context.Background())
 	reserve := vcs.WithReserveQuotaReads(standard)

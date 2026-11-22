@@ -42,7 +42,7 @@ func TestGetPRStatus_RESTSupplementRefusal(t *testing.T) {
 					}
 					return `{"mergeable":true,"mergeable_state":"clean","rebaseable":true}`, nil
 				}
-				status, err := New(zerolog.Nop(), WithRunGH(fakeGH)).GetPRStatus(context.Background(), "owner/repo", 42)
+				status, err := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH))).GetPRStatus(context.Background(), "owner/repo", 42)
 				if err != nil {
 					t.Fatalf("GetPRStatus: %v", err)
 				}
@@ -82,7 +82,7 @@ func TestGetPRStatus_RESTSupplementCoreFloor(t *testing.T) {
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
 	status, err := p.GetPRStatus(vcs.WithCachedReads(context.Background()), "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRStatus: %v", err)

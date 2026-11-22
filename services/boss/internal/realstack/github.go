@@ -115,3 +115,24 @@ func OpenPRListResponse(repo, nodes string) GHResponse {
 		Stdout: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":` + nodes + `}}}}`,
 	}
 }
+
+// PRStatusResponse supplies the per-PR status query, including scenario-local repo keys.
+func PRStatusResponse(repo string, number int, pr string) GHResponse {
+	owner, name, host := fixtureRepoParts(repo)
+	return GHResponse{Args: vcs.GitHubPRStatusQueryArgs(owner, name, host, number, ""), Stdout: `{"data":{"repository":{"pullRequest":` + pr + `}}}`}
+}
+
+// PRChecksResponse supplies the per-PR rollup query from context-node JSON.
+func PRChecksResponse(repo string, number int, contexts string) GHResponse {
+	owner, name, host := fixtureRepoParts(repo)
+	return GHResponse{Args: vcs.GitHubPRChecksQueryArgs(owner, name, host, number, ""), Stdout: `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":false},"nodes":` + contexts + `}}}}]}}}}}`}
+}
+
+func fixtureRepoParts(repo string) (owner, name, host string) {
+	owner, name, host, ok := vcs.GitHubRepoParts(repo)
+	if !ok {
+		owner, name, _ = strings.Cut(repo, "/")
+		host = ""
+	}
+	return owner, name, host
+}

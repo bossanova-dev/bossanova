@@ -111,12 +111,17 @@ type webOpenResultMsg struct {
 	err error
 }
 
-// MergeResultMsg carries the result of an async MergeSession RPC call.
-// sessionID tags the session this merge was issued for so a completion that
+// MergeResultMsg carries the result of the view's async operator merge.
+// SessionID tags the session this merge was issued for so a completion that
 // resolves after the user navigated to a different session is discarded rather
 // than acted on.
 type MergeResultMsg struct {
 	SessionID string
+	// Text is the result line: what merged, or how long the operator waits.
+	Text string
+	// Unsettled marks a merge whose call ended without bossd's answer, so
+	// whether it landed is settled by a later session poll.
+	Unsettled bool
 	Err       error
 }
 

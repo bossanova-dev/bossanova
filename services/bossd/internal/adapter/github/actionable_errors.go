@@ -12,7 +12,7 @@ func classifyMergeError(err error, repoPath string, prID int) error {
 		return nil
 	}
 
-	errText := err.Error()
+	errText := ghResponseText(err)
 	if strings.Contains(errText, "refusing to allow an OAuth App to create or update workflow") &&
 		strings.Contains(errText, "without `workflow` scope") {
 		return &vcs.ActionableError{
@@ -24,9 +24,7 @@ func classifyMergeError(err error, repoPath string, prID int) error {
 		}
 	}
 
-	// GitHub's refusal of a --match-head-commit merge whose pin no longer
-	// matches the PR head reads "GraphQL: Head branch was modified. Review and
-	// try the merge again. (mergePullRequest)". Match the HEAD phrase only:
+	// GitHub refuses a merge whose pinned head moved. Match the HEAD phrase only:
 	// "Base branch was modified" is a different condition.
 	if strings.Contains(strings.ToLower(errText), "head branch was modified") {
 		return fmt.Errorf("%w: %w", vcs.ErrHeadMismatch, err)

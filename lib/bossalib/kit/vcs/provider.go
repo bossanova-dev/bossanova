@@ -205,6 +205,12 @@ func WithCachedReads(ctx context.Context) context.Context {
 	return context.WithValue(ctx, cachedReadsKey{}, true)
 }
 
+// WithoutBackgroundReads makes reads that act on their answer foreground reads,
+// bypassing background caches and quota floors while preserving the parent context.
+func WithoutBackgroundReads(ctx context.Context) context.Context {
+	return context.WithValue(context.WithValue(ctx, cachedReadsKey{}, false), reserveQuotaReadsKey{}, false)
+}
+
 // CachedReadsAllowed reports whether ctx was marked by WithCachedReads.
 func CachedReadsAllowed(ctx context.Context) bool {
 	allowed, _ := ctx.Value(cachedReadsKey{}).(bool)

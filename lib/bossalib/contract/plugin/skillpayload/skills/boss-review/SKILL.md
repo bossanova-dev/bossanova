@@ -234,7 +234,9 @@ Only when the status is `blocked`, and only once:
    `node "$BOSS_REVIEW_TOOLBOX/verification-receipt.mjs" check --dispatch review-fix --id <each-reported-id> --wait-ms 540000`
    with a tool timeout of at least 600 seconds. Exit 2 transfers ownership: repeat the bounded
    `check` for live `pending` receipts until terminal; the wait deadline never authorizes
-   restarting a live command or replacing its receipt. Re-run only `absent` or `orphaned` commands
+   restarting a live command or replacing its receipt. Re-run `stale` commands in the foreground
+   with the same id without process settlement: they are already terminal. A stale failure does
+   not spend the fix allowance. Re-run `absent` or `orphaned` commands only
    after establishing that their original gate process is no longer running (a dead wrapper
    alone does not establish this). Run them in the foreground through `run` with the same id,
    using their recorded command or the finding’s targeted covering tests when absent; check again.

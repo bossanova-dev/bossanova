@@ -2,7 +2,6 @@ package chatpicker
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/recurser/boss/internal/domain/rpc"
@@ -18,6 +17,7 @@ import (
 	// SwitchSessionAgentAccount in chatpicker_switch.go.
 
 	tea "charm.land/bubbletea/v2"
+	"google.golang.org/protobuf/proto"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/vcs"
@@ -203,18 +203,18 @@ func (m Model) renameChatCmd(agentSessionID, title, previousTitle string) tea.Cm
 	}
 }
 
-// mergeCmd runs MergeSession off the update loop. Captures everything by value.
+// mergeCmd runs the operator merge off the update loop, as Home's [m]erge does:
+// pinned to the head this view showed, recording the approval a review row or
+// an unverified head needs. It captures the session as shown, so a refresh
+// that lands while the command runs cannot move the pin.
 func (m Model) mergeCmd() tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	id := m.sessionID
-	head, pr := m.session.GetPrDisplayHeadSha(), m.session.GetPrNumber()
+	shown, _ := proto.Clone(m.session).(*pb.Session)
 	return func() tea.Msg {
-		if pr != 0 && head == "" {
-			return MergeResultMsg{SessionID: id, Err: fmt.Errorf("couldn't merge PR #%d: its latest commit is not known yet", pr)}
-		}
-		_, _, err := client.MergeSession(ctx, id, head)
-		return MergeResultMsg{SessionID: id, Err: err}
+		text, unsettled, err := ui.OperatorMergeOutcome(ctx, client, shown)
+		return MergeResultMsg{SessionID: id, Text: text, Unsettled: unsettled, Err: err}
 	}
 }
 

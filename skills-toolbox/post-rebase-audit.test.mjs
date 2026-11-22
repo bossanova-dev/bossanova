@@ -410,7 +410,7 @@ test('a subject-only rewrite at the same fork point is clean', () => {
   ])
 })
 
-test('a subject-only rewrite that lacks the advanced base stays unevaluated', () => {
+test('message-only rewrite behind an advanced base is clean and names base drift', () => {
   const { dir, preRebaseHead } = makeRepo({
     initial: { 'a.txt': 'a\n' },
     branch: [{ message: 'branch work', files: { 'a.txt': 'b\n' } }],
@@ -418,8 +418,112 @@ test('a subject-only rewrite that lacks the advanced base stays unevaluated', ()
   })
   git(dir, ['commit', '--amend', '-q', '-m', '[#123] branch work'])
   const report = audit(dir, preRebaseHead)
+  assert.equal(report.verdict, VERDICT_CLEAN, JSON.stringify(report))
+  assert.ok(Object.values(report.detectors).every((status) => status === 'ok'))
+  const fork = git(dir, ['merge-base', preRebaseHead, 'main']).stdout.trim()
+  assert.deepEqual(report.baseDrift, { auditedBase: fork, behind: 1 })
+  assert.ok(report.notes.some((note) => note.startsWith('message-only rewrite:')))
+  assert.ok(report.notes.some((note) => note.startsWith('base drift:')))
+  assert.match(formatAuditNote(report), /base drift:/)
+  const cli = spawnSync(
+    process.execPath,
+    [HELPER, 'check', '--repo', dir, '--pre-rebase-head', preRebaseHead, '--base', 'main'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(cli.status, 0, cli.stderr)
+  assert.equal(JSON.parse(cli.stdout).verdict, VERDICT_CLEAN)
+  assert.match(cli.stderr, /message-only rewrite:/)
+  assert.match(cli.stderr, /base drift:/)
+})
+
+test('base that advanced after the rebase audits only the rebased-onto tip and names base drift', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'app/source.txt': 'source\n' },
+    branch: [{ message: 'branch work', files: { 'app/source.txt': 'branch\n' } }],
+    baseSide: [{ message: 'base adds test', files: { 'app/before.test.mjs': 'before\n' } }],
+  })
+  const landedBase = git(dir, ['rev-parse', 'main']).stdout.trim()
+  rebaseClean(dir)
+  git(dir, ['checkout', '-q', 'main'])
+  writeFiles(dir, { 'app/after.test.mjs': 'after\n' })
+  commit(dir, 'base advances after rebase')
+  const requestedBase = git(dir, ['rev-parse', 'main']).stdout.trim()
+  git(dir, ['checkout', '-q', 'work'])
+  const report = audit(dir, preRebaseHead)
+  assert.equal(report.verdict, VERDICT_FINDINGS, JSON.stringify(report))
+  assert.ok(Object.values(report.detectors).every((status) => status === 'ok'))
+  assert.deepEqual(report.baseAddedTests, [{ path: 'app/before.test.mjs', branchDir: 'app' }])
+  assert.deepEqual(report.baseDrift, { auditedBase: landedBase, behind: 1 })
+  assert.equal(report.base, requestedBase)
+  assert.match(formatAuditNote(report), /base drift:/)
+  const cli = spawnSync(
+    process.execPath,
+    [HELPER, 'check', '--repo', dir, '--pre-rebase-head', preRebaseHead, '--base', 'main'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(cli.status, 0, cli.stderr)
+  assert.equal(JSON.parse(cli.stdout).verdict, VERDICT_FINDINGS)
+  assert.match(cli.stderr, /base drift:/)
+})
+
+test('content rewrite behind an advanced base stays unevaluated', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'a.txt': 'a\n' },
+    branch: [{ message: 'branch work', files: { 'a.txt': 'b\n' } }],
+    baseSide: [{ message: 'base work', files: { 'c.txt': 'c\n' } }],
+  })
+  writeFiles(dir, { 'a.txt': 'changed during rewrite\n' })
+  git(dir, ['add', 'a.txt'])
+  git(dir, ['commit', '--amend', '-q', '-m', 'rewrite branch work'])
+  const report = audit(dir, preRebaseHead)
   assert.equal(report.verdict, UNEVALUATED)
-  assert.match(report.notes.join(' '), /HEAD does not contain the base/)
+  assert.deepEqual(report.baseDrift, {
+    auditedBase: git(dir, ['merge-base', preRebaseHead, 'main']).stdout.trim(),
+    behind: 1,
+  })
+})
+
+test('failed base-drift probe keeps even a message-only rewrite unevaluated', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'a.txt': 'a\n' },
+    branch: [{ message: 'branch work', files: { 'a.txt': 'b\n' } }],
+    baseSide: [{ message: 'base work', files: { 'c.txt': 'c\n' } }],
+  })
+  git(dir, ['commit', '--amend', '-q', '-m', 'retag branch work'])
+  const head = git(dir, ['rev-parse', 'HEAD']).stdout.trim()
+  for (const probe of ['merge-base', 'rev-list', 'containment']) {
+    for (const response of [
+      { status: 128, stdout: '', stderr: 'fatal: injected probe failure' },
+      { status: 0, stdout: 'invalid\n', stderr: '' },
+      { status: 0, stdout: '0\n', stderr: '' },
+    ]) {
+      if (probe === 'containment' && response.status === 0) continue
+      const run = (repo, args) => {
+        const matches =
+          probe === 'merge-base'
+            ? args[0] === 'merge-base' && args[1] === head
+            : probe === 'containment'
+              ? args[0] === 'merge-base' && args[1] === '--is-ancestor'
+              : args[0] === 'rev-list' && args[1] === '--count'
+        return matches ? response : git(repo, args, { allowFail: true })
+      }
+      const report = audit(dir, preRebaseHead, { run })
+      assert.equal(report.verdict, UNEVALUATED, `${probe}: ${JSON.stringify(response)}`)
+      assert.equal(report.baseDrift, null)
+    }
+  }
+})
+
+test('contained base report names base drift only when the base is missing', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'a.txt': 'a\n' },
+    branch: [{ message: 'branch work', files: { 'a.txt': 'b\n' } }],
+    baseSide: [{ message: 'base work', files: { 'c.txt': 'c\n' } }],
+  })
+  rebaseClean(dir)
+  const report = audit(dir, preRebaseHead)
+  assert.equal(report.baseDrift, null)
+  assert.ok(!formatAuditNote(report).includes('base drift:'))
 })
 
 test('an identical tree at a moved fork point still runs the audit detectors', () => {

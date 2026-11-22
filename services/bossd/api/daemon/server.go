@@ -90,9 +90,10 @@ type Server struct {
 	factoryRepoChecker        *verifyjob.Checker
 	factoryHealthVersions     func(context.Context, string) (string, string, bool, error)
 	resumeAttempts            resumeAttemptReader
-	// pendingTrackerMerges queues post-merge tracker writes that did not land,
-	// for retryPendingTrackerMerges. Nil means a failed one is only reported.
+	// pendingTrackerMerges queues post-merge tracker writes for the worker;
+	// trackerMerges is what an operator merge leaves it besides the entry.
 	pendingTrackerMerges pendingTrackerMergeStore
+	trackerMerges        trackerMergeOwing
 	attentionCache       attentionCache
 	githubCallbacks      githubCallbackStore
 	telemetry            libtelemetry.Client
@@ -708,6 +709,7 @@ func New(cfg Config) *Server {
 		resumeAttempts:        cfg.ResumeAttempts,
 
 		pendingTrackerMerges: cfg.PendingTrackerMerges,
+		trackerMerges:        trackerMergeOwing{nudge: make(chan struct{}, 1)},
 		githubCallbacks:      cfg.GithubCallbacks,
 		telemetry:            cfg.Telemetry,
 

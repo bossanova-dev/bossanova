@@ -62,8 +62,8 @@ type mergeGateProvider struct {
 	mergeOpts []vcs.MergePROpts
 	// prStatusCalls counts GetPRStatus reads.
 	prStatusCalls int
-	// checksCalls counts GetCheckResults reads, so a head-mismatch pre-check
-	// can be shown to skip the remaining gate reads.
+	// checksCalls counts GetCheckResults reads, so a path can be shown to make
+	// exactly one set of gate reads.
 	checksCalls int
 	// mergeErrByStrategy lets a single test fail one strategy and succeed on
 	// another (the rebase-refused → squash-retry case). It takes precedence
@@ -83,10 +83,9 @@ type mergeGateProvider struct {
 	// filter removes but the observation still counts.
 	observation    vcs.ReviewObservation
 	observationErr error
-	// onObservation, when set, fires inside GetReviewObservation. The
-	// observation is a fourth context-bound read running AFTER the three
-	// guarded ones, so this is the only seam that can kill the context at that
-	// specific point.
+	// onObservation, when set, fires inside GetReviewObservation, the
+	// context-bound read whose own error the gate swallows, so this is the seam
+	// that kills the context while only that read is at fault.
 	onObservation func(context.Context)
 }
 
@@ -123,11 +122,17 @@ func (p *mergeGateProvider) GetAllowedMergeStrategies(context.Context, string) (
 	}
 	return []string{"merge"}, nil
 }
+
+// MergePR refuses a pinned merge whose pin is not the live head, as GitHub's
+// --match-head-commit does: the pin is the backstop for a head that moved.
 func (p *mergeGateProvider) MergePR(_ context.Context, _ string, _ int, opts vcs.MergePROpts) error {
 	strategy := opts.Strategy
 	p.mergeCalled = true
 	p.mergeStrategies = append(p.mergeStrategies, strategy)
 	p.mergeOpts = append(p.mergeOpts, opts)
+	if opts.ExpectedHeadSHA != "" && p.prStatus != nil && p.prStatus.HeadSHA != "" && !strings.EqualFold(opts.ExpectedHeadSHA, p.prStatus.HeadSHA) {
+		return fmt.Errorf("%w: GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)", vcs.ErrHeadMismatch)
+	}
 	if p.onMerge != nil {
 		p.onMerge()
 	}
@@ -1317,12 +1322,12 @@ func pinnedMergeRequest(pin string) *connect.Request[pb.MergeSessionRequest] {
 
 // TestMergeSessionHeadPinPreCheckRefusesMovedHead: when the live PR head
 // differs from the pin, the RPC refuses with a HEAD_MISMATCH FailedPrecondition
-// before any merge, and skips the gate's remaining reads.
+// before any merge, whatever the other gate reads say about that head.
 func TestMergeSessionHeadPinPreCheckRefusesMovedHead(t *testing.T) {
 	live := strings.Repeat("ffee", 10)
 	st := openCleanPRStatus()
 	st.HeadSHA = live
-	prov := &mergeGateProvider{prStatus: st, checks: livePassingChecks()}
+	prov := &mergeGateProvider{prStatus: st, checks: livePassingChecks(), reviewsErr: errors.New("gh: rate limited")}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
 
 	_, err := srv.MergeSession(context.Background(), pinnedMergeRequest(headPin))
@@ -1334,16 +1339,11 @@ func TestMergeSessionHeadPinPreCheckRefusesMovedHead(t *testing.T) {
 			t.Errorf("error %q missing %q", err.Error(), want)
 		}
 	}
+	if strings.Contains(err.Error(), "gate=pending") {
+		t.Errorf("error %q reports the unreadable reviews; the moved head must win", err.Error())
+	}
 	if prov.mergeCalled {
 		t.Fatal("MergePR was called despite a known head mismatch")
-	}
-	// The pre-gate display refresh also reads checks, so compare against an
-	// unpinned run of the same setup: the pinned run must make one fewer
-	// check read (the gate's own) because the mismatch short-circuits it.
-	unpinned := &mergeGateProvider{prStatus: st, checks: livePassingChecks(), mergeErr: errors.New("merge short-circuited in test")}
-	_, _ = mergeGateServer(t, unpinned, vcs.DisplayStatusPassing).MergeSession(context.Background(), pinnedMergeRequest(live))
-	if prov.checksCalls != unpinned.checksCalls-1 {
-		t.Errorf("GetCheckResults: pinned %d reads, unpinned %d; a head mismatch must skip the gate's remaining reads", prov.checksCalls, unpinned.checksCalls)
 	}
 }
 

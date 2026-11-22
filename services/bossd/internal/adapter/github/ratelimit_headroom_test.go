@@ -54,7 +54,7 @@ func TestHeadroomRefusalBurstPausesWhateverTheHeadroom(t *testing.T) {
 			healthy := false
 			gh := lowHeadroomGH(clock, tc.limit, tc.remaining, tc.resetIn, &healthy)
 			var logs bytes.Buffer
-			p := New(zerolog.New(&logs), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
+			p := New(zerolog.New(&logs), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 			ctx := context.Background()
 
 			if _, err := primaryPRRead(p, ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
@@ -85,7 +85,7 @@ func TestRateLimitResetAtFromBreaker(t *testing.T) {
 	clock := newFakeClock()
 	healthy := false
 	gh := lowHeadroomGH(clock, 5000, 0, 20*time.Minute, &healthy)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	want := time.Unix(clock.Now().Add(20*time.Minute).Unix(), 0)
 
 	_, refused := primaryPRRead(p, context.Background(), "o/r", 7)

@@ -16,7 +16,6 @@ import (
 	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 
@@ -61,7 +60,35 @@ func newOperatorMergeHarness(t *testing.T, liveHead string) *operatorMergeHarnes
 		h.verbs.builtCount++
 		return h.verbs
 	}
+	h.srv.pendingTrackerMerges = newPendingTrackerMergesFake()
+	h.srv.trackerMerges.nudge = make(chan struct{}, 1)
 	return h
+}
+
+// bookkeep runs the tracker write the merge owed, as the worker does when the
+// merge wakes it, and fails if the merge woke nothing.
+func (h *operatorMergeHarness) bookkeep(t *testing.T) {
+	t.Helper()
+	select {
+	case <-h.srv.trackerMerges.nudge:
+	default:
+		t.Fatal("the merge did not wake the tracker worker")
+	}
+	h.srv.retryPendingTrackerMerges(context.Background(), time.Now())
+}
+
+func (h *operatorMergeHarness) queue() *pendingTrackerMergesFake {
+	return h.srv.pendingTrackerMerges.(*pendingTrackerMergesFake)
+}
+
+// wantPendingThenBookkept asserts the reply reported the bookkeeping as still
+// to run, then runs it.
+func (h *operatorMergeHarness) wantPendingThenBookkept(t *testing.T, resp *pb.OperatorMergeSessionResponse) {
+	t.Helper()
+	if !resp.GetIsMerged() || resp.GetTrackerWrites() != trackerWritesPending {
+		t.Fatalf("response = %+v, want a landed merge whose bookkeeping is pending", resp)
+	}
+	h.bookkeep(t)
 }
 
 func (h *operatorMergeHarness) merge(approve bool, waives ...string) (*pb.OperatorMergeSessionResponse, error) {
@@ -81,8 +108,8 @@ func TestOperatorMergeSession_ReviewRecordsTheApprovalThenMergesAtThePinnedHead(
 	if err != nil {
 		t.Fatalf("OperatorMergeSession: %v", err)
 	}
-	if want := []string{"approve", "merge", "mark-merged"}; !slices.Equal(h.calls, want) {
-		t.Fatalf("calls = %q, want %q: the approval is recorded before the merge and the bookkeeping after it", h.calls, want)
+	if want := []string{"approve", "merge"}; !slices.Equal(h.calls, want) {
+		t.Fatalf("calls = %q, want %q: the approval is recorded before the merge, and the reply waits for nothing after it", h.calls, want)
 	}
 	if got := h.verbs.forMerge[0]; got == nil || got.Head != headPin || !slices.Equal(got.Waives, []string{"human-review:ui"}) {
 		t.Fatalf("approve ran with %+v, want --for-merge pinned to %s waiving human-review:ui", got, headPin)
@@ -90,11 +117,12 @@ func TestOperatorMergeSession_ReviewRecordsTheApprovalThenMergesAtThePinnedHead(
 	if len(h.prov.mergeOpts) != 1 || h.prov.mergeOpts[0].ExpectedHeadSHA != headPin {
 		t.Fatalf("MergePR opts = %+v, want one merge pinned to %s", h.prov.mergeOpts, headPin)
 	}
-	if !resp.GetIsMerged() || resp.GetApproval().GetApprovalUrl() != "https://x/approval" || resp.GetTrackerWrites() != "ok" {
+	if resp.GetApproval().GetApprovalUrl() != "https://x/approval" {
 		t.Fatalf("response = %+v", resp)
 	}
-	if h.verbs.markCtxErr != nil {
-		t.Fatalf("mark-merged ran on a dead context: %v", h.verbs.markCtxErr)
+	h.wantPendingThenBookkept(t, resp)
+	if want := []string{"approve", "merge", "mark-merged"}; !slices.Equal(h.calls, want) || h.verbs.markCtxErr != nil {
+		t.Fatalf("calls = %q (mark-merged ctx err %v), want the bookkeeping run once after the merge on a live context", h.calls, h.verbs.markCtxErr)
 	}
 }
 
@@ -166,14 +194,15 @@ func TestOperatorMergeSession_AMergeRowMergesWithoutApprovingAndRunsTheBookkeepi
 	if err != nil {
 		t.Fatalf("OperatorMergeSession: %v", err)
 	}
-	if want := []string{"merge", "mark-merged"}; !slices.Equal(h.calls, want) {
-		t.Fatalf("calls = %q, want %q", h.calls, want)
-	}
-	if !resp.GetIsMerged() || resp.GetApproval() != nil || resp.GetTrackerWrites() != "ok" {
-		t.Fatalf("response = %+v", resp)
+	if resp.GetApproval() != nil {
+		t.Fatalf("response = %+v, want no approval on a merge row", resp)
 	}
 	if len(h.prov.mergeOpts) != 1 || h.prov.mergeOpts[0].ExpectedHeadSHA != headPin {
 		t.Fatalf("MergePR opts = %+v, want one merge pinned to %s", h.prov.mergeOpts, headPin)
+	}
+	h.wantPendingThenBookkept(t, resp)
+	if want := []string{"merge", "mark-merged"}; !slices.Equal(h.calls, want) || len(h.queue().rows) != 0 {
+		t.Fatalf("calls = %q, queue = %+v; want %q and the owed entry cleared", h.calls, h.queue().rows, want)
 	}
 }
 
@@ -185,8 +214,24 @@ func TestOperatorMergeSession_FailedBookkeepingNeverFailsALandedMerge(t *testing
 	if err != nil {
 		t.Fatalf("OperatorMergeSession: %v", err)
 	}
-	if !resp.GetIsMerged() || resp.GetTrackerWrites() != "failed" || !strings.Contains(resp.GetTrackerWhy(), "exited non-zero") {
-		t.Fatalf("response = %+v, want a landed merge reporting the failed bookkeeping", resp)
+	h.wantPendingThenBookkept(t, resp)
+	if p, ok := h.queue().rows["s1"]; !ok || p.AttemptCount != 1 || !strings.Contains(p.LastReason, "exited non-zero") {
+		t.Fatalf("queue = %+v, want the failed write queued for a retry naming its failure", h.queue().rows)
+	}
+}
+
+// With no queue to owe the write to, the bookkeeping runs before the reply and
+// its outcome is reported, as it was before the worker took it over.
+func TestOperatorMergeSession_WithNoQueueTheBookkeepingRunsBeforeTheReply(t *testing.T) {
+	h := newOperatorMergeHarness(t, headPin)
+	h.srv.pendingTrackerMerges = nil
+
+	resp, err := h.merge(false)
+	if err != nil {
+		t.Fatalf("OperatorMergeSession: %v", err)
+	}
+	if want := []string{"merge", "mark-merged"}; !slices.Equal(h.calls, want) || resp.GetTrackerWrites() != "ok" {
+		t.Fatalf("calls = %q, response = %+v; want %q and the write's own outcome", h.calls, resp, want)
 	}
 }
 
@@ -296,8 +341,10 @@ func TestOperatorMergeSession_APushAfterTheApprovalMergesNothing(t *testing.T) {
 			t.Errorf("error %q missing %q", err.Error(), want)
 		}
 	}
-	if want := []string{"approve"}; !slices.Equal(h.calls, want) || h.prov.mergeCalled {
-		t.Fatalf("calls = %q (merge called %v), want the approval only and no merge of the pushed head", h.calls, h.prov.mergeCalled)
+	// The pinned provider merge is the backstop for a head that moved after
+	// the gate: it is asked and refuses, so nothing lands and no bookkeeping runs.
+	if want := []string{"approve"}; !slices.Equal(h.calls, want) || h.prov.prStatus.State == vcs.PRStateMerged {
+		t.Fatalf("calls = %q (PR state %v), want the approval only and no merge of the pushed head", h.calls, h.prov.prStatus.State)
 	}
 }
 
@@ -314,21 +361,38 @@ func TestOperatorMergeSession_ApproveRunsUnderItsOwnBudget(t *testing.T) {
 	}
 }
 
-func TestOperatorMergeSession_SlowBookkeepingStillReportsTheMerge(t *testing.T) {
+// The reply does not wait for the tracker: the worker wakes for the owed write
+// as soon as the merge lands, and the merge answers while that write is still
+// running. A write cut off by the daemon stopping stays owed for the next start.
+func TestOperatorMergeSession_TheReplyDoesNotWaitForTheBookkeeping(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
-	h.srv.operatorMergeBudget = operatorMergeBudget{total: 300 * time.Millisecond, approve: 100 * time.Millisecond}
 	h.verbs.markBlocks = true
+	started := make(chan struct{})
+	h.verbs.onMarkMerged = func() { close(started) }
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	workerDone := h.srv.RunTrackerMergeRetries(ctx)
+	defer func() { stop(); <-workerDone }()
 
 	resp, err := h.merge(false)
 	if err != nil {
 		t.Fatalf("OperatorMergeSession: %v", err)
 	}
-	if !resp.GetIsMerged() || resp.GetTrackerWrites() != "failed" || !strings.Contains(resp.GetTrackerWhy(), "timed out") {
-		t.Fatalf("response = %+v, want a landed merge whose hung bookkeeping was cut off at the budget", resp)
+	if !resp.GetIsMerged() || resp.GetTrackerWrites() != trackerWritesPending {
+		t.Fatalf("response = %+v, want a landed merge whose bookkeeping is pending", resp)
+	}
+	awaitOrFail(t, started, "the worker starting the owed write on the merge's wake, not on its tick,")
+	if p, ok := h.queue().row("s1"); !ok || p.AttemptCount != 0 {
+		t.Fatalf("queue = %+v, want s1 still owed while the write runs", p)
+	}
+	stop()
+	<-workerDone
+	if p, ok := h.queue().row("s1"); !ok || p.AttemptCount != 0 {
+		t.Fatalf("queue = %+v, want a write the daemon stopped mid-run still owed", p)
 	}
 }
 
-func TestOperatorMergeSession_NoTimeLeftSkipsTheBookkeeping(t *testing.T) {
+func TestOperatorMergeSession_AMergeThatSpendsItsBudgetStillOwesTheBookkeeping(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
 	h.srv.operatorMergeBudget = operatorMergeBudget{total: 100 * time.Millisecond, approve: 100 * time.Millisecond}
 	merge := h.prov.onMerge
@@ -341,8 +405,9 @@ func TestOperatorMergeSession_NoTimeLeftSkipsTheBookkeeping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OperatorMergeSession: %v", err)
 	}
-	if !resp.GetIsMerged() || resp.GetTrackerWrites() != "failed" || slices.Contains(h.calls, "mark-merged") {
-		t.Fatalf("response = %+v, calls = %q, want a landed merge and no bookkeeping started after the budget ran out", resp, h.calls)
+	h.wantPendingThenBookkept(t, resp)
+	if !slices.Contains(h.calls, "mark-merged") || h.verbs.markCtxErr != nil {
+		t.Fatalf("calls = %q (mark-merged ctx err %v), want the bookkeeping run on the worker's budget after the merge's ran out", h.calls, h.verbs.markCtxErr)
 	}
 }
 
@@ -358,15 +423,16 @@ func TestOperatorMergeSession_TheOperatorLeavingDoesNotAbandonTheMerge(t *testin
 	if err != nil {
 		t.Fatalf("OperatorMergeSession after the caller left: %v", err)
 	}
-	if want := []string{"approve", "merge", "mark-merged"}; !slices.Equal(h.calls, want) {
-		t.Fatalf("calls = %q, want %q: a caller that leaves mid-merge must not stop the merge or its bookkeeping", h.calls, want)
+	if want := []string{"approve", "merge"}; !slices.Equal(h.calls, want) {
+		t.Fatalf("calls = %q, want %q: a caller that leaves mid-merge must not stop the merge", h.calls, want)
 	}
-	if !resp.Msg.GetIsMerged() || h.verbs.markCtxErr != nil {
-		t.Fatalf("response = %+v, mark-merged ctx err = %v, want a landed merge with live bookkeeping", resp.Msg, h.verbs.markCtxErr)
+	h.wantPendingThenBookkept(t, resp.Msg)
+	if !slices.Contains(h.calls, "mark-merged") || h.verbs.markCtxErr != nil {
+		t.Fatalf("calls = %q, mark-merged ctx err = %v, want live bookkeeping after the caller left", h.calls, h.verbs.markCtxErr)
 	}
 }
 
-func TestOperatorMergeSession_BookkeepingRunsOnTheMergesBudgetNotTheCallers(t *testing.T) {
+func TestOperatorMergeSession_BookkeepingRunsOnTheWorkersBudgetNotTheCallers(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -376,16 +442,17 @@ func TestOperatorMergeSession_BookkeepingRunsOnTheMergesBudgetNotTheCallers(t *t
 		merge()
 	}
 
-	start := time.Now()
 	resp, err := h.srv.OperatorMergeSession(ctx, connect.NewRequest(&pb.OperatorMergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err != nil {
 		t.Fatalf("OperatorMergeSession past the caller's deadline: %v", err)
 	}
-	if want := []string{"merge", "mark-merged"}; !slices.Equal(h.calls, want) || !resp.Msg.GetIsMerged() {
-		t.Fatalf("calls = %q, response = %+v, want %q: a merge that lands after the caller gave up still runs its bookkeeping", h.calls, resp.Msg, want)
+	start := time.Now()
+	h.wantPendingThenBookkept(t, resp.Msg)
+	if want := []string{"merge", "mark-merged"}; !slices.Equal(h.calls, want) {
+		t.Fatalf("calls = %q, want %q: a merge that lands after the caller gave up still gets its bookkeeping", h.calls, want)
 	}
-	if d := h.verbs.markCtxDeadline; h.verbs.markCtxErr != nil || d.Before(start.Add(config.OperatorMergeCeiling-time.Minute)) {
-		t.Fatalf("mark-merged ran with deadline %v (err %v), want the merge's own %v budget from %v", d, h.verbs.markCtxErr, config.OperatorMergeCeiling, start)
+	if d := h.verbs.markCtxDeadline; h.verbs.markCtxErr != nil || d.Before(start.Add(trackerMergeAttemptBudget-time.Minute)) {
+		t.Fatalf("mark-merged ran with deadline %v (err %v), want the worker's own %v budget from %v", d, h.verbs.markCtxErr, trackerMergeAttemptBudget, start)
 	}
 }
 
@@ -422,13 +489,7 @@ func TestOperatorMergeSession_RecordsTheOutcomeOfAMergeTheOperatorLeft(t *testin
 				Id: "s1", ExpectedHeadSha: headPin, ShouldApprove: true,
 			}))
 
-			var entry map[string]any
-			for line := range strings.Lines(logs.String()) {
-				var e map[string]any
-				if json.Unmarshal([]byte(line), &e) == nil && e["message"] == "operator merge finished" {
-					entry = e
-				}
-			}
+			entry := operatorMergeOutcomeLog(t, logs.String())
 			want := map[string]any{"level": "info", "session": "s1", "pr": float64(h.verbs.targets[0].PR), "outcome": tc.outcome, "operator_left": true}
 			maps.Copy(want, tc.want)
 			for k, v := range want {
@@ -483,7 +544,10 @@ func (r *pollingRefresher) RefreshPRWithoutWebhookCredit(context.Context, string
 	return nil
 }
 
-func TestOperatorMergeSession_HoldsMergingFromTheGateThroughTheBookkeeping(t *testing.T) {
+// Every client reads "merging" from the gate until the merge has landed and
+// the display has been re-polled, and not a moment longer: the bookkeeping that
+// follows the reply runs with the hold released.
+func TestOperatorMergeSession_HoldsMergingFromTheGateThroughTheMerge(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		setup  func(*operatorMergeHarness)
@@ -514,11 +578,12 @@ func TestOperatorMergeSession_HoldsMergingFromTheGateThroughTheBookkeeping(t *te
 				}
 			}
 			h.verbs.onApprove = func() { note("approve") }
-			h.verbs.onMarkMerged = func() { note("mark-merged") }
+			var mergingDuringBookkeeping bool
+			h.verbs.onMarkMerged = func() { mergingDuringBookkeeping = merging() }
 			onMerge := h.prov.onMerge
 			h.prov.onMerge = func() { note("merge"); onMerge() }
 
-			_, _ = h.merge(true, "human-review:ui")
+			resp, _ := h.merge(true, "human-review:ui")
 
 			if len(unserved) > 0 {
 				t.Errorf("merging was not served during %q", unserved)
@@ -532,6 +597,12 @@ func TestOperatorMergeSession_HoldsMergingFromTheGateThroughTheBookkeeping(t *te
 			}
 			if e := tracker.Get("s1"); tc.landed && (e == nil || e.Status != vcs.DisplayStatusMerged) {
 				t.Errorf("entry after the merge = %+v, want the re-polled merged status kept", e)
+			}
+			if tc.landed {
+				h.wantPendingThenBookkept(t, resp)
+				if mergingDuringBookkeeping {
+					t.Error("merging was held while the bookkeeping ran after the reply")
+				}
 			}
 		})
 	}
@@ -575,24 +646,23 @@ func TestOperatorMergeSession_AnArchiveDuringTheApprovalWaitsForTheMerge(t *test
 		approvedInWorktree = err == nil
 	}
 
-	if _, err := h.merge(true, "human-review:ui"); err != nil {
+	resp, err := h.merge(true, "human-review:ui")
+	if err != nil {
 		t.Fatalf("OperatorMergeSession: %v", err)
 	}
 	if !approvedInWorktree {
 		t.Fatal("the archive removed the worktree while the approval was running in it")
 	}
-	select {
-	case <-archived:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the archive requested during the approval never ran after the merge")
-	}
+	h.wantPendingThenBookkept(t, resp)
+	awaitOrFail(t, archived, "the archive requested during the approval, due after the merge and its bookkeeping,")
 }
 
 // TestOperatorMergeSession_TheArchiveWaitsForTheTrackerBookkeeping reproduces
 // the delta report: on a repo that archives after merge, the post-merge re-poll
 // archived the session and removed its worktree before mark-merged ran in it,
 // so every gh read the toolbox made failed (ENOENT on the vanished cwd) and the
-// merge reported "the PR could not be read" with the ticket left unmoved.
+// merge reported "the PR could not be read" with the ticket left unmoved. The
+// bookkeeping now runs after the reply, so the hold must outlive the reply too.
 func TestOperatorMergeSession_TheArchiveWaitsForTheTrackerBookkeeping(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
 	worktree := h.srv.sessions.(*lifecycleSessionStoreFake).session.WorktreePath
@@ -617,15 +687,98 @@ func TestOperatorMergeSession_TheArchiveWaitsForTheTrackerBookkeeping(t *testing
 	if err != nil {
 		t.Fatalf("OperatorMergeSession: %v", err)
 	}
-	if resp.GetTrackerWrites() != "ok" {
-		t.Fatalf("tracker writes = %q (why %q), want ok: the archive removed the worktree before the bookkeeping ran in it", resp.GetTrackerWrites(), resp.GetTrackerWhy())
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("worktree after the reply: %v; want it kept until the bookkeeping has run in it", err)
 	}
-	select {
-	case <-archived:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the archive the merge requested never ran after the bookkeeping finished")
+	h.wantPendingThenBookkept(t, resp)
+	if len(h.queue().rows) != 0 {
+		t.Fatalf("queue = %+v, want the write settled: the archive removed the worktree before the bookkeeping ran in it", h.queue().rows)
 	}
+	awaitOrFail(t, archived, "the archive the merge requested, due after the bookkeeping finished,")
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
 		t.Fatalf("worktree still present after the archive: %v", err)
+	}
+}
+
+// The operator merge judges the PR once: the gate it passes before the approval
+// is the gate the merge trusts, so the merge makes no second round of PR reads.
+// A plain MergeSession passed no gate of its own, so it still reads one.
+func TestOperatorMergeSession_GatesOnce(t *testing.T) {
+	h := newOperatorMergeHarness(t, headPin)
+	if _, err := h.merge(true, "human-review:ui"); err != nil {
+		t.Fatalf("OperatorMergeSession: %v", err)
+	}
+	if h.prov.checksCalls != 1 || h.prov.prStatusCalls != 2 {
+		t.Fatalf("checks read %d times and PR status %d times, want one gate's reads plus the fresh already-merged read", h.prov.checksCalls, h.prov.prStatusCalls)
+	}
+
+	plain := newOperatorMergeHarness(t, headPin)
+	if _, err := plain.srv.MergeSession(context.Background(), pinnedMergeRequest(headPin)); err != nil {
+		t.Fatalf("MergeSession: %v", err)
+	}
+	if plain.prov.prStatusCalls == 0 || plain.prov.checksCalls == 0 {
+		t.Fatalf("PR status read %d times and checks %d times, want a plain merge to read its own gate", plain.prov.prStatusCalls, plain.prov.checksCalls)
+	}
+}
+
+// A second press of the same merge passes its gate while the PR is still open,
+// then finds the first press landed while it approved: it reports the merge
+// rather than asking the provider to merge a merged PR.
+func TestOperatorMergeSession_ASecondPressFindsTheFirstLanded(t *testing.T) {
+	h := newOperatorMergeHarness(t, headPin)
+	h.verbs.onApprove = func() { h.prov.prStatus.State = vcs.PRStateMerged }
+
+	resp, err := h.merge(true, "human-review:ui")
+	if err != nil {
+		t.Fatalf("OperatorMergeSession: %v", err)
+	}
+	if !resp.GetIsMerged() || h.prov.mergeCalled {
+		t.Fatalf("merged=%v, MergePR called=%v; want the landed merge reported without a second provider merge", resp.GetIsMerged(), h.prov.mergeCalled)
+	}
+}
+
+// operatorMergeOutcomeLog is the "operator merge finished" line in logs.
+func operatorMergeOutcomeLog(t *testing.T, logs string) map[string]any {
+	t.Helper()
+	for line := range strings.Lines(logs) {
+		var e map[string]any
+		if json.Unmarshal([]byte(line), &e) == nil && e["message"] == "operator merge finished" {
+			return e
+		}
+	}
+	t.Fatalf("no operator merge outcome line in logs:\n%s", logs)
+	return nil
+}
+
+// The outcome line says where an operator merge's time went: one duration per
+// phase, zero for an approval that did not run, and the whole request at least
+// the phases' sum.
+func TestOperatorMergeSession_LogsHowLongEachPhaseTook(t *testing.T) {
+	for name, approve := range map[string]bool{"review row": true, "merge row": false} {
+		t.Run(name, func(t *testing.T) {
+			h := newOperatorMergeHarness(t, headPin)
+			var logs bytes.Buffer
+			h.srv.logger = zerolog.New(&logs)
+
+			if _, err := h.merge(approve); err != nil {
+				t.Fatalf("OperatorMergeSession: %v", err)
+			}
+
+			entry := operatorMergeOutcomeLog(t, logs.String())
+			var sum float64
+			for _, phase := range []string{"gate", "approve", "merge"} {
+				d, ok := entry[phase].(float64)
+				if !ok || d < 0 {
+					t.Fatalf("%s = %v (%T), want a non-negative duration", phase, entry[phase], entry[phase])
+				}
+				sum += d
+			}
+			if total, ok := entry["total"].(float64); !ok || total < sum {
+				t.Fatalf("total = %v, want at least the phases' sum %v", entry["total"], sum)
+			}
+			if !approve && entry["approve"] != float64(0) {
+				t.Fatalf("approve = %v on a merge row whose head verify passed, want 0 because no approval ran", entry["approve"])
+			}
+		})
 	}
 }

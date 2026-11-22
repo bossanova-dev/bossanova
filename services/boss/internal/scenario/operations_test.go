@@ -38,7 +38,7 @@ func TestCompileHeldMergeArgv(t *testing.T) {
 		if flag == "" {
 			flag = "merge"
 		}
-		want := []string{"pr", "merge", "42", "--repo", "r", "--" + flag, "--delete-branch", "--match-head-commit", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+		want := []string{"api", "-X", "PUT", "repos/r/pulls/42/merge", "-f", "merge_method=" + flag, "-f", "sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 		found := false
 		for _, response := range plan.GH {
 			if reflect.DeepEqual(response.Args, want) {

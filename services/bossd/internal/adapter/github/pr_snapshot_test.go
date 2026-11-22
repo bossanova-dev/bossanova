@@ -25,7 +25,7 @@ const emptySnapshot = `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNe
 // per-PR read path keeps exercising it under vcs.WithCachedReads.
 func withoutSnapshot(f ghFunc) ghFunc {
 	return func(ctx context.Context, args ...string) (string, error) {
-		if isGraphQL(args) && !isOpenPRList(args) {
+		if isSnapshotQuery(args) && !isOpenPRList(args) {
 			return "", errors.New("snapshot unavailable in this test")
 		}
 		return f(ctx, args...)
@@ -33,8 +33,15 @@ func withoutSnapshot(f ghFunc) ghFunc {
 }
 
 func isGraphQL(args []string) bool { return len(args) >= 2 && args[0] == "api" && args[1] == "graphql" }
+func isSnapshotQuery(args []string) bool {
+	_, _, perPR := perPRQuery(args)
+	return isGraphQL(args) && !perPR
+}
 
 func isPerPRRead(args []string) bool {
+	if _, _, ok := perPRQuery(args); ok {
+		return true
+	}
 	if len(args) >= 2 && args[0] == "pr" && (args[1] == "view" || args[1] == "checks" || args[1] == "list") {
 		return true
 	}
@@ -44,10 +51,16 @@ func isPerPRRead(args []string) bool {
 // routeKey names one gh invocation: "graphql" (plus " cursor=<c>" on a later
 // page), "pr view 7", "pr checks 7", "pr list", or "api <path>".
 func routeKey(args []string) string {
+	if kind, n, ok := perPRQuery(args); ok {
+		if kind == "status" || kind == "merge" {
+			return fmt.Sprintf("pr view %d", n)
+		}
+		return fmt.Sprintf("pr checks %d", n)
+	}
 	switch {
 	case isOpenPRList(args):
 		return "open graphql"
-	case isGraphQL(args):
+	case isSnapshotQuery(args):
 		for _, a := range args {
 			if strings.HasPrefix(a, "cursor=") {
 				return "graphql " + a
@@ -155,7 +168,7 @@ func mustJSON(t *testing.T, v any) string {
 // query, with no per-PR `gh pr view`, `gh pr checks` or REST pulls/N call.
 func TestOpenPRSnapshotBatchesBackgroundReads(t *testing.T) {
 	gh := routedGH(t, map[string]string{"graphql": readFixture(t, "open_pr_snapshot_three.json")})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	for _, n := range []int{1, 2, 3} {
@@ -183,7 +196,7 @@ func TestOpenPRSnapshotPagesWithCursor(t *testing.T) {
 		"graphql":                     readFixture(t, "open_pr_snapshot_page1.json"),
 		"graphql cursor=Y3Vyc29yOjE=": readFixture(t, "open_pr_snapshot_page2.json"),
 	})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	prs, err := p.ListOpenPRs(bg, "o/r")
@@ -208,9 +221,9 @@ func TestOpenPRSnapshotPagesWithCursor(t *testing.T) {
 func TestOpenPRSnapshotStatusParity(t *testing.T) {
 	fixture := readFixture(t, "open_pr_snapshot_parity.json")
 	snapGH := routedGH(t, map[string]string{"graphql": fixture})
-	snapP := New(zerolog.Nop(), WithRunGH(snapGH.run), WithNowFunc(newFakeClock().Now))
+	snapP := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(snapGH.run)), WithNowFunc(newFakeClock().Now))
 	perGH := routedGH(t, perPRRoutes(t, fixture))
-	perP := New(zerolog.Nop(), WithRunGH(perGH.run))
+	perP := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(perGH.run)))
 	bg := vcs.WithCachedReads(context.Background())
 
 	yes, no := true, false
@@ -252,7 +265,7 @@ func TestOpenPRSnapshotStatusParity(t *testing.T) {
 	if s, _ := snapP.GetPRStatus(bg, "o/r", 6); !s.IsCrossRepository {
 		t.Fatal("PR 6 lost IsCrossRepository")
 	}
-	if got := snapGH.count(func(a []string) bool { return !isGraphQL(a) }); got != 0 {
+	if got := snapGH.count(func(a []string) bool { return !isSnapshotQuery(a) }); got != 0 {
 		t.Fatalf("snapshot reads made %d per-PR calls, want 0", got)
 	}
 }
@@ -262,7 +275,7 @@ func TestOpenPRSnapshotStatusParity(t *testing.T) {
 // rollup (newest first, a re-run job collapsed to its latest run).
 func TestOpenPRSnapshotCheckSetParity(t *testing.T) {
 	gh := routedGH(t, map[string]string{"graphql": readFixture(t, "open_pr_snapshot_parity.json")})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	got, err := p.GetCheckSet(bg, "o/r", 1)
@@ -276,7 +289,7 @@ func TestOpenPRSnapshotCheckSetParity(t *testing.T) {
 {"name":"boss/build","state":"SUCCESS","workflow":"","description":"built by boss-build"},
 {"name":"boss/verify","state":"PENDING","workflow":"","description":"verify: claimed by delta"}]`
 	perGH := routedGH(t, map[string]string{"pr checks 1": rows})
-	want, err := New(zerolog.Nop(), WithRunGH(perGH.run)).fetchCheckSet(context.Background(), "o/r", 1)
+	want, err := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(perGH.run))).fetchCheckSet(context.Background(), "o/r", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +311,7 @@ func TestOpenPRSnapshotCheckSetParity(t *testing.T) {
 // including gh's app/<login> spelling of a bot author.
 func TestOpenPRSnapshotListMatchesGHPRList(t *testing.T) {
 	gh := routedGH(t, map[string]string{"graphql": readFixture(t, "open_pr_snapshot_parity.json")})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 
 	prs, err := p.ListOpenPRs(vcs.WithCachedReads(context.Background()), "o/r")
 	if err != nil {
@@ -332,7 +345,7 @@ func TestOpenPRSnapshotDeclinesFallThroughToPerPRReads(t *testing.T) {
 				fmt.Sprintf("pr view %d", tc.pr):   perPRView,
 				fmt.Sprintf("pr checks %d", tc.pr): `[{"name":"per-pr","state":"SUCCESS","workflow":"ci","description":""}]`,
 			})
-			p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 			bg := vcs.WithCachedReads(context.Background())
 			if tc.check {
 				set, err := p.GetCheckSet(bg, "o/r", tc.pr)
@@ -360,7 +373,7 @@ func TestOpenPRSnapshotRateLimitedSpendsNothingPerPR(t *testing.T) {
 		"api repos/o/r/pulls/7": "error:HTTP 403: API rate limit exceeded",
 		"api rate_limit":        rateLimitBody(clock, 0, 30*time.Minute),
 	})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 
 	_, err := p.GetPRStatus(vcs.WithCachedReads(context.Background()), "o/r", 7)
 	if !errors.Is(err, vcs.ErrRateLimited) {
@@ -378,7 +391,7 @@ func TestOpenPRSnapshotMalformedFallsThrough(t *testing.T) {
 		"graphql":     `{"data":{"repository":null}}`,
 		"pr checks 7": `[{"name":"build","state":"SUCCESS","workflow":"ci","description":""}]`,
 	})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 
 	set, err := p.GetCheckSet(vcs.WithCachedReads(context.Background()), "o/r", 7)
 	if err != nil || len(set.Checks) != 1 {
@@ -397,7 +410,7 @@ func TestOpenPRSnapshotPartialFetchStoresNothing(t *testing.T) {
 	}
 	gh := routedGH(t, routes)
 	clock := newFakeClock()
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	if s, err := p.GetPRStatus(bg, "o/r", 11); err != nil || s.Title != "per-pr" {
@@ -426,7 +439,7 @@ func TestOpenPRSnapshotFailureBacksOff(t *testing.T) {
 		"pr checks 11": `[]`,
 	})
 	clock := newFakeClock()
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	_, _ = p.GetPRStatus(bg, "o/r", 11)
@@ -457,7 +470,7 @@ func TestOpenPRSnapshotFailureAfterCallerGaveUpBacksOff(t *testing.T) {
 		var once sync.Once
 		gh := &scriptedGH{reply: func(args []string) (string, error) {
 			switch {
-			case isGraphQL(args):
+			case isSnapshotQuery(args):
 				once.Do(func() { close(started) })
 				<-release
 				return "", errors.New("HTTP 502: Bad Gateway")
@@ -466,7 +479,7 @@ func TestOpenPRSnapshotFailureAfterCallerGaveUpBacksOff(t *testing.T) {
 			}
 			return "", fmt.Errorf("unexpected gh call %v", args)
 		}}
-		p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+		p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 		ctx, cancel := context.WithCancel(vcs.WithCachedReads(context.Background()))
 		done := make(chan error, 1)
 		go func() {
@@ -484,7 +497,7 @@ func TestOpenPRSnapshotFailureAfterCallerGaveUpBacksOff(t *testing.T) {
 		if s, err := p.GetPRStatus(vcs.WithCachedReads(context.Background()), "o/r", 11); err != nil || s.Title != "per-pr" {
 			t.Fatalf("status = %+v, %v; want the per-PR read", s, err)
 		}
-		if got := gh.count(isGraphQL); got != 1 {
+		if got := gh.count(isSnapshotQuery); got != 1 {
 			t.Fatalf("snapshot queries = %d, want 1 (the failed flight backs off)", got)
 		}
 	})
@@ -495,13 +508,13 @@ func TestOpenPRSnapshotFailureAfterCallerGaveUpBacksOff(t *testing.T) {
 // repo refetches it.
 func TestOpenPRSnapshotInvalidatedByAnyPR(t *testing.T) {
 	gh := routedGH(t, map[string]string{"graphql": readFixture(t, "open_pr_snapshot_three.json")})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	_, _ = p.GetPRStatus(bg, "o/r", 1)
 	p.InvalidatePR("https://github.com/O/R.git", 1)
 	_, _ = p.GetPRStatus(bg, "o/r", 2)
-	if got := gh.count(isGraphQL); got != 2 {
+	if got := gh.count(isSnapshotQuery); got != 2 {
 		t.Fatalf("snapshot queries = %d, want a refetch after InvalidatePR", got)
 	}
 }
@@ -513,7 +526,7 @@ func TestOpenPRSnapshotInvalidationBeatsInFlightFetch(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
-		if !isGraphQL(args) {
+		if !isSnapshotQuery(args) {
 			return "", fmt.Errorf("unexpected gh call %v", args)
 		}
 		first := false
@@ -524,7 +537,7 @@ func TestOpenPRSnapshotInvalidationBeatsInFlightFetch(t *testing.T) {
 		}
 		return snapshot, nil
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	done := make(chan struct{})
@@ -538,7 +551,7 @@ func TestOpenPRSnapshotInvalidationBeatsInFlightFetch(t *testing.T) {
 	<-done
 
 	_, _ = p.GetPRStatus(bg, "o/r", 2)
-	if got := gh.count(isGraphQL); got != 2 {
+	if got := gh.count(isSnapshotQuery); got != 2 {
 		t.Fatalf("snapshot queries = %d: the pre-invalidation fetch was stored", got)
 	}
 }
@@ -553,7 +566,7 @@ func TestOpenPRSnapshotFresherPerPRReadWins(t *testing.T) {
 		"pr view 3":   `{"state":"OPEN","isDraft":true,"title":"fresh","reviews":[]}`,
 		"pr checks 3": `[]`,
 	})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	if s, _ := p.GetPRStatus(bg, "o/r", 3); s == nil || s.Title != "three" {
@@ -584,7 +597,7 @@ func TestOpenPRSnapshotInFlightLosesToNewerPerPRRead(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
 		switch {
-		case isGraphQL(args):
+		case isSnapshotQuery(args):
 			close(started)
 			<-release
 			return snapshot, nil
@@ -594,7 +607,7 @@ func TestOpenPRSnapshotInFlightLosesToNewerPerPRRead(t *testing.T) {
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
 	clock := newFakeClock()
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	bg := vcs.WithCachedReads(context.Background())
 
 	var flight *vcs.PRStatus
@@ -621,7 +634,7 @@ func TestOpenPRSnapshotInFlightLosesToNewerPerPRRead(t *testing.T) {
 	if s, _ := p.GetPRStatus(bg, "o/r", 1); s == nil || s.Title == "fresh" {
 		t.Fatalf("PR 1 status = %+v, want the snapshot's", s)
 	}
-	if got := gh.count(isGraphQL); got != 1 {
+	if got := gh.count(isSnapshotQuery); got != 1 {
 		t.Fatalf("snapshot queries = %d, want 1", got)
 	}
 }
@@ -636,7 +649,7 @@ func TestOpenPRSnapshotNotConsultedByUnmarkedReads(t *testing.T) {
 		"pr checks 3":  `[]`,
 		"open graphql": emptySnapshot,
 	})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 	ctx := context.Background()
 
 	_, _ = p.ListOpenPRs(vcs.WithCachedReads(ctx), "o/r")
@@ -653,8 +666,8 @@ func TestOpenPRSnapshotNotConsultedByUnmarkedReads(t *testing.T) {
 
 func TestSnapshotPRSize_Sessions_AC213501(t *testing.T) {
 	fixture := `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":42,"state":"OPEN","mergeable":"MERGEABLE","additions":12,"deletions":3,"changedFiles":2}]}}}}`
-	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
-		if !isGraphQL(args) {
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
+		if !isSnapshotQuery(args) {
 			t.Fatalf("unexpected per-PR call %v", args)
 		}
 		query := strings.Join(args, " ")
@@ -664,7 +677,7 @@ func TestSnapshotPRSize_Sessions_AC213501(t *testing.T) {
 			}
 		}
 		return fixture, nil
-	}))
+	})))
 	got, err := p.GetPRStatus(vcs.WithCachedReads(t.Context()), "o/r", 42)
 	if err != nil {
 		t.Fatal(err)
@@ -676,7 +689,7 @@ func TestSnapshotPRSize_Sessions_AC213501(t *testing.T) {
 
 func TestOpenPRSnapshotCommitAuthorship(t *testing.T) {
 	gh := routedGH(t, map[string]string{"graphql": readFixture(t, "open_pr_snapshot_three.json")})
-	p := New(zerolog.Nop(), WithRunGH(gh.run))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)))
 	prs, err := p.ListOpenPRs(vcs.WithCachedReads(context.Background()), "o/r")
 	if err != nil {
 		t.Fatal(err)
@@ -716,12 +729,12 @@ func listPage(nodes string) string {
 }
 
 func TestOpenPRListCommitAuthorship(t *testing.T) {
-	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 		if !isOpenPRList(args) {
 			t.Fatalf("unexpected query %v", args)
 		}
 		return readFixture(t, "open_pr_snapshot_three.json"), nil
-	}))
+	})))
 	prs, err := p.ListOpenPRs(t.Context(), "o/r")
 	if err != nil {
 		t.Fatal(err)
@@ -735,13 +748,13 @@ func TestOpenPRListCommitAuthorship(t *testing.T) {
 // GraphQL answers only the fields a query selects, so the uncached open-PR
 // list carries each PR's base branch only when its query asks for it.
 func TestOpenPRListReadsBaseBranch(t *testing.T) {
-	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 		node := `{"number":5,"title":"t","headRefName":"child","headRefOid":"sha5","state":"OPEN"}`
 		if isOpenPRList(args) && strings.Contains(strings.Join(args, " "), " baseRefName ") {
 			node = `{"number":5,"title":"t","headRefName":"child","baseRefName":"production","headRefOid":"sha5","state":"OPEN"}`
 		}
 		return listPage("[" + node + "]"), nil
-	}))
+	})))
 	prs, err := p.ListOpenPRs(t.Context(), "o/r")
 	if err != nil || len(prs) != 1 || prs[0].BaseBranch != "production" {
 		t.Fatalf("open PRs = %+v, %v; want one PR into production", prs, err)
@@ -759,7 +772,7 @@ func TestOpenPRListRoutesOriginHost(t *testing.T) {
 	} {
 		t.Run(tc.origin, func(t *testing.T) {
 			calls := 0
-			p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 				if !isOpenPRList(args) || flagValue(args, "--hostname") != tc.host ||
 					!strings.Contains(strings.Join(args, " "), "owner=o -f name=r") {
 					t.Fatalf("incorrect repository routing: %v", args)
@@ -769,7 +782,7 @@ func TestOpenPRListRoutesOriginHost(t *testing.T) {
 					return `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":true,"endCursor":"next"},"nodes":[]}}}}`, nil
 				}
 				return readFixture(t, "open_pr_snapshot_three.json"), nil
-			}))
+			})))
 			prs, err := p.ListOpenPRs(t.Context(), tc.origin)
 			if err != nil || calls != 2 || len(prs) != 3 || prs[1].HeadSHA == "" || !prs[1].CommitAuthorsComplete {
 				t.Fatalf("PRs=%+v calls=%d err=%v", prs, calls, err)
@@ -780,7 +793,7 @@ func TestOpenPRListRoutesOriginHost(t *testing.T) {
 
 func TestOpenPRListPaginatesTo300(t *testing.T) {
 	calls := 0
-	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 		if !isOpenPRList(args) {
 			t.Fatalf("unexpected query %v", args)
 		}
@@ -793,7 +806,7 @@ func TestOpenPRListPaginatesTo300(t *testing.T) {
 		}
 		calls++
 		return fmt.Sprintf(`{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":true,"endCursor":"page%d"},"nodes":%s}}}}`, calls, mustJSON(t, nodes)), nil
-	}))
+	})))
 	prs, err := p.ListOpenPRs(t.Context(), "o/r")
 	if err != nil || len(prs) != 300 || calls != 3 || prs[299].Number != 300 {
 		t.Fatalf("PRs=%d calls=%d err=%v", len(prs), calls, err)
@@ -801,12 +814,12 @@ func TestOpenPRListPaginatesTo300(t *testing.T) {
 }
 
 func TestClosedPRListOmitsCommitAuthorship(t *testing.T) {
-	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 		if got := flagValue(args, "--json"); got != "number,title,headRefName,state,author" {
 			t.Errorf("closed fields = %q", got)
 		}
 		return "[]", nil
-	}))
+	})))
 	if _, err := p.ListClosedPRs(context.Background(), "o/r"); err != nil {
 		t.Fatal(err)
 	}
@@ -823,7 +836,7 @@ func TestOpenPRSummaryConflictDoesNotNeedFullStatus_Sessions_AC248204(t *testing
 		}
 	}
 	gh := routedGH(t, map[string]string{"graphql": mustJSON(t, page)})
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 	for range 2 {
 		prs, err := p.ListOpenPRs(vcs.WithCachedReads(t.Context()), "o/r")
 		if err != nil {
@@ -845,7 +858,7 @@ func TestOpenPRSummaryConflictDoesNotNeedFullStatus_Sessions_AC248204(t *testing
 	if got := gh.count(isPerPRRead); got != 0 {
 		t.Fatalf("summary made %d per-PR reads: %q", got, callKeys(gh))
 	}
-	if got := gh.count(isGraphQL); got != 1 {
+	if got := gh.count(isSnapshotQuery); got != 1 {
 		t.Fatalf("snapshot queries=%d, want 1", got)
 	}
 }

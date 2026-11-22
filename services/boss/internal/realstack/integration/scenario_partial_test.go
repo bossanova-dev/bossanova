@@ -58,16 +58,8 @@ func TestScenarioPartialBuildRealStack(t *testing.T) {
 	}
 	for i := range plan.GH {
 		response := &plan.GH[i]
-		for j, arg := range response.Args {
-			if j > 0 && response.Args[j-1] == "--repo" {
-				response.Args[j] = prepared.Origins[arg]
-			}
-		}
-		for key, origin := range prepared.Origins {
-			if response.Args[0] == "api" {
-				response.Args[1] = strings.Replace(response.Args[1], "repos/"+key, "repos/"+origin, 1)
-			}
-		}
+		scenario.RemapPRQueries(response, doc, prepared.Origins)
+		scenario.RemapGHResponse(response, prepared.Origins)
 		for key, branch := range prepared.Branches {
 			response.Stdout = strings.ReplaceAll(response.Stdout, `"headRefName":"`+key+`"`, `"headRefName":"`+branch+`"`)
 		}

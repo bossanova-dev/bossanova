@@ -149,6 +149,95 @@ after(() => {
   for (const dir of tempRoots) fs.rmSync(dir, { recursive: true, force: true })
 })
 
+function historyState(repo) {
+  return ['rev-parse HEAD', 'reflog show HEAD', 'reflog show feature'].map((command) =>
+    git(repo, ...command.split(' ')),
+  )
+}
+
+function advanceUpstream(repo, { empty = false } = {}) {
+  git(repo, 'checkout', '-q', 'main')
+  if (!empty) {
+    fs.writeFileSync(path.join(repo, 'upstream.txt'), 'upstream\n')
+    git(repo, 'add', 'upstream.txt')
+  }
+  git(repo, 'commit', '--no-verify', '--allow-empty', '-q', '-m', 'fix: upstream work')
+  git(repo, 'push', '-q', 'origin', 'main')
+  const sha = git(repo, 'rev-parse', 'HEAD')
+  git(repo, 'checkout', '-q', 'feature')
+  return sha
+}
+
+test('add-pr-numbers case 21: a fully tagged range preserves history and the stale index', () => {
+  const empty = 'chore: bootstrap'
+  const repo = makeRepo({
+    hook: PERMISSIVE_HOOK,
+    commits: [
+      { subject: empty, empty: true },
+      { subject: `feat: ${TAG} first` },
+      { subject: `fix: ${TAG} second` },
+    ],
+  })
+  const emptyShort = shortShaFor(repo, empty)
+  const tracked = path.join(repo, 'file-1.txt')
+  const future = new Date(Date.now() + 60_000)
+  fs.utimesSync(tracked, future, future)
+  const index = path.join(repo, '.git', 'index')
+  const indexState = () => [git(repo, 'hash-object', index), fs.statSync(index).mtimeMs]
+  const before = historyState(repo)
+  const beforeIndex = indexState()
+  const r = runScript(repo)
+  assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`)
+  assert.deepEqual(historyState(repo), before, 'neither HEAD nor either reflog may change')
+  assert.deepEqual(indexState(), beforeIndex, 'a read-only no-op must not refresh the index')
+  assert.equal(fs.existsSync(path.join(repo, '.git', 'rebase-merge')), false)
+  assert.equal(occurrences(r.stdout, `Skipped empty commit ${emptyShort} ${empty}`), 1)
+})
+
+test('add-pr-numbers case 22: foreign tags alone or beside the current tag refuse before rewriting', () => {
+  for (const subject of ['fix: [#123] foreign', `fix: ${TAG} [#123] foreign`]) {
+    const repo = makeRepo({
+      hook: PERMISSIVE_HOOK,
+      commits: [{ subject: 'feat: untagged first' }, { subject }],
+    })
+    const short = shortShaFor(repo, subject)
+    const before = historyState(repo)
+    const beforeSubjects = subjects(repo)
+    const r = runScript(repo)
+    assert.notEqual(r.code, 0, `${r.stdout}\n${r.stderr}`)
+    assert.deepEqual(historyState(repo), before)
+    assert.deepEqual(subjects(repo), beforeSubjects)
+    assert.equal(fs.existsSync(path.join(repo, '.git', 'rebase-merge')), false)
+    assert.ok(r.stderr.includes(short), `refusal must name ${short}: ${r.stderr}`)
+  }
+})
+
+test('add-pr-numbers case 23: a patch-equivalent commit refuses before rewriting', () => {
+  const repo = makeRepo({ hook: PERMISSIVE_HOOK, commits: [{ subject: 'feat: real work' }] })
+  const upstream = advanceUpstream(repo)
+  git(repo, 'cherry-pick', upstream)
+  git(repo, 'commit', '--no-verify', '--amend', '-q', '-m', 'fix: copied upstream work')
+  const short = git(repo, 'rev-parse', '--short', 'HEAD')
+  const before = historyState(repo)
+  const r = runScript(repo)
+  assert.notEqual(r.code, 0, `${r.stdout}\n${r.stderr}`)
+  assert.deepEqual(historyState(repo), before)
+  assert.equal(fs.existsSync(path.join(repo, '.git', 'rebase-merge')), false)
+  assert.ok(r.stderr.includes(short), `refusal must name ${short}: ${r.stderr}`)
+})
+
+test('add-pr-numbers case 24: upstream empty commits never cause a bootstrap refusal', () => {
+  const empty = 'chore: [#123] empty bootstrap'
+  const repo = makeRepo({
+    hook: PERMISSIVE_HOOK,
+    commits: [{ subject: empty, empty: true }, { subject: 'feat: real work' }],
+  })
+  advanceUpstream(repo, { empty: true })
+  const r = runScript(repo)
+  assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`)
+  assert.deepEqual(subjects(repo), [empty, `feat: ${TAG} real work`])
+})
+
 test('add-pr-numbers case 1: permissive hook tags every commit and exits 0', () => {
   assert.ok(fs.existsSync(scriptPath), 'add-pr-numbers.sh must exist')
   const repo = makeRepo({

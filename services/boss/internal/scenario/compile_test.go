@@ -9,6 +9,7 @@ import (
 
 	"github.com/recurser/boss/internal/realstack"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func TestRemapCompiledOpenPRLists(t *testing.T) {
@@ -40,6 +41,23 @@ func TestRemapCompiledOpenPRLists(t *testing.T) {
 	}
 	if matched != len(origins) {
 		t.Fatalf("remapped %d lists, want %d", matched, len(origins))
+	}
+}
+
+func TestRemapGitHubAPIRepoPaths(t *testing.T) {
+	for _, args := range [][]string{
+		{"api", "repos/repo/pulls/42", "-i"},
+		{"api", "-X", "PUT", "repos/repo/pulls/42/merge", "-f", "merge_method=merge"},
+		{"api", "-X", "DELETE", "repos/repo/git/refs/heads/feature"},
+	} {
+		response := realstack.GHResponse{Args: slices.Clone(args)}
+		RemapGHResponse(&response, map[string]string{"repo": "scenario/registered"})
+		for i, arg := range args {
+			want := strings.Replace(arg, "repos/repo/", "repos/scenario/registered/", 1)
+			if response.Args[i] != want {
+				t.Fatalf("remapped argv %v: argument %d = %q, want %q", response.Args, i, response.Args[i], want)
+			}
+		}
 	}
 }
 
@@ -101,31 +119,13 @@ func TestCompileEveryStateAndPRInputs(t *testing.T) {
 		}
 	}
 	for _, response := range p.GH {
-		if response.Args[0] != "pr" {
-			continue
-		}
-		switch response.Args[1] {
-		case "view":
-			var value struct {
-				Mergeable string `json:"mergeable"`
-				Draft     bool   `json:"isDraft"`
-			}
-			if err := json.Unmarshal([]byte(response.Stdout), &value); err != nil {
-				t.Fatal(err)
-			}
-			if !value.Draft || value.Mergeable != "MERGEABLE" {
+		if strings.Contains(strings.Join(response.Args, " "), "reviewDecision") {
+			value := fixturePRNode(t, response.Stdout)
+			if value["isDraft"] != true || value["mergeable"] != "MERGEABLE" {
 				t.Fatal(response)
 			}
-		case "checks":
-			if !strings.Contains(response.Stdout, `"state":"FAILURE"`) {
-				t.Fatal(response)
-			}
-		case "list":
-			if response.Args[3] != "r" || !strings.Contains(response.Stdout, `"number":`) {
-				t.Fatal(response)
-			}
-		default:
-			t.Fatalf("unexpected argv %v", response.Args)
+		} else if strings.Contains(strings.Join(response.Args, " "), "statusCheckRollup") && !strings.Contains(response.Stdout, `"conclusion":"FAILURE"`) {
+			t.Fatal(response)
 		}
 	}
 }
@@ -204,11 +204,8 @@ func TestCompilePRBodyAndHead(t *testing.T) {
 		t.Fatal(ps)
 	}
 	for _, response := range plan.GH {
-		if response.Args[1] == "view" {
-			var raw map[string]any
-			if err := json.Unmarshal([]byte(response.Stdout), &raw); err != nil {
-				t.Fatal(err)
-			}
+		if strings.Contains(strings.Join(response.Args, " "), "reviewDecision") {
+			raw := fixturePRNode(t, response.Stdout)
 			if raw["body"] != doc.Sessions[0].PR.Body || raw["headRefOid"] != doc.Sessions[0].PR.HeadSHA {
 				t.Fatalf("PR inputs lost: %s", response.Stdout)
 			}
@@ -241,15 +238,12 @@ func TestPRSizes_Sessions_AC213501(t *testing.T) {
 	}
 	found := false
 	for _, r := range plan.GH {
-		if len(r.Args) < 2 || r.Args[0] != "pr" || r.Args[1] != "view" {
+		if !strings.Contains(strings.Join(r.Args, " "), "reviewDecision") {
 			continue
 		}
 		found = true
-		fields := strings.Split(r.Args[len(r.Args)-1], ",")
-		var raw map[string]any
-		if err := json.Unmarshal([]byte(r.Stdout), &raw); err != nil {
-			t.Fatal(err)
-		}
+		fields := strings.Fields(r.Args[3])
+		raw := fixturePRNode(t, r.Stdout)
 		for field, want := range map[string]float64{"additions": 12, "deletions": 3, "changedFiles": 2} {
 			has := false
 			for _, f := range fields {
@@ -302,4 +296,66 @@ func TestPublicRepositoryIdentityFixture(t *testing.T) {
 	if !found {
 		t.Fatal("repository identity fixture absent")
 	}
+}
+
+func TestCompilePerPRGraphQLFixtures(t *testing.T) {
+	doc := Document{Version: 1, Name: "per-pr", Repos: []Repo{{Key: "r", DisplayName: "R"}, {Key: "a", DisplayName: "A"}}, Sessions: []Session{
+		{Key: "one", Repo: "r", Title: "One", State: "READY_FOR_REVIEW", PR: &PullRequest{Number: 7, State: "OPEN", Checks: "PASSED", Mergeable: true}},
+		{Key: "two", Repo: "a", Title: "Two", State: "READY_FOR_REVIEW", PR: &PullRequest{Number: 7, State: "OPEN", Checks: "FAILED", Mergeable: true}},
+	}}
+	plan, problems := Compile(doc)
+	if len(problems) > 0 {
+		t.Fatal(problems)
+	}
+	origins := map[string]string{"r": "scenario/one", "a": "scenario/two"}
+	seen := map[string]bool{}
+	matched := 0
+	for _, response := range plan.GH {
+		RemapPRQueries(&response, doc, origins)
+		key := strings.Join(response.Args, "\x00")
+		if seen[key] {
+			t.Fatalf("duplicate argv: %v", response.Args)
+		}
+		seen[key] = true
+		for _, session := range doc.Sessions {
+			origin := "https://github.com/" + origins[session.Repo] + ".git"
+			status, _ := vcs.GitHubPRStatusArgs(origin, 7, "")
+			checks, _ := vcs.GitHubPRChecksArgs(origin, 7, "")
+			if slices.Equal(response.Args, status) {
+				matched++
+				node := fixturePRNode(t, response.Stdout)
+				if node["state"] != "OPEN" {
+					t.Fatal(node)
+				}
+			}
+			if slices.Equal(response.Args, checks) {
+				matched++
+				want := "SUCCESS"
+				if session.PR.Checks == "FAILED" {
+					want = "FAILURE"
+				}
+				if !strings.Contains(response.Stdout, `"conclusion":"`+want+`"`) {
+					t.Fatal(response.Stdout)
+				}
+			}
+		}
+	}
+	if matched != 4 {
+		t.Fatalf("got %d remapped per-PR queries, want 4", matched)
+	}
+}
+
+func fixturePRNode(t *testing.T, body string) map[string]any {
+	t.Helper()
+	var page struct {
+		Data struct {
+			Repository struct {
+				PullRequest map[string]any `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &page); err != nil {
+		t.Fatal(err)
+	}
+	return page.Data.Repository.PullRequest
 }

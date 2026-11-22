@@ -46,7 +46,9 @@ test('(b) every release Dockerfile builder pins the go.work Go minor', () => {
   for (const file of dockerfiles) {
     const relative = path.relative(repoRoot, file)
     const source = fs.readFileSync(file, 'utf8')
-    const bases = [...source.matchAll(/^FROM\s+golang:(\d+\.\d+)(?:\.\d+)?[-\s]/gm)]
+    const bases = [
+      ...source.matchAll(/^FROM\s+(?:--platform=\S+\s+)?golang:(\d+\.\d+)(?:\.\d+)?[-\s]/gm),
+    ]
     assert.ok(bases.length > 0, `${relative} must build FROM a pinned golang:<major.minor> image`)
     for (const base of bases) {
       assert.equal(

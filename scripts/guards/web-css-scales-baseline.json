@@ -1,0 +1,155 @@
+{
+  "services/web/src/app/frame/AppFrame.css": {
+    "size": 2
+  },
+  "services/web/src/app/frame/CommandMenu.css": {
+    "size": 4
+  },
+  "services/web/src/app/frame/Sidebar.css": {
+    "size": 1,
+    "space": 1
+  },
+  "services/web/src/app/index.css": {
+    "font-size": 7,
+    "shadow": 2,
+    "size": 17,
+    "space": 2
+  },
+  "services/web/src/app/settings/SettingsSidebar.css": {
+    "size": 1,
+    "space": 1
+  },
+  "services/web/src/features/accounts/components/AccountUsageSection.css": {
+    "size": 1
+  },
+  "services/web/src/features/chat/components/ChatTranscript.css": {
+    "space": 1
+  },
+  "services/web/src/features/chat/components/ReplyBox.css": {
+    "size": 2
+  },
+  "services/web/src/features/chat/components/TranscriptBlocks.css": {
+    "space": 3
+  },
+  "services/web/src/features/cron/components/CronJobForm.css": {
+    "size": 1
+  },
+  "services/web/src/features/sessions/components/NewChatComposer.css": {
+    "size": 3
+  },
+  "services/web/src/features/sessions/components/NewSessionComposer.css": {
+    "size": 2
+  },
+  "services/web/src/features/sessions/components/ProofFrame.css": {
+    "size": 2
+  },
+  "services/web/src/features/sessions/components/SessionCard.css": {
+    "size": 1,
+    "space": 2
+  },
+  "services/web/src/features/sessions/components/SessionChats.css": {
+    "size": 1
+  },
+  "services/web/src/features/sessions/components/SessionDetails.css": {
+    "size": 2
+  },
+  "services/web/src/features/sessions/components/SessionDialogs.css": {
+    "size": 1
+  },
+  "services/web/src/features/sessions/components/SessionHeader.css": {
+    "size": 2
+  },
+  "services/web/src/features/sessions/components/SessionPhone.css": {
+    "size": 1
+  },
+  "services/web/src/features/sessions/components/SessionProof.css": {
+    "size": 2,
+    "space": 2
+  },
+  "services/web/src/features/sessions/components/SessionRow.css": {
+    "size": 3
+  },
+  "services/web/src/features/sessions/components/SessionsBoard.css": {
+    "size": 4,
+    "space": 2
+  },
+  "services/web/src/features/sessions/components/SessionsFoot.css": {
+    "size": 1
+  },
+  "services/web/src/features/sessions/components/SessionsGroupList.css": {
+    "size": 2
+  },
+  "services/web/src/features/sessions/components/SessionsWorkbench.css": {
+    "shadow": 3,
+    "size": 5
+  },
+  "services/web/src/features/sessions/components/composer/ComposerChips.css": {
+    "size": 1
+  },
+  "services/web/src/features/sessions/components/composer/ComposerPicker.css": {
+    "size": 4
+  },
+  "services/web/src/features/sessions/pages/SessionsPage.css": {
+    "size": 1,
+    "space": 1
+  },
+  "services/web/src/features/triggers/components/TriggerForm.css": {
+    "size": 1
+  },
+  "services/web/src/features/triggers/components/TriggerTestDialog.css": {
+    "size": 1
+  },
+  "services/web/src/features/webhooks/components/WebhookForm.css": {
+    "size": 1
+  },
+  "services/web/src/features/webhooks/components/WebhookTestDialog.css": {
+    "size": 2
+  },
+  "services/web/src/shared/ui/Popover.css": {
+    "size": 2
+  },
+  "services/web/src/shared/ui/RoundButton.css": {
+    "size": 4
+  },
+  "services/web/src/shared/ui/Select.css": {
+    "size": 1,
+    "space": 1
+  },
+  "services/web/src/shared/ui/StatusPill.css": {
+    "size": 1
+  },
+  "services/web/src/shared/ui/settings/SettingsControls.css": {
+    "size": 7,
+    "stroke": 1
+  },
+  "services/web/src/shared/ui/settings/SettingsGroup.css": {
+    "size": 2
+  },
+  "services/web/src/shared/ui/settings/SettingsHistory.css": {
+    "size": 2
+  },
+  "services/web/src/shared/ui/settings/SettingsPage.css": {
+    "font-size": 1,
+    "size": 1,
+    "space": 6
+  },
+  "services/web/src/shared/ui/settings/SettingsTable.css": {
+    "size": 4,
+    "stroke": 3
+  },
+  "services/web/src/shared/ui/views/DisplayOptions.css": {
+    "size": 4
+  },
+  "services/web/src/shared/ui/views/FilterMenu.css": {
+    "font-size": 1
+  },
+  "services/web/src/shared/ui/views/FindBox.css": {
+    "size": 2
+  },
+  "services/web/src/shared/ui/views/OptionGlyph.css": {
+    "font-size": 1
+  },
+  "services/web/src/shared/ui/views/ViewTabs.css": {
+    "size": 1
+  }
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -325,7 +326,7 @@ type streamAuthAdapter struct {
 	streamAuth    streamAuthSnapshotter
 	sessionTokens *upstream.SessionTokenHolder
 	// reRegister proactively (re-)registers the daemon with the
-	// orchestrator on login. It shares the reRegisterMu + sessionTokenHolder
+	// orchestrator on login. It shares the registrar + sessionTokenHolder
 	// with the reactive tryReRegister path, so login and auth-failure
 	// recovery never double-register. Nil in local-only mode.
 	reRegister func(context.Context) (string, error)
@@ -363,7 +364,7 @@ type credentialResetter interface {
 // Registering first means both park paths (the NeedsLogin Wait() and the
 // backoff select) re-open cleanly and the reactive path never sees
 // CodeUnauthenticated — the primary anti-storm guarantee; the shared
-// reRegisterMu + sessionTokenHolder keep login and the reactive path from
+// registrar + sessionTokenHolder keep login and the reactive path from
 // double-registering. Re-register is best-effort — a failure is logged and
 // MarkOK still runs so the reactive path remains the backstop. Note that this
 // function DOES return that failure, as a RegisterFailed verdict plus the
@@ -499,6 +500,9 @@ func (a *streamAuthAdapter) NotifyLogin(ctx context.Context, _ []string) (server
 		a.logger.Info().
 			Str("component", "auth-reload").
 			Msg("credentials usable after login; auth gate cleared")
+	}
+	if errors.Is(registerErr, upstream.ErrDaemonRemovedByAnotherUser) {
+		return server.LoginVerdict{Outcome: server.LoginOutcomeRemovedByAnotherUser}, registerErr
 	}
 	if registerErr != nil {
 		return server.LoginVerdict{Outcome: server.LoginOutcomeRegisterFailed}, registerErr

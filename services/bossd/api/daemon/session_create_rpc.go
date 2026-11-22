@@ -36,6 +36,28 @@ func validateCreateSessionFields(msg *pb.CreateSessionRequest) error {
 	return nil
 }
 
+// resolveSessionAgentAccount resolves the agent a new session runs on, then the
+// account it binds to, since the account policy is per agent.
+//
+// The agent field is a oneof (*string); an unset request resolves via the
+// shared rule (single loaded runner, then Settings.DefaultAgent) and a default
+// that names an unloaded runner is refused before any row is written.
+//
+// Account binding honours an explicit account_id (validated against the
+// registry and the resolved agent's provider), an explicit empty account_id
+// (account 0, opting out of the policy), or, when the field is absent, the
+// default-account policy. The raw optional pointer is passed so presence is
+// preserved: msg.GetAccountId() would collapse absent and explicit-empty. A
+// resolver error never fails creation; only an invalid explicit account_id does.
+func (s *Server) resolveSessionAgentAccount(ctx context.Context, msg *pb.CreateSessionRequest) (agentName, accountID string, err error) {
+	agentName, err = s.resolveAgentName(msg.GetAgentName())
+	if err != nil {
+		return "", "", connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	accountID, err = s.resolveSessionAccount(ctx, msg.AccountId, agentName, msg.GetModel())
+	return agentName, accountID, err
+}
+
 // StreamCreateSession holds the full CreateSession body. Each result frame is
 // delivered through emit (the connect handler passes stream.Send; the reverse-
 // stream adapter passes a channel-pushing closure). Behaviour and validation
@@ -313,10 +335,10 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		plan = trackerprompt.Format(msg.GetTrackerIssue(), msg.GetTrackerSource())
 	}
 
-	// Resolve the agent name. The proto field is a oneof (*string), so an
-	// unset request resolves via the shared rule (single-loaded runner, then
-	// Settings.DefaultAgent) — see resolveAgentName.
-	agentName := s.resolveAgentName(msg.GetAgentName())
+	agentName, accountID, err := s.resolveSessionAgentAccount(ctx, msg)
+	if err != nil {
+		return err
+	}
 
 	createParams := domain.CreateSessionParams{
 		RepoID:     msg.RepoId,
@@ -341,19 +363,8 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		createParams.PRURL = prURL
 	}
 
-	// Account binding: honor an explicit account_id (validated against the
-	// registry and the resolved agent's provider), an explicit empty account_id
-	// (account 0, opting out of the policy), or — when the field is absent — apply
-	// the default-account policy. Pass the raw optional pointer so presence is
-	// preserved: msg.GetAccountId() would collapse absent and explicit-empty. An
-	// explicit empty result leaves AccountID present-empty (account 0) so later
-	// chat backfill can distinguish explicit opt-out from legacy nil rows. A
-	// resolver error never fails creation — only an invalid explicit account_id
-	// does.
-	accountID, err := s.resolveSessionAccount(ctx, msg.AccountId, agentName, msg.GetModel())
-	if err != nil {
-		return err
-	}
+	// An explicit empty result leaves AccountID present-empty (account 0) so
+	// later chat backfill can distinguish explicit opt-out from legacy nil rows.
 	if accountID != "" || msg.AccountId != nil {
 		createParams.AccountID = &accountID
 	}

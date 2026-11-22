@@ -54,7 +54,10 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	// append_system_prompt, so there are no instruction classes to report and
 	// this path emits no undelivered-instruction record whatever the runner
 	// declares.
-	effort := session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
+	effort := chat.Effort
+	if effort == "" {
+		effort = session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
+	}
 	// The preview must resolve the model the way the spawn does, or it shows a
 	// command that is not the one bossd would run (BOS-1281). Passing chat.Model
 	// raw was wrong in BOTH directions: a same-agent chat with no model of its

@@ -54,6 +54,7 @@ type AgentChat struct {
 	Role              *string
 	ReclaimedAt       *string
 	ReclaimReason     *string
+	Effort            string
 	Rowid             int64
 }
 

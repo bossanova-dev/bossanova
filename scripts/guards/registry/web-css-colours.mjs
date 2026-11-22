@@ -1,6 +1,6 @@
 export default {
   id: 'web-css-colours',
-  rule: 'Web stylesheets take colours from tokens; per-file literal counts in `scripts/guards/web-css-colours-baseline.json` only shrink.',
+  rule: 'Web CSS colours come from tokens.',
   command: 'node scripts/guards/check-web-css-colours.mjs',
   wiring: { make: 'lint-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
   scans: ['services/web/src/**/*.css', 'scripts/guards/web-css-colours-baseline.json'],

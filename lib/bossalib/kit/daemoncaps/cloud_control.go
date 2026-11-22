@@ -21,6 +21,7 @@ var commandContent = contentTable(commandOneof, map[protoreflect.Name]bool{
 	"get_chat_transcript":   true,
 	"list_accounts":         false,
 	"get_repo":              false,
+	"get_daemon_settings":   false,
 	"list_cron_jobs":        true,
 	"list_chats":            false,
 	"get_session_statuses":  false,
@@ -32,6 +33,7 @@ var commandContent = contentTable(commandOneof, map[protoreflect.Name]bool{
 	"get_note":              true,
 	"list_notes":            true,
 	"get_chat_statuses":     false,
+	"list_agent_models":     false,
 })
 
 var terminalContent = contentTable(terminalOneof, map[protoreflect.Name]bool{

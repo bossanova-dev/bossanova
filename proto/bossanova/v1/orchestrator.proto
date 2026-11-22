@@ -46,6 +46,15 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "daemons:read";
   }
+  // RemoveDaemon forgets a machine: it deletes the daemon's ownership row,
+  // revokes its daemon token and refuses its re-registration until someone
+  // runs a fresh login on the machine. Allowed for the machine's owner and for
+  // an owner of the organization the daemon claimed.
+  rpc RemoveDaemon(RemoveDaemonRequest) returns (RemoveDaemonResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "daemons:delete";
+  }
 
   // Session transfer between daemons
   rpc TransferSession(TransferSessionRequest) returns (TransferSessionResponse) {
@@ -171,6 +180,25 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
     option (bossanova.v1.permission) = "chats:write";
   }
+  // Answers the question a chat's agent waits on in its terminal menu, with
+  // one of its options or with typed words. Writes to the agent like
+  // ProxySendChatMessage, so it takes the same permission and the same cloud
+  // control. question_id must name the question the agent still waits on;
+  // otherwise the daemon types nothing and the call fails FailedPrecondition.
+  // Routes by session_id with the chat scoped to that session.
+  rpc ProxyAnswerChatQuestion(ProxyAnswerChatQuestionRequest) returns (ProxyAnswerChatQuestionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "chats:write";
+  }
+  // Stops one chat's agent and leaves the session's other chats running. The
+  // chat stays, asleep, and a later message wakes it. Routes by session_id
+  // with the chat scoped to that session.
+  rpc ProxyStopChat(ProxyStopChatRequest) returns (ProxyStopChatResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "chats:write";
+  }
   // Aggregates repos across the caller's live daemons, deduped by origin URL,
   // with the serving daemon IDs unioned per repo. Spans every organization the
   // caller belongs to unless the request narrows it to one.
@@ -184,6 +212,26 @@ service OrchestratorService {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
     option (bossanova.v1.permission) = "daemons:read";
+  }
+  // Lists the models one agent on a daemon offers, for the model and effort
+  // pickers. The daemon asks the agent plugin; Bossanova keeps no model list.
+  rpc ProxyListAgentModels(ProxyListAgentModelsRequest) returns (ProxyListAgentModelsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "daemons:read";
+  }
+  // Reads and edits the web-editable subset of a daemon's settings.json. The
+  // daemon enforces the allowlist; cloud control and operator tuning stay
+  // local.
+  rpc ProxyGetDaemonSettings(ProxyGetDaemonSettingsRequest) returns (ProxyGetDaemonSettingsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "daemons:read";
+  }
+  rpc ProxyUpdateDaemonSettings(ProxyUpdateDaemonSettingsRequest) returns (ProxyUpdateDaemonSettingsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "daemons:write";
   }
   rpc ProxyListRepoPRs(ProxyListRepoPRsRequest) returns (ProxyListRepoPRsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
@@ -896,6 +944,14 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "account:write";
   }
+  // UnsubscribeFromNewsletter withdraws the caller's newsletter consent and
+  // removes them from the Loops list. Idempotent: a caller who never opted in
+  // succeeds.
+  rpc UnsubscribeFromNewsletter(UnsubscribeFromNewsletterRequest) returns (UnsubscribeFromNewsletterResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
 
   // Organizations. User-authenticated.
   rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse) {
@@ -933,6 +989,22 @@ service OrchestratorService {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
     option (bossanova.v1.permission) = "organization:admin";
+  }
+  // SetMemberSessionSharing turns member session sharing on or off for the
+  // caller's active organization (Organization.is_member_session_sharing_enabled).
+  // Owner only.
+  rpc SetMemberSessionSharing(SetMemberSessionSharingRequest) returns (SetMemberSessionSharingResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "organization:admin";
+  }
+  // GetOrganizationBilling reports an organization's plan, seats, renewal and
+  // cloud access for its Billing settings page. The caller must own the
+  // requested organization.
+  rpc GetOrganizationBilling(GetOrganizationBillingRequest) returns (GetOrganizationBillingResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "billing:read";
   }
   rpc ListOrganizationMembers(ListOrganizationMembersRequest) returns (ListOrganizationMembersResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
@@ -1268,6 +1340,86 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "none";
   }
+
+  // Personal settings. Each belongs to the calling user alone and follows
+  // them across organizations and devices.
+  rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:read";
+  }
+  rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  // UpdateUserProfile renames the caller in WorkOS, then in bosso's users row.
+  rpc UpdateUserProfile(UpdateUserProfileRequest) returns (UpdateUserProfileResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  rpc GetUserGitHubIdentity(GetUserGitHubIdentityRequest) returns (GetUserGitHubIdentityResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:read";
+  }
+  // Saved views are private to the caller.
+  rpc ListSavedViews(ListSavedViewsRequest) returns (ListSavedViewsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:read";
+  }
+  rpc CreateSavedView(CreateSavedViewRequest) returns (CreateSavedViewResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  rpc UpdateSavedView(UpdateSavedViewRequest) returns (UpdateSavedViewResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  rpc DeleteSavedView(DeleteSavedViewRequest) returns (DeleteSavedViewResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  rpc ReorderSavedViews(ReorderSavedViewsRequest) returns (ReorderSavedViewsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  // Sidebar favorites are private to the caller.
+  rpc ListFavorites(ListFavoritesRequest) returns (ListFavoritesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:read";
+  }
+  rpc SetFavorite(SetFavoriteRequest) returns (SetFavoriteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  rpc RemoveFavorite(RemoveFavoriteRequest) returns (RemoveFavoriteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  // SnoozeSession hides a session from the caller ("Not now") until the
+  // session's state changes or expires_at passes. Only the caller's own lists
+  // change; the session itself is untouched. The session must be visible to
+  // the caller.
+  rpc SnoozeSession(SnoozeSessionRequest) returns (SnoozeSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
+  rpc UnsnoozeSession(UnsnoozeSessionRequest) returns (UnsnoozeSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "account:write";
+  }
 }
 
 // --- Daemon Registry ---
@@ -1317,6 +1469,23 @@ message ListDaemonsRequest {
   // they belong to. Older clients and daemon-authenticated callers retain the
   // legacy single-organization resolution.
   optional string organization_id = 1;
+}
+
+message RemoveDaemonRequest {
+  string daemon_id = 1;
+}
+message RemoveDaemonResponse {}
+
+// DaemonRemoved is attached to the FailedPrecondition RegisterDaemon returns
+// for a removed daemon. Only the account that owned the machine when it was
+// removed can add it back, by a fresh login on the machine; until then the
+// daemon should stop re-registering.
+message DaemonRemoved {
+  // is_removed_by_another_user is true when the registering account is not
+  // the one that owned the machine when it was removed. That account's login
+  // can never lift the removal: the previous owner must log in on the machine
+  // again, or the daemon must take a new id to join as a new machine.
+  bool is_removed_by_another_user = 1;
 }
 
 message DaemonInfo {
@@ -1622,6 +1791,12 @@ message ProxyRecordChatRequest {
   string title = 3;
   bool resume = 4;
   string agent_name = 5;
+  // model and effort set a NEW chat's agent model id and reasoning effort.
+  // Unset or empty inherits: the session's model and effort when the chat
+  // runs the session's agent, else that agent's configured default. Ignored
+  // when the chat already exists.
+  optional string model = 6;
+  optional string effort = 7;
 }
 message ProxyRecordChatResponse { AgentChat chat = 1; }
 
@@ -1630,6 +1805,29 @@ message ProxyDeleteChatRequest {
   string agent_session_id = 2;
 }
 message ProxyDeleteChatResponse {}
+
+message ProxyAnswerChatQuestionRequest {
+  string session_id = 1;
+  string agent_session_id = 2;
+  // ChatQuestion.id of the question being answered.
+  string question_id = 3;
+  oneof answer {
+    // Zero-based index into ChatQuestion.options.
+    uint32 option_index = 4;
+    // Words for the menu's own free-text answer. One line.
+    string text = 5;
+  }
+}
+// ProxyAnswerChatQuestionResponse mirrors AnswerChatQuestionResult.
+message ProxyAnswerChatQuestionResponse {
+  bool is_answered = 1;
+}
+
+message ProxyStopChatRequest {
+  string session_id = 1;
+  string agent_session_id = 2;
+}
+message ProxyStopChatResponse {}
 
 // ProxySwitchSessionAgentAccountRequest switches a session's live chat to a
 // different account. session_id is required for authz scoping (mirror
@@ -1653,6 +1851,10 @@ message ProxyGetChatTranscriptRequest {
   string session_id = 1;       // for authz scoping (mirror ProxyWakeChat)
   string agent_session_id = 2;
   int32 max_messages = 3;      // 0 = all; otherwise the most recent N
+  // should_include_activity asks for the structured transcript: steps, events
+  // and questions as their own kinds, harness wrappers removed (ChatMessage).
+  // A daemon older than the field ignores it and answers the flat stream.
+  bool should_include_activity = 4;
 }
 // ProxyGetChatTranscriptResponse mirrors daemon.proto's GetChatTranscriptResponse
 // shape so the gateway can forward it field-for-field. ChatMessage is defined in
@@ -1773,6 +1975,40 @@ message ProxyListAgentsRequest {
 
 message ProxyListAgentsResponse {
   repeated AgentInfo agents = 1;
+}
+
+message ProxyListAgentModelsRequest {
+  string daemon_id = 1;
+  // Agent plugin name, as in AgentInfo.name ("claude", "codex", ...).
+  string agent_name = 2;
+}
+
+message ProxyListAgentModelsResponse {
+  // The agent's own list, in the agent's order. Empty when the agent offers
+  // no list; the picker then accepts a typed model ID.
+  repeated AgentModel models = 1;
+  // Model IDs this daemon recently ran the agent with, newest first, from its
+  // sessions and schedules. May name models absent from models.
+  repeated string recent_model_ids = 2;
+}
+
+message ProxyGetDaemonSettingsRequest {
+  string daemon_id = 1;
+}
+
+message ProxyGetDaemonSettingsResponse {
+  DaemonSettings settings = 1;
+}
+
+message ProxyUpdateDaemonSettingsRequest {
+  string daemon_id = 1;
+  DaemonSettingsUpdate update = 2;
+}
+
+message ProxyUpdateDaemonSettingsResponse {
+  DaemonSettings settings = 1;
+  // True when a saved change takes effect only after the daemon restarts.
+  bool is_restart_needed = 2;
 }
 
 // ProxyListAgentAccountsRequest lists the rotation accounts on the daemon owning
@@ -1926,6 +2162,12 @@ message ProxyUpdateRepoRequest {
   // Additive: older clients omit this field and retain existing behavior, so no
   // version transform is needed. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
   optional string serve_script = 14;
+  // Absent leaves each flag unchanged. Additive: older clients omit them and
+  // observe no change, so no version transform is needed. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  optional bool should_keep_branches_current = 15;
+  optional bool can_auto_delete_branches = 16;
+  optional bool can_auto_rotate = 17;
 }
 message ProxyUpdateRepoResponse { RepoSettings settings = 1; }
 
@@ -2961,6 +3203,9 @@ message SubscribeToNewsletterResponse {
   NewsletterConsent consent = 1;
 }
 
+message UnsubscribeFromNewsletterRequest {}
+message UnsubscribeFromNewsletterResponse {}
+
 // --- Organizations ---
 
 // MemberRole is a member's role inside an organization. Owners can rename the
@@ -2993,7 +3238,7 @@ message Organization {
   // machine owner -- the user whose daemon runs a session -- can reach it;
   // organization owners are restricted too. True applies the teammate model:
   // any member may see the organization's sessions and run the teammate
-  // allow-list on them. Read-only: no RPC sets it yet (BOS-1593).
+  // allow-list on them. Owners change it with SetMemberSessionSharing.
   bool is_member_session_sharing_enabled = 8;
 }
 
@@ -3011,6 +3256,12 @@ message OrganizationMember {
   // True after WorkOS accepted the invitation but before the accepted user has
   // landed as a local organization member through sign-in reconciliation.
   bool is_invite_accepted = 9;
+  // When the member last made an authenticated request in this organization,
+  // recorded at most once per throttle window. Absent for invitation-only rows
+  // and for members not seen since the column was added.
+  // No dated API bump: additive output field older clients ignore. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  google.protobuf.Timestamp last_seen_at = 10;
 }
 
 message ListOrganizationsRequest {}
@@ -3074,6 +3325,42 @@ message SetOrganizationProofHostingRequest {
 
 message SetOrganizationProofHostingResponse {
   OrganizationProofHosting proof_hosting = 1;
+}
+
+message SetMemberSessionSharingRequest {
+  string organization_id = 1;
+  bool is_enabled = 2;
+}
+message SetMemberSessionSharingResponse {
+  Organization organization = 1;
+}
+
+message GetOrganizationBillingRequest {
+  string organization_id = 1;
+}
+message GetOrganizationBillingResponse {
+  OrganizationBilling billing = 1;
+}
+
+// OrganizationBilling is the Billing page's plan card. Fields from Stripe are
+// served from a short-lived cache.
+message OrganizationBilling {
+  // Stripe product name of the subscription's plan; empty with no subscription.
+  string plan_name = 1;
+  // Seats Stripe bills (the subscription quantity).
+  int32 seat_count = 2;
+  // Active members today; seat_count follows it.
+  int32 member_count = 3;
+  // Stripe subscription status verbatim ("active", "trialing", "past_due",
+  // "canceled", ...); empty with no subscription.
+  string subscription_status = 4;
+  // Next renewal. Absent with no subscription or when it ends at period end.
+  google.protobuf.Timestamp renews_at = 5;
+  // When a subscription set to cancel ends.
+  google.protobuf.Timestamp ends_at = 6;
+  google.protobuf.Timestamp trial_ends_at = 7;
+  // Whether the organization's own cloud access is active now.
+  bool is_cloud_access_active = 8;
 }
 
 message ListOrganizationMembersRequest {
@@ -3929,6 +4216,11 @@ message CreateAPITokenRequest {
   string name = 1;
   repeated string permissions = 2;
   google.protobuf.Timestamp expires_at = 3;
+  // Organization the token is bound to; the caller must belong to it. Empty
+  // keeps the earlier behaviour: the caller's active (claimed) organization.
+  // No dated API bump: older clients omit it and observe no change. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  string organization_id = 4;
 }
 message CreateAPITokenResponse {
   APIToken token = 1;
@@ -4027,3 +4319,279 @@ message DeleteViewerDeviceRequest { string id = 1; }
 message DeleteViewerDeviceResponse {}
 message ListViewerDeviceRequestsRequest {}
 message ListViewerDeviceRequestsResponse { repeated ViewerDevice viewer_devices = 1; }
+
+// --- Personal settings ---
+
+enum UserTheme {
+  USER_THEME_UNSPECIFIED = 0;
+  USER_THEME_SYSTEM = 1;
+  USER_THEME_LIGHT = 2;
+  USER_THEME_DARK = 3;
+}
+
+// SessionOpenTarget is what opening a session shows first.
+enum SessionOpenTarget {
+  SESSION_OPEN_TARGET_UNSPECIFIED = 0;
+  SESSION_OPEN_TARGET_PROOF = 1;
+  SESSION_OPEN_TARGET_CHAT = 2;
+}
+
+enum SessionsLayout {
+  SESSIONS_LAYOUT_UNSPECIFIED = 0;
+  SESSIONS_LAYOUT_BOARD = 1;
+  SESSIONS_LAYOUT_LIST = 2;
+}
+
+// SessionsDisplay is how the Sessions page groups, orders and decorates its
+// cards. bosso rejects an unspecified or unknown grouping or ordering, and a
+// property outside repository, size, ticket, confidence, chats and updated or
+// named twice, with INVALID_ARGUMENT, and stores properties in that order.
+message SessionsDisplay {
+  ViewGrouping grouping = 1;
+  ViewOrdering ordering = 2;
+  repeated string properties = 3;
+}
+
+// UserPreferences are one person's settings. A person who never saved any
+// reads the defaults: system theme, proof first, board, idle shown, pinned
+// actions proof, chat, details and merge, notifications for every
+// organization, and Sessions grouped by status, ordered by quickest call,
+// showing repository, size, ticket, chats and updated.
+message UserPreferences {
+  UserTheme theme = 1;
+  SessionOpenTarget session_open_target = 2;
+  SessionsLayout sessions_layout = 3;
+  bool is_idle_shown = 4;
+  // Session action IDs pinned beside the session's menu, in order.
+  repeated string pinned_actions = 5;
+  // Whether browser notifications cover every organization, not only the
+  // active one.
+  bool is_notify_all_orgs = 6;
+  // Absent until the person first saves a preference.
+  google.protobuf.Timestamp updated_at = 7;
+  // The Sessions page's current display; its layout and idle toggle are
+  // sessions_layout and is_idle_shown.
+  SessionsDisplay sessions_display = 8;
+  // The display the Sessions page's Reset returns to. Absent until the person
+  // first sets one; the web then falls back to its built-in display. bosso
+  // validates it as a SessionsDisplay, with a board or list layout.
+  ViewDisplay default_sessions_display = 9;
+}
+
+// PinnedSessionActions wraps the pinned list so an update can tell "leave
+// unchanged" (absent) from "unpin everything" (present and empty).
+message PinnedSessionActions {
+  repeated string actions = 1;
+}
+
+message GetUserPreferencesRequest {}
+message GetUserPreferencesResponse {
+  UserPreferences preferences = 1;
+}
+
+// UpdateUserPreferencesRequest changes only the fields that are present. The
+// web also sends it once to copy preferences it kept in browser storage.
+message UpdateUserPreferencesRequest {
+  optional UserTheme theme = 1;
+  optional SessionOpenTarget session_open_target = 2;
+  optional SessionsLayout sessions_layout = 3;
+  optional bool is_idle_shown = 4;
+  PinnedSessionActions pinned_actions = 5;
+  optional bool is_notify_all_orgs = 6;
+  // Present replaces the stored display whole.
+  SessionsDisplay sessions_display = 7;
+  ViewDisplay default_sessions_display = 8;
+}
+message UpdateUserPreferencesResponse {
+  UserPreferences preferences = 1;
+}
+
+message UserProfile {
+  string user_id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+message UpdateUserProfileRequest {
+  // Trimmed; 1 to 100 characters.
+  string name = 1;
+}
+message UpdateUserProfileResponse {
+  UserProfile profile = 1;
+}
+
+enum GitHubIdentitySource {
+  GIT_HUB_IDENTITY_SOURCE_UNSPECIFIED = 0;
+  // Learned from the WorkOS GitHub sign-in.
+  GIT_HUB_IDENTITY_SOURCE_WORKOS_OAUTH = 1;
+  // Learned from a GitHub App user authorization.
+  GIT_HUB_IDENTITY_SOURCE_GITHUB_APP = 2;
+}
+
+message UserGitHubIdentity {
+  int64 github_user_id = 1;
+  string github_login = 2;
+  GitHubIdentitySource source = 3;
+  google.protobuf.Timestamp last_verified_at = 4;
+}
+
+message GetUserGitHubIdentityRequest {}
+message GetUserGitHubIdentityResponse {
+  // The most recently verified identity; absent when none is linked.
+  UserGitHubIdentity identity = 1;
+}
+
+enum ViewGrouping {
+  VIEW_GROUPING_UNSPECIFIED = 0;
+  VIEW_GROUPING_STATUS = 1;
+  VIEW_GROUPING_NEEDS = 2;
+  VIEW_GROUPING_REPOSITORY = 3;
+}
+
+enum ViewOrdering {
+  VIEW_ORDERING_UNSPECIFIED = 0;
+  VIEW_ORDERING_QUICKEST_CALL = 1;
+  VIEW_ORDERING_SMALLEST = 2;
+  VIEW_ORDERING_LAST_UPDATED = 3;
+  // High confidence first, then moderate, then low, then none; ties by most
+  // recently updated.
+  VIEW_ORDERING_CONFIDENT = 4;
+}
+
+// ViewFilterClause is one filter chip: facet, is / is not, values. bosso
+// accepts the facets status, needs, repository, organization, daemon,
+// proof_page, size and agent, at most 50 values of at most 200 characters
+// each, and rejects anything else with INVALID_ARGUMENT.
+message ViewFilterClause {
+  string facet = 1;
+  bool is_negated = 2;
+  repeated string values = 3;
+}
+
+// ViewFilter is a view's chips, ANDed. At most 20 clauses.
+message ViewFilter {
+  repeated ViewFilterClause clauses = 1;
+}
+
+// ViewDisplay is a view's display options.
+message ViewDisplay {
+  SessionsLayout layout = 1;
+  ViewGrouping grouping = 2;
+  ViewOrdering ordering = 3;
+  bool is_idle_shown = 4;
+  // Card properties shown, in order: repository, size, ticket, confidence,
+  // chats, updated.
+  repeated string properties = 5;
+}
+
+// SavedView is a person's private, named filter and display combination.
+message SavedView {
+  string id = 1;
+  // 1 to 60 characters.
+  string name = 2;
+  // At most 500 characters.
+  string description = 3;
+  ViewFilter filter = 4;
+  ViewDisplay display = 5;
+  // Zero-based tab order among the person's views.
+  int32 position = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message ListSavedViewsRequest {}
+message ListSavedViewsResponse {
+  // In position order.
+  repeated SavedView views = 1;
+}
+
+// CreateSavedViewRequest appends a view after the person's last one.
+message CreateSavedViewRequest {
+  string name = 1;
+  string description = 2;
+  ViewFilter filter = 3;
+  ViewDisplay display = 4;
+}
+message CreateSavedViewResponse {
+  SavedView view = 1;
+}
+
+// UpdateSavedViewRequest changes only the fields that are present; a present
+// filter or display replaces the stored one.
+message UpdateSavedViewRequest {
+  string id = 1;
+  optional string name = 2;
+  optional string description = 3;
+  ViewFilter filter = 4;
+  ViewDisplay display = 5;
+}
+message UpdateSavedViewResponse {
+  SavedView view = 1;
+}
+
+// DeleteSavedViewRequest also removes the view's favorite, if any.
+message DeleteSavedViewRequest {
+  string id = 1;
+}
+message DeleteSavedViewResponse {}
+
+// ReorderSavedViewsRequest names every one of the person's view IDs exactly
+// once, in the new order.
+message ReorderSavedViewsRequest {
+  repeated string view_ids = 1;
+}
+message ReorderSavedViewsResponse {
+  repeated SavedView views = 1;
+}
+
+// Favorite is one sidebar favorite. target is one of:
+//   view:<saved view id>             one of the person's saved views
+//   builtin:<all|needs|working>      a built-in view
+//   quick:<key>=<value>[&...]        a quick-filter combination over the keys
+//                                    org, daemon and repo, each at most once,
+//                                    in that order, values URL-encoded
+// bosso rejects any other target with INVALID_ARGUMENT and returns the
+// canonical spelling.
+message Favorite {
+  string target = 1;
+  // Zero-based order in the sidebar.
+  int32 position = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message ListFavoritesRequest {}
+message ListFavoritesResponse {
+  // In position order.
+  repeated Favorite favorites = 1;
+}
+
+// SetFavoriteRequest adds a favorite or moves an existing one. Absent
+// position appends a new favorite and keeps an existing one where it is.
+message SetFavoriteRequest {
+  string target = 1;
+  optional int32 position = 2;
+}
+message SetFavoriteResponse {
+  Favorite favorite = 1;
+}
+
+// RemoveFavoriteRequest is idempotent: removing an absent target succeeds.
+message RemoveFavoriteRequest {
+  string target = 1;
+}
+message RemoveFavoriteResponse {}
+
+message SnoozeSessionRequest {
+  string session_id = 1;
+  // Optional time limit; must be in the future.
+  google.protobuf.Timestamp expires_at = 2;
+}
+message SnoozeSessionResponse {
+  SessionSnooze snooze = 1;
+}
+
+// UnsnoozeSessionRequest is idempotent.
+message UnsnoozeSessionRequest {
+  string session_id = 1;
+}
+message UnsnoozeSessionResponse {}

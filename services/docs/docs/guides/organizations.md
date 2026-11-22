@@ -8,13 +8,16 @@ description: 'Create a Bossanova Cloud organization, invite people, set their ro
 
 An organization is the group your Bossanova Cloud sessions, notes, webhooks and
 billing belong to. You manage organizations and their members in the
-[web app](./web.md) under **Settings → Organization**. The `boss` CLI, the
+[web app](./web.md) under **Settings**, where each organization has its own
+group of pages: **General**, **Members**, **Proof pages**, **Billing** and the
+rest. The `boss` CLI, the
 terminal UI and the MCP tools have no member-management commands. They only
 choose which organization a repository belongs to (see
 [Which organization a repository's sessions land in](#which-organization-a-repositorys-sessions-land-in)).
 
-The Organization settings page sits behind Bossanova Cloud access. If your
-account has no active plan, the web app sends you to the subscribe page
+**General**, **Members** and **Billing** stay open without Bossanova Cloud
+access, so an owner always keeps a way to fix billing or leave. The other organization
+pages sit behind it: without an active plan they send you to the subscribe page
 instead. [Signing In](./login.md#if-bossanova-cloud-needs-a-subscription)
 covers choosing a plan.
 
@@ -30,42 +33,41 @@ to it, and leave or delete it when you are done.
 ## Roles
 
 Each member has one of two roles. The members table shows them as **Owner**
-and **User**.
+and **Member**.
 
-| Action                                   | Owner | User |
-| ---------------------------------------- | ----- | ---- |
-| See the organization and its member list | Yes   | Yes  |
-| Rename the organization                  | Yes   | No   |
-| Invite people and revoke invitations     | Yes   | No   |
-| Change another member's role             | Yes   | No   |
-| Remove another member                    | Yes   | No   |
-| Manage the organization's billing        | Yes   | No   |
-| Delete the organization                  | Yes   | No   |
-| Leave the organization                   | Yes   | Yes  |
-| Create a new organization of their own   | Yes   | Yes  |
+| Action                                   | Owner | Member |
+| ---------------------------------------- | ----- | ------ |
+| See the organization and its member list | Yes   | Yes    |
+| Rename the organization                  | Yes   | No     |
+| Invite people and revoke invitations     | Yes   | No     |
+| Change another member's role             | Yes   | No     |
+| Remove another member                    | Yes   | No     |
+| Manage the organization's billing        | Yes   | No     |
+| Delete the organization                  | Yes   | No     |
+| Leave the organization                   | Yes   | Yes    |
+| Create a new organization of their own   | Yes   | Yes    |
 
 Owners manage every other row in the members table. Nobody changes their own
 role or removes themselves, and an organization always keeps at least one
-owner.
+owner. A member sees the owner-only settings as read-only values, and does not
+see **Billing** or **Webhooks** at all.
 
-To rename the organization, an owner clicks its name at the top of the page,
-types the new name and presses Enter. Escape, or clicking anywhere else,
-cancels the edit.
+To rename the organization, an owner edits **Name** on its **General** page
+and presses Enter, or moves to another field. Escape puts the old name back.
 
 ## Switching organizations
 
-When you belong to more than one organization, the Organization settings page
-shows an organization picker next to the **New organization** button. Choose
-an organization to open its settings.
+Each organization you belong to has its own group in the Settings sidebar.
+Open a page in another organization's group to manage that organization.
 
 ## Create an organization
 
 Anyone signed in with Bossanova Cloud access is allowed to create organizations,
 and the person who creates one becomes its owner.
 
-1. Open **Settings → Organization** in the web app.
-2. Click **New organization**.
-3. Enter a name and click **Create organization**.
+1. Open **Settings** in the web app.
+2. Click **New organization** at the foot of the sidebar.
+3. Enter a name and click **Create organization**. Its **General** page opens.
 
 If the organization has not had billing set up yet, you will be prompted to
 subscribe after creating the organization.
@@ -74,11 +76,11 @@ subscribe after creating the organization.
 
 Only owners invite people, and the organization needs Bossanova Cloud access.
 
-1. Open **Settings → Organization** for the organization.
-2. Click **Invite member**.
-3. Enter the person's email address and choose a role. The role starts as
-   **User**.
-4. Click **Invite member**.
+1. Open the organization's **Members** page.
+2. Click **Invite**.
+3. Enter one or more email addresses, separated by commas or new lines, and
+   choose a role. The role starts as **Member**.
+4. Click **Send invites**.
 
 WorkOS, the sign-in provider behind Bossanova Cloud, emails the person a link
 to join. They do not need a Bossanova account first. Enter a bare address
@@ -90,26 +92,27 @@ invitation rate limit: a burst of 10, refilled at 5 invitations a minute.
 
 ### Invitation states
 
-The **Status** column in the members table tracks each invitation.
+The members table has two bands. **Invited** holds invitations, and **Active**
+holds members, with when each joined and was last seen.
 
-| Status                               | Meaning                                                                                     |
-| ------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `Invite pending`                     | WorkOS has sent the email and the person has not accepted. The invitation grants no access. |
-| `Invite accepted — awaiting sign-in` | The person accepted in WorkOS but has not signed in to Bossanova yet.                       |
-| `Active`                             | The person is a member, with the role shown in the **Role** column.                         |
+| Row under the address           | Meaning                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------- |
+| `Invitation sent`               | WorkOS has sent the email and the person has not accepted. The invitation grants no access. |
+| `Accepted, waiting for sign-in` | The person accepted in WorkOS but has not signed in to Bossanova yet.                       |
 
 A pending invitation is not a member and does not use a seat. A row waiting for
-sign-in has no role or remove controls. It becomes an **Active** member row the
-first time the person signs in to Bossanova.
+sign-in has no role or remove controls. It moves to **Active** the first time
+the person signs in to Bossanova.
 
 ## Change a member's role
 
 Changing roles is owner-only, and only for **Active** users.
 
-1. Open **Settings → Organization**.
-2. In the member's **Role** column, choose **Owner** or **User**.
+1. Open the organization's **Members** page.
+2. Click the member's row, or its **⋯** button, and choose **Owner** or
+   **Member**.
 
-Your own row has no role control. To give up ownership, ask another owner to
+Nobody changes their own role. To give up ownership, ask another owner to
 change your role, or promote someone else and then [leave](#leave-an-organization).
 Bossanova refuses any change that would leave the organization with no owner.
 
@@ -117,26 +120,25 @@ Bossanova refuses any change that would leave the organization with no owner.
 
 Only owners remove members and revoke invitations.
 
-1. Open **Settings → Organization**.
-2. On the member's row, click the remove button. On an `Invite pending` row,
-   the button reads **Revoke invitation**.
-3. Confirm in the **Remove member?** or **Revoke invitation?** dialog.
+1. Open the organization's **Members** page.
+2. Click the member's row and choose the item that removes them from the
+   organization, then confirm. On an invitation, click **Revoke** or choose **Revoke invitation**.
 
 A removed member loses access to the organization straight away. A revoked
-invitation's link stops working. Your own row has no remove button: to give up
-your own membership, [leave the organization](#leave-an-organization) instead.
+invitation's link stops working. Your own row offers **Leave** followed by the organization's name
+instead: see [leave the organization](#leave-an-organization).
 
 ## Leave an organization
 
 Any member of a team organization leaves it from the settings page, owners
 included.
 
-1. Open **Settings → Organization** for the organization.
-2. In the **Danger zone**, click **Leave organization**.
-3. Confirm in the **Leave organization?** dialog.
+1. Open the organization's **General** page.
+2. In the **Danger zone**, click **Leave**.
+3. Confirm with **Leave organization**.
 
 You lose access to everything in the organization until somebody invites you
-back. The web app then returns you to the sessions list.
+back. The web app then opens your Preferences.
 
 The last owner of an organization is not allowed to leave, even when nobody
 else is in it. Promote another member to **Owner** first, or
@@ -150,15 +152,14 @@ once it is empty:
 - No members other than you. Remove them first.
 - No sessions. Delete them first.
 - No Bossanova Cloud subscription that is active or still being activated.
-  Cancel it first with the `Manage billing for <organization name>` button on
-  the same page.
+  Cancel it first from the organization's **Billing** page.
 
 Bossanova checks each condition in turn and names the first one that blocks
 the delete.
 
-1. Open **Settings → Organization** for the organization.
-2. In the **Danger zone**, click **Delete organization**.
-3. Confirm in the **Delete organization?** dialog.
+1. Open the organization's **General** page.
+2. In the **Danger zone**, click **Delete…**.
+3. Type the organization's name and click **Delete organization**.
 
 Deleting removes the organization for everybody and cannot be undone.
 
@@ -171,8 +172,9 @@ subscription's seat quantity to the new member count. Stripe prorates the
 change for the rest of the billing period. A subscription never drops below one
 seat.
 
-Owners manage the subscription via the **Billing** section in the Organization
-settings page.
+Owners manage the subscription on the organization's **Billing** page: it shows
+the plan, its seats and renewal, and **Manage** and **Open** open the Stripe
+billing portal.
 
 ## Which organization a repository's sessions land in
 

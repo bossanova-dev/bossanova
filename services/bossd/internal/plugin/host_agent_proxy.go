@@ -47,7 +47,14 @@ func (p *agentRunnerProxy) resolve() (AgentRunner, error) {
 // of agent.RunnerClient, so this also guarantees the main.go
 // `raw.(agent.RunnerClient)` assertion succeeds while allowing newer RPCs
 // to remain optional at that compatibility seam.
-var _ AgentRunner = (*agentRunnerProxy)(nil)
+var (
+	_ AgentRunner = (*agentRunnerProxy)(nil)
+	_ ModelLister = (*agentRunnerProxy)(nil)
+	_ ModelLister = (*agentRunnerGRPCClient)(nil)
+
+	_ QuestionMenus = (*agentRunnerProxy)(nil)
+	_ QuestionMenus = (*agentRunnerGRPCClient)(nil)
+)
 
 func (p *agentRunnerProxy) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
 	r, err := p.resolve()
@@ -239,4 +246,40 @@ func (p *agentRunnerProxy) DescribeMCPSurface(ctx context.Context, req *bossanov
 		return nil, err
 	}
 	return r.DescribeMCPSurface(ctx, req)
+}
+
+func (p *agentRunnerProxy) ListModels(ctx context.Context, req *bossanovav1.ListModelsRequest) (*bossanovav1.ListModelsResponse, error) {
+	r, err := p.resolve()
+	if err != nil {
+		return nil, err
+	}
+	lister, ok := r.(ModelLister)
+	if !ok {
+		return nil, grpcstatus.Errorf(codes.Unimplemented, "agent %q cannot list models", p.name)
+	}
+	return lister.ListModels(ctx, req)
+}
+
+func (p *agentRunnerProxy) PlanQuestionAnswer(ctx context.Context, req *bossanovav1.PlanQuestionAnswerRequest) (*bossanovav1.PlanQuestionAnswerResponse, error) {
+	r, err := p.resolve()
+	if err != nil {
+		return nil, err
+	}
+	menus, ok := r.(QuestionMenus)
+	if !ok {
+		return nil, grpcstatus.Errorf(codes.Unimplemented, "agent %q cannot answer a question menu", p.name)
+	}
+	return menus.PlanQuestionAnswer(ctx, req)
+}
+
+func (p *agentRunnerProxy) ReadQuestionMenu(ctx context.Context, req *bossanovav1.ReadQuestionMenuRequest) (*bossanovav1.ReadQuestionMenuResponse, error) {
+	r, err := p.resolve()
+	if err != nil {
+		return nil, err
+	}
+	menus, ok := r.(QuestionMenus)
+	if !ok {
+		return nil, grpcstatus.Errorf(codes.Unimplemented, "agent %q cannot read a question menu", p.name)
+	}
+	return menus.ReadQuestionMenu(ctx, req)
 }

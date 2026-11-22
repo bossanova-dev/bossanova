@@ -107,12 +107,24 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchListRepos(ctx, cmdID, outbound)
 	case *pb.OrchestratorCommand_ListAgents:
 		return c.dispatchListAgents(ctx, cmdID, outbound)
+	case *pb.OrchestratorCommand_ListAgentModels:
+		return c.dispatchListAgentModels(ctx, cmdID, cmd.GetListAgentModels(), outbound)
+	case *pb.OrchestratorCommand_AnswerChatQuestion, *pb.OrchestratorCommand_StopChat:
+		return c.dispatchChatAgent(ctx, cmdID, cmd, outbound)
 	case *pb.OrchestratorCommand_ListAccounts:
 		return c.dispatchListAccounts(ctx, cmdID, cmd.GetListAccounts(), outbound)
 	case *pb.OrchestratorCommand_GetRepo:
 		return c.dispatchGetRepo(ctx, cmdID, cmd.GetGetRepo(), outbound)
 	case *pb.OrchestratorCommand_UpdateRepo:
 		return c.dispatchUpdateRepo(ctx, cmdID, cmd.GetUpdateRepo(), outbound)
+	case *pb.OrchestratorCommand_GetDaemonSettings:
+		return c.dispatchDaemonSettings(ctx, cmdID, outbound, func(h DaemonSettingsHandler) (*pb.DaemonSettingsResult, error) {
+			return h.GetDaemonSettings(ctx)
+		})
+	case *pb.OrchestratorCommand_UpdateDaemonSettings:
+		return c.dispatchDaemonSettings(ctx, cmdID, outbound, func(h DaemonSettingsHandler) (*pb.DaemonSettingsResult, error) {
+			return h.UpdateDaemonSettings(ctx, cmd.GetUpdateDaemonSettings().GetUpdate())
+		})
 	case *pb.OrchestratorCommand_RemoveRepo:
 		return c.dispatchRemoveRepo(ctx, cmdID, cmd.GetRemoveRepo(), outbound)
 	case *pb.OrchestratorCommand_ListRepoPrs:
@@ -804,17 +816,13 @@ func (c *StreamClient) dispatchRecordChat(ctx context.Context, cmdID string, req
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
-	chat, err := c.commandHandler.RecordChat(ctx, req.GetSessionId(), req.GetAgentSessionId(), req.GetTitle(), req.GetResume(), req.GetAgentName())
+	chat, err := c.commandHandler.RecordChat(ctx, req)
 	if err != nil {
 		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 	}
-	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
-		Result: &pb.CommandResult{
-			CommandId: cmdID,
-			Ok:        true,
-			Payload:   &pb.CommandResult_RecordChat{RecordChat: chat},
-		},
-	}}
+	result := &pb.CommandResult{CommandId: cmdID, Ok: true}
+	result.Payload = &pb.CommandResult_RecordChat{RecordChat: chat}
+	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: result}}
 }
 
 func (c *StreamClient) dispatchDeleteChat(ctx context.Context, cmdID string, req *pb.DeleteChatCommand) *pb.DaemonEvent {
@@ -1213,7 +1221,7 @@ func (c *StreamClient) dispatchGetChatTranscript(ctx context.Context, cmdID stri
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.GetChatTranscript(ctx, req.GetSessionId(), req.GetAgentSessionId(), req.GetMaxMessages())
+		out, err := c.commandHandler.GetChatTranscript(ctx, req.GetSessionId(), req.GetAgentSessionId(), req.GetMaxMessages(), req.GetShouldIncludeActivity())
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}

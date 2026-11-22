@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -130,6 +131,30 @@ func TestNotifyLogin_RegistersBeforeClearingAuthGate(t *testing.T) {
 	}
 	if authState.NeedsLogin() {
 		t.Fatal("auth gate still closed after NotifyLogin; MarkOK not applied last")
+	}
+}
+
+// TestNotifyLogin_RemovalByAnotherUserIsItsOwnVerdict verifies a login
+// whose registration bosso refuses because another account removed the
+// machine says so, rather than promising a background retry that cannot help.
+func TestNotifyLogin_RemovalByAnotherUserIsItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+
+	adapter := &streamAuthAdapter{
+		streamClient: &fakeReconnector{},
+		authState:    upstream.NewAuthState(),
+		logger:       zerolog.Nop(),
+		reRegister: func(context.Context) (string, error) {
+			return "", fmt.Errorf("%w: %w", upstream.ErrDaemonRemoved, upstream.ErrDaemonRemovedByAnotherUser)
+		},
+	}
+
+	verdict, err := adapter.NotifyLogin(context.Background(), nil)
+	if !errors.Is(err, upstream.ErrDaemonRemovedByAnotherUser) {
+		t.Fatalf("NotifyLogin error = %v, want the removal naming another account", err)
+	}
+	if verdict.Outcome != server.LoginOutcomeRemovedByAnotherUser {
+		t.Fatalf("verdict outcome = %v, want LoginOutcomeRemovedByAnotherUser", verdict.Outcome)
 	}
 }
 

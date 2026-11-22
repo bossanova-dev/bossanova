@@ -14,14 +14,97 @@ package testharness_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/testharness"
 )
+
+// registerTempRepo registers a throwaway repo and returns its id.
+func registerTempRepo(t *testing.T, h *testharness.Harness, ctx context.Context) string {
+	t.Helper()
+	resp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+		DisplayName:       "default-agent",
+		LocalPath:         testharness.TempRepoDir(t),
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}))
+	if err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+	return resp.Msg.Repo.Id
+}
+
+// TestE2EHarnessIgnoresHostDefaultAgent proves the harness reads no settings
+// from the developer's machine. A shell whose BOSS_SETTINGS_PATH names a
+// default_agent the harness never loads must still create a claude session,
+// which is what the harness loads and what the default settings name.
+func TestE2EHarnessIgnoresHostDefaultAgent(t *testing.T) {
+	hostSettings := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(hostSettings, []byte(`{"default_agent":"antigravity"}`), 0o600); err != nil {
+		t.Fatalf("write host settings: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", hostSettings)
+
+	h := testharness.New(t)
+	ctx := context.Background()
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
+		RepoId: registerTempRepo(t, h, ctx),
+		Title:  "no agent named",
+		Plan:   "p",
+	})
+	if sess.AgentName != "claude" {
+		t.Fatalf("session agent = %q, want claude; the harness read the host settings file", sess.AgentName)
+	}
+}
+
+// TestE2ECreateSessionRefusesUnloadedDefaultAgent covers the daemon-side rule:
+// when default_agent names a runner the daemon did not load, a create with no
+// explicit agent fails up front and names the runners that are loaded, instead
+// of storing a session whose first spawn fails with "agent runner not loaded".
+func TestE2ECreateSessionRefusesUnloadedDefaultAgent(t *testing.T) {
+	h := testharness.New(t)
+	ctx := context.Background()
+	repoID := registerTempRepo(t, h, ctx)
+	if err := os.WriteFile(h.SettingsPath, []byte(`{"default_agent":"antigravity"}`), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	stream, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
+		RepoId: repoID,
+		Title:  "no agent named",
+		Plan:   "p",
+	}))
+	if err == nil {
+		for stream.Receive() {
+		}
+		err = stream.Err()
+		_ = stream.Close()
+	}
+	var cerr *connect.Error
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeFailedPrecondition {
+		t.Fatalf("CreateSession error = %v, want FailedPrecondition", err)
+	}
+	for _, want := range []string{"antigravity", "claude", "codex"} {
+		if !strings.Contains(cerr.Message(), want) {
+			t.Errorf("error %q does not name %q", cerr.Message(), want)
+		}
+	}
+
+	listed, err := h.Client.ListSessions(ctx, connect.NewRequest(&pb.ListSessionsRequest{RepoId: &repoID}))
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if n := len(listed.Msg.GetSessions()); n != 0 {
+		t.Fatalf("refused create left %d session(s) behind: %v", n, listed.Msg.GetSessions())
+	}
+}
 
 // tmuxEnvFromNewSession scans the fake's recorded tmux invocations for the
 // `new-session` call and returns the environment it carried. The production

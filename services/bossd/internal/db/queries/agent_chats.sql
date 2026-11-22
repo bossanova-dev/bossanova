@@ -1,6 +1,6 @@
 -- name: CreateAgentChat :one
-INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, start_error, account_id, model, role, created_at)
-VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?) RETURNING *;
+INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, start_error, account_id, model, effort, role, created_at)
+VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?) RETURNING *;
 
 -- name: GetAgentChatByAgentSessionID :one
 SELECT * FROM agent_chats WHERE agent_session_id = ?;

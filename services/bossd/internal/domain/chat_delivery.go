@@ -118,3 +118,10 @@ func WillSubmit(submit bool, text string) bool {
 
 // ConfigHomeKeys returns the config-home selectors in precedence order.
 func ConfigHomeKeys() []string { return []string{"CODEX_HOME", "HOME"} }
+
+// PaneInput is one thing to send to a chat's terminal: a named tmux key
+// ("2", "Enter") or, when Key is empty, Text typed literally.
+type PaneInput struct {
+	Key  string
+	Text string
+}

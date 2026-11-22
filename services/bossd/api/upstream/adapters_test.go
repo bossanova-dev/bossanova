@@ -29,7 +29,7 @@ type fakeSessionCommandServer struct {
 	lastResumeRunReq           *pb.ResumeSessionRunRequest
 	lastUpdateRepo             *pb.UpdateRepoRequest
 	lastRecordChat             *pb.RecordChatRequest
-	lastTranscriptID           string
+	lastTranscript             *pb.GetChatTranscriptRequest
 	lastSendReq                *pb.SendChatMessageRequest
 	lastSwitchReq              *pb.SwitchSessionAgentAccountRequest
 	switchResp                 *pb.SwitchSessionAgentAccountResponse
@@ -190,7 +190,7 @@ func (f *fakeSessionCommandServer) ListTrackerIssues(_ context.Context, _ *conne
 }
 
 func (f *fakeSessionCommandServer) GetChatTranscript(_ context.Context, req *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error) {
-	f.lastTranscriptID = req.Msg.GetAgentSessionId()
+	f.lastTranscript = req.Msg
 	return connect.NewResponse(&pb.GetChatTranscriptResponse{
 		Messages:           []*pb.ChatMessage{{Text: "x"}},
 		FinalAssistantText: "final",
@@ -818,24 +818,24 @@ func TestSessionCreatorAdapter_Create_PreservesPresentEmptyAccountID(t *testing.
 	}
 }
 
-func TestCommandHandlerAdapter_RecordChat_AgentNameMapping(t *testing.T) {
+func TestCommandHandlerAdapter_RecordChat_OptionalFieldMapping(t *testing.T) {
 	t.Parallel()
 
+	ptr := func(v string) *string { return &v }
 	tests := []struct {
-		name            string
-		agentName       string
-		wantAgentNilNil bool // true → req.AgentName must be nil
-		wantAgentValue  string
+		name string
+		cmd  *pb.RecordChatCommand
+		want *pb.RecordChatRequest
 	}{
 		{
-			name:            "empty agentName leaves AgentName nil",
-			agentName:       "",
-			wantAgentNilNil: true,
+			name: "empty agent, model and effort stay unset",
+			cmd:  &pb.RecordChatCommand{SessionId: "s1", AgentSessionId: "as1", Title: "title"},
+			want: &pb.RecordChatRequest{SessionId: "s1", AgentSessionId: "as1", Title: "title"},
 		},
 		{
-			name:           "non-empty agentName sets AgentName pointer",
-			agentName:      "claude",
-			wantAgentValue: "claude",
+			name: "named agent, model and effort reach the daemon",
+			cmd:  &pb.RecordChatCommand{SessionId: "s1", AgentSessionId: "as1", Title: "title", Resume: true, AgentName: "codex", Model: "gpt-x", Effort: "high"},
+			want: &pb.RecordChatRequest{SessionId: "s1", AgentSessionId: "as1", Title: "title", Resume: true, AgentName: ptr("codex"), Model: ptr("gpt-x"), Effort: ptr("high")},
 		},
 	}
 
@@ -846,47 +846,15 @@ func TestCommandHandlerAdapter_RecordChat_AgentNameMapping(t *testing.T) {
 			fake := &fakeSessionCommandServer{}
 			adapter := &CommandHandlerAdapter{Commands: fake}
 
-			chat, err := adapter.RecordChat(context.Background(), "s1", "as1", "title", false, tc.agentName)
+			chat, err := adapter.RecordChat(context.Background(), tc.cmd)
 			if err != nil {
 				t.Fatalf("RecordChat returned unexpected error: %v", err)
 			}
-
-			// Verify the returned chat ID is threaded through from the stub response.
 			if chat == nil || chat.Id != "chat1" {
 				t.Fatalf("expected chat.Id == %q, got %v", "chat1", chat)
 			}
-
-			req := fake.lastRecordChat
-			if req == nil {
-				t.Fatal("no RecordChatRequest was captured by the fake")
-			}
-
-			// Verify the non-agent-name fields are threaded through correctly.
-			if req.SessionId != "s1" {
-				t.Errorf("SessionId: got %q, want %q", req.SessionId, "s1")
-			}
-			if req.AgentSessionId != "as1" {
-				t.Errorf("AgentSessionId: got %q, want %q", req.AgentSessionId, "as1")
-			}
-			if req.Title != "title" {
-				t.Errorf("Title: got %q, want %q", req.Title, "title")
-			}
-			if req.Resume != false {
-				t.Errorf("Resume: got %v, want false", req.Resume)
-			}
-
-			// Verify optional AgentName field mapping — check the raw pointer,
-			// NOT GetAgentName(), which masks nil vs "".
-			if tc.wantAgentNilNil {
-				if req.AgentName != nil {
-					t.Errorf("AgentName: got %v (%q), want nil", req.AgentName, *req.AgentName)
-				}
-			} else {
-				if req.AgentName == nil {
-					t.Errorf("AgentName: got nil, want pointer to %q", tc.wantAgentValue)
-				} else if *req.AgentName != tc.wantAgentValue {
-					t.Errorf("AgentName: got %q, want %q", *req.AgentName, tc.wantAgentValue)
-				}
+			if !proto.Equal(fake.lastRecordChat, tc.want) {
+				t.Fatalf("RecordChatRequest = %v, want %v", fake.lastRecordChat, tc.want)
 			}
 		})
 	}
@@ -1891,7 +1859,7 @@ func TestCommandHandlerAdapter_GetChatTranscript(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.GetChatTranscript(context.Background(), "s1", "a1", 0); err == nil || !strings.Contains(err.Error(), "get_chat_transcript: command server not wired") {
+		if _, err := adapter.GetChatTranscript(context.Background(), "s1", "a1", 0, false); err == nil || !strings.Contains(err.Error(), "get_chat_transcript: command server not wired") {
 			t.Fatalf("GetChatTranscript error = %v, want command server not wired", err)
 		}
 	})
@@ -1899,7 +1867,7 @@ func TestCommandHandlerAdapter_GetChatTranscript(t *testing.T) {
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.GetChatTranscript(context.Background(), "s1", "a1", 0); err == nil || !strings.Contains(err.Error(), "get chat transcript: boom") {
+		if _, err := adapter.GetChatTranscript(context.Background(), "s1", "a1", 0, false); err == nil || !strings.Contains(err.Error(), "get chat transcript: boom") {
 			t.Fatalf("GetChatTranscript error = %v, want get chat transcript: boom", err)
 		}
 	})
@@ -1908,15 +1876,15 @@ func TestCommandHandlerAdapter_GetChatTranscript(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		resp, err := adapter.GetChatTranscript(context.Background(), "s1", "agent-9", 3)
+		resp, err := adapter.GetChatTranscript(context.Background(), "s1", "agent-9", 3, true)
 		if err != nil {
 			t.Fatalf("GetChatTranscript returned error: %v", err)
 		}
 		if resp == nil || !resp.GetExists() || resp.GetFinalAssistantText() != "final" {
 			t.Fatalf("unexpected response: %+v", resp)
 		}
-		if fake.lastTranscriptID != "agent-9" {
-			t.Fatalf("agent_session_id not forwarded: %q", fake.lastTranscriptID)
+		if got := fake.lastTranscript; got.GetAgentSessionId() != "agent-9" || !got.GetShouldIncludeActivity() {
+			t.Fatalf("request not forwarded: %+v", got)
 		}
 	})
 }

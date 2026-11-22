@@ -630,6 +630,7 @@ message UpdateRepoRequest {
   optional bool is_trusted = 23;
   // Absent leaves the command unchanged; empty clears it.
   optional string serve_script = 24;
+  optional bool can_auto_rotate = 25;
 }
 
 message UpdateRepoResponse {
@@ -1276,6 +1277,12 @@ message RecordChatRequest {
   // role is the purpose of a NEW chat. UNSPECIFIED records an operator chat.
   // Ignored when the chat already exists: a chat's role never changes.
   ChatRole role = 6;
+  // model and effort set a NEW chat's agent model id and reasoning effort.
+  // Unset or empty inherits the session's when the chat runs the session's
+  // agent, else that agent's configured default. Ignored when the chat
+  // already exists.
+  optional string model = 7;
+  optional string effort = 8;
 }
 
 message RecordChatResponse {
@@ -1423,6 +1430,8 @@ message GetChatTranscriptRequest {
   // check, like DeleteChatRequest.
   string session_id = 2;
   int32 max_messages = 3;       // 0 = all; otherwise the most recent N
+  // should_include_activity asks for the structured transcript (see ChatMessage).
+  bool should_include_activity = 4;
 }
 message GetChatTranscriptResponse {
   repeated ChatMessage messages = 1;
@@ -1643,6 +1652,11 @@ message NotifyAuthChangeResponse {
     // Credentials were clean and the auth gate WAS cleared, but the proactive
     // re-register failed. The reactive path remains the backstop.
     OUTCOME_REGISTER_FAILED = 4;
+    // Credentials were clean, but bosso refused the registration because the
+    // machine was removed by the account that owned it, and this login is
+    // another account's. Neither path retries; the previous owner must log in
+    // on the machine again, or the daemon must take a new id.
+    OUTCOME_REMOVED_BY_ANOTHER_USER = 5;
   }
   Outcome outcome = 1;
   // relogin_reason is the enumerated persisted re-login reason observed by the

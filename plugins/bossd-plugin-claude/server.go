@@ -568,7 +568,13 @@ func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscri
 	if err != nil {
 		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
 	}
-	msgs, finalAssistant, exists, err := readTranscript(path, req.MaxMessages)
+	read := readTranscript
+	if req.GetShouldIncludeActivity() {
+		read = func(path string, maxMessages int32) ([]*bossanovav1.ChatMessage, string, bool, error) {
+			return readActivity(path, req.GetWorkDir(), maxMessages)
+		}
+	}
+	msgs, finalAssistant, exists, err := read(path, req.MaxMessages)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read transcript: %v", err)
 	}

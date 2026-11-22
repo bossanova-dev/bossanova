@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -387,21 +386,25 @@ func (w *daemonWiring) wireUpstream() {
 		}
 
 		var sessionTokenHolder *upstream.SessionTokenHolder
-		var reRegisterMu sync.Mutex
-		// reRegister self-heals from a stale or missing session_token
+		// Shared auth state: when the stored refresh token can no longer
+		// be exchanged — WorkOS rejected it, or the exchange outcome could
+		// never be confirmed (BOS-659) — the opener flips this to
+		// NeedsLogin and both Run loops pause until NotifyLogin clears it
+		// after a fresh `boss login`. Without this, the daemon tight-loops
+		// on an unusable credential indefinitely. The registrar below flips
+		// it too when bosso refuses the daemon as removed.
+		authState := upstream.NewAuthState()
+		// register self-heals from a stale or missing session_token
 		// (another bossd with the same daemon_id rotated it via UPSERT,
 		// bosso's daemons row was cleared, OR the initial Register at
-		// startup failed). The Run loop calls this after a
-		// CodeUnauthenticated handshake; we re-use the fresh JWT path
-		// from startup (tokenProvider auto-refreshes inside the opener)
-		// and gather repoIDs each call so a repo set that changed
-		// since startup is reflected. The mutex serializes token issuance
-		// across the stream and snapshot-publisher recovery paths because
-		// bosso keeps one current session_token per daemon_id.
-		reRegister := func(ctx context.Context) (string, error) {
-			reRegisterMu.Lock()
-			defer reRegisterMu.Unlock()
-
+		// startup failed). The Run loop calls it, through the registrar,
+		// after a CodeUnauthenticated handshake; we re-use the fresh JWT
+		// path from startup (tokenProvider auto-refreshes inside the
+		// opener) and gather repoIDs each call so a repo set that changed
+		// since startup is reflected. The registrar serializes token
+		// issuance across the stream and snapshot-publisher recovery paths
+		// because bosso keeps one current session_token per daemon_id.
+		register := func(ctx context.Context) (string, error) {
 			currentRepos, err := w.repos.List(ctx)
 			if err != nil {
 				log.Warn().Err(err).Msg("reRegister: repos.List failed; proceeding with empty set")
@@ -426,6 +429,8 @@ func (w *daemonWiring) wireUpstream() {
 			}
 			return tok, nil
 		}
+		registrar := upstream.NewRegistrar(register, authState, log.Logger)
+		reRegister := registrar.Reregister
 
 		// Shared session_token holder: every opener that sends
 		// X-Daemon-Token reads from this so a re-register-driven
@@ -435,13 +440,6 @@ func (w *daemonWiring) wireUpstream() {
 		sessionTokenHolder = upstream.NewSessionTokenHolder(sessionToken)
 		w.wireCredentialDistribution(cfg, client, sessionTokenHolder, identityKey, authToken)
 		w.wireViewerApprovals(httpClient, cfg.OrchestratorURL, sessionTokenHolder.Get, identityKey)
-		// Shared auth state: when the stored refresh token can no longer
-		// be exchanged — WorkOS rejected it, or the exchange outcome could
-		// never be confirmed (BOS-659) — the opener flips this to
-		// NeedsLogin and both Run loops pause until NotifyLogin clears it
-		// after a fresh `boss login`. Without this, the daemon tight-loops
-		// on an unusable credential indefinitely.
-		authState := upstream.NewAuthState()
 		// BOS-376: positive terminal-liveness signal shared by the
 		// TerminalStream reader (sets it healthy on TerminalReady) and its
 		// Run-loop watchdog (escalates to a forced paired re-register when a
@@ -510,6 +508,7 @@ func (w *daemonWiring) wireUpstream() {
 			Events:         w.streamBus,
 			TokenProvider:  tokenProvider,
 			CommandHandler: cmdHandler,
+			DaemonSettings: cmdHandler,
 			UsageShare:     w.usageShare,
 			UsageRecorder: sharedUsageCooldownRecorder{
 				store: w.accounts, logger: log.Logger, now: time.Now,
@@ -611,11 +610,12 @@ func (w *daemonWiring) wireUpstream() {
 			// process last successfully register".
 			streamAuth:    w.streamClient,
 			sessionTokens: sessionTokenHolder,
-			// Proactive login-triggered register. Same closure the reactive
-			// Run-loop path uses, so both serialize on reRegisterMu and write
-			// the one shared sessionTokenHolder — login and auth-failure
-			// recovery can never double-register or fight each other.
-			reRegister: reRegister,
+			// Proactive login-triggered register. Same registrar the reactive
+			// Run-loop path uses, so both serialize on it and write the one
+			// shared sessionTokenHolder — login and auth-failure recovery can
+			// never double-register or fight each other. Only a login lifts
+			// a removal the registrar remembers.
+			reRegister: registrar.RegisterAfterLogin,
 			// A logout or a fresh login (possibly another account) drops
 			// every cached installation token.
 			githubCredentials: w.githubCredentials,

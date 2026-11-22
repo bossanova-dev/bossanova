@@ -37,6 +37,7 @@ for (const [name, css, count] of [
   ['comments and strings', '/* #fff rgb(0 0 0) */ .a { content: "#fff"; }', 0],
   ['an id selector', '#root .a { color: var(--text); }', 0],
   ['a name that is not a colour property', '.a { grid-area: tan; animation-name: red; }', 0],
+  ['a token named after a colour', '.a { color: var(--red); background: var(--green, red); }', 1],
   [
     'currentcolor and transparent',
     '.a { border-color: currentColor; background: transparent; }',

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/recurser/bossd/internal/domain"
@@ -71,6 +72,34 @@ type streamSessionHydrator struct {
 	accountLabeler streamAccountLabeler
 	attention      func(context.Context, *bossanovav1.Session)
 	logger         zerolog.Logger
+	// sentChatCounts holds the chat counts each session's last hydrated delta
+	// or snapshot carried, so republishMovedChatCounts sends a delta only when
+	// they move.
+	sentChatCounts chatCountLedger
+}
+
+// chatCountLedger is the chat counts last hydrated per session id.
+type chatCountLedger struct {
+	mu   sync.Mutex
+	sent map[string]server.ChatCounts
+}
+
+func (l *chatCountLedger) record(sessionID string, counts server.ChatCounts) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.sent == nil {
+		l.sent = make(map[string]server.ChatCounts)
+	}
+	l.sent[sessionID] = counts
+}
+
+// moved reports whether counts differ from the last ones recorded for the
+// session, or none were.
+func (l *chatCountLedger) moved(sessionID string, counts server.ChatCounts) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	sent, ok := l.sent[sessionID]
+	return !ok || sent != counts
 }
 
 func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1.Session) {
@@ -132,6 +161,9 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 	if err != nil {
 		return
 	}
+	counts := server.CountChats(h.chatStatusTracker, chats)
+	counts.Stamp(pbSess)
+	h.sentChatCounts.record(pbSess.Id, counts)
 	server.HydrateAgentObservabilityWithAuthCorroboration(
 		h.chatStatusTracker,
 		pbSess,
@@ -160,9 +192,59 @@ func publishAgentMarkerSessionDelta(
 	if err != nil || chat == nil {
 		return
 	}
-	row, err := hydrator.rawSessions.Get(ctx, chat.SessionID)
+	publishHydratedSessionDelta(ctx, chat.SessionID, hydrator, streamBus, logger)
+}
+
+// republishMovedChatCounts publishes the session's hydrated delta when its chat
+// counts differ from the ones bosso last received. Creating, deleting, starting
+// or finishing a chat often leaves the display trio unchanged, so no other
+// delta would carry the new counts.
+func republishMovedChatCounts(
+	ctx context.Context,
+	sessionID string,
+	hydrator *streamSessionHydrator,
+	streamBus *upstream.StreamBus,
+	logger zerolog.Logger,
+) {
+	if hydrator == nil || hydrator.agentChats == nil || hydrator.rawSessions == nil || streamBus == nil {
+		return
+	}
+	chats, err := hydrator.agentChats.ListBySession(ctx, sessionID)
 	if err != nil {
-		logger.Debug().Err(err).Str("session_id", chat.SessionID).Msg("agent-marker change: session lookup failed")
+		return
+	}
+	if !hydrator.sentChatCounts.moved(sessionID, server.CountChats(hydrator.chatStatusTracker, chats)) {
+		return
+	}
+	publishHydratedSessionDelta(ctx, sessionID, hydrator, streamBus, logger)
+}
+
+// chatCountRecomputer recomputes a session's display composite, then
+// republishes the session when its chat counts moved without the composite
+// changing.
+type chatCountRecomputer struct {
+	display   sessionRecomputer
+	hydrator  *streamSessionHydrator
+	streamBus *upstream.StreamBus
+	logger    zerolog.Logger
+}
+
+func (r chatCountRecomputer) Recompute(ctx context.Context, sessionID string) error {
+	err := r.display.Recompute(ctx, sessionID)
+	republishMovedChatCounts(ctx, sessionID, r.hydrator, r.streamBus, r.logger)
+	return err
+}
+
+func publishHydratedSessionDelta(
+	ctx context.Context,
+	sessionID string,
+	hydrator *streamSessionHydrator,
+	streamBus *upstream.StreamBus,
+	logger zerolog.Logger,
+) {
+	row, err := hydrator.rawSessions.Get(ctx, sessionID)
+	if err != nil {
+		logger.Debug().Err(err).Str("session_id", sessionID).Msg("session delta: session lookup failed")
 		return
 	}
 	pbSess := server.SessionToProto(row)

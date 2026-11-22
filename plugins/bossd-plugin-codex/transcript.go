@@ -1043,11 +1043,20 @@ func extractResponseItemUserText(raw json.RawMessage) string {
 // a warning there would be noise. The operator-facing surface is this log,
 // which is where "the transcript you are reading dropped N records" belongs.
 func readTranscriptAt(root, workDir, agentSessionID string, maxMessages int32, logger zerolog.Logger) (*bossanovav1.ReadTranscriptResponse, error) {
+	return readRolloutAt(root, workDir, agentSessionID, maxMessages, parseRolloutMessages, logger)
+}
+
+// rolloutParser reads a rollout's messages, its final assistant text, how many
+// records it skipped, and the newest turn's error.
+type rolloutParser func(path string) ([]*bossanovav1.ChatMessage, string, int, string, error)
+
+// readRolloutAt is readTranscriptAt with the rollout parsed by parse.
+func readRolloutAt(root, workDir, agentSessionID string, maxMessages int32, parse rolloutParser, logger zerolog.Logger) (*bossanovav1.ReadTranscriptResponse, error) {
 	path, err := findRolloutPathInWorkDir(root, workDir, agentSessionID)
 	if err != nil {
 		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
 	}
-	msgs, finalAssistant, skipped, lastTurnError, err := parseRolloutMessages(path)
+	msgs, finalAssistant, skipped, lastTurnError, err := parse(path)
 	if err != nil {
 		return nil, err
 	}

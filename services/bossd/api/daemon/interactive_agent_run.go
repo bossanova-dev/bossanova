@@ -42,7 +42,10 @@ func (s *Server) recordInteractiveAgentRunStart(ctx context.Context, sess *model
 	if model == "" {
 		model = session.EffectiveModelForAgent(sess.AgentName, sess.Model, chat.AgentName)
 	}
-	effort := session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
+	effort := chat.Effort
+	if effort == "" {
+		effort = session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
+	}
 	if _, err := s.agentRuns.Create(recordCtx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: chat.AgentSessionID,

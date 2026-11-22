@@ -70,6 +70,9 @@ type AgentChat struct {
 	// agent CLI default" (BOS-381 moves model authority from the session to the
 	// chat). bossd never enumerates valid models; the agent CLI validates it.
 	Model string
+	// Effort is the per-chat reasoning effort. Empty inherits the session's
+	// effort for the session's agent, else the chat agent's configured default.
+	Effort string
 	// Role is the purpose the chat was created for; the zero value is a legacy
 	// row whose purpose is unknown.
 	Role AgentChatRole

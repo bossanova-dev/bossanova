@@ -13,7 +13,7 @@ import record from './registry/web-iframe-sandbox.mjs'
 // sandbox tokens ASCII case-insensitively, so tokens are lowercased first.
 // Popups are allowed so a proof host's sign-in link can open a tab: the app's
 // Cross-Origin-Opener-Policy: same-origin gives that tab no opener, and
-// services/web/e2e/review-screen.spec.ts proves the tab cannot reach the app.
+// services/web/e2e/session-proof.spec.ts proves the tab cannot reach the app.
 // Fullscreen is the only browser feature a frame may be delegated.
 const ALLOWED_SANDBOX_TOKENS = new Set([
   'allow-scripts',

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-11-03'
+  version: '2026-11-04'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -386,6 +386,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.CreateOrganizationNoteResponse'
+  /bossanova.v1.OrchestratorService/CreateSavedView:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: CreateSavedView
+      operationId: bossanova.v1.OrchestratorService.CreateSavedView
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.CreateSavedViewRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.CreateSavedViewResponse'
   /bossanova.v1.OrchestratorService/CreateSessionWebhook:
     post:
       tags:
@@ -580,6 +615,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.DeleteOrganizationNoteResponse'
+  /bossanova.v1.OrchestratorService/DeleteSavedView:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: DeleteSavedView
+      operationId: bossanova.v1.OrchestratorService.DeleteSavedView
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.DeleteSavedViewRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.DeleteSavedViewResponse'
   /bossanova.v1.OrchestratorService/DeleteSessionWebhook:
     post:
       tags:
@@ -982,6 +1052,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.GetOrganizationResponse'
+  /bossanova.v1.OrchestratorService/GetOrganizationBilling:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetOrganizationBilling
+      description: |-
+        GetOrganizationBilling reports an organization's plan, seats, renewal and
+         cloud access for its Billing settings page. The caller must own the
+         requested organization.
+      operationId: bossanova.v1.OrchestratorService.GetOrganizationBilling
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetOrganizationBillingRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetOrganizationBillingResponse'
   /bossanova.v1.OrchestratorService/GetOrganizationNote:
     post:
       tags:
@@ -1264,6 +1373,79 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.GetTriggerCatalogResponse'
+  /bossanova.v1.OrchestratorService/GetUserGitHubIdentity:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetUserGitHubIdentity
+      operationId: bossanova.v1.OrchestratorService.GetUserGitHubIdentity
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetUserGitHubIdentityRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetUserGitHubIdentityResponse'
+  /bossanova.v1.OrchestratorService/GetUserPreferences:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetUserPreferences
+      description: |-
+        Personal settings. Each belongs to the calling user alone and follows
+         them across organizations and devices.
+      operationId: bossanova.v1.OrchestratorService.GetUserPreferences
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetUserPreferencesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetUserPreferencesResponse'
   /bossanova.v1.OrchestratorService/InviteOrganizationMember:
     post:
       tags:
@@ -1610,6 +1792,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListDaemonsResponse'
+  /bossanova.v1.OrchestratorService/ListFavorites:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListFavorites
+      description: Sidebar favorites are private to the caller.
+      operationId: bossanova.v1.OrchestratorService.ListFavorites
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListFavoritesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListFavoritesResponse'
   /bossanova.v1.OrchestratorService/ListGitHubAppRepos:
     post:
       tags:
@@ -1825,6 +2043,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListRepoOrganizationsResponse'
+  /bossanova.v1.OrchestratorService/ListSavedViews:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListSavedViews
+      description: Saved views are private to the caller.
+      operationId: bossanova.v1.OrchestratorService.ListSavedViews
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListSavedViewsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListSavedViewsResponse'
   /bossanova.v1.OrchestratorService/ListSessionWebhookDeliveries:
     post:
       tags:
@@ -2317,6 +2571,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyAddAgentAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyAnswerChatQuestion:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyAnswerChatQuestion
+      description: |-
+        Answers the question a chat's agent waits on in its terminal menu, with
+         one of its options or with typed words. Writes to the agent like
+         ProxySendChatMessage, so it takes the same permission and the same cloud
+         control. question_id must name the question the agent still waits on;
+         otherwise the daemon types nothing and the call fails FailedPrecondition.
+         Routes by session_id with the chat scoped to that session.
+      operationId: bossanova.v1.OrchestratorService.ProxyAnswerChatQuestion
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyAnswerChatQuestionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyAnswerChatQuestionResponse'
   /bossanova.v1.OrchestratorService/ProxyArchiveSession:
     post:
       tags:
@@ -2843,6 +3139,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyGetCronJobResponse'
+  /bossanova.v1.OrchestratorService/ProxyGetDaemonSettings:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyGetDaemonSettings
+      description: |-
+        Reads and edits the web-editable subset of a daemon's settings.json. The
+         daemon enforces the allowlist; cloud control and operator tuning stay
+         local.
+      operationId: bossanova.v1.OrchestratorService.ProxyGetDaemonSettings
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyGetDaemonSettingsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyGetDaemonSettingsResponse'
   /bossanova.v1.OrchestratorService/ProxyGetNote:
     post:
       tags:
@@ -3104,6 +3439,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListAgentAccountsResponse'
+  /bossanova.v1.OrchestratorService/ProxyListAgentModels:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListAgentModels
+      description: |-
+        Lists the models one agent on a daemon offers, for the model and effort
+         pickers. The daemon asks the agent plugin; Bossanova keeps no model list.
+      operationId: bossanova.v1.OrchestratorService.ProxyListAgentModels
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListAgentModelsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListAgentModelsResponse'
   /bossanova.v1.OrchestratorService/ProxyListAgents:
     post:
       tags:
@@ -4320,6 +4693,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxySendChatMessageResponse'
+  /bossanova.v1.OrchestratorService/ProxyStopChat:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyStopChat
+      description: |-
+        Stops one chat's agent and leaves the session's other chats running. The
+         chat stays, asleep, and a later message wakes it. Routes by session_id
+         with the chat scoped to that session.
+      operationId: bossanova.v1.OrchestratorService.ProxyStopChat
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyStopChatRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyStopChatResponse'
   /bossanova.v1.OrchestratorService/ProxyStopSession:
     post:
       tags:
@@ -4536,6 +4948,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyUpdateCronJobResponse'
+  /bossanova.v1.OrchestratorService/ProxyUpdateDaemonSettings:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyUpdateDaemonSettings
+      operationId: bossanova.v1.OrchestratorService.ProxyUpdateDaemonSettings
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateDaemonSettingsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateDaemonSettingsResponse'
   /bossanova.v1.OrchestratorService/ProxyUpdateNote:
     post:
       tags:
@@ -5022,6 +5469,81 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ReleaseTrackerIssueLeaseResponse'
+  /bossanova.v1.OrchestratorService/RemoveDaemon:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RemoveDaemon
+      description: |-
+        RemoveDaemon forgets a machine: it deletes the daemon's ownership row,
+         revokes its daemon token and refuses its re-registration until someone
+         runs a fresh login on the machine. Allowed for the machine's owner and for
+         an owner of the organization the daemon claimed.
+      operationId: bossanova.v1.OrchestratorService.RemoveDaemon
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RemoveDaemonRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RemoveDaemonResponse'
+  /bossanova.v1.OrchestratorService/RemoveFavorite:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RemoveFavorite
+      operationId: bossanova.v1.OrchestratorService.RemoveFavorite
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RemoveFavoriteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RemoveFavoriteResponse'
   /bossanova.v1.OrchestratorService/RemoveOrganizationMember:
     post:
       tags:
@@ -5092,6 +5614,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.RenameOrganizationResponse'
+  /bossanova.v1.OrchestratorService/ReorderSavedViews:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ReorderSavedViews
+      operationId: bossanova.v1.OrchestratorService.ReorderSavedViews
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ReorderSavedViewsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ReorderSavedViewsResponse'
   /bossanova.v1.OrchestratorService/ReportBug:
     post:
       tags:
@@ -5442,6 +5999,80 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.SeparateSyncedAgentAccountsResponse'
+  /bossanova.v1.OrchestratorService/SetFavorite:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SetFavorite
+      operationId: bossanova.v1.OrchestratorService.SetFavorite
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SetFavoriteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SetFavoriteResponse'
+  /bossanova.v1.OrchestratorService/SetMemberSessionSharing:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SetMemberSessionSharing
+      description: |-
+        SetMemberSessionSharing turns member session sharing on or off for the
+         caller's active organization (Organization.is_member_session_sharing_enabled).
+         Owner only.
+      operationId: bossanova.v1.OrchestratorService.SetMemberSessionSharing
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SetMemberSessionSharingRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SetMemberSessionSharingResponse'
   /bossanova.v1.OrchestratorService/SetOrganizationMemberRole:
     post:
       tags:
@@ -5554,6 +6185,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.SetRepoOrganizationResponse'
+  /bossanova.v1.OrchestratorService/SnoozeSession:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SnoozeSession
+      description: |-
+        SnoozeSession hides a session from the caller ("Not now") until the
+         session's state changes or expires_at passes. Only the caller's own lists
+         change; the session itself is untouched. The session must be visible to
+         the caller.
+      operationId: bossanova.v1.OrchestratorService.SnoozeSession
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SnoozeSessionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SnoozeSessionResponse'
   /bossanova.v1.OrchestratorService/StartProofUpload:
     post:
       tags:
@@ -5796,6 +6467,80 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.TransferSessionResponse'
+  /bossanova.v1.OrchestratorService/UnsnoozeSession:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UnsnoozeSession
+      operationId: bossanova.v1.OrchestratorService.UnsnoozeSession
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UnsnoozeSessionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UnsnoozeSessionResponse'
+  /bossanova.v1.OrchestratorService/UnsubscribeFromNewsletter:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UnsubscribeFromNewsletter
+      description: |-
+        UnsubscribeFromNewsletter withdraws the caller's newsletter consent and
+         removes them from the Loops list. Idempotent: a caller who never opted in
+         succeeds.
+      operationId: bossanova.v1.OrchestratorService.UnsubscribeFromNewsletter
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UnsubscribeFromNewsletterRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UnsubscribeFromNewsletterResponse'
   /bossanova.v1.OrchestratorService/UpdateOrganizationNote:
     post:
       tags:
@@ -5831,6 +6576,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.UpdateOrganizationNoteResponse'
+  /bossanova.v1.OrchestratorService/UpdateSavedView:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UpdateSavedView
+      operationId: bossanova.v1.OrchestratorService.UpdateSavedView
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UpdateSavedViewRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UpdateSavedViewResponse'
   /bossanova.v1.OrchestratorService/UpdateSessionWebhook:
     post:
       tags:
@@ -5949,6 +6729,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.UpdateTriggerResponse'
+  /bossanova.v1.OrchestratorService/UpdateUserPreferences:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UpdateUserPreferences
+      operationId: bossanova.v1.OrchestratorService.UpdateUserPreferences
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UpdateUserPreferencesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UpdateUserPreferencesResponse'
+  /bossanova.v1.OrchestratorService/UpdateUserProfile:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UpdateUserProfile
+      description: UpdateUserProfile renames the caller in WorkOS, then in bosso's users row.
+      operationId: bossanova.v1.OrchestratorService.UpdateUserProfile
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UpdateUserProfileRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UpdateUserProfileResponse'
   /bossanova.v1.OrchestratorService/UpsertProofCheckRun:
     post:
       tags:
@@ -6660,6 +7511,52 @@ components:
           description: user_settings imported from plugin.proto.
       title: AgentInfo
       additionalProperties: false
+    bossanova.v1.AgentModel:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          description: The value passed to the agent's model option.
+        displayName:
+          type: string
+          title: display_name
+        description:
+          type: string
+          title: description
+        supportedEfforts:
+          type: array
+          items:
+            type: string
+          title: supported_efforts
+          description: Reasoning efforts the model accepts, in the agent's order.
+        defaultEffort:
+          type: string
+          title: default_effort
+          description: Effort used when none is chosen; empty when the agent does not say.
+        isDefault:
+          type: boolean
+          title: is_default
+          description: Whether the agent uses this model when none is chosen.
+      title: AgentModel
+      additionalProperties: false
+      description: AgentModel is one model an agent offers, as the agent itself reports it.
+    bossanova.v1.AgentModelsResult:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentModel'
+          title: models
+        recentModelIds:
+          type: array
+          items:
+            type: string
+          title: recent_model_ids
+          description: Model IDs the daemon recently ran this agent with, newest first.
+      title: AgentModelsResult
+      additionalProperties: false
     bossanova.v1.AgentProgressPhase:
       type: string
       title: AgentProgressPhase
@@ -6970,6 +7867,55 @@ components:
       description: |-
         AggregatedRepo is one logical repo (deduped by origin URL) plus a ref for
          every live daemon that serves it. Web-safe: carries no Repo and no API keys.
+    bossanova.v1.AnswerChatQuestionCommand:
+      type: object
+      allOf:
+        - properties:
+            agentSessionId:
+              type: string
+              title: agent_session_id
+            questionId:
+              type: string
+              title: question_id
+        - oneOf:
+            - type: object
+              properties:
+                optionIndex:
+                  type: integer
+                  title: option_index
+                  description: Zero-based index into ChatQuestion.options.
+              title: option_index
+              required:
+                - optionIndex
+            - type: object
+              properties:
+                text:
+                  type: string
+                  title: text
+                  description: Words for the menu's own free-text answer. One line.
+              title: text
+              required:
+                - text
+      title: AnswerChatQuestionCommand
+      additionalProperties: false
+      description: |-
+        AnswerChatQuestionCommand answers the question a chat's agent waits on in
+         its terminal menu. question_id is ChatQuestion.id: the daemon refuses with
+         FAILED_PRECONDITION, typing nothing, unless the agent still waits on that
+         question and its terminal shows that question's menu.
+    bossanova.v1.AnswerChatQuestionResult:
+      type: object
+      properties:
+        isAnswered:
+          type: boolean
+          title: is_answered
+      title: AnswerChatQuestionResult
+      additionalProperties: false
+      description: |-
+        AnswerChatQuestionResult reports whether the agent took the answer. The
+         keys were sent either way; is_answered is false when the menu was still
+         showing at the end of the daemon's wait, so the answer is unconfirmed and
+         sending it again could answer the next question.
     bossanova.v1.AppendSystemPromptSupport:
       type: string
       title: AppendSystemPromptSupport
@@ -7962,6 +8908,25 @@ components:
         - KIND_UPDATED
         - KIND_DELETED
       description: Kind names are prefixed with KIND_ to satisfy buf STANDARD lint.
+    bossanova.v1.ChatEvent:
+      type: object
+      properties:
+        source:
+          type: string
+          title: source
+        text:
+          type: string
+          title: text
+        url:
+          type: string
+          title: url
+      title: ChatEvent
+      additionalProperties: false
+      description: |-
+        ChatEvent is a notice the transcript recorded from outside the conversation.
+         source is "github" (a PR linked or a GitHub callback), "bossanova" (a
+         broadcast), or "agent" (a background task finishing, an interruption or a
+         compaction). url, when set, is the page the notice is about.
     bossanova.v1.ChatMessage:
       type: object
       properties:
@@ -7980,7 +8945,16 @@ components:
         kind:
           type: string
           title: kind
-          description: 'optional: text | tool_use | tool_result'
+          description: text | tool_use | tool_result; with activity, the kinds above
+        step:
+          title: step
+          $ref: '#/components/schemas/bossanova.v1.ChatStep'
+        event:
+          title: event
+          $ref: '#/components/schemas/bossanova.v1.ChatEvent'
+        question:
+          title: question
+          $ref: '#/components/schemas/bossanova.v1.ChatQuestion'
       title: ChatMessage
       additionalProperties: false
       description: |-
@@ -7988,6 +8962,54 @@ components:
          flattened from the agent's on-disk JSONL by the owning plugin. It carries
          enough to render a conversation and to derive the "final result" without the
          daemon needing to understand any agent-specific transcript format.
+
+         A read that sets should_include_activity gets the conversation as the
+         agent's own transcript structures it: harness wrappers (system reminders,
+         slash-command expansions, local-command output, hook and task notices) never
+         arrive as user text, and kind takes these values, each with its payload:
+
+           text      a user or assistant turn (role says which)
+           command   a slash command or skill the user turn ran; text is "/name args"
+           step      one tool call the agent made; step is set, role is assistant
+           event     a notice from outside the conversation; event is set
+           question  a structured question the agent is waiting on; question is set
+
+         A read without it keeps the flat text-only stream.
+    bossanova.v1.ChatQuestion:
+      type: object
+      properties:
+        text:
+          type: string
+          title: text
+        options:
+          type: array
+          items:
+            type: string
+          title: options
+        id:
+          type: string
+          title: id
+        isAnswerable:
+          type: boolean
+          title: is_answerable
+      title: ChatQuestion
+      additionalProperties: false
+      description: |-
+        ChatQuestion is a question the agent asked through its own question tool and
+         is still waiting on, with the answers it offered. The agent shows it as a
+         menu in its terminal; a typed message cannot answer it.
+
+         id names the question by what its menu shows: its title, its words and its
+         options. An answer carries it, so an answer meant for a question the agent
+         has since moved past is refused rather than typed into whatever the
+         terminal shows next. is_answerable is set when the agent's menu can take an
+         answer through ProxyAnswerChatQuestion: one question with a single choice,
+         from options or as typed words. A question with several parts or several
+         choices is answered in the terminal.
+
+         The agent may not record a question in its transcript until it is answered
+         (Claude Code does not), so a read with should_include_activity ends on the
+         question the chat's terminal shows while its menu waits.
     bossanova.v1.ChatRole:
       type: string
       title: ChatRole
@@ -8126,6 +9148,29 @@ components:
       title: ChatStatusReport
       additionalProperties: false
       description: ChatStatusReport is a single heartbeat from an owning client.
+    bossanova.v1.ChatStep:
+      type: object
+      properties:
+        verb:
+          type: string
+          title: verb
+        object:
+          type: string
+          title: object
+        isError:
+          type: boolean
+          title: is_error
+        result:
+          type: string
+          title: result
+      title: ChatStep
+      additionalProperties: false
+      description: |-
+        ChatStep is one tool call, named for a person: "Read" and the file, "Ran"
+         and the command. is_error is set once its result came back as a failure.
+         result is a short summary of what the call returned ("12 matches", "+4 -1",
+         "exit 1"), set only when the agent's own record of the result states it;
+         empty when nothing about the result can be read without guessing.
     bossanova.v1.CheckConclusion:
       type: string
       title: CheckConclusion
@@ -8447,6 +9492,24 @@ components:
                 - addAccount
             - type: object
               properties:
+                agentModels:
+                  title: agent_models
+                  description: Reply to list_agent_models.
+                  $ref: '#/components/schemas/bossanova.v1.AgentModelsResult'
+              title: agent_models
+              required:
+                - agentModels
+            - type: object
+              properties:
+                answerChatQuestion:
+                  title: answer_chat_question
+                  description: Reply to answer_chat_question.
+                  $ref: '#/components/schemas/bossanova.v1.AnswerChatQuestionResult'
+              title: answer_chat_question
+              required:
+                - answerChatQuestion
+            - type: object
+              properties:
                 createCronJob:
                   title: create_cron_job
                   description: CreateCronJob returns the created cron job (reuses daemon.proto type).
@@ -8472,6 +9535,15 @@ components:
               title: create_note
               required:
                 - createNote
+            - type: object
+              properties:
+                daemonSettings:
+                  title: daemon_settings
+                  description: Reply to get_daemon_settings and update_daemon_settings.
+                  $ref: '#/components/schemas/bossanova.v1.DaemonSettingsResult'
+              title: daemon_settings
+              required:
+                - daemonSettings
             - type: object
               properties:
                 emptyTrash:
@@ -8958,6 +10030,14 @@ components:
         expiresAt:
           title: expires_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        organizationId:
+          type: string
+          title: organization_id
+          description: |-
+            Organization the token is bound to; the caller must belong to it. Empty
+             keeps the earlier behaviour: the caller's active (claimed) organization.
+             No dated API bump: older clients omit it and observe no change. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: CreateAPITokenRequest
       additionalProperties: false
     bossanova.v1.CreateAPITokenResponse:
@@ -9551,6 +10631,32 @@ components:
       title: CreatePROpts
       additionalProperties: false
       description: CreatePROpts contains options for creating a new pull request.
+    bossanova.v1.CreateSavedViewRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        description:
+          type: string
+          title: description
+        filter:
+          title: filter
+          $ref: '#/components/schemas/bossanova.v1.ViewFilter'
+        display:
+          title: display
+          $ref: '#/components/schemas/bossanova.v1.ViewDisplay'
+      title: CreateSavedViewRequest
+      additionalProperties: false
+      description: CreateSavedViewRequest appends a view after the person's last one.
+    bossanova.v1.CreateSavedViewResponse:
+      type: object
+      properties:
+        view:
+          title: view
+          $ref: '#/components/schemas/bossanova.v1.SavedView'
+      title: CreateSavedViewResponse
+      additionalProperties: false
     bossanova.v1.CreateSessionCommand:
       type: object
       properties:
@@ -10303,6 +11409,61 @@ components:
       title: CustomEvent
       additionalProperties: false
       description: CustomEvent is an extensibility point for plugin-specific events.
+    bossanova.v1.DaemonAgentSettings:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        model:
+          type: string
+          title: model
+          description: Empty means the agent's default model.
+        sandbox:
+          type: string
+          title: sandbox
+          description: 'Codex only: sandbox mode and approval policy; empty for other agents.'
+        approval:
+          type: string
+          title: approval
+        isPermissionBypassEnabled:
+          type: boolean
+          title: is_permission_bypass_enabled
+          description: |-
+            The agent's permission bypass (Claude dangerously_skip_permissions, Codex
+             dangerously_bypass_approvals_and_sandbox). Writable only while the
+             daemon's cloud control is full.
+      title: DaemonAgentSettings
+      additionalProperties: false
+      description: DaemonAgentSettings is the web-editable part of one agent plugin's config.
+    bossanova.v1.DaemonAgentSettingsUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        model:
+          type:
+            - string
+            - "null"
+          title: model
+        sandbox:
+          type:
+            - string
+            - "null"
+          title: sandbox
+        approval:
+          type:
+            - string
+            - "null"
+          title: approval
+        isPermissionBypassEnabled:
+          type:
+            - boolean
+            - "null"
+          title: is_permission_bypass_enabled
+      title: DaemonAgentSettingsUpdate
+      additionalProperties: false
     bossanova.v1.DaemonEvent:
       type: object
       oneOf:
@@ -10545,6 +11706,24 @@ components:
         DaemonRef is the minimal identity needed to filter sessions served by a
          daemon the caller does not own. It deliberately excludes inventory details
          such as repositories and connection timestamps.
+    bossanova.v1.DaemonRemoved:
+      type: object
+      properties:
+        isRemovedByAnotherUser:
+          type: boolean
+          title: is_removed_by_another_user
+          description: |-
+            is_removed_by_another_user is true when the registering account is not
+             the one that owned the machine when it was removed. That account's login
+             can never lift the removal: the previous owner must log in on the machine
+             again, or the daemon must take a new id to join as a new machine.
+      title: DaemonRemoved
+      additionalProperties: false
+      description: |-
+        DaemonRemoved is attached to the FailedPrecondition RegisterDaemon returns
+         for a removed daemon. Only the account that owned the machine when it was
+         removed can add it back, by a fresh login on the machine; until then the
+         daemon should stop re-registering.
     bossanova.v1.DaemonRepoRef:
       type: object
       properties:
@@ -10571,6 +11750,139 @@ components:
       description: |-
         DaemonRepoRef ties a logical repo to one serving daemon: that daemon's local
          repo_id plus its per-daemon tracker capability (Linear/Sentry creds present).
+    bossanova.v1.DaemonSettings:
+      type: object
+      properties:
+        daemonName:
+          type: string
+          title: daemon_name
+        worktreeBaseDir:
+          type: string
+          title: worktree_base_dir
+        pollIntervalSeconds:
+          type: integer
+          title: poll_interval_seconds
+          format: int32
+          description: 0 means the default interval.
+        shouldDisplayOpenPorts:
+          type: boolean
+          title: should_display_open_ports
+        isNotificationsEnabled:
+          type: boolean
+          title: is_notifications_enabled
+        defaultAgent:
+          type: string
+          title: default_agent
+        isAccountRotationEnabled:
+          type: boolean
+          title: is_account_rotation_enabled
+          description: 'managed_accounts.enabled: rotate sessions between agent accounts.'
+        isProofPagesEnabled:
+          type: boolean
+          title: is_proof_pages_enabled
+          description: proof_upload.pages_enabled.
+        hasOwnProofBucket:
+          type: boolean
+          title: has_own_proof_bucket
+          description: |-
+            Read-only: whether proofs go to the machine's own bucket rather than
+             Bossanova hosting. Bucket settings stay in the file.
+        isErrorTrackingEnabled:
+          type: boolean
+          title: is_error_tracking_enabled
+        isEventTracingEnabled:
+          type: boolean
+          title: is_event_tracing_enabled
+        cloudControl:
+          title: cloud_control
+          description: Read-only machine-wide cloud control mode.
+          $ref: '#/components/schemas/bossanova.v1.CloudControl'
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.DaemonAgentSettings'
+          title: agents
+      title: DaemonSettings
+      additionalProperties: false
+      description: |-
+        DaemonSettings is the web-editable subset of a daemon's settings.json, plus
+         read-only facts the daemon settings page shows. Keys outside this message
+         (cloud control, subagent dispatch, supervision mode, proof bucket
+         credentials, operator tuning) are never readable or writable from the web.
+    bossanova.v1.DaemonSettingsResult:
+      type: object
+      properties:
+        settings:
+          title: settings
+          $ref: '#/components/schemas/bossanova.v1.DaemonSettings'
+        isRestartNeeded:
+          type: boolean
+          title: is_restart_needed
+          description: True when a saved change takes effect only after a restart.
+      title: DaemonSettingsResult
+      additionalProperties: false
+    bossanova.v1.DaemonSettingsUpdate:
+      type: object
+      properties:
+        daemonName:
+          type:
+            - string
+            - "null"
+          title: daemon_name
+        worktreeBaseDir:
+          type:
+            - string
+            - "null"
+          title: worktree_base_dir
+        pollIntervalSeconds:
+          type:
+            - integer
+            - "null"
+          title: poll_interval_seconds
+          format: int32
+        shouldDisplayOpenPorts:
+          type:
+            - boolean
+            - "null"
+          title: should_display_open_ports
+        isNotificationsEnabled:
+          type:
+            - boolean
+            - "null"
+          title: is_notifications_enabled
+        defaultAgent:
+          type:
+            - string
+            - "null"
+          title: default_agent
+        isAccountRotationEnabled:
+          type:
+            - boolean
+            - "null"
+          title: is_account_rotation_enabled
+        isProofPagesEnabled:
+          type:
+            - boolean
+            - "null"
+          title: is_proof_pages_enabled
+        isErrorTrackingEnabled:
+          type:
+            - boolean
+            - "null"
+          title: is_error_tracking_enabled
+        isEventTracingEnabled:
+          type:
+            - boolean
+            - "null"
+          title: is_event_tracing_enabled
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.DaemonAgentSettingsUpdate'
+          title: agents
+      title: DaemonSettingsUpdate
+      additionalProperties: false
+      description: DaemonSettingsUpdate changes only the fields that are present.
     bossanova.v1.DaemonSnapshot:
       type: object
       properties:
@@ -10897,6 +12209,19 @@ components:
     bossanova.v1.DeleteOrganizationResponse:
       type: object
       title: DeleteOrganizationResponse
+      additionalProperties: false
+    bossanova.v1.DeleteSavedViewRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteSavedViewRequest
+      additionalProperties: false
+      description: DeleteSavedViewRequest also removes the view's favorite, if any.
+    bossanova.v1.DeleteSavedViewResponse:
+      type: object
+      title: DeleteSavedViewResponse
       additionalProperties: false
     bossanova.v1.DeleteSessionWebhookRequest:
       type: object
@@ -11430,6 +12755,31 @@ components:
           $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: FactoryHealthProblem
       additionalProperties: false
+    bossanova.v1.Favorite:
+      type: object
+      properties:
+        target:
+          type: string
+          title: target
+        position:
+          type: integer
+          title: position
+          format: int32
+          description: Zero-based order in the sidebar.
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: Favorite
+      additionalProperties: false
+      description: |-
+        Favorite is one sidebar favorite. target is one of:
+           view:<saved view id>             one of the person's saved views
+           builtin:<all|needs|working>      a built-in view
+           quick:<key>=<value>[&...]        a quick-filter combination over the keys
+                                            org, daemon and repo, each at most once,
+                                            in that order, values URL-encoded
+         bosso rejects any other target with INVALID_ARGUMENT and returns the
+         canonical spelling.
     bossanova.v1.FinishUnattendedRunRequest:
       type: object
       properties:
@@ -11798,6 +13148,10 @@ components:
           type: integer
           title: max_messages
           format: int32
+        shouldIncludeActivity:
+          type: boolean
+          title: should_include_activity
+          description: should_include_activity asks for the structured transcript (see ChatMessage).
       title: GetChatTranscriptCommand
       additionalProperties: false
       description: |-
@@ -11823,6 +13177,10 @@ components:
           title: max_messages
           format: int32
           description: 0 = all; otherwise the most recent N
+        shouldIncludeActivity:
+          type: boolean
+          title: should_include_activity
+          description: should_include_activity asks for the structured transcript (see ChatMessage).
       title: GetChatTranscriptRequest
       additionalProperties: false
     bossanova.v1.GetChatTranscriptResponse:
@@ -11926,6 +13284,11 @@ components:
           title: capabilities
       title: GetDaemonCapabilitiesResponse
       additionalProperties: false
+    bossanova.v1.GetDaemonSettingsCommand:
+      type: object
+      title: GetDaemonSettingsCommand
+      additionalProperties: false
+      description: GetDaemonSettingsCommand asks the daemon for its web-editable settings.
     bossanova.v1.GetFactoryHealthRequest:
       type: object
       properties:
@@ -12098,6 +13461,22 @@ components:
           title: note
           $ref: '#/components/schemas/bossanova.v1.Note'
       title: GetNoteResponse
+      additionalProperties: false
+    bossanova.v1.GetOrganizationBillingRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: GetOrganizationBillingRequest
+      additionalProperties: false
+    bossanova.v1.GetOrganizationBillingResponse:
+      type: object
+      properties:
+        billing:
+          title: billing
+          $ref: '#/components/schemas/bossanova.v1.OrganizationBilling'
+      title: GetOrganizationBillingResponse
       additionalProperties: false
     bossanova.v1.GetOrganizationNoteQuotaRequest:
       type: object
@@ -12643,6 +14022,31 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Trigger'
       title: GetTriggerResponse
       additionalProperties: false
+    bossanova.v1.GetUserGitHubIdentityRequest:
+      type: object
+      title: GetUserGitHubIdentityRequest
+      additionalProperties: false
+    bossanova.v1.GetUserGitHubIdentityResponse:
+      type: object
+      properties:
+        identity:
+          title: identity
+          description: The most recently verified identity; absent when none is linked.
+          $ref: '#/components/schemas/bossanova.v1.UserGitHubIdentity'
+      title: GetUserGitHubIdentityResponse
+      additionalProperties: false
+    bossanova.v1.GetUserPreferencesRequest:
+      type: object
+      title: GetUserPreferencesRequest
+      additionalProperties: false
+    bossanova.v1.GetUserPreferencesResponse:
+      type: object
+      properties:
+        preferences:
+          title: preferences
+          $ref: '#/components/schemas/bossanova.v1.UserPreferences'
+      title: GetUserPreferencesResponse
+      additionalProperties: false
     bossanova.v1.GetViewerDeviceStatusRequest:
       type: object
       title: GetViewerDeviceStatusRequest
@@ -12895,6 +14299,13 @@ components:
       title: GitHubCredentialState
       additionalProperties: false
       description: GitHubCredentialState is one local repo's GitHub credential and why.
+    bossanova.v1.GitHubIdentitySource:
+      type: string
+      title: GitHubIdentitySource
+      enum:
+        - GIT_HUB_IDENTITY_SOURCE_UNSPECIFIED
+        - GIT_HUB_IDENTITY_SOURCE_WORKOS_OAUTH
+        - GIT_HUB_IDENTITY_SOURCE_GITHUB_APP
     bossanova.v1.GitHubTriggerConfig:
       type: object
       properties:
@@ -13595,6 +15006,15 @@ components:
           title: devices
       title: ListAgentCredentialDevicesResponse
       additionalProperties: false
+    bossanova.v1.ListAgentModelsCommand:
+      type: object
+      properties:
+        agentName:
+          type: string
+          title: agent_name
+      title: ListAgentModelsCommand
+      additionalProperties: false
+      description: ListAgentModelsCommand asks the daemon for one agent plugin's models.
     bossanova.v1.ListAgentsCommand:
       type: object
       title: ListAgentsCommand
@@ -13929,6 +15349,21 @@ components:
              caller. This is intentionally distinct from the acting-user inventory.
       title: ListDaemonsResponse
       additionalProperties: false
+    bossanova.v1.ListFavoritesRequest:
+      type: object
+      title: ListFavoritesRequest
+      additionalProperties: false
+    bossanova.v1.ListFavoritesResponse:
+      type: object
+      properties:
+        favorites:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Favorite'
+          title: favorites
+          description: In position order.
+      title: ListFavoritesResponse
+      additionalProperties: false
     bossanova.v1.ListGitHubAppReposRequest:
       type: object
       title: ListGitHubAppReposRequest
@@ -14067,6 +15502,20 @@ components:
             $ref: '#/components/schemas/bossanova.v1.LocalViewerDevice'
           title: devices
       title: ListLocalViewerDevicesResponse
+      additionalProperties: false
+    bossanova.v1.ListModelsRequest:
+      type: object
+      title: ListModelsRequest
+      additionalProperties: false
+    bossanova.v1.ListModelsResponse:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentModel'
+          title: models
+      title: ListModelsResponse
       additionalProperties: false
     bossanova.v1.ListNotesCommand:
       type: object
@@ -14453,6 +15902,21 @@ components:
           title: level_counts
           description: One entry per ConfidenceLevel, in enum order, zeros included.
       title: ListReviewQueueResponse
+      additionalProperties: false
+    bossanova.v1.ListSavedViewsRequest:
+      type: object
+      title: ListSavedViewsRequest
+      additionalProperties: false
+    bossanova.v1.ListSavedViewsResponse:
+      type: object
+      properties:
+        views:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SavedView'
+          title: views
+          description: In position order.
+      title: ListSavedViewsResponse
       additionalProperties: false
     bossanova.v1.ListSessionPRBlockersRequest:
       type: object
@@ -15475,6 +16939,7 @@ components:
         - OUTCOME_CREDENTIALS_FLAGGED
         - OUTCOME_CREDENTIALS_MISSING
         - OUTCOME_REGISTER_FAILED
+        - OUTCOME_REMOVED_BY_ANOTHER_USER
       description: |-
         Outcome is the daemon's verdict on the credentials it reloaded after a
          `boss login`. It is enumerated and non-secret; it never carries token
@@ -15623,6 +17088,17 @@ components:
               title: agent_credential_devices_changed
               required:
                 - agentCredentialDevicesChanged
+            - type: object
+              properties:
+                answerChatQuestion:
+                  title: answer_chat_question
+                  description: |-
+                    bosso → daemon: answer the question a chat's agent waits on in its
+                     terminal menu. Replies CommandResult{answer_chat_question}.
+                  $ref: '#/components/schemas/bossanova.v1.AnswerChatQuestionCommand'
+              title: answer_chat_question
+              required:
+                - answerChatQuestion
             - type: object
               properties:
                 applyAgentAccountSync:
@@ -15814,6 +17290,15 @@ components:
                 - getCronJob
             - type: object
               properties:
+                getDaemonSettings:
+                  title: get_daemon_settings
+                  description: 'bosso → daemon: read the web-editable settings. Replies CommandResult{daemon_settings}.'
+                  $ref: '#/components/schemas/bossanova.v1.GetDaemonSettingsCommand'
+              title: get_daemon_settings
+              required:
+                - getDaemonSettings
+            - type: object
+              properties:
                 getNote:
                   title: get_note
                   description: 'bosso → daemon: read one note by id. Replies CommandResult{get_note}.'
@@ -15883,6 +17368,15 @@ components:
               title: list_accounts
               required:
                 - listAccounts
+            - type: object
+              properties:
+                listAgentModels:
+                  title: list_agent_models
+                  description: 'bosso → daemon: list one agent''s models. Replies CommandResult{agent_models}.'
+                  $ref: '#/components/schemas/bossanova.v1.ListAgentModelsCommand'
+              title: list_agent_models
+              required:
+                - listAgentModels
             - type: object
               properties:
                 listAgents:
@@ -16160,6 +17654,17 @@ components:
                 - stop
             - type: object
               properties:
+                stopChat:
+                  title: stop_chat
+                  description: |-
+                    bosso → daemon: stop one chat's agent and leave the session's other
+                     chats running. Replies with a bare ok.
+                  $ref: '#/components/schemas/bossanova.v1.StopChatCommand'
+              title: stop_chat
+              required:
+                - stopChat
+            - type: object
+              properties:
                 switchAccount:
                   title: switch_account
                   description: |-
@@ -16244,6 +17749,15 @@ components:
               title: update_cron_job
               required:
                 - updateCronJob
+            - type: object
+              properties:
+                updateDaemonSettings:
+                  title: update_daemon_settings
+                  description: 'bosso → daemon: change allowlisted settings. Replies CommandResult{daemon_settings}.'
+                  $ref: '#/components/schemas/bossanova.v1.UpdateDaemonSettingsCommand'
+              title: update_daemon_settings
+              required:
+                - updateDaemonSettings
             - type: object
               properties:
                 updateNote:
@@ -16335,9 +17849,52 @@ components:
              machine owner -- the user whose daemon runs a session -- can reach it;
              organization owners are restricted too. True applies the teammate model:
              any member may see the organization's sessions and run the teammate
-             allow-list on them. Read-only: no RPC sets it yet (BOS-1593).
+             allow-list on them. Owners change it with SetMemberSessionSharing.
       title: Organization
       additionalProperties: false
+    bossanova.v1.OrganizationBilling:
+      type: object
+      properties:
+        planName:
+          type: string
+          title: plan_name
+          description: Stripe product name of the subscription's plan; empty with no subscription.
+        seatCount:
+          type: integer
+          title: seat_count
+          format: int32
+          description: Seats Stripe bills (the subscription quantity).
+        memberCount:
+          type: integer
+          title: member_count
+          format: int32
+          description: Active members today; seat_count follows it.
+        subscriptionStatus:
+          type: string
+          title: subscription_status
+          description: |-
+            Stripe subscription status verbatim ("active", "trialing", "past_due",
+             "canceled", ...); empty with no subscription.
+        renewsAt:
+          title: renews_at
+          description: Next renewal. Absent with no subscription or when it ends at period end.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        endsAt:
+          title: ends_at
+          description: When a subscription set to cancel ends.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        trialEndsAt:
+          title: trial_ends_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        isCloudAccessActive:
+          type: boolean
+          title: is_cloud_access_active
+          description: Whether the organization's own cloud access is active now.
+      title: OrganizationBilling
+      additionalProperties: false
+      description: |-
+        OrganizationBilling is the Billing page's plan card. Fields from Stripe are
+         served from a short-lived cache.
     bossanova.v1.OrganizationCronJobReadFailure:
       type: object
       properties:
@@ -16432,6 +17989,15 @@ components:
           description: |-
             True after WorkOS accepted the invitation but before the accepted user has
              landed as a local organization member through sign-in reconciliation.
+        lastSeenAt:
+          title: last_seen_at
+          description: |-
+            When the member last made an authenticated request in this organization,
+             recorded at most once per throttle window. Absent for invitation-only rows
+             and for members not seen since the column was added.
+             No dated API bump: additive output field older clients ignore. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: OrganizationMember
       additionalProperties: false
     bossanova.v1.OrganizationNote:
@@ -16959,6 +18525,30 @@ components:
       description: |-
         PRWorkflowRun is one GitHub Actions workflow run for the PR head, as GitHub
          reported it.
+    bossanova.v1.PaneInput:
+      type: object
+      oneOf:
+        - type: object
+          properties:
+            key:
+              type: string
+              title: key
+          title: key
+          required:
+            - key
+        - type: object
+          properties:
+            text:
+              type: string
+              title: text
+          title: text
+          required:
+            - text
+      title: PaneInput
+      additionalProperties: false
+      description: |-
+        PaneInput is one thing to send to an agent's terminal: a named key, as
+         tmux send-keys names it ("2", "Enter"), or literal text typed as is.
     bossanova.v1.PauseSessionCommand:
       type: object
       properties:
@@ -17026,6 +18616,82 @@ components:
       description: |-
         Permission is one catalogue entry: the "resource:action" slug an RPC
          declares with (bossanova.v1.permission) and a credential can be granted.
+    bossanova.v1.PinnedSessionActions:
+      type: object
+      properties:
+        actions:
+          type: array
+          items:
+            type: string
+          title: actions
+      title: PinnedSessionActions
+      additionalProperties: false
+      description: |-
+        PinnedSessionActions wraps the pinned list so an update can tell "leave
+         unchanged" (absent) from "unpin everything" (present and empty).
+    bossanova.v1.PlanQuestionAnswerRequest:
+      type: object
+      allOf:
+        - properties:
+            workDir:
+              type: string
+              title: work_dir
+            agentSessionId:
+              type: string
+              title: agent_session_id
+            questionId:
+              type: string
+              title: question_id
+              description: ChatQuestion.id of the question being answered.
+            paneContent:
+              type: string
+              title: pane_content
+              format: byte
+              description: The chat's pane as captured just before planning.
+        - oneOf:
+            - type: object
+              properties:
+                optionIndex:
+                  type: integer
+                  title: option_index
+                  description: Zero-based index into the question's options.
+              title: option_index
+              required:
+                - optionIndex
+            - type: object
+              properties:
+                text:
+                  type: string
+                  title: text
+                  description: Words typed into the menu's own free-text answer. One line.
+              title: text
+              required:
+                - text
+      title: PlanQuestionAnswerRequest
+      additionalProperties: false
+    bossanova.v1.PlanQuestionAnswerResponse:
+      type: object
+      properties:
+        isQuestionPending:
+          type: boolean
+          title: is_question_pending
+          description: |-
+            The named question is still the one the agent waits on, and the pane
+             shows its menu. False when the agent moved past it or the terminal shows
+             something else; inputs is then empty.
+        inputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.PaneInput'
+          title: inputs
+          description: |-
+            What to send to the pane, in order. Empty when the question is pending
+             but this answer cannot be given here; reason then says why.
+        reason:
+          type: string
+          title: reason
+      title: PlanQuestionAnswerResponse
+      additionalProperties: false
     bossanova.v1.PluginInfo:
       type: object
       properties:
@@ -17399,6 +19065,50 @@ components:
           $ref: '#/components/schemas/bossanova.v1.AgentAccount'
       title: ProxyAddAgentAccountResponse
       additionalProperties: false
+    bossanova.v1.ProxyAnswerChatQuestionRequest:
+      type: object
+      allOf:
+        - properties:
+            sessionId:
+              type: string
+              title: session_id
+            agentSessionId:
+              type: string
+              title: agent_session_id
+            questionId:
+              type: string
+              title: question_id
+              description: ChatQuestion.id of the question being answered.
+        - oneOf:
+            - type: object
+              properties:
+                optionIndex:
+                  type: integer
+                  title: option_index
+                  description: Zero-based index into ChatQuestion.options.
+              title: option_index
+              required:
+                - optionIndex
+            - type: object
+              properties:
+                text:
+                  type: string
+                  title: text
+                  description: Words for the menu's own free-text answer. One line.
+              title: text
+              required:
+                - text
+      title: ProxyAnswerChatQuestionRequest
+      additionalProperties: false
+    bossanova.v1.ProxyAnswerChatQuestionResponse:
+      type: object
+      properties:
+        isAnswered:
+          type: boolean
+          title: is_answered
+      title: ProxyAnswerChatQuestionResponse
+      additionalProperties: false
+      description: ProxyAnswerChatQuestionResponse mirrors AnswerChatQuestionResult.
     bossanova.v1.ProxyArchiveSessionRequest:
       type: object
       properties:
@@ -18085,6 +19795,13 @@ components:
           title: max_messages
           format: int32
           description: 0 = all; otherwise the most recent N
+        shouldIncludeActivity:
+          type: boolean
+          title: should_include_activity
+          description: |-
+            should_include_activity asks for the structured transcript: steps, events
+             and questions as their own kinds, harness wrappers removed (ChatMessage).
+             A daemon older than the field ignores it and answers the flat stream.
       title: ProxyGetChatTranscriptRequest
       additionalProperties: false
       description: |-
@@ -18147,6 +19864,22 @@ components:
             $ref: '#/components/schemas/bossanova.v1.OrganizationFleetReadFailure'
           title: failed_organizations
       title: ProxyGetCronJobResponse
+      additionalProperties: false
+    bossanova.v1.ProxyGetDaemonSettingsRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+      title: ProxyGetDaemonSettingsRequest
+      additionalProperties: false
+    bossanova.v1.ProxyGetDaemonSettingsResponse:
+      type: object
+      properties:
+        settings:
+          title: settings
+          $ref: '#/components/schemas/bossanova.v1.DaemonSettings'
+      title: ProxyGetDaemonSettingsResponse
       additionalProperties: false
     bossanova.v1.ProxyGetNoteRequest:
       type: object
@@ -18290,6 +20023,39 @@ components:
             $ref: '#/components/schemas/bossanova.v1.AgentAccount'
           title: accounts
       title: ProxyListAgentAccountsResponse
+      additionalProperties: false
+    bossanova.v1.ProxyListAgentModelsRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        agentName:
+          type: string
+          title: agent_name
+          description: Agent plugin name, as in AgentInfo.name ("claude", "codex", ...).
+      title: ProxyListAgentModelsRequest
+      additionalProperties: false
+    bossanova.v1.ProxyListAgentModelsResponse:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentModel'
+          title: models
+          description: |-
+            The agent's own list, in the agent's order. Empty when the agent offers
+             no list; the picker then accepts a typed model ID.
+        recentModelIds:
+          type: array
+          items:
+            type: string
+          title: recent_model_ids
+          description: |-
+            Model IDs this daemon recently ran the agent with, newest first, from its
+             sessions and schedules. May name models absent from models.
+      title: ProxyListAgentModelsResponse
       additionalProperties: false
     bossanova.v1.ProxyListAgentsAggregatedRequest:
       type: object
@@ -19078,6 +20844,21 @@ components:
         agentName:
           type: string
           title: agent_name
+        model:
+          type:
+            - string
+            - "null"
+          title: model
+          description: |-
+            model and effort set a NEW chat's agent model id and reasoning effort.
+             Unset or empty inherits: the session's model and effort when the chat
+             runs the session's agent, else that agent's configured default. Ignored
+             when the chat already exists.
+        effort:
+          type:
+            - string
+            - "null"
+          title: effort
       title: ProxyRecordChatRequest
       additionalProperties: false
     bossanova.v1.ProxyRecordChatResponse:
@@ -19400,6 +21181,21 @@ components:
       title: ProxySendChatMessageResponse
       additionalProperties: false
       description: ProxySendChatMessageResponse mirrors daemon.proto's SendChatMessageResponse.
+    bossanova.v1.ProxyStopChatRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        agentSessionId:
+          type: string
+          title: agent_session_id
+      title: ProxyStopChatRequest
+      additionalProperties: false
+    bossanova.v1.ProxyStopChatResponse:
+      type: object
+      title: ProxyStopChatResponse
+      additionalProperties: false
     bossanova.v1.ProxyStopSessionRequest:
       type: object
       properties:
@@ -19644,6 +21440,29 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CronJob'
       title: ProxyUpdateCronJobResponse
       additionalProperties: false
+    bossanova.v1.ProxyUpdateDaemonSettingsRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        update:
+          title: update
+          $ref: '#/components/schemas/bossanova.v1.DaemonSettingsUpdate'
+      title: ProxyUpdateDaemonSettingsRequest
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateDaemonSettingsResponse:
+      type: object
+      properties:
+        settings:
+          title: settings
+          $ref: '#/components/schemas/bossanova.v1.DaemonSettings'
+        isRestartNeeded:
+          type: boolean
+          title: is_restart_needed
+          description: True when a saved change takes effect only after the daemon restarts.
+      title: ProxyUpdateDaemonSettingsResponse
+      additionalProperties: false
     bossanova.v1.ProxyUpdateNoteRequest:
       type: object
       properties:
@@ -19745,6 +21564,25 @@ components:
             Optional: absent leaves the command unchanged; empty clears it.
              Additive: older clients omit this field and retain existing behavior, so no
              version transform is needed. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        shouldKeepBranchesCurrent:
+          type:
+            - boolean
+            - "null"
+          title: should_keep_branches_current
+          description: |-
+            Absent leaves each flag unchanged. Additive: older clients omit them and
+             observe no change, so no version transform is needed. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        canAutoDeleteBranches:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_delete_branches
+        canAutoRotate:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_rotate
       title: ProxyUpdateRepoRequest
       additionalProperties: false
       description: |-
@@ -19982,6 +21820,24 @@ components:
       title: RateLimitStatus
       additionalProperties: false
       description: RateLimitStatus is the normalized probe result, reused by B/C/D.
+    bossanova.v1.ReadQuestionMenuRequest:
+      type: object
+      properties:
+        paneContent:
+          type: string
+          title: pane_content
+          format: byte
+      title: ReadQuestionMenuRequest
+      additionalProperties: false
+    bossanova.v1.ReadQuestionMenuResponse:
+      type: object
+      properties:
+        question:
+          title: question
+          description: Unset when the pane shows no question menu.
+          $ref: '#/components/schemas/bossanova.v1.ChatQuestion'
+      title: ReadQuestionMenuResponse
+      additionalProperties: false
     bossanova.v1.ReadTranscriptRequest:
       type: object
       properties:
@@ -19998,6 +21854,12 @@ components:
           title: max_messages
           format: int32
           description: 0 = all; otherwise return the most recent N
+        shouldIncludeActivity:
+          type: boolean
+          title: should_include_activity
+          description: |-
+            should_include_activity asks for steps, events and questions as their own
+             ChatMessage kinds, with harness wrappers removed (see ChatMessage).
       title: ReadTranscriptRequest
       additionalProperties: false
     bossanova.v1.ReadTranscriptResponse:
@@ -20072,6 +21934,13 @@ components:
         agentName:
           type: string
           title: agent_name
+        model:
+          type: string
+          title: model
+          description: A new chat's model and effort; empty inherits (see ProxyRecordChatRequest).
+        effort:
+          type: string
+          title: effort
       title: RecordChatCommand
       additionalProperties: false
       description: |-
@@ -20115,6 +21984,21 @@ components:
             role is the purpose of a NEW chat. UNSPECIFIED records an operator chat.
              Ignored when the chat already exists: a chat's role never changes.
           $ref: '#/components/schemas/bossanova.v1.ChatRole'
+        model:
+          type:
+            - string
+            - "null"
+          title: model
+          description: |-
+            model and effort set a NEW chat's agent model id and reasoning effort.
+             Unset or empty inherits the session's when the chat runs the session's
+             agent, else that agent's configured default. Ignored when the chat
+             already exists.
+        effort:
+          type:
+            - string
+            - "null"
+          title: effort
       title: RecordChatRequest
       additionalProperties: false
     bossanova.v1.RecordChatResponse:
@@ -20557,6 +22441,31 @@ components:
           title: is_supported
       title: RemoveAgentRunHookResponse
       additionalProperties: false
+    bossanova.v1.RemoveDaemonRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+      title: RemoveDaemonRequest
+      additionalProperties: false
+    bossanova.v1.RemoveDaemonResponse:
+      type: object
+      title: RemoveDaemonResponse
+      additionalProperties: false
+    bossanova.v1.RemoveFavoriteRequest:
+      type: object
+      properties:
+        target:
+          type: string
+          title: target
+      title: RemoveFavoriteRequest
+      additionalProperties: false
+      description: 'RemoveFavoriteRequest is idempotent: removing an absent target succeeds.'
+    bossanova.v1.RemoveFavoriteResponse:
+      type: object
+      title: RemoveFavoriteResponse
+      additionalProperties: false
     bossanova.v1.RemoveOrganizationMemberRequest:
       type: object
       properties:
@@ -20657,6 +22566,29 @@ components:
           title: device
           $ref: '#/components/schemas/bossanova.v1.AgentCredentialDevice'
       title: RenewAgentCredentialDeviceEnrollmentResponse
+      additionalProperties: false
+    bossanova.v1.ReorderSavedViewsRequest:
+      type: object
+      properties:
+        viewIds:
+          type: array
+          items:
+            type: string
+          title: view_ids
+      title: ReorderSavedViewsRequest
+      additionalProperties: false
+      description: |-
+        ReorderSavedViewsRequest names every one of the person's view IDs exactly
+         once, in the new order.
+    bossanova.v1.ReorderSavedViewsResponse:
+      type: object
+      properties:
+        views:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SavedView'
+          title: views
+      title: ReorderSavedViewsResponse
       additionalProperties: false
     bossanova.v1.RepairDoctorCheck:
       type: object
@@ -20842,6 +22774,12 @@ components:
             Long-running command that boss session serve starts. Additive optional
              field: older clients ignore it; no version transform is needed.
              docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
+        canAutoRotate:
+          type: boolean
+          title: can_auto_rotate
+          description: |-
+            Whether the daemon may rotate this repository's sessions to another agent
+             account when one hits its usage limit. Defaults on.
       title: Repo
       additionalProperties: false
       description: Repo represents a registered Git repository.
@@ -21007,6 +22945,25 @@ components:
             - "null"
           title: serve_script
           description: Long-running command that starts the repository services.
+        shouldKeepBranchesCurrent:
+          type: boolean
+          title: should_keep_branches_current
+          description: |-
+            Projections of the matching Repo flags so the web can show and toggle
+             them. Additive output fields older clients ignore; no dated API bump. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        canAutoDeleteBranches:
+          type: boolean
+          title: can_auto_delete_branches
+        canAutoRotate:
+          type: boolean
+          title: can_auto_rotate
+        isTrusted:
+          type: boolean
+          title: is_trusted
+          description: |-
+            Read-only here: trust changes only on the machine (boss repo update
+             --trusted), never through the orchestrator.
       title: RepoSettings
       additionalProperties: false
       description: |-
@@ -21936,6 +23893,40 @@ components:
       description: |-
         RunTriggerGateResult is the reply to RunTriggerGateCommand
          (run_trigger_gate = 43).
+    bossanova.v1.SavedView:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        name:
+          type: string
+          title: name
+          description: 1 to 60 characters.
+        description:
+          type: string
+          title: description
+          description: At most 500 characters.
+        filter:
+          title: filter
+          $ref: '#/components/schemas/bossanova.v1.ViewFilter'
+        display:
+          title: display
+          $ref: '#/components/schemas/bossanova.v1.ViewDisplay'
+        position:
+          type: integer
+          title: position
+          format: int32
+          description: Zero-based tab order among the person's views.
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: SavedView
+      additionalProperties: false
+      description: SavedView is a person's private, named filter and display combination.
     bossanova.v1.SecretAction:
       type: string
       title: SecretAction
@@ -22934,6 +24925,47 @@ components:
              and blanked in private cloud-control mode. No dated API bump or transform:
              additive, so older clients ignore it without changing existing behavior. See
              docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        callerSnooze:
+          title: caller_snooze
+          description: |-
+            The calling user's active snooze on this session, set by bosso's session
+             reads only; absent when the caller has none or it has lapsed. No dated
+             API bump: additive output field older clients ignore. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+          $ref: '#/components/schemas/bossanova.v1.SessionSnooze'
+        daemonId:
+          type: string
+          title: daemon_id
+          description: |-
+            The daemon that reports this session, stamped by bosso from the stream
+             the session arrived on; a daemon cannot set it for itself. Empty on the
+             daemon's own local reads. No dated API bump: additive output field older
+             clients ignore. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        chatCount:
+          type:
+            - integer
+            - "null"
+          title: chat_count
+          format: int32
+          description: |-
+            How many chats the session has: the chats ListChats returns for it.
+             Set by the daemon on the sessions it reports to the orchestrator
+             (DaemonSnapshot and SessionDelta), which the orchestrator serves as
+             reported. Absent on the daemon's own local reads and from daemons built
+             before this field, so absent means "not reported", never zero chats.
+             No dated API bump: additive output field older clients ignore. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        workingChatCount:
+          type:
+            - integer
+            - "null"
+          title: working_chat_count
+          format: int32
+          description: |-
+            How many of those chats are working: a fresh CHAT_STATUS_WORKING
+             heartbeat, the status the chat pills read as "working". Set exactly when
+             chat_count is.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -23258,6 +25290,14 @@ components:
         - SESSION_EVENT_PR_CLOSED
         - SESSION_EVENT_FINALIZE_REQUESTED
       description: SessionEvent represents the 16 events that trigger state transitions.
+    bossanova.v1.SessionOpenTarget:
+      type: string
+      title: SessionOpenTarget
+      enum:
+        - SESSION_OPEN_TARGET_UNSPECIFIED
+        - SESSION_OPEN_TARGET_PROOF
+        - SESSION_OPEN_TARGET_CHAT
+      description: SessionOpenTarget is what opening a session shows first.
     bossanova.v1.SessionResurrected:
       type: object
       properties:
@@ -23316,6 +25356,22 @@ components:
           description: Empty on success; otherwise the bootstrap failure after cleanup has run.
       title: SessionSetupSettled
       additionalProperties: false
+    bossanova.v1.SessionSnooze:
+      type: object
+      properties:
+        snoozedAt:
+          title: snoozed_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        expiresAt:
+          title: expires_at
+          description: 'Absent: until the session changes.'
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: SessionSnooze
+      additionalProperties: false
+      description: |-
+        SessionSnooze is the caller's active "Not now" on a session. Session
+         listings carry it in Session.caller_snooze while it holds; it lapses when
+         the session's state changes or expires_at passes.
     bossanova.v1.SessionState:
       type: string
       title: SessionState
@@ -23613,6 +25669,34 @@ components:
       title: SessionWebhookRequestHeader
       additionalProperties: false
       description: SessionWebhookRequestHeader is one HTTP request header of a delivery.
+    bossanova.v1.SessionsDisplay:
+      type: object
+      properties:
+        grouping:
+          title: grouping
+          $ref: '#/components/schemas/bossanova.v1.ViewGrouping'
+        ordering:
+          title: ordering
+          $ref: '#/components/schemas/bossanova.v1.ViewOrdering'
+        properties:
+          type: array
+          items:
+            type: string
+          title: properties
+      title: SessionsDisplay
+      additionalProperties: false
+      description: |-
+        SessionsDisplay is how the Sessions page groups, orders and decorates its
+         cards. bosso rejects an unspecified or unknown grouping or ordering, and a
+         property outside repository, size, ticket, confidence, chats and updated or
+         named twice, with INVALID_ARGUMENT, and stores properties in that order.
+    bossanova.v1.SessionsLayout:
+      type: string
+      title: SessionsLayout
+      enum:
+        - SESSIONS_LAYOUT_UNSPECIFIED
+        - SESSIONS_LAYOUT_BOARD
+        - SESSIONS_LAYOUT_LIST
     bossanova.v1.SetChatPhaseRequest:
       type: object
       properties:
@@ -23632,6 +25716,50 @@ components:
     bossanova.v1.SetChatPhaseResponse:
       type: object
       title: SetChatPhaseResponse
+      additionalProperties: false
+    bossanova.v1.SetFavoriteRequest:
+      type: object
+      properties:
+        target:
+          type: string
+          title: target
+        position:
+          type:
+            - integer
+            - "null"
+          title: position
+          format: int32
+      title: SetFavoriteRequest
+      additionalProperties: false
+      description: |-
+        SetFavoriteRequest adds a favorite or moves an existing one. Absent
+         position appends a new favorite and keeps an existing one where it is.
+    bossanova.v1.SetFavoriteResponse:
+      type: object
+      properties:
+        favorite:
+          title: favorite
+          $ref: '#/components/schemas/bossanova.v1.Favorite'
+      title: SetFavoriteResponse
+      additionalProperties: false
+    bossanova.v1.SetMemberSessionSharingRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        isEnabled:
+          type: boolean
+          title: is_enabled
+      title: SetMemberSessionSharingRequest
+      additionalProperties: false
+    bossanova.v1.SetMemberSessionSharingResponse:
+      type: object
+      properties:
+        organization:
+          title: organization
+          $ref: '#/components/schemas/bossanova.v1.Organization'
+      title: SetMemberSessionSharingResponse
       additionalProperties: false
     bossanova.v1.SetOrganizationMemberRoleRequest:
       type: object
@@ -23771,6 +25899,26 @@ components:
           type: string
           title: text
       title: SetupScriptOutput
+      additionalProperties: false
+    bossanova.v1.SnoozeSessionRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        expiresAt:
+          title: expires_at
+          description: Optional time limit; must be in the future.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: SnoozeSessionRequest
+      additionalProperties: false
+    bossanova.v1.SnoozeSessionResponse:
+      type: object
+      properties:
+        snooze:
+          title: snooze
+          $ref: '#/components/schemas/bossanova.v1.SessionSnooze'
+      title: SnoozeSessionResponse
       additionalProperties: false
     bossanova.v1.StackedPullRequest:
       type: object
@@ -24138,6 +26286,21 @@ components:
       type: object
       title: StopAgentRunResponse
       additionalProperties: false
+    bossanova.v1.StopChatCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        agentSessionId:
+          type: string
+          title: agent_session_id
+      title: StopChatCommand
+      additionalProperties: false
+      description: |-
+        StopChatCommand stops one chat's agent, as the idle reaper puts a chat to
+         sleep: the chat's terminal ends and its row stays, so a later message wakes
+         it, and the session's other chats keep running.
     bossanova.v1.StopSessionCommand:
       type: object
       properties:
@@ -25953,6 +28116,27 @@ components:
       title: TriggerTypeSpec
       additionalProperties: false
       description: TriggerTypeSpec describes one trigger type.
+    bossanova.v1.UnsnoozeSessionRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: UnsnoozeSessionRequest
+      additionalProperties: false
+      description: UnsnoozeSessionRequest is idempotent.
+    bossanova.v1.UnsnoozeSessionResponse:
+      type: object
+      title: UnsnoozeSessionResponse
+      additionalProperties: false
+    bossanova.v1.UnsubscribeFromNewsletterRequest:
+      type: object
+      title: UnsubscribeFromNewsletterRequest
+      additionalProperties: false
+    bossanova.v1.UnsubscribeFromNewsletterResponse:
+      type: object
+      title: UnsubscribeFromNewsletterResponse
+      additionalProperties: false
     bossanova.v1.UpdateAgentAccountCommand:
       type: object
       properties:
@@ -26224,6 +28408,18 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CronJob'
       title: UpdateCronJobResponse
       additionalProperties: false
+    bossanova.v1.UpdateDaemonSettingsCommand:
+      type: object
+      properties:
+        update:
+          title: update
+          $ref: '#/components/schemas/bossanova.v1.DaemonSettingsUpdate'
+      title: UpdateDaemonSettingsCommand
+      additionalProperties: false
+      description: |-
+        UpdateDaemonSettingsCommand changes allowlisted settings. The message can
+         only name allowlisted keys; the daemon still refuses a permission bypass
+         unless its cloud control is full.
     bossanova.v1.UpdateNoteCommand:
       type: object
       properties:
@@ -26374,6 +28570,21 @@ components:
             - "null"
           title: serve_script
           description: 'Optional: absent leaves the command unchanged; empty clears it.'
+        shouldKeepBranchesCurrent:
+          type:
+            - boolean
+            - "null"
+          title: should_keep_branches_current
+        canAutoDeleteBranches:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_delete_branches
+        canAutoRotate:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_rotate
       title: UpdateRepoCommand
       additionalProperties: false
       description: |-
@@ -26487,6 +28698,11 @@ components:
             - "null"
           title: serve_script
           description: Absent leaves the command unchanged; empty clears it.
+        canAutoRotate:
+          type:
+            - boolean
+            - "null"
+          title: can_auto_rotate
       title: UpdateRepoRequest
       additionalProperties: false
     bossanova.v1.UpdateRepoResponse:
@@ -26496,6 +28712,41 @@ components:
           title: repo
           $ref: '#/components/schemas/bossanova.v1.Repo'
       title: UpdateRepoResponse
+      additionalProperties: false
+    bossanova.v1.UpdateSavedViewRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        name:
+          type:
+            - string
+            - "null"
+          title: name
+        description:
+          type:
+            - string
+            - "null"
+          title: description
+        filter:
+          title: filter
+          $ref: '#/components/schemas/bossanova.v1.ViewFilter'
+        display:
+          title: display
+          $ref: '#/components/schemas/bossanova.v1.ViewDisplay'
+      title: UpdateSavedViewRequest
+      additionalProperties: false
+      description: |-
+        UpdateSavedViewRequest changes only the fields that are present; a present
+         filter or display replaces the stored one.
+    bossanova.v1.UpdateSavedViewResponse:
+      type: object
+      properties:
+        view:
+          title: view
+          $ref: '#/components/schemas/bossanova.v1.SavedView'
+      title: UpdateSavedViewResponse
       additionalProperties: false
     bossanova.v1.UpdateSessionCommand:
       type: object
@@ -26854,6 +29105,74 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Trigger'
       title: UpdateTriggerResponse
       additionalProperties: false
+    bossanova.v1.UpdateUserPreferencesRequest:
+      type: object
+      properties:
+        theme:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.UserTheme'
+            - type: "null"
+          title: theme
+        sessionOpenTarget:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.SessionOpenTarget'
+            - type: "null"
+          title: session_open_target
+        sessionsLayout:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.SessionsLayout'
+            - type: "null"
+          title: sessions_layout
+        isIdleShown:
+          type:
+            - boolean
+            - "null"
+          title: is_idle_shown
+        pinnedActions:
+          title: pinned_actions
+          $ref: '#/components/schemas/bossanova.v1.PinnedSessionActions'
+        isNotifyAllOrgs:
+          type:
+            - boolean
+            - "null"
+          title: is_notify_all_orgs
+        sessionsDisplay:
+          title: sessions_display
+          description: Present replaces the stored display whole.
+          $ref: '#/components/schemas/bossanova.v1.SessionsDisplay'
+        defaultSessionsDisplay:
+          title: default_sessions_display
+          $ref: '#/components/schemas/bossanova.v1.ViewDisplay'
+      title: UpdateUserPreferencesRequest
+      additionalProperties: false
+      description: |-
+        UpdateUserPreferencesRequest changes only the fields that are present. The
+         web also sends it once to copy preferences it kept in browser storage.
+    bossanova.v1.UpdateUserPreferencesResponse:
+      type: object
+      properties:
+        preferences:
+          title: preferences
+          $ref: '#/components/schemas/bossanova.v1.UserPreferences'
+      title: UpdateUserPreferencesResponse
+      additionalProperties: false
+    bossanova.v1.UpdateUserProfileRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: Trimmed; 1 to 100 characters.
+      title: UpdateUserProfileRequest
+      additionalProperties: false
+    bossanova.v1.UpdateUserProfileResponse:
+      type: object
+      properties:
+        profile:
+          title: profile
+          $ref: '#/components/schemas/bossanova.v1.UserProfile'
+      title: UpdateUserProfileResponse
+      additionalProperties: false
     bossanova.v1.UploadEvidenceRequest:
       type: object
       properties:
@@ -27038,6 +29357,92 @@ components:
          derived from the BOS-293 probe result and carries METADATA ONLY:
          utilization fractions, reset instants, a status string, a plan-tier string,
          and the fetch time. It NEVER contains a token or any credential.
+    bossanova.v1.UserGitHubIdentity:
+      type: object
+      properties:
+        githubUserId:
+          type:
+            - integer
+            - string
+          title: github_user_id
+          format: int64
+        githubLogin:
+          type: string
+          title: github_login
+        source:
+          title: source
+          $ref: '#/components/schemas/bossanova.v1.GitHubIdentitySource'
+        lastVerifiedAt:
+          title: last_verified_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: UserGitHubIdentity
+      additionalProperties: false
+    bossanova.v1.UserPreferences:
+      type: object
+      properties:
+        theme:
+          title: theme
+          $ref: '#/components/schemas/bossanova.v1.UserTheme'
+        sessionOpenTarget:
+          title: session_open_target
+          $ref: '#/components/schemas/bossanova.v1.SessionOpenTarget'
+        sessionsLayout:
+          title: sessions_layout
+          $ref: '#/components/schemas/bossanova.v1.SessionsLayout'
+        isIdleShown:
+          type: boolean
+          title: is_idle_shown
+        pinnedActions:
+          type: array
+          items:
+            type: string
+          title: pinned_actions
+          description: Session action IDs pinned beside the session's menu, in order.
+        isNotifyAllOrgs:
+          type: boolean
+          title: is_notify_all_orgs
+          description: |-
+            Whether browser notifications cover every organization, not only the
+             active one.
+        updatedAt:
+          title: updated_at
+          description: Absent until the person first saves a preference.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        sessionsDisplay:
+          title: sessions_display
+          description: |-
+            The Sessions page's current display; its layout and idle toggle are
+             sessions_layout and is_idle_shown.
+          $ref: '#/components/schemas/bossanova.v1.SessionsDisplay'
+        defaultSessionsDisplay:
+          title: default_sessions_display
+          description: |-
+            The display the Sessions page's Reset returns to. Absent until the person
+             first sets one; the web then falls back to its built-in display. bosso
+             validates it as a SessionsDisplay, with a board or list layout.
+          $ref: '#/components/schemas/bossanova.v1.ViewDisplay'
+      title: UserPreferences
+      additionalProperties: false
+      description: |-
+        UserPreferences are one person's settings. A person who never saved any
+         reads the defaults: system theme, proof first, board, idle shown, pinned
+         actions proof, chat, details and merge, notifications for every
+         organization, and Sessions grouped by status, ordered by quickest call,
+         showing repository, size, ticket, chats and updated.
+    bossanova.v1.UserProfile:
+      type: object
+      properties:
+        userId:
+          type: string
+          title: user_id
+        name:
+          type: string
+          title: name
+        email:
+          type: string
+          title: email
+      title: UserProfile
+      additionalProperties: false
     bossanova.v1.UserSetting:
       type: object
       properties:
@@ -27071,6 +29476,14 @@ components:
         - USER_SETTING_TYPE_BOOL
         - USER_SETTING_TYPE_STRING
         - USER_SETTING_TYPE_ENUM
+    bossanova.v1.UserTheme:
+      type: string
+      title: UserTheme
+      enum:
+        - USER_THEME_UNSPECIFIED
+        - USER_THEME_SYSTEM
+        - USER_THEME_LIGHT
+        - USER_THEME_DARK
     bossanova.v1.VCSEvent:
       type: object
       oneOf:
@@ -27296,6 +29709,81 @@ components:
       title: VerifyNoteFollowUp
       additionalProperties: false
       description: VerifyNoteFollowUp reports the tracker write and comment link for one verify note.
+    bossanova.v1.ViewDisplay:
+      type: object
+      properties:
+        layout:
+          title: layout
+          $ref: '#/components/schemas/bossanova.v1.SessionsLayout'
+        grouping:
+          title: grouping
+          $ref: '#/components/schemas/bossanova.v1.ViewGrouping'
+        ordering:
+          title: ordering
+          $ref: '#/components/schemas/bossanova.v1.ViewOrdering'
+        isIdleShown:
+          type: boolean
+          title: is_idle_shown
+        properties:
+          type: array
+          items:
+            type: string
+          title: properties
+          description: |-
+            Card properties shown, in order: repository, size, ticket, confidence,
+             chats, updated.
+      title: ViewDisplay
+      additionalProperties: false
+      description: ViewDisplay is a view's display options.
+    bossanova.v1.ViewFilter:
+      type: object
+      properties:
+        clauses:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ViewFilterClause'
+          title: clauses
+      title: ViewFilter
+      additionalProperties: false
+      description: ViewFilter is a view's chips, ANDed. At most 20 clauses.
+    bossanova.v1.ViewFilterClause:
+      type: object
+      properties:
+        facet:
+          type: string
+          title: facet
+        isNegated:
+          type: boolean
+          title: is_negated
+        values:
+          type: array
+          items:
+            type: string
+          title: values
+      title: ViewFilterClause
+      additionalProperties: false
+      description: |-
+        ViewFilterClause is one filter chip: facet, is / is not, values. bosso
+         accepts the facets status, needs, repository, organization, daemon,
+         proof_page, size and agent, at most 50 values of at most 200 characters
+         each, and rejects anything else with INVALID_ARGUMENT.
+    bossanova.v1.ViewGrouping:
+      type: string
+      title: ViewGrouping
+      enum:
+        - VIEW_GROUPING_UNSPECIFIED
+        - VIEW_GROUPING_STATUS
+        - VIEW_GROUPING_NEEDS
+        - VIEW_GROUPING_REPOSITORY
+    bossanova.v1.ViewOrdering:
+      type: string
+      title: ViewOrdering
+      enum:
+        - VIEW_ORDERING_UNSPECIFIED
+        - VIEW_ORDERING_QUICKEST_CALL
+        - VIEW_ORDERING_SMALLEST
+        - VIEW_ORDERING_LAST_UPDATED
+        - VIEW_ORDERING_CONFIDENT
     bossanova.v1.ViewerDevice:
       type: object
       properties:

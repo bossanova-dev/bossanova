@@ -37,7 +37,7 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, int,
 	// events win when present.
 	var legacy, items []*bossanovav1.ChatMessage
 	var lastLegacy, lastItem string
-	var lastTurnError, pendingError string
+	var errs turnErrors
 
 	scanner := jsonlscan.New(f)
 	for scanner.Scan() {
@@ -53,25 +53,7 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, int,
 			continue
 		}
 		typ, message := p.turn()
-		switch typ {
-		case "task_started":
-			lastTurnError, pendingError = "", ""
-		case "user_message":
-			if strings.TrimSpace(message) != "" {
-				lastTurnError, pendingError = "", ""
-			}
-		case "error":
-			pendingError = rolloutErrorMessage(p.Error)
-			if pendingError == "" {
-				pendingError = strings.TrimSpace(p.Message)
-			}
-		case "task_complete":
-			lastTurnError = rolloutErrorMessage(p.Error)
-			if lastTurnError == "" {
-				lastTurnError = pendingError
-			}
-			pendingError = ""
-		}
+		errs.observe(p, typ, message)
 		var role string
 		switch typ {
 		case "user_message":
@@ -104,9 +86,37 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, int,
 		return nil, "", scanner.Skipped(), "", err
 	}
 	if len(legacy) > 0 {
-		return legacy, lastLegacy, scanner.Skipped(), lastTurnError, nil
+		return legacy, lastLegacy, scanner.Skipped(), errs.last, nil
 	}
-	return items, lastItem, scanner.Skipped(), lastTurnError, nil
+	return items, lastItem, scanner.Skipped(), errs.last, nil
+}
+
+// turnErrors follows the newest completed turn's error: a new turn clears it,
+// an error event holds one until its turn completes.
+type turnErrors struct {
+	last, pending string
+}
+
+func (e *turnErrors) observe(p codexEventMsgPayload, typ, message string) {
+	switch typ {
+	case "task_started":
+		e.last, e.pending = "", ""
+	case "user_message":
+		if strings.TrimSpace(message) != "" {
+			e.last, e.pending = "", ""
+		}
+	case "error":
+		e.pending = rolloutErrorMessage(p.Error)
+		if e.pending == "" {
+			e.pending = strings.TrimSpace(p.Message)
+		}
+	case "task_complete":
+		e.last = rolloutErrorMessage(p.Error)
+		if e.last == "" {
+			e.last = e.pending
+		}
+		e.pending = ""
+	}
 }
 
 // rolloutErrorMessage accepts the two Codex error encodings without making an

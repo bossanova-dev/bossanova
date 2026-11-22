@@ -39,6 +39,20 @@ type AgentRunner interface {
 	DescribeMCPSurface(ctx context.Context, req *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error)
 }
 
+// ModelLister is the optional model-listing capability of an agent runner.
+// It stays outside AgentRunner because only the daemon's model picker asks.
+type ModelLister interface {
+	ListModels(ctx context.Context, req *bossanovav1.ListModelsRequest) (*bossanovav1.ListModelsResponse, error)
+}
+
+// QuestionMenus is the optional capability of an agent runner whose agent
+// asks questions through a terminal menu. It stays outside AgentRunner
+// because only reading and answering a chat's question asks.
+type QuestionMenus interface {
+	ReadQuestionMenu(ctx context.Context, req *bossanovav1.ReadQuestionMenuRequest) (*bossanovav1.ReadQuestionMenuResponse, error)
+	PlanQuestionAnswer(ctx context.Context, req *bossanovav1.PlanQuestionAnswerRequest) (*bossanovav1.PlanQuestionAnswerResponse, error)
+}
+
 func NewAgentRunnerGRPCPlugin(hostService sharedplugin.HostServiceRegistrar) *sharedplugin.AgentRunnerPlugin {
 	return &sharedplugin.AgentRunnerPlugin{HostService: hostService}
 }
@@ -265,6 +279,24 @@ func (c *agentRunnerGRPCClient) DescribeMCPSurface(ctx context.Context, req *bos
 		return nil, err
 	}
 	return resp, nil
+}
+
+// ListModels forwards to the plugin. Unimplemented is returned verbatim; the
+// daemon's model listing turns it into an empty list.
+func (c *agentRunnerGRPCClient) ListModels(ctx context.Context, req *bossanovav1.ListModelsRequest) (*bossanovav1.ListModelsResponse, error) {
+	return invokePluginUnary(ctx, c.client.ListModels, req)
+}
+
+// ReadQuestionMenu forwards to the plugin. Unimplemented is returned
+// verbatim; the daemon then reads no question from the pane.
+func (c *agentRunnerGRPCClient) ReadQuestionMenu(ctx context.Context, req *bossanovav1.ReadQuestionMenuRequest) (*bossanovav1.ReadQuestionMenuResponse, error) {
+	return invokePluginUnary(ctx, c.client.ReadQuestionMenu, req)
+}
+
+// PlanQuestionAnswer forwards to the plugin. Unimplemented is returned
+// verbatim; the daemon then refuses the answer.
+func (c *agentRunnerGRPCClient) PlanQuestionAnswer(ctx context.Context, req *bossanovav1.PlanQuestionAnswerRequest) (*bossanovav1.PlanQuestionAnswerResponse, error) {
+	return invokePluginUnary(ctx, c.client.PlanQuestionAnswer, req)
 }
 
 // NewAgentRunnerClient adapts a generated client to the daemon consumer interface.

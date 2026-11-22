@@ -119,6 +119,8 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 			AgentSessionID: msg.AgentSessionId,
 			AgentName:      agentName,
 			Title:          msg.Title,
+			Model:          msg.GetModel(),
+			Effort:         msg.GetEffort(),
 			Role:           recordChatRole(msg.GetRole()),
 		})
 		if err != nil {
@@ -244,6 +246,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *domain.AgentCh
 		},
 		Model:                  chat.Model,
 		SessionAgentName:       sess.AgentName,
+		SessionModel:           sess.Model,
 		SessionEffectiveEffort: sess.EffectiveEffort,
 	})
 	if err != nil {

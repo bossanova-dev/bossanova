@@ -12,8 +12,8 @@ import (
 )
 
 const createAgentChat = `-- name: CreateAgentChat :one
-INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, start_error, account_id, model, role, created_at)
-VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?) RETURNING id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, rowid
+INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, start_error, account_id, model, effort, role, created_at)
+VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?) RETURNING id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, effort, rowid
 `
 
 type CreateAgentChatParams struct {
@@ -25,6 +25,7 @@ type CreateAgentChatParams struct {
 	Title             string
 	AccountID         *string
 	Model             string
+	Effort            string
 	Role              *string
 	CreatedAt         string
 }
@@ -39,6 +40,7 @@ func (q *Queries) CreateAgentChat(ctx context.Context, arg CreateAgentChatParams
 		arg.Title,
 		arg.AccountID,
 		arg.Model,
+		arg.Effort,
 		arg.Role,
 		arg.CreatedAt,
 	)
@@ -59,6 +61,7 @@ func (q *Queries) CreateAgentChat(ctx context.Context, arg CreateAgentChatParams
 		&i.Role,
 		&i.ReclaimedAt,
 		&i.ReclaimReason,
+		&i.Effort,
 		&i.Rowid,
 	)
 	return i, err
@@ -83,7 +86,7 @@ func (q *Queries) DeleteAgentChatProxyTokensByAgentSessionID(ctx context.Context
 }
 
 const getAgentChatByAgentSessionID = `-- name: GetAgentChatByAgentSessionID :one
-SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, rowid FROM agent_chats WHERE agent_session_id = ?
+SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, effort, rowid FROM agent_chats WHERE agent_session_id = ?
 `
 
 func (q *Queries) GetAgentChatByAgentSessionID(ctx context.Context, agentSessionID string) (AgentChat, error) {
@@ -105,6 +108,7 @@ func (q *Queries) GetAgentChatByAgentSessionID(ctx context.Context, agentSession
 		&i.Role,
 		&i.ReclaimedAt,
 		&i.ReclaimReason,
+		&i.Effort,
 		&i.Rowid,
 	)
 	return i, err
@@ -127,7 +131,7 @@ func (q *Queries) GetAgentChatReclaimedPR(ctx context.Context, agentSessionID st
 }
 
 const listAgentChatsBySession = `-- name: ListAgentChatsBySession :many
-SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, rowid FROM agent_chats WHERE session_id = ? ORDER BY created_at DESC
+SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, effort, rowid FROM agent_chats WHERE session_id = ? ORDER BY created_at DESC
 `
 
 func (q *Queries) ListAgentChatsBySession(ctx context.Context, sessionID string) ([]AgentChat, error) {
@@ -155,6 +159,7 @@ func (q *Queries) ListAgentChatsBySession(ctx context.Context, sessionID string)
 			&i.Role,
 			&i.ReclaimedAt,
 			&i.ReclaimReason,
+			&i.Effort,
 			&i.Rowid,
 		); err != nil {
 			return nil, err
@@ -171,7 +176,7 @@ func (q *Queries) ListAgentChatsBySession(ctx context.Context, sessionID string)
 }
 
 const listAgentChatsBySessions = `-- name: ListAgentChatsBySessions :many
-SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, rowid FROM agent_chats WHERE session_id IN (/*SLICE:session_ids*/?) ORDER BY session_id, created_at DESC
+SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, effort, rowid FROM agent_chats WHERE session_id IN (/*SLICE:session_ids*/?) ORDER BY session_id, created_at DESC
 `
 
 func (q *Queries) ListAgentChatsBySessions(ctx context.Context, sessionIds []string) ([]AgentChat, error) {
@@ -209,6 +214,7 @@ func (q *Queries) ListAgentChatsBySessions(ctx context.Context, sessionIds []str
 			&i.Role,
 			&i.ReclaimedAt,
 			&i.ReclaimReason,
+			&i.Effort,
 			&i.Rowid,
 		); err != nil {
 			return nil, err
@@ -225,7 +231,7 @@ func (q *Queries) ListAgentChatsBySessions(ctx context.Context, sessionIds []str
 }
 
 const listAgentChatsRoutable = `-- name: ListAgentChatsRoutable :many
-SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, rowid FROM agent_chats
+SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, effort, rowid FROM agent_chats
 WHERE (tmux_session_name IS NOT NULL AND tmux_session_name != '')
 OR ((start_error IS NULL OR start_error = '') AND reclaimed_at IS NULL)
 ORDER BY created_at DESC
@@ -256,6 +262,7 @@ func (q *Queries) ListAgentChatsRoutable(ctx context.Context) ([]AgentChat, erro
 			&i.Role,
 			&i.ReclaimedAt,
 			&i.ReclaimReason,
+			&i.Effort,
 			&i.Rowid,
 		); err != nil {
 			return nil, err
@@ -272,7 +279,7 @@ func (q *Queries) ListAgentChatsRoutable(ctx context.Context) ([]AgentChat, erro
 }
 
 const listAgentChatsWithTmuxSession = `-- name: ListAgentChatsWithTmuxSession :many
-SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, rowid FROM agent_chats WHERE tmux_session_name IS NOT NULL AND tmux_session_name != '' ORDER BY created_at DESC
+SELECT id, session_id, agent_session_id, title, daemon_id, created_at, tmux_session_name, agent_name, provider_session_id, start_error, account_id, model, role, reclaimed_at, reclaim_reason, effort, rowid FROM agent_chats WHERE tmux_session_name IS NOT NULL AND tmux_session_name != '' ORDER BY created_at DESC
 `
 
 func (q *Queries) ListAgentChatsWithTmuxSession(ctx context.Context) ([]AgentChat, error) {
@@ -300,6 +307,7 @@ func (q *Queries) ListAgentChatsWithTmuxSession(ctx context.Context) ([]AgentCha
 			&i.Role,
 			&i.ReclaimedAt,
 			&i.ReclaimReason,
+			&i.Effort,
 			&i.Rowid,
 		); err != nil {
 			return nil, err

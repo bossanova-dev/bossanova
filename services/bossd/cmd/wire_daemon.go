@@ -134,6 +134,7 @@ func (w *daemonWiring) wireDaemon() {
 		Lifecycle:            w.lifecycle,
 		Agent:                w.agentRunner,
 		AgentClients:         w.agentClients,
+		ModelUsage:           w.modelUsage,
 		Worktrees:            w.worktrees,
 		Provider:             w.ghProvider,
 
@@ -252,6 +253,8 @@ func (w *daemonWiring) wireDaemon() {
 	if w.cmdHandlerStream != nil {
 		w.cmdHandlerStream.Waker = w.srv
 		w.cmdHandlerStream.Commands = w.srv
+		w.cmdHandlerStream.AgentModels = w.srv
+		w.cmdHandlerStream.Settings = w.srv
 		if w.cmdHandlerStream.Triggers != nil {
 			w.cmdHandlerStream.Triggers.Creator = w.srv
 		}

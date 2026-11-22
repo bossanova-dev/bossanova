@@ -313,6 +313,11 @@ func TestRenderDaemonLoginVerdict_Warnings(t *testing.T) {
 			resp:        &pb.NotifyAuthChangeResponse{Outcome: pb.NotifyAuthChangeResponse_OUTCOME_REGISTER_FAILED},
 			wantSubstrs: []string{"retry in the background"},
 		},
+		{
+			name:        "a machine another account removed names who can add it back",
+			resp:        &pb.NotifyAuthChangeResponse{Outcome: pb.NotifyAuthChangeResponse_OUTCOME_REMOVED_BY_ANOTHER_USER},
+			wantSubstrs: []string{"Warning", "removed from Bossanova by the account that owned it", "new id"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -373,6 +378,7 @@ func TestRenderDaemonLoginVerdict_NeverLeaksCredentialMaterial(t *testing.T) {
 		pb.NotifyAuthChangeResponse_OUTCOME_CREDENTIALS_FLAGGED,
 		pb.NotifyAuthChangeResponse_OUTCOME_CREDENTIALS_MISSING,
 		pb.NotifyAuthChangeResponse_OUTCOME_REGISTER_FAILED,
+		pb.NotifyAuthChangeResponse_OUTCOME_REMOVED_BY_ANOTHER_USER,
 	} {
 		got := renderDaemonLoginVerdict(&pb.NotifyAuthChangeResponse{
 			Outcome:       outcome,

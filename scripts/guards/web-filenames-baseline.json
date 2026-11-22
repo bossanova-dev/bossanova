@@ -9,6 +9,5 @@
   "e2e/real/stack-client.ts",
   "src/features/billing/analytics/BillingAnalytics.ts",
   "src/shared/lib/analytics/ProductAnalytics.ts",
-  "src/shared/lib/sentry-init.ts",
-  "tests/filterHarness.tsx"
+  "src/shared/lib/sentry-init.ts"
 ]

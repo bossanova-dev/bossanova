@@ -133,6 +133,7 @@ lint:
 	@node guards/check-web-e2e-harness-imports.mjs
 	@node guards/check-web-iframe-sandbox.mjs
 	@node guards/check-web-css-colours.mjs
+	@node guards/check-web-css-scales.mjs
 	@node guards/check-settings-readiness-figure.mjs
 	@node guards/check-exec-waitdelay.mjs
 	@node guards/check-go-work-sum-churn.mjs

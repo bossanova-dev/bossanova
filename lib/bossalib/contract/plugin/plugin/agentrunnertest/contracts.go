@@ -159,4 +159,24 @@ var contracts = []contract{
 		}
 		return c.DescribeMCPSurface(ctx, q)
 	}},
+	{"ListModels", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
+		return c.ListModels(ctx, &v1.ListModelsRequest{})
+	}},
+	{"ReadQuestionMenu", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
+		q := &v1.ReadQuestionMenuRequest{}
+		if !empty {
+			*q = v1.ReadQuestionMenuRequest{PaneContent: []byte("conformance pane")}
+		}
+		return c.ReadQuestionMenu(ctx, q)
+	}},
+	{"PlanQuestionAnswer", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
+		q := &v1.PlanQuestionAnswerRequest{}
+		if !empty {
+			*q = v1.PlanQuestionAnswerRequest{
+				WorkDir: e.WorkDir, AgentSessionId: e.UnknownSessionID, QuestionId: "conformance-question",
+				PaneContent: []byte("conformance pane"), Answer: &v1.PlanQuestionAnswerRequest_OptionIndex{OptionIndex: 0},
+			}
+		}
+		return c.PlanQuestionAnswer(ctx, q)
+	}},
 }

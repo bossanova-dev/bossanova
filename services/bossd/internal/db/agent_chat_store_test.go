@@ -247,6 +247,34 @@ func TestAgentChatStore_AccountIDRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentChatStore_EffortRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	sess, err := NewSessionStore(db).Create(context.Background(), CreateSessionParams{
+		RepoID:       createTestRepo(t, NewRepoStore(db)).ID,
+		Title:        "Chat effort test",
+		WorktreePath: "/tmp/wt/chat-effort",
+		BranchName:   "feat/chat-effort",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	chats := NewAgentChatStore(db)
+	for _, effort := range []string{"low", ""} {
+		id := "agent-effort-" + effort
+		if _, err := chats.Create(t.Context(), CreateAgentChatParams{SessionID: sess.ID, AgentSessionID: id, Title: "effort", Effort: effort}); err != nil {
+			t.Fatalf("create chat: %v", err)
+		}
+		got, err := chats.GetByAgentSessionID(t.Context(), id)
+		if err != nil {
+			t.Fatalf("get chat: %v", err)
+		}
+		if got.Effort != effort {
+			t.Fatalf("chat effort = %q, want %q", got.Effort, effort)
+		}
+	}
+}
+
 func TestAgentChatStore_ModelRoundTrip(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

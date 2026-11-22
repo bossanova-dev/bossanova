@@ -539,7 +539,7 @@ type SessionCommandHandler interface {
 	RunTriggerGate(ctx context.Context, cmd *pb.RunTriggerGateCommand) (*pb.RunTriggerGateResult, pb.CommandResult_ErrorCode, error)
 	// LinkSessionPR attaches an existing PR to a session and returns the updated row.
 	LinkSessionPR(ctx context.Context, sessionID, pr string) (*pb.Session, error)
-	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.AgentChat, error)
+	RecordChat(ctx context.Context, cmd *pb.RecordChatCommand) (*pb.AgentChat, error)
 	// DeleteChat removes a chat by agent_session_id. sessionID, when non-empty,
 	// scopes the delete: the handler rejects the request if the chat does not
 	// belong to that session (so bosso's session-level authz is enforced
@@ -579,8 +579,9 @@ type SessionCommandHandler interface {
 	ListTrackerIssues(ctx context.Context, repoID, query string, source *string) (*pb.ListTrackerIssuesResponse, error)
 	// GetChatTranscript reads a chat's transcript by agent_session_id. sessionID,
 	// when non-empty, scopes the read (the handler rejects the request if the chat
-	// does not belong to that session). Network/tmux-bound — dispatched async.
-	GetChatTranscript(ctx context.Context, sessionID, agentSessionID string, maxMessages int32) (*pb.GetChatTranscriptResponse, error)
+	// does not belong to that session). withActivity asks for the structured
+	// transcript. Network/tmux-bound — dispatched async.
+	GetChatTranscript(ctx context.Context, sessionID, agentSessionID string, maxMessages int32, withActivity bool) (*pb.GetChatTranscriptResponse, error)
 	// SendChatMessage delivers a user message into a chat's live agent, optionally
 	// waking it first. submit routes verified-submit vs. prefill delivery (BOS-242
 	// Gap 1). Network/tmux-bound — dispatched async.
@@ -787,6 +788,7 @@ type StreamClient struct {
 	events           EventSource
 	tokenProvider    TokenProvider
 	commandHandler   SessionCommandHandler
+	daemonSettings   DaemonSettingsHandler
 	usageShare       UsageShareState
 	usageRecorder    SharedUsageRecorder
 	transferHandler  TransferHandler
@@ -1057,6 +1059,7 @@ type StreamClientConfig struct {
 
 	// Command-side collaborators.
 	CommandHandler SessionCommandHandler
+	DaemonSettings DaemonSettingsHandler
 	UsageShare     UsageShareState
 	UsageRecorder  SharedUsageRecorder
 	// TransferHandler is optional. When nil, the dispatcher ACKs
@@ -1166,6 +1169,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		events:           cfg.Events,
 		tokenProvider:    cfg.TokenProvider,
 		commandHandler:   cfg.CommandHandler,
+		daemonSettings:   cfg.DaemonSettings,
 		usageShare:       cfg.UsageShare,
 		usageRecorder:    cfg.UsageRecorder,
 		transferHandler:  cfg.TransferHandler,

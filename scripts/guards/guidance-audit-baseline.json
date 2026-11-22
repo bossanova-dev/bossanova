@@ -152,11 +152,6 @@
       "fingerprint": "e21aaa8780707fa0863a35cc3c72d11099ac00aa0af070594eac5cd2f872e9f3"
     },
     {
-      "file": "services/web/src/shared/ui/filters/FilterBar.test.tsx",
-      "kind": "source-text",
-      "fingerprint": "6328c59054ff994ffdeda17ebc84a622f016b730509fbbe3b1e4dad0eac63791"
-    },
-    {
       "file": "services/web/src/theme-tokens.test.ts",
       "kind": "source-text",
       "fingerprint": "fb3043a555ba8b51c1e41a41c27b1f95a541e42f50338469ac48069005df05df"

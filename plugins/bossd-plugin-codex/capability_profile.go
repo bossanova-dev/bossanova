@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -18,7 +17,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
-	"github.com/recurser/bossalib/contract/plugin/loginshell"
 	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -93,7 +91,7 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 		err = annotateRegistryProbeFailure(ctx, err, started)
 	}()
 
-	args := []string{r.binary, "app-server", "--stdio"}
+	var args []string
 	if target.Model != "" {
 		args = append(args, "-c", "model="+strconv.Quote(target.Model))
 	}
@@ -101,72 +99,34 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(target.Effort))
 	}
 	args = appendConfigOverride(args, target.ProjectTrustOverride)
-	args = loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
-	commandFactory := r.commandFactory
-	if commandFactory == nil {
-		commandFactory = exec.CommandContext
-	}
-	cmd := commandFactory(ctx, args[0], args[1:]...)
-	cmd.Env = runtimeEnv(target.ExtraEnv)
-	// An empty Dir is exec's own "inherit the daemon's cwd", which is what every
+	// An empty dir is exec's own "inherit the daemon's cwd", which is what every
 	// pre-BOS-865 caller got and what a request carrying no work dir must keep
-	// getting byte-identically. Assigning it unconditionally is therefore the
-	// same behaviour as guarding on non-empty, with one fewer branch to read as
-	// load-bearing.
-	cmd.Dir = target.WorkDir
-	cmd.Stderr = io.Discard
-	cmd.WaitDelay = codexOperationRegistryWaitDelay
-	stdin, err := cmd.StdinPipe()
+	// getting byte-identically.
+	conn, err := openAppServer(ctx, appServerLaunch{
+		binary:         r.binary,
+		loginShell:     r.loginShell,
+		commandFactory: r.commandFactory,
+		args:           args,
+		env:            runtimeEnv(target.ExtraEnv),
+		dir:            target.WorkDir,
+	})
 	if err != nil {
-		return runtimeOperationSurface{}, fmt.Errorf("open app-server stdin: %w", err)
+		return runtimeOperationSurface{}, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return runtimeOperationSurface{}, fmt.Errorf("open app-server stdout: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return runtimeOperationSurface{}, fmt.Errorf("start app-server: %w", err)
-	}
-	stdinClosed := false
-	waited := false
-	defer func() {
-		if !stdinClosed {
-			_ = stdin.Close()
-		}
-		if !waited {
-			_ = cmd.Wait()
-		}
-	}()
+	defer conn.close()
 
-	encoder := json.NewEncoder(stdin)
-	decoder := json.NewDecoder(stdout)
-	if err := encoder.Encode(appServerRequest{ID: 1, Method: "initialize", Params: map[string]any{
-		"clientInfo":   map[string]string{"name": "bossd-plugin-codex", "version": pluginVersion},
-		"capabilities": map[string]any{},
-	}}); err != nil {
-		return runtimeOperationSurface{}, fmt.Errorf("initialize app-server: %w", err)
-	}
-	if _, err := readAppServerResponse(decoder, 1); err != nil {
-		return runtimeOperationSurface{}, fmt.Errorf("initialize app-server: %w", err)
-	}
-	if err := encoder.Encode(appServerRequest{Method: "initialized"}); err != nil {
-		return runtimeOperationSurface{}, fmt.Errorf("notify app-server initialized: %w", err)
-	}
-
-	requestID := 2
 	threadID := ""
 	if target.WorkDir != "" {
-		threadID, err = startProbeThread(encoder, decoder, requestID, target.WorkDir)
+		threadID, err = startProbeThread(conn, target.WorkDir)
 		if err != nil {
 			return runtimeOperationSurface{}, err
 		}
-		requestID++
 	}
 
 	var inventories []appServerMCPInventory
 	seenCursors := map[string]struct{}{}
 	cursor := ""
-	for ; ; requestID++ {
+	for {
 		params := map[string]any{"detail": "full"}
 		if threadID != "" {
 			params["threadId"] = threadID
@@ -174,14 +134,7 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-		if err := encoder.Encode(appServerRequest{
-			ID:     requestID,
-			Method: "mcpServerStatus/list",
-			Params: params,
-		}); err != nil {
-			return runtimeOperationSurface{}, fmt.Errorf("request runtime operation registry: %w", err)
-		}
-		result, err := readAppServerResponse(decoder, requestID)
+		result, err := conn.call("mcpServerStatus/list", params)
 		if err != nil {
 			return runtimeOperationSurface{}, fmt.Errorf("request runtime operation registry: %w", err)
 		}
@@ -199,10 +152,7 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 		}
 		seenCursors[cursor] = struct{}{}
 	}
-	_ = stdin.Close()
-	stdinClosed = true
-	_ = cmd.Wait()
-	waited = true
+	conn.close()
 
 	surface := runtimeOperationSurface{Source: codexOperationRegistrySource}
 	for _, inventory := range inventories {
@@ -232,15 +182,8 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 // not per process cwd, so a thread-less inventory never contains the MCP
 // servers the repo declares for itself. No turn is started, so nothing is
 // billed and nothing is persisted.
-func startProbeThread(encoder *json.Encoder, decoder *json.Decoder, requestID int, workDir string) (string, error) {
-	if err := encoder.Encode(appServerRequest{
-		ID:     requestID,
-		Method: "thread/start",
-		Params: map[string]any{"cwd": workDir, "ephemeral": true},
-	}); err != nil {
-		return "", fmt.Errorf("start probe thread: %w", err)
-	}
-	result, err := readAppServerResponse(decoder, requestID)
+func startProbeThread(conn *appServerConn, workDir string) (string, error) {
+	result, err := conn.call("thread/start", map[string]any{"cwd": workDir, "ephemeral": true})
 	if err != nil {
 		return "", fmt.Errorf("start probe thread: %w", err)
 	}
@@ -256,48 +199,6 @@ func startProbeThread(encoder *json.Encoder, decoder *json.Decoder, requestID in
 		return "", fmt.Errorf("start probe thread: response carried no thread id")
 	}
 	return started.Thread.ID, nil
-}
-
-type appServerRequest struct {
-	ID     int    `json:"id,omitempty"`
-	Method string `json:"method"`
-	Params any    `json:"params,omitempty"`
-}
-
-type appServerResponse struct {
-	ID     *int            `json:"id"`
-	Result json.RawMessage `json:"result"`
-	Error  *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-func readAppServerResponse(decoder *json.Decoder, expectedID int) (json.RawMessage, error) {
-	for {
-		var response appServerResponse
-		if err := decoder.Decode(&response); err != nil {
-			return nil, fmt.Errorf("read response id %d: %w", expectedID, err)
-		}
-		if response.ID == nil {
-			continue
-		}
-		if *response.ID != expectedID {
-			return nil, fmt.Errorf("response id = %d, want %d", *response.ID, expectedID)
-		}
-		if response.Error != nil {
-			return nil, fmt.Errorf(
-				"response id %d error %d: %s",
-				expectedID,
-				response.Error.Code,
-				response.Error.Message,
-			)
-		}
-		if len(response.Result) == 0 {
-			return nil, fmt.Errorf("response id %d missing result", expectedID)
-		}
-		return response.Result, nil
-	}
 }
 
 type appServerMCPInventory struct {

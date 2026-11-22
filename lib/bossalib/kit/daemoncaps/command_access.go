@@ -61,6 +61,8 @@ var commandAccess = accessTable(commandOneof, map[protoreflect.Name]CommandAcces
 	"list_accounts":                    AccessObserve,
 	"get_repo":                         AccessObserve,
 	"update_repo":                      AccessControl,
+	"get_daemon_settings":              AccessObserve,
+	"update_daemon_settings":           AccessControl,
 	"remove_repo":                      AccessControl,
 	"list_cron_jobs":                   AccessObserve,
 	"create_cron_job":                  AccessControl,
@@ -110,6 +112,9 @@ var commandAccess = accessTable(commandOneof, map[protoreflect.Name]CommandAcces
 	"agent_credential_devices_changed": AccessHousekeeping,
 	"send_back_to_repair":              AccessControl,
 	"get_session_timeline":             AccessControl,
+	"list_agent_models":                AccessObserve,
+	"answer_chat_question":             AccessControl,
+	"stop_chat":                        AccessControl,
 })
 
 var terminalAccess = accessTable(terminalOneof, map[protoreflect.Name]CommandAccess{

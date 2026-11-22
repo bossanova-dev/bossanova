@@ -60,6 +60,8 @@ func (f *recordChatStoreFake) Create(_ context.Context, params db.CreateAgentCha
 		AgentSessionID: params.AgentSessionID,
 		AgentName:      params.AgentName,
 		Title:          params.Title,
+		Model:          params.Model,
+		Effort:         params.Effort,
 		Role:           params.Role,
 	}, nil
 }

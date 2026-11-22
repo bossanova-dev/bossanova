@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func fullMethod(name string) string {
@@ -221,6 +222,61 @@ func checkMethod(parent context.Context, r Runner, e Env, row contract) []Violat
 		if v.GetProbeError() != "" && len(v.GetServers()) != 0 {
 			fail("probe_error requires empty servers")
 		}
+	case *v1.ListModelsResponse:
+		out = append(out, modelListViolations(row.name, v.GetModels())...)
+	case *v1.ReadQuestionMenuResponse, *v1.PlanQuestionAnswerResponse:
+		out = append(out, questionMenuViolations(row.name, v)...)
+	}
+	return out
+}
+
+// questionMenuViolations checks the question menu RPCs against a pane that
+// shows no menu and a question nobody asked: neither reads a question, and a
+// stale answer types nothing.
+func questionMenuViolations(method string, response proto.Message) []Violation {
+	problem := ""
+	switch v := response.(type) {
+	case *v1.ReadQuestionMenuResponse:
+		if v.GetQuestion() != nil {
+			problem = "a pane showing no menu must read as no question"
+		}
+	case *v1.PlanQuestionAnswerResponse:
+		if v.GetIsQuestionPending() || len(v.GetInputs()) != 0 {
+			problem = "a question nobody asked must be answered is_question_pending=false with no inputs"
+		}
+	}
+	if problem == "" {
+		return nil
+	}
+	return []Violation{{Method: method, Problem: problem}}
+}
+
+// modelListViolations checks what the model and effort pickers rely on. Only
+// the default entry may carry an empty id, which means "pass no model option".
+func modelListViolations(method string, models []*v1.AgentModel) []Violation {
+	var problems []string
+	seen := make(map[string]bool, len(models))
+	defaults := 0
+	for _, m := range models {
+		if m.GetIsDefault() {
+			defaults++
+		} else if m.GetId() == "" {
+			problems = append(problems, "only the default model may have an empty id")
+		}
+		if seen[m.GetId()] {
+			problems = append(problems, "duplicate model id "+m.GetId())
+		}
+		seen[m.GetId()] = true
+		if m.GetDefaultEffort() != "" && !slices.Contains(m.GetSupportedEfforts(), m.GetDefaultEffort()) {
+			problems = append(problems, "default_effort must be one of supported_efforts for model "+m.GetId())
+		}
+	}
+	if defaults > 1 {
+		problems = append(problems, "at most one model may be the default")
+	}
+	out := make([]Violation, 0, len(problems))
+	for _, problem := range problems {
+		out = append(out, Violation{Method: method, Problem: problem})
 	}
 	return out
 }

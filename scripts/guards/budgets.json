@@ -1,7 +1,7 @@
 {
   "agents-index-size": {
     "subjects": {
-      "AGENTS.md": 24875
+      "AGENTS.md": 24945
     }
   },
   "go-cognitive-complexity": {
@@ -172,7 +172,7 @@
       "services/boss/api/cli/daemon/daemon_doctor.go": 2288,
       "services/boss/api/cli/session/session.go": 1450,
       "services/boss/api/cli/skills/init.go": 1196,
-      "services/boss/api/cli/skills/init_cron.go": 1105,
+      "services/boss/api/cli/skills/init_cron.go": 1027,
       "services/boss/api/tui/attach/attach.go": 1112,
       "services/boss/api/tui/repos/repo_add.go": 1140,
       "services/boss/api/tui/repos/repo_settings.go": 1595,

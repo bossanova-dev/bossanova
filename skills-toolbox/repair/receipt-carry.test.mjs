@@ -268,6 +268,39 @@ function fixture(t) {
   return { dir, git, commit, onMain, start, receipts, posts, run, pushed, verdict }
 }
 
+test('receipt carry reports alternate receipt reads and double refusal stays start-receipt-unknown', (t) => {
+  const f = fixture(t)
+  for (const both of [false, true]) {
+    const posts = []
+    const native = fakeSpawn(new Set(), posts)
+    const spawn = (command, args, opts) => {
+      if (command === 'gh' && args[0] === 'api' && args[1]?.includes('/statuses'))
+        return { status: 1, stderr: 'API rate limit exceeded' }
+      if (command === 'gh' && args[1] === 'graphql')
+        return both
+          ? { status: 1, stderr: 'API rate limit exceeded' }
+          : {
+              status: 0,
+              stdout: JSON.stringify({
+                data: {
+                  repository: {
+                    object: { status: { contexts: [{ context: 'boss/build', state: 'SUCCESS' }] } },
+                  },
+                },
+              }),
+            }
+      return native(command, args, opts)
+    }
+    const result = carryReport(
+      { startSha: f.start, head: f.start, base: 'main' },
+      { spawn, cwd: f.dir, env: fixtureEnv(f.dir) },
+    )
+    assert.equal(result.decision, both ? 'refused' : 'carry')
+    if (both) assert.ok(result.reasons.includes('start-receipt-unknown'))
+    else assert.equal(result.degraded[0].transport, 'graphql')
+  }
+})
+
 const BLOCKER = {
   id: 'f1',
   severity: 'P1',

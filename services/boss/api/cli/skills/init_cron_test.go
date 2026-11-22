@@ -119,18 +119,7 @@ func newCronFixture(t *testing.T, loaded ...string) *cronFixture {
 		t.Fatal(err)
 	}
 	for _, agentDir := range []string{".claude", ".codex"} {
-		for _, st := range factoryCronStages {
-			root := filepath.Join(f.home, agentDir, "skills")
-			for _, rel := range []string{st.gatePath(), st.modulePath()} {
-				p := filepath.Join(root, filepath.FromSlash(rel))
-				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(p, []byte("// stub\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
+		installStubStageGates(t, filepath.Join(f.home, agentDir, "skills"))
 	}
 	for _, tool := range []string{"node", "claude", "codex"} {
 		writeExecutable(t, f.serviceDir, tool, "exit 0\n")
@@ -169,6 +158,23 @@ func newCronFixture(t *testing.T, loaded ...string) *cronFixture {
 		},
 	}
 	return f
+}
+
+// installStubStageGates writes a stub gate script and skill-config module for
+// every stage under the skill root.
+func installStubStageGates(t *testing.T, root string) {
+	t.Helper()
+	for _, st := range factoryCronStages {
+		for _, rel := range []string{st.gatePath(), st.modulePath()} {
+			p := filepath.Join(root, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("// stub\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }
 
 func (f *cronFixture) run(req initCronRequest) (initCronResult, string) {
@@ -723,6 +729,83 @@ func TestInitCronFlagValidation(t *testing.T) {
 	if err := req.normalize(); err != nil || strings.Join(req.stages, ",") != "plan,verify" || req.agent != "codex" {
 		t.Fatalf("normalize: %v %+v", err, req)
 	}
+	agy := initCronRequest{stages: []string{"build"}, agent: " Antigravity"}
+	if err := agy.normalize(); err != nil || agy.agent != "antigravity" {
+		t.Fatalf("normalize antigravity: %v %+v", err, agy)
+	}
+}
+
+// newAntigravityCronFixture is a cron fixture whose skill roots are the real
+// per-agent install directories under the fixture's home, with Antigravity's
+// stage gates installed and its `agy` CLI on the service PATH.
+func newAntigravityCronFixture(t *testing.T, loaded ...string) *cronFixture {
+	t.Helper()
+	f := newCronFixture(t, loaded...)
+	t.Setenv("HOME", f.home)
+	f.env.SkillRoot = defaultCronSkillRoot
+	installStubStageGates(t, filepath.Join(f.home, ".gemini", "config", "skills"))
+	writeExecutable(t, f.serviceDir, "agy", "exit 0\n")
+	f.repo.IsTrusted = true
+	return f
+}
+
+const antigravityBuildGate = `node "$HOME/.gemini/config/skills/boss-build/toolbox/cron-gates/boss-build.mjs"`
+
+func TestInitCronAntigravityVariant(t *testing.T) {
+	t.Run("build job invokes /boss-build and gates from agy's skill root", func(t *testing.T) {
+		f := newAntigravityCronFixture(t, "claude", "antigravity")
+		res, report := f.run(initCronRequest{stages: []string{"build"}, agent: "antigravity"})
+		calls := f.daemon.CreateCronJobCalls()
+		if len(calls) != 1 {
+			t.Fatalf("want 1 create, got %+v\n%s", calls, report)
+		}
+		c := calls[0]
+		if c.Prompt != "/boss-build" || c.GateCommand != antigravityBuildGate || c.AgentName != "antigravity" || !c.IsEnabled {
+			t.Fatalf("antigravity build job %+v\n%s", c, report)
+		}
+		if res.Agent != "antigravity" {
+			t.Fatalf("agent %q", res.Agent)
+		}
+	})
+
+	t.Run("resolver resolves antigravity and keeps claude the default", func(t *testing.T) {
+		f := newAntigravityCronFixture(t, "claude", "codex", "antigravity")
+		r, err := NewFactoryCronResolver(context.Background(), f.c, f.configPath, f.env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := r.Resolve("build", "antigravity")
+		if err != nil || got.Agent != "antigravity" || got.Prompt != "/boss-build" || got.GateCommand != antigravityBuildGate || len(got.PreflightFailures) != 0 {
+			t.Fatalf("antigravity %+v %v", got, err)
+		}
+		if def, err := r.Resolve("build", ""); err != nil || def.Agent != "claude" {
+			t.Fatalf("default %+v %v", def, err)
+		}
+		if _, err := r.Resolve("build", "hermes"); err == nil {
+			t.Fatal("hermes resolved a pipeline cron")
+		}
+	})
+
+	t.Run("untrusted repository is left to trust", func(t *testing.T) {
+		const trustNote = "run `boss repo update repo-1 --trusted`"
+		for _, trusted := range []bool{false, true} {
+			f := newAntigravityCronFixture(t, "antigravity")
+			f.repo.IsTrusted = trusted
+			res, report := f.run(initCronRequest{stages: []string{"plan"}})
+			if got := strings.Contains(strings.Join(res.LeftToDo, "\n"), trustNote); got == trusted {
+				t.Fatalf("trusted=%v: trust note present = %v\n%s", trusted, got, report)
+			}
+		}
+	})
+
+	t.Run("no harness file is checked for the tracker MCP server", func(t *testing.T) {
+		f := newAntigravityCronFixture(t, "antigravity")
+		f.baseFiles = map[string][]byte{}
+		res, report := f.run(initCronRequest{stages: []string{"plan"}})
+		if len(res.LeftToDo) != 0 {
+			t.Fatalf("left to do for a trusted antigravity repo:\n%s", report)
+		}
+	})
 }
 
 func TestInitCronSkippedWithoutALocalRepoID(t *testing.T) {

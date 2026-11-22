@@ -42,6 +42,18 @@ export const workflowRouteRules = [
 
 export const workflowRouteExemptions = [
   {
+    workflow: 'test-marketing.yml',
+    pattern: 'scripts/dev/ensure-lychee.sh',
+    reason:
+      'installer fixtures run in test-scripts; marketing CI additionally exercises the installed binary against dist',
+  },
+  {
+    workflow: 'test-marketing.yml',
+    pattern: 'scripts/dev/retry.sh',
+    reason:
+      'network retry fixtures run in test-scripts; marketing CI exercises retries through the lychee installer',
+  },
+  {
     workflow: 'test-web.yml',
     pattern: 'skills-toolbox/verify/verify-proof-player.mjs',
     reason:

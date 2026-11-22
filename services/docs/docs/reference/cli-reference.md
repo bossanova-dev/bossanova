@@ -520,26 +520,26 @@ question. Without a terminal the flags alone decide. If a run stops early it
 lists what it already applied; every step converges, so a re-run finishes the
 job. A successful interview ends with a summary and what is left to do.
 
-| Flag                      | Description                                                                                            |
-| ------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `--dir <path>`            | repository directory to inspect and write into (default: the working directory)                        |
-| `--force`                 | replace an existing `.boss-skills.json` instead of refusing                                            |
-| `--merge`                 | merge into an existing `.boss-skills.json`, keeping every member it does not set                       |
-| `--team <name>`           | Linear team to pin as `trackerConfig.linear.team` (name, key or id)                                    |
-| `--state <role>=<name>`   | Linear state for a role (`unplanned`, `planned`, `inProgress`, `inReview`, `done`); repeatable         |
-| `--label <role>=<name>`   | Linear label for a role (`agentBuild`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic`); repeatable |
-| `--create-labels`         | create missing pipeline labels in the resolved Linear team                                             |
-| `--assignee-me`           | write the "only my tickets" filter, `selection.assignees.include: ["me"]`                              |
-| `--register`              | find or register this repository with local bossd                                                      |
-| `--no-register`           | require an existing repository registration                                                            |
-| `--trusted`               | register a new repository as trusted: Codex project trust and proof secrets for its sessions           |
-| `--linear-key-stdin`      | read the Linear API key from stdin and store it on the repository                                      |
-| `--sentry-token-stdin`    | read the Sentry token from stdin (with `--sentry-org`)                                                 |
-| `--sentry-org <slug>`     | Sentry organization slug (requires a token)                                                            |
-| `--store-env-keys`        | store `LINEAR_API_KEY` and `SENTRY_AUTH_TOKEN` from the environment                                    |
-| `--cron <stages>`         | create or converge the pipeline cron jobs for `plan`, `build` and/or `verify`                          |
-| `--agent <claude\|codex>` | agent for the pipeline cron jobs (default: Claude when both qualify)                                   |
-| `--update-crons`          | update an existing pipeline job's prompt, gate and agent when they differ                              |
+| Flag                    | Description                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `--dir <path>`          | repository directory to inspect and write into (default: the working directory)                        |
+| `--force`               | replace an existing `.boss-skills.json` instead of refusing                                            |
+| `--merge`               | merge into an existing `.boss-skills.json`, keeping every member it does not set                       |
+| `--team <name>`         | Linear team to pin as `trackerConfig.linear.team` (name, key or id)                                    |
+| `--state <role>=<name>` | Linear state for a role (`unplanned`, `planned`, `inProgress`, `inReview`, `done`); repeatable         |
+| `--label <role>=<name>` | Linear label for a role (`agentBuild`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic`); repeatable |
+| `--create-labels`       | create missing pipeline labels in the resolved Linear team                                             |
+| `--assignee-me`         | write the "only my tickets" filter, `selection.assignees.include: ["me"]`                              |
+| `--register`            | find or register this repository with local bossd                                                      |
+| `--no-register`         | require an existing repository registration                                                            |
+| `--trusted`             | register a new repository as trusted: Codex project trust and proof secrets for its sessions           |
+| `--linear-key-stdin`    | read the Linear API key from stdin and store it on the repository                                      |
+| `--sentry-token-stdin`  | read the Sentry token from stdin (with `--sentry-org`)                                                 |
+| `--sentry-org <slug>`   | Sentry organization slug (requires a token)                                                            |
+| `--store-env-keys`      | store `LINEAR_API_KEY` and `SENTRY_AUTH_TOKEN` from the environment                                    |
+| `--cron <stages>`       | create or converge the pipeline cron jobs for `plan`, `build` and/or `verify`                          |
+| `--agent <agent>`       | agent for the pipeline cron jobs: `claude`, `codex` or `antigravity` (default: first that qualifies)   |
+| `--update-crons`        | update an existing pipeline job's prompt, gate and agent when they differ                              |
 
 The file it writes carries what detection produced (in practice a `commands`
 block or an empty object), plus the tracker block when a Linear team is

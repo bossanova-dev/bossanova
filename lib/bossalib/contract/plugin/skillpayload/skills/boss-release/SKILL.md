@@ -13,6 +13,8 @@ extension, report the unreleased changes and stop.
 
 Run this pre-pin block first, once per run:
 
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
 ```bash
 BOSS_RELEASE_TOOLBOX="${BOSS_RELEASE_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-release/toolbox}"
 if [ ! -d "$BOSS_RELEASE_TOOLBOX" ]; then BOSS_RELEASE_TOOLBOX="$HOME/.codex/skills/boss-release/toolbox"; fi
@@ -109,6 +111,8 @@ node "$BOSS_RELEASE_TOOLBOX/skill-pin.mjs" remove --skill boss-release
 
 The job prompt must invoke `/boss-release`. Register this installed-toolbox gate command so cron
 starts an agent only when an extension is installed and an environment is ready:
+
+<!-- pre-pin: scheduler-time cron gate, before any run exists -->
 
 ```bash
 BOSS_RELEASE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-release/toolbox"

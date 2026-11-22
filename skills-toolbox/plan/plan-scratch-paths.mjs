@@ -96,6 +96,7 @@ export const PLAN_SCRATCH_FAMILIES = [
     '^SEG\\.plan-readback\\.md$',
   ),
   ...[
+    ['draft-tier', 'the drafting tier the drafter selected and its re-triage history'],
     ['blocker-graph', 'the bounded downstream graph used to screen blocking writes'],
     ['sibling-edges', 'the sibling split edge proposals screened before writing'],
     ['recheck', 'the fresh issue payload at a planning write boundary'],

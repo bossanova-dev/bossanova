@@ -456,6 +456,67 @@ func TestProjectApplyFactoryRetro(t *testing.T) {
 	})
 }
 
+// TestProjectApplyFactoryBuildOnAntigravity: a build-stage cron that names
+// the antigravity agent applies with agy's prompt spelling and the gate from
+// agy's installed skill root, and an agent with no pipeline support is still
+// skipped.
+func TestProjectApplyFactoryBuildOnAntigravity(t *testing.T) {
+	withAgent := func(t *testing.T, agent string) *applyFixture {
+		t.Helper()
+		f := newApplyFixture(t)
+		f.daemon.SetAgents([]*pb.AgentInfo{{Name: "claude"}, {Name: "antigravity"}})
+		cron := newCronFixture(t)
+		t.Setenv("HOME", cron.home)
+		cron.env.SkillRoot = skills.DefaultCronEnv().SkillRoot
+		for _, rel := range []string{"boss-build/toolbox/cron-gates/boss-build.mjs", "boss-build/toolbox/skill-config.mjs"} {
+			p := filepath.Join(cron.home, ".gemini", "config", "skills", filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("// stub\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(cron.env.ServicePath(), "agy"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f.env.cronEnv = func() skills.CronEnv { return cron.env }
+		if err := os.WriteFile(filepath.Join(f.main, skills.ConfigFilename), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f.write(t, f.projectFile(`{"name": "hb-build", "factoryStage": "build", "agent": "`+agent+`"}`, ""))
+		return f
+	}
+
+	t.Run("antigravity applies", func(t *testing.T) {
+		f := withAgent(t, "antigravity")
+		out, err := f.run(t, "apply", "--yes")
+		if err != nil {
+			t.Fatalf("apply: %v\n%s", err, out)
+		}
+		creates := f.daemon.CreateCronJobCalls()
+		if len(creates) != 1 {
+			t.Fatalf("creates %+v\n%s", creates, out)
+		}
+		c := creates[0]
+		const gate = `node "$HOME/.gemini/config/skills/boss-build/toolbox/cron-gates/boss-build.mjs"`
+		if c.GetName() != "hb-build" || c.GetPrompt() != "/boss-build" || c.GetAgentName() != "antigravity" || c.GetGateCommand() != gate || !c.GetIsEnabled() {
+			t.Fatalf("antigravity build create %+v\n%s", c, out)
+		}
+	})
+
+	t.Run("hermes is skipped", func(t *testing.T) {
+		f := withAgent(t, "hermes")
+		out, err := f.run(t, "apply", "--yes")
+		if len(f.daemon.CreateCronJobCalls()) != 0 {
+			t.Fatalf("hermes created a pipeline cron: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, projectconfig.ReasonFactoryUnavailable) {
+			t.Fatalf("hermes not skipped %s: %v\n%s", projectconfig.ReasonFactoryUnavailable, err, out)
+		}
+	})
+}
+
 func TestProjectDefaultBranch(t *testing.T) {
 	registration := &projectconfig.LocalState{
 		Repos:          []*pb.Repo{{Id: "repo-1", DefaultBaseBranch: "develop"}},

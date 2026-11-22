@@ -4,6 +4,8 @@ Read this when scheduling `boss-build` as an unattended implementation cron (a s
 not part of a run). Register this **gate command** on the job (scheduler UI, `GateCommand` — see
 PR #870) so the run only fires when there is a candidate, spending **zero** agent tokens otherwise:
 
+<!-- pre-pin: scheduler-time cron gate, before any run exists -->
+
 ```
 BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
 if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi

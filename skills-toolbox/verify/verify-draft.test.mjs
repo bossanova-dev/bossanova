@@ -191,6 +191,57 @@ function chainWorld(overrides = {}) {
 }
 const chainArgs = [...args.slice(0, -1), repaired]
 
+test('ready falls back for repository, PR and timeline, preserving a human redraft', async () => {
+  for (const redrafted of [false, true]) {
+    const w = chainWorld()
+    const original = w.read
+    w.read = (command, args) => {
+      if (command !== 'gh') return original(command, args)
+      if (args[0] === 'repo' || (args[0] === 'pr' && args[1] === 'view') || args[1] === 'graphql')
+        return { ok: false, stderr: 'API rate limit exceeded' }
+      let payload
+      if (args[1] === 'repos/{owner}/{repo}') payload = { full_name: 'o/r' }
+      else if (args[1] === 'repos/o/r/pulls/7')
+        payload = { state: 'open', draft: true, head: { sha: pushed } }
+      else if (args[1]?.includes('/timeline?'))
+        payload = [
+          [
+            {
+              event: 'ready_for_review',
+              created_at: redrafted ? '2026-11-06T12:00:00Z' : '2026-11-06T08:42:43Z',
+            },
+            {
+              event: 'convert_to_draft',
+              created_at: redrafted ? '2026-11-06T12:05:00Z' : '2026-11-06T09:25:45Z',
+            },
+          ],
+        ]
+      else return original(command, args)
+      return { ok: true, payload, output: JSON.stringify(payload) }
+    }
+    const withoutRepo = chainArgs.filter(
+      (value, index) => value !== '--repo' && chainArgs[index - 1] !== '--repo',
+    )
+    const result = await main(withoutRepo, w)
+    assert.equal(result.outcome, redrafted ? 'not-verify-drafted' : 'readied')
+    if (redrafted) assert.equal(result.reason, 'redrafted')
+    assert.deepEqual(
+      result.degraded.map((entry) => entry.read),
+      ['repo-name', 'pull-request', 'draft-history'],
+    )
+  }
+})
+
+test('ready keeps a double-refused PR view unreadable', async () => {
+  const w = world()
+  const original = w.read
+  w.read = (command, argv) =>
+    command === 'gh' && (argv[0] === 'pr' || argv[1]?.includes('/pulls/'))
+      ? { ok: false, stderr: 'API rate limit exceeded' }
+      : original(command, argv)
+  assert.equal((await main(args, w)).outcome, 'unreadable')
+})
+
 test('ready owns verify draft through writer repair outcomes from a send-back head', async () => {
   const w = chainWorld()
   assert.deepEqual(await main(chainArgs, w), { outcome: 'readied' })

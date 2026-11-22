@@ -48,6 +48,18 @@ test('an action pinned by a 40-hex commit SHA passes, with or without a tag comm
   assert.deepEqual(checkWorkflow('w.yml', workflow({ jobs })), [])
 })
 
+test('replaced release-only actions fail in block and flow steps, including composites', () => {
+  const steps = `      - uses: vale-cli/vale-action@${SHA}\n      - { uses: lycheeverse/lychee-action@${SHA} }\n`
+  for (const findings of [
+    checkWorkflow('w.yml', workflow({ jobs: readJob(steps) })),
+    checkActionFile('a.yml', `runs:\n  using: composite\n  steps:\n${steps}`),
+  ]) {
+    assert.equal(findings.length, 2)
+    assert.match(findings[0].message, /scripts\/dev\/ensure-vale\.sh/)
+    assert.match(findings[1].message, /scripts\/dev\/ensure-lychee\.sh/)
+  }
+})
+
 test('short, uppercase or branch refs fail', () => {
   for (const ref of ['main', SHA.slice(0, 7), SHA.toUpperCase(), `${SHA}0`]) {
     const findings = checkWorkflow(

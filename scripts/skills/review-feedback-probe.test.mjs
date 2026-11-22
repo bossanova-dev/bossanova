@@ -16,6 +16,20 @@ import { spawnSync } from 'node:child_process'
 
 const require = createRequire(import.meta.filename)
 const probe = require('../../lib/bossalib/contract/plugin/skillpayload/skills/boss-repair/scripts/review-feedback-probe.js')
+import { isRateLimitRefusal } from '../../skills-toolbox/ci/gh-quota-read.mjs'
+
+test('probe and shared detector agree on refusal signatures', () => {
+  for (const text of [
+    'API rate limit exceeded',
+    'secondary rate limit',
+    'rate limit exceeded',
+    'was submitted too quickly',
+    'abuse detection',
+  ]) {
+    assert.equal(isRateLimitRefusal(text), true)
+    assert.equal(probe.classifyGhFailure({ stderr: text }).failureClass, 'rate_limited')
+  }
+})
 
 function withStateRoot(fn) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'review-feedback-probe-test-'))

@@ -1946,7 +1946,7 @@ const PLANNING_LIST_ITEM = /(?<=\S)[-*] ([A-Z][A-Za-z0-9]*(?:[- ][A-Za-z0-9]+){0
 // (`- Contract: v1 - Agent-friendly: needs-human`) is told apart from spaced prose
 // (`backend - Frontend: later`) only by the key, so the space-joined form is flagged for these
 // keys alone.
-const PLANNING_BULLET_KEYS = Object.freeze([
+export const PLANNING_BULLET_KEYS = Object.freeze([
   'Contract',
   'Target repo',
   'Agent-friendly',

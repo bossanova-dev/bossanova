@@ -82,6 +82,7 @@ function fixture(t, shell = 'bash') {
   put('attachment-guard-orig.md', notes)
   put('description.md', description)
   put('plan.md', description)
+  put('draft-tier.json', JSON.stringify({ estimate: 3, tier: 'standard', history: [] }))
   return { dir, file, put, run, args, sentinel, values }
 }
 test('run-tmp creates design paths and confines removal to its own temp namespace', (t) => {
@@ -125,7 +126,7 @@ test('append-original-notes refuses incomplete headings and preserves arbitrary 
 test('draft-verify uses system Bash to reject dropped images, then publish checked premises', (t) => {
   const f = fixture(t, '/bin/bash')
   f.put('image-guard-orig.md', notes + '![diagram](https://example.invalid/diagram.png)\n')
-  const args = [...f.args, '--plan', f.file('plan.md')]
+  const args = [...f.args, '--plan', f.file('plan.md'), '--estimate', '3']
   assert.notEqual(f.run('draft-verify', ...args).status, 0)
   assert.equal(JSON.parse(f.sentinel().stdout).status, 'missing')
   f.put('image-guard-orig.md', notes)
@@ -257,10 +258,51 @@ test('fanout-init emits one sentinel context and ext-paths resolves declared art
 
 test('draft-verify supports fanout guards without writing the shared draft sentinel', (t) => {
   const f = fixture(t)
-  const r = f.run('draft-verify', ...f.args, '--plan', f.file('plan.md'), '--verify-only')
+  const r = f.run(
+    'draft-verify',
+    ...f.args,
+    '--plan',
+    f.file('plan.md'),
+    '--estimate',
+    '3',
+    '--verify-only',
+  )
   assert.equal(r.status, 0, r.stderr)
   assert.equal(JSON.parse(f.sentinel().stdout).status, 'missing')
 })
+
+test('draft-verify requires an estimate before writing a sentinel', (t) => {
+  const f = fixture(t)
+  assert.equal(f.run('draft-verify', ...f.args, '--plan', f.file('plan.md')).status, 64)
+  assert.equal(JSON.parse(f.sentinel().stdout).status, 'missing')
+})
+
+for (const verifyOnly of [false, true]) {
+  for (const failure of ['missing', 'stale', 'over-budget']) {
+    test(`draft-verify refuses ${failure} tier on ${verifyOnly ? 'verify-only' : 'sentinel'} path`, (t) => {
+      const f = fixture(t)
+      if (failure === 'missing') rmSync(f.file('draft-tier.json'))
+      if (failure === 'stale')
+        f.put('draft-tier.json', JSON.stringify({ estimate: 5, tier: 'full', history: [] }))
+      if (failure === 'over-budget') f.put('plan.md', 'x'.repeat(24577))
+      const result = f.run(
+        'draft-verify',
+        ...f.args,
+        '--plan',
+        f.file('plan.md'),
+        '--estimate',
+        '3',
+        ...(verifyOnly ? ['--verify-only'] : []),
+      )
+      assert.notEqual(result.status, 0)
+      assert.match(
+        result.stderr,
+        failure === 'over-budget' ? /plan-over-tier-budget/ : new RegExp(`draft-tier-${failure}`),
+      )
+      assert.equal(JSON.parse(f.sentinel().stdout).status, 'missing')
+    })
+  }
+}
 
 test('child dispatch names preserve uppercase tracker identifiers across mark and wait', (t) => {
   const f = fixture(t)

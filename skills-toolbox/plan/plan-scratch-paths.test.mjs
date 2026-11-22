@@ -345,6 +345,19 @@ test('the ratchet rejects a flat, issue-scoped token injected into payload text'
   assert.match(result.reason, /must be run-scoped/)
 })
 
+test('the drafting tier is declared for resolution, token scans and cleanup', () => {
+  const family = planScratchFamily('draft-tier')
+  assert.equal(family.template, '<ISSUE-ID>.draft-tier.json')
+  assert.equal(family.basename({ issueId: 'ABC-1' }), 'ABC-1.draft-tier.json')
+  assert.equal(
+    planScratchPath('r1', 'draft-tier', { issueId: 'ABC-1' }),
+    '.linear-plans/run-r1/ABC-1.draft-tier.json',
+  )
+  assert.deepEqual(planScratchToken('.linear-plans/run-r1/ABC-1.draft-tier.json').families, [
+    'draft-tier',
+  ])
+})
+
 test('BOS-1278: the dispatch heartbeat is a declared family in both spellings', () => {
   // The liveness artifact an awaited dispatch touches while it works. Declaring it
   // here is what makes it reachable by cleanup and the TTL reap; a heartbeat

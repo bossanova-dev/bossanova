@@ -14,8 +14,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/recurser/boss/internal/domain/rpc"
-
 	daemon "github.com/recurser/boss/internal/daemonlife"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -84,21 +82,6 @@ func (s cronStage) modulePath() string {
 // skill, in either agent's spelling.
 func (s cronStage) matchesPrompt(prompt string) bool { return s.lib().MatchesPrompt(prompt) }
 
-const (
-	cronAgentClaude = "claude"
-	cronAgentCodex  = "codex"
-)
-
-// cronAgents are the agents a factory job may run under, in default-preference
-// order. cli is the executable the daemon's runner plugin launches.
-var cronAgents = []struct {
-	name, cli string
-	skill     libskillinstall.Agent
-}{
-	{name: cronAgentClaude, cli: "claude", skill: libskillinstall.AgentClaude},
-	{name: cronAgentCodex, cli: "codex", skill: libskillinstall.AgentCodex},
-}
-
 // cronSkillsInstallRemedy is printed with every preflight failure.
 const cronSkillsInstallRemedy = "boss skills install"
 
@@ -140,8 +123,8 @@ func (r *initCronRequest) normalize() error {
 		}
 	}
 	r.agent = strings.ToLower(strings.TrimSpace(r.agent))
-	if r.agent != "" && r.agent != cronAgentClaude && r.agent != cronAgentCodex {
-		return fmt.Errorf("--agent: unsupported agent %q (want claude or codex)", r.agent)
+	if _, ok := cronAgentByName(r.agent); r.agent != "" && !ok {
+		return fmt.Errorf("--agent: unsupported agent %q (want %s)", r.agent, cronAgentNames())
 	}
 	return nil
 }
@@ -210,12 +193,11 @@ func daemonServicePathForResolution() string {
 }
 
 func defaultCronSkillRoot(agent string) (string, error) {
-	for _, a := range cronAgents {
-		if a.name == agent {
-			return libskillinstall.DirForAgent(a.skill)
-		}
+	a, ok := cronAgentByName(agent)
+	if !ok {
+		return "", fmt.Errorf("unsupported agent %q", agent)
 	}
-	return "", fmt.Errorf("unsupported agent %q", agent)
+	return libskillinstall.DirForAgent(a.skill)
 }
 
 func DefaultCronBaseBranch(ctx context.Context, repoDir string, repo *pb.Repo) string {
@@ -334,74 +316,6 @@ process.stdout.write(JSON.stringify({
 		return CronEffective{}, fmt.Errorf("%w: evaluate stage selection: %s", errNodeBadJSON, truncate(stdout))
 	}
 	return eff, nil
-}
-
-// --- Agent eligibility ----------------------------------------------------
-
-// cronAgentEligibility says whether one agent can run factory jobs: the daemon
-// must have loaded its runner (CreateCronJob rejects one it has not), and its
-// CLI must resolve on the daemon's service PATH.
-type cronAgentEligibility struct {
-	Name    string
-	Loaded  bool
-	CLIPath string // empty when the CLI is not on the service PATH
-}
-
-func (e cronAgentEligibility) Eligible() bool { return e.Loaded && e.CLIPath != "" }
-
-// reason names why an ineligible agent does not qualify.
-func (e cronAgentEligibility) reason() string {
-	var why []string
-	if !e.Loaded {
-		why = append(why, "the daemon has not loaded its runner plugin")
-	}
-	if e.CLIPath == "" {
-		why = append(why, "the `"+e.Name+"` CLI is not on the daemon's service PATH")
-	}
-	return strings.Join(why, ", and ")
-}
-
-// initCronAgentEligibility reports every supported agent's eligibility, in
-// default-preference order. The interactive installer offers only eligible ones.
-func initCronAgentEligibility(ctx context.Context, c Client, servicePath string) ([]cronAgentEligibility, error) {
-	loaded, err := c.ListAgents(ctx)
-	if err != nil {
-		return nil, errors.New("could not list the daemon's agents")
-	}
-	out := make([]cronAgentEligibility, 0, len(cronAgents))
-	for _, a := range cronAgents {
-		e := cronAgentEligibility{Name: a.name}
-		e.Loaded = slices.ContainsFunc(loaded, func(info rpc.AgentInfo) bool { return info.Name == a.name })
-		if path, ok := daemon.LookPathIn(servicePath, a.cli); ok {
-			e.CLIPath = path
-		}
-		out = append(out, e)
-	}
-	return out, nil
-}
-
-// chooseInitCronAgent picks the requested agent when it qualifies, else the
-// first eligible one (Claude before Codex).
-func chooseInitCronAgent(eligibility []cronAgentEligibility, requested string) (string, error) {
-	if requested != "" {
-		for _, e := range eligibility {
-			if e.Name == requested {
-				if !e.Eligible() {
-					return "", fmt.Errorf("--agent %s cannot run pipeline cron jobs: %s", requested, e.reason())
-				}
-				return requested, nil
-			}
-		}
-		return "", fmt.Errorf("--agent: unsupported agent %q", requested)
-	}
-	var why []string
-	for _, e := range eligibility {
-		if e.Eligible() {
-			return e.Name, nil
-		}
-		why = append(why, e.Name+": "+e.reason())
-	}
-	return "", fmt.Errorf("no agent can run pipeline cron jobs (%s)", strings.Join(why, "; "))
 }
 
 // --- Setup ----------------------------------------------------------------
@@ -632,6 +546,9 @@ func setupInitCron(ctx context.Context, c Client, repo *pb.Repo, repoDir, config
 	}
 
 	run.appendBaseBranchWarnings(ctx)
+	if todo := untrustedRepoRefusedNote(repo, agent); todo != "" {
+		run.res.LeftToDo = append(run.res.LeftToDo, todo)
+	}
 	if slices.Contains(req.stages, "build") && !slices.Contains(req.stages, "plan") && !hasEnabledStageJob(run.existing, mustCronStage("plan")) {
 		run.res.LeftToDo = append(run.res.LeftToDo, "the build job (factory-build) is enabled without the plan job (factory-plan): nothing reaches the planned state unless people plan tickets (or re-run with --cron plan)")
 	}
@@ -871,6 +788,16 @@ func untrustedCodexMCPNote(repo *pb.Repo, agent, server string) string {
 	return fmt.Sprintf("trust the repository: Codex runs an untrusted repository's sessions untrusted and ignores the repository's .codex/config.toml, so codex cron sessions cannot use a tracker MCP server %q declared in it; run %s (`boss init --trusted` trusts a repository only when it registers it)", server, trustRepoCommand(repo.GetId()))
 }
 
+// untrustedRepoRefusedNote returns a left-to-do line when the agent's runner
+// refuses to launch an untrusted repository, so none of its cron sessions can
+// start until the repository is trusted.
+func untrustedRepoRefusedNote(repo *pb.Repo, agent string) string {
+	if a, _ := cronAgentByName(agent); !a.trustedOnly || repo.GetIsTrusted() {
+		return ""
+	}
+	return fmt.Sprintf("trust the repository: the %s runner refuses to launch an untrusted repository, so %s cron sessions cannot start; run %s (`boss init --trusted` trusts a repository only when it registers it)", agent, agent, trustRepoCommand(repo.GetId()))
+}
+
 const untilMerged = " until this is merged"
 
 // describeSelectionSkew names, per difference, what the stage's cron workers
@@ -947,15 +874,13 @@ var codexMCPTable = regexp.MustCompile(`(?m)^\s*\[\s*mcp_servers\.("([^"]+)"|'([
 
 // checkBaseMCPDeclaration returns a left-to-do line when the agent's harness
 // file on the base branch does not declare the tracker MCP server. The file is
-// looked up in supportedHarnesses, the table detectHarnesses reads.
+// looked up in supportedHarnesses, the table detectHarnesses reads; an agent
+// with no harness there gets no line.
 func (run *cronSetupRun) checkBaseMCPDeclaration(ctx context.Context, ref, server string) string {
-	harnessName := "Claude Code"
-	if run.res.Agent == cronAgentCodex {
-		harnessName = "Codex"
-	}
+	agent, _ := cronAgentByName(run.res.Agent)
 	var h harness
 	for _, candidate := range supportedHarnesses {
-		if candidate.name == harnessName {
+		if candidate.name == agent.harness {
 			h = candidate
 		}
 	}

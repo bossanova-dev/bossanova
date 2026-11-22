@@ -105,6 +105,35 @@ test('premises: empty list writes live states and a durable successful verdict',
   assert.equal(JSON.parse(readFileSync(f.file('premise-report.json'))).rc, 0)
 })
 
+for (const bareList of [false, true]) {
+  test(`premises: missing prefixed list fails closed${bareList ? ' despite a bare list' : ''}`, (t) => {
+    const f = fixture(t)
+    rmSync(f.file('premises.json'))
+    if (bareList) writeFileSync(join(f.dir, 'premises.json'), '[]')
+    const r = f.run('premises', ...f.planArgs, '--description', f.file('description.md'))
+    assert.equal(r.status, 1, r.stderr)
+    assert.match(r.stderr, /^premises-missing:/)
+    assert.ok(r.stderr.includes(f.file('premises.json')), r.stderr)
+    assert.doesNotMatch(r.stderr, /\n\s+at |ENOENT/)
+    for (const suffix of ['plan.md', 'description.md'])
+      assert.equal(readFileSync(f.file(suffix), 'utf8'), description)
+    const report = JSON.parse(readFileSync(f.file('premise-report.json')))
+    assert.deepEqual(report, { rc: 1, report: r.stderr.trim(), changed: false })
+    const v = trackerStub(f)('writeback-verify')
+    assert.equal(v.status, 1, v.stderr)
+    assert.match(v.stderr, /premises-missing:/)
+  })
+}
+
+test('premises: malformed list reports unreadable input without a probe stack trace', (t) => {
+  const f = fixture(t)
+  f.put('premises.json', '{')
+  const r = f.run('premises', ...f.planArgs, '--description', f.file('description.md'))
+  assert.equal(r.status, 1, r.stderr)
+  assert.match(r.stderr, /unreadable-input/)
+  assert.doesNotMatch(r.stderr, /\n\s+at /)
+})
+
 test('premises: ordinary drift annotates both files and retains the guard success status', (t) => {
   const f = fixture(t)
   f.put('premises.json', JSON.stringify([{ id: 'TCK-2', state: 'Todo' }]))

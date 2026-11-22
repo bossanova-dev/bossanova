@@ -116,6 +116,8 @@ bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh <step> [--flag value …]
 
 ## Phase 0 — Preflight
 
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
 ```bash
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh preflight
 ```
@@ -125,6 +127,8 @@ everywhere below (it is not the sentinel `RUN_ID`). An `unconfigured` repo is a 
 `ready` and `needs-team` continue. A present but broken config aborts.
 
 Measure checkout freshness before the drift report:
+
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
 
 ```bash
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh node plan/plan-checkout-freshness.mjs check
@@ -136,6 +140,8 @@ Every inline or dispatched recon read uses `<RECON-REF>` when it is not `HEAD`.
 
 Report installed-skill drift (a stale record warns; an absent capability stops):
 
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
 ```bash
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh drift
 ```
@@ -145,6 +151,8 @@ A second reload means a peer install is racing; continue under the body just rea
 A blocking drift verdict, including config-validator drift, is a hard stop.
 
 Capture this run's skill immediately after the drift gate:
+
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
 
 ```bash
 bash <skill-dir>/toolbox/plan/boss-plan-run.sh pin --run-scratch .linear-plans/run-<RUN-SCRATCH-ID>
@@ -364,8 +372,10 @@ Then run the guard:
 bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh premises --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --issue <ISSUE-ID> --plan .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md --description .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md
 ```
 
-When `<ISSUE-ID>.premises.json` is absent, write the sentinel payload's `premises` array (or `[]`) there
-with the file tool before generating states. The guard step persists its exit status and report in
+The `premises` family file is `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json`:
+headless, `dispatch-classify` writes it; interactive, save relied-on tickets as `{id, state}` at recon's
+observed state (or `[]`) there before generating states. Absence fails with `premises-missing`.
+The guard step persists its exit status and report in
 `<ISSUE-ID>.premise-report.json`; `writeback-verify` enforces that verdict across shell calls.
 Non-zero ⇒ no writes. Drift is annotated (`- Premise drift: …`) and named in the report.
 

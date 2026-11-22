@@ -14,6 +14,8 @@ action per verdict. It runs unattended: never ask, decide and report.
 
 Run this pre-pin block first, once per run:
 
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
 ```bash
 BOSS_VERIFY_TOOLBOX="${BOSS_VERIFY_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-verify/toolbox}"
 if [ ! -d "$BOSS_VERIFY_TOOLBOX" ]; then BOSS_VERIFY_TOOLBOX="$HOME/.codex/skills/boss-verify/toolbox"; fi

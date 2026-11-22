@@ -153,6 +153,8 @@ assumeCleared, assumeClearedAndMerge, selectionFlags?, baseBranch?}` (`--label`/
    `--assume-cleared-and-merge <ref>` also lets the merge step pass that blocker. A throw stops
    `BLOCKED: <message>`.
 
+   <!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
    ```bash
    if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
      for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do

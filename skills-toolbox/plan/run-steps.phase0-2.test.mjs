@@ -20,7 +20,7 @@ const source = resolve('skills-toolbox')
 const issue = 'TCK-1'
 const title = "Operator's $budget `draft`"
 
-function fixture(t) {
+function fixture(t, issueTitle = title) {
   const dir = realpathSync(tempDir('plan-phase0-2-'))
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
   const toolbox = join(dir, 'toolbox')
@@ -31,8 +31,8 @@ function fixture(t) {
   mkdirSync(join(dir, scratch), { recursive: true })
   const file = (name) => join(dir, scratch, name)
   const precheck = file(`${issue}.precheck.json`)
-  writeFileSync(precheck, JSON.stringify({ id: 'uuid-1', identifier: issue, title }))
-  const plan = `${scratch}/${issueSlug(issue, title)}.md`
+  writeFileSync(precheck, JSON.stringify({ id: 'uuid-1', identifier: issue, title: issueTitle }))
+  const plan = `${scratch}/${issueSlug(issue, issueTitle)}.md`
   const env = { ...process.env, TMPDIR: tmp, BOSS_GATE_OUTCOME_FILE: join(dir, 'outcomes.tsv') }
   const run = (step, ...args) =>
     spawnSync('bash', [join(toolbox, 'plan/boss-plan-run.sh'), step, ...args], {
@@ -270,9 +270,10 @@ test('dispatch-classify: invalid epic manifest retains scratch', (t) => {
   assert.equal(existsSync(ctx.runDir), false)
 })
 
-for (const valid of [false, true]) {
-  test(`adopt-metadata: ${valid ? 'valid literal text is normalized intact' : 'invalid return cleans scratch'}`, (t) => {
-    const f = fixture(t)
+for (const outcome of ['invalid', 'valid', 'empty-slug', 'stale-tier']) {
+  test(`adopt-metadata: ${outcome}`, (t) => {
+    const valid = outcome === 'valid' || outcome === 'empty-slug'
+    const f = fixture(t, outcome === 'empty-slug' ? '!!!' : title)
     const ctx = f.context()
     const returned = f.file(`${issue}.draft-returned.json`)
     const metadata = f.file(`${issue}.draft-metadata.json`)
@@ -286,7 +287,12 @@ for (const valid of [false, true]) {
       openQuestions: [],
       descriptionSummary: summary,
     }
-    writeFileSync(returned, valid ? JSON.stringify(value) : '{bad json')
+    writeFileSync(returned, outcome === 'invalid' ? '{bad json' : JSON.stringify(value))
+    if (outcome !== 'invalid') writeFileSync(join(f.dir, f.plan), 'A bounded plan.\n')
+    writeFileSync(
+      f.file(`${issue}.draft-tier.json`),
+      JSON.stringify({ estimate: valid ? 3 : 5, tier: valid ? 'standard' : 'full', history: [] }),
+    )
     // A failed adoption must probe the absent plan and discard all run scratch.
     const result = f.run(
       'adopt-metadata',
@@ -308,7 +314,8 @@ for (const valid of [false, true]) {
       assert.equal(adopted.planPath, f.plan)
     } else {
       assert.match(result.stderr, /dispatch-failure/)
-      assert.equal(existsSync(join(f.dir, f.scratch)), false)
+      if (outcome === 'stale-tier') assert.match(result.stderr, /draft-tier-stale/)
+      assert.equal(existsSync(join(f.dir, f.scratch)), outcome === 'stale-tier')
       assert.equal(existsSync(ctx.runDir), false)
     }
   })

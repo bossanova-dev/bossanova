@@ -25,6 +25,8 @@ adds filing labels and one project; it never narrows marker dedupe. Teardown on 
 Run this pre-pin block first, once per run. Acquire the repo lock before replacing the pin;
 a peer receiving `held` must never create or remove the owner's pin:
 
+<!-- pre-pin: preflight reads the installed skill before creating its run pin -->
+
 ```bash
 BOSS_RETRO_TOOLBOX="${BOSS_RETRO_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-retro/toolbox}"
 if [ ! -d "$BOSS_RETRO_TOOLBOX" ]; then BOSS_RETRO_TOOLBOX="$HOME/.codex/skills/boss-retro/toolbox"; fi

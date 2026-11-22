@@ -237,6 +237,76 @@ test('carry read failure exits nonzero without writing a findings file', async (
   }
 })
 
+test('carry uses GraphQL standing findings after REST refusal and writes nothing on double refusal', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'repair-quota-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const report = (title) =>
+    `<!-- bs-review -->\n<!-- bs-review-findings v1 base=${head} head=${head} ${Buffer.from(JSON.stringify([{ ...finding, title }])).toString('base64url')} -->`
+  const body = report('newest edited finding')
+  for (const both of [false, true]) {
+    const out = join(dir, both ? 'unknown.json' : 'carried.json')
+    const read = (command, args) => {
+      if (command === 'git') return { ok: true, output: head }
+      if (args[1] !== 'graphql' || both)
+        return { ok: false, exit: 1, error: 'exit-1', stderr: 'API rate limit exceeded' }
+      const payload = args.some((arg) => arg.includes('collaborators('))
+        ? [
+            {
+              data: {
+                repository: {
+                  collaborators: { edges: [{ permission: 'WRITE', node: { login: 'writer' } }] },
+                },
+              },
+            },
+          ]
+        : [
+            {
+              data: {
+                repository: {
+                  pullRequest: {
+                    comments: {
+                      nodes: [
+                        {
+                          databaseId: 2,
+                          body: report('older finding'),
+                          createdAt: '2026-11-01T12:00:00Z',
+                          updatedAt: '2026-11-01T12:00:00Z',
+                          authorAssociation: 'MEMBER',
+                          author: { __typename: 'User', login: 'writer' },
+                        },
+                        {
+                          databaseId: 1,
+                          body,
+                          createdAt: '2026-11-01T00:00:00Z',
+                          authorAssociation: 'MEMBER',
+                          updatedAt: '2026-11-02T00:00:00Z',
+                          author: { __typename: 'User', login: 'writer' },
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            },
+          ]
+      return { ok: true, payload }
+    }
+    const call = main(['carry', '--pr', '1', '--repo', 'o/r', '--out', out], { read })
+    if (both) {
+      await assert.rejects(call, /cannot read standing review report/)
+      assert.equal(existsSync(out), false)
+    } else {
+      const result = JSON.parse(await call)
+      assert.equal(JSON.parse(readFileSync(out))[0].id, finding.id)
+      assert.equal(JSON.parse(readFileSync(out))[0].title, 'newest edited finding')
+      assert.deepEqual(
+        result.degraded.map((entry) => entry.read),
+        ['issue-comments', 'collaborator-permission'],
+      )
+    }
+  }
+})
+
 test('carry selects the newest valid writer report and ignores reader-authored reports', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'repair-standing-'))
   try {

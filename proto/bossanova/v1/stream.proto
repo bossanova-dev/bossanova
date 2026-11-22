@@ -244,6 +244,18 @@ message OrchestratorCommand {
     SendBackToRepairCommand send_back_to_repair = 75;
     // bosso → daemon: read a session's timeline. Replies CommandResult{get_session_timeline}.
     GetSessionTimelineCommand get_session_timeline = 76;
+    // bosso → daemon: read the web-editable settings. Replies CommandResult{daemon_settings}.
+    GetDaemonSettingsCommand get_daemon_settings = 77;
+    // bosso → daemon: change allowlisted settings. Replies CommandResult{daemon_settings}.
+    UpdateDaemonSettingsCommand update_daemon_settings = 78;
+    // bosso → daemon: list one agent's models. Replies CommandResult{agent_models}.
+    ListAgentModelsCommand list_agent_models = 79;
+    // bosso → daemon: answer the question a chat's agent waits on in its
+    // terminal menu. Replies CommandResult{answer_chat_question}.
+    AnswerChatQuestionCommand answer_chat_question = 90;
+    // bosso → daemon: stop one chat's agent and leave the session's other
+    // chats running. Replies with a bare ok.
+    StopChatCommand stop_chat = 91;
   }
 }
 
@@ -608,6 +620,12 @@ message CommandResult {
     SendBackToRepairResponse send_back_to_repair = 46;
     // The daemon's dated timeline, in its original order (reuses daemon.proto type).
     GetSessionTimelineResponse get_session_timeline = 47;
+    // Reply to get_daemon_settings and update_daemon_settings.
+    DaemonSettingsResult daemon_settings = 48;
+    // Reply to list_agent_models.
+    AgentModelsResult agent_models = 49;
+    // Reply to answer_chat_question.
+    AnswerChatQuestionResult answer_chat_question = 60;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -977,6 +995,9 @@ message RecordChatCommand {
   string title = 3;
   bool resume = 4;
   string agent_name = 5;
+  // A new chat's model and effort; empty inherits (see ProxyRecordChatRequest).
+  string model = 6;
+  string effort = 7;
 }
 
 // DeleteChatCommand asks the daemon to delete a chat.
@@ -1138,6 +1159,9 @@ message UpdateRepoCommand {
   google.protobuf.Timestamp expected_updated_at = 11;
   // Optional: absent leaves the command unchanged; empty clears it.
   optional string serve_script = 13;
+  optional bool should_keep_branches_current = 14;
+  optional bool can_auto_delete_branches = 15;
+  optional bool can_auto_rotate = 16;
 }
 
 // RemoveRepoCommand asks the daemon to remove a repo. Successful responses
@@ -1164,6 +1188,8 @@ message GetChatTranscriptCommand {
   string session_id = 1;
   string agent_session_id = 2;
   int32 max_messages = 3;
+  // should_include_activity asks for the structured transcript (see ChatMessage).
+  bool should_include_activity = 4;
 }
 
 // ListChatsCommand asks the daemon for a session's chats. Replies with
@@ -1778,3 +1804,61 @@ message SendBackToRepairCommand {
 
 // GetSessionTimelineCommand reads the session's dated timeline on its owning daemon.
 message GetSessionTimelineCommand { string session_id = 1; }
+
+// GetDaemonSettingsCommand asks the daemon for its web-editable settings.
+message GetDaemonSettingsCommand {}
+
+// UpdateDaemonSettingsCommand changes allowlisted settings. The message can
+// only name allowlisted keys; the daemon still refuses a permission bypass
+// unless its cloud control is full.
+message UpdateDaemonSettingsCommand {
+  DaemonSettingsUpdate update = 1;
+}
+
+message DaemonSettingsResult {
+  DaemonSettings settings = 1;
+  // True when a saved change takes effect only after a restart.
+  bool is_restart_needed = 2;
+}
+
+// ListAgentModelsCommand asks the daemon for one agent plugin's models.
+message ListAgentModelsCommand {
+  string agent_name = 1;
+}
+
+message AgentModelsResult {
+  repeated AgentModel models = 1;
+  // Model IDs the daemon recently ran this agent with, newest first.
+  repeated string recent_model_ids = 2;
+}
+
+// AnswerChatQuestionCommand answers the question a chat's agent waits on in
+// its terminal menu. question_id is ChatQuestion.id: the daemon refuses with
+// FAILED_PRECONDITION, typing nothing, unless the agent still waits on that
+// question and its terminal shows that question's menu.
+message AnswerChatQuestionCommand {
+  string agent_session_id = 1;
+  string question_id = 2;
+  oneof answer {
+    // Zero-based index into ChatQuestion.options.
+    uint32 option_index = 3;
+    // Words for the menu's own free-text answer. One line.
+    string text = 4;
+  }
+}
+
+// AnswerChatQuestionResult reports whether the agent took the answer. The
+// keys were sent either way; is_answered is false when the menu was still
+// showing at the end of the daemon's wait, so the answer is unconfirmed and
+// sending it again could answer the next question.
+message AnswerChatQuestionResult {
+  bool is_answered = 1;
+}
+
+// StopChatCommand stops one chat's agent, as the idle reaper puts a chat to
+// sleep: the chat's terminal ends and its row stays, so a later message wakes
+// it, and the session's other chats keep running.
+message StopChatCommand {
+  string session_id = 1;
+  string agent_session_id = 2;
+}

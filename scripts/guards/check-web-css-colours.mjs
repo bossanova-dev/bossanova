@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
+import { cssDeclarations } from './css-declarations.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const BASELINE = 'scripts/guards/web-css-colours-baseline.json'
@@ -19,7 +20,6 @@ const SCAN = 'services/web/src'
 const REMEDY =
   'use a colour token (var(--…)); add one to the :root token layer in services/web/src/app/index.css when none fits'
 
-const CUSTOM_PROPERTY = /^-{2}/
 const HEX = /#[0-9a-f]{3,8}\b/gi
 const FUNCTIONAL = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/gi
 // The CSS named colours, less transparent and currentcolor, which name no colour of their own.
@@ -46,25 +46,13 @@ const NAMED = new Set(
 const COLOUR_PROPERTY =
   /^(?:color|background(?:-color)?|border(?:-(?:top|right|bottom|left|block|inline)(?:-(?:start|end))?)?(?:-color)?|outline(?:-color)?|box-shadow|text-shadow|fill|stroke|caret-color|accent-color|column-rule(?:-color)?|text-decoration(?:-color)?|scrollbar-color|--.*)$/
 
-/** Comments and strings blanked to spaces, keeping every offset and line in place. */
-function blankCommentsAndStrings(css) {
-  return css
-    .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '))
-    .replace(/(["'])(?:\\.|(?!\1)[^\\\n])*\1/g, (text) => text.replace(/[^\n]/g, ' '))
-}
-
-// A rule whose every selector is :root (or html), the token layer's own scope.
-function isTokenScope(stack) {
-  const rule = stack.findLast((prelude) => !prelude.startsWith('@'))
-  return (
-    rule !== undefined &&
-    rule.split(',').every((selector) => /^(?::root|html)(?![\w-])/.test(selector.trim()))
-  )
-}
+// A token reference names a token, not a colour: `var(--red)` is a token.
+const TOKEN_REFERENCE = /--[\w-]+/g
 
 function literalsIn(property, value) {
+  const words = value.replace(TOKEN_REFERENCE, ' ').match(/[a-z]+/gi) ?? []
   const named = COLOUR_PROPERTY.test(property)
-    ? (value.match(/[a-z]+/gi) ?? []).filter((word) => NAMED.has(word.toLowerCase())).length
+    ? words.filter((word) => NAMED.has(word.toLowerCase())).length
     : 0
   return (value.match(HEX) ?? []).length + (value.match(FUNCTIONAL) ?? []).length + named
 }
@@ -76,32 +64,11 @@ function literalsIn(property, value) {
  * @returns {{line: number, property: string}[]}
  */
 export function colourLiterals(css) {
-  const source = blankCommentsAndStrings(css)
-  const found = []
-  const stack = []
-  let start = 0
-  const declaration = (end) => {
-    const text = source.slice(start, end)
-    const colon = text.indexOf(':')
-    const property = text.slice(0, colon).trim().toLowerCase()
-    if (colon === -1 || property.startsWith('@') || stack.length === 0) return
-    if (CUSTOM_PROPERTY.test(property) && isTokenScope(stack)) return
-    const count = literalsIn(property, text.slice(colon + 1))
-    const line = source.slice(0, start + text.search(/\S/)).split('\n').length
-    for (let i = 0; i < count; i++) found.push({ line, property })
-  }
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i]
-    if (ch === '{') {
-      stack.push(source.slice(start, i).trim())
-      start = i + 1
-    } else if (ch === '}' || ch === ';') {
-      declaration(i)
-      if (ch === '}') stack.pop()
-      start = i + 1
-    }
-  }
-  return found
+  return cssDeclarations(css)
+    .filter((declaration) => !declaration.tokenDefinition)
+    .flatMap(({ property, value, line }) =>
+      Array.from({ length: literalsIn(property, value) }, () => ({ line, property })),
+    )
 }
 
 /**

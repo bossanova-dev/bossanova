@@ -34,6 +34,7 @@ type Server struct {
 	// for an explicitly profiled headless launch. Tests replace it with a fixed
 	// surface; production uses the app-server registry.
 	operationRegistry runtimeOperationRegistry
+	modelCatalog      modelCatalog
 	capabilityCache   headlessCapabilityCache
 	// inspector resolves a chat's rollout from the open file descriptors of
 	// the codex process running under its tmux pane. Defaults to the real
@@ -49,6 +50,7 @@ func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Opti
 		runner:            runner,
 		inspector:         defaultProcessInspector,
 		operationRegistry: codexAppServerOperationRegistry{binary: "codex", loginShell: runner.loginShell},
+		modelCatalog:      codexAppServerModelCatalog{binary: "codex", loginShell: runner.loginShell},
 	}
 }
 
@@ -747,6 +749,12 @@ func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscri
 	root, err := codexSessionsRoot()
 	if err != nil {
 		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
+	}
+	if req.GetShouldIncludeActivity() {
+		parse := func(path string) ([]*bossanovav1.ChatMessage, string, int, string, error) {
+			return parseRolloutActivity(path, req.GetWorkDir())
+		}
+		return readRolloutAt(root, req.WorkDir, req.AgentSessionId, req.MaxMessages, parse, s.logger)
 	}
 	return readTranscriptAt(root, req.WorkDir, req.AgentSessionId, req.MaxMessages, s.logger)
 }

@@ -164,6 +164,7 @@ type daemonWiring struct {
 	usageShare                     *rotation.UsageShare
 	rotationEngine                 *rotation.Engine
 	rotationEvents                 *db.SQLiteRotationEventStore
+	modelUsage                     *db.SQLiteModelUsageStore
 	rotationRecorder               *rotation.Recorder
 	sessionLister                  *sessionListerAdapter
 	sessions                       db.SessionStore

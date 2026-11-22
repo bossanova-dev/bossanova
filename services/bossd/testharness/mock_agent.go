@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/adapter/accountcred"
 	"github.com/recurser/bossd/internal/agent"
 )
 
@@ -274,4 +276,44 @@ func sameCodexWorkDir(a, b string) bool {
 		bb, _ = filepath.Abs(b)
 	}
 	return filepath.Clean(aa) == filepath.Clean(bb)
+}
+
+// memAgentAccountCreds is an in-memory server.AgentAccountCredentialStore for the
+// harness. It mirrors accountcred.Store's not-found semantics (Load and Delete
+// return accountcred.ErrCredentialNotFound for a missing entry) without linking
+// the real OS keyring, so harness-based tests never write real keychain items.
+type memAgentAccountCreds struct {
+	mu    sync.Mutex
+	blobs map[string][]byte
+}
+
+func newMemAccountCreds() *memAgentAccountCreds {
+	return &memAgentAccountCreds{blobs: map[string][]byte{}}
+}
+
+func (m *memAgentAccountCreds) Save(accountID string, blob []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.blobs[accountID] = append([]byte(nil), blob...)
+	return nil
+}
+
+func (m *memAgentAccountCreds) Load(accountID string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	blob, ok := m.blobs[accountID]
+	if !ok {
+		return nil, accountcred.ErrCredentialNotFound
+	}
+	return append([]byte(nil), blob...), nil
+}
+
+func (m *memAgentAccountCreds) Delete(accountID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.blobs[accountID]; !ok {
+		return accountcred.ErrCredentialNotFound
+	}
+	delete(m.blobs, accountID)
+	return nil
 }

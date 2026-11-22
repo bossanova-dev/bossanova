@@ -231,6 +231,9 @@ type CommandHandlerAdapter struct {
 	Automation     AutomationToggler
 	Waker          ChatWaker
 	Commands       SessionCommandServer
+	Settings       DaemonSettingsHandler
+	// AgentModels answers ListAgentModelsCommand; wired post-hoc with the server.
+	AgentModels AgentModelLister
 	// Broadcasts materialises an inbound cross-daemon broadcast locally
 	// (BOS-558). Nil when the daemon has no upstream, in which case no
 	// BroadcastCommand can arrive to need it.
@@ -614,18 +617,18 @@ func (a *CommandHandlerAdapter) LinkSessionPR(ctx context.Context, sessionID, pr
 }
 
 // RecordChat implements SessionCommandHandler.RecordChat.
-func (a *CommandHandlerAdapter) RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.AgentChat, error) {
+func (a *CommandHandlerAdapter) RecordChat(ctx context.Context, cmd *pb.RecordChatCommand) (*pb.AgentChat, error) {
 	if a.Commands == nil {
 		return nil, errors.New("record_chat: command server not wired")
 	}
 	req := &pb.RecordChatRequest{
-		SessionId:      sessionID,
-		AgentSessionId: agentSessionID,
-		Title:          title,
-		Resume:         resume,
-	}
-	if agentName != "" {
-		req.AgentName = &agentName
+		SessionId:      cmd.GetSessionId(),
+		AgentSessionId: cmd.GetAgentSessionId(),
+		Title:          cmd.GetTitle(),
+		Resume:         cmd.GetResume(),
+		AgentName:      setOrNil(cmd.GetAgentName()),
+		Model:          setOrNil(cmd.GetModel()),
+		Effort:         setOrNil(cmd.GetEffort()),
 	}
 	resp, err := a.Commands.RecordChat(ctx, connect.NewRequest(req))
 	if err != nil {
@@ -770,6 +773,9 @@ func (a *CommandHandlerAdapter) UpdateRepo(ctx context.Context, msg *pb.UpdateRe
 		CanAutoMergeDependabot:          msg.CanAutoMergeDependabot,
 		CanAutoRepair:                   msg.CanAutoRepair,
 		ShouldArchiveSessionsAfterMerge: msg.ShouldArchiveSessionsAfterMerge,
+		ShouldKeepBranchesCurrent:       msg.ShouldKeepBranchesCurrent,
+		CanAutoDeleteBranches:           msg.CanAutoDeleteBranches,
+		CanAutoRotate:                   msg.CanAutoRotate,
 		SentryOrg:                       msg.SentryOrg,
 		LinearKey:                       msg.LinearKey,
 		SentryKey:                       msg.SentryKey,
@@ -834,14 +840,15 @@ func (a *CommandHandlerAdapter) ListTrackerIssues(ctx context.Context, repoID, q
 
 // GetChatTranscript implements SessionCommandHandler.GetChatTranscript by
 // delegating to the daemon's GetChatTranscript connect handler.
-func (a *CommandHandlerAdapter) GetChatTranscript(ctx context.Context, sessionID, agentSessionID string, maxMessages int32) (*pb.GetChatTranscriptResponse, error) {
+func (a *CommandHandlerAdapter) GetChatTranscript(ctx context.Context, sessionID, agentSessionID string, maxMessages int32, withActivity bool) (*pb.GetChatTranscriptResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("get_chat_transcript: command server not wired")
 	}
 	resp, err := a.Commands.GetChatTranscript(ctx, connect.NewRequest(&pb.GetChatTranscriptRequest{
-		AgentSessionId: agentSessionID,
-		SessionId:      sessionID,
-		MaxMessages:    maxMessages,
+		AgentSessionId:        agentSessionID,
+		SessionId:             sessionID,
+		MaxMessages:           maxMessages,
+		ShouldIncludeActivity: withActivity,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("get chat transcript: %w", err)

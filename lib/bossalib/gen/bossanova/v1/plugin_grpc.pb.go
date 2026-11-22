@@ -626,6 +626,9 @@ const (
 	AgentRunnerService_RotationCapability_FullMethodName          = "/bossanova.v1.AgentRunnerService/RotationCapability"
 	AgentRunnerService_MaterializeAgentAccount_FullMethodName     = "/bossanova.v1.AgentRunnerService/MaterializeAgentAccount"
 	AgentRunnerService_DescribeMCPSurface_FullMethodName          = "/bossanova.v1.AgentRunnerService/DescribeMCPSurface"
+	AgentRunnerService_ListModels_FullMethodName                  = "/bossanova.v1.AgentRunnerService/ListModels"
+	AgentRunnerService_ReadQuestionMenu_FullMethodName            = "/bossanova.v1.AgentRunnerService/ReadQuestionMenu"
+	AgentRunnerService_PlanQuestionAnswer_FullMethodName          = "/bossanova.v1.AgentRunnerService/PlanQuestionAnswer"
 )
 
 // AgentRunnerServiceClient is the client API for AgentRunnerService service.
@@ -779,6 +782,28 @@ type AgentRunnerServiceClient interface {
 	// probe_error with servers empty. "No servers" and "could not ask" are
 	// deliberately distinguishable.
 	DescribeMCPSurface(ctx context.Context, in *DescribeMCPSurfaceRequest, opts ...grpc.CallOption) (*DescribeMCPSurfaceResponse, error)
+	// ListModels reports the models the agent offers for the model and effort
+	// pickers, in the agent's order, hidden models omitted. An agent with no
+	// list of its own returns the aliases its CLI accepts. A plugin that cannot
+	// answer returns codes.Unimplemented; the daemon then offers a typed model ID
+	// only.
+	ListModels(ctx context.Context, in *ListModelsRequest, opts ...grpc.CallOption) (*ListModelsResponse, error)
+	// ReadQuestionMenu reads the question menu pane_content shows, if any, as a
+	// ChatQuestion whose id names it by what the menu shows. The daemon adds it
+	// to a structured transcript read, because an agent may not record a
+	// question it waits on until it is answered. A plugin whose agent has no
+	// question menu returns codes.Unimplemented.
+	ReadQuestionMenu(ctx context.Context, in *ReadQuestionMenuRequest, opts ...grpc.CallOption) (*ReadQuestionMenuResponse, error)
+	// PlanQuestionAnswer works out the keystrokes that answer the question the
+	// agent is waiting on in its terminal menu, and refuses when that question
+	// is not the one named. pane_content must show the menu of the question
+	// question_id names, with its options in order and its free-text row
+	// untouched; a question the plugin's transcript still ends on counts when
+	// the menu shows its options. Otherwise it answers is_question_pending=false
+	// with no inputs, so a stale answer types nothing. The daemon sends the
+	// inputs and never interprets them. A plugin whose agent has no question
+	// menu returns codes.Unimplemented.
+	PlanQuestionAnswer(ctx context.Context, in *PlanQuestionAnswerRequest, opts ...grpc.CallOption) (*PlanQuestionAnswerResponse, error)
 }
 
 type agentRunnerServiceClient struct {
@@ -1029,6 +1054,36 @@ func (c *agentRunnerServiceClient) DescribeMCPSurface(ctx context.Context, in *D
 	return out, nil
 }
 
+func (c *agentRunnerServiceClient) ListModels(ctx context.Context, in *ListModelsRequest, opts ...grpc.CallOption) (*ListModelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListModelsResponse)
+	err := c.cc.Invoke(ctx, AgentRunnerService_ListModels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentRunnerServiceClient) ReadQuestionMenu(ctx context.Context, in *ReadQuestionMenuRequest, opts ...grpc.CallOption) (*ReadQuestionMenuResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadQuestionMenuResponse)
+	err := c.cc.Invoke(ctx, AgentRunnerService_ReadQuestionMenu_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentRunnerServiceClient) PlanQuestionAnswer(ctx context.Context, in *PlanQuestionAnswerRequest, opts ...grpc.CallOption) (*PlanQuestionAnswerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlanQuestionAnswerResponse)
+	err := c.cc.Invoke(ctx, AgentRunnerService_PlanQuestionAnswer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentRunnerServiceServer is the server API for AgentRunnerService service.
 // All implementations must embed UnimplementedAgentRunnerServiceServer
 // for forward compatibility.
@@ -1180,6 +1235,28 @@ type AgentRunnerServiceServer interface {
 	// probe_error with servers empty. "No servers" and "could not ask" are
 	// deliberately distinguishable.
 	DescribeMCPSurface(context.Context, *DescribeMCPSurfaceRequest) (*DescribeMCPSurfaceResponse, error)
+	// ListModels reports the models the agent offers for the model and effort
+	// pickers, in the agent's order, hidden models omitted. An agent with no
+	// list of its own returns the aliases its CLI accepts. A plugin that cannot
+	// answer returns codes.Unimplemented; the daemon then offers a typed model ID
+	// only.
+	ListModels(context.Context, *ListModelsRequest) (*ListModelsResponse, error)
+	// ReadQuestionMenu reads the question menu pane_content shows, if any, as a
+	// ChatQuestion whose id names it by what the menu shows. The daemon adds it
+	// to a structured transcript read, because an agent may not record a
+	// question it waits on until it is answered. A plugin whose agent has no
+	// question menu returns codes.Unimplemented.
+	ReadQuestionMenu(context.Context, *ReadQuestionMenuRequest) (*ReadQuestionMenuResponse, error)
+	// PlanQuestionAnswer works out the keystrokes that answer the question the
+	// agent is waiting on in its terminal menu, and refuses when that question
+	// is not the one named. pane_content must show the menu of the question
+	// question_id names, with its options in order and its free-text row
+	// untouched; a question the plugin's transcript still ends on counts when
+	// the menu shows its options. Otherwise it answers is_question_pending=false
+	// with no inputs, so a stale answer types nothing. The daemon sends the
+	// inputs and never interprets them. A plugin whose agent has no question
+	// menu returns codes.Unimplemented.
+	PlanQuestionAnswer(context.Context, *PlanQuestionAnswerRequest) (*PlanQuestionAnswerResponse, error)
 	mustEmbedUnimplementedAgentRunnerServiceServer()
 }
 
@@ -1261,6 +1338,15 @@ func (UnimplementedAgentRunnerServiceServer) MaterializeAgentAccount(context.Con
 }
 func (UnimplementedAgentRunnerServiceServer) DescribeMCPSurface(context.Context, *DescribeMCPSurfaceRequest) (*DescribeMCPSurfaceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DescribeMCPSurface not implemented")
+}
+func (UnimplementedAgentRunnerServiceServer) ListModels(context.Context, *ListModelsRequest) (*ListModelsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListModels not implemented")
+}
+func (UnimplementedAgentRunnerServiceServer) ReadQuestionMenu(context.Context, *ReadQuestionMenuRequest) (*ReadQuestionMenuResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadQuestionMenu not implemented")
+}
+func (UnimplementedAgentRunnerServiceServer) PlanQuestionAnswer(context.Context, *PlanQuestionAnswerRequest) (*PlanQuestionAnswerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PlanQuestionAnswer not implemented")
 }
 func (UnimplementedAgentRunnerServiceServer) mustEmbedUnimplementedAgentRunnerServiceServer() {}
 func (UnimplementedAgentRunnerServiceServer) testEmbeddedByValue()                            {}
@@ -1715,6 +1801,60 @@ func _AgentRunnerService_DescribeMCPSurface_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentRunnerService_ListModels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListModelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentRunnerServiceServer).ListModels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentRunnerService_ListModels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentRunnerServiceServer).ListModels(ctx, req.(*ListModelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentRunnerService_ReadQuestionMenu_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadQuestionMenuRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentRunnerServiceServer).ReadQuestionMenu(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentRunnerService_ReadQuestionMenu_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentRunnerServiceServer).ReadQuestionMenu(ctx, req.(*ReadQuestionMenuRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentRunnerService_PlanQuestionAnswer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlanQuestionAnswerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentRunnerServiceServer).PlanQuestionAnswer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentRunnerService_PlanQuestionAnswer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentRunnerServiceServer).PlanQuestionAnswer(ctx, req.(*PlanQuestionAnswerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentRunnerService_ServiceDesc is the grpc.ServiceDesc for AgentRunnerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1817,6 +1957,18 @@ var AgentRunnerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DescribeMCPSurface",
 			Handler:    _AgentRunnerService_DescribeMCPSurface_Handler,
+		},
+		{
+			MethodName: "ListModels",
+			Handler:    _AgentRunnerService_ListModels_Handler,
+		},
+		{
+			MethodName: "ReadQuestionMenu",
+			Handler:    _AgentRunnerService_ReadQuestionMenu_Handler,
+		},
+		{
+			MethodName: "PlanQuestionAnswer",
+			Handler:    _AgentRunnerService_PlanQuestionAnswer_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

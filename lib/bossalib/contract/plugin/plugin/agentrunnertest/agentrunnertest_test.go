@@ -87,8 +87,28 @@ func (*referenceCore) MaterializeAgentAccount(_ context.Context, _ *v1.Materiali
 func (*referenceCore) DescribeMCPSurface(_ context.Context, _ *v1.DescribeMCPSurfaceRequest) (*v1.DescribeMCPSurfaceResponse, error) {
 	return &v1.DescribeMCPSurfaceResponse{}, nil
 }
+func (*referenceCore) ListModels(_ context.Context, _ *v1.ListModelsRequest) (*v1.ListModelsResponse, error) {
+	return &v1.ListModelsResponse{Models: []*v1.AgentModel{
+		{Id: "", DisplayName: "Default", IsDefault: true},
+		{Id: "reference-model", SupportedEfforts: []string{"low", "high"}, DefaultEffort: "high"},
+	}}, nil
+}
+
+func (*referenceCore) ReadQuestionMenu(context.Context, *v1.ReadQuestionMenuRequest) (*v1.ReadQuestionMenuResponse, error) {
+	return &v1.ReadQuestionMenuResponse{}, nil
+}
+
+func (*referenceCore) PlanQuestionAnswer(context.Context, *v1.PlanQuestionAnswerRequest) (*v1.PlanQuestionAnswerResponse, error) {
+	return &v1.PlanQuestionAnswerResponse{Reason: "the agent is not waiting on that question"}, nil
+}
 
 type referenceRunner struct{ referenceCore }
+
+type staleAnswerRunner struct{ referenceRunner }
+
+func (*staleAnswerRunner) PlanQuestionAnswer(context.Context, *v1.PlanQuestionAnswerRequest) (*v1.PlanQuestionAnswerResponse, error) {
+	return &v1.PlanQuestionAnswerResponse{IsQuestionPending: true, Inputs: []*v1.PaneInput{{Input: &v1.PaneInput_Key{Key: "1"}}}}, nil
+}
 
 func (*referenceRunner) HasWorkingIndicator(context.Context, *v1.HasWorkingIndicatorRequest) (*v1.HasWorkingIndicatorResponse, error) {
 	return &v1.HasWorkingIndicatorResponse{}, nil
@@ -101,6 +121,24 @@ func (*brokenWorkingRunner) HasWorkingIndicator(context.Context, *v1.HasWorkingI
 }
 
 type missingStatusRunner struct{ referenceRunner }
+
+type twoDefaultModelsRunner struct{ referenceRunner }
+
+func (*twoDefaultModelsRunner) ListModels(context.Context, *v1.ListModelsRequest) (*v1.ListModelsResponse, error) {
+	return &v1.ListModelsResponse{Models: []*v1.AgentModel{{Id: "a", IsDefault: true}, {Id: "b", IsDefault: true}}}, nil
+}
+
+type unsupportedDefaultEffortRunner struct{ referenceRunner }
+
+func (*unsupportedDefaultEffortRunner) ListModels(context.Context, *v1.ListModelsRequest) (*v1.ListModelsResponse, error) {
+	return &v1.ListModelsResponse{Models: []*v1.AgentModel{{Id: "a", SupportedEfforts: []string{"low"}, DefaultEffort: "high"}}}, nil
+}
+
+type blankModelIDRunner struct{ referenceRunner }
+
+func (*blankModelIDRunner) ListModels(context.Context, *v1.ListModelsRequest) (*v1.ListModelsResponse, error) {
+	return &v1.ListModelsResponse{Models: []*v1.AgentModel{{Id: "a", IsDefault: true}, {Id: ""}}}, nil
+}
 
 func (*missingStatusRunner) ProbeRateLimit(context.Context, *v1.ProbeRateLimitRequest) (*v1.ProbeRateLimitResponse, error) {
 	return &v1.ProbeRateLimitResponse{}, nil
@@ -124,6 +162,11 @@ func TestCheckFailsOnSeededViolations(t *testing.T) {
 		{name: "falsely declared unsupported", server: &referenceRunner{}, unsupported: []string{v1.AgentRunnerService_HasWorkingIndicator_FullMethodName}, method: "HasWorkingIndicator"},
 		{name: "unknown unsupported name", server: &referenceRunner{}, unsupported: []string{fullMethod("DoesNotExist")}, method: fullMethod("DoesNotExist")},
 		{name: "missing rate limit status", server: &missingStatusRunner{}, method: "ProbeRateLimit"},
+		{name: "two default models", server: &twoDefaultModelsRunner{}, method: "ListModels"},
+		{name: "default effort not supported", server: &unsupportedDefaultEffortRunner{}, method: "ListModels"},
+		{name: "blank non-default model id", server: &blankModelIDRunner{}, method: "ListModels"},
+		{name: "plans keys for a question nobody asked", server: &staleAnswerRunner{}, method: "PlanQuestionAnswer"},
+		{name: "falsely declared models unsupported", server: &referenceRunner{}, unsupported: []string{v1.AgentRunnerService_ListModels_FullMethodName}, method: "ListModels"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

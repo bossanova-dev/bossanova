@@ -104,14 +104,18 @@ func TestGetChatTranscript_ForwardsAndReturnsPayload(t *testing.T) {
 	}
 
 	resp, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{
-		AgentSessionId: "agent-1",
-		MaxMessages:    10,
+		AgentSessionId:        "agent-1",
+		MaxMessages:           10,
+		ShouldIncludeActivity: true,
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Verify forwarded request fields.
+	if fakeClient.lastReq != nil && !fakeClient.lastReq.GetShouldIncludeActivity() {
+		t.Error("ShouldIncludeActivity was not forwarded to the runner")
+	}
 	if fakeClient.lastReq == nil {
 		t.Fatal("ReadTranscript was not called")
 	}

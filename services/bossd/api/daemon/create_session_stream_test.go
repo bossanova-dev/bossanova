@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1627,6 +1628,15 @@ func (w *setupStreamWorktree) RebaseOntoBaseAndPush(context.Context, string, str
 type setupStreamAgent struct {
 	startErr error
 	startFn  func(context.Context, string, string, *string, string) (string, error)
+	mu       sync.Mutex
+	// runtimes records the model and effort of each StartByAgent call.
+	runtimes [][2]string
+}
+
+func (a *setupStreamAgent) startedRuntimes() [][2]string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.runtimes)
 }
 
 func (a *setupStreamAgent) Start(ctx context.Context, workDir, plan string, resume *string, agentSessionID, _, _ string, _ map[string]string) (string, error) {
@@ -1644,7 +1654,10 @@ func (a *setupStreamAgent) Subscribe(context.Context, string) (<-chan agent.Outp
 	close(ch)
 	return ch, nil
 }
-func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, _, _ string, _ map[string]string) (string, error) {
+func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, model, effort string, _ map[string]string) (string, error) {
+	a.mu.Lock()
+	a.runtimes = append(a.runtimes, [2]string{model, effort})
+	a.mu.Unlock()
 	if a.startFn != nil {
 		return a.startFn(ctx, workDir, plan, resume, agentSessionID)
 	}

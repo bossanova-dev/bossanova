@@ -82,16 +82,20 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 	if err := validCronManagedBy(msg.ManagedBy); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	// Resolve a blank agent the same way CreateSession does, so a cron job
+	// created with no explicit agent lands on the daemon's actual runner
+	// rather than a hardcoded "claude" that may not be loaded.
+	resolvedAgent, err := s.resolveAgentName(agentName)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
 
 	params := domain.CreateCronJobParams{
-		RepoID:   msg.RepoId,
-		Name:     strings.TrimSpace(msg.Name),
-		Prompt:   msg.Prompt,
-		Schedule: strings.TrimSpace(msg.Schedule),
-		// Resolve a blank agent the same way CreateSession does, so a cron job
-		// created with no explicit agent lands on the daemon's actual runner
-		// rather than a hardcoded "claude" that may not be loaded.
-		AgentName:         s.resolveAgentName(agentName),
+		RepoID:            msg.RepoId,
+		Name:              strings.TrimSpace(msg.Name),
+		Prompt:            msg.Prompt,
+		Schedule:          strings.TrimSpace(msg.Schedule),
+		AgentName:         resolvedAgent,
 		Model:             model,
 		IsEnabled:         msg.IsEnabled,
 		GateCommand:       strings.TrimSpace(msg.GateCommand),

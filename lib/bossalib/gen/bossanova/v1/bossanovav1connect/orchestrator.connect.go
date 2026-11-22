@@ -46,6 +46,9 @@ const (
 	// OrchestratorServiceListDaemonsProcedure is the fully-qualified name of the OrchestratorService's
 	// ListDaemons RPC.
 	OrchestratorServiceListDaemonsProcedure = "/bossanova.v1.OrchestratorService/ListDaemons"
+	// OrchestratorServiceRemoveDaemonProcedure is the fully-qualified name of the OrchestratorService's
+	// RemoveDaemon RPC.
+	OrchestratorServiceRemoveDaemonProcedure = "/bossanova.v1.OrchestratorService/RemoveDaemon"
 	// OrchestratorServiceTransferSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's TransferSession RPC.
 	OrchestratorServiceTransferSessionProcedure = "/bossanova.v1.OrchestratorService/TransferSession"
@@ -103,12 +106,27 @@ const (
 	// OrchestratorServiceProxySendChatMessageProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxySendChatMessage RPC.
 	OrchestratorServiceProxySendChatMessageProcedure = "/bossanova.v1.OrchestratorService/ProxySendChatMessage"
+	// OrchestratorServiceProxyAnswerChatQuestionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyAnswerChatQuestion RPC.
+	OrchestratorServiceProxyAnswerChatQuestionProcedure = "/bossanova.v1.OrchestratorService/ProxyAnswerChatQuestion"
+	// OrchestratorServiceProxyStopChatProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyStopChat RPC.
+	OrchestratorServiceProxyStopChatProcedure = "/bossanova.v1.OrchestratorService/ProxyStopChat"
 	// OrchestratorServiceProxyListReposAggregatedProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListReposAggregated RPC.
 	OrchestratorServiceProxyListReposAggregatedProcedure = "/bossanova.v1.OrchestratorService/ProxyListReposAggregated"
 	// OrchestratorServiceProxyListAgentsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListAgents RPC.
 	OrchestratorServiceProxyListAgentsProcedure = "/bossanova.v1.OrchestratorService/ProxyListAgents"
+	// OrchestratorServiceProxyListAgentModelsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListAgentModels RPC.
+	OrchestratorServiceProxyListAgentModelsProcedure = "/bossanova.v1.OrchestratorService/ProxyListAgentModels"
+	// OrchestratorServiceProxyGetDaemonSettingsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyGetDaemonSettings RPC.
+	OrchestratorServiceProxyGetDaemonSettingsProcedure = "/bossanova.v1.OrchestratorService/ProxyGetDaemonSettings"
+	// OrchestratorServiceProxyUpdateDaemonSettingsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyUpdateDaemonSettings RPC.
+	OrchestratorServiceProxyUpdateDaemonSettingsProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateDaemonSettings"
 	// OrchestratorServiceProxyListRepoPRsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListRepoPRs RPC.
 	OrchestratorServiceProxyListRepoPRsProcedure = "/bossanova.v1.OrchestratorService/ProxyListRepoPRs"
@@ -400,6 +418,9 @@ const (
 	// OrchestratorServiceSubscribeToNewsletterProcedure is the fully-qualified name of the
 	// OrchestratorService's SubscribeToNewsletter RPC.
 	OrchestratorServiceSubscribeToNewsletterProcedure = "/bossanova.v1.OrchestratorService/SubscribeToNewsletter"
+	// OrchestratorServiceUnsubscribeFromNewsletterProcedure is the fully-qualified name of the
+	// OrchestratorService's UnsubscribeFromNewsletter RPC.
+	OrchestratorServiceUnsubscribeFromNewsletterProcedure = "/bossanova.v1.OrchestratorService/UnsubscribeFromNewsletter"
 	// OrchestratorServiceListOrganizationsProcedure is the fully-qualified name of the
 	// OrchestratorService's ListOrganizations RPC.
 	OrchestratorServiceListOrganizationsProcedure = "/bossanova.v1.OrchestratorService/ListOrganizations"
@@ -418,6 +439,12 @@ const (
 	// OrchestratorServiceSetOrganizationProofHostingProcedure is the fully-qualified name of the
 	// OrchestratorService's SetOrganizationProofHosting RPC.
 	OrchestratorServiceSetOrganizationProofHostingProcedure = "/bossanova.v1.OrchestratorService/SetOrganizationProofHosting"
+	// OrchestratorServiceSetMemberSessionSharingProcedure is the fully-qualified name of the
+	// OrchestratorService's SetMemberSessionSharing RPC.
+	OrchestratorServiceSetMemberSessionSharingProcedure = "/bossanova.v1.OrchestratorService/SetMemberSessionSharing"
+	// OrchestratorServiceGetOrganizationBillingProcedure is the fully-qualified name of the
+	// OrchestratorService's GetOrganizationBilling RPC.
+	OrchestratorServiceGetOrganizationBillingProcedure = "/bossanova.v1.OrchestratorService/GetOrganizationBilling"
 	// OrchestratorServiceListOrganizationMembersProcedure is the fully-qualified name of the
 	// OrchestratorService's ListOrganizationMembers RPC.
 	OrchestratorServiceListOrganizationMembersProcedure = "/bossanova.v1.OrchestratorService/ListOrganizationMembers"
@@ -523,6 +550,48 @@ const (
 	// OrchestratorServiceListPermissionsProcedure is the fully-qualified name of the
 	// OrchestratorService's ListPermissions RPC.
 	OrchestratorServiceListPermissionsProcedure = "/bossanova.v1.OrchestratorService/ListPermissions"
+	// OrchestratorServiceGetUserPreferencesProcedure is the fully-qualified name of the
+	// OrchestratorService's GetUserPreferences RPC.
+	OrchestratorServiceGetUserPreferencesProcedure = "/bossanova.v1.OrchestratorService/GetUserPreferences"
+	// OrchestratorServiceUpdateUserPreferencesProcedure is the fully-qualified name of the
+	// OrchestratorService's UpdateUserPreferences RPC.
+	OrchestratorServiceUpdateUserPreferencesProcedure = "/bossanova.v1.OrchestratorService/UpdateUserPreferences"
+	// OrchestratorServiceUpdateUserProfileProcedure is the fully-qualified name of the
+	// OrchestratorService's UpdateUserProfile RPC.
+	OrchestratorServiceUpdateUserProfileProcedure = "/bossanova.v1.OrchestratorService/UpdateUserProfile"
+	// OrchestratorServiceGetUserGitHubIdentityProcedure is the fully-qualified name of the
+	// OrchestratorService's GetUserGitHubIdentity RPC.
+	OrchestratorServiceGetUserGitHubIdentityProcedure = "/bossanova.v1.OrchestratorService/GetUserGitHubIdentity"
+	// OrchestratorServiceListSavedViewsProcedure is the fully-qualified name of the
+	// OrchestratorService's ListSavedViews RPC.
+	OrchestratorServiceListSavedViewsProcedure = "/bossanova.v1.OrchestratorService/ListSavedViews"
+	// OrchestratorServiceCreateSavedViewProcedure is the fully-qualified name of the
+	// OrchestratorService's CreateSavedView RPC.
+	OrchestratorServiceCreateSavedViewProcedure = "/bossanova.v1.OrchestratorService/CreateSavedView"
+	// OrchestratorServiceUpdateSavedViewProcedure is the fully-qualified name of the
+	// OrchestratorService's UpdateSavedView RPC.
+	OrchestratorServiceUpdateSavedViewProcedure = "/bossanova.v1.OrchestratorService/UpdateSavedView"
+	// OrchestratorServiceDeleteSavedViewProcedure is the fully-qualified name of the
+	// OrchestratorService's DeleteSavedView RPC.
+	OrchestratorServiceDeleteSavedViewProcedure = "/bossanova.v1.OrchestratorService/DeleteSavedView"
+	// OrchestratorServiceReorderSavedViewsProcedure is the fully-qualified name of the
+	// OrchestratorService's ReorderSavedViews RPC.
+	OrchestratorServiceReorderSavedViewsProcedure = "/bossanova.v1.OrchestratorService/ReorderSavedViews"
+	// OrchestratorServiceListFavoritesProcedure is the fully-qualified name of the
+	// OrchestratorService's ListFavorites RPC.
+	OrchestratorServiceListFavoritesProcedure = "/bossanova.v1.OrchestratorService/ListFavorites"
+	// OrchestratorServiceSetFavoriteProcedure is the fully-qualified name of the OrchestratorService's
+	// SetFavorite RPC.
+	OrchestratorServiceSetFavoriteProcedure = "/bossanova.v1.OrchestratorService/SetFavorite"
+	// OrchestratorServiceRemoveFavoriteProcedure is the fully-qualified name of the
+	// OrchestratorService's RemoveFavorite RPC.
+	OrchestratorServiceRemoveFavoriteProcedure = "/bossanova.v1.OrchestratorService/RemoveFavorite"
+	// OrchestratorServiceSnoozeSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's SnoozeSession RPC.
+	OrchestratorServiceSnoozeSessionProcedure = "/bossanova.v1.OrchestratorService/SnoozeSession"
+	// OrchestratorServiceUnsnoozeSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's UnsnoozeSession RPC.
+	OrchestratorServiceUnsnoozeSessionProcedure = "/bossanova.v1.OrchestratorService/UnsnoozeSession"
 )
 
 // OrchestratorServiceClient is a client for the bossanova.v1.OrchestratorService service.
@@ -543,6 +612,11 @@ type OrchestratorServiceClient interface {
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	DaemonStream(context.Context) *connect.BidiStreamForClient[v1.DaemonEvent, v1.OrchestratorCommand]
 	ListDaemons(context.Context, *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error)
+	// RemoveDaemon forgets a machine: it deletes the daemon's ownership row,
+	// revokes its daemon token and refuses its re-registration until someone
+	// runs a fresh login on the machine. Allowed for the machine's owner and for
+	// an owner of the organization the daemon claimed.
+	RemoveDaemon(context.Context, *connect.Request[v1.RemoveDaemonRequest]) (*connect.Response[v1.RemoveDaemonResponse], error)
 	// Session transfer between daemons
 	TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error)
 	// Proxied daemon RPCs (remote CLI → orchestrator → daemon)
@@ -591,12 +665,31 @@ type OrchestratorServiceClient interface {
 	// Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
 	// carries no session_id.
 	ProxySendChatMessage(context.Context, *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error)
+	// Answers the question a chat's agent waits on in its terminal menu, with
+	// one of its options or with typed words. Writes to the agent like
+	// ProxySendChatMessage, so it takes the same permission and the same cloud
+	// control. question_id must name the question the agent still waits on;
+	// otherwise the daemon types nothing and the call fails FailedPrecondition.
+	// Routes by session_id with the chat scoped to that session.
+	ProxyAnswerChatQuestion(context.Context, *connect.Request[v1.ProxyAnswerChatQuestionRequest]) (*connect.Response[v1.ProxyAnswerChatQuestionResponse], error)
+	// Stops one chat's agent and leaves the session's other chats running. The
+	// chat stays, asleep, and a later message wakes it. Routes by session_id
+	// with the chat scoped to that session.
+	ProxyStopChat(context.Context, *connect.Request[v1.ProxyStopChatRequest]) (*connect.Response[v1.ProxyStopChatResponse], error)
 	// Aggregates repos across the caller's live daemons, deduped by origin URL,
 	// with the serving daemon IDs unioned per repo. Spans every organization the
 	// caller belongs to unless the request narrows it to one.
 	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
 	// Lists the installed agents on a single named daemon via its reverse stream.
 	ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error)
+	// Lists the models one agent on a daemon offers, for the model and effort
+	// pickers. The daemon asks the agent plugin; Bossanova keeps no model list.
+	ProxyListAgentModels(context.Context, *connect.Request[v1.ProxyListAgentModelsRequest]) (*connect.Response[v1.ProxyListAgentModelsResponse], error)
+	// Reads and edits the web-editable subset of a daemon's settings.json. The
+	// daemon enforces the allowlist; cloud control and operator tuning stay
+	// local.
+	ProxyGetDaemonSettings(context.Context, *connect.Request[v1.ProxyGetDaemonSettingsRequest]) (*connect.Response[v1.ProxyGetDaemonSettingsResponse], error)
+	ProxyUpdateDaemonSettings(context.Context, *connect.Request[v1.ProxyUpdateDaemonSettingsRequest]) (*connect.Response[v1.ProxyUpdateDaemonSettingsResponse], error)
 	ProxyListRepoPRs(context.Context, *connect.Request[v1.ProxyListRepoPRsRequest]) (*connect.Response[v1.ProxyListRepoPRsResponse], error)
 	ProxyListTrackerIssues(context.Context, *connect.Request[v1.ProxyListTrackerIssuesRequest]) (*connect.Response[v1.ProxyListTrackerIssuesResponse], error)
 	// Per-repo proxies for web repo management. Route to the daemon named by
@@ -914,6 +1007,10 @@ type OrchestratorServiceClient interface {
 	// opt-in; see docs/analytics/newsletter.md.
 	GetNewsletterStatus(context.Context, *connect.Request[v1.GetNewsletterStatusRequest]) (*connect.Response[v1.GetNewsletterStatusResponse], error)
 	SubscribeToNewsletter(context.Context, *connect.Request[v1.SubscribeToNewsletterRequest]) (*connect.Response[v1.SubscribeToNewsletterResponse], error)
+	// UnsubscribeFromNewsletter withdraws the caller's newsletter consent and
+	// removes them from the Loops list. Idempotent: a caller who never opted in
+	// succeeds.
+	UnsubscribeFromNewsletter(context.Context, *connect.Request[v1.UnsubscribeFromNewsletterRequest]) (*connect.Response[v1.UnsubscribeFromNewsletterResponse], error)
 	// Organizations. User-authenticated.
 	ListOrganizations(context.Context, *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error)
 	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
@@ -927,6 +1024,14 @@ type OrchestratorServiceClient interface {
 	// caller's active organization. Owner only. Turning on requires the
 	// organization's own cloud access to be active; turning off never does.
 	SetOrganizationProofHosting(context.Context, *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error)
+	// SetMemberSessionSharing turns member session sharing on or off for the
+	// caller's active organization (Organization.is_member_session_sharing_enabled).
+	// Owner only.
+	SetMemberSessionSharing(context.Context, *connect.Request[v1.SetMemberSessionSharingRequest]) (*connect.Response[v1.SetMemberSessionSharingResponse], error)
+	// GetOrganizationBilling reports an organization's plan, seats, renewal and
+	// cloud access for its Billing settings page. The caller must own the
+	// requested organization.
+	GetOrganizationBilling(context.Context, *connect.Request[v1.GetOrganizationBillingRequest]) (*connect.Response[v1.GetOrganizationBillingResponse], error)
 	ListOrganizationMembers(context.Context, *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error)
 	InviteOrganizationMember(context.Context, *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error)
 	RemoveOrganizationMember(context.Context, *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error)
@@ -1116,6 +1221,29 @@ type OrchestratorServiceClient interface {
 	// requirement from, and the caller's effective permissions in their active
 	// organization, so clients never hard-code slugs.
 	ListPermissions(context.Context, *connect.Request[v1.ListPermissionsRequest]) (*connect.Response[v1.ListPermissionsResponse], error)
+	// Personal settings. Each belongs to the calling user alone and follows
+	// them across organizations and devices.
+	GetUserPreferences(context.Context, *connect.Request[v1.GetUserPreferencesRequest]) (*connect.Response[v1.GetUserPreferencesResponse], error)
+	UpdateUserPreferences(context.Context, *connect.Request[v1.UpdateUserPreferencesRequest]) (*connect.Response[v1.UpdateUserPreferencesResponse], error)
+	// UpdateUserProfile renames the caller in WorkOS, then in bosso's users row.
+	UpdateUserProfile(context.Context, *connect.Request[v1.UpdateUserProfileRequest]) (*connect.Response[v1.UpdateUserProfileResponse], error)
+	GetUserGitHubIdentity(context.Context, *connect.Request[v1.GetUserGitHubIdentityRequest]) (*connect.Response[v1.GetUserGitHubIdentityResponse], error)
+	// Saved views are private to the caller.
+	ListSavedViews(context.Context, *connect.Request[v1.ListSavedViewsRequest]) (*connect.Response[v1.ListSavedViewsResponse], error)
+	CreateSavedView(context.Context, *connect.Request[v1.CreateSavedViewRequest]) (*connect.Response[v1.CreateSavedViewResponse], error)
+	UpdateSavedView(context.Context, *connect.Request[v1.UpdateSavedViewRequest]) (*connect.Response[v1.UpdateSavedViewResponse], error)
+	DeleteSavedView(context.Context, *connect.Request[v1.DeleteSavedViewRequest]) (*connect.Response[v1.DeleteSavedViewResponse], error)
+	ReorderSavedViews(context.Context, *connect.Request[v1.ReorderSavedViewsRequest]) (*connect.Response[v1.ReorderSavedViewsResponse], error)
+	// Sidebar favorites are private to the caller.
+	ListFavorites(context.Context, *connect.Request[v1.ListFavoritesRequest]) (*connect.Response[v1.ListFavoritesResponse], error)
+	SetFavorite(context.Context, *connect.Request[v1.SetFavoriteRequest]) (*connect.Response[v1.SetFavoriteResponse], error)
+	RemoveFavorite(context.Context, *connect.Request[v1.RemoveFavoriteRequest]) (*connect.Response[v1.RemoveFavoriteResponse], error)
+	// SnoozeSession hides a session from the caller ("Not now") until the
+	// session's state changes or expires_at passes. Only the caller's own lists
+	// change; the session itself is untouched. The session must be visible to
+	// the caller.
+	SnoozeSession(context.Context, *connect.Request[v1.SnoozeSessionRequest]) (*connect.Response[v1.SnoozeSessionResponse], error)
+	UnsnoozeSession(context.Context, *connect.Request[v1.UnsnoozeSessionRequest]) (*connect.Response[v1.UnsnoozeSessionResponse], error)
 }
 
 // NewOrchestratorServiceClient constructs a client for the bossanova.v1.OrchestratorService
@@ -1151,6 +1279,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceListDaemonsProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ListDaemons")),
+			connect.WithClientOptions(opts...),
+		),
+		removeDaemon: connect.NewClient[v1.RemoveDaemonRequest, v1.RemoveDaemonResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRemoveDaemonProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RemoveDaemon")),
 			connect.WithClientOptions(opts...),
 		),
 		transferSession: connect.NewClient[v1.TransferSessionRequest, v1.TransferSessionResponse](
@@ -1267,6 +1401,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxySendChatMessage")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyAnswerChatQuestion: connect.NewClient[v1.ProxyAnswerChatQuestionRequest, v1.ProxyAnswerChatQuestionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyAnswerChatQuestionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyAnswerChatQuestion")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyStopChat: connect.NewClient[v1.ProxyStopChatRequest, v1.ProxyStopChatResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyStopChatProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStopChat")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyListReposAggregated: connect.NewClient[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyListReposAggregatedProcedure,
@@ -1277,6 +1423,24 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceProxyListAgentsProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgents")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListAgentModels: connect.NewClient[v1.ProxyListAgentModelsRequest, v1.ProxyListAgentModelsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListAgentModelsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgentModels")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyGetDaemonSettings: connect.NewClient[v1.ProxyGetDaemonSettingsRequest, v1.ProxyGetDaemonSettingsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyGetDaemonSettingsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetDaemonSettings")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyUpdateDaemonSettings: connect.NewClient[v1.ProxyUpdateDaemonSettingsRequest, v1.ProxyUpdateDaemonSettingsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyUpdateDaemonSettingsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateDaemonSettings")),
 			connect.WithClientOptions(opts...),
 		),
 		proxyListRepoPRs: connect.NewClient[v1.ProxyListRepoPRsRequest, v1.ProxyListRepoPRsResponse](
@@ -1861,6 +2025,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("SubscribeToNewsletter")),
 			connect.WithClientOptions(opts...),
 		),
+		unsubscribeFromNewsletter: connect.NewClient[v1.UnsubscribeFromNewsletterRequest, v1.UnsubscribeFromNewsletterResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUnsubscribeFromNewsletterProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UnsubscribeFromNewsletter")),
+			connect.WithClientOptions(opts...),
+		),
 		listOrganizations: connect.NewClient[v1.ListOrganizationsRequest, v1.ListOrganizationsResponse](
 			httpClient,
 			baseURL+OrchestratorServiceListOrganizationsProcedure,
@@ -1895,6 +2065,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceSetOrganizationProofHostingProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("SetOrganizationProofHosting")),
+			connect.WithClientOptions(opts...),
+		),
+		setMemberSessionSharing: connect.NewClient[v1.SetMemberSessionSharingRequest, v1.SetMemberSessionSharingResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSetMemberSessionSharingProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SetMemberSessionSharing")),
+			connect.WithClientOptions(opts...),
+		),
+		getOrganizationBilling: connect.NewClient[v1.GetOrganizationBillingRequest, v1.GetOrganizationBillingResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetOrganizationBillingProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationBilling")),
 			connect.WithClientOptions(opts...),
 		),
 		listOrganizationMembers: connect.NewClient[v1.ListOrganizationMembersRequest, v1.ListOrganizationMembersResponse](
@@ -2107,6 +2289,90 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ListPermissions")),
 			connect.WithClientOptions(opts...),
 		),
+		getUserPreferences: connect.NewClient[v1.GetUserPreferencesRequest, v1.GetUserPreferencesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetUserPreferencesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetUserPreferences")),
+			connect.WithClientOptions(opts...),
+		),
+		updateUserPreferences: connect.NewClient[v1.UpdateUserPreferencesRequest, v1.UpdateUserPreferencesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUpdateUserPreferencesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UpdateUserPreferences")),
+			connect.WithClientOptions(opts...),
+		),
+		updateUserProfile: connect.NewClient[v1.UpdateUserProfileRequest, v1.UpdateUserProfileResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUpdateUserProfileProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UpdateUserProfile")),
+			connect.WithClientOptions(opts...),
+		),
+		getUserGitHubIdentity: connect.NewClient[v1.GetUserGitHubIdentityRequest, v1.GetUserGitHubIdentityResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetUserGitHubIdentityProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetUserGitHubIdentity")),
+			connect.WithClientOptions(opts...),
+		),
+		listSavedViews: connect.NewClient[v1.ListSavedViewsRequest, v1.ListSavedViewsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListSavedViewsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListSavedViews")),
+			connect.WithClientOptions(opts...),
+		),
+		createSavedView: connect.NewClient[v1.CreateSavedViewRequest, v1.CreateSavedViewResponse](
+			httpClient,
+			baseURL+OrchestratorServiceCreateSavedViewProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("CreateSavedView")),
+			connect.WithClientOptions(opts...),
+		),
+		updateSavedView: connect.NewClient[v1.UpdateSavedViewRequest, v1.UpdateSavedViewResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUpdateSavedViewProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UpdateSavedView")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteSavedView: connect.NewClient[v1.DeleteSavedViewRequest, v1.DeleteSavedViewResponse](
+			httpClient,
+			baseURL+OrchestratorServiceDeleteSavedViewProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("DeleteSavedView")),
+			connect.WithClientOptions(opts...),
+		),
+		reorderSavedViews: connect.NewClient[v1.ReorderSavedViewsRequest, v1.ReorderSavedViewsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceReorderSavedViewsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ReorderSavedViews")),
+			connect.WithClientOptions(opts...),
+		),
+		listFavorites: connect.NewClient[v1.ListFavoritesRequest, v1.ListFavoritesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListFavoritesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListFavorites")),
+			connect.WithClientOptions(opts...),
+		),
+		setFavorite: connect.NewClient[v1.SetFavoriteRequest, v1.SetFavoriteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSetFavoriteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SetFavorite")),
+			connect.WithClientOptions(opts...),
+		),
+		removeFavorite: connect.NewClient[v1.RemoveFavoriteRequest, v1.RemoveFavoriteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRemoveFavoriteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RemoveFavorite")),
+			connect.WithClientOptions(opts...),
+		),
+		snoozeSession: connect.NewClient[v1.SnoozeSessionRequest, v1.SnoozeSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSnoozeSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SnoozeSession")),
+			connect.WithClientOptions(opts...),
+		),
+		unsnoozeSession: connect.NewClient[v1.UnsnoozeSessionRequest, v1.UnsnoozeSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUnsnoozeSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UnsnoozeSession")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -2116,6 +2382,7 @@ type orchestratorServiceClient struct {
 	publishDaemonSnapshot                  *connect.Client[v1.PublishDaemonSnapshotRequest, v1.PublishDaemonSnapshotResponse]
 	daemonStream                           *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
 	listDaemons                            *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
+	removeDaemon                           *connect.Client[v1.RemoveDaemonRequest, v1.RemoveDaemonResponse]
 	transferSession                        *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
 	proxyListSessions                      *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
 	proxyListSessionsAcrossOrganizations   *connect.Client[v1.ProxyListSessionsAcrossOrganizationsRequest, v1.ProxyListSessionsAcrossOrganizationsResponse]
@@ -2135,8 +2402,13 @@ type orchestratorServiceClient struct {
 	proxyListAgentAccounts                 *connect.Client[v1.ProxyListAgentAccountsRequest, v1.ProxyListAgentAccountsResponse]
 	proxyGetChatTranscript                 *connect.Client[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse]
 	proxySendChatMessage                   *connect.Client[v1.ProxySendChatMessageRequest, v1.ProxySendChatMessageResponse]
+	proxyAnswerChatQuestion                *connect.Client[v1.ProxyAnswerChatQuestionRequest, v1.ProxyAnswerChatQuestionResponse]
+	proxyStopChat                          *connect.Client[v1.ProxyStopChatRequest, v1.ProxyStopChatResponse]
 	proxyListReposAggregated               *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
 	proxyListAgents                        *connect.Client[v1.ProxyListAgentsRequest, v1.ProxyListAgentsResponse]
+	proxyListAgentModels                   *connect.Client[v1.ProxyListAgentModelsRequest, v1.ProxyListAgentModelsResponse]
+	proxyGetDaemonSettings                 *connect.Client[v1.ProxyGetDaemonSettingsRequest, v1.ProxyGetDaemonSettingsResponse]
+	proxyUpdateDaemonSettings              *connect.Client[v1.ProxyUpdateDaemonSettingsRequest, v1.ProxyUpdateDaemonSettingsResponse]
 	proxyListRepoPRs                       *connect.Client[v1.ProxyListRepoPRsRequest, v1.ProxyListRepoPRsResponse]
 	proxyListTrackerIssues                 *connect.Client[v1.ProxyListTrackerIssuesRequest, v1.ProxyListTrackerIssuesResponse]
 	proxyGetRepo                           *connect.Client[v1.ProxyGetRepoRequest, v1.ProxyGetRepoResponse]
@@ -2234,12 +2506,15 @@ type orchestratorServiceClient struct {
 	refreshCloudEntitlements               *connect.Client[v1.RefreshCloudEntitlementsRequest, v1.RefreshCloudEntitlementsResponse]
 	getNewsletterStatus                    *connect.Client[v1.GetNewsletterStatusRequest, v1.GetNewsletterStatusResponse]
 	subscribeToNewsletter                  *connect.Client[v1.SubscribeToNewsletterRequest, v1.SubscribeToNewsletterResponse]
+	unsubscribeFromNewsletter              *connect.Client[v1.UnsubscribeFromNewsletterRequest, v1.UnsubscribeFromNewsletterResponse]
 	listOrganizations                      *connect.Client[v1.ListOrganizationsRequest, v1.ListOrganizationsResponse]
 	getOrganization                        *connect.Client[v1.GetOrganizationRequest, v1.GetOrganizationResponse]
 	createOrganization                     *connect.Client[v1.CreateOrganizationRequest, v1.CreateOrganizationResponse]
 	renameOrganization                     *connect.Client[v1.RenameOrganizationRequest, v1.RenameOrganizationResponse]
 	getOrganizationProofHosting            *connect.Client[v1.GetOrganizationProofHostingRequest, v1.GetOrganizationProofHostingResponse]
 	setOrganizationProofHosting            *connect.Client[v1.SetOrganizationProofHostingRequest, v1.SetOrganizationProofHostingResponse]
+	setMemberSessionSharing                *connect.Client[v1.SetMemberSessionSharingRequest, v1.SetMemberSessionSharingResponse]
+	getOrganizationBilling                 *connect.Client[v1.GetOrganizationBillingRequest, v1.GetOrganizationBillingResponse]
 	listOrganizationMembers                *connect.Client[v1.ListOrganizationMembersRequest, v1.ListOrganizationMembersResponse]
 	inviteOrganizationMember               *connect.Client[v1.InviteOrganizationMemberRequest, v1.InviteOrganizationMemberResponse]
 	removeOrganizationMember               *connect.Client[v1.RemoveOrganizationMemberRequest, v1.RemoveOrganizationMemberResponse]
@@ -2275,6 +2550,20 @@ type orchestratorServiceClient struct {
 	listAPITokens                          *connect.Client[v1.ListAPITokensRequest, v1.ListAPITokensResponse]
 	revokeAPIToken                         *connect.Client[v1.RevokeAPITokenRequest, v1.RevokeAPITokenResponse]
 	listPermissions                        *connect.Client[v1.ListPermissionsRequest, v1.ListPermissionsResponse]
+	getUserPreferences                     *connect.Client[v1.GetUserPreferencesRequest, v1.GetUserPreferencesResponse]
+	updateUserPreferences                  *connect.Client[v1.UpdateUserPreferencesRequest, v1.UpdateUserPreferencesResponse]
+	updateUserProfile                      *connect.Client[v1.UpdateUserProfileRequest, v1.UpdateUserProfileResponse]
+	getUserGitHubIdentity                  *connect.Client[v1.GetUserGitHubIdentityRequest, v1.GetUserGitHubIdentityResponse]
+	listSavedViews                         *connect.Client[v1.ListSavedViewsRequest, v1.ListSavedViewsResponse]
+	createSavedView                        *connect.Client[v1.CreateSavedViewRequest, v1.CreateSavedViewResponse]
+	updateSavedView                        *connect.Client[v1.UpdateSavedViewRequest, v1.UpdateSavedViewResponse]
+	deleteSavedView                        *connect.Client[v1.DeleteSavedViewRequest, v1.DeleteSavedViewResponse]
+	reorderSavedViews                      *connect.Client[v1.ReorderSavedViewsRequest, v1.ReorderSavedViewsResponse]
+	listFavorites                          *connect.Client[v1.ListFavoritesRequest, v1.ListFavoritesResponse]
+	setFavorite                            *connect.Client[v1.SetFavoriteRequest, v1.SetFavoriteResponse]
+	removeFavorite                         *connect.Client[v1.RemoveFavoriteRequest, v1.RemoveFavoriteResponse]
+	snoozeSession                          *connect.Client[v1.SnoozeSessionRequest, v1.SnoozeSessionResponse]
+	unsnoozeSession                        *connect.Client[v1.UnsnoozeSessionRequest, v1.UnsnoozeSessionResponse]
 }
 
 // RegisterDaemon calls bossanova.v1.OrchestratorService.RegisterDaemon.
@@ -2295,6 +2584,11 @@ func (c *orchestratorServiceClient) DaemonStream(ctx context.Context) *connect.B
 // ListDaemons calls bossanova.v1.OrchestratorService.ListDaemons.
 func (c *orchestratorServiceClient) ListDaemons(ctx context.Context, req *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error) {
 	return c.listDaemons.CallUnary(ctx, req)
+}
+
+// RemoveDaemon calls bossanova.v1.OrchestratorService.RemoveDaemon.
+func (c *orchestratorServiceClient) RemoveDaemon(ctx context.Context, req *connect.Request[v1.RemoveDaemonRequest]) (*connect.Response[v1.RemoveDaemonResponse], error) {
+	return c.removeDaemon.CallUnary(ctx, req)
 }
 
 // TransferSession calls bossanova.v1.OrchestratorService.TransferSession.
@@ -2396,6 +2690,16 @@ func (c *orchestratorServiceClient) ProxySendChatMessage(ctx context.Context, re
 	return c.proxySendChatMessage.CallUnary(ctx, req)
 }
 
+// ProxyAnswerChatQuestion calls bossanova.v1.OrchestratorService.ProxyAnswerChatQuestion.
+func (c *orchestratorServiceClient) ProxyAnswerChatQuestion(ctx context.Context, req *connect.Request[v1.ProxyAnswerChatQuestionRequest]) (*connect.Response[v1.ProxyAnswerChatQuestionResponse], error) {
+	return c.proxyAnswerChatQuestion.CallUnary(ctx, req)
+}
+
+// ProxyStopChat calls bossanova.v1.OrchestratorService.ProxyStopChat.
+func (c *orchestratorServiceClient) ProxyStopChat(ctx context.Context, req *connect.Request[v1.ProxyStopChatRequest]) (*connect.Response[v1.ProxyStopChatResponse], error) {
+	return c.proxyStopChat.CallUnary(ctx, req)
+}
+
 // ProxyListReposAggregated calls bossanova.v1.OrchestratorService.ProxyListReposAggregated.
 func (c *orchestratorServiceClient) ProxyListReposAggregated(ctx context.Context, req *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error) {
 	return c.proxyListReposAggregated.CallUnary(ctx, req)
@@ -2404,6 +2708,21 @@ func (c *orchestratorServiceClient) ProxyListReposAggregated(ctx context.Context
 // ProxyListAgents calls bossanova.v1.OrchestratorService.ProxyListAgents.
 func (c *orchestratorServiceClient) ProxyListAgents(ctx context.Context, req *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error) {
 	return c.proxyListAgents.CallUnary(ctx, req)
+}
+
+// ProxyListAgentModels calls bossanova.v1.OrchestratorService.ProxyListAgentModels.
+func (c *orchestratorServiceClient) ProxyListAgentModels(ctx context.Context, req *connect.Request[v1.ProxyListAgentModelsRequest]) (*connect.Response[v1.ProxyListAgentModelsResponse], error) {
+	return c.proxyListAgentModels.CallUnary(ctx, req)
+}
+
+// ProxyGetDaemonSettings calls bossanova.v1.OrchestratorService.ProxyGetDaemonSettings.
+func (c *orchestratorServiceClient) ProxyGetDaemonSettings(ctx context.Context, req *connect.Request[v1.ProxyGetDaemonSettingsRequest]) (*connect.Response[v1.ProxyGetDaemonSettingsResponse], error) {
+	return c.proxyGetDaemonSettings.CallUnary(ctx, req)
+}
+
+// ProxyUpdateDaemonSettings calls bossanova.v1.OrchestratorService.ProxyUpdateDaemonSettings.
+func (c *orchestratorServiceClient) ProxyUpdateDaemonSettings(ctx context.Context, req *connect.Request[v1.ProxyUpdateDaemonSettingsRequest]) (*connect.Response[v1.ProxyUpdateDaemonSettingsResponse], error) {
+	return c.proxyUpdateDaemonSettings.CallUnary(ctx, req)
 }
 
 // ProxyListRepoPRs calls bossanova.v1.OrchestratorService.ProxyListRepoPRs.
@@ -2894,6 +3213,11 @@ func (c *orchestratorServiceClient) SubscribeToNewsletter(ctx context.Context, r
 	return c.subscribeToNewsletter.CallUnary(ctx, req)
 }
 
+// UnsubscribeFromNewsletter calls bossanova.v1.OrchestratorService.UnsubscribeFromNewsletter.
+func (c *orchestratorServiceClient) UnsubscribeFromNewsletter(ctx context.Context, req *connect.Request[v1.UnsubscribeFromNewsletterRequest]) (*connect.Response[v1.UnsubscribeFromNewsletterResponse], error) {
+	return c.unsubscribeFromNewsletter.CallUnary(ctx, req)
+}
+
 // ListOrganizations calls bossanova.v1.OrchestratorService.ListOrganizations.
 func (c *orchestratorServiceClient) ListOrganizations(ctx context.Context, req *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error) {
 	return c.listOrganizations.CallUnary(ctx, req)
@@ -2922,6 +3246,16 @@ func (c *orchestratorServiceClient) GetOrganizationProofHosting(ctx context.Cont
 // SetOrganizationProofHosting calls bossanova.v1.OrchestratorService.SetOrganizationProofHosting.
 func (c *orchestratorServiceClient) SetOrganizationProofHosting(ctx context.Context, req *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error) {
 	return c.setOrganizationProofHosting.CallUnary(ctx, req)
+}
+
+// SetMemberSessionSharing calls bossanova.v1.OrchestratorService.SetMemberSessionSharing.
+func (c *orchestratorServiceClient) SetMemberSessionSharing(ctx context.Context, req *connect.Request[v1.SetMemberSessionSharingRequest]) (*connect.Response[v1.SetMemberSessionSharingResponse], error) {
+	return c.setMemberSessionSharing.CallUnary(ctx, req)
+}
+
+// GetOrganizationBilling calls bossanova.v1.OrchestratorService.GetOrganizationBilling.
+func (c *orchestratorServiceClient) GetOrganizationBilling(ctx context.Context, req *connect.Request[v1.GetOrganizationBillingRequest]) (*connect.Response[v1.GetOrganizationBillingResponse], error) {
+	return c.getOrganizationBilling.CallUnary(ctx, req)
 }
 
 // ListOrganizationMembers calls bossanova.v1.OrchestratorService.ListOrganizationMembers.
@@ -3101,6 +3435,76 @@ func (c *orchestratorServiceClient) ListPermissions(ctx context.Context, req *co
 	return c.listPermissions.CallUnary(ctx, req)
 }
 
+// GetUserPreferences calls bossanova.v1.OrchestratorService.GetUserPreferences.
+func (c *orchestratorServiceClient) GetUserPreferences(ctx context.Context, req *connect.Request[v1.GetUserPreferencesRequest]) (*connect.Response[v1.GetUserPreferencesResponse], error) {
+	return c.getUserPreferences.CallUnary(ctx, req)
+}
+
+// UpdateUserPreferences calls bossanova.v1.OrchestratorService.UpdateUserPreferences.
+func (c *orchestratorServiceClient) UpdateUserPreferences(ctx context.Context, req *connect.Request[v1.UpdateUserPreferencesRequest]) (*connect.Response[v1.UpdateUserPreferencesResponse], error) {
+	return c.updateUserPreferences.CallUnary(ctx, req)
+}
+
+// UpdateUserProfile calls bossanova.v1.OrchestratorService.UpdateUserProfile.
+func (c *orchestratorServiceClient) UpdateUserProfile(ctx context.Context, req *connect.Request[v1.UpdateUserProfileRequest]) (*connect.Response[v1.UpdateUserProfileResponse], error) {
+	return c.updateUserProfile.CallUnary(ctx, req)
+}
+
+// GetUserGitHubIdentity calls bossanova.v1.OrchestratorService.GetUserGitHubIdentity.
+func (c *orchestratorServiceClient) GetUserGitHubIdentity(ctx context.Context, req *connect.Request[v1.GetUserGitHubIdentityRequest]) (*connect.Response[v1.GetUserGitHubIdentityResponse], error) {
+	return c.getUserGitHubIdentity.CallUnary(ctx, req)
+}
+
+// ListSavedViews calls bossanova.v1.OrchestratorService.ListSavedViews.
+func (c *orchestratorServiceClient) ListSavedViews(ctx context.Context, req *connect.Request[v1.ListSavedViewsRequest]) (*connect.Response[v1.ListSavedViewsResponse], error) {
+	return c.listSavedViews.CallUnary(ctx, req)
+}
+
+// CreateSavedView calls bossanova.v1.OrchestratorService.CreateSavedView.
+func (c *orchestratorServiceClient) CreateSavedView(ctx context.Context, req *connect.Request[v1.CreateSavedViewRequest]) (*connect.Response[v1.CreateSavedViewResponse], error) {
+	return c.createSavedView.CallUnary(ctx, req)
+}
+
+// UpdateSavedView calls bossanova.v1.OrchestratorService.UpdateSavedView.
+func (c *orchestratorServiceClient) UpdateSavedView(ctx context.Context, req *connect.Request[v1.UpdateSavedViewRequest]) (*connect.Response[v1.UpdateSavedViewResponse], error) {
+	return c.updateSavedView.CallUnary(ctx, req)
+}
+
+// DeleteSavedView calls bossanova.v1.OrchestratorService.DeleteSavedView.
+func (c *orchestratorServiceClient) DeleteSavedView(ctx context.Context, req *connect.Request[v1.DeleteSavedViewRequest]) (*connect.Response[v1.DeleteSavedViewResponse], error) {
+	return c.deleteSavedView.CallUnary(ctx, req)
+}
+
+// ReorderSavedViews calls bossanova.v1.OrchestratorService.ReorderSavedViews.
+func (c *orchestratorServiceClient) ReorderSavedViews(ctx context.Context, req *connect.Request[v1.ReorderSavedViewsRequest]) (*connect.Response[v1.ReorderSavedViewsResponse], error) {
+	return c.reorderSavedViews.CallUnary(ctx, req)
+}
+
+// ListFavorites calls bossanova.v1.OrchestratorService.ListFavorites.
+func (c *orchestratorServiceClient) ListFavorites(ctx context.Context, req *connect.Request[v1.ListFavoritesRequest]) (*connect.Response[v1.ListFavoritesResponse], error) {
+	return c.listFavorites.CallUnary(ctx, req)
+}
+
+// SetFavorite calls bossanova.v1.OrchestratorService.SetFavorite.
+func (c *orchestratorServiceClient) SetFavorite(ctx context.Context, req *connect.Request[v1.SetFavoriteRequest]) (*connect.Response[v1.SetFavoriteResponse], error) {
+	return c.setFavorite.CallUnary(ctx, req)
+}
+
+// RemoveFavorite calls bossanova.v1.OrchestratorService.RemoveFavorite.
+func (c *orchestratorServiceClient) RemoveFavorite(ctx context.Context, req *connect.Request[v1.RemoveFavoriteRequest]) (*connect.Response[v1.RemoveFavoriteResponse], error) {
+	return c.removeFavorite.CallUnary(ctx, req)
+}
+
+// SnoozeSession calls bossanova.v1.OrchestratorService.SnoozeSession.
+func (c *orchestratorServiceClient) SnoozeSession(ctx context.Context, req *connect.Request[v1.SnoozeSessionRequest]) (*connect.Response[v1.SnoozeSessionResponse], error) {
+	return c.snoozeSession.CallUnary(ctx, req)
+}
+
+// UnsnoozeSession calls bossanova.v1.OrchestratorService.UnsnoozeSession.
+func (c *orchestratorServiceClient) UnsnoozeSession(ctx context.Context, req *connect.Request[v1.UnsnoozeSessionRequest]) (*connect.Response[v1.UnsnoozeSessionResponse], error) {
+	return c.unsnoozeSession.CallUnary(ctx, req)
+}
+
 // OrchestratorServiceHandler is an implementation of the bossanova.v1.OrchestratorService service.
 type OrchestratorServiceHandler interface {
 	// Daemon registry
@@ -3119,6 +3523,11 @@ type OrchestratorServiceHandler interface {
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	DaemonStream(context.Context, *connect.BidiStream[v1.DaemonEvent, v1.OrchestratorCommand]) error
 	ListDaemons(context.Context, *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error)
+	// RemoveDaemon forgets a machine: it deletes the daemon's ownership row,
+	// revokes its daemon token and refuses its re-registration until someone
+	// runs a fresh login on the machine. Allowed for the machine's owner and for
+	// an owner of the organization the daemon claimed.
+	RemoveDaemon(context.Context, *connect.Request[v1.RemoveDaemonRequest]) (*connect.Response[v1.RemoveDaemonResponse], error)
 	// Session transfer between daemons
 	TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error)
 	// Proxied daemon RPCs (remote CLI → orchestrator → daemon)
@@ -3167,12 +3576,31 @@ type OrchestratorServiceHandler interface {
 	// Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
 	// carries no session_id.
 	ProxySendChatMessage(context.Context, *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error)
+	// Answers the question a chat's agent waits on in its terminal menu, with
+	// one of its options or with typed words. Writes to the agent like
+	// ProxySendChatMessage, so it takes the same permission and the same cloud
+	// control. question_id must name the question the agent still waits on;
+	// otherwise the daemon types nothing and the call fails FailedPrecondition.
+	// Routes by session_id with the chat scoped to that session.
+	ProxyAnswerChatQuestion(context.Context, *connect.Request[v1.ProxyAnswerChatQuestionRequest]) (*connect.Response[v1.ProxyAnswerChatQuestionResponse], error)
+	// Stops one chat's agent and leaves the session's other chats running. The
+	// chat stays, asleep, and a later message wakes it. Routes by session_id
+	// with the chat scoped to that session.
+	ProxyStopChat(context.Context, *connect.Request[v1.ProxyStopChatRequest]) (*connect.Response[v1.ProxyStopChatResponse], error)
 	// Aggregates repos across the caller's live daemons, deduped by origin URL,
 	// with the serving daemon IDs unioned per repo. Spans every organization the
 	// caller belongs to unless the request narrows it to one.
 	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
 	// Lists the installed agents on a single named daemon via its reverse stream.
 	ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error)
+	// Lists the models one agent on a daemon offers, for the model and effort
+	// pickers. The daemon asks the agent plugin; Bossanova keeps no model list.
+	ProxyListAgentModels(context.Context, *connect.Request[v1.ProxyListAgentModelsRequest]) (*connect.Response[v1.ProxyListAgentModelsResponse], error)
+	// Reads and edits the web-editable subset of a daemon's settings.json. The
+	// daemon enforces the allowlist; cloud control and operator tuning stay
+	// local.
+	ProxyGetDaemonSettings(context.Context, *connect.Request[v1.ProxyGetDaemonSettingsRequest]) (*connect.Response[v1.ProxyGetDaemonSettingsResponse], error)
+	ProxyUpdateDaemonSettings(context.Context, *connect.Request[v1.ProxyUpdateDaemonSettingsRequest]) (*connect.Response[v1.ProxyUpdateDaemonSettingsResponse], error)
 	ProxyListRepoPRs(context.Context, *connect.Request[v1.ProxyListRepoPRsRequest]) (*connect.Response[v1.ProxyListRepoPRsResponse], error)
 	ProxyListTrackerIssues(context.Context, *connect.Request[v1.ProxyListTrackerIssuesRequest]) (*connect.Response[v1.ProxyListTrackerIssuesResponse], error)
 	// Per-repo proxies for web repo management. Route to the daemon named by
@@ -3490,6 +3918,10 @@ type OrchestratorServiceHandler interface {
 	// opt-in; see docs/analytics/newsletter.md.
 	GetNewsletterStatus(context.Context, *connect.Request[v1.GetNewsletterStatusRequest]) (*connect.Response[v1.GetNewsletterStatusResponse], error)
 	SubscribeToNewsletter(context.Context, *connect.Request[v1.SubscribeToNewsletterRequest]) (*connect.Response[v1.SubscribeToNewsletterResponse], error)
+	// UnsubscribeFromNewsletter withdraws the caller's newsletter consent and
+	// removes them from the Loops list. Idempotent: a caller who never opted in
+	// succeeds.
+	UnsubscribeFromNewsletter(context.Context, *connect.Request[v1.UnsubscribeFromNewsletterRequest]) (*connect.Response[v1.UnsubscribeFromNewsletterResponse], error)
 	// Organizations. User-authenticated.
 	ListOrganizations(context.Context, *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error)
 	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
@@ -3503,6 +3935,14 @@ type OrchestratorServiceHandler interface {
 	// caller's active organization. Owner only. Turning on requires the
 	// organization's own cloud access to be active; turning off never does.
 	SetOrganizationProofHosting(context.Context, *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error)
+	// SetMemberSessionSharing turns member session sharing on or off for the
+	// caller's active organization (Organization.is_member_session_sharing_enabled).
+	// Owner only.
+	SetMemberSessionSharing(context.Context, *connect.Request[v1.SetMemberSessionSharingRequest]) (*connect.Response[v1.SetMemberSessionSharingResponse], error)
+	// GetOrganizationBilling reports an organization's plan, seats, renewal and
+	// cloud access for its Billing settings page. The caller must own the
+	// requested organization.
+	GetOrganizationBilling(context.Context, *connect.Request[v1.GetOrganizationBillingRequest]) (*connect.Response[v1.GetOrganizationBillingResponse], error)
 	ListOrganizationMembers(context.Context, *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error)
 	InviteOrganizationMember(context.Context, *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error)
 	RemoveOrganizationMember(context.Context, *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error)
@@ -3692,6 +4132,29 @@ type OrchestratorServiceHandler interface {
 	// requirement from, and the caller's effective permissions in their active
 	// organization, so clients never hard-code slugs.
 	ListPermissions(context.Context, *connect.Request[v1.ListPermissionsRequest]) (*connect.Response[v1.ListPermissionsResponse], error)
+	// Personal settings. Each belongs to the calling user alone and follows
+	// them across organizations and devices.
+	GetUserPreferences(context.Context, *connect.Request[v1.GetUserPreferencesRequest]) (*connect.Response[v1.GetUserPreferencesResponse], error)
+	UpdateUserPreferences(context.Context, *connect.Request[v1.UpdateUserPreferencesRequest]) (*connect.Response[v1.UpdateUserPreferencesResponse], error)
+	// UpdateUserProfile renames the caller in WorkOS, then in bosso's users row.
+	UpdateUserProfile(context.Context, *connect.Request[v1.UpdateUserProfileRequest]) (*connect.Response[v1.UpdateUserProfileResponse], error)
+	GetUserGitHubIdentity(context.Context, *connect.Request[v1.GetUserGitHubIdentityRequest]) (*connect.Response[v1.GetUserGitHubIdentityResponse], error)
+	// Saved views are private to the caller.
+	ListSavedViews(context.Context, *connect.Request[v1.ListSavedViewsRequest]) (*connect.Response[v1.ListSavedViewsResponse], error)
+	CreateSavedView(context.Context, *connect.Request[v1.CreateSavedViewRequest]) (*connect.Response[v1.CreateSavedViewResponse], error)
+	UpdateSavedView(context.Context, *connect.Request[v1.UpdateSavedViewRequest]) (*connect.Response[v1.UpdateSavedViewResponse], error)
+	DeleteSavedView(context.Context, *connect.Request[v1.DeleteSavedViewRequest]) (*connect.Response[v1.DeleteSavedViewResponse], error)
+	ReorderSavedViews(context.Context, *connect.Request[v1.ReorderSavedViewsRequest]) (*connect.Response[v1.ReorderSavedViewsResponse], error)
+	// Sidebar favorites are private to the caller.
+	ListFavorites(context.Context, *connect.Request[v1.ListFavoritesRequest]) (*connect.Response[v1.ListFavoritesResponse], error)
+	SetFavorite(context.Context, *connect.Request[v1.SetFavoriteRequest]) (*connect.Response[v1.SetFavoriteResponse], error)
+	RemoveFavorite(context.Context, *connect.Request[v1.RemoveFavoriteRequest]) (*connect.Response[v1.RemoveFavoriteResponse], error)
+	// SnoozeSession hides a session from the caller ("Not now") until the
+	// session's state changes or expires_at passes. Only the caller's own lists
+	// change; the session itself is untouched. The session must be visible to
+	// the caller.
+	SnoozeSession(context.Context, *connect.Request[v1.SnoozeSessionRequest]) (*connect.Response[v1.SnoozeSessionResponse], error)
+	UnsnoozeSession(context.Context, *connect.Request[v1.UnsnoozeSessionRequest]) (*connect.Response[v1.UnsnoozeSessionResponse], error)
 }
 
 // NewOrchestratorServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -3723,6 +4186,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceListDaemonsProcedure,
 		svc.ListDaemons,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ListDaemons")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRemoveDaemonHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRemoveDaemonProcedure,
+		svc.RemoveDaemon,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RemoveDaemon")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceTransferSessionHandler := connect.NewUnaryHandler(
@@ -3839,6 +4308,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxySendChatMessage")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyAnswerChatQuestionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyAnswerChatQuestionProcedure,
+		svc.ProxyAnswerChatQuestion,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyAnswerChatQuestion")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyStopChatHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyStopChatProcedure,
+		svc.ProxyStopChat,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStopChat")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyListReposAggregatedHandler := connect.NewUnaryHandler(
 		OrchestratorServiceProxyListReposAggregatedProcedure,
 		svc.ProxyListReposAggregated,
@@ -3849,6 +4330,24 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceProxyListAgentsProcedure,
 		svc.ProxyListAgents,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgents")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListAgentModelsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListAgentModelsProcedure,
+		svc.ProxyListAgentModels,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgentModels")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyGetDaemonSettingsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyGetDaemonSettingsProcedure,
+		svc.ProxyGetDaemonSettings,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetDaemonSettings")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyUpdateDaemonSettingsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyUpdateDaemonSettingsProcedure,
+		svc.ProxyUpdateDaemonSettings,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateDaemonSettings")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyListRepoPRsHandler := connect.NewUnaryHandler(
@@ -4433,6 +4932,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("SubscribeToNewsletter")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceUnsubscribeFromNewsletterHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUnsubscribeFromNewsletterProcedure,
+		svc.UnsubscribeFromNewsletter,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UnsubscribeFromNewsletter")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceListOrganizationsHandler := connect.NewUnaryHandler(
 		OrchestratorServiceListOrganizationsProcedure,
 		svc.ListOrganizations,
@@ -4467,6 +4972,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceSetOrganizationProofHostingProcedure,
 		svc.SetOrganizationProofHosting,
 		connect.WithSchema(orchestratorServiceMethods.ByName("SetOrganizationProofHosting")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSetMemberSessionSharingHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSetMemberSessionSharingProcedure,
+		svc.SetMemberSessionSharing,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SetMemberSessionSharing")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetOrganizationBillingHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetOrganizationBillingProcedure,
+		svc.GetOrganizationBilling,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationBilling")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceListOrganizationMembersHandler := connect.NewUnaryHandler(
@@ -4679,6 +5196,90 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ListPermissions")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceGetUserPreferencesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetUserPreferencesProcedure,
+		svc.GetUserPreferences,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetUserPreferences")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceUpdateUserPreferencesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUpdateUserPreferencesProcedure,
+		svc.UpdateUserPreferences,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UpdateUserPreferences")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceUpdateUserProfileHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUpdateUserProfileProcedure,
+		svc.UpdateUserProfile,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UpdateUserProfile")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetUserGitHubIdentityHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetUserGitHubIdentityProcedure,
+		svc.GetUserGitHubIdentity,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetUserGitHubIdentity")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListSavedViewsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListSavedViewsProcedure,
+		svc.ListSavedViews,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListSavedViews")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceCreateSavedViewHandler := connect.NewUnaryHandler(
+		OrchestratorServiceCreateSavedViewProcedure,
+		svc.CreateSavedView,
+		connect.WithSchema(orchestratorServiceMethods.ByName("CreateSavedView")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceUpdateSavedViewHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUpdateSavedViewProcedure,
+		svc.UpdateSavedView,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UpdateSavedView")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceDeleteSavedViewHandler := connect.NewUnaryHandler(
+		OrchestratorServiceDeleteSavedViewProcedure,
+		svc.DeleteSavedView,
+		connect.WithSchema(orchestratorServiceMethods.ByName("DeleteSavedView")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceReorderSavedViewsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceReorderSavedViewsProcedure,
+		svc.ReorderSavedViews,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ReorderSavedViews")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListFavoritesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListFavoritesProcedure,
+		svc.ListFavorites,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListFavorites")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSetFavoriteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSetFavoriteProcedure,
+		svc.SetFavorite,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SetFavorite")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRemoveFavoriteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRemoveFavoriteProcedure,
+		svc.RemoveFavorite,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RemoveFavorite")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSnoozeSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSnoozeSessionProcedure,
+		svc.SnoozeSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SnoozeSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceUnsnoozeSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUnsnoozeSessionProcedure,
+		svc.UnsnoozeSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UnsnoozeSession")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.OrchestratorService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case OrchestratorServiceRegisterDaemonProcedure:
@@ -4689,6 +5290,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceDaemonStreamHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListDaemonsProcedure:
 			orchestratorServiceListDaemonsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRemoveDaemonProcedure:
+			orchestratorServiceRemoveDaemonHandler.ServeHTTP(w, r)
 		case OrchestratorServiceTransferSessionProcedure:
 			orchestratorServiceTransferSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListSessionsProcedure:
@@ -4727,10 +5330,20 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyGetChatTranscriptHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxySendChatMessageProcedure:
 			orchestratorServiceProxySendChatMessageHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyAnswerChatQuestionProcedure:
+			orchestratorServiceProxyAnswerChatQuestionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyStopChatProcedure:
+			orchestratorServiceProxyStopChatHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListReposAggregatedProcedure:
 			orchestratorServiceProxyListReposAggregatedHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListAgentsProcedure:
 			orchestratorServiceProxyListAgentsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListAgentModelsProcedure:
+			orchestratorServiceProxyListAgentModelsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyGetDaemonSettingsProcedure:
+			orchestratorServiceProxyGetDaemonSettingsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyUpdateDaemonSettingsProcedure:
+			orchestratorServiceProxyUpdateDaemonSettingsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListRepoPRsProcedure:
 			orchestratorServiceProxyListRepoPRsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListTrackerIssuesProcedure:
@@ -4925,6 +5538,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceGetNewsletterStatusHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSubscribeToNewsletterProcedure:
 			orchestratorServiceSubscribeToNewsletterHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUnsubscribeFromNewsletterProcedure:
+			orchestratorServiceUnsubscribeFromNewsletterHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListOrganizationsProcedure:
 			orchestratorServiceListOrganizationsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceGetOrganizationProcedure:
@@ -4937,6 +5552,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceGetOrganizationProofHostingHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSetOrganizationProofHostingProcedure:
 			orchestratorServiceSetOrganizationProofHostingHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSetMemberSessionSharingProcedure:
+			orchestratorServiceSetMemberSessionSharingHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetOrganizationBillingProcedure:
+			orchestratorServiceGetOrganizationBillingHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListOrganizationMembersProcedure:
 			orchestratorServiceListOrganizationMembersHandler.ServeHTTP(w, r)
 		case OrchestratorServiceInviteOrganizationMemberProcedure:
@@ -5007,6 +5626,34 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceRevokeAPITokenHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListPermissionsProcedure:
 			orchestratorServiceListPermissionsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetUserPreferencesProcedure:
+			orchestratorServiceGetUserPreferencesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUpdateUserPreferencesProcedure:
+			orchestratorServiceUpdateUserPreferencesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUpdateUserProfileProcedure:
+			orchestratorServiceUpdateUserProfileHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetUserGitHubIdentityProcedure:
+			orchestratorServiceGetUserGitHubIdentityHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListSavedViewsProcedure:
+			orchestratorServiceListSavedViewsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceCreateSavedViewProcedure:
+			orchestratorServiceCreateSavedViewHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUpdateSavedViewProcedure:
+			orchestratorServiceUpdateSavedViewHandler.ServeHTTP(w, r)
+		case OrchestratorServiceDeleteSavedViewProcedure:
+			orchestratorServiceDeleteSavedViewHandler.ServeHTTP(w, r)
+		case OrchestratorServiceReorderSavedViewsProcedure:
+			orchestratorServiceReorderSavedViewsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListFavoritesProcedure:
+			orchestratorServiceListFavoritesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSetFavoriteProcedure:
+			orchestratorServiceSetFavoriteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRemoveFavoriteProcedure:
+			orchestratorServiceRemoveFavoriteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSnoozeSessionProcedure:
+			orchestratorServiceSnoozeSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUnsnoozeSessionProcedure:
+			orchestratorServiceUnsnoozeSessionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -5030,6 +5677,10 @@ func (UnimplementedOrchestratorServiceHandler) DaemonStream(context.Context, *co
 
 func (UnimplementedOrchestratorServiceHandler) ListDaemons(context.Context, *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListDaemons is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RemoveDaemon(context.Context, *connect.Request[v1.RemoveDaemonRequest]) (*connect.Response[v1.RemoveDaemonResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RemoveDaemon is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error) {
@@ -5108,12 +5759,32 @@ func (UnimplementedOrchestratorServiceHandler) ProxySendChatMessage(context.Cont
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxySendChatMessage is not implemented"))
 }
 
+func (UnimplementedOrchestratorServiceHandler) ProxyAnswerChatQuestion(context.Context, *connect.Request[v1.ProxyAnswerChatQuestionRequest]) (*connect.Response[v1.ProxyAnswerChatQuestionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyAnswerChatQuestion is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyStopChat(context.Context, *connect.Request[v1.ProxyStopChatRequest]) (*connect.Response[v1.ProxyStopChatResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyStopChat is not implemented"))
+}
+
 func (UnimplementedOrchestratorServiceHandler) ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListReposAggregated is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListAgents is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListAgentModels(context.Context, *connect.Request[v1.ProxyListAgentModelsRequest]) (*connect.Response[v1.ProxyListAgentModelsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListAgentModels is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyGetDaemonSettings(context.Context, *connect.Request[v1.ProxyGetDaemonSettingsRequest]) (*connect.Response[v1.ProxyGetDaemonSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyGetDaemonSettings is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyUpdateDaemonSettings(context.Context, *connect.Request[v1.ProxyUpdateDaemonSettingsRequest]) (*connect.Response[v1.ProxyUpdateDaemonSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateDaemonSettings is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListRepoPRs(context.Context, *connect.Request[v1.ProxyListRepoPRsRequest]) (*connect.Response[v1.ProxyListRepoPRsResponse], error) {
@@ -5504,6 +6175,10 @@ func (UnimplementedOrchestratorServiceHandler) SubscribeToNewsletter(context.Con
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SubscribeToNewsletter is not implemented"))
 }
 
+func (UnimplementedOrchestratorServiceHandler) UnsubscribeFromNewsletter(context.Context, *connect.Request[v1.UnsubscribeFromNewsletterRequest]) (*connect.Response[v1.UnsubscribeFromNewsletterResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UnsubscribeFromNewsletter is not implemented"))
+}
+
 func (UnimplementedOrchestratorServiceHandler) ListOrganizations(context.Context, *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListOrganizations is not implemented"))
 }
@@ -5526,6 +6201,14 @@ func (UnimplementedOrchestratorServiceHandler) GetOrganizationProofHosting(conte
 
 func (UnimplementedOrchestratorServiceHandler) SetOrganizationProofHosting(context.Context, *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SetOrganizationProofHosting is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SetMemberSessionSharing(context.Context, *connect.Request[v1.SetMemberSessionSharingRequest]) (*connect.Response[v1.SetMemberSessionSharingResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SetMemberSessionSharing is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetOrganizationBilling(context.Context, *connect.Request[v1.GetOrganizationBillingRequest]) (*connect.Response[v1.GetOrganizationBillingResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetOrganizationBilling is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ListOrganizationMembers(context.Context, *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error) {
@@ -5666,4 +6349,60 @@ func (UnimplementedOrchestratorServiceHandler) RevokeAPIToken(context.Context, *
 
 func (UnimplementedOrchestratorServiceHandler) ListPermissions(context.Context, *connect.Request[v1.ListPermissionsRequest]) (*connect.Response[v1.ListPermissionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListPermissions is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetUserPreferences(context.Context, *connect.Request[v1.GetUserPreferencesRequest]) (*connect.Response[v1.GetUserPreferencesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetUserPreferences is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) UpdateUserPreferences(context.Context, *connect.Request[v1.UpdateUserPreferencesRequest]) (*connect.Response[v1.UpdateUserPreferencesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UpdateUserPreferences is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) UpdateUserProfile(context.Context, *connect.Request[v1.UpdateUserProfileRequest]) (*connect.Response[v1.UpdateUserProfileResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UpdateUserProfile is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetUserGitHubIdentity(context.Context, *connect.Request[v1.GetUserGitHubIdentityRequest]) (*connect.Response[v1.GetUserGitHubIdentityResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetUserGitHubIdentity is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListSavedViews(context.Context, *connect.Request[v1.ListSavedViewsRequest]) (*connect.Response[v1.ListSavedViewsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListSavedViews is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) CreateSavedView(context.Context, *connect.Request[v1.CreateSavedViewRequest]) (*connect.Response[v1.CreateSavedViewResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.CreateSavedView is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) UpdateSavedView(context.Context, *connect.Request[v1.UpdateSavedViewRequest]) (*connect.Response[v1.UpdateSavedViewResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UpdateSavedView is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) DeleteSavedView(context.Context, *connect.Request[v1.DeleteSavedViewRequest]) (*connect.Response[v1.DeleteSavedViewResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DeleteSavedView is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ReorderSavedViews(context.Context, *connect.Request[v1.ReorderSavedViewsRequest]) (*connect.Response[v1.ReorderSavedViewsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ReorderSavedViews is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListFavorites(context.Context, *connect.Request[v1.ListFavoritesRequest]) (*connect.Response[v1.ListFavoritesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListFavorites is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SetFavorite(context.Context, *connect.Request[v1.SetFavoriteRequest]) (*connect.Response[v1.SetFavoriteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SetFavorite is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RemoveFavorite(context.Context, *connect.Request[v1.RemoveFavoriteRequest]) (*connect.Response[v1.RemoveFavoriteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RemoveFavorite is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SnoozeSession(context.Context, *connect.Request[v1.SnoozeSessionRequest]) (*connect.Response[v1.SnoozeSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SnoozeSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) UnsnoozeSession(context.Context, *connect.Request[v1.UnsnoozeSessionRequest]) (*connect.Response[v1.UnsnoozeSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UnsnoozeSession is not implemented"))
 }

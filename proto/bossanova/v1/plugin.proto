@@ -457,6 +457,31 @@ service AgentRunnerService {
   // deliberately distinguishable.
   rpc DescribeMCPSurface(DescribeMCPSurfaceRequest)
       returns (DescribeMCPSurfaceResponse);
+
+  // ListModels reports the models the agent offers for the model and effort
+  // pickers, in the agent's order, hidden models omitted. An agent with no
+  // list of its own returns the aliases its CLI accepts. A plugin that cannot
+  // answer returns codes.Unimplemented; the daemon then offers a typed model ID
+  // only.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+
+  // ReadQuestionMenu reads the question menu pane_content shows, if any, as a
+  // ChatQuestion whose id names it by what the menu shows. The daemon adds it
+  // to a structured transcript read, because an agent may not record a
+  // question it waits on until it is answered. A plugin whose agent has no
+  // question menu returns codes.Unimplemented.
+  rpc ReadQuestionMenu(ReadQuestionMenuRequest) returns (ReadQuestionMenuResponse);
+
+  // PlanQuestionAnswer works out the keystrokes that answer the question the
+  // agent is waiting on in its terminal menu, and refuses when that question
+  // is not the one named. pane_content must show the menu of the question
+  // question_id names, with its options in order and its free-text row
+  // untouched; a question the plugin's transcript still ends on counts when
+  // the menu shows its options. Otherwise it answers is_question_pending=false
+  // with no inputs, so a stale answer types nothing. The daemon sends the
+  // inputs and never interprets them. A plugin whose agent has no question
+  // menu returns codes.Unimplemented.
+  rpc PlanQuestionAnswer(PlanQuestionAnswerRequest) returns (PlanQuestionAnswerResponse);
 }
 
 message AgentRunnerServiceGetInfoRequest {}
@@ -920,6 +945,9 @@ message ReadTranscriptRequest {
   string work_dir = 1;           // worktree path (claude derives the project key from it)
   string agent_session_id = 2;   // chat's agent session UUID
   int32 max_messages = 3;        // 0 = all; otherwise return the most recent N
+  // should_include_activity asks for steps, events and questions as their own
+  // ChatMessage kinds, with harness wrappers removed (see ChatMessage).
+  bool should_include_activity = 4;
 }
 message ReadTranscriptResponse {
   repeated ChatMessage messages = 1;
@@ -1104,4 +1132,54 @@ enum UserSettingType {
   USER_SETTING_TYPE_BOOL = 1;
   USER_SETTING_TYPE_STRING = 2;
   USER_SETTING_TYPE_ENUM = 3;
+}
+
+message ListModelsRequest {}
+
+message ListModelsResponse {
+  repeated AgentModel models = 1;
+}
+
+message ReadQuestionMenuRequest {
+  bytes pane_content = 1;
+}
+
+message ReadQuestionMenuResponse {
+  // Unset when the pane shows no question menu.
+  ChatQuestion question = 1;
+}
+
+message PlanQuestionAnswerRequest {
+  string work_dir = 1;
+  string agent_session_id = 2;
+  // ChatQuestion.id of the question being answered.
+  string question_id = 3;
+  // The chat's pane as captured just before planning.
+  bytes pane_content = 4;
+  oneof answer {
+    // Zero-based index into the question's options.
+    uint32 option_index = 5;
+    // Words typed into the menu's own free-text answer. One line.
+    string text = 6;
+  }
+}
+
+message PlanQuestionAnswerResponse {
+  // The named question is still the one the agent waits on, and the pane
+  // shows its menu. False when the agent moved past it or the terminal shows
+  // something else; inputs is then empty.
+  bool is_question_pending = 1;
+  // What to send to the pane, in order. Empty when the question is pending
+  // but this answer cannot be given here; reason then says why.
+  repeated PaneInput inputs = 2;
+  string reason = 3;
+}
+
+// PaneInput is one thing to send to an agent's terminal: a named key, as
+// tmux send-keys names it ("2", "Enter"), or literal text typed as is.
+message PaneInput {
+  oneof input {
+    string key = 1;
+    string text = 2;
+  }
 }

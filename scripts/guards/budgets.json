@@ -25,7 +25,6 @@
       "lib/bossalib/kit/projectconfig:Reconcile": 34,
       "lib/bossalib/kit/projectconfig:validator.crons": 36,
       "lib/bossalib/kit/projectconfig:walker.walk": 34,
-      "plugins/bossd-plugin-codex:codexAppServerOperationRegistry.Operations": 42,
       "plugins/bossd-plugin-codex:lastTurnIsUser": 33,
       "plugins/bossd-plugin-codex:scanInteractiveSessionCandidatesInWindowWith": 36,
       "plugins/bossd-plugin-repair:repairMonitor.maybeRepair": 33,
@@ -183,7 +182,7 @@
       "services/boss/internal/domain/clidoc/registry.go": 1023,
       "services/boss/internal/fixtures/fixtures.go": 1936,
       "services/bossd/api/daemon/repair_doctor.go": 1092,
-      "services/bossd/api/daemon/server.go": 1142,
+      "services/bossd/api/daemon/server.go": 1079,
       "services/bossd/api/plugin/host_service.go": 2784,
       "services/bossd/api/proxy/proxy_server.go": 2578,
       "services/bossd/api/upstream/adapters.go": 1681,
@@ -205,7 +204,6 @@
       "services/bossd/internal/session/tmux_chat.go": 2615,
       "services/bossd/internal/status/tracker.go": 1035,
       "services/bossd/internal/taskorchestrator/orchestrator.go": 1145,
-      "services/bossd/testharness/harness.go": 1007,
       "services/bosso/api/orchestrator/billing/billing.go": 1349,
       "services/bosso/api/webhook/handler.go": 1289,
       "services/bosso/cmd/main.go": 2301,
@@ -350,11 +348,8 @@
       "services/bosso/internal/orchestratortest/repo_organizations_test.go": 2070,
       "services/bosso/internal/stream/registry_test.go": 2021,
       "services/bosso/internal/triggers/triggerlaunch/worker_test.go": 1561,
-      "services/web/src/features/accounts/pages/AccountsSettings.reconnect.test.tsx": 1651,
-      "services/web/src/features/accounts/pages/AccountsSettings.test.tsx": 2008,
-      "services/web/src/features/chat/pages/ChatTerminal.test.tsx": 1763,
-      "services/web/src/features/cron/pages/CronJobs.test.tsx": 1616,
-      "services/web/src/features/repos/pages/RepoSettings.test.tsx": 1730
+      "services/web/src/features/accounts/pages/AccountsSettings.reconnect.test.tsx": 1542,
+      "services/web/src/features/chat/pages/ChatTerminal.test.tsx": 1763
     }
   },
   "ts-cognitive-complexity": {
@@ -366,32 +361,13 @@
       "services/web/e2e/real/global-setup.ts": 1,
       "services/web/src/features/chat/lib/touchScroll.ts": 1,
       "services/web/src/features/chat/lib/wsAttach.ts": 1,
-      "services/web/src/features/chat/pages/ChatTerminal.tsx": 1,
-      "services/web/src/features/organizations/pages/OrganizationSettings.tsx": 1,
-      "services/web/src/features/repos/pages/RepoEdit.tsx": 1,
-      "services/web/src/shared/ui/ShortcutLauncher.tsx": 1
+      "services/web/src/features/chat/pages/ChatTerminal.tsx": 1
     }
   },
   "tsx-file-size": {
     "default": 400,
     "subjects": {
-      "services/web/src/features/accounts/pages/AccountsSettings.tsx": 978,
-      "services/web/src/features/chat/pages/ChatTerminal.tsx": 1176,
-      "services/web/src/features/cron/components/CronJobForm.tsx": 524,
-      "services/web/src/features/cron/pages/CronJobs.tsx": 976,
-      "services/web/src/features/notes/pages/OrganizationNotes.tsx": 907,
-      "services/web/src/features/organizations/pages/OrganizationSettings.tsx": 900,
-      "services/web/src/features/repos/pages/RepoEdit.tsx": 592,
-      "services/web/src/features/repos/pages/RepoSettings.tsx": 977,
-      "services/web/src/features/triggers/components/TriggerFormFields.tsx": 447,
-      "services/web/src/features/triggers/components/TriggerFormSections.tsx": 404,
-      "services/web/src/features/triggers/pages/TriggerEdit.tsx": 421,
-      "services/web/src/features/triggers/pages/Triggers.tsx": 497,
-      "services/web/src/features/webhooks/components/WebhookDeliveries.tsx": 454,
-      "services/web/src/features/webhooks/components/WebhookForm.tsx": 446,
-      "services/web/src/features/webhooks/pages/WebhookEdit.tsx": 430,
-      "services/web/src/features/webhooks/pages/Webhooks.tsx": 462,
-      "services/web/src/shared/ui/filters/FilterMenu.tsx": 440
+      "services/web/src/features/chat/pages/ChatTerminal.tsx": 1176
     }
   },
   "warehouse-file-size": {

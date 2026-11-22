@@ -26,6 +26,8 @@ type wakeHook struct {
 	transcripts transcriptOracle
 	argv        argvBuilder
 	resolver    interactiveSessionResolver
+	// stopChat stands in for lifecycle.StopChat in StopChat.
+	stopChat func(ctx context.Context, sessionID, agentSessionID string) error
 }
 
 // ErrWakeChatNotFound is returned by WakeChatInternal when the named chat
@@ -173,6 +175,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			},
 			Model:                  chat.Model,
 			SessionAgentName:       sess.AgentName,
+			SessionModel:           sess.Model,
 			SessionEffectiveEffort: sess.EffectiveEffort,
 		})
 		if err != nil {

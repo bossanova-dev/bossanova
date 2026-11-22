@@ -92,6 +92,12 @@ func TestNotifyAuthChange_LoginReturnsTheDaemonVerdict(t *testing.T) {
 			err:         errors.New("register boom"),
 			wantOutcome: pb.NotifyAuthChangeResponse_OUTCOME_REGISTER_FAILED,
 		},
+		{
+			name:        "a machine removed by another account says so",
+			verdict:     LoginVerdict{Outcome: LoginOutcomeRemovedByAnotherUser},
+			err:         errors.New("removed by another account"),
+			wantOutcome: pb.NotifyAuthChangeResponse_OUTCOME_REMOVED_BY_ANOTHER_USER,
+		},
 	}
 
 	for _, tc := range tests {
@@ -195,6 +201,7 @@ func TestLoginVerdictToProto_ReloginReasonOnlyRidesTheFlaggedOutcome(t *testing.
 		LoginOutcomeOK,
 		LoginOutcomeCredentialsMissing,
 		LoginOutcomeRegisterFailed,
+		LoginOutcomeRemovedByAnotherUser,
 	} {
 		got := loginVerdictToProto(LoginVerdict{Outcome: outcome, ReloginReason: "refresh_token_rejected"})
 		if got.GetReloginReason() != "" {

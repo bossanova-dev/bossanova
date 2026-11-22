@@ -1,11 +1,13 @@
 package callback
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/recurser/bossd/internal/domain"
 
+	"github.com/recurser/bossalib/contract/plugin/userturn"
 	"github.com/recurser/bossalib/models"
 )
 
@@ -160,5 +162,25 @@ func TestBuildCallbackPrompt_MessageReproducedVerbatimBetweenMarkers(t *testing.
 	between := got[beginIdx+len(registeredMessageBegin) : endIdx]
 	if !strings.Contains(between, secret) {
 		t.Errorf("registered message not reproduced verbatim between markers.\nbetween=%q", between)
+	}
+}
+
+// The transcript readers recognise a callback only by the frame this prompt
+// writes, so a change to the frame must keep them recognising it.
+func TestBuildCallbackPrompt_ReadsBackAsAGitHubEvent(t *testing.T) {
+	group := "grp-123"
+	for _, cb := range []*domain.GitHubCallback{
+		{ID: "cb-1", RepoOwner: "acme", RepoName: "widgets.go", PRNumber: 42, Trigger: models.GitHubCallbackTriggerChecksPassed, Message: "merge it"},
+		{ID: "cb-2", GroupID: &group, RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerMerged, Message: "", AttemptCount: 2},
+	} {
+		got := userturn.Classify(BuildCallbackPrompt(cb, "checks_failed"))
+		want := userturn.Turn{Kind: userturn.Event, Event: userturn.Notice{
+			Source: userturn.SourceGitHub,
+			Text:   strings.ReplaceAll(string(cb.Trigger), "_", " ") + " on acme/" + cb.RepoName + "#" + strconv.Itoa(cb.PRNumber),
+			URL:    "https://github.com/acme/" + cb.RepoName + "/pull/" + strconv.Itoa(cb.PRNumber),
+		}}
+		if got != want {
+			t.Errorf("Classify(prompt for %s) = %+v, want %+v", cb.ID, got, want)
+		}
 	}
 }

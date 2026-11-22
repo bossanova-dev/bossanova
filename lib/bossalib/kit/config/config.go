@@ -5,13 +5,11 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"testing"
 	"time"
 )
 
@@ -1446,6 +1444,11 @@ func LoadFrom(path string) (Settings, error) {
 		return DefaultSettings(), err
 	}
 
+	return decodeSettings(data, cleaned)
+}
+
+// decodeSettings parses settings.json bytes as LoadFrom does, defaults included.
+func decodeSettings(data []byte, cleaned string) (Settings, error) {
 	s := DefaultSettings()
 	if err := json.Unmarshal(data, &s); err != nil {
 		return DefaultSettings(), fmt.Errorf("parse settings %q: %w", cleaned, err)
@@ -1477,79 +1480,11 @@ func SaveTo(path string, s Settings) error {
 }
 
 func saveTo(path string, s Settings, syncParentDir func(string) error) error {
-	if err := guardRealDefaultWrite(
-		path,
-		testing.Testing(),
-		refusesDefaultSettingsWrite(),
-		realDefaultPath,
-		initEnvSettingsPath,
-	); err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create settings directory %q: %w", path, err)
-	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal settings %q: %w", path, err)
 	}
-	data = append(data, '\n')
-
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("create settings temporary file %q: %w", path, err)
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write settings temporary file %q: %w", path, err)
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("set settings temporary file permissions %q: %w", path, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync settings temporary file %q: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close settings temporary file %q: %w", path, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("replace settings %q: %w", path, err)
-	}
-	cleanup = false
-	if err := syncParentDir(dir); err != nil {
-		return fmt.Errorf("sync settings directory for %q: %w", path, err)
-	}
-	return nil
-}
-
-func syncDir(dir string) error {
-	cleaned := filepath.Clean(dir)
-	f, err := os.Open(cleaned)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	return syncDirectory(f)
-}
-
-// syncDirectory preserves the one platform-specific directory-sync error that
-// is safe to ignore while returning every other failure to the caller.
-func syncDirectory(f interface{ Sync() error }) error {
-	if err := f.Sync(); err != nil && err != io.ErrUnexpectedEOF {
-		return err
-	}
-	return nil
+	return replaceSettingsFile(path, append(data, '\n'), syncParentDir, nil)
 }
 
 // AutoResumeDroppedRunsEnabled reports whether dropped-run recovery is enabled.

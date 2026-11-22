@@ -264,6 +264,11 @@ func renderDaemonLoginVerdict(resp *pb.NotifyAuthChangeResponse) string {
 		// retries on its own.
 		return "Note: the daemon could not reach the orchestrator to re-register after this login; it will retry in the background."
 
+	case pb.NotifyAuthChangeResponse_OUTCOME_REMOVED_BY_ANOTHER_USER:
+		return "Warning: this machine was removed from Bossanova by the account that owned it, so this account cannot add it back. " +
+			"That account can run `boss login` on this machine to add it back, or give the daemon a new id " +
+			"(delete the daemon-id file in its data directory, or change BOSSD_DAEMON_ID when that is set) and restart it to add it as a new machine."
+
 	default:
 		return ""
 	}

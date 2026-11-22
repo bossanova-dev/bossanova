@@ -6,6 +6,7 @@ go_library(
         "attach.go",
         "composer_marker.go",
         "intconv.go",
+        "pane_inputs.go",
         "panes.go",
         "ready_marker.go",
         "serve.go",

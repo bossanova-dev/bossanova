@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/recurser/bossd/internal/domain"
+
+	"github.com/recurser/bossalib/contract/plugin/userturn"
 )
 
 func testBroadcast(message string, origin *string) *domain.Broadcast {
@@ -122,5 +124,15 @@ func TestBuildBroadcastPrompt_BodyIsNeverABareControlCommand(t *testing.T) {
 	// would look.
 	if strings.TrimSpace(lines[0]) == body {
 		t.Errorf("body is the first line of the prompt:\n%s", got)
+	}
+}
+
+// The transcript readers recognise a broadcast only by the frame this prompt
+// writes, so a change to the frame must keep them recognising it.
+func TestBuildBroadcastPrompt_ReadsBackAsABroadcastEvent(t *testing.T) {
+	got := userturn.Classify(BuildBroadcastPrompt(testBroadcast("rebase onto main", nil), testDelivery()))
+	want := userturn.Turn{Kind: userturn.Event, Event: userturn.Notice{Source: userturn.SourceBossanova, Text: "Broadcast received"}}
+	if got != want {
+		t.Fatalf("Classify(broadcast prompt) = %+v, want %+v", got, want)
 	}
 }

@@ -42,7 +42,6 @@ import (
 	server "github.com/recurser/bossd/api/daemon"
 	"github.com/recurser/bossd/api/hooks"
 	"github.com/recurser/bossd/api/upstream"
-	"github.com/recurser/bossd/internal/adapter/accountcred"
 	"github.com/recurser/bossd/internal/adapter/migrate"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
@@ -84,6 +83,9 @@ type Options struct {
 	// WorkflowServices receive display status notifications from the same
 	// DisplayTracker change point that production wires to the plugin host.
 	WorkflowServices []pluginpkg.WorkflowService
+	// SettingsPath, when non-empty, is the settings.json the daemon reads.
+	// Seed it before construction. Empty selects a throwaway temp file.
+	SettingsPath string
 }
 
 // Harness provides a fully wired bossd daemon for E2E tests.
@@ -134,6 +136,11 @@ type Harness struct {
 	// AgentLogsDir is the bossd-owned directory where tmux-hosted agent
 	// output is written. E2E tests use it to seed durable repair activity.
 	AgentLogsDir string
+
+	// SettingsPath is the settings.json every config.Load in the daemon reads
+	// while this harness runs; BOSS_SETTINGS_PATH points here, so the
+	// developer's real settings cannot leak into a test.
+	SettingsPath string
 
 	socketPath string
 	httpServer *http.Server
@@ -186,6 +193,12 @@ func (h *Harness) SetAgentClientsForTest(m map[string]agent.RunnerClient) {
 func newHarness(t *testing.T, opts Options) *Harness {
 	dbPath := opts.DBPath
 	t.Helper()
+
+	settingsPath := opts.SettingsPath
+	if settingsPath == "" {
+		settingsPath = filepath.Join(t.TempDir(), "settings.json")
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
 
 	var (
 		database *sql.DB
@@ -299,7 +312,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		t.Fatal("timed out waiting for the realtime poller's initial poll")
 	}
 
-	h := &Harness{}
+	h := &Harness{SettingsPath: settingsPath}
 	mockAgentClient := &MockAgentClient{Name: "claude"}
 	mockCodexClient := &MockAgentClient{Name: "codex"}
 	srv := server.New(server.Config{
@@ -964,44 +977,4 @@ func mergeSessionEvents(ctx context.Context, a, b <-chan session.Event) <-chan s
 		}
 	})
 	return out
-}
-
-// memAgentAccountCreds is an in-memory server.AgentAccountCredentialStore for the
-// harness. It mirrors accountcred.Store's not-found semantics (Load and Delete
-// return accountcred.ErrCredentialNotFound for a missing entry) without linking
-// the real OS keyring, so harness-based tests never write real keychain items.
-type memAgentAccountCreds struct {
-	mu    sync.Mutex
-	blobs map[string][]byte
-}
-
-func newMemAccountCreds() *memAgentAccountCreds {
-	return &memAgentAccountCreds{blobs: map[string][]byte{}}
-}
-
-func (m *memAgentAccountCreds) Save(accountID string, blob []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.blobs[accountID] = append([]byte(nil), blob...)
-	return nil
-}
-
-func (m *memAgentAccountCreds) Load(accountID string) ([]byte, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	blob, ok := m.blobs[accountID]
-	if !ok {
-		return nil, accountcred.ErrCredentialNotFound
-	}
-	return append([]byte(nil), blob...), nil
-}
-
-func (m *memAgentAccountCreds) Delete(accountID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.blobs[accountID]; !ok {
-		return accountcred.ErrCredentialNotFound
-	}
-	delete(m.blobs, accountID)
-	return nil
 }

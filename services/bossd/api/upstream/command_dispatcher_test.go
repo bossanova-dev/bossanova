@@ -237,7 +237,7 @@ func (f *fakeCommandHandler) LinkSessionPR(_ context.Context, sessionID, pr stri
 	f.linkPR = pr
 	return f.linkSession, f.returnErr
 }
-func (f *fakeCommandHandler) RecordChat(_ context.Context, _, _, _ string, _ bool, _ string) (*pb.AgentChat, error) {
+func (f *fakeCommandHandler) RecordChat(context.Context, *pb.RecordChatCommand) (*pb.AgentChat, error) {
 	f.recordChatCalls.Add(1)
 	return f.recordChatResult, f.returnErr
 }
@@ -300,7 +300,7 @@ func (f *fakeCommandHandler) ListTrackerIssues(_ context.Context, repoID, query 
 	return f.issues, f.returnErr
 }
 
-func (f *fakeCommandHandler) GetChatTranscript(_ context.Context, sessionID, _ string, _ int32) (*pb.GetChatTranscriptResponse, error) {
+func (f *fakeCommandHandler) GetChatTranscript(_ context.Context, sessionID, _ string, _ int32, _ bool) (*pb.GetChatTranscriptResponse, error) {
 	f.transcriptSession = sessionID
 	return f.transcript, f.returnErr
 }

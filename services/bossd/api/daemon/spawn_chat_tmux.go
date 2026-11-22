@@ -212,22 +212,23 @@ type spawnInput struct {
 	// session.BuildAppendSystemPrompt alongside the text; nil (the value a
 	// caller that builds no instructions passes) reports nothing.
 	AppendSystemPromptClasses []string
-	// Model is the CHAT's opaque agent model id ("" = plugin default). Every
-	// caller passes chat.Model, which is why nothing here re-resolves it across
-	// an agent boundary: a model the chat bound is already its own agent's, so
-	// session.EffectiveModelForAgent has nothing to reset (BOS-1281 — the
-	// comment previously said "the session's", which named a value no caller
-	// has ever passed). It must thread through so a re-ensured (RecordChat) or
-	// woken (WakeChat) pane launches on the same model the chat was created
-	// with rather than silently reverting to the plugin default.
+	// Model is the CHAT's opaque agent model id. Every caller passes
+	// chat.Model, so a re-ensured (RecordChat) or woken (WakeChat) pane
+	// launches on the model the chat was created with. A chat with no model of
+	// its own launches on SessionModel when it runs the session's agent, as
+	// StartTmuxChat seeds it and DescribeChatLaunch previews it (BOS-1281);
+	// session.EffectiveModelForAgent keeps a session's model from crossing
+	// into another agent's chat.
 	Model string
+	// SessionModel is the parent session's model id ("" = plugin default).
+	SessionModel string
 	// SessionAgentName is the parent session's resolved agent name. It lets the
 	// spawn resolver distinguish the original session effort from a cross-agent
 	// chat that must use its own agent's effort config/default.
 	SessionAgentName string
 	// SessionEffectiveEffort is the write-once session effort resolved at
-	// creation. Agent chats can carry model overrides today, but effort remains
-	// session-scoped until a chat-level field exists.
+	// creation. A chat with no effort of its own (chat.Effort) launches on it
+	// when it runs the session's agent.
 	SessionEffectiveEffort string
 	// Repo is the parent repo (BOS-1562); nil when its lookup failed, which
 	// counts as untrusted. Every spawn is a real launch, so spawnChatTmux sends
@@ -422,8 +423,8 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 			return spawnResult{}, envErr
 		}
 	}
-	effort := session.EffectiveEffortForAgent(in.SessionAgentName, in.SessionEffectiveEffort, in.Chat.AgentName)
-	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, effort, configHomeEnv(sessionEnv, in.WorktreePath), sessionEnv["ANTHROPIC_API_KEY"] == domain.SentinelAPIKey, repotrust.ProjectTrustFor(in.Repo, in.WorktreePath))
+	model, effort := in.launchModelAndEffort()
+	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, model, effort, configHomeEnv(sessionEnv, in.WorktreePath), sessionEnv["ANTHROPIC_API_KEY"] == domain.SentinelAPIKey, repotrust.ProjectTrustFor(in.Repo, in.WorktreePath))
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)
 	}
@@ -709,4 +710,17 @@ func configHomeEnv(env map[string]string, worktreePath string) map[string]string
 		return nil
 	}
 	return out
+}
+
+// launchModelAndEffort is what the chat launches on: its own model and effort,
+// else the session's for the session's agent, else that agent's default.
+func (in spawnInput) launchModelAndEffort() (model, effort string) {
+	model, effort = in.Model, in.Chat.Effort
+	if model == "" {
+		model = session.EffectiveModelForAgent(in.SessionAgentName, in.SessionModel, in.Chat.AgentName)
+	}
+	if effort == "" {
+		effort = session.EffectiveEffortForAgent(in.SessionAgentName, in.SessionEffectiveEffort, in.Chat.AgentName)
+	}
+	return model, effort
 }

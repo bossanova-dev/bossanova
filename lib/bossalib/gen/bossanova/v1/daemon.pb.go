@@ -872,6 +872,11 @@ const (
 	// Credentials were clean and the auth gate WAS cleared, but the proactive
 	// re-register failed. The reactive path remains the backstop.
 	NotifyAuthChangeResponse_OUTCOME_REGISTER_FAILED NotifyAuthChangeResponse_Outcome = 4
+	// Credentials were clean, but bosso refused the registration because the
+	// machine was removed by the account that owned it, and this login is
+	// another account's. Neither path retries; the previous owner must log in
+	// on the machine again, or the daemon must take a new id.
+	NotifyAuthChangeResponse_OUTCOME_REMOVED_BY_ANOTHER_USER NotifyAuthChangeResponse_Outcome = 5
 )
 
 // Enum value maps for NotifyAuthChangeResponse_Outcome.
@@ -882,13 +887,15 @@ var (
 		2: "OUTCOME_CREDENTIALS_FLAGGED",
 		3: "OUTCOME_CREDENTIALS_MISSING",
 		4: "OUTCOME_REGISTER_FAILED",
+		5: "OUTCOME_REMOVED_BY_ANOTHER_USER",
 	}
 	NotifyAuthChangeResponse_Outcome_value = map[string]int32{
-		"OUTCOME_UNSPECIFIED":         0,
-		"OUTCOME_OK":                  1,
-		"OUTCOME_CREDENTIALS_FLAGGED": 2,
-		"OUTCOME_CREDENTIALS_MISSING": 3,
-		"OUTCOME_REGISTER_FAILED":     4,
+		"OUTCOME_UNSPECIFIED":             0,
+		"OUTCOME_OK":                      1,
+		"OUTCOME_CREDENTIALS_FLAGGED":     2,
+		"OUTCOME_CREDENTIALS_MISSING":     3,
+		"OUTCOME_REGISTER_FAILED":         4,
+		"OUTCOME_REMOVED_BY_ANOTHER_USER": 5,
 	}
 )
 
@@ -1771,6 +1778,7 @@ type UpdateRepoRequest struct {
 	IsTrusted *bool `protobuf:"varint,23,opt,name=is_trusted,json=isTrusted,proto3,oneof" json:"is_trusted,omitempty"`
 	// Absent leaves the command unchanged; empty clears it.
 	ServeScript   *string `protobuf:"bytes,24,opt,name=serve_script,json=serveScript,proto3,oneof" json:"serve_script,omitempty"`
+	CanAutoRotate *bool   `protobuf:"varint,25,opt,name=can_auto_rotate,json=canAutoRotate,proto3,oneof" json:"can_auto_rotate,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1936,6 +1944,13 @@ func (x *UpdateRepoRequest) GetServeScript() string {
 		return *x.ServeScript
 	}
 	return ""
+}
+
+func (x *UpdateRepoRequest) GetCanAutoRotate() bool {
+	if x != nil && x.CanAutoRotate != nil {
+		return *x.CanAutoRotate
+	}
+	return false
 }
 
 type UpdateRepoResponse struct {
@@ -6415,7 +6430,13 @@ type RecordChatRequest struct {
 	AgentName *string `protobuf:"bytes,5,opt,name=agent_name,json=agentName,proto3,oneof" json:"agent_name,omitempty"`
 	// role is the purpose of a NEW chat. UNSPECIFIED records an operator chat.
 	// Ignored when the chat already exists: a chat's role never changes.
-	Role          ChatRole `protobuf:"varint,6,opt,name=role,proto3,enum=bossanova.v1.ChatRole" json:"role,omitempty"`
+	Role ChatRole `protobuf:"varint,6,opt,name=role,proto3,enum=bossanova.v1.ChatRole" json:"role,omitempty"`
+	// model and effort set a NEW chat's agent model id and reasoning effort.
+	// Unset or empty inherits the session's when the chat runs the session's
+	// agent, else that agent's configured default. Ignored when the chat
+	// already exists.
+	Model         *string `protobuf:"bytes,7,opt,name=model,proto3,oneof" json:"model,omitempty"`
+	Effort        *string `protobuf:"bytes,8,opt,name=effort,proto3,oneof" json:"effort,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6490,6 +6511,20 @@ func (x *RecordChatRequest) GetRole() ChatRole {
 		return x.Role
 	}
 	return ChatRole_CHAT_ROLE_UNSPECIFIED
+}
+
+func (x *RecordChatRequest) GetModel() string {
+	if x != nil && x.Model != nil {
+		return *x.Model
+	}
+	return ""
+}
+
+func (x *RecordChatRequest) GetEffort() string {
+	if x != nil && x.Effort != nil {
+		return *x.Effort
+	}
+	return ""
 }
 
 type RecordChatResponse struct {
@@ -7221,10 +7256,12 @@ type GetChatTranscriptRequest struct {
 	// session_id, when set, scopes the read: the daemon rejects the request
 	// (NotFound) if the chat does not belong to this session. Empty skips the
 	// check, like DeleteChatRequest.
-	SessionId     string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	MaxMessages   int32  `protobuf:"varint,3,opt,name=max_messages,json=maxMessages,proto3" json:"max_messages,omitempty"` // 0 = all; otherwise the most recent N
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SessionId   string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	MaxMessages int32  `protobuf:"varint,3,opt,name=max_messages,json=maxMessages,proto3" json:"max_messages,omitempty"` // 0 = all; otherwise the most recent N
+	// should_include_activity asks for the structured transcript (see ChatMessage).
+	ShouldIncludeActivity bool `protobuf:"varint,4,opt,name=should_include_activity,json=shouldIncludeActivity,proto3" json:"should_include_activity,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *GetChatTranscriptRequest) Reset() {
@@ -7276,6 +7313,13 @@ func (x *GetChatTranscriptRequest) GetMaxMessages() int32 {
 		return x.MaxMessages
 	}
 	return 0
+}
+
+func (x *GetChatTranscriptRequest) GetShouldIncludeActivity() bool {
+	if x != nil {
+		return x.ShouldIncludeActivity
+	}
+	return false
 }
 
 type GetChatTranscriptResponse struct {
@@ -18446,7 +18490,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x05repos\x18\x01 \x03(\v2\x12.bossanova.v1.RepoR\x05repos\"#\n" +
 	"\x11RemoveRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x14\n" +
-	"\x12RemoveRepoResponse\"\xb0\n" +
+	"\x12RemoveRepoResponse\"\xf1\n" +
 	"\n" +
 	"\x11UpdateRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12&\n" +
@@ -18472,7 +18516,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x11worktree_base_dir\x18\x16 \x01(\tH\fR\x0fworktreeBaseDir\x88\x01\x01\x12\"\n" +
 	"\n" +
 	"is_trusted\x18\x17 \x01(\bH\rR\tisTrusted\x88\x01\x01\x12&\n" +
-	"\fserve_script\x18\x18 \x01(\tH\x0eR\vserveScript\x88\x01\x01B\x0f\n" +
+	"\fserve_script\x18\x18 \x01(\tH\x0eR\vserveScript\x88\x01\x01\x12+\n" +
+	"\x0fcan_auto_rotate\x18\x19 \x01(\bH\x0fR\rcanAutoRotate\x88\x01\x01B\x0f\n" +
 	"\r_display_nameB\x11\n" +
 	"\x0f_can_auto_mergeB\x1c\n" +
 	"\x1a_can_auto_merge_dependabotB\x11\n" +
@@ -18487,7 +18532,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x1d_should_keep_branches_currentB\x14\n" +
 	"\x12_worktree_base_dirB\r\n" +
 	"\v_is_trustedB\x0f\n" +
-	"\r_serve_scriptJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\x0e\x10\x0fJ\x04\b\n" +
+	"\r_serve_scriptB\x12\n" +
+	"\x10_can_auto_rotateJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\x0e\x10\x0fJ\x04\b\n" +
 	"\x10\vJ\x04\b\r\x10\x0e\"<\n" +
 	"\x12UpdateRepoResponse\x12&\n" +
 	"\x04repo\x18\x01 \x01(\v2\x12.bossanova.v1.RepoR\x04repo\"(\n" +
@@ -18816,7 +18862,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"older_than\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\tolderThan\x88\x01\x01B\r\n" +
 	"\v_older_than\"9\n" +
 	"\x12EmptyTrashResponse\x12#\n" +
-	"\rdeleted_count\x18\x01 \x01(\x05R\fdeletedCount\"\xe9\x01\n" +
+	"\rdeleted_count\x18\x01 \x01(\x05R\fdeletedCount\"\xb6\x02\n" +
 	"\x11RecordChatRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
@@ -18825,8 +18871,12 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x06resume\x18\x04 \x01(\bR\x06resume\x12\"\n" +
 	"\n" +
 	"agent_name\x18\x05 \x01(\tH\x00R\tagentName\x88\x01\x01\x12*\n" +
-	"\x04role\x18\x06 \x01(\x0e2\x16.bossanova.v1.ChatRoleR\x04roleB\r\n" +
-	"\v_agent_name\"A\n" +
+	"\x04role\x18\x06 \x01(\x0e2\x16.bossanova.v1.ChatRoleR\x04role\x12\x19\n" +
+	"\x05model\x18\a \x01(\tH\x01R\x05model\x88\x01\x01\x12\x1b\n" +
+	"\x06effort\x18\b \x01(\tH\x02R\x06effort\x88\x01\x01B\r\n" +
+	"\v_agent_nameB\b\n" +
+	"\x06_modelB\t\n" +
+	"\a_effort\"A\n" +
 	"\x12RecordChatResponse\x12+\n" +
 	"\x04chat\x18\x01 \x01(\v2\x17.bossanova.v1.AgentChatR\x04chat\"1\n" +
 	"\x10ListChatsRequest\x12\x1d\n" +
@@ -18883,12 +18933,13 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\aservers\x18\x06 \x03(\v2\x1d.bossanova.v1.MCPServerReportR\aservers\x12\x1f\n" +
 	"\vprobe_error\x18\a \x01(\tR\n" +
 	"probeError\x127\n" +
-	"\tprobed_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\bprobedAt\"\x86\x01\n" +
+	"\tprobed_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\bprobedAt\"\xbe\x01\n" +
 	"\x18GetChatTranscriptRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12!\n" +
-	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\"\xb4\x01\n" +
+	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\x126\n" +
+	"\x17should_include_activity\x18\x04 \x01(\bR\x15shouldIncludeActivity\"\xb4\x01\n" +
 	"\x19GetChatTranscriptResponse\x125\n" +
 	"\bmessages\x18\x01 \x03(\v2\x19.bossanova.v1.ChatMessageR\bmessages\x120\n" +
 	"\x14final_assistant_text\x18\x02 \x01(\tR\x12finalAssistantText\x12\x16\n" +
@@ -18961,17 +19012,18 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x05event\x18\x02 \x01(\v2\x16.bossanova.v1.VCSEventR\x05event\"\x19\n" +
 	"\x17DeliverVCSEventResponse\"1\n" +
 	"\x17NotifyAuthChangeRequest\x12\x16\n" +
-	"\x06action\x18\x01 \x01(\tR\x06action\"\x9f\x02\n" +
+	"\x06action\x18\x01 \x01(\tR\x06action\"\xc4\x02\n" +
 	"\x18NotifyAuthChangeResponse\x12H\n" +
 	"\aoutcome\x18\x01 \x01(\x0e2..bossanova.v1.NotifyAuthChangeResponse.OutcomeR\aoutcome\x12%\n" +
-	"\x0erelogin_reason\x18\x02 \x01(\tR\rreloginReason\"\x91\x01\n" +
+	"\x0erelogin_reason\x18\x02 \x01(\tR\rreloginReason\"\xb6\x01\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
 	"OUTCOME_OK\x10\x01\x12\x1f\n" +
 	"\x1bOUTCOME_CREDENTIALS_FLAGGED\x10\x02\x12\x1f\n" +
 	"\x1bOUTCOME_CREDENTIALS_MISSING\x10\x03\x12\x1b\n" +
-	"\x17OUTCOME_REGISTER_FAILED\x10\x04\"\x15\n" +
+	"\x17OUTCOME_REGISTER_FAILED\x10\x04\x12#\n" +
+	"\x1fOUTCOME_REMOVED_BY_ANOTHER_USER\x10\x05\"\x15\n" +
 	"\x13GetAuthStateRequest\"\xdb\x03\n" +
 	"\x14GetAuthStateResponse\x12/\n" +
 	"\x13upstream_configured\x18\x01 \x01(\bR\x12upstreamConfigured\x12\x1f\n" +

@@ -304,8 +304,9 @@ The daemon that recorded a note is the authority for it:
 with `ls`, `show`, `add`, `edit`, `rm` and `quota`. When you belong to one
 organization it is the default; with several, pass `--org <id>`. Agents use the
 six organization-note tools on the hosted MCP endpoint (see
-[MCP](./mcp.md)). In the web app, **Settings → Notes** lists the same notes with
-the organization's quota and each note's expiry.
+[MCP](./mcp.md)). In the web app, **Notes** in the organization's settings
+lists the same notes under the hourly write quota used so far. Add a note
+there, or delete one: owners delete any note, members only their own.
 
 <CommandTabs
 chat='"add an organization note that the deploy fixture needs a configurable timeout, tagged flaky, using idempotency key nightly-2026-10-09"'

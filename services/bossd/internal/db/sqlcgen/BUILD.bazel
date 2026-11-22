@@ -13,6 +13,7 @@ go_library(
         "db.go",
         "fix_attempts.sql.go",
         "github_callbacks.sql.go",
+        "model_usage.sql.go",
         "models.go",
         "note_sync.sql.go",
         "notes.sql.go",

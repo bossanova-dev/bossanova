@@ -682,6 +682,13 @@ const V20261102 Version = "2026-11-02"
 // return FailedPrecondition; older pins retain Aborted.
 const V20261103 Version = "2026-11-03"
 
+// V20261104 lists a daemon in a ListDaemons read narrowed to an organization
+// whose sessions it serves, not only in the organization its stream
+// authenticated into; the union read still lists each daemon once. The change is
+// handler-gated (IsDaemonServingOrganizationListing): a transform sees only
+// the response, which cannot tell an added row from the daemon's own one.
+const V20261104 Version = "2026-11-04"
+
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions. The slice is ordered oldest→newest and its last member is Current
 // (the newest behavior). At most one trailing member is unreleased: every
@@ -752,8 +759,9 @@ func DefaultRegistry() *Registry {
 			V20261101,
 			V20261102,
 			V20261103,
+			V20261104,
 		},
-		V20261103,
+		V20261104,
 		Baseline,
 	)
 	if err != nil {
@@ -900,6 +908,16 @@ func IsCrossOrganizationDaemonReads(ctx context.Context) bool {
 // against the request, and TransformResponse/TransformError never see it.
 func IsMemberOrganizationCloudAccess(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260906, "IsMemberOrgCloudAccess")
+}
+
+// IsDaemonServingOrganizationListing reports whether a ListDaemons read
+// narrowed to one organization also lists the caller's daemons that serve its
+// sessions from another organization (V20261104 and newer). Older callers see
+// only the daemons that authenticated into it. It is a handler gate because
+// TransformResponse sees only the response and cannot tell which row is the
+// daemon's own.
+func IsDaemonServingOrganizationListing(ctx context.Context) bool {
+	return gateAtLeast(ctx, V20261104, "IsDaemonServingOrganizationListing")
 }
 
 // IsMergeHeadRequired reports whether PR merge requests must carry a head pin.

@@ -145,14 +145,13 @@ func TestMCPCreateToolsSatisfyDaemonValidation(t *testing.T) {
 	// developer's real settings file.
 	seededBase := filepath.Join(t.TempDir(), "global-worktrees")
 	settingsPath := filepath.Join(t.TempDir(), "settings.json")
-	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
 	seed := config.DefaultSettings()
 	seed.WorktreeBaseDir = seededBase
 	if err := config.SaveTo(settingsPath, seed); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
 
-	h := testharness.New(t)
+	h := testharness.NewWithOptions(t, testharness.Options{SettingsPath: settingsPath})
 	ctx := context.Background()
 
 	t.Run("register_repo", func(t *testing.T) {
@@ -438,13 +437,12 @@ func callProjectTool(t *testing.T, backend bossmcp.Backend, tool string, args ma
 // marker, and the next diff must be converged and the next apply write nothing.
 func TestMCPApplyProjectConfigAgainstDaemon(t *testing.T) {
 	settingsPath := filepath.Join(t.TempDir(), "settings.json")
-	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
 	seed := config.DefaultSettings()
 	seed.WorktreeBaseDir = filepath.Join(t.TempDir(), "global-worktrees")
 	if err := config.SaveTo(settingsPath, seed); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
-	h := testharness.New(t)
+	h := testharness.NewWithOptions(t, testharness.Options{SettingsPath: settingsPath})
 	ctx := context.Background()
 
 	repoDir, err := filepath.EvalSymlinks(testharness.TempRepoDir(t))

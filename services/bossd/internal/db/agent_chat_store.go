@@ -42,7 +42,7 @@ func (s *SQLiteAgentChatStore) Create(ctx context.Context, params CreateAgentCha
 	}
 	row, err := sqlcgen.New(s.db).CreateAgentChat(ctx, sqlcgen.CreateAgentChatParams{
 		ID: id, SessionID: params.SessionID, AgentSessionID: params.AgentSessionID, ProviderSessionID: params.ProviderSessionID,
-		AgentName: agentName, Title: params.Title, AccountID: params.AccountID, Model: params.Model, Role: role, CreatedAt: sqlutil.TimeNow(),
+		AgentName: agentName, Title: params.Title, AccountID: params.AccountID, Model: params.Model, Effort: params.Effort, Role: role, CreatedAt: sqlutil.TimeNow(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("insert agent_chat: %w", err)
@@ -328,7 +328,7 @@ func agentChatFromRow(row sqlcgen.AgentChat) *domain.AgentChat {
 		Seq: row.Rowid, ID: row.ID, SessionID: row.SessionID, AgentSessionID: row.AgentSessionID,
 		ProviderSessionID: row.ProviderSessionID, AgentName: row.AgentName, Title: row.Title,
 		DaemonID: row.DaemonID, TmuxSessionName: row.TmuxSessionName, StartError: row.StartError,
-		AccountID: row.AccountID, Model: row.Model, Role: domain.ParseAgentChatRole(textValue(row.Role)),
+		AccountID: row.AccountID, Model: row.Model, Effort: row.Effort, Role: domain.ParseAgentChatRole(textValue(row.Role)),
 		ReclaimReason: row.ReclaimReason, CreatedAt: textTime(row.CreatedAt),
 	}
 	// Preserve the legacy representation of a non-NULL, invalid timestamp as a zero time pointer.

@@ -258,6 +258,9 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	if msg.CanAutoDeleteBranches != nil {
 		params.CanAutoDeleteBranches = msg.CanAutoDeleteBranches
 	}
+	if msg.CanAutoRotate != nil {
+		params.CanAutoRotate = msg.CanAutoRotate
+	}
 	if msg.IsTrusted != nil {
 		params.IsTrusted = msg.IsTrusted
 	}

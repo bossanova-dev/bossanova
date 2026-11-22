@@ -406,50 +406,33 @@ func extractAllText(raw json.RawMessage) string {
 // assistant turn in the full transcript regardless of maxMessages. A missing
 // file returns (nil, "", false, nil) — absent transcript is not an error.
 func readTranscript(path string, maxMessages int32) (messages []*bossanovav1.ChatMessage, finalAssistant string, exists bool, err error) {
-	// Clean last before the read: path is built by transcriptPath, which
-	// rejects traversal in the caller-supplied session id (G304).
-	cleaned := filepath.Clean(path)
-	f, err := os.Open(cleaned)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, "", false, nil
-		}
-		return nil, "", false, err
-	}
-	defer func() { _ = f.Close() }()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, transcriptScanInitialBytes), transcriptScanMaxBytes)
-
 	var all []*bossanovav1.ChatMessage
-	line := 0
-	for scanner.Scan() {
-		line++
+	exists, err = scanTranscript(path, func(raw []byte) {
 		var entry transcriptLineWithTS
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			continue
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return
 		}
 
 		var role string
 		switch entry.Type {
 		case "user":
 			if entry.Message.Role != "user" {
-				continue
+				return
 			}
 			if !hasUserTextBlock(entry.Message.Content) {
 				// Tool-result-only entries are protocol plumbing; skip them.
-				continue
+				return
 			}
 			role = "user"
 		case "assistant":
 			role = "assistant"
 		default:
-			continue
+			return
 		}
 
 		text := extractAllText(entry.Message.Content)
 		if text == "" {
-			continue
+			return
 		}
 
 		all = append(all, &bossanovav1.ChatMessage{
@@ -458,26 +441,56 @@ func readTranscript(path string, maxMessages int32) (messages []*bossanovav1.Cha
 			Timestamp: entry.Timestamp,
 			Kind:      "text",
 		})
+	})
+	if !exists || err != nil {
+		return nil, "", exists, err
 	}
-	if scanErr := classifyTranscriptScanErr(scanner.Err(), cleaned, line); scanErr != nil {
-		return nil, "", true, scanErr
-	}
+	messages, finalAssistant = tailTranscript(all, maxMessages)
+	return messages, finalAssistant, true, nil
+}
 
-	// Compute finalAssistant from the full transcript before any tail cut.
+// scanTranscript calls visit with each line of the JSONL transcript at path. A
+// missing file answers exists=false and no error: an absent transcript is not
+// an error.
+func scanTranscript(path string, visit func(line []byte)) (exists bool, err error) {
+	// Clean last before the read: path is built by transcriptPath, which
+	// rejects traversal in the caller-supplied session id (G304).
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, transcriptScanInitialBytes), transcriptScanMaxBytes)
+	line := 0
+	for scanner.Scan() {
+		line++
+		visit(scanner.Bytes())
+	}
+	return true, classifyTranscriptScanErr(scanner.Err(), cleaned, line)
+}
+
+// tailTranscript answers the last maxMessages messages (all when 0) and the
+// text of the last assistant text turn in the whole transcript, before the cut.
+func tailTranscript(all []*bossanovav1.ChatMessage, maxMessages int32) ([]*bossanovav1.ChatMessage, string) {
+	var finalAssistant string
 	for i := len(all) - 1; i >= 0; i-- {
-		if all[i].Role == "assistant" {
+		if all[i].Role == "assistant" && all[i].Kind == "text" {
 			finalAssistant = all[i].Text
 			break
 		}
 	}
 
-	// Apply maxMessages tail. Widen maxMessages (int32 → int) rather than
-	// narrowing len(all) (int → int32): the widening conversion cannot
-	// overflow, so a transcript with more than math.MaxInt32 messages can
-	// never wrap the comparison (G115).
+	// Widen maxMessages (int32 → int) rather than narrowing len(all)
+	// (int → int32): the widening conversion cannot overflow, so a transcript
+	// with more than math.MaxInt32 messages can never wrap the comparison (G115).
 	if maxMessages > 0 && len(all) > int(maxMessages) {
 		all = all[len(all)-int(maxMessages):]
 	}
-
-	return all, finalAssistant, true, nil
+	return all, finalAssistant
 }

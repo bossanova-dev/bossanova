@@ -211,6 +211,9 @@ message Repo {
   // field: older clients ignore it; no version transform is needed.
   // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
   optional string serve_script = 27;
+  // Whether the daemon may rotate this repository's sessions to another agent
+  // account when one hits its usage limit. Defaults on.
+  bool can_auto_rotate = 28;
 }
 
 // MergeStrategy is the merge method used when auto-merging PRs. Mirrors the
@@ -260,6 +263,15 @@ message RepoSettings {
   google.protobuf.Timestamp updated_at = 11; // echoed for optimistic concurrency
   // Long-running command that starts the repository services.
   optional string serve_script = 13;
+  // Projections of the matching Repo flags so the web can show and toggle
+  // them. Additive output fields older clients ignore; no dated API bump. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  bool should_keep_branches_current = 14;
+  bool can_auto_delete_branches = 15;
+  bool can_auto_rotate = 16;
+  // Read-only here: trust changes only on the machine (boss repo update
+  // --trusted), never through the orchestrator.
+  bool is_trusted = 17;
 }
 
 // HTTPEndpoint is a single verified, machine-local web endpoint for a session:
@@ -668,7 +680,40 @@ message Session {
   // additive, so older clients ignore it without changing existing behavior. See
   // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
   repeated ServiceLink service_links = 97;
+  // The calling user's active snooze on this session, set by bosso's session
+  // reads only; absent when the caller has none or it has lapsed. No dated
+  // API bump: additive output field older clients ignore. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  SessionSnooze caller_snooze = 98;
+  // The daemon that reports this session, stamped by bosso from the stream
+  // the session arrived on; a daemon cannot set it for itself. Empty on the
+  // daemon's own local reads. No dated API bump: additive output field older
+  // clients ignore. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  string daemon_id = 99;
+  // How many chats the session has: the chats ListChats returns for it.
+  // Set by the daemon on the sessions it reports to the orchestrator
+  // (DaemonSnapshot and SessionDelta), which the orchestrator serves as
+  // reported. Absent on the daemon's own local reads and from daemons built
+  // before this field, so absent means "not reported", never zero chats.
+  // No dated API bump: additive output field older clients ignore. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  optional int32 chat_count = 100;
+  // How many of those chats are working: a fresh CHAT_STATUS_WORKING
+  // heartbeat, the status the chat pills read as "working". Set exactly when
+  // chat_count is.
+  optional int32 working_chat_count = 101;
 }
+
+// SessionSnooze is the caller's active "Not now" on a session. Session
+// listings carry it in Session.caller_snooze while it holds; it lapses when
+// the session's state changes or expires_at passes.
+message SessionSnooze {
+  google.protobuf.Timestamp snoozed_at = 1;
+  // Absent: until the session changes.
+  google.protobuf.Timestamp expires_at = 2;
+}
+
 
 // ServiceLink is one service reported by a session's serve command.
 message ServiceLink {
@@ -1386,11 +1431,71 @@ message UsageSnapshot {
 // flattened from the agent's on-disk JSONL by the owning plugin. It carries
 // enough to render a conversation and to derive the "final result" without the
 // daemon needing to understand any agent-specific transcript format.
+//
+// A read that sets should_include_activity gets the conversation as the
+// agent's own transcript structures it: harness wrappers (system reminders,
+// slash-command expansions, local-command output, hook and task notices) never
+// arrive as user text, and kind takes these values, each with its payload:
+//
+//   text      a user or assistant turn (role says which)
+//   command   a slash command or skill the user turn ran; text is "/name args"
+//   step      one tool call the agent made; step is set, role is assistant
+//   event     a notice from outside the conversation; event is set
+//   question  a structured question the agent is waiting on; question is set
+//
+// A read without it keeps the flat text-only stream.
 message ChatMessage {
   string role = 1;       // user | assistant | system | tool
   string text = 2;       // flattened text content of the turn
   string timestamp = 3;  // RFC3339, best-effort from the transcript ("" if unknown)
-  string kind = 4;       // optional: text | tool_use | tool_result
+  string kind = 4;       // text | tool_use | tool_result; with activity, the kinds above
+  ChatStep step = 5;
+  ChatEvent event = 6;
+  ChatQuestion question = 7;
+}
+
+// ChatStep is one tool call, named for a person: "Read" and the file, "Ran"
+// and the command. is_error is set once its result came back as a failure.
+// result is a short summary of what the call returned ("12 matches", "+4 -1",
+// "exit 1"), set only when the agent's own record of the result states it;
+// empty when nothing about the result can be read without guessing.
+message ChatStep {
+  string verb = 1;
+  string object = 2;
+  bool is_error = 3;
+  string result = 4;
+}
+
+// ChatEvent is a notice the transcript recorded from outside the conversation.
+// source is "github" (a PR linked or a GitHub callback), "bossanova" (a
+// broadcast), or "agent" (a background task finishing, an interruption or a
+// compaction). url, when set, is the page the notice is about.
+message ChatEvent {
+  string source = 1;
+  string text = 2;
+  string url = 3;
+}
+
+// ChatQuestion is a question the agent asked through its own question tool and
+// is still waiting on, with the answers it offered. The agent shows it as a
+// menu in its terminal; a typed message cannot answer it.
+//
+// id names the question by what its menu shows: its title, its words and its
+// options. An answer carries it, so an answer meant for a question the agent
+// has since moved past is refused rather than typed into whatever the
+// terminal shows next. is_answerable is set when the agent's menu can take an
+// answer through ProxyAnswerChatQuestion: one question with a single choice,
+// from options or as typed words. A question with several parts or several
+// choices is answered in the terminal.
+//
+// The agent may not record a question in its transcript until it is answered
+// (Claude Code does not), so a read with should_include_activity ends on the
+// question the chat's terminal shows while its menu waits.
+message ChatQuestion {
+  string text = 1;
+  repeated string options = 2;
+  string id = 3;
+  bool is_answerable = 4;
 }
 
 // --- Inbound triggers (BOS-1348) ---
@@ -1811,4 +1916,81 @@ enum CloudControl {
   CLOUD_CONTROL_FULL = 2;
   // Metadata observe commands only; content-bearing observe commands and terminal attach are refused.
   CLOUD_CONTROL_PRIVATE = 3;
+}
+
+// AgentModel is one model an agent offers, as the agent itself reports it.
+message AgentModel {
+  // The value passed to the agent's model option.
+  string id = 1;
+  string display_name = 2;
+  string description = 3;
+  // Reasoning efforts the model accepts, in the agent's order.
+  repeated string supported_efforts = 4;
+  // Effort used when none is chosen; empty when the agent does not say.
+  string default_effort = 5;
+  // Whether the agent uses this model when none is chosen.
+  bool is_default = 6;
+}
+
+// DaemonSettings is the web-editable subset of a daemon's settings.json, plus
+// read-only facts the daemon settings page shows. Keys outside this message
+// (cloud control, subagent dispatch, supervision mode, proof bucket
+// credentials, operator tuning) are never readable or writable from the web.
+message DaemonSettings {
+  string daemon_name = 1;
+  string worktree_base_dir = 2;
+  // 0 means the default interval.
+  int32 poll_interval_seconds = 3;
+  bool should_display_open_ports = 4;
+  bool is_notifications_enabled = 5;
+  string default_agent = 6;
+  // managed_accounts.enabled: rotate sessions between agent accounts.
+  bool is_account_rotation_enabled = 7;
+  // proof_upload.pages_enabled.
+  bool is_proof_pages_enabled = 8;
+  // Read-only: whether proofs go to the machine's own bucket rather than
+  // Bossanova hosting. Bucket settings stay in the file.
+  bool has_own_proof_bucket = 9;
+  bool is_error_tracking_enabled = 10;
+  bool is_event_tracing_enabled = 11;
+  // Read-only machine-wide cloud control mode.
+  CloudControl cloud_control = 12;
+  repeated DaemonAgentSettings agents = 13;
+}
+
+// DaemonAgentSettings is the web-editable part of one agent plugin's config.
+message DaemonAgentSettings {
+  string name = 1;
+  // Empty means the agent's default model.
+  string model = 2;
+  // Codex only: sandbox mode and approval policy; empty for other agents.
+  string sandbox = 3;
+  string approval = 4;
+  // The agent's permission bypass (Claude dangerously_skip_permissions, Codex
+  // dangerously_bypass_approvals_and_sandbox). Writable only while the
+  // daemon's cloud control is full.
+  bool is_permission_bypass_enabled = 5;
+}
+
+// DaemonSettingsUpdate changes only the fields that are present.
+message DaemonSettingsUpdate {
+  optional string daemon_name = 1;
+  optional string worktree_base_dir = 2;
+  optional int32 poll_interval_seconds = 3;
+  optional bool should_display_open_ports = 4;
+  optional bool is_notifications_enabled = 5;
+  optional string default_agent = 6;
+  optional bool is_account_rotation_enabled = 7;
+  optional bool is_proof_pages_enabled = 8;
+  optional bool is_error_tracking_enabled = 9;
+  optional bool is_event_tracing_enabled = 10;
+  repeated DaemonAgentSettingsUpdate agents = 11;
+}
+
+message DaemonAgentSettingsUpdate {
+  string name = 1;
+  optional string model = 2;
+  optional string sandbox = 3;
+  optional string approval = 4;
+  optional bool is_permission_bypass_enabled = 5;
 }

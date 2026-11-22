@@ -46,10 +46,14 @@ var commandTargets = targetTable(map[protoreflect.Name]CommandTargets{
 	"list_tracker_issues":              {Fields: []CommandTargetField{{Field: "repo_id", Kind: "repo", Optional: false}}},
 	"get_chat_transcript":              {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: true}, {Field: "agent_session_id", Kind: "chat", Optional: false}}},
 	"send_chat_message":                {Fields: []CommandTargetField{{Field: "agent_session_id", Kind: "chat", Optional: false}}},
+	"answer_chat_question":             {Fields: []CommandTargetField{{Field: "agent_session_id", Kind: "chat", Optional: false}}},
+	"stop_chat":                        {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: false}, {Field: "agent_session_id", Kind: "chat", Optional: false}}},
 	"switch_account":                   {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: false}, {Field: "agent_session_id", Kind: "chat", Optional: true}, {Field: "account_id", Kind: "account", Optional: true}}, Machine: true},
 	"list_accounts":                    {Machine: true},
 	"get_repo":                         {Fields: []CommandTargetField{{Field: "repo_id", Kind: "repo", Optional: false}}},
 	"update_repo":                      {Fields: []CommandTargetField{{Field: "repo_id", Kind: "repo", Optional: false}}},
+	"get_daemon_settings":              {Machine: true},
+	"update_daemon_settings":           {Machine: true},
 	"remove_repo":                      {Fields: []CommandTargetField{{Field: "repo_id", Kind: "repo", Optional: false}}},
 	"list_cron_jobs":                   {},
 	"create_cron_job":                  {Fields: []CommandTargetField{{Field: "repo_id", Kind: "repo", Optional: false}}},
@@ -99,6 +103,7 @@ var commandTargets = targetTable(map[protoreflect.Name]CommandTargets{
 	"agent_credential_devices_changed": {},
 	"send_back_to_repair":              {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: false}}},
 	"get_session_timeline":             {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: false}}},
+	"list_agent_models":                {},
 })
 
 func targetTable(names map[protoreflect.Name]CommandTargets) map[protoreflect.FieldNumber]CommandTargets {

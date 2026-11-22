@@ -12,6 +12,9 @@ type CreateAgentChatParams struct {
 	// Model is the per-chat agent model id; empty inherits the agent CLI
 	// default (BOS-381). bossd never enumerates valid models.
 	Model string
+	// Effort is the per-chat reasoning effort; empty inherits the session's
+	// (or, for another agent, that agent's default).
+	Effort string
 	// Role is the purpose the chat is created for; the unknown role is
 	// stored as NULL.
 	Role AgentChatRole

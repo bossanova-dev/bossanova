@@ -278,6 +278,7 @@ func (w *daemonWiring) wireStores() error {
 	// hydrator (which publishes full Session replacements to bosso).
 	// Auditing never fails a rotation — the Recorder swallows insert errors.
 	w.rotationEvents = db.NewRotationEventStore(database)
+	w.modelUsage = db.NewModelUsageStore(database)
 	// agentRuns is created early so the reverse-stream hydrator can read a
 	// session's runs for the restart-proof agent activity; the open-run
 	// reconcile below still runs where it always did.
@@ -372,6 +373,7 @@ func (w *daemonWiring) wireStores() error {
 	// Fails toward NOT flagging on any lookup error (the overlay is best-effort
 	// enrichment, never a hard dependency of the delta).
 	w.hydrateSessionForStream = w.streamHydrator.Hydrate
+	recompute := chatCountRecomputer{display: w.displayComputer, hydrator: w.streamHydrator, streamBus: w.streamBus, logger: log.Logger}
 
 	// Wire the chat-status tracker similarly. It is keyed by claude_id, so
 	// resolve to a session before calling Recompute. In addition to the
@@ -431,7 +433,7 @@ func (w *daemonWiring) wireStores() error {
 				},
 			})
 		}
-		_ = w.displayComputer.Recompute(ctx, chat.SessionID)
+		_ = recompute.Recompute(ctx, chat.SessionID)
 
 		// A chat leaving WORKING may free a session whose archive (BOS-1380)
 		// or unattended-run finish (BOS-1508) is waiting on it. The nudges are
@@ -504,7 +506,7 @@ func (w *daemonWiring) wireStores() error {
 	// Installed here rather than inline so the seam probe below can assert a
 	// booted daemon actually has it: dropping this single line leaves every
 	// other test for this fix green while the reported symptom returns in full.
-	wireEvictionRecompute(w.chatStatusTracker, w.agentChats, w.displayComputer, log.Logger)
+	wireEvictionRecompute(w.chatStatusTracker, w.agentChats, recompute, log.Logger)
 	w.evictionRecomputeHookInstalled = true
 
 	// Emit a structured audit log each time a chat enters or leaves the
@@ -558,6 +560,9 @@ func (w *daemonWiring) wireStores() error {
 				Chat: chatMetadata(chat),
 			},
 		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		republishMovedChatCounts(ctx, chat.SessionID, w.streamHydrator, w.streamBus, log.Logger)
 	}
 
 	// Create session lister for upstream sync

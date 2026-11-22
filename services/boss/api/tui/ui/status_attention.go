@@ -251,11 +251,7 @@ func AttentionActionCmd(ctx context.Context, c AttentionClient, s *pb.Session, a
 		result := AttentionActionResultMsg{SessionID: s.GetId(), Action: action}
 		switch action {
 		case pb.AttentionAction_ATTENTION_ACTION_MERGE:
-			result.Text, result.Err = OperatorMerge(ctx, c, s)
-			if errors.Is(result.Err, ErrMergeUnsettled) {
-				result.Text = fmt.Sprintf("Waiting to hear whether PR #%d merged", s.GetPrNumber())
-				result.Err, result.Unsettled = nil, true
-			}
+			result.Text, result.Unsettled, result.Err = OperatorMergeOutcome(ctx, c, s)
 		case pb.AttentionAction_ATTENTION_ACTION_DISMISS:
 			_, result.Err = c.DismissSessionAlert(ctx, s.GetId(), s.GetAttention().GetAlertKey())
 			result.Text = "Alert dismissed"
@@ -305,6 +301,17 @@ func OperatorMerge(ctx context.Context, c AttentionClient, s *pb.Session) (strin
 		return "", MergeFailure(prverdict.MergeRefusal(pr, r.GetApproval()))
 	}
 	return prverdict.OperatorMerged(pr, r), nil
+}
+
+// OperatorMergeOutcome is OperatorMerge as a screen reports it: the result
+// line, or, for a call that ended without bossd's answer, the waiting line a
+// session poll later settles (unsettled) in place of ErrMergeUnsettled.
+func OperatorMergeOutcome(ctx context.Context, c AttentionClient, s *pb.Session) (text string, unsettled bool, err error) {
+	text, err = OperatorMerge(ctx, c, s)
+	if errors.Is(err, ErrMergeUnsettled) {
+		return fmt.Sprintf("Waiting to hear whether PR #%d merged", s.GetPrNumber()), true, nil
+	}
+	return text, false, err
 }
 
 // ErrMergeUnsettled is a merge whose call ended before bossd answered. bossd

@@ -18,7 +18,6 @@ type Client interface {
 	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
 	UpdateChatTitle(ctx context.Context, agentSessionID, title string) error
 	ArchiveSession(ctx context.Context, req *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error)
-	MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error)
 	ListAgentAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error)
 	SwitchSessionAgentAccount(ctx context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error)
 	WakeChat(ctx context.Context, sessionID, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error)

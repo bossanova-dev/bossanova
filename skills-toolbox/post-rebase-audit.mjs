@@ -14,9 +14,11 @@
 //
 // Definitions (all revs resolved to object ids up front):
 //   M0           merge-base(preRebaseHead, base) — the branch's OLD fork point
+//   auditedBase  merge-base(HEAD, base) — the base commit HEAD actually carries
 //   branchDiff   M0..preRebaseHead — what the branch changed before the rebase
-//   baseAdvance  M0..base          — what the base changed underneath it
-//   postDiff     base..HEAD        — what the branch changes now, after the rebase
+//   baseAdvance  M0..auditedBase   — what the base changed underneath it
+//   postDiff     auditedBase..HEAD — what the branch changes now, after the rebase
+// A requested base beyond auditedBase is reported separately in baseDrift.
 //
 // Fail-closed contract: a detector that could not run is 'unevaluated', and any unevaluated
 // detector makes the top-level verdict 'unevaluated' — never 'clean'. 'clean' means every detector
@@ -621,6 +623,7 @@ function emptyReport({ preRebaseHead, base, head }) {
     base,
     head,
     oldMergeBase: null,
+    baseDrift: null,
     skippedCommits: [],
     lostAdditions: [],
     baseAddedTests: [],
@@ -667,25 +670,42 @@ export function postRebaseAudit({ repo, preRebaseHead, base, head = 'HEAD', run 
   }
   report.oldMergeBase = m0
   const contains = run(repo, ['merge-base', '--is-ancestor', baseOid, headOid])
-  if (contains.status !== 0) {
-    notes.push(
-      contains.status === 1
-        ? 'HEAD does not contain the base: run the audit after the rebase onto that base'
-        : fail('checking that HEAD contains the base failed', contains),
-    )
+  if (contains.status !== 0 && contains.status !== 1) {
+    notes.push(fail('checking that HEAD contains the base failed', contains))
     return report
+  }
+  let auditedBase = baseOid
+  if (contains.status === 1) {
+    const headMergeBase = run(repo, ['merge-base', headOid, baseOid])
+    auditedBase = headMergeBase.stdout.trim()
+    if (headMergeBase.status !== 0 || !OID.test(auditedBase)) {
+      notes.push(fail('the HEAD/base merge-base probe failed', headMergeBase))
+      return report
+    }
+    const count = run(repo, ['rev-list', '--count', `${headOid}..${baseOid}`])
+    const behind = Number(count.stdout.trim())
+    if (
+      count.status !== 0 ||
+      !/^[1-9]\d*$/.test(count.stdout.trim()) ||
+      !Number.isSafeInteger(behind)
+    ) {
+      notes.push(fail('the base-drift rev-list --count probe failed', count))
+      return report
+    }
+    report.baseDrift = { auditedBase, behind }
+    notes.push(
+      `base drift: ${baseOid} carries ${behind} commit(s) HEAD lacks; audited against ${auditedBase}, the base HEAD carries`,
+    )
   }
 
   const preTree = run(repo, ['rev-parse', `${pre}^{tree}`])
   const headTree = run(repo, ['rev-parse', `${headOid}^{tree}`])
-  const headMergeBase = run(repo, ['merge-base', headOid, baseOid])
   if (
     preTree.status === 0 &&
     headTree.status === 0 &&
-    headMergeBase.status === 0 &&
     OID.test(preTree.stdout.trim()) &&
     preTree.stdout.trim() === headTree.stdout.trim() &&
-    headMergeBase.stdout.trim() === m0
+    auditedBase === m0
   ) {
     for (const d of Object.keys(report.detectors)) report.detectors[d] = DETECTOR_OK
     report.verdict = VERDICT_CLEAN
@@ -694,8 +714,21 @@ export function postRebaseAudit({ repo, preRebaseHead, base, head = 'HEAD', run 
     )
     return report
   }
+  if (contains.status === 1) {
+    if (auditedBase === m0) {
+      notes.push('HEAD does not contain the base: run the audit after the rebase onto that base')
+      return report
+    }
+    const advanced = run(repo, ['merge-base', '--is-ancestor', m0, auditedBase])
+    if (advanced.status !== 0) {
+      notes.push(
+        fail('checking that the audited base descends from the old fork point failed', advanced),
+      )
+      return report
+    }
+  }
 
-  const ctx = { repo, oldMergeBase: m0, preRebaseHead: pre, base: baseOid, head: headOid, run }
+  const ctx = { repo, oldMergeBase: m0, preRebaseHead: pre, base: auditedBase, head: headOid, run }
   const record = (name, result) => {
     report.detectors[name] = result.status
     if (result.truncated) report.truncated.push(name)
@@ -743,7 +776,10 @@ export function formatAuditNote(report) {
   const parts = FINDING_LISTS.filter((k) => report[k].length > 0).map(
     (k) => `${k} ${report[k].length}${report.truncated.includes(k) ? '+' : ''}`,
   )
-  return `Post-rebase audit: findings — ${parts.join(', ')}.`
+  const drift = report.baseDrift
+    ? report.notes.find((note) => note.startsWith('base drift:'))
+    : null
+  return `Post-rebase audit: findings — ${parts.join(', ')}.${drift ? ` ${drift}.` : ''}`
 }
 
 export const POST_REBASE_AUDIT_USAGE = `usage: node post-rebase-audit.mjs check --pre-rebase-head <sha> --base <ref> [--head <ref>] [--repo <dir>]
@@ -756,6 +792,8 @@ subcommands:
       names the branch deleted that HEAD references again. Writes a one-line
       note to stderr and the JSON report to stdout. Verdict is clean, findings,
       or unevaluated (never clean when a detector could not run).
+      If <ref> advanced after the rebase, audit against merge-base(HEAD, <ref>)
+      and report the remaining base drift separately in baseDrift and the note.
       --head <ref>      audit this ref instead of HEAD
       --repo <dir>      run against this checkout instead of the cwd
 

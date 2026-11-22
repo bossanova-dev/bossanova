@@ -95,6 +95,7 @@ func TestOperatorMerged(t *testing.T) {
 		{"bookkeeping that never ran says so", &pb.OperatorMergeSessionResponse{IsMerged: true}, "Merged PR #7; the tracker was not updated"},
 		{"bookkeeping that ran out of time says so", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "failed", TrackerWhy: "no time was left to update the tracker"},
 			"Merged PR #7; the tracker was not updated because no time was left to update the tracker"},
+		{"bookkeeping still running after the reply says so", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "pending"}, "Merged PR #7; the ticket update is running"},
 		{"a queued retry says the ticket update will be retried", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "retrying", TrackerWhy: "pr-unreadable", TrackerTicket: "MAD-1764"},
 			"Merged PR #7; the ticket update will be retried"},
 		{"a write the tracker refuses for good names the ticket and promises nothing", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "permanent", TrackerWhy: "state-not-found: Done", TrackerTicket: "MAD-1764"},

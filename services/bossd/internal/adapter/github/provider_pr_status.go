@@ -2,15 +2,11 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"github.com/recurser/bossalib/kit/vcs"
 )
 
-// prReview is one review in either PR status source: the `gh pr view --json
-// reviews` list or the open-PR snapshot's review page.
 type prReview struct {
 	// ID is the review's GraphQL node ID, the same value the REST review list
 	// reports as node_id.
@@ -18,7 +14,7 @@ type prReview struct {
 	State  string `json:"state"`
 	Author struct {
 		Login string `json:"login"`
-		// Typename is only queried by the snapshot; `gh pr view` leaves it
+		// Typename is only queried by the snapshot; the per-PR query leaves it
 		// empty and reports bots under a bare login.
 		Typename string `json:"__typename"`
 	} `json:"author"`
@@ -27,8 +23,6 @@ type prReview struct {
 	AuthorAssociation string `json:"authorAssociation"`
 }
 
-// prStatusFields are the GraphQL pull request fields a vcs.PRStatus is built
-// from. `gh pr view --json` and the open-PR snapshot both decode into it.
 type prStatusFields struct {
 	Additions         int        `json:"additions"`
 	Deletions         int        `json:"deletions"`
@@ -58,11 +52,7 @@ func (raw prStatusFields) needsMergeability() bool {
 // fetchPRStatus reads the current status of a pull request from GitHub,
 // bypassing the read cache (see GetPRStatus).
 func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int) (*vcs.PRStatus, error) {
-	out, err := p.gh(ctx,
-		"pr", "view", strconv.Itoa(prID),
-		"--repo", repoFlag(repoPath),
-		"--json", "state,mergeable,mergeStateStatus,isDraft,title,body,headRefName,baseRefName,headRefOid,isCrossRepository,reviewDecision,reviews,additions,deletions,changedFiles",
-	)
+	raw, err := p.readPRStatus(ctx, repoPath, prID)
 	if err != nil {
 		if quota, ok := refusedQuota(err); ok && quota == quotaGraphQL {
 			status, restErr := p.fetchPRStatusREST(ctx, repoPath, prID)
@@ -72,11 +62,6 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 			err = fmt.Errorf("GraphQL read refused (%v); REST fallback: %w", err, restErr)
 		}
 		return nil, fmt.Errorf("get PR status: %w", err)
-	}
-
-	var raw prStatusFields
-	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return nil, fmt.Errorf("parse PR status: %w", err)
 	}
 
 	degraded := false
@@ -168,8 +153,7 @@ func buildPRStatus(raw prStatusFields, mergeability *pullRequestMergeability, tr
 	return status
 }
 
-// checkRow is one check in `gh pr checks --json name,state,workflow,description`
-// form. The open-PR snapshot converts its status-check rollup into the same rows.
+// checkRow is the combined check state projected from a GraphQL rollup context.
 type checkRow struct {
 	Name        string `json:"name"`
 	State       string `json:"state"`
@@ -211,7 +195,7 @@ func (p *Provider) VerifyPassedAtHead(ctx context.Context, repoPath, sha string)
 }
 
 // buildCheckSet is the one decision path from check rows to a vcs.CheckSet,
-// shared by the per-PR `gh pr checks` read and the open-PR snapshot.
+// shared by the per-PR GraphQL read and the open-PR snapshot.
 //
 // The gh CLI's "pr checks" command combines status and conclusion into a single
 // "state" field (SUCCESS, FAILURE, PENDING, STARTUP_FAILURE, etc.) rather than

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/domain"
@@ -132,15 +133,14 @@ func (s *Server) syncBaseAfterMerge(ctx context.Context, localPath, baseBranch s
 //
 // Pending verify claims and parks do not belong to the block set: the caller
 // separately requires a passed verdict or an approval recorded at the pin.
-// The provider merge carries that pin to bind these sequential reads to its head.
+// The provider merge carries that pin to bind these reads to its head.
 // The legacy stream transport remains unpinned until BOS-2064.
 //
 // When expectedHead is non-empty and the live PR head is known and differs, it
-// returns an error wrapping vcs.ErrHeadMismatch (and no block) right after the
-// GetPRStatus read, skipping the remaining reads: the gate's verdict would be
-// about a different head, so the mismatch takes precedence. An empty live head
-// is unknown, not mismatched; the merge proceeds and the remote pin is the
-// backstop.
+// returns an error wrapping vcs.ErrHeadMismatch (and no block) whatever the
+// other reads say: the gate's verdict would be about a different head, so the
+// mismatch takes precedence. An empty live head is unknown, not mismatched; the
+// merge proceeds and the remote pin is the backstop.
 //
 // Otherwise it returns a non-nil error, and no block, when the CALLER's context
 // was canceled or timed out mid-read. A canceled read is not an unverifiable gate:
@@ -163,46 +163,86 @@ func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber 
 		return unverifiableMergeBlock(read, err), mergeVerdict{}, nil
 	}
 
-	prStatus, err := s.provider.GetPRStatus(ctx, originURL, prNumber)
-	if err != nil {
-		return unverifiable("PR status", err)
+	r := s.readLiveGate(ctx, originURL, prNumber)
+	if r.statusErr != nil {
+		return unverifiable("PR status", r.statusErr)
 	}
-	if prStatus == nil {
+	if r.status == nil {
 		return unverifiable("PR status", errors.New("provider returned no PR status"))
 	}
-	if expectedHead != "" && prStatus.HeadSHA != "" && !strings.EqualFold(prStatus.HeadSHA, expectedHead) {
-		return nil, mergeVerdict{}, fmt.Errorf("%w: expected head %s, live head %s", vcs.ErrHeadMismatch, expectedHead, prStatus.HeadSHA)
+	if expectedHead != "" && r.status.HeadSHA != "" && !strings.EqualFold(r.status.HeadSHA, expectedHead) {
+		return nil, mergeVerdict{}, fmt.Errorf("%w: expected head %s, live head %s", vcs.ErrHeadMismatch, expectedHead, r.status.HeadSHA)
 	}
-	checks, err := s.provider.GetCheckResults(ctx, originURL, prNumber)
-	if err != nil {
-		return unverifiable("check results", err)
+	if r.checksErr != nil {
+		return unverifiable("check results", r.checksErr)
 	}
-	reviews, err := s.provider.GetReviewComments(ctx, originURL, prNumber)
-	if err != nil {
-		return unverifiable("review comments", err)
+	if r.reviewsErr != nil {
+		return unverifiable("review comments", r.reviewsErr)
 	}
-	s.warnOnNoReviewsObserved(ctx, prStatus, originURL, prNumber)
-	// The observation is a FOURTH context-bound provider read, and it runs after
-	// the three guarded ones. It swallows its own errors on purpose (an
-	// unreadable tally must not block a merge the gate approved) — but a dead
-	// context is not an ordinary observation failure. Swallowing that one would
-	// let the merge proceed on an expired context until MergePR failed and was
-	// reported as CodeInternal, losing the cancellation semantics the guards
-	// above exist to preserve. Ordinary failures stay ignored; only the context
-	// is re-checked.
+	s.warnOnNoReviewsObserved(r, prNumber)
+	// The observation is a context-bound provider read whose own errors are
+	// swallowed on purpose (an unreadable tally must not block a merge the gate
+	// approved) — but a dead context is not an ordinary observation failure.
+	// Swallowing that one would let the merge proceed on an expired context
+	// until MergePR failed and was reported as CodeInternal, losing the
+	// cancellation semantics the guards above exist to preserve. Ordinary
+	// failures stay ignored; only the context is re-checked.
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, mergeVerdict{}, ctxErr
 	}
-	info := vcs.ComputeDisplayStatusWith(prStatus, checks, reviews, vcs.DisplayOptions{Required: s.requiredChecksFor(ctx, originURL)})
-	verdict := mergeVerdict{verified: vcs.VerifyPassed(checks), info: info}
+	info := vcs.ComputeDisplayStatusWith(r.status, r.checks, r.reviews, vcs.DisplayOptions{Required: r.required})
+	verdict := mergeVerdict{verified: vcs.VerifyPassed(r.checks), info: info}
 	if !blocks[info.Status] {
 		return nil, verdict, nil
 	}
 	mb := vcs.DeriveMergeBlock(info.Status, info.HasFailures, info.ChangesRequestedBy, info.VerifyReason)
-	if prStatus.HeadSHA != "" {
-		mb.Detail += fmt.Sprintf("; gated at head %s", prStatus.HeadSHA)
+	if r.status.HeadSHA != "" {
+		mb.Detail += fmt.Sprintf("; gated at head %s", r.status.HeadSHA)
 	}
 	return &mb, verdict, nil
+}
+
+// liveGateReads is everything the live merge gate judges, read in one round of
+// concurrent provider calls. Each call is a gh subprocess of a second or more,
+// so the gate costs the slowest read rather than their sum. A read whose
+// goroutine did not return (a recovered panic) keeps errGateReadUnfinished, so
+// it fails the gate closed instead of reading as a clean empty result.
+type liveGateReads struct {
+	status     *vcs.PRStatus
+	statusErr  error
+	checks     []vcs.CheckResult
+	checksErr  error
+	reviews    []vcs.ReviewComment
+	reviewsErr error
+	// observed is false for a provider with no raw review observation.
+	observed       bool
+	observation    vcs.ReviewObservation
+	observationErr error
+	required       vcs.RequiredChecks
+}
+
+var errGateReadUnfinished = errors.New("the read did not finish")
+
+func (s *Server) readLiveGate(ctx context.Context, originURL string, prNumber int) liveGateReads {
+	r := liveGateReads{statusErr: errGateReadUnfinished, checksErr: errGateReadUnfinished, reviewsErr: errGateReadUnfinished, observationErr: errGateReadUnfinished}
+	reads := []func(){
+		func() { r.status, r.statusErr = s.provider.GetPRStatus(ctx, originURL, prNumber) },
+		func() { r.checks, r.checksErr = s.provider.GetCheckResults(ctx, originURL, prNumber) },
+		func() { r.reviews, r.reviewsErr = s.provider.GetReviewComments(ctx, originURL, prNumber) },
+		func() { r.required = s.requiredChecksFor(ctx, originURL) },
+	}
+	if observer, ok := s.provider.(vcs.ReviewObserver); ok {
+		r.observed = true
+		reads = append(reads, func() { r.observation, r.observationErr = observer.GetReviewObservation(ctx, originURL, prNumber) })
+	}
+	done := make([]<-chan struct{}, len(reads))
+	for i, read := range reads {
+		done[i] = safego.Go(s.logger, read)
+	}
+	for _, d := range done {
+		<-d
+	}
+	return r
 }
 
 // blockingStatuses is the set of live display statuses a merge gate refuses.
@@ -264,46 +304,43 @@ func unverifiableMergeBlock(read string, err error) *vcs.MergeBlockReason {
 // purpose: a lone human approval with no bot review is precisely the silent-loss
 // case this warning exists to surface. Log-only — MergeSessionResponse.detail is
 // discarded by every RPC consumer.
-func (s *Server) warnOnNoReviewsObserved(ctx context.Context, prStatus *vcs.PRStatus, originURL string, prNumber int) {
-	if prStatus.Draft {
-		return
-	}
+func (s *Server) warnOnNoReviewsObserved(r liveGateReads, prNumber int) {
 	// The tally MUST come from the raw, pre-filtering observation, never from
 	// the []ReviewComment the gate judges. GetReviewComments deliberately drops
 	// a bot's COMMENTED review once that bot's threads are all resolved, so
 	// counting bots in its result reports "no reviewer observed" on exactly the
 	// addressed, ready-to-merge PRs where the reviewer did run — firing on the
 	// healthy path and never distinguishing the absent-reviewer condition this
-	// warning exists to surface.
-	observer, ok := s.provider.(vcs.ReviewObserver)
-	if !ok {
-		// This provider does no actionable filtering to see behind, so there is
-		// no raw observation to consult and nothing trustworthy to warn about.
+	// warning exists to surface. A provider without one does no actionable
+	// filtering to see behind, so there is nothing trustworthy to warn about.
+	if r.status.Draft || !r.observed {
 		return
 	}
-	obs, err := observer.GetReviewObservation(ctx, originURL, prNumber)
-	if err != nil {
+	if r.observationErr != nil {
 		// Observability only: an unreadable tally means "we cannot tell whether
 		// a reviewer ran", which is not evidence that none did. Note it and move
 		// on — this read is NOT part of the fail-closed gate decision, so it
 		// must never block a merge the three gate reads approved.
-		s.logger.Debug().Err(err).
+		s.logger.Debug().Err(r.observationErr).
 			Int("pr", prNumber).
 			Msg("merge gate: could not read the raw review observation; skipping the no-reviews-observed check")
 		return
 	}
-	if obs.Bot > 0 {
+	if r.observation.Bot > 0 {
 		return
 	}
 	s.logger.Warn().
 		Str("review_gate", "no_reviews_observed").
 		Int("pr", prNumber).
-		Int("reviews_total", obs.Total).
-		Int("bot_reviews_total", obs.Bot).
+		Int("reviews_total", r.observation.Total).
+		Int("bot_reviews_total", r.observation.Bot).
 		Msg("merge gate: no external bot review observed on this PR; the review gate had nothing to block on")
 }
 
-// mergeVerdict is derived from the same check read as the live block decision.
+// mergeVerdict is what a live gate learned at one head besides its block
+// decision: whether boss/verify passed and the display it computed, so a
+// later step in the same request can judge the same evidence instead of
+// reading the PR again.
 type mergeVerdict struct {
 	verified bool
 	info     vcs.DisplayInfo
@@ -322,7 +359,29 @@ func noMergeVerdict(pin string, pr int, info vcs.DisplayInfo) error {
 	return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w: no verdict on %s: boss/verify has not passed this head%s; run verify (/boss-verify %d) or approve and merge it (boss merge --approve <session>, or [m]erge on its TUI row)", vcs.ErrNoVerdict, pin, detail, pr))
 }
 
+// checkMergeSessionGate refuses a merge the live gate blocks or that has no
+// verdict at its pin: boss/verify passed there, or an approval was recorded
+// there. A gate the caller already passed at the pin stands in for the refresh
+// and the live reads; each is a gh subprocess, so the merge skips the second
+// round.
 func (s *Server) checkMergeSessionGate(ctx context.Context, repo *models.Repo, sess *models.Session, pr int, g mergeGate) error {
+	verdict := g.passed
+	if verdict == nil {
+		live, err := s.readMergeSessionGate(ctx, repo, sess, pr, g.pin)
+		if err != nil {
+			return err
+		}
+		verdict = &live
+	}
+	if !verdict.verified && g.approvedHead != g.pin {
+		return noMergeVerdict(g.pin, pr, verdict.info)
+	}
+	return nil
+}
+
+// readMergeSessionGate refreshes the session's display and runs the live gate
+// at pin, returning the verdict or the refusal.
+func (s *Server) readMergeSessionGate(ctx context.Context, repo *models.Repo, sess *models.Session, pr int, pin string) (mergeVerdict, error) {
 	id := sess.ID
 	refreshCtx, cancel := context.WithTimeout(ctx, refreshSessionPRTimeout)
 	if err := s.refreshSessionPRDisplay(refreshCtx, repo, sess, pr); err != nil {
@@ -332,12 +391,12 @@ func (s *Server) checkMergeSessionGate(ctx context.Context, repo *models.Repo, s
 			Msg("merge: pre-gate PR refresh failed; live gate will re-read")
 	}
 	cancel()
-	mb, verdict, err := s.liveMergeBlock(ctx, repo.OriginURL, pr, g.pin, mergeSessionBlocks)
+	mb, verdict, err := s.liveMergeBlock(ctx, repo.OriginURL, pr, pin, mergeSessionBlocks)
 	if err != nil {
 		// A known head mismatch is a terminal refusal, not a dead
 		// context: test it first so it maps to FailedPrecondition.
 		if errors.Is(err, vcs.ErrHeadMismatch) {
-			return connect.NewError(connect.CodeFailedPrecondition, err)
+			return mergeVerdict{}, connect.NewError(connect.CodeFailedPrecondition, err)
 		}
 		// The gate read died with the caller's context, not against an
 		// unreachable provider. Preserve the cancellation semantics the
@@ -347,15 +406,12 @@ func (s *Server) checkMergeSessionGate(ctx context.Context, repo *models.Repo, s
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = connect.CodeDeadlineExceeded
 		}
-		return connect.NewError(code,
+		return mergeVerdict{}, connect.NewError(code,
 			fmt.Errorf("merge abandoned while checking the live merge gate: %w", err))
 	}
 	if mb != nil {
-		return connect.NewError(connect.CodeFailedPrecondition,
+		return mergeVerdict{}, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("merge blocked: gate=%s; %s", mb.Gate.Slug(), mb.Detail))
 	}
-	if !verdict.verified && g.approvedHead != g.pin {
-		return noMergeVerdict(g.pin, pr, verdict.info)
-	}
-	return nil
+	return verdict, nil
 }

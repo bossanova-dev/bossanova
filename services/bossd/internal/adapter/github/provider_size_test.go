@@ -11,10 +11,10 @@ import (
 func TestGetPRStatusSize_Sessions_AC213501(t *testing.T) {
 	for _, sizes := range []string{`,"additions":12,"deletions":3,"changedFiles":2`, ""} {
 		var requested string
-		p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 			requested = strings.Join(args, " ")
 			return `{"state":"OPEN","mergeable":"CONFLICTING"` + sizes + `}`, nil
-		}))
+		})))
 		got, err := p.GetPRStatus(t.Context(), "owner/repo", 42)
 		if err != nil {
 			t.Fatal(err)

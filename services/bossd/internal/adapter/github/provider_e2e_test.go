@@ -99,7 +99,7 @@ func argsStartWith(want ...string) func([]string) bool {
 }
 
 func newProvider(f *fakeGH) *Provider {
-	return New(zerolog.Nop(), WithRunGH(f.run))
+	return New(zerolog.Nop(), WithRunGH(perPRFixtureGH(f.run)))
 }
 
 const testRepo = "owner/repo"
@@ -157,7 +157,7 @@ func TestE2E_GitHub_GetPRStatus_AllStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeGH(t)
 			f.expect(ghResponder{
-				match:  argsStartWith("pr", "view"),
+				match:  isPRView,
 				stdout: fixture(t, tc.fixture),
 			})
 			if tc.wantState == vcs.PRStateOpen && !tc.wantDraft && (tc.wantMergeable == nil || *tc.wantMergeable) {
@@ -213,7 +213,7 @@ func ptrBool(b bool) *bool { return &b }
 func TestE2E_GitHub_GetCheckResults_Passing(t *testing.T) {
 	f := newFakeGH(t)
 	f.expect(ghResponder{
-		match:  argsStartWith("pr", "checks"),
+		match:  isPRChecks,
 		stdout: fixture(t, "check_runs_passing.json"),
 	})
 	p := newProvider(f)
@@ -238,7 +238,7 @@ func TestE2E_GitHub_GetCheckResults_Passing(t *testing.T) {
 func TestE2E_GitHub_GetCheckResults_Failing_WithLogs(t *testing.T) {
 	f := newFakeGH(t)
 	f.expect(ghResponder{
-		match:  argsStartWith("pr", "checks"),
+		match:  isPRChecks,
 		stdout: fixture(t, "check_runs_failing.json"),
 	})
 	f.expect(ghResponder{
@@ -320,17 +320,18 @@ func TestE2E_GitHub_MergePR_AllStrategies(t *testing.T) {
 		strategy string
 		wantFlag string
 	}{
-		{"merge", "merge", "--merge"},
-		{"rebase", "rebase", "--rebase"},
-		{"squash", "squash", "--squash"},
+		{"merge", "merge", "merge_method=merge"},
+		{"rebase", "rebase", "merge_method=rebase"},
+		{"squash", "squash", "merge_method=squash"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeGH(t)
 			f.expect(ghResponder{
-				match:  argsStartWith("pr", "merge"),
-				stdout: "",
+				match:  argsStartWith("api", "-X", "PUT"),
+				stdout: "{}",
 			})
+			f.expect(ghResponder{match: argsStartWith("api", "repos/owner/repo/pulls/42"), stdout: "{}"})
 			p := newProvider(f)
 
 			if err := p.MergePR(context.Background(), testRepo, 42, vcs.MergePROpts{Strategy: tc.strategy}); err != nil {
@@ -350,7 +351,7 @@ func TestE2E_GitHub_MergePR_AllStrategies(t *testing.T) {
 func TestE2E_GitHub_MergePR_ConflictErrorParsed(t *testing.T) {
 	f := newFakeGH(t)
 	f.expect(ghResponder{
-		match: argsStartWith("pr", "merge"),
+		match: argsStartWith("api", "-X", "PUT"),
 		err:   fmt.Errorf("gh pr merge: Pull Request is not mergeable: the merge commit cannot be cleanly created"),
 	})
 	p := newProvider(f)
@@ -367,16 +368,17 @@ func TestE2E_GitHub_MergePR_ConflictErrorParsed(t *testing.T) {
 func TestE2E_GitHub_MarkReadyForReview(t *testing.T) {
 	f := newFakeGH(t)
 	f.expect(ghResponder{
-		match:  argsStartWith("pr", "ready"),
-		stdout: "",
+		match:  argsStartWith("api", "repos/owner/repo/pulls/42"),
+		stdout: `{"state":"open","draft":true,"node_id":"PR_node"}`,
 	})
+	f.expect(ghResponder{match: argsStartWith("api", "graphql"), stdout: "{}"})
 	p := newProvider(f)
 
 	if err := p.MarkReadyForReview(context.Background(), testRepo, 42); err != nil {
 		t.Fatalf("MarkReadyForReview: %v", err)
 	}
-	if len(f.callsContaining("ready")) != 1 {
-		t.Errorf("expected exactly one gh call with 'ready', got %d", len(f.callsContaining("ready")))
+	if len(f.callsContaining("markPullRequestReadyForReview")) != 1 {
+		t.Errorf("expected exactly one gh call with 'ready', got %d", len(f.callsContaining("markPullRequestReadyForReview")))
 	}
 }
 
@@ -457,7 +459,7 @@ func TestE2E_GitHub_ErrorPropagation(t *testing.T) {
 	f := newFakeGH(t)
 	wantErr := errors.New("gh: auth token missing")
 	f.expect(ghResponder{
-		match: argsStartWith("pr", "view"),
+		match: isPRView,
 		err:   wantErr,
 	})
 	p := newProvider(f)

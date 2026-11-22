@@ -25,22 +25,22 @@ func (f *fakeSessionStore) Get(_ context.Context, id string) (*models.Session, e
 	return nil, domain.ErrNotFound
 }
 
-// fakeAgentChatStore satisfies db.AgentChatStore narrowly — only
-// GetByAgentSessionID is wired. The lookup closure under test only
-// reaches for that method.
-type fakeAgentChatStore struct {
+// fakeDispatcherChatStore backs dispatcher lookup and stream hydration tests.
+// Agent-session misses return ErrNotFound; session lists come from the same
+// seeded reverse index.
+type fakeDispatcherChatStore struct {
 	db.AgentChatStore
 	byAgentSessionID map[string]*domain.AgentChat
 }
 
-func (f *fakeAgentChatStore) GetByAgentSessionID(_ context.Context, id string) (*domain.AgentChat, error) {
+func (f *fakeDispatcherChatStore) GetByAgentSessionID(_ context.Context, id string) (*domain.AgentChat, error) {
 	if chat, ok := f.byAgentSessionID[id]; ok {
 		return chat, nil
 	}
 	return nil, domain.ErrNotFound
 }
 
-func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*domain.AgentChat, error) {
+func (f *fakeDispatcherChatStore) ListBySession(_ context.Context, sessionID string) ([]*domain.AgentChat, error) {
 	var out []*domain.AgentChat
 	for _, chat := range f.byAgentSessionID {
 		if chat.SessionID == sessionID {
@@ -54,7 +54,7 @@ func TestNewDispatcherLookup_PrefersSessionByBossID(t *testing.T) {
 	sessions := &fakeSessionStore{byID: map[string]*models.Session{
 		"sess-1": {ID: "sess-1", AgentName: "codex"},
 	}}
-	chats := &fakeAgentChatStore{}
+	chats := &fakeDispatcherChatStore{}
 
 	lookup := newDispatcherLookup(sessions, chats)
 	got, err := lookup("sess-1")
@@ -72,7 +72,7 @@ func TestNewDispatcherLookup_FallsBackToChatsByAgentSessionID(t *testing.T) {
 	// interactive attach adapter pass agent-session-IDs (not bossd IDs)
 	// to dispatcher.IsRunning/Subscribe/History.
 	sessions := &fakeSessionStore{byID: map[string]*models.Session{}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
+	chats := &fakeDispatcherChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		"agent-uuid-codex-7": {AgentSessionID: "agent-uuid-codex-7", AgentName: "codex"},
 	}}
 
@@ -87,7 +87,7 @@ func TestNewDispatcherLookup_FallsBackToChatsByAgentSessionID(t *testing.T) {
 }
 
 func TestNewDispatcherLookup_BothMissReturnsError(t *testing.T) {
-	lookup := newDispatcherLookup(&fakeSessionStore{}, &fakeAgentChatStore{})
+	lookup := newDispatcherLookup(&fakeSessionStore{}, &fakeDispatcherChatStore{})
 	_, err := lookup("ghost-id")
 	if err == nil {
 		t.Fatalf("expected error for unknown id")

@@ -128,10 +128,6 @@ func (s *chatPickerStub) ResumeSessionRun(context.Context, string) (*pb.Session,
 	panic("unused")
 }
 
-func (s *chatPickerStub) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
-	panic("unused")
-}
-
 func (s *chatPickerStub) OperatorMergeSession(context.Context, string, string, bool, []string) (*pb.OperatorMergeSessionResponse, error) {
 	panic("unused")
 }

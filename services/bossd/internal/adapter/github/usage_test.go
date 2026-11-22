@@ -51,7 +51,7 @@ func TestBreakerRefusalRecordsOneBreakerSkip_GitHubUsage_AC222301(t *testing.T) 
 	clock := newFakeClock()
 	gh := exhaustedGraphQLGH(clock)
 	ledger := newTestLedger(t, clock)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithUsageRecorder(ledger))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithUsageRecorder(ledger))
 
 	// The first call is sent, refused by GitHub, and opens the breaker.
 	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
@@ -106,7 +106,7 @@ func TestSentRefusalRecordsOneCallAndNoSkip_GitHubUsage_AC222301(t *testing.T) {
 	clock := newFakeClock()
 	gh := exhaustedGraphQLGH(clock)
 	ledger := newTestLedger(t, clock)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithUsageRecorder(ledger))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithUsageRecorder(ledger))
 
 	ctx := ghusage.WithLabel(context.Background(), ghusage.LabelCallbacks)
 	if _, err := primaryPRRead(p, ctx, "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {

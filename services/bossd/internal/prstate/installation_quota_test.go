@@ -32,12 +32,12 @@ func cannedGH(t *testing.T) func(ctx context.Context, args ...string) (string, e
 	return func(_ context.Context, args ...string) (string, error) {
 		call := strings.Join(args, " ")
 		switch {
-		case strings.HasPrefix(call, "pr view"):
-			return fmt.Sprintf(`{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false,`+
+		case strings.Contains(call, "number=7") && strings.Contains(call, "reviewDecision"):
+			return fmt.Sprintf(`{"data":{"repository":{"pullRequest":{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false,`+
 				`"title":"t","body":"","headRefName":"feature","baseRefName":"main","headRefOid":%q,`+
-				`"isCrossRepository":false,"reviewDecision":"","reviews":[]}`, quotaHead), nil
-		case strings.HasPrefix(call, "pr checks"):
-			return `[{"name":"build","state":"SUCCESS","workflow":"ci.yml","description":""}]`, nil
+				`"isCrossRepository":false,"reviewDecision":"","reviews":{"nodes":[],"pageInfo":{}}}}}}`, quotaHead), nil
+		case strings.Contains(call, "number=7") && strings.Contains(call, "statusCheckRollup"):
+			return `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","checkSuite":{"workflowRun":{"workflow":{"name":"ci.yml"}}}}],"pageInfo":{}}}}}]}}}}}`, nil
 		case strings.HasPrefix(call, "api repos/o/r/actions/runs"):
 			return fmt.Sprintf(`{"total_count":1,"workflow_runs":[{"name":"ci","event":"pull_request",`+
 				`"status":"completed","conclusion":"success","head_sha":%q}]}`, quotaHead), nil

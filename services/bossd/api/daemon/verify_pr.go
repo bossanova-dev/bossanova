@@ -99,9 +99,10 @@ func approveResultProto(r domain.VerifyApproveResult) *pb.VerifyApproveResult {
 }
 
 // operatorMergeBudget splits OperatorMergeSession's time. total bounds the
-// whole merge once it runs detached from the caller, tracker bookkeeping
-// included; approve is the slice the approval gets. The handler is exempt from
-// the daemon's generic write timeout, so a reply inside total still arrives.
+// whole merge once it runs detached from the caller, up to the reply; approve
+// is the slice the approval gets. The tracker bookkeeping runs after the reply
+// on the worker's own budget. The handler is exempt from the daemon's generic
+// write timeout, so a reply inside total still arrives.
 type operatorMergeBudget struct {
 	total, approve time.Duration
 }
@@ -118,10 +119,11 @@ func (s *Server) mergeBudget() operatorMergeBudget {
 // OperatorMergeSession is the operator's merge from a review or merge row, in
 // one order that never merges what the operator did not see: refuse a FIX,
 // check the live gate at the pinned head, record the head-bound approval
-// (review rows and unverified heads), merge at that head, then run the
-// post-merge tracker bookkeeping. Nothing is recorded when the gate refuses or
-// the head moved. A merge the operator confirmed finishes even if they leave:
-// the TUI lets them walk away, and quitting it drops the request context.
+// (review rows and unverified heads), merge at that head, then owe the
+// post-merge tracker bookkeeping to the worker and reply. Nothing is recorded
+// when the gate refuses or the head moved. A merge the operator confirmed
+// finishes even if they leave: the TUI lets them walk away, and quitting it
+// drops the request context.
 func (s *Server) OperatorMergeSession(ctx context.Context, req *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error) {
 	pin, ok := vcs.NormalizeHeadSHA(req.Msg.GetExpectedHeadSha())
 	if !ok {
@@ -131,21 +133,35 @@ func (s *Server) OperatorMergeSession(ctx context.Context, req *connect.Request[
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget.total)
 	defer cancel()
 	approver := approverOf(ctx)
-	resp, pr, err := s.operatorMerge(runCtx, req.Msg, pin, budget, approver)
-	s.logOperatorMergeOutcome(req.Msg.GetId(), pr, ctx.Err() != nil, resp, err, approver)
+	started := time.Now()
+	var phases operatorMergePhases
+	resp, pr, err := s.operatorMerge(runCtx, req.Msg, pin, budget, approver, &phases)
+	phases.total = time.Since(started)
+	s.logOperatorMergeOutcome(req.Msg.GetId(), pr, ctx.Err() != nil, resp, err, approver, phases)
 	if err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(resp), nil
 }
 
+// operatorMergePhases is how long each step of an operator merge took, for the
+// outcome log: the live gate, the approval verb (zero when none ran), the
+// merge from the repo lock through the post-merge display refresh, and the
+// whole request up to its reply. The tracker bookkeeping runs after the reply
+// and logs its own finish.
+type operatorMergePhases struct {
+	gate, approve, merge, total time.Duration
+}
+
 // operatorMerge is OperatorMergeSession on its detached context. It also
-// returns the session's PR once known, for the outcome log.
-func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSessionRequest, pin string, budget operatorMergeBudget, approver domain.CallerPrincipal) (*pb.OperatorMergeSessionResponse, int, error) {
+// returns the session's PR once known, for the outcome log, and records how
+// long each phase took in phases.
+func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSessionRequest, pin string, budget operatorMergeBudget, approver domain.CallerPrincipal, phases *operatorMergePhases) (*pb.OperatorMergeSessionResponse, int, error) {
 	id := req.GetId()
 	// An archive waits until the merge is over: the approval runs in the
-	// session worktree, and the merge can archive the session, which removes
-	// the worktree the tracker bookkeeping runs in.
+	// session worktree, and the merge can archive the session. The tracker
+	// bookkeeping, which also runs in the worktree, takes its own hold when it
+	// is handed off, released once the worker has run it.
 	defer s.archiveDeferral().hold(id)()
 	target, env, err := s.verifyTarget(ctx, id, false)
 	if err != nil {
@@ -154,23 +170,29 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 	if err := s.refuseFixAttention(ctx, id, target.PR); err != nil {
 		return nil, target.PR, err
 	}
-	// Hold "merging" from the gate to the end of the tracker bookkeeping, so
-	// every client sees the merge the operator asked for until it is over.
-	// MergeSession takes its own hold inside this one; releasing it leaves
-	// this one standing.
+	// Hold "merging" from the gate until the merge returns, so every client
+	// sees the merge the operator asked for until it has landed and the
+	// display has been re-polled. MergeSession takes its own hold inside this
+	// one; releasing it leaves this one standing.
+	releaseMerging := func() {}
 	if s.displayTracker != nil {
-		defer s.displayTracker.HoldMerging(id)()
+		releaseMerging = s.displayTracker.HoldMerging(id)
 	}
+	defer releaseMerging()
 	verbs := s.verifyVerbsFor(withApprover(env, approver))
 	resp := &pb.OperatorMergeSessionResponse{}
-	verified, err := s.operatorMergeGate(ctx, id, target.PR, pin)
+	gateStarted := time.Now()
+	verdict, err := s.operatorMergeGate(ctx, id, target.PR, pin)
+	phases.gate = time.Since(gateStarted)
 	if err != nil {
 		return nil, target.PR, err
 	}
-	g := mergeGate{pin: pin}
-	if req.GetShouldApprove() || !verified {
+	g := mergeGate{pin: pin, passed: &verdict}
+	if req.GetShouldApprove() || !verdict.verified {
 		approveCtx, cancel := context.WithTimeout(ctx, budget.approve)
+		approveStarted := time.Now()
 		r, err := verbs.Approve(approveCtx, target, &domain.VerifyMergeApproval{Head: pin, Waives: req.GetWaives()})
+		phases.approve = time.Since(approveStarted)
 		cancel()
 		if err != nil {
 			return nil, target.PR, s.verifyBridgeError("approve", target, err)
@@ -183,7 +205,10 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 			g.approvedHead = pin
 		}
 	}
+	mergeStarted := time.Now()
 	merged, err := s.mergeSession(ctx, id, g)
+	phases.merge = time.Since(mergeStarted)
+	releaseMerging()
 	if err != nil {
 		if resp.Approval != nil {
 			return nil, target.PR, approvalStandsError(err, resp.Approval)
@@ -193,16 +218,15 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 	resp.IsMerged = true
 	resp.Session = merged.Msg.GetSession()
 	resp.MergeDetail = merged.Msg.GetDetail()
-	// Owed before it runs, so a daemon that dies mid-write still retries it.
-	s.owePendingTrackerMerge(ctx, id)
-	o := s.settleTrackerMerge(ctx, id, s.markMerged(ctx, verbs, target))
+	o := s.handOffTrackerMerge(ctx, id, verbs, target)
 	resp.TrackerWrites, resp.TrackerWhy, resp.TrackerTicket = o.writes, o.why, o.ticket
 	return resp, target.PR, nil
 }
 
-// logOperatorMergeOutcome records how an operator merge ended, so the outcome
-// of one the operator left before it answered is still on record.
-func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, resp *pb.OperatorMergeSessionResponse, err error, approver domain.CallerPrincipal) {
+// logOperatorMergeOutcome records how an operator merge ended and how long
+// each phase took, so the outcome of one the operator left before it answered
+// is still on record and a slow merge says where its time went.
+func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, resp *pb.OperatorMergeSessionResponse, err error, approver domain.CallerPrincipal, phases operatorMergePhases) {
 	outcome := "not approved"
 	switch {
 	case err != nil:
@@ -210,7 +234,8 @@ func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, r
 	case resp.GetIsMerged():
 		outcome = "merged"
 	}
-	ev := logApprover(s.logger.Info().Str("session", id).Int("pr", pr).Str("outcome", outcome).Bool("operator_left", operatorLeft), approver)
+	ev := logApprover(s.logger.Info().Str("session", id).Int("pr", pr).Str("outcome", outcome).Bool("operator_left", operatorLeft), approver).
+		Dur("gate", phases.gate).Dur("approve", phases.approve).Dur("merge", phases.merge).Dur("total", phases.total)
 	if err != nil {
 		ev = ev.Err(err)
 	}
@@ -242,26 +267,26 @@ func (s *Server) refuseFixAttention(ctx context.Context, id string, pr int) erro
 // operatorMergeGate runs a stricter live gate than MergeSession's before an
 // approval is recorded, so an approval is never left standing on a head that
 // could not merge, is a draft, has checks still running, or moved since the
-// operator looked.
-func (s *Server) operatorMergeGate(ctx context.Context, id string, pr int, pin string) (bool, error) {
+// operator looked. The verdict it passes is the one the merge then trusts.
+func (s *Server) operatorMergeGate(ctx context.Context, id string, pr int, pin string) (mergeVerdict, error) {
 	sess, err := s.sessions.Get(ctx, id)
 	if err != nil {
-		return false, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+		return mergeVerdict{}, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 	repo, err := s.repos.Get(ctx, sess.RepoID)
 	if err != nil {
-		return false, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
+		return mergeVerdict{}, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
 	}
 	mb, verdict, err := s.liveMergeBlock(ctx, repo.OriginURL, pr, pin, operatorApprovalBlocks)
 	switch {
 	case errors.Is(err, vcs.ErrHeadMismatch):
-		return false, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w; nothing was approved or merged", err))
+		return mergeVerdict{}, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w; nothing was approved or merged", err))
 	case err != nil:
-		return false, connect.NewError(connect.CodeCanceled, fmt.Errorf("merge abandoned while checking the live merge gate: %w", err))
+		return mergeVerdict{}, connect.NewError(connect.CodeCanceled, fmt.Errorf("merge abandoned while checking the live merge gate: %w", err))
 	case mb != nil:
-		return false, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("merge blocked: gate=%s; %s; nothing was approved or merged", mb.Gate.Slug(), mb.Detail))
+		return mergeVerdict{}, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("merge blocked: gate=%s; %s; nothing was approved or merged", mb.Gate.Slug(), mb.Detail))
 	}
-	return verdict.verified, nil
+	return verdict, nil
 }
 
 // approvalStandsError keeps a refused merge's code and says that the approval

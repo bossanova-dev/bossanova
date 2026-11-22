@@ -9,6 +9,7 @@ go_library(
         "decode.go",
         "offline.go",
         "operations.go",
+        "pr_queries.go",
         "schema.go",
         "seed.go",
         "types.go",
@@ -44,6 +45,7 @@ go_test(
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/kit/safego",
+        "//lib/bossalib/kit/vcs",
         "//services/boss/internal/adapter/realstackrpc",
         "//services/boss/internal/realstack",
         "@com_connectrpc_connect//:connect",

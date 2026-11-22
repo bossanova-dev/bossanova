@@ -195,8 +195,12 @@ func (m Model) handleMergeResult(msg MergeResultMsg) (tea.Model, tea.Cmd) {
 	// No tui_action here: session_merged is captured once in App.handleMergeResult
 	// (app_handlers.go), which sees every MergeResultMsg whether or not this
 	// picker is still on screen.
-	if msg.Err != nil {
-		m.statusMsg = ui.RPCStatusMessage("Couldn't merge", msg.Err)
+	switch {
+	case msg.Err != nil:
+		m.statusMsg = ui.RPCStatusDetail(msg.Err)
+		return m, nil
+	case msg.Unsettled:
+		m.attentionAction, m.statusNote = ui.AwaitingMerge(msg.SessionID, msg.Text), ""
 		return m, nil
 	}
 	// Merge succeeded — stay on the session-detail view showing merged status
@@ -205,6 +209,7 @@ func (m Model) handleMergeResult(msg MergeResultMsg) (tea.Model, tea.Cmd) {
 	// MERGED optimistically until the daemon reconciles (if the user then
 	// cancels or archives back to the list).
 	m.merged = true
+	m.statusMsg, m.statusNote = "", msg.Text
 	if m.session.GetRepoShouldArchiveSessionsAfterMerge() {
 		// Optimistic latch: the daemon will archive on the merge webhook.
 		// Show "Archiving…" immediately, before archive_pending round-trips.

@@ -63,7 +63,7 @@ func TestPerMinuteRefusalPausesBrieflyNotUntilReset_ScheduledJobs_AC230401(t *te
 	refusing := refusingFlag()
 	gh := perMinuteGH(clock, 4699, refusing)
 	var logs bytes.Buffer
-	p := New(zerolog.New(&logs), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
+	p := New(zerolog.New(&logs), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 	ctx := context.Background()
 	start := clock.Now()
 
@@ -108,7 +108,7 @@ func TestPerMinuteRefusalLeavesQuotaStatusAtGitHubsFigures_ScheduledJobs_AC23040
 	clock := newFakeClock()
 	refusing := refusingFlag()
 	gh := perMinuteGH(clock, 4699, refusing)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter),
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter),
 		WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
 	ctx := context.Background()
 
@@ -144,7 +144,7 @@ func TestRepeatedBurstRefusalsBackOffToTheFallbackCap(t *testing.T) {
 	clock := newFakeClock()
 	refusing := refusingFlag()
 	gh := perMinuteGH(clock, 4699, refusing)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 	ctx := context.Background()
 
 	refuse := func(want time.Duration) {
@@ -189,7 +189,7 @@ func TestSecondaryRefusalBurstPausesWithoutProbing(t *testing.T) {
 		}
 		return "", errors.New("gh pr view: HTTP 403: You have exceeded a secondary rate limit")
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 	start := clock.Now()
 
 	_, err := primaryPRRead(p, context.Background(), "o/r", 7)
@@ -210,7 +210,7 @@ func TestHourlyExhaustionStillPausesUntilReset(t *testing.T) {
 	clock := newFakeClock()
 	gh := perMinuteGH(clock, 0, refusingFlag())
 	var logs bytes.Buffer
-	p := New(zerolog.New(&logs), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
+	p := New(zerolog.New(&logs), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 	ctx := context.Background()
 	reset := time.Unix(clock.Now().Add(40*time.Minute).Unix(), 0)
 
@@ -258,7 +258,7 @@ func TestBurstRefusalIsTransientForTheRetryLadder(t *testing.T) {
 			refusing := refusingFlag()
 			gh := perMinuteGH(clock, tc.remaining, refusing)
 			sleeps := 0
-			p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter),
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter),
 				WithSleepFunc(func(d time.Duration) {
 					sleeps++
 					refusing.Store(false)

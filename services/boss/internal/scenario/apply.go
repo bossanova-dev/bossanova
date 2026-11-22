@@ -171,7 +171,7 @@ func checkRun(o ApplyOptions) []Problem {
 
 func applyPhase(ctx context.Context, doc Document, opts ApplyOptions, p Plan, st *applyState) error {
 	if opts.Phase == "offline" {
-		return applyOffline(ctx, opts, p, st)
+		return applyOffline(ctx, doc, opts, p, st)
 	}
 	connection, err := newOperationConnection(opts.Socket)
 	if err != nil {
@@ -187,7 +187,7 @@ func applyPhase(ctx context.Context, doc Document, opts ApplyOptions, p Plan, st
 		return fmt.Errorf("unknown apply phase %q", opts.Phase)
 	}
 }
-func applyOffline(ctx context.Context, opts ApplyOptions, p Plan, st *applyState) error {
+func applyOffline(ctx context.Context, doc Document, opts ApplyOptions, p Plan, st *applyState) error {
 	if conn, err := net.DialTimeout("unix", opts.Socket, 200*time.Millisecond); err == nil {
 		_ = conn.Close()
 		return fmt.Errorf("daemon must be stopped before offline seeding")
@@ -203,24 +203,8 @@ func applyOffline(ctx context.Context, opts ApplyOptions, p Plan, st *applyState
 	}
 	for i := range p.GH {
 		response := &p.GH[i]
-		remapOpenPRList(response, st.Origins)
-		for j, arg := range response.Args {
-			if j > 0 && response.Args[j-1] == "--repo" {
-				response.Args[j] = st.Origins[arg]
-			}
-		}
-		if len(response.Args) > 1 && response.Args[0] == "api" {
-			for key, origin := range st.Origins {
-				if response.Args[1] == "repos/"+key {
-					response.Args[1] = "repos/" + origin
-					break
-				}
-				if strings.HasPrefix(response.Args[1], "repos/"+key+"/") {
-					response.Args[1] = "repos/" + origin + strings.TrimPrefix(response.Args[1], "repos/"+key)
-					break
-				}
-			}
-		}
+		RemapPRQueries(response, doc, st.Origins)
+		RemapGHResponse(response, st.Origins)
 		response.Stdout = replaceBranch(response.Stdout, st.Branches)
 		response.Stdout = replacePRHead(response.Stdout, st.Branches, st.Heads)
 

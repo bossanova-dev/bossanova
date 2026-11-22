@@ -168,6 +168,8 @@ func OperatorMerged(pr int, r *pb.OperatorMergeSessionResponse) string {
 	switch r.GetTrackerWrites() {
 	case "ok", "none":
 		return merged
+	case "pending":
+		return merged + "; the ticket update is running"
 	case "retrying":
 		return merged + "; the ticket update will be retried"
 	case "permanent":

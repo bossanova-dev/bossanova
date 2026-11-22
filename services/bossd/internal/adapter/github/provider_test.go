@@ -241,9 +241,9 @@ func TestIsPRAlreadyExistsFalseForOtherErrors(t *testing.T) {
 
 func TestCreateDraftPRReturnsErrPRAlreadyExistsForDuplicatePR(t *testing.T) {
 	p := New(zerolog.Nop(),
-		WithRunGH(func(_ context.Context, _ ...string) (string, error) {
+		WithRunGH(perPRFixtureGH(func(_ context.Context, _ ...string) (string, error) {
 			return "", errors.New(`gh pr create: exit status 1: pull request create failed: GraphQL: a pull request for branch "owner:feature" into branch "main" already exists`)
-		}),
+		})),
 		WithSleepFunc(func(time.Duration) {}),
 	)
 
@@ -269,10 +269,10 @@ func testPROpts() vcs.CreatePROpts {
 
 func TestCreateDraftPR_EmptyRepoPath(t *testing.T) {
 	p := New(zerolog.Nop(),
-		WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 			t.Fatal("gh should not be called with empty repo path")
 			return "", nil
-		}),
+		})),
 	)
 
 	opts := testPROpts()
@@ -297,7 +297,7 @@ func TestCreateDraftPR_RetrySuccess(t *testing.T) {
 	}
 
 	p := New(zerolog.Nop(),
-		WithRunGH(fakeGH),
+		WithRunGH(perPRFixtureGH(fakeGH)),
 		WithSleepFunc(func(time.Duration) {}),
 	)
 
@@ -321,7 +321,7 @@ func TestCreateDraftPR_RetriesExhausted(t *testing.T) {
 	}
 
 	p := New(zerolog.Nop(),
-		WithRunGH(fakeGH),
+		WithRunGH(perPRFixtureGH(fakeGH)),
 		WithSleepFunc(func(time.Duration) {}),
 	)
 
@@ -346,7 +346,7 @@ func TestCreateDraftPR_NoRetryForOtherErrors(t *testing.T) {
 	}
 
 	p := New(zerolog.Nop(),
-		WithRunGH(fakeGH),
+		WithRunGH(perPRFixtureGH(fakeGH)),
 		WithSleepFunc(func(time.Duration) {}),
 	)
 
@@ -372,7 +372,7 @@ func TestCreateDraftPR_RespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := New(zerolog.Nop(),
-		WithRunGH(fakeGH),
+		WithRunGH(perPRFixtureGH(fakeGH)),
 		WithSleepFunc(func(time.Duration) {
 			cancel() // cancel during sleep
 		}),
@@ -401,7 +401,7 @@ func TestListOpenPRs_RetriesSecondaryRateLimit(t *testing.T) {
 		return emptySnapshot, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH), WithNowFunc(clock.Now), WithJitterFunc(noJitter), WithSleepFunc(clock.Advance))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)), WithNowFunc(clock.Now), WithJitterFunc(noJitter), WithSleepFunc(clock.Advance))
 
 	if _, err := p.ListOpenPRs(context.Background(), "owner/repo"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -439,7 +439,7 @@ func TestListPRsByState_PassesStateAndLimitAndMaps(t *testing.T) {
 				return prJSON, nil
 			}
 
-			p := New(zerolog.Nop(), WithRunGH(fakeGH))
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 			prs, err := tt.call(p)
 			if err != nil {
 				t.Fatalf("list PRs: %v", err)
@@ -487,7 +487,7 @@ func TestSearchPRsByTitleTag_QueriesAllStatesAndAppliesExactBracketFilter(t *tes
 		return prJSON, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	prs, err := p.SearchPRsByTitleTag(context.Background(), "owner/repo", "BOS-289")
 	if err != nil {
 		t.Fatalf("SearchPRsByTitleTag: %v", err)
@@ -521,7 +521,7 @@ func TestSearchPRsByTitleTag_QueriesAllStatesAndAppliesExactBracketFilter(t *tes
 func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
 	var viewArgs []string
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+		if isPRView(args) {
 			viewArgs = append([]string(nil), args...)
 			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"REVIEW_REQUIRED","reviews":[]}`, nil
 		}
@@ -531,7 +531,7 @@ func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
 		return "", fmt.Errorf("unexpected gh args: %v", args)
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRStatus: %v", err)
@@ -561,12 +561,12 @@ func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
 func TestGetPRStatus_ReportsAForkHead(t *testing.T) {
 	for _, cross := range []bool{true, false} {
 		fakeGH := func(_ context.Context, args ...string) (string, error) {
-			if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+			if isPRView(args) {
 				return fmt.Sprintf(`{"state":"OPEN","mergeable":"CONFLICTING","isDraft":false,"title":"t","headRefName":"fix/x","baseRefName":"main","headRefOid":"abc","isCrossRepository":%t,"reviews":[]}`, cross), nil
 			}
 			return "", fmt.Errorf("unexpected gh args: %v", args)
 		}
-		status, err := New(zerolog.Nop(), WithRunGH(fakeGH)).GetPRStatus(context.Background(), "owner/repo", 42)
+		status, err := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH))).GetPRStatus(context.Background(), "owner/repo", 42)
 		if err != nil {
 			t.Fatalf("GetPRStatus: %v", err)
 		}
@@ -635,7 +635,7 @@ func TestGetPRStatus_ReviewStateResolution(t *testing.T) {
 				reviewsJSON = append(reviewsJSON, fmt.Sprintf(`{"state":%q,"authorAssociation":"MEMBER"}`, s))
 			}
 			fakeGH := func(_ context.Context, args ...string) (string, error) {
-				if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+				if isPRView(args) {
 					return fmt.Sprintf(
 						`{"state":"OPEN","mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","isDraft":false,`+
 							`"title":"Review resolution","headRefName":"feature","baseRefName":"main",`+
@@ -648,7 +648,7 @@ func TestGetPRStatus_ReviewStateResolution(t *testing.T) {
 				return "", fmt.Errorf("unexpected gh args: %v", args)
 			}
 
-			p := New(zerolog.Nop(), WithRunGH(fakeGH))
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 			status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
 			if err != nil {
 				t.Fatalf("GetPRStatus: %v", err)
@@ -666,7 +666,7 @@ func TestGetPRStatus_ReviewStateResolution(t *testing.T) {
 func TestGetPRStatus_RestMergeabilityMapsRebaseConflict(t *testing.T) {
 	apiCalled := false
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+		if isPRView(args) {
 			return `{"state":"OPEN","mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN","isDraft":false,"title":"Rebase blocked","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"","reviews":[]}`, nil
 		}
 		if len(args) >= 2 && args[0] == "api" && args[1] == "repos/owner/repo/pulls/42" {
@@ -676,7 +676,7 @@ func TestGetPRStatus_RestMergeabilityMapsRebaseConflict(t *testing.T) {
 		return "", fmt.Errorf("unexpected gh args: %v", args)
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRStatus: %v", err)
@@ -697,7 +697,7 @@ func TestGetPRStatus_RestMergeabilityMapsRebaseConflict(t *testing.T) {
 
 func TestGetPRStatus_ReviewRequiredDoesNotSuppressCommentedReview(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+		if isPRView(args) {
 			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"REVIEW_REQUIRED","reviews":[{"state":"COMMENTED","authorAssociation":"MEMBER"}]}`, nil
 		}
 		if len(args) >= 2 && args[0] == "api" {
@@ -706,7 +706,7 @@ func TestGetPRStatus_ReviewRequiredDoesNotSuppressCommentedReview(t *testing.T) 
 		return "", fmt.Errorf("unexpected gh args: %v", args)
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRStatus: %v", err)
@@ -721,7 +721,7 @@ func TestGetPRStatus_ReviewRequiredDoesNotSuppressCommentedReview(t *testing.T) 
 
 func TestGetPRStatus_PendingReviewDoesNotSuppressChangesRequestedDecision(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+		if isPRView(args) {
 			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"CHANGES_REQUESTED","reviews":[{"state":"CHANGES_REQUESTED","authorAssociation":"MEMBER"},{"state":"PENDING","authorAssociation":"MEMBER"}]}`, nil
 		}
 		if len(args) >= 2 && args[0] == "api" {
@@ -730,7 +730,7 @@ func TestGetPRStatus_PendingReviewDoesNotSuppressChangesRequestedDecision(t *tes
 		return "", fmt.Errorf("unexpected gh args: %v", args)
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRStatus: %v", err)
@@ -745,7 +745,7 @@ func TestGetPRStatus_PendingReviewDoesNotSuppressChangesRequestedDecision(t *tes
 
 func TestGetPRStatus_CommentedReviewDoesNotSuppressChangesRequestedDecision(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+		if isPRView(args) {
 			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"CHANGES_REQUESTED","reviews":[{"state":"CHANGES_REQUESTED","authorAssociation":"MEMBER"},{"state":"COMMENTED","authorAssociation":"MEMBER"},{"state":"DISMISSED"}]}`, nil
 		}
 		if len(args) >= 2 && args[0] == "api" {
@@ -754,7 +754,7 @@ func TestGetPRStatus_CommentedReviewDoesNotSuppressChangesRequestedDecision(t *t
 		return "", fmt.Errorf("unexpected gh args: %v", args)
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRStatus: %v", err)
@@ -769,7 +769,7 @@ func TestGetPRStatus_CommentedReviewDoesNotSuppressChangesRequestedDecision(t *t
 
 func TestGetPRStatus_CommentedReviewDoesNotSuppressApprovedDecision(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+		if isPRView(args) {
 			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","authorAssociation":"MEMBER"},{"state":"COMMENTED","authorAssociation":"MEMBER"},{"state":"DISMISSED"}]}`, nil
 		}
 		if len(args) >= 2 && args[0] == "api" {
@@ -778,7 +778,7 @@ func TestGetPRStatus_CommentedReviewDoesNotSuppressApprovedDecision(t *testing.T
 		return "", fmt.Errorf("unexpected gh args: %v", args)
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRStatus: %v", err)
@@ -807,7 +807,7 @@ func TestListOpenPRs_PrimaryRateLimitDoesNotRetry(t *testing.T) {
 	}
 
 	p := New(zerolog.Nop(),
-		WithRunGH(fakeGH),
+		WithRunGH(perPRFixtureGH(fakeGH)),
 		WithSleepFunc(func(time.Duration) {
 			slept.Add(1)
 		}),
@@ -822,179 +822,6 @@ func TestListOpenPRs_PrimaryRateLimitDoesNotRetry(t *testing.T) {
 	}
 	if got := slept.Load(); got != 0 {
 		t.Errorf("got %d sleeps, want 0", got)
-	}
-}
-
-func TestMergePR_RetriesBadGateway(t *testing.T) {
-	var calls atomic.Int32
-	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		n := calls.Add(1)
-		if n == 1 {
-			return "", fmt.Errorf("gh pr merge: non-200 OK status code: 502 Bad Gateway")
-		}
-		return "", nil
-	}
-
-	p := New(zerolog.Nop(),
-		WithRunGH(fakeGH),
-		WithSleepFunc(func(time.Duration) {}),
-	)
-
-	if err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: "rebase"}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := calls.Load(); got != 2 {
-		t.Errorf("got %d calls, want 2", got)
-	}
-}
-
-func TestMergePR_DoesNotRetryPermanentError(t *testing.T) {
-	var calls atomic.Int32
-	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		calls.Add(1)
-		return "", fmt.Errorf("gh pr merge: GraphQL: Pull request is not mergeable")
-	}
-
-	p := New(zerolog.Nop(),
-		WithRunGH(fakeGH),
-		WithSleepFunc(func(time.Duration) {}),
-	)
-
-	err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: "rebase"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if got := calls.Load(); got != 1 {
-		t.Errorf("got %d calls, want 1", got)
-	}
-}
-
-func TestMergePR_ClassifiesWorkflowScopeError(t *testing.T) {
-	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		return "", fmt.Errorf("gh pr merge 4 --repo freshclaim/marketing --rebase --delete-branch: exit status 1: GraphQL: refusing to allow an OAuth App to create or update workflow `.github/workflows/_quality-gate.yml` without `workflow` scope (mergePullRequest)")
-	}
-
-	p := New(zerolog.Nop(),
-		WithRunGH(fakeGH),
-		WithSleepFunc(func(time.Duration) {}),
-	)
-
-	err := p.MergePR(context.Background(), "freshclaim/marketing", 4, vcs.MergePROpts{Strategy: "rebase"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-
-	var actionable *vcs.ActionableError
-	if !errors.As(err, &actionable) {
-		t.Fatalf("expected actionable error, got %T: %v", err, err)
-	}
-	if actionable.Code != vcs.ErrorCodeGitHubWorkflowScopeRequired {
-		t.Errorf("got code %q, want %q", actionable.Code, vcs.ErrorCodeGitHubWorkflowScopeRequired)
-	}
-
-	message := actionable.OperatorMessage()
-	for _, want := range []string{
-		"Auto-merge blocked: GitHub token lacks workflow permission",
-		"PR #4 in freshclaim/marketing changes a file under .github/workflows",
-		"gh auth refresh -h github.com -s workflow",
-	} {
-		if !strings.Contains(message, want) {
-			t.Errorf("operator message missing %q:\n%s", want, message)
-		}
-	}
-}
-
-// testPin is a valid 40-hex head SHA used by the head-pinned merge tests.
-var testPin = strings.Repeat("0a1b", 10)
-
-func TestMergePR_MatchHeadCommitArgv(t *testing.T) {
-	for _, strategy := range []string{"merge", "squash", "rebase"} {
-		t.Run(strategy, func(t *testing.T) {
-			var pinned, unpinned []string
-			p := New(zerolog.Nop(),
-				WithRunGH(func(_ context.Context, args ...string) (string, error) {
-					if pinned == nil {
-						pinned = append([]string(nil), args...)
-					} else {
-						unpinned = append([]string(nil), args...)
-					}
-					return "", nil
-				}),
-				WithSleepFunc(func(time.Duration) {}),
-			)
-
-			// An upper-case pin is normalized before it reaches gh.
-			if err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: strategy, ExpectedHeadSHA: strings.ToUpper(testPin)}); err != nil {
-				t.Fatalf("pinned MergePR: %v", err)
-			}
-			if err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: strategy}); err != nil {
-				t.Fatalf("unpinned MergePR: %v", err)
-			}
-
-			want := []string{"pr", "merge", "42", "--repo", "owner/repo", "--" + strategy, "--delete-branch"}
-			if !slices.Equal(unpinned, want) {
-				t.Errorf("unpinned argv = %v, want exactly %v", unpinned, want)
-			}
-			wantPinned := append(append([]string(nil), want...), "--match-head-commit", testPin)
-			if !slices.Equal(pinned, wantPinned) {
-				t.Errorf("pinned argv = %v, want %v", pinned, wantPinned)
-			}
-		})
-	}
-}
-
-func TestMergePR_HeadBranchModifiedIsHeadMismatch(t *testing.T) {
-	tests := []struct {
-		name    string
-		ghErr   string
-		wantHit bool
-	}{
-		{"head moved", "gh pr merge 42: exit status 1: GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)", true},
-		{"base moved", "gh pr merge 42: exit status 1: GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var calls atomic.Int32
-			p := New(zerolog.Nop(),
-				WithRunGH(func(_ context.Context, _ ...string) (string, error) {
-					calls.Add(1)
-					return "", errors.New(tt.ghErr)
-				}),
-				WithSleepFunc(func(time.Duration) {}),
-			)
-
-			err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: "squash", ExpectedHeadSHA: testPin})
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if got := errors.Is(err, vcs.ErrHeadMismatch); got != tt.wantHit {
-				t.Errorf("errors.Is(err, ErrHeadMismatch) = %v, want %v (err: %v)", got, tt.wantHit, err)
-			}
-			if got := calls.Load(); got != 1 {
-				t.Errorf("got %d gh calls, want exactly 1 (no transient retry)", got)
-			}
-		})
-	}
-}
-
-func TestMergePR_MalformedPinMakesNoGHCall(t *testing.T) {
-	for _, pin := range []string{"abc", testPin[:39], testPin + "a", strings.Repeat("z", 40)} {
-		t.Run(pin, func(t *testing.T) {
-			var calls atomic.Int32
-			p := New(zerolog.Nop(),
-				WithRunGH(func(_ context.Context, _ ...string) (string, error) {
-					calls.Add(1)
-					return "", nil
-				}),
-				WithSleepFunc(func(time.Duration) {}),
-			)
-			if err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{ExpectedHeadSHA: pin}); err == nil {
-				t.Fatal("expected error for malformed pin, got nil")
-			}
-			if got := calls.Load(); got != 0 {
-				t.Errorf("got %d gh calls, want 0", got)
-			}
-		})
 	}
 }
 
@@ -1040,7 +867,7 @@ func TestGetReviewComments_ChangesRequestedIncludesInlineComments(t *testing.T) 
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1100,7 +927,7 @@ func TestGetReviewComments_BotWithUnresolvedThreads(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1145,7 +972,7 @@ func TestGetReviewComments_CodexBotCommentedReviewWithInlineCommentsPromotesToCh
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1191,7 +1018,7 @@ func TestGetReviewComments_BotWithUnresolvedThreadOnSecondPage(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1254,7 +1081,7 @@ func TestGetReviewComments_EmptyCodexCommentedReviewWithBlockingThreadIsDropped(
 		return reviewsJSON, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1294,7 +1121,7 @@ func TestGetReviewComments_EmptyCodexFollowupDoesNotClobberEarlierPromotion(t *t
 		), nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1332,7 +1159,7 @@ func TestGetReviewComments_BotAllThreadsResolved(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1378,7 +1205,7 @@ func TestGetReviewComments_GraphQLQuerySelectsIsOutdated(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	if _, err := p.GetReviewComments(context.Background(), "owner/repo", 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1403,7 +1230,7 @@ func TestGetReviewComments_BotResolvedAndOutdatedThreadIsSkipped(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1440,7 +1267,7 @@ func TestGetReviewComments_BotUnresolvedOutdatedThreadIsSkipped(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1480,7 +1307,7 @@ func TestGetReviewComments_BotUnresolvedNotOutdatedThreadStillPromotes(t *testin
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1521,7 +1348,7 @@ func TestGetReviewComments_BotWithOutdatedAndLiveThreadsStillPromotes(t *testing
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1562,7 +1389,7 @@ func TestGetReviewComments_NativeChangesRequestedIgnoresOutdatedThreads(t *testi
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1610,7 +1437,7 @@ func TestGetReviewComments_OutdatedThreadOnSecondPageIsSkipped(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1645,7 +1472,7 @@ func TestGetReviewComments_BotNoThreads(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1671,7 +1498,7 @@ func TestGetReviewComments_GraphQLFailure(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
 		t.Fatalf("err = %v, want it to wrap vcs.ErrReviewThreadsUnverified", err)
@@ -1694,7 +1521,7 @@ func TestGetReviewComments_GraphQLMalformedResponse(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
 		t.Fatalf("err = %v, want it to wrap vcs.ErrReviewThreadsUnverified", err)
@@ -1721,7 +1548,7 @@ func TestGetReviewComments_GraphQLMissingEndCursor(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
 		t.Fatalf("err = %v, want it to wrap vcs.ErrReviewThreadsUnverified", err)
@@ -1748,7 +1575,7 @@ func TestBlockingThreadAuthors_DelegatesToUnexportedForm(t *testing.T) {
 		return "", fmt.Errorf("unexpected gh call: %v", args)
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	bots := map[string]bool{"cursor[bot]": true, "chatgpt-codex-connector[bot]": true}
 
 	exported, err := p.BlockingThreadAuthors(context.Background(), "owner/repo", 1, bots)
@@ -1785,7 +1612,7 @@ func TestBlockingThreadAuthors_FailsClosedOnGHFailure(t *testing.T) {
 		return "", fmt.Errorf("unexpected gh call: %v", args)
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	blocking, err := p.BlockingThreadAuthors(context.Background(), "owner/repo", 1, map[string]bool{"cursor[bot]": true})
 	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
 		t.Fatalf("err = %v, want it to wrap vcs.ErrReviewThreadsUnverified", err)
@@ -1808,7 +1635,7 @@ func TestGetReviewComments_NoBotReviews(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1849,7 +1676,7 @@ func TestGetReviewComments_MultipleBotsMixed(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1928,7 +1755,7 @@ func TestListOpenPRs_ParsesAndMapsPayload(t *testing.T) {
 		return listPage(listPRsPayload), nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	prs, err := p.ListOpenPRs(context.Background(), "owner/repo")
 	if err != nil {
@@ -1953,7 +1780,7 @@ func TestListClosedPRs_ParsesAndMapsPayload(t *testing.T) {
 		return listPRsPayload, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	prs, err := p.ListClosedPRs(context.Background(), "owner/repo")
 	if err != nil {
@@ -1974,7 +1801,7 @@ func TestListClosedPRs_ParsesAndMapsPayload(t *testing.T) {
 func TestListOpenPRs_EmptyPayloadYieldsNoPRs(t *testing.T) {
 	fakeGH := func(_ context.Context, _ ...string) (string, error) { return emptySnapshot, nil }
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	prs, err := p.ListOpenPRs(context.Background(), "owner/repo")
 	if err != nil {
@@ -1990,7 +1817,7 @@ func TestGetCheckResults_UnrecognizedStateIsUnclassified(t *testing.T) {
 		return `[{"name":"build","state":"BOUNCED","workflow":"ci"}]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	results, err := p.GetCheckResults(context.Background(), "owner/repo", 42)
 	if err != nil {
@@ -2019,7 +1846,7 @@ func TestGetCheckResults_DropsProvenanceReceipt(t *testing.T) {
 		return `[{"name":"boss/build","state":"SUCCESS","workflow":""}]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	results, err := p.GetCheckResults(context.Background(), "owner/repo", 42)
 	if err != nil {
@@ -2038,7 +1865,7 @@ func TestGetCheckResults_KeepsWorkflowCheckNamedLikeReceipt(t *testing.T) {
 		return `[{"name":"boss/build","state":"FAILURE","workflow":"ci"}]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	results, err := p.GetCheckResults(context.Background(), "owner/repo", 42)
 	if err != nil {
@@ -2059,14 +1886,14 @@ func TestGetCheckResults_DecodesVerifyStatusDescription(t *testing.T) {
 		]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	results, err := p.GetCheckResults(context.Background(), "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetCheckResults: %v", err)
 	}
-	if !slices.Contains(gotArgs, "name,state,workflow,description") {
-		t.Fatalf("gh args = %v, want --json name,state,workflow,description", gotArgs)
+	if !strings.Contains(strings.Join(gotArgs, " "), "context state description") {
+		t.Fatalf("gh args = %v, want check context description", gotArgs)
 	}
 	if len(results) != 2 {
 		t.Fatalf("got %d check results, want 2: %+v", len(results), results)
@@ -2089,27 +1916,6 @@ func TestGetCheckResults_DecodesVerifyStatusDescription(t *testing.T) {
 	}
 }
 
-func TestGetCheckResults_NoChecksReportedIsEmptyNotError(t *testing.T) {
-	// `gh pr checks` exits non-zero when the head commit has no check runs.
-	// That is a normal empty state — GetCheckResults must surface it as an
-	// empty slice with no error, so the display poller still recomputes and
-	// clears any stale status (e.g. a "draft" left over from before the PR
-	// became ready). Regression test for the stuck-draft bug (WON-1118).
-	fakeGH := func(_ context.Context, _ ...string) (string, error) {
-		return "", fmt.Errorf("gh pr checks 299 --repo IKHOR/wondercanvas-mono --json name,state,workflow: exit status 1: no checks reported on the 'dave/won-1118-fable-02' branch")
-	}
-
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
-
-	results, err := p.GetCheckResults(context.Background(), "IKHOR/wondercanvas-mono", 299)
-	if err != nil {
-		t.Fatalf("GetCheckResults: unexpected error: %v", err)
-	}
-	if len(results) != 0 {
-		t.Errorf("got %d check results, want 0", len(results))
-	}
-}
-
 func TestGetCheckResults_RealErrorPropagates(t *testing.T) {
 	// A genuine gh failure (e.g. rate limit) must still surface as an error so
 	// the poller preserves the previous status instead of collapsing it.
@@ -2117,7 +1923,7 @@ func TestGetCheckResults_RealErrorPropagates(t *testing.T) {
 		return "", fmt.Errorf("gh pr checks 299 --repo IKHOR/wondercanvas-mono --json name,state,workflow: exit status 1: GraphQL: API rate limit already exceeded for user ID 96322")
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	if _, err := p.GetCheckResults(context.Background(), "IKHOR/wondercanvas-mono", 299); err == nil {
 		t.Fatal("expected error for a real gh failure, got nil")
@@ -2156,7 +1962,7 @@ func TestGetReviewObservation_CountsReviewsGetReviewCommentsDrops(t *testing.T) 
 			{"user":{"login":"human-reviewer"},"author_association":"MEMBER","body":"looks good","state":"APPROVED"}
 		]`, nil
 	}
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	// The filtered set the gate judges has dropped the addressed bot review.
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
@@ -2188,7 +1994,7 @@ func TestGetReviewObservation_NoBotReviews(t *testing.T) {
 	fakeGH := func(_ context.Context, _ ...string) (string, error) {
 		return `[{"user":{"login":"human-reviewer"},"author_association":"MEMBER","body":"lgtm","state":"APPROVED"}]`, nil
 	}
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	obs, err := p.GetReviewObservation(context.Background(), "owner/repo", 1)
 	if err != nil {
@@ -2206,7 +2012,7 @@ func TestGetReviewObservation_ReadFailurePropagates(t *testing.T) {
 	fakeGH := func(_ context.Context, _ ...string) (string, error) {
 		return "", errors.New("gh: rate limited")
 	}
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	obs, err := p.GetReviewObservation(context.Background(), "owner/repo", 1)
 	if err == nil {
@@ -2238,7 +2044,7 @@ func TestGetReviewComments_SupersededBotReviewSkipsThreadQuery(t *testing.T) {
 			{"id":124,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"all good now","state":"APPROVED"}
 		]`, nil
 	}
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
@@ -2275,7 +2081,7 @@ func TestGetReviewComments_DismissedBotReviewSkipsThreadQuery(t *testing.T) {
 			{"id":124,"user":{"login":"cursor[bot]"},"body":"","state":"DISMISSED"}
 		]`, nil
 	}
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	if _, err := p.GetReviewComments(context.Background(), "owner/repo", 1); err != nil {
 		t.Fatalf("a dismissed bot review must not be thread-verified, got error: %v", err)
@@ -2302,7 +2108,7 @@ func TestGetReviewComments_StillCommentedBotIsThreadVerified(t *testing.T) {
 			{"id":124,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"new issues","state":"COMMENTED"}
 		]`, nil
 	}
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 
 	_, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
@@ -2446,13 +2252,13 @@ func TestGHClassifiersReadOnlyTheGHResponseNotTheEchoedArgs(t *testing.T) {
 func TestCreateDraftPRAuthProseInBodyStillRetriesAsRepoNotReady(t *testing.T) {
 	slept := 0
 	p := New(zerolog.Nop(),
-		WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 			return "", &ghError{
 				args:   args,
 				stderr: "GraphQL: No commits between main and feat/x (createPullRequest)",
 				err:    errors.New("exit status 1"),
 			}
-		}),
+		})),
 		WithSleepFunc(func(time.Duration) { slept++ }),
 	)
 
@@ -2480,9 +2286,9 @@ func TestCreateDraftPRAuthProseInBodyStillRetriesAsRepoNotReady(t *testing.T) {
 func TestCreateDraftPRReturnsErrGitHubAuthUnavailableFor401(t *testing.T) {
 	slept := 0
 	p := New(zerolog.Nop(),
-		WithRunGH(func(_ context.Context, _ ...string) (string, error) {
+		WithRunGH(perPRFixtureGH(func(_ context.Context, _ ...string) (string, error) {
 			return "", errors.New("gh pr create: exit status 1: HTTP 401: Requires authentication (https://api.github.com/graphql)")
-		}),
+		})),
 		WithSleepFunc(func(time.Duration) { slept++ }),
 	)
 
@@ -2519,9 +2325,9 @@ func TestGetCheckSet_BuildReceipt(t *testing.T) {
 		{"actions", "SUCCESS", "ci", false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := New(zerolog.Nop(), WithRunGH(func(context.Context, ...string) (string, error) {
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(context.Context, ...string) (string, error) {
 				return fmt.Sprintf(`[{"name":"boss/build","state":%q,"workflow":%q}]`, tc.state, tc.workflow), nil
-			}))
+			})))
 			got, err := p.GetCheckSet(context.Background(), "owner/repo", 42)
 			if err != nil {
 				t.Fatal(err)
@@ -2536,7 +2342,7 @@ func TestGetCheckSet_BuildReceipt(t *testing.T) {
 func TestGetCheckSet_CacheSharesReceiptAndClearsOnNewHead(t *testing.T) {
 	calls := 0
 	response := `[{"name":"boss/build","state":"SUCCESS","workflow":""},{"name":"build","state":"SUCCESS","workflow":"ci"}]`
-	p := New(zerolog.Nop(), WithRunGH(withoutSnapshot(func(context.Context, ...string) (string, error) { calls++; return response, nil })))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(withoutSnapshot(func(context.Context, ...string) (string, error) { calls++; return response, nil }))))
 	ctx := vcs.WithCachedReads(context.Background())
 	results, err := p.GetCheckResults(ctx, "owner/repo", 42)
 	if err != nil {
@@ -2574,7 +2380,7 @@ func TestGetCheckSet_BuildReceiptSeenForAnyState(t *testing.T) {
 		{"actions job named boss/build", `[{"name":"boss/build","state":"SUCCESS","workflow":"ci"}]`, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := New(zerolog.Nop(), WithRunGH(func(context.Context, ...string) (string, error) { return tc.body, nil }))
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(context.Context, ...string) (string, error) { return tc.body, nil })))
 			got, err := p.GetCheckSet(context.Background(), "owner/repo", 42)
 			if err != nil {
 				t.Fatal(err)
@@ -2589,10 +2395,10 @@ func TestGetCheckSet_BuildReceiptSeenForAnyState(t *testing.T) {
 const postStatusSHA = "0123456789abcdef0123456789abcdef01234567"
 
 func recordingProvider(calls *[][]string) *Provider {
-	return New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+	return New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 		*calls = append(*calls, append([]string(nil), args...))
 		return "{}", nil
-	}))
+	})))
 }
 
 func TestPostCommitStatus_SendsRawFieldsToStatusesEndpoint(t *testing.T) {
@@ -2689,9 +2495,9 @@ func TestPostCommitStatus_RejectsBadInputWithoutRunningGH(t *testing.T) {
 }
 
 func TestPostCommitStatus_WrapsGHError(t *testing.T) {
-	p := New(zerolog.Nop(), WithRunGH(func(context.Context, ...string) (string, error) {
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(context.Context, ...string) (string, error) {
 		return "", errors.New("HTTP 422: Validation Failed")
-	}))
+	})))
 	err := p.PostCommitStatus(context.Background(), "owner/repo", postStatusSHA, vcs.CommitStatus{Context: "boss/build", State: "success"})
 	if err == nil || !strings.Contains(err.Error(), "Validation Failed") {
 		t.Fatalf("err = %v, want the gh failure wrapped", err)
@@ -2725,7 +2531,7 @@ func TestGetReviewComments_DropsUntrustedChangesRequested(t *testing.T) {
 				]`, association, hostileReviewBody), nil
 			}
 
-			p := New(zerolog.Nop(), WithRunGH(fakeGH))
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 			comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 			if err != nil {
 				t.Fatalf("GetReviewComments: %v", err)
@@ -2758,7 +2564,7 @@ func TestGetReviewComments_KeepsTrustedAssociations(t *testing.T) {
 				return fmt.Sprintf(`[{"id":55,"user":{"login":"reviewer"},"author_association":%q,"body":"please fix","state":"CHANGES_REQUESTED"}]`, association), nil
 			}
 
-			p := New(zerolog.Nop(), WithRunGH(fakeGH))
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 			comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 			if err != nil {
 				t.Fatalf("GetReviewComments: %v", err)
@@ -2787,7 +2593,7 @@ func TestGetReviewComments_KeepsBotReviews(t *testing.T) {
 		return `[{"id":88,"user":{"login":"cursor[bot]"},"author_association":"NONE","body":"requesting changes","state":"CHANGES_REQUESTED"}]`, nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
 	if err != nil {
 		t.Fatalf("GetReviewComments: %v", err)
@@ -2814,7 +2620,7 @@ func TestGetReviewInlineComments_DropsUntrustedComments(t *testing.T) {
 		]`, hostileReviewBody), nil
 	}
 
-	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 	comments, err := p.GetReviewInlineComments(context.Background(), "owner/repo", 1, 7)
 	if err != nil {
 		t.Fatalf("GetReviewInlineComments: %v", err)
@@ -2862,14 +2668,14 @@ func TestGetPRStatus_UntrustedReviewDoesNotSetLatestState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var viewArgs []string
 			fakeGH := func(_ context.Context, args ...string) (string, error) {
-				if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+				if isPRView(args) {
 					viewArgs = append([]string(nil), args...)
 					return `{"state":"OPEN","mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","isDraft":false,"title":"t","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"REVIEW_REQUIRED","reviews":[` + tt.reviews + `]}`, nil
 				}
 				return "", fmt.Errorf("unexpected gh args: %v", args)
 			}
 
-			p := New(zerolog.Nop(), WithRunGH(fakeGH))
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 			status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
 			if err != nil {
 				t.Fatalf("GetPRStatus: %v", err)
@@ -2879,7 +2685,7 @@ func TestGetPRStatus_UntrustedReviewDoesNotSetLatestState(t *testing.T) {
 			}
 			// The per-review authorAssociation rides inside the reviews field;
 			// a top-level authorAssociation field would be the PR author's.
-			if fields := flagValue(viewArgs, "--json"); !slices.Contains(strings.Split(fields, ","), "reviews") {
+			if fields := strings.Join(viewArgs, " "); !strings.Contains(fields, "reviews(first: 100") {
 				t.Fatalf("gh pr view --json = %q, want the reviews field", fields)
 			}
 		})
@@ -2927,7 +2733,7 @@ func TestGetPRStatus_BotReviewSetsLatestState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			restCalls := 0
 			fakeGH := func(_ context.Context, args ...string) (string, error) {
-				if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+				if isPRView(args) {
 					return `{"state":"OPEN","mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","isDraft":false,"title":"t","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"REVIEW_REQUIRED","reviews":[` + tt.reviews + `]}`, nil
 				}
 				if len(args) == 3 && args[0] == "api" && args[1] == "repos/owner/repo/pulls/42/reviews?per_page=100" && args[2] == "-i" {
@@ -2937,7 +2743,7 @@ func TestGetPRStatus_BotReviewSetsLatestState(t *testing.T) {
 				return "", fmt.Errorf("unexpected gh args: %v", args)
 			}
 
-			p := New(zerolog.Nop(), WithRunGH(fakeGH))
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(fakeGH)))
 			status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
 			if err != nil {
 				t.Fatalf("GetPRStatus: %v", err)

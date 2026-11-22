@@ -65,7 +65,7 @@ func graphQLAt(clock *clocktest.Clock, remaining int, resetIn time.Duration) str
 
 func newFloorProvider(gh *floorGH, clock *clocktest.Clock, opts ...ProviderOption) *Provider {
 	opts = append([]ProviderOption{
-		WithRunGH(gh.run), WithNowFunc(clock.Now),
+		WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now),
 		WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor),
 	}, opts...)
 	return New(zerolog.Nop(), opts...)
@@ -180,7 +180,7 @@ func TestFloorFailsOpen(t *testing.T) {
 func TestProviderWithoutFloorsNeverProbes(t *testing.T) {
 	clock := newFakeClock()
 	gh := newFloorGH(graphQLAt(clock, 100, time.Hour))
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 
 	if _, err := primaryPRRead(p, vcs.WithCachedReads(context.Background()), "o/r", 7); err != nil {
 		t.Fatalf("background read: %v", err)
@@ -233,7 +233,7 @@ func TestConcurrentBackgroundReadsShareOneFloorProbe(t *testing.T) {
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
-	p = New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
+	p = New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
 	bg := vcs.WithCachedReads(context.Background())
 
 	var done sync.WaitGroup
@@ -260,7 +260,7 @@ func TestFloorLogsTransitionsNotRefusals(t *testing.T) {
 	clock := newFakeClock()
 	gh := newFloorGH(graphQLAt(clock, 1500, 20*time.Minute))
 	var logs bytes.Buffer
-	p := New(zerolog.New(&logs), WithRunGH(gh.run), WithNowFunc(clock.Now),
+	p := New(zerolog.New(&logs), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now),
 		WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
 	bg := vcs.WithCachedReads(context.Background())
 

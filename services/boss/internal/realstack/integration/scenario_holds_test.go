@@ -93,16 +93,8 @@ func exerciseScenarioHolds(t *testing.T, stack *realstack.Stack, doc scenario.Do
 	}
 	for i := range plan.GH {
 		response := &plan.GH[i]
-		for j, arg := range response.Args {
-			if j > 0 && response.Args[j-1] == "--repo" {
-				response.Args[j] = prepared.Origins[arg]
-			}
-		}
-		if len(response.Args) > 1 && response.Args[0] == "api" {
-			for key, origin := range prepared.Origins {
-				response.Args[1] = strings.Replace(response.Args[1], "repos/"+key, "repos/"+origin, 1)
-			}
-		}
+		scenario.RemapPRQueries(response, doc, prepared.Origins)
+		scenario.RemapGHResponse(response, prepared.Origins)
 		for key, branch := range prepared.Branches {
 			response.Stdout = strings.ReplaceAll(response.Stdout, fmt.Sprintf(`"headRefName":%q`, key), fmt.Sprintf(`"headRefName":%q`, branch))
 		}

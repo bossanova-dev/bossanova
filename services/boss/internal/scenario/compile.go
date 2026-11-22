@@ -111,7 +111,7 @@ func Compile(doc Document) (Plan, []Problem) {
 		if pr.Mergeable {
 			mergeable = "MERGEABLE"
 		}
-		view, _ := json.Marshal(map[string]any{"additions": pr.Additions, "deletions": pr.Deletions, "changedFiles": pr.ChangedFiles, "body": pr.Body, "headRefOid": pr.HeadSHA, "state": state, "mergeable": mergeable, "mergeStateStatus": "CLEAN", "isDraft": pr.State == "DRAFT" || pr.Draft, "title": s.Title, "headRefName": s.Key, "baseRefName": "main"})
+		view, _ := json.Marshal(map[string]any{"additions": pr.Additions, "deletions": pr.Deletions, "changedFiles": pr.ChangedFiles, "body": pr.Body, "headRefOid": pr.HeadSHA, "state": state, "mergeable": mergeable, "mergeStateStatus": "CLEAN", "isDraft": pr.State == "DRAFT" || pr.Draft, "title": s.Title, "headRefName": s.Key, "baseRefName": "main", "reviews": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{}}})
 		checks := "PENDING"
 		switch pr.Checks {
 		case "PASSED", "PASSING":
@@ -124,7 +124,7 @@ func Compile(doc Document) (Plan, []Problem) {
 		for _, op := range doc.Operations {
 			if op.Op == "holdMerge" && op.Session == s.Key {
 				snapshotHead, _ = vcs.NormalizeHeadSHA(pr.HeadSHA)
-				checkRows = append(checkRows, map[string]string{"name": "boss/verify", "state": "SUCCESS", "description": "Scenario merge authorization"})
+				checkRows = append(checkRows, map[string]string{"name": vcs.VerifyStatusContext, "state": "SUCCESS", "description": "Scenario merge authorization"})
 				break
 			}
 		}
@@ -133,7 +133,8 @@ func Compile(doc Document) (Plan, []Problem) {
 		restMergeability, _ := json.Marshal(map[string]any{"mergeable": pr.Mergeable, "mergeable_state": "clean", "rebaseable": true})
 		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n, "-i"}, Stdout: string(restMergeability)})
 		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n + "/reviews?per_page=100", "-i"}, Stdout: "[]"})
-		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"pr", "view", n, "--repo", s.Repo, "--json", "state,mergeable,mergeStateStatus,isDraft,title,body,headRefName,baseRefName,headRefOid,isCrossRepository,reviewDecision,reviews,additions,deletions,changedFiles"}, Stdout: string(view)}, realstack.GHResponse{Args: []string{"pr", "checks", n, "--repo", s.Repo, "--json", "name,state,workflow,description"}, Stdout: string(checkJSON)})
+
+		p.GH = append(p.GH, realstack.PRStatusResponse(s.Repo, pr.Number, string(view)), realstack.PRChecksResponse(s.Repo, pr.Number, checkContextJSON(checkRows)))
 	}
 	p.GH = append(p.GH, heldMergeResponses(doc)...)
 	for _, r := range doc.Repos {
@@ -150,6 +151,20 @@ func Compile(doc Document) (Plan, []Problem) {
 	return p, ps
 }
 
+func checkContextJSON(rows []map[string]string) string {
+	contexts := make([]map[string]any, 1, len(rows))
+	contexts[0] = map[string]any{"__typename": "CheckRun", "name": "scenario", "status": "COMPLETED", "conclusion": rows[0]["state"], "checkSuite": map[string]any{"workflowRun": map[string]any{"workflow": map[string]string{"name": "scenario"}}}}
+	if rows[0]["state"] == "PENDING" {
+		contexts[0]["status"] = "PENDING"
+		contexts[0]["conclusion"] = ""
+	}
+	for _, row := range rows[1:] {
+		contexts = append(contexts, map[string]any{"__typename": "StatusContext", "context": row["name"], "state": row["state"], "description": row["description"]})
+	}
+	contextJSON, _ := json.Marshal(contexts)
+	return string(contextJSON)
+}
+
 func replaceBranch(value string, branches map[string]string) string {
 	for key, branch := range branches {
 		encoded, _ := json.Marshal(key)
@@ -164,6 +179,26 @@ func remapOpenPRList(response *realstack.GHResponse, origins map[string]string) 
 		if slices.Equal(response.Args, realstack.OpenPRListResponse(key, "[]").Args) {
 			response.Args = realstack.OpenPRListResponse("https://github.com/"+origin+".git", "[]").Args
 			return
+		}
+	}
+}
+
+// RemapGHResponse routes a compiled GitHub fixture to the prepared repository.
+func RemapGHResponse(response *realstack.GHResponse, origins map[string]string) {
+	remapOpenPRList(response, origins)
+	for i, arg := range response.Args {
+		if i > 0 && response.Args[i-1] == "--repo" {
+			response.Args[i] = origins[arg]
+		}
+		if response.Args[0] != "api" {
+			continue
+		}
+		for key, origin := range origins {
+			prefix := "repos/" + key
+			if arg == prefix || strings.HasPrefix(arg, prefix+"/") {
+				response.Args[i] = "repos/" + origin + strings.TrimPrefix(arg, prefix)
+				break
+			}
 		}
 	}
 }
@@ -207,9 +242,9 @@ func heldMergeResponses(doc Document) []realstack.GHResponse {
 					strategy = repo.MergeStrategy
 				}
 			}
-			args := []string{"pr", "merge", strconv.Itoa(session.PR.Number), "--repo", session.Repo, "--" + strategy, "--delete-branch"}
+			args := []string{"api", "-X", "PUT", "repos/" + session.Repo + "/pulls/" + strconv.Itoa(session.PR.Number) + "/merge", "-f", "merge_method=" + strategy}
 			if session.PR.HeadSHA != "" {
-				args = append(args, "--match-head-commit", session.PR.HeadSHA)
+				args = append(args, "-f", "sha="+session.PR.HeadSHA)
 			}
 			responses = append(responses, realstack.GHResponse{Args: args, Hold: operationName(op)})
 		}

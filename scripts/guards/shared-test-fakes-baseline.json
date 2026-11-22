@@ -1,6 +1,5 @@
 {
   "fakeActivity": 2,
-  "fakeAgentChatStore": 2,
   "fakeAgentClient": 2,
   "fakeAgentRunStore": 2,
   "fakeBillingStripe": 3,

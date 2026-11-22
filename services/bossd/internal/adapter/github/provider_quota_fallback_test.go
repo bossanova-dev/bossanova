@@ -29,7 +29,7 @@ func TestGraphQLRefusalFallsBackToREST_Callbacks_AC245501(t *testing.T) {
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	for range 2 {
 		status, err := p.GetPRStatus(context.Background(), "o/r", 7)
 		if err != nil {
@@ -53,7 +53,7 @@ func TestCheckSetRESTPreservesIdentityAndReceipts_Callbacks_AC245501(t *testing.
 		switch {
 		case isRateLimitProbe(args):
 			return rateLimitBody(clock, 0, time.Hour), nil
-		case args[0] == "pr":
+		case isPRView(args) || isPRChecks(args):
 			return "", errors.New(graphQLExhausted)
 		case args[1] == "repos/o/r/pulls/7":
 			return `{"head":{"sha":"abc"}}`, nil
@@ -66,7 +66,7 @@ func TestCheckSetRESTPreservesIdentityAndReceipts_Callbacks_AC245501(t *testing.
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	set, err := p.GetCheckSet(context.Background(), "o/r", 7)
 	if err != nil {
 		t.Fatal(err)
@@ -100,15 +100,15 @@ func TestQuotaFallbackFailureAndNonQuotaErrors_Callbacks_AC245502(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			restCalls := 0
-			p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
-				if args[0] == "pr" {
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
+				if isPRView(args) || isPRChecks(args) {
 					return "", tc.primary
 				}
 				if !isRateLimitProbe(args) {
 					restCalls++
 				}
 				return "", &rateLimitedError{quota: quotaCore}
-			}))
+			})))
 			_, err := p.GetPRStatus(context.Background(), "o/r", 7)
 			if err == nil || vcs.IsRateLimited(err) != tc.limited || restCalls != tc.restCalls {
 				t.Fatalf("err=%v calls=%d", err, restCalls)
@@ -131,7 +131,7 @@ func TestBackgroundSnapshotFallsThroughToREST_Callbacks_AC245501(t *testing.T) {
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
 	status, err := p.GetPRStatus(vcs.WithCachedReads(context.Background()), "o/r", 7)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestFallbackObeysCoreFloorAndUsage_Callbacks_AC245502(t *testing.T) {
 				}
 				return "", fmt.Errorf("unexpected call %v", args)
 			}}
-			p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithUsageRecorder(ledger), WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithUsageRecorder(ledger), WithBackgroundQuotaFloors(testStandardFloor, testReserveFloor))
 			ctx := ghusage.WithLabel(vcs.WithCachedReads(context.Background()), ghusage.LabelPRPoller)
 			_, err := p.GetPRStatus(ctx, "o/r", 7)
 			if vcs.IsRateLimited(err) != (coreRemaining == 100) {
@@ -199,8 +199,8 @@ func TestRESTStatusStateMapping(t *testing.T) {
 		{"open", false, vcs.PRStateOpen}, {"closed", false, vcs.PRStateClosed}, {"closed", true, vcs.PRStateMerged},
 	} {
 		t.Run(fmt.Sprintf("%s/%v", tc.state, tc.merged), func(t *testing.T) {
-			p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
-				if args[0] == "pr" {
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
+				if isPRView(args) || isPRChecks(args) {
 					return "", &rateLimitedError{quota: quotaGraphQL}
 				}
 				if isRateLimitProbe(args) {
@@ -210,7 +210,7 @@ func TestRESTStatusStateMapping(t *testing.T) {
 					return `[]`, nil
 				}
 				return fmt.Sprintf(`{"state":%q,"merged":%v,"head":{"ref":"fork","sha":"abc"},"base":{"ref":"main","repo":{"full_name":"o/r"}},"mergeable":null}`, tc.state, tc.merged), nil
-			}))
+			})))
 			status, err := p.GetPRStatus(context.Background(), "o/r", 7)
 			if err != nil {
 				t.Fatal(err)
@@ -223,8 +223,8 @@ func TestRESTStatusStateMapping(t *testing.T) {
 }
 
 func TestRESTCheckWorkflowFailureIsNotRateLimited(t *testing.T) {
-	p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
-		if args[0] == "pr" {
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
+		if isPRView(args) || isPRChecks(args) {
 			return "", &rateLimitedError{quota: quotaGraphQL}
 		}
 		if isRateLimitProbe(args) {
@@ -240,7 +240,7 @@ func TestRESTCheckWorkflowFailureIsNotRateLimited(t *testing.T) {
 			return `{"statuses":[]}`, nil
 		}
 		return `{"head":{"sha":"abc"}}`, nil
-	}))
+	})))
 	_, err := p.GetCheckSet(context.Background(), "o/r", 7)
 	if err == nil || vcs.IsRateLimited(err) || !strings.Contains(err.Error(), "workflow list unavailable") {
 		t.Fatalf("err=%v", err)
@@ -250,8 +250,8 @@ func TestRESTCheckWorkflowFailureIsNotRateLimited(t *testing.T) {
 func TestRESTUnknownReviewDecisionCannotDisplaySatisfied(t *testing.T) {
 	for _, reviews := range []string{`[]`, `[{"state":"APPROVED","user":{"login":"maintainer"},"author_association":"MEMBER"}]`} {
 		t.Run(reviews, func(t *testing.T) {
-			p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
-				if args[0] == "pr" {
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
+				if isPRView(args) || isPRChecks(args) {
 					return "", &rateLimitedError{quota: quotaGraphQL}
 				}
 				if isRateLimitProbe(args) {
@@ -261,7 +261,7 @@ func TestRESTUnknownReviewDecisionCannotDisplaySatisfied(t *testing.T) {
 					return reviews, nil
 				}
 				return `{"state":"open","head":{"sha":"abc"},"mergeable":true,"mergeable_state":"blocked","rebaseable":false}`, nil
-			}))
+			})))
 			status, err := p.GetPRStatus(context.Background(), "o/r", 7)
 			if err != nil {
 				t.Fatal(err)
@@ -288,15 +288,15 @@ func TestRESTStatusFailureClassification(t *testing.T) {
 		{"quota", "", &rateLimitedError{quota: quotaCore}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
-				if args[0] == "pr" {
+			p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
+				if isPRView(args) || isPRChecks(args) {
 					return "", &rateLimitedError{quota: quotaGraphQL}
 				}
 				if isRateLimitProbe(args) {
 					return `{}`, nil
 				}
 				return tc.reply, tc.err
-			}))
+			})))
 			_, err := p.GetPRStatus(context.Background(), "o/r", 7)
 			if err == nil || vcs.IsRateLimited(err) != tc.limited {
 				t.Fatalf("err=%v rateLimited=%v, want %v", err, vcs.IsRateLimited(err), tc.limited)

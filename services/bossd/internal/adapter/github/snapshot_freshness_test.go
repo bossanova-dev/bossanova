@@ -49,7 +49,7 @@ func newFreshnessGH(t *testing.T, now func() time.Time, t0 time.Time) *freshness
 		g.at = append(g.at, fmt.Sprintf("t0+%s %s", now().Sub(t0), key))
 		g.atMu.Unlock()
 		switch {
-		case isGraphQL(args):
+		case isSnapshotQuery(args):
 			return snapshot, nil
 		case key == "pr view 1" || key == "pr view 9":
 			return draftPRView, nil
@@ -96,7 +96,7 @@ func freshnessProvider(t *testing.T, health WebhookDeliveryHealth) (*Provider, *
 	clock := newFakeClock()
 	t0 := clock.Now()
 	gh := newFreshnessGH(t, clock.Now, t0)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	if health != nil {
 		p.SetWebhookHealth(health)
 	}
@@ -112,12 +112,12 @@ func TestSnapshotServesHealthyRepoForSafetyNetAge(t *testing.T) {
 	readAll(t, p)
 	advance(snapshotSafetyNetMaxAge - time.Second)
 	readAll(t, p)
-	if got := gh.calls(isGraphQL); got != 1 {
+	if got := gh.calls(isSnapshotQuery); got != 1 {
 		t.Fatalf("snapshot queries before t0+10m = %d, want 1 (calls %q)", got, gh.log())
 	}
 	advance(time.Second)
 	readAll(t, p)
-	if got := gh.calls(isGraphQL); got != 2 {
+	if got := gh.calls(isSnapshotQuery); got != 2 {
 		t.Fatalf("snapshot queries at t0+10m = %d, want a refetch (calls %q)", got, gh.log())
 	}
 	if got := len(gh.log()); got != 2 {
@@ -142,12 +142,12 @@ func TestSnapshotFallsBackToFiveMinutesWithoutHealthyWebhooks(t *testing.T) {
 			readAll(t, p)
 			advance(snapshotFallbackMaxAge - time.Second)
 			readAll(t, p)
-			if got := gh.calls(isGraphQL); got != 1 {
+			if got := gh.calls(isSnapshotQuery); got != 1 {
 				t.Fatalf("snapshot queries before t0+5m = %d, want 1", got)
 			}
 			advance(time.Second)
 			readAll(t, p)
-			if got := gh.calls(isGraphQL); got != 2 {
+			if got := gh.calls(isSnapshotQuery); got != 2 {
 				t.Fatalf("snapshot queries at t0+5m = %d, want a refetch", got)
 			}
 		})
@@ -164,7 +164,7 @@ func TestSnapshotHealthLapseTakesEffectOnNextRead(t *testing.T) {
 	advance(6 * time.Minute)
 	health.set(false)
 	readAll(t, p)
-	if got := gh.calls(isGraphQL); got != 2 {
+	if got := gh.calls(isSnapshotQuery); got != 2 {
 		t.Fatalf("snapshot queries after the lapse = %d, want a refetch", got)
 	}
 }
@@ -186,7 +186,7 @@ func TestSnapshotSurvivesTheSizeSweep(t *testing.T) {
 		t.Fatalf("cache holds %d entries after the sweep, want the expired ones evicted", n)
 	}
 	readAll(t, p)
-	if got := gh.calls(isGraphQL); got != 1 {
+	if got := gh.calls(isSnapshotQuery); got != 1 {
 		t.Fatalf("snapshot queries = %d: the sweep evicted a 2-minute-old snapshot", got)
 	}
 }
@@ -220,7 +220,7 @@ func TestSnapshotNeverStepsBackPastANewerPerPRRead(t *testing.T) {
 	if st.HeadSHA != "abc" {
 		t.Fatalf("read past the TTL served head %q from the older snapshot, want abc (calls %q)", st.HeadSHA, gh.log())
 	}
-	if got := gh.calls(isGraphQL); got != 1 {
+	if got := gh.calls(isSnapshotQuery); got != 1 {
 		t.Fatalf("snapshot queries = %d, want 1: the snapshot is still young (calls %q)", got, gh.log())
 	}
 	if got := gh.calls(isRoute("pr view 1")); got != 2 {
@@ -248,7 +248,7 @@ func TestInvalidateRepoMarksRepoReadsStale(t *testing.T) {
 	}
 	reviews := isRoute("api repos/o/r/pulls/1/reviews?per_page=100")
 	before := map[string]int{
-		"graphql": gh.calls(isGraphQL), "pr view 9": gh.calls(isRoute("pr view 9")),
+		"graphql": gh.calls(isSnapshotQuery), "pr view 9": gh.calls(isRoute("pr view 9")),
 		"head": gh.calls(isRoute("api repos/o/r/git/ref/heads/main")), "reviews": gh.calls(reviews),
 	}
 
@@ -259,7 +259,7 @@ func TestInvalidateRepoMarksRepoReadsStale(t *testing.T) {
 	_, _ = p.GetBranchHeadSHA(bg, "o/r", "main")
 	_, _ = p.GetReviewComments(bg, "o/r", 1)
 	after := map[string]int{
-		"graphql": gh.calls(isGraphQL), "pr view 9": gh.calls(isRoute("pr view 9")),
+		"graphql": gh.calls(isSnapshotQuery), "pr view 9": gh.calls(isRoute("pr view 9")),
 		"head": gh.calls(isRoute("api repos/o/r/git/ref/heads/main")), "reviews": gh.calls(reviews),
 	}
 	want := map[string]int{"graphql": 1, "pr view 9": 1, "head": 1, "reviews": 0}
@@ -277,7 +277,7 @@ func TestInvalidateRepoBeatsInFlightSnapshot(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
-		if !isGraphQL(args) {
+		if !isSnapshotQuery(args) {
 			return "", fmt.Errorf("unexpected gh call %v", args)
 		}
 		first := false
@@ -288,7 +288,7 @@ func TestInvalidateRepoBeatsInFlightSnapshot(t *testing.T) {
 		}
 		return snapshot, nil
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(newFakeClock().Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(newFakeClock().Now))
 	p.SetWebhookHealth(&webhookHealthSwitch{healthy: true})
 	bg := vcs.WithCachedReads(context.Background())
 
@@ -303,7 +303,7 @@ func TestInvalidateRepoBeatsInFlightSnapshot(t *testing.T) {
 	<-done
 
 	_, _ = p.GetPRStatus(bg, "o/r", 2)
-	if got := gh.count(isGraphQL); got != 2 {
+	if got := gh.count(isSnapshotQuery); got != 2 {
 		t.Fatalf("snapshot queries = %d: the pre-invalidation fetch was stored", got)
 	}
 }
@@ -315,7 +315,7 @@ func TestInvalidateRepoLeavesOtherReposAlone(t *testing.T) {
 	readAll(t, p)
 	p.InvalidateRepo("o/r-other")
 	readAll(t, p)
-	if got := gh.calls(isGraphQL); got != 1 {
+	if got := gh.calls(isSnapshotQuery); got != 1 {
 		t.Fatalf("snapshot queries = %d: another repo's invalidation dropped o/r", got)
 	}
 }
@@ -394,7 +394,7 @@ func TestDependabotHourOfPollsStaysWithinSnapshotBudget(t *testing.T) {
 	}
 	calls := gh.log()
 	t.Logf("gh invocations over the hour: %q", calls)
-	if snapshots := gh.calls(isGraphQL); snapshots > 12 || snapshots != len(calls) {
+	if snapshots := gh.calls(isSnapshotQuery); snapshots > 12 || snapshots != len(calls) {
 		t.Fatalf("gh invocations over the hour = %q, want at most 12, all snapshot queries", calls)
 	}
 }

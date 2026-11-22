@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +18,11 @@ import (
 	"github.com/recurser/bossd/internal/db"
 )
 
+// pendingTrackerMergesFake is the queue; rows is read directly by tests that
+// run the worker on their own goroutine, and through row by those that run it
+// on another.
 type pendingTrackerMergesFake struct {
+	mu   sync.Mutex
 	rows map[string]db.PendingTrackerMerge
 }
 
@@ -25,12 +30,23 @@ func newPendingTrackerMergesFake() *pendingTrackerMergesFake {
 	return &pendingTrackerMergesFake{rows: map[string]db.PendingTrackerMerge{}}
 }
 
+func (f *pendingTrackerMergesFake) row(sessionID string) (db.PendingTrackerMerge, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.rows[sessionID]
+	return p, ok
+}
+
 func (f *pendingTrackerMergesFake) Upsert(_ context.Context, p db.PendingTrackerMerge) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.rows[p.SessionID] = p
 	return nil
 }
 
 func (f *pendingTrackerMergesFake) ListByDueAt(_ context.Context, now time.Time) ([]db.PendingTrackerMerge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []db.PendingTrackerMerge
 	for _, p := range f.rows {
 		if !p.NextAttemptAt.After(now) {
@@ -42,6 +58,8 @@ func (f *pendingTrackerMergesFake) ListByDueAt(_ context.Context, now time.Time)
 }
 
 func (f *pendingTrackerMergesFake) Delete(_ context.Context, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.rows, sessionID)
 	return nil
 }
@@ -74,31 +92,32 @@ func wantTicketNote(t *testing.T, notes *notesFake, body string) {
 	}
 }
 
-func TestOperatorMergeSession_TheTrackerWriteIsOwedBeforeItRuns(t *testing.T) {
+// The write is owed, as due now, before the reply and before the worker runs
+// it, so a daemon that dies in between still runs it at its next start; the
+// worker's run clears it.
+func TestOperatorMergeSession_TheTrackerWriteIsOwedBeforeTheWorkerRunsIt(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
-	queue := newPendingTrackerMergesFake()
-	h.srv.pendingTrackerMerges = queue
-	var owed db.PendingTrackerMerge
-	var wasOwed bool
-	h.verbs.onMarkMerged = func() { owed, wasOwed = queue.rows["s1"] }
+	queue := h.queue()
 
 	before := time.Now()
-	if _, err := h.merge(false); err != nil {
+	resp, err := h.merge(false)
+	if err != nil {
 		t.Fatalf("OperatorMergeSession: %v", err)
 	}
-	if !wasOwed || owed.AttemptCount != 1 || owed.NextAttemptAt.Before(before.Add(defaultOperatorMergeBudget.total)) {
-		t.Fatalf("while mark-merged ran the queue held %+v (queued %v), want s1 due only after the merge's budget", owed, wasOwed)
+	owed, wasOwed := queue.rows["s1"]
+	if !wasOwed || owed.AttemptCount != 0 || owed.NextAttemptAt.Before(before) || owed.NextAttemptAt.After(time.Now()) || slices.Contains(h.calls, "mark-merged") {
+		t.Fatalf("after the reply the queue held %+v (queued %v) and calls = %q, want s1 owed as due now with nothing run yet", owed, wasOwed, h.calls)
 	}
-	if len(queue.rows) != 0 {
-		t.Fatalf("queue = %+v, want the owed entry cleared once the write landed", queue.rows)
+	h.wantPendingThenBookkept(t, resp)
+	if len(queue.rows) != 0 || !slices.Contains(h.calls, "mark-merged") {
+		t.Fatalf("queue = %+v, calls = %q; want the owed entry cleared once the write landed", queue.rows, h.calls)
 	}
 }
 
 func TestOperatorMergeSession_AWriteTheTrackerRefusesForGoodIsNotedNotRetried(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
-	queue := newPendingTrackerMergesFake()
 	notes := &notesFake{}
-	h.srv.pendingTrackerMerges, h.srv.notes = queue, notes
+	h.srv.notes = notes
 	h.verbs.markMerged = verifybridge.MarkMergedResult{
 		Merged: true, TrackerWrites: "permanent", Why: "state-not-found: Done",
 		Writes: []verifybridge.MarkMergedWrite{{Kind: "tracker", IssueID: "MAD-1764"}},
@@ -108,11 +127,9 @@ func TestOperatorMergeSession_AWriteTheTrackerRefusesForGoodIsNotedNotRetried(t 
 	if err != nil {
 		t.Fatalf("OperatorMergeSession: %v", err)
 	}
-	if !resp.GetIsMerged() || resp.GetTrackerWrites() != "permanent" || resp.GetTrackerTicket() != "MAD-1764" {
-		t.Fatalf("response = %+v, want a landed merge whose ticket MAD-1764 will not move", resp)
-	}
-	if len(queue.rows) != 0 {
-		t.Fatalf("queue = %+v, want nothing queued for a write no retry can land", queue.rows)
+	h.wantPendingThenBookkept(t, resp)
+	if len(h.queue().rows) != 0 {
+		t.Fatalf("queue = %+v, want nothing queued for a write no retry can land", h.queue().rows)
 	}
 	wantTicketNote(t, notes, `PR #42 merged, but its ticket MAD-1764 could not be moved (state "Done" not found)`)
 }
@@ -129,25 +146,23 @@ func TestOperatorMergeSession_AFailedTrackerWriteIsQueuedForARetry(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newOperatorMergeHarness(t, headPin)
-			queue := newPendingTrackerMergesFake()
+			queue := h.queue()
 			notes := &notesFake{}
-			h.srv.pendingTrackerMerges, h.srv.notes = queue, notes
+			h.srv.notes = notes
 			h.verbs.markMerged, h.verbs.markErr = tc.markMerged, tc.markErr
 
-			before := time.Now()
 			resp, err := h.merge(false)
 			if err != nil {
 				t.Fatalf("OperatorMergeSession: %v", err)
 			}
-			if !resp.GetIsMerged() || resp.GetTrackerWrites() != trackerWritesRetrying {
-				t.Fatalf("response = %+v, want a landed merge whose tracker write is retrying", resp)
-			}
+			before := time.Now()
+			h.wantPendingThenBookkept(t, resp)
 			p, ok := queue.rows["s1"]
 			if !ok || p.AttemptCount != 1 || p.LastReason == "" || p.NextAttemptAt.Before(before.Add(trackerRetryDelays[0])) {
 				t.Fatalf("queue = %+v, want s1 after one attempt, due no sooner than %v", queue.rows, trackerRetryDelays[0])
 			}
 			if p.NextAttemptAt.After(time.Now().Add(trackerRetryDelays[0])) {
-				t.Fatalf("queue = %+v, want the retry due %v after the failure, not after the merge's budget", queue.rows, trackerRetryDelays[0])
+				t.Fatalf("queue = %+v, want the retry due %v after the failure", queue.rows, trackerRetryDelays[0])
 			}
 			if len(notes.created) != 0 {
 				t.Fatalf("notes = %+v, want none while a retry is due", notes.created)
@@ -164,17 +179,17 @@ func TestOperatorMergeSession_ASettledTrackerOutcomeIsNotQueued(t *testing.T) {
 		{Merged: true, TrackerWrites: "unavailable", Why: "missing-credential"},
 	} {
 		h := newOperatorMergeHarness(t, headPin)
-		queue := newPendingTrackerMergesFake()
 		notes := &notesFake{}
-		h.srv.pendingTrackerMerges, h.srv.notes = queue, notes
+		h.srv.notes = notes
 		h.verbs.markMerged = r
 
 		resp, err := h.merge(false)
 		if err != nil {
 			t.Fatalf("OperatorMergeSession: %v", err)
 		}
-		if resp.GetTrackerWrites() != r.TrackerWrites || len(queue.rows) != 0 || len(notes.created) != 0 {
-			t.Fatalf("%+v: tracker writes = %q, queue = %+v, notes = %+v; want the outcome reported as is, nothing queued and nothing noted", r, resp.GetTrackerWrites(), queue.rows, notes.created)
+		h.wantPendingThenBookkept(t, resp)
+		if len(h.queue().rows) != 0 || len(notes.created) != 0 {
+			t.Fatalf("%+v: queue = %+v, notes = %+v; want a settled write to leave nothing queued and nothing noted", r, h.queue().rows, notes.created)
 		}
 	}
 }

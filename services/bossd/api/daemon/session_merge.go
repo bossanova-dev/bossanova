@@ -35,8 +35,16 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	return s.mergeSession(ctx, req.Msg.Id, mergeGate{pin: pin})
 }
 
+// mergeGate is what a merge holds at its pinned head: the pin, the approval
+// recorded at it, if any, and the live gate already passed at it, if any.
 type mergeGate struct {
 	pin, approvedHead string
+	// passed is the verdict of a live gate that passed at pin with a block set
+	// at least as strict as mergeSessionBlocks, read in this same request. The
+	// merge then judges that verdict instead of refreshing the display and
+	// reading the gate again; the pinned provider merge still refuses a head
+	// that moved since. nil means the merge reads its own gate.
+	passed *mergeVerdict
 }
 
 func (s *Server) mergeSession(ctx context.Context, id string, g mergeGate) (*connect.Response[pb.MergeSessionResponse], error) {
@@ -192,7 +200,9 @@ func (s *Server) mergeSession(ctx context.Context, id string, g mergeGate) (*con
 		// so a merge queued behind another re-reads fresh — turns that retry
 		// into a no-op success instead of a second MergePR the remote rejects.
 		// A stale "merged" read is safe (merged is terminal); a stale "open"
-		// read just proceeds to MergePR exactly as today.
+		// read just proceeds to MergePR exactly as today. This read stays
+		// fresh even after a passed gate: a second press of the same merge
+		// queues here behind the first and must find it landed.
 		if merged, mergedHead := s.prAlreadyMerged(ctx, repo.OriginURL, *sess.PRNumber); merged {
 			// A pinned caller must not be told its head merged when the PR
 			// landed at another head. An unknown head keeps the idempotent

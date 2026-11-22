@@ -103,7 +103,7 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 			UpdatedAt: now,
 		},
 	}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
+	chats := &fakeDispatcherChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-1", SessionID: sessionID, AgentSessionID: agentSessionID},
 	}}
 	repos := &fakeRepoStore{byID: map[string]*models.Repo{
@@ -205,7 +205,7 @@ func TestPublishAuthFailedSessionDelta_RepublishesAfterCorroboratingAudit(t *tes
 			UpdatedAt: now,
 		},
 	}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
+	chats := &fakeDispatcherChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-auth-audit-1", SessionID: sessionID, AgentSessionID: agentSessionID},
 	}}
 	tracker := status.NewTracker()
@@ -276,7 +276,7 @@ func TestPublishStalledSessionDelta_SetAndClear(t *testing.T) {
 			UpdatedAt: now,
 		},
 	}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
+	chats := &fakeDispatcherChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-stalled-1", SessionID: sessionID, AgentSessionID: agentSessionID},
 	}}
 	repos := &fakeRepoStore{byID: map[string]*models.Repo{
@@ -354,7 +354,7 @@ func TestPublishStalledSessionDelta_AuthOutranksStalled(t *testing.T) {
 			UpdatedAt: now,
 		},
 	}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
+	chats := &fakeDispatcherChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-both-1", SessionID: sessionID, AgentSessionID: agentSessionID},
 	}}
 	repos := &fakeRepoStore{byID: map[string]*models.Repo{
@@ -497,7 +497,7 @@ func TestStreamHydrator_RestartProofAgentActivity(t *testing.T) {
 	giveUpAt := time.Date(2026, 10, 13, 23, 16, 0, 0, time.UTC)
 	outputAt := giveUpAt.Add(4 * time.Minute)
 	sessionID, agentSessionID := "sess-wedge-1", "agent-wedge-1"
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
+	chats := &fakeDispatcherChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-wedge-1", SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude"},
 	}}
 	rotationEvents := fakeRotationEventStore{bySession: map[string][]db.RotationEvent{
@@ -559,7 +559,7 @@ func TestStreamHydrator_AttentionRunsAfterLegacyOverlays(t *testing.T) {
 	t.Parallel()
 	tracker := status.NewDisplayTracker()
 	tracker.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:ui"})
-	for _, chats := range []db.AgentChatStore{nil, &fakeAgentChatStore{}, failingStreamChatStore{}} {
+	for _, chats := range []db.AgentChatStore{nil, &fakeDispatcherChatStore{}, failingStreamChatStore{}} {
 		called := false
 		h := &streamSessionHydrator{displayTracker: tracker, agentChats: chats, logger: zerolog.Nop(), attention: func(_ context.Context, p *bossanovav1.Session) {
 			called = true

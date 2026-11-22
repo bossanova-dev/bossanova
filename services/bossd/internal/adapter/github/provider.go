@@ -462,11 +462,7 @@ func (p *Provider) fetchBranchHeadSHA(ctx context.Context, repoPath, branch stri
 	if branch == "" {
 		return "", fmt.Errorf("branch is required")
 	}
-	segments := strings.Split(branch, "/")
-	for i, segment := range segments {
-		segments[i] = url.PathEscape(segment)
-	}
-	out, err := p.ghConditional(ctx, fmt.Sprintf("repos/%s/git/ref/heads/%s", nwo, strings.Join(segments, "/")))
+	out, err := p.ghConditional(ctx, fmt.Sprintf("repos/%s/git/ref/heads/%s", nwo, escapedBranchRef(branch)))
 	if err != nil {
 		return "", fmt.Errorf("get branch head: %w", err)
 	}
@@ -627,40 +623,6 @@ func (p *Provider) PostCommitStatus(ctx context.Context, repoPath, sha string, s
 	return nil
 }
 
-// fetchCheckSet reads CI checks and build provenance for a pull request from GitHub,
-// bypassing the read cache (see GetCheckSet). buildCheckSet turns its rows
-// into the result.
-func (p *Provider) fetchCheckSet(ctx context.Context, repoPath string, prID int) (vcs.CheckSet, error) {
-	out, err := p.gh(ctx,
-		"pr", "checks", strconv.Itoa(prID),
-		"--repo", repoFlag(repoPath),
-		"--json", "name,state,workflow,description",
-	)
-	if err != nil {
-		if quota, ok := refusedQuota(err); ok && quota == quotaGraphQL {
-			set, restErr := p.fetchCheckSetREST(ctx, repoPath, prID)
-			if restErr == nil {
-				return set, nil
-			}
-			err = fmt.Errorf("GraphQL read refused (%v); REST fallback: %w", err, restErr)
-		}
-		// A PR whose head commit has no check runs is a normal empty result,
-		// not a failure. Returning it as an error here would make the display
-		// poller bail before updating the tracker, freezing the row on its
-		// previous status (e.g. a stale "draft" after the PR became ready).
-		if isNoChecksReported(err) {
-			return vcs.CheckSet{Checks: []vcs.CheckResult{}}, nil
-		}
-		return vcs.CheckSet{}, fmt.Errorf("get check results: %w", err)
-	}
-
-	var raw []checkRow
-	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return vcs.CheckSet{}, fmt.Errorf("parse check results: %w", err)
-	}
-	return p.buildCheckSet(raw), nil
-}
-
 // GetFailedCheckLogs returns the log output for a specific failed check run.
 func (p *Provider) GetFailedCheckLogs(ctx context.Context, repoPath string, checkID string) (string, error) {
 	ctx = withRoute(ctx, "GetFailedCheckLogs", vcs.GitHubNWO(repoPath))
@@ -673,24 +635,6 @@ func (p *Provider) GetFailedCheckLogs(ctx context.Context, repoPath string, chec
 		return "", fmt.Errorf("get check logs: %w", err)
 	}
 	return out, nil
-}
-
-// MarkReadyForReview transitions a draft PR to ready for review.
-func (p *Provider) MarkReadyForReview(ctx context.Context, repoPath string, prID int) error {
-	ctx = withRoute(ctx, "MarkReadyForReview", vcs.GitHubNWO(repoPath))
-	_, err := p.gh(ctx,
-		"pr", "ready", strconv.Itoa(prID),
-		"--repo", repoFlag(repoPath),
-	)
-	if err != nil {
-		return fmt.Errorf("mark ready for review: %w", err)
-	}
-
-	p.logger.Info().
-		Int("number", prID).
-		Msg("marked PR ready for review")
-
-	return nil
 }
 
 // rawReview is one entry of the REST review list, before any of
@@ -1034,12 +978,7 @@ const openPRListQuery = `query($owner: String!, $name: String!, $cursor: String)
 // fetchOpenPRs lists a repository's open pull requests from GitHub,
 // bypassing the read cache (see ListOpenPRs).
 func (p *Provider) fetchOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
-	nwo, host := repoFlag(repoPath), ""
-	if canonical := vcs.NormalizeRepoURL(repoPath); canonical != "" {
-		u, _ := url.Parse(canonical)
-		nwo, host = vcs.RepoSlug(canonical), u.Hostname()
-	}
-	owner, name, ok := splitNWO(nwo)
+	owner, name, host, ok := vcs.GitHubRepoParts(repoPath)
 	if !ok {
 		return nil, fmt.Errorf("list open PRs: invalid GitHub repo %q", repoPath)
 	}
@@ -1159,83 +1098,6 @@ func (p *Provider) SearchPRsByTitleTag(ctx context.Context, repoPath, tag string
 	}
 
 	return prs, nil
-}
-
-// MergePR merges a pull request using opts.Strategy.
-// Valid strategies are "rebase", "squash", and "merge". An empty string
-// defaults to "merge" (GitHub's default). When opts.ExpectedHeadSHA is set,
-// --match-head-commit makes GitHub refuse the merge atomically unless the PR
-// head is exactly that commit; the refusal wraps vcs.ErrHeadMismatch.
-func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int, opts vcs.MergePROpts) error {
-	ctx = withRoute(ctx, "MergePR", vcs.GitHubNWO(repoPath))
-	flag := "--merge"
-	switch opts.Strategy {
-	case "rebase":
-		flag = "--rebase"
-	case "squash":
-		flag = "--squash"
-	}
-
-	args := []string{
-		"pr", "merge", strconv.Itoa(prID),
-		"--repo", repoFlag(repoPath),
-		flag,
-		"--delete-branch",
-	}
-	if opts.ExpectedHeadSHA != "" {
-		// Callers validate first, so a malformed pin here is a programming
-		// error: refuse it before any gh call rather than merge unpinned.
-		pin, ok := vcs.NormalizeHeadSHA(opts.ExpectedHeadSHA)
-		if !ok {
-			return fmt.Errorf("merge PR: invalid expected head SHA %q: must be 40 hex characters", opts.ExpectedHeadSHA)
-		}
-		args = append(args, "--match-head-commit", pin)
-	}
-
-	_, err := p.runGHWithTransientRetry(ctx, "merge PR", args...)
-	if err != nil {
-		return fmt.Errorf("merge PR: %w", classifyMergeError(err, repoPath, prID))
-	}
-
-	p.logger.Info().
-		Int("number", prID).
-		Str("strategy", opts.Strategy).
-		Str("expected_head", opts.ExpectedHeadSHA).
-		Msg("merged PR")
-
-	return nil
-}
-
-// GetPRMergeCommit returns the merge commit SHA GitHub recorded for the PR.
-// Returns vcs.ErrPRNotMerged if the PR is not in MERGED state.
-func (p *Provider) GetPRMergeCommit(ctx context.Context, repoPath string, prID int) (string, error) {
-	ctx = withRoute(ctx, "GetPRMergeCommit", vcs.GitHubNWO(repoPath))
-	out, err := p.gh(ctx,
-		"pr", "view", strconv.Itoa(prID),
-		"--repo", repoFlag(repoPath),
-		"--json", "state,mergeCommit",
-	)
-	if err != nil {
-		return "", fmt.Errorf("gh pr view: %w", err)
-	}
-
-	var resp struct {
-		State       string `json:"state"`
-		MergeCommit *struct {
-			OID string `json:"oid"`
-		} `json:"mergeCommit"`
-	}
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		return "", fmt.Errorf("parse gh pr view JSON: %w", err)
-	}
-
-	if strings.ToUpper(resp.State) != "MERGED" {
-		return "", fmt.Errorf("%w: state=%s", vcs.ErrPRNotMerged, resp.State)
-	}
-	if resp.MergeCommit == nil || resp.MergeCommit.OID == "" {
-		return "", fmt.Errorf("%w: no merge commit recorded", vcs.ErrPRNotMerged)
-	}
-	return resp.MergeCommit.OID, nil
 }
 
 // GetAllowedMergeStrategies returns the strategies the GitHub repo has
@@ -1390,15 +1252,6 @@ func isPRAlreadyExists(err error) bool {
 	msg := ghResponseText(err)
 	return strings.Contains(msg, "a pull request for branch") &&
 		strings.Contains(msg, "already exists")
-}
-
-// isNoChecksReported reports whether a gh error indicates the PR's head commit
-// simply has no check runs. `gh pr checks` exits non-zero in this case with
-// "no checks reported on the '<branch>' branch", but it is a normal empty
-// state — not a failure. Treating it as an error would freeze a PR's display
-// status (e.g. a stale "draft") because the poller bails before recomputing.
-func isNoChecksReported(err error) bool {
-	return err != nil && strings.Contains(ghResponseText(err), "no checks reported on the")
 }
 
 // ghError is the error defaultRunGH returns for a failed gh invocation. It

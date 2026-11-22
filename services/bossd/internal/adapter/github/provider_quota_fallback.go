@@ -21,6 +21,7 @@ type restPRRef struct {
 
 type restPullRequest struct {
 	pullRequestMergeability
+	NodeID       string    `json:"node_id"`
 	State        string    `json:"state"`
 	Merged       bool      `json:"merged"`
 	Draft        bool      `json:"draft"`

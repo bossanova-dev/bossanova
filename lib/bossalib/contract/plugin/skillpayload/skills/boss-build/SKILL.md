@@ -655,7 +655,8 @@ verification only_). Thread only that into the next dispatch; every decision rea
 **Commit contract** (every implementation brief carries it):
 
 - Commit each task as it finishes, path-scoped to the files it touched; never one end-of-run commit.
-  Run formatters/codegen **before** the commit they belong to.
+  Run formatters, codegen and autofix through `run --writes` before final verification and the
+  commit they belong to.
 - Never return with uncommitted work of your own: finish with `node <toolbox>/worktree-state.mjs`
   (`unknown` is not clean). If a hook rejects a message, fix exactly what the hook names and retry
   once; if it still fails, leave the work in the tree, report the paths, and never revert.
@@ -672,6 +673,9 @@ verification only_). Thread only that into the next dispatch; every decision rea
 - The parent supplies a safe dispatch label (`task-N` or `ext-<name>`) and clears its receipts
   before dispatch. Run every verification command (tests, lint, gates) in the foreground through
   `node "$BOSS_BUILD_TOOLBOX/verification-receipt.mjs" run --dispatch <label> --id <id> -- <cmd>`.
+- Run writers (formatters, codegen and autofix) first through `run --writes`. Start gates only
+  after every writer has exited; never run a gate alongside a writer. Before returning, `check`
+  can confirm the dispatch's receipts are still fresh.
 - Reuse the same receipt id for the same test command across its completed expected-red and
   green runs, so the final receipt records the repaired gate. Await each run before replacing its
   receipt; distinct commands use distinct ids. Report the expected failure in the task summary.
@@ -686,8 +690,10 @@ Exit 0 admits the verification; exit 1 means a command finished but failed: fold
 into the existing one re-dispatch allowance, and do not mark the task done. Exit 2 transfers gate
 ownership to the parent: for a live `pending` receipt, repeat the bounded `check` until it becomes
 terminal; a wait deadline never authorizes restarting that command or replacing its receipt.
-Re-run only `absent` or `orphaned` commands, after establishing that their original gate process
-is no longer running (a dead wrapper alone does not establish this). Use the recorded `command`
+Re-run `stale` commands with the same id in the foreground: they are already terminal and need
+no process settlement, even when the recorded exit failed. A stale failure does not spend the
+re-dispatch allowance. Re-run `absent` or `orphaned` commands only after establishing that their
+original gate process is no longer running (a dead wrapper alone does not establish this). Use the recorded `command`
 or, when absent, the closest covering tests from **Verification**, in the foreground through
 `run` with the same receipt id. If the original process cannot be settled, keep verification
 incomplete and do not admit the dispatch. Record these results under `## Local verification`,
@@ -928,6 +934,10 @@ test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$SESSION_BR
 node "$BOSS_BUILD_TOOLBOX/ci/ci-request.mjs" request --pr "$PR_NUMBER" --head "$(git rev-parse HEAD)"
 node "$BOSS_BUILD_TOOLBOX/build/ready-gate.mjs" remap-reviewed-head --base "$BASE_BRANCH"
 ```
+
+The tag-and-push block runs alone: no tests, gates or other git commands start in this worktree
+until it returns, because the injector can rewrite history in place. A fully tagged range is a
+no-op; foreign tags and patch-equivalent commits are refused with history untouched.
 
 A non-zero injector exit is a disclosure item, not a blocker — history may be partly rewritten, so
 check before re-running (it is a no-op on tagged commits). A rejected amend names its reason (type,

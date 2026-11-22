@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/recurser/bossalib/kit/safego"
@@ -15,6 +16,21 @@ import (
 // trackerWritesRetrying is the operator merge's tracker outcome when the write
 // did not land and is queued to be tried again.
 const trackerWritesRetrying = "retrying"
+
+// trackerWritesPending is the operator merge's tracker outcome while the
+// write runs after the reply.
+const trackerWritesPending = "pending"
+
+// trackerMergeOwing is what an operator merge leaves the worker besides the
+// queue entry: the wake that runs the write at once rather than on the next
+// tick (nil when no worker listens), and, per session, the archive hold that
+// keeps the worktree in place until the worker has run the write there once.
+// With no queue the write runs on the merge's own reply path instead.
+type trackerMergeOwing struct {
+	nudge chan struct{}
+	mu    sync.Mutex
+	holds map[string]func()
+}
 
 // trackerRetryDelays spaces the retries of a post-merge tracker write that did
 // not land, one delay per retry. After the last retry fails it is given up.
@@ -87,28 +103,65 @@ func queueContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), trackerMergeQueueBudget)
 }
 
-// owePendingTrackerMerge queues the session's tracker write before it runs, as
-// one attempt that did not finish, due once the merge's budget is spent. A
-// daemon that dies mid-write then still retries it; settleTrackerMerge
-// replaces or clears the entry once the write returns.
-func (s *Server) owePendingTrackerMerge(ctx context.Context, id string) {
-	if s.pendingTrackerMerges == nil {
-		return
+// handOffTrackerMerge owes the session's post-merge tracker write to the
+// worker and wakes it, so the merge's reply does not wait for the tracker. The
+// queue entry is written before anything runs, so a daemon that dies mid-write
+// still retries it; the worker's own tick runs it if the wake is missed. The
+// session's archive is held until the worker has run the write in its
+// worktree. With no queue, or one that refuses the entry, the write runs here
+// and its outcome is reported as it was.
+func (s *Server) handOffTrackerMerge(ctx context.Context, id string, verbs verifyVerbs, target domain.VerifyTarget) trackerMergeOutcome {
+	if !s.oweTrackerMerge(ctx, id) {
+		return s.settleTrackerMerge(ctx, id, s.markMerged(ctx, verbs, target))
 	}
-	from := time.Now()
-	if deadline, ok := ctx.Deadline(); ok && deadline.After(from) {
-		from = deadline
+	s.holdForTrackerMerge(id)
+	select {
+	case s.trackerMerges.nudge <- struct{}{}:
+	default:
+	}
+	return trackerMergeOutcome{writes: trackerWritesPending}
+}
+
+// oweTrackerMerge queues the session's tracker write as due now and reports
+// whether the queue took it.
+func (s *Server) oweTrackerMerge(ctx context.Context, id string) bool {
+	if s.pendingTrackerMerges == nil {
+		return false
 	}
 	qctx, cancel := queueContext(ctx)
 	defer cancel()
-	err := s.pendingTrackerMerges.Upsert(qctx, domain.PendingTrackerMerge{
-		SessionID:     id,
-		AttemptCount:  1,
-		NextAttemptAt: from.Add(trackerRetryDelays[0]),
-		LastReason:    "unfinished",
-	})
+	err := s.pendingTrackerMerges.Upsert(qctx, domain.PendingTrackerMerge{SessionID: id, NextAttemptAt: time.Now(), LastReason: "owed"})
 	if err != nil {
-		s.logger.Warn().Err(err).Str("session", id).Msg("operator merge: could not queue the tracker write before it ran")
+		s.logger.Warn().Err(err).Str("session", id).Msg("operator merge: could not queue the tracker write; running it now")
+		return false
+	}
+	return true
+}
+
+// holdForTrackerMerge keeps the session from being archived until the worker
+// has run its tracker write. A session merged again before then keeps one hold.
+func (s *Server) holdForTrackerMerge(id string) {
+	release := s.archiveDeferral().hold(id)
+	o := &s.trackerMerges
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if prev := o.holds[id]; prev != nil {
+		prev()
+	}
+	if o.holds == nil {
+		o.holds = map[string]func(){}
+	}
+	o.holds[id] = release
+}
+
+func (s *Server) releaseTrackerMergeHold(id string) {
+	o := &s.trackerMerges
+	o.mu.Lock()
+	release := o.holds[id]
+	delete(o.holds, id)
+	o.mu.Unlock()
+	if release != nil {
+		release()
 	}
 }
 
@@ -230,8 +283,9 @@ func (s *Server) noteTicketNotMoved(ctx context.Context, id string, o trackerMer
 	s.nudgeNoteSync()
 }
 
-// RunTrackerMergeRetries retries the queued post-merge tracker writes, once at
-// start and then every trackerMergeRetryInterval, until ctx ends.
+// RunTrackerMergeRetries runs the queued post-merge tracker writes: once at
+// start, whenever a merge owes one, and every trackerMergeRetryInterval for
+// the retries, until ctx ends.
 func (s *Server) RunTrackerMergeRetries(ctx context.Context) <-chan struct{} {
 	return safego.Go(s.logger, func() {
 		if s.pendingTrackerMerges == nil {
@@ -244,6 +298,7 @@ func (s *Server) RunTrackerMergeRetries(ctx context.Context) <-chan struct{} {
 			select {
 			case <-ctx.Done():
 				return
+			case <-s.trackerMerges.nudge:
 			case <-ticker.C:
 			}
 		}
@@ -269,8 +324,10 @@ func (s *Server) retryPendingTrackerMerges(ctx context.Context, now time.Time) {
 // or, once the session is archived, in the repo's checkout. A write that may
 // still land is rescheduled until the retries run out; one that will not, or
 // that ran out of retries, is noted for the operator. Either way, and once
-// settled, it leaves the queue.
+// settled, it leaves the queue, and the archive held for its first run is
+// released.
 func (s *Server) retryTrackerMerge(ctx context.Context, p domain.PendingTrackerMerge, now time.Time) {
+	defer s.releaseTrackerMergeHold(p.SessionID)
 	attempt := p.AttemptCount + 1
 	log := s.logger.With().Str("session", p.SessionID).Int("attempt", attempt).Logger()
 	o := trackerMergeOutcome{writes: "failed"}
@@ -303,6 +360,6 @@ func (s *Server) retryTrackerMerge(ctx context.Context, p domain.PendingTrackerM
 		s.noteTicketNotMoved(ctx, p.SessionID, o)
 		ev = log.Warn()
 	}
-	ev.Str("tracker_writes", o.writes).Str("tracker_why", o.why).Msg("tracker write retry: finished")
+	ev.Str("tracker_writes", o.writes).Str("tracker_why", o.why).Msg("tracker write finished")
 	s.clearPendingTrackerMerge(ctx, p.SessionID)
 }

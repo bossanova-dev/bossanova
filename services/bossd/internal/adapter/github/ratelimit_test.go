@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,8 +23,8 @@ import (
 // primaryPRRead exercises quota admission without the high-level REST fallback.
 // Fallback classification and accounting are covered by provider_quota_fallback_test.go.
 func primaryPRRead(p *Provider, ctx context.Context, repo string, prID int) (string, error) {
-	return p.gh(withRoute(ctx, "GetPRStatus", vcs.GitHubNWO(repo)),
-		"pr", "view", strconv.Itoa(prID), "--repo", repoFlag(repo))
+	args, _ := vcs.GitHubPRStatusArgs(repo, prID, "")
+	return p.gh(withRoute(ctx, "GetPRStatus", vcs.GitHubNWO(repo)), args...)
 }
 
 func newFakeClock() *clocktest.Clock { return clocktest.New(time.Unix(1_800_000_000, 0)) }
@@ -57,7 +56,7 @@ func (g *scriptedGH) count(match func(args []string) bool) int {
 	return n
 }
 
-func isPRView(args []string) bool { return len(args) >= 2 && args[0] == "pr" && args[1] == "view" }
+func isPRView(args []string) bool { kind, _, ok := perPRQuery(args); return ok && kind == "status" }
 func isRateLimitProbe(args []string) bool {
 	return len(args) >= 2 && args[0] == "api" && args[1] == "rate_limit"
 }
@@ -102,7 +101,7 @@ func TestBreakerPausesExhaustedQuotaForEveryCaller(t *testing.T) {
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 
 	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("first call err = %v, want vcs.ErrRateLimited", err)
@@ -149,7 +148,7 @@ func TestBreakerQuotasAreIndependent(t *testing.T) {
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 
 	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("err = %v, want vcs.ErrRateLimited", err)
@@ -169,7 +168,7 @@ func TestBreakerFallsBackWhenResetIsUnreadable(t *testing.T) {
 		}
 		return "", errors.New(graphQLExhausted)
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 
 	_, _ = primaryPRRead(p, context.Background(), "o/r", 7)
 	_, _ = primaryPRRead(p, context.Background(), "o/r", 7)
@@ -198,7 +197,7 @@ func TestBreakerDoesNotPauseWhenQuotaAlreadyReset(t *testing.T) {
 		}
 		return draftPRView, nil
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 
 	if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("err = %v, want the refused call to report vcs.ErrRateLimited", err)
@@ -220,7 +219,7 @@ func TestBreakerIgnoresAuthFailures(t *testing.T) {
 		}
 		return "", errors.New(msg)
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)))
 	_, err := primaryPRRead(p, context.Background(), "o/r", 7)
 	if errors.Is(err, vcs.ErrRateLimited) {
 		t.Fatalf("err = %v classified as a rate-limit refusal", err)
@@ -263,7 +262,7 @@ func failOpenGH(clock *clocktest.Clock) *scriptedGH {
 func TestQuotaReadingIsReusedWithinTTL(t *testing.T) {
 	clock := newFakeClock()
 	gh := failOpenGH(clock)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 
 	for i := 0; i < 50; i++ {
 		if _, err := primaryPRRead(p, context.Background(), "o/r", 7); !errors.Is(err, vcs.ErrRateLimited) {
@@ -311,7 +310,7 @@ func TestConcurrentRefusalsShareOneProbe(t *testing.T) {
 		}
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
-	p = New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p = New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 
 	var done sync.WaitGroup
 	errs := make([]error, callers)
@@ -336,7 +335,7 @@ func TestConcurrentRefusalsShareOneProbe(t *testing.T) {
 func TestRefusalNewerThanCachedReadingReprobes(t *testing.T) {
 	clock := newFakeClock()
 	gh := failOpenGH(clock)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 	ctx := context.Background()
 
 	if _, err := p.QuotaStatus(ctx); err != nil {
@@ -360,7 +359,7 @@ func TestRefusalNewerThanCachedReadingReprobes(t *testing.T) {
 func TestRefusalLeavesCachedReadingAtGitHubsFigures(t *testing.T) {
 	clock := newFakeClock()
 	gh := failOpenGH(clock)
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithJitterFunc(noJitter))
 	ctx := context.Background()
 
 	before, ok := p.readQuotas(ctx)
@@ -394,7 +393,7 @@ func TestFailedProbeIsNotCached(t *testing.T) {
 		}
 		return "", errors.New(graphQLExhausted)
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 	ctx := context.Background()
 
 	_, _ = primaryPRRead(p, ctx, "o/r", 7)
@@ -421,7 +420,7 @@ func TestQuotaStatusReadsBothQuotasOncePerTTL(t *testing.T) {
 		}
 		return fmt.Sprintf(`{"resources":{"core":{"limit":5000,"remaining":1200,"reset":%d},"graphql":{"limit":5000,"remaining":300,"reset":%d}}}`, reset, reset), nil
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 
 	want := []vcs.Quota{
 		{Name: "core", Limit: 5000, Remaining: 1200, ResetAt: time.Unix(reset, 0)},
@@ -460,7 +459,7 @@ func TestQuotaStatusFailuresAreNotCached(t *testing.T) {
 		}
 		return fmt.Sprintf(`{"resources":{"core":{"limit":5000,"remaining":10,"reset":%d}}}`, clock.Now().Add(time.Hour).Unix()), nil
 	}}
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now))
 
 	if _, err := p.QuotaStatus(context.Background()); err == nil {
 		t.Fatal("QuotaStatus succeeded on a failed probe")
@@ -493,7 +492,7 @@ func TestGHMetersEverySentCall(t *testing.T) {
 		return "", fmt.Errorf("unexpected gh call %v", args)
 	}}
 	ledger := ghusage.New(t.TempDir(), zerolog.Nop(), ghusage.WithNow(clock.Now))
-	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now), WithUsageRecorder(ledger))
+	p := New(zerolog.Nop(), WithRunGH(perPRFixtureGH(gh.run)), WithNowFunc(clock.Now), WithUsageRecorder(ledger))
 
 	finalizeCtx := ghusage.WithLabel(context.Background(), ghusage.LabelFinalize)
 	if _, err := p.GetReviewObservation(finalizeCtx, "o/r", 7); err != nil {
@@ -533,7 +532,7 @@ func TestRepeatReadOfUnchangedPRRecordsNotModified_GitHubUsage_AC230701(t *testi
 	clock := newFakeClock()
 	ledger := ghusage.New(t.TempDir(), zerolog.Nop(), ghusage.WithNow(clock.Now))
 	coreCalls := 0
-	p := New(zerolog.Nop(), WithNowFunc(clock.Now), WithUsageRecorder(ledger), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+	p := New(zerolog.Nop(), WithNowFunc(clock.Now), WithUsageRecorder(ledger), WithRunGH(perPRFixtureGH(func(_ context.Context, args ...string) (string, error) {
 		if isPRView(args) {
 			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false,"title":"unchanged","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"APPROVED"}`, nil
 		}
@@ -548,7 +547,7 @@ func TestRepeatReadOfUnchangedPRRecordsNotModified_GitHubUsage_AC230701(t *testi
 			return "", &ghError{stdout: "HTTP/2.0 304 Not Modified\n\n", stderr: "gh: HTTP 304", err: errors.New("exit status 1")}
 		}
 		return "", fmt.Errorf("unexpected call %v", args)
-	}))
+	})))
 	ctx := ghusage.WithLabel(context.Background(), ghusage.LabelFinalize)
 	first, err := p.GetPRStatus(ctx, "o/r", 7)
 	if err != nil {

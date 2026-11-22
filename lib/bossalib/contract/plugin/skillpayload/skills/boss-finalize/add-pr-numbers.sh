@@ -6,8 +6,8 @@
 #
 # If PR_NUMBER is not provided, it will be fetched from the current PR using gh cli.
 # Set BASE_BRANCH to override PR base discovery.
-# This script rebases all commits since the branch diverged from the PR base branch,
-# adding [#PR_NUMBER] to any commit message that doesn't already have it.
+# This script rebases only when non-empty commits need [#PR_NUMBER], and refuses
+# foreign tags or patches already on the base before rewriting any history.
 #
 
 set -e
@@ -53,7 +53,7 @@ echo "PR number: #$PR_NUM"
 # Its OWN statement, not the head of a pipeline or of an `if` condition: a pipeline reports the
 # LAST stage's status, so `git status ... | grep -q .` would read an unreadable worktree exactly
 # as it reads a clean one. Keep the ask's status apart from its answer.
-DIRTY_TRACKED=$(git status --porcelain --untracked-files=no) || {
+DIRTY_TRACKED=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain --untracked-files=no) || {
   echo "Error: could not read the worktree state; refusing to rebase." >&2
   exit 1
 }
@@ -190,18 +190,57 @@ PROJECTION_LOG=$(git log --reverse --format='%h%x09%H%x09%s' "$BASE_COMMIT"..HEA
   echo "ERROR: could not read $BASE_COMMIT..HEAD to project the tagged subject lengths." >&2
   exit 1
 }
+CHERRY=$(git cherry "origin/$BASE_BRANCH" HEAD "$BASE_COMMIT") || {
+  echo "ERROR: could not compare $BASE_COMMIT..HEAD with origin/$BASE_BRANCH; refusing to rebase." >&2
+  exit 1
+}
+NEEDS_TAG=no
+FOREIGN_ROWS=
+PATCH_ROWS=
+EMPTY_ROWS=
 echo "Projected tagged subject lengths (the tag adds $TAG_WIDTH characters):"
 while IFS=$'\t' read -r proj_short proj_sha proj_subject; do
   [ -n "$proj_sha" ] || continue
-  # The two commits the helper will NOT amend, for the two reasons it will not: already tagged,
-  # and classified empty. Listing either would project a rewrite that is never attempted.
+  if printf '%s\n' "$PR_TAG_EMPTY_SHAS" | grep -qxF "$proj_sha"; then
+    EMPTY_ROWS+="Skipped empty commit $proj_short $proj_subject"$'\n'
+    continue
+  fi
+  tag_rest="$proj_subject"
+  while [[ "$tag_rest" =~ \[\#([0-9]+)\] ]]; do
+    if [ "${BASH_REMATCH[1]}" != "$PR_NUM" ]; then
+      FOREIGN_ROWS+="  $proj_short  $proj_subject"$'\n'
+      break
+    fi
+    tag_rest="${tag_rest#*"${BASH_REMATCH[0]}"}"
+  done
+  if printf '%s\n' "$CHERRY" | grep -qxF -- "- $proj_sha"; then
+    PATCH_ROWS+="  $proj_short  $proj_subject"$'\n'
+  fi
   case "$proj_subject" in
   *"[#$PR_NUM]"*) continue ;;
   esac
-  if printf '%s\n' "$PR_TAG_EMPTY_SHAS" | grep -qxF "$proj_sha"; then continue; fi
+  NEEDS_TAG=yes
   echo "  $proj_short  subject ${#proj_subject} -> $((${#proj_subject} + TAG_WIDTH))  $proj_subject"
 done <<< "$PROJECTION_LOG"
 echo ""
+
+if [ -n "$FOREIGN_ROWS" ]; then
+  echo "ERROR: these non-empty commits carry foreign PR tags:" >&2
+  printf '%s' "$FOREIGN_ROWS" >&2
+  echo "Rewrite those messages using the boss-build core's finalize reference," >&2
+  echo "under 'The non-interactive message-rewrite recipe', then re-run." >&2
+fi
+if [ -n "$PATCH_ROWS" ]; then
+  echo "ERROR: these non-empty commits are patch-equivalent to origin/$BASE_BRANCH:" >&2
+  printf '%s' "$PATCH_ROWS" >&2
+  echo "Run 'git rebase origin/$BASE_BRANCH' to drop commits already upstream, then re-run." >&2
+fi
+if [ -n "$FOREIGN_ROWS$PATCH_ROWS" ]; then exit 1; fi
+if [ "$NEEDS_TAG" = no ]; then
+  printf '%s' "$EMPTY_ROWS"
+  echo "All non-empty commits already carry [#$PR_NUM]; nothing was rewritten."
+  exit 0
+fi
 
 cleanup_temp() {
   # Only a report THIS script created is removed; a caller-supplied path is left for the

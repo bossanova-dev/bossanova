@@ -248,6 +248,8 @@ func (h Model) TableHeight() int {
 		// action bar it replaces is one at a wide terminal, so reserving the
 		// default would leave the board a row too tall (BOS-837).
 		footerLines = h.Rename.LineCount()
+	case h.LabelPicker.Active():
+		footerLines = h.LabelPicker.LineCount()
 	case !h.Confirm.Active && !h.Upgrading && !h.Restarting:
 		footerLines = h.SessionTableFooterLineCount()
 	}

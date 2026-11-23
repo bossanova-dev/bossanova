@@ -703,6 +703,34 @@ message Session {
   // heartbeat, the status the chat pills read as "working". Set exactly when
   // chat_count is.
   optional int32 working_chat_count = 101;
+  // Whether this session's repository has a serve command configured.
+  // Transport-only, hydrated from the repo on daemon reads and stream
+  // snapshots/deltas. No dated API bump: additive output field older clients
+  // ignore. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  bool has_serve_command = 102;
+  // Whether the session's serve command is currently running on the daemon.
+  // Transport-only, never persisted. No dated API bump: additive output field
+  // older clients ignore.
+  bool is_serve_running = 103;
+  // Latest serve command error reported by the daemon, if any.
+  // Transport-only, never persisted, blanked in private cloud-control mode.
+  // No dated API bump: additive output field older clients ignore.
+  string serve_error = 104;
+  // Labels attached to this session, ordered by name.
+  // No dated API bump: additive output field older clients ignore. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  repeated SessionLabel labels = 105;
+}
+
+// SessionLabel is a colored tag that can be attached to sessions (Linear-style).
+message SessionLabel {
+  string id = 1;
+  string name = 2;
+  string color = 3;
+  string description = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  int32 session_count = 7;
 }
 
 // SessionSnooze is the caller's active "Not now" on a session. Session
@@ -1476,26 +1504,41 @@ message ChatEvent {
   string url = 3;
 }
 
-// ChatQuestion is a question the agent asked through its own question tool and
-// is still waiting on, with the answers it offered. The agent shows it as a
-// menu in its terminal; a typed message cannot answer it.
+// ChatQuestion is a question or permission prompt the agent is waiting on in
+// its terminal, with the answers it offered. The agent shows it as a menu in
+// its terminal; a typed message cannot answer it.
 //
-// id names the question by what its menu shows: its title, its words and its
-// options. An answer carries it, so an answer meant for a question the agent
-// has since moved past is refused rather than typed into whatever the
-// terminal shows next. is_answerable is set when the agent's menu can take an
-// answer through ProxyAnswerChatQuestion: one question with a single choice,
-// from options or as typed words. A question with several parts or several
+// id names the prompt by what its menu shows: its title, its words, its
+// options, and (for permission prompts) its detail and warning. An answer
+// carries it, so an answer meant for a prompt the agent has since moved past
+// is refused rather than typed into whatever the terminal shows next.
+// is_answerable is set when the agent's menu can take an answer through
+// ProxyAnswerChatQuestion: one question with a single choice, or a permission
+// prompt whose rows select by digit. A question with several parts or several
 // choices is answered in the terminal.
 //
-// The agent may not record a question in its transcript until it is answered
-// (Claude Code does not), so a read with should_include_activity ends on the
-// question the chat's terminal shows while its menu waits.
+// The agent may not record a prompt in its transcript until it is answered
+// (Claude Code does not, and subagent permission prompts never appear in the
+// main transcript), so a read with should_include_activity ends on the prompt
+// the chat's terminal shows while its menu waits.
 message ChatQuestion {
   string text = 1;
   repeated string options = 2;
   string id = 3;
   bool is_answerable = 4;
+  // "question" (or empty for older daemons) for an agent question-tool menu;
+  // "permission" for a tool-approval dialog.
+  string kind = 5;
+  // Header of the prompt (for example "Bash command · from the general-purpose
+  // agent" or "Edit file · a.txt").
+  string title = 6;
+  // Verbatim command, diff, or tool payload the dialog asks to approve.
+  string detail = 7;
+  // Caution text the agent's safety check printed under the detail, if any.
+  string warning = 8;
+  // Set when the captured pane cut off the top of detail, so a viewer never
+  // mistakes a partial command or diff for the whole thing.
+  bool is_detail_truncated = 9;
 }
 
 // --- Inbound triggers (BOS-1348) ---

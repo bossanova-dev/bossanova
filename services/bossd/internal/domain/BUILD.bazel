@@ -36,6 +36,7 @@ go_library(
         "session.go",
         "session_create.go",
         "session_endpoint.go",
+        "session_label.go",
         "session_list_rank.go",
         "session_update.go",
         "task_mapping.go",

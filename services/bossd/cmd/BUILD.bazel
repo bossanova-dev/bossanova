@@ -212,6 +212,7 @@ go_test(
         "usage_refresh_test.go",
         "viewer_approvals_test.go",
         "waiting_sweep_test.go",
+        "wire_accounts_test.go",
         "worktree_reconcile_test.go",
     ],
     embed = [":cmd_lib"],

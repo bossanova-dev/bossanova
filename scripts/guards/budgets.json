@@ -109,7 +109,6 @@
       "services/bossd/internal/adapter/git:ensureGitInfoExclude": 33,
       "services/bossd/internal/adapter/sessionports:Detector.Scan": 63,
       "services/bossd/internal/adapter/sessionports:procfsSocketSource.Listeners": 33,
-      "services/bossd/internal/adapter/tmux:Client.sendPlan": 31,
       "services/bossd/internal/adapter/tmux:Client.verifyWithEnterRetry": 61,
       "services/bossd/internal/broadcast:DeliveryWorker.scan": 31,
       "services/bossd/internal/callback:Evaluator.EvaluatePR": 50,

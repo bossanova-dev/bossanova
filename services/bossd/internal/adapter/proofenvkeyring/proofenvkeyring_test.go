@@ -194,7 +194,7 @@ func TestUploadTargetFreshAndMissing(t *testing.T) {
 			if !tc.want && !errors.Is(err, domain.ErrEvidenceUploadNotConfigured) {
 				t.Fatalf("credential error = %v", err)
 			}
-			want := domain.EvidenceUploadTarget{AccountID: completeDestination.AccountID, Bucket: completeDestination.Bucket, PublicBaseURL: completeDestination.PublicBaseURL, Token: string(tc.token)}
+			want := domain.EvidenceUploadTarget{AccountID: completeDestination.AccountID, Bucket: completeDestination.Bucket, PublicBaseURL: completeDestination.PublicBaseURL, PagesEnabled: true, Token: string(tc.token)}
 			if err == nil && target != want {
 				t.Errorf("target = %+v, want %+v", target, want)
 			}
@@ -216,17 +216,19 @@ func TestUploadTargetTakesDestinationFromSettings_Sessions_AC208101(t *testing.T
 	var buf bytes.Buffer
 	store := fakeStore{data: map[string][]byte{ItemCloudflareAPIToken: []byte("cf-SECRET-token")}}
 	r := newResolver(store, nil, &buf)
-	dest := config.ProofUploadConfig{AccountID: "acct-1", Bucket: "bucket-1", PublicBaseURL: "https://one.example/base", PagesEnabled: true}
+	off := false
+	dest := config.ProofUploadConfig{AccountID: "acct-1", Bucket: "bucket-1", PublicBaseURL: "https://one.example/base", PagesEnabled: &off}
 	r.settings = func() (config.ProofUploadConfig, error) { return dest, nil }
 	target, err := r.UploadTarget()
-	want := domain.EvidenceUploadTarget{AccountID: "acct-1", Bucket: "bucket-1", PublicBaseURL: "https://one.example/base", PagesEnabled: true, Token: "cf-SECRET-token"}
+	want := domain.EvidenceUploadTarget{AccountID: "acct-1", Bucket: "bucket-1", PublicBaseURL: "https://one.example/base", Token: "cf-SECRET-token"}
 	if err != nil || target != want {
 		t.Fatalf("target = %+v err=%v, want %+v", target, err, want)
 	}
 	// Settings are re-read on every call: an edit takes effect without a restart.
+	// A bucket with pages_enabled unset publishes pages.
 	dest = config.ProofUploadConfig{AccountID: "acct-2", Bucket: "bucket-2", PublicBaseURL: "https://two.example"}
 	target, err = r.UploadTarget()
-	want = domain.EvidenceUploadTarget{AccountID: "acct-2", Bucket: "bucket-2", PublicBaseURL: "https://two.example", Token: "cf-SECRET-token"}
+	want = domain.EvidenceUploadTarget{AccountID: "acct-2", Bucket: "bucket-2", PublicBaseURL: "https://two.example", PagesEnabled: true, Token: "cf-SECRET-token"}
 	if err != nil || target != want {
 		t.Fatalf("settings were cached: target = %+v err=%v", target, err)
 	}
@@ -253,7 +255,6 @@ func TestUploadTargetIncompleteDestinationIsNotConfigured_Sessions_AC208101(t *t
 			store := fakeStore{data: map[string][]byte{ItemCloudflareAPIToken: []byte("cf-SECRET-token")}}
 			r := newResolver(store, nil, &buf)
 			dest := completeDestination
-			dest.PagesEnabled = true
 			if tc.mutate != nil {
 				tc.mutate(&dest)
 			}

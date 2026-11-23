@@ -83,6 +83,7 @@ func (w *daemonWiring) wireDaemon() {
 		GithubCallbacks:       w.githubCallbacks,
 		Telemetry:             w.telemetryClient,
 		Notes:                 w.notes,
+		SessionLabels:         w.sessionLabels,
 		NoteSyncStates:        w.noteSyncStates,
 		NoteSyncWorker:        noteSyncNudger(w.noteSyncWorker),
 		Broadcasts:            w.broadcasts,
@@ -182,6 +183,11 @@ func (w *daemonWiring) wireDaemon() {
 		ProtectedRoots:     w.startupProtectedRoots,
 	}
 	setGitHubCredentialReporter(&daemonConfig, w.githubCredentials)
+	// Assigned only when the manager exists: a typed-nil *chatupload.Manager
+	// would read as a live resolver and panic on the first attachment.
+	if w.chatUploadMgr != nil {
+		daemonConfig.ChatAttachments = w.chatUploadMgr
+	}
 	w.srv = server.New(daemonConfig)
 	w.srv.SetRequiredChecks(w.checkPolicy)
 	if w.opts.onVerifyJobSeamsWired != nil {

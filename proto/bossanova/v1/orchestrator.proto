@@ -456,6 +456,36 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
     option (bossanova.v1.permission) = "sessions:write";
   }
+  // ProxyListSessionLabels lists session labels on a daemon (or across connected daemons).
+  rpc ProxyListSessionLabels(ProxyListSessionLabelsRequest) returns (ProxyListSessionLabelsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "sessions:read";
+  }
+  // ProxyCreateSessionLabel creates a session label on a daemon.
+  rpc ProxyCreateSessionLabel(ProxyCreateSessionLabelRequest) returns (ProxyCreateSessionLabelResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "sessions:write";
+  }
+  // ProxyUpdateSessionLabel updates a session label on a daemon.
+  rpc ProxyUpdateSessionLabel(ProxyUpdateSessionLabelRequest) returns (ProxyUpdateSessionLabelResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "sessions:write";
+  }
+  // ProxyDeleteSessionLabel deletes a session label on a daemon.
+  rpc ProxyDeleteSessionLabel(ProxyDeleteSessionLabelRequest) returns (ProxyDeleteSessionLabelResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "sessions:write";
+  }
+  // ProxySetSessionLabels sets the labels on a session (routes by session_id).
+  rpc ProxySetSessionLabels(ProxySetSessionLabelsRequest) returns (ProxySetSessionLabelsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "sessions:write";
+  }
   // ProxyMoveSession moves a session up or down the rendered list (routes by
   // session_id). It is a pure passthrough: the rank arithmetic lives in the
   // daemon, so bosso resolves the owner, forwards the DIRECTION, and returns
@@ -494,6 +524,18 @@ service OrchestratorService {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
     option (bossanova.v1.permission) = "sessions:merge";
+  }
+  // ProxyStartSessionServe forwards DaemonService.StartSessionServe to the owning daemon.
+  rpc ProxyStartSessionServe(ProxyStartSessionServeRequest) returns (ProxyStartSessionServeResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "sessions:write";
+  }
+  // ProxyStopSessionServe forwards DaemonService.StopSessionServe to the owning daemon.
+  rpc ProxyStopSessionServe(ProxyStopSessionServeRequest) returns (ProxyStopSessionServeResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "sessions:write";
   }
   // ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
   rpc ProxyUpdateChatTitle(ProxyUpdateChatTitleRequest) returns (ProxyUpdateChatTitleResponse) {
@@ -1041,6 +1083,16 @@ service OrchestratorService {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "organization:write";
+  }
+  // PrepareOrganizationSwitch confirms against WorkOS that the organization
+  // exists and the caller holds an active membership before the web client
+  // calls AuthKit switchToOrganization. For the caller's own personal
+  // organization, recreates a missing WorkOS organization or membership and
+  // re-points the local mirror, cloud account, and membership record.
+  rpc PrepareOrganizationSwitch(PrepareOrganizationSwitchRequest) returns (PrepareOrganizationSwitchResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "organization:read";
   }
   // Deprecated: use AuthKit switchToOrganization instead. This RPC is
   // deprecated rather than deleted because buf breaking: use: FILE blocks
@@ -1882,6 +1934,12 @@ message ProxySendChatMessageRequest {
   // chat whose daemon is claimed in another of the caller's organizations.
   // Callers without a session (the MCP send tool) leave it empty.
   string session_id = 5;
+  // attachment_upload_ids names files this chat's upload-only attach
+  // (ATTACH_SCOPE_UPLOAD) already finished. The daemon types each file's
+  // path ahead of the message, separated by spaces, and fails the send when
+  // an id is unknown, expired or belongs to another chat. A send may carry
+  // attachments and an empty message. Additive: empty keeps the prior send.
+  repeated string attachment_upload_ids = 6;
 }
 // ProxySendChatMessageResponse mirrors daemon.proto's SendChatMessageResponse.
 message ProxySendChatMessageResponse {
@@ -2960,6 +3018,11 @@ enum AttachScope {
   // viewer's keystrokes and resizes without closing the socket, and rejects
   // its uploads.
   ATTACH_SCOPE_VIEWER = 2;
+  // Upload-only: the socket carries file-upload frames for the chat's reply
+  // box and spawns no terminal. Finished files wait on the daemon until a
+  // ProxySendChatMessage names them in attachment_upload_ids. Bosso drops
+  // keystrokes and resizes on it, and refuses it with a viewer device.
+  ATTACH_SCOPE_UPLOAD = 3;
 }
 
 // --- Webhook Configuration ---
@@ -3418,6 +3481,33 @@ message LeaveOrganizationRequest {
 }
 
 message LeaveOrganizationResponse {}
+
+enum OrganizationSwitchStatus {
+  ORGANIZATION_SWITCH_STATUS_UNSPECIFIED = 0;
+  // The WorkOS organization exists and the caller holds an active membership.
+  ORGANIZATION_SWITCH_STATUS_READY = 1;
+  // The caller's personal organization was healed (WorkOS organization and/or
+  // membership recreated and local bindings updated).
+  ORGANIZATION_SWITCH_STATUS_HEALED = 2;
+  // The non-personal organization is unbound or missing from WorkOS.
+  ORGANIZATION_SWITCH_STATUS_ORGANIZATION_MISSING = 3;
+  // The caller does not hold an active membership in the non-personal WorkOS
+  // organization.
+  ORGANIZATION_SWITCH_STATUS_NOT_A_MEMBER = 4;
+}
+
+message PrepareOrganizationSwitchRequest {
+  string organization_id = 1;
+}
+
+message PrepareOrganizationSwitchResponse {
+  OrganizationSwitchStatus status = 1;
+  // WorkOS organization id to pass to AuthKit switchToOrganization.
+  // Populated when status is READY or HEALED; empty otherwise.
+  string workos_org_id = 2;
+  // Human-readable reason when status is neither READY nor HEALED.
+  string reason = 3;
+}
 
 // Deprecated: use AuthKit switchToOrganization instead. This message is
 // deprecated rather than deleted because buf breaking: use: FILE blocks deleting
@@ -4599,3 +4689,61 @@ message UnsnoozeSessionRequest {
   string session_id = 1;
 }
 message UnsnoozeSessionResponse {}
+
+message ProxyStartSessionServeRequest {
+  string id = 1;
+}
+message ProxyStartSessionServeResponse {
+  SessionServe serve = 1;
+}
+
+message ProxyStopSessionServeRequest {
+  string id = 1;
+}
+message ProxyStopSessionServeResponse {
+  SessionServe serve = 1;
+}
+
+// --- Session labels proxy ---
+
+message ProxyListSessionLabelsRequest {
+  string daemon_id = 1;
+}
+message ProxyListSessionLabelsResponse {
+  repeated SessionLabel labels = 1;
+}
+
+message ProxyCreateSessionLabelRequest {
+  string daemon_id = 1;
+  string name = 2;
+  string color = 3;
+  string description = 4;
+}
+message ProxyCreateSessionLabelResponse {
+  SessionLabel label = 1;
+}
+
+message ProxyUpdateSessionLabelRequest {
+  string daemon_id = 1;
+  string id = 2;
+  optional string name = 3;
+  optional string color = 4;
+  optional string description = 5;
+}
+message ProxyUpdateSessionLabelResponse {
+  SessionLabel label = 1;
+}
+
+message ProxyDeleteSessionLabelRequest {
+  string daemon_id = 1;
+  string id = 2;
+}
+message ProxyDeleteSessionLabelResponse {}
+
+message ProxySetSessionLabelsRequest {
+  string session_id = 1;
+  repeated string label_ids = 2;
+}
+message ProxySetSessionLabelsResponse {
+  Session session = 1;
+}

@@ -121,6 +121,46 @@ func (b *Backend) UpdateSession(ctx context.Context, req *pb.UpdateSessionReques
 	return resp.Msg.GetSession(), nil
 }
 
+func (b *Backend) ListSessionLabels(ctx context.Context) ([]*pb.SessionLabel, error) {
+	resp, err := b.rpc.ListSessionLabels(ctx, connect.NewRequest(&pb.ListSessionLabelsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetLabels(), nil
+}
+
+func (b *Backend) CreateSessionLabel(ctx context.Context, req *pb.CreateSessionLabelRequest) (*pb.SessionLabel, error) {
+	resp, err := b.rpc.CreateSessionLabel(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetLabel(), nil
+}
+
+func (b *Backend) UpdateSessionLabel(ctx context.Context, req *pb.UpdateSessionLabelRequest) (*pb.SessionLabel, error) {
+	resp, err := b.rpc.UpdateSessionLabel(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetLabel(), nil
+}
+
+func (b *Backend) DeleteSessionLabel(ctx context.Context, id string) error {
+	_, err := b.rpc.DeleteSessionLabel(ctx, connect.NewRequest(&pb.DeleteSessionLabelRequest{Id: id}))
+	return err
+}
+
+func (b *Backend) SetSessionLabels(ctx context.Context, sessionID string, labelIDs []string) (*pb.Session, error) {
+	resp, err := b.rpc.SetSessionLabels(ctx, connect.NewRequest(&pb.SetSessionLabelsRequest{
+		SessionId: sessionID,
+		LabelIds:  labelIDs,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSession(), nil
+}
+
 func (b *Backend) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
 	resp, err := b.rpc.LinkSessionPR(ctx, connect.NewRequest(&pb.LinkSessionPRRequest{Id: id, Pr: pr}))
 	if err != nil {

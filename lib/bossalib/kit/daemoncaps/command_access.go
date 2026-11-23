@@ -115,6 +115,13 @@ var commandAccess = accessTable(commandOneof, map[protoreflect.Name]CommandAcces
 	"list_agent_models":                AccessObserve,
 	"answer_chat_question":             AccessControl,
 	"stop_chat":                        AccessControl,
+	"start_session_serve":              AccessControl,
+	"stop_session_serve":               AccessControl,
+	"list_session_labels":              AccessObserve,
+	"create_session_label":             AccessControl,
+	"update_session_label":             AccessControl,
+	"delete_session_label":             AccessControl,
+	"set_session_labels":               AccessControl,
 })
 
 var terminalAccess = accessTable(terminalOneof, map[protoreflect.Name]CommandAccess{

@@ -58,6 +58,8 @@ func HydrateDisplayEntry(p *pb.Session, e *status.DisplayEntry) {
 	p.DisplaySettingUp = e.SettingUp
 	p.DisplayMerging = e.Merging
 	p.ArchivePending = e.Archiving
+	p.IsServeRunning = e.ServeRunning
+	p.ServeError = e.ServeError
 	p.ServiceLinks = make([]*pb.ServiceLink, len(e.ServiceLinks))
 	for i, link := range e.ServiceLinks {
 		p.ServiceLinks[i] = &pb.ServiceLink{Name: link.Name, Url: link.URL}
@@ -70,6 +72,14 @@ func HydrateDisplayEntry(p *pb.Session, e *status.DisplayEntry) {
 	// (head moved past last_repair_head_sha, alertstate BOS-1535).
 	p.PrDisplayHeadSha = e.HeadSHA
 	p.MergeBlock = displayEntryToMergeBlock(e)
+}
+
+// HydrateRepoServe stamps whether the session's repository has a serve command configured.
+func HydrateRepoServe(p *pb.Session, repo *models.Repo) {
+	if p == nil || repo == nil {
+		return
+	}
+	p.HasServeCommand = repo.ServeScript != nil && *repo.ServeScript != ""
 }
 
 // displayEntryToMergeBlock derives the structured MergeBlock proto from a

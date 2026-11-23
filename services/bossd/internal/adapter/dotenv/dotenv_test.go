@@ -732,3 +732,37 @@ func TestOverlayWithRepoPinsUploadSources_Sessions_AC98(t *testing.T) {
 		}
 	}
 }
+
+func TestOverlayWithRepoSetsBossRepoID(t *testing.T) {
+	t.Run("sets repo ID when absent from base", func(t *testing.T) {
+		got := OverlayWithRepo(nil, t.TempDir(), &models.Repo{ID: "repo-123", IsTrusted: true})
+		if got["BOSS_REPO_ID"] != "repo-123" {
+			t.Fatalf("BOSS_REPO_ID = %q, want repo-123", got["BOSS_REPO_ID"])
+		}
+	})
+
+	t.Run("overrides spoofed BOSS_REPO_ID from worktree dotenv", func(t *testing.T) {
+		dir := gitRepoWithEnv(t, "BOSS_REPO_ID=other-repo\n", false)
+		got := OverlayWithRepo(nil, dir, &models.Repo{ID: "repo-123", IsTrusted: true})
+		if got["BOSS_REPO_ID"] != "repo-123" {
+			t.Fatalf("BOSS_REPO_ID = %q, want repo-123 (dotenv must not spoof BOSS_REPO_ID)", got["BOSS_REPO_ID"])
+		}
+	})
+
+	t.Run("pins empty when repo is nil", func(t *testing.T) {
+		dir := gitRepoWithEnv(t, "BOSS_REPO_ID=other-repo\n", false)
+		got := OverlayWithRepo(nil, dir, nil)
+		v, ok := got["BOSS_REPO_ID"]
+		if !ok || v != "" {
+			t.Fatalf("BOSS_REPO_ID = %q (present %v), want present and empty", v, ok)
+		}
+	})
+
+	t.Run("preserves base BOSS_REPO_ID", func(t *testing.T) {
+		base := map[string]string{"BOSS_REPO_ID": "from-base"}
+		got := OverlayWithRepo(base, t.TempDir(), &models.Repo{ID: "repo-123", IsTrusted: true})
+		if got["BOSS_REPO_ID"] != "from-base" {
+			t.Fatalf("BOSS_REPO_ID = %q, want from-base", got["BOSS_REPO_ID"])
+		}
+	})
+}

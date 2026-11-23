@@ -476,6 +476,8 @@ func workflowStatusToProto(s domain.WorkflowStatus) pb.WorkflowStatus {
 }
 
 func hydrateServiceLinks(p *pb.Session, e *DisplayEntry) {
+	p.IsServeRunning = e.ServeRunning
+	p.ServeError = e.ServeError
 	p.ServiceLinks = make([]*pb.ServiceLink, len(e.ServiceLinks))
 	for i, link := range e.ServiceLinks {
 		p.ServiceLinks[i] = &pb.ServiceLink{Name: link.Name, Url: link.URL}

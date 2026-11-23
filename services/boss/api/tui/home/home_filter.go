@@ -45,6 +45,11 @@ func homeFilterHaystack(sess *pb.Session) string {
 	if sess.PrNumber != nil {
 		fields = append(fields, fmt.Sprintf("#%d", sess.GetPrNumber()))
 	}
+	for _, lbl := range sess.GetLabels() {
+		if name := lbl.GetName(); name != "" {
+			fields = append(fields, name, "label:"+name)
+		}
+	}
 	return strings.Join(fields, " ")
 }
 

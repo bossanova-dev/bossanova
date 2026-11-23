@@ -15,7 +15,14 @@ type ProofUploadConfig struct {
 	Bucket string `json:"bucket,omitempty"`
 	// PublicBaseURL is the absolute https:// origin that serves Bucket.
 	PublicBaseURL string `json:"public_base_url,omitempty"`
-	// PagesEnabled allows index.html proof pages to be uploaded. It defaults
-	// off so a public bucket serves no HTML until its host is protected.
-	PagesEnabled bool `json:"pages_enabled,omitempty"`
+	// PagesEnabled allows index.html proof pages to be uploaded. Unset means
+	// on: an operator who configures a bucket wants its pages, and a page that
+	// is silently refused is lost. An explicit false keeps HTML off a bucket
+	// whose host is not yet protected.
+	PagesEnabled *bool `json:"pages_enabled,omitempty"`
+}
+
+// PagesAllowed reports whether index.html proof pages may be uploaded.
+func (c ProofUploadConfig) PagesAllowed() bool {
+	return c.PagesEnabled == nil || *c.PagesEnabled
 }

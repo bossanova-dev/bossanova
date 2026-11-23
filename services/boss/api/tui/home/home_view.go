@@ -474,6 +474,8 @@ func (h Model) RenderSessionTable() string {
 		b.WriteString(h.AttentionAction.Footer(h.Width, h.Spinner.View()))
 	} else if h.Rename.Active() {
 		b.WriteString(h.Rename.Footer(h.Width))
+	} else if h.LabelPicker.Active() {
+		b.WriteString(h.LabelPicker.Footer(h.Width))
 	} else if h.Confirm.Active {
 		b.WriteString("\n")
 		b.WriteString(h.Confirm.Footer(h.Width))

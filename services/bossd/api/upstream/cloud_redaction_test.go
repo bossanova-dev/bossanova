@@ -22,7 +22,7 @@ func TestCloudRedactionSnapshotsAndDeltas_ChatPicker_AC238101(t *testing.T) {
 		{"nil", nil, false, pb.CloudControl_CLOUD_CONTROL_READ_ONLY},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			session := &pb.Session{Id: "session", RepoId: "repo", Title: "session title", Plan: "operator prompt", ServiceLinks: []*pb.ServiceLink{{Name: "api", Url: "https://api.example.test"}}, BranchName: "branch", PrNumber: proto.Int32(42), BlockedReason: proto.String("blocked")}
+			session := &pb.Session{Id: "session", RepoId: "repo", Title: "session title", Plan: "operator prompt", ServeError: "/private/serve/services.json: invalid service secret", ServiceLinks: []*pb.ServiceLink{{Name: "api", Url: "https://api.example.test"}}, BranchName: "branch", PrNumber: proto.Int32(42), BlockedReason: proto.String("blocked")}
 			chat := &pb.AgentChatMetadata{Id: "chat", SessionId: "session", Title: "chat title", LastMessagePreview: "agent output"}
 			originalSession := proto.Clone(session).(*pb.Session)
 			originalChat := proto.Clone(chat).(*pb.AgentChatMetadata)
@@ -32,6 +32,7 @@ func TestCloudRedactionSnapshotsAndDeltas_ChatPicker_AC238101(t *testing.T) {
 			if tc.private {
 				wantSession.Plan = ""
 				wantSession.ServiceLinks = nil
+				wantSession.ServeError = ""
 				wantChat.LastMessagePreview = ""
 			}
 			client := newTestClient(StreamStores{

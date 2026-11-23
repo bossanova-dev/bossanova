@@ -45,6 +45,10 @@ type linkPublisher interface {
 	SetServiceLinks(string, []status.ServiceLink)
 }
 
+type serveStatePublisher interface {
+	SetServeState(sessionID string, running bool, serveErr string, links []status.ServiceLink)
+}
+
 // Config supplies daemon-owned storage, identity and the configured login shell.
 type Config struct{ DataDir, DaemonID, LoginShell string }
 
@@ -92,6 +96,14 @@ func (r *Runner) snapshot(id string) State {
 	return State{}
 }
 
+func (r *Runner) publishState(id string, s State) {
+	if sp, ok := r.publisher.(serveStatePublisher); ok {
+		sp.SetServeState(id, s.IsRunning, s.LastError, s.Links)
+		return
+	}
+	r.publisher.SetServiceLinks(id, s.Links)
+}
+
 // Start starts the configured command once, or returns the live command's state.
 func (r *Runner) Start(ctx context.Context, id string) (State, error) {
 	r.mu.Lock()
@@ -119,7 +131,9 @@ func (r *Runner) Start(ctx context.Context, id string) (State, error) {
 			r.states[id] = &tracked{State: State{IsRunning: true, TmuxName: name}}
 			r.liveTmux.Store(id, name)
 		}
-		return r.snapshot(id), nil
+		snap := r.snapshot(id)
+		r.publishState(id, snap)
+		return snap, nil
 	}
 	repo, err := r.repos.Get(ctx, sess.RepoID)
 	if err != nil {
@@ -146,8 +160,9 @@ func (r *Runner) Start(ctx context.Context, id string) (State, error) {
 	}
 	r.states[id] = &tracked{State: State{IsRunning: true, TmuxName: name, StartedAt: time.Now()}}
 	r.liveTmux.Store(id, name)
-	r.publisher.SetServiceLinks(id, nil)
-	return r.snapshot(id), nil
+	snap := r.snapshot(id)
+	r.publishState(id, snap)
+	return snap, nil
 }
 func (r *Runner) filePath(id string) string {
 	return filepath.Join(r.cfg.DataDir, "serve", id, "services.json")
@@ -169,6 +184,7 @@ func (r *Runner) Stop(ctx context.Context, id string) error {
 	defer r.mu.Unlock()
 	s := r.states[id]
 	if s != nil && !s.IsRunning {
+		s.LastError = ""
 		return r.clear(id, s)
 	}
 	if s == nil {
@@ -193,6 +209,7 @@ func (r *Runner) Stop(ctx context.Context, id string) error {
 		s.LastError = err.Error()
 		return err
 	}
+	s.LastError = ""
 	return r.clear(id, s)
 }
 func (r *Runner) kill(ctx context.Context, name string) error {
@@ -213,11 +230,12 @@ func (r *Runner) clear(id string, s *tracked) error {
 	r.liveTmux.Delete(id)
 	s.Links = nil
 	s.observed = false
-	r.publisher.SetServiceLinks(id, nil)
 	if err := os.RemoveAll(filepath.Dir(r.filePath(id))); err != nil {
 		s.LastError = err.Error()
+		r.publishState(id, s.State)
 		return err
 	}
+	r.publishState(id, s.State)
 	return nil
 }
 

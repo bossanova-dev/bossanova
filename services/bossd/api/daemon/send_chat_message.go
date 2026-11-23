@@ -300,14 +300,11 @@ func (s *Server) modalDetectorFor(agentName string) domain.ModalDetector {
 // agent's composer, i.e. the bug this change exists to remove. Adding
 // delivery_state to ProxySendChatMessageResponse WOULD put a new value on that
 // wire and would need a bump; that is the deferral recorded above.
-func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
-	chat, sess, err := s.chatMessageTarget(ctx, req.Msg.GetAgentSessionId())
+func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.SendChatMessageRequest]) (_ *connect.Response[pb.SendChatMessageResponse], err error) {
+	defer s.spendAttachments(req.Msg, &err)
+	chat, sess, attachmentPaths, err := s.sendTarget(ctx, req.Msg)
 	if err != nil {
 		return nil, err
-	}
-
-	if !domain.CloudRepoAllowed(ctx, sess.RepoID) {
-		return nil, connect.NewError(connect.CodePermissionDenied, domain.ErrCloudTarget)
 	}
 
 	// Intercept a SUBMITTED single-line "/boss switch" (or "/switch") control
@@ -329,15 +326,13 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	// directly into the tmux pane bypass this RPC entirely and still reach the agent
 	// (→ 401 on an exhausted account); guarding the raw pane is deliberately out of
 	// scope here and is covered by S3 (auto-rotate on 401).
-	if req.Msg.GetSubmit() {
-		if cmd, ok := session.ParseBossControlCommand(req.Msg.GetMessage()); ok {
-			resp, err := s.handleBossSwitchInterception(ctx, chat, sess, cmd)
-			if err != nil {
-				return nil, err
-			}
-			s.applyTurnStartVerdict(req.Msg, resp.Msg, status.TurnStartUnobservable)
-			return resp, nil
+	if cmd, ok := bossControlCommand(req.Msg, attachmentPaths); ok {
+		resp, err := s.handleBossSwitchInterception(ctx, chat, sess, cmd)
+		if err != nil {
+			return nil, err
 		}
+		s.applyTurnStartVerdict(req.Msg, resp.Msg, status.TurnStartUnobservable)
+		return resp, nil
 	}
 
 	// Prefer the tmux session name persisted on the chat row: a legacy or
@@ -393,7 +388,8 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	// "$"). The rewrite is scoped to installed skill names on the first line, so
 	// a multi-line message's leading "/boss-repair N" is rewritten while a codex user's
 	// native built-in ("/model", "/status") and free text pass through unchanged.
-	message := session.RenderBossCommandPrefix(req.Msg.GetMessage(), chatCommandPrefix(chat.AgentName), sess.WorktreePath)
+	text := session.RenderBossCommandPrefix(req.Msg.GetMessage(), chatCommandPrefix(chat.AgentName), sess.WorktreePath)
+	message := withAttachmentPaths(attachmentPaths, text)
 
 	// submit routes the delivery: true submits the message (Enter + BOS-228
 	// verifier) for both single- and multi-line payloads (BOS-488); false
@@ -428,7 +424,9 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	submitted, releaseReceipt := s.expectPromptReceipt(chat, willSubmit)
 	defer releaseReceipt()
 	receiptRequired := false
-	if rollout := s.expectRolloutReceipt(ctx, chat, sess.WorktreePath, message, willSubmit); rollout != nil {
+	// The rollout probe reads the user's own text: a leading attachment path
+	// is not a slash command, and the agent takes a turn for it.
+	if rollout := s.expectRolloutReceipt(ctx, chat, sess.WorktreePath, text, willSubmit); rollout != nil {
 		submitted, receiptRequired = rollout, true
 	}
 	var receiptSeen atomic.Bool
@@ -446,10 +444,11 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	}
 	sentAt := time.Now()
 	sendErr := spawner.SendMessageWithHooks(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName),
-		domain.SendHooks{FreshPane: s.isFreshChatSubmit(chat.AgentSessionID, willSubmit, isLive), BeforeSubmit: beforeSubmit, Submitted: submitted, ReceiptRequired: receiptRequired})
+		domain.SendHooks{FreshPane: s.isFreshChatSubmit(chat.AgentSessionID, willSubmit, isLive), BeforeSubmit: beforeSubmit, Submitted: submitted, ReceiptRequired: receiptRequired, Prose: len(attachmentPaths) > 0})
 	if receiptOverridesOutcome(sendErr, submitted) {
 		sendErr = nil
 	}
+	sendErr = withholdPaneText(sendErr, attachmentPaths)
 	s.settleFreshChatPane(chat.AgentSessionID, willSubmit, sendErr)
 	deliveryOutcome := domain.OutcomeOf(sendErr).String()
 	if sendErr == nil && !willSubmit {
@@ -677,6 +676,101 @@ func (s *Server) handleBossSwitchInterception(ctx context.Context, chat *domain.
 		Delivered:  false,
 		NoticeText: res.NoticeText,
 	}), nil
+}
+
+// ChatAttachmentResolver is the part of the chat upload manager a send uses:
+// it turns the upload ids one user's reply box finished in a chat into file
+// paths, and forgets them once a send has typed them. *chatupload.Manager
+// satisfies it.
+type ChatAttachmentResolver interface {
+	Attachments(chatID, uploaderID string, uploadIDs []string) ([]string, error)
+	ReleaseAttachments(chatID, uploaderID string, uploadIDs []string)
+}
+
+// attachmentPaths resolves the attachment ids a user's send names in chatID.
+// The paths are typed into the pane and never logged.
+func (s *Server) attachmentPaths(chatID, actingUserID string, uploadIDs []string) ([]string, error) {
+	if len(uploadIDs) == 0 {
+		return nil, nil
+	}
+	if s.chatAttachments == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("file attachments are unavailable on this machine"))
+	}
+	paths, err := s.chatAttachments.Attachments(chatID, actingUserID, uploadIDs)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	return paths, nil
+}
+
+// sendTarget resolves a send's chat and session, refuses a repository cloud
+// control does not reach, and resolves every attachment before anything
+// reaches the pane, so an unknown, expired or foreign id refuses the send
+// with nothing typed.
+func (s *Server) sendTarget(ctx context.Context, req *pb.SendChatMessageRequest) (*domain.AgentChat, *models.Session, []string, error) {
+	chat, sess, err := s.chatMessageTarget(ctx, req.GetAgentSessionId())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if !domain.CloudRepoAllowed(ctx, sess.RepoID) {
+		return nil, nil, nil, connect.NewError(connect.CodePermissionDenied, domain.ErrCloudTarget)
+	}
+	paths, err := s.attachmentPaths(chat.AgentSessionID, req.GetActingUserId(), req.GetAttachmentUploadIds())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return chat, sess, paths, nil
+}
+
+// spendAttachments forgets a send's attachment ids once it answered: it may
+// have typed their paths. A send that failed keeps them for the retry.
+func (s *Server) spendAttachments(req *pb.SendChatMessageRequest, err *error) {
+	if ids := req.GetAttachmentUploadIds(); *err == nil && len(ids) > 0 && s.chatAttachments != nil {
+		s.chatAttachments.ReleaseAttachments(req.GetAgentSessionId(), req.GetActingUserId(), ids)
+	}
+}
+
+// bossControlCommand is the "/boss switch" a submitted message carries. A
+// message with attachments is never one.
+func bossControlCommand(req *pb.SendChatMessageRequest, attachmentPaths []string) (*session.BossControlCommand, bool) {
+	if !req.GetSubmit() || len(attachmentPaths) > 0 {
+		return nil, false
+	}
+	return session.ParseBossControlCommand(req.GetMessage())
+}
+
+// withholdPaneText hides a failed attachment send's pane text; see
+// withheldPaneError.
+func withholdPaneText(sendErr error, attachmentPaths []string) error {
+	if sendErr == nil || len(attachmentPaths) == 0 {
+		return sendErr
+	}
+	return withheldPaneError{err: sendErr}
+}
+
+// withheldPaneError keeps a failed send's delivery outcome but not its text.
+// A verifier error can quote what the composer showed, and a send with
+// attachments shows their absolute paths there; that text would otherwise
+// reach bosso and the browser.
+type withheldPaneError struct{ err error }
+
+func (e withheldPaneError) Error() string {
+	return fmt.Sprintf("the message with attachments failed (%s); its pane text is withheld because it names their paths", domain.OutcomeOf(e.err))
+}
+
+func (e withheldPaneError) Unwrap() error { return e.err }
+
+// withAttachmentPaths types each attachment's path ahead of the message,
+// separated by single spaces, so neither runs into the other.
+func withAttachmentPaths(paths []string, message string) string {
+	if len(paths) == 0 {
+		return message
+	}
+	prefix := strings.Join(paths, " ")
+	if strings.TrimSpace(message) == "" {
+		return prefix
+	}
+	return prefix + " " + message
 }
 
 func (s *Server) chatMessageTarget(ctx context.Context, id string) (*domain.AgentChat, *models.Session, error) {

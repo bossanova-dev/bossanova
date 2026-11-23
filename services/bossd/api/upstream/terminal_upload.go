@@ -46,6 +46,7 @@ type uploadManager interface {
 	Chunk(attachID, uploadID string, seq uint64, data []byte) (uint64, error)
 	ClaimFinish(attachID, uploadID string) error
 	Finish(ctx context.Context, attachID, uploadID string) (string, error)
+	FinishDeferred(attachID, uploadID, uploaderID string) error
 	Cancel(attachID, uploadID string)
 	CancelAttach(attachID string)
 	CancelAll()
@@ -121,7 +122,9 @@ func (c *TerminalStreamClient) handleUploadChunk(ctx context.Context, cmd *pb.Te
 }
 
 // handleUploadFinish closes the file and prefills the path into the chat's
-// composer, then reports the terminal result.
+// composer, then reports the terminal result. On an upload-only attach the
+// path is not prefilled: the file waits for the send that names its upload
+// id (chatupload.Manager.FinishDeferred).
 //
 // It runs on its own goroutine because chatupload.Manager.Finish delivers
 // through the daemon's wake-and-deliver chat path, which drives tmux and may
@@ -152,6 +155,12 @@ func (c *TerminalStreamClient) handleUploadFinish(ctx context.Context, cmd *pb.T
 	if err := c.uploads.ClaimFinish(attachID, uploadID); err != nil {
 		c.sendUploadError(ctx, outbound, attachID, uploadID, err)
 		return
+	}
+	state := c.lookupAttach(attachID)
+	deferred := state != nil && state.uploadOnly
+	uploaderID := ""
+	if deferred {
+		uploaderID = state.actingUserID
 	}
 	sess.uploadWG.Add(1)
 	_ = safego.Go(c.logger, func() {
@@ -188,14 +197,22 @@ func (c *TerminalStreamClient) handleUploadFinish(ctx context.Context, cmd *pb.T
 			c.refuseCloudUpload(ctx, outbound, attachID, uploadID)
 			return
 		}
-		if _, err := c.uploads.Finish(deliverCtx, attachID, uploadID); err != nil {
+		event := "terminal stream: upload delivered to chat"
+		var err error
+		if deferred {
+			event = "terminal stream: upload held for the chat's next send"
+			err = c.uploads.FinishDeferred(attachID, uploadID, uploaderID)
+		} else {
+			_, err = c.uploads.Finish(deliverCtx, attachID, uploadID)
+		}
+		if err != nil {
 			c.sendUploadError(ctx, outbound, attachID, uploadID, err)
 			return
 		}
 		c.logger.Info().
 			Str("attach_id", attachID).
 			Str("upload_id", uploadID).
-			Msg("terminal stream: upload delivered to chat")
+			Msg(event)
 		c.sendServerMessage(ctx, outbound, &pb.TerminalServerMessage{
 			Msg: &pb.TerminalServerMessage_UploadResult{UploadResult: &pb.TerminalUploadResult{
 				AttachId: attachID,

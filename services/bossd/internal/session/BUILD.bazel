@@ -147,6 +147,7 @@ go_test(
         "detached_cleanup_test.go",
         "dispatcher_pr_readied_test.go",
         "dispatcher_test.go",
+        "display_poller_cancelled_test.go",
         "display_poller_draft_test.go",
         "display_poller_evidence_test.go",
         "display_poller_partial_test.go",

@@ -225,7 +225,7 @@ func TestReadQuestionMenu_ReadsTheQuestionOnScreen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &bossanovav1.ChatQuestion{Text: "Pick a colour", Options: []string{"Red", "Green", "Blue"}, Id: colourID, IsAnswerable: true}
+	want := &bossanovav1.ChatQuestion{Kind: questionKindQuestion, Text: "Pick a colour", Options: []string{"Red", "Green", "Blue"}, Id: colourID, IsAnswerable: true}
 	if !proto.Equal(got.GetQuestion(), want) {
 		t.Fatalf("question = %v, want %v", got.GetQuestion(), want)
 	}

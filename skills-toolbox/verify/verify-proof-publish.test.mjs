@@ -50,12 +50,16 @@ test('every recorded proof note mirrors its lead and final page to a check run',
   }
 })
 
-test('non-parked verdicts mirror their one-line proof after posted, updated or current notes', async () => {
+test('non-parked verdicts mirror their one-line proof when pages is parked', async () => {
   for (const verdict of ['pass', 'blocked', 'defect']) {
     for (const outcome of ['posted', 'updated', 'current']) {
       const { result, checkRuns } = await run({
         judgement: { ...judged, verdict },
-        overrides: { recordHeadNote: () => ({ outcome }) },
+        overrides: {
+          recordHeadNote: () => ({ outcome }),
+          trustedTree: () => ({ ok: true, root: '/base' }),
+          loadConfig: () => ({ proofDefaults: { pages: 'parked' } }),
+        },
       })
       assert.equal(result.note, outcome)
       assert.equal(checkRuns.length, 1)
@@ -186,19 +190,20 @@ test('access-put is selected only by trusted base config and hooks still win @se
   assert.equal(discoverProofPublisher({ ...common, loadConfig }).publisher.kind, 'hook')
 })
 
-test('proof page policy defaults to parked and rejects deferred faults @sessions.AC254502', (t) => {
+test('proof page policy defaults to all, supports parked/none opt-out, and rejects deferred faults @sessions.AC254502', (t) => {
   for (const config of [
     undefined,
     {},
-    { proofDefaults: { pages: 'parked' } },
+    { proofDefaults: { pages: 'all' } },
     { proofDefaults: { pages: true } },
   ])
-    assert.equal(proofPagesFor(config), 'parked')
-  assert.equal(proofPagesFor({ proofDefaults: { pages: 'all' } }), 'all')
+    assert.equal(proofPagesFor(config), 'all')
+  assert.equal(proofPagesFor({ proofDefaults: { pages: 'parked' } }), 'parked')
+  assert.equal(proofPagesFor({ proofDefaults: { pages: 'none' } }), 'none')
   const root = tempDir('proof-policy-', t)
   fs.writeFileSync(
     path.join(root, '.boss-skills.json'),
-    JSON.stringify({ proofDefaults: { pages: 'all', builtins: false } }),
+    JSON.stringify({ proofDefaults: { pages: 'parked', builtins: false } }),
   )
   const config = loadSkillConfig({ cwd: root })
   assert.throws(() => proofPagesFor(config), /proofDefaults/)
@@ -208,7 +213,7 @@ test('proof page policy defaults to parked and rejects deferred faults @sessions
       trustedTree: () => ({ ok: true, root: '/base' }),
       loadConfig: () => config,
     }),
-    'parked',
+    'all',
   )
 })
 
@@ -223,10 +228,10 @@ test('proof page policy reads only the trusted root and falls back on unavailabl
     },
     loadConfig: (root) => {
       assert.equal(root, '/base')
-      return { proofDefaults: { pages: 'all' } }
+      return { proofDefaults: { pages: 'parked' } }
     },
   }
-  assert.equal(readProofPages(input), 'all')
+  assert.equal(readProofPages(input), 'parked')
   for (const override of [
     { trustedTree: undefined },
     { trustedTree: () => null },
@@ -242,7 +247,7 @@ test('proof page policy reads only the trusted root and falls back on unavailabl
       },
     },
   ])
-    assert.equal(readProofPages({ ...input, ...override }), 'parked')
+    assert.equal(readProofPages({ ...input, ...override }), 'all')
 })
 const judged = {
   verdict: 'human',

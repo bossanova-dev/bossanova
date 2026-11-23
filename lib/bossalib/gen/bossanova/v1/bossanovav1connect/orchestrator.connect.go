@@ -232,6 +232,21 @@ const (
 	// OrchestratorServiceProxyUpdateSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyUpdateSession RPC.
 	OrchestratorServiceProxyUpdateSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateSession"
+	// OrchestratorServiceProxyListSessionLabelsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListSessionLabels RPC.
+	OrchestratorServiceProxyListSessionLabelsProcedure = "/bossanova.v1.OrchestratorService/ProxyListSessionLabels"
+	// OrchestratorServiceProxyCreateSessionLabelProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyCreateSessionLabel RPC.
+	OrchestratorServiceProxyCreateSessionLabelProcedure = "/bossanova.v1.OrchestratorService/ProxyCreateSessionLabel"
+	// OrchestratorServiceProxyUpdateSessionLabelProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyUpdateSessionLabel RPC.
+	OrchestratorServiceProxyUpdateSessionLabelProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateSessionLabel"
+	// OrchestratorServiceProxyDeleteSessionLabelProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyDeleteSessionLabel RPC.
+	OrchestratorServiceProxyDeleteSessionLabelProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteSessionLabel"
+	// OrchestratorServiceProxySetSessionLabelsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxySetSessionLabels RPC.
+	OrchestratorServiceProxySetSessionLabelsProcedure = "/bossanova.v1.OrchestratorService/ProxySetSessionLabels"
 	// OrchestratorServiceProxyMoveSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyMoveSession RPC.
 	OrchestratorServiceProxyMoveSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyMoveSession"
@@ -250,6 +265,12 @@ const (
 	// OrchestratorServiceProxySendBackToRepairProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxySendBackToRepair RPC.
 	OrchestratorServiceProxySendBackToRepairProcedure = "/bossanova.v1.OrchestratorService/ProxySendBackToRepair"
+	// OrchestratorServiceProxyStartSessionServeProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyStartSessionServe RPC.
+	OrchestratorServiceProxyStartSessionServeProcedure = "/bossanova.v1.OrchestratorService/ProxyStartSessionServe"
+	// OrchestratorServiceProxyStopSessionServeProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyStopSessionServe RPC.
+	OrchestratorServiceProxyStopSessionServeProcedure = "/bossanova.v1.OrchestratorService/ProxyStopSessionServe"
 	// OrchestratorServiceProxyUpdateChatTitleProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyUpdateChatTitle RPC.
 	OrchestratorServiceProxyUpdateChatTitleProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateChatTitle"
@@ -463,6 +484,9 @@ const (
 	// OrchestratorServiceLeaveOrganizationProcedure is the fully-qualified name of the
 	// OrchestratorService's LeaveOrganization RPC.
 	OrchestratorServiceLeaveOrganizationProcedure = "/bossanova.v1.OrchestratorService/LeaveOrganization"
+	// OrchestratorServicePrepareOrganizationSwitchProcedure is the fully-qualified name of the
+	// OrchestratorService's PrepareOrganizationSwitch RPC.
+	OrchestratorServicePrepareOrganizationSwitchProcedure = "/bossanova.v1.OrchestratorService/PrepareOrganizationSwitch"
 	// OrchestratorServiceSwitchActiveOrganizationProcedure is the fully-qualified name of the
 	// OrchestratorService's SwitchActiveOrganization RPC.
 	OrchestratorServiceSwitchActiveOrganizationProcedure = "/bossanova.v1.OrchestratorService/SwitchActiveOrganization"
@@ -773,6 +797,16 @@ type OrchestratorServiceClient interface {
 	ProxyRetrySession(context.Context, *connect.Request[v1.ProxyRetrySessionRequest]) (*connect.Response[v1.ProxyRetrySessionResponse], error)
 	// ProxyUpdateSession updates a session's title/tracker (routes by session_id).
 	ProxyUpdateSession(context.Context, *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error)
+	// ProxyListSessionLabels lists session labels on a daemon (or across connected daemons).
+	ProxyListSessionLabels(context.Context, *connect.Request[v1.ProxyListSessionLabelsRequest]) (*connect.Response[v1.ProxyListSessionLabelsResponse], error)
+	// ProxyCreateSessionLabel creates a session label on a daemon.
+	ProxyCreateSessionLabel(context.Context, *connect.Request[v1.ProxyCreateSessionLabelRequest]) (*connect.Response[v1.ProxyCreateSessionLabelResponse], error)
+	// ProxyUpdateSessionLabel updates a session label on a daemon.
+	ProxyUpdateSessionLabel(context.Context, *connect.Request[v1.ProxyUpdateSessionLabelRequest]) (*connect.Response[v1.ProxyUpdateSessionLabelResponse], error)
+	// ProxyDeleteSessionLabel deletes a session label on a daemon.
+	ProxyDeleteSessionLabel(context.Context, *connect.Request[v1.ProxyDeleteSessionLabelRequest]) (*connect.Response[v1.ProxyDeleteSessionLabelResponse], error)
+	// ProxySetSessionLabels sets the labels on a session (routes by session_id).
+	ProxySetSessionLabels(context.Context, *connect.Request[v1.ProxySetSessionLabelsRequest]) (*connect.Response[v1.ProxySetSessionLabelsResponse], error)
 	// ProxyMoveSession moves a session up or down the rendered list (routes by
 	// session_id). It is a pure passthrough: the rank arithmetic lives in the
 	// daemon, so bosso resolves the owner, forwards the DIRECTION, and returns
@@ -788,6 +822,10 @@ type OrchestratorServiceClient interface {
 	ProxyOperatorMergeSession(context.Context, *connect.Request[v1.ProxyOperatorMergeSessionRequest]) (*connect.Response[v1.ProxyOperatorMergeSessionResponse], error)
 	// ProxySendBackToRepair forwards a pinned send-back to the session's owning daemon.
 	ProxySendBackToRepair(context.Context, *connect.Request[v1.ProxySendBackToRepairRequest]) (*connect.Response[v1.ProxySendBackToRepairResponse], error)
+	// ProxyStartSessionServe forwards DaemonService.StartSessionServe to the owning daemon.
+	ProxyStartSessionServe(context.Context, *connect.Request[v1.ProxyStartSessionServeRequest]) (*connect.Response[v1.ProxyStartSessionServeResponse], error)
+	// ProxyStopSessionServe forwards DaemonService.StopSessionServe to the owning daemon.
+	ProxyStopSessionServe(context.Context, *connect.Request[v1.ProxyStopSessionServeRequest]) (*connect.Response[v1.ProxyStopSessionServeResponse], error)
 	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
 	ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error)
 	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
@@ -1044,6 +1082,12 @@ type OrchestratorServiceClient interface {
 	// leave; the last owner of an organization that still has members may not,
 	// and nobody may leave their personal organization.
 	LeaveOrganization(context.Context, *connect.Request[v1.LeaveOrganizationRequest]) (*connect.Response[v1.LeaveOrganizationResponse], error)
+	// PrepareOrganizationSwitch confirms against WorkOS that the organization
+	// exists and the caller holds an active membership before the web client
+	// calls AuthKit switchToOrganization. For the caller's own personal
+	// organization, recreates a missing WorkOS organization or membership and
+	// re-points the local mirror, cloud account, and membership record.
+	PrepareOrganizationSwitch(context.Context, *connect.Request[v1.PrepareOrganizationSwitchRequest]) (*connect.Response[v1.PrepareOrganizationSwitchResponse], error)
 	// Deprecated: use AuthKit switchToOrganization instead. This RPC is
 	// deprecated rather than deleted because buf breaking: use: FILE blocks
 	// deleting it from bossanova.v1; true removal requires bossanova.v2.
@@ -1653,6 +1697,36 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateSession")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyListSessionLabels: connect.NewClient[v1.ProxyListSessionLabelsRequest, v1.ProxyListSessionLabelsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListSessionLabelsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListSessionLabels")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyCreateSessionLabel: connect.NewClient[v1.ProxyCreateSessionLabelRequest, v1.ProxyCreateSessionLabelResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyCreateSessionLabelProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateSessionLabel")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyUpdateSessionLabel: connect.NewClient[v1.ProxyUpdateSessionLabelRequest, v1.ProxyUpdateSessionLabelResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyUpdateSessionLabelProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateSessionLabel")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyDeleteSessionLabel: connect.NewClient[v1.ProxyDeleteSessionLabelRequest, v1.ProxyDeleteSessionLabelResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyDeleteSessionLabelProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteSessionLabel")),
+			connect.WithClientOptions(opts...),
+		),
+		proxySetSessionLabels: connect.NewClient[v1.ProxySetSessionLabelsRequest, v1.ProxySetSessionLabelsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxySetSessionLabelsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxySetSessionLabels")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyMoveSession: connect.NewClient[v1.ProxyMoveSessionRequest, v1.ProxyMoveSessionResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyMoveSessionProcedure,
@@ -1687,6 +1761,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceProxySendBackToRepairProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxySendBackToRepair")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyStartSessionServe: connect.NewClient[v1.ProxyStartSessionServeRequest, v1.ProxyStartSessionServeResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyStartSessionServeProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStartSessionServe")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyStopSessionServe: connect.NewClient[v1.ProxyStopSessionServeRequest, v1.ProxyStopSessionServeResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyStopSessionServeProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStopSessionServe")),
 			connect.WithClientOptions(opts...),
 		),
 		proxyUpdateChatTitle: connect.NewClient[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse](
@@ -2115,6 +2201,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("LeaveOrganization")),
 			connect.WithClientOptions(opts...),
 		),
+		prepareOrganizationSwitch: connect.NewClient[v1.PrepareOrganizationSwitchRequest, v1.PrepareOrganizationSwitchResponse](
+			httpClient,
+			baseURL+OrchestratorServicePrepareOrganizationSwitchProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("PrepareOrganizationSwitch")),
+			connect.WithClientOptions(opts...),
+		),
 		switchActiveOrganization: connect.NewClient[v1.SwitchActiveOrganizationRequest, v1.SwitchActiveOrganizationResponse](
 			httpClient,
 			baseURL+OrchestratorServiceSwitchActiveOrganizationProcedure,
@@ -2444,12 +2536,19 @@ type orchestratorServiceClient struct {
 	proxyEmptyTrash                        *connect.Client[v1.ProxyEmptyTrashRequest, v1.ProxyEmptyTrashResponse]
 	proxyRetrySession                      *connect.Client[v1.ProxyRetrySessionRequest, v1.ProxyRetrySessionResponse]
 	proxyUpdateSession                     *connect.Client[v1.ProxyUpdateSessionRequest, v1.ProxyUpdateSessionResponse]
+	proxyListSessionLabels                 *connect.Client[v1.ProxyListSessionLabelsRequest, v1.ProxyListSessionLabelsResponse]
+	proxyCreateSessionLabel                *connect.Client[v1.ProxyCreateSessionLabelRequest, v1.ProxyCreateSessionLabelResponse]
+	proxyUpdateSessionLabel                *connect.Client[v1.ProxyUpdateSessionLabelRequest, v1.ProxyUpdateSessionLabelResponse]
+	proxyDeleteSessionLabel                *connect.Client[v1.ProxyDeleteSessionLabelRequest, v1.ProxyDeleteSessionLabelResponse]
+	proxySetSessionLabels                  *connect.Client[v1.ProxySetSessionLabelsRequest, v1.ProxySetSessionLabelsResponse]
 	proxyMoveSession                       *connect.Client[v1.ProxyMoveSessionRequest, v1.ProxyMoveSessionResponse]
 	proxyLinkSessionPR                     *connect.Client[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse]
 	proxyDismissSessionAlert               *connect.Client[v1.ProxyDismissSessionAlertRequest, v1.ProxyDismissSessionAlertResponse]
 	proxyResumeSessionRun                  *connect.Client[v1.ProxyResumeSessionRunRequest, v1.ProxyResumeSessionRunResponse]
 	proxyOperatorMergeSession              *connect.Client[v1.ProxyOperatorMergeSessionRequest, v1.ProxyOperatorMergeSessionResponse]
 	proxySendBackToRepair                  *connect.Client[v1.ProxySendBackToRepairRequest, v1.ProxySendBackToRepairResponse]
+	proxyStartSessionServe                 *connect.Client[v1.ProxyStartSessionServeRequest, v1.ProxyStartSessionServeResponse]
+	proxyStopSessionServe                  *connect.Client[v1.ProxyStopSessionServeRequest, v1.ProxyStopSessionServeResponse]
 	proxyUpdateChatTitle                   *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
 	proxyReportChatStatus                  *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
 	proxyCreateGitHubCallback              *connect.Client[v1.ProxyCreateGitHubCallbackRequest, v1.ProxyCreateGitHubCallbackResponse]
@@ -2521,6 +2620,7 @@ type orchestratorServiceClient struct {
 	setOrganizationMemberRole              *connect.Client[v1.SetOrganizationMemberRoleRequest, v1.SetOrganizationMemberRoleResponse]
 	deleteOrganization                     *connect.Client[v1.DeleteOrganizationRequest, v1.DeleteOrganizationResponse]
 	leaveOrganization                      *connect.Client[v1.LeaveOrganizationRequest, v1.LeaveOrganizationResponse]
+	prepareOrganizationSwitch              *connect.Client[v1.PrepareOrganizationSwitchRequest, v1.PrepareOrganizationSwitchResponse]
 	switchActiveOrganization               *connect.Client[v1.SwitchActiveOrganizationRequest, v1.SwitchActiveOrganizationResponse]
 	setRepoOrganization                    *connect.Client[v1.SetRepoOrganizationRequest, v1.SetRepoOrganizationResponse]
 	getRepoOrganization                    *connect.Client[v1.GetRepoOrganizationRequest, v1.GetRepoOrganizationResponse]
@@ -2900,6 +3000,31 @@ func (c *orchestratorServiceClient) ProxyUpdateSession(ctx context.Context, req 
 	return c.proxyUpdateSession.CallUnary(ctx, req)
 }
 
+// ProxyListSessionLabels calls bossanova.v1.OrchestratorService.ProxyListSessionLabels.
+func (c *orchestratorServiceClient) ProxyListSessionLabels(ctx context.Context, req *connect.Request[v1.ProxyListSessionLabelsRequest]) (*connect.Response[v1.ProxyListSessionLabelsResponse], error) {
+	return c.proxyListSessionLabels.CallUnary(ctx, req)
+}
+
+// ProxyCreateSessionLabel calls bossanova.v1.OrchestratorService.ProxyCreateSessionLabel.
+func (c *orchestratorServiceClient) ProxyCreateSessionLabel(ctx context.Context, req *connect.Request[v1.ProxyCreateSessionLabelRequest]) (*connect.Response[v1.ProxyCreateSessionLabelResponse], error) {
+	return c.proxyCreateSessionLabel.CallUnary(ctx, req)
+}
+
+// ProxyUpdateSessionLabel calls bossanova.v1.OrchestratorService.ProxyUpdateSessionLabel.
+func (c *orchestratorServiceClient) ProxyUpdateSessionLabel(ctx context.Context, req *connect.Request[v1.ProxyUpdateSessionLabelRequest]) (*connect.Response[v1.ProxyUpdateSessionLabelResponse], error) {
+	return c.proxyUpdateSessionLabel.CallUnary(ctx, req)
+}
+
+// ProxyDeleteSessionLabel calls bossanova.v1.OrchestratorService.ProxyDeleteSessionLabel.
+func (c *orchestratorServiceClient) ProxyDeleteSessionLabel(ctx context.Context, req *connect.Request[v1.ProxyDeleteSessionLabelRequest]) (*connect.Response[v1.ProxyDeleteSessionLabelResponse], error) {
+	return c.proxyDeleteSessionLabel.CallUnary(ctx, req)
+}
+
+// ProxySetSessionLabels calls bossanova.v1.OrchestratorService.ProxySetSessionLabels.
+func (c *orchestratorServiceClient) ProxySetSessionLabels(ctx context.Context, req *connect.Request[v1.ProxySetSessionLabelsRequest]) (*connect.Response[v1.ProxySetSessionLabelsResponse], error) {
+	return c.proxySetSessionLabels.CallUnary(ctx, req)
+}
+
 // ProxyMoveSession calls bossanova.v1.OrchestratorService.ProxyMoveSession.
 func (c *orchestratorServiceClient) ProxyMoveSession(ctx context.Context, req *connect.Request[v1.ProxyMoveSessionRequest]) (*connect.Response[v1.ProxyMoveSessionResponse], error) {
 	return c.proxyMoveSession.CallUnary(ctx, req)
@@ -2928,6 +3053,16 @@ func (c *orchestratorServiceClient) ProxyOperatorMergeSession(ctx context.Contex
 // ProxySendBackToRepair calls bossanova.v1.OrchestratorService.ProxySendBackToRepair.
 func (c *orchestratorServiceClient) ProxySendBackToRepair(ctx context.Context, req *connect.Request[v1.ProxySendBackToRepairRequest]) (*connect.Response[v1.ProxySendBackToRepairResponse], error) {
 	return c.proxySendBackToRepair.CallUnary(ctx, req)
+}
+
+// ProxyStartSessionServe calls bossanova.v1.OrchestratorService.ProxyStartSessionServe.
+func (c *orchestratorServiceClient) ProxyStartSessionServe(ctx context.Context, req *connect.Request[v1.ProxyStartSessionServeRequest]) (*connect.Response[v1.ProxyStartSessionServeResponse], error) {
+	return c.proxyStartSessionServe.CallUnary(ctx, req)
+}
+
+// ProxyStopSessionServe calls bossanova.v1.OrchestratorService.ProxyStopSessionServe.
+func (c *orchestratorServiceClient) ProxyStopSessionServe(ctx context.Context, req *connect.Request[v1.ProxyStopSessionServeRequest]) (*connect.Response[v1.ProxyStopSessionServeResponse], error) {
+	return c.proxyStopSessionServe.CallUnary(ctx, req)
 }
 
 // ProxyUpdateChatTitle calls bossanova.v1.OrchestratorService.ProxyUpdateChatTitle.
@@ -3286,6 +3421,11 @@ func (c *orchestratorServiceClient) DeleteOrganization(ctx context.Context, req 
 // LeaveOrganization calls bossanova.v1.OrchestratorService.LeaveOrganization.
 func (c *orchestratorServiceClient) LeaveOrganization(ctx context.Context, req *connect.Request[v1.LeaveOrganizationRequest]) (*connect.Response[v1.LeaveOrganizationResponse], error) {
 	return c.leaveOrganization.CallUnary(ctx, req)
+}
+
+// PrepareOrganizationSwitch calls bossanova.v1.OrchestratorService.PrepareOrganizationSwitch.
+func (c *orchestratorServiceClient) PrepareOrganizationSwitch(ctx context.Context, req *connect.Request[v1.PrepareOrganizationSwitchRequest]) (*connect.Response[v1.PrepareOrganizationSwitchResponse], error) {
+	return c.prepareOrganizationSwitch.CallUnary(ctx, req)
 }
 
 // SwitchActiveOrganization calls bossanova.v1.OrchestratorService.SwitchActiveOrganization.
@@ -3684,6 +3824,16 @@ type OrchestratorServiceHandler interface {
 	ProxyRetrySession(context.Context, *connect.Request[v1.ProxyRetrySessionRequest]) (*connect.Response[v1.ProxyRetrySessionResponse], error)
 	// ProxyUpdateSession updates a session's title/tracker (routes by session_id).
 	ProxyUpdateSession(context.Context, *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error)
+	// ProxyListSessionLabels lists session labels on a daemon (or across connected daemons).
+	ProxyListSessionLabels(context.Context, *connect.Request[v1.ProxyListSessionLabelsRequest]) (*connect.Response[v1.ProxyListSessionLabelsResponse], error)
+	// ProxyCreateSessionLabel creates a session label on a daemon.
+	ProxyCreateSessionLabel(context.Context, *connect.Request[v1.ProxyCreateSessionLabelRequest]) (*connect.Response[v1.ProxyCreateSessionLabelResponse], error)
+	// ProxyUpdateSessionLabel updates a session label on a daemon.
+	ProxyUpdateSessionLabel(context.Context, *connect.Request[v1.ProxyUpdateSessionLabelRequest]) (*connect.Response[v1.ProxyUpdateSessionLabelResponse], error)
+	// ProxyDeleteSessionLabel deletes a session label on a daemon.
+	ProxyDeleteSessionLabel(context.Context, *connect.Request[v1.ProxyDeleteSessionLabelRequest]) (*connect.Response[v1.ProxyDeleteSessionLabelResponse], error)
+	// ProxySetSessionLabels sets the labels on a session (routes by session_id).
+	ProxySetSessionLabels(context.Context, *connect.Request[v1.ProxySetSessionLabelsRequest]) (*connect.Response[v1.ProxySetSessionLabelsResponse], error)
 	// ProxyMoveSession moves a session up or down the rendered list (routes by
 	// session_id). It is a pure passthrough: the rank arithmetic lives in the
 	// daemon, so bosso resolves the owner, forwards the DIRECTION, and returns
@@ -3699,6 +3849,10 @@ type OrchestratorServiceHandler interface {
 	ProxyOperatorMergeSession(context.Context, *connect.Request[v1.ProxyOperatorMergeSessionRequest]) (*connect.Response[v1.ProxyOperatorMergeSessionResponse], error)
 	// ProxySendBackToRepair forwards a pinned send-back to the session's owning daemon.
 	ProxySendBackToRepair(context.Context, *connect.Request[v1.ProxySendBackToRepairRequest]) (*connect.Response[v1.ProxySendBackToRepairResponse], error)
+	// ProxyStartSessionServe forwards DaemonService.StartSessionServe to the owning daemon.
+	ProxyStartSessionServe(context.Context, *connect.Request[v1.ProxyStartSessionServeRequest]) (*connect.Response[v1.ProxyStartSessionServeResponse], error)
+	// ProxyStopSessionServe forwards DaemonService.StopSessionServe to the owning daemon.
+	ProxyStopSessionServe(context.Context, *connect.Request[v1.ProxyStopSessionServeRequest]) (*connect.Response[v1.ProxyStopSessionServeResponse], error)
 	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
 	ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error)
 	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
@@ -3955,6 +4109,12 @@ type OrchestratorServiceHandler interface {
 	// leave; the last owner of an organization that still has members may not,
 	// and nobody may leave their personal organization.
 	LeaveOrganization(context.Context, *connect.Request[v1.LeaveOrganizationRequest]) (*connect.Response[v1.LeaveOrganizationResponse], error)
+	// PrepareOrganizationSwitch confirms against WorkOS that the organization
+	// exists and the caller holds an active membership before the web client
+	// calls AuthKit switchToOrganization. For the caller's own personal
+	// organization, recreates a missing WorkOS organization or membership and
+	// re-points the local mirror, cloud account, and membership record.
+	PrepareOrganizationSwitch(context.Context, *connect.Request[v1.PrepareOrganizationSwitchRequest]) (*connect.Response[v1.PrepareOrganizationSwitchResponse], error)
 	// Deprecated: use AuthKit switchToOrganization instead. This RPC is
 	// deprecated rather than deleted because buf breaking: use: FILE blocks
 	// deleting it from bossanova.v1; true removal requires bossanova.v2.
@@ -4560,6 +4720,36 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyListSessionLabelsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListSessionLabelsProcedure,
+		svc.ProxyListSessionLabels,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListSessionLabels")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyCreateSessionLabelHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyCreateSessionLabelProcedure,
+		svc.ProxyCreateSessionLabel,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateSessionLabel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyUpdateSessionLabelHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyUpdateSessionLabelProcedure,
+		svc.ProxyUpdateSessionLabel,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateSessionLabel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyDeleteSessionLabelHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyDeleteSessionLabelProcedure,
+		svc.ProxyDeleteSessionLabel,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteSessionLabel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxySetSessionLabelsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxySetSessionLabelsProcedure,
+		svc.ProxySetSessionLabels,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxySetSessionLabels")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyMoveSessionHandler := connect.NewUnaryHandler(
 		OrchestratorServiceProxyMoveSessionProcedure,
 		svc.ProxyMoveSession,
@@ -4594,6 +4784,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceProxySendBackToRepairProcedure,
 		svc.ProxySendBackToRepair,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxySendBackToRepair")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyStartSessionServeHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyStartSessionServeProcedure,
+		svc.ProxyStartSessionServe,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStartSessionServe")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyStopSessionServeHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyStopSessionServeProcedure,
+		svc.ProxyStopSessionServe,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStopSessionServe")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyUpdateChatTitleHandler := connect.NewUnaryHandler(
@@ -5022,6 +5224,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("LeaveOrganization")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServicePrepareOrganizationSwitchHandler := connect.NewUnaryHandler(
+		OrchestratorServicePrepareOrganizationSwitchProcedure,
+		svc.PrepareOrganizationSwitch,
+		connect.WithSchema(orchestratorServiceMethods.ByName("PrepareOrganizationSwitch")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceSwitchActiveOrganizationHandler := connect.NewUnaryHandler(
 		OrchestratorServiceSwitchActiveOrganizationProcedure,
 		svc.SwitchActiveOrganization,
@@ -5414,6 +5622,16 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyRetrySessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyUpdateSessionProcedure:
 			orchestratorServiceProxyUpdateSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListSessionLabelsProcedure:
+			orchestratorServiceProxyListSessionLabelsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyCreateSessionLabelProcedure:
+			orchestratorServiceProxyCreateSessionLabelHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyUpdateSessionLabelProcedure:
+			orchestratorServiceProxyUpdateSessionLabelHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyDeleteSessionLabelProcedure:
+			orchestratorServiceProxyDeleteSessionLabelHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxySetSessionLabelsProcedure:
+			orchestratorServiceProxySetSessionLabelsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyMoveSessionProcedure:
 			orchestratorServiceProxyMoveSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyLinkSessionPRProcedure:
@@ -5426,6 +5644,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyOperatorMergeSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxySendBackToRepairProcedure:
 			orchestratorServiceProxySendBackToRepairHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyStartSessionServeProcedure:
+			orchestratorServiceProxyStartSessionServeHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyStopSessionServeProcedure:
+			orchestratorServiceProxyStopSessionServeHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyUpdateChatTitleProcedure:
 			orchestratorServiceProxyUpdateChatTitleHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyReportChatStatusProcedure:
@@ -5568,6 +5790,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceDeleteOrganizationHandler.ServeHTTP(w, r)
 		case OrchestratorServiceLeaveOrganizationProcedure:
 			orchestratorServiceLeaveOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServicePrepareOrganizationSwitchProcedure:
+			orchestratorServicePrepareOrganizationSwitchHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSwitchActiveOrganizationProcedure:
 			orchestratorServiceSwitchActiveOrganizationHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSetRepoOrganizationProcedure:
@@ -5927,6 +6151,26 @@ func (UnimplementedOrchestratorServiceHandler) ProxyUpdateSession(context.Contex
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateSession is not implemented"))
 }
 
+func (UnimplementedOrchestratorServiceHandler) ProxyListSessionLabels(context.Context, *connect.Request[v1.ProxyListSessionLabelsRequest]) (*connect.Response[v1.ProxyListSessionLabelsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListSessionLabels is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyCreateSessionLabel(context.Context, *connect.Request[v1.ProxyCreateSessionLabelRequest]) (*connect.Response[v1.ProxyCreateSessionLabelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyCreateSessionLabel is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyUpdateSessionLabel(context.Context, *connect.Request[v1.ProxyUpdateSessionLabelRequest]) (*connect.Response[v1.ProxyUpdateSessionLabelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateSessionLabel is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyDeleteSessionLabel(context.Context, *connect.Request[v1.ProxyDeleteSessionLabelRequest]) (*connect.Response[v1.ProxyDeleteSessionLabelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteSessionLabel is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxySetSessionLabels(context.Context, *connect.Request[v1.ProxySetSessionLabelsRequest]) (*connect.Response[v1.ProxySetSessionLabelsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxySetSessionLabels is not implemented"))
+}
+
 func (UnimplementedOrchestratorServiceHandler) ProxyMoveSession(context.Context, *connect.Request[v1.ProxyMoveSessionRequest]) (*connect.Response[v1.ProxyMoveSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyMoveSession is not implemented"))
 }
@@ -5949,6 +6193,14 @@ func (UnimplementedOrchestratorServiceHandler) ProxyOperatorMergeSession(context
 
 func (UnimplementedOrchestratorServiceHandler) ProxySendBackToRepair(context.Context, *connect.Request[v1.ProxySendBackToRepairRequest]) (*connect.Response[v1.ProxySendBackToRepairResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxySendBackToRepair is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyStartSessionServe(context.Context, *connect.Request[v1.ProxyStartSessionServeRequest]) (*connect.Response[v1.ProxyStartSessionServeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyStartSessionServe is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyStopSessionServe(context.Context, *connect.Request[v1.ProxyStopSessionServeRequest]) (*connect.Response[v1.ProxyStopSessionServeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyStopSessionServe is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error) {
@@ -6233,6 +6485,10 @@ func (UnimplementedOrchestratorServiceHandler) DeleteOrganization(context.Contex
 
 func (UnimplementedOrchestratorServiceHandler) LeaveOrganization(context.Context, *connect.Request[v1.LeaveOrganizationRequest]) (*connect.Response[v1.LeaveOrganizationResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.LeaveOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) PrepareOrganizationSwitch(context.Context, *connect.Request[v1.PrepareOrganizationSwitchRequest]) (*connect.Response[v1.PrepareOrganizationSwitchResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.PrepareOrganizationSwitch is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) SwitchActiveOrganization(context.Context, *connect.Request[v1.SwitchActiveOrganizationRequest]) (*connect.Response[v1.SwitchActiveOrganizationResponse], error) {

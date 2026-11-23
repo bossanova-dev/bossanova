@@ -19,6 +19,7 @@ import {
   writeMediaManifest,
 } from './verify-media-hook.mjs'
 import { parseTicketLine, ticketDescription } from './verify-admission.mjs'
+import { readSessionChatTranscript } from './verify-chat-transcript.mjs'
 import { readMergePolicy } from './verify-merge-prose.mjs'
 import { discoverExtensions } from '../skill-extensions.mjs'
 import { baseProofSections } from './verify-proof-sections.mjs'
@@ -50,6 +51,7 @@ const objects = (list) => (Array.isArray(list) ? list.filter(isObject) : [])
  *   canAutoMerge: boolean | null, media: ReturnType<typeof mediaSummary>,
  *   branch?: import('./verify-proof-page.mjs').BranchContext | null,
  *   ticket?: {id: string, url: string, description: {read: boolean, text?: string, why?: string}} | null,
+ *   chatTranscript?: {read: boolean, sessionId?: string, chats?: unknown[], text?: string, truncated?: boolean} | null,
  *   mergePolicy?: import('./verify-merge-prose.mjs').MergePolicy,
  *   sections?: import('./verify-proof-sections.mjs').DeclaredSection[]}} input
  */
@@ -64,6 +66,7 @@ export function proofBundle({
   media,
   branch,
   ticket = null,
+  chatTranscript = null,
   mergePolicy = { state: 'none' },
   sections = [],
 }) {
@@ -90,6 +93,16 @@ export function proofBundle({
         : { descriptionUnread: ticket.description.why }),
       acceptance: review.acceptance,
     },
+    ...(chatTranscript?.read
+      ? {
+          chatTranscript: {
+            sessionId: chatTranscript.sessionId,
+            chats: chatTranscript.chats,
+            text: chatTranscript.text,
+            ...(chatTranscript.truncated ? { truncated: true } : {}),
+          },
+        }
+      : {}),
     ...(mergePolicy.state === 'ok'
       ? { mergePolicy: { path: mergePolicy.path, text: mergePolicy.text } }
       : {}),
@@ -219,6 +232,14 @@ export async function proofBundleVerb(options, deps, actions) {
     ...ref,
     description: await ticketDescription(actions.adapter?.() ?? null, ref, pr.createdAt),
   }
+  const chatTranscript =
+    !ticket || !ticket.description.read
+      ? await (actions.readChatTranscript ?? readSessionChatTranscript)({
+          prUrl: pr.url,
+          read,
+          env: actions.env,
+        })
+      : null
   const bundle = proofBundle({
     judged,
     record: /** @type {{proof: any, areas: any[]}} */ (record),
@@ -234,6 +255,7 @@ export async function proofBundleVerb(options, deps, actions) {
       pr: Number(options.pr),
     }),
     ticket,
+    chatTranscript,
     mergePolicy,
     sections: actions.trustedTree
       ? baseProofSections({

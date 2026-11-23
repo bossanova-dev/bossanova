@@ -51,6 +51,8 @@ type fakeTmuxClient struct {
 	lastSubmitted func() bool
 	// lastReceiptRequired is SendHooks.ReceiptRequired from that send.
 	lastReceiptRequired bool
+	// lastProse is SendHooks.Prose from that send.
+	lastProse bool
 	// panePID / panePIDByName / panePIDErr model tmux list-panes for the
 	// codex provider-session fd resolver (BOS-290).
 	panePID       int
@@ -115,6 +117,7 @@ func (f *fakeTmuxClient) SendMessageWithHooks(_ context.Context, sessionName, te
 	defer f.mu.Unlock()
 	f.lastSubmitted = hooks.Submitted
 	f.lastReceiptRequired = hooks.ReceiptRequired
+	f.lastProse = hooks.Prose
 	if f.duringSend != nil {
 		f.duringSend()
 	}

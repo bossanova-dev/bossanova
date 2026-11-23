@@ -65,22 +65,29 @@ type menuRow struct {
 	block string
 }
 
-// ReadQuestionMenu reads the question the pane's menu asks. See the RPC in
-// plugin.proto.
+// ReadQuestionMenu reads the question or permission dialog the pane's menu
+// asks. See the RPC in plugin.proto.
 func (s *Server) ReadQuestionMenu(_ context.Context, req *bossanovav1.ReadQuestionMenuRequest) (*bossanovav1.ReadQuestionMenuResponse, error) {
-	menu, ok := parseQuestionMenu(string(req.GetPaneContent()))
-	if !ok {
-		return &bossanovav1.ReadQuestionMenuResponse{}, nil
+	pane := string(req.GetPaneContent())
+	if menu, ok := parseQuestionMenu(pane); ok {
+		return &bossanovav1.ReadQuestionMenuResponse{Question: menu.question()}, nil
 	}
-	return &bossanovav1.ReadQuestionMenuResponse{Question: menu.question()}, nil
+	if perm, ok := parsePermissionMenu(pane); ok {
+		return &bossanovav1.ReadQuestionMenuResponse{Question: perm.question()}, nil
+	}
+	return &bossanovav1.ReadQuestionMenuResponse{}, nil
 }
 
-// PlanQuestionAnswer plans the keys that answer the question the agent waits
-// on, after checking that question is the one named and that its menu is on
-// screen untouched. See the RPC in plugin.proto.
+// PlanQuestionAnswer plans the keys that answer the question or permission
+// prompt the agent waits on, after checking that prompt is the one named and
+// that its menu is on screen untouched. See the RPC in plugin.proto.
 func (s *Server) PlanQuestionAnswer(_ context.Context, req *bossanovav1.PlanQuestionAnswerRequest) (*bossanovav1.PlanQuestionAnswerResponse, error) {
-	menu, ok := parseQuestionMenu(string(req.GetPaneContent()))
+	pane := string(req.GetPaneContent())
+	menu, ok := parseQuestionMenu(pane)
 	if !ok {
+		if perm, ok := parsePermissionMenu(pane); ok {
+			return planPermissionAnswer(perm, req), nil
+		}
 		return notPending("the terminal does not show a question menu"), nil
 	}
 	question := menu.question()
@@ -169,7 +176,7 @@ func parseQuestionMenu(pane string) (questionMenu, bool) {
 // answerable when it takes a single choice by a digit key with its free-text
 // row untouched.
 func (m questionMenu) question() *bossanovav1.ChatQuestion {
-	q := &bossanovav1.ChatQuestion{Text: m.words}
+	q := &bossanovav1.ChatQuestion{Kind: questionKindQuestion, Text: m.words}
 	options := len(m.rows) - 2
 	for _, row := range m.rows[:max(options, 0)] {
 		q.Options = append(q.Options, menuBoxRe.ReplaceAllString(row.first, ""))

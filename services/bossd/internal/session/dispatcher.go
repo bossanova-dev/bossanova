@@ -834,7 +834,10 @@ func (d *Dispatcher) leaveDraftUnheld(ctx context.Context, sess *models.Session)
 	if !pr.Draft || pr.State != vcs.PRStateOpen {
 		return false, nil
 	}
-	checks, err := vcs.ReadCheckSet(ctx, d.provider, repo.OriginURL, *sess.PRNumber)
+	checks, err := vcs.ReadCheckSet(ctx, d.provider, repo.OriginURL, *sess.PRNumber, pr.HeadSHA, vcs.CheckReadLog{
+		Logger: &d.logger,
+		Site:   "dispatcher",
+	})
 	if err != nil {
 		return false, fmt.Errorf("draft ownership checks: %w", err)
 	}

@@ -43,3 +43,4 @@ func archiveCmd() *cobra.Command { return sessionGroup().ArchiveCmd() }
 func mergeCmd() *cobra.Command   { return sessionGroup().MergeCmd() }
 func renameCmd() *cobra.Command  { return sessionGroup().RenameCmd() }
 func prCmd() *cobra.Command      { return sessionGroup().PRCmd() }
+func labelCmd() *cobra.Command   { return sessionGroup().LabelCmd() }

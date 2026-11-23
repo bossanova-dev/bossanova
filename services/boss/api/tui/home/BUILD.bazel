@@ -15,6 +15,7 @@ go_library(
         "home_daemon.go",
         "home_filter.go",
         "home_keys.go",
+        "home_labels.go",
         "home_messages.go",
         "home_sessions.go",
         "home_status.go",

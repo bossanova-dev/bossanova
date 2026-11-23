@@ -7,6 +7,7 @@ import { isMainModule } from '../main-module.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
 import { commandReader } from './verify-gate.mjs'
 import { closingIssueRefs, parseTicketLine, ticketDescription } from './verify-admission.mjs'
+import { readSessionChatTranscript } from './verify-chat-transcript.mjs'
 import { validateVerifyContext } from './verify-contract.mjs'
 import { INTENT_SOURCES, MAX_BULLETS } from './verify-proof.mjs'
 
@@ -66,11 +67,11 @@ function safeRead(read, command, args, options) {
 /**
  * Offer bounded intent sources without interpreting their author text.
  * @param {Record<string, any>} judge
- * @param {{outDir: string, read?: ReturnType<typeof commandReader>, adapter?: object}} options
+ * @param {{outDir: string, read?: ReturnType<typeof commandReader>, adapter?: object, readTranscript?: typeof readSessionChatTranscript}} options
  */
 export async function collectIntentSources(
   judge,
-  { outDir, read = commandReader(), adapter = {} },
+  { outDir, read = commandReader(), adapter = {}, readTranscript = readSessionChatTranscript },
 ) {
   if (judge?.verdict !== 'extensions-required')
     return { decision: 'skip', why: 'extensions-not-required' }
@@ -126,6 +127,11 @@ export async function collectIntentSources(
   }
   if (linked.length) offer('issue', linkedIds, linked.join('\n\n'))
   else skip('issue', firstReason)
+
+  const transcript = await readTranscript({ prUrl: envelope.pr.url, read })
+  if (transcript?.read && transcript.text?.trim())
+    offer('chat-transcript', `session:${transcript.sessionId}`, transcript.text)
+  else skip('chat-transcript', transcript?.why ?? 'no-session')
 
   let body = String(envelope.pr.body ?? '').replace(/<!--[\s\S]*?-->/g, '')
   const ticket = parseTicketLine(body)

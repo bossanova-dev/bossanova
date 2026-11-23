@@ -309,9 +309,13 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// read-only mode useful (export and diff register there, apply does not).
 	// The argument docs were cut to scope tags ("local:", "gateway:") and the
 	// descriptions to what no argument doc can say.
+	// RAISED 2026-11-23: 83 tools / 68,006 bytes (+4 tools, +1,619 bytes),
+	// adding the session labels family (list_session_labels, save_session_label,
+	// set_session_labels, delete_session_label). Create and update are folded
+	// into save_session_label to keep the surface minimal.
 	const (
-		maxToolCount   = 79
-		maxSchemaBytes = 66387
+		maxToolCount   = 83
+		maxSchemaBytes = 68006
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

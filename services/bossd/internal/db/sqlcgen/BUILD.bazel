@@ -22,6 +22,7 @@ go_library(
         "repos.sql.go",
         "resume_attempts.sql.go",
         "rotation_events.sql.go",
+        "session_labels.sql.go",
         "session_transitions.sql.go",
         "sessions.sql.go",
         "task_mappings.sql.go",

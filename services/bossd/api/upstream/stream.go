@@ -585,7 +585,7 @@ type SessionCommandHandler interface {
 	// SendChatMessage delivers a user message into a chat's live agent, optionally
 	// waking it first. submit routes verified-submit vs. prefill delivery (BOS-242
 	// Gap 1). Network/tmux-bound — dispatched async.
-	SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep, submit bool) (*pb.SendChatMessageResponse, error)
+	SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep, submit bool, attachments ChatAttachmentRef) (*pb.SendChatMessageResponse, error)
 	// ListCronJobs returns the daemon's cron jobs for the web cron-management
 	// surface. Not session-scoped. Store-bound — dispatched async.
 	ListCronJobs(ctx context.Context) (*pb.ListCronJobsResponse, error)
@@ -777,6 +777,7 @@ type ReRegisterFunc func(ctx context.Context) (sessionToken string, err error)
 
 type StreamClient struct {
 	terminalSealingSupported bool
+	chatAttachmentSupported  bool
 
 	targetObjects    CommandTargetObjects
 	cloudControl     CloudControlPolicy
@@ -1035,8 +1036,11 @@ type StreamClientConfig struct {
 	Redialer interface{ Redial() }
 	// TerminalSealingSupported is a presentation hint, never an authorization input.
 	TerminalSealingSupported bool
-	TargetObjects            CommandTargetObjects
-	CloudControl             CloudControlPolicy
+	// ChatAttachmentSupported advertises upload-only attaches and send
+	// attachments; true only when the daemon has a working upload manager.
+	ChatAttachmentSupported bool
+	TargetObjects           CommandTargetObjects
+	CloudControl            CloudControlPolicy
 	// Opener is the live ConnectRPC client. If nil, the client will be
 	// built from Client + AuthToken at construction time.
 	Opener    streamOpener
@@ -1162,6 +1166,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		targetObjects:            cfg.TargetObjects,
 		cloudControl:             cfg.CloudControl,
 		terminalSealingSupported: cfg.TerminalSealingSupported,
+		chatAttachmentSupported:  cfg.ChatAttachmentSupported,
 
 		opener:           opener,
 		reconnectCh:      make(chan struct{}, 1),
@@ -1715,4 +1720,11 @@ func (c *StreamClient) wasConnected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.connected
+}
+
+// ChatAttachmentRef names the files a send attaches: the upload ids and the
+// user who must have uploaded them.
+type ChatAttachmentRef struct {
+	UploadIDs    []string
+	ActingUserID string
 }

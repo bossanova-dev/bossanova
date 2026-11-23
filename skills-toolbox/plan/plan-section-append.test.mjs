@@ -279,7 +279,7 @@ test('CLI renders overlap and dependency references inert without changing Origi
     },
   }).notes[0].text
   const expected = [
-    'Open PR `#4175` (`https://github.com/owner/repo/pull/4175`) for `ABC-12` overlaps at file level (shared: app/api/x.go).',
+    'Open PR `#4175` (`https://github.com/owner/repo/pull/4175`) for `ABC-12` overlaps at file level (shared: `app/api/x.go`).',
     'Dependencies: blocked by `ABC-12`',
   ]
   const run = () =>
@@ -311,6 +311,47 @@ test('CLI renders overlap and dependency references inert without changing Origi
   assert.equal(repeated.status, 0, repeated.stderr)
   assert.deepEqual(JSON.parse(repeated.stdout).skipped, expected)
   assert.equal(readFileSync(file, 'utf8'), body)
+})
+
+test('CLI wraps Dependencies item ids and skips bare repeats byte-identically', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'plan-deps-cli-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const file = join(dir, 'description.md')
+  writeFileSync(file, '## Planning\n\n* Contract: v1\n')
+  const run = () =>
+    spawnSync(
+      process.execPath,
+      [
+        'skills-toolbox/plan/plan-section-append.mjs',
+        '--file',
+        file,
+        '--heading',
+        'Planning',
+        '--item',
+        'Dependencies: blocks ABC-12; blocked by ABC-34',
+      ],
+      { encoding: 'utf8' },
+    )
+  const expectedItem = 'Dependencies: blocks `ABC-12`; blocked by `ABC-34`'
+  const first = run()
+  assert.equal(first.status, 0, first.stderr)
+  assert.deepEqual(JSON.parse(first.stdout), {
+    appended: [expectedItem],
+    skipped: [],
+    marker: '*',
+    created: false,
+  })
+  const afterFirst = readFileSync(file, 'utf8')
+  assert.equal(afterFirst, `## Planning\n\n* Contract: v1\n* ${expectedItem}\n`)
+  const second = run()
+  assert.equal(second.status, 0, second.stderr)
+  assert.deepEqual(JSON.parse(second.stdout), {
+    appended: [],
+    skipped: [expectedItem],
+    marker: '*',
+    created: false,
+  })
+  assert.equal(readFileSync(file, 'utf8'), afterFirst)
 })
 
 for (const marker of ['-', '*', '+']) {

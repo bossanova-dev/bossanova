@@ -861,7 +861,7 @@ for (const marker of ['*', '+']) {
   test(`reconcilePremiseAnnotations matches stored ${marker} bullets and removes resolved drift`, () => {
     const before = annotationBody('GIG-46 was Todo.').replace(/^- /gm, `${marker} `)
     const after = reconcile(before)
-    assert.ok(after.includes(`${marker} Scope: bounded\n${marker} Premise drift: GIG-46`))
+    assert.ok(after.includes(`${marker} Scope: bounded\n${marker} Premise drift: \`GIG-46\``))
     assert.equal(reconcile(after), after)
     assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
   })
@@ -871,14 +871,15 @@ test('reconcilePremiseAnnotations flags drifted prose only, reporting sections',
   const before = annotationBody('- GIG-46 and GIG-47 were Todo.\n- GIG-47 stays Todo.')
   const after = reconcile(before)
   assert.ok(
-    after.includes('- GIG-46 and GIG-47 were Todo. (premise drift: GIG-46 is now In Progress)'),
+    after.includes('- GIG-46 and GIG-47 were Todo. (premise drift: `GIG-46` is now In Progress)'),
   )
   assert.ok(after.includes('- GIG-47 stays Todo.\n'))
   assert.ok(
     after.includes(
-      '- Scope: bounded\n- Premise drift: GIG-46 was Todo, is now In Progress; flagged inline in Risks / unknowns\n\n## Original notes',
+      '- Scope: bounded\n- Premise drift: `GIG-46` was Todo, is now In Progress; flagged inline in Risks / unknowns\n\n## Original notes',
     ),
   )
+  assert.ok(!after.includes('premise drift: `GIG-47`'))
   assert.ok(!after.includes('premise drift: GIG-47'))
 })
 
@@ -907,7 +908,7 @@ test('reconcilePremiseAnnotations leaves Original notes through EOF and fenced c
   assert.ok(originalNotesStart >= 0)
   const protectedTail = before.slice(originalNotesStart)
   assert.ok(after.endsWith(protectedTail))
-  assert.ok(after.includes('GIG-46 prose. (premise drift: GIG-46 is now In Progress)'))
+  assert.ok(after.includes('GIG-46 prose. (premise drift: `GIG-46` is now In Progress)'))
 })
 
 test('reconcilePremiseAnnotations inserts missing Planning before an EOF Original notes heading', () => {
@@ -918,7 +919,7 @@ test('reconcilePremiseAnnotations inserts missing Planning before an EOF Origina
       const after = reconcile(before)
       assert.ok(after.endsWith(protectedTail))
       assert.ok(after.indexOf('## Planning') < after.indexOf(heading))
-      assert.ok(after.includes('- Premise drift: GIG-46 was Todo, is now In Progress'))
+      assert.ok(after.includes('- Premise drift: `GIG-46` was Todo, is now In Progress'))
       assert.equal(reconcile(after), after)
     }
   }
@@ -931,7 +932,7 @@ test('reconcilePremiseAnnotations ignores fenced Original notes headings when in
     const after = reconcile(before)
     assert.ok(after.includes(code))
     assert.ok(after.indexOf('## Planning') > after.indexOf(code) + code.length)
-    assert.ok(after.includes('GIG-46 was Todo. (premise drift: GIG-46 is now In Progress)'))
+    assert.ok(after.includes('GIG-46 was Todo. (premise drift: `GIG-46` is now In Progress)'))
     if (tail) assert.ok(after.endsWith(tail.trimStart()))
     assert.equal(reconcile(after), after)
   }
@@ -941,7 +942,7 @@ test('reconcilePremiseAnnotations matches whole tokens, skipping headings and ta
   const after = reconcile(
     annotationBody('GIG-46.\nGIG-461 and XGIG-46 and GIG-46-extra.\n### GIG-46\n| GIG-46 | Todo |'),
   )
-  assert.ok(after.includes('GIG-46. (premise drift: GIG-46 is now In Progress)'))
+  assert.ok(after.includes('GIG-46. (premise drift: `GIG-46` is now In Progress)'))
   assert.ok(
     after.includes('GIG-461 and XGIG-46 and GIG-46-extra.\n### GIG-46\n| GIG-46 | Todo |\n'),
   )
@@ -951,15 +952,15 @@ test('reconcilePremiseAnnotations skips Markdown tables with optional outer pipe
   const table = 'Ticket | State\n--- | ---\nGIG-46 | Todo'
   const after = reconcile(annotationBody(`${table}\n\nGIG-46 prose.`))
   assert.ok(after.includes(table + '\n\n'))
-  assert.ok(after.includes('GIG-46 prose. (premise drift: GIG-46 is now In Progress)'))
+  assert.ok(after.includes('GIG-46 prose. (premise drift: `GIG-46` is now In Progress)'))
 })
 
 test('reconcilePremiseAnnotations is idempotent and replaces a second-pass state', () => {
   const once = reconcile(annotationBody('GIG-46 was Todo.'))
   assert.equal(reconcile(once), once)
   const twice = reconcile(once, { 'GIG-46': 'In Review', 'GIG-47': 'Todo' })
-  assert.ok(twice.includes('(premise drift: GIG-46 is now In Review)'))
-  assert.ok(twice.includes('- Premise drift: GIG-46 was Todo, is now In Review;'))
+  assert.ok(twice.includes('(premise drift: `GIG-46` is now In Review)'))
+  assert.ok(twice.includes('- Premise drift: `GIG-46` was Todo, is now In Review;'))
   assert.ok(!twice.includes('In Progress'))
   assert.equal(reconcile(twice, { 'GIG-46': 'In Review', 'GIG-47': 'Todo' }), twice)
 })
@@ -988,7 +989,9 @@ test('reconcilePremiseAnnotations marks multiple drifted ids without treating ma
   const states = { 'GIG-46': 'In Review', 'GIG-47': 'Done' }
   const after = reconcile(before, states)
   assert.ok(
-    after.includes('(premise drift: GIG-46 is now In Review) (premise drift: GIG-47 is now Done)'),
+    after.includes(
+      '(premise drift: `GIG-46` is now In Review) (premise drift: `GIG-47` is now Done)',
+    ),
   )
   assert.equal(reconcile(after, states), after)
   assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
@@ -998,7 +1001,8 @@ test('reconcilePremiseAnnotations reconciles parenthesized states without markin
   const before = annotationBody('GIG-46 was Todo.')
   const states = { 'GIG-46': 'Review (waiting on GIG-47)', 'GIG-47': 'Done' }
   const after = reconcile(before, states)
-  assert.ok(after.includes('(premise drift: GIG-46 is now Review \\(waiting on GIG-47\\))'))
+  assert.ok(after.includes('(premise drift: `GIG-46` is now Review \\(waiting on GIG-47\\))'))
+  assert.ok(!after.includes('(premise drift: `GIG-47`'))
   assert.ok(!after.includes('(premise drift: GIG-47'))
   assert.equal(reconcile(after, states), after)
   assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
@@ -1010,17 +1014,54 @@ test('reconcilePremiseAnnotations treats unmatched state parentheses as opaque t
     const states = { 'GIG-46': state, 'GIG-47': 'Done' }
     const after = reconcile(before, states)
     const escapedState = state.replace(/[\\()]/g, '\\$&')
-    assert.ok(after.includes(`(premise drift: GIG-46 is now ${escapedState})`))
+    assert.ok(after.includes(`(premise drift: \`GIG-46\` is now ${escapedState})`))
     assert.equal(escapedState.replace(/\\([\\()])/g, '$1'), state)
     assert.equal(reconcile(after, states), after)
     assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
     const changed = reconcile(after, { 'GIG-46': 'In Review', 'GIG-47': 'Done' })
-    assert.ok(!changed.includes(`(premise drift: GIG-46 is now ${escapedState})`))
+    assert.ok(!changed.includes(`(premise drift: \`GIG-46\` is now ${escapedState})`))
     assert.equal(reconcile(changed, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
     const control = annotationBody('GIG-46 was Todo. (premise drift: GIG-48 is now Done)')
     const marked = reconcile(control, { 'GIG-46': state, 'GIG-47': 'Todo' })
     assert.equal(reconcile(marked, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), control)
   }
+})
+
+test('reconcilePremiseAnnotations replaces legacy bare drift lines and markers without duplicating them', () => {
+  for (const marker of ['-', '*', '+']) {
+    const clean = annotationBody('`GIG-46` was Todo.').replace(/^- /gm, `${marker} `)
+    const legacy = clean
+      .replace('`GIG-46` was Todo.', '`GIG-46` was Todo. (premise drift: GIG-46 is now Old)')
+      .replace(
+        `${marker} Scope: bounded\n`,
+        `${marker} Scope: bounded\n${marker} Premise drift: GIG-46 was Todo, is now Old; flagged inline in Risks / unknowns\n`,
+      )
+    const reconciled = reconcile(legacy)
+    assert.equal(reconciled, reconcile(clean))
+    assert.ok(
+      reconciled.includes('`GIG-46` was Todo. (premise drift: `GIG-46` is now In Progress)'),
+    )
+    assert.ok(
+      reconciled.includes(
+        `${marker} Premise drift: \`GIG-46\` was Todo, is now In Progress; flagged inline in Risks / unknowns\n`,
+      ),
+    )
+    assert.equal(reconciled.match(/Premise drift:/g)?.length, 1)
+    assert.equal(reconciled.match(/premise drift:/g)?.length, 1)
+    assert.equal(reconcile(reconciled), reconciled)
+    // Resolving drift removes both legacy bare-form and code-spanned lines/markers cleanly.
+    assert.equal(reconcile(legacy, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), clean)
+    assert.equal(reconcile(reconciled, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), clean)
+  }
+  // Prefix-similar ids in legacy or code-spanned markers are never touched.
+  const control = annotationBody(
+    'GIG-46 was Todo.\nGIG-461 (premise drift: GIG-461 is now Old) (premise drift: `GIG-461` is now Old)',
+  ).replace(
+    '- Scope: bounded\n',
+    '- Scope: bounded\n- Premise drift: GIG-461 was Todo, is now Old\n- Premise drift: `GIG-461` was Todo, is now Old\n',
+  )
+  const resolved = reconcile(reconcile(control), { 'GIG-46': 'Todo', 'GIG-47': 'Todo' })
+  assert.equal(resolved, control)
 })
 
 test('reconcilePremiseAnnotations removes balanced relocated markers without losing following prose', () => {
@@ -1030,16 +1071,18 @@ test('reconcilePremiseAnnotations removes balanced relocated markers without los
     ', required condition; check!',
   ]) {
     for (const state of ['Old', 'Review (waiting on GIG-47)']) {
-      const prose = `GIG-46 prose${suffix}`
-      const before = annotationBody(prose)
-      const relocated = annotationBody(
-        `GIG-46 prose (premise drift: GIG-46 is now ${state})${suffix}`,
-      )
-      const after = reconcile(relocated)
-      assert.equal(after, reconcile(before))
-      assert.ok(after.includes(prose))
-      assert.equal(reconcile(after), after)
-      assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+      for (const idForm of ['GIG-46', '`GIG-46`']) {
+        const prose = `GIG-46 prose${suffix}`
+        const before = annotationBody(prose)
+        const relocated = annotationBody(
+          `GIG-46 prose (premise drift: ${idForm} is now ${state})${suffix}`,
+        )
+        const after = reconcile(relocated)
+        assert.equal(after, reconcile(before))
+        assert.ok(after.includes(prose))
+        assert.equal(reconcile(after), after)
+        assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+      }
     }
   }
 })
@@ -1064,7 +1107,7 @@ test('premises --annotate updates two files, records drift and leaves a repeat b
       /premise-annotated: plan-run-guards: GIG-46 flagged in Risks \/ unknowns/,
     )
     const after = files.map((file) => readFileSync(file, 'utf8'))
-    assert.ok(after.every((text) => text.includes('(premise drift: GIG-46 is now In Review)')))
+    assert.ok(after.every((text) => text.includes('(premise drift: `GIG-46` is now In Review)')))
     assert.deepEqual(
       files.map((file) => statSync(file).mode & 0o7777),
       modes,

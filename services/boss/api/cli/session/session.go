@@ -43,6 +43,7 @@ func (g *Group) runLS(cmd *cobra.Command) error {
 	repoID, _ := cmd.Flags().GetString("repo")
 	archived, _ := cmd.Flags().GetBool("archived")
 	stateStrs, _ := cmd.Flags().GetStringSlice("state")
+	labelFilters, _ := cmd.Flags().GetStringSlice("label")
 
 	// Parse state filters.
 	var states []pb.SessionState
@@ -58,6 +59,7 @@ func (g *Group) runLS(cmd *cobra.Command) error {
 	req := &pb.ListSessionsRequest{
 		IncludeArchived: archived,
 		States:          states,
+		LabelIds:        labelFilters,
 	}
 	if repoID != "" {
 		req.RepoId = &repoID
@@ -74,6 +76,7 @@ func (g *Group) runLS(cmd *cobra.Command) error {
 	if err != nil {
 		return cliutil.EmitJSONFailure(cmd, asJSON, fmt.Errorf("list sessions: %w", err))
 	}
+	sessions = filterSessionsByLabelRefs(sessions, labelFilters)
 
 	if asJSON {
 		// The empty case emits `{"sessions": []}`, not the human "no sessions"
@@ -1048,6 +1051,9 @@ func printSessionShowHeader(sess *pb.Session) {
 	fmt.Printf("  Effort:   %s\n", recordedSessionSettingLabel(sess.GetEffectiveEffort()))
 	if sess.PrNumber != nil {
 		fmt.Printf("  PR:       #%d\n", *sess.PrNumber)
+	}
+	if len(sess.GetLabels()) > 0 {
+		fmt.Printf("  Labels:   %s\n", formatSessionLabelsInline(sess.GetLabels()))
 	}
 	if sess.GetWorktreePath() != "" {
 		fmt.Printf("  Worktree: %s\n", sess.GetWorktreePath())

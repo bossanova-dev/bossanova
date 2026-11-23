@@ -188,7 +188,7 @@ test('predicted park markers retain legal labels containing replacement tokens',
     const annotated = annotatePrediction(prefix + body('judge/main.mjs'), prediction)
     assert.ok(
       annotated.includes(
-        '- Predicted verify park: always-human-path · $& policy (from judge/main.mjs)',
+        '- Predicted verify park: always-human-path · $& policy (from `judge/main.mjs`)',
       ),
     )
     assert.equal(annotatePrediction(annotated, prediction), annotated)
@@ -283,4 +283,62 @@ test('legacy generated human decisions reconcile without overriding independent 
   const cleared = annotatePrediction(authored, { ...prediction, predicted: false })
   assert.ok(cleared.includes('A human must provide credentials.'))
   assert.ok(cleared.includes('- Agent-friendly: needs-human'))
+})
+
+test('annotatePrediction code-spans areas, matches Planning list marker, and strips any marker on re-annotation', () => {
+  const prediction = {
+    predicted: true,
+    codes: ['always-human-path'],
+    labels: ['runbook guard'],
+    areas: ['docs/ops/abc-1184-runbook.md', 'toolbox/verify/gate.mjs'],
+  }
+  const expectedDetails =
+    'always-human-path · runbook guard (from `docs/ops/abc-1184-runbook.md`, `toolbox/verify/gate.mjs`)'
+  for (const marker of ['-', '*', '+']) {
+    const source = body('toolbox/verify/gate.mjs').replace(/^- /gm, `${marker} `)
+    const annotated = annotatePrediction(source, prediction)
+    assert.ok(
+      annotated.includes(`${marker} Predicted verify park: ${expectedDetails}\n`),
+      `expected ${marker} marker with code-spanned areas:\n${annotated}`,
+    )
+    assert.equal(annotatePrediction(annotated, prediction), annotated)
+    assert.equal(annotatePrediction(annotated, { ...prediction, predicted: false }), source)
+    for (const priorMarker of ['-', '*', '+']) {
+      const stale = source.replace(
+        `${marker} Agent-friendly: yes\n`,
+        `${marker} Agent-friendly: yes\n${priorMarker} Predicted verify park: stale · old (from old/path.mjs)\n`,
+      )
+      assert.equal(annotatePrediction(stale, prediction), annotated)
+      assert.equal(annotatePrediction(stale, { ...prediction, predicted: false }), source)
+    }
+  }
+})
+
+test('annotatePrediction reverts legacy generated agent-friendly markers across bullet styles and indented comments', () => {
+  const prediction = {
+    predicted: true,
+    codes: ['always-human-path'],
+    labels: ['the verify judge (cannot grade itself)'],
+    areas: ['toolbox/verify/gate.mjs'],
+  }
+  for (const marker of ['-', '*', '+']) {
+    const source = body('toolbox/verify/gate.mjs').replace(/^- /gm, `${marker} `)
+    const annotated = annotatePrediction(source, prediction)
+    for (const indent of ['', '  ', '\t']) {
+      const agentLine = `${marker} Agent-friendly: needs-human (see "Why this needs a human")\n${indent}<!-- predicted-verify-park-agent-friendly -->`
+      const retired = annotated
+        .replace('## Planning', `${RETIRED_WHY}## Planning`)
+        .replace(`${marker} Agent-friendly: yes`, agentLine)
+      assert.equal(annotatePrediction(retired, prediction), annotated)
+      assert.equal(annotatePrediction(retired, { ...prediction, predicted: false }), source)
+    }
+    const noComment = annotated
+      .replace('## Planning', `${RETIRED_WHY}## Planning`)
+      .replace(
+        `${marker} Agent-friendly: yes`,
+        `${marker} Agent-friendly: needs-human (see "Why this needs a human")`,
+      )
+    assert.equal(annotatePrediction(noComment, prediction), annotated)
+    assert.equal(annotatePrediction(noComment, { ...prediction, predicted: false }), source)
+  }
 })

@@ -60,11 +60,12 @@ type SmokeCredentialStore interface {
 type SmokeRunnerOption func(*smokeRunnerConfig)
 
 type smokeRunnerConfig struct {
-	broker         *credmaterialize.RefreshBroker
-	brokerRequired bool
-	baseDir        string
-	timeout        time.Duration
-	pollInterval   time.Duration
+	broker              *credmaterialize.RefreshBroker
+	brokerRequired      bool
+	baseDir             string
+	timeout             time.Duration
+	pollInterval        time.Duration
+	antigravityMCPRepos func(context.Context) ([]credmaterialize.AntigravityMCPRepo, error)
 }
 
 // WithSmokeBaseDir overrides the credential-materialization base dir.
@@ -81,6 +82,13 @@ func WithSmokeTimeout(d time.Duration) SmokeRunnerOption {
 // WithSmokePollInterval overrides the ExitStatus polling interval.
 func WithSmokePollInterval(d time.Duration) SmokeRunnerOption {
 	return func(c *smokeRunnerConfig) { c.pollInterval = d }
+}
+
+// WithSmokeAntigravityMCPRepos supplies the trusted-repository source forwarded
+// to the smoke runner's Antigravity materializer so credential verification
+// generates the same mcp_config.json bytes as session materialization.
+func WithSmokeAntigravityMCPRepos(fn func(context.Context) ([]credmaterialize.AntigravityMCPRepo, error)) SmokeRunnerOption {
+	return func(c *smokeRunnerConfig) { c.antigravityMCPRepos = fn }
 }
 
 // SmokeRunner runs a short live provider invocation using a registered account's
@@ -123,6 +131,9 @@ func NewSmokeRunner(
 	}
 	if cfg.baseDir != "" {
 		cmOpts = append(cmOpts, credmaterialize.WithBaseDir(cfg.baseDir))
+	}
+	if cfg.antigravityMCPRepos != nil {
+		cmOpts = append(cmOpts, credmaterialize.WithAntigravityMCPRepos(cfg.antigravityMCPRepos))
 	}
 	saves := newCredentialSaveCounter()
 	creds := credentialStoreAdapter{store: store, saves: saves}

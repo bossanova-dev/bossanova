@@ -220,6 +220,7 @@ func (w *daemonWiring) wireStores() error {
 	// repo's expired and over-cap notes on each insert, per the startup
 	// settings snapshot; a changed override applies on the next restart.
 	w.notes = db.NewNoteStore(database, db.WithNoteRetention(db.NoteRetentionFromSettings(w.settings.Notes)))
+	w.sessionLabels = db.NewSessionLabelStore(database)
 	// The note cloud-sync outbox (BOS-1429) the note store writes in every
 	// note transaction. The worker that drains it to Bosso (BOS-1435) is built
 	// only when an upstream is configured, below; SyncNotesNow counts it either
@@ -349,6 +350,7 @@ func (w *daemonWiring) wireStores() error {
 		agentChats:        w.agentChats,
 		rawSessions:       w.rawSessions,
 		repos:             w.repos,
+		sessionLabels:     w.sessionLabels,
 		chatStatusTracker: w.chatStatusTracker,
 		displayTracker:    w.displayTracker,
 		rotationEvents:    w.rotationEvents,

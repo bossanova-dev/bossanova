@@ -31,19 +31,19 @@ func (p *receiptCheckProvider) GetCheckSet(context.Context, string, int) (CheckS
 func TestReadCheckSet_BuildReceipt(t *testing.T) {
 	checks := []CheckResult{{Name: "build"}}
 	legacy := &legacyCheckProvider{checks: checks}
-	got, err := ReadCheckSet(context.Background(), legacy, "owner/repo", 42)
+	got, err := ReadCheckSet(context.Background(), legacy, "owner/repo", 42, "head")
 	if err != nil || got.HasBuildReceipt || !reflect.DeepEqual(got.Checks, checks) || legacy.calls != 1 {
 		t.Fatalf("fallback: set=%+v err=%v calls=%d", got, err, legacy.calls)
 	}
 	capable := &receiptCheckProvider{legacyCheckProvider: legacy, set: CheckSet{Checks: checks, HasBuildReceipt: true}}
-	got, err = ReadCheckSet(context.Background(), capable, "owner/repo", 42)
+	got, err = ReadCheckSet(context.Background(), capable, "owner/repo", 42, "head")
 	if err != nil || !got.HasBuildReceipt || !reflect.DeepEqual(got.Checks, checks) || legacy.calls != 1 {
 		t.Fatalf("capability: set=%+v err=%v calls=%d", got, err, legacy.calls)
 	}
 	sentinel := errors.New("remote failed")
 	legacy.err = sentinel
 	for _, p := range []Provider{legacy, capable} {
-		_, err = ReadCheckSet(context.Background(), p, "owner/repo", 42)
+		_, err = ReadCheckSet(context.Background(), p, "owner/repo", 42, "head")
 		if !errors.Is(err, sentinel) {
 			t.Fatalf("error=%v want %v", err, sentinel)
 		}

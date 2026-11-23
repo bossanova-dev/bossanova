@@ -126,6 +126,18 @@ boss session finish --json
 boss session finish --blocked --reason "review left an unresolved P1" --json
 ```
 
+### `boss session label <session-id> [flags]`
+
+Attach, remove, or replace labels on a session
+
+**Flags:**
+
+- `--add` — Add label(s) by name or ID
+- `--clear` — Remove all labels from the session
+- `--json` — Emit a stable JSON schema instead of text
+- `--remove` — Remove label(s) by name or ID
+- `--set` — Replace all labels on the session with these names or IDs
+
 ### `boss session link-pr <session-id> <pr-number-or-url>`
 
 Attach an existing pull request to a session

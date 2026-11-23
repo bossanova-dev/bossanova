@@ -114,6 +114,7 @@ type fakeCommandHandler struct {
 	sendAgentID       string // last agentSessionID passed to SendChatMessage
 	sendMessage       string // last message passed to SendChatMessage
 	sendSubmit        bool   // last submit flag passed to SendChatMessage
+	sendAttachments   ChatAttachmentRef
 	// Cron knobs.
 	listCronResult   *pb.ListCronJobsResponse
 	createCronResult *pb.CreateCronJobResponse
@@ -304,10 +305,11 @@ func (f *fakeCommandHandler) GetChatTranscript(_ context.Context, sessionID, _ s
 	f.transcriptSession = sessionID
 	return f.transcript, f.returnErr
 }
-func (f *fakeCommandHandler) SendChatMessage(_ context.Context, agentSessionID, message string, _, submit bool) (*pb.SendChatMessageResponse, error) {
+func (f *fakeCommandHandler) SendChatMessage(_ context.Context, agentSessionID, message string, _, submit bool, attachments ChatAttachmentRef) (*pb.SendChatMessageResponse, error) {
 	f.sendAgentID = agentSessionID
 	f.sendMessage = message
 	f.sendSubmit = submit
+	f.sendAttachments = attachments
 	return f.sendResult, f.returnErr
 }
 
@@ -901,6 +903,7 @@ func TestDispatch_SendChatMessage(t *testing.T) {
 		CommandId: "sm1",
 		Cmd: &pb.OrchestratorCommand_SendChatMessage{SendChatMessage: &pb.SendChatMessageCommand{
 			AgentSessionId: "agent-1", Message: "hello", WakeIfAsleep: true, Submit: true,
+			AttachmentUploadIds: []string{"up-1"}, ActingUserId: "user-1",
 		}},
 	}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
@@ -915,8 +918,8 @@ func TestDispatch_SendChatMessage(t *testing.T) {
 	if sm == nil || !sm.GetDelivered() || sm.GetTmuxSessionName() != "boss-x" {
 		t.Fatalf("unexpected send payload: %+v", sm)
 	}
-	if fake.sendAgentID != "agent-1" || fake.sendMessage != "hello" || !fake.sendSubmit {
-		t.Fatalf("send fields not forwarded: agent=%q msg=%q submit=%v", fake.sendAgentID, fake.sendMessage, fake.sendSubmit)
+	if fake.sendAgentID != "agent-1" || fake.sendMessage != "hello" || !fake.sendSubmit || len(fake.sendAttachments.UploadIDs) != 1 || fake.sendAttachments.UploadIDs[0] != "up-1" || fake.sendAttachments.ActingUserID != "user-1" {
+		t.Fatalf("send fields not forwarded: agent=%q msg=%q submit=%v attachments=%q", fake.sendAgentID, fake.sendMessage, fake.sendSubmit, fake.sendAttachments)
 	}
 }
 

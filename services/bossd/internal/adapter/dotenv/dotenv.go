@@ -275,7 +275,10 @@ func overlay(base map[string]string, dir string, drop func(key string) bool) map
 // linearAPIKey is the env var Claude's Linear MCP expands from the session
 // environment (via ${LINEAR_API_KEY} in a worktree's .mcp.json). It is one of
 // the repo-scoped keys OverlayWithRepo guarantees is always present.
-const linearAPIKey = "LINEAR_API_KEY"
+const (
+	linearAPIKey = "LINEAR_API_KEY"
+	bossRepoID   = "BOSS_REPO_ID"
+)
 
 // OverlayWithRepo overlays the worktree .env beneath base (see Overlay), then
 // fills any repo-secret keys still absent from the repo's stored config, and
@@ -354,6 +357,18 @@ func OverlayWithRepo(base map[string]string, dir string, repo *models.Repo) map[
 	}
 	for _, key := range proofenv.UploadKeys() {
 		out[key] = ""
+	}
+	// Pin BOSS_REPO_ID from the resolved repo when base did not already supply
+	// it (tmux paths supply it via managedSessionEnv; headless launch/resume
+	// paths do not). Assigning unconditionally when absent from base prevents a
+	// worktree .env from spoofing another repo's ID and pins "" when repo is nil
+	// so an ambient daemon BOSS_REPO_ID cannot leak into the child.
+	if _, inBase := base[bossRepoID]; !inBase {
+		repoID := ""
+		if repo != nil {
+			repoID = repo.ID
+		}
+		out[bossRepoID] = repoID
 	}
 	return out
 }

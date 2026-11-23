@@ -18,6 +18,7 @@ go_library(
         "rpcdeadline.go",
         "rpcdeadline_e2e.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
         "rpcdeadline_prod.go",
+        "session_labels.go",
         "session_tracker_rank.go",
         "tracker_issue_lease.go",
         "unsupported.go",

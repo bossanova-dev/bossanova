@@ -427,3 +427,19 @@ func (s *Server) mergeSession(ctx context.Context, id string, g mergeGate) (*con
 		Detail:  mergeDetail,
 	}), nil
 }
+
+// PRRefresher re-polls a single PR's display status on demand, repopulating the
+// display tracker with the live status. It is defined here (rather than
+// importing session) so the server depends only on this narrow surface;
+// *session.DisplayPoller satisfies it. MergeSession calls it after every merge
+// attempt on a server wired with a display tracker, so the label reflects what
+// the daemon just did (see the HoldMerging block).
+//
+// It deliberately names the WithoutWebhookCredit variant: a refresh the daemon
+// triggered itself is not evidence that the session's webhook pipeline is
+// healthy, and crediting one would back that session's scheduled poll interval
+// off — leaving a still-active session staler after a blocked or failed merge
+// than before it.
+type PRRefresher interface {
+	RefreshPRWithoutWebhookCredit(ctx context.Context, repoOriginURL string, prNumber int) error
+}

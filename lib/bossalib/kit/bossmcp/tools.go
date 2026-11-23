@@ -207,6 +207,7 @@ func RegisterTools(server *mcp.Server, backend Backend, opts Options) {
 	triggers := hostedTriggerBackend(backend, opts)
 	webhooks := hostedSessionWebhookBackend(backend, opts)
 	registerReadTools(server, backend, opts)
+	registerSessionLabelReadTools(server, backend, opts)
 	if triggers != nil {
 		registerTriggerReadTools(server, triggers, opts)
 	}
@@ -217,6 +218,7 @@ func RegisterTools(server *mcp.Server, backend Backend, opts Options) {
 		return
 	}
 	registerMutatingTools(server, backend, opts)
+	registerSessionLabelWriteTools(server, backend, opts)
 	registerDestructiveTools(server, backend, opts)
 	if triggers != nil {
 		registerTriggerWriteTools(server, triggers, opts)
@@ -242,7 +244,10 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		Description: "List bossanova sessions, optionally filtered by repo, states, or archived flag.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListSessionsArgs) (*mcp.CallToolResult, any, error) {
-		req := &pb.ListSessionsRequest{IncludeArchived: args.IncludeArchived}
+		req := &pb.ListSessionsRequest{
+			IncludeArchived: args.IncludeArchived,
+			LabelIds:        args.Labels,
+		}
 		if args.RepoID != "" {
 			repoID := args.RepoID
 			req.RepoId = &repoID
@@ -805,6 +810,7 @@ type ListSessionsArgs struct {
 	RepoID          string   `json:"repo_id,omitempty" jsonschema:"the repo id to filter by"`
 	States          []string `json:"states,omitempty" jsonschema:"session state enum names to filter by (e.g. SESSION_STATE_RUNNING)"`
 	IncludeArchived bool     `json:"include_archived,omitempty" jsonschema:"include archived sessions"`
+	Labels          []string `json:"labels,omitempty" jsonschema:"optional label ids or case-insensitive label names to filter by (matches any)"`
 }
 
 // ListGitHubCallbacksArgs is the typed argument struct for list_github_callbacks.

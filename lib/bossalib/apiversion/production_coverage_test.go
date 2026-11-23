@@ -51,6 +51,23 @@ func TestProductionChanges_CoverDerivedCarrierProcedures(t *testing.T) {
 
 func productionCoverageProbes(change VersionChange) []responseProbe {
 	switch change.(type) {
+	case ServePinnedActionChange:
+		return []responseProbe{
+			{procedure: bossanovav1connect.OrchestratorServiceGetUserPreferencesProcedure,
+				build: func() any {
+					return &pb.GetUserPreferencesResponse{Preferences: &pb.UserPreferences{PinnedActions: []string{"serve", "chat"}}}
+				},
+				mutated: func(msg any) bool {
+					return slices.Equal(msg.(*pb.GetUserPreferencesResponse).Preferences.PinnedActions, []string{"chat"})
+				}},
+			{procedure: bossanovav1connect.OrchestratorServiceUpdateUserPreferencesProcedure,
+				build: func() any {
+					return &pb.UpdateUserPreferencesResponse{Preferences: &pb.UserPreferences{PinnedActions: []string{"serve", "chat"}}}
+				},
+				mutated: func(msg any) bool {
+					return slices.Equal(msg.(*pb.UpdateUserPreferencesResponse).Preferences.PinnedActions, []string{"chat"})
+				}},
+		}
 	case SupersededCredentialClassChange:
 		return accountProbes(func() *pb.AgentAccount {
 			return &pb.AgentAccount{
@@ -517,6 +534,8 @@ func sessionResponse(procedure string, sess *pb.Session) (any, func(any) *pb.Ses
 		return &pb.ProxyRetrySessionResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyRetrySessionResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
 		return &pb.ProxyRunCronJobNowResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyRunCronJobNowResponse).GetSession() }
+	case bossanovav1connect.OrchestratorServiceProxySetSessionLabelsProcedure:
+		return &pb.ProxySetSessionLabelsResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxySetSessionLabelsResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
 		return &pb.ProxyStopSessionResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyStopSessionResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:

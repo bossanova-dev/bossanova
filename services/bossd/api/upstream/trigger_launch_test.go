@@ -207,6 +207,7 @@ func TestLaunchTriggerSessionClassifiesEveryCreateSessionRequestField(t *testing
 		"tracker_issue":            "unused",
 		"tracker_source":           "unused",
 		"account_id":               "unused",
+		"label_ids":                "unused",
 	}
 	requestFields := (&pb.CreateSessionRequest{}).ProtoReflect().Descriptor().Fields()
 	for i := 0; i < requestFields.Len(); i++ {

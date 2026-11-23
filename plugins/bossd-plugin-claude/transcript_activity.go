@@ -24,6 +24,13 @@ type activityLine struct {
 	PRURL         string          `json:"prUrl"`
 	PRRepository  string          `json:"prRepository"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	Attachment    struct {
+		Type   string `json:"type"`
+		Prompt string `json:"prompt"`
+		Origin struct {
+			Kind string `json:"kind"`
+		} `json:"origin"`
+	} `json:"attachment"`
 }
 
 // contentBlock is one block of a message's content array.
@@ -80,6 +87,8 @@ func (a *activity) add(raw []byte) {
 		}
 	case "assistant":
 		a.addAssistant(line)
+	case "attachment":
+		a.addQueued(line)
 	case "pr-link":
 		if line.PRNumber > 0 {
 			a.event(line.Timestamp, userturn.Notice{
@@ -114,17 +123,37 @@ func (a *activity) addUser(line activityLine) {
 		}
 		text = strings.Join(parts, "\n")
 	}
+	a.userTurn(text, line.Timestamp, true)
+}
+
+// addQueued reads what arrived while the agent was mid-turn. Claude Code
+// records it as a queued_command attachment rather than a user line: a
+// person's message with origin "human", or a background task's notice.
+func (a *activity) addQueued(line activityLine) {
+	if line.Attachment.Type != "queued_command" {
+		return
+	}
+	a.userTurn(line.Attachment.Prompt, line.Timestamp, line.Attachment.Origin.Kind == "human")
+}
+
+// userTurn places text the agent received: a person's message or command, or
+// a notice as an event. Text not from a person is never shown as theirs.
+func (a *activity) userTurn(text, timestamp string, fromPerson bool) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
 	turn := userturn.Classify(text)
 	switch turn.Kind {
 	case userturn.Message:
-		a.push(&bossanovav1.ChatMessage{Role: "user", Kind: "text", Text: turn.Text, Timestamp: line.Timestamp})
+		if fromPerson {
+			a.push(&bossanovav1.ChatMessage{Role: "user", Kind: "text", Text: turn.Text, Timestamp: timestamp})
+		}
 	case userturn.Command:
-		a.push(&bossanovav1.ChatMessage{Role: "user", Kind: "command", Text: turn.Text, Timestamp: line.Timestamp})
+		if fromPerson {
+			a.push(&bossanovav1.ChatMessage{Role: "user", Kind: "command", Text: turn.Text, Timestamp: timestamp})
+		}
 	case userturn.Event:
-		a.event(line.Timestamp, turn.Event)
+		a.event(timestamp, turn.Event)
 	case userturn.Harness:
 	}
 }
@@ -203,7 +232,7 @@ func askedQuestion(b contentBlock) *bossanovav1.ChatQuestion {
 		return nil
 	}
 	first := input.Questions[0]
-	q := &bossanovav1.ChatQuestion{Text: strings.TrimSpace(first.Question)}
+	q := &bossanovav1.ChatQuestion{Kind: questionKindQuestion, Text: strings.TrimSpace(first.Question)}
 	for _, o := range first.Options {
 		if label := strings.TrimSpace(o.Label); label != "" {
 			q.Options = append(q.Options, label)

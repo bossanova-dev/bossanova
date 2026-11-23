@@ -65,9 +65,10 @@ type stubUploadManager struct {
 	// claimCalls counts ClaimFinish invocations. It is what proves the
 	// finish gate runs synchronously on the reader goroutine: a repeated
 	// upload_finish must increment this without ever reaching Finish.
-	claimCalls  int
-	finishCalls int
-	claimed     map[string]bool
+	claimCalls    int
+	finishCalls   int
+	deferredCalls int
+	claimed       map[string]bool
 
 	// chunkGate, when non-nil, blocks Chunk until the test closes it.
 	chunkGate  chan struct{}
@@ -155,6 +156,13 @@ func (s *stubUploadManager) Finish(ctx context.Context, _, _ string) (string, er
 		return "", s.finishErr
 	}
 	return "/private/upload-path", nil
+}
+
+func (s *stubUploadManager) FinishDeferred(_, _, _ string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deferredCalls++
+	return s.finishErr
 }
 
 func (s *stubUploadManager) attachCancelSeen() bool {

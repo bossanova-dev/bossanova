@@ -82,7 +82,7 @@ func (m *Materializer) MaterializeAntigravity(ctx context.Context, accountID str
 		}
 		m.writeCacheDirTag()
 
-		if err := m.projectAntigravityBaseHome(accountHome); err != nil {
+		if err := m.projectAntigravityBaseHome(ctx, accountHome); err != nil {
 			return fmt.Errorf("project antigravity base home: %w", err)
 		}
 
@@ -119,18 +119,19 @@ func (m *Materializer) MaterializeAntigravity(ctx context.Context, accountID str
 	}, persist, nil
 }
 
-func (m *Materializer) projectAntigravityBaseHome(accountHome string) error {
+func (m *Materializer) projectAntigravityBaseHome(ctx context.Context, accountHome string) error {
+	acctGemini := filepath.Join(accountHome, antigravityGeminiDirName)
 	baseHome := m.antigravityBaseHome
 	if baseHome == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil
+			return m.ensureAntigravityConfigDir(ctx, "", acctGemini)
 		}
 		baseHome = home
 	}
 	if _, err := os.Stat(baseHome); err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return m.ensureAntigravityConfigDir(ctx, "", acctGemini)
 		}
 		return err
 	}
@@ -169,16 +170,20 @@ func (m *Materializer) projectAntigravityBaseHome(accountHome string) error {
 		}
 	}
 
-	// Project ~/.gemini entries except antigravity-cli (so ~/.gemini/config
-	// including Boss skills and MCP configs is shared).
+	// Project ~/.gemini entries except antigravity-cli and config (config is
+	// materialized as a real directory so mcp_config.json can merge user and
+	// repo servers while keeping skills/ and config.json symlinked).
 	baseGemini := filepath.Join(baseHome, antigravityGeminiDirName)
 	if info, err := os.Stat(baseGemini); err == nil && info.IsDir() {
-		acctGemini := filepath.Join(accountHome, antigravityGeminiDirName)
 		if err := projectDirectoryEntries(baseGemini, acctGemini, map[string]bool{
-			antigravityCLIDirName: true,
+			antigravityCLIDirName:    true,
+			antigravityConfigDirName: true,
 		}); err != nil {
 			return err
 		}
+	}
+	if err := m.ensureAntigravityConfigDir(ctx, baseGemini, acctGemini); err != nil {
+		return err
 	}
 
 	// Project ~/.gemini/antigravity-cli entries except the account-local token

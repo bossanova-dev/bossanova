@@ -170,6 +170,52 @@ func TestAnswerChatQuestion_StaleRefusalNamesTheQuestion(t *testing.T) {
 	}
 }
 
+func TestAnswerChatQuestion_PermissionPromptObeysCloudControlAndDispatchesDigit(t *testing.T) {
+	permCmd := &pb.AnswerChatQuestionCommand{
+		AgentSessionId: "agent-1",
+		QuestionId:     "perm-deadbeef01234567",
+		Answer:         &pb.AnswerChatQuestionCommand_OptionIndex{OptionIndex: 0},
+	}
+
+	t.Run("dispatches planned digit when allowed", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			keyOne := []*pb.PaneInput{{Input: &pb.PaneInput_Key{Key: "1"}}}
+			planner := &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{pendingPlan(keyOne...), answeredPlan()}}
+			pane := &fakeChatPane{live: true, pane: "permission dialog"}
+			s := newAnswerTestServer(t, planner, pane)
+
+			got, err := s.AnswerChatQuestion(t.Context(), permCmd)
+			if err != nil {
+				t.Fatalf("AnswerChatQuestion: %v", err)
+			}
+			if !got.GetIsAnswered() {
+				t.Fatal("is_answered = false, want true")
+			}
+			if len(pane.sent) != 1 || len(pane.sent[0]) != 1 || pane.sent[0][0] != (domain.PaneInput{Key: "1"}) {
+				t.Fatalf("sent %v, want key 1 once", pane.sent)
+			}
+		})
+	})
+
+	t.Run("refuses when cloud control denies the repository", func(t *testing.T) {
+		keyOne := []*pb.PaneInput{{Input: &pb.PaneInput_Key{Key: "1"}}}
+		planner := &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{pendingPlan(keyOne...)}}
+		pane := &fakeChatPane{live: true, pane: "permission dialog"}
+		s := newAnswerTestServer(t, planner, pane)
+		ctx := domain.WithCloudRepoCheck(
+			domain.WithCloudTarget(t.Context(), domain.CloudTarget{"repo:r1": "r1"}),
+			func(context.Context, string) bool { return false },
+		)
+		_, err := s.AnswerChatQuestion(ctx, permCmd)
+		if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
+			t.Fatalf("code = %v, want PermissionDenied (err=%v)", got, err)
+		}
+		if len(pane.sent) != 0 {
+			t.Fatalf("sent %v, want nothing typed", pane.sent)
+		}
+	})
+}
+
 func TestStopChat_EndsOnlyTheNamedChat(t *testing.T) {
 	chat := &domain.AgentChat{ID: "c2", AgentSessionID: "agent-2", SessionID: "s1"}
 	var stopped []string

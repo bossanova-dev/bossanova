@@ -256,6 +256,18 @@ message OrchestratorCommand {
     // bosso → daemon: stop one chat's agent and leave the session's other
     // chats running. Replies with a bare ok.
     StopChatCommand stop_chat = 91;
+    // bosso → daemon: start the session's repository serve command. Replies
+    // CommandResult{session_serve}.
+    StartSessionServeCommand start_session_serve = 92;
+    // bosso → daemon: stop the session's repository serve command. Replies
+    // CommandResult{session_serve}.
+    StopSessionServeCommand stop_session_serve = 93;
+    // bosso → daemon: session label CRUD and assignment.
+    ListSessionLabelsCommand list_session_labels = 94;
+    CreateSessionLabelCommand create_session_label = 95;
+    UpdateSessionLabelCommand update_session_label = 96;
+    DeleteSessionLabelCommand delete_session_label = 97;
+    SetSessionLabelsCommand set_session_labels = 98;
   }
 }
 
@@ -325,6 +337,13 @@ message DaemonSnapshot {
   // increasing within one daemon process, seeded from wall-clock time at
   // start so a restarted daemon does not reuse an older revision.
   uint64 repo_cloud_control_revision = 15;
+  // True when this daemon serves upload-only attaches (TerminalAttachCommand
+  // .is_upload_only) and resolves SendChatMessageCommand
+  // .attachment_upload_ids. Older daemons ignore both fields, so bosso
+  // refuses an upload-only socket for a daemon that leaves this false rather
+  // than let it spawn a terminal. Additive stream field; see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  bool is_chat_attachment_supported = 16;
 }
 
 // RepoCloudControlMode is one registered repository's effective cloud
@@ -626,6 +645,14 @@ message CommandResult {
     AgentModelsResult agent_models = 49;
     // Reply to answer_chat_question.
     AnswerChatQuestionResult answer_chat_question = 60;
+    // Reply to start_session_serve and stop_session_serve.
+    SessionServe session_serve = 61;
+    // Reply to list_session_labels.
+    ListSessionLabelsResponse list_session_labels = 62;
+    // Reply to create_session_label.
+    CreateSessionLabelResponse create_session_label = 63;
+    // Reply to update_session_label.
+    UpdateSessionLabelResponse update_session_label = 64;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -1372,6 +1399,12 @@ message SendChatMessageCommand {
   string message = 2;
   bool wake_if_asleep = 3;
   bool submit = 4;  // when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, services/docs/docs/guides/mcp.md); this bool cannot, so an unset bit prefills.
+  // Upload ids an upload-only attach finished for this chat; see
+  // SendChatMessageRequest.attachment_upload_ids.
+  repeated string attachment_upload_ids = 5;
+  // The user bosso authenticated for this send; see
+  // SendChatMessageRequest.acting_user_id.
+  string acting_user_id = 6;
 }
 
 // TransferSessionCommand asks a daemon to take part in a coordinated transfer
@@ -1539,6 +1572,15 @@ message TerminalAttachCommand {
   uint32 rows = 4;
   // Empty preserves plaintext; otherwise requires local device approval.
   string viewer_device_id = 5;
+  // True for a chat reply box's upload channel: the daemon spawns no PTY,
+  // never wakes the chat, and keeps each finished upload for a later
+  // SendChatMessageCommand instead of prefilling its path. bosso sends it
+  // only to daemons whose snapshot sets is_chat_attachment_supported.
+  bool is_upload_only = 6;
+  // The user bosso authenticated for this attach. An upload-only attach
+  // holds each finished file for that user alone, so only their own send can
+  // name it. Additive; older daemons ignore it.
+  string acting_user_id = 7;
 }
 
 // TerminalInputCommand: bosso → daemon. Payloads on sealed attaches are
@@ -1861,4 +1903,42 @@ message AnswerChatQuestionResult {
 message StopChatCommand {
   string session_id = 1;
   string agent_session_id = 2;
+}
+
+// StartSessionServeCommand asks the daemon to start the session's configured
+// repository serve command and reply with CommandResult{session_serve}.
+message StartSessionServeCommand {
+  string session_id = 1;
+}
+
+// StopSessionServeCommand asks the daemon to stop the session's running
+// repository serve command and reply with CommandResult{session_serve}.
+message StopSessionServeCommand {
+  string session_id = 1;
+}
+
+// --- Session label commands ---
+
+message ListSessionLabelsCommand {}
+
+message CreateSessionLabelCommand {
+  string name = 1;
+  string color = 2;
+  string description = 3;
+}
+
+message UpdateSessionLabelCommand {
+  string id = 1;
+  optional string name = 2;
+  optional string color = 3;
+  optional string description = 4;
+}
+
+message DeleteSessionLabelCommand {
+  string id = 1;
+}
+
+message SetSessionLabelsCommand {
+  string session_id = 1;
+  repeated string label_ids = 2;
 }

@@ -225,6 +225,16 @@ type CheckSet struct {
 	// BuildReceiptSeen is true when any boss/build status, in any state, is on
 	// the head. A receipt carrier must not post over an existing one.
 	BuildReceiptSeen bool
+	// RawChecks holds the pre-reconciliation check slice when ReadCheckSet
+	// reconciled cancelled workflow checks. Nil when no reconciliation ran.
+	RawChecks []CheckResult
+	// WorkflowRuns holds the head's workflow runs when ReadCheckSet listed them
+	// to reconcile a cancelled workflow check. RunsRead distinguishes a
+	// completed read (possibly empty) from no read; RunsErr records a listing
+	// failure when a read was attempted.
+	WorkflowRuns []WorkflowRun
+	RunsRead     bool
+	RunsErr      error
 }
 
 // CheckResult represents the result of a single CI check.

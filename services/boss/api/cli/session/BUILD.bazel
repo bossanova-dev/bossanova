@@ -18,6 +18,7 @@ go_library(
         "session_checks.go",
         "session_finish.go",
         "session_json.go",
+        "session_labels.go",
         "session_mcp.go",
         "session_merge.go",
         "session_phase.go",

@@ -57,6 +57,7 @@ func (g *Group) SessionCmd() *cobra.Command {
 	})
 	cmd.AddCommand(g.sessionSetTrackerCmd())
 	cmd.AddCommand(g.sessionSetRankCmd())
+	cmd.AddCommand(g.sessionLabelCmd())
 	refreshPR := &cobra.Command{
 		Use:   "refresh-pr [session-id]",
 		Short: "Refresh one session's cached pull request status",
@@ -94,6 +95,7 @@ func (g *Group) LSCmd() *cobra.Command {
 	cmd.Flags().Bool("archived", false, "Include archived sessions")
 	cmd.Flags().Bool("all-daemons", false, "List live sessions from every daemon reachable through the orchestrator")
 	cmd.Flags().StringSlice("state", nil, "Filter by state(s)")
+	cmd.Flags().StringSlice("label", nil, "Filter by label name or ID")
 	cmd.Flags().Bool(cliutil.JSONFlagName, false, "Emit a stable JSON schema instead of a table")
 	return cmd
 }

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/rs/zerolog/log"
 
@@ -11,6 +13,33 @@ import (
 	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 	"github.com/recurser/bossd/internal/domain"
 )
+
+type antigravityMCPRepoLister interface {
+	List(ctx context.Context) ([]*domain.Repo, error)
+}
+
+func antigravityMCPReposFromStore(lister antigravityMCPRepoLister) func(context.Context) ([]credmaterialize.AntigravityMCPRepo, error) {
+	return func(ctx context.Context) ([]credmaterialize.AntigravityMCPRepo, error) {
+		if lister == nil {
+			return nil, nil
+		}
+		repos, err := lister.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]credmaterialize.AntigravityMCPRepo, 0, len(repos))
+		for _, r := range repos {
+			if r == nil || !r.IsTrusted || r.ID == "" || r.LocalPath == "" {
+				continue
+			}
+			out = append(out, credmaterialize.AntigravityMCPRepo{
+				ID:        r.ID,
+				LocalPath: r.LocalPath,
+			})
+		}
+		return out, nil
+	}
+}
 
 func (w *daemonWiring) proactive5hThreshold() float64 {
 	loaded, err := config.Load()
@@ -36,7 +65,19 @@ func (w *daemonWiring) wireAccounts() {
 	} else {
 		w.deferCleanup(broker.Close)
 	}
-	w.accountMaterializer = accountwiring.NewMaterializer(w.agentClients, w.accounts, w.accountCreds, log.Logger, credmaterialize.WithRefreshBroker(broker))
+	var repoLister antigravityMCPRepoLister
+	if w.repos != nil {
+		repoLister = w.repos
+	}
+	agyMCPRepos := antigravityMCPReposFromStore(repoLister)
+	w.accountMaterializer = accountwiring.NewMaterializer(
+		w.agentClients,
+		w.accounts,
+		w.accountCreds,
+		log.Logger,
+		credmaterialize.WithRefreshBroker(broker),
+		credmaterialize.WithAntigravityMCPRepos(agyMCPRepos),
+	)
 	w.accountUsageProbe, _ = w.accountMaterializer.(server.UsageProbeRecorder)
 	// Optional too: without it RemoveAgentAccount cannot purge the on-disk credential
 	// materialization, so it keeps its pre-purge behavior (keyring + row only).
@@ -50,7 +91,13 @@ func (w *daemonWiring) wireAccounts() {
 	)
 	w.accountSpawnEnv = accountwiring.NewSpawnEnvResolver(w.accountResolver, log.Logger)
 	w.hostService.SetAgentAccountEnvResolver(w.accountSpawnEnv)
-	accountSmoke, err := accountwiring.NewSmokeRunner(w.agentClients, w.accountCreds, log.Logger, accountwiring.WithSmokeRefreshBroker(broker))
+	accountSmoke, err := accountwiring.NewSmokeRunner(
+		w.agentClients,
+		w.accountCreds,
+		log.Logger,
+		accountwiring.WithSmokeRefreshBroker(broker),
+		accountwiring.WithSmokeAntigravityMCPRepos(agyMCPRepos),
+	)
 	if err != nil {
 		log.Warn().Err(err).Msg("account provider verification unavailable; account test will validate credential shape only")
 	}

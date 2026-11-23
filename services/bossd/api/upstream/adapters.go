@@ -856,17 +856,17 @@ func (a *CommandHandlerAdapter) GetChatTranscript(ctx context.Context, sessionID
 	return resp.Msg, nil
 }
 
-// SendChatMessage implements SessionCommandHandler.SendChatMessage by delegating
-// to the daemon's SendChatMessage connect handler.
-func (a *CommandHandlerAdapter) SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep, submit bool) (*pb.SendChatMessageResponse, error) {
+// SendChatMessage delegates SessionCommandHandler.SendChatMessage to the daemon's connect handler.
+func (a *CommandHandlerAdapter) SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep, submit bool, attachments ChatAttachmentRef) (*pb.SendChatMessageResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("send_chat_message: command server not wired")
 	}
 	resp, err := a.Commands.SendChatMessage(ctx, connect.NewRequest(&pb.SendChatMessageRequest{
-		AgentSessionId: agentSessionID,
-		Message:        message,
-		WakeIfAsleep:   wakeIfAsleep,
-		Submit:         submit,
+		AgentSessionId:      agentSessionID,
+		Message:             message,
+		WakeIfAsleep:        wakeIfAsleep,
+		Submit:              submit,
+		AttachmentUploadIds: attachments.UploadIDs, ActingUserId: attachments.ActingUserID,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("send chat message: %w", err)

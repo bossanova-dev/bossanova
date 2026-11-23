@@ -80,6 +80,7 @@ test('Linear snapshots round-trip through export and idempotence for planned and
               title: 'Plan this',
               description: issue.description,
               state: { name: state, type: 'unstarted' },
+              labels: { nodes: [], pageInfo: { hasNextPage: false } },
               attachments: { nodes: issue.attachments, pageInfo: { hasNextPage: false } },
             },
           },

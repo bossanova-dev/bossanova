@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { GhError } from '../tracker/github-gh.mjs'
+import { inertReferences } from './plan-inert-references.mjs'
 import {
   fetchOpenPullRequests,
   parseTicketIds,
@@ -220,4 +221,49 @@ test('fetch CLI writes a receipt only on success and leaves no snapshot on gh fa
     spawnSync(process.execPath, [CLI, 'fetch', '--out-file', out, '--limit', '0']).status,
     2,
   )
+})
+
+test('overlapNote renders PR number, URL, candidate id and shared paths in code spans while keeping data fields bare', () => {
+  const mapped = classify(
+    snapshot(
+      pr({
+        number: 42,
+        url: 'https://github.com/org/repo/pull/42',
+        files: ['app/api/x.go', 'Makefile'],
+        ticketIds: ['ABC-2'],
+      }),
+    ),
+    { subjectAreas: ['app/api/x.go', 'Makefile'] },
+  )
+  assert.equal(mapped.notes.length, 1)
+  const [mappedNote] = mapped.notes
+  assert.equal(mappedNote.pr, 42)
+  assert.equal(mappedNote.candidate, 'ABC-2')
+  assert.deepEqual(mappedNote.shared, ['app/api/x.go', 'makefile'])
+  assert.equal(
+    mappedNote.text,
+    'Open PR `#42` (`https://github.com/org/repo/pull/42`) for `ABC-2` overlaps at file level (shared: `app/api/x.go`, `makefile`).',
+  )
+  assert.equal(inertReferences(mappedNote.text), mappedNote.text)
+
+  const unmapped = classify(
+    snapshot(
+      pr({
+        number: 99,
+        url: 'https://github.com/org/repo/pull/99',
+        files: ['app/api/x.go'],
+        ticketIds: [],
+      }),
+    ),
+  )
+  assert.equal(unmapped.notes.length, 1)
+  const [unmappedNote] = unmapped.notes
+  assert.equal(unmappedNote.pr, 99)
+  assert.equal(unmappedNote.candidate, '')
+  assert.deepEqual(unmappedNote.shared, ['app/api/x.go'])
+  assert.equal(
+    unmappedNote.text,
+    'Open PR `#99` (`https://github.com/org/repo/pull/99`) overlaps at file level (shared: `app/api/x.go`).',
+  )
+  assert.equal(inertReferences(unmappedNote.text), unmappedNote.text)
 })

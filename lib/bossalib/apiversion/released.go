@@ -71,6 +71,7 @@ var ReleasedVersions = []Version{
 	"2026-11-01", // V20261101 — ProofAttentionChange and StatusPhraseChange.
 	"2026-11-02", // V20261102 — CandidateHoldLabelChange.
 	"2026-11-03", // V20261103 — CloudControlDisabledCodeChange.
+	"2026-11-04", // V20261104 — organization-filtered daemon listing.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

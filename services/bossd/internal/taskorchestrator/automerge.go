@@ -82,7 +82,10 @@ func (o *Orchestrator) confirmAutoMergeHead(ctx context.Context, repo repoInfo, 
 		sha, _ := vcs.NormalizeHeadSHA(status.HeadSHA)
 		return vcs.MergePROpts{ExpectedHeadSHA: sha}, err
 	}
-	checkSet, readErr := vcs.ReadCheckSet(ctx, o.provider, repo.originURL, prNumber)
+	checkSet, readErr := vcs.ReadCheckSet(ctx, o.provider, repo.originURL, prNumber, status.HeadSHA, vcs.CheckReadLog{
+		Logger: &o.logger,
+		Site:   "auto-merge",
+	})
 	verdict := vcs.EvaluateChecksRequiring(status.HeadSHA, checkSet.Checks, readErr, required)
 	if !verdict.IsGreen() {
 		return vcs.MergePROpts{}, fmt.Errorf("fresh checks verdict on head %q is %s (%s; required=%v; not-requested=%v)", status.HeadSHA, verdict.State, verdict.Reason, required, verdict.NotRequested)

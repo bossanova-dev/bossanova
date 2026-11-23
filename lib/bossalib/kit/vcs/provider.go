@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // Provider is the interface that VCS hosting implementations must satisfy.
@@ -72,10 +74,32 @@ type Provider interface {
 	GetAllowedMergeStrategies(ctx context.Context, repoPath string) ([]string, error)
 }
 
+// CheckResultsReader is the minimal check-reading surface every Provider
+// implements. ReadCheckSet prefers CheckSetReader when available.
+type CheckResultsReader interface {
+	GetCheckResults(ctx context.Context, repoPath string, prID int) ([]CheckResult, error)
+}
+
 // CheckSetReader is an optional capability that exposes the build receipt from
 // the same read as CI checks, without widening Provider.
 type CheckSetReader interface {
 	GetCheckSet(ctx context.Context, repoPath string, prID int) (CheckSet, error)
+}
+
+// WorkflowRunLister is an optional capability that lists workflow runs for a
+// commit SHA so ReadCheckSet can reconcile superseded cancelled checks against
+// same-head replacements.
+type WorkflowRunLister interface {
+	ListWorkflowRuns(ctx context.Context, repoPath, headSHA string) ([]WorkflowRun, error)
+}
+
+// CheckReadLog configures optional logging when ReadCheckSet cannot list
+// workflow runs to reconcile a cancelled workflow check. A nil Logger disables
+// logging; a nil RateLimitLog logs listing errors at Warn.
+type CheckReadLog struct {
+	Logger       *zerolog.Logger
+	RateLimitLog *RateLimitLog
+	Site         string
 }
 
 // CommitStatusPoster is an optional capability: post one commit status on a
@@ -105,14 +129,65 @@ type CommitStatus struct {
 	TargetURL   string
 }
 
-// ReadCheckSet uses the receipt-aware capability when available. A legacy
-// provider supplies checks only, so it cannot claim a build receipt.
-func ReadCheckSet(ctx context.Context, p Provider, repoPath string, prID int) (CheckSet, error) {
+// ReadCheckSet uses the receipt-aware capability when available and reconciles
+// cancelled Actions workflow checks against same-head workflow runs when
+// headSHA is non-empty and p implements WorkflowRunLister. When runs cannot be
+// listed, the cancelled checks are retained and the failure is recorded on
+// CheckSet.RunsErr (and logged via log when provided).
+func ReadCheckSet(ctx context.Context, p CheckResultsReader, repoPath string, prID int, headSHA string, log ...CheckReadLog) (CheckSet, error) {
+	var set CheckSet
+	var err error
 	if reader, ok := p.(CheckSetReader); ok {
-		return reader.GetCheckSet(ctx, repoPath, prID)
+		set, err = reader.GetCheckSet(ctx, repoPath, prID)
+	} else {
+		var checks []CheckResult
+		checks, err = p.GetCheckResults(ctx, repoPath, prID)
+		set = CheckSet{Checks: checks}
 	}
-	checks, err := p.GetCheckResults(ctx, repoPath, prID)
-	return CheckSet{Checks: checks}, err
+	if err != nil {
+		return set, err
+	}
+	if !HasCancelledWorkflowCheck(set.Checks) {
+		return set, nil
+	}
+	var cfg CheckReadLog
+	if len(log) > 0 {
+		cfg = log[0]
+	}
+	lister, ok := p.(WorkflowRunLister)
+	if !ok || headSHA == "" {
+		if cfg.Logger != nil {
+			cfg.Logger.Debug().Str("repo", repoPath).Int("pr", prID).
+				Msg(checkReadLogPrefix(cfg.Site) + "cancelled checks retained; workflow runs unavailable")
+		}
+		return set, nil
+	}
+	runs, runsErr := lister.ListWorkflowRuns(ctx, repoPath, headSHA)
+	if runsErr != nil {
+		set.RunsErr = runsErr
+		if cfg.Logger != nil {
+			level := zerolog.WarnLevel
+			if cfg.RateLimitLog != nil {
+				level = cfg.RateLimitLog.Level(checkReadLogPrefix(cfg.Site)+"list workflow runs", runsErr)
+			}
+			cfg.Logger.WithLevel(level).Err(runsErr).Str("repo", repoPath).Int("pr", prID).
+				Str("head_sha", headSHA).
+				Msg(checkReadLogPrefix(cfg.Site) + "cancelled checks retained; list workflow runs failed")
+		}
+		return set, nil
+	}
+	set.WorkflowRuns = runs
+	set.RunsRead = true
+	set.RawChecks = set.Checks
+	set.Checks = ReconcileSupersededCancelled(headSHA, set.Checks, runs)
+	return set, nil
+}
+
+func checkReadLogPrefix(site string) string {
+	if site == "" {
+		return ""
+	}
+	return site + ": "
 }
 
 // BranchHeadReader is an OPTIONAL Provider capability, type-asserted rather

@@ -141,6 +141,21 @@ const (
 	// DaemonServiceUpdateSessionProcedure is the fully-qualified name of the DaemonService's
 	// UpdateSession RPC.
 	DaemonServiceUpdateSessionProcedure = "/bossanova.v1.DaemonService/UpdateSession"
+	// DaemonServiceListSessionLabelsProcedure is the fully-qualified name of the DaemonService's
+	// ListSessionLabels RPC.
+	DaemonServiceListSessionLabelsProcedure = "/bossanova.v1.DaemonService/ListSessionLabels"
+	// DaemonServiceCreateSessionLabelProcedure is the fully-qualified name of the DaemonService's
+	// CreateSessionLabel RPC.
+	DaemonServiceCreateSessionLabelProcedure = "/bossanova.v1.DaemonService/CreateSessionLabel"
+	// DaemonServiceUpdateSessionLabelProcedure is the fully-qualified name of the DaemonService's
+	// UpdateSessionLabel RPC.
+	DaemonServiceUpdateSessionLabelProcedure = "/bossanova.v1.DaemonService/UpdateSessionLabel"
+	// DaemonServiceDeleteSessionLabelProcedure is the fully-qualified name of the DaemonService's
+	// DeleteSessionLabel RPC.
+	DaemonServiceDeleteSessionLabelProcedure = "/bossanova.v1.DaemonService/DeleteSessionLabel"
+	// DaemonServiceSetSessionLabelsProcedure is the fully-qualified name of the DaemonService's
+	// SetSessionLabels RPC.
+	DaemonServiceSetSessionLabelsProcedure = "/bossanova.v1.DaemonService/SetSessionLabels"
 	// DaemonServiceLinkSessionPRProcedure is the fully-qualified name of the DaemonService's
 	// LinkSessionPR RPC.
 	DaemonServiceLinkSessionPRProcedure = "/bossanova.v1.DaemonService/LinkSessionPR"
@@ -479,6 +494,12 @@ type DaemonServiceClient interface {
 	AcceptSessionPRBlocker(context.Context, *connect.Request[v1.AcceptSessionPRBlockerRequest]) (*connect.Response[v1.AcceptSessionPRBlockerResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
+	// Session labels (Linear-style colored tags)
+	ListSessionLabels(context.Context, *connect.Request[v1.ListSessionLabelsRequest]) (*connect.Response[v1.ListSessionLabelsResponse], error)
+	CreateSessionLabel(context.Context, *connect.Request[v1.CreateSessionLabelRequest]) (*connect.Response[v1.CreateSessionLabelResponse], error)
+	UpdateSessionLabel(context.Context, *connect.Request[v1.UpdateSessionLabelRequest]) (*connect.Response[v1.UpdateSessionLabelResponse], error)
+	DeleteSessionLabel(context.Context, *connect.Request[v1.DeleteSessionLabelRequest]) (*connect.Response[v1.DeleteSessionLabelResponse], error)
+	SetSessionLabels(context.Context, *connect.Request[v1.SetSessionLabelsRequest]) (*connect.Response[v1.SetSessionLabelsResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
 	// SetSessionTracker links a session to a tracker issue, resolved against the
 	// repo's own tracker. It overwrites an existing link (the correction path).
@@ -1023,6 +1044,36 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("UpdateSession")),
 			connect.WithClientOptions(opts...),
 		),
+		listSessionLabels: connect.NewClient[v1.ListSessionLabelsRequest, v1.ListSessionLabelsResponse](
+			httpClient,
+			baseURL+DaemonServiceListSessionLabelsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListSessionLabels")),
+			connect.WithClientOptions(opts...),
+		),
+		createSessionLabel: connect.NewClient[v1.CreateSessionLabelRequest, v1.CreateSessionLabelResponse](
+			httpClient,
+			baseURL+DaemonServiceCreateSessionLabelProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("CreateSessionLabel")),
+			connect.WithClientOptions(opts...),
+		),
+		updateSessionLabel: connect.NewClient[v1.UpdateSessionLabelRequest, v1.UpdateSessionLabelResponse](
+			httpClient,
+			baseURL+DaemonServiceUpdateSessionLabelProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UpdateSessionLabel")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteSessionLabel: connect.NewClient[v1.DeleteSessionLabelRequest, v1.DeleteSessionLabelResponse](
+			httpClient,
+			baseURL+DaemonServiceDeleteSessionLabelProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DeleteSessionLabel")),
+			connect.WithClientOptions(opts...),
+		),
+		setSessionLabels: connect.NewClient[v1.SetSessionLabelsRequest, v1.SetSessionLabelsResponse](
+			httpClient,
+			baseURL+DaemonServiceSetSessionLabelsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SetSessionLabels")),
+			connect.WithClientOptions(opts...),
+		),
 		linkSessionPR: connect.NewClient[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse](
 			httpClient,
 			baseURL+DaemonServiceLinkSessionPRProcedure,
@@ -1556,6 +1607,11 @@ type daemonServiceClient struct {
 	acceptSessionPRBlocker               *connect.Client[v1.AcceptSessionPRBlockerRequest, v1.AcceptSessionPRBlockerResponse]
 	removeSession                        *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
 	updateSession                        *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
+	listSessionLabels                    *connect.Client[v1.ListSessionLabelsRequest, v1.ListSessionLabelsResponse]
+	createSessionLabel                   *connect.Client[v1.CreateSessionLabelRequest, v1.CreateSessionLabelResponse]
+	updateSessionLabel                   *connect.Client[v1.UpdateSessionLabelRequest, v1.UpdateSessionLabelResponse]
+	deleteSessionLabel                   *connect.Client[v1.DeleteSessionLabelRequest, v1.DeleteSessionLabelResponse]
+	setSessionLabels                     *connect.Client[v1.SetSessionLabelsRequest, v1.SetSessionLabelsResponse]
 	linkSessionPR                        *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
 	setSessionTracker                    *connect.Client[v1.SetSessionTrackerRequest, v1.SetSessionTrackerResponse]
 	setSessionTrackerRank                *connect.Client[v1.SetSessionTrackerRankRequest, v1.SetSessionTrackerRankResponse]
@@ -1818,6 +1874,31 @@ func (c *daemonServiceClient) RemoveSession(ctx context.Context, req *connect.Re
 // UpdateSession calls bossanova.v1.DaemonService.UpdateSession.
 func (c *daemonServiceClient) UpdateSession(ctx context.Context, req *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error) {
 	return c.updateSession.CallUnary(ctx, req)
+}
+
+// ListSessionLabels calls bossanova.v1.DaemonService.ListSessionLabels.
+func (c *daemonServiceClient) ListSessionLabels(ctx context.Context, req *connect.Request[v1.ListSessionLabelsRequest]) (*connect.Response[v1.ListSessionLabelsResponse], error) {
+	return c.listSessionLabels.CallUnary(ctx, req)
+}
+
+// CreateSessionLabel calls bossanova.v1.DaemonService.CreateSessionLabel.
+func (c *daemonServiceClient) CreateSessionLabel(ctx context.Context, req *connect.Request[v1.CreateSessionLabelRequest]) (*connect.Response[v1.CreateSessionLabelResponse], error) {
+	return c.createSessionLabel.CallUnary(ctx, req)
+}
+
+// UpdateSessionLabel calls bossanova.v1.DaemonService.UpdateSessionLabel.
+func (c *daemonServiceClient) UpdateSessionLabel(ctx context.Context, req *connect.Request[v1.UpdateSessionLabelRequest]) (*connect.Response[v1.UpdateSessionLabelResponse], error) {
+	return c.updateSessionLabel.CallUnary(ctx, req)
+}
+
+// DeleteSessionLabel calls bossanova.v1.DaemonService.DeleteSessionLabel.
+func (c *daemonServiceClient) DeleteSessionLabel(ctx context.Context, req *connect.Request[v1.DeleteSessionLabelRequest]) (*connect.Response[v1.DeleteSessionLabelResponse], error) {
+	return c.deleteSessionLabel.CallUnary(ctx, req)
+}
+
+// SetSessionLabels calls bossanova.v1.DaemonService.SetSessionLabels.
+func (c *daemonServiceClient) SetSessionLabels(ctx context.Context, req *connect.Request[v1.SetSessionLabelsRequest]) (*connect.Response[v1.SetSessionLabelsResponse], error) {
+	return c.setSessionLabels.CallUnary(ctx, req)
 }
 
 // LinkSessionPR calls bossanova.v1.DaemonService.LinkSessionPR.
@@ -2325,6 +2406,12 @@ type DaemonServiceHandler interface {
 	AcceptSessionPRBlocker(context.Context, *connect.Request[v1.AcceptSessionPRBlockerRequest]) (*connect.Response[v1.AcceptSessionPRBlockerResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
+	// Session labels (Linear-style colored tags)
+	ListSessionLabels(context.Context, *connect.Request[v1.ListSessionLabelsRequest]) (*connect.Response[v1.ListSessionLabelsResponse], error)
+	CreateSessionLabel(context.Context, *connect.Request[v1.CreateSessionLabelRequest]) (*connect.Response[v1.CreateSessionLabelResponse], error)
+	UpdateSessionLabel(context.Context, *connect.Request[v1.UpdateSessionLabelRequest]) (*connect.Response[v1.UpdateSessionLabelResponse], error)
+	DeleteSessionLabel(context.Context, *connect.Request[v1.DeleteSessionLabelRequest]) (*connect.Response[v1.DeleteSessionLabelResponse], error)
+	SetSessionLabels(context.Context, *connect.Request[v1.SetSessionLabelsRequest]) (*connect.Response[v1.SetSessionLabelsResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
 	// SetSessionTracker links a session to a tracker issue, resolved against the
 	// repo's own tracker. It overwrites an existing link (the correction path).
@@ -2863,6 +2950,36 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceUpdateSessionProcedure,
 		svc.UpdateSession,
 		connect.WithSchema(daemonServiceMethods.ByName("UpdateSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListSessionLabelsHandler := connect.NewUnaryHandler(
+		DaemonServiceListSessionLabelsProcedure,
+		svc.ListSessionLabels,
+		connect.WithSchema(daemonServiceMethods.ByName("ListSessionLabels")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceCreateSessionLabelHandler := connect.NewUnaryHandler(
+		DaemonServiceCreateSessionLabelProcedure,
+		svc.CreateSessionLabel,
+		connect.WithSchema(daemonServiceMethods.ByName("CreateSessionLabel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceUpdateSessionLabelHandler := connect.NewUnaryHandler(
+		DaemonServiceUpdateSessionLabelProcedure,
+		svc.UpdateSessionLabel,
+		connect.WithSchema(daemonServiceMethods.ByName("UpdateSessionLabel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceDeleteSessionLabelHandler := connect.NewUnaryHandler(
+		DaemonServiceDeleteSessionLabelProcedure,
+		svc.DeleteSessionLabel,
+		connect.WithSchema(daemonServiceMethods.ByName("DeleteSessionLabel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceSetSessionLabelsHandler := connect.NewUnaryHandler(
+		DaemonServiceSetSessionLabelsProcedure,
+		svc.SetSessionLabels,
+		connect.WithSchema(daemonServiceMethods.ByName("SetSessionLabels")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceLinkSessionPRHandler := connect.NewUnaryHandler(
@@ -3431,6 +3548,16 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceRemoveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateSessionProcedure:
 			daemonServiceUpdateSessionHandler.ServeHTTP(w, r)
+		case DaemonServiceListSessionLabelsProcedure:
+			daemonServiceListSessionLabelsHandler.ServeHTTP(w, r)
+		case DaemonServiceCreateSessionLabelProcedure:
+			daemonServiceCreateSessionLabelHandler.ServeHTTP(w, r)
+		case DaemonServiceUpdateSessionLabelProcedure:
+			daemonServiceUpdateSessionLabelHandler.ServeHTTP(w, r)
+		case DaemonServiceDeleteSessionLabelProcedure:
+			daemonServiceDeleteSessionLabelHandler.ServeHTTP(w, r)
+		case DaemonServiceSetSessionLabelsProcedure:
+			daemonServiceSetSessionLabelsHandler.ServeHTTP(w, r)
 		case DaemonServiceLinkSessionPRProcedure:
 			daemonServiceLinkSessionPRHandler.ServeHTTP(w, r)
 		case DaemonServiceSetSessionTrackerProcedure:
@@ -3746,6 +3873,26 @@ func (UnimplementedDaemonServiceHandler) RemoveSession(context.Context, *connect
 
 func (UnimplementedDaemonServiceHandler) UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateSession is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListSessionLabels(context.Context, *connect.Request[v1.ListSessionLabelsRequest]) (*connect.Response[v1.ListSessionLabelsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListSessionLabels is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) CreateSessionLabel(context.Context, *connect.Request[v1.CreateSessionLabelRequest]) (*connect.Response[v1.CreateSessionLabelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CreateSessionLabel is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) UpdateSessionLabel(context.Context, *connect.Request[v1.UpdateSessionLabelRequest]) (*connect.Response[v1.UpdateSessionLabelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateSessionLabel is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DeleteSessionLabel(context.Context, *connect.Request[v1.DeleteSessionLabelRequest]) (*connect.Response[v1.DeleteSessionLabelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteSessionLabel is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) SetSessionLabels(context.Context, *connect.Request[v1.SetSessionLabelsRequest]) (*connect.Response[v1.SetSessionLabelsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SetSessionLabels is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error) {

@@ -4,6 +4,7 @@ go_test(
     name = "serve_test",
     srcs = [
         "cache_test.go",
+        "poll_error_test.go",
         "runner_test.go",
         "services_file_test.go",
     ],

@@ -171,7 +171,7 @@ make build-mcp     # build the MCP server (bin/mcp)
 
 Point Claude Code or Claude Desktop at `bin/mcp` (the host spawns it over
 stdio), or run `boss mcp install` to host it as an always-on local HTTP daemon.
-The MCP server exposes 79 tools across 29 read-only, 35 mutating, and 15
+The MCP server exposes 83 tools across 30 read-only, 37 mutating, and 16
 `confirm`-gated destructive tools. See the [MCP guide](https://docs.bossanova.dev/guides/mcp)
 for host wiring and the full tool catalog.
 

@@ -19,6 +19,7 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 	snap := &pb.DaemonSnapshot{
 		DaemonId:                   c.daemonID,
 		IsTerminalSealingSupported: c.terminalSealingSupported,
+		IsChatAttachmentSupported:  c.chatAttachmentSupported,
 		CloudControl:               cloudControlProto(c.cloudControl),
 		HasCloudControlUpdates:     true,
 		// Commands are decided by their resolved target; see command_target.go.

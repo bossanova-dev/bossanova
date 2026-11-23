@@ -448,7 +448,7 @@ func (l *Lifecycle) runBuildReceipt(ctx context.Context, s *models.Session) (boo
 	if s.PRNumber == nil || l.provider == nil {
 		return false, nil
 	}
-	checks, err := vcs.ReadCheckSet(ctx, l.provider, s.WorktreePath, *s.PRNumber)
+	checks, err := vcs.ReadCheckSet(ctx, l.provider, s.WorktreePath, *s.PRNumber, "")
 	// An unreadable remote is not permission to relaunch a possibly finished run.
 	return checks.HasBuildReceipt, err
 }

@@ -7,6 +7,7 @@ export const TOOL_SOURCE_FILES = [
   path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools.go'),
   path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_mutating.go'),
   path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_destructive.go'),
+  path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_session_labels.go'),
 ]
 
 // The hosted-only tool families. They register only on the hosted Bossanova

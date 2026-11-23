@@ -106,9 +106,10 @@ stale read is exactly as uninformative as no read. `beginCycle` advances the cou
 `recordReconciliation({externalBlockersEvaluated: true})` satisfies it again.
 
 `transitionToDone` is the **sole** DONE path and adds, on top of the invariant: final authoritative
-reconciliation recorded; every eligible ticket merged / fail-isolated / cascade-skipped; the final
-progress upsert written; settled-child watch cleanup done (retained evidence watches excepted).
-`epicDoneBlockers` reports the unmet ones. The zero-launch branch is DONE only when reconstruction
+reconciliation recorded; every eligible ticket merged / fail-isolated / cascade-skipped.
+`epicDoneBlockers` reports the unmet ones, while `epicDoneWarnings` reports unfinished final
+progress upsert or settled-child watch cleanup (retained evidence watches excepted); the final
+summary is written from the DONE state. The zero-launch branch is DONE only when reconstruction
 adopts no live session and the same assertion passes.
 
 ## The launch / adoption handoff
@@ -175,11 +176,19 @@ only `active` as coverage. Remove a settled child's watches only after durable t
 bookkeeping; retain the watches of a live fail-isolated child as evidence
 (`retainedEvidenceWatches`).
 
+A trigger whose condition the PR satisfies now is never re-armed: the trigger is state-matching, so
+the new registration would fire at once. It counts as covered, except `checks_passed_ready` on a
+held or unmerged child (no PR trigger reports the hold clearing or wakes the next merge attempt) and
+`merged`/`closed` while the child is still in flight (no further PR trigger fires to reconcile the
+terminal provider outcome). An unreadable PR or unreadable check runs arm nothing they cannot judge,
+and that becomes a coverage failure that takes the fallback.
+
 ### Verification is the list read
 
 An arm that returns without an error but does not appear in the list read **did not take**, and is
 indistinguishable from one that did unless the driver looks. `ensureDurableCoverage` therefore
-list-reads after every arm and treats a still-missing trigger as a registration failure.
+list-reads after every arm and treats a still-missing trigger as a registration failure; a trigger
+reported as satisfied is not "still missing".
 
 ### The bounded fallback
 
@@ -227,7 +236,7 @@ wake must be a no-op, which it is because every step reads authoritative state f
 20. Persist.
 21. Evaluate the terminal invariant.
 22. Non-terminal ⇒ arm/verify the next wake and yield as `RUNNING` (or the explicit degradation).
-23. Terminal ⇒ clean up, write the final summary, then return `DONE`.
+23. Terminal ⇒ clean up, transition to `DONE`, write the final summary from the DONE state.
 
 ### Green admission
 

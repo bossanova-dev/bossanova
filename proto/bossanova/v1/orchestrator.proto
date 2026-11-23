@@ -1878,6 +1878,10 @@ message ProxySendChatMessageRequest {
   // optional so an omitting (pre-BOS-242) client is treated as submit=true
   // server-side, preserving the prior always-submit proxy behavior.
   optional bool submit = 4;
+  // session_id, when set, routes by the (session, chat) pair, which finds a
+  // chat whose daemon is claimed in another of the caller's organizations.
+  // Callers without a session (the MCP send tool) leave it empty.
+  string session_id = 5;
 }
 // ProxySendChatMessageResponse mirrors daemon.proto's SendChatMessageResponse.
 message ProxySendChatMessageResponse {

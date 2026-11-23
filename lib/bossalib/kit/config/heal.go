@@ -9,9 +9,10 @@ import (
 // HealPluginPaths repairs configured plugin entries whose stored Path no longer
 // points at an executable binary — e.g. a Homebrew upgrade deleted the versioned
 // Cellar directory the path was pinned to — by swapping in a same-name binary
-// found by auto-discovery. Only Path changes; Enabled, Version and Config are
-// preserved so user customizations survive. Repair is limited to entries whose
-// current path is missing/non-executable: a path that exists but fails checksum is
+// found by auto-discovery, and moves any path pinned to a Homebrew Cellar keg to
+// the formula's opt path. Only Path changes; Enabled, Version and Config are
+// preserved so user customizations survive. Otherwise repair is limited to entries
+// whose current path is missing/non-executable: a path that exists but fails checksum is
 // left for VerifyConfiguredPlugins to reject (fail closed), so a tampered binary is
 // never silently swapped. The replacement is accepted only when the discovered
 // binary is itself executable, so an entry is never marked healed to a path that
@@ -30,6 +31,15 @@ func HealPluginPaths(configured, discovered []PluginConfig) ([]PluginConfig, []s
 	out := append([]PluginConfig(nil), configured...)
 	var healed []string
 	for i := range out {
+		// A path pinned to one Homebrew keg breaks on the next upgrade even while
+		// that keg still exists: the new daemon starts before `brew cleanup`, the
+		// old binary fails the new release's checksums, and the runner is refused.
+		// The formula's opt path always names the current keg, so move to it.
+		if opt, ok := homebrewOptPath(out[i].Path); ok && isExecutableFile(opt) {
+			out[i].Path = opt
+			healed = append(healed, out[i].Name)
+			continue
+		}
 		if isExecutableFile(out[i].Path) {
 			continue
 		}
@@ -60,20 +70,24 @@ func HealPluginPaths(configured, discovered []PluginConfig) ([]PluginConfig, []s
 // re-points on every upgrade. It only rewrites when the opt path exists and
 // resolves to the same file; otherwise it returns path unchanged.
 func stableHomebrewPluginPath(path string) string {
-	parts := strings.Split(filepath.ToSlash(filepath.Clean(path)), "/")
-	for i := 0; i+2 < len(parts); i++ {
-		if parts[i] == "Cellar" {
-			formula := parts[i+1]
-			prefix := strings.Join(parts[:i], "/")
-			rest := strings.Join(parts[i+3:], "/") // drop Cellar/<formula>/<version>
-			opt := filepath.FromSlash(strings.Join([]string{prefix, "opt", formula, rest}, "/"))
-			if sameFile(opt, path) {
-				return opt
-			}
-			return path
-		}
+	if opt, ok := homebrewOptPath(path); ok && sameFile(opt, path) {
+		return opt
 	}
 	return path
+}
+
+// homebrewOptPath maps .../Cellar/<formula>/<version>/<rest> to
+// .../opt/<formula>/<rest>. ok is false for any path without that shape.
+func homebrewOptPath(path string) (string, bool) {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(path)), "/")
+	for i := 0; i+3 < len(parts); i++ {
+		if parts[i] == "Cellar" {
+			prefix := strings.Join(parts[:i], "/")
+			rest := strings.Join(parts[i+3:], "/")
+			return filepath.FromSlash(strings.Join([]string{prefix, "opt", parts[i+1], rest}, "/")), true
+		}
+	}
+	return "", false
 }
 
 func sameFile(a, b string) bool {

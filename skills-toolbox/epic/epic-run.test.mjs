@@ -4,6 +4,7 @@ import { createEpicState, normalizeEpicState, recordLaunch } from './epic-driver
 import {
   checkVerdictFromDisplayStatus,
   createEpicIo,
+  epicTriggerConditions,
   normalizeCallbackRow,
   pullFromRest,
 } from './epic-io.mjs'
@@ -146,6 +147,7 @@ test('arming before the child has a PR is a failure the cycle must cover with a 
   const { io, calls } = ioFor(baseState([ticket('A')]), {})
   assert.deepEqual(io.armWatches({ prNumber: null, triggers: ['merged'], message: 'm' }), {
     callbacks: [],
+    satisfied: [],
     error: 'child has no PR yet',
   })
   assert.equal(calls.length, 0)
@@ -378,7 +380,59 @@ test('a BLOCKED child whose run concluded with a reason routes to repair, not in
   assert.equal(classifyChildLiveness(read('WORKING', 'run blocked')).action, 'hold')
 })
 
-test('a trigger whose condition already holds is left to the fallback, never armed', () => {
+test('epicTriggerConditions classifies satisfied, unknown, and known-false triggers across PR and check-run states', () => {
+  const green = { readable: true, failing: false, pending: false }
+  const red = { readable: true, failing: true, pending: false }
+  const unread = { readable: false, failing: false, pending: false }
+  const cases = [
+    {
+      name: 'null PR marks every epic trigger unknown',
+      input: { pr: null, runs: unread },
+      want: {
+        satisfied: [],
+        unknown: ['checks_passed_ready', 'ready_for_review', 'checks_failed', 'merged', 'closed'],
+      },
+    },
+    {
+      name: 'ready PR with green runs satisfies ready_for_review and checks_passed_ready',
+      input: { pr: { state: 'OPEN', isDraft: false }, runs: green },
+      want: { satisfied: ['checks_passed_ready', 'ready_for_review'], unknown: [] },
+    },
+    {
+      name: 'ready PR with red runs satisfies ready_for_review and checks_failed',
+      input: { pr: { state: 'OPEN', isDraft: false }, runs: red },
+      want: { satisfied: ['ready_for_review', 'checks_failed'], unknown: [] },
+    },
+    {
+      name: 'draft PR with unreadable runs keeps checks_passed_ready known false and checks_failed unknown',
+      input: { pr: { state: 'OPEN', isDraft: true }, runs: unread },
+      want: { satisfied: [], unknown: ['checks_failed'] },
+    },
+    {
+      name: 'ready PR with unreadable runs marks both check triggers unknown',
+      input: { pr: { state: 'OPEN', isDraft: false }, runs: unread },
+      want: {
+        satisfied: ['ready_for_review'],
+        unknown: ['checks_passed_ready', 'checks_failed'],
+      },
+    },
+    {
+      name: 'merged PR satisfies only merged',
+      input: { pr: { state: 'MERGED', isDraft: false }, runs: green },
+      want: { satisfied: ['merged'], unknown: [] },
+    },
+    {
+      name: 'merged PR with unreadable runs has nothing unknown',
+      input: { pr: { state: 'MERGED', isDraft: false }, runs: unread },
+      want: { satisfied: ['merged'], unknown: [] },
+    },
+  ]
+  for (const tc of cases) {
+    assert.deepEqual(epicTriggerConditions(tc.input), tc.want, tc.name)
+  }
+})
+
+test('a trigger whose condition already holds is returned as satisfied without error, never armed', () => {
   const launched = recordLaunch(baseState([ticket('A')]), {
     ticketId: 'A',
     sessionId: 'sess-A',
@@ -400,7 +454,94 @@ test('a trigger whose condition already holds is left to the fallback, never arm
   })
   const added = calls.filter((call) => call.args[0] === 'callback').map((call) => call.args[3])
   assert.deepEqual(added, ['checks_failed', 'merged', 'closed'])
-  assert.match(armed.error, /checks_passed_ready,ready_for_review/)
+  assert.deepEqual(armed.satisfied, ['checks_passed_ready', 'ready_for_review'])
+  assert.equal(armed.error, undefined)
+})
+
+test('a pending required status does not stop checks_passed_ready from reporting satisfied and staying unarmed', () => {
+  const launched = recordLaunch(baseState([ticket('A')]), {
+    ticketId: 'A',
+    sessionId: 'sess-A',
+    chatId: 'chat-A',
+    prNumber: 7,
+  })
+  const { io, calls } = ioFor(
+    launched,
+    {
+      'gh api': (args) => {
+        if (args[1].endsWith('/status')) {
+          return JSON.stringify({ statuses: [{ context: 'boss/verify', state: 'pending' }] })
+        }
+        if (args[1].includes('/check-runs')) {
+          return JSON.stringify({ check_runs: [{ status: 'completed', conclusion: 'success' }] })
+        }
+        return JSON.stringify({ number: 7, draft: false, state: 'open', head: { sha: 'abc' } })
+      },
+      callback: (args) =>
+        JSON.stringify({ id: `cb-${args[3]}`, trigger: args[3], state: 'active' }),
+    },
+    { requiredStatus: 'boss/verify' },
+  )
+  const armed = io.armWatches({
+    ticketId: 'A',
+    prNumber: 7,
+    triggers: ['checks_passed_ready', 'ready_for_review', 'checks_failed', 'merged', 'closed'],
+    message: 'm',
+  })
+  const added = calls.filter((call) => call.args[0] === 'callback').map((call) => call.args[3])
+  assert.deepEqual(added, ['checks_failed', 'merged', 'closed'])
+  assert.deepEqual(armed.satisfied, ['checks_passed_ready', 'ready_for_review'])
+  assert.equal(armed.error, undefined)
+})
+
+test('armWatches with an unreadable PR arms no callbacks and reports an error naming the PR', () => {
+  const launched = recordLaunch(baseState([ticket('A')]), {
+    ticketId: 'A',
+    sessionId: 'sess-A',
+    chatId: 'chat-A',
+    prNumber: 7,
+  })
+  const { io, calls } = ioFor(launched, {
+    'gh api': () => ({ status: 1, stdout: '', stderr: 'HTTP 502 Bad Gateway' }),
+    callback: (args) => JSON.stringify({ id: `cb-${args[3]}`, trigger: args[3], state: 'active' }),
+  })
+  const armed = io.armWatches({
+    ticketId: 'A',
+    prNumber: 7,
+    triggers: ['checks_passed_ready', 'ready_for_review', 'checks_failed', 'merged', 'closed'],
+    message: 'm',
+  })
+  assert.equal(calls.filter((call) => call.args[0] === 'callback').length, 0)
+  assert.deepEqual(armed.callbacks, [])
+  assert.deepEqual(armed.satisfied, [])
+  assert.match(armed.error, /PR #7.*unreadable/i)
+})
+
+test('armWatches with unreadable check runs on a ready PR arms only merged and closed and errors on check triggers', () => {
+  const launched = recordLaunch(baseState([ticket('A')]), {
+    ticketId: 'A',
+    sessionId: 'sess-A',
+    chatId: 'chat-A',
+    prNumber: 7,
+  })
+  const { io, calls } = ioFor(launched, {
+    'gh api': (args) =>
+      args[1].includes('/check-runs')
+        ? { status: 1, stdout: '', stderr: 'HTTP 500 Internal Server Error' }
+        : JSON.stringify({ number: 7, draft: false, state: 'open', head: { sha: 'abc' } }),
+    callback: (args) => JSON.stringify({ id: `cb-${args[3]}`, trigger: args[3], state: 'active' }),
+  })
+  const armed = io.armWatches({
+    ticketId: 'A',
+    prNumber: 7,
+    triggers: ['checks_passed_ready', 'ready_for_review', 'checks_failed', 'merged', 'closed'],
+    message: 'm',
+  })
+  const added = calls.filter((call) => call.args[0] === 'callback').map((call) => call.args[3])
+  assert.deepEqual(added, ['merged', 'closed'])
+  assert.deepEqual(armed.satisfied, ['ready_for_review'])
+  assert.match(armed.error, /checks_passed_ready/)
+  assert.match(armed.error, /checks_failed/)
 })
 
 test('with a required status, passing checks wait for it to succeed on the head', () => {

@@ -71,11 +71,16 @@ func TestMaterializeAntigravityProjectsHomeAndIsolatesCredentials(t *testing.T) 
 		t.Fatalf("token mode = %#o, want 0600", info.Mode().Perm())
 	}
 
-	// Keychains must NOT be projected into the account home.
-	if _, err := os.Lstat(filepath.Join(mat.HomeDir, "Library", "Keychains")); !os.IsNotExist(err) {
-		t.Fatalf("Library/Keychains was projected into account home (err=%v)", err)
+	// The login keychain must be projected so gh and git credential helpers
+	// can read host tokens; agy itself stays off the keyring via SSH_CLIENT=1.
+	keychain, err := os.ReadFile(filepath.Join(mat.HomeDir, "Library", "Keychains", "login.keychain-db"))
+	if err != nil {
+		t.Fatalf("read projected login keychain: %v", err)
 	}
-	// Shared dotfiles, Library/Caches, .gemini/config, and brain/ must be projected.
+	if string(keychain) != "ambient-keychain" {
+		t.Fatalf("projected login keychain = %q, want host keychain", keychain)
+	}
+	// Shared dotfiles, Library entries, .gemini/config, and brain/ must be projected.
 	for _, rel := range []string{
 		".gitconfig",
 		"Library/Caches/tool.cache",
@@ -339,4 +344,42 @@ func TestProjectAntigravityBaseHomeRejectsLibrarySymlinkAndTightensPerms(t *test
 			t.Fatalf("acctLib mode = %#o, want 0700", got)
 		}
 	})
+}
+
+func TestMaterializeAntigravityProjectsKeychainsIntoExistingAccountLibrary(t *testing.T) {
+	baseDir := t.TempDir()
+	hostHome := t.TempDir()
+	stored := []byte(`{"token":{"access_token":"acct-access","refresh_token":"acct-refresh"}}`)
+
+	hostKeychain := filepath.Join(hostHome, "Library", "Keychains", "login.keychain-db")
+	if err := os.MkdirAll(filepath.Dir(hostKeychain), 0o700); err != nil {
+		t.Fatalf("mkdir host Library/Keychains: %v", err)
+	}
+	if err := os.WriteFile(hostKeychain, []byte("host-keychain"), 0o600); err != nil {
+		t.Fatalf("write host keychain: %v", err)
+	}
+
+	// An account home materialized before Keychains was projected: a real
+	// Library/ directory holding other projected entries but no Keychains.
+	acctLib := filepath.Join(baseDir, "accounts", "antigravity", "acct-old", "Library")
+	if err := os.MkdirAll(filepath.Join(acctLib, "Caches"), 0o700); err != nil {
+		t.Fatalf("mkdir existing account Library: %v", err)
+	}
+
+	m, err := New(&fakeStore{blob: stored}, zerolog.Nop(), WithBaseDir(baseDir), WithAntigravityBaseHome(hostHome))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mat, _, err := m.MaterializeAntigravity(context.Background(), "acct-old")
+	if err != nil {
+		t.Fatalf("MaterializeAntigravity: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(mat.HomeDir, "Library", "Keychains", "login.keychain-db"))
+	if err != nil {
+		t.Fatalf("read projected login keychain: %v", err)
+	}
+	if string(got) != "host-keychain" {
+		t.Fatalf("projected login keychain = %q, want host keychain", got)
+	}
 }

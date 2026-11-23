@@ -12,7 +12,7 @@
 //
 //   node orchestrate-snapshot.mjs collect [--host <ssh-host>]... [--no-local] [--json]
 //        [--boss <local boss>] [--remote-boss <boss on hosts>] [--remote-path <PATH on hosts>]
-//        [--root <repo>] [--core <skill name>] [--state <grace state file>]
+//        [--root <repo>] [--core <skill name>] [--state <grace state file>] [--deadline <seconds>]
 //   node orchestrate-snapshot.mjs pane --chat <chat-id> [--host <ssh-host>] [--lines 40] [--approve]
 
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -23,6 +23,7 @@ import { parseArgs } from 'node:util'
 
 import { isMainModule } from '../main-module.mjs'
 import { discoverExtensions, validateResult } from '../skill-extensions.mjs'
+import { DEFAULT_DUMP_DEADLINE_MS, DEFAULT_REMOTE_PATH, dumpDaemon } from './orchestrate-dump.mjs'
 import {
   FINISH_CHAT_TITLE,
   finishBuild,
@@ -141,9 +142,6 @@ export function sharedReds(rows) {
   return [...groups.values()].filter((group) => group.prs.length >= 2)
 }
 
-// The tag a repair puts on the durable note it records when it stops short (boss-repair's
-// RESIDUAL_NOTE_TAG); a stop on a red found on the base is one of them.
-export const RESIDUAL_TAG = 'repair-residual'
 const PR_REFERENCE = /(?:\bPR\s*#|\/pull\/)(\d+)\b/gi
 
 /** The residual notes that name this session: recorded by it, or citing its PR in its repo. */
@@ -465,90 +463,6 @@ const NUDGE =
 const STALE_DIALOG =
   'Operator: the dialog you showed was answered or dismissed. Re-check your state and continue toward the hand-off.'
 
-// Runs on the daemon's machine (over SSH for a remote host) so one round trip lists everything.
-// argv: boss. Prints { sessions, residuals, errors }; `residuals` are the host's repair-residual
-// notes across every repo (`--repo ""`, since the notes list defaults to the current repo). A
-// session that is a cron job's run carries that job as `cron`: its latest run, or a session titled
-// with the job's name in the job's repo (a fire titles its session so; a branchless plan run keeps
-// that title, and an overlapping or gated later fire moves the job's latest-run pointer).
-const DAEMON_DUMP = `
-const { execFile } = require('node:child_process')
-const boss = process.argv[2] || 'boss'
-const run = (args) => new Promise((resolve, reject) =>
-  execFile(boss, args, { encoding: 'utf8', maxBuffer: 64 << 20, timeout: 90000 }, (err, out) =>
-    err ? reject(err) : resolve(JSON.parse(out))))
-const settle = (p) => p.then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }))
-const TERMINAL = new Set(['CLOSED', 'MERGED', 'ARCHIVED'])
-// The cron job each session is a run of, from one cron list.
-const cronBySession = new Map()
-const cronByTitle = new Map()
-const titleKey = (repoId, name) => repoId + '\\0' + name
-async function one(s) {
-  const entry = { session: s, chats: [], pr: null }
-  if (TERMINAL.has(s.state)) return entry
-  const cron = cronBySession.get(s.id) ?? cronByTitle.get(titleKey(s.repo_id, s.title))
-  if (cron) entry.cron = cron
-  const ref = /github\\.com\\/([^/]+\\/[^/]+)\\/pull\\/(\\d+)/.exec(s.pr_url || '')
-  // Sequential per session and few workers: a burst of parallel calls makes bossd drop connections.
-  const pr = await settle(ref ? run(['pr', 'state', ref[2], '--repo', ref[1], '--json']) : Promise.resolve(null))
-  if (pr.status === 'fulfilled') entry.pr = pr.value
-  else entry.errors = [...(entry.errors ?? []), 'pr state: ' + String(pr.reason.message).slice(0, 160)]
-  if (ref) entry.repo = ref[1]
-  const chats = await settle(run(['chats', '--json', s.id]))
-  const shown = await settle(run(['show', '--json', s.id]))
-  if (chats.status === 'fulfilled') entry.chats = chats.value.chats ?? []
-  else entry.errors = [...(entry.errors ?? []), 'chats: ' + String(chats.reason.message).slice(0, 160)]
-  if (shown.status === 'fulfilled') entry.session = shown.value.session ?? s
-  return entry
-}
-;(async () => {
-  const errors = []
-  const crons = await settle(run(['cron', 'ls', '--json']))
-  if (crons.status === 'fulfilled') {
-    const jobs = Array.isArray(crons.value) ? crons.value : (crons.value.jobs ?? [])
-    for (const job of jobs) {
-      if (job.last_run_session_id) cronBySession.set(job.last_run_session_id, { id: job.id, name: job.name })
-      if (job.repo_id && job.name) cronByTitle.set(titleKey(job.repo_id, job.name), { id: job.id, name: job.name })
-    }
-  } else errors.push('cron jobs: ' + String(crons.reason.message).slice(0, 160))
-  const listed = await run(['ls', '--json'])
-  const queue = [...(listed.sessions ?? listed)]
-  const out = []
-  await Promise.all(Array.from({ length: 4 }, async () => {
-    while (queue.length) out.push(await one(queue.shift()))
-  }))
-  const notes = await settle(run(['notes', 'ls', '--tag', '${RESIDUAL_TAG}', '--repo', '', '--json']))
-  let residuals = []
-  if (notes.status === 'fulfilled') {
-    const list = Array.isArray(notes.value) ? notes.value : (notes.value.notes ?? [])
-    residuals = list.map((n) => ({ id: n.id, repo_id: n.repo_id, session_id: n.session_id,
-      created_at: n.created_at, body: String(n.body ?? '').slice(0, 4000) }))
-  } else errors.push('residual notes: ' + String(notes.reason.message).slice(0, 160))
-  process.stdout.write(JSON.stringify({ sessions: out, residuals, errors }))
-})().catch((e) => { process.stderr.write(String(e.message)); process.exit(1) })
-`
-
-// A non-interactive SSH command gets a minimal PATH, and the host's login shell may not be POSIX,
-// so remote commands run through `env` with a PATH covering the usual install locations.
-export const DEFAULT_REMOTE_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
-
-/**
- * @param {string} host
- * @param {{ bossBin: string, remoteBoss: string, remotePath: string }} where
- */
-function dumpDaemon(host, { bossBin, remoteBoss, remotePath }) {
-  /** @type {import('node:child_process').ExecFileSyncOptionsWithStringEncoding} */
-  const opts = { input: DAEMON_DUMP, encoding: 'utf8', maxBuffer: 64 << 20 }
-  const raw = host
-    ? execFileSync(
-        'ssh',
-        ['-o', 'BatchMode=yes', host, 'env', `PATH=${remotePath}`, 'node', '-', remoteBoss],
-        opts,
-      )
-    : execFileSync('node', ['-', bossBin], opts)
-  return JSON.parse(raw)
-}
-
 const TIMELINE_QUERY = `query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){
 timelineItems(last:60,itemTypes:[CONVERT_TO_DRAFT_EVENT,READY_FOR_REVIEW_EVENT,ISSUE_COMMENT]){nodes{__typename
 ... on ConvertToDraftEvent{createdAt} ... on ReadyForReviewEvent{createdAt} ... on IssueComment{createdAt body}}}}}}`
@@ -735,8 +649,10 @@ export function collect({
   seen = null,
   // Where the outage record lives; null reads none.
   stateDir = null,
+  // How long the whole round may spend reading daemons; the hosts share it in turn.
+  deadlineMs = DEFAULT_DUMP_DEADLINE_MS,
 }) {
-  const where = { bossBin, remoteBoss, remotePath }
+  const until = Date.now() + deadlineMs
   const targets = [
     ...(local ? [{ host: '', label: 'local' }] : []),
     ...hosts.map((host) => ({ host, label: host })),
@@ -750,12 +666,15 @@ export function collect({
   for (const target of targets) {
     let read
     try {
-      read = dump(target.host, where)
+      const left = Math.max(1, until - Date.now())
+      read = dump(target.host, { bossBin, remoteBoss, remotePath, deadlineMs: left })
     } catch (error) {
       errors.push(`${target.label}: ${String(error.message).split('\n')[0]}`)
       unread.push(target.label)
       continue
     }
+    // A dump cut short by its deadline left sessions out.
+    if (read.partial) unread.push(target.label)
     const { sessions: entries, residuals = [] } = read
     for (const error of read.errors ?? []) errors.push(`${target.label}: ${error}`)
     for (const entry of entries) {
@@ -899,10 +818,15 @@ function main(argv) {
       // Remembers when each repair/verify row was first seen, so the grace spans the attended
       // chat's repeated collect rounds.
       state: { type: 'string', default: DEFAULT_STATE },
+      // Seconds the round may spend reading daemons; set it below the caller's own budget.
+      deadline: { type: 'string', default: String(DEFAULT_DUMP_DEADLINE_MS / 1000) },
     },
   })
   const [command] = positionals
+  const deadline = Number(values.deadline)
+  if (!(deadline > 0)) throw new Error(`--deadline must be a positive number of seconds`)
   const options = {
+    deadlineMs: deadline * 1000,
     hosts: values.host,
     local: !values['no-local'],
     bossBin: values.boss,

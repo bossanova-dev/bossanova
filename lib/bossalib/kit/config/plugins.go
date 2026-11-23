@@ -157,10 +157,17 @@ func discoverPluginsFrom(binDir string, policy discoveryPolicy) ([]PluginConfig,
 		binDir = filepath.Dir(resolved)
 	}
 	libexecDir := filepath.Clean(filepath.Join(binDir, "..", "libexec", "plugins"))
-	if plugins, rej := scanForPlugins(libexecDir, policy); len(plugins) > 0 || len(rej) > 0 {
-		return plugins, rej
+	plugins, rej := scanForPlugins(libexecDir, policy)
+	if len(plugins) == 0 && len(rej) == 0 {
+		plugins, rej = scanForPlugins(binDir, policy)
 	}
-	return scanForPlugins(binDir, policy)
+	// binDir was resolved through symlinks, so a Homebrew install finds its
+	// plugins inside the versioned keg. Every caller persists these paths, and a
+	// keg path breaks on the next upgrade, so hand out the opt path instead.
+	for i := range plugins {
+		plugins[i].Path = stableHomebrewPluginPath(plugins[i].Path)
+	}
+	return plugins, rej
 }
 
 func discoverDevPluginsFromCWD(policy discoveryPolicy) ([]PluginConfig, []PluginRejection) {

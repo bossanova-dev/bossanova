@@ -5,7 +5,7 @@
 // ships its own `.prettierrc`, so both resolve the repo-root config. Two engines
 // reading one config is how a file passes one leg and fails the other (BOS-795).
 //
-// `services/docs` is installed with `--ignore-workspace` and owns a separate
+// `services/docs` is its own pnpm workspace root with a separate
 // lockfile, so pnpm's workspace resolution cannot deduplicate the two ranges for
 // us. This assertion is the honest mechanism keeping them on one engine.
 //
@@ -121,7 +121,7 @@ export function compareResolvedPrettier(rootLockText, docsLockText, labels = {})
     : `prettier resolved-version drift: ${rootLabel} resolves ${shown(root)} but ${docsLabel} ` +
       `resolves ${shown(docs)} — matching caret ranges are not enough, since a \`pnpm update ` +
       `prettier\` in one tree alone moves that tree's engine while both manifests still agree. ` +
-      `Re-run \`cd services/docs && pnpm install --ignore-workspace\` after bumping the root ` +
+      `Re-run \`make -C services/docs deps\` after bumping the root ` +
       `(see docs/release/ci.md)`
   return { agree, rootVersion: root.version, docsVersion: docs.version, message }
 }

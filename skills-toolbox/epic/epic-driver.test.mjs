@@ -44,7 +44,12 @@ import {
   validateEpicState,
   verifySubscriptionRow,
 } from './epic-driver.mjs'
-import { parseProgressRunMetadata, validateProgressState } from './progress-comment.mjs'
+import { coverageFailureReason, rearmCoverage } from './epic-coverage.mjs'
+import {
+  parseProgressRunMetadata,
+  renderProgressComment,
+  validateProgressState,
+} from './progress-comment.mjs'
 
 const NOW = '2026-01-01T00:00:00Z'
 const EPIC = 'EPIC-1'
@@ -978,6 +983,29 @@ test('a full run reaches DONE only after cleanup and the final progress upsert',
   assert.equal(assertEpicCanTerminate(result.state), true)
 })
 
+test('the final progress comment is rendered from the DONE state', async () => {
+  const io = makeIo()
+  let state = baseState({ parallel: 1, tickets: [ticket('T-1')] })
+  state = recordLaunch(state, { ticketId: 'T-1', sessionId: 'sess-1', chatId: 'chat-1', at: NOW })
+  state = seedSettled(state, ['T-1'])
+  await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+
+  const upserts = io.calls.filter((call) => call.name === 'upsertProgress')
+  assert.ok(upserts.length >= 2, `expected in-cycle and final upserts, got ${upserts.length}`)
+  for (const call of upserts.slice(0, -1)) {
+    assert.notEqual(call.args[0].state.status, EPIC_RUN_STATUSES.DONE)
+  }
+  const finalCall = upserts.at(-1).args[0]
+  assert.equal(finalCall.state.status, EPIC_RUN_STATUSES.DONE)
+  assert.equal(finalCall.state.phase, 'terminal')
+  assert.equal(finalCall.progressState.run.status, EPIC_RUN_STATUSES.DONE)
+  assert.equal(finalCall.progressState.run.phase, 'terminal')
+  assert.equal(
+    parseProgressRunMetadata(renderProgressComment(finalCall.progressState)).status,
+    EPIC_RUN_STATUSES.DONE,
+  )
+})
+
 test('a needs-human ticket is never launched by a reconciliation cycle', async () => {
   const io = makeIo()
   const state = baseState({
@@ -1401,5 +1429,306 @@ test('base branch survives normalization and persistence, while legacy states ha
   )
   for (const value of [undefined, null, 123]) {
     assert.equal(normalizeEpicState({ ...state, baseBranch: value }).baseBranch, '')
+  }
+})
+
+// --- satisfied trigger coverage --------------------------------------------
+
+const HELD_CPR_REASON =
+  'checks_passed_ready holds but the child is held; no trigger reports the hold clearing'
+
+function coverageIo(live, satisfied, armWatches) {
+  const rows = live.map((trigger, i) => ({ id: `cb-${i}`, trigger, state: 'active' }))
+  return makeIo({
+    readSessionSnapshot: () => workingSnapshot(),
+    listWatches: () => rows,
+    armWatches: armWatches ?? (() => ({ callbacks: [], satisfied })),
+    scheduleFallbackWake: () => ({ mechanism: 'in-session-wake', nextWakeAt: NOW }),
+  })
+}
+
+const launchedChild = () =>
+  recordLaunch(baseState({ parallel: 1, tickets: [ticket('T-1')] }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+    prNumber: 10,
+    prRepo: 'acme/app',
+  })
+
+test('rearmCoverage ignores unrequested triggers and holds checks_passed_ready only when held', () => {
+  const check = (rearmNeeded, satisfied, held) =>
+    rearmCoverage({ rearmNeeded, satisfied, verifiedTriggers: new Set(['merged']), held })
+  assert.deepEqual(check(['merged', 'closed'], ['ready_for_review', 'bogus'], true), {
+    covered: [],
+    stillMissing: ['closed'],
+    reasons: [],
+  })
+  assert.deepEqual(check(['checks_passed_ready', 'merged'], ['checks_passed_ready'], true), {
+    covered: [],
+    stillMissing: ['checks_passed_ready'],
+    reasons: [HELD_CPR_REASON],
+  })
+  assert.deepEqual(check(['checks_passed_ready', 'merged'], ['checks_passed_ready'], false), {
+    covered: ['checks_passed_ready'],
+    stillMissing: [],
+    reasons: [],
+  })
+})
+
+test('satisfied triggers count as verified coverage with no fallback and emit a satisfied action', async () => {
+  const io = coverageIo(
+    ['checks_passed_ready', 'merged', 'closed'],
+    ['ready_for_review', 'checks_failed'],
+  )
+  const result = await reconcileEpic({ state: launchedChild(), wake: 'callback', io, now: NOW })
+  assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING)
+  assert.equal(result.state.watches['T-1'].verifiedAt, NOW)
+  assert.equal(io.count('scheduleFallbackWake'), 0)
+  assert.ok(result.actions.includes('satisfied:T-1:ready_for_review,checks_failed'))
+})
+
+test('held child with satisfied checks_passed_ready is not covered and takes fallback naming it', async () => {
+  const io = coverageIo(
+    ['ready_for_review', 'checks_failed', 'merged', 'closed'],
+    ['checks_passed_ready'],
+  )
+  const result = await reconcileEpic({ state: launchedChild(), wake: 'callback', io, now: NOW })
+  assert.equal(result.state.watches['T-1'].verifiedAt, '')
+  assert.equal(io.count('scheduleFallbackWake'), 1)
+  assert.match(result.state.watches['T-1'].fallback.reason, /checks_passed_ready/)
+})
+
+test('armWatches claiming an unrequested trigger covers nothing', async () => {
+  const io = coverageIo(
+    ['checks_passed_ready', 'ready_for_review', 'checks_failed', 'merged'],
+    ['ready_for_review', 'unexpected'],
+  )
+  const result = await reconcileEpic({ state: launchedChild(), wake: 'callback', io, now: NOW })
+  assert.equal(result.state.watches['T-1'].verifiedAt, '')
+  assert.equal(io.count('scheduleFallbackWake'), 1)
+  assert.ok(!result.actions.some((a) => a.startsWith('satisfied:')))
+})
+
+test('a second cycle after a satisfied skip asks armWatches for that trigger again', async () => {
+  const requested = []
+  const io = coverageIo(
+    ['checks_passed_ready', 'checks_failed', 'merged', 'closed'],
+    [],
+    ({ triggers }) => {
+      requested.push(triggers)
+      return { callbacks: [], satisfied: ['ready_for_review'] }
+    },
+  )
+  const first = await reconcileEpic({ state: launchedChild(), wake: 'callback', io, now: NOW })
+  await reconcileEpic({ state: first.state, wake: 'callback', io, now: NOW })
+  assert.deepEqual(requested, [['ready_for_review'], ['ready_for_review']])
+})
+
+test('rearmCoverage keeps satisfied merged/closed missing and coverageFailureReason matches reasons by trigger', () => {
+  for (const trigger of ['merged', 'closed']) {
+    const res = rearmCoverage({
+      rearmNeeded: [trigger, 'ready_for_review'],
+      satisfied: [trigger, 'ready_for_review'],
+      verifiedTriggers: new Set(),
+      held: false,
+    })
+    assert.deepEqual(res.covered, ['ready_for_review'])
+    assert.deepEqual(res.stillMissing, [trigger])
+    assert.equal(res.reasons.length, 1)
+    assert.match(res.reasons[0], new RegExp(`^${trigger} `))
+  }
+  // An unrelated reason must not suppress an unreasoned checks_passed_ready gap.
+  const combined = coverageFailureReason({
+    stillMissing: ['checks_passed_ready', 'merged'],
+    reasons: ['merged already holds while the child is still in flight'],
+  })
+  assert.match(combined, /merged already holds/)
+  assert.match(combined, /list verification found no watch for checks_passed_ready/)
+})
+
+test('in-flight child with satisfied merged or closed takes fallback instead of stalling', async () => {
+  for (const trigger of ['merged', 'closed']) {
+    const live = [
+      'checks_passed_ready',
+      'ready_for_review',
+      'checks_failed',
+      'merged',
+      'closed',
+    ].filter((t) => t !== trigger)
+    const io = coverageIo(live, [trigger])
+    const result = await reconcileEpic({ state: launchedChild(), wake: 'callback', io, now: NOW })
+    assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING)
+    assert.equal(result.state.watches['T-1'].verifiedAt, '')
+    assert.equal(io.count('scheduleFallbackWake'), 1)
+    assert.match(result.state.watches['T-1'].fallback.reason, new RegExp(trigger))
+  }
+})
+
+test('unmerged green children with satisfied checks_passed_ready take fallback instead of stalling', async () => {
+  const readyRows = ['checks_failed', 'merged', 'closed'].map((trigger, i) => ({
+    id: `cb-${i}`,
+    trigger,
+    state: 'active',
+  }))
+  const greenIo = (overrides = {}) =>
+    makeIo({
+      readSessionSnapshot: () => greenSnapshot(),
+      listWatches: () => readyRows,
+      armWatches: () => ({ callbacks: [], satisfied: ['checks_passed_ready', 'ready_for_review'] }),
+      scheduleFallbackWake: () => ({ mechanism: 'in-session-wake', nextWakeAt: NOW }),
+      ...overrides,
+    })
+
+  // 1. merge-unverified demotes the child out of greens.
+  {
+    const io = greenIo({
+      mergeChild: () => ({ merged: false, error: 'conflict' }),
+      verifyMerged: () => false,
+    })
+    const result = await reconcileEpic({
+      state: seedSettled(launchedChild(), ['T-1']),
+      wake: 'callback',
+      io,
+      now: NOW,
+    })
+    assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING)
+    assert.equal(result.state.watches['T-1'].verifiedAt, '')
+    assert.equal(io.count('scheduleFallbackWake'), 1)
+    assert.match(result.state.watches['T-1'].fallback.reason, /checks_passed_ready/)
+  }
+
+  // 2. merge-skip on an open external blocker leaves the green child in flight.
+  {
+    const io = greenIo({ readExternalBlockers: () => ({ 'EXT-9': 'open' }) })
+    let state = recordLaunch(
+      baseState({ parallel: 1, tickets: [ticket('T-1', { blockedBy: ['EXT-9'] })] }),
+      {
+        ticketId: 'T-1',
+        sessionId: 'sess-1',
+        chatId: 'chat-1',
+        at: NOW,
+        prNumber: 10,
+        prRepo: 'acme/app',
+      },
+    )
+    state = seedSettled(state, ['T-1'])
+    const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+    assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING)
+    assert.equal(result.state.watches['T-1'].verifiedAt, '')
+    assert.equal(io.count('scheduleFallbackWake'), 1)
+    assert.match(result.state.watches['T-1'].fallback.reason, /checks_passed_ready/)
+  }
+
+  // 3. Second green child queued behind the one-merge-per-cycle cap takes fallback, while the merged child does not.
+  {
+    const io = greenIo()
+    let state = baseState({ parallel: 2, tickets: [ticket('T-1'), ticket('T-2')] })
+    for (const id of ['T-1', 'T-2']) {
+      state = recordLaunch(state, {
+        ticketId: id,
+        sessionId: `sess-${id}`,
+        chatId: `chat-${id}`,
+        at: NOW,
+        prNumber: id === 'T-1' ? 10 : 11,
+        prRepo: 'acme/app',
+      })
+    }
+    state = seedSettled(state, ['T-1', 'T-2'])
+    const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+    assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING)
+    assert.equal(result.state.merged.length, 1)
+    const remaining = result.state.inFlight[0]
+    assert.equal(result.state.watches[remaining].verifiedAt, '')
+    assert.equal(io.count('scheduleFallbackWake'), 1)
+    assert.match(result.state.watches[remaining].fallback.reason, /checks_passed_ready/)
+  }
+})
+
+test('post-merge retry of an unmerged green child with satisfied checks_passed_ready does not mark it verified', async () => {
+  const readyRows = ['checks_failed', 'merged', 'closed'].map((trigger, i) => ({
+    id: `cb-${i}`,
+    trigger,
+    state: 'active',
+  }))
+
+  // 1. External-blocker merge-skip: pass-1 armWatches fails transiently with no fallback wake;
+  // pass-2 retries ensureDurableCoverage after merging and sees satisfied checks_passed_ready.
+  {
+    let armCalls = 0
+    const io = makeIo({
+      readSessionSnapshot: () => greenSnapshot(),
+      readExternalBlockers: () => ({ 'EXT-9': 'open' }),
+      listWatches: () => readyRows,
+      armWatches: () => {
+        armCalls += 1
+        if (armCalls === 1) return { error: 'transient transport error' }
+        return { callbacks: [], satisfied: ['checks_passed_ready', 'ready_for_review'] }
+      },
+      scheduleFallbackWake: () => null,
+    })
+    let state = recordLaunch(
+      baseState({ parallel: 1, tickets: [ticket('T-1', { blockedBy: ['EXT-9'] })] }),
+      {
+        ticketId: 'T-1',
+        sessionId: 'sess-1',
+        chatId: 'chat-1',
+        at: NOW,
+        prNumber: 10,
+        prRepo: 'acme/app',
+      },
+    )
+    state = seedSettled(state, ['T-1'])
+    const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+    assert.equal(armCalls, 2)
+    assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING_BUT_UNWATCHED)
+    assert.equal(result.state.watches['T-1'].verifiedAt, '')
+    assert.equal(result.state.watches['T-1'].fallback, null)
+    assert.match(result.state.watches['T-1'].unwatchedReason, /checks_passed_ready/)
+    assert.ok(
+      result.actions.some(
+        (a) => a.startsWith('unwatched:T-1:') && a.includes('checks_passed_ready'),
+      ),
+    )
+    const progress = io.calls.find((c) => c.name === 'upsertProgress').args[0].progressState
+    assert.equal(progress.run.nextWake, 'none')
+  }
+
+  // 2. Queued behind one-merge-per-cycle cap: second green child fails pass-1 transiently with no
+  // fallback wake, then clears on pass-2 retry while remaining unmerged in greens.
+  {
+    const armCallsByTicket = new Map()
+    const io = makeIo({
+      readSessionSnapshot: () => greenSnapshot(),
+      listWatches: () => readyRows,
+      armWatches: ({ ticketId }) => {
+        const count = (armCallsByTicket.get(ticketId) ?? 0) + 1
+        armCallsByTicket.set(ticketId, count)
+        if (count === 1) return { error: 'transient transport error' }
+        return { callbacks: [], satisfied: ['checks_passed_ready', 'ready_for_review'] }
+      },
+      scheduleFallbackWake: () => null,
+    })
+    let state = baseState({ parallel: 2, tickets: [ticket('T-1'), ticket('T-2')] })
+    for (const id of ['T-1', 'T-2']) {
+      state = recordLaunch(state, {
+        ticketId: id,
+        sessionId: `sess-${id}`,
+        chatId: `chat-${id}`,
+        at: NOW,
+        prNumber: id === 'T-1' ? 10 : 11,
+        prRepo: 'acme/app',
+      })
+    }
+    state = seedSettled(state, ['T-1', 'T-2'])
+    const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+    assert.equal(result.state.merged.length, 1)
+    const remaining = result.state.inFlight[0]
+    assert.equal(armCallsByTicket.get(remaining), 2)
+    assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING_BUT_UNWATCHED)
+    assert.equal(result.state.watches[remaining].verifiedAt, '')
+    assert.equal(result.state.watches[remaining].fallback, null)
+    assert.match(result.state.watches[remaining].unwatchedReason, /checks_passed_ready/)
   }
 })

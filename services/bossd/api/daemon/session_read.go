@@ -33,6 +33,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 		p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 		p.RepoShouldArchiveSessionsAfterMerge = repo.ShouldArchiveSessionsAfterMerge
 		p.RepoCanAutoRepair = repo.CanAutoRepair
+		HydrateRepoServe(p, repo)
 	}
 
 	// Hydrate PR display status from the in-memory tracker.
@@ -83,6 +84,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 		s.hydrateSessionEndpoints(chats, p, session, req.Msg.GetClientNetworkNamespace())
 	}
 
+	s.hydrateSessionLabels(ctx, p)
 	s.hydrateAttention(ctx, p, attentionDeps{row: session, display: displayEntry, chats: chats})
 
 	return connect.NewResponse(&pb.GetSessionResponse{Session: p}), nil
@@ -139,6 +141,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		if repo, ok := repoCache[sess.RepoID]; ok {
 			p.RepoDisplayName = repo.DisplayName
 			p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
+			HydrateRepoServe(p, repo)
 			var display *status.DisplayEntry
 			if s.displayTracker != nil {
 				display = s.displayTracker.Get(sess.ID)
@@ -269,6 +272,9 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	if msg.GetIncludeLocalHttpEndpoints() && s.endpointReader != nil {
 		s.hydrateSessionEndpointsBatch(pbSessions, sessByID, chatsBySession, msg.GetClientNetworkNamespace())
 	}
+
+	s.hydrateSessionLabelsBatch(ctx, pbSessions)
+	pbSessions = filterSessionsByLabels(pbSessions, msg.GetLabelIds())
 
 	for _, p := range pbSessions {
 		s.hydrateAttention(ctx, p, attentionDeps{row: sessByID[p.Id], display: entries[p.Id], chats: chatsBySession[p.Id]})

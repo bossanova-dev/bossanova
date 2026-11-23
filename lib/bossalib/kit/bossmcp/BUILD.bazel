@@ -13,6 +13,7 @@ go_library(
         "tools_hosted.go",
         "tools_mutating.go",
         "tools_mutating_types.go",
+        "tools_session_labels.go",
         "tools_session_webhooks.go",
         "tools_triggers.go",
     ],

@@ -133,6 +133,8 @@ type PersistBack func(ctx context.Context) error
 type Materializer struct {
 	baseDir             string
 	antigravityBaseHome string
+	// antigravityMCPRepos lists trusted repos whose .mcp.json servers are projected into Antigravity homes.
+	antigravityMCPRepos func(context.Context) ([]AntigravityMCPRepo, error)
 	store               CredentialStore
 	logger              zerolog.Logger
 	locks               keyedMutex

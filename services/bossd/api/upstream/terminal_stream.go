@@ -481,9 +481,16 @@ type activeAttach struct {
 	// BOS-661 upload resolves its target chat from the attach registry
 	// instead of trusting an id off the wire.
 	chatID string
-	attach terminalAttach
-	cancel context.CancelFunc
-	done   <-chan struct{}
+	// uploadOnly marks a chat reply box's upload channel: no PTY sits
+	// behind attach, and finished uploads wait for a send rather than
+	// prefilling the composer.
+	uploadOnly bool
+	// actingUserID is the user bosso authenticated for an upload-only
+	// attach; its finished files belong to them alone.
+	actingUserID string
+	attach       terminalAttach
+	cancel       context.CancelFunc
+	done         <-chan struct{}
 }
 
 // TerminalStreamClientConfig bundles the constructor inputs.
@@ -1091,6 +1098,11 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 	c.mu.Unlock()
 
+	if cmd.GetIsUploadOnly() {
+		c.handleUploadOnlyAttach(ctx, cmd, outbound)
+		return
+	}
+
 	seal, sealedKey, sealReason := c.prepareSeal(ctx, cmd)
 	if sealReason != "" {
 		c.sendExited(ctx, outbound, attachID, sealReason)
@@ -1118,17 +1130,11 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 		return
 	}
 
-	resolver := &StreamClient{targetObjects: c.targetObjects}
-	target := &authorizedTarget{objects: make(map[targetKey]CommandTargetObject), repos: make(map[string]CommandTargetObject)}
-	if err := resolver.loadTarget(ctx, target, targetKey{"chat", chatID}); err != nil || validateTargetParents(target, false) != nil {
-		reason := "chat lookup failed"
-		if isChatNotFound(err) || errors.Is(err, errTargetNotFound) {
-			reason = "chat not found"
-		}
+	repoID, reason := c.attachTargetRepo(ctx, chatID)
+	if reason != "" {
 		c.sendExited(ctx, outbound, attachID, reason)
 		return
 	}
-	repoID := target.objects[targetKey{"chat", chatID}].RepoID
 	mode := repoCloudControlMode(ctx, c.cloudControl, repoID)
 	if !terminalAttachAllowed(mode, seal != nil) {
 		c.sendExited(ctx, outbound, attachID, terminalPrivateReason)
@@ -1197,6 +1203,40 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 
 	sealOwned = false
+	start, ok := c.registerAttach(attachCtx, state, outbound)
+	if !ok {
+		return
+	}
+	if !c.publishSealedKey(ctx, state, outbound, sealedKey) {
+		start()
+		<-state.done
+		c.sendExited(ctx, outbound, attachID, state.seal.failureReason())
+		return
+	}
+	start()
+}
+
+// attachTargetRepo resolves the repository a chat attach acts on, through
+// the same target loader every cloud command uses. A non-empty reason is the
+// fixed string the browser sees when the chat cannot be resolved.
+func (c *TerminalStreamClient) attachTargetRepo(ctx context.Context, chatID string) (repoID, reason string) {
+	resolver := &StreamClient{targetObjects: c.targetObjects}
+	target := &authorizedTarget{objects: make(map[targetKey]CommandTargetObject), repos: make(map[string]CommandTargetObject)}
+	if err := resolver.loadTarget(ctx, target, targetKey{"chat", chatID}); err != nil || validateTargetParents(target, false) != nil {
+		if isChatNotFound(err) || errors.Is(err, errTargetNotFound) {
+			return "", "chat not found"
+		}
+		return "", "chat lookup failed"
+	}
+	return target.objects[targetKey{"chat", chatID}].RepoID, ""
+}
+
+// registerAttach publishes state in the attach registry and starts its pump
+// gated behind the returned start func, so the caller can finish setup (a
+// sealed key) before any output flows. ok is false when the stream is
+// closing or another attach won the id; the attach is then already torn
+// down.
+func (c *TerminalStreamClient) registerAttach(attachCtx context.Context, state *activeAttach, outbound chan<- *pb.TerminalServerMessage) (start func(), ok bool) {
 	pumpStart := make(chan struct{})
 	// safego.Go gives us panic recovery + a done channel for the teardown
 	// path; assign done before publishing state so logout teardown can never
@@ -1207,36 +1247,30 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 		<-pumpStart
 		c.runAttachPump(attachCtx, state, outbound)
 	})
+	abandon := func() {
+		_ = state.attach.Close()
+		state.cancel()
+		close(pumpStart)
+		<-state.done
+	}
 
 	c.mu.Lock()
 	if c.streamClosing || attachCtx.Err() != nil {
 		c.mu.Unlock()
-		_ = attach.Close()
-		cancel()
-		close(pumpStart)
-		<-state.done
-		return
+		abandon()
+		return nil, false
 	}
-	if _, exists := c.attaches[attachID]; exists {
+	if _, exists := c.attaches[state.id]; exists {
 		// Race: a concurrent attach with the same id beat us here. Tear
 		// down our newly-spawned PTY and bail.
 		c.mu.Unlock()
-		_ = attach.Close()
-		cancel()
-		close(pumpStart)
-		<-state.done
-		c.logger.Warn().Str("attach_id", attachID).Msg("terminal stream: lost duplicate-attach race; dropping")
-		return
+		abandon()
+		c.logger.Warn().Str("attach_id", state.id).Msg("terminal stream: lost duplicate-attach race; dropping")
+		return nil, false
 	}
-	c.attaches[attachID] = state
+	c.attaches[state.id] = state
 	c.mu.Unlock()
-	if !c.publishSealedKey(ctx, state, outbound, sealedKey) {
-		close(pumpStart)
-		<-state.done
-		c.sendExited(ctx, outbound, attachID, state.seal.failureReason())
-		return
-	}
-	close(pumpStart)
+	return func() { close(pumpStart) }, true
 }
 
 // wakeChatForAttach revives a chat whose tmux pane pointer was cleared and

@@ -35,6 +35,7 @@ import {
   withScanDefaults,
 } from './plan-deps-lib.mjs'
 import { descriptionAppearsTruncated } from './plan-epic-lib.mjs'
+import { inertReferences } from './plan-inert-references.mjs'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -2806,7 +2807,7 @@ test('BOS-1327 transitive warnings: upstream reproduces the blocked-side rule', 
       blockerId: 'TCK-2',
       blockedId: 'uuid-subject',
       via: ['TCK-9'],
-      text: 'blocked by TCK-2, which is itself open and blocked by TCK-9',
+      text: 'blocked by `TCK-2`, which is itself open and blocked by `TCK-9`',
     },
   ])
   assert.ok(
@@ -2857,7 +2858,7 @@ test('BOS-1327 transitive warnings: downstream fires, and escalates for a needs-
       blockerId: 'TCK-1',
       blockedId: 'TCK-2',
       via: ['TCK-7'],
-      text: 'blocks TCK-2, which itself blocks open TCK-7',
+      text: 'blocks `TCK-2`, which itself blocks open `TCK-7`',
     },
   ])
   const [escalated] = transitiveBlockWarnings({ ...input, subjectAgentBuild: false })
@@ -3686,7 +3687,7 @@ test('hot overlap demotes only-hot edges and aggregates their planning notes', (
   assert.equal(hot.length, 1)
   assert.equal(hot[0].severity, 'info')
   assert.equal(hot[0].destination, 'planning')
-  assert.match(hot[0].text, /app\/registry\.json.*5.*TCK-2, TCK-3, TCK-4, TCK-5, TCK-6/)
+  assert.match(hot[0].text, /`app\/registry\.json`.*5.*`TCK-2`, `TCK-3`, `TCK-4`, `TCK-5`, `TCK-6`/)
   assert.equal(planDependencyEdges({ ...input, maxOverlapFanOut: 10 }).edges.length, 5)
 })
 
@@ -3932,4 +3933,91 @@ test('validator refuses unfetched logical verdicts and accepts known aliases and
     ).ok,
     true,
   )
+})
+
+test('all scan notes and transitive block warnings emit inert references while keeping data fields bare', () => {
+  const result = planDependencyEdges({
+    subject: subject({ areas: ['app/registry.json', 'app/api/x.go'] }),
+    subjectUnresolvedAreas: ['skill.md'],
+    candidates: [
+      candidate({
+        id: 'uuid-2',
+        identifier: 'TCK-2',
+        areas: ['app/registry.json', 'app/api/x.go'],
+      }),
+      candidate({ id: 'uuid-3', identifier: 'TCK-3', areas: ['app/registry.json'] }),
+      candidate({ id: 'uuid-4', identifier: 'TCK-4', areas: ['app/registry.json'] }),
+      candidate({ id: 'uuid-5', identifier: 'TCK-5', areas: ['app/registry.json'] }),
+      candidate({
+        id: 'uuid-6',
+        identifier: 'TCK-6',
+        stateName: 'In Progress',
+        stateType: 'started',
+        areas: ['app/ui/y.go'],
+      }),
+    ],
+    declaredRelatedIds: ['TCK-99'],
+    logicalDependencies: { 'TCK-6': { direction: 'blocks' } },
+    stateRoles: STATE_ROLES,
+  })
+  const reasons = new Set(result.notes.map((entry) => entry.reason))
+  assert.equal(reasons.has('file-overlap'), true)
+  assert.equal(reasons.has('hot-overlap'), true)
+  assert.equal(
+    result.notes.some((entry) => COULD_NOT_EVALUATE_REASONS.includes(entry.reason)),
+    true,
+  )
+  assert.equal(reasons.has('downgraded-candidate-started'), true)
+  assert.deepEqual(result.notes.map((entry) => entry.candidate).sort(), [
+    'TCK-1',
+    'TCK-2',
+    'TCK-6',
+    'app/registry.json',
+    'tck-99',
+  ])
+  for (const entry of result.notes) {
+    assert.equal(inertReferences(entry.text), entry.text, entry.reason)
+    assert.equal(entry.candidate.includes('`'), false, entry.reason)
+    const codeSpans = entry.text.match(/`[^`]*`/g) ?? []
+    assert.equal(
+      codeSpans.some((span) => span.includes(entry.candidate)),
+      true,
+      entry.reason,
+    )
+    const outsideCode = entry.text.replace(/`[^`]*`/g, '')
+    assert.equal(outsideCode.includes(entry.candidate), false, entry.reason)
+    assert.equal(/\bTCK-\d+\b/i.test(outsideCode), false, entry.reason)
+  }
+
+  const warnings = transitiveBlockWarnings({
+    subjectId: 'TCK-1',
+    writes: [
+      { id: 'TCK-1', blockedBy: ['TCK-2'] },
+      { id: 'TCK-3', blockedBy: ['TCK-1'] },
+    ],
+    relationsById: {
+      'TCK-2': { stateType: 'started', blockedBy: ['TCK-9', 'TCK-10'] },
+      'TCK-3': { stateType: 'unstarted', blocks: ['TCK-7', 'TCK-8'] },
+    },
+  })
+  assert.deepEqual(
+    warnings.map((entry) => entry.direction),
+    ['downstream', 'upstream'],
+  )
+  for (const entry of warnings) {
+    assert.equal(inertReferences(entry.text), entry.text, entry.direction)
+    assert.equal(entry.blockerId.includes('`'), false, entry.direction)
+    assert.equal(entry.blockedId.includes('`'), false, entry.direction)
+    assert.equal(
+      entry.via.every((id) => !id.includes('`')),
+      true,
+      entry.direction,
+    )
+    const expectedId = entry.direction === 'upstream' ? entry.blockerId : entry.blockedId
+    for (const id of [expectedId, ...entry.via]) {
+      assert.equal(entry.text.includes(`\`${id}\``), true, `${entry.direction}: ${id}`)
+    }
+    const outsideCode = entry.text.replace(/`[^`]*`/g, '')
+    assert.equal(/\bTCK-\d+\b/.test(outsideCode), false, entry.direction)
+  }
 })

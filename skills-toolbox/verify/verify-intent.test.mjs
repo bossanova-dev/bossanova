@@ -77,6 +77,11 @@ test('sources offer ticket, closing issues, body and commits in rank order', asy
       read: read({
         commits: [{ messageHeadline: 'Display alerts', messageBody: 'Adds alert view' }],
       }),
+      readTranscript: async () => ({
+        read: true,
+        sessionId: 'sess-7',
+        text: 'Chat: Alerts\n\nPlease add alerts to the dashboard.',
+      }),
     },
   )
   assert.equal(result.decision, 'derive')
@@ -88,7 +93,8 @@ test('sources offer ticket, closing issues, body and commits in rank order', asy
   assert.equal(sources.offered[0].rank, 1)
   assert.equal(sources.offered[0].ref, 'ABC-1')
   assert.deepEqual(sources.offered[1].ref, ['ABC-2'])
-  assert.match(readFileSync(sources.offered[3].file, 'utf8'), /\+new/)
+  assert.equal(sources.offered[2].ref, 'session:sess-7')
+  assert.match(readFileSync(sources.offered[4].file, 'utf8'), /\+new/)
   assert.ok(existsSync(result.brief))
 })
 

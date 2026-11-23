@@ -42,6 +42,7 @@ go_test(
         "partial_marker_test.go",
         "provider_context_test.go",
         "ratelimit_test.go",
+        "read_check_set_test.go",
         "url_test.go",
     ],
     data = glob(["testdata/**"]),

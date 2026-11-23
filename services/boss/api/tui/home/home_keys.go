@@ -61,6 +61,9 @@ func (h Model) HandleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if h.Rename.Active() {
 		return h.handleRenameKey(msg)
 	}
+	if h.LabelPicker.Active() {
+		return h.handleLabelPickerKey(msg)
+	}
 	if h.Filter.Active() {
 		return h.handleFilterKey(msg)
 	}
@@ -132,6 +135,8 @@ func (h Model) handleActionKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	case "l":
 		model, cmd := h.handleLoginKey()
 		return model, cmd, true
+	case "L":
+		return h.startLabelPicker()
 	case "enter":
 		model, cmd := h.handleSelectKey()
 		return model, cmd, true
@@ -245,6 +250,7 @@ func (h Model) dismissInputsIfHidden() Model {
 		return h
 	}
 	h.Rename = ui.RenamePrompt{}
+	h.LabelPicker = LabelPickerState{}
 	h.Filter.Reset()
 	h.Table.SetHeight(h.TableHeight())
 	return h

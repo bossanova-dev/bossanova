@@ -102,6 +102,9 @@ func (h Model) primaryRow(sess *pb.Session, _ int, selected bool) table.Row {
 			pr = ui.RenderSelectedText(pr)
 		}
 	}
+	if lbls := renderSessionLabelsInline(sess.GetLabels()); lbls != "" {
+		name = name + "  " + lbls
+	}
 	indicator := ""
 	if selected {
 		indicator = ui.CursorChevron

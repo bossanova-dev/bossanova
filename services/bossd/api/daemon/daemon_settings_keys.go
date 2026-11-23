@@ -42,7 +42,7 @@ var daemonSettingKeys = []daemonSettingKey{
 	{[]string{"default_agent"}, func(s config.Settings) any { return nonZero(s.DefaultAgent) }, appliesLive},
 	// The account usage refresh loop and failover proxy start only when rotation was on at startup.
 	{[]string{"managed_accounts", "enabled"}, func(s config.Settings) any { return deref(s.ManagedAccounts.Enabled) }, needsRestartToEnable},
-	{[]string{"proof_upload", "pages_enabled"}, func(s config.Settings) any { return nonZero(s.ProofUpload.PagesEnabled) }, appliesLive},
+	{[]string{"proof_upload", "pages_enabled"}, func(s config.Settings) any { return deref(s.ProofUpload.PagesEnabled) }, appliesLive},
 	// Sentry is initialised once and its DSN handed to plugins at launch.
 	{[]string{"error_tracking_enabled"}, func(s config.Settings) any { return nonZero(s.ErrorTrackingEnabled) }, needsRestart},
 	// The telemetry client takes the new value through Update.

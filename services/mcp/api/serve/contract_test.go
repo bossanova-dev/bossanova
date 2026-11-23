@@ -45,7 +45,11 @@ var expectedTools = []string{
 	"get_organization_note_quota",
 	"export_project_config",
 	"diff_project_config",
-	// mutating (35)
+	"list_session_labels",
+	// mutating (37)
+	"save_session_label",
+	"set_session_labels",
+	"delete_session_label",
 	"register_repo",
 	"clone_and_register_repo",
 	"update_repo",

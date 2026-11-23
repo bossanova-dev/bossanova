@@ -204,3 +204,55 @@ func TestAttentionStuckWaitOrdinal_Sessions_AC219901(t *testing.T) {
 		})
 	}
 }
+
+type pr4630RefreshProvider struct {
+	vcs.Provider
+	status *vcs.PRStatus
+	checks []vcs.CheckResult
+	runs   []vcs.WorkflowRun
+}
+
+func (p *pr4630RefreshProvider) GetPRStatus(context.Context, string, int) (*vcs.PRStatus, error) {
+	return p.status, nil
+}
+func (p *pr4630RefreshProvider) GetCheckResults(context.Context, string, int) ([]vcs.CheckResult, error) {
+	return p.checks, nil
+}
+func (p *pr4630RefreshProvider) GetReviewComments(context.Context, string, int) ([]vcs.ReviewComment, error) {
+	return nil, nil
+}
+func (p *pr4630RefreshProvider) ListWorkflowRuns(context.Context, string, string) ([]vcs.WorkflowRun, error) {
+	return p.runs, nil
+}
+
+func TestAttentionStuckWait_SupersededCancelledPR4630(t *testing.T) {
+	yes := true
+	cancelled := vcs.CheckConclusionCancelled
+	success := vcs.CheckConclusionSuccess
+	skipped := vcs.CheckConclusionSkipped
+	s := stuckWaitServer(t, vcs.DisplayInfo{Status: vcs.DisplayStatusChecking, Mergeable: &yes, HeadSHA: "96967f58"}, "none", "checks_passed_ready")
+	s.provider = &pr4630RefreshProvider{
+		status: &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "96967f58", Mergeable: &yes},
+		checks: []vcs.CheckResult{
+			{Name: "scripts", Workflow: "scripts", Status: vcs.CheckStatusInProgress},
+			{Name: "Notify on nightly failure", Workflow: "scripts", Status: vcs.CheckStatusCompleted, Conclusion: &cancelled},
+			{Name: "go-test", Workflow: "CI", Status: vcs.CheckStatusCompleted, Conclusion: &success},
+			{Name: "nightly-only", Workflow: "CI", Status: vcs.CheckStatusCompleted, Conclusion: &skipped},
+		},
+		runs: []vcs.WorkflowRun{
+			{Name: "scripts", HeadSHA: "96967f58", Status: "completed", Conclusion: "cancelled"},
+			{Name: "scripts", HeadSHA: "96967f58", Status: "in_progress"},
+		},
+	}
+	row := s.sessions.(*listSessionsSessionStoreFake).sessions[0]
+	repo := s.repos.(*listSessionsRepoStoreFake).repos[row.RepoID]
+	if _, _, err := s.refreshSessionPRSnapshot(t.Context(), repo, row, *row.PRNumber); err != nil {
+		t.Fatalf("refreshSessionPRSnapshot: %v", err)
+	}
+	if entry := s.displayTracker.Get(row.ID); entry == nil || entry.Status != vcs.DisplayStatusChecking || entry.HasFailures {
+		t.Fatalf("display entry = %+v, want Checking with HasFailures=false", entry)
+	}
+	if got := listStuckAttention(t, s); strings.HasPrefix(got.GetAlertKey(), "stuck-wait:") {
+		t.Fatalf("superseded cancelled check raised stuck-wait attention: %v", got)
+	}
+}

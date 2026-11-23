@@ -141,6 +141,10 @@ func TestRunnerStartPublishAndExit_Sessions_AC250701(t *testing.T) {
 		t.Fatal("probe failure treated as exit")
 	}
 	mux.probeErr = nil
+	r.poll(ctx)
+	if got := r.State(id); got.LastError != "" || len(got.Links) != 1 || got.Links[0].URL != "https://second.example" {
+		t.Fatalf("healthy unchanged file did not clear transient error: %+v", got)
+	}
 	delete(mux.live, state.TmuxName)
 	r.poll(ctx)
 	if r.State(id).IsRunning || len(pub.links[id]) != 0 || r.LiveTmuxName(id) != "" {

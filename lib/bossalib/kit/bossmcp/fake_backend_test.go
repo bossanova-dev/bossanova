@@ -245,6 +245,26 @@ func (f *fakeBackend) UpdateSession(ctx context.Context, req *pb.UpdateSessionRe
 	return nil, errNotImpl
 }
 
+func (f *fakeBackend) ListSessionLabels(context.Context) ([]*pb.SessionLabel, error) {
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) CreateSessionLabel(context.Context, *pb.CreateSessionLabelRequest) (*pb.SessionLabel, error) {
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) UpdateSessionLabel(context.Context, *pb.UpdateSessionLabelRequest) (*pb.SessionLabel, error) {
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) DeleteSessionLabel(context.Context, string) error {
+	return errNotImpl
+}
+
+func (f *fakeBackend) SetSessionLabels(context.Context, string, []string) (*pb.Session, error) {
+	return nil, errNotImpl
+}
+
 func (f *fakeBackend) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
 	if f.linkSessionPR != nil {
 		return f.linkSessionPR(ctx, id, pr)

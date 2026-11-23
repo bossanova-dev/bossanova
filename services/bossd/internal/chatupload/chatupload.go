@@ -43,6 +43,14 @@
 //     disconnected client cannot accumulate unbounded disk usage, and by a
 //     directory quota (see MaxUploadDirBytes) so serial uploads cannot
 //     retain unbounded bytes inside one TTL window.
+//
+// Deferred delivery. A chat reply box uploads through an upload-only attach
+// and names its files when the user presses Send, so FinishDeferred prefills
+// nothing: it keeps the finished file keyed by (chat, uploader, upload id)
+// until Attachments resolves it for that user's send in that chat. Upload ids
+// are client-chosen, so the uploader is part of the key: one user's ids can
+// neither name nor block another user's files. The same TTL janitor and
+// quota bound a deferred file the user never sends.
 package chatupload
 
 import (
@@ -111,6 +119,10 @@ const (
 	// a byte quota alone still permits millions of one-byte files —
 	// exhausting inodes rather than blocks.
 	MaxUploadDirFiles = 1024
+
+	// MaxAttachmentsPerSend bounds how many deferred uploads one chat send
+	// may name, so a single message cannot type an unbounded run of paths.
+	MaxAttachmentsPerSend = 32
 
 	// DefaultStaleTTL is the retention decision for BOS-661: a completed
 	// upload stays available to the live chat, but no longer than this.
@@ -206,6 +218,15 @@ type Manager struct {
 	syncFile func(*os.File) error
 	mu       sync.Mutex
 	uploads  map[string]*upload
+	// deferred holds finished upload-only files, keyed by deferredKey, until
+	// a send names them. Guarded by mu.
+	deferred map[string]deferredUpload
+}
+
+// deferredUpload is a finished file waiting for its chat's send.
+type deferredUpload struct {
+	path       string
+	finishedAt time.Time
 }
 
 // Option customizes a Manager. Kept tiny on purpose.
@@ -335,6 +356,7 @@ func newManagerWithChmod(dir string, sender ChatMessageSender, chmod func(string
 		now:         time.Now,
 		syncFile:    (*os.File).Sync,
 		uploads:     make(map[string]*upload),
+		deferred:    make(map[string]deferredUpload),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -346,6 +368,10 @@ func newManagerWithChmod(dir string, sender ChatMessageSender, chmod func(string
 func (m *Manager) Dir() string { return m.dir }
 
 func key(attachID, uploadID string) string { return attachID + "\x00" + uploadID }
+
+func deferredKey(chatID, uploaderID, uploadID string) string {
+	return chatID + "\x00" + uploaderID + "\x00" + uploadID
+}
 
 // ValidateFilename enforces the display-name rules. It is exported so
 // bosso can reject a bad name before any bytes cross the wire.
@@ -589,6 +615,87 @@ func (m *Manager) ClaimFinish(attachID, uploadID string) error {
 // Callers that reach Finish from a wire frame MUST have claimed the upload
 // with ClaimFinish first; see that method for why.
 func (m *Manager) Finish(ctx context.Context, attachID, uploadID string) (string, error) {
+	path, chatID, err := m.complete(attachID, uploadID)
+	if err != nil {
+		return "", err
+	}
+	return m.prefill(ctx, chatID, path)
+}
+
+// FinishDeferred syncs and closes the file like Finish but prefills nothing.
+// The file waits under (chat, uploader, upload id) until Attachments resolves
+// it for that uploader's send. A second finished upload under the same key is
+// refused and its file removed, so an id always names one file. An empty
+// uploader is refused: a file nobody owns could never be sent.
+//
+// Callers that reach FinishDeferred from a wire frame MUST have claimed the
+// upload with ClaimFinish first.
+func (m *Manager) FinishDeferred(attachID, uploadID, uploaderID string) error {
+	if uploaderID == "" {
+		m.Cancel(attachID, uploadID)
+		return permanent("upload: no uploader for this attach")
+	}
+	path, chatID, err := m.complete(attachID, uploadID)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := deferredKey(chatID, uploaderID, uploadID)
+	if _, exists := m.deferred[k]; exists {
+		_ = os.Remove(path)
+		return permanent("upload: duplicate upload_id")
+	}
+	m.deferred[k] = deferredUpload{path: path, finishedAt: m.now()}
+	return nil
+}
+
+// Attachments resolves the deferred uploads one user's send names, in order,
+// to their absolute paths. The whole set fails when any id is unknown,
+// belongs to another chat or another user, has outlived the stale TTL, has
+// lost its file, or is named twice, so a send never types some of its files
+// and drops the rest. It consumes nothing: ReleaseAttachments does that once
+// the send landed.
+func (m *Manager) Attachments(chatID, uploaderID string, uploadIDs []string) ([]string, error) {
+	if len(uploadIDs) > MaxAttachmentsPerSend {
+		return nil, permanent("attachment: at most %d files per message", MaxAttachmentsPerSend)
+	}
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	paths := make([]string, 0, len(uploadIDs))
+	named := make(map[string]struct{}, len(uploadIDs))
+	for _, id := range uploadIDs {
+		if _, twice := named[id]; twice {
+			return nil, permanent("attachment %q is named twice", id)
+		}
+		named[id] = struct{}{}
+		up, ok := m.deferred[deferredKey(chatID, uploaderID, id)]
+		if !ok || now.Sub(up.finishedAt) > m.ttl {
+			return nil, permanent("attachment %q is unknown or expired; upload the file again", id)
+		}
+		if _, err := os.Lstat(up.path); err != nil {
+			return nil, permanent("attachment %q is unknown or expired; upload the file again", id)
+		}
+		paths = append(paths, up.path)
+	}
+	return paths, nil
+}
+
+// ReleaseAttachments forgets deferred uploads a send delivered. The files
+// stay on disk for the agent to read; the janitor removes them at the stale
+// TTL like any delivered upload.
+func (m *Manager) ReleaseAttachments(chatID, uploaderID string, uploadIDs []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range uploadIDs {
+		delete(m.deferred, deferredKey(chatID, uploaderID, id))
+	}
+}
+
+// complete takes a claimed upload out of the registry, then syncs and closes
+// its file. It returns the absolute path and the chat the upload belongs to.
+func (m *Manager) complete(attachID, uploadID string) (string, string, error) {
 	// Take OWNERSHIP of the handle under the lock, then do the file I/O
 	// outside it.
 	//
@@ -609,12 +716,12 @@ func (m *Manager) Finish(ctx context.Context, attachID, uploadID string) (string
 	up, ok := m.uploads[key(attachID, uploadID)]
 	if !ok {
 		m.mu.Unlock()
-		return "", permanent("upload: unknown upload_id")
+		return "", "", permanent("upload: unknown upload_id")
 	}
 	if up.received != up.declared {
 		m.abortLocked(up)
 		m.mu.Unlock()
-		return "", permanent("upload: size mismatch")
+		return "", "", permanent("upload: size mismatch")
 	}
 	delete(m.uploads, key(attachID, uploadID))
 	file, path, chatID := up.file, up.path, up.chatID
@@ -624,13 +731,18 @@ func (m *Manager) Finish(ctx context.Context, attachID, uploadID string) (string
 	if err := m.syncFile(file); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
-		return "", retryable("upload: sync failed")
+		return "", "", retryable("upload: sync failed")
 	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(path)
-		return "", retryable("upload: close failed")
+		return "", "", retryable("upload: close failed")
 	}
+	return path, chatID, nil
+}
 
+// prefill types a finished upload's path into its chat's composer without
+// submitting it.
+func (m *Manager) prefill(ctx context.Context, chatID, path string) (string, error) {
 	if m.sender == nil {
 		_ = os.Remove(path)
 		return "", retryable("upload: chat delivery unavailable")
@@ -804,6 +916,11 @@ func (m *Manager) Sweep() int {
 			continue
 		}
 		active[up.path] = struct{}{}
+	}
+	for k, up := range m.deferred {
+		if now.Sub(up.finishedAt) > m.ttl {
+			delete(m.deferred, k)
+		}
 	}
 	m.mu.Unlock()
 

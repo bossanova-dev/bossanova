@@ -39,6 +39,7 @@ func TestReadActivityStructuresTheConversation(t *testing.T) {
 		t.Fatalf("readActivity: exists=%v err=%v", exists, err)
 	}
 	pending := &bossanovav1.ChatQuestion{
+		Kind:         questionKindQuestion,
 		Text:         "Should I do just the prompt, or the prompt and the code?",
 		Options:      []string{"Prompt only", "Prompt and code"},
 		Id:           questionID("Fix", "Should I do just the prompt, or the prompt and the code?", []string{"Prompt only", "Prompt and code"}),
@@ -157,4 +158,38 @@ func dump(msgs []*bossanovav1.ChatMessage) string {
 		}
 	}
 	return b.String()
+}
+
+// A message sent while the agent works is a queued_command attachment, not a
+// user line. A person's shows as theirs where it arrived; a background task's
+// notice never does.
+func TestReadActivityShowsMessagesQueuedMidTurn(t *testing.T) {
+	got, _, _, err := readActivity(filepath.Join("testdata", "queued.jsonl"), activityWorkDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var said []string
+	for _, m := range got {
+		if m.GetRole() == "user" {
+			said = append(said, m.GetKind()+": "+m.GetText())
+		}
+	}
+	want := []string{"text: Fix the empty sections on mobile.", "text: And perhaps on desktop too? Wdyt?"}
+	if strings.Join(said, "|") != strings.Join(want, "|") {
+		t.Fatalf("user turns = %q, want %q\n%s", said, want, dump(got))
+	}
+	var queued int
+	for i, m := range got {
+		if m.GetText() == "And perhaps on desktop too? Wdyt?" {
+			queued = i
+		}
+	}
+	if next := got[queued+1]; next.GetRole() != "assistant" || next.GetText() != "On desktop I'd keep things as they are." {
+		t.Fatalf("message after the queued one = %v, want the agent's answer\n%s", next, dump(got))
+	}
+	for _, m := range got {
+		if strings.Contains(m.GetText(), "task-notification") || strings.Contains(m.GetText(), "<") {
+			t.Errorf("a task notice reached the transcript as text: %v", m)
+		}
+	}
 }

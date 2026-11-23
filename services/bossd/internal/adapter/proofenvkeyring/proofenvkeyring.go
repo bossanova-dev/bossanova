@@ -113,7 +113,7 @@ func (r *Resolver) UploadTarget() (domain.EvidenceUploadTarget, error) {
 		AccountID:     dest.AccountID,
 		Bucket:        dest.Bucket,
 		PublicBaseURL: dest.PublicBaseURL,
-		PagesEnabled:  dest.PagesEnabled,
+		PagesEnabled:  dest.PagesAllowed(),
 		Token:         token,
 	}, nil
 }

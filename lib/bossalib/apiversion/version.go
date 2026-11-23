@@ -689,6 +689,9 @@ const V20261103 Version = "2026-11-03"
 // the response, which cannot tell an added row from the daemon's own one.
 const V20261104 Version = "2026-11-04"
 
+// V20261105 adds Services to pinned session actions for current clients.
+const V20261105 Version = "2026-11-05"
+
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions. The slice is ordered oldest→newest and its last member is Current
 // (the newest behavior). At most one trailing member is unreleased: every
@@ -760,8 +763,9 @@ func DefaultRegistry() *Registry {
 			V20261102,
 			V20261103,
 			V20261104,
+			V20261105,
 		},
-		V20261104,
+		V20261105,
 		Baseline,
 	)
 	if err != nil {

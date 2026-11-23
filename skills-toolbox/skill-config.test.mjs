@@ -4552,21 +4552,21 @@ test('ci.required is parsed onto the verify policy and validated by the schema',
   )
 })
 
-test('verifyAdmissionPolicy is null without a block and fully defaulted with one', async () => {
+test('verifyAdmissionPolicy defaults to admitting human and bot PRs and honours opt-outs', async () => {
   const { verifyAdmissionPolicy, VERIFY_ADMISSION_LABELS } = await import('./skill-config.mjs')
-  assert.equal(verifyAdmissionPolicy(DEFAULT_CONFIG), null)
-  assert.equal(verifyAdmissionPolicy({ verifyDefaults: {} }), null)
-  assert.equal(verifyAdmissionPolicy(undefined), null)
-  assert.equal(verifyPolicyFromConfigText('{}', 'test').admission, null)
   const defaults = {
-    human: { admit: false, merge: 'human' },
-    bot: { admit: false, merge: 'human' },
+    human: { admit: true, merge: 'human' },
+    bot: { admit: true, merge: 'human' },
     fork: { admit: false },
     labels: { ...VERIFY_ADMISSION_LABELS },
   }
+  assert.deepEqual(verifyAdmissionPolicy(DEFAULT_CONFIG), defaults)
+  assert.deepEqual(verifyAdmissionPolicy({ verifyDefaults: {} }), defaults)
+  assert.deepEqual(verifyAdmissionPolicy(undefined), defaults)
+  assert.deepEqual(verifyPolicyFromConfigText('{}', 'test').admission, defaults)
   assert.deepEqual(verifyAdmissionPolicy({ verifyDefaults: { admission: {} } }), defaults)
   const admission = {
-    human: { admit: true },
+    human: { admit: false },
     bot: { admit: true, merge: 'auto' },
     fork: { admit: true },
     labels: { optIn: 'verify-me' },
@@ -4574,7 +4574,7 @@ test('verifyAdmissionPolicy is null without a block and fully defaulted with one
   const config = { ...DEFAULT_CONFIG, verifyDefaults: { admission } }
   assert.doesNotThrow(() => validateConfig(config, 'test'))
   const expected = {
-    human: { admit: true, merge: 'human' },
+    human: { admit: false, merge: 'human' },
     bot: { admit: true, merge: 'auto' },
     fork: { admit: true },
     labels: { ...VERIFY_ADMISSION_LABELS, optIn: 'verify-me' },
@@ -4686,7 +4686,8 @@ test('validateConfig rejects a malformed verifyDefaults.humanReview block naming
 })
 
 test('verifyPolicyFromConfigText validates only verifyDefaults and ci and returns the policy', async () => {
-  const { verifyPolicyFromConfigText } = await import('./skill-config.mjs')
+  const { verifyPolicyFromConfigText, verifyAdmissionPolicy } = await import('./skill-config.mjs')
+  const defaultAdmission = verifyAdmissionPolicy({})
   assert.throws(() => verifyPolicyFromConfigText('{not json', 'base'), /not valid JSON/)
   assert.throws(() => verifyPolicyFromConfigText('[]', 'base'), /JSON object/)
   assert.deepEqual(verifyPolicyFromConfigText('{}', 'base'), {
@@ -4698,7 +4699,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and ci and return
     generatedPaths: [],
     generatedChecks: [],
     reviewers: [],
-    admission: null,
+    admission: defaultAdmission,
     requiredChecks: { checks: [], exemptBases: [] },
   })
   const text = JSON.stringify({
@@ -4716,7 +4717,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and ci and return
     generatedPaths: [],
     generatedChecks: [],
     reviewers: [],
-    admission: null,
+    admission: defaultAdmission,
     requiredChecks: { checks: [], exemptBases: [] },
   })
   assert.throws(

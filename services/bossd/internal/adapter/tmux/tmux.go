@@ -1136,6 +1136,8 @@ func (c *Client) captureVisibleStyled(ctx context.Context, sessionName string) (
 // aggressive timeouts so neither production budget gates them, and an injected
 // positive deadline always wins over the client's configured one.
 type sendPlanOpts struct {
+	// prose is SendHooks.Prose: a leading '/' does not make it a command.
+	prose             bool
 	freshPaneDeadline time.Time
 	deadline          time.Duration
 	pollInterval      time.Duration
@@ -1607,6 +1609,13 @@ func (c *Client) SendMessageWithHooks(ctx context.Context, sessionName, text str
 	return c.sendMessageWithDeliveryHooks(ctx, sessionName, text, submit, readyMarker, detector, hooks)
 }
 
+// typesLine reports whether a single-line payload is typed rather than
+// pasted: always for an agent that does not take pasted free text, and for
+// Claude only a slash command, which prose never is.
+func (opts sendPlanOpts) typesLine(line string) bool {
+	return !opts.pasteFreeText || (!opts.prose && strings.HasPrefix(line, "/"))
+}
+
 // sendPlan is the test-injectable variant of SendPlan that accepts custom
 // timing. Both production code and tests funnel through here.
 func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts sendPlanOpts) error {
@@ -1657,7 +1666,7 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	if singleLine {
 		pasted = trimmedPlan
 	}
-	typed := singleLine && (!opts.pasteFreeText || strings.HasPrefix(trimmedPlan, "/"))
+	typed := singleLine && opts.typesLine(trimmedPlan)
 	if !opts.pasteFreeText {
 		pasted = plan
 	}

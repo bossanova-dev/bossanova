@@ -737,6 +737,13 @@ type OrchestratorCommand struct {
 	//	*OrchestratorCommand_ListAgentModels
 	//	*OrchestratorCommand_AnswerChatQuestion
 	//	*OrchestratorCommand_StopChat
+	//	*OrchestratorCommand_StartSessionServe
+	//	*OrchestratorCommand_StopSessionServe
+	//	*OrchestratorCommand_ListSessionLabels
+	//	*OrchestratorCommand_CreateSessionLabel
+	//	*OrchestratorCommand_UpdateSessionLabel
+	//	*OrchestratorCommand_DeleteSessionLabel
+	//	*OrchestratorCommand_SetSessionLabels
 	Cmd           isOrchestratorCommand_Cmd `protobuf_oneof:"cmd"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1488,6 +1495,69 @@ func (x *OrchestratorCommand) GetStopChat() *StopChatCommand {
 	return nil
 }
 
+func (x *OrchestratorCommand) GetStartSessionServe() *StartSessionServeCommand {
+	if x != nil {
+		if x, ok := x.Cmd.(*OrchestratorCommand_StartSessionServe); ok {
+			return x.StartSessionServe
+		}
+	}
+	return nil
+}
+
+func (x *OrchestratorCommand) GetStopSessionServe() *StopSessionServeCommand {
+	if x != nil {
+		if x, ok := x.Cmd.(*OrchestratorCommand_StopSessionServe); ok {
+			return x.StopSessionServe
+		}
+	}
+	return nil
+}
+
+func (x *OrchestratorCommand) GetListSessionLabels() *ListSessionLabelsCommand {
+	if x != nil {
+		if x, ok := x.Cmd.(*OrchestratorCommand_ListSessionLabels); ok {
+			return x.ListSessionLabels
+		}
+	}
+	return nil
+}
+
+func (x *OrchestratorCommand) GetCreateSessionLabel() *CreateSessionLabelCommand {
+	if x != nil {
+		if x, ok := x.Cmd.(*OrchestratorCommand_CreateSessionLabel); ok {
+			return x.CreateSessionLabel
+		}
+	}
+	return nil
+}
+
+func (x *OrchestratorCommand) GetUpdateSessionLabel() *UpdateSessionLabelCommand {
+	if x != nil {
+		if x, ok := x.Cmd.(*OrchestratorCommand_UpdateSessionLabel); ok {
+			return x.UpdateSessionLabel
+		}
+	}
+	return nil
+}
+
+func (x *OrchestratorCommand) GetDeleteSessionLabel() *DeleteSessionLabelCommand {
+	if x != nil {
+		if x, ok := x.Cmd.(*OrchestratorCommand_DeleteSessionLabel); ok {
+			return x.DeleteSessionLabel
+		}
+	}
+	return nil
+}
+
+func (x *OrchestratorCommand) GetSetSessionLabels() *SetSessionLabelsCommand {
+	if x != nil {
+		if x, ok := x.Cmd.(*OrchestratorCommand_SetSessionLabels); ok {
+			return x.SetSessionLabels
+		}
+	}
+	return nil
+}
+
 type isOrchestratorCommand_Cmd interface {
 	isOrchestratorCommand_Cmd()
 }
@@ -1905,6 +1975,39 @@ type OrchestratorCommand_StopChat struct {
 	StopChat *StopChatCommand `protobuf:"bytes,91,opt,name=stop_chat,json=stopChat,proto3,oneof"`
 }
 
+type OrchestratorCommand_StartSessionServe struct {
+	// bosso → daemon: start the session's repository serve command. Replies
+	// CommandResult{session_serve}.
+	StartSessionServe *StartSessionServeCommand `protobuf:"bytes,92,opt,name=start_session_serve,json=startSessionServe,proto3,oneof"`
+}
+
+type OrchestratorCommand_StopSessionServe struct {
+	// bosso → daemon: stop the session's repository serve command. Replies
+	// CommandResult{session_serve}.
+	StopSessionServe *StopSessionServeCommand `protobuf:"bytes,93,opt,name=stop_session_serve,json=stopSessionServe,proto3,oneof"`
+}
+
+type OrchestratorCommand_ListSessionLabels struct {
+	// bosso → daemon: session label CRUD and assignment.
+	ListSessionLabels *ListSessionLabelsCommand `protobuf:"bytes,94,opt,name=list_session_labels,json=listSessionLabels,proto3,oneof"`
+}
+
+type OrchestratorCommand_CreateSessionLabel struct {
+	CreateSessionLabel *CreateSessionLabelCommand `protobuf:"bytes,95,opt,name=create_session_label,json=createSessionLabel,proto3,oneof"`
+}
+
+type OrchestratorCommand_UpdateSessionLabel struct {
+	UpdateSessionLabel *UpdateSessionLabelCommand `protobuf:"bytes,96,opt,name=update_session_label,json=updateSessionLabel,proto3,oneof"`
+}
+
+type OrchestratorCommand_DeleteSessionLabel struct {
+	DeleteSessionLabel *DeleteSessionLabelCommand `protobuf:"bytes,97,opt,name=delete_session_label,json=deleteSessionLabel,proto3,oneof"`
+}
+
+type OrchestratorCommand_SetSessionLabels struct {
+	SetSessionLabels *SetSessionLabelsCommand `protobuf:"bytes,98,opt,name=set_session_labels,json=setSessionLabels,proto3,oneof"`
+}
+
 func (*OrchestratorCommand_Stop) isOrchestratorCommand_Cmd() {}
 
 func (*OrchestratorCommand_Pause) isOrchestratorCommand_Cmd() {}
@@ -2061,6 +2164,20 @@ func (*OrchestratorCommand_AnswerChatQuestion) isOrchestratorCommand_Cmd() {}
 
 func (*OrchestratorCommand_StopChat) isOrchestratorCommand_Cmd() {}
 
+func (*OrchestratorCommand_StartSessionServe) isOrchestratorCommand_Cmd() {}
+
+func (*OrchestratorCommand_StopSessionServe) isOrchestratorCommand_Cmd() {}
+
+func (*OrchestratorCommand_ListSessionLabels) isOrchestratorCommand_Cmd() {}
+
+func (*OrchestratorCommand_CreateSessionLabel) isOrchestratorCommand_Cmd() {}
+
+func (*OrchestratorCommand_UpdateSessionLabel) isOrchestratorCommand_Cmd() {}
+
+func (*OrchestratorCommand_DeleteSessionLabel) isOrchestratorCommand_Cmd() {}
+
+func (*OrchestratorCommand_SetSessionLabels) isOrchestratorCommand_Cmd() {}
+
 // CommandCancel asks the daemon to cancel an in-flight command whose original
 // OrchestratorCommand.command_id matches command_id. Old daemons ignore the
 // unknown oneof arm, so callers must still bound their own wait locally.
@@ -2163,8 +2280,15 @@ type DaemonSnapshot struct {
 	// increasing within one daemon process, seeded from wall-clock time at
 	// start so a restarted daemon does not reuse an older revision.
 	RepoCloudControlRevision uint64 `protobuf:"varint,15,opt,name=repo_cloud_control_revision,json=repoCloudControlRevision,proto3" json:"repo_cloud_control_revision,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// True when this daemon serves upload-only attaches (TerminalAttachCommand
+	// .is_upload_only) and resolves SendChatMessageCommand
+	// .attachment_upload_ids. Older daemons ignore both fields, so bosso
+	// refuses an upload-only socket for a daemon that leaves this false rather
+	// than let it spawn a terminal. Additive stream field; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	IsChatAttachmentSupported bool `protobuf:"varint,16,opt,name=is_chat_attachment_supported,json=isChatAttachmentSupported,proto3" json:"is_chat_attachment_supported,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *DaemonSnapshot) Reset() {
@@ -2300,6 +2424,13 @@ func (x *DaemonSnapshot) GetRepoCloudControlRevision() uint64 {
 		return x.RepoCloudControlRevision
 	}
 	return 0
+}
+
+func (x *DaemonSnapshot) GetIsChatAttachmentSupported() bool {
+	if x != nil {
+		return x.IsChatAttachmentSupported
+	}
+	return false
 }
 
 // RepoCloudControlMode is one registered repository's effective cloud
@@ -2978,6 +3109,10 @@ type CommandResult struct {
 	//	*CommandResult_DaemonSettings
 	//	*CommandResult_AgentModels
 	//	*CommandResult_AnswerChatQuestion
+	//	*CommandResult_SessionServe
+	//	*CommandResult_ListSessionLabels
+	//	*CommandResult_CreateSessionLabel
+	//	*CommandResult_UpdateSessionLabel
 	Payload isCommandResult_Payload `protobuf_oneof:"payload"`
 	// Populated when ok == false. Lets bosso map structured failures
 	// (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -3454,6 +3589,42 @@ func (x *CommandResult) GetAnswerChatQuestion() *AnswerChatQuestionResult {
 	return nil
 }
 
+func (x *CommandResult) GetSessionServe() *SessionServe {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandResult_SessionServe); ok {
+			return x.SessionServe
+		}
+	}
+	return nil
+}
+
+func (x *CommandResult) GetListSessionLabels() *ListSessionLabelsResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandResult_ListSessionLabels); ok {
+			return x.ListSessionLabels
+		}
+	}
+	return nil
+}
+
+func (x *CommandResult) GetCreateSessionLabel() *CreateSessionLabelResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandResult_CreateSessionLabel); ok {
+			return x.CreateSessionLabel
+		}
+	}
+	return nil
+}
+
+func (x *CommandResult) GetUpdateSessionLabel() *UpdateSessionLabelResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandResult_UpdateSessionLabel); ok {
+			return x.UpdateSessionLabel
+		}
+	}
+	return nil
+}
+
 func (x *CommandResult) GetErrorCode() CommandResult_ErrorCode {
 	if x != nil {
 		return x.ErrorCode
@@ -3710,6 +3881,26 @@ type CommandResult_AnswerChatQuestion struct {
 	AnswerChatQuestion *AnswerChatQuestionResult `protobuf:"bytes,60,opt,name=answer_chat_question,json=answerChatQuestion,proto3,oneof"`
 }
 
+type CommandResult_SessionServe struct {
+	// Reply to start_session_serve and stop_session_serve.
+	SessionServe *SessionServe `protobuf:"bytes,61,opt,name=session_serve,json=sessionServe,proto3,oneof"`
+}
+
+type CommandResult_ListSessionLabels struct {
+	// Reply to list_session_labels.
+	ListSessionLabels *ListSessionLabelsResponse `protobuf:"bytes,62,opt,name=list_session_labels,json=listSessionLabels,proto3,oneof"`
+}
+
+type CommandResult_CreateSessionLabel struct {
+	// Reply to create_session_label.
+	CreateSessionLabel *CreateSessionLabelResponse `protobuf:"bytes,63,opt,name=create_session_label,json=createSessionLabel,proto3,oneof"`
+}
+
+type CommandResult_UpdateSessionLabel struct {
+	// Reply to update_session_label.
+	UpdateSessionLabel *UpdateSessionLabelResponse `protobuf:"bytes,64,opt,name=update_session_label,json=updateSessionLabel,proto3,oneof"`
+}
+
 func (*CommandResult_Session) isCommandResult_Payload() {}
 
 func (*CommandResult_TransferConfirmed) isCommandResult_Payload() {}
@@ -3799,6 +3990,14 @@ func (*CommandResult_DaemonSettings) isCommandResult_Payload() {}
 func (*CommandResult_AgentModels) isCommandResult_Payload() {}
 
 func (*CommandResult_AnswerChatQuestion) isCommandResult_Payload() {}
+
+func (*CommandResult_SessionServe) isCommandResult_Payload() {}
+
+func (*CommandResult_ListSessionLabels) isCommandResult_Payload() {}
+
+func (*CommandResult_CreateSessionLabel) isCommandResult_Payload() {}
+
+func (*CommandResult_UpdateSessionLabel) isCommandResult_Payload() {}
 
 // TokenRefresh carries a freshly-obtained WorkOS JWT. Bosso re-verifies it
 // against WorkOS JWKS (same path as initial validation) before accepting. On
@@ -8283,8 +8482,14 @@ type SendChatMessageCommand struct {
 	Message        string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	WakeIfAsleep   bool                   `protobuf:"varint,3,opt,name=wake_if_asleep,json=wakeIfAsleep,proto3" json:"wake_if_asleep,omitempty"`
 	Submit         bool                   `protobuf:"varint,4,opt,name=submit,proto3" json:"submit,omitempty"` // when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, services/docs/docs/guides/mcp.md); this bool cannot, so an unset bit prefills.
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Upload ids an upload-only attach finished for this chat; see
+	// SendChatMessageRequest.attachment_upload_ids.
+	AttachmentUploadIds []string `protobuf:"bytes,5,rep,name=attachment_upload_ids,json=attachmentUploadIds,proto3" json:"attachment_upload_ids,omitempty"`
+	// The user bosso authenticated for this send; see
+	// SendChatMessageRequest.acting_user_id.
+	ActingUserId  string `protobuf:"bytes,6,opt,name=acting_user_id,json=actingUserId,proto3" json:"acting_user_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SendChatMessageCommand) Reset() {
@@ -8343,6 +8548,20 @@ func (x *SendChatMessageCommand) GetSubmit() bool {
 		return x.Submit
 	}
 	return false
+}
+
+func (x *SendChatMessageCommand) GetAttachmentUploadIds() []string {
+	if x != nil {
+		return x.AttachmentUploadIds
+	}
+	return nil
+}
+
+func (x *SendChatMessageCommand) GetActingUserId() string {
+	if x != nil {
+		return x.ActingUserId
+	}
+	return ""
 }
 
 // TransferSessionCommand asks a daemon to take part in a coordinated transfer
@@ -8850,8 +9069,17 @@ type TerminalAttachCommand struct {
 	Rows uint32 `protobuf:"varint,4,opt,name=rows,proto3" json:"rows,omitempty"`
 	// Empty preserves plaintext; otherwise requires local device approval.
 	ViewerDeviceId string `protobuf:"bytes,5,opt,name=viewer_device_id,json=viewerDeviceId,proto3" json:"viewer_device_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// True for a chat reply box's upload channel: the daemon spawns no PTY,
+	// never wakes the chat, and keeps each finished upload for a later
+	// SendChatMessageCommand instead of prefilling its path. bosso sends it
+	// only to daemons whose snapshot sets is_chat_attachment_supported.
+	IsUploadOnly bool `protobuf:"varint,6,opt,name=is_upload_only,json=isUploadOnly,proto3" json:"is_upload_only,omitempty"`
+	// The user bosso authenticated for this attach. An upload-only attach
+	// holds each finished file for that user alone, so only their own send can
+	// name it. Additive; older daemons ignore it.
+	ActingUserId  string `protobuf:"bytes,7,opt,name=acting_user_id,json=actingUserId,proto3" json:"acting_user_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TerminalAttachCommand) Reset() {
@@ -8915,6 +9143,20 @@ func (x *TerminalAttachCommand) GetRows() uint32 {
 func (x *TerminalAttachCommand) GetViewerDeviceId() string {
 	if x != nil {
 		return x.ViewerDeviceId
+	}
+	return ""
+}
+
+func (x *TerminalAttachCommand) GetIsUploadOnly() bool {
+	if x != nil {
+		return x.IsUploadOnly
+	}
+	return false
+}
+
+func (x *TerminalAttachCommand) GetActingUserId() string {
+	if x != nil {
+		return x.ActingUserId
 	}
 	return ""
 }
@@ -11339,6 +11581,358 @@ func (x *StopChatCommand) GetAgentSessionId() string {
 	return ""
 }
 
+// StartSessionServeCommand asks the daemon to start the session's configured
+// repository serve command and reply with CommandResult{session_serve}.
+type StartSessionServeCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartSessionServeCommand) Reset() {
+	*x = StartSessionServeCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[124]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartSessionServeCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartSessionServeCommand) ProtoMessage() {}
+
+func (x *StartSessionServeCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[124]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartSessionServeCommand.ProtoReflect.Descriptor instead.
+func (*StartSessionServeCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{124}
+}
+
+func (x *StartSessionServeCommand) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+// StopSessionServeCommand asks the daemon to stop the session's running
+// repository serve command and reply with CommandResult{session_serve}.
+type StopSessionServeCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopSessionServeCommand) Reset() {
+	*x = StopSessionServeCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[125]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopSessionServeCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopSessionServeCommand) ProtoMessage() {}
+
+func (x *StopSessionServeCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[125]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopSessionServeCommand.ProtoReflect.Descriptor instead.
+func (*StopSessionServeCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{125}
+}
+
+func (x *StopSessionServeCommand) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type ListSessionLabelsCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSessionLabelsCommand) Reset() {
+	*x = ListSessionLabelsCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[126]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSessionLabelsCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSessionLabelsCommand) ProtoMessage() {}
+
+func (x *ListSessionLabelsCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[126]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSessionLabelsCommand.ProtoReflect.Descriptor instead.
+func (*ListSessionLabelsCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{126}
+}
+
+type CreateSessionLabelCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Color         string                 `protobuf:"bytes,2,opt,name=color,proto3" json:"color,omitempty"`
+	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSessionLabelCommand) Reset() {
+	*x = CreateSessionLabelCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[127]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSessionLabelCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSessionLabelCommand) ProtoMessage() {}
+
+func (x *CreateSessionLabelCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[127]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSessionLabelCommand.ProtoReflect.Descriptor instead.
+func (*CreateSessionLabelCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{127}
+}
+
+func (x *CreateSessionLabelCommand) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateSessionLabelCommand) GetColor() string {
+	if x != nil {
+		return x.Color
+	}
+	return ""
+}
+
+func (x *CreateSessionLabelCommand) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+type UpdateSessionLabelCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name          *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Color         *string                `protobuf:"bytes,3,opt,name=color,proto3,oneof" json:"color,omitempty"`
+	Description   *string                `protobuf:"bytes,4,opt,name=description,proto3,oneof" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateSessionLabelCommand) Reset() {
+	*x = UpdateSessionLabelCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[128]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateSessionLabelCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateSessionLabelCommand) ProtoMessage() {}
+
+func (x *UpdateSessionLabelCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[128]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateSessionLabelCommand.ProtoReflect.Descriptor instead.
+func (*UpdateSessionLabelCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{128}
+}
+
+func (x *UpdateSessionLabelCommand) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *UpdateSessionLabelCommand) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return ""
+}
+
+func (x *UpdateSessionLabelCommand) GetColor() string {
+	if x != nil && x.Color != nil {
+		return *x.Color
+	}
+	return ""
+}
+
+func (x *UpdateSessionLabelCommand) GetDescription() string {
+	if x != nil && x.Description != nil {
+		return *x.Description
+	}
+	return ""
+}
+
+type DeleteSessionLabelCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteSessionLabelCommand) Reset() {
+	*x = DeleteSessionLabelCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[129]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteSessionLabelCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteSessionLabelCommand) ProtoMessage() {}
+
+func (x *DeleteSessionLabelCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[129]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteSessionLabelCommand.ProtoReflect.Descriptor instead.
+func (*DeleteSessionLabelCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{129}
+}
+
+func (x *DeleteSessionLabelCommand) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type SetSessionLabelsCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	LabelIds      []string               `protobuf:"bytes,2,rep,name=label_ids,json=labelIds,proto3" json:"label_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetSessionLabelsCommand) Reset() {
+	*x = SetSessionLabelsCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[130]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetSessionLabelsCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetSessionLabelsCommand) ProtoMessage() {}
+
+func (x *SetSessionLabelsCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[130]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetSessionLabelsCommand.ProtoReflect.Descriptor instead.
+func (*SetSessionLabelsCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{130}
+}
+
+func (x *SetSessionLabelsCommand) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *SetSessionLabelsCommand) GetLabelIds() []string {
+	if x != nil {
+		return x.LabelIds
+	}
+	return nil
+}
+
 var File_bossanova_v1_stream_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_stream_proto_rawDesc = "" +
@@ -11360,7 +11954,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x17agent_account_inventory\x18\f \x01(\v2#.bossanova.v1.AgentAccountInventoryH\x00R\x15agentAccountInventory\x12d\n" +
 	"\x1aagent_account_usage_report\x18\r \x01(\v2%.bossanova.v1.AgentAccountUsageReportH\x00R\x17agentAccountUsageReport\x12g\n" +
 	"\x1brepo_cloud_controls_changed\x18\x0e \x01(\v2&.bossanova.v1.RepoCloudControlsChangedH\x00R\x18repoCloudControlsChangedB\a\n" +
-	"\x05event\"\xaa0\n" +
+	"\x05event\"\xa35\n" +
 	"\x13OrchestratorCommand\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x126\n" +
@@ -11456,11 +12050,18 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x16update_daemon_settings\x18N \x01(\v2).bossanova.v1.UpdateDaemonSettingsCommandH\x00R\x14updateDaemonSettings\x12R\n" +
 	"\x11list_agent_models\x18O \x01(\v2$.bossanova.v1.ListAgentModelsCommandH\x00R\x0flistAgentModels\x12[\n" +
 	"\x14answer_chat_question\x18Z \x01(\v2'.bossanova.v1.AnswerChatQuestionCommandH\x00R\x12answerChatQuestion\x12<\n" +
-	"\tstop_chat\x18[ \x01(\v2\x1d.bossanova.v1.StopChatCommandH\x00R\bstopChatB\x05\n" +
+	"\tstop_chat\x18[ \x01(\v2\x1d.bossanova.v1.StopChatCommandH\x00R\bstopChat\x12X\n" +
+	"\x13start_session_serve\x18\\ \x01(\v2&.bossanova.v1.StartSessionServeCommandH\x00R\x11startSessionServe\x12U\n" +
+	"\x12stop_session_serve\x18] \x01(\v2%.bossanova.v1.StopSessionServeCommandH\x00R\x10stopSessionServe\x12X\n" +
+	"\x13list_session_labels\x18^ \x01(\v2&.bossanova.v1.ListSessionLabelsCommandH\x00R\x11listSessionLabels\x12[\n" +
+	"\x14create_session_label\x18_ \x01(\v2'.bossanova.v1.CreateSessionLabelCommandH\x00R\x12createSessionLabel\x12[\n" +
+	"\x14update_session_label\x18` \x01(\v2'.bossanova.v1.UpdateSessionLabelCommandH\x00R\x12updateSessionLabel\x12[\n" +
+	"\x14delete_session_label\x18a \x01(\v2'.bossanova.v1.DeleteSessionLabelCommandH\x00R\x12deleteSessionLabel\x12U\n" +
+	"\x12set_session_labels\x18b \x01(\v2%.bossanova.v1.SetSessionLabelsCommandH\x00R\x10setSessionLabelsB\x05\n" +
 	"\x03cmd\".\n" +
 	"\rCommandCancel\x12\x1d\n" +
 	"\n" +
-	"command_id\x18\x01 \x01(\tR\tcommandId\"\xed\x06\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\"\xae\a\n" +
 	"\x0eDaemonSnapshot\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x19\n" +
@@ -11477,7 +12078,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x19has_cloud_control_updates\x18\f \x01(\bR\x16hasCloudControlUpdates\x12D\n" +
 	"\x1fis_repo_cloud_control_supported\x18\r \x01(\bR\x1bisRepoCloudControlSupported\x12R\n" +
 	"\x13repo_cloud_controls\x18\x0e \x03(\v2\".bossanova.v1.RepoCloudControlModeR\x11repoCloudControls\x12=\n" +
-	"\x1brepo_cloud_control_revision\x18\x0f \x01(\x04R\x18repoCloudControlRevision\"p\n" +
+	"\x1brepo_cloud_control_revision\x18\x0f \x01(\x04R\x18repoCloudControlRevision\x12?\n" +
+	"\x1cis_chat_attachment_supported\x18\x10 \x01(\bR\x19isChatAttachmentSupported\"p\n" +
 	"\x14RepoCloudControlMode\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12?\n" +
 	"\rcloud_control\x18\x02 \x01(\x0e2\x1a.bossanova.v1.CloudControlR\fcloudControl\"\xa0\x01\n" +
@@ -11535,7 +12137,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x0e\n" +
 	"\x02ok\x18\x02 \x01(\bR\x02ok\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\x97\x1f\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xf1!\n" +
 	"\rCommandResult\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x0e\n" +
@@ -11597,7 +12199,11 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x14get_session_timeline\x18/ \x01(\v2(.bossanova.v1.GetSessionTimelineResponseH\x00R\x12getSessionTimeline\x12M\n" +
 	"\x0fdaemon_settings\x180 \x01(\v2\".bossanova.v1.DaemonSettingsResultH\x00R\x0edaemonSettings\x12D\n" +
 	"\fagent_models\x181 \x01(\v2\x1f.bossanova.v1.AgentModelsResultH\x00R\vagentModels\x12Z\n" +
-	"\x14answer_chat_question\x18< \x01(\v2&.bossanova.v1.AnswerChatQuestionResultH\x00R\x12answerChatQuestion\x12D\n" +
+	"\x14answer_chat_question\x18< \x01(\v2&.bossanova.v1.AnswerChatQuestionResultH\x00R\x12answerChatQuestion\x12A\n" +
+	"\rsession_serve\x18= \x01(\v2\x1a.bossanova.v1.SessionServeH\x00R\fsessionServe\x12Y\n" +
+	"\x13list_session_labels\x18> \x01(\v2'.bossanova.v1.ListSessionLabelsResponseH\x00R\x11listSessionLabels\x12\\\n" +
+	"\x14create_session_label\x18? \x01(\v2(.bossanova.v1.CreateSessionLabelResponseH\x00R\x12createSessionLabel\x12\\\n" +
+	"\x14update_session_label\x18@ \x01(\v2(.bossanova.v1.UpdateSessionLabelResponseH\x00R\x12updateSessionLabel\x12D\n" +
 	"\n" +
 	"error_code\x18\a \x01(\x0e2%.bossanova.v1.CommandResult.ErrorCodeR\terrorCode\x12(\n" +
 	"\x10is_stream_closed\x18- \x01(\bR\x0eisStreamClosed\"\x86\x02\n" +
@@ -12042,12 +12648,14 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x05_bodyB\a\n" +
 	"\x05_tags\"#\n" +
 	"\x11DeleteNoteCommand\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\x9a\x01\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xf4\x01\n" +
 	"\x16SendChatMessageCommand\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12$\n" +
 	"\x0ewake_if_asleep\x18\x03 \x01(\bR\fwakeIfAsleep\x12\x16\n" +
-	"\x06submit\x18\x04 \x01(\bR\x06submit\"\x8b\x01\n" +
+	"\x06submit\x18\x04 \x01(\bR\x06submit\x122\n" +
+	"\x15attachment_upload_ids\x18\x05 \x03(\tR\x13attachmentUploadIds\x12$\n" +
+	"\x0eacting_user_id\x18\x06 \x01(\tR\factingUserId\"\x8b\x01\n" +
 	"\x16TransferSessionCommand\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
@@ -12088,13 +12696,15 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0eorigin_chat_id\x18\x04 \x01(\tR\foriginChatId\x12\x18\n" +
 	"\amessage\x18\x05 \x01(\tR\amessage\x129\n" +
 	"\n" +
-	"expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"\x9f\x01\n" +
+	"expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"\xeb\x01\n" +
 	"\x15TerminalAttachCommand\x12\x1b\n" +
 	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x17\n" +
 	"\achat_id\x18\x02 \x01(\tR\x06chatId\x12\x12\n" +
 	"\x04cols\x18\x03 \x01(\rR\x04cols\x12\x12\n" +
 	"\x04rows\x18\x04 \x01(\rR\x04rows\x12(\n" +
-	"\x10viewer_device_id\x18\x05 \x01(\tR\x0eviewerDeviceId\"\x89\x01\n" +
+	"\x10viewer_device_id\x18\x05 \x01(\tR\x0eviewerDeviceId\x12$\n" +
+	"\x0eis_upload_only\x18\x06 \x01(\bR\fisUploadOnly\x12$\n" +
+	"\x0eacting_user_id\x18\a \x01(\tR\factingUserId\"\x89\x01\n" +
 	"\x14TerminalInputCommand\x12\x1b\n" +
 	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12\x1b\n" +
@@ -12250,7 +12860,32 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0fStopChatCommand\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
-	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId*\xa5\x01\n" +
+	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"9\n" +
+	"\x18StartSessionServeCommand\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"8\n" +
+	"\x17StopSessionServeCommand\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\x1a\n" +
+	"\x18ListSessionLabelsCommand\"g\n" +
+	"\x19CreateSessionLabelCommand\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05color\x18\x02 \x01(\tR\x05color\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\"\xa9\x01\n" +
+	"\x19UpdateSessionLabelCommand\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
+	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x19\n" +
+	"\x05color\x18\x03 \x01(\tH\x01R\x05color\x88\x01\x01\x12%\n" +
+	"\vdescription\x18\x04 \x01(\tH\x02R\vdescription\x88\x01\x01B\a\n" +
+	"\x05_nameB\b\n" +
+	"\x06_colorB\x0e\n" +
+	"\f_description\"+\n" +
+	"\x19DeleteSessionLabelCommand\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"U\n" +
+	"\x17SetSessionLabelsCommand\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x1b\n" +
+	"\tlabel_ids\x18\x02 \x03(\tR\blabelIds*\xa5\x01\n" +
 	"\x12TriggerGateVerdict\x12$\n" +
 	" TRIGGER_GATE_VERDICT_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bTRIGGER_GATE_VERDICT_PASSED\x10\x01\x12 \n" +
@@ -12270,7 +12905,7 @@ func file_bossanova_v1_stream_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_stream_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_bossanova_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 125)
+var file_bossanova_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 132)
 var file_bossanova_v1_stream_proto_goTypes = []any{
 	(TriggerGateVerdict)(0),                      // 0: bossanova.v1.TriggerGateVerdict
 	(SessionDelta_Kind)(0),                       // 1: bossanova.v1.SessionDelta.Kind
@@ -12401,64 +13036,75 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*AnswerChatQuestionCommand)(nil),            // 126: bossanova.v1.AnswerChatQuestionCommand
 	(*AnswerChatQuestionResult)(nil),             // 127: bossanova.v1.AnswerChatQuestionResult
 	(*StopChatCommand)(nil),                      // 128: bossanova.v1.StopChatCommand
-	nil,                                          // 129: bossanova.v1.WebhookEvent.HeadersEntry
-	(*Session)(nil),                              // 130: bossanova.v1.Session
-	(*ChatStatusEntry)(nil),                      // 131: bossanova.v1.ChatStatusEntry
-	(*AgentAccount)(nil),                         // 132: bossanova.v1.AgentAccount
-	(CloudControl)(0),                            // 133: bossanova.v1.CloudControl
-	(ChatStatus)(0),                              // 134: bossanova.v1.ChatStatus
-	(*timestamppb.Timestamp)(nil),                // 135: google.protobuf.Timestamp
-	(ChatRole)(0),                                // 136: bossanova.v1.ChatRole
-	(*AgentChat)(nil),                            // 137: bossanova.v1.AgentChat
-	(*ListReposResponse)(nil),                    // 138: bossanova.v1.ListReposResponse
-	(*ListAgentsResponse)(nil),                   // 139: bossanova.v1.ListAgentsResponse
-	(*ListRepoPRsResponse)(nil),                  // 140: bossanova.v1.ListRepoPRsResponse
-	(*ListTrackerIssuesResponse)(nil),            // 141: bossanova.v1.ListTrackerIssuesResponse
-	(*GetChatTranscriptResponse)(nil),            // 142: bossanova.v1.GetChatTranscriptResponse
-	(*SendChatMessageResponse)(nil),              // 143: bossanova.v1.SendChatMessageResponse
-	(*ListAgentAccountsResponse)(nil),            // 144: bossanova.v1.ListAgentAccountsResponse
-	(*GetRepoSettingsResponse)(nil),              // 145: bossanova.v1.GetRepoSettingsResponse
-	(*UpdateRepoResponse)(nil),                   // 146: bossanova.v1.UpdateRepoResponse
-	(*ListCronJobsResponse)(nil),                 // 147: bossanova.v1.ListCronJobsResponse
-	(*CreateCronJobResponse)(nil),                // 148: bossanova.v1.CreateCronJobResponse
-	(*UpdateCronJobResponse)(nil),                // 149: bossanova.v1.UpdateCronJobResponse
-	(*RunCronJobNowResponse)(nil),                // 150: bossanova.v1.RunCronJobNowResponse
-	(*AddAgentAccountResponse)(nil),              // 151: bossanova.v1.AddAgentAccountResponse
-	(*RefreshAgentAccountResponse)(nil),          // 152: bossanova.v1.RefreshAgentAccountResponse
-	(*UpdateAgentAccountResponse)(nil),           // 153: bossanova.v1.UpdateAgentAccountResponse
-	(*TestAgentAccountResponse)(nil),             // 154: bossanova.v1.TestAgentAccountResponse
-	(*ListChatsResponse)(nil),                    // 155: bossanova.v1.ListChatsResponse
-	(*GetSessionStatusesResponse)(nil),           // 156: bossanova.v1.GetSessionStatusesResponse
-	(*ListCheckSnapshotsResponse)(nil),           // 157: bossanova.v1.ListCheckSnapshotsResponse
-	(*ListPluginsResponse)(nil),                  // 158: bossanova.v1.ListPluginsResponse
-	(*GetCronJobResponse)(nil),                   // 159: bossanova.v1.GetCronJobResponse
-	(*RepairDoctorResponse)(nil),                 // 160: bossanova.v1.RepairDoctorResponse
-	(*CreateGitHubCallbackResponse)(nil),         // 161: bossanova.v1.CreateGitHubCallbackResponse
-	(*ListGitHubCallbacksResponse)(nil),          // 162: bossanova.v1.ListGitHubCallbacksResponse
-	(*CreateNoteResponse)(nil),                   // 163: bossanova.v1.CreateNoteResponse
-	(*GetNoteResponse)(nil),                      // 164: bossanova.v1.GetNoteResponse
-	(*ListNotesResponse)(nil),                    // 165: bossanova.v1.ListNotesResponse
-	(*UpdateNoteResponse)(nil),                   // 166: bossanova.v1.UpdateNoteResponse
-	(*GetChatStatusesResponse)(nil),              // 167: bossanova.v1.GetChatStatusesResponse
-	(*MoveSessionResponse)(nil),                  // 168: bossanova.v1.MoveSessionResponse
-	(*OperatorMergeSessionResponse)(nil),         // 169: bossanova.v1.OperatorMergeSessionResponse
-	(*SendBackToRepairResponse)(nil),             // 170: bossanova.v1.SendBackToRepairResponse
-	(*GetSessionTimelineResponse)(nil),           // 171: bossanova.v1.GetSessionTimelineResponse
-	(*OutputLine)(nil),                           // 172: bossanova.v1.OutputLine
-	(*StateChange)(nil),                          // 173: bossanova.v1.StateChange
-	(*SessionEnded)(nil),                         // 174: bossanova.v1.SessionEnded
-	(*TrackerIssue)(nil),                         // 175: bossanova.v1.TrackerIssue
-	(MoveDirection)(0),                           // 176: bossanova.v1.MoveDirection
-	(CronJobConcurrencyPolicy)(0),                // 177: bossanova.v1.CronJobConcurrencyPolicy
-	(MergeStrategy)(0),                           // 178: bossanova.v1.MergeStrategy
-	(*SecretUpdate)(nil),                         // 179: bossanova.v1.SecretUpdate
-	(*ChatStatusReport)(nil),                     // 180: bossanova.v1.ChatStatusReport
-	(*NoteTagSet)(nil),                           // 181: bossanova.v1.NoteTagSet
-	(*BroadcastSelector)(nil),                    // 182: bossanova.v1.BroadcastSelector
-	(*UsageSnapshot)(nil),                        // 183: bossanova.v1.UsageSnapshot
-	(*DaemonSettingsUpdate)(nil),                 // 184: bossanova.v1.DaemonSettingsUpdate
-	(*DaemonSettings)(nil),                       // 185: bossanova.v1.DaemonSettings
-	(*AgentModel)(nil),                           // 186: bossanova.v1.AgentModel
+	(*StartSessionServeCommand)(nil),             // 129: bossanova.v1.StartSessionServeCommand
+	(*StopSessionServeCommand)(nil),              // 130: bossanova.v1.StopSessionServeCommand
+	(*ListSessionLabelsCommand)(nil),             // 131: bossanova.v1.ListSessionLabelsCommand
+	(*CreateSessionLabelCommand)(nil),            // 132: bossanova.v1.CreateSessionLabelCommand
+	(*UpdateSessionLabelCommand)(nil),            // 133: bossanova.v1.UpdateSessionLabelCommand
+	(*DeleteSessionLabelCommand)(nil),            // 134: bossanova.v1.DeleteSessionLabelCommand
+	(*SetSessionLabelsCommand)(nil),              // 135: bossanova.v1.SetSessionLabelsCommand
+	nil,                                          // 136: bossanova.v1.WebhookEvent.HeadersEntry
+	(*Session)(nil),                              // 137: bossanova.v1.Session
+	(*ChatStatusEntry)(nil),                      // 138: bossanova.v1.ChatStatusEntry
+	(*AgentAccount)(nil),                         // 139: bossanova.v1.AgentAccount
+	(CloudControl)(0),                            // 140: bossanova.v1.CloudControl
+	(ChatStatus)(0),                              // 141: bossanova.v1.ChatStatus
+	(*timestamppb.Timestamp)(nil),                // 142: google.protobuf.Timestamp
+	(ChatRole)(0),                                // 143: bossanova.v1.ChatRole
+	(*AgentChat)(nil),                            // 144: bossanova.v1.AgentChat
+	(*ListReposResponse)(nil),                    // 145: bossanova.v1.ListReposResponse
+	(*ListAgentsResponse)(nil),                   // 146: bossanova.v1.ListAgentsResponse
+	(*ListRepoPRsResponse)(nil),                  // 147: bossanova.v1.ListRepoPRsResponse
+	(*ListTrackerIssuesResponse)(nil),            // 148: bossanova.v1.ListTrackerIssuesResponse
+	(*GetChatTranscriptResponse)(nil),            // 149: bossanova.v1.GetChatTranscriptResponse
+	(*SendChatMessageResponse)(nil),              // 150: bossanova.v1.SendChatMessageResponse
+	(*ListAgentAccountsResponse)(nil),            // 151: bossanova.v1.ListAgentAccountsResponse
+	(*GetRepoSettingsResponse)(nil),              // 152: bossanova.v1.GetRepoSettingsResponse
+	(*UpdateRepoResponse)(nil),                   // 153: bossanova.v1.UpdateRepoResponse
+	(*ListCronJobsResponse)(nil),                 // 154: bossanova.v1.ListCronJobsResponse
+	(*CreateCronJobResponse)(nil),                // 155: bossanova.v1.CreateCronJobResponse
+	(*UpdateCronJobResponse)(nil),                // 156: bossanova.v1.UpdateCronJobResponse
+	(*RunCronJobNowResponse)(nil),                // 157: bossanova.v1.RunCronJobNowResponse
+	(*AddAgentAccountResponse)(nil),              // 158: bossanova.v1.AddAgentAccountResponse
+	(*RefreshAgentAccountResponse)(nil),          // 159: bossanova.v1.RefreshAgentAccountResponse
+	(*UpdateAgentAccountResponse)(nil),           // 160: bossanova.v1.UpdateAgentAccountResponse
+	(*TestAgentAccountResponse)(nil),             // 161: bossanova.v1.TestAgentAccountResponse
+	(*ListChatsResponse)(nil),                    // 162: bossanova.v1.ListChatsResponse
+	(*GetSessionStatusesResponse)(nil),           // 163: bossanova.v1.GetSessionStatusesResponse
+	(*ListCheckSnapshotsResponse)(nil),           // 164: bossanova.v1.ListCheckSnapshotsResponse
+	(*ListPluginsResponse)(nil),                  // 165: bossanova.v1.ListPluginsResponse
+	(*GetCronJobResponse)(nil),                   // 166: bossanova.v1.GetCronJobResponse
+	(*RepairDoctorResponse)(nil),                 // 167: bossanova.v1.RepairDoctorResponse
+	(*CreateGitHubCallbackResponse)(nil),         // 168: bossanova.v1.CreateGitHubCallbackResponse
+	(*ListGitHubCallbacksResponse)(nil),          // 169: bossanova.v1.ListGitHubCallbacksResponse
+	(*CreateNoteResponse)(nil),                   // 170: bossanova.v1.CreateNoteResponse
+	(*GetNoteResponse)(nil),                      // 171: bossanova.v1.GetNoteResponse
+	(*ListNotesResponse)(nil),                    // 172: bossanova.v1.ListNotesResponse
+	(*UpdateNoteResponse)(nil),                   // 173: bossanova.v1.UpdateNoteResponse
+	(*GetChatStatusesResponse)(nil),              // 174: bossanova.v1.GetChatStatusesResponse
+	(*MoveSessionResponse)(nil),                  // 175: bossanova.v1.MoveSessionResponse
+	(*OperatorMergeSessionResponse)(nil),         // 176: bossanova.v1.OperatorMergeSessionResponse
+	(*SendBackToRepairResponse)(nil),             // 177: bossanova.v1.SendBackToRepairResponse
+	(*GetSessionTimelineResponse)(nil),           // 178: bossanova.v1.GetSessionTimelineResponse
+	(*SessionServe)(nil),                         // 179: bossanova.v1.SessionServe
+	(*ListSessionLabelsResponse)(nil),            // 180: bossanova.v1.ListSessionLabelsResponse
+	(*CreateSessionLabelResponse)(nil),           // 181: bossanova.v1.CreateSessionLabelResponse
+	(*UpdateSessionLabelResponse)(nil),           // 182: bossanova.v1.UpdateSessionLabelResponse
+	(*OutputLine)(nil),                           // 183: bossanova.v1.OutputLine
+	(*StateChange)(nil),                          // 184: bossanova.v1.StateChange
+	(*SessionEnded)(nil),                         // 185: bossanova.v1.SessionEnded
+	(*TrackerIssue)(nil),                         // 186: bossanova.v1.TrackerIssue
+	(MoveDirection)(0),                           // 187: bossanova.v1.MoveDirection
+	(CronJobConcurrencyPolicy)(0),                // 188: bossanova.v1.CronJobConcurrencyPolicy
+	(MergeStrategy)(0),                           // 189: bossanova.v1.MergeStrategy
+	(*SecretUpdate)(nil),                         // 190: bossanova.v1.SecretUpdate
+	(*ChatStatusReport)(nil),                     // 191: bossanova.v1.ChatStatusReport
+	(*NoteTagSet)(nil),                           // 192: bossanova.v1.NoteTagSet
+	(*BroadcastSelector)(nil),                    // 193: bossanova.v1.BroadcastSelector
+	(*UsageSnapshot)(nil),                        // 194: bossanova.v1.UsageSnapshot
+	(*DaemonSettingsUpdate)(nil),                 // 195: bossanova.v1.DaemonSettingsUpdate
+	(*DaemonSettings)(nil),                       // 196: bossanova.v1.DaemonSettings
+	(*AgentModel)(nil),                           // 197: bossanova.v1.AgentModel
 }
 var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	8,   // 0: bossanova.v1.DaemonEvent.snapshot:type_name -> bossanova.v1.DaemonSnapshot
@@ -12553,124 +13199,135 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	124, // 89: bossanova.v1.OrchestratorCommand.list_agent_models:type_name -> bossanova.v1.ListAgentModelsCommand
 	126, // 90: bossanova.v1.OrchestratorCommand.answer_chat_question:type_name -> bossanova.v1.AnswerChatQuestionCommand
 	128, // 91: bossanova.v1.OrchestratorCommand.stop_chat:type_name -> bossanova.v1.StopChatCommand
-	130, // 92: bossanova.v1.DaemonSnapshot.sessions:type_name -> bossanova.v1.Session
-	16,  // 93: bossanova.v1.DaemonSnapshot.chats:type_name -> bossanova.v1.AgentChatMetadata
-	131, // 94: bossanova.v1.DaemonSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
-	11,  // 95: bossanova.v1.DaemonSnapshot.callback_interests:type_name -> bossanova.v1.CallbackInterest
-	132, // 96: bossanova.v1.DaemonSnapshot.agent_accounts:type_name -> bossanova.v1.AgentAccount
-	133, // 97: bossanova.v1.DaemonSnapshot.cloud_control:type_name -> bossanova.v1.CloudControl
-	9,   // 98: bossanova.v1.DaemonSnapshot.repo_cloud_controls:type_name -> bossanova.v1.RepoCloudControlMode
-	133, // 99: bossanova.v1.RepoCloudControlMode.cloud_control:type_name -> bossanova.v1.CloudControl
-	9,   // 100: bossanova.v1.RepoCloudControlsChanged.upserted:type_name -> bossanova.v1.RepoCloudControlMode
-	11,  // 101: bossanova.v1.CallbackInterestSet.interests:type_name -> bossanova.v1.CallbackInterest
-	1,   // 102: bossanova.v1.SessionDelta.kind:type_name -> bossanova.v1.SessionDelta.Kind
-	130, // 103: bossanova.v1.SessionDelta.session:type_name -> bossanova.v1.Session
-	2,   // 104: bossanova.v1.ChatDelta.kind:type_name -> bossanova.v1.ChatDelta.Kind
-	16,  // 105: bossanova.v1.ChatDelta.chat:type_name -> bossanova.v1.AgentChatMetadata
-	134, // 106: bossanova.v1.ChatStatusDelta.status:type_name -> bossanova.v1.ChatStatus
-	135, // 107: bossanova.v1.ChatStatusDelta.last_output_at:type_name -> google.protobuf.Timestamp
-	135, // 108: bossanova.v1.AgentChatMetadata.created_at:type_name -> google.protobuf.Timestamp
-	135, // 109: bossanova.v1.AgentChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
-	136, // 110: bossanova.v1.AgentChatMetadata.role:type_name -> bossanova.v1.ChatRole
-	130, // 111: bossanova.v1.CommandResult.session:type_name -> bossanova.v1.Session
-	87,  // 112: bossanova.v1.CommandResult.transfer_confirmed:type_name -> bossanova.v1.TransferConfirmed
-	29,  // 113: bossanova.v1.CommandResult.wake_chat:type_name -> bossanova.v1.WakeChatResult
-	137, // 114: bossanova.v1.CommandResult.record_chat:type_name -> bossanova.v1.AgentChat
-	138, // 115: bossanova.v1.CommandResult.list_repos:type_name -> bossanova.v1.ListReposResponse
-	139, // 116: bossanova.v1.CommandResult.list_agents:type_name -> bossanova.v1.ListAgentsResponse
-	140, // 117: bossanova.v1.CommandResult.list_repo_prs:type_name -> bossanova.v1.ListRepoPRsResponse
-	141, // 118: bossanova.v1.CommandResult.list_tracker_issues:type_name -> bossanova.v1.ListTrackerIssuesResponse
-	142, // 119: bossanova.v1.CommandResult.get_chat_transcript:type_name -> bossanova.v1.GetChatTranscriptResponse
-	143, // 120: bossanova.v1.CommandResult.send_chat_message:type_name -> bossanova.v1.SendChatMessageResponse
-	31,  // 121: bossanova.v1.CommandResult.switch_account:type_name -> bossanova.v1.SwitchAgentAccountResult
-	144, // 122: bossanova.v1.CommandResult.list_accounts:type_name -> bossanova.v1.ListAgentAccountsResponse
-	145, // 123: bossanova.v1.CommandResult.get_repo:type_name -> bossanova.v1.GetRepoSettingsResponse
-	146, // 124: bossanova.v1.CommandResult.update_repo:type_name -> bossanova.v1.UpdateRepoResponse
-	147, // 125: bossanova.v1.CommandResult.list_cron_jobs:type_name -> bossanova.v1.ListCronJobsResponse
-	148, // 126: bossanova.v1.CommandResult.create_cron_job:type_name -> bossanova.v1.CreateCronJobResponse
-	149, // 127: bossanova.v1.CommandResult.update_cron_job:type_name -> bossanova.v1.UpdateCronJobResponse
-	150, // 128: bossanova.v1.CommandResult.run_cron_job_now:type_name -> bossanova.v1.RunCronJobNowResponse
-	151, // 129: bossanova.v1.CommandResult.add_account:type_name -> bossanova.v1.AddAgentAccountResponse
-	152, // 130: bossanova.v1.CommandResult.refresh_account:type_name -> bossanova.v1.RefreshAgentAccountResponse
-	153, // 131: bossanova.v1.CommandResult.update_account:type_name -> bossanova.v1.UpdateAgentAccountResponse
-	154, // 132: bossanova.v1.CommandResult.test_account:type_name -> bossanova.v1.TestAgentAccountResponse
-	155, // 133: bossanova.v1.CommandResult.list_chats:type_name -> bossanova.v1.ListChatsResponse
-	156, // 134: bossanova.v1.CommandResult.get_session_statuses:type_name -> bossanova.v1.GetSessionStatusesResponse
-	157, // 135: bossanova.v1.CommandResult.list_check_snapshots:type_name -> bossanova.v1.ListCheckSnapshotsResponse
-	158, // 136: bossanova.v1.CommandResult.list_plugins:type_name -> bossanova.v1.ListPluginsResponse
-	159, // 137: bossanova.v1.CommandResult.get_cron_job:type_name -> bossanova.v1.GetCronJobResponse
-	160, // 138: bossanova.v1.CommandResult.repair_doctor:type_name -> bossanova.v1.RepairDoctorResponse
-	71,  // 139: bossanova.v1.CommandResult.empty_trash:type_name -> bossanova.v1.EmptyTrashResult
-	161, // 140: bossanova.v1.CommandResult.create_github_callback:type_name -> bossanova.v1.CreateGitHubCallbackResponse
-	162, // 141: bossanova.v1.CommandResult.list_github_callbacks:type_name -> bossanova.v1.ListGitHubCallbacksResponse
-	163, // 142: bossanova.v1.CommandResult.create_note:type_name -> bossanova.v1.CreateNoteResponse
-	164, // 143: bossanova.v1.CommandResult.get_note:type_name -> bossanova.v1.GetNoteResponse
-	165, // 144: bossanova.v1.CommandResult.list_notes:type_name -> bossanova.v1.ListNotesResponse
-	166, // 145: bossanova.v1.CommandResult.update_note:type_name -> bossanova.v1.UpdateNoteResponse
-	167, // 146: bossanova.v1.CommandResult.get_chat_statuses:type_name -> bossanova.v1.GetChatStatusesResponse
-	168, // 147: bossanova.v1.CommandResult.move_session:type_name -> bossanova.v1.MoveSessionResponse
-	39,  // 148: bossanova.v1.CommandResult.launch_trigger_session:type_name -> bossanova.v1.LaunchTriggerSessionResult
-	41,  // 149: bossanova.v1.CommandResult.run_trigger_gate:type_name -> bossanova.v1.RunTriggerGateResult
-	169, // 150: bossanova.v1.CommandResult.operator_merge_session:type_name -> bossanova.v1.OperatorMergeSessionResponse
-	170, // 151: bossanova.v1.CommandResult.send_back_to_repair:type_name -> bossanova.v1.SendBackToRepairResponse
-	171, // 152: bossanova.v1.CommandResult.get_session_timeline:type_name -> bossanova.v1.GetSessionTimelineResponse
-	123, // 153: bossanova.v1.CommandResult.daemon_settings:type_name -> bossanova.v1.DaemonSettingsResult
-	125, // 154: bossanova.v1.CommandResult.agent_models:type_name -> bossanova.v1.AgentModelsResult
-	127, // 155: bossanova.v1.CommandResult.answer_chat_question:type_name -> bossanova.v1.AnswerChatQuestionResult
-	3,   // 156: bossanova.v1.CommandResult.error_code:type_name -> bossanova.v1.CommandResult.ErrorCode
-	130, // 157: bossanova.v1.SessionCreateChunk.created:type_name -> bossanova.v1.Session
-	21,  // 158: bossanova.v1.SessionCreateChunk.error:type_name -> bossanova.v1.CreateError
-	172, // 159: bossanova.v1.SessionAttachChunk.output_line:type_name -> bossanova.v1.OutputLine
-	173, // 160: bossanova.v1.SessionAttachChunk.state_change:type_name -> bossanova.v1.StateChange
-	174, // 161: bossanova.v1.SessionAttachChunk.session_ended:type_name -> bossanova.v1.SessionEnded
-	175, // 162: bossanova.v1.CreateSessionCommand.tracker_issue:type_name -> bossanova.v1.TrackerIssue
-	4,   // 163: bossanova.v1.WakeChatResult.outcome:type_name -> bossanova.v1.WakeChatResult.Outcome
-	176, // 164: bossanova.v1.MoveSessionCommand.direction:type_name -> bossanova.v1.MoveDirection
-	0,   // 165: bossanova.v1.RunTriggerGateResult.verdict:type_name -> bossanova.v1.TriggerGateVerdict
-	177, // 166: bossanova.v1.CreateCronJobCommand.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
-	177, // 167: bossanova.v1.UpdateCronJobCommand.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
-	178, // 168: bossanova.v1.UpdateRepoCommand.merge_strategy:type_name -> bossanova.v1.MergeStrategy
-	179, // 169: bossanova.v1.UpdateRepoCommand.linear_key:type_name -> bossanova.v1.SecretUpdate
-	179, // 170: bossanova.v1.UpdateRepoCommand.sentry_key:type_name -> bossanova.v1.SecretUpdate
-	135, // 171: bossanova.v1.UpdateRepoCommand.expected_updated_at:type_name -> google.protobuf.Timestamp
-	135, // 172: bossanova.v1.EmptyTrashCommand.older_than:type_name -> google.protobuf.Timestamp
-	180, // 173: bossanova.v1.ReportChatStatusCommand.reports:type_name -> bossanova.v1.ChatStatusReport
-	135, // 174: bossanova.v1.CreateGitHubCallbackCommand.expires_at:type_name -> google.protobuf.Timestamp
-	181, // 175: bossanova.v1.UpdateNoteCommand.tags:type_name -> bossanova.v1.NoteTagSet
-	129, // 176: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
-	182, // 177: bossanova.v1.BroadcastEgress.selector:type_name -> bossanova.v1.BroadcastSelector
-	135, // 178: bossanova.v1.BroadcastEgress.expires_at:type_name -> google.protobuf.Timestamp
-	182, // 179: bossanova.v1.BroadcastCommand.selector:type_name -> bossanova.v1.BroadcastSelector
-	135, // 180: bossanova.v1.BroadcastCommand.expires_at:type_name -> google.protobuf.Timestamp
-	92,  // 181: bossanova.v1.TerminalClientMessage.attach:type_name -> bossanova.v1.TerminalAttachCommand
-	93,  // 182: bossanova.v1.TerminalClientMessage.input:type_name -> bossanova.v1.TerminalInputCommand
-	94,  // 183: bossanova.v1.TerminalClientMessage.resize:type_name -> bossanova.v1.TerminalResizeCommand
-	95,  // 184: bossanova.v1.TerminalClientMessage.close:type_name -> bossanova.v1.TerminalCloseCommand
-	104, // 185: bossanova.v1.TerminalClientMessage.ready:type_name -> bossanova.v1.TerminalReady
-	105, // 186: bossanova.v1.TerminalClientMessage.ping:type_name -> bossanova.v1.TerminalPing
-	96,  // 187: bossanova.v1.TerminalClientMessage.upload_start:type_name -> bossanova.v1.TerminalUploadStart
-	97,  // 188: bossanova.v1.TerminalClientMessage.upload_chunk:type_name -> bossanova.v1.TerminalUploadChunk
-	98,  // 189: bossanova.v1.TerminalClientMessage.upload_finish:type_name -> bossanova.v1.TerminalUploadFinish
-	99,  // 190: bossanova.v1.TerminalClientMessage.upload_cancel:type_name -> bossanova.v1.TerminalUploadCancel
-	102, // 191: bossanova.v1.TerminalServerMessage.data:type_name -> bossanova.v1.TerminalDataChunk
-	103, // 192: bossanova.v1.TerminalServerMessage.exited:type_name -> bossanova.v1.TerminalAttachExited
-	106, // 193: bossanova.v1.TerminalServerMessage.pong:type_name -> bossanova.v1.TerminalPong
-	100, // 194: bossanova.v1.TerminalServerMessage.upload_ack:type_name -> bossanova.v1.TerminalUploadAck
-	101, // 195: bossanova.v1.TerminalServerMessage.upload_result:type_name -> bossanova.v1.TerminalUploadResult
-	108, // 196: bossanova.v1.TerminalServerMessage.sealed_key:type_name -> bossanova.v1.TerminalSealedKey
-	132, // 197: bossanova.v1.AgentAccountInventory.accounts:type_name -> bossanova.v1.AgentAccount
-	183, // 198: bossanova.v1.AgentAccountUsageReport.usage:type_name -> bossanova.v1.UsageSnapshot
-	135, // 199: bossanova.v1.AgentAccountUsageReport.throttled_until_at:type_name -> google.protobuf.Timestamp
-	183, // 200: bossanova.v1.ApplyAgentAccountUsageCommand.usage:type_name -> bossanova.v1.UsageSnapshot
-	135, // 201: bossanova.v1.ApplyAgentAccountUsageCommand.throttled_until_at:type_name -> google.protobuf.Timestamp
-	184, // 202: bossanova.v1.UpdateDaemonSettingsCommand.update:type_name -> bossanova.v1.DaemonSettingsUpdate
-	185, // 203: bossanova.v1.DaemonSettingsResult.settings:type_name -> bossanova.v1.DaemonSettings
-	186, // 204: bossanova.v1.AgentModelsResult.models:type_name -> bossanova.v1.AgentModel
-	205, // [205:205] is the sub-list for method output_type
-	205, // [205:205] is the sub-list for method input_type
-	205, // [205:205] is the sub-list for extension type_name
-	205, // [205:205] is the sub-list for extension extendee
-	0,   // [0:205] is the sub-list for field type_name
+	129, // 92: bossanova.v1.OrchestratorCommand.start_session_serve:type_name -> bossanova.v1.StartSessionServeCommand
+	130, // 93: bossanova.v1.OrchestratorCommand.stop_session_serve:type_name -> bossanova.v1.StopSessionServeCommand
+	131, // 94: bossanova.v1.OrchestratorCommand.list_session_labels:type_name -> bossanova.v1.ListSessionLabelsCommand
+	132, // 95: bossanova.v1.OrchestratorCommand.create_session_label:type_name -> bossanova.v1.CreateSessionLabelCommand
+	133, // 96: bossanova.v1.OrchestratorCommand.update_session_label:type_name -> bossanova.v1.UpdateSessionLabelCommand
+	134, // 97: bossanova.v1.OrchestratorCommand.delete_session_label:type_name -> bossanova.v1.DeleteSessionLabelCommand
+	135, // 98: bossanova.v1.OrchestratorCommand.set_session_labels:type_name -> bossanova.v1.SetSessionLabelsCommand
+	137, // 99: bossanova.v1.DaemonSnapshot.sessions:type_name -> bossanova.v1.Session
+	16,  // 100: bossanova.v1.DaemonSnapshot.chats:type_name -> bossanova.v1.AgentChatMetadata
+	138, // 101: bossanova.v1.DaemonSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
+	11,  // 102: bossanova.v1.DaemonSnapshot.callback_interests:type_name -> bossanova.v1.CallbackInterest
+	139, // 103: bossanova.v1.DaemonSnapshot.agent_accounts:type_name -> bossanova.v1.AgentAccount
+	140, // 104: bossanova.v1.DaemonSnapshot.cloud_control:type_name -> bossanova.v1.CloudControl
+	9,   // 105: bossanova.v1.DaemonSnapshot.repo_cloud_controls:type_name -> bossanova.v1.RepoCloudControlMode
+	140, // 106: bossanova.v1.RepoCloudControlMode.cloud_control:type_name -> bossanova.v1.CloudControl
+	9,   // 107: bossanova.v1.RepoCloudControlsChanged.upserted:type_name -> bossanova.v1.RepoCloudControlMode
+	11,  // 108: bossanova.v1.CallbackInterestSet.interests:type_name -> bossanova.v1.CallbackInterest
+	1,   // 109: bossanova.v1.SessionDelta.kind:type_name -> bossanova.v1.SessionDelta.Kind
+	137, // 110: bossanova.v1.SessionDelta.session:type_name -> bossanova.v1.Session
+	2,   // 111: bossanova.v1.ChatDelta.kind:type_name -> bossanova.v1.ChatDelta.Kind
+	16,  // 112: bossanova.v1.ChatDelta.chat:type_name -> bossanova.v1.AgentChatMetadata
+	141, // 113: bossanova.v1.ChatStatusDelta.status:type_name -> bossanova.v1.ChatStatus
+	142, // 114: bossanova.v1.ChatStatusDelta.last_output_at:type_name -> google.protobuf.Timestamp
+	142, // 115: bossanova.v1.AgentChatMetadata.created_at:type_name -> google.protobuf.Timestamp
+	142, // 116: bossanova.v1.AgentChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
+	143, // 117: bossanova.v1.AgentChatMetadata.role:type_name -> bossanova.v1.ChatRole
+	137, // 118: bossanova.v1.CommandResult.session:type_name -> bossanova.v1.Session
+	87,  // 119: bossanova.v1.CommandResult.transfer_confirmed:type_name -> bossanova.v1.TransferConfirmed
+	29,  // 120: bossanova.v1.CommandResult.wake_chat:type_name -> bossanova.v1.WakeChatResult
+	144, // 121: bossanova.v1.CommandResult.record_chat:type_name -> bossanova.v1.AgentChat
+	145, // 122: bossanova.v1.CommandResult.list_repos:type_name -> bossanova.v1.ListReposResponse
+	146, // 123: bossanova.v1.CommandResult.list_agents:type_name -> bossanova.v1.ListAgentsResponse
+	147, // 124: bossanova.v1.CommandResult.list_repo_prs:type_name -> bossanova.v1.ListRepoPRsResponse
+	148, // 125: bossanova.v1.CommandResult.list_tracker_issues:type_name -> bossanova.v1.ListTrackerIssuesResponse
+	149, // 126: bossanova.v1.CommandResult.get_chat_transcript:type_name -> bossanova.v1.GetChatTranscriptResponse
+	150, // 127: bossanova.v1.CommandResult.send_chat_message:type_name -> bossanova.v1.SendChatMessageResponse
+	31,  // 128: bossanova.v1.CommandResult.switch_account:type_name -> bossanova.v1.SwitchAgentAccountResult
+	151, // 129: bossanova.v1.CommandResult.list_accounts:type_name -> bossanova.v1.ListAgentAccountsResponse
+	152, // 130: bossanova.v1.CommandResult.get_repo:type_name -> bossanova.v1.GetRepoSettingsResponse
+	153, // 131: bossanova.v1.CommandResult.update_repo:type_name -> bossanova.v1.UpdateRepoResponse
+	154, // 132: bossanova.v1.CommandResult.list_cron_jobs:type_name -> bossanova.v1.ListCronJobsResponse
+	155, // 133: bossanova.v1.CommandResult.create_cron_job:type_name -> bossanova.v1.CreateCronJobResponse
+	156, // 134: bossanova.v1.CommandResult.update_cron_job:type_name -> bossanova.v1.UpdateCronJobResponse
+	157, // 135: bossanova.v1.CommandResult.run_cron_job_now:type_name -> bossanova.v1.RunCronJobNowResponse
+	158, // 136: bossanova.v1.CommandResult.add_account:type_name -> bossanova.v1.AddAgentAccountResponse
+	159, // 137: bossanova.v1.CommandResult.refresh_account:type_name -> bossanova.v1.RefreshAgentAccountResponse
+	160, // 138: bossanova.v1.CommandResult.update_account:type_name -> bossanova.v1.UpdateAgentAccountResponse
+	161, // 139: bossanova.v1.CommandResult.test_account:type_name -> bossanova.v1.TestAgentAccountResponse
+	162, // 140: bossanova.v1.CommandResult.list_chats:type_name -> bossanova.v1.ListChatsResponse
+	163, // 141: bossanova.v1.CommandResult.get_session_statuses:type_name -> bossanova.v1.GetSessionStatusesResponse
+	164, // 142: bossanova.v1.CommandResult.list_check_snapshots:type_name -> bossanova.v1.ListCheckSnapshotsResponse
+	165, // 143: bossanova.v1.CommandResult.list_plugins:type_name -> bossanova.v1.ListPluginsResponse
+	166, // 144: bossanova.v1.CommandResult.get_cron_job:type_name -> bossanova.v1.GetCronJobResponse
+	167, // 145: bossanova.v1.CommandResult.repair_doctor:type_name -> bossanova.v1.RepairDoctorResponse
+	71,  // 146: bossanova.v1.CommandResult.empty_trash:type_name -> bossanova.v1.EmptyTrashResult
+	168, // 147: bossanova.v1.CommandResult.create_github_callback:type_name -> bossanova.v1.CreateGitHubCallbackResponse
+	169, // 148: bossanova.v1.CommandResult.list_github_callbacks:type_name -> bossanova.v1.ListGitHubCallbacksResponse
+	170, // 149: bossanova.v1.CommandResult.create_note:type_name -> bossanova.v1.CreateNoteResponse
+	171, // 150: bossanova.v1.CommandResult.get_note:type_name -> bossanova.v1.GetNoteResponse
+	172, // 151: bossanova.v1.CommandResult.list_notes:type_name -> bossanova.v1.ListNotesResponse
+	173, // 152: bossanova.v1.CommandResult.update_note:type_name -> bossanova.v1.UpdateNoteResponse
+	174, // 153: bossanova.v1.CommandResult.get_chat_statuses:type_name -> bossanova.v1.GetChatStatusesResponse
+	175, // 154: bossanova.v1.CommandResult.move_session:type_name -> bossanova.v1.MoveSessionResponse
+	39,  // 155: bossanova.v1.CommandResult.launch_trigger_session:type_name -> bossanova.v1.LaunchTriggerSessionResult
+	41,  // 156: bossanova.v1.CommandResult.run_trigger_gate:type_name -> bossanova.v1.RunTriggerGateResult
+	176, // 157: bossanova.v1.CommandResult.operator_merge_session:type_name -> bossanova.v1.OperatorMergeSessionResponse
+	177, // 158: bossanova.v1.CommandResult.send_back_to_repair:type_name -> bossanova.v1.SendBackToRepairResponse
+	178, // 159: bossanova.v1.CommandResult.get_session_timeline:type_name -> bossanova.v1.GetSessionTimelineResponse
+	123, // 160: bossanova.v1.CommandResult.daemon_settings:type_name -> bossanova.v1.DaemonSettingsResult
+	125, // 161: bossanova.v1.CommandResult.agent_models:type_name -> bossanova.v1.AgentModelsResult
+	127, // 162: bossanova.v1.CommandResult.answer_chat_question:type_name -> bossanova.v1.AnswerChatQuestionResult
+	179, // 163: bossanova.v1.CommandResult.session_serve:type_name -> bossanova.v1.SessionServe
+	180, // 164: bossanova.v1.CommandResult.list_session_labels:type_name -> bossanova.v1.ListSessionLabelsResponse
+	181, // 165: bossanova.v1.CommandResult.create_session_label:type_name -> bossanova.v1.CreateSessionLabelResponse
+	182, // 166: bossanova.v1.CommandResult.update_session_label:type_name -> bossanova.v1.UpdateSessionLabelResponse
+	3,   // 167: bossanova.v1.CommandResult.error_code:type_name -> bossanova.v1.CommandResult.ErrorCode
+	137, // 168: bossanova.v1.SessionCreateChunk.created:type_name -> bossanova.v1.Session
+	21,  // 169: bossanova.v1.SessionCreateChunk.error:type_name -> bossanova.v1.CreateError
+	183, // 170: bossanova.v1.SessionAttachChunk.output_line:type_name -> bossanova.v1.OutputLine
+	184, // 171: bossanova.v1.SessionAttachChunk.state_change:type_name -> bossanova.v1.StateChange
+	185, // 172: bossanova.v1.SessionAttachChunk.session_ended:type_name -> bossanova.v1.SessionEnded
+	186, // 173: bossanova.v1.CreateSessionCommand.tracker_issue:type_name -> bossanova.v1.TrackerIssue
+	4,   // 174: bossanova.v1.WakeChatResult.outcome:type_name -> bossanova.v1.WakeChatResult.Outcome
+	187, // 175: bossanova.v1.MoveSessionCommand.direction:type_name -> bossanova.v1.MoveDirection
+	0,   // 176: bossanova.v1.RunTriggerGateResult.verdict:type_name -> bossanova.v1.TriggerGateVerdict
+	188, // 177: bossanova.v1.CreateCronJobCommand.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
+	188, // 178: bossanova.v1.UpdateCronJobCommand.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
+	189, // 179: bossanova.v1.UpdateRepoCommand.merge_strategy:type_name -> bossanova.v1.MergeStrategy
+	190, // 180: bossanova.v1.UpdateRepoCommand.linear_key:type_name -> bossanova.v1.SecretUpdate
+	190, // 181: bossanova.v1.UpdateRepoCommand.sentry_key:type_name -> bossanova.v1.SecretUpdate
+	142, // 182: bossanova.v1.UpdateRepoCommand.expected_updated_at:type_name -> google.protobuf.Timestamp
+	142, // 183: bossanova.v1.EmptyTrashCommand.older_than:type_name -> google.protobuf.Timestamp
+	191, // 184: bossanova.v1.ReportChatStatusCommand.reports:type_name -> bossanova.v1.ChatStatusReport
+	142, // 185: bossanova.v1.CreateGitHubCallbackCommand.expires_at:type_name -> google.protobuf.Timestamp
+	192, // 186: bossanova.v1.UpdateNoteCommand.tags:type_name -> bossanova.v1.NoteTagSet
+	136, // 187: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
+	193, // 188: bossanova.v1.BroadcastEgress.selector:type_name -> bossanova.v1.BroadcastSelector
+	142, // 189: bossanova.v1.BroadcastEgress.expires_at:type_name -> google.protobuf.Timestamp
+	193, // 190: bossanova.v1.BroadcastCommand.selector:type_name -> bossanova.v1.BroadcastSelector
+	142, // 191: bossanova.v1.BroadcastCommand.expires_at:type_name -> google.protobuf.Timestamp
+	92,  // 192: bossanova.v1.TerminalClientMessage.attach:type_name -> bossanova.v1.TerminalAttachCommand
+	93,  // 193: bossanova.v1.TerminalClientMessage.input:type_name -> bossanova.v1.TerminalInputCommand
+	94,  // 194: bossanova.v1.TerminalClientMessage.resize:type_name -> bossanova.v1.TerminalResizeCommand
+	95,  // 195: bossanova.v1.TerminalClientMessage.close:type_name -> bossanova.v1.TerminalCloseCommand
+	104, // 196: bossanova.v1.TerminalClientMessage.ready:type_name -> bossanova.v1.TerminalReady
+	105, // 197: bossanova.v1.TerminalClientMessage.ping:type_name -> bossanova.v1.TerminalPing
+	96,  // 198: bossanova.v1.TerminalClientMessage.upload_start:type_name -> bossanova.v1.TerminalUploadStart
+	97,  // 199: bossanova.v1.TerminalClientMessage.upload_chunk:type_name -> bossanova.v1.TerminalUploadChunk
+	98,  // 200: bossanova.v1.TerminalClientMessage.upload_finish:type_name -> bossanova.v1.TerminalUploadFinish
+	99,  // 201: bossanova.v1.TerminalClientMessage.upload_cancel:type_name -> bossanova.v1.TerminalUploadCancel
+	102, // 202: bossanova.v1.TerminalServerMessage.data:type_name -> bossanova.v1.TerminalDataChunk
+	103, // 203: bossanova.v1.TerminalServerMessage.exited:type_name -> bossanova.v1.TerminalAttachExited
+	106, // 204: bossanova.v1.TerminalServerMessage.pong:type_name -> bossanova.v1.TerminalPong
+	100, // 205: bossanova.v1.TerminalServerMessage.upload_ack:type_name -> bossanova.v1.TerminalUploadAck
+	101, // 206: bossanova.v1.TerminalServerMessage.upload_result:type_name -> bossanova.v1.TerminalUploadResult
+	108, // 207: bossanova.v1.TerminalServerMessage.sealed_key:type_name -> bossanova.v1.TerminalSealedKey
+	139, // 208: bossanova.v1.AgentAccountInventory.accounts:type_name -> bossanova.v1.AgentAccount
+	194, // 209: bossanova.v1.AgentAccountUsageReport.usage:type_name -> bossanova.v1.UsageSnapshot
+	142, // 210: bossanova.v1.AgentAccountUsageReport.throttled_until_at:type_name -> google.protobuf.Timestamp
+	194, // 211: bossanova.v1.ApplyAgentAccountUsageCommand.usage:type_name -> bossanova.v1.UsageSnapshot
+	142, // 212: bossanova.v1.ApplyAgentAccountUsageCommand.throttled_until_at:type_name -> google.protobuf.Timestamp
+	195, // 213: bossanova.v1.UpdateDaemonSettingsCommand.update:type_name -> bossanova.v1.DaemonSettingsUpdate
+	196, // 214: bossanova.v1.DaemonSettingsResult.settings:type_name -> bossanova.v1.DaemonSettings
+	197, // 215: bossanova.v1.AgentModelsResult.models:type_name -> bossanova.v1.AgentModel
+	216, // [216:216] is the sub-list for method output_type
+	216, // [216:216] is the sub-list for method input_type
+	216, // [216:216] is the sub-list for extension type_name
+	216, // [216:216] is the sub-list for extension extendee
+	0,   // [0:216] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_stream_proto_init() }
@@ -12775,6 +13432,13 @@ func file_bossanova_v1_stream_proto_init() {
 		(*OrchestratorCommand_ListAgentModels)(nil),
 		(*OrchestratorCommand_AnswerChatQuestion)(nil),
 		(*OrchestratorCommand_StopChat)(nil),
+		(*OrchestratorCommand_StartSessionServe)(nil),
+		(*OrchestratorCommand_StopSessionServe)(nil),
+		(*OrchestratorCommand_ListSessionLabels)(nil),
+		(*OrchestratorCommand_CreateSessionLabel)(nil),
+		(*OrchestratorCommand_UpdateSessionLabel)(nil),
+		(*OrchestratorCommand_DeleteSessionLabel)(nil),
+		(*OrchestratorCommand_SetSessionLabels)(nil),
 	}
 	file_bossanova_v1_stream_proto_msgTypes[13].OneofWrappers = []any{
 		(*CommandResult_Session)(nil),
@@ -12822,6 +13486,10 @@ func file_bossanova_v1_stream_proto_init() {
 		(*CommandResult_DaemonSettings)(nil),
 		(*CommandResult_AgentModels)(nil),
 		(*CommandResult_AnswerChatQuestion)(nil),
+		(*CommandResult_SessionServe)(nil),
+		(*CommandResult_ListSessionLabels)(nil),
+		(*CommandResult_CreateSessionLabel)(nil),
+		(*CommandResult_UpdateSessionLabel)(nil),
 	}
 	file_bossanova_v1_stream_proto_msgTypes[15].OneofWrappers = []any{
 		(*SessionCreateChunk_SetupOutput)(nil),
@@ -12873,13 +13541,14 @@ func file_bossanova_v1_stream_proto_init() {
 		(*AnswerChatQuestionCommand_OptionIndex)(nil),
 		(*AnswerChatQuestionCommand_Text)(nil),
 	}
+	file_bossanova_v1_stream_proto_msgTypes[128].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_stream_proto_rawDesc), len(file_bossanova_v1_stream_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   125,
+			NumMessages:   132,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

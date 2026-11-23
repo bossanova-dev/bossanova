@@ -41,6 +41,51 @@ boss chats abc123
 boss chats abc123 --json
 ```
 
+### `boss label`
+
+Manage colored session labels
+
+### `boss label create <name> [flags]`
+
+Create a new session label
+
+**Flags:**
+
+- `--color` — Hex color (#rrggbb) or preset name (red, orange, yellow, green, teal, blue, indigo, purple, pink, gray)
+- `--description` — Optional description
+- `--json` — Emit a stable JSON schema instead of text
+
+### `boss label delete <id-or-name> [flags]`
+
+Alias: `boss label rm`
+
+Delete a session label
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of text
+
+### `boss label ls [flags]`
+
+Alias: `boss label list`
+
+List session labels
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of a table
+
+### `boss label update <id-or-name> [flags]`
+
+Update a session label
+
+**Flags:**
+
+- `--color` — New hex color (#rrggbb) or preset name
+- `--description` — New description
+- `--json` — Emit a stable JSON schema instead of text
+- `--name` — New label name
+
 ### `boss ls [flags]`
 
 List sessions (non-interactive)
@@ -54,6 +99,7 @@ An extra `AGENT` column appears only when at least one listed session uses an ag
 - `--all-daemons` — List live sessions from every daemon reachable through the orchestrator
 - `--archived` — Include archived sessions
 - `--json` — Emit a stable JSON schema instead of a table
+- `--label` — Filter by label name or ID
 - `--repo` — Filter by repo ID
 - `--state` — Filter by state(s)
 

@@ -330,3 +330,29 @@ func TestUpdateDaemonSettings_KeepsConcurrentLocalEdit(t *testing.T) {
 		t.Fatalf("sandbox = %v, want read-only", sandbox)
 	}
 }
+
+func TestDaemonSettings_ProofPagesDefaultOnWithBucketAndTurnOffExplicitly(t *testing.T) {
+	path := writeRawSettings(t, `{"proof_upload":{"account_id":"acct","bucket":"proof","public_base_url":"https://proof.example"}}`)
+	got, err := daemonSettingsServer().GetDaemonSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.GetSettings().GetIsProofPagesEnabled() {
+		t.Fatal("a bucket with pages_enabled unset must report proof pages on")
+	}
+
+	got, err = daemonSettingsServer().UpdateDaemonSettings(context.Background(), &pb.DaemonSettingsUpdate{IsProofPagesEnabled: proto.Bool(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetSettings().GetIsProofPagesEnabled() {
+		t.Fatal("turning proof pages off still reports them on")
+	}
+	proof := readRawSettings(t, path)["proof_upload"].(map[string]any)
+	if enabled, present := proof["pages_enabled"]; !present || enabled != false {
+		t.Fatalf("proof_upload = %v, want an explicit pages_enabled false", proof)
+	}
+	if again, err := daemonSettingsServer().GetDaemonSettings(context.Background()); err != nil || again.GetSettings().GetIsProofPagesEnabled() {
+		t.Fatalf("proof pages read back on after turning them off (err=%v)", err)
+	}
+}

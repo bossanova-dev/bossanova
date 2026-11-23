@@ -38,8 +38,10 @@ type DisplayEntry struct {
 	// can't clobber it. Surfaced on Session.archive_pending so the TUI renders
 	// "Archiving…" only when the daemon actually has an archive running (BOS-425).
 	Archiving bool
-	// ServiceLinks are live serve-command links, never persisted.
+	// ServiceLinks, ServeRunning and ServeError are live serve-command state, never persisted.
 	ServiceLinks []ServiceLink
+	ServeRunning bool
+	ServeError   string
 	HeadSHA      string
 	// Mergeable is the PR's last-polled mergeability (nil unknown / true
 	// mergeable / false conflicting), surfaced on Session.pr_mergeable so a
@@ -146,8 +148,12 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		archiving = oldEntry.Archiving
 	}
 	var serviceLinks []ServiceLink
+	var serveRunning bool
+	var serveError string
 	if existed {
 		serviceLinks = oldEntry.ServiceLinks
+		serveRunning = oldEntry.ServeRunning
+		serveError = oldEntry.ServeError
 	}
 	var receiptHeadSHA string
 	if existed {
@@ -177,6 +183,8 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		Merging:             t.mergeHolds[sessionID] > 0,
 		Archiving:           archiving,
 		ServiceLinks:        serviceLinks,
+		ServeRunning:        serveRunning,
+		ServeError:          serveError,
 		HeadSHA:             info.HeadSHA,
 		Mergeable:           info.Mergeable,
 		AddedLineCount:      info.AddedLineCount,
@@ -428,7 +436,7 @@ func (e *DisplayEntry) isEmpty() bool {
 	return e.Status == vcs.DisplayStatusUnspecified &&
 		!e.HasFailures && !e.HasChangesRequested &&
 		!e.IsRepairing && !e.SettingUp && !e.Merging && !e.Archiving && e.HeadSHA == "" &&
-		e.BlockedRunWorkingAt.IsZero() && len(e.ServiceLinks) == 0
+		e.BlockedRunWorkingAt.IsZero() && len(e.ServiceLinks) == 0 && !e.ServeRunning && e.ServeError == ""
 }
 
 // SetOnChange sets the callback function that is called when a display status changes.

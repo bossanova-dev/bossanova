@@ -382,6 +382,21 @@ type SessionCheckSnapshot struct {
 	VerifiedRunStartedAt *string
 }
 
+type SessionLabel struct {
+	ID          string
+	Name        string
+	Color       string
+	Description string
+	CreatedAt   string
+	UpdatedAt   string
+}
+
+type SessionLabelAssignment struct {
+	SessionID string
+	LabelID   string
+	CreatedAt string
+}
+
 type SessionResumeAttempt struct {
 	ID            string
 	SessionID     string

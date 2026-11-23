@@ -9,6 +9,9 @@ go_library(
 
 go_test(
     name = "chatupload_test",
-    srcs = ["chatupload_test.go"],
+    srcs = [
+        "chatupload_test.go",
+        "deferred_test.go",
+    ],
     embed = [":chatupload"],
 )

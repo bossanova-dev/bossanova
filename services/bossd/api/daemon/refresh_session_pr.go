@@ -163,7 +163,10 @@ func (s *Server) refreshSessionPRSnapshot(ctx context.Context, repo *models.Repo
 	var checkSet vcs.CheckSet
 	var reviews []vcs.ReviewComment
 	if prStatus.State != vcs.PRStateMerged && prStatus.State != vcs.PRStateClosed {
-		checkSet, err = vcs.ReadCheckSet(ctx, s.provider, repo.OriginURL, prNumber)
+		checkSet, err = vcs.ReadCheckSet(ctx, s.provider, repo.OriginURL, prNumber, prStatus.HeadSHA, vcs.CheckReadLog{
+			Logger: &s.logger,
+			Site:   "refresh session PR",
+		})
 		if err != nil {
 			return nil, vcs.CheckSet{}, providerRefreshError(ctx, "check results", err)
 		}

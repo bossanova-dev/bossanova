@@ -335,7 +335,7 @@ test('classifyAdmission with no policy ignores labels and author and keeps its a
 })
 
 test('classifyAdmission admits by class and label under a policy', () => {
-  const policy = policyOf({ human: { admit: true } })
+  const policy = policyOf({ human: { admit: true }, bot: { admit: false } })
   const prs = [
     human(1),
     human(2, { author: { login: 'dependabot', __typename: 'Bot' } }),
@@ -391,7 +391,7 @@ test('classifyAdmission admits by class and label under a policy', () => {
   const renamed = classifyAdmission({
     prs: [human(1, { labels: ['boss-verify'] }), human(2, { labels: ['verify-me'] })],
     admitsTicketless: true,
-    policy: policyOf({ labels: { optIn: 'verify-me' } }),
+    policy: policyOf({ human: { admit: false }, labels: { optIn: 'verify-me' } }),
   })
   assert.deepEqual(
     [answer(renamed, 1), answer(renamed, 2)],
@@ -445,7 +445,7 @@ test('admittedTicketless and admissionFacts answer only under a policy', async (
   )
   assert.equal(await admittedTicketless(human(2), { claimed: claims(new Set()), policy }), true)
   assert.equal(await admittedTicketless(human(2), { claimed: claims(new Set([2])), policy }), false)
-  assert.equal(await admittedTicketless(human(2), { claimed: claims(null), policy }), false)
+  assert.equal(await admittedTicketless(human(2), { claimed: claims(null), policy }), true)
   assert.equal(await admittedTicketless(cron(2), { claimed: claims(new Set()), policy }), false)
   assert.equal(admissionFacts(human(2, { labels: ['boss-verify'] }), null), undefined)
   assert.deepEqual(
@@ -478,7 +478,8 @@ test("judgeTier: no base policy keeps today's rules; a policy tiers each class b
     ],
     [human, policy({ human: { admit: true, merge: 'auto' } }), 'human/true/verify/human'],
     [labelled(human, 'boss-no-verify'), open, 'human/false/receipt/human'],
-    [human, policy({}), 'human/false/receipt/human'],
+    [human, policy({ human: { admit: false } }), 'human/false/receipt/human'],
+    [human, policy({}), 'human/true/verify/human'],
     [bot, open, 'bot/false/receipt/human'],
     [labelled(bot, 'boss-no-verify', 'boss-merge-on-pass'), open, 'bot/false/receipt/auto'],
     [labelled(bot, 'boss-verify'), open, 'bot/true/verify/human'],

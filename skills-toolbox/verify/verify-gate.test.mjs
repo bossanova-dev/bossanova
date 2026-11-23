@@ -691,13 +691,29 @@ test('claimState tells mine, a fresh foreign claim, a stale one, waiting and ter
 // ---------------------------------------------------------------------------
 // judge.
 
+const mergeUnadmittedBase = (baseConfig) => {
+  const parsed = baseConfig ? JSON.parse(baseConfig) : {}
+  return JSON.stringify({
+    ...parsed,
+    verifyDefaults: {
+      merge: { auto: [{ level: 'high' }] },
+      ...(parsed.verifyDefaults ?? {}),
+      admission: {
+        human: { admit: false, merge: 'auto' },
+        ...(parsed.verifyDefaults?.admission ?? {}),
+      },
+    },
+  })
+}
 const humanWorld = (opts = {}) =>
   world({
     ...opts,
+    baseConfig: mergeUnadmittedBase(opts.baseConfig),
     pr: {
       ...opts.pr,
       body: (opts.pr?.body ?? BODY).split('\n').slice(1).join('\n'),
       headRefName: 'feature',
+      labels: opts.pr?.labels ?? [{ name: 'boss-merge-on-pass' }],
     },
   })
 
@@ -3534,10 +3550,16 @@ test('post never writes a human or defect status without its tracker writes', as
         assert.ok(r.writes.some((write) => write.kind === 'tracker'))
       }
     }
-    // A body that lost its ticket line is not ticketless while a ticket may still stand behind it:
-    // its session names one, there is no session row, or the session list cannot be read.
+    // A cron PR whose body lost its ticket line is not ticketless while a ticket may still stand
+    // behind it: its session names one, there is no session row, or the session list cannot be read.
     for (const sessions of [[{ id: 'sess-1', pr_url: PR_URL, tracker_id: 'BOS-1' }], [], null]) {
-      const noTicket = world({ pr: { body: BODY.replace(/^Linear issue:.*\n/, '') }, sessions })
+      const noTicket = world({
+        pr: {
+          body: BODY.replace(/^Linear issue:.*\n/, ''),
+          headRefName: 'cron-build-1',
+        },
+        sessions,
+      })
       const r = await post(
         { pr: 7, head: HEAD, verdict: 'human', reason: 'no-receipt', repo: REPO },
         deps(noTicket),
@@ -3545,6 +3567,18 @@ test('post never writes a human or defect status without its tracker writes', as
       assert.equal(r.trackerWrites, 'unavailable')
       assert.equal(noTicket.statusPosts().length, 0)
     }
+    // An unclaimed non-cron PR with no ticket line posts with trackerWrites: 'none' by default.
+    const unclaimedHuman = world({
+      pr: { body: BODY.replace(/^Linear issue:.*\n/, ''), headRefName: 'feature/no-ticket' },
+      sessions: [],
+    })
+    const posted = await post(
+      { pr: 7, head: HEAD, verdict: 'human', reason: 'no-receipt', repo: REPO },
+      deps(unclaimedHuman, { adapter: fakeAdapter({ tickets: [] }) }),
+    )
+    assert.equal(posted.trackerWrites, 'none')
+    assert.equal(posted.posted, true)
+    assert.equal(unclaimedHuman.statusPosts().length, 1)
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
@@ -4961,7 +4995,10 @@ test('candidates: the skip rules — verified, claimed, stale and waiting admitt
       6: [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }],
     },
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.candidates.map((c) => [c.pr, c.claim]),
     [
@@ -4995,7 +5032,10 @@ test('candidates: an attachment links a PR whose body carries no ticket line', a
       { number: 12, url: 'u12', body: 'no ticket line', headRefOid: SHA_OF(12), isDraft: false },
     ],
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.candidates.map((c) => [c.ticket, c.pr]),
     [['BOS-4', 12]],
@@ -5019,7 +5059,10 @@ test('candidates: a parked needs-human head is excluded unless approval hands it
     reviews: { 2: 'APPROVED', 3: 'APPROVED' },
     labels: { 'BOS-2': ['needs-human'], 'BOS-3': ['needs-human'], 'BOS-4': ['needs-human'] },
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.equal(w.probes.length, 1, 'only the defect probes the tracker')
   assert.deepEqual(
     r.candidates.map((c) => ({ pr: c.pr, approval: c.approval, waive: c.waive })),
@@ -5238,7 +5281,10 @@ test('candidates: needs-human holds only a head its own park stands on', async (
       ),
     },
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.candidates.map((c) => [c.ticket, c.headSha, c.claim]),
     [
@@ -5269,7 +5315,10 @@ test("candidates: a needs-human head's park check reuses the head's one statuses
       return { ok: false, error: 'exit-1', exit: 1, output: '' }
     return read(command, args, o)
   }
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.candidates.map((c) => [c.ticket, c.claim]),
     [['BOS-1', 'waiting']],
@@ -5289,7 +5338,10 @@ test('candidates: unreadable per-head evidence is unknown:<what>, never a candid
     })),
     malformed: { status: [1], rollup: [2] },
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(r.candidates, [])
   assert.deepEqual(
     r.skipped.map((s) => s.reason),
@@ -5325,7 +5377,10 @@ test('candidates: a PR the batch cannot stand for reads its own status and rollu
     ['a last commit that is not the head', { gaps: { head: [4] } }, 4],
   ]) {
     const w = scan(opts)
-    const r = await candidates({ repo: REPO }, candDeps(w))
+    const r = await candidates(
+      { repo: REPO },
+      candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+    )
     assert.deepEqual(
       { candidates: r.candidates, skipped: r.skipped, mergeRetries: r.mergeRetries },
       { candidates: want.candidates, skipped: want.skipped, mergeRetries: want.mergeRetries },
@@ -5385,7 +5440,10 @@ test('candidates: one batched read serves discovery; only parked and needs-human
     },
     labels: { 'BOS-2': ['needs-human'], 'BOS-5': ['needs-human'] },
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.candidates.map((c) => [c.pr, c.claim]),
     [
@@ -5497,7 +5555,10 @@ test('candidates: the batched read pages newest first by cursor and stops at the
   const ticket = (n) => ({ identifier: `BOS-${n}`, labels: ['agent-build'], attachments: [] })
 
   const w = candidateWorld({ tickets: [ticket(1), ticket(150)], prs: prsOf(150) })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.candidates.map((c) => c.pr),
     Array.from({ length: 150 }, (_, i) => i + 1),
@@ -7768,7 +7829,10 @@ test('candidates: a park is handed back only by a record for its own head', asyn
     },
     commentsFail: [4],
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.candidates.map((c) => [c.pr, c.approval, c.waive]),
     [[2, 'policy-park-approved', 'partial-build']],
@@ -8886,15 +8950,16 @@ const PROVEN = [...green, drift('SUCCESS')]
 
 // An unreceipted head that touches ui paths, so it parks `no-receipt,human-review:ui` unless an
 // approval waives both. CI, `drift` included, is green.
-function carryWorld({ comments, pr, ...opts } = {}) {
+function carryWorld({ comments, pr, baseConfig, ...opts } = {}) {
   return world({
     statuses: [],
     diff: ['web/a.tsx'],
-    baseConfig: carryPolicy(),
+    baseConfig: mergeUnadmittedBase(baseConfig ?? carryPolicy()),
     comments: comments ?? [operatorComment(approveMarker(ANCHOR, CARRIED.split(',')))],
     pr: {
       body: BODY.split('\n').slice(1).join('\n'),
       headRefName: 'feature',
+      labels: [{ name: 'boss-merge-on-pass' }],
       statusCheckRollup: PROVEN,
       ...pr,
     },
@@ -9248,7 +9313,10 @@ test('candidates stop retrying a verified head whose session is elsewhere once t
     comments: { 2: noticeOn(SHA_OF(2)), 4: noticeOn(SHA_OF(4)), 5: noticeOn(SHA_OF(99)) },
     commentsFail: [6],
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   // #2 has its session here; #3 has no notice yet; #5's notice is for an older head; #6's comments
   // are unreadable. Only #4, whose PR already says this machine cannot merge it, stops.
   assert.deepEqual(
@@ -9402,7 +9470,10 @@ test('candidates: a ticketless factory PR is judged; one a ticket, a person or n
       { id: 's10', pr_url: 'https://github.com/o/r/pull/10', tracker_id: null },
     ],
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   const entry = (ticket, n) => ({
     ticket,
     pr: n,
@@ -9606,7 +9677,9 @@ test('post and merge share the discovery predicate: a PR some ticket may stand b
       deps(w, { adapter }),
     )
     const expected =
-      name === 'ticketless' ? ['none', 'no-ticket', 1] : ['unavailable', 'no-ticket-line', 0]
+      name === 'ticketless' || name === 'human branch'
+        ? ['none', 'no-ticket', 1]
+        : ['unavailable', 'no-ticket-line', 0]
     assert.deepEqual([r.trackerWrites, r.why, w.statusPosts().length], expected, name)
   }
 
@@ -9661,20 +9734,22 @@ test('candidates: an admission policy admits a human PR with ticket null and its
     const answers = Object.fromEntries(r.admission.map((a) => [a.pr, `${a.state}/${a.reason}`]))
     return { r, w, answers }
   }
-  const off = await scan(candidateConfig())
+  const off = await scan(admissionConfig({ human: { admit: false }, bot: { admit: false } }))
   assert.deepEqual(
     off.r.candidates.map((c) => [c.pr, c.ticket, c.class]),
-    [
-      [1, 'BOS-1', undefined],
-      [8, 'BOS-8', undefined],
-    ],
+    [[1, 'BOS-1', undefined]],
   )
   assert.deepEqual(
     [5, 6, 7, 9].map((n) => off.answers[n]),
-    Array(4).fill('excluded/no-ticket'),
+    [
+      'excluded/not-admitted:human',
+      'excluded/not-admitted:bot',
+      'excluded/opted-out',
+      'excluded/not-admitted:fork',
+    ],
   )
 
-  const on = await scan(admissionConfig({ human: { admit: true } }))
+  const on = await scan(admissionConfig({ human: { admit: true }, bot: { admit: false } }))
   assert.deepEqual(on.r.candidates, [
     {
       ticket: 'BOS-1',
@@ -10048,7 +10123,10 @@ test('candidates: a standing park naming the retired ledger-open code is re-judg
       ],
     },
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.candidates.map((c) => [c.pr, c.rejudge]),
     [
@@ -10298,7 +10376,10 @@ test('candidates: a standing park naming the retired human-review:size code is r
       [SHA_OF(3)]: verifyStatus('pending', 'needs human: human-review:ui'),
     },
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.candidates.map((c) => [c.pr, c.rejudge]),
     [
@@ -10609,18 +10690,19 @@ const admissionText = (admission) => policyText({ admission })
 const workingTreeAdmits = (admission) => () => ({ verifyDefaults: { admission } })
 
 test('judge reads the tier from the base tip, never the working tree', async () => {
-  // The working tree admits humans with merge on pass; the base admits nobody.
+  // The working tree admits humans with merge on pass; the base explicitly opts out.
   const head = { human: { admit: true, merge: 'auto' } }
   const selfAdmitted = world({
     pr: handView({ labels: [{ name: 'boss-merge-on-pass' }] }),
     statuses: [],
+    baseConfig: admissionText({ human: { admit: false } }),
   })
   const r1 = await judge(
     { pr: 7, repo: REPO },
     deps(selfAdmitted, { loadConfig: workingTreeAdmits(head) }),
   )
-  assert.deepEqual([r1.verdict, r1.reason], ['human', 'no-receipt'])
-  assert.equal(r1.facts.tier, undefined, 'no base admission block, no tier')
+  assert.deepEqual([r1.verdict, r1.reason], ['human', 'no-receipt,human-merge'])
+  assert.equal(r1.facts.tier.admitted, false, 'base opt-out holds against working tree')
   // The base admits humans and leaves their merge to a person; the head says merge on pass.
   const based = world({
     pr: handView({ labels: [{ name: 'boss-merge-on-pass' }] }),
@@ -11060,7 +11142,10 @@ test('candidates store an admitted head skipped for CI or an unread step as pend
     statuses: { [SHA_OF(6)]: verifyStatus('pending', 'needs human: partial-build') },
     commentsFail: [6],
   })
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const r = await candidates(
+    { repo: REPO },
+    candDeps(w, admissionConfig({ human: { admit: false }, bot: { admit: false } })),
+  )
   assert.deepEqual(
     r.skipped.map(({ pr, reason }) => [pr, reason]),
     [

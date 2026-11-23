@@ -10,7 +10,9 @@ On exit 2, execute the tracker adapter's `getIssue` operation and save the bare 
 (`id` or `identifier`), a non-empty state name (`status`, `stateName`, string `state` or `state.name`),
 an own `description` string or null, and the complete `attachments` array of objects. This is the
 `ISSUE_SNAPSHOT_FIELDS` contract from `tracker/issue-snapshot.mjs`; guards refuse incomplete snapshots
-with exit 2. Preserve the adapter's UUID for later description reads.
+with exit 2. Parent payloads (route bundle, parent flip) also require the complete `labels` array;
+`plan/plan-child-fanout.mjs` refuses a parent with no `labels` array. Preserve the adapter's UUID for
+later description reads.
 
 The claim's token and posted comment id live only in
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.claim-receipt.json`. Set `CLAIM_RECEIPT` to that

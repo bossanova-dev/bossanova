@@ -34,6 +34,7 @@ func TestUnaryProceduresContainingCarrier_SessionSet(t *testing.T) {
 		bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure,
+		bossanovav1connect.OrchestratorServiceProxySetSessionLabelsProcedure,
 		bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure,
 		bossanovav1connect.OrchestratorServiceTransferSessionProcedure,

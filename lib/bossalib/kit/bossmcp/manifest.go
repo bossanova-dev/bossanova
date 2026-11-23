@@ -41,6 +41,7 @@ var readOnlyToolNames = []string{
 	"get_organization_note_quota",
 	"export_project_config",
 	"diff_project_config",
+	"list_session_labels",
 }
 
 // writeToolNames is the canonical union of mutating + destructive tool names,
@@ -58,6 +59,7 @@ var writeToolNames = []string{
 	"create_note", "update_note",
 	"create_organization_note", "update_organization_note",
 	"apply_project_config",
+	"save_session_label", "set_session_labels",
 	// destructive
 	"remove_repo", "close_session", "merge_session", "remove_session",
 	"archive_session", "resurrect_session", "delete_chat", "empty_trash",
@@ -65,6 +67,7 @@ var writeToolNames = []string{
 	"delete_broadcast", "delete_broadcast_subscription",
 	"delete_note",
 	"delete_organization_note",
+	"delete_session_label",
 }
 
 // hostedToolNames is the hosted-only tool tier, in registration order: read

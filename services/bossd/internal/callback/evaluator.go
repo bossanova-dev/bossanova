@@ -180,28 +180,31 @@ func (e *Evaluator) readPRState(ctx context.Context, rp string, prNumber int) (*
 			Msg("callback evaluator: get PR status failed")
 		return nil, nil, false, fmt.Errorf("get PR status %s#%d: %w", rp, prNumber, err)
 	}
-	checks, err := e.provider.GetCheckResults(ctx, rp, prNumber)
+	headSHA := ""
+	if status != nil {
+		headSHA = status.HeadSHA
+	}
+	checkSet, err := vcs.ReadCheckSet(ctx, e.provider, rp, prNumber, headSHA, vcs.CheckReadLog{
+		Logger:       &e.logger,
+		RateLimitLog: &e.rateLimitLog,
+		Site:         "callback evaluator",
+	})
 	if err != nil {
 		e.logger.WithLevel(e.rateLimitLog.Level("get check results", err)).Err(err).Str("repo", rp).Int("pr", prNumber).
 			Msg("callback evaluator: get check results failed")
 		return nil, nil, false, fmt.Errorf("get check results %s#%d: %w", rp, prNumber, err)
 	}
 
-	var runs []vcs.WorkflowRun
-	read, attempted := false, vcs.HasCancelledWorkflowCheck(checks)
-	if attempted {
-		runs, read = e.headRuns(ctx, rp, prNumber, status)
-		if read {
-			checks = vcs.ReconcileSupersededCancelled(status.HeadSHA, checks, runs)
-		}
-	}
+	checks := checkSet.Checks
+	runs, read := checkSet.WorkflowRuns, checkSet.RunsRead
+	attempted := checkSet.RunsRead || checkSet.RunsErr != nil
 	settled := false
 	if vcs.EvaluateChecksRequiring("", checks, nil, e.requiredFor(ctx, rp, status)).IsGreen() {
 		if !attempted {
 			runs, read = e.headRuns(ctx, rp, prNumber, status)
 		}
 		if read {
-			settled, _ = e.runsSettled(rp, prNumber, status.HeadSHA, runs)
+			settled, _ = e.runsSettled(rp, prNumber, headSHA, runs)
 		}
 	}
 	return status, checks, settled, nil

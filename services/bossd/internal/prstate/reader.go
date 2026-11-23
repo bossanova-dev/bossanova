@@ -125,23 +125,32 @@ func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (S
 	if status == nil {
 		return Snapshot{}, fmt.Errorf("get PR status %s#%d: %w", repo, pr, ErrNoStatus)
 	}
-	set, err := r.provider.GetCheckSet(ctx, repo, pr)
+	set, err := vcs.ReadCheckSet(ctx, checkSetProvider{r.provider}, repo, pr, status.HeadSHA)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("get check set %s#%d: %w", repo, pr, err)
+	}
+	rawChecks := set.Checks
+	if set.RawChecks != nil {
+		rawChecks = set.RawChecks
 	}
 	snap := Snapshot{
 		Status:          *status,
 		Degraded:        status.Degraded || set.Degraded,
-		Checks:          set.Checks,
+		Checks:          rawChecks,
 		HasBuildReceipt: set.HasBuildReceipt,
 		VerifyPhase:     vcs.ClassifyVerify(set.Checks),
+		WorkflowRuns:    set.WorkflowRuns,
+		RunsRead:        set.RunsRead,
 	}
 	checks := set.Checks
-	if vcs.HasCancelledWorkflowCheck(checks) {
-		if err := r.readRuns(ctx, repo, &snap); err != nil {
-			return Snapshot{}, err
+	if set.RunsErr != nil {
+		if !vcs.IsRateLimited(set.RunsErr) {
+			return Snapshot{}, fmt.Errorf("list workflow runs %s@%s: %w", repo, status.HeadSHA, set.RunsErr)
 		}
-		checks = reconcileCancelledChecks(snap)
+		snap.Degraded = true
+		checks = pendingCancelledChecks(set.Checks)
+	} else if status.HeadSHA == "" && vcs.HasCancelledWorkflowCheck(set.Checks) {
+		checks = pendingCancelledChecks(set.Checks)
 	}
 	// apiversion-skip: boss pr state/wait and the skills toolbox ship with bossd
 	// but may skew. Restoring a false cancellation failure has no useful transform.
@@ -177,13 +186,20 @@ func (r *Reader) Read(ctx context.Context, repo string, pr int, opts Options) (S
 	return snap, nil
 }
 
-// reconcileCancelledChecks keeps a cancellation pending until its replacement
-// runs can be read. Raw results stay intact, and other failures still settle.
-func reconcileCancelledChecks(snap Snapshot) []vcs.CheckResult {
-	if snap.RunsRead {
-		return vcs.ReconcileSupersededCancelled(snap.Status.HeadSHA, snap.Checks, snap.WorkflowRuns)
-	}
-	checks := slices.Clone(snap.Checks)
+// checkSetProvider adapts Provider (which implements vcs.CheckSetReader and
+// vcs.WorkflowRunLister) to vcs.CheckResultsReader for vcs.ReadCheckSet.
+type checkSetProvider struct{ Provider }
+
+func (p checkSetProvider) GetCheckResults(ctx context.Context, repoPath string, prID int) ([]vcs.CheckResult, error) {
+	set, err := p.GetCheckSet(ctx, repoPath, prID)
+	return set.Checks, err
+}
+
+// pendingCancelledChecks keeps a cancellation pending until its replacement
+// runs can be read (quota refusal or empty head). Raw results stay intact, and
+// other failures still settle.
+func pendingCancelledChecks(raw []vcs.CheckResult) []vcs.CheckResult {
+	checks := slices.Clone(raw)
 	for i := range checks {
 		if vcs.HasCancelledWorkflowCheck(checks[i : i+1]) {
 			checks[i].Status, checks[i].Conclusion = vcs.CheckStatusInProgress, nil

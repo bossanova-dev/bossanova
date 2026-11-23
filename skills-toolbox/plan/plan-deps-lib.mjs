@@ -32,15 +32,11 @@
 // The two inlined constants
 // ---------------------------------------------------------------------------
 // `DEFAULT_CLEARED_STATE_TYPES` + `DEFAULT_CANCELED_STATE_TYPES` are deliberate
-// COPIES of values that also live in
-// non-vendored toolbox modules. They are copied rather than imported because
-// importing either would drag a tracker-named, network-capable module into this
-// project-agnostic payload's import closure (this module may import
-// `skill-config.mjs` and `plan-epic-lib.mjs` — the list-truncation sentinel's
-// single owner, itself import-free — and nothing else). A silent second copy is exactly the
-// "prose and gate diverge" failure those modules exist to prevent, so the test
-// file — which is never vendored and may import anything — imports the
-// originals and asserts the copies still agree with them.
+// COPIES of values from non-vendored toolbox modules: importing either would
+// drag a tracker-named, network-capable module into this project-agnostic
+// payload's import closure (this module imports only `skill-config.mjs`,
+// `plan-epic-lib.mjs`, and `plan-inert-references.mjs`). The test file — never
+// vendored — imports the originals and asserts the copies still agree.
 //
 // Both state-type constants stay FROZEN ARRAYS, deliberately, and converting
 // either to a `Set` was adjudicated and rejected. The argument
@@ -100,6 +96,7 @@
 //     blocking write whose other side is itself entangled in open blocking work.
 
 import { descriptionAppearsTruncated } from './plan-epic-lib.mjs'
+import { inertReferences } from './plan-inert-references.mjs'
 import {
   labelName,
   planDependencyDefaults,
@@ -444,7 +441,7 @@ function landedEvidence(issue) {
 // A note carries its own `reason` so a caller reading `notes` alone can still tell
 // WHICH rung produced the line without re-deriving it from the prose.
 function note(severity, destination, candidate, reason, body) {
-  return { severity, destination, candidate, reason, text: body }
+  return { severity, destination, candidate, reason, text: inertReferences(body) }
 }
 
 /** The label a note or question uses for an issue: identifier when present, else id. */
@@ -2152,7 +2149,9 @@ export function transitiveBlockWarnings(input) {
           blockerId,
           blockedId,
           via,
-          text: `blocked by ${blockerId}, which is itself open and blocked by ${via.join(', ')}`,
+          text: inertReferences(
+            `blocked by ${blockerId}, which is itself open and blocked by ${via.join(', ')}`,
+          ),
         })
       }
     } else if (blockers.some(isSubject) && blockedId !== '') {
@@ -2165,7 +2164,7 @@ export function transitiveBlockWarnings(input) {
         blockerId,
         blockedId,
         via,
-        text: `blocks ${blockedId}, which itself blocks open ${via.join(', ')}`,
+        text: inertReferences(`blocks ${blockedId}, which itself blocks open ${via.join(', ')}`),
       })
     }
   }

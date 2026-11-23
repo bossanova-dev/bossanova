@@ -192,15 +192,15 @@ func TestDefaultRegistry(t *testing.T) {
 	// Current advances with behavior changes while Default stays Baseline
 	// (header-less callers pin to the oldest supported version).
 	// V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.V20261104 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20261104)
+	if reg.Current() != apiversion.V20261105 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20261105)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 48 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 48", len(all))
+	if len(all) != 49 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 49", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -349,7 +349,7 @@ func TestConstants(t *testing.T) {
 // named constant. Current may be one trailing unreleased contract; released.go
 // remains the immutable ledger of versions that have actually shipped.
 func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
-	const wantCurrent = apiversion.Version("2026-11-04")
+	const wantCurrent = apiversion.Version("2026-11-05")
 	if got := apiversion.DefaultRegistry().Current(); got != wantCurrent {
 		t.Errorf("DefaultRegistry().Current() = %q, want %q", got, wantCurrent)
 	}
@@ -357,7 +357,7 @@ func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
 	if len(released) == 0 {
 		t.Fatal("ReleasedVersions is empty")
 	}
-	const wantNewestReleased = apiversion.Version("2026-11-03")
+	const wantNewestReleased = apiversion.Version("2026-11-04")
 	if got := released[len(released)-1]; got != wantNewestReleased {
 		t.Errorf("newest ReleasedVersions entry = %q, want %q", got, wantNewestReleased)
 	}

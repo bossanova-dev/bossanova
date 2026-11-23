@@ -32,8 +32,13 @@ can also see and drive from the web.
 - **Chats.** A chat reads as a conversation: your messages on the right,
   the agent's replies as plain text, and its steps folded into one line.
   A question the agent asks docks above the reply box, with its options
-  as one-tap answers. **New chat** opens an empty composer with the agent,
-  model and effort to start it with.
+  as one-tap answers. To give the agent files, use the paperclip, drop
+  them on the reply box or paste them in. Each file uploads at once and
+  shows its progress; **Send** waits for them, then the agent gets each
+  file's path ahead of your message. The files go to your machine through
+  Bossanova Cloud, as the conversation does, so they upload even when the
+  terminal is end-to-end encrypted. **New chat** opens an empty composer
+  with the agent, model and effort to start it with.
 - **Settings.** Your own settings (Preferences, Profile, Notifications,
   Security & access, Agent accounts, Session actions, Views & favorites),
   then each organization's (General, Members, Repositories, Daemons,

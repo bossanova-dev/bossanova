@@ -83,6 +83,7 @@ type Model struct {
 
 	// Navigation
 	HighlightSessionID string // session to auto-highlight after returning from chat picker
+	LabelPicker        LabelPickerState
 
 	// focused tracks whether boss's terminal currently has focus, updated from
 	// tea.FocusMsg/BlurMsg. Assumed true at startup (the user just launched it).
@@ -414,6 +415,12 @@ func (h Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.handleStatusExpired(msg)
 	case SessionRenamedMsg:
 		return h.handleSessionRenamed(msg)
+	case labelsLoadedMsg:
+		return h.handleLabelsLoaded(msg), nil
+	case sessionLabelsUpdatedMsg:
+		return h.handleSessionLabelsUpdated(msg), nil
+	case labelCreatedAndAppliedMsg:
+		return h.handleLabelCreatedAndApplied(msg), nil
 	case sessionMovedMsg:
 		return h.handleSessionMoved(msg)
 	// Bracketed paste is not a KeyMsg, so it must be forwarded explicitly or a
@@ -585,7 +592,7 @@ func (h Model) View() tea.View {
 // aliasing ctrl+x to the back action while a title is being typed
 // (app.go's backKeyAliasEligible). Mirrors chatpicker.Model.textEntryActive.
 func (h Model) TextEntryActive() bool {
-	return h.Rename.Active() || h.Filter.Active()
+	return h.Rename.Active() || h.Filter.Active() || h.LabelPicker.Active()
 }
 
 func fetchRepoCount(c Client, ctx context.Context) tea.Cmd {

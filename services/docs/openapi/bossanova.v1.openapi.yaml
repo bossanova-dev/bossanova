@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-11-04'
+  version: '2026-11-05'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -2536,6 +2536,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.MintProofViewLinkResponse'
+  /bossanova.v1.OrchestratorService/PrepareOrganizationSwitch:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: PrepareOrganizationSwitch
+      description: |-
+        PrepareOrganizationSwitch confirms against WorkOS that the organization
+         exists and the caller holds an active membership before the web client
+         calls AuthKit switchToOrganization. For the caller's own personal
+         organization, recreates a missing WorkOS organization or membership and
+         re-points the local mirror, cloud account, and membership record.
+      operationId: bossanova.v1.OrchestratorService.PrepareOrganizationSwitch
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.PrepareOrganizationSwitchRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.PrepareOrganizationSwitchResponse'
   /bossanova.v1.OrchestratorService/ProxyAddAgentAccount:
     post:
       tags:
@@ -2810,6 +2851,42 @@ paths:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyCreateNoteResponse'
   /bossanova.v1.OrchestratorService/ProxyCreateSession: {}
+  /bossanova.v1.OrchestratorService/ProxyCreateSessionLabel:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyCreateSessionLabel
+      description: ProxyCreateSessionLabel creates a session label on a daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxyCreateSessionLabel
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyCreateSessionLabelRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyCreateSessionLabelResponse'
   /bossanova.v1.OrchestratorService/ProxyDeleteChat:
     post:
       tags:
@@ -2951,6 +3028,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyDeleteNoteResponse'
+  /bossanova.v1.OrchestratorService/ProxyDeleteSessionLabel:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyDeleteSessionLabel
+      description: ProxyDeleteSessionLabel deletes a session label on a daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxyDeleteSessionLabel
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyDeleteSessionLabelRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyDeleteSessionLabelResponse'
   /bossanova.v1.OrchestratorService/ProxyDismissSessionAlert:
     post:
       tags:
@@ -3884,6 +3997,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListReviewQueueResponse'
+  /bossanova.v1.OrchestratorService/ProxyListSessionLabels:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListSessionLabels
+      description: ProxyListSessionLabels lists session labels on a daemon (or across connected daemons).
+      operationId: bossanova.v1.OrchestratorService.ProxyListSessionLabels
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListSessionLabelsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListSessionLabelsResponse'
   /bossanova.v1.OrchestratorService/ProxyListSessions:
     post:
       tags:
@@ -4693,6 +4842,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxySendChatMessageResponse'
+  /bossanova.v1.OrchestratorService/ProxySetSessionLabels:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxySetSessionLabels
+      description: ProxySetSessionLabels sets the labels on a session (routes by session_id).
+      operationId: bossanova.v1.OrchestratorService.ProxySetSessionLabels
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxySetSessionLabelsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxySetSessionLabelsResponse'
+  /bossanova.v1.OrchestratorService/ProxyStartSessionServe:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyStartSessionServe
+      description: ProxyStartSessionServe forwards DaemonService.StartSessionServe to the owning daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxyStartSessionServe
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyStartSessionServeRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyStartSessionServeResponse'
   /bossanova.v1.OrchestratorService/ProxyStopChat:
     post:
       tags:
@@ -4767,6 +4988,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyStopSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyStopSessionServe:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyStopSessionServe
+      description: ProxyStopSessionServe forwards DaemonService.StopSessionServe to the owning daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxyStopSessionServe
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyStopSessionServeRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyStopSessionServeResponse'
   /bossanova.v1.OrchestratorService/ProxyStreamChats: {}
   /bossanova.v1.OrchestratorService/ProxySwitchSessionAgentAccount:
     post:
@@ -5089,6 +5346,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyUpdateSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyUpdateSessionLabel:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyUpdateSessionLabel
+      description: ProxyUpdateSessionLabel updates a session label on a daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxyUpdateSessionLabel
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateSessionLabelRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateSessionLabelResponse'
   /bossanova.v1.OrchestratorService/ProxyWakeChat:
     post:
       tags:
@@ -8099,6 +8392,7 @@ components:
         - ATTACH_SCOPE_UNSPECIFIED
         - ATTACH_SCOPE_EDITOR
         - ATTACH_SCOPE_VIEWER
+        - ATTACH_SCOPE_UPLOAD
       description: |-
         AttachScope distinguishes editor (input allowed) from viewer (read-only)
          attach modes.
@@ -8992,24 +9286,52 @@ components:
         isAnswerable:
           type: boolean
           title: is_answerable
+        kind:
+          type: string
+          title: kind
+          description: |-
+            "question" (or empty for older daemons) for an agent question-tool menu;
+             "permission" for a tool-approval dialog.
+        title:
+          type: string
+          title: title
+          description: |-
+            Header of the prompt (for example "Bash command · from the general-purpose
+             agent" or "Edit file · a.txt").
+        detail:
+          type: string
+          title: detail
+          description: Verbatim command, diff, or tool payload the dialog asks to approve.
+        warning:
+          type: string
+          title: warning
+          description: Caution text the agent's safety check printed under the detail, if any.
+        isDetailTruncated:
+          type: boolean
+          title: is_detail_truncated
+          description: |-
+            Set when the captured pane cut off the top of detail, so a viewer never
+             mistakes a partial command or diff for the whole thing.
       title: ChatQuestion
       additionalProperties: false
       description: |-
-        ChatQuestion is a question the agent asked through its own question tool and
-         is still waiting on, with the answers it offered. The agent shows it as a
-         menu in its terminal; a typed message cannot answer it.
+        ChatQuestion is a question or permission prompt the agent is waiting on in
+         its terminal, with the answers it offered. The agent shows it as a menu in
+         its terminal; a typed message cannot answer it.
 
-         id names the question by what its menu shows: its title, its words and its
-         options. An answer carries it, so an answer meant for a question the agent
-         has since moved past is refused rather than typed into whatever the
-         terminal shows next. is_answerable is set when the agent's menu can take an
-         answer through ProxyAnswerChatQuestion: one question with a single choice,
-         from options or as typed words. A question with several parts or several
+         id names the prompt by what its menu shows: its title, its words, its
+         options, and (for permission prompts) its detail and warning. An answer
+         carries it, so an answer meant for a prompt the agent has since moved past
+         is refused rather than typed into whatever the terminal shows next.
+         is_answerable is set when the agent's menu can take an answer through
+         ProxyAnswerChatQuestion: one question with a single choice, or a permission
+         prompt whose rows select by digit. A question with several parts or several
          choices is answered in the terminal.
 
-         The agent may not record a question in its transcript until it is answered
-         (Claude Code does not), so a read with should_include_activity ends on the
-         question the chat's terminal shows while its menu waits.
+         The agent may not record a prompt in its transcript until it is answered
+         (Claude Code does not, and subagent permission prompts never appear in the
+         main transcript), so a read with should_include_activity ends on the prompt
+         the chat's terminal shows while its menu waits.
     bossanova.v1.ChatRole:
       type: string
       title: ChatRole
@@ -9537,6 +9859,15 @@ components:
                 - createNote
             - type: object
               properties:
+                createSessionLabel:
+                  title: create_session_label
+                  description: Reply to create_session_label.
+                  $ref: '#/components/schemas/bossanova.v1.CreateSessionLabelResponse'
+              title: create_session_label
+              required:
+                - createSessionLabel
+            - type: object
+              properties:
                 daemonSettings:
                   title: daemon_settings
                   description: Reply to get_daemon_settings and update_daemon_settings.
@@ -9725,6 +10056,15 @@ components:
                 - listRepos
             - type: object
               properties:
+                listSessionLabels:
+                  title: list_session_labels
+                  description: Reply to list_session_labels.
+                  $ref: '#/components/schemas/bossanova.v1.ListSessionLabelsResponse'
+              title: list_session_labels
+              required:
+                - listSessionLabels
+            - type: object
+              properties:
                 listTrackerIssues:
                   title: list_tracker_issues
                   description: ListTrackerIssues returns the repo's tracker issues (reuses daemon.proto type).
@@ -9832,6 +10172,15 @@ components:
                 - session
             - type: object
               properties:
+                sessionServe:
+                  title: session_serve
+                  description: Reply to start_session_serve and stop_session_serve.
+                  $ref: '#/components/schemas/bossanova.v1.SessionServe'
+              title: session_serve
+              required:
+                - sessionServe
+            - type: object
+              properties:
                 switchAccount:
                   title: switch_account
                   description: SwitchAccount returns the resumed flag + target label + notice text.
@@ -9899,6 +10248,15 @@ components:
               title: update_repo
               required:
                 - updateRepo
+            - type: object
+              properties:
+                updateSessionLabel:
+                  title: update_session_label
+                  description: Reply to update_session_label.
+                  $ref: '#/components/schemas/bossanova.v1.UpdateSessionLabelResponse'
+              title: update_session_label
+              required:
+                - updateSessionLabel
             - type: object
               properties:
                 wakeChat:
@@ -10814,6 +11172,42 @@ components:
       description: |-
         CreateSessionConflictReason names why CreateSession refused with
          CodeAlreadyExists and therefore which request flag, if any, bypasses it.
+    bossanova.v1.CreateSessionLabelCommand:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        color:
+          type: string
+          title: color
+        description:
+          type: string
+          title: description
+      title: CreateSessionLabelCommand
+      additionalProperties: false
+    bossanova.v1.CreateSessionLabelRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        color:
+          type: string
+          title: color
+        description:
+          type: string
+          title: description
+      title: CreateSessionLabelRequest
+      additionalProperties: false
+    bossanova.v1.CreateSessionLabelResponse:
+      type: object
+      properties:
+        label:
+          title: label
+          $ref: '#/components/schemas/bossanova.v1.SessionLabel'
+      title: CreateSessionLabelResponse
+      additionalProperties: false
     bossanova.v1.CreateSessionRequest:
       type: object
       properties:
@@ -10961,6 +11355,12 @@ components:
           description: |-
             Mark an existing-PR session as verify-only, permanently disabling automatic repair.
              Requires pr_number.
+        labelIds:
+          type: array
+          items:
+            type: string
+          title: label_ids
+          description: Optional label IDs to attach to the session on creation.
       title: CreateSessionRequest
       additionalProperties: false
     bossanova.v1.CreateSessionResponse:
@@ -11993,6 +12393,16 @@ components:
             Orders this set against RepoCloudControlsChanged deltas. Strictly
              increasing within one daemon process, seeded from wall-clock time at
              start so a restarted daemon does not reuse an older revision.
+        isChatAttachmentSupported:
+          type: boolean
+          title: is_chat_attachment_supported
+          description: |-
+            True when this daemon serves upload-only attaches (TerminalAttachCommand
+             .is_upload_only) and resolves SendChatMessageCommand
+             .attachment_upload_ids. Older daemons ignore both fields, so bosso
+             refuses an upload-only socket for a daemon that leaves this false rather
+             than let it spawn a terminal. Additive stream field; see
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: DaemonSnapshot
       additionalProperties: false
       description: |-
@@ -12222,6 +12632,26 @@ components:
     bossanova.v1.DeleteSavedViewResponse:
       type: object
       title: DeleteSavedViewResponse
+      additionalProperties: false
+    bossanova.v1.DeleteSessionLabelCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteSessionLabelCommand
+      additionalProperties: false
+    bossanova.v1.DeleteSessionLabelRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteSessionLabelRequest
+      additionalProperties: false
+    bossanova.v1.DeleteSessionLabelResponse:
+      type: object
+      title: DeleteSessionLabelResponse
       additionalProperties: false
     bossanova.v1.DeleteSessionWebhookRequest:
       type: object
@@ -15918,6 +16348,24 @@ components:
           description: In position order.
       title: ListSavedViewsResponse
       additionalProperties: false
+    bossanova.v1.ListSessionLabelsCommand:
+      type: object
+      title: ListSessionLabelsCommand
+      additionalProperties: false
+    bossanova.v1.ListSessionLabelsRequest:
+      type: object
+      title: ListSessionLabelsRequest
+      additionalProperties: false
+    bossanova.v1.ListSessionLabelsResponse:
+      type: object
+      properties:
+        labels:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionLabel'
+          title: labels
+      title: ListSessionLabelsResponse
+      additionalProperties: false
     bossanova.v1.ListSessionPRBlockersRequest:
       type: object
       properties:
@@ -16085,6 +16533,12 @@ components:
              identity (Linux: the /proc/self/ns/net symlink target). See
              GetSessionRequest.client_network_namespace — the daemon fails closed on
              Linux unless this exactly equals its own namespace identity.
+        labelIds:
+          type: array
+          items:
+            type: string
+          title: label_ids
+          description: Filter by label IDs or case-insensitive label names (matches any).
       title: ListSessionsRequest
       additionalProperties: false
     bossanova.v1.ListSessionsResponse:
@@ -17210,6 +17664,14 @@ components:
                 - createSession
             - type: object
               properties:
+                createSessionLabel:
+                  title: create_session_label
+                  $ref: '#/components/schemas/bossanova.v1.CreateSessionLabelCommand'
+              title: create_session_label
+              required:
+                - createSessionLabel
+            - type: object
+              properties:
                 deleteChat:
                   title: delete_chat
                   description: 'bosso → daemon: delete a chat. Replies CommandResult{Ok} with no payload.'
@@ -17244,6 +17706,14 @@ components:
               title: delete_note
               required:
                 - deleteNote
+            - type: object
+              properties:
+                deleteSessionLabel:
+                  title: delete_session_label
+                  $ref: '#/components/schemas/bossanova.v1.DeleteSessionLabelCommand'
+              title: delete_session_label
+              required:
+                - deleteSessionLabel
             - type: object
               properties:
                 dismissSessionAlert:
@@ -17460,6 +17930,15 @@ components:
                 - listRepos
             - type: object
               properties:
+                listSessionLabels:
+                  title: list_session_labels
+                  description: 'bosso → daemon: session label CRUD and assignment.'
+                  $ref: '#/components/schemas/bossanova.v1.ListSessionLabelsCommand'
+              title: list_session_labels
+              required:
+                - listSessionLabels
+            - type: object
+              properties:
                 listTrackerIssues:
                   title: list_tracker_issues
                   description: 'bosso → daemon: list a repo''s tracker issues. Replies CommandResult{list_tracker_issues}.'
@@ -17646,6 +18125,25 @@ components:
                 - sendChatMessage
             - type: object
               properties:
+                setSessionLabels:
+                  title: set_session_labels
+                  $ref: '#/components/schemas/bossanova.v1.SetSessionLabelsCommand'
+              title: set_session_labels
+              required:
+                - setSessionLabels
+            - type: object
+              properties:
+                startSessionServe:
+                  title: start_session_serve
+                  description: |-
+                    bosso → daemon: start the session's repository serve command. Replies
+                     CommandResult{session_serve}.
+                  $ref: '#/components/schemas/bossanova.v1.StartSessionServeCommand'
+              title: start_session_serve
+              required:
+                - startSessionServe
+            - type: object
+              properties:
                 stop:
                   title: stop
                   $ref: '#/components/schemas/bossanova.v1.StopSessionCommand'
@@ -17663,6 +18161,17 @@ components:
               title: stop_chat
               required:
                 - stopChat
+            - type: object
+              properties:
+                stopSessionServe:
+                  title: stop_session_serve
+                  description: |-
+                    bosso → daemon: stop the session's repository serve command. Replies
+                     CommandResult{session_serve}.
+                  $ref: '#/components/schemas/bossanova.v1.StopSessionServeCommand'
+              title: stop_session_serve
+              required:
+                - stopSessionServe
             - type: object
               properties:
                 switchAccount:
@@ -17785,6 +18294,14 @@ components:
               title: update_session
               required:
                 - updateSession
+            - type: object
+              properties:
+                updateSessionLabel:
+                  title: update_session_label
+                  $ref: '#/components/schemas/bossanova.v1.UpdateSessionLabelCommand'
+              title: update_session_label
+              required:
+                - updateSessionLabel
             - type: object
               properties:
                 wakeChat:
@@ -18214,6 +18731,15 @@ components:
       title: OrganizationSessionReadFailure
       additionalProperties: false
       description: One organization that could not be read during a cross-organization fan-out.
+    bossanova.v1.OrganizationSwitchStatus:
+      type: string
+      title: OrganizationSwitchStatus
+      enum:
+        - ORGANIZATION_SWITCH_STATUS_UNSPECIFIED
+        - ORGANIZATION_SWITCH_STATUS_READY
+        - ORGANIZATION_SWITCH_STATUS_HEALED
+        - ORGANIZATION_SWITCH_STATUS_ORGANIZATION_MISSING
+        - ORGANIZATION_SWITCH_STATUS_NOT_A_MEMBER
     bossanova.v1.OrganizationTrashDeletion:
       type: object
       properties:
@@ -18848,6 +19374,32 @@ components:
           title: provided
       title: PreflightHeadlessRunResponse
       additionalProperties: false
+    bossanova.v1.PrepareOrganizationSwitchRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: PrepareOrganizationSwitchRequest
+      additionalProperties: false
+    bossanova.v1.PrepareOrganizationSwitchResponse:
+      type: object
+      properties:
+        status:
+          title: status
+          $ref: '#/components/schemas/bossanova.v1.OrganizationSwitchStatus'
+        workosOrgId:
+          type: string
+          title: workos_org_id
+          description: |-
+            WorkOS organization id to pass to AuthKit switchToOrganization.
+             Populated when status is READY or HEALED; empty otherwise.
+        reason:
+          type: string
+          title: reason
+          description: Human-readable reason when status is neither READY nor HEALED.
+      title: PrepareOrganizationSwitchResponse
+      additionalProperties: false
     bossanova.v1.ProbeProgressLivenessRequest:
       type: object
       properties:
@@ -19471,6 +20023,31 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Note'
       title: ProxyCreateNoteResponse
       additionalProperties: false
+    bossanova.v1.ProxyCreateSessionLabelRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        name:
+          type: string
+          title: name
+        color:
+          type: string
+          title: color
+        description:
+          type: string
+          title: description
+      title: ProxyCreateSessionLabelRequest
+      additionalProperties: false
+    bossanova.v1.ProxyCreateSessionLabelResponse:
+      type: object
+      properties:
+        label:
+          title: label
+          $ref: '#/components/schemas/bossanova.v1.SessionLabel'
+      title: ProxyCreateSessionLabelResponse
+      additionalProperties: false
     bossanova.v1.ProxyCreateSessionRequest:
       type: object
       properties:
@@ -19694,6 +20271,21 @@ components:
     bossanova.v1.ProxyDeleteNoteResponse:
       type: object
       title: ProxyDeleteNoteResponse
+      additionalProperties: false
+    bossanova.v1.ProxyDeleteSessionLabelRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        id:
+          type: string
+          title: id
+      title: ProxyDeleteSessionLabelRequest
+      additionalProperties: false
+    bossanova.v1.ProxyDeleteSessionLabelResponse:
+      type: object
+      title: ProxyDeleteSessionLabelResponse
       additionalProperties: false
     bossanova.v1.ProxyDismissSessionAlertRequest:
       type: object
@@ -20497,6 +21089,24 @@ components:
              level_counts; the rest of the union is still served.
       title: ProxyListReviewQueueResponse
       additionalProperties: false
+    bossanova.v1.ProxyListSessionLabelsRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+      title: ProxyListSessionLabelsRequest
+      additionalProperties: false
+    bossanova.v1.ProxyListSessionLabelsResponse:
+      type: object
+      properties:
+        labels:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionLabel'
+          title: labels
+      title: ProxyListSessionLabelsResponse
+      additionalProperties: false
     bossanova.v1.ProxyListSessionsAcrossOrganizationsRequest:
       type: object
       properties:
@@ -21154,6 +21764,17 @@ components:
             session_id, when set, routes by the (session, chat) pair, which finds a
              chat whose daemon is claimed in another of the caller's organizations.
              Callers without a session (the MCP send tool) leave it empty.
+        attachmentUploadIds:
+          type: array
+          items:
+            type: string
+          title: attachment_upload_ids
+          description: |-
+            attachment_upload_ids names files this chat's upload-only attach
+             (ATTACH_SCOPE_UPLOAD) already finished. The daemon types each file's
+             path ahead of the message, separated by spaces, and fails the send when
+             an id is unknown, expired or belongs to another chat. A send may carry
+             attachments and an empty message. Additive: empty keeps the prior send.
       title: ProxySendChatMessageRequest
       additionalProperties: false
       description: |-
@@ -21188,6 +21809,43 @@ components:
       title: ProxySendChatMessageResponse
       additionalProperties: false
       description: ProxySendChatMessageResponse mirrors daemon.proto's SendChatMessageResponse.
+    bossanova.v1.ProxySetSessionLabelsRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        labelIds:
+          type: array
+          items:
+            type: string
+          title: label_ids
+      title: ProxySetSessionLabelsRequest
+      additionalProperties: false
+    bossanova.v1.ProxySetSessionLabelsResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: ProxySetSessionLabelsResponse
+      additionalProperties: false
+    bossanova.v1.ProxyStartSessionServeRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: ProxyStartSessionServeRequest
+      additionalProperties: false
+    bossanova.v1.ProxyStartSessionServeResponse:
+      type: object
+      properties:
+        serve:
+          title: serve
+          $ref: '#/components/schemas/bossanova.v1.SessionServe'
+      title: ProxyStartSessionServeResponse
+      additionalProperties: false
     bossanova.v1.ProxyStopChatRequest:
       type: object
       properties:
@@ -21218,6 +21876,22 @@ components:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ProxyStopSessionResponse
+      additionalProperties: false
+    bossanova.v1.ProxyStopSessionServeRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: ProxyStopSessionServeRequest
+      additionalProperties: false
+    bossanova.v1.ProxyStopSessionServeResponse:
+      type: object
+      properties:
+        serve:
+          title: serve
+          $ref: '#/components/schemas/bossanova.v1.SessionServe'
+      title: ProxyStopSessionServeResponse
       additionalProperties: false
     bossanova.v1.ProxyStreamChatsRequest:
       type: object
@@ -21604,6 +22278,40 @@ components:
           title: settings
           $ref: '#/components/schemas/bossanova.v1.RepoSettings'
       title: ProxyUpdateRepoResponse
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateSessionLabelRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        id:
+          type: string
+          title: id
+        name:
+          type:
+            - string
+            - "null"
+          title: name
+        color:
+          type:
+            - string
+            - "null"
+          title: color
+        description:
+          type:
+            - string
+            - "null"
+          title: description
+      title: ProxyUpdateSessionLabelRequest
+      additionalProperties: false
+    bossanova.v1.ProxyUpdateSessionLabelResponse:
+      type: object
+      properties:
+        label:
+          title: label
+          $ref: '#/components/schemas/bossanova.v1.SessionLabel'
+      title: ProxyUpdateSessionLabelResponse
       additionalProperties: false
     bossanova.v1.ProxyUpdateSessionRequest:
       type: object
@@ -24114,6 +24822,20 @@ components:
           type: boolean
           title: submit
           description: when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, services/docs/docs/guides/mcp.md); this bool cannot, so an unset bit prefills.
+        attachmentUploadIds:
+          type: array
+          items:
+            type: string
+          title: attachment_upload_ids
+          description: |-
+            Upload ids an upload-only attach finished for this chat; see
+             SendChatMessageRequest.attachment_upload_ids.
+        actingUserId:
+          type: string
+          title: acting_user_id
+          description: |-
+            The user bosso authenticated for this send; see
+             SendChatMessageRequest.acting_user_id.
       title: SendChatMessageCommand
       additionalProperties: false
       description: |-
@@ -24145,6 +24867,24 @@ components:
             should_observe_turn_start asks bossd to wait briefly after a submit and report
              whether the agent began a substantive turn for this message. It is
              downstream of delivery and never authorizes a resend.
+        attachmentUploadIds:
+          type: array
+          items:
+            type: string
+          title: attachment_upload_ids
+          description: |-
+            attachment_upload_ids names uploads an upload-only attach finished for
+             this chat. bossd types each file's path ahead of the message, separated
+             by spaces, and refuses the whole send, typing nothing, when any id is
+             unknown, expired, another chat's or another user's. The message may then be empty.
+        actingUserId:
+          type: string
+          title: acting_user_id
+          description: |-
+            acting_user_id is the user the send acts for. An attachment resolves only
+             for the user who uploaded it, so one sender can never name another's file.
+             bosso stamps it for cloud sends; a local caller without one can name no
+             attachments.
       title: SendChatMessageRequest
       additionalProperties: false
     bossanova.v1.SendChatMessageResponse:
@@ -24973,6 +25713,37 @@ components:
             How many of those chats are working: a fresh CHAT_STATUS_WORKING
              heartbeat, the status the chat pills read as "working". Set exactly when
              chat_count is.
+        hasServeCommand:
+          type: boolean
+          title: has_serve_command
+          description: |-
+            Whether this session's repository has a serve command configured.
+             Transport-only, hydrated from the repo on daemon reads and stream
+             snapshots/deltas. No dated API bump: additive output field older clients
+             ignore. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        isServeRunning:
+          type: boolean
+          title: is_serve_running
+          description: |-
+            Whether the session's serve command is currently running on the daemon.
+             Transport-only, never persisted. No dated API bump: additive output field
+             older clients ignore.
+        serveError:
+          type: string
+          title: serve_error
+          description: |-
+            Latest serve command error reported by the daemon, if any.
+             Transport-only, never persisted, blanked in private cloud-control mode.
+             No dated API bump: additive output field older clients ignore.
+        labels:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionLabel'
+          title: labels
+          description: |-
+            Labels attached to this session, ordered by name.
+             No dated API bump: additive output field older clients ignore. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -25297,6 +26068,34 @@ components:
         - SESSION_EVENT_PR_CLOSED
         - SESSION_EVENT_FINALIZE_REQUESTED
       description: SessionEvent represents the 16 events that trigger state transitions.
+    bossanova.v1.SessionLabel:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        name:
+          type: string
+          title: name
+        color:
+          type: string
+          title: color
+        description:
+          type: string
+          title: description
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        sessionCount:
+          type: integer
+          title: session_count
+          format: int32
+      title: SessionLabel
+      additionalProperties: false
+      description: SessionLabel is a colored tag that can be attached to sessions (Linear-style).
     bossanova.v1.SessionOpenTarget:
       type: string
       title: SessionOpenTarget
@@ -25858,6 +26657,40 @@ components:
           $ref: '#/components/schemas/bossanova.v1.RepoOrganizationMapping'
       title: SetRepoOrganizationResponse
       additionalProperties: false
+    bossanova.v1.SetSessionLabelsCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        labelIds:
+          type: array
+          items:
+            type: string
+          title: label_ids
+      title: SetSessionLabelsCommand
+      additionalProperties: false
+    bossanova.v1.SetSessionLabelsRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        labelIds:
+          type: array
+          items:
+            type: string
+          title: label_ids
+      title: SetSessionLabelsRequest
+      additionalProperties: false
+    bossanova.v1.SetSessionLabelsResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: SetSessionLabelsResponse
+      additionalProperties: false
     bossanova.v1.SetSessionTrackerRankRequest:
       type: object
       properties:
@@ -26210,6 +27043,17 @@ components:
           description: detail is a one-line human-readable summary (prior status, action taken).
       title: StartRepairWorkflowResponse
       additionalProperties: false
+    bossanova.v1.StartSessionServeCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: StartSessionServeCommand
+      additionalProperties: false
+      description: |-
+        StartSessionServeCommand asks the daemon to start the session's configured
+         repository serve command and reply with CommandResult{session_serve}.
     bossanova.v1.StartSessionServeRequest:
       type: object
       properties:
@@ -26335,6 +27179,17 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: StopSessionResponse
       additionalProperties: false
+    bossanova.v1.StopSessionServeCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: StopSessionServeCommand
+      additionalProperties: false
+      description: |-
+        StopSessionServeCommand asks the daemon to stop the session's running
+         repository serve command and reply with CommandResult{session_serve}.
     bossanova.v1.StopSessionServeRequest:
       type: object
       properties:
@@ -26850,6 +27705,21 @@ components:
           type: string
           title: viewer_device_id
           description: Empty preserves plaintext; otherwise requires local device approval.
+        isUploadOnly:
+          type: boolean
+          title: is_upload_only
+          description: |-
+            True for a chat reply box's upload channel: the daemon spawns no PTY,
+             never wakes the chat, and keeps each finished upload for a later
+             SendChatMessageCommand instead of prefilling its path. bosso sends it
+             only to daemons whose snapshot sets is_chat_attachment_supported.
+        actingUserId:
+          type: string
+          title: acting_user_id
+          description: |-
+            The user bosso authenticated for this attach. An upload-only attach
+             holds each finished file for that user alone, so only their own send can
+             name it. Additive; older daemons ignore it.
       title: TerminalAttachCommand
       additionalProperties: false
       description: |-
@@ -28782,6 +29652,60 @@ components:
         UpdateSessionCommand asks the daemon to update a session's title/tracker.
          Mirrors daemon.proto's UpdateSessionRequest. Replies with CommandResult
          carrying the updated Session (session = 4).
+    bossanova.v1.UpdateSessionLabelCommand:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        name:
+          type:
+            - string
+            - "null"
+          title: name
+        color:
+          type:
+            - string
+            - "null"
+          title: color
+        description:
+          type:
+            - string
+            - "null"
+          title: description
+      title: UpdateSessionLabelCommand
+      additionalProperties: false
+    bossanova.v1.UpdateSessionLabelRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        name:
+          type:
+            - string
+            - "null"
+          title: name
+        color:
+          type:
+            - string
+            - "null"
+          title: color
+        description:
+          type:
+            - string
+            - "null"
+          title: description
+      title: UpdateSessionLabelRequest
+      additionalProperties: false
+    bossanova.v1.UpdateSessionLabelResponse:
+      type: object
+      properties:
+        label:
+          title: label
+          $ref: '#/components/schemas/bossanova.v1.SessionLabel'
+      title: UpdateSessionLabelResponse
+      additionalProperties: false
     bossanova.v1.UpdateSessionRequest:
       type: object
       properties:

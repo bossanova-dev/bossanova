@@ -1,6 +1,7 @@
 package accountwiring
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -536,4 +537,85 @@ func codexExpiryBlob(t *testing.T, issued, expires time.Time) []byte {
 		t.Fatalf("marshal codex blob: %v", err)
 	}
 	return blob
+}
+
+func TestSmokeRunnerAntigravityMCPRepos(t *testing.T) {
+	hostHome := t.TempDir()
+	baseConfigDir := filepath.Join(hostHome, ".gemini", "config")
+	if err := os.MkdirAll(baseConfigDir, 0o700); err != nil {
+		t.Fatalf("mkdir base config dir: %v", err)
+	}
+	baseMCP := `{"mcpServers":{"user-only":{"serverUrl":"https://mcp.example.com/user"}}}`
+	if err := os.WriteFile(filepath.Join(baseConfigDir, "mcp_config.json"), []byte(baseMCP), 0o600); err != nil {
+		t.Fatalf("write base mcp_config.json: %v", err)
+	}
+
+	repoDir := t.TempDir()
+	repoMCP := `{"mcpServers":{"bossanova-linear":{"type":"http","url":"https://mcp.linear.app/mcp","headers":{"Authorization":"Bearer ${LINEAR_API_KEY}"}}}}`
+	if err := os.WriteFile(filepath.Join(repoDir, ".mcp.json"), []byte(repoMCP), 0o600); err != nil {
+		t.Fatalf("write repo .mcp.json: %v", err)
+	}
+
+	t.Setenv("HOME", hostHome)
+
+	repoSource := func(context.Context) ([]credmaterialize.AntigravityMCPRepo, error) {
+		return []credmaterialize.AntigravityMCPRepo{
+			{ID: "repo-bossanova", LocalPath: repoDir},
+		}, nil
+	}
+
+	blob := []byte(`{"token":{"access_token":"agy-access","refresh_token":"agy-refresh"}}`)
+	creds := &smokeCreds{blobs: map[string][]byte{"acct-agy": blob}}
+	client := &smokeClient{}
+
+	runner, err := NewSmokeRunner(
+		map[string]agent.RunnerClient{"antigravity": client},
+		creds,
+		zerolog.Nop(),
+		WithSmokeBaseDir(t.TempDir()),
+		WithSmokeAntigravityMCPRepos(repoSource),
+	)
+	if err != nil {
+		t.Fatalf("NewSmokeRunner: %v", err)
+	}
+	if err := runner.Smoke(context.Background(), "acct-agy", "antigravity", blob); err != nil {
+		t.Fatalf("Smoke: %v", err)
+	}
+	if len(client.startReqs) != 1 {
+		t.Fatalf("StartAgentRun calls = %d, want 1", len(client.startReqs))
+	}
+	smokeHome := client.startReqs[0].GetExtraEnv()["HOME"]
+	if smokeHome == "" {
+		t.Fatal("HOME not set in antigravity smoke env")
+	}
+	smokeMCP, err := os.ReadFile(filepath.Join(smokeHome, ".gemini", "config", "mcp_config.json"))
+	if err != nil {
+		t.Fatalf("read smoke mcp_config.json: %v", err)
+	}
+
+	sessionMat, err := credmaterialize.New(
+		credentialStoreAdapter{store: creds},
+		zerolog.Nop(),
+		credmaterialize.WithBaseDir(t.TempDir()),
+		credmaterialize.WithAntigravityBaseHome(hostHome),
+		credmaterialize.WithAntigravityMCPRepos(repoSource),
+	)
+	if err != nil {
+		t.Fatalf("credmaterialize.New: %v", err)
+	}
+	mat, _, err := sessionMat.MaterializeAntigravity(context.Background(), "acct-agy")
+	if err != nil {
+		t.Fatalf("MaterializeAntigravity: %v", err)
+	}
+	sessionMCP, err := os.ReadFile(filepath.Join(mat.HomeDir, ".gemini", "config", "mcp_config.json"))
+	if err != nil {
+		t.Fatalf("read session mcp_config.json: %v", err)
+	}
+
+	if !bytes.Equal(smokeMCP, sessionMCP) {
+		t.Fatalf("smoke runner mcp_config.json differs from session materializer:\nsmoke:\n%s\nsession:\n%s", smokeMCP, sessionMCP)
+	}
+	if !strings.Contains(string(smokeMCP), `"bossanova-linear"`) || !strings.Contains(string(smokeMCP), `"user-only"`) {
+		t.Fatalf("generated mcp_config.json missing expected servers: %s", smokeMCP)
+	}
 }

@@ -437,8 +437,8 @@ function ticket(m) {
   const contradictions = t.contradictions.map((text) => proseHtml(text, m.tickets))
   return {
     id: 'ticket',
-    nav: 'Ticket',
-    title: `Does it satisfy ${t.id ?? 'the ticket'}?`,
+    nav: t.id ? 'Ticket' : 'Request',
+    title: `Does it satisfy ${t.id ?? 'what was asked'}?`,
     count: t.criteria.length,
     ...(t.verdict ? { pill: { word: t.verdict, tone: VERDICT_TONE[t.verdict] } } : {}),
     ...(open ? { sub: `${open} not done`, hot: true } : {}),

@@ -392,3 +392,23 @@ func TestHeldPasteSendStaysInsideItsTail(t *testing.T) {
 		t.Fatalf("held send took %v, beyond its tail bound %v", elapsed, bound)
 	}
 }
+
+// TestClaudeProsePastesALineThatStartsWithASlash: a slash command is typed so
+// Claude runs it, but a message led by an attachment path is prose and is
+// pasted like any other free text.
+func TestClaudeProsePastesALineThatStartsWithASlash(t *testing.T) {
+	const line = "/tmp/bossd-chat-uploads-501/upload-1.png what is in this?"
+	for _, tc := range []struct {
+		prose bool
+		paste bool
+	}{{prose: false, paste: false}, {prose: true, paste: true}} {
+		fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{settleFrame("", "")}}
+		c := NewClient(WithCommandFactory(fake.factory))
+		if err := c.SendMessageWithHooks(context.Background(), "boss-test-prose", line, false, sendPlanReadyMarker, nil, SendHooks{Prose: tc.prose}); err != nil {
+			t.Fatalf("prose=%v: SendMessageWithHooks: %v", tc.prose, err)
+		}
+		if pasted := callIndex(fake.callsCopy(), "paste-buffer", "") != -1; pasted != tc.paste {
+			t.Fatalf("prose=%v: pasted = %v, want %v", tc.prose, pasted, tc.paste)
+		}
+	}
+}

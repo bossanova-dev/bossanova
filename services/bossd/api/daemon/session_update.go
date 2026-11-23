@@ -190,6 +190,7 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 		p.RepoDisplayName = repo.DisplayName
 		p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 	}
+	s.hydrateSessionLabels(ctx, p)
 
 	// Propagate the update (e.g. a rename) to the cloud/web via the upstream
 	// stream, matching LinkSessionPR/MarkArchived/Resurrect. Without this the local

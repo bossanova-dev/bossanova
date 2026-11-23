@@ -53,7 +53,7 @@ export function forge({ prs, baseConfig = null, extensions = [] }) {
         number: pr.number,
         url: `https://github.com/${REPO}/pull/${pr.number}`,
         title: `feat: widget ${pr.number}`,
-        body: `Adds widget ${pr.number}.`,
+        body: `Linear issue: https://linear.app/acme/issue/BOS-${pr.number}/widget\n\nAdds widget ${pr.number}.`,
         isDraft: false,
         additions: 10,
         deletions: 2,

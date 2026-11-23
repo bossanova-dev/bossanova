@@ -111,6 +111,10 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchListAgentModels(ctx, cmdID, cmd.GetListAgentModels(), outbound)
 	case *pb.OrchestratorCommand_AnswerChatQuestion, *pb.OrchestratorCommand_StopChat:
 		return c.dispatchChatAgent(ctx, cmdID, cmd, outbound)
+	case *pb.OrchestratorCommand_StartSessionServe, *pb.OrchestratorCommand_StopSessionServe:
+		return c.dispatchSessionServe(ctx, cmdID, cmd, outbound)
+	case *pb.OrchestratorCommand_ListSessionLabels, *pb.OrchestratorCommand_CreateSessionLabel, *pb.OrchestratorCommand_UpdateSessionLabel, *pb.OrchestratorCommand_DeleteSessionLabel, *pb.OrchestratorCommand_SetSessionLabels:
+		return c.dispatchSessionLabelCommand(ctx, cmdID, cmd)
 	case *pb.OrchestratorCommand_ListAccounts:
 		return c.dispatchListAccounts(ctx, cmdID, cmd.GetListAccounts(), outbound)
 	case *pb.OrchestratorCommand_GetRepo:
@@ -118,9 +122,7 @@ func (c *StreamClient) dispatchCommand(
 	case *pb.OrchestratorCommand_UpdateRepo:
 		return c.dispatchUpdateRepo(ctx, cmdID, cmd.GetUpdateRepo(), outbound)
 	case *pb.OrchestratorCommand_GetDaemonSettings:
-		return c.dispatchDaemonSettings(ctx, cmdID, outbound, func(h DaemonSettingsHandler) (*pb.DaemonSettingsResult, error) {
-			return h.GetDaemonSettings(ctx)
-		})
+		return c.dispatchDaemonSettings(ctx, cmdID, outbound, func(h DaemonSettingsHandler) (*pb.DaemonSettingsResult, error) { return h.GetDaemonSettings(ctx) })
 	case *pb.OrchestratorCommand_UpdateDaemonSettings:
 		return c.dispatchDaemonSettings(ctx, cmdID, outbound, func(h DaemonSettingsHandler) (*pb.DaemonSettingsResult, error) {
 			return h.UpdateDaemonSettings(ctx, cmd.GetUpdateDaemonSettings().GetUpdate())
@@ -1366,7 +1368,8 @@ func (c *StreamClient) dispatchSendChatMessage(ctx context.Context, cmdID string
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.SendChatMessage(ctx, req.GetAgentSessionId(), req.GetMessage(), req.GetWakeIfAsleep(), req.GetSubmit())
+		out, err := c.commandHandler.SendChatMessage(ctx, req.GetAgentSessionId(), req.GetMessage(), req.GetWakeIfAsleep(), req.GetSubmit(),
+			ChatAttachmentRef{UploadIDs: req.GetAttachmentUploadIds(), ActingUserID: req.GetActingUserId()})
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}

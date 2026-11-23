@@ -1,4 +1,8 @@
-.PHONY: clean kill kill-all
+.PHONY: clean kill kill-all serve
+
+## serve: Run bosso, web, marketing, and docs in parallel with hot reload (Tailscale HTTPS when available)
+serve:
+	node scripts/dev/serve.mjs $(SERVE_ARGS)
 
 claude:
 	claude --dangerously-skip-permissions

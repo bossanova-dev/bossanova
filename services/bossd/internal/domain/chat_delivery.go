@@ -27,6 +27,10 @@ type SendHooks struct {
 	// submitted, and one still holding the payload gets the clear-and-redeliver
 	// retry. Claude's hook can fail to fire, so its receipt leaves this false.
 	ReceiptRequired bool
+	// Prose marks a message that starts with '/' without being a slash
+	// command, such as one led by an attachment's path. Claude then gets it
+	// pasted, as other free text is, instead of typed as a command.
+	Prose bool
 }
 type SubmitOutcome int
 

@@ -649,3 +649,232 @@ test('parentFlipDecision: a resume whose children were all planned earlier still
   assert.deepEqual(ledger.order, [])
   assert.equal(parentFlipDecision({ ledger, parent: PARENT, config: CONFIG }).flip, true)
 })
+
+const withoutLabels = (base) => {
+  const copy = { ...base }
+  delete copy.labels
+  return copy
+}
+
+test('routeSelectedIssue and initFanoutLedger: refuse a parent with no labels array, accept empty arrays and unlabelled children', () => {
+  const badParents = [
+    withoutLabels(issue('ABC-1')),
+    issue('ABC-1', { labels: undefined }),
+    issue('ABC-1', { labels: null }),
+    issue('ABC-1', { labels: {} }),
+    issue('ABC-1', { labels: 'epic' }),
+  ]
+  for (const bad of badParents) {
+    assert.throws(
+      () => routeSelectedIssue({ parent: bad, children: [], config: CONFIG }),
+      /labels/i,
+      `routeSelectedIssue must reject parent labels=${JSON.stringify(bad.labels)}`,
+    )
+    assert.throws(
+      () => initFanoutLedger({ parent: bad, children: [], config: CONFIG }),
+      /labels/i,
+      `initFanoutLedger must reject parent labels=${JSON.stringify(bad.labels)}`,
+    )
+  }
+
+  for (const empty of [issue('ABC-1', { labels: [] }), issue('ABC-1', { labels: { nodes: [] } })]) {
+    assert.equal(
+      routeSelectedIssue({ parent: empty, children: [], config: CONFIG }).verdict,
+      'single',
+    )
+    assert.deepEqual(initFanoutLedger({ parent: empty, children: [], config: CONFIG }).order, [])
+  }
+
+  const childWithoutLabels = withoutLabels(issue('ABC-2'))
+  assert.equal(
+    routeSelectedIssue({
+      parent: issue('ABC-1', { labels: [] }),
+      children: [childWithoutLabels],
+      config: CONFIG,
+    }).verdict,
+    'single',
+  )
+  const ledger = initFanoutLedger({
+    parent: issue('ABC-1', { labels: [] }),
+    children: [childWithoutLabels],
+    config: CONFIG,
+  })
+  assert.deepEqual(ledger.order, [])
+  assert.deepEqual(
+    ledger.skipped.map(({ id, reason }) => [id, reason]),
+    [['ABC-2', 'no-agent-plan-label']],
+  )
+})
+
+test('parentFlipDecision: refuses a parent with no labels array and accepts empty arrays', () => {
+  const ledger = finishedLedger(['planned'])
+  const badParents = [
+    withoutLabels(issue('ABC-1')),
+    issue('ABC-1', { labels: undefined }),
+    issue('ABC-1', { labels: null }),
+    issue('ABC-1', { labels: {} }),
+  ]
+  for (const bad of badParents) {
+    assert.throws(
+      () => parentFlipDecision({ ledger, parent: bad, config: CONFIG }),
+      /labels/i,
+      `parentFlipDecision must reject parent labels=${JSON.stringify(bad.labels)}`,
+    )
+  }
+
+  for (const empty of [issue('ABC-1', { labels: [] }), issue('ABC-1', { labels: { nodes: [] } })]) {
+    const decision = parentFlipDecision({ ledger, parent: empty, config: CONFIG })
+    assert.equal(decision.flip, true)
+    assert.equal(decision.write, true)
+    assert.deepEqual(decision.labels, ['epic'])
+    assert.deepEqual(decision.added, ['epic'])
+    assert.deepEqual(decision.removed, [])
+  }
+})
+
+test('CLI: route and parent-flip exit 1 naming missing labels when parent has no labels array', () => {
+  const dir = tempDir('fanout-cli-missing-labels-')
+  const bundle = join(dir, 'ABC-1.fanout-route.json')
+  const ledger = join(dir, 'ABC-1.fanout-ledger.json')
+  const parentFile = join(dir, 'parent.json')
+  const noLabelsParent = withoutLabels(issue('ABC-1'))
+  writeFileSync(bundle, JSON.stringify({ parent: noLabelsParent, children: [] }))
+  writeFileSync(ledger, JSON.stringify(finishedLedger(['planned'])))
+  writeFileSync(parentFile, JSON.stringify(noLabelsParent))
+
+  const run = (args) => {
+    try {
+      execFileSync(process.execPath, [CLI, ...args], { cwd: dir, encoding: 'utf8', stdio: 'pipe' })
+      return { status: 0, stderr: '' }
+    } catch (error) {
+      return { status: error.status, stderr: String(error.stderr) }
+    }
+  }
+
+  const routeResult = run(['route', bundle])
+  assert.equal(routeResult.status, 1)
+  assert.match(routeResult.stderr, /labels/i)
+
+  const flipResult = run(['parent-flip', ledger, parentFile])
+  assert.equal(flipResult.status, 1)
+  assert.match(flipResult.stderr, /labels/i)
+})
+
+test('read-issue-shaped and MCP-shaped parents produce identical route verdicts and flip decisions', () => {
+  const readIssueParent = (
+    id,
+    { status = 'Backlog', stateType = 'unstarted', labels = [], attachments = [] } = {},
+  ) => ({
+    id,
+    identifier: id,
+    uuid: `uuid-${id}`,
+    title: `Title ${id}`,
+    description: `notes for ${id}`,
+    status,
+    state: { name: status, type: stateType },
+    team: 'Core',
+    labels,
+    attachments,
+  })
+  const mcpParent = (
+    id,
+    { status = 'Backlog', statusType = 'unstarted', labels = [], attachments = [] } = {},
+  ) => ({
+    id,
+    uuid: `uuid-${id}`,
+    title: `Title ${id}`,
+    description: `notes for ${id}`,
+    status,
+    statusType,
+    labels: labels.map((name) => ({ name })),
+    attachments,
+  })
+
+  const specAttachment = [
+    {
+      id: 'spec-1',
+      title: 'Epic spec (ABC-1)',
+      subtitle: null,
+      url: 'https://example.test/spec-1',
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+  ]
+  const routeCases = [
+    {
+      name: 'epic-resume',
+      expectedVerdict: 'epic-resume',
+      parentOpts: { labels: ['agent-plan'], attachments: specAttachment },
+      children: [issue('ABC-2', { labels: ['agent-plan'] })],
+    },
+    {
+      name: 'epic-noop',
+      expectedVerdict: 'epic-noop',
+      parentOpts: { labels: ['epic'] },
+      children: [issue('ABC-2')],
+    },
+    {
+      name: 'fan-out',
+      expectedVerdict: 'fan-out',
+      parentOpts: { labels: ['agent-plan'] },
+      children: [issue('ABC-2', { labels: ['agent-plan'] }), issue('ABC-3')],
+    },
+    {
+      name: 'single',
+      expectedVerdict: 'single',
+      parentOpts: { labels: ['agent-plan'] },
+      children: [],
+    },
+  ]
+
+  for (const { name, expectedVerdict, parentOpts, children } of routeCases) {
+    const fromReadIssue = routeSelectedIssue({
+      parent: readIssueParent('ABC-1', parentOpts),
+      children,
+      config: CONFIG,
+    })
+    const fromMcp = routeSelectedIssue({
+      parent: mcpParent('ABC-1', parentOpts),
+      children,
+      config: CONFIG,
+    })
+    assert.equal(fromReadIssue.verdict, expectedVerdict, name)
+    assert.deepEqual(fromReadIssue, fromMcp, `${name} verdict must match`)
+  }
+
+  const flipCases = [
+    {
+      name: 'unplanned parent with queue labels',
+      ledger: finishedLedger(['planned', 'planned']),
+      parentOpts: {
+        status: 'Backlog',
+        stateType: 'unstarted',
+        statusType: 'unstarted',
+        labels: ['feature', 'Agent-Plan', 'agent-friendly', 'needs-human', 'agent-build'],
+      },
+    },
+    {
+      name: 'in-progress parent already labelled epic',
+      ledger: finishedLedger(['planned']),
+      parentOpts: {
+        status: 'In Progress',
+        stateType: 'started',
+        statusType: 'started',
+        labels: ['epic'],
+      },
+    },
+  ]
+
+  for (const { name, ledger, parentOpts } of flipCases) {
+    const fromReadIssue = parentFlipDecision({
+      ledger,
+      parent: readIssueParent('ABC-1', parentOpts),
+      config: CONFIG,
+    })
+    const fromMcp = parentFlipDecision({
+      ledger,
+      parent: mcpParent('ABC-1', parentOpts),
+      config: CONFIG,
+    })
+    assert.deepEqual(fromReadIssue, fromMcp, `${name} flip decision must match`)
+  }
+})

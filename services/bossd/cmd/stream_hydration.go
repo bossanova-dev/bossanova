@@ -59,10 +59,21 @@ type streamAccountLabeler interface {
 type usageSnapshotProber interface {
 	ProbeUsageSnapshot(context.Context, string) (domain.UsageSnapshot, error)
 }
+
+func (h *streamSessionHydrator) hydrateLabels(ctx context.Context, pbSess *bossanovav1.Session) {
+	if h.sessionLabels == nil || pbSess.Id == "" {
+		return
+	}
+	if labels, err := h.sessionLabels.ListForSession(ctx, pbSess.Id); err == nil {
+		pbSess.Labels = server.SessionLabelsToProto(labels)
+	}
+}
+
 type streamSessionHydrator struct {
 	agentChats        db.AgentChatStore
 	rawSessions       db.SessionStore
 	repos             db.RepoStore
+	sessionLabels     domain.SessionLabelStore
 	chatStatusTracker *status.Tracker
 	displayTracker    *status.DisplayTracker
 	rotationEvents    db.RotationEventStore
@@ -130,6 +141,7 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 						display = h.displayTracker.Get(pbSess.Id)
 					}
 					server.HydrateBaseAttention(pbSess, row, repo, display)
+					server.HydrateRepoServe(pbSess, repo)
 				}
 			}
 			if h.accountLabeler != nil {
@@ -153,6 +165,7 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 		displayEntry = h.displayTracker.Get(pbSess.Id)
 		server.HydrateDisplayEntry(pbSess, displayEntry)
 	}
+	h.hydrateLabels(ctx, pbSess)
 	server.HydrateRotationEvents(ctx, h.rotationEvents, h.logger, pbSess, pbSess.Id)
 	if h.agentChats == nil {
 		return

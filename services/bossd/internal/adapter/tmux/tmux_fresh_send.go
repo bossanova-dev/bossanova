@@ -38,6 +38,7 @@ func (c *Client) sendMessageWithDeliveryHooks(ctx context.Context, name, text st
 	opts.beforeSubmit = hooks.BeforeSubmit
 	opts.submitted = hooks.Submitted
 	opts.receiptRequired = hooks.ReceiptRequired && hooks.Submitted != nil
+	opts.prose = hooks.Prose
 	return c.sendPlan(ctx, name, text, opts)
 }
 

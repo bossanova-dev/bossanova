@@ -329,6 +329,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		Accounts:            accounts,
 		GithubCallbacks:     githubCallbacks,
 		Notes:               notes,
+		SessionLabels:       db.NewSessionLabelStore(database),
 		// The cron RPCs read and write this store. No scheduler is wired, so
 		// only a disabled job can be created through them.
 		CronJobs: cronJobs,

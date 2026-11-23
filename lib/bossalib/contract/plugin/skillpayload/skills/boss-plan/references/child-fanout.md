@@ -70,13 +70,16 @@ reason when the sentinel never became publishable). Keep the child's returned `o
 
 ### 3. Parent flip, report, clean up
 
-When `next` says `complete`: `get_issue` the parent fresh (parent-flip needs labels) into
-`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json` and run
-`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs parent-flip .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-ledger.json <that file>`. `flip: true` with
-`write: true` ⇒ one `save_issue` carrying exactly `labels` (the whole merged set) and, when non-null,
-`state` — never the description, estimate or attachments — then read it back; a mismatch is a
-failed run (report it, exit non-zero, Phase 7 outcome `failed`) even when every child planned.
-`flip: false` ⇒ no parent write; print its `reasons`.
+When `next` says `complete`, read the parent fresh (the parent's labels may have changed during the
+fan-out):
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs read-issue --id <ISSUE-ID> --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`.
+Exit 0 continues; exit 2 uses the [snapshot fallback](planning-claims.md#claim-before-drafting) (the
+saved parent payload must include `labels`); exit 64 means fix the call. Then run
+`bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-child-fanout.mjs parent-flip .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-ledger.json .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`.
+`flip: true` with `write: true` ⇒ one `save_issue` carrying exactly `labels` (the whole merged set)
+and, when non-null, `state` — never the description, estimate or attachments — then read it back; a
+mismatch is a failed run (report it, exit non-zero, Phase 7 outcome `failed`) even when every child
+planned. `flip: false` ⇒ no parent write; print its `reasons`.
 
 Report (Phase 6) the `summary` verb's rows as a table — id, title, `planned` / `failed: <reason>` /
 `skipped: <reason>` — plus the parent-flip result. Then clean up: `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node bs-run-sentinel.mjs cleanup

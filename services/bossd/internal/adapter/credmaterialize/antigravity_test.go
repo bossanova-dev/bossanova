@@ -383,3 +383,92 @@ func TestMaterializeAntigravityProjectsKeychainsIntoExistingAccountLibrary(t *te
 		t.Fatalf("projected login keychain = %q, want host keychain", got)
 	}
 }
+
+func TestMaterializeAntigravityReplacesLegacyConfigSymlink(t *testing.T) {
+	baseDir := t.TempDir()
+	hostHome := t.TempDir()
+	repoDir := t.TempDir()
+	stored := []byte(`{"token":{"access_token":"acct-access","refresh_token":"acct-refresh"}}`)
+
+	baseConfig := filepath.Join(hostHome, ".gemini", "config")
+	baseMCP := `{"mcpServers":{"user-srv":{"serverUrl":"https://user.example/mcp"}}}`
+	writeTestFile(t, filepath.Join(baseConfig, "config.json"), `{"ok":true}`, 0o600)
+	writeTestFile(t, filepath.Join(baseConfig, "skills", "foo", "SKILL.md"), "# foo", 0o600)
+	writeTestFile(t, filepath.Join(baseConfig, "mcp_config.json"), baseMCP, 0o600)
+	writeTestFile(t, filepath.Join(repoDir, ".mcp.json"), `{"mcpServers":{"repo-srv":{"type":"http","url":"https://repo.example/mcp"}}}`, 0o600)
+
+	// Simulate an account home created by an earlier materialization where
+	// .gemini/config was a symlink to hostHome/.gemini/config.
+	acctGemini := filepath.Join(baseDir, "accounts", "antigravity", "acct-legacy", ".gemini")
+	if err := os.MkdirAll(acctGemini, 0o700); err != nil {
+		t.Fatalf("mkdir acctGemini: %v", err)
+	}
+	acctConfig := filepath.Join(acctGemini, "config")
+	if err := os.Symlink(baseConfig, acctConfig); err != nil {
+		t.Fatalf("symlink legacy config: %v", err)
+	}
+
+	m, err := New(
+		&fakeStore{blob: stored},
+		zerolog.Nop(),
+		WithBaseDir(baseDir),
+		WithAntigravityBaseHome(hostHome),
+		WithAntigravityMCPRepos(func(context.Context) ([]AntigravityMCPRepo, error) {
+			return []AntigravityMCPRepo{{ID: "repo-legacy", LocalPath: repoDir}}, nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, _, err := m.MaterializeAntigravity(t.Context(), "acct-legacy"); err != nil {
+		t.Fatalf("MaterializeAntigravity: %v", err)
+	}
+
+	info, err := os.Lstat(acctConfig)
+	if err != nil {
+		t.Fatalf("lstat acctConfig: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		t.Fatalf("acctConfig mode = %v, want real directory", info.Mode())
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("acctConfig perm = %#o, want 0700", info.Mode().Perm())
+	}
+
+	for _, name := range []string{"config.json", "skills"} {
+		linkPath := filepath.Join(acctConfig, name)
+		linfo, err := os.Lstat(linkPath)
+		if err != nil {
+			t.Fatalf("lstat %s: %v", name, err)
+		}
+		if linfo.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s mode = %v, want symlink", name, linfo.Mode())
+		}
+	}
+
+	cfg := readMCPConfig(t, filepath.Join(acctConfig, "mcp_config.json"))
+	if _, ok := cfg.MCPServers["user-srv"]; !ok {
+		t.Fatal("missing user-srv in generated mcp_config.json")
+	}
+	if _, ok := cfg.MCPServers["repo-srv"]; !ok {
+		t.Fatal("missing repo-srv in generated mcp_config.json")
+	}
+
+	// Base target directory and its files must be completely untouched.
+	gotBaseMCP, err := os.ReadFile(filepath.Join(baseConfig, "mcp_config.json"))
+	if err != nil {
+		t.Fatalf("read base mcp_config.json: %v", err)
+	}
+	if string(gotBaseMCP) != baseMCP {
+		t.Fatalf("base mcp_config.json was modified: got %q, want %q", gotBaseMCP, baseMCP)
+	}
+	gotBaseCfg, err := os.ReadFile(filepath.Join(baseConfig, "config.json"))
+	if err != nil || string(gotBaseCfg) != `{"ok":true}` {
+		t.Fatalf("base config.json changed: %q err=%v", gotBaseCfg, err)
+	}
+	gotSkill, err := os.ReadFile(filepath.Join(baseConfig, "skills", "foo", "SKILL.md"))
+	if err != nil || string(gotSkill) != "# foo" {
+		t.Fatalf("base skill changed: %q err=%v", gotSkill, err)
+	}
+}

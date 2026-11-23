@@ -245,7 +245,7 @@ func rootCmdWithGroups(g *skills.Group, daemonGroup daemonCommands) *cobra.Comma
 	}
 
 	addProofCommands(root)
-	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), mergeCmd(), prCmd(), archiveCmd(), renameCmd())
+	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), mergeCmd(), prCmd(), archiveCmd(), renameCmd(), labelCmd())
 	addGrouped("chat", chatCmd())
 	repoGroup := newRepoGroup()
 	addGrouped("repo", repoGroup.RepoCommand(), repoGroup.ProjectCommand())

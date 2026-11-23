@@ -698,6 +698,7 @@ func ProductionChanges() *Changes {
 		StatusPhraseChange{},
 		CandidateHoldLabelChange{},
 		CloudControlDisabledCodeChange{},
+		ServePinnedActionChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -1293,7 +1294,17 @@ func transformUnarySessionResponse(method string, msg any, transform func(*pb.Se
 			m.Session = transform(m.GetSession())
 		}
 	default:
+		return transformSessionLabelUnaryResponse(method, msg, transform)
+	}
+	return true
+}
+
+func transformSessionLabelUnaryResponse(method string, msg any, transform func(*pb.Session) *pb.Session) bool {
+	if method != bossanovav1connect.OrchestratorServiceProxySetSessionLabelsProcedure {
 		return false
+	}
+	if m, ok := msg.(*pb.ProxySetSessionLabelsResponse); ok {
+		m.Session = transform(m.GetSession())
 	}
 	return true
 }

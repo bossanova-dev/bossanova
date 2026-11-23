@@ -559,7 +559,11 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 
 	// Drafts held by bossd remain repairable; reviews stay skipped until ready.
 	if prStatus.Draft {
-		checkSet, err := vcs.ReadCheckSet(ctx, p.provider, repoPath, prNumber)
+		checkSet, err := vcs.ReadCheckSet(ctx, p.provider, repoPath, prNumber, prStatus.HeadSHA, vcs.CheckReadLog{
+			Logger:       &p.logger,
+			RateLimitLog: &p.rateLimitLog,
+			Site:         "display poller",
+		})
 		if err != nil {
 			p.logger.WithLevel(p.rateLimitLog.Level("display poller: get draft check results", err)).Err(err).Str("session", sessionID).Msg("display poller: get draft check results; preserving previous status")
 			return false
@@ -584,7 +588,11 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	// disabling the repair plugin (which only triggers on
 	// FAILING/CONFLICT/REJECTED). The previous tracker entry sticks; the
 	// next poll cycle retries.
-	checkSet, err := vcs.ReadCheckSet(ctx, p.provider, repoPath, prNumber)
+	checkSet, err := vcs.ReadCheckSet(ctx, p.provider, repoPath, prNumber, prStatus.HeadSHA, vcs.CheckReadLog{
+		Logger:       &p.logger,
+		RateLimitLog: &p.rateLimitLog,
+		Site:         "display poller",
+	})
 	if err != nil {
 		p.logger.WithLevel(p.rateLimitLog.Level("display poller: get check results", err)).Err(err).Str("session", sessionID).Msg("display poller: get check results; preserving previous status")
 		return false

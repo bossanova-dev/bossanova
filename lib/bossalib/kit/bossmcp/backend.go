@@ -280,3 +280,14 @@ type ProjectCloudBackend interface {
 	projectconfig.RemoteCronWriter
 	ListDaemons(ctx context.Context, organizationID string) ([]*pb.DaemonInfo, error)
 }
+
+// SessionLabelBackend is the optional backend interface for colored session
+// label management and assignment. Discovered via type assertion on Backend
+// so Backend stays within its method-width budget.
+type SessionLabelBackend interface {
+	ListSessionLabels(ctx context.Context) ([]*pb.SessionLabel, error)
+	CreateSessionLabel(ctx context.Context, req *pb.CreateSessionLabelRequest) (*pb.SessionLabel, error)
+	UpdateSessionLabel(ctx context.Context, req *pb.UpdateSessionLabelRequest) (*pb.SessionLabel, error)
+	DeleteSessionLabel(ctx context.Context, id string) error
+	SetSessionLabels(ctx context.Context, sessionID string, labelIDs []string) (*pb.Session, error)
+}

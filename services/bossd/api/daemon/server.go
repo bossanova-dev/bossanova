@@ -114,7 +114,8 @@ type Server struct {
 	// notes persists free-text notes recorded against a repo (BOS-550).
 	// Optional (nil where the note surface is not exercised); the handlers
 	// report CodeUnavailable rather than panicking when it is absent.
-	notes noteStore
+	notes         noteStore
+	sessionLabels domain.SessionLabelStore
 	// noteSyncStates and noteSyncWorker back the note cloud sync (BOS-1435):
 	// the outbox the SyncNotesNow counts come from, and the worker every
 	// successful note write nudges. Both optional; the worker is nil on a
@@ -187,6 +188,9 @@ type Server struct {
 	// (BOS-1506). New derives it from Lifecycle; nil disables the receipt, which
 	// leaves the pane verifier as the only signal.
 	promptReceipts promptReceiptBook
+	// chatAttachments resolves the upload ids a send names (nil when the
+	// daemon has no upload directory; a send naming any then fails).
+	chatAttachments ChatAttachmentResolver
 	// bootstrapRunner owns session bootstraps: it runs them on the daemon's
 	// context rather than the RPC's, so a client disconnect cannot abort one.
 	bootstrapRunner *session.BootstrapRunner
@@ -433,7 +437,8 @@ type Config struct {
 	// Notes persists free-text notes recorded against a repo (BOS-550). May be
 	// nil in tests/contexts that do not exercise the note RPCs; the handlers
 	// then report CodeUnavailable.
-	Notes noteStore
+	Notes         noteStore
+	SessionLabels domain.SessionLabelStore
 	// NoteSyncStates is the note sync outbox (BOS-1435) that SyncNotesNow
 	// counts. May be nil; SyncNotesNow then reports CodeUnavailable.
 	NoteSyncStates NoteSyncCounter
@@ -585,6 +590,9 @@ type Config struct {
 	// protected root through a symlink is still reported (BOS-725). Nil unless
 	// the macOS startup diagnostic ran.
 	ProtectedRoots []string
+	// ChatAttachments resolves the files a chat reply box uploaded for a
+	// send. Nil refuses every send that names an attachment.
+	ChatAttachments ChatAttachmentResolver
 }
 
 // AuthNotifier is the narrow interface the NotifyAuthChange RPC
@@ -602,22 +610,6 @@ type AuthNotifier interface {
 // PRAssociationResolver refreshes local session-to-PR links.
 type PRAssociationResolver interface {
 	ReconcileSessions(context.Context, []*models.Session) (int64, error)
-}
-
-// PRRefresher re-polls a single PR's display status on demand, repopulating the
-// display tracker with the live status. It is defined here (rather than
-// importing session) so the server depends only on this narrow surface;
-// *session.DisplayPoller satisfies it. MergeSession calls it after every merge
-// attempt on a server wired with a display tracker, so the label reflects what
-// the daemon just did (see the HoldMerging block).
-//
-// It deliberately names the WithoutWebhookCredit variant: a refresh the daemon
-// triggered itself is not evidence that the session's webhook pipeline is
-// healthy, and crediting one would back that session's scheduled poll interval
-// off — leaving a still-active session staler after a blocked or failed merge
-// than before it.
-type PRRefresher interface {
-	RefreshPRWithoutWebhookCredit(ctx context.Context, repoOriginURL string, prNumber int) error
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
@@ -655,6 +647,7 @@ func New(cfg Config) *Server {
 		broadcastEgress:           cfg.BroadcastEgress,
 		daemonID:                  cfg.DaemonID,
 		notes:                     cfg.Notes,
+		sessionLabels:             cfg.SessionLabels,
 		evidenceBucketOpener:      cfg.EvidenceBucketOpener,
 		proofCheckRuns:            cfg.ProofCheckRuns,
 		proofCheckRunSessionToken: cfg.ProofCheckRunSessionToken,
@@ -727,6 +720,7 @@ func New(cfg Config) *Server {
 		protectedRoots:        cfg.ProtectedRoots,
 
 		endpointNamespaceGate: cfg.EndpointNamespaceGate,
+		chatAttachments:       cfg.ChatAttachments,
 	}
 	if srv.endpointNamespaceGate == nil {
 		srv.endpointNamespaceGate = platformEndpointNamespaceGate
@@ -1065,15 +1059,10 @@ func installedPluginStatus(p plugin.Status) pb.InstalledPlugin_Status {
 
 // isSubdirOf checks if child is the same as or a subdirectory of parent.
 func isSubdirOf(child, parent string) bool {
-	// Clean both paths for consistent comparison.
-	child = filepath.Clean(child)
-	parent = filepath.Clean(parent)
-
+	child, parent = filepath.Clean(child), filepath.Clean(parent)
 	if child == parent {
 		return true
 	}
-
-	// Ensure parent ends with separator for prefix matching.
 	parentPrefix := parent + string(filepath.Separator)
 	return len(child) > len(parentPrefix) && child[:len(parentPrefix)] == parentPrefix
 }

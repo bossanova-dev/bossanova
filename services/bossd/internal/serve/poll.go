@@ -46,6 +46,7 @@ func (r *Runner) refresh(ctx context.Context, id string, s *tracked) {
 	alive, err := r.tmux.HasSessionStatus(ctx, s.TmuxName)
 	if err != nil {
 		s.LastError = err.Error()
+		r.publishState(id, s.State)
 		return
 	}
 	if !alive {
@@ -56,6 +57,7 @@ func (r *Runner) refresh(ctx context.Context, id string, s *tracked) {
 	if errors.Is(err, domain.ErrNotFound) || (err == nil && (sess == nil || sess.ArchivedAt != nil || sess.State == machine.Closed)) {
 		if err = r.kill(ctx, s.TmuxName); err != nil {
 			s.LastError = err.Error()
+			r.publishState(id, s.State)
 			return
 		}
 		_ = r.clear(id, s)
@@ -63,19 +65,26 @@ func (r *Runner) refresh(ctx context.Context, id string, s *tracked) {
 	}
 	if err != nil {
 		s.LastError = err.Error()
+		r.publishState(id, s.State)
 		return
 	}
 	info, err := os.Stat(r.filePath(id))
 	if os.IsNotExist(err) {
+		if s.LastError != "" {
+			s.LastError = ""
+			r.publishState(id, s.State)
+		}
 		return
 	}
 	if err != nil {
 		s.LastError = err.Error()
+		r.publishState(id, s.State)
 		return
 	}
-	if s.observed && info.ModTime().Equal(s.mtime) && info.Size() == s.size {
+	if s.LastError == "" && s.observed && info.ModTime().Equal(s.mtime) && info.Size() == s.size {
 		return
 	}
+	prevErr := s.LastError
 	links, err := readServicesFile(r.filePath(id))
 	if err != nil {
 		s.LastError = err.Error()
@@ -85,9 +94,9 @@ func (r *Runner) refresh(ctx context.Context, id string, s *tracked) {
 		s.size = info.Size()
 		s.observed = true
 	}
-	if !slices.Equal(s.Links, links) {
+	if !slices.Equal(s.Links, links) || s.LastError != prevErr {
 		s.Links = links
-		r.publisher.SetServiceLinks(id, links)
+		r.publishState(id, s.State)
 	}
 }
 func (r *Runner) adopt(ctx context.Context) error {
@@ -128,6 +137,7 @@ func (r *Runner) adopt(ctx context.Context) error {
 		s := &tracked{State: State{IsRunning: true, TmuxName: pane.Name, StartedAt: pane.Created}}
 		r.states[id] = s
 		r.liveTmux.Store(id, pane.Name)
+		r.publishState(id, s.State)
 		r.refresh(ctx, id, s)
 	}
 	return nil

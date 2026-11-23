@@ -9,6 +9,7 @@ go_library(
         "github_callback.go",
         "models.go",
         "note.go",
+        "session_label.go",
         "tracker_rank.go",
     ],
     importpath = "github.com/recurser/bossalib/models",

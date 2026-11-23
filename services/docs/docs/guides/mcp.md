@@ -10,13 +10,13 @@ import CommandTabs from '@site/src/components/CommandTabs';
 
 Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents (Claude Code, Claude Desktop, and any MCP-capable host) drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. The tool reference below describes the supported operations.
 
-The server exposes **79 tools** in three tiers:
+The server exposes **83 tools** in three tiers:
 
 | Tier        | Count | Behaviour                          |
 | ----------- | ----- | ---------------------------------- |
-| Read-only   | 29    | Always available                   |
-| Mutating    | 35    | Non-destructive writes             |
-| Destructive | 15    | Require `confirm: true` to execute |
+| Read-only   | 30    | Always available                   |
+| Mutating    | 37    | Non-destructive writes             |
+| Destructive | 16    | Require `confirm: true` to execute |
 
 ## Install
 

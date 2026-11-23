@@ -228,8 +228,8 @@ const proofDefaults = object({
   additionalProperties: false,
   properties: {
     pages: {
-      enum: ['parked', 'all'],
-      'x-msg': 'proofDefaults.pages must be "parked" or "all" when present',
+      enum: ['all', 'parked', 'none'],
+      'x-msg': 'proofDefaults.pages must be "all", "parked" or "none" when present',
     },
     builtins: object({
       'x-msg': 'proofDefaults.builtins must be an object when present',

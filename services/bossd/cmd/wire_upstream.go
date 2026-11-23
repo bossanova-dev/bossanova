@@ -492,6 +492,7 @@ func (w *daemonWiring) wireUpstream() {
 			CloudControl:             cloudControl,
 			TargetObjects:            targets,
 			TerminalSealingSupported: terminalSealing.IsAvailable(),
+			ChatAttachmentSupported:  w.chatUploadMgr != nil,
 			Client:                   client,
 			AuthToken:                authToken,          // WorkOS JWT → Authorization header
 			SessionToken:             sessionTokenHolder, // daemon token → X-Daemon-Token header

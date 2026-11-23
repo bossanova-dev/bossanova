@@ -104,6 +104,13 @@ var commandTargets = targetTable(map[protoreflect.Name]CommandTargets{
 	"send_back_to_repair":              {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: false}}},
 	"get_session_timeline":             {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: false}}},
 	"list_agent_models":                {},
+	"start_session_serve":              {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: false}}},
+	"stop_session_serve":               {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: false}}},
+	"list_session_labels":              {},
+	"create_session_label":             {Machine: true},
+	"update_session_label":             {Machine: true},
+	"delete_session_label":             {Machine: true},
+	"set_session_labels":               {Fields: []CommandTargetField{{Field: "session_id", Kind: "session", Optional: false}}},
 })
 
 func targetTable(names map[protoreflect.Name]CommandTargets) map[protoreflect.FieldNumber]CommandTargets {

@@ -231,8 +231,8 @@ bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh children-input --mode fanout --run-
 ```
 
 Stop on a listing failure; a failed read is never an empty child list. The unchanged
-`{parent, children, relationWarnings}` result carries complete per-child payloads.
-Print any `relationWarnings`
+`{parent, children, relationWarnings}` result carries complete parent (`labels` required — `route`
+refuses a parent with no `labels` array) and per-child payloads. Print any `relationWarnings`
 in the route summary; they never stop the run. `single` ⇒ continue below;
 `fan-out` ⇒ [`references/child-fanout.md`](references/child-fanout.md) instead of the precheck and Phases
 2–5; `epic-resume` ⇒ [`references/epic.md`](references/epic.md#resume); `epic-noop` ⇒ report its
@@ -544,6 +544,8 @@ Then:
    ```bash
    bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-section-append.mjs --file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md --heading "Open Questions" --item "<question>"
    ```
+
+   The helper code-spans issue ids, PR references, URLs and paths, so pass them bare.
 
    Save the edited `$FINAL` with `write-description --body-file "$FINAL" --base-file "$BASE"`
    (plus labels if `agent-question` was added), using step 3's read-before-retry rule on rejection. Record whether

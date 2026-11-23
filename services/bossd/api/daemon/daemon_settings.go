@@ -159,7 +159,8 @@ func applyDaemonScalars(settings *config.Settings, update *pb.DaemonSettingsUpda
 		settings.ManagedAccounts.Enabled = update.IsAccountRotationEnabled
 	}
 	if update.IsProofPagesEnabled != nil {
-		settings.ProofUpload.PagesEnabled = update.GetIsProofPagesEnabled()
+		enabled := update.GetIsProofPagesEnabled()
+		settings.ProofUpload.PagesEnabled = &enabled
 	}
 	if update.IsErrorTrackingEnabled != nil {
 		settings.ErrorTrackingEnabled = update.GetIsErrorTrackingEnabled()
@@ -282,7 +283,7 @@ func (s *Server) daemonSettingsToProto(settings config.Settings) *pb.DaemonSetti
 		IsNotificationsEnabled:   config.NotificationsEnabled(settings),
 		DefaultAgent:             settings.DefaultAgent,
 		IsAccountRotationEnabled: settings.ManagedAccounts.ManagedAgentAccountsEnabled(),
-		IsProofPagesEnabled:      settings.ProofUpload.PagesEnabled,
+		IsProofPagesEnabled:      settings.ProofUpload.PagesAllowed(),
 		HasOwnProofBucket:        settings.ProofUpload.Bucket != "",
 		IsErrorTrackingEnabled:   settings.ErrorTrackingEnabled,
 		IsEventTracingEnabled:    settings.EventTracingEnabled,

@@ -462,10 +462,11 @@ test('a changed UI area with no recording leads the page, which still gets the p
   assert.ok(!page.includes('<video'), 'the player has no video to drive and does nothing for it')
 })
 
-test('a pass, blocked or defect head uploads nothing and notes the level with a null page @sessions.AC248606', async (t) => {
+test('a pass, blocked or defect head uploads nothing under parked policy and notes the level with a null page @sessions.AC248606', async (t) => {
   const { head, base, out, w, deps } = await setup(t)
   const checkUrl = 'https://github.com/acme/widgets/runs/42'
   deps.proof = {
+    loadConfig: () => ({ proofDefaults: { pages: 'parked' } }),
     callDaemon: async (_socket, method, request) => {
       assert.equal(method, 'PostProofCheckRun')
       assert.equal(request.headSha, head)
@@ -553,21 +554,14 @@ test('non-parked verdicts publish deterministic pages under the trusted all poli
   }
 })
 
-test('non-parked verdicts keep null pages without a trusted opt-in @sessions.AC254502', async (t) => {
+test('non-parked verdicts publish by default and keep null pages only under trusted parked/none opt-out @sessions.AC254502', async (t) => {
   for (const verdict of ['pass', 'blocked', 'defect']) {
-    for (const policy of ['absent', 'parked', 'head-only', 'unreadable']) {
+    for (const policy of ['parked', 'none']) {
       await t.test(`${verdict} with ${policy}`, async (t) => {
         const { head, base, out, w, deps } = await setup(t, {}, null, {
-          headPages: policy === 'head-only',
+          headPages: true,
         })
-        if (policy === 'parked')
-          deps.proof = { loadConfig: () => ({ proofDefaults: { pages: 'parked' } }) }
-        if (policy === 'unreadable')
-          deps.proof = {
-            loadConfig: () => {
-              throw new Error('unreadable')
-            },
-          }
+        deps.proof = { loadConfig: () => ({ proofDefaults: { pages: policy } }) }
         const dir = tempDir('verify-proof-run-', t)
         const judge = judgeFile(dir, { head, base, verdict })
         const result = await main(
@@ -576,7 +570,10 @@ test('non-parked verdicts keep null pages without a trusted opt-in @sessions.AC2
         )
         assert.equal(result.posted, true)
         assert.equal(result.verdict, verdict)
-        assert.deepEqual(result.proof.page, { published: false, reason: 'not-parked' })
+        assert.deepEqual(result.proof.page, {
+          published: false,
+          reason: policy === 'none' ? 'disabled' : 'not-parked',
+        })
         assert.deepEqual(calls(out), [])
         const note = w.writes.find((x) => x.body?.includes('boss-proof-note'))
         assert.deepEqual(parseProofLine(note.body), { head, page: null, level: 'moderate' })

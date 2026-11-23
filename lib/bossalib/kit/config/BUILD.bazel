@@ -40,6 +40,7 @@ go_test(
         "cloud_control_test.go",
         "config_guard_test.go",
         "config_test.go",
+        "discover_homebrew_test.go",
         "displayhostname_test.go",
         "document_test.go",
         "env_test.go",

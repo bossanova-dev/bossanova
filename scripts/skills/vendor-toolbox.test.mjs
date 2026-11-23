@@ -686,6 +686,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'ci/pr-state-envelope.mjs',
       'ci/required-checks.mjs',
       'epic/dag-scheduler.mjs',
+      'epic/epic-coverage.mjs',
       // epic-driver.mjs (BOS-1271) is the executable lifecycle authority the SKILL body calls by
       // path. An installed tree without it is a terminal guard that cannot RUN rather than one that
       // decides wrongly — the exact shape of the bug it closes, since the invariant was previously

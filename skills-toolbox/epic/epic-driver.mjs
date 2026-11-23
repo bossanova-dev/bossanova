@@ -14,8 +14,8 @@
 //   1. THE END OF A MODEL TURN IS NOT THE END OF A RUN. A launch or adoption is an intermediate
 //      checkpoint. `assertEpicCanTerminate` throws while any ready, in-flight, green, pending
 //      cascade, unreconciled adoption, unreconciled wake, or unevaluated external-blocker state
-//      exists, and the sole DONE transition adds final-reconciliation, all-terminal, final-progress
-//      and watch-cleanup requirements on top.
+//      exists, and the sole DONE transition adds final-reconciliation and all-terminal requirements
+//      on top (final-progress and watch-cleanup are reported as warnings).
 //   2. A WAKE IS A PROMPT, NEVER PROOF. Callback triggers, subscription outcomes, fallback timers,
 //      retries and manual resumes are all one input: they select no mutation path of their own.
 //      `reconcileEpic` re-reads authoritative state for every tracked child on every wake, whatever
@@ -52,6 +52,7 @@ import {
 import { classifyChildLiveness, classifyChildSettled } from './bs-epic-lib.mjs'
 import { bossCallbackPolicy } from '../callback/boss.mjs'
 import { isMainModule } from '../main-module.mjs'
+import * as epicCoverage from './epic-coverage.mjs'
 import { isPartial } from './merge-eligibility.mjs'
 
 /**
@@ -128,7 +129,7 @@ export const EPIC_DRIVER_IO = Object.freeze([
   'readExternalBlockers',
   /** `({ticket}) => {sessionId, chatId}` — launch. Never called for an already-adopted ticket. */
   'createSession',
-  /** `({ticketId, prNumber, prRepo, triggers, message}) => {callbacks: Array, error?: string}` */
+  /** `({ticketId, prNumber, prRepo, triggers, message}) => {callbacks: Array, satisfied?: string[], error?: string}` */
   'armWatches',
   /** `({ticketId, prNumber, prRepo}) => Array` — list-read that VERIFIES a registration took. */
   'listWatches',
@@ -646,10 +647,10 @@ export function epicDoneWarnings(state) {
 }
 
 /**
- * The SOLE DONE transition. Throws unless the invariant is false AND final reconciliation, all-
- * terminal children, the final progress upsert and watch cleanup are all recorded. There is no
- * other way to set `status: DONE` — every other transition below returns a non-terminal status,
- * which is what makes "a launch cannot be reported as success" structural rather than remembered.
+ * The SOLE DONE transition. Throws unless the invariant is false AND final reconciliation and
+ * all-terminal children are recorded (final progress upsert and watch cleanup are warnings). There
+ * is no other way to set `status: DONE` — every other transition below returns a non-terminal
+ * status, which makes "a launch cannot be reported as success" structural rather than remembered.
  */
 export function transitionToDone(state) {
   const blockers = epicDoneBlockers(state)
@@ -1287,10 +1288,11 @@ export async function reconcileEpic({ state, wake = 'initial', io, now = '', sav
   s = await scheduleReadyWork({ state: s, io, now, actions, persist })
 
   // --- Durable coverage for everything in flight, armed AND list-verified before yielding.
+  const coveredReady = new Set()
   for (const ticketId of [...s.inFlight]) {
     const coverage = await ensureDurableCoverage({ state: s, ticketId, io, now, actions })
-    s = coverage.state
-    s = await persist(s)
+    if (coverage.coveredChecksPassedReady) coveredReady.add(ticketId)
+    s = await persist(coverage.state)
   }
 
   // --- Serialized merge: at most ONE per cycle, after a merge-time external re-check.
@@ -1344,10 +1346,18 @@ export async function reconcileEpic({ state, wake = 'initial', io, now = '', sav
   // either a verified watch or a recorded fallback behind it.
   s = await scheduleReadyWork({ state: s, io, now, actions, persist })
   for (const ticketId of [...s.inFlight]) {
-    if (isNonEmptyString(s.watches[ticketId]?.verifiedAt) || s.watches[ticketId]?.fallback) continue
-    const coverage = await ensureDurableCoverage({ state: s, ticketId, io, now, actions })
-    s = coverage.state
-    s = await persist(s)
+    const watch = s.watches[ticketId]
+    let unmergedReady = coveredReady.has(ticketId) && isNonEmptyString(watch?.verifiedAt)
+    if (!unmergedReady && !isNonEmptyString(watch?.verifiedAt) && !watch?.fallback) {
+      const cov = await ensureDurableCoverage({ state: s, ticketId, io, now, actions })
+      unmergedReady = Boolean(cov.coveredChecksPassedReady)
+      s = unmergedReady ? cov.state : await persist(cov.state)
+    }
+    if (!unmergedReady) continue
+    const reason = epicCoverage.UNMERGED_CHECKS_PASSED_READY_REASON
+    const fallback = (await io.scheduleFallbackWake({ ticketId, reason })) ?? null
+    actions.push(epicCoverage.fallbackAction(ticketId, fallback, reason))
+    s = await persist(recordWatchFailure(s, { ticketId, reason, fallback, at: now }))
   }
 
   // --- The single progress comment, after every transition.
@@ -1366,8 +1376,8 @@ export async function reconcileEpic({ state, wake = 'initial', io, now = '', sav
   }
 
   // --- Terminal. Clean up settled children's watches (retaining explicitly-recorded evidence
-  // watches for live fail-isolated children), write the FINAL progress comment, then and only then
-  // transition to DONE.
+  // watches for live fail-isolated children), transition to DONE, and write the FINAL progress
+  // comment from the DONE state.
   for (const [ticketId, watch] of Object.entries(s.watches)) {
     if (s.retainedEvidenceWatches.includes(ticketId)) {
       actions.push(`retain-evidence-watch:${ticketId}`)
@@ -1381,13 +1391,13 @@ export async function reconcileEpic({ state, wake = 'initial', io, now = '', sav
     actions.push(`cleanup-watch:${ticketId}`)
   }
   s = recordWatchCleanup(s, { at: now })
+  s = transitionToDone(s)
   const finalUpsert =
     (await io.upsertProgress({
       state: s,
       progressState: buildEpicProgressState(s, { updatedAt: now }),
     })) ?? {}
   s = recordProgressUpsert(s, { commentId: finalUpsert.commentId ?? '', finalAt: now })
-  s = transitionToDone(s)
   s = await persist(s)
   actions.push('terminal:done')
   return { state: s, status: s.status, blockers: [], actions }
@@ -1467,13 +1477,8 @@ export async function ensureDurableCoverage({ state, ticketId, io, now = '', act
   if (!record?.sessionId) return { state: s }
 
   const watch = s.watches[ticketId] ?? {}
-  const existingCallbacks = watch.callbacks ?? []
-  const liveRows =
-    (await io.listWatches({
-      ticketId,
-      prNumber: record.prNumber,
-      prRepo: record.prRepo,
-    })) ?? []
+  const watchQuery = { ticketId, prNumber: record.prNumber, prRepo: record.prRepo }
+  const liveRows = (await io.listWatches(watchQuery)) ?? []
   const liveByTrigger = new Map(
     liveRows.filter((row) => isNonEmptyString(row?.trigger)).map((row) => [row.trigger, row]),
   )
@@ -1481,34 +1486,33 @@ export async function ensureDurableCoverage({ state, ticketId, io, now = '', act
     needsRearm({ registration: liveByTrigger.get(trigger), inFlight: true }),
   )
 
-  let callbacks = existingCallbacks
+  let callbacks = watch.callbacks ?? []
   let armError = ''
+  let coveredChecksPassedReady = false
   if (rearmNeeded.length > 0) {
     const armed =
       (await io.armWatches({
-        ticketId,
-        prNumber: record.prNumber,
-        prRepo: record.prRepo,
+        ...watchQuery,
         triggers: rearmNeeded,
         message: buildContinuationPrompt({ epicId: s.epicId, kind: 'callback', runId: s.runId }),
       })) ?? {}
     armError = armed.error ?? ''
     // The list-read is the VERIFICATION. An arm that returned without error but does not appear in
     // the list did not take, and is indistinguishable from one that did unless we look.
-    const verifyRows =
-      (await io.listWatches({
-        ticketId,
-        prNumber: record.prNumber,
-        prRepo: record.prRepo,
-      })) ?? []
+    const verifyRows = (await io.listWatches(watchQuery)) ?? []
     const verifiedTriggers = new Set(verifyRows.map((row) => row?.trigger))
-    const stillMissing = rearmNeeded.filter((trigger) => !verifiedTriggers.has(trigger))
+    const { covered, stillMissing, reasons } = epicCoverage.rearmCoverage({
+      rearmNeeded,
+      satisfied: armed.satisfied,
+      verifiedTriggers,
+      held: !s.greens.includes(ticketId),
+    })
+    coveredChecksPassedReady = covered.includes('checks_passed_ready')
     callbacks = verifyRows
       .filter((row) => isNonEmptyString(row?.id))
       .map((row) => ({ id: row.id, trigger: row.trigger ?? '', state: row.state ?? '' }))
-    if (stillMissing.length > 0) {
-      armError = armError || `list verification found no watch for ${stillMissing.join(',')}`
-    }
+    if (covered.length > 0) actions.push(`satisfied:${ticketId}:${covered.join(',')}`)
+    armError = epicCoverage.coverageFailureReason({ armError, stillMissing, reasons })
     actions.push(`arm:${ticketId}:${rearmNeeded.join(',')}${armError ? ':failed' : ':verified'}`)
   }
 
@@ -1552,16 +1556,15 @@ export async function ensureDurableCoverage({ state, ticketId, io, now = '', act
   }
 
   if (!armError && !subError) {
-    return {
-      state: recordWatchCoverage(s, {
-        ticketId,
-        targetChatId: watch.targetChatId ?? '',
-        repo: record.prRepo,
-        callbacks,
-        subscription,
-        verifiedAt: now,
-      }),
-    }
+    const next = recordWatchCoverage(s, {
+      ticketId,
+      targetChatId: watch.targetChatId ?? '',
+      repo: record.prRepo,
+      callbacks,
+      subscription,
+      verifiedAt: now,
+    })
+    return { state: next, coveredChecksPassedReady }
   }
 
   const reason = [armError, subError].filter(Boolean).join('; ')
@@ -1576,10 +1579,8 @@ export async function ensureDurableCoverage({ state, ticketId, io, now = '', act
   })
   const fallback = (await io.scheduleFallbackWake({ ticketId, reason })) ?? null
   s = recordWatchFailure(s, { ticketId, reason, fallback, at: now, blocked: false })
-  actions.push(
-    fallback ? `fallback:${ticketId}:${fallback.mechanism}` : `unwatched:${ticketId}:${reason}`,
-  )
-  return { state: s }
+  actions.push(epicCoverage.fallbackAction(ticketId, fallback, reason))
+  return { state: s, coveredChecksPassedReady: false }
 }
 
 function matchSessionForTicket(sessions, ticket) {

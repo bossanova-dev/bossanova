@@ -17,7 +17,7 @@ func TestHealPluginPaths_RepairsMissingPathFromDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	configured := []config.PluginConfig{
-		{Name: "claude", Path: "/opt/homebrew/Cellar/bossanova/1.63.0/libexec/plugins/bossd-plugin-claude",
+		{Name: "claude", Path: "/no-such-brew-prefix/Cellar/bossanova/1.63.0/libexec/plugins/bossd-plugin-claude",
 			Enabled: true, Config: map[string]string{"dangerously_skip_permissions": "true"}},
 	}
 	discovered := []config.PluginConfig{{Name: "claude", Path: good, Enabled: true}}
@@ -52,7 +52,7 @@ func TestHealPluginPaths_LeavesValidPathsUntouched(t *testing.T) {
 }
 
 func TestHealPluginPaths_NoDiscoveryMatchLeavesStalePath(t *testing.T) {
-	stale := "/opt/homebrew/Cellar/bossanova/1.63.0/libexec/plugins/bossd-plugin-claude"
+	stale := "/no-such-brew-prefix/Cellar/bossanova/1.63.0/libexec/plugins/bossd-plugin-claude"
 	configured := []config.PluginConfig{{Name: "claude", Path: stale, Enabled: true}}
 	discovered := []config.PluginConfig{{Name: "codex", Path: "/anything/bossd-plugin-codex"}}
 	healed, names := config.HealPluginPaths(configured, discovered)
@@ -61,11 +61,11 @@ func TestHealPluginPaths_NoDiscoveryMatchLeavesStalePath(t *testing.T) {
 	}
 }
 
-// mkCellarPlugin creates <root>/Cellar/<formula>/<version>/libexec/plugins/<bin>
+// mkCellarPlugin creates <root>/Cellar/bossanova/<version>/libexec/plugins/<bin>
 // as an executable file and returns its path.
-func mkCellarPlugin(t *testing.T, root, formula, version, bin string) string {
+func mkCellarPlugin(t *testing.T, root, version, bin string) string {
 	t.Helper()
-	pluginDir := filepath.Join(root, "Cellar", formula, version, "libexec", "plugins")
+	pluginDir := filepath.Join(root, "Cellar", "bossanova", version, "libexec", "plugins")
 	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestHealPluginPaths_RewritesToStableOptSymlinkPath(t *testing.T) {
 		t.Skip("Homebrew opt-symlink layout is macOS/Linux only")
 	}
 	dir := t.TempDir()
-	cellarBin := mkCellarPlugin(t, dir, "bossanova", "1.63.0", "bossd-plugin-claude")
+	cellarBin := mkCellarPlugin(t, dir, "1.63.0", "bossd-plugin-claude")
 
 	// opt/<formula> -> Cellar/<formula>/<version>, the symlink Homebrew re-points on each upgrade.
 	optDir := filepath.Join(dir, "opt")
@@ -115,7 +115,7 @@ func TestHealPluginPaths_RewritesToStableOptSymlinkPath(t *testing.T) {
 // negative rewrite path: no opt symlink ⇒ sameFile fails ⇒ keep the Cellar path.
 func TestHealPluginPaths_CellarWithoutOptSymlinkKeepsDiscoveredPath(t *testing.T) {
 	dir := t.TempDir()
-	cellarBin := mkCellarPlugin(t, dir, "bossanova", "1.63.0", "bossd-plugin-claude")
+	cellarBin := mkCellarPlugin(t, dir, "1.63.0", "bossd-plugin-claude")
 
 	configured := []config.PluginConfig{{Name: "claude", Path: filepath.Join(dir, "gone", "bossd-plugin-claude"), Enabled: true}}
 	discovered := []config.PluginConfig{{Name: "claude", Path: cellarBin, Enabled: true}}
@@ -137,7 +137,7 @@ func TestHealPluginPaths_SkipsNonExecutableDiscovery(t *testing.T) {
 	if err := os.WriteFile(nonExec, []byte("#!/bin/sh\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	const stale = "/opt/homebrew/Cellar/bossanova/1.63.0/libexec/plugins/bossd-plugin-claude"
+	const stale = "/no-such-brew-prefix/Cellar/bossanova/1.63.0/libexec/plugins/bossd-plugin-claude"
 	configured := []config.PluginConfig{{Name: "claude", Path: stale, Enabled: true}}
 	discovered := []config.PluginConfig{{Name: "claude", Path: nonExec, Enabled: true}}
 
@@ -174,7 +174,7 @@ func TestHealPluginPaths_DoesNotMutateInput(t *testing.T) {
 	if err := os.WriteFile(good, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const stale = "/opt/homebrew/Cellar/bossanova/1.63.0/libexec/plugins/bossd-plugin-claude"
+	const stale = "/no-such-brew-prefix/Cellar/bossanova/1.63.0/libexec/plugins/bossd-plugin-claude"
 	configured := []config.PluginConfig{{Name: "claude", Path: stale, Enabled: true, Config: map[string]string{"k": "v"}}}
 	discovered := []config.PluginConfig{{Name: "claude", Path: good, Enabled: true}}
 
@@ -187,5 +187,39 @@ func TestHealPluginPaths_DoesNotMutateInput(t *testing.T) {
 	}
 	if configured[0].Config["k"] != "v" {
 		t.Fatalf("input Config mutated: %v", configured[0].Config)
+	}
+}
+
+// A brew upgrade starts the new daemon before `brew cleanup` removes the old
+// keg, so an entry pinned to that keg still points at a runnable binary. It must
+// still move to the opt path, or the new release's checksums reject the runner.
+func TestHealPluginPaths_MovesPinnedCellarPathToOptWhileOldKegExists(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Homebrew opt-symlink layout is macOS/Linux only")
+	}
+	dir := t.TempDir()
+	oldKegBin := mkCellarPlugin(t, dir, "1.192.0", "bossd-plugin-antigravity")
+	mkCellarPlugin(t, dir, "1.193.0", "bossd-plugin-antigravity")
+	optDir := filepath.Join(dir, "opt")
+	if err := os.MkdirAll(optDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "Cellar", "bossanova", "1.193.0"), filepath.Join(optDir, "bossanova")); err != nil {
+		t.Fatal(err)
+	}
+	wantOpt := filepath.Join(optDir, "bossanova", "libexec", "plugins", "bossd-plugin-antigravity")
+
+	configured := []config.PluginConfig{{Name: "antigravity", Path: oldKegBin, Enabled: true,
+		Config: map[string]string{"dangerously_skip_permissions": "true"}}}
+
+	healed, names := config.HealPluginPaths(configured, nil)
+	if len(names) != 1 || names[0] != "antigravity" {
+		t.Fatalf("want [antigravity] healed, got %v", names)
+	}
+	if healed[0].Path != wantOpt {
+		t.Fatalf("want opt path %q, got %q", wantOpt, healed[0].Path)
+	}
+	if healed[0].Config["dangerously_skip_permissions"] != "true" || !healed[0].Enabled {
+		t.Fatalf("enabled and config must survive the move: %+v", healed[0])
 	}
 }

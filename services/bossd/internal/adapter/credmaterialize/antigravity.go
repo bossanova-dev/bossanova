@@ -16,7 +16,6 @@ const (
 	antigravityGeminiDirName  = ".gemini"
 	antigravityCLIDirName     = "antigravity-cli"
 	antigravityLibraryDirName = "Library"
-	antigravityKeychainsName  = "Keychains"
 )
 
 // WithAntigravityBaseHome overrides the host user's home directory projected
@@ -36,10 +35,13 @@ func (m *Materializer) antigravityAccountDir(accountID string) string {
 //
 // SSH_CLIENT=1 instructs agy's composite token storage to bypass the OS keyring
 // (macOS Keychain / Linux Secret Service) and use its file-based token store at
-// $HOME/.gemini/antigravity-cli/antigravity-oauth-token. Top-level entries from
-// the real home directory are symlinked into the account home so git, ssh, gh,
-// boss, and agy's shared conversations/brain/settings remain accessible, while
-// Library/Keychains and antigravity-oauth-token stay isolated per account.
+// $HOME/.gemini/antigravity-cli/antigravity-oauth-token, which stays isolated
+// per account. Top-level entries from the real home directory, including
+// Library/Keychains, are symlinked into the account home so git, ssh, boss and
+// agy's shared conversations/brain/settings remain accessible. Projecting
+// Library/Keychains matters on macOS: gh and git credential helpers keep their
+// tokens in $HOME/Library/Keychains/login.keychain-db, and without it they fail
+// with HTTP 401 because the shared ~/.config/gh/hosts.yml holds no token.
 func (m *Materializer) MaterializeAntigravity(ctx context.Context, accountID string) (Materialized, PersistBack, error) {
 	if err := validateAccountID(accountID); err != nil {
 		return Materialized{}, nil, err
@@ -133,8 +135,8 @@ func (m *Materializer) projectAntigravityBaseHome(accountHome string) error {
 		return err
 	}
 
-	// Project top-level entries except Library and .gemini (which need selective
-	// projection so Keychains and antigravity-oauth-token stay account-local).
+	// Project top-level entries except Library and .gemini, which are projected
+	// entry by entry below.
 	if err := projectDirectoryEntries(baseHome, accountHome, map[string]bool{
 		antigravityLibraryDirName: true,
 		antigravityGeminiDirName:  true,
@@ -142,7 +144,13 @@ func (m *Materializer) projectAntigravityBaseHome(accountHome string) error {
 		return err
 	}
 
-	// On macOS, project ~/Library entries except Keychains as defense in depth.
+	// On macOS, project every ~/Library entry, Keychains included, so host CLIs
+	// such as gh and git credential helpers can read the login keychain. agy is
+	// kept off the OS keyring by SSH_CLIENT=1, not by hiding Keychains. Library
+	// stays a real per-account directory rather than one symlink because account
+	// homes materialized before Keychains was projected already hold a real
+	// Library/, and projectDirectoryEntries never replaces a non-symlink; linking
+	// entry by entry lets those homes pick up Keychains on their next run.
 	baseLib := filepath.Join(baseHome, antigravityLibraryDirName)
 	if info, err := os.Stat(baseLib); err == nil && info.IsDir() {
 		acctLib := filepath.Join(accountHome, antigravityLibraryDirName)
@@ -156,9 +164,7 @@ func (m *Materializer) projectAntigravityBaseHome(accountHome string) error {
 		if err := os.Chmod(acctLib, 0o700); err != nil {
 			return fmt.Errorf("enforce 0700 on antigravity dir %q: %w", acctLib, err)
 		}
-		if err := projectDirectoryEntries(baseLib, acctLib, map[string]bool{
-			antigravityKeychainsName: true,
-		}); err != nil {
+		if err := projectDirectoryEntries(baseLib, acctLib, nil); err != nil {
 			return err
 		}
 	}

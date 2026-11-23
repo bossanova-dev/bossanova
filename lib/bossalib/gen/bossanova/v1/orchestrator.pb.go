@@ -4086,7 +4086,11 @@ type ProxySendChatMessageRequest struct {
 	// when true, submit the message (BOS-242); when false, prefill only.
 	// optional so an omitting (pre-BOS-242) client is treated as submit=true
 	// server-side, preserving the prior always-submit proxy behavior.
-	Submit        *bool `protobuf:"varint,4,opt,name=submit,proto3,oneof" json:"submit,omitempty"`
+	Submit *bool `protobuf:"varint,4,opt,name=submit,proto3,oneof" json:"submit,omitempty"`
+	// session_id, when set, routes by the (session, chat) pair, which finds a
+	// chat whose daemon is claimed in another of the caller's organizations.
+	// Callers without a session (the MCP send tool) leave it empty.
+	SessionId     string `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4147,6 +4151,13 @@ func (x *ProxySendChatMessageRequest) GetSubmit() bool {
 		return *x.Submit
 	}
 	return false
+}
+
+func (x *ProxySendChatMessageRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
 }
 
 // ProxySendChatMessageResponse mirrors daemon.proto's SendChatMessageResponse.
@@ -25849,12 +25860,14 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\bmessages\x18\x01 \x03(\v2\x19.bossanova.v1.ChatMessageR\bmessages\x120\n" +
 	"\x14final_assistant_text\x18\x02 \x01(\tR\x12finalAssistantText\x12\x16\n" +
 	"\x06exists\x18\x03 \x01(\bR\x06exists\x12\x16\n" +
-	"\x06reason\x18\x04 \x01(\tR\x06reason\"\xaf\x01\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"\xce\x01\n" +
 	"\x1bProxySendChatMessageRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12$\n" +
 	"\x0ewake_if_asleep\x18\x03 \x01(\bR\fwakeIfAsleep\x12\x1b\n" +
-	"\x06submit\x18\x04 \x01(\bH\x00R\x06submit\x88\x01\x01B\t\n" +
+	"\x06submit\x18\x04 \x01(\bH\x00R\x06submit\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x05 \x01(\tR\tsessionIdB\t\n" +
 	"\a_submit\"\xe5\x01\n" +
 	"\x1cProxySendChatMessageResponse\x12*\n" +
 	"\x11tmux_session_name\x18\x01 \x01(\tR\x0ftmuxSessionName\x12\x1c\n" +

@@ -505,13 +505,16 @@ Run passes in a loop, at most **5 repair passes**:
 1. At the start of each pass, run step 1's lease acquisition before assessment. A foreign or
    unreadable lease ends the loop immediately as `blocked` with `repair-lease-held` (name holder
    and head) or `repair-lease-unreadable`, exit zero. Do not wait on CI in this case.
-   Re-read the PR head. If it is not a fast-forward of the head the
-   previous pass started from (`git merge-base --is-ancestor <previous> <current>`), someone rewrote
-   the branch: discard everything the earlier passes concluded and re-derive from the new head,
-   except when `git rev-parse <previous>^{tree}` equals `git rev-parse <current>^{tree}` and both
-   share the same `git merge-base origin/<base>`: keep the earlier conclusions for that
+   Re-read the PR head. Compare it against `<previous>`, the head the previous pass ended on (the
+   last SHA it confirmed landed under rule 5, or the head it started from if it pushed nothing). If
+   `<current>` is not a fast-forward of `<previous>` (`git merge-base --is-ancestor <previous> <current>`),
+   someone else rewrote the branch: discard everything the earlier passes concluded, reset the
+   loop's landed-SHA list, and re-derive from the new head, except when
+   `git rev-parse <previous>^{tree}` equals `git rev-parse <current>^{tree}` and both share the same
+   `git merge-base origin/<base>`: keep the earlier conclusions and landed list for that
    message-only rewrite; step 2 still re-reads checks on the new head.
-   Keep a note per pass of the SHA you pushed (if any) and the strategy and file it targeted.
+   Keep a note per pass of the SHA you pushed (if any) and the strategy and file it targeted; append
+   each SHA confirmed landed under rule 5 to the loop's landed list.
 2. Re-run step 1's head-keyed blocker assessment, then poll checks, review feedback and mergeability
    ([Reading PR state](#reading-pr-state)).
 3. In blocker mode, process only its ordered list and publish outcomes; otherwise: open review threads → handle them (as above), push, next pass. Conflict → repair, push, next pass.
@@ -534,8 +537,10 @@ Run passes in a loop, at most **5 repair passes**:
    Never `sleep` 60 seconds or more waiting for CI.
 
 5. **No progress:** if a pass pushed nothing that is still on the branch and the failing signal is
-   unchanged, stop — don't spin on something you can't fix. If two consecutive passes keep applying
-   the same strategy to the same file, say so in the report (a branch that keeps re-conflicting).
+   unchanged, stop — don't spin on something you can't fix. This ends the loop as `stop: stalled`;
+   the terminal helper below (not this stop rule) names the token. If two consecutive passes keep
+   applying the same strategy to the same file, say so in the report (a branch that keeps
+   re-conflicting).
 6. **Done** when checks are green, mergeability is not `CONFLICTING`, and review feedback is `clean`
    or `parked` with every fixed or declined thread resolved. Re-poll review feedback after checks go
    green — that is when fresh threads appear. Before exiting, make sure something will still observe
@@ -560,12 +565,18 @@ Run passes in a loop, at most **5 repair passes**:
    `unwatched` means arm the `missingTriggers` it names (once) before exiting; `settled`, `watched`
    and `polled` may exit. Remove the watches you registered.
 
-End with the report plus a final line naming why the loop ended — exactly one of `green`, `parked`,
-`no-progress`, `max-attempts`, `blocked` (a human must act) — with the number of passes used and the
-pending-check state. Callers parse this token. Ending short of green is still a residual and exits
-zero; only a true stop exits non-zero. When the 5-pass bound ends the loop, the residuals include
-pending checks and any review feedback that arrived after the final push.
-For terminal `no-progress` or `max-attempts`, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger repair-exhausted --where "<failing check name, or review feedback>"` (never fatal).
+End with the report, then derive the final line by writing `{stop, passes, landedShas, checks}`
+(`stop` is `green`, `parked`, `blocked`, `bound` or `stalled`; `checks` is the last
+`pr-check-state.mjs classify` verdict) to a JSON file, running
+`node "$BOSS_REPAIR_TOOLBOX/repair/bs-repair-derivations.mjs" watch-terminal --in <file>`, and
+printing its `line` verbatim as the final line. Its token is one of `green`, `parked`, `pushed`
+(the loop landed at least one fix and stopped short of green before the bound), `no-progress`,
+`max-attempts` and `blocked` (a human must act). Callers parse this token. Exit `2` is a residual:
+print the report and end with no token line, which callers treat as unclassifiable. Ending short of
+green is still a residual and exits zero; only a true stop exits non-zero. When the 5-pass bound
+ends the loop, the residuals include pending checks and any review feedback that arrived after the
+final push.
+For terminal `no-progress` or `max-attempts` (not `pushed`), run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger repair-exhausted --where "<failing check name, or review feedback>"` (never fatal).
 
 ## Post-terminal notes extensions (repo opt-in)
 

@@ -461,10 +461,11 @@ its `action`.
   ```
 
   Read the repair chat's terminal token (strip backticks, emphasis and labels):
-  `inner-cap-exhausted` counts a round; `no-progress` means nothing changed; anything unreadable is
-  `repair-unclassifiable` and counts. **Four rounds per ticket**, then fail-isolate. A conflicted
-  green (`pr_mergeable=false`) needs a repair round, not a merge. Track the repair chat in place of
-  the original.
+  `inner-cap-exhausted` counts a round; `pushed` means the round landed a fix with checks still
+  unsettled — count a round and re-poll the child (verify re-runs on the new head); `no-progress`
+  means nothing changed; anything unreadable is `repair-unclassifiable` and counts. **Four rounds
+  per ticket**, then fail-isolate. A conflicted green (`pr_mergeable=false`) needs a repair round,
+  not a merge. Track the repair chat in place of the original.
 
 - **Environmental death** (chat `LIMITED`, a usage-limit banner, or a transient 5xx as the last
   message; no spinner; frozen activity) ⇒ one `send_chat_message` (wake + submit) telling it to

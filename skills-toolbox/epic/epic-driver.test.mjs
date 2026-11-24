@@ -1796,3 +1796,121 @@ test('a GREEN_DRAFT working child with no subscription is reported unwatched rat
     result.actions.join('\n'),
   )
 })
+
+test('a merge first seen in the cycle re-read is recorded and launches its dependent', async () => {
+  const state = recordLaunch(baseState({ parallel: 2 }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+  })
+  const io = makeIo({
+    readSessionSnapshot: () =>
+      greenSnapshot({
+        chatStatus: 'IDLE',
+        sessionState: 'MERGED',
+        prView: {
+          number: 10,
+          repo: 'acme/app',
+          state: 'MERGED',
+          isDraft: false,
+          title: 'F',
+          body: '',
+        },
+      }),
+  })
+
+  const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+  assert.deepEqual(result.state.merged, ['T-1'])
+  assert.deepEqual(result.state.failed, [])
+  assert.equal(io.count('mergeChild'), 0)
+  assert.equal(io.count('moveTicketDone'), 1)
+  assert.ok(result.actions.includes('external-merge:T-1'))
+  assert.equal(
+    result.actions.some((action) => action.startsWith('liveness:T-1:')),
+    false,
+  )
+  assert.equal(result.state.sessions['T-1'].prNumber, 10)
+  assert.equal(result.state.inFlight.includes('T-1'), false)
+  assert.ok(result.state.inFlight.includes('T-2'))
+})
+
+test('wall-clock expiry never fail-isolates a merged child', async () => {
+  const state = recordLaunch(baseState({ parallel: 2 }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+  })
+  const io = makeIo({
+    readSessionSnapshot: () =>
+      greenSnapshot({
+        chatStatus: 'IDLE',
+        sessionState: 'MERGED',
+        wallClockExceeded: true,
+        prView: {
+          number: 10,
+          repo: 'acme/app',
+          state: 'MERGED',
+          isDraft: false,
+          title: 'F',
+          body: '',
+        },
+      }),
+  })
+
+  const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+  assert.ok(result.state.merged.includes('T-1'))
+  assert.equal(result.state.failed.includes('T-1'), false)
+  assert.deepEqual(result.state.cascadeSkipped, [])
+})
+
+test('an unreadable PR without a provider state is never read as merged', async () => {
+  const state = recordLaunch(baseState({ parallel: 2 }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+  })
+  const io = makeIo({
+    readSessionSnapshot: () =>
+      workingSnapshot({
+        chatStatus: 'WORKING',
+        prView: { number: 10, repo: 'acme/app', url: '' },
+      }),
+  })
+
+  const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+  assert.ok(result.state.inFlight.includes('T-1'))
+  assert.deepEqual(result.state.merged, [])
+  assert.equal(io.count('moveTicketDone'), 0)
+})
+
+test('a failed ticket write-back still records a provider-merged child', async () => {
+  const state = recordLaunch(baseState({ parallel: 2 }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+  })
+  const io = makeIo({
+    readSessionSnapshot: () =>
+      greenSnapshot({
+        chatStatus: 'IDLE',
+        sessionState: 'MERGED',
+        prView: {
+          number: 10,
+          repo: 'acme/app',
+          state: 'MERGED',
+          isDraft: false,
+          title: 'F',
+          body: '',
+        },
+      }),
+    moveTicketDone: () => false,
+  })
+
+  const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+  assert.ok(result.state.merged.includes('T-1'))
+  assert.ok(result.actions.includes('external-merge:T-1:ticket-writeback-failed'))
+})

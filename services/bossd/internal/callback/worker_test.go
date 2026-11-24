@@ -128,6 +128,74 @@ func TestWorker_HappyPath(t *testing.T) {
 	}
 }
 
+// TestWorker_DeliversOnlyToTargetChat pins the callback worker's targeting
+// contract: each triggered callback is delivered once to its own target_chat_id
+// with its own payload and never to another chat.
+func TestWorker_DeliversOnlyToTargetChat(t *testing.T) {
+	store := newStore(t)
+	clk := newClock(time.Now().UTC())
+	const (
+		msgOne = "child-build-wake-alpha"
+		msgTwo = "coordinator-wake-bravo"
+	)
+	cb1 := mustCreate(t, store, db.CreateGitHubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GitHubCallbackTriggerMerged, Message: msgOne,
+	})
+	cb2 := mustCreate(t, store, db.CreateGitHubCallbackParams{
+		TargetChatID: "chat-2", RepoOwner: "acme", RepoName: "widgets", PRNumber: 8,
+		Trigger: models.GitHubCallbackTriggerMerged, Message: msgTwo,
+	})
+	triggerActive(t, store, cb1.ID, clk.now())
+	triggerActive(t, store, cb2.ID, clk.now())
+
+	deliverer := newCaptureDeliverer(nil)
+	w := newWorker(store, deliverer, clk.now, "worker-1")
+	w.scan(context.Background())
+
+	for _, id := range []string{cb1.ID, cb2.ID} {
+		if got := getState(t, store, id); got != models.GitHubCallbackStateDelivered {
+			t.Fatalf("callback %s state = %q, want delivered", id, got)
+		}
+	}
+
+	got := deliverer.deliveries()
+	if len(got) != 2 {
+		t.Fatalf("deliveries = %d, want 2", len(got))
+	}
+
+	byChat := make(map[string]string, len(got))
+	for _, d := range got {
+		if _, dup := byChat[d.chatID]; dup {
+			t.Fatalf("chat %q received duplicate delivery", d.chatID)
+		}
+		byChat[d.chatID] = d.message
+	}
+
+	checks := []struct {
+		chatID    string
+		wantID    string
+		wantMsg   string
+		forbidID  string
+		forbidMsg string
+	}{
+		{chatID: "chat-1", wantID: cb1.ID, wantMsg: msgOne, forbidID: cb2.ID, forbidMsg: msgTwo},
+		{chatID: "chat-2", wantID: cb2.ID, wantMsg: msgTwo, forbidID: cb1.ID, forbidMsg: msgOne},
+	}
+	for _, tc := range checks {
+		msg, ok := byChat[tc.chatID]
+		if !ok {
+			t.Fatalf("missing delivery for %q; got %+v", tc.chatID, got)
+		}
+		if !strings.Contains(msg, tc.wantMsg) || !strings.Contains(msg, tc.wantID) {
+			t.Errorf("%s delivery missing own callback (%s / %q):\n%s", tc.chatID, tc.wantID, tc.wantMsg, msg)
+		}
+		if strings.Contains(msg, tc.forbidMsg) || strings.Contains(msg, tc.forbidID) {
+			t.Errorf("%s delivery leaked other callback (%s / %q):\n%s", tc.chatID, tc.forbidID, tc.forbidMsg, msg)
+		}
+	}
+}
+
 func TestWorker_TelemetryTerminalOutcomesOnly(t *testing.T) {
 	enableCallbackTelemetry(t)
 	store := newStore(t)

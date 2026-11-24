@@ -5,8 +5,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
@@ -401,5 +403,87 @@ func TestGetChatTranscript_SessionStoreFakeReturnsNoRows(t *testing.T) {
 	}
 	if s != nil {
 		t.Fatal("expected nil session")
+	}
+}
+
+// A chat opened with no prompt whose first turn was typed straight into the
+// terminal never went through a send or a wake, so nothing bound the agent's
+// own conversation id and every read missed ("No messages yet"). A read that
+// misses binds it from the chat's live pane, then reads by it.
+func TestGetChatTranscript_BindsFirstTurnProviderSessionFromLivePane(t *testing.T) {
+	for _, agentName := range []string{"antigravity", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			const panePID = 4242
+			providerID := agentName + "-conversation-1"
+			chat := &domain.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: agentName, CreatedAt: time.Now().Add(-time.Hour)}
+			sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+			store := &chatStoreFake{chat: chat}
+			resolver := &fakeInteractiveSessionResolver{byPanePID: map[int]string{panePID: providerID}}
+			client := &transcriptAgentClient{respByID: map[string]*pb.ReadTranscriptResponse{
+				providerID: {Exists: true, Messages: []*pb.ChatMessage{{Role: "user", Text: "look at delta-freshclaim"}}},
+			}}
+			s := &Server{
+				agentChats:   store,
+				sessions:     &sessionStoreFake{sess: sess},
+				agentClients: map[string]agent.RunnerClient{agentName: client},
+				logger:       zerolog.Nop(),
+				wakeHook:     wakeHook{spawner: &fakeTmuxClient{available: true, hasSession: true, panePID: panePID}, resolver: resolver},
+			}
+
+			resp, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{AgentSessionId: "agent-1", SessionId: "s1"}))
+			if err != nil {
+				t.Fatalf("GetChatTranscript: %v", err)
+			}
+			if !resp.Msg.GetExists() || len(resp.Msg.GetMessages()) != 1 {
+				t.Fatalf("transcript = %+v, want the conversation read by the bound id", resp.Msg)
+			}
+			if store.updateProvider == nil || *store.updateProvider != providerID {
+				t.Fatalf("persisted provider id = %v, want %q", store.updateProvider, providerID)
+			}
+			for _, call := range resolver.snapshotResolverCalls() {
+				if call.allowLegacyBackfill || call.panePID != panePID {
+					t.Fatalf("resolver called with %+v, want the live pane's own files only", call)
+				}
+			}
+		})
+	}
+}
+
+func TestGetChatTranscript_FirstTurnBindAsksOnlyALivePaneAndNotOnEveryRead(t *testing.T) {
+	newServer := func(agentName string, panePID int) (*Server, *fakeInteractiveSessionResolver) {
+		chat := &domain.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: agentName, CreatedAt: time.Now()}
+		sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+		resolver := &fakeInteractiveSessionResolver{byPanePID: map[int]string{}}
+		return &Server{
+			agentChats:   &chatStoreFake{chat: chat},
+			sessions:     &sessionStoreFake{sess: sess},
+			agentClients: map[string]agent.RunnerClient{agentName: &transcriptAgentClient{respByID: map[string]*pb.ReadTranscriptResponse{}}},
+			logger:       zerolog.Nop(),
+			wakeHook:     wakeHook{spawner: &fakeTmuxClient{available: true, hasSession: true, panePID: panePID}, resolver: resolver},
+		}, resolver
+	}
+	read := func(s *Server) {
+		if _, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{AgentSessionId: "agent-1", SessionId: "s1"})); err != nil {
+			t.Fatalf("GetChatTranscript: %v", err)
+		}
+	}
+
+	noPane, resolver := newServer("antigravity", 0)
+	read(noPane)
+	if calls := resolver.snapshotResolverCalls(); len(calls) != 0 {
+		t.Fatalf("resolver called %d times with no live pane, want none", len(calls))
+	}
+
+	beforeFirstTurn, resolver := newServer("antigravity", 4242)
+	read(beforeFirstTurn)
+	read(beforeFirstTurn)
+	if calls := resolver.snapshotResolverCalls(); len(calls) != 1 {
+		t.Fatalf("resolver called %d times for two reads in a row, want 1", len(calls))
+	}
+
+	claude, resolver := newServer("claude", 4242)
+	read(claude)
+	if calls := resolver.snapshotResolverCalls(); len(calls) != 0 {
+		t.Fatalf("resolver called %d times for claude, whose transcript is keyed by its own id; want none", len(calls))
 	}
 }

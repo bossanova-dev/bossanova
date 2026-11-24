@@ -46,6 +46,7 @@ node "$BOSS_VERIFY_TOOLBOX/skill-pin.mjs" create --skill boss-verify --skills-ho
 BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
 [ -f "$BOSS_VERIFY_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-verify skill pin missing - re-run the first block"; exit 1; }
+BOSS_VERIFY_RUN_DIR="$(node "$BOSS_VERIFY_TOOLBOX/verify/verify-run-dir.mjs" create)" || exit 1
 printf '%s\n' "${O:-}" | node "$BOSS_VERIFY_TOOLBOX/skill-drift-verdict.mjs" reload --core boss-verify --skill-md "${BOSS_VERIFY_TOOLBOX%/toolbox}/SKILL.md" || exit "$?"
 ```
 
@@ -60,6 +61,7 @@ After the pin exists, read `references/…`, `scripts/…` and `extensions/…` 
 BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
 [ -f "$BOSS_VERIFY_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-verify skill pin missing - re-run the first block"; exit 1; }
+BOSS_VERIFY_RUN_DIR="$(node "$BOSS_VERIFY_TOOLBOX/verify/verify-run-dir.mjs" path)" || exit 1
 ```
 
 The last Bash call before any stop (single PR or sweep) removes this run's pin:
@@ -68,8 +70,13 @@ The last Bash call before any stop (single PR or sweep) removes this run's pin:
 BOSS_VERIFY_PIN="$(git rev-parse --absolute-git-dir)/boss-skill-pins/boss-verify/${BOSS_AGENT_SESSION_ID:-local}"
 BOSS_VERIFY_TOOLBOX="$BOSS_VERIFY_PIN/toolbox"
 [ -f "$BOSS_VERIFY_PIN/.boss-skill-pin.json" ] || { echo "BLOCKED: boss-verify skill pin missing - re-run the first block"; exit 1; }
+node "$BOSS_VERIFY_TOOLBOX/verify/verify-run-dir.mjs" remove
 node "$BOSS_VERIFY_TOOLBOX/skill-pin.mjs" remove --skill boss-verify
 ```
+
+Every run-temp file or directory this skill or its references name (judge output, blocker and notes
+files, confidence and extension-results files, the proof-bundle `--out`, the intent `--out-dir`, and
+subagent output paths) goes under `$BOSS_VERIFY_RUN_DIR`, which no other run shares.
 
 Every `verify-gate.mjs` verb prints one JSON line. A failed read is **unknown**, never a pass: when
 a verb exits non-zero or prints nothing parseable, report it and stop on that PR.

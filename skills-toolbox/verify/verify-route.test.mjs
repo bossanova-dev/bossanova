@@ -2645,6 +2645,23 @@ test('sweep forwards notes for each posted verdict and ignores an unwritable not
   assert.equal(w.posts()[0].includes('--notes'), false)
 })
 
+test('a session verify creates for a PR is named after the PR, not its number', () => {
+  const title = (argv) => argv[argv.indexOf('--title') + 1]
+  const pr = 'deps(api): Bump the minor-patch group in /services/api with 3 updates'
+  assert.equal(title(newSessionArgv({ pr: 7, repoDir: '/r', token: 't', title: pr })), pr)
+  assert.equal(
+    title(newSessionArgv({ pr: 7, repoDir: '/r', token: 't', title: '  ' })),
+    'verify #7',
+  )
+  assert.equal(title(newSessionArgv({ pr: 7, repoDir: '/r', token: 't' })), 'verify #7')
+  const routed = routeCandidate(
+    { pr: 7, url: url(7), token: 't', title: pr },
+    { dryRun: true, repoDir: '/r', sessions: [], timeout: () => 1000, run: () => ({ ok: true }) },
+  )
+  assert.equal(routed.route, 'new-session')
+  assert.equal(title(routed.argv), pr)
+})
+
 test('new adoption marks human and bot sessions verify-only, retaining opt-in repair', () => {
   const base = newSessionArgv({ pr: 7, repoDir: '/r', token: 't' })
   assert.deepEqual(newSessionArgv({ pr: 7, repoDir: '/r', token: 't', verifyOnly: true }), [

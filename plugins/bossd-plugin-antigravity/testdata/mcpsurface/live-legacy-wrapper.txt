@@ -1,0 +1,2 @@
+NAME                TYPE   STATUS   COMMAND/URL
+life-skills-linear  stdio  enabled  sh -c [ -z "$BOSS_REPO_ID" ] || [ "$BOSS_REPO_ID" = 1b82bcdd9239b267 ] || exit 0; exec npx -y mcp-remote@0.16.4 https://mcp.linear.app/mcp --header "Authorization: Bearer <redacted>"

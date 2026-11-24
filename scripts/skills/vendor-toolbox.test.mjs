@@ -694,6 +694,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'epic/epic-driver.mjs',
       'epic/epic-io.mjs',
       'epic/epic-run.mjs',
+      'epic/epic-subscription.mjs',
       'linear-claim.mjs',
       'linear-deps-lib.mjs',
       'linear-gate-lib.mjs',

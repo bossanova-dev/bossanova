@@ -113,6 +113,25 @@ test('environment candidate takes precedence, falls through when absent, then us
   )
 })
 
+test('resolveInstalledSkill prefers agent-matched directory and supports Antigravity skills home', (t) => {
+  const f = fixture(t)
+  const agyHome = path.join(f.home, '.gemini', 'config', 'skills')
+  const agySkill = path.join(agyHome, f.skill)
+  fs.mkdirSync(path.join(agySkill, 'toolbox'), { recursive: true })
+  fs.writeFileSync(path.join(agySkill, 'SKILL.md'), 'antigravity instructions')
+  assert.equal(
+    resolveInstalledSkill({ skill: f.skill, home: f.home, env: { BOSS_AGENT: 'antigravity' } })
+      .source,
+    fs.realpathSync(agySkill),
+  )
+  // Without BOSS_AGENT, falls back to .gemini/config/skills once Claude and Codex are absent.
+  fs.rmSync(f.source, { recursive: true, maxRetries: 3 })
+  assert.equal(
+    resolveInstalledSkill({ skill: f.skill, home: f.home, env: {} }).source,
+    fs.realpathSync(agySkill),
+  )
+})
+
 test('a new capture replaces an earlier pin, and verify detects tampering and missing pins', async (t) => {
   const f = fixture(t)
   assert.equal(verifyPin(f).status, 2)

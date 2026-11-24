@@ -5,8 +5,12 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/rs/zerolog"
+
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/adapter/setupscript"
+	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 func TestRepoServeScript(t *testing.T) {
@@ -79,5 +83,70 @@ func TestRepoServeScript(t *testing.T) {
 	}
 	if store.updateParams.ServeScript != nil {
 		t.Fatal("absent serve field should leave the stored command alone")
+	}
+}
+
+func TestUpdateRepoRepublishesActiveSessionsWhenSessionFieldsChange(t *testing.T) {
+	ctx := context.Background()
+	database := dbtest.New(t)
+	repos := db.NewRepoStore(database)
+	sessions := db.NewSessionStore(database)
+	newRepo := func(name string) string {
+		r, err := repos.Create(ctx, db.CreateRepoParams{DisplayName: name, LocalPath: "/tmp/" + name, OriginURL: "https://github.com/o/" + name + ".git", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/wt"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.ID
+	}
+	newSession := func(repoID, branch string) string {
+		sess, err := sessions.Create(ctx, db.CreateSessionParams{RepoID: repoID, Title: branch, WorktreePath: "/tmp/wt/" + branch, BranchName: branch, BaseBranch: "main"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sess.ID
+	}
+	target, other := newRepo("target"), newRepo("other")
+	active := newSession(target, "active")
+	if err := sessions.MarkArchived(ctx, newSession(target, "archived")); err != nil {
+		t.Fatal(err)
+	}
+	newSession(other, "elsewhere")
+
+	var published []*pb.Session
+	s := New(Config{
+		Repos:              repos,
+		Sessions:           sessions,
+		Logger:             zerolog.Nop(),
+		ValidateRepoScript: setupscript.ValidateStored,
+		OnSessionUpdated:   func(_ context.Context, p *pb.Session) { published = append(published, p) },
+	})
+	serve, name, merge := "make serve", "renamed", true
+	for _, tc := range []struct {
+		name     string
+		req      *pb.UpdateRepoRequest
+		wantName string
+	}{
+		{"serve command", &pb.UpdateRepoRequest{Id: target, ServeScript: &serve}, "target"},
+		{"display name", &pb.UpdateRepoRequest{Id: target, DisplayName: &name}, "renamed"},
+		{"unrelated flag", &pb.UpdateRepoRequest{Id: target, CanAutoMerge: &merge}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			published = nil
+			if _, err := s.UpdateRepo(ctx, connect.NewRequest(tc.req)); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantName == "" {
+				if len(published) != 0 {
+					t.Fatalf("published %d sessions, want none", len(published))
+				}
+				return
+			}
+			if len(published) != 1 || published[0].GetId() != active {
+				t.Fatalf("published = %v, want only the active session %s", published, active)
+			}
+			if got := published[0].GetRepoDisplayName(); got != tc.wantName {
+				t.Fatalf("repo display name = %q, want %q", got, tc.wantName)
+			}
+		})
 	}
 }

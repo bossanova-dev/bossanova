@@ -165,7 +165,8 @@ func TestModalWrappersNilDetectorMatchesReadyMarkerSibling(t *testing.T) {
 				return fake.callsCopy()
 			}
 
-			modal, marker := run(true), run(false)
+			modal := normalizePasteBufferCalls(t, run(true))
+			marker := normalizePasteBufferCalls(t, run(false))
 			if len(modal) != len(marker) {
 				t.Fatalf("call counts differ: WithModal(nil)=%d, WithReadyMarker=%d\n%s\n%s",
 					len(modal), len(marker), formatModalWrapperCalls(modal), formatModalWrapperCalls(marker))
@@ -178,6 +179,37 @@ func TestModalWrappersNilDetectorMatchesReadyMarkerSibling(t *testing.T) {
 			}
 		})
 	}
+}
+
+// normalizePasteBufferCalls replaces each per-call random `-b boss-paste-<hex>`
+// buffer name with a deterministic per-run placeholder (`<paste-buf-N>`) after
+// validating its format, so two independent deliveries can be compared for
+// structural equivalence while still verifying that load-buffer and
+// paste-buffer share one buffer name within each run.
+func normalizePasteBufferCalls(t *testing.T, calls []sendPlanCall) []sendPlanCall {
+	t.Helper()
+	seen := map[string]string{}
+	out := make([]sendPlanCall, len(calls))
+	for i, call := range calls {
+		args := append([]string(nil), call.args...)
+		if call.subcommand == "load-buffer" || call.subcommand == "paste-buffer" || call.subcommand == "delete-buffer" {
+			for j := 0; j+1 < len(args); j++ {
+				if args[j] == "-b" {
+					name := args[j+1]
+					assertValidPasteBufferName(t, name)
+					placeholder, ok := seen[name]
+					if !ok {
+						placeholder = fmt.Sprintf("<paste-buf-%d>", len(seen))
+						seen[name] = placeholder
+					}
+					args[j+1] = placeholder
+					break
+				}
+			}
+		}
+		out[i] = sendPlanCall{subcommand: call.subcommand, args: args}
+	}
+	return out
 }
 
 func formatModalWrapperCalls(calls []sendPlanCall) string {

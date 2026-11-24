@@ -9,10 +9,11 @@ import { PUBLISHED_SKILLS } from '../skills/vendor-toolbox.mjs'
 import { extractFencedBlocks, SHELL_INFO_STRINGS } from './check-skill-shell.mjs'
 
 export const LOCATOR_PATTERNS = [
-  { name: 'tilde home', pattern: /~\/\.(?:claude|codex)\/skills\b/ },
+  { name: 'tilde home', pattern: /~\/(?:\.(?:claude|codex)\/skills|\.gemini\/config\/skills)\b/ },
   {
     name: 'variable home',
-    pattern: /(?:\$HOME|\$\{HOME\}|"\$HOME")\/\.(?:claude|codex)\/skills\b/,
+    pattern:
+      /(?:\$HOME|\$\{HOME\}|"\$HOME")\/(?:\.(?:claude|codex)\/skills|\.gemini\/config\/skills)\b/,
   },
   { name: 'shared skills home', pattern: /(?<![A-Za-z0-9_])BOSS_SKILLS_HOME(?![A-Za-z0-9_])/ },
   { name: 'unpinned skill directory', pattern: /<skill-dir>\// },

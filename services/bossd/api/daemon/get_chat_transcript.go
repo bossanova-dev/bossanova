@@ -105,6 +105,9 @@ func (s *Server) readChatTranscript(ctx context.Context, req *connect.Request[pb
 	if pluginResp.GetExists() {
 		return transcriptResponse(pluginResp, ""), transcriptSource{client, tmuxName}, nil
 	}
+	if providerSessionID == "" {
+		providerSessionID = s.bindProviderSessionOnRead(ctx, chat, worktreePath, tmuxName)
+	}
 
 	// Primary read (keyed by agent_session_id) missed. Agents like codex mint
 	// their own rollout UUID at boot and key the on-disk transcript by it, so a

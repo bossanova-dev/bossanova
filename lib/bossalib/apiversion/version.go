@@ -692,6 +692,15 @@ const V20261104 Version = "2026-11-04"
 // V20261105 adds Services to pinned session actions for current clients.
 const V20261105 Version = "2026-11-05"
 
+// V20261106 scopes organization-filtered repository, daemon, cron and fleet
+// reads by repository-organization ownership (mapped organization, or the
+// caller's personal organization when unmapped) across every Ready daemon the
+// caller owns, rather than only daemons whose stream authenticated into the
+// requested organization. Handler-gated (IsOrganizationRepoMappedReads):
+// TransformResponse never sees the request's organization_id, the caller's
+// membership set, or which daemon answered.
+const V20261106 Version = "2026-11-06"
+
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions. The slice is ordered oldest→newest and its last member is Current
 // (the newest behavior). At most one trailing member is unreleased: every
@@ -764,8 +773,9 @@ func DefaultRegistry() *Registry {
 			V20261103,
 			V20261104,
 			V20261105,
+			V20261106,
 		},
-		V20261105,
+		V20261106,
 		Baseline,
 	)
 	if err != nil {
@@ -935,4 +945,13 @@ func IsMergeHeadRequired(ctx context.Context) bool {
 // read-only refusal code; streaming errors bypass the compatibility transform.
 func IsCloudControlPrecondition(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20261103, "IsCloudControlPrecondition")
+}
+
+// IsOrganizationRepoMappedReads reports whether organization-filtered
+// repository, daemon, cron and fleet reads resolve across all of the caller's
+// Ready daemons by repository-organization ownership (mapped organization, or
+// personal organization when unmapped) instead of only daemons claimed in the
+// requested organization (V20261106 and newer).
+func IsOrganizationRepoMappedReads(ctx context.Context) bool {
+	return gateAtLeast(ctx, V20261106, "IsOrganizationRepoMappedReads")
 }

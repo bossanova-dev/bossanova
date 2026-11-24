@@ -320,7 +320,7 @@ export function reviewSidecar(judged) {
  *
  * Level rules the contract fixes: blockers make the record `blocked` and only blockers do (a
  * `blocked` confidence without them reads `cannot-assess`); a level below high always names a
- * reason, `confidence-not-computed` when the judge gave none.
+ * reason: `area-asks` when the judge gave none and an area asks, else `confidence-not-computed`.
  *
  * @param {{judged: Record<string, any>, intent?: unknown, repo: string, pr: number}} input
  */
@@ -353,7 +353,11 @@ export function buildProofRecord({ judged, intent = null, repo, pr }) {
     // High means nothing asks and nothing lowered it; a confidence claiming otherwise is moderate.
     if (level === 'high' && (loweredBy.length || areas.some((area) => area.ask))) level = 'moderate'
     if (level !== 'high' && loweredBy.length === 0)
-      loweredBy.push({ code: CONFIDENCE_NOT_COMPUTED, text: 'Confidence is not computed yet.' })
+      loweredBy.push(
+        level !== 'cannot-assess' && areas.some((area) => area.ask)
+          ? lowered('area-asks')
+          : { code: CONFIDENCE_NOT_COMPUTED, text: 'Confidence is not computed yet.' },
+      )
     const record = withDigest({
       schema: PROOF_SCHEMA,
       repo,

@@ -1995,37 +1995,6 @@ func (c *Client) clearTypedLine(ctx context.Context, sessionName, line string) e
 	return c.clearComposer(ctx, sessionName)
 }
 
-// pasteBufferNoEnter loads text into a tmux paste buffer and pastes it into the
-// composer with bracketed paste enabled (-p) WITHOUT submitting. It is the
-// load-buffer → paste-buffer half of SendMessage, split out so prefill delivery
-// and the multi-line submit path can paste without an Enter. stderr from either
-// tmux invocation is wrapped into the returned error.
-func (c *Client) pasteBufferNoEnter(ctx context.Context, sessionName, text string) error {
-	loadCmd := c.cmdFunc(ctx, "tmux", "load-buffer", "-")
-	loadCmd.Stdin = strings.NewReader(text)
-	var loadStderr bytes.Buffer
-	loadCmd.Stderr = &loadStderr
-	loadCmd.WaitDelay = tmuxCommandWaitDelay
-	if err := loadCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(loadStderr.String()); msg != "" {
-			return fmt.Errorf("tmux load-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
-		}
-		return fmt.Errorf("tmux load-buffer for %q: %w", sessionName, err)
-	}
-
-	pasteCmd := c.cmdFunc(ctx, "tmux", "paste-buffer", "-d", "-p", "-t", sessionName)
-	var pasteStderr bytes.Buffer
-	pasteCmd.Stderr = &pasteStderr
-	pasteCmd.WaitDelay = tmuxCommandWaitDelay
-	if err := pasteCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(pasteStderr.String()); msg != "" {
-			return fmt.Errorf("tmux paste-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
-		}
-		return fmt.Errorf("tmux paste-buffer for %q: %w", sessionName, err)
-	}
-	return nil
-}
-
 // sendEnter submits the current composer contents with a single send-keys
 // Enter. It is the submission half of the literal/paste delivery helpers, split
 // out so prefill delivery can skip it and the submit path can retry it

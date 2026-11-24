@@ -75,6 +75,9 @@ type Server struct {
 	credentialDevices          *CredentialDeviceService
 	trackerIssueLeases         trackerIssueLeases
 	providerSessionIDDiscovery providerSessionIDDiscoveryJoin
+	// providerSessionReadBinds holds, per chat, when a transcript read last
+	// asked the chat's live pane for its provider session (time.Time values).
+	providerSessionReadBinds sync.Map
 
 	evidenceBucketOpener      evidenceBucketOpener
 	proofCheckRuns            ProofCheckRuns

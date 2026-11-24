@@ -9,6 +9,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 
 export const DEV_AUTH_TOKEN = 'e2e-test-token'
@@ -87,12 +88,97 @@ function buildGoBinary(moduleDir, outPath, env, label) {
 }
 
 /**
+ * The GitHub token the developer's own `gh` holds, read with their real HOME
+ * before `bossd` gets an isolated one. Null when `gh` is missing or logged out.
+ * @param {NodeJS.ProcessEnv} [baseEnv]
+ * @param {typeof execFileSync} [run]
+ * @returns {string | null}
+ */
+export function resolveGitHubToken(baseEnv = process.env, run = execFileSync) {
+  const given = (baseEnv.GH_TOKEN || baseEnv.GITHUB_TOKEN || '').trim()
+  if (given) {
+    return given
+  }
+  try {
+    const out = run('gh', ['auth', 'token'], {
+      env: baseEnv,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 15_000,
+    })
+    return String(out).trim() || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The developer's git name and email, read with their real HOME, so commits in
+ * the dev stack's sessions keep their author. Only the identity crosses: the
+ * rest of their global config stays out, because signing (commit.gpgsign with
+ * a gpg key) cannot work under the isolated HOME and would fail every commit.
+ * @param {NodeJS.ProcessEnv} [baseEnv]
+ * @param {typeof execFileSync} [run]
+ * @returns {{ name: string, email: string } | null}
+ */
+export function resolveGitIdentity(baseEnv = process.env, run = execFileSync) {
+  const read = (/** @type {string} */ key) => {
+    try {
+      return String(
+        run('git', ['config', '--get', key], {
+          env: baseEnv,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 10_000,
+        }),
+      ).trim()
+    } catch {
+      return ''
+    }
+  }
+  const name = read('user.name')
+  const email = read('user.email')
+  return name && email ? { name, email } : null
+}
+
+// A github.com credential helper that answers from GH_TOKEN. The empty entry
+// before it drops the macOS keychain helper, which an isolated HOME cannot
+// reach and which would otherwise leave git prompting for a username.
+const GITHUB_TOKEN_HELPER =
+  '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
+
+/**
+ * Appends config entries through git's GIT_CONFIG_COUNT/KEY/VALUE variables,
+ * after any the caller's environment already set.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {readonly [string, string][]} entries
+ */
+function appendGitConfig(env, entries) {
+  const start = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10) || 0
+  entries.forEach(([key, value], index) => {
+    env[`GIT_CONFIG_KEY_${start + index}`] = key
+    env[`GIT_CONFIG_VALUE_${start + index}`] = value
+  })
+  env.GIT_CONFIG_COUNT = String(start + entries.length)
+}
+
+/**
  * Build child-process env for the ephemeral dev `bossd`.
+ *
+ * HOME is isolated so bossd keeps its own state and never reads a production
+ * token, but git and gh must still reach GitHub as the developer: without that
+ * every session create fails its base-branch check ("could not read Username
+ * for 'https://github.com'") and no clone, fetch, push or PR call can work.
+ * The token goes in as GH_TOKEN (read by gh, and by git through the helper
+ * above), commits carry the developer's name and email, and git never waits
+ * on a terminal prompt.
  * @param {{
  *   homeDir: string,
  *   settingsPath: string,
  *   socketPath?: string,
  *   bossoPort: number,
+ *   githubToken?: string | null,
+ *   gitIdentity?: { name: string, email: string } | null,
  *   baseEnv?: NodeJS.ProcessEnv,
  * }} opts
  * @returns {NodeJS.ProcessEnv}
@@ -102,6 +188,8 @@ export function buildDevBossdEnv({
   settingsPath,
   socketPath,
   bossoPort,
+  githubToken = null,
+  gitIdentity = null,
   baseEnv = process.env,
 }) {
   /** @type {NodeJS.ProcessEnv} */
@@ -117,6 +205,20 @@ export function buildDevBossdEnv({
     BOSSD_SENTRY_DSN: '',
     BOSS_ENV: 'development',
     BOSS_REFUSE_DEFAULT_SETTINGS: '1',
+    GIT_TERMINAL_PROMPT: '0',
+  }
+  if (gitIdentity) {
+    env.GIT_AUTHOR_NAME = gitIdentity.name
+    env.GIT_AUTHOR_EMAIL = gitIdentity.email
+    env.GIT_COMMITTER_NAME = gitIdentity.name
+    env.GIT_COMMITTER_EMAIL = gitIdentity.email
+  }
+  if (githubToken) {
+    env.GH_TOKEN = githubToken
+    appendGitConfig(env, [
+      ['credential.https://github.com.helper', ''],
+      ['credential.https://github.com.helper', GITHUB_TOKEN_HELPER],
+    ])
   }
   if (socketPath) {
     env.BOSS_SOCKET = socketPath
@@ -296,7 +398,20 @@ export async function startDevBossd({ repoRoot, buildDir, bossoPort, supervisor,
   }
   fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
 
-  const env = buildDevBossdEnv({ homeDir, settingsPath, socketPath, bossoPort })
+  const githubToken = resolveGitHubToken()
+  if (!githubToken) {
+    process.stderr.write(
+      '[bossd] no GitHub token from `gh auth token`; sessions in the dev stack cannot reach GitHub. Run `gh auth login`.\n',
+    )
+  }
+  const env = buildDevBossdEnv({
+    homeDir,
+    settingsPath,
+    socketPath,
+    bossoPort,
+    githubToken,
+    gitIdentity: resolveGitIdentity(),
+  })
   supervisor.spawn('bossd', 'bossd', bossdBin, [], { cwd: repoRoot, env })
 
   const displayName = resolveRepoDisplayName(repoRoot)

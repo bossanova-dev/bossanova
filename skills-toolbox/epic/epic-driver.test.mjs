@@ -107,7 +107,7 @@ function greenSnapshot(overrides = {}) {
 
 // A still-working child: never settled, whatever else the snapshot says.
 function workingSnapshot(overrides = {}) {
-  return greenSnapshot({ chatStatus: 'WORKING', ...overrides })
+  return greenSnapshot({ chatStatus: 'WORKING', sessionState: 'IMPLEMENTING_PLAN', ...overrides })
 }
 
 // Seed the previous poll's settle observation, as if the child had already been read once IDLE.
@@ -1731,4 +1731,68 @@ test('post-merge retry of an unmerged green child with satisfied checks_passed_r
     assert.equal(result.state.watches[remaining].fallback, null)
     assert.match(result.state.watches[remaining].unwatchedReason, /checks_passed_ready/)
   }
+})
+
+test('a child with no PR keeps one verified settled subscription across cycles', async () => {
+  let subSeq = 0
+  const liveSubs = []
+  const io = makeIo({
+    readSessionSnapshot: () => workingSnapshot({ prView: undefined }),
+    listWatches: () => [],
+    armWatches: () => ({ error: 'child has no PR yet' }),
+    subscribeSessionOutcome: ({ sessionId }) => {
+      subSeq += 1
+      const row = subscriptionRow({ id: `sub-${subSeq}`, owner_session_id: sessionId })
+      liveSubs.push(row)
+      return { subscription: row }
+    },
+    listSessionSubscriptions: ({ sessionId }) =>
+      liveSubs.filter((row) => row.owner_session_id === sessionId),
+    scheduleFallbackWake: () => ({ mechanism: 'in-session-wake', nextWakeAt: NOW }),
+  })
+  const state = recordLaunch(baseState({ parallel: 1, tickets: [ticket('T-1')] }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+  })
+
+  const first = await reconcileEpic({ state, wake: 'initial', io, now: NOW })
+  assert.equal(io.count('subscribeSessionOutcome'), 1)
+  assert.equal(first.state.watches['T-1'].subscription?.id, 'sub-1')
+  assert.notEqual(first.status, EPIC_RUN_STATUSES.DONE)
+
+  const second = await reconcileEpic({ state: first.state, wake: 'fallback', io, now: NOW })
+  assert.equal(io.count('subscribeSessionOutcome'), 1)
+  assert.equal(second.state.watches['T-1'].subscription?.id, 'sub-1')
+  assert.notEqual(second.status, EPIC_RUN_STATUSES.DONE)
+})
+
+test('a GREEN_DRAFT working child with no subscription is reported unwatched rather than subscribed', async () => {
+  const io = makeIo({
+    readSessionSnapshot: () =>
+      workingSnapshot({
+        sessionState: 'GREEN_DRAFT',
+        prView: { ...greenSnapshot().prView, isDraft: true },
+      }),
+    scheduleFallbackWake: () => null,
+  })
+  const state = recordLaunch(baseState({ parallel: 1, tickets: [ticket('T-1')] }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+    prNumber: 10,
+    prRepo: 'acme/app',
+  })
+
+  const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+  assert.equal(io.count('subscribeSessionOutcome'), 0)
+  assert.ok(result.state.watches['T-1'].unwatchedReason.length > 0)
+  assert.notEqual(result.status, EPIC_RUN_STATUSES.DONE)
+  assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING_BUT_UNWATCHED)
+  assert.ok(
+    result.actions.some((action) => action.startsWith('subscribe:T-1:skipped')),
+    result.actions.join('\n'),
+  )
 })

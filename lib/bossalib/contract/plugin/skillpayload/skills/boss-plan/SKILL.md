@@ -53,10 +53,13 @@ resolved adapter. A blocker counts as cleared only when its state type is comple
 (`plan/plan-deps-lib.mjs`); boss-build will not start a ticket with an uncleared blocker.
 
 Each capability is an operation in the resolved adapter's map. `tracker/cli.mjs operations` lists
-its transport. An `mcp` operation is the named tool, called through `resolvedServer`; a `command`
-operation is run with `tracker/cli.mjs invoke-operation <op> --args-file <file>`, whose `result` is
-the answer. A descriptor verb (`create-issue`, `update-comment`, `write-description`) that prints
-`outcome: operation-executed` has already performed the write: do not make an MCP call for it.
+its transport. An `mcp` operation is the named tool, called through `resolvedServer` — directly
+(`mcp__<server>__<tool>` / `<server>__<tool>`) or through the harness's generic MCP dispatcher
+(such as `call_mcp_tool` with `ServerName=<resolvedServer>` and the bare `<tool>` name from a lazy
+`<mcp_servers>` catalog); a `command` operation is run with `tracker/cli.mjs invoke-operation <op>
+--args-file <file>`, whose `result` is the answer. A descriptor verb (`create-issue`,
+`update-comment`, `write-description`) that prints `outcome: operation-executed` has already
+performed the write: do not make an MCP call for it.
 
 ## Helpers
 
@@ -184,9 +187,11 @@ When `tracker/cli.mjs operations` lists a `preflight` operation, run it with
 non-zero exit is the stop reason, verbatim.
 
 **Team.** `--team <name>` is a skill argument, never a ticket id. When config names no team, the
-cheap read is `listTeams` (`limit=50`, through `resolvedServer`; an adapter without it gives
+cheap read is `listTeams` (`limit=50`, through `resolvedServer` — directly or via the harness's
+generic MCP dispatcher such as `call_mcp_tool` against `<mcp_servers>`; an adapter without it gives
 `visibleTeams: null`), classified with `trackerMcpPreflight` (`tracker/preflight.mjs`, `probeOk` =
-it succeeded). Then `resolveTrackerTeam(config, {preflight, visibleTeams: <raw result>, teamFlag})`
+it succeeded, including any lazy `<mcp_servers>` entries as `<server>__<tool>` in `availableTools`).
+Then `resolveTrackerTeam(config, {preflight, visibleTeams: <raw result>, teamFlag})`
 and gate on `isConfiguredForPlanning(config, {team})`. Unconfigured ⇒ print `message`, delete
 `.linear-plans/run-<RUN-SCRATCH-ID>/`, exit 0 with no tracker writes. Configured ⇒ print a non-empty
 `message` (an overridden `--team`), use `team` for every team-scoped read, and pass

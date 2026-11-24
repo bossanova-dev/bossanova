@@ -1685,13 +1685,8 @@ func TestSendPlan_HappyPath_Order(t *testing.T) {
 
 	// Verify args on the trailing commands.
 	loadCall := calls[len(calls)-3]
-	if !equalSlices(loadCall.args, []string{"-"}) {
-		t.Errorf("load-buffer args = %v, want [-]", loadCall.args)
-	}
 	pasteCall := calls[len(calls)-2]
-	if !equalSlices(pasteCall.args, []string{"-d", "-p", "-t", "boss-test-sess"}) {
-		t.Errorf("paste-buffer args = %v, want [-d -p -t boss-test-sess]", pasteCall.args)
-	}
+	assertNamedPasteCalls(t, loadCall.args, pasteCall.args, "boss-test-sess")
 	enterCall := calls[len(calls)-1]
 	if !equalSlices(enterCall.args, []string{"-t", "boss-test-sess", "Enter"}) {
 		t.Errorf("send-keys args = %v, want [-t boss-test-sess Enter]", enterCall.args)

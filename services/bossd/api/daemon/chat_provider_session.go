@@ -201,3 +201,56 @@ func (s *Server) WaitForBackgroundProviderSessionIDDiscovery(ctx context.Context
 	case <-ctx.Done():
 	}
 }
+
+// providerSessionReadBindInterval bounds how often transcript reads may ask a
+// chat's live pane for its provider session. The web reads an open chat every
+// few seconds, and until the first turn there is nothing to find.
+var providerSessionReadBindInterval = 15 * time.Second
+
+// bindProviderSessionOnRead binds, on a transcript read that missed, the
+// provider session of a chat whose agent mints it on the first turn and that
+// has none yet, and returns the id to read by ("" when none is bound).
+//
+// Launch-time discovery gives up after a while, and a first turn typed straight
+// into the terminal goes through neither a send nor a wake, so without this the
+// chat view says "No messages yet" for the whole conversation. Only the live
+// pane's own open files may answer (allowLegacyBackfill false): a read must
+// never bind a sibling chat's conversation from a time-window scan.
+func (s *Server) bindProviderSessionOnRead(ctx context.Context, chat *domain.AgentChat, worktreePath, tmuxName string) string {
+	if chat == nil || chat.ProviderSessionID != nil || !mintsProviderSessionOnFirstTurn(chat.AgentName) {
+		return ""
+	}
+	now := time.Now()
+	if last, ok := s.providerSessionReadBinds.Load(chat.AgentSessionID); ok {
+		if at, isTime := last.(time.Time); isTime && now.Sub(at) < providerSessionReadBindInterval {
+			return ""
+		}
+	}
+	s.providerSessionReadBinds.Store(chat.AgentSessionID, now)
+
+	deps := s.chatSpawnDeps()
+	panePID := panePIDForChat(ctx, deps.Tmux, tmuxName)
+	if panePID == 0 || deps.Resolver == nil {
+		return ""
+	}
+	resolution, err := deps.Resolver.ResolveInteractiveSessionID(ctx, chat.AgentName, worktreePath, chat.AgentSessionID, chat.CreatedAt, time.Time{}, false, panePID)
+	if err != nil || resolution.SessionID == "" {
+		return ""
+	}
+	providerID := resolution.SessionID
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDBackfillPersistTimeout)
+	defer cancel()
+	// Another path (a send, a wake, launch discovery) may have bound it since
+	// the chat was read; that id stands.
+	if current, getErr := s.agentChats.GetByAgentSessionID(persistCtx, chat.AgentSessionID); getErr == nil &&
+		current != nil && current.ProviderSessionID != nil && *current.ProviderSessionID != "" {
+		return *current.ProviderSessionID
+	}
+	if err := s.agentChats.UpdateProviderSessionID(persistCtx, chat.AgentSessionID, &providerID); err != nil {
+		s.logger.Warn().Err(err).
+			Str("agent_session_id", chat.AgentSessionID).
+			Str("provider_session_id", providerID).
+			Msg("failed to persist provider session id bound on transcript read")
+	}
+	return providerID
+}

@@ -8,13 +8,13 @@ import (
 )
 
 func TestAgentRunnerConformance(t *testing.T) {
-	s, _ := newTestServer(t, WithCommandFactory(fakeAgy(`echo '`+initLine(conversationA)+`'; exec sleep 60`)))
+	script := `if [ "$1" = "mcp" ] && [ "$2" = "list" ]; then echo "No MCP servers configured."; exit 0; fi; echo '` + initLine(conversationA) + `'; exec sleep 60`
+	s, _ := newTestServer(t, WithCommandFactory(fakeAgy(script)))
 	agentrunnertest.Run(t, agentrunnertest.Runner{
 		Name:   pluginName,
 		Client: agentrunnertest.Serve(t, s),
 		Unsupported: []string{
 			bossanovav1.AgentRunnerService_PreflightHeadlessRun_FullMethodName,
-			bossanovav1.AgentRunnerService_DescribeMCPSurface_FullMethodName,
 			bossanovav1.AgentRunnerService_ListModels_FullMethodName,
 			bossanovav1.AgentRunnerService_PlanQuestionAnswer_FullMethodName,
 			bossanovav1.AgentRunnerService_ReadQuestionMenu_FullMethodName,

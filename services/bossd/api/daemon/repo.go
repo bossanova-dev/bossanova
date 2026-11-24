@@ -311,8 +311,30 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update repo: %w", err))
 		}
 	}
+	if msg.ServeScript != nil || msg.DisplayName != nil {
+		s.republishRepoSessions(ctx, repo.ID)
+	}
 
 	return connect.NewResponse(&pb.UpdateRepoResponse{Repo: s.liveRepoToProto(repo)}), nil
+}
+
+// republishRepoSessions resends a repo's active sessions upstream after a
+// change to a repo field the session projection carries (display name, serve
+// command), so the web sees it without waiting for an unrelated session change.
+func (s *Server) republishRepoSessions(ctx context.Context, repoID string) {
+	if s.onSessionUpdated == nil || s.sessions == nil {
+		return
+	}
+	sessions, err := s.sessions.ListActive(ctx, repoID)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("repo_id", repoID).Msg("list sessions to republish after repo update")
+		return
+	}
+	ids := make([]string, 0, len(sessions))
+	for _, sess := range sessions {
+		ids = append(ids, sess.ID)
+	}
+	s.notifySessionIDsUpdated(ctx, ids)
 }
 
 // secretUpdateToParam translates a tri-state SecretUpdate into an

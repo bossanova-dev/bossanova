@@ -157,9 +157,23 @@ assumeCleared, assumeClearedAndMerge, selectionFlags?, baseBranch?}` (`--label`/
 
    ```bash
    if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-       if [ -d "$candidate/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-     done
+     case "${BOSS_AGENT:-}" in
+       antigravity)
+         for candidate in "$HOME/.gemini/config/skills" "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+           if [ -d "$candidate/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+         done
+         ;;
+       codex)
+         for candidate in "$HOME/.codex/skills" "$HOME/.claude/skills" "$HOME/.gemini/config/skills"; do
+           if [ -d "$candidate/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+         done
+         ;;
+       *)
+         for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.gemini/config/skills"; do
+           if [ -d "$candidate/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+         done
+         ;;
+     esac
    fi
    test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
    BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
@@ -205,9 +219,13 @@ non-zero exit is the stop reason, verbatim.
    `limit=50` instead), classified with `trackerMcpPreflight` so a failure says
    whether to fix the repo's declaration (`absent`) or credentials/network (`unreachable`). Log
    `tracker preflight: <status> (declared: <true|false|no report>)` either way and call tracker
-   tools through `resolvedServer`. MCP servers can still be connecting when a session starts: if no
-   tracker tools are in your tool list yet, wait about 20 seconds and look again, up to three times,
-   before classifying:
+   tools through `resolvedServer`. Harnesses expose MCP tools either as direct namespaced
+   declarations (`mcp__<server>__<tool>` / `<server>__<tool>`) or via a generic MCP dispatcher
+   (such as `call_mcp_tool`) paired with a lazy `<mcp_servers>` catalog: check both, run the cheap
+   probe through whichever mechanism this harness provides, and include any lazy catalog entries in
+   `AVAILABLE_TOOLS` as `<server>__<tool>`. MCP servers can still be connecting when a session
+   starts: if neither direct tools nor a lazy catalog lists tracker tools yet, wait about 20
+   seconds and look again, up to three times, before classifying:
 
    ```bash
    set -euo pipefail

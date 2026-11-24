@@ -49,8 +49,10 @@ type Turn struct {
 }
 
 var (
-	reminderRe    = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
-	pastedRe      = regexp.MustCompile(`(?s)<pasted_content\b[^>]*>(.*?)</pasted_content>`)
+	reminderRe = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+	// Claude Code repeats the paste's id on the closing tag and puts each tag
+	// on its own line; the newlines it adds are not part of the person's text.
+	pastedRe      = regexp.MustCompile(`(?s)<pasted_content\b[^>]*>\n?(.*?)\n?</pasted_content\b[^>]*>`)
 	commandNameRe = regexp.MustCompile(`(?s)<command-name>(.*?)</command-name>`)
 	commandArgsRe = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 	taskSummaryRe = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)

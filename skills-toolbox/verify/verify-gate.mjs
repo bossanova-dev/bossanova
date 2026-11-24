@@ -4198,6 +4198,7 @@ export async function candidates(options = {}, deps = {}) {
     }
     if (out.length >= limit) continue
     const entry = { ticket: id, pr: pr.number, url: pr.url ?? '', headSha, repo, claim: head.claim }
+    if (text(pr.title)) entry.title = pr.title
     if (cls) entry.class = cls
     if (cls && admissionLabelHits(pr, policy).includes('repair')) entry.repairOptIn = true
     if (head.parked) {

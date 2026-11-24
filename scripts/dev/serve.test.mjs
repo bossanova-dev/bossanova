@@ -223,10 +223,14 @@ test('ProcessSupervisor stops entire child process group including grandchildren
 
     supervisor.spawn('demo', 'demo', process.execPath, ['-e', script])
 
+    // The child prints ready after writing the pid file, and the supervisor reads its stdout
+    // asynchronously, so stopping on the pid file alone can kill it before ready is logged.
+    const ready = () => logs.some((line) => line.includes('[demo] ready'))
     const deadline = Date.now() + 30_000
-    while (!fs.existsSync(grandchildPidFile) && Date.now() < deadline) {
+    while (!(fs.existsSync(grandchildPidFile) && ready()) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50))
     }
+    assert.ok(ready(), 'the supervisor logs the child output with its label')
     const grandchildPid = Number.parseInt(fs.readFileSync(grandchildPidFile, 'utf8').trim(), 10)
     assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0)
 
@@ -244,7 +248,6 @@ test('ProcessSupervisor stops entire child process group including grandchildren
       }
     }
     assert.equal(alive, false, 'grandchild process should be terminated with its process group')
-    assert.ok(logs.some((line) => line.includes('[demo] ready')))
   } finally {
     await supervisor.stopAll()
     fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })

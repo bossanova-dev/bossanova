@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-11-05**. The engineering procedure for adding a new
+The current version is **2026-11-06**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/structure/contracts.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/structure/contracts.md)).
 
@@ -1035,9 +1035,19 @@ organization's `active_sessions`. The union read (no `organization_id`) still
 lists each daemon once, under the organization its stream authenticated into.
 Older pins list only the daemons that authenticated into the organization.
 
-### 2026-11-05 — Services action pin (Current)
+### 2026-11-05 — Services action pin
 
 Session preferences include the Services action in the default pinned actions.
 Older API versions omit `serve` from GetUserPreferences and UpdateUserPreferences
 responses, preserving the actions those clients support. Other saved pins keep
 their order.
+
+### 2026-11-06 — Organization-scoped repository and fleet reads (Current)
+
+Organization-filtered reads (`ProxyListReposAggregated`, `ListDaemons`,
+`ProxyListCronJobs`, and narrowed fleet commands) resolve across all of the
+caller's Ready daemons by repository-organization ownership rather than only
+querying daemons whose stream authenticated into the requested organization.
+Mapped repositories belong to their mapped organization, and unmapped
+repositories belong to the caller's personal organization. Older pins retain the
+claimed-organization-only read behavior.

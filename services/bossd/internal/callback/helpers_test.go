@@ -275,6 +275,21 @@ func (c *captureDeliverer) count() int {
 	return len(c.ids)
 }
 
+type capturedDelivery struct {
+	chatID  string
+	message string
+}
+
+func (c *captureDeliverer) deliveries() []capturedDelivery {
+	<-c.mu
+	defer func() { c.mu <- struct{}{} }()
+	out := make([]capturedDelivery, len(c.ids))
+	for i := range c.ids {
+		out[i] = capturedDelivery{chatID: c.ids[i], message: c.msgs[i]}
+	}
+	return out
+}
+
 func (c *captureDeliverer) lastMessage() string {
 	<-c.mu
 	defer func() { c.mu <- struct{}{} }()

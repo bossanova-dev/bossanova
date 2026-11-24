@@ -113,6 +113,16 @@ func TestClassify(t *testing.T) {
 			want: Turn{Kind: Message, Text: "Here is the stack trace\npanic: nil map"},
 		},
 		{
+			name: "a paste whose closing tag repeats its id stays a message",
+			raw:  "\n\n<pasted_content id=\"acca\">\n> Who owns bossd\napp owns if present\n</pasted_content id=\"acca\">\n",
+			want: Turn{Kind: Message, Text: "> Who owns bossd\napp owns if present"},
+		},
+		{
+			name: "typed text around a paste keeps both",
+			raw:  "see this:\n<pasted_content id=\"b1\">\npanic: nil map\n</pasted_content id=\"b1\">\nwhy?",
+			want: Turn{Kind: Message, Text: "see this:\npanic: nil map\nwhy?"},
+		},
+		{
 			name: "a message that mentions a tag is kept",
 			raw:  "Why does <Button> render twice?",
 			want: Turn{Kind: Message, Text: "Why does <Button> render twice?"},

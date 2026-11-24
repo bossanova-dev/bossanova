@@ -257,6 +257,7 @@ export const VENDOR_MAP = {
     'verify/verify-session.mjs',
     'verify/verify-review.mjs',
     'verify/verify-route.mjs',
+    'verify/verify-run-dir.mjs',
     'verify/verify-area-caps-sync.mjs',
     'verify/verify-confidence.mjs',
     'verify/verify-areas.mjs',

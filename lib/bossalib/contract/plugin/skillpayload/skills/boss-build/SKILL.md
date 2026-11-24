@@ -64,10 +64,13 @@ resumed**, not a stop condition.
   `gh pr checks --watch`, never `boss cron` (a cron fire starts a new blind session).
 
 Each capability is an operation in the resolved adapter's map. `tracker/cli.mjs operations` lists
-its transport. An `mcp` operation is the named tool, called through `resolvedServer`; a `command`
-operation is run with `tracker/cli.mjs invoke-operation <op> --args-file <file>`, whose `result` is
-the answer. A descriptor verb (`create-issue`, `update-comment`, `write-description`) that prints
-`outcome: operation-executed` has already performed the write: do not make an MCP call for it.
+its transport. An `mcp` operation is the named tool, called through `resolvedServer` — directly
+(`mcp__<server>__<tool>` / `<server>__<tool>`) or through the harness's generic MCP dispatcher
+(such as `call_mcp_tool` with `ServerName=<resolvedServer>` and the bare `<tool>` name from a lazy
+`<mcp_servers>` catalog); a `command` operation is run with `tracker/cli.mjs invoke-operation <op>
+--args-file <file>`, whose `result` is the answer. A descriptor verb (`create-issue`,
+`update-comment`, `write-description`) that prints `outcome: operation-executed` has already
+performed the write: do not make an MCP call for it.
 
 A `moveState` / `writeComment` response echoes the issue before the write; it is not
 proof that the write landed or failed. Read claim visibility with `read-claim-comments` and
@@ -218,9 +221,23 @@ if [ "${BOSS_BUILD_CONTINUE:-}" != 1 ]; then
 fi
 SESSION_BRANCH="$(git branch --show-current)"
 if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-    if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-  done
+  case "${BOSS_AGENT:-}" in
+    antigravity)
+      for candidate in "$HOME/.gemini/config/skills" "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+        if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+      done
+      ;;
+    codex)
+      for candidate in "$HOME/.codex/skills" "$HOME/.claude/skills" "$HOME/.gemini/config/skills"; do
+        if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+      done
+      ;;
+    *)
+      for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.gemini/config/skills"; do
+        if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+      done
+      ;;
+  esac
 fi
 test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
@@ -320,17 +337,26 @@ non-zero exit is the stop reason, verbatim.
 **Tracker.** Make one cheap read through the adapter (e.g. the backlog team's statuses; when config
 names no team, the `listTeams` call with `limit=50` — an adapter without it gives
 `visibleTeams: null`), then classify it with `trackerMcpPreflight` (`toolbox/tracker/preflight.mjs`),
-passing your **own tool list** — never a harness config file. MCP servers can still be connecting when a session starts: if
-no tracker tools are in your tool list yet, wait about 20 seconds and look again, up to three times,
-before classifying.
+passing your **own tool list** — never a harness config file. Harnesses expose MCP tools either as
+direct namespaced declarations (`mcp__<server>__<tool>` / `<server>__<tool>`) or via a generic MCP
+dispatcher (such as `call_mcp_tool`) paired with a lazy `<mcp_servers>` catalog: check both before
+concluding the server is absent, attempt the cheap probe through whichever mechanism this harness
+provides, and include any lazy catalog entries in `AVAILABLE_TOOLS` as `<server>__<tool>`. MCP
+servers can still be connecting when a session starts: if neither direct tools nor a lazy catalog
+lists tracker tools yet, wait about 20 seconds and look again, up to three times, before classifying.
 
 ```bash
+DECLARED="$("${BOSS_BIN:-boss}" session mcp "${BOSS_AGENT_SESSION_ID:-}" --json 2>/dev/null)" || DECLARED=''
+export DECLARED
 node --input-type=module -e '
   import{pathToFileURL as u}from"node:url"
   const { trackerMcpPreflight } = await import(u(process.env.BOSS_BUILD_TOOLBOX+"/tracker/preflight.mjs").href)
+  let declaredServers = []
+  try { declaredServers = JSON.parse(process.env.DECLARED || "{}").servers || [] } catch {}
   process.stdout.write(JSON.stringify(trackerMcpPreflight({
     operationMap: ADAPTER_OPERATION_MAP, mcpServer: TRACKER_MCP_SERVER,
-    agent: process.env.BOSS_AGENT || "", availableTools: AVAILABLE_TOOLS, probeOk: PROBE_OK,
+    agent: process.env.BOSS_AGENT || "", availableTools: AVAILABLE_TOOLS,
+    probeOk: PROBE_OK, declaredServers,
   })))
 '
 ```

@@ -2,7 +2,7 @@ import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { classifyHeadStatus, post, postOptionsFromArgv, tickFingerprint } from './verify-gate.mjs'
 import { CLAIM_STALE_AFTER_MS, claimState } from './verify-vocabulary.mjs'
@@ -981,4 +981,171 @@ test('an expired sweep claim note reads the previous dispatch from the shared fi
   assert.equal(w.notes.length, 1)
   for (const fact of ['chat-new', 's1', 'dispatched', 'new-verify-chat'])
     assert.ok(w.notes[0].includes(fact), fact)
+})
+
+test('a quiet entry with no wakeAt wakes when a claim in the local holder ledger expires', (t) => {
+  const stateFile = join(tempDir('verify-stale-claim-holder-', t), 'sweep-state.json')
+  const claimedAt = T0 - 10 * MIN
+  const expiresAt = claimedAt + CLAIM_STALE_AFTER_MS
+  const options = { skipUnchanged: true, safetyNetMs: 60 * MIN }
+  assert.equal(storeQuietFingerprint(stateFile, sweepScopeKey(), 'quiet-fp', iso(T0)), true)
+  assert.equal(
+    claimHoldersAt(join(dirname(stateFile), 'claim-holders.json')).merge(
+      'theirs',
+      { pr: 1, claimedAt },
+      claimedAt,
+    ),
+    true,
+  )
+  const w = world({ statuses: { 1: claimStatus('theirs', claimedAt) } })
+  const discovered = () => w.verbs().some((v) => v[0] === 'candidates')
+
+  w.clock = expiresAt - MIN
+  const before = sweep(options, w.deps({ stateFile }))
+  assert.ok(before.idle, 'before holder expiry the tick is idle')
+  assert.equal(w.calls.length, 0)
+  assert.equal(discovered(), false)
+  assert.ok(before.idle.includes(iso(expiresAt)), 'idle text names the holder expiry')
+  assert.equal(before.idle.includes(iso(T0 + 60 * MIN)), false, 'not the later safety-net deadline')
+
+  w.clock = expiresAt + MIN
+  w.reset()
+  const after = sweep(options, w.deps({ stateFile }))
+  assert.ok(w.clock < T0 + 60 * MIN, 'still inside the safety-net window')
+  assert.equal(after.idle, undefined)
+  assert.equal(discovered(), true, 'after holder expiry the tick runs discovery')
+  assert.equal(w.statuses[1].description, 'verified', 'and the expired claim is re-judged')
+})
+
+test('safetyNetIdleUntil incorporates valid future holder expiries and ignores invalid or past ones', () => {
+  const checkedAt = T0
+  const safetyNetMs = 60 * MIN
+  const safetyUntil = checkedAt + safetyNetMs
+  const entry = { fingerprint: 'fp', at: iso(checkedAt), checkedAt }
+
+  assert.equal(safetyNetIdleUntil(entry, safetyNetMs), safetyUntil)
+  assert.equal(safetyNetIdleUntil(entry, safetyNetMs, null), safetyUntil)
+  assert.equal(safetyNetIdleUntil(entry, safetyNetMs, {}), safetyUntil)
+  assert.equal(
+    safetyNetIdleUntil(entry, safetyNetMs, {
+      past: { pr: 1, claimedAt: checkedAt - CLAIM_STALE_AFTER_MS - 1 },
+      exact: { pr: 2, claimedAt: checkedAt - CLAIM_STALE_AFTER_MS },
+    }),
+    safetyUntil,
+  )
+  assert.equal(
+    safetyNetIdleUntil(entry, safetyNetMs, {
+      missing: { pr: 1 },
+      str: { claimedAt: String(checkedAt) },
+      nan: { claimedAt: NaN },
+      inf: { claimedAt: Infinity },
+      ninf: { claimedAt: -Infinity },
+    }),
+    safetyUntil,
+  )
+  assert.equal(
+    safetyNetIdleUntil(entry, safetyNetMs, {
+      nil: null,
+      num: 42,
+      str: 'holder',
+      arr: [{ claimedAt: checkedAt }],
+    }),
+    safetyUntil,
+  )
+  assert.equal(safetyNetIdleUntil(entry, safetyNetMs, [{ claimedAt: checkedAt }]), safetyUntil)
+
+  const wakeAt = checkedAt + 15 * MIN
+  assert.equal(
+    safetyNetIdleUntil({ ...entry, wakeAt }, safetyNetMs, {
+      exact: { claimedAt: checkedAt - CLAIM_STALE_AFTER_MS },
+      bad: null,
+    }),
+    wakeAt,
+  )
+
+  const earlier = checkedAt - 10 * MIN
+  const later = checkedAt - 2 * MIN
+  assert.equal(
+    safetyNetIdleUntil(entry, safetyNetMs, {
+      later: { claimedAt: later },
+      earlier: { claimedAt: earlier },
+      past: { claimedAt: checkedAt - CLAIM_STALE_AFTER_MS },
+    }),
+    earlier + CLAIM_STALE_AFTER_MS,
+  )
+  assert.equal(
+    safetyNetIdleUntil({ ...entry, wakeAt: earlier + CLAIM_STALE_AFTER_MS - MIN }, safetyNetMs, {
+      earlier: { claimedAt: earlier },
+    }),
+    earlier + CLAIM_STALE_AFTER_MS - MIN,
+  )
+  assert.equal(
+    safetyNetIdleUntil({ ...entry, wakeAt: earlier + CLAIM_STALE_AFTER_MS + MIN }, safetyNetMs, {
+      earlier: { claimedAt: earlier },
+    }),
+    earlier + CLAIM_STALE_AFTER_MS,
+  )
+  assert.equal(
+    safetyNetIdleUntil({ at: iso(checkedAt), checkedAt }, safetyNetMs, {
+      earlier: { claimedAt: earlier },
+    }),
+    null,
+  )
+  assert.equal(safetyNetIdleUntil(null, safetyNetMs, { earlier: { claimedAt: earlier } }), null)
+})
+
+test('an absent or unreadable holder ledger keeps today’s safety-net idle window', (t) => {
+  const stateFile = join(tempDir('verify-stale-claim-unreadable-', t), 'sweep-state.json')
+  const options = { skipUnchanged: true, safetyNetMs: 60 * MIN }
+  assert.equal(storeQuietFingerprint(stateFile, sweepScopeKey(), 'quiet-fp', iso(T0)), true)
+  const w = world({
+    clock: T0 + 25 * MIN,
+    statuses: { 1: claimStatus('theirs', T0 - 10 * MIN) },
+  })
+
+  const absent = sweep(options, w.deps({ stateFile }))
+  assert.ok(absent.idle?.includes(iso(T0 + 60 * MIN)))
+  assert.equal(w.calls.length, 0)
+
+  writeFileSync(join(dirname(stateFile), 'claim-holders.json'), '{not-json')
+  w.reset()
+  const garbage = sweep(options, w.deps({ stateFile }))
+  assert.ok(garbage.idle?.includes(iso(T0 + 60 * MIN)))
+  assert.equal(w.calls.length, 0)
+})
+
+test('a resolved claim in the holder ledger costs at most one full tick', (t) => {
+  const stateFile = join(tempDir('verify-stale-claim-resolved-', t), 'sweep-state.json')
+  const claimedAt = T0 - 10 * MIN
+  const expiresAt = claimedAt + CLAIM_STALE_AFTER_MS
+  const options = { skipUnchanged: true, safetyNetMs: 60 * MIN }
+  assert.equal(storeQuietFingerprint(stateFile, sweepScopeKey(), 'quiet-fp', iso(T0)), true)
+  assert.equal(
+    claimHoldersAt(join(dirname(stateFile), 'claim-holders.json')).merge(
+      'theirs',
+      { pr: 1, claimedAt },
+      claimedAt,
+    ),
+    true,
+  )
+  const w = world({
+    statuses: {
+      1: { state: 'success', description: 'verified', updatedAt: iso(claimedAt + 5 * MIN) },
+    },
+  })
+
+  w.clock = expiresAt + MIN
+  const full = sweep(options, w.deps({ stateFile }))
+  assert.equal(full.idle, undefined)
+  assert.equal(
+    w.verbs().some((v) => v[0] === 'candidates'),
+    true,
+  )
+  assert.equal(readQuietEntry(stateFile, sweepScopeKey())?.checkedAt, expiresAt + MIN)
+
+  w.clock = expiresAt + 10 * MIN
+  w.reset()
+  const next = sweep(options, w.deps({ stateFile }))
+  assert.ok(next.idle?.includes(iso(expiresAt + MIN + 60 * MIN)))
+  assert.equal(w.calls.length, 0)
 })

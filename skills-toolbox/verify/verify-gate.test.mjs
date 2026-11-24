@@ -4944,6 +4944,20 @@ test('candidates: a clean head is a candidate with its PR, head, repo and claim 
   })
 })
 
+test('candidates: a candidate carries its PR title, so a session made for it is named after it', async () => {
+  const pr = {
+    number: 1,
+    url: 'https://github.com/o/r/pull/1',
+    body: ticketBody('BOS-1'),
+    headRefOid: SHA_OF(1),
+    isDraft: false,
+    title: 'feat: label sessions',
+  }
+  const w = candidateWorld({ prs: [pr] })
+  const { candidates: found } = await candidates({ repo: REPO }, candDeps(w))
+  assert.equal(found[0]?.title, 'feat: label sessions')
+})
+
 test('candidates: the skip rules — verified, claimed, stale and waiting admitted, CI, draft, no PR, ambiguous', async () => {
   const ids = [1, 2, 3, 4, 5, 6]
   const tickets = [...ids, 7, 8, 9, 10].map((n) => ({

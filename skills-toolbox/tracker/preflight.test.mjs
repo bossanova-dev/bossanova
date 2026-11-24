@@ -418,3 +418,30 @@ test('command operations contribute no expected MCP tool names in a mixed map', 
   assert.equal(r.status, 'unreachable')
   assert.deepEqual(r.missing, ['mcp__acme-linear__save_issue'])
 })
+
+test('lazy MCP catalog tools flattened as server:op or server/op classify unreachable and resolve server', () => {
+  for (const sep of [':', '/']) {
+    const r = trackerMcpPreflight({
+      ...base,
+      agent: 'antigravity',
+      availableTools: [
+        'call_mcp_tool',
+        `acme-linear${sep}get_issue`,
+        `acme-linear${sep}save_issue`,
+      ],
+      probeOk: false,
+    })
+    assert.equal(r.status, 'unreachable', `sep ${sep}`)
+    assert.deepEqual(r.missing, [], `sep ${sep}`)
+    assert.match(r.message, /antigravity/)
+
+    const aliased = trackerMcpPreflight({
+      ...base,
+      agent: 'antigravity',
+      availableTools: ['call_mcp_tool', `linear${sep}get_issue`, `linear${sep}save_issue`],
+      probeOk: false,
+    })
+    assert.equal(aliased.ok, true, `aliased sep ${sep}`)
+    assert.equal(aliased.resolvedServer, 'linear')
+  }
+})

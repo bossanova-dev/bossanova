@@ -730,3 +730,83 @@ test('init requires an exact origin ref even when ls-remote matches a glob', asy
     /does not exist on origin/,
   )
 })
+
+test('reconcile records a merged child with no saved PR number and launches its dependent', async () => {
+  const state = recordLaunch(baseState([ticket('A'), ticket('B', ['A'])]), {
+    ticketId: 'A',
+    sessionId: 'sess-A',
+    chatId: 'chat-A',
+    at: NOW,
+  })
+  const subscriptions = []
+  const { exec } = fakeExec({
+    ls: () => JSON.stringify({ sessions: [] }),
+    new: () => JSON.stringify({ session: { id: 'sess-B', chat_id: 'chat-B' } }),
+    show: () =>
+      JSON.stringify({ session: { state: 'MERGED', pr_number: 7, display_status: 'merged' } }),
+    chats: () =>
+      JSON.stringify({
+        chats: [{ agent_session_id: 'chat-A', status: 'IDLE', spinner_present: false }],
+      }),
+    'gh api': () =>
+      JSON.stringify({
+        number: 7,
+        html_url: 'https://github.com/owner/repo/pull/7',
+        state: 'closed',
+        merged: true,
+        draft: false,
+        title: 'Work A',
+        body: '',
+        head: { ref: 'feat-a', sha: 'abc123' },
+      }),
+    'callback list': () => JSON.stringify([]),
+    'callback add': (args) =>
+      JSON.stringify({ id: `cb-${args[3]}`, trigger: args[3], state: 'active' }),
+    'broadcast subscribe': (_args, { input }) => {
+      const row = {
+        id: 'sub-B',
+        owner_session_id: 'sess-B',
+        origin_chat_id: 'driver-chat',
+        trigger_event: 'settled',
+        state: 'active',
+      }
+      subscriptions.push({ ...row, message: input })
+      return JSON.stringify(row)
+    },
+    'broadcast subscriptions': () => JSON.stringify(subscriptions),
+  })
+  const result = await runReconcile(
+    {
+      'state-file': 'state.json',
+      'repo-id': 'repo-1',
+      'pr-repo': 'owner/repo',
+      'driver-chat': 'driver-chat',
+      wake: 'callback',
+      'fallback-mechanism': 'host-session-wake',
+      'fallback-wake-at': '2026-01-01T12:15:00.000Z',
+      now: NOW,
+    },
+    {
+      readState: () => state,
+      writeState: (_file, next) => normalizeEpicState(next),
+      config: {},
+      env: {},
+      adapter: mcpAdapter,
+      exec,
+      sleep: () => {},
+      upsertProgress: async () => ({ results: [] }),
+    },
+  )
+  assert.deepEqual(result.merged, ['A'])
+  assert.ok(result.actions.includes('external-merge:A'))
+  assert.ok(result.inFlight.includes('B'))
+  assert.equal(
+    result.routes.some((route) => route.ticketId === 'A'),
+    false,
+  )
+  assert.ok(
+    result.deferred.some(
+      (op) => op.operation === 'moveState' && op.args?.id === 'A' && op.args?.state === 'completed',
+    ),
+  )
+})

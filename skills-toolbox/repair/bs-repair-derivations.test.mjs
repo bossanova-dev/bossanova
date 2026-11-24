@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
+import { classifyChecks } from '../pr-check-state.mjs'
 import {
   DECLINE_REPLY_REASONS,
   DECLINE_REPLY_RECORD_CITED,
@@ -34,9 +35,23 @@ import {
   RESIDUAL_SINKS,
   RESIDUAL_SINK_BOSS_NOTES,
   RESIDUAL_SINK_PR_COMMENT,
+  WATCH_STOPS,
+  WATCH_STOP_BLOCKED,
+  WATCH_STOP_BOUND,
+  WATCH_STOP_GREEN,
+  WATCH_STOP_PARKED,
+  WATCH_STOP_STALLED,
+  WATCH_TOKENS,
+  WATCH_TOKEN_BLOCKED,
+  WATCH_TOKEN_GREEN,
+  WATCH_TOKEN_MAX_ATTEMPTS,
+  WATCH_TOKEN_NO_PROGRESS,
+  WATCH_TOKEN_PARKED,
+  WATCH_TOKEN_PUSHED,
   classifyDeclineReply,
   classifyProblemSources,
   classifyPushState,
+  deriveWatchTerminal,
   resolveResidualSink,
   runCli,
 } from './bs-repair-derivations.mjs'
@@ -393,6 +408,307 @@ test('problem source: every frozen source is reachable', () => {
 })
 
 // ---------------------------------------------------------------------------
+// deriveWatchTerminal — closed loop-verdict mapping separated from check state.
+
+test('watch terminal: mapping table across empty and non-empty landedShas', () => {
+  const cases = [
+    { stop: WATCH_STOP_GREEN, landedShas: [], expected: WATCH_TOKEN_GREEN },
+    { stop: WATCH_STOP_GREEN, landedShas: ['a1b2c3d4'], expected: WATCH_TOKEN_GREEN },
+    { stop: WATCH_STOP_PARKED, landedShas: [], expected: WATCH_TOKEN_PARKED },
+    { stop: WATCH_STOP_PARKED, landedShas: ['a1b2c3d4'], expected: WATCH_TOKEN_PARKED },
+    { stop: WATCH_STOP_BLOCKED, landedShas: [], expected: WATCH_TOKEN_BLOCKED },
+    {
+      stop: WATCH_STOP_BLOCKED,
+      landedShas: ['a1b2c3d4', 'e5f6a7b8'],
+      expected: WATCH_TOKEN_BLOCKED,
+    },
+    { stop: WATCH_STOP_BOUND, landedShas: [], expected: WATCH_TOKEN_MAX_ATTEMPTS },
+    {
+      stop: WATCH_STOP_BOUND,
+      landedShas: ['a1b2c3d4', 'e5f6a7b8'],
+      expected: WATCH_TOKEN_MAX_ATTEMPTS,
+    },
+    { stop: WATCH_STOP_STALLED, landedShas: [], expected: WATCH_TOKEN_NO_PROGRESS },
+    { stop: WATCH_STOP_STALLED, landedShas: ['a1b2c3d4'], expected: WATCH_TOKEN_PUSHED },
+  ]
+  for (const { stop, landedShas, expected } of cases) {
+    const verdict = deriveWatchTerminal({
+      stop,
+      passes: 2,
+      landedShas,
+      checks: { state: 'passing' },
+    })
+    assert.equal(verdict.token, expected, `${stop} with ${landedShas.length} landed`)
+    assert.equal(verdict.landed, landedShas.length, `${stop} landed count`)
+    assert.ok(verdict.line.startsWith(`${expected} — 2 passes; landed ${landedShas.length}; `))
+  }
+})
+
+test('watch terminal: stalled after landing a fix reports pushed with separate check clause', () => {
+  const verdict = deriveWatchTerminal({
+    stop: WATCH_STOP_STALLED,
+    passes: 2,
+    landedShas: ['d83c03e2'],
+    checks: {
+      state: 'pending',
+      reason: 'absent-gate',
+      names: ['cubic · AI code reviewer'],
+    },
+  })
+  assert.equal(verdict.token, WATCH_TOKEN_PUSHED)
+  assert.equal(verdict.landed, 1)
+  assert.equal(
+    verdict.line,
+    'pushed — 2 passes; landed 1; checks pending (absent-gate: cubic · AI code reviewer)',
+  )
+})
+
+test('watch terminal: stalled with no landed SHA reports no-progress', () => {
+  const verdict = deriveWatchTerminal({
+    stop: WATCH_STOP_STALLED,
+    passes: 2,
+    landedShas: [],
+    checks: { state: 'failing', names: ['lint'] },
+  })
+  assert.equal(verdict.token, WATCH_TOKEN_NO_PROGRESS)
+  assert.equal(verdict.landed, 0)
+  assert.equal(verdict.line, 'no-progress — 2 passes; landed 0; checks failing (lint)')
+})
+
+test('watch terminal: bound stays max-attempts and blocked beats landed commits', () => {
+  const bound = deriveWatchTerminal({
+    stop: WATCH_STOP_BOUND,
+    passes: 5,
+    landedShas: ['11111111', '22222222'],
+    checks: { state: 'failing', reason: 'test-failure', names: ['unit', 'e2e'] },
+  })
+  assert.equal(bound.token, WATCH_TOKEN_MAX_ATTEMPTS)
+  assert.equal(bound.landed, 2)
+  assert.equal(
+    bound.line,
+    'max-attempts — 5 passes; landed 2; checks failing (test-failure: unit · e2e)',
+  )
+
+  const blocked = deriveWatchTerminal({
+    stop: WATCH_STOP_BLOCKED,
+    passes: 1,
+    landedShas: ['11111111'],
+    checks: { state: 'pending', reason: 'lease-conflict' },
+  })
+  assert.equal(blocked.token, WATCH_TOKEN_BLOCKED)
+  assert.equal(blocked.landed, 1)
+  assert.equal(blocked.line, 'blocked — 1 passes; landed 1; checks pending (lease-conflict)')
+})
+
+test('watch terminal: checks clause handles missing, malformed and partial shapes', () => {
+  for (const checks of [undefined, null, 'passing', 42, [], {}, { state: '' }, { state: '   ' }]) {
+    const verdict = deriveWatchTerminal({
+      stop: WATCH_STOP_GREEN,
+      passes: 1,
+      landedShas: [],
+      checks,
+    })
+    assert.equal(verdict.line, 'green — 1 passes; landed 0; checks unknown', JSON.stringify(checks))
+  }
+
+  assert.equal(
+    deriveWatchTerminal({
+      stop: WATCH_STOP_GREEN,
+      passes: 1,
+      landedShas: [],
+      checks: { state: 'green' },
+    }).line,
+    'green — 1 passes; landed 0; checks green',
+  )
+
+  assert.equal(
+    deriveWatchTerminal({
+      stop: WATCH_STOP_PARKED,
+      passes: 1,
+      landedShas: [],
+      checks: { state: 'pending', reason: 'review-wait' },
+    }).line,
+    'parked — 1 passes; landed 0; checks pending (review-wait)',
+  )
+
+  assert.equal(
+    deriveWatchTerminal({
+      stop: WATCH_STOP_STALLED,
+      passes: 2,
+      landedShas: ['abc12345'],
+      checks: { state: 'failing', names: ['go-lint', 'go-test'] },
+    }).line,
+    'pushed — 2 passes; landed 1; checks failing (go-lint · go-test)',
+  )
+
+  assert.equal(
+    deriveWatchTerminal({
+      stop: WATCH_STOP_STALLED,
+      passes: 2,
+      landedShas: ['abc12345'],
+      checks: { state: 'pending', reason: 'absent-gate', names: ['  ', 'ci-gate'] },
+    }).line,
+    'pushed — 2 passes; landed 1; checks pending (absent-gate: ci-gate)',
+  )
+})
+
+test('watch terminal: renders affected names from real pr-check-state classify verdicts', () => {
+  const absentVerdict = classifyChecks({
+    headSHA: LOCAL,
+    observedSHA: LOCAL,
+    buckets: [{ name: 'ci / test', state: 'pass', bucket: 'pass', workflow: 'CI' }],
+    priorContexts: ['ci / test', 'cubic · AI code reviewer'],
+  })
+  assert.equal(absentVerdict.reason, 'absent-gate')
+  assert.equal(
+    deriveWatchTerminal({
+      stop: WATCH_STOP_STALLED,
+      passes: 2,
+      landedShas: ['d83c03e2'],
+      checks: absentVerdict,
+    }).line,
+    'pushed — 2 passes; landed 1; checks pending (absent-gate: cubic · AI code reviewer)',
+  )
+
+  const notRequestedVerdict = classifyChecks({
+    headSHA: LOCAL,
+    observedSHA: LOCAL,
+    buckets: [{ name: 'ci / test', state: 'pass', bucket: 'pass', workflow: 'CI' }],
+    workflowRuns: [{ headSha: LOCAL, workflowName: 'CI', status: 'COMPLETED' }],
+    requiredChecks: ['ci / test', 'ci / required'],
+  })
+  assert.equal(notRequestedVerdict.reason, 'not-requested')
+  assert.equal(
+    deriveWatchTerminal({
+      stop: WATCH_STOP_BLOCKED,
+      passes: 1,
+      landedShas: ['d83c03e2'],
+      checks: notRequestedVerdict,
+    }).line,
+    'blocked — 1 passes; landed 1; checks unknown (not-requested: ci / required)',
+  )
+
+  const pendingRunsVerdict = classifyChecks({
+    headSHA: LOCAL,
+    observedSHA: LOCAL,
+    buckets: [{ name: 'ci / test', state: 'pending', bucket: 'pending', workflow: 'CI' }],
+    workflowRuns: [{ headSha: LOCAL, workflowName: 'CI', status: 'IN_PROGRESS' }],
+  })
+  assert.equal(pendingRunsVerdict.reason, 'pending')
+  assert.equal(
+    deriveWatchTerminal({
+      stop: WATCH_STOP_BOUND,
+      passes: 5,
+      landedShas: ['d83c03e2'],
+      checks: pendingRunsVerdict,
+    }).line,
+    'max-attempts — 5 passes; landed 1; checks pending (pending: CI)',
+  )
+
+  const strandedVerdict = classifyChecks({
+    headSHA: LOCAL,
+    observedSHA: LOCAL,
+    buckets: [{ name: 'ci / lint', state: 'pending', bucket: 'pending', workflow: 'CI' }],
+    workflowRuns: [{ headSha: LOCAL, workflowName: 'CI', status: 'COMPLETED' }],
+  })
+  assert.equal(strandedVerdict.reason, 'pending')
+  assert.equal(
+    deriveWatchTerminal({
+      stop: WATCH_STOP_STALLED,
+      passes: 2,
+      landedShas: ['d83c03e2'],
+      checks: strandedVerdict,
+    }).line,
+    'pushed — 2 passes; landed 1; checks pending (pending: ci / lint)',
+  )
+
+  const failingWithAbsentAndPending = classifyChecks({
+    headSHA: LOCAL,
+    observedSHA: LOCAL,
+    buckets: [{ name: 'ci / unit', state: 'fail', bucket: 'fail', workflow: 'CI' }],
+    priorContexts: ['ci / unit', 'cubic · AI code reviewer'],
+    workflowRuns: [{ headSha: LOCAL, workflowName: 'CI', status: 'IN_PROGRESS' }],
+  })
+  assert.equal(failingWithAbsentAndPending.reason, 'failed')
+  assert.equal(
+    deriveWatchTerminal({
+      stop: WATCH_STOP_STALLED,
+      passes: 2,
+      landedShas: ['d83c03e2'],
+      checks: failingWithAbsentAndPending,
+    }).line,
+    'pushed — 2 passes; landed 1; checks failing (failed)',
+  )
+
+  const cliAbsent = cli(['watch-terminal', '--in', '/in.json'], {
+    '/in.json': JSON.stringify({
+      stop: WATCH_STOP_STALLED,
+      passes: 2,
+      landedShas: ['d83c03e2'],
+      checks: absentVerdict,
+    }),
+  })
+  assert.equal(cliAbsent.code, 0)
+  assert.deepEqual(JSON.parse(cliAbsent.out), {
+    token: WATCH_TOKEN_PUSHED,
+    landed: 1,
+    line: 'pushed — 2 passes; landed 1; checks pending (absent-gate: cubic · AI code reviewer)',
+  })
+})
+
+test('watch terminal: every frozen stop and token is reachable', () => {
+  assert.ok(Object.isFrozen(WATCH_STOPS))
+  assert.ok(Object.isFrozen(WATCH_TOKENS))
+  const stopsUsed = new Set()
+  const tokensReached = new Set()
+  for (const [stop, landedShas] of [
+    [WATCH_STOP_GREEN, []],
+    [WATCH_STOP_PARKED, []],
+    [WATCH_STOP_BLOCKED, []],
+    [WATCH_STOP_BOUND, []],
+    [WATCH_STOP_STALLED, []],
+    [WATCH_STOP_STALLED, ['d83c03e2']],
+  ]) {
+    stopsUsed.add(stop)
+    const verdict = deriveWatchTerminal({ stop, passes: 1, landedShas })
+    assert.ok(WATCH_TOKENS.includes(verdict.token))
+    tokensReached.add(verdict.token)
+  }
+  assert.deepEqual([...stopsUsed].sort(), [...WATCH_STOPS].sort())
+  assert.deepEqual([...tokensReached].sort(), [...WATCH_TOKENS].sort())
+})
+
+test('watch terminal fails closed: bad stop, passes or landedShas throw and CLI exits 2 with empty stdout', () => {
+  const invalidInputs = [
+    {},
+    { stop: 'unknown', passes: 1, landedShas: [] },
+    { stop: '', passes: 1, landedShas: [] },
+    { stop: 123, passes: 1, landedShas: [] },
+    { stop: WATCH_STOP_GREEN, passes: 0, landedShas: [] },
+    { stop: WATCH_STOP_GREEN, passes: -1, landedShas: [] },
+    { stop: WATCH_STOP_GREEN, passes: 1.5, landedShas: [] },
+    { stop: WATCH_STOP_GREEN, passes: '2', landedShas: [] },
+    { stop: WATCH_STOP_GREEN, passes: Number.NaN, landedShas: [] },
+    { stop: WATCH_STOP_GREEN, landedShas: [] },
+    { stop: WATCH_STOP_GREEN, passes: 1, landedShas: 'd83c03e2' },
+    { stop: WATCH_STOP_GREEN, passes: 1, landedShas: null },
+    { stop: WATCH_STOP_GREEN, passes: 1 },
+    { stop: WATCH_STOP_GREEN, passes: 1, landedShas: [''] },
+    { stop: WATCH_STOP_GREEN, passes: 1, landedShas: ['   '] },
+    { stop: WATCH_STOP_GREEN, passes: 1, landedShas: ['d83c03e2', 42] },
+  ]
+  for (const input of invalidInputs) {
+    assert.throws(() => deriveWatchTerminal(input), JSON.stringify(input))
+    const result = cli(['watch-terminal', '--in', '/in.json'], {
+      '/in.json': JSON.stringify(input),
+    })
+    assert.equal(result.code, 2, JSON.stringify(input))
+    assert.equal(result.out, '', JSON.stringify(input))
+    assert.ok(result.err.length > 0, JSON.stringify(input))
+  }
+})
+
+// ---------------------------------------------------------------------------
 // CLI
 
 test('cli: each command prints its verdict as JSON and exits zero', () => {
@@ -419,12 +735,31 @@ test('cli: each command prints its verdict as JSON and exits zero', () => {
   })
   assert.equal(sources.code, 0)
   assert.deepEqual(JSON.parse(sources.out).sources, [PROBLEM_SOURCE_REPORT_ONLY])
+
+  const watch = cli(['watch-terminal', '--in', '/in.json'], {
+    '/in.json': JSON.stringify({
+      stop: WATCH_STOP_STALLED,
+      passes: 2,
+      landedShas: ['d83c03e2'],
+      checks: {
+        state: 'pending',
+        reason: 'absent-gate',
+        names: ['cubic · AI code reviewer'],
+      },
+    }),
+  })
+  assert.equal(watch.code, 0)
+  assert.deepEqual(JSON.parse(watch.out), {
+    token: WATCH_TOKEN_PUSHED,
+    landed: 1,
+    line: 'pushed — 2 passes; landed 1; checks pending (absent-gate: cubic · AI code reviewer)',
+  })
 })
 
 test('cli: a classifying command refuses to run with no input rather than classifying {}', () => {
   // Every one of these has a real verdict for the empty object, so a permissive CLI would exit zero
   // and print a plausible answer nobody derived — the silent default this module exists to end.
-  for (const command of ['push-state', 'decline-reply', 'problem-sources']) {
+  for (const command of ['push-state', 'decline-reply', 'problem-sources', 'watch-terminal']) {
     const result = cli([command])
     assert.equal(result.code, 2, command)
     assert.equal(result.out, '', command)

@@ -302,7 +302,8 @@ The decision surface. `epic/epic-run.mjs` is the live-I/O entry point: `epic/epi
 implements `EPIC_DRIVER_IO` over the `boss` CLI, `gh` and the tracker adapter, and `epic-run.mjs
 reconcile` runs one `reconcileEpic` cycle with it. A tracker operation with `mcp` transport comes
 back in `deferred` for the host; a PR merged or closed by another actor is folded in before the
-cycle (`reconcileProviderOutcomes`).
+cycle (`reconcileProviderOutcomes`), and the cycle's own re-read also records a merge it observes
+before classifying liveness.
 
 ```bash
 node "$BOSS_EPIC_TOOLBOX/epic/epic-cli.mjs" schedule --tickets-file "$TICKETS_FILE" --planned-state "$BOSS_EPIC_PLANNED_STATE"

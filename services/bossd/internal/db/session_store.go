@@ -791,6 +791,8 @@ func sessionFromRow(row sqlcgen.Session) *domain.Session {
 		PRNumber:                    prNumber,
 		PRReadiedAt:                 optionalTextTime(row.PrReadiedAt),
 		PRURL:                       row.PrUrl,
+		PRAuthorLogin:               row.PrAuthorLogin,
+		PRTargetBranch:              row.PrTargetBranch,
 		TrackerID:                   row.TrackerID,
 		TrackerRank:                 trackerRankFromRow(row),
 		TrackerURL:                  row.TrackerUrl,

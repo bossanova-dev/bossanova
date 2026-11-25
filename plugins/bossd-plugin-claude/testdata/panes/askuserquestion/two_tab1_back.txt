@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /scratch/project
+
+
+⚠ Both claude.ai and ANTHROPIC_API_KEY set · auth may not work as expected
+  · to use claude.ai: Unset ANTHROPIC_API_KEY, or turn off "Use custom API key" in /config.
+  · to use ANTHROPIC_API_KEY: claude /logout to sign out of claude.ai.
+
+❯ Call the AskUserQuestion tool exactly once with exactly two questions in one call. Question 1: header "Size",
+  question "Which size?", multiSelect false, options "Small" (description "Fits one"), "Large" (description "Fits
+  two"). Question 2: header "Toppings", question "Which toppings?", multiSelect true, options "Cheese" (description
+  "Melted"), "Olives" (description "Black"). Do nothing else.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Size  ☐ Toppings  ✔ Submit  →
+
+Which size?
+
+❯ 1. Small ✔
+     Fits one
+  2. Large
+     Fits two
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+

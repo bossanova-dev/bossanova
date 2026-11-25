@@ -1477,6 +1477,8 @@ func (deps *Group) runDaemonDoctor(cmd *cobra.Command) error {
 	if servicePathStale {
 		_, _ = fmt.Fprintln(out, "service PATH: stale — the running daemon still uses the installed PATH; run 'boss daemon restart'")
 	}
+	loginShellMeta, loginShellMetaErr := deps.daemonMetadataForDoctor()
+	reportDaemonLoginShellNode(out, loginShellMeta, loginShellMetaErr)
 	// BOS-1368: which settings file the login-started daemon reads. Advisory
 	// only — it never touches the exit status — because inspecting another
 	// profile from this shell is legitimate. Cross-platform, so it sits above

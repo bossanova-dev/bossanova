@@ -33,6 +33,31 @@ type TCCProbeResult struct {
 	Diagnostic string         `json:"diagnostic,omitempty"`
 }
 
+// LoginShellNodeStatus is bossd's persisted outcome for its startup probe
+// locating node through the captured login shell. String values keep the state
+// file readable and allow this shared package to remain independent of bossd's
+// resolver implementation.
+type LoginShellNodeStatus string
+
+const (
+	LoginShellNodeStatusPrepended LoginShellNodeStatus = "prepended"
+	LoginShellNodeStatusOnPath    LoginShellNodeStatus = "on_path"
+	LoginShellNodeStatusNotFound  LoginShellNodeStatus = "not_found"
+	LoginShellNodeStatusTimedOut  LoginShellNodeStatus = "timed_out"
+	LoginShellNodeStatusFailed    LoginShellNodeStatus = "failed"
+	LoginShellNodeStatusSkipped   LoginShellNodeStatus = "skipped"
+)
+
+// LoginShellNodeProbe records what bossd observed when resolving node through
+// the captured login shell at startup and updating its process PATH.
+type LoginShellNodeProbe struct {
+	Shell      string               `json:"shell,omitempty"`
+	Status     LoginShellNodeStatus `json:"status"`
+	NodePath   string               `json:"node_path,omitempty"`
+	Dir        string               `json:"dir,omitempty"`
+	Diagnostic string               `json:"diagnostic,omitempty"`
+}
+
 type Metadata struct {
 	PID            int       `json:"pid"`
 	ExecutablePath string    `json:"executable_path"`
@@ -59,6 +84,10 @@ type Metadata struct {
 	// TCCProbeCompleted distinguishes a completed zero-root probe from legacy
 	// state that predates persisted TCC observations.
 	TCCProbeCompleted bool `json:"tcc_probe_completed,omitempty"`
+	// LoginShellNode records the outcome of bossd's startup probe resolving
+	// node through the captured login shell. Nil on records written by older
+	// versions of bossd.
+	LoginShellNode *LoginShellNodeProbe `json:"login_shell_node,omitempty"`
 }
 
 func Path(appDataDir string) string {

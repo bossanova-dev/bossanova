@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sessionorder",
+    srcs = ["sessionorder.go"],
+    importpath = "github.com/recurser/bossalib/sessionorder",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "sessionorder_test",
+    srcs = ["sessionorder_test.go"],
+    embed = [":sessionorder"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

@@ -225,6 +225,7 @@ func run(opts runOpts) error {
 		name string
 		run  func() error
 	}{
+		{"login_shell_path", w.wireLoginShellPath},
 		{"session_infrastructure", w.wireSessionInfrastructure},
 		{"plugins", w.wirePlugins},
 		{"accounts", startupVoidPhase(w.wireAccounts)},

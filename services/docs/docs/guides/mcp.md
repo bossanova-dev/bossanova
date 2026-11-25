@@ -212,7 +212,7 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 
 | Tool                           | Description                                                                                |
 | ------------------------------ | ------------------------------------------------------------------------------------------ |
-| `list_sessions`                | List sessions, optionally filtered by repo, states, or archived flag                       |
+| `list_sessions`                | Filter sessions by repo, states, labels or archived; order by created/updated time; limit  |
 | `get_session`                  | Get a single session by id — `state`/`last_check_state` carry no push info, see below      |
 | `list_repos`                   | List every registered repository                                                           |
 | `list_repo_prs`                | List open pull requests for a repository                                                   |

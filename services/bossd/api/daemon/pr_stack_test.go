@@ -71,3 +71,46 @@ func TestPRStackServedOnEveryReadSurface(t *testing.T) {
 		})
 	}
 }
+
+// Every read surface serves the open PR's live author and base as
+// pr_author_login and pr_target_branch, and the stored values once the PR
+// leaves the listing or the detector restarts. A live result for another PR
+// number, or with empty values, never hides the stored ones.
+func TestPRAuthorAndTargetServedOnEveryReadSurface_Sessions_AC277501(t *testing.T) {
+	live := prstack.Result{PRNumber: 12, Author: "octocat", BaseBranch: "dev", DefaultBranch: "main"}
+	for _, tc := range []struct {
+		name                 string
+		source               StackSource
+		wantAuthor, wantBase string
+	}{
+		{"open PR serves the live values", stackResults{"s": live}, "octocat", "dev"},
+		{"retarget not yet stored serves the live base", stackResults{"s": {PRNumber: 12, Author: "octocat", BaseBranch: "release", DefaultBranch: "main"}}, "octocat", "release"},
+		{"PR left the listing serves the stored values", stackResults{}, "stored-author", "stored-target"},
+		{"fresh daemon serves the stored values", nil, "stored-author", "stored-target"},
+		{"result for another PR serves the stored values", stackResults{"s": {PRNumber: 11, Author: "hubot", BaseBranch: "old"}}, "stored-author", "stored-target"},
+		{"empty live values keep the stored ones", stackResults{"s": {PRNumber: 12}}, "stored-author", "stored-target"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := 12
+			row := &models.Session{ID: "s", RepoID: "r", State: machine.ReadyForReview, UpdatedAt: time.Now(), BaseBranch: "main", PRNumber: &n, PRAuthorLogin: "stored-author", PRTargetBranch: "stored-target"}
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, status.NewDisplayTracker(), status.NewTracker())
+			s.stacks = tc.source
+			listed, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.sessions = &sessionStoreFake{sess: row}
+			fetched, err := s.GetSession(t.Context(), connect.NewRequest(&pb.GetSessionRequest{Id: row.ID}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			streamed := SessionToProto(row)
+			s.HydrateAttentionForStream(t.Context(), streamed)
+			for _, got := range []*pb.Session{onlySession(t, listed.Msg.Sessions), fetched.Msg.Session, streamed} {
+				if got.GetPrAuthorLogin() != tc.wantAuthor || got.GetPrTargetBranch() != tc.wantBase || got.GetBaseBranch() != "main" {
+					t.Fatalf("served (author, target, base) = (%q, %q, %q); want (%q, %q, main)", got.GetPrAuthorLogin(), got.GetPrTargetBranch(), got.GetBaseBranch(), tc.wantAuthor, tc.wantBase)
+				}
+			}
+		})
+	}
+}

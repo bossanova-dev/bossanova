@@ -1617,6 +1617,16 @@ message TransferSessionResponse {
 // to the appropriate daemon. Each has its own request/response types
 // to satisfy buf lint uniqueness requirements.
 
+// SessionListOrdering orders a session list by one timestamp. Ties go by id,
+// ascending. Unspecified keeps the list's default order.
+enum SessionListOrdering {
+  SESSION_LIST_ORDERING_UNSPECIFIED = 0;
+  SESSION_LIST_ORDERING_CREATED_OLDEST_FIRST = 1;
+  SESSION_LIST_ORDERING_CREATED_NEWEST_FIRST = 2;
+  SESSION_LIST_ORDERING_UPDATED_OLDEST_FIRST = 3;
+  SESSION_LIST_ORDERING_UPDATED_NEWEST_FIRST = 4;
+}
+
 message ProxyListSessionsRequest {
   optional string repo_id = 1;
   repeated SessionState states = 2;
@@ -1627,6 +1637,14 @@ message ProxyListSessionsRequest {
   // organization after a membership check. Clients pinned below 2026-09-12
   // retain the former single-organization behavior when this is unset.
   optional string organization_id = 5;
+  // Orders the sessions returned. Unspecified keeps the default order; an
+  // undeclared value is INVALID_ARGUMENT. A client resolved older than
+  // 2026-09-15 still receives the legacy order, because the session-list
+  // rank-order transform re-sorts the page after this ordering is applied.
+  SessionListOrdering ordering = 6;
+  // Caps the sessions returned after ordering; zero or negative means
+  // unlimited.
+  int32 limit = 7;
 }
 
 message ProxyListSessionsResponse {

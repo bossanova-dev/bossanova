@@ -88,7 +88,7 @@ func TestRun_StartupPhaseLog(t *testing.T) {
 	if summaries != 1 {
 		t.Errorf("got %d ready summaries, want 1", summaries)
 	}
-	want := []string{"stores", "session_infrastructure", "plugins", "accounts", "lifecycle", "rotation", "shutdown_tracking", "repair_plugin", "task_workers", "stream_observers", "chat_uploads", "upstream", "daemon", "delivery_workers", "hooks", "proxy", "bootstrap", "background_workers", "serving"}
+	want := []string{"stores", "login_shell_path", "session_infrastructure", "plugins", "accounts", "lifecycle", "rotation", "shutdown_tracking", "repair_plugin", "task_workers", "stream_observers", "chat_uploads", "upstream", "daemon", "delivery_workers", "hooks", "proxy", "bootstrap", "background_workers", "serving"}
 	if !slices.Equal(completed, want) {
 		t.Errorf("phase order = %v, want %v", completed, want)
 	}

@@ -26,6 +26,7 @@ go_library(
         "//lib/bossalib/kit/projectconfig",
         "//lib/bossalib/kit/vcs",
         "//lib/bossalib/models",
+        "//lib/bossalib/sessionorder",
         "@com_connectrpc_connect//:connect",
         "@com_github_google_uuid//:uuid",
         "@com_github_modelcontextprotocol_go_sdk//mcp",

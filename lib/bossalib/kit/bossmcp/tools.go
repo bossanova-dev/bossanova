@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/githubcallback"
+	"github.com/recurser/bossalib/sessionorder"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -189,7 +191,7 @@ const (
 	// rather than paying for it twice per tool every turn. A struct tag must be a
 	// literal, so this constant cannot be interpolated into one — it exists to
 	// keep the three hand-copied tags reviewable against a single source.
-	noteRepoIDRoutingField = "the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"
+	noteRepoIDRoutingField = "the note's owning repo id (required, even locally; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, so repo_id is not a safety check"
 )
 
 // boolPtr returns a pointer to b. The MCP SDK's ToolAnnotations.DestructiveHint
@@ -241,25 +243,10 @@ func addTool[In, Out any](s *mcp.Server, opts Options, t *mcp.Tool, h mcp.ToolHa
 func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 	addTool(server, opts, &mcp.Tool{
 		Name:        "list_sessions",
-		Description: "List bossanova sessions, optionally filtered by repo, states, or archived flag.",
+		Description: "List bossanova sessions, optionally filtered, ordered and limited.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListSessionsArgs) (*mcp.CallToolResult, any, error) {
-		req := &pb.ListSessionsRequest{
-			IncludeArchived: args.IncludeArchived,
-			LabelIds:        args.Labels,
-		}
-		if args.RepoID != "" {
-			repoID := args.RepoID
-			req.RepoId = &repoID
-		}
-		for _, s := range args.States {
-			req.States = append(req.States, pb.SessionState(pb.SessionState_value[s]))
-		}
-		sessions, err := backend.ListSessions(ctx, req)
-		if err != nil {
-			return errorResult(err), nil, nil
-		}
-		r, err := jsonResult(sessions)
+		r, err := listSessions(ctx, backend, args)
 		return r, nil, err
 	})
 
@@ -807,10 +794,75 @@ type ListAgentAccountsArgs struct {
 
 // ListSessionsArgs is the typed argument struct for list_sessions.
 type ListSessionsArgs struct {
-	RepoID          string   `json:"repo_id,omitempty" jsonschema:"the repo id to filter by"`
-	States          []string `json:"states,omitempty" jsonschema:"session state enum names to filter by (e.g. SESSION_STATE_RUNNING)"`
+	RepoID          string   `json:"repo_id,omitempty" jsonschema:"repo id filter"`
+	States          []string `json:"states,omitempty" jsonschema:"state enum names, e.g. SESSION_STATE_RUNNING"`
 	IncludeArchived bool     `json:"include_archived,omitempty" jsonschema:"include archived sessions"`
-	Labels          []string `json:"labels,omitempty" jsonschema:"optional label ids or case-insensitive label names to filter by (matches any)"`
+	Labels          []string `json:"labels,omitempty" jsonschema:"label ids or names (case-insensitive, matches any)"`
+	OrderBy         string   `json:"order_by,omitempty" jsonschema:"created or updated"`
+	Direction       string   `json:"direction,omitempty" jsonschema:"oldest_first or newest_first (default)"`
+	Limit           int      `json:"limit,omitempty" jsonschema:"at most this many, after ordering"`
+}
+
+// listSessions serves list_sessions. It orders and caps after the backend
+// returns, after every backend filter, so the hosted gateway's label filter
+// runs before the limit cuts the list.
+func listSessions(ctx context.Context, backend Backend, args ListSessionsArgs) (*mcp.CallToolResult, error) {
+	ordering, err := listSessionsOrdering(args)
+	if err != nil {
+		return errorResult(err), nil
+	}
+	req := &pb.ListSessionsRequest{
+		IncludeArchived: args.IncludeArchived,
+		LabelIds:        args.Labels,
+	}
+	if args.RepoID != "" {
+		repoID := args.RepoID
+		req.RepoId = &repoID
+	}
+	for _, s := range args.States {
+		req.States = append(req.States, pb.SessionState(pb.SessionState_value[s]))
+	}
+	sessions, err := backend.ListSessions(ctx, req)
+	if err != nil {
+		return errorResult(err), nil
+	}
+	return jsonResult(sessionorder.Apply(sessions, ordering, int32(min(args.Limit, math.MaxInt32))))
+}
+
+// listSessionsOrdering maps list_sessions' order_by and direction onto the
+// API ordering, rejecting values the tool does not declare and a negative
+// limit.
+func listSessionsOrdering(args ListSessionsArgs) (pb.SessionListOrdering, error) {
+	if args.Limit < 0 {
+		return 0, fmt.Errorf("limit must be zero or positive, got %d", args.Limit)
+	}
+	newestFirst := true
+	switch args.Direction {
+	case "", "newest_first":
+	case "oldest_first":
+		newestFirst = false
+	default:
+		return 0, fmt.Errorf("direction must be oldest_first or newest_first, got %q", args.Direction)
+	}
+	switch args.OrderBy {
+	case "":
+		if args.Direction != "" {
+			return 0, fmt.Errorf("direction %q needs order_by (created or updated)", args.Direction)
+		}
+		return pb.SessionListOrdering_SESSION_LIST_ORDERING_UNSPECIFIED, nil
+	case "created":
+		if newestFirst {
+			return pb.SessionListOrdering_SESSION_LIST_ORDERING_CREATED_NEWEST_FIRST, nil
+		}
+		return pb.SessionListOrdering_SESSION_LIST_ORDERING_CREATED_OLDEST_FIRST, nil
+	case "updated":
+		if newestFirst {
+			return pb.SessionListOrdering_SESSION_LIST_ORDERING_UPDATED_NEWEST_FIRST, nil
+		}
+		return pb.SessionListOrdering_SESSION_LIST_ORDERING_UPDATED_OLDEST_FIRST, nil
+	default:
+		return 0, fmt.Errorf("order_by must be created or updated, got %q", args.OrderBy)
+	}
 }
 
 // ListGitHubCallbacksArgs is the typed argument struct for list_github_callbacks.
@@ -848,7 +900,7 @@ type ListNotesArgs struct {
 // the field description, which must not read as optional just because the local
 // adapter ignores the value. Keep the tag in step with noteRepoIDRoutingField.
 type GetNoteArgs struct {
-	RepoID string `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
+	RepoID string `json:"repo_id" jsonschema:"the note's owning repo id (required, even locally; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, so repo_id is not a safety check"`
 	ID     string `json:"id" jsonschema:"the note id"`
 }
 

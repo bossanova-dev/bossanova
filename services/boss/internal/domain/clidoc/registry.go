@@ -68,27 +68,7 @@ func newRegistry() map[string]Prose {
 			},
 		},
 		"boss show": {
-			Long: "Shows one session's details, then its chats in the same table `boss chats` " +
-				"prints -- ID, TITLE, CREATED, STATUS and LAST OUTPUT, with the same reading of " +
-				"UNSPECIFIED and of last_output_at. If the status read fails the rows still " +
-				"print, STATUS and LAST OUTPUT read `?`, one stderr line explains why, and the " +
-				"command exits 0.\n\n" +
-				"`--json` emits `{\"session\": {...}}`: every field of a `boss ls " +
-				"--json` row, plus the detail the text rendering prints — " +
-				"`repo_display_name`, `repo_should_archive_sessions_after_merge`, " +
-				"`base_branch`, `worktree_path`, `account_id`, " +
-				"`account_label`, `display_status`, `last_check_state`, " +
-				"`archived_at`, `setup_error` and `last_repair` (an object, or " +
-				"`null` when the repair plugin has never run for this session). " +
-				"`repo_should_archive_sessions_after_merge` is a boolean, or `null` " +
-				"when repository hydration failed. " +
-				"`display_status` uses the same vocabulary as the TUI and `boss " +
-				"session checks` (`idle`, `checking`, `passing`, `failing`, …). The " +
-				"chats table the text rendering prints below the header is " +
-				"deliberately NOT in this envelope — `boss chats` owns that shape, " +
-				"because it has to join in per-chat status, so drive a machine gate " +
-				"off `boss chats --json`. An unknown session id " +
-				"exits 1 with the shared JSON error envelope on stdout.",
+			Long: bossShowLong,
 			Examples: []Example{
 				{Command: "boss show abc123"},
 				{Command: "boss show abc123 --json"},

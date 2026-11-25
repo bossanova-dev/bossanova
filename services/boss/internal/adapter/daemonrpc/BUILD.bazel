@@ -9,6 +9,7 @@ go_library(
         "github_usage.go",
         "local.go",
         "local_serve.go",
+        "local_setup_detect.go",
         "netns_linux.go",
         "netns_other.go",
         "pr_state.go",

@@ -2308,18 +2308,41 @@ describe('declared target repository routing', () => {
         1,
       )
       assert.ok(codes(foreign).includes('vacuous-criterion-command-pipe-without-pipefail'))
+      assert.equal(foreign.ok, true)
       assert.equal(foreign.ok, undeclared.ok)
+      assert.deepEqual(foreign.blocking, [])
       const mismatch = checkPlanContract({
         ...options,
         description: foreignDescription(),
         targetRoot: root,
       })
+      assert.equal(mismatch.ok, false)
+      assert.deepEqual(
+        mismatch.blocking.map(({ code }) => code),
+        ['target-root-mismatch'],
+      )
+      assert.match(mismatch.blocking[0].message, /acme\/local/)
+      assert.match(mismatch.blocking[0].message, /acme\/foreign/)
       assert.deepEqual(rootCodes(mismatch), [])
       assert.match(
         mismatch.advisories.find(({ code }) => code === 'advisory: target-repo-not-resolved')
           .message,
         /acme\/local/,
       )
+      const unreadableTarget = checkPlanContract({
+        ...options,
+        description: foreignDescription(),
+        targetRoot: '/unreadable-target',
+        readOrigin: (dir) => (dir === root ? 'acme/local' : null),
+      })
+      assert.equal(unreadableTarget.ok, false)
+      assert.deepEqual(
+        unreadableTarget.blocking.map(({ code }) => code),
+        ['target-root-mismatch'],
+      )
+      assert.match(unreadableTarget.blocking[0].message, /unreadable/)
+      assert.match(unreadableTarget.blocking[0].message, /acme\/foreign/)
+      assert.deepEqual(rootCodes(unreadableTarget), [])
       const unknown = checkPlanContract({
         ...options,
         description: foreignDescription(),
@@ -2417,6 +2440,45 @@ describe('declared target repository routing', () => {
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 5 })
       rmSync(target, { recursive: true, force: true, maxRetries: 5 })
+    }
+  })
+
+  test('CLI blocks with target-root-mismatch when target-root origin differs', () => {
+    const root = tempDir('target-guard-cli-mismatch-')
+    const wrongTarget = tempDir('target-guard-cli-wrong-')
+    try {
+      for (const [dir, repo] of [
+        [root, 'local'],
+        [wrongTarget, 'other'],
+      ]) {
+        assert.equal(spawnSync('git', ['init', '-q', dir]).status, 0)
+        assert.equal(
+          spawnSync('git', [
+            '-C',
+            dir,
+            'remote',
+            'add',
+            'origin',
+            `https://github.com/acme/${repo}.git`,
+          ]).status,
+          0,
+        )
+      }
+      const desc = path.join(root, 'description.md')
+      writeFileSync(desc, foreignDescription())
+      const result = spawnSync(
+        process.execPath,
+        [GUARD, '--description', desc, '--target-root', wrongTarget],
+        { cwd: root, encoding: 'utf8', env: { ...process.env, PLAN_CONTRACT_GUARD_CWD: root } },
+      )
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /\[target-root-mismatch\]/)
+      assert.match(result.stderr, /acme\/other/)
+      assert.match(result.stderr, /acme\/foreign/)
+      assert.match(result.stderr, /target-repo-not-resolved/)
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 })
+      rmSync(wrongTarget, { recursive: true, force: true, maxRetries: 5 })
     }
   })
 })

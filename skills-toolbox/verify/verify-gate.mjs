@@ -2,10 +2,10 @@
 import {
   readAcrossQuotas,
   recordDegraded,
-  repoFor,
   canWrite,
   issueCommentsGraphql,
 } from '../ci/gh-quota-alternates.mjs'
+import { repoFor } from './verify-repo.mjs'
 export { repoFor, canWrite }
 import { confirmClaimOrWithdraw, releaseOwnClaim } from './verify-claim-confirm.mjs'
 import { cachedReader, operatorReads } from './verify-read-rounds.mjs'
@@ -109,6 +109,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { postPass } from './verify-post-pass.mjs'
 import * as proofs from './verify-proof-publish.mjs'
+import { proofAfterPost, proofVerb } from './verify-proof-after-post.mjs'
 import { proofBundleVerb } from './verify-proof-bundle.mjs'
 import { headView, mergeStatus, prStateCall } from './verify-pr-state.mjs'
 import {
@@ -2571,7 +2572,7 @@ export async function post(options, deps = {}) {
     }
   }
   const withNotes = (r) =>
-    proofs.proofAfterPost({ ...ctx, prView: p }, parsed.proof, noted(r), proofActions(deps))
+    proofAfterPost({ ...ctx, prView: p }, parsed.proof, noted(r), proofActions(deps))
   if (verdict === 'pass')
     return withNotes(
       await postPass(ctx, parsed, options, facts, {
@@ -3168,7 +3169,7 @@ export function operatorMarkers(comments) {
     if (!ANCHOR_REVIEW_ASSOCIATIONS.has(comment.author_association)) continue
     const proofMark = proofs.proofCommentMarker(comment.body, last)
     if (proofMark) out.push({ ...stamp(proofMark.kind, proofMark.head), ...proofMark.fields })
-    if (proofMark?.kind === 'proof-note') continue
+    if (proofMark?.kind === 'proof-note' || proofMark?.kind === 'proof-missing') continue
     const report = parseReportFindings(comment.body)
     if (report && comment.body.includes('<!-- bs-review -->')) {
       out.push({
@@ -4409,6 +4410,7 @@ const proofActions = (deps) => ({
   cwd: deps.cwd ?? process.cwd(),
   env: deps.env ?? process.env,
   recordHeadNote,
+  recordNote,
   trustedTree: deps.trustedTree ?? materializeTrustedTree,
   readBasePolicy,
   adapter: () => resolveAdapter(deps),
@@ -4483,7 +4485,7 @@ export async function main(argv, deps = {}) {
     )
   }
   if (cmd === 'post') return post(postOptionsFromArgv(rest), deps)
-  if (cmd === 'proof') return proofs.proofVerb(parseFlags('proof', rest), deps, proofActions(deps))
+  if (cmd === 'proof') return proofVerb(parseFlags('proof', rest), deps, proofActions(deps))
   if (cmd === 'proof-bundle')
     return proofBundleVerb(parseFlags('proof-bundle', rest), deps, proofActions(deps))
   if (cmd === 'accept') return accept(parseFlags('accept', rest), deps)

@@ -577,6 +577,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		info.HeadSHA = prStatus.HeadSHA
 		info.IsPartial = vcs.IsPartialMarked(prStatus.Title, prStatus.Body)
 		p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
+		p.latchCheckState(ctx, sess, prStatus.HeadSHA, checks, requiredChecksPolicy(ctx, p.required, repo.LocalPath).For(prStatus.BaseBranch))
 		p.tracker.Set(sessionID, info)
 		p.observeEvidence(ctx, sessionID, repoPath, prNumber, prStatus, checks, info)
 		return true
@@ -632,6 +633,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	info.ChangedFileCount = prStatus.ChangedFileCount
 	// Attention publication from Set hydrates checks for this head.
 	p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
+	p.latchCheckState(ctx, sess, prStatus.HeadSHA, checks, requiredChecksPolicy(ctx, p.required, repo.LocalPath).For(prStatus.BaseBranch))
 	p.tracker.Set(sessionID, info)
 	p.observeEvidence(ctx, sessionID, repoPath, prNumber, prStatus, checks, info)
 

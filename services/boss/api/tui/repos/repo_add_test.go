@@ -72,6 +72,10 @@ type repoAddStubClient struct {
 	validateErr  error
 	validatePath string // captures the last ValidateRepoPath path
 
+	detectResp *pb.DetectSetupScriptResponse
+	detectErr  error
+	detectPath string // captures the last DetectSetupScript path
+
 	registered  *pb.Repo
 	registerErr error
 	registerReq *pb.RegisterRepoRequest
@@ -87,6 +91,11 @@ type repoAddStubClient struct {
 func (s *repoAddStubClient) ValidateRepoPath(_ context.Context, path string) (*pb.ValidateRepoPathResponse, error) {
 	s.validatePath = path
 	return s.validateResp, s.validateErr
+}
+
+func (s *repoAddStubClient) DetectSetupScript(_ context.Context, path string) (*pb.DetectSetupScriptResponse, error) {
+	s.detectPath = path
+	return s.detectResp, s.detectErr
 }
 
 func (s *repoAddStubClient) RegisterRepo(_ context.Context, req *pb.RegisterRepoRequest) (*pb.Repo, error) {

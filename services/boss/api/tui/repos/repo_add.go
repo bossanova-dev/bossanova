@@ -92,8 +92,9 @@ type RepoClonedMsg struct {
 
 // RepoValidatedMsg carries the result of a ValidateRepoPath RPC call.
 type RepoValidatedMsg struct {
-	Resp *pb.ValidateRepoPathResponse
-	Err  error
+	Resp     *pb.ValidateRepoPathResponse
+	Detected *pb.DetectSetupScriptResponse
+	Err      error
 }
 
 type githubAppInstallURLMsg struct {
@@ -232,6 +233,7 @@ type RepoAddModel struct {
 	isGithub           bool
 	detectedBaseBranch string
 	detectedOriginURL  string
+	detectedSetup      *pb.DetectSetupScriptResponse
 
 	createdRepo *pb.Repo
 
@@ -333,6 +335,7 @@ func (m RepoAddModel) formHeight() int {
 func (m *RepoAddModel) buildInputForm() {
 	var fields []huh.Field
 	if m.sourceMode == sourceModeClone {
+		m.clearDetection()
 		fields = []huh.Field{
 			huh.NewInput().
 				Title("Git URL").
@@ -399,6 +402,7 @@ func (m *RepoAddModel) buildDetailsForm() {
 			}),
 		huh.NewInput().
 			Title("Setup command").
+			Description(m.setupCommandDescription()).
 			Placeholder("Optional, e.g. make setup").
 			Value(&m.fd.setup),
 		ui.BossConfirm().
@@ -486,6 +490,7 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isGithub = msg.Resp.IsGithub
 		m.detectedOriginURL = msg.Resp.OriginUrl
 		m.fd.name, m.detectedBaseBranch = display.RepoNameAndBranch(m.fd.localPath, msg.Resp)
+		m.applyDetection(msg.Detected)
 		// Advance to details phase.
 		m.phase = repoAddPhaseDetails
 		m.buildDetailsForm()
@@ -811,11 +816,7 @@ func (m *RepoAddModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 		// Open mode — validate path first.
 		m.validating = true
 		m.err = nil
-		localPath := m.fd.localPath
-		return *m, func() tea.Msg {
-			resp, err := m.client.ValidateRepoPath(m.ctx, localPath)
-			return RepoValidatedMsg{Resp: resp, Err: err}
-		}
+		return *m, validateAndDetectCmd(m.ctx, m.client, m.fd.localPath)
 
 	case repoAddPhaseDetails:
 		if !m.fd.confirm {
@@ -850,15 +851,14 @@ func (m *RepoAddModel) submitRepo() tea.Cmd {
 	if m.sourceMode == sourceModeClone {
 		m.cloning = true
 		req := &pb.CloneAndRegisterRepoRequest{
-			IsTrusted:         &isTrusted,
-			CloneUrl:          fd.gitURL,
-			LocalPath:         fd.clonePath,
-			DisplayName:       fd.name,
-			DefaultBaseBranch: "main",
-			WorktreeBaseDir:   cfg.WorktreeBaseDir,
-		}
-		if s := fd.setup; s != "" {
-			req.SetupScript = &s
+			IsTrusted:               &isTrusted,
+			CloneUrl:                fd.gitURL,
+			LocalPath:               fd.clonePath,
+			DisplayName:             fd.name,
+			DefaultBaseBranch:       "main",
+			WorktreeBaseDir:         cfg.WorktreeBaseDir,
+			SetupScript:             setupScriptForSubmit(fd.setup, nil),
+			ShouldDetectSetupScript: shouldDetectSetupOnClone(fd.setup),
 		}
 		return func() tea.Msg {
 			repo, err := c.CloneAndRegisterRepo(ctx, req)
@@ -876,9 +876,7 @@ func (m *RepoAddModel) submitRepo() tea.Cmd {
 		DisplayName:       fd.name,
 		DefaultBaseBranch: m.detectedBaseBranch,
 		WorktreeBaseDir:   cfg.WorktreeBaseDir,
-	}
-	if s := fd.setup; s != "" {
-		req.SetupScript = &s
+		SetupScript:       setupScriptForSubmit(fd.setup, m.detectedSetup),
 	}
 	return func() tea.Msg {
 		repo, err := c.RegisterRepo(ctx, req)

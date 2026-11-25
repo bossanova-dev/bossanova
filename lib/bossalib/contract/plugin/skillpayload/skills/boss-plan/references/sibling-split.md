@@ -28,8 +28,10 @@ suggested split, `needs-human`):
 - Under `## Planning`, add `- Sibling-split: <why it is not atomic; this ticket is part a; the other
 parts by key and title>`. Never together with `- Oversized-child:`.
 - Return the other parts as Step 9's `siblings` ([`headless-drafting-brief.md`](headless-drafting-brief.md)).
-  `blockedBy` names `source` (this ticket) or another part's key and must be acyclic; `blocks` lists
-  existing issue ids that depend on that part (their edge on this ticket stays).
+  `blockedBy` names `source` (this ticket), another part's key, or an existing issue identifier (an
+  edge on that issue that step 4 wires and cycle-checks like any other); the split's own declared
+  edges, including those through existing issues, must be acyclic; `blocks` lists existing issue ids
+  that depend on that part (their edge on this ticket stays).
 
 `plan-run-guards.mjs adopt-metadata` refuses the whole draft when the split disagrees with itself:
 invalid `siblings`, a source estimate above 3, a missing `- Sibling-split:` bullet, both bullets, or
@@ -78,11 +80,12 @@ After write-back verification (step 5), file the siblings:
 
 4. Screen sibling edges before writing. Save the edge proposals to
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json`, fetch a fresh blocker graph
-   seeded with every proposal's `issue` and `blockedBy`, then run the shared screen. Write only
-   `accepted` with `appendDependency` (each `{id, blockedBy: [ids]}`). Edges are additive; never
+   seeded with every proposal's `issue` and `blockedBy`, then run the shared screen. For each
+   accepted `{issue, blockedBy}` pair, run `tracker/cli.mjs link-dependency` once per blocker id:
+   on `descriptor-emitted`, run the emitted tool once then the emitted `next` command (`--verify`)
+   through the runner, and handle exits 3, 4 and 2 per Phase 4 step 4(e). Edges are additive; never
    delete a relation. Record cycle skips and held writes as Phase 4 step 4(d) describes. A failed
-   graph fetch or screen writes no blocking edge. Re-read both sides after each write and record
-   a missing edge rather than re-writing it.
+   graph fetch or screen writes no blocking edge.
 
    ```bash
    bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs edges --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --created .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-created.json > .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json
@@ -96,6 +99,10 @@ After write-back verification (step 5), file the siblings:
    bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-blocker-graph.mjs screen --writes .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.sibling-edges.json --graph .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.blocker-graph.json --subject <ISSUE-ID>
    ```
 
+   ```bash
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs link-dependency --issue <id> --blocked-by <id>
+   ```
+
 5. Read every sibling back (`get_issue`, or `listChildren` on the parent), write
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-readback.json` as `{key: issue}` (`null`
    for a sibling the read did not find), and verify that each exists, sits under the parent and
@@ -105,9 +112,15 @@ After write-back verification (step 5), file the siblings:
    bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-sibling-split.mjs verify --input .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-in.json --read-back .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.siblings-readback.json
    ```
 
-6. Only on exit 0, and only when the drafter's `agentBuild` was true, flip the source's exposure
-   label `needs-human` to `agent-build` in a labels-only write (read, merge, write), then read it
-   back.
+6. Only on exit 0, and only when the drafter's `agentBuild` was true, re-read the source's labels
+   into `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.current-labels.json` and run:
+
+   ```bash
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-label-merge.mjs --metadata .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json --current .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.current-labels.json --siblings-verified
+   ```
+
+   Add `--interactive` on interactive runs. Save its `labels` verbatim in a labels-only write (exit
+   non-zero means no label write), then read it back.
 
 Any failure, at any point, leaves `needs-human` on the source. Never loop, retry a create blind, or
 delete a sibling. The run report (Phase 6) names every sibling id that exists, created or reused,
@@ -116,6 +129,6 @@ the `verify` problems, and whether the exposure flipped.
 ## Fan-out child planners
 
 A child planner ([`child-fanout.md`](child-fanout.md)) may create new sibling shells under the
-parent and write edges to and from them, each behind the blocker-graph screen: nobody else knows the
-new shells yet, so no concurrent planner can write an opposing edge. Every other rule in its brief
-stands.
+parent and write edges to and from them, each behind the blocker-graph screen and through the
+`link-dependency` helper: nobody else knows the new shells yet, so no concurrent planner can write
+an opposing edge. Every other rule in its brief stands.

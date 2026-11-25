@@ -282,3 +282,160 @@ test('evaluates a count premise followed by trailing prose', (t) => {
   assert.equal(result.items.find((item) => item.source === 'premise').kind, 'confirmed')
   assert.equal(result.verdict, 'current')
 })
+
+test('scopes evaluation to the declared target repository when given an issue description', (t) => {
+  const { root } = fixture(t)
+  const localPlan = '`old.mjs:1` `currentSymbol`\n`old.mjs:1` `movedSymbol`\n`docs/**/*.md`'
+  const undeclared = recheckPlan(DEFAULT_CONFIG, localPlan, { root })
+  const sameRepo = recheckPlan(DEFAULT_CONFIG, localPlan, {
+    root,
+    description: '## Planning\n- Target repo: acme/local\n',
+    readOrigin: () => 'https://github.com/ACME/local.git',
+  })
+  assert.deepEqual(sameRepo, undeclared)
+
+  const undeclaredNoOrigin = recheckPlan(DEFAULT_CONFIG, localPlan, {
+    root,
+    description: '## Planning\n- Contract: v1\n',
+    readOrigin: () => null,
+  })
+  assert.deepEqual(undeclaredNoOrigin, undeclared)
+
+  const foreignPlan =
+    '## Premises\n- [ ] `foreign/missing.mjs:1` `missingSymbol`\n`foreign/absent.mjs`'
+  const mismatch = recheckPlan(DEFAULT_CONFIG, foreignPlan, {
+    root,
+    description: '## Planning\n- Target repo: acme/foreign\n',
+    readOrigin: () => 'git@github.com:ACME/local.git',
+  })
+  assert.deepEqual(mismatch, {
+    verdict: 'unknown',
+    reason: 'target-repo-mismatch',
+    targetRepo: 'acme/foreign',
+    rootRepo: 'acme/local',
+    root,
+    checked: 0,
+    items: [],
+  })
+
+  const matchedForeign = recheckPlan(DEFAULT_CONFIG, foreignPlan, {
+    root,
+    description: '## Planning\n- Target repo: acme/foreign\n',
+    readOrigin: () => 'https://github.com/ACME/foreign.git',
+  })
+  assert.equal(matchedForeign.verdict, 'stale')
+  assert.equal(matchedForeign.items.find((item) => item.source === 'citation').kind, 'path-missing')
+  assert.equal(matchedForeign.items.find((item) => item.source === 'path').kind, 'absent')
+})
+
+test('returns unknown for conflicting, invalid or unverifiable target declarations', (t) => {
+  const { root } = fixture(t)
+  const plan = '`old.mjs:1` `currentSymbol`'
+  const conflicting = recheckPlan(DEFAULT_CONFIG, plan, {
+    root,
+    description: '## Planning\n- Target repo: acme/one\n- Target repo: acme/two\n',
+    readOrigin: () => 'acme/one',
+  })
+  assert.deepEqual(conflicting, {
+    verdict: 'unknown',
+    reason: 'Target repo declarations name different repositories',
+    root,
+    checked: 0,
+    items: [],
+  })
+
+  const invalid = recheckPlan(DEFAULT_CONFIG, plan, {
+    root,
+    description: '## Planning\n- Target repo: not-a-repo\n',
+    readOrigin: () => 'acme/one',
+  })
+  assert.deepEqual(invalid, {
+    verdict: 'unknown',
+    reason: 'Target repo declaration is not a repository identity',
+    root,
+    checked: 0,
+    items: [],
+  })
+
+  const unreadableOrigin = recheckPlan(DEFAULT_CONFIG, plan, {
+    root,
+    description: '## Planning\n- Target repo: acme/foreign\n',
+    readOrigin: () => null,
+  })
+  assert.deepEqual(unreadableOrigin, {
+    verdict: 'unknown',
+    reason: 'origin-unreadable',
+    targetRepo: 'acme/foreign',
+    root,
+    checked: 0,
+    items: [],
+  })
+})
+
+test('CLI --issue-json checks target repo identity and rejects malformed issue files', (t) => {
+  const { root } = fixture(t)
+  execFileSync('git', ['-C', root, 'remote', 'add', 'origin', 'https://github.com/acme/local.git'])
+  const cli = new URL('./plan-recheck.mjs', import.meta.url)
+  const run = (args) => spawnSync(process.execPath, [cli.pathname, ...args], { encoding: 'utf8' })
+
+  const help = run(['--help'])
+  assert.equal(help.status, 0)
+  assert.match(help.stdout, /plan-recheck\.mjs <plan> \[--root <dir>\] \[--issue-json <file>\]/)
+
+  const planPath = join(root, 'plan.md')
+  writeFileSync(planPath, '`foreign/missing.mjs:1` `missingSymbol`\n')
+
+  const foreignIssuePath = join(root, 'foreign-issue.json')
+  writeFileSync(
+    foreignIssuePath,
+    JSON.stringify({ description: '## Planning\n- Target repo: acme/foreign\n' }),
+  )
+  const mismatch = run([planPath, '--root', root, '--issue-json', foreignIssuePath])
+  assert.equal(mismatch.status, 2, mismatch.stderr)
+  const mismatchBody = JSON.parse(mismatch.stdout)
+  assert.equal(mismatchBody.verdict, 'unknown')
+  assert.equal(mismatchBody.reason, 'target-repo-mismatch')
+  assert.equal(mismatchBody.targetRepo, 'acme/foreign')
+  assert.equal(mismatchBody.rootRepo, 'acme/local')
+  assert.equal(mismatchBody.checked, 0)
+  assert.deepEqual(mismatchBody.items, [])
+
+  const localPlanPath = join(root, 'local-plan.md')
+  writeFileSync(localPlanPath, '`old.mjs:1` `currentSymbol`\n')
+  const localIssuePath = join(root, 'local-issue.json')
+  writeFileSync(
+    localIssuePath,
+    JSON.stringify({ description: '## Planning\n- Target repo: acme/local\n' }),
+  )
+  const matched = run([localPlanPath, '--root', root, '--issue-json', localIssuePath])
+  assert.equal(matched.status, 0, matched.stderr)
+  assert.equal(JSON.parse(matched.stdout).verdict, 'current')
+
+  for (const [name, content] of [
+    ['broken.json', '{not valid json'],
+    ['array.json', '[]'],
+    ['null.json', 'null'],
+    ['string.json', '"hello"'],
+    ['bad-desc.json', JSON.stringify({ description: 42 })],
+  ]) {
+    const issuePath = join(root, name)
+    writeFileSync(issuePath, content)
+    const bad = run([localPlanPath, '--root', root, '--issue-json', issuePath])
+    assert.equal(bad.status, 2, name)
+    const body = JSON.parse(bad.stdout)
+    assert.equal(body.verdict, 'unknown', name)
+    assert.equal(typeof body.error, 'string', name)
+    assert.ok(body.error.length > 0, name)
+  }
+
+  const missingIssue = run([
+    localPlanPath,
+    '--root',
+    root,
+    '--issue-json',
+    join(root, 'no-such-issue.json'),
+  ])
+  assert.equal(missingIssue.status, 2)
+  assert.equal(JSON.parse(missingIssue.stdout).verdict, 'unknown')
+  assert.ok(JSON.parse(missingIssue.stdout).error)
+})

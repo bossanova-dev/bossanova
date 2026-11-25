@@ -1,6 +1,7 @@
 package evidence_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
@@ -379,4 +380,86 @@ func TestReaderProofSummaryChangeNotifies(t *testing.T) {
 	if got, _ := r.LatestProof("s"); got.Summary != "second" || changes != 2 {
 		t.Fatalf("summary %q after %d changes; want the edited block to notify", got.Summary, changes)
 	}
+}
+
+// TestReaderProofRealVerifyComments exercises the exact comment shapes verify
+// writes on org PRs: one with a published proof page and one with page=null,
+// both posted by an org MEMBER, and confirms an untrusted CONTRIBUTOR copy is
+// dropped with a debug log rather than silently swallowed.
+func TestReaderProofRealVerifyComments(t *testing.T) {
+	const (
+		pageHead = "1ee2bf6574ab67092b0305bb5e5a6fea7151f263"
+		noteHead = "656511467901d80cdc40e0a23024094ab08c45c5"
+		pageURL  = "https://proof.example.test/org/repo/7441/" + pageHead + "/index.html"
+	)
+	withPageBody := "<details>\n<summary>Not verified · waiting for you · this PR changes low: Housekeeping, Other changes, Credentials +4</summary>\n\n" +
+		"[Full page](" + pageURL + ")\n\n" +
+		"## Confidence\n\n- Confidence: Low. Review the gaps before deciding.\n\n" +
+		"## Why not high\n\n- It changes areas a person reviews.\n- It asks about more than three areas.\n\n</details>\n\n" +
+		`<!-- boss-proof: {"schema":"boss-proof/1","head":"` + pageHead + `","page":"` + pageURL + `","level":"low","asks":["housekeeping","other","judge-credentials","judge-authorization","judge-automated-pr-merging","judge-force-push-capability","judge-automated-release-tagging"],"loweredBy":["It changes areas a person reviews.","It asks about more than three areas."],"digest":"sha256:9df2fc31fff011b6a08b31d5e282cdb4414954b9bf3d918eb570d83e90403388"} -->` + "\n\n" +
+		"<!-- boss-proof-note head=" + pageHead + " digest=0373eef95d5a38ab -->"
+
+	nullPageBody := "<details>\n<summary>Not verified · waiting for you · this PR changes moderate: Migrations, Data deletion</summary>\n\n" +
+		"## Confidence\n\n- Confidence: Moderate. Inspect the asks before deciding.\n\n" +
+		"## Why not high\n\n- It changes areas a person reviews.\n\n</details>\n\n" +
+		`<!-- boss-proof: {"schema":"boss-proof/1","head":"` + noteHead + `","page":null,"level":"moderate","asks":["migrations","judge-data-deletion"],"loweredBy":["It changes areas a person reviews."],"digest":"sha256:61aad4f49431c7d449fcfcab409e2e5ba8a9858d6ed14fe334d9dba80816e65a"} -->` + "\n\n" +
+		"<!-- boss-proof-note head=" + noteHead + " digest=613d033a7d70e7fa -->"
+
+	at := time.Date(2026, 11, 24, 10, 19, 20, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		head      string
+		body      string
+		wantPage  string
+		wantLevel string
+		wantAsks  int
+	}{
+		{"published page note", pageHead, withPageBody, pageURL, evidence.LevelLow, 7},
+		{"null page note", noteHead, nullPageBody, "", evidence.LevelModerate, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &proofCommentFinder{comments: []vcs.PRComment{{
+				ID:                7128617606,
+				Body:              tc.body,
+				AuthorLogin:       "octocat",
+				AuthorAssociation: "MEMBER",
+				CreatedAt:         at,
+				WrittenAt:         at,
+			}}}
+			r := evidence.NewReader(f, zerolog.Nop())
+			r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 7441, HeadSHA: tc.head, IsPROpen: true, IsVerifyActive: true})
+			got, ok := r.Proof("s", tc.head)
+			if !ok {
+				t.Fatalf("Proof(%s) ok = false", tc.head)
+			}
+			if got.Page != tc.wantPage || got.Level != tc.wantLevel || len(got.Asks) != tc.wantAsks || got.Summary == "" {
+				t.Fatalf("Proof = %+v; want page=%q level=%q asks=%d non-empty summary", got, tc.wantPage, tc.wantLevel, tc.wantAsks)
+			}
+			latest, lok := r.LatestProof("s")
+			if !lok || latest.Page != tc.wantPage || latest.Summary != got.Summary {
+				t.Fatalf("LatestProof = %+v %v; want page=%q summary=%q", latest, lok, tc.wantPage, got.Summary)
+			}
+		})
+	}
+
+	t.Run("untrusted contributor logs drop at debug", func(t *testing.T) {
+		var logs bytes.Buffer
+		logger := zerolog.New(&logs).Level(zerolog.DebugLevel)
+		f := &proofCommentFinder{comments: []vcs.PRComment{{
+			ID:                7128617606,
+			Body:              withPageBody,
+			AuthorLogin:       "octocat",
+			AuthorAssociation: "CONTRIBUTOR",
+			CreatedAt:         at,
+			WrittenAt:         at,
+		}}}
+		r := evidence.NewReader(f, logger)
+		r.Observe(t.Context(), evidence.Observation{SessionID: "s", PRNumber: 7441, HeadSHA: pageHead, IsPROpen: true, IsVerifyActive: true})
+		if _, ok := r.Proof("s", pageHead); ok {
+			t.Fatal("Proof ok = true for untrusted CONTRIBUTOR")
+		}
+		if !strings.Contains(logs.String(), "dropped proof comment from untrusted author") {
+			t.Fatalf("logs = %q; want debug drop log", logs.String())
+		}
+	})
 }

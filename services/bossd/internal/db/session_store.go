@@ -13,7 +13,10 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 )
 
-var _ SessionStore = (*SQLiteSessionStore)(nil)
+var (
+	_ SessionStore         = (*SQLiteSessionStore)(nil)
+	_ CheckStateLatchStore = (*SQLiteSessionStore)(nil)
+)
 
 // SQLiteSessionStore implements SessionStore using SQLite.
 type SQLiteSessionStore struct {
@@ -921,4 +924,38 @@ func (s *SQLiteSessionStore) RecordAgentRunDeath(ctx context.Context, id, agentI
 		return time.Time{}, notFound(err)
 	}
 	return sqlutil.ParseTime(observed), nil
+}
+
+// SetCheckStateIfUnchanged writes last_check_state, last_check_state_head_sha,
+// and last_check_state_at only while the persisted latch still matches the
+// caller's pre-poll snapshot. Returning false means a concurrent writer (such as
+// Dispatcher or a webhook refresh) already updated the verdict.
+func (s *SQLiteSessionStore) SetCheckStateIfUnchanged(
+	ctx context.Context,
+	id string,
+	expectedState machine.CheckState,
+	expectedHeadSHA *string,
+	expectedAt *time.Time,
+	newState machine.CheckState,
+	newHeadSHA string,
+) (bool, error) {
+	now := sqlutil.TimeNow()
+	res, err := sqlcgen.New(s.db).UpdateSessionCheckStateIfUnchanged(ctx, sqlcgen.UpdateSessionCheckStateIfUnchangedParams{
+		NewCheckState:      int64(newState),
+		NewHeadSha:         &newHeadSHA,
+		ObservedAt:         &now,
+		UpdatedAt:          now,
+		ID:                 id,
+		ExpectedCheckState: int64(expectedState),
+		ExpectedHeadSha:    expectedHeadSHA,
+		ExpectedAt:         sqlutil.FormatOptionalTime(expectedAt),
+	})
+	if err != nil {
+		return false, fmt.Errorf("set check state if unchanged: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
 }

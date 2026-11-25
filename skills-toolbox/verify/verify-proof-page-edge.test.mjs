@@ -251,6 +251,13 @@ test('#1 #2 #14 #19 every text container breaks an unbroken token instead of wid
   assert.ok(text(region(section(html, 'a-logic'), '<p class="lead">', '</p>')).includes(TOKEN))
 })
 
+test('an evidence chip wraps, so a long test name never pushes the criterion pill out of its box', () => {
+  // The criteria table lays out automatically, where a chip's max-width cannot cap a nowrap
+  // label: the label widened the text column and the box's overflow:hidden clipped the pill.
+  assert.doesNotMatch(rule('.evc'), /white-space:nowrap/)
+  assert.match(rule('.box'), /overflow:hidden/, 'the box still clips, so the chip must wrap')
+})
+
 test('#5 #6 #7 a 300-character record label is cut at a word, and none of 20 facts is lost', () => {
   const html = page({}, { docsAsk: true })
   const cut = 'A record label that runs to the full…'

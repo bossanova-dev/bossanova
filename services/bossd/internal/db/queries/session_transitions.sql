@@ -187,3 +187,14 @@ SET tracker_rank_tier = sqlc.arg(tracker_rank_tier),
     updated_at = sqlc.arg(now)
 WHERE id = sqlc.arg(id) AND tracker_id = sqlc.arg(expected_tracker_id)
   AND tracker_url IS sqlc.narg(expected_tracker_url);
+
+-- name: UpdateSessionCheckStateIfUnchanged :execresult
+UPDATE sessions
+SET last_check_state = CAST(sqlc.arg(new_check_state) AS INTEGER),
+    last_check_state_head_sha = sqlc.arg(new_head_sha),
+    last_check_state_at = sqlc.arg(observed_at),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id)
+  AND last_check_state = CAST(sqlc.arg(expected_check_state) AS INTEGER)
+  AND last_check_state_head_sha IS sqlc.narg(expected_head_sha)
+  AND last_check_state_at IS sqlc.narg(expected_at);

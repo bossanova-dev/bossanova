@@ -11,6 +11,7 @@ import {
   resolveTargetContext,
   targetModuleRoots,
   targetRepoNotResolvedAdvisory,
+  targetRootMismatchViolation,
 } from './plan-target-repo.mjs'
 
 const parse = (text) => parseTargetRepoDeclaration(DEFAULT_CONFIG, text)
@@ -66,7 +67,9 @@ test('target context only admits a foreign root with the declared origin', () =>
   assert.deepEqual(context({ declared: false }), { kind: 'local', root: local })
   assert.deepEqual(context({ declared: true, repo: 'acme/local' }), { kind: 'local', root: local })
   assert.equal(context({ declared: true, error: 'bad' }).couldNotEvaluate, 'bad')
-  assert.equal(context({ declared: true, repo: 'acme/widgets' }).root, null)
+  const missingRoot = context({ declared: true, repo: 'acme/widgets' })
+  assert.equal(missingRoot.root, null)
+  assert.ok(!missingRoot.rootMismatch)
   assert.deepEqual(context({ declared: true, repo: 'acme/widgets' }, target), {
     kind: 'foreign',
     repo: 'acme/widgets',
@@ -74,8 +77,14 @@ test('target context only admits a foreign root with the declared origin', () =>
   })
   const mismatch = context({ declared: true, repo: 'acme/elsewhere' }, target)
   assert.equal(mismatch.root, null)
+  assert.equal(mismatch.rootMismatch, true)
+  assert.equal(mismatch.targetRootOrigin, 'acme/widgets')
   assert.match(mismatch.reason, /acme\/widgets/)
   assert.equal(targetRepoNotResolvedAdvisory(mismatch).code, 'advisory: target-repo-not-resolved')
+  const mismatchViolation = targetRootMismatchViolation(mismatch)
+  assert.equal(mismatchViolation.code, 'target-root-mismatch')
+  assert.match(mismatchViolation.message, /acme\/widgets/)
+  assert.match(mismatchViolation.message, /acme\/elsewhere/)
   const unknown = resolveTargetContext({
     declaration: { declared: true, repo: 'acme/widgets' },
     checkoutRoot: local,
@@ -90,7 +99,13 @@ test('target context only admits a foreign root with the declared origin', () =>
     readOrigin: (root) => (root === local ? 'acme/local' : null),
   })
   assert.equal(unreadableTarget.root, null)
+  assert.equal(unreadableTarget.rootMismatch, true)
+  assert.equal(unreadableTarget.targetRootOrigin, null)
   assert.match(unreadableTarget.reason, /unreadable/)
+  const unreadableViolation = targetRootMismatchViolation(unreadableTarget)
+  assert.equal(unreadableViolation.code, 'target-root-mismatch')
+  assert.match(unreadableViolation.message, /unreadable/)
+  assert.match(unreadableViolation.message, /acme\/widgets/)
 })
 
 test('origin and target module discovery read real repository fixtures', () => {

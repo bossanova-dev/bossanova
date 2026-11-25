@@ -143,7 +143,16 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
      `readPlanAttachment`, then move the shell to
      planned.
 5. Wire the intra-epic DAG from `epicWiringPlan(spec, createdIdByKey)` (include the reserved `parent`
-   entry). Intra-epic edges come only from there.
+   entry). Intra-epic edges come only from there. For each `(childId, blockedBy[i])` pair, call
+   `tracker/cli.mjs link-dependency`:
+
+   ```bash
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs link-dependency --issue <child-id> --blocked-by <blocker-id>
+   ```
+
+   On `descriptor-emitted`, run the emitted tool once, then run the emitted `next` command
+   (`--verify`) through the runner; handle exits 3, 4 and 2 per SKILL.md Phase 4 step 4(e).
+
 6. **Commit the parent overview before exposing anything.** Re-assert the parent's unplanned state
    (the tracker's sub-issue rollup can move it), compose the overview — `## Summary`,
    `## Child tickets`, `## Planning`, verbatim `## Original notes` — in
@@ -153,7 +162,7 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
    single-record route write it with `writePlan` on the parent, titled
    `Implementation plan (<ISSUE-ID>)`, read it back with `readPlanAttachment`, and re-assert unplanned;
    skip the description save. An overview exceeding the comment limit fails closed. Then link each child against the
-   **non-epic** active backlog (SKILL.md Phase 4 step 5, excluding this epic's own ids), and only then
+   **non-epic** active backlog (SKILL.md Phase 4 step 4, excluding this epic's own ids), and only then
    expose each child with its own call: `agent-build`, or `needs-human` when its plan said so.
 7. **Flip the parent last:** union the `epic` label (`labelName(config, 'epic')`), drop
    `agent-build` / `needs-human` and the planning-queue label, delete the ids

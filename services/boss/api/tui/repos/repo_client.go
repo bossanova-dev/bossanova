@@ -8,6 +8,7 @@ import (
 
 type AddClient interface {
 	ValidateRepoPath(context.Context, string) (*pb.ValidateRepoPathResponse, error)
+	DetectSetupScript(context.Context, string) (*pb.DetectSetupScriptResponse, error)
 	RegisterRepo(context.Context, *pb.RegisterRepoRequest) (*pb.Repo, error)
 	CloneAndRegisterRepo(context.Context, *pb.CloneAndRegisterRepoRequest) (*pb.Repo, error)
 	UpdateRepo(context.Context, *pb.UpdateRepoRequest) (*pb.Repo, error)

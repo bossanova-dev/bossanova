@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { runCli, generateClaimToken, TRACKER_USAGE } from './cli.mjs'
 import { createGithubAdapter } from './github.mjs'
 import { buildLinearOperationMap, createLinearAdapter } from './linear.mjs'
@@ -2469,4 +2470,103 @@ test('list-unplanned excludes claimed candidates with diagnostics and fails clos
   assert.equal(legacy.code, 0)
   assert.equal(JSON.parse(legacy.out).length, 1)
   assert.match(legacy.err, /does not declare planClaimSelection/)
+})
+
+test('--help output includes link-dependency', () => {
+  let out = ''
+  let err = ''
+  const code = runCli(['--help'], {
+    write: (s) => {
+      out += s
+    },
+    errWrite: (s) => {
+      err += s
+    },
+  })
+  assert.equal(code, 0)
+  assert.equal(err, '')
+  assert.ok(out.includes('link-dependency'))
+})
+
+test('link-dependency dispatches with MCP appendDependency and a file pair, emitting one descriptor-emitted JSON line', async (t) => {
+  const dir = tempDir('tracker-cli-link-dep-', t)
+  const issueFile = path.join(dir, 'issue.json')
+  const blockerFile = path.join(dir, 'blocker.json')
+  fs.writeFileSync(
+    issueFile,
+    JSON.stringify({
+      id: 'APP-1',
+      identifier: 'APP-1',
+      state: { type: 'unstarted' },
+      relations: { blockedBy: [], blocks: [] },
+    }),
+  )
+  fs.writeFileSync(
+    blockerFile,
+    JSON.stringify({
+      id: 'APP-2',
+      identifier: 'APP-2',
+      state: { type: 'unstarted' },
+      relations: { blockedBy: [], blocks: [] },
+    }),
+  )
+  let out = ''
+  let err = ''
+  const code = await runCli(
+    [
+      'link-dependency',
+      '--issue',
+      'APP-1',
+      '--blocked-by',
+      'APP-2',
+      '--issue-file',
+      issueFile,
+      '--blocker-file',
+      blockerFile,
+    ],
+    {
+      write: (s) => {
+        out += s
+      },
+      errWrite: (s) => {
+        err += s
+      },
+      env: {},
+      resolveAdapter: () => ({
+        operationMap: {
+          appendDependency: { tool: 'mcp__tracker__save_issue', summary: 'append dep' },
+        },
+      }),
+    },
+  )
+  assert.equal(code, 0, err)
+  assert.equal(err, '')
+  const lines = out.trimEnd().split('\n')
+  assert.equal(lines.length, 1)
+  const payload = JSON.parse(lines[0])
+  assert.equal(payload.outcome, 'descriptor-emitted')
+  assert.equal(payload.tool, 'mcp__tracker__save_issue')
+  assert.deepEqual(payload.args, { id: 'APP-1', blockedBy: ['APP-2'] })
+  assert.match(payload.next, /link-dependency.*--verify/)
+})
+
+test('link-dependency returns 64 on an unknown flag', async () => {
+  let out = ''
+  let err = ''
+  const code = await runCli(
+    ['link-dependency', '--issue', 'APP-1', '--blocked-by', 'APP-2', '--bogus'],
+    {
+      write: (s) => {
+        out += s
+      },
+      errWrite: (s) => {
+        err += s
+      },
+      env: {},
+      resolveAdapter: () => ({ operationMap: {} }),
+    },
+  )
+  assert.equal(code, 64)
+  assert.equal(out, '')
+  assert.match(err, /link-dependency: usage:/)
 })

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/domain"
 )
@@ -787,4 +788,18 @@ type RunResumeGiveUpper interface {
 // without changing session activity timestamps.
 type RunDeathObserver interface {
 	RecordAgentRunDeath(ctx context.Context, id, agentID string, expectedState int, at time.Time) (time.Time, error)
+}
+
+// CheckStateLatchStore atomically updates a session's persisted check verdict
+// only while its prior check-state latch still matches the caller's snapshot.
+type CheckStateLatchStore interface {
+	SetCheckStateIfUnchanged(
+		ctx context.Context,
+		id string,
+		expectedState machine.CheckState,
+		expectedHeadSHA *string,
+		expectedAt *time.Time,
+		newState machine.CheckState,
+		newHeadSHA string,
+	) (bool, error)
 }

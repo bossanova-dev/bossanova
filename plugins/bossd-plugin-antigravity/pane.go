@@ -12,9 +12,14 @@ import (
 //
 // agy draws its composer between two full-width rules. Everything after the
 // last rule is the live status region: the footer, or an approval menu or
-// trust modal that replaced the composer. Earlier user turns also start with
-// "> ", so the grammar below reads only the live region and the line directly
-// above the composer.
+// trust modal that replaced the composer. While a background command, a
+// timer or a subagent runs, agy adds a tray between the composer and the
+// footer, ruled off on both sides, one "●" line per job, and counts them in
+// the footer ("1 task(s)", "1 subagent(s)"). The turn has ended but the agent
+// has not: it resumes when the job finishes, so a job in the tray is work.
+// Earlier user turns also start with "> ", and tool calls in the scrollback
+// with "●", so the grammar below reads only the live region, the tray, and
+// the line directly above the composer.
 type paneState struct {
 	question   bool
 	trustModal bool
@@ -27,6 +32,7 @@ var (
 	ansiEscape   = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
 	menuOption   = regexp.MustCompile(`^(?:>\s*)?\d+\.\s+\S`)
 	spinnerGlyph = regexp.MustCompile(`^[\x{2800}-\x{28FF}]\s+\S`)
+	jobCount     = regexp.MustCompile(`(?:^|\s)[1-9]\d* (?:task|subagent)\(s\)`)
 )
 
 const (
@@ -49,11 +55,16 @@ func parsePane(content []byte) paneState {
 			lines = append(lines, strings.TrimRight(line, " \t\r"))
 		}
 	}
-	lastRule := -1
+	var rules []int
 	for i, line := range lines {
 		if isRule(line) {
-			lastRule = i
+			rules = append(rules, i)
 		}
+	}
+	lastRule, composerBottom, tray := -1, -1, false
+	if len(rules) > 0 {
+		lastRule = rules[len(rules)-1]
+		composerBottom, tray = trayAbove(lines, rules)
 	}
 	var st paneState
 	st.status = lines[lastRule+1:]
@@ -69,16 +80,38 @@ func parsePane(content []byte) paneState {
 	}
 	st.trustModal = trust && navigation
 	st.question = !trust && navigation && option
-	st.working = !navigation &&
-		(strings.HasPrefix(st.footer, workingFooter) || spinnerAboveComposer(lines, lastRule))
+	st.working = !navigation && (strings.HasPrefix(st.footer, workingFooter) ||
+		tray || jobCount.MatchString(st.footer) || spinnerAboveComposer(lines, composerBottom))
 	return st
+}
+
+// trayAbove finds agy's job tray: the last two rules enclosing only "●" job
+// lines, below a composer, itself between rules, that starts with "> ". It
+// returns the composer's bottom rule, which is the last rule when there is no
+// tray, and whether a tray with a job shows.
+func trayAbove(lines []string, rules []int) (composerBottom int, tray bool) {
+	last := rules[len(rules)-1]
+	if len(rules) < 3 {
+		return last, false
+	}
+	top, bottom := rules[len(rules)-3], rules[len(rules)-2]
+	jobs := lines[bottom+1 : last]
+	if bottom-top < 2 || !strings.HasPrefix(strings.TrimSpace(lines[top+1]), ">") || len(jobs) == 0 {
+		return last, false
+	}
+	for _, line := range jobs {
+		if !strings.HasPrefix(strings.TrimSpace(line), "●") {
+			return last, false
+		}
+	}
+	return bottom, true
 }
 
 // spinnerAboveComposer reports a braille spinner on the last line before the
 // composer's top rule, where agy draws "⣯  Generating..." while a turn runs.
-func spinnerAboveComposer(lines []string, lastRule int) bool {
+func spinnerAboveComposer(lines []string, composerBottom int) bool {
 	topRule := -1
-	for i := lastRule - 1; i >= 0; i-- {
+	for i := composerBottom - 1; i >= 0; i-- {
 		if isRule(lines[i]) {
 			topRule = i
 			break

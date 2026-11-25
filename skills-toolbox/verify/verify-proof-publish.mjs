@@ -13,20 +13,10 @@
 // comment), the core records nothing for that head: its note would be the newer comment and
 // replace the richer record as the line the daemon reads. An unreadable comment list also records
 // nothing. Nothing here throws, changes a verdict or keeps a hook's output.
-import { spawn as nodeSpawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import {
-  closeSync,
-  mkdirSync,
-  mkdtempSync,
-  openSync,
-  readFileSync,
-  rmSync,
-  rmdirSync,
-} from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { classifyEntry, normalizeRollup } from '../pr-check-state.mjs'
 import { scanText } from '../plan/plan-secret-scan.mjs'
 import { assertStageBlockReadable, loadSkillConfig } from '../skill-config.mjs'
@@ -43,7 +33,14 @@ import {
 import { readBranchContext } from './verify-branch-context.mjs'
 import { baseProofSections } from './verify-proof-sections.mjs'
 import { afterMergeItems } from './verify-park-note.mjs'
-import { PROOF_VERDICTS, buildProofRecord, reviewSidecar } from './verify-proof-build.mjs'
+import {
+  PROOF_VERDICTS,
+  buildProofRecord,
+  evidenceClaimContext,
+  readProofEvidence,
+  reviewSidecar,
+} from './verify-proof-build.mjs'
+import { PROOF_MISSING_MARKER } from './verify-proof-missing.mjs'
 import {
   MAX_AFTER_MERGE,
   MAX_TIMELINE,
@@ -522,13 +519,40 @@ export async function recordHeadProof(
       return { recorded: false, reason: 'judge-unreadable' }
     if (String(judged.headSha ?? '').toLowerCase() !== headSha)
       return { recorded: false, reason: 'judge-other-head' }
-    const built = buildProofRecord({ judged, intent, repo, pr })
+    let workspaceRoot = null
+    try {
+      const top = typeof read === 'function' ? read('git', ['rev-parse', '--show-toplevel']) : null
+      workspaceRoot = top?.ok ? String(top.output ?? '').trim() : null
+    } catch {
+      workspaceRoot = null
+    }
+    const evidence = readProofEvidence({ workspaceRoot, headSha })
+    const { readHeadFile, changedPaths } = evidenceClaimContext({
+      read,
+      judged,
+      headSha,
+      evidence,
+      ensureCommit,
+    })
+    const built = buildProofRecord({
+      judged,
+      intent,
+      evidence,
+      repo,
+      pr,
+      readHeadFile,
+      changedPaths,
+      hasHeadClip: false,
+    })
     if (!built.ok) return { recorded: false, reason: built.reason }
     const markers = actions.readOperatorMarkers(read, repo, pr)
     if (!markers.readable) return { recorded: false, reason: 'comments-unreadable' }
     if (markers.markers.some((m) => m.kind === 'repo-proof' && m.head === headSha))
       return { recorded: false, reason: 'repo-proof-present' }
-    const { proof: record, areas } = /** @type {{proof: any, areas: any[]}} */ (built)
+    const baseRecord = /** @type {{proof: any, areas: any[]}} */ (built).proof
+    const baseAreas = /** @type {{proof: any, areas: any[]}} */ (built).areas
+    let record = baseRecord
+    let areas = baseAreas
     const config = readBaseProofConfig({
       baseSha: record.base,
       cwd,
@@ -582,7 +606,6 @@ export async function recordHeadProof(
     const git = (args) => read('git', args, { raw: true })
     const branch = (actions.readBranchContext ?? readBranchContext)({ read, repo, pr: Number(pr) })
     const prBody = String(prView.body ?? '')
-    const input = proofPageInput({ proof: record, areas, judged, git, prBody, repo, pr, branch })
     const parts = pageExtras({
       proof: record,
       areas,
@@ -598,6 +621,29 @@ export async function recordHeadProof(
       actions,
     })
     temp = parts.temp
+    const hasHeadClip = Boolean(parts.media?.media?.clips?.some((clip) => clip?.side === 'head'))
+    if (
+      hasHeadClip &&
+      Array.isArray(evidence?.claims) &&
+      evidence.claims.some((claim) => claim?.proof === 'clip')
+    ) {
+      const rebuilt = buildProofRecord({
+        judged,
+        intent,
+        evidence,
+        repo,
+        pr,
+        readHeadFile,
+        changedPaths,
+        hasHeadClip: true,
+      })
+      if (rebuilt.ok) {
+        record = rebuilt.proof
+        areas = rebuilt.areas
+      }
+    }
+    let headClipPublished = hasHeadClip
+    const input = proofPageInput({ proof: record, areas, judged, git, prBody, repo, pr, branch })
     let html = null
     /** @type {{published: boolean, reason?: string, url?: string, publisher?: string, omittedMedia?: number}} */
     let page = { published: false, reason: 'render-failed' }
@@ -685,8 +731,23 @@ export async function recordHeadProof(
                 media,
                 head: proof.head,
                 sizeOf: containedSize(dir),
-                render: (kept, omitted) =>
-                  renderProofHtml(input, fittedExtras(parts.extras, kept, omitted)),
+                render: (kept, omitted) => {
+                  headClipPublished = Boolean(kept?.clips?.some((clip) => clip?.side === 'head'))
+                  const renderInput =
+                    !headClipPublished && record !== baseRecord
+                      ? proofPageInput({
+                          proof: baseRecord,
+                          areas: baseAreas,
+                          judged,
+                          git,
+                          prBody,
+                          repo,
+                          pr,
+                          branch,
+                        })
+                      : input
+                  return renderProofHtml(renderInput, fittedExtras(parts.extras, kept, omitted))
+                },
                 scan: (text) => findPageSecrets([text], env).length > 0,
                 fixedFor: (text) => fixedSize(text, pageAssets(null, dir, player)),
               })
@@ -712,6 +773,28 @@ export async function recordHeadProof(
             // Publisher credentials can come from outside the environment scan above.
             if (!uploaded.ok && uploaded.reason === 'page-contains-secret') html = block = null
           }
+        }
+      }
+    }
+    if ((!page.published || !headClipPublished) && record !== baseRecord) {
+      const fallback =
+        page.published && page.url ? withDigest({ ...baseRecord, page: page.url }) : baseRecord
+      proof = validateProof(fallback).ok ? fallback : baseRecord
+      if (block !== null) {
+        try {
+          const baseInput = proofPageInput({
+            proof,
+            areas: baseAreas,
+            judged,
+            git,
+            prBody,
+            repo,
+            pr,
+            branch,
+          })
+          block = renderProofComment(baseInput)
+        } catch {
+          block = null
         }
       }
     }
@@ -770,8 +853,6 @@ export function parseProofOptions(options, verdict, UsageError) {
   return { proof }
 }
 
-const GATE = fileURLToPath(new URL('./verify-gate.mjs', import.meta.url))
-
 /** The names of the checks that passed, from a PR view's `statusCheckRollup`, which is the head's.
  * @param {unknown} rollup @returns {string[]} */
 export const passedChecks = (rollup) =>
@@ -780,107 +861,9 @@ export const passedChecks = (rollup) =>
     .map((check) => check.name)
 
 /**
- * Start `verify-gate.mjs proof` for the head in its own process group, its JSON line appended to
- * `boss-verify-proof-<pr>-<head>.log` under `logDir`: `{detached: true, log}`, or a skipped
- * proof when it cannot start. The proof is the head's own idempotent note, so nothing waits on it.
- */
-export function spawnProof({
-  pr,
-  headSha,
-  repo,
-  files,
-  cwd,
-  env,
-  spawn = nodeSpawn,
-  logDir = tmpdir(),
-}) {
-  try {
-    const log = join(logDir, `boss-verify-proof-${pr}-${headSha}.log`)
-    const fd = openSync(log, 'a')
-    try {
-      const args = ['proof', '--pr', String(pr), '--head', headSha, '--judge', String(files.judge)]
-      if (files.intent) args.push('--intent', String(files.intent))
-      if (files.spec) args.push('--proof-spec', String(files.spec))
-      if (files.media) args.push('--proof-media', String(files.media))
-      if (repo) args.push('--repo', repo)
-      const child = spawn(process.execPath, [GATE, ...args], {
-        cwd,
-        env,
-        detached: true,
-        stdio: ['ignore', fd, fd],
-      })
-      child.unref()
-      return { detached: true, log }
-    } finally {
-      closeSync(fd)
-    }
-  } catch {
-    return { recorded: false, reason: 'spawn-failed' }
-  }
-}
-
-/**
- * `result` with the head's `proof` outcome once the verdict it carries has landed (posted, or
- * already standing). The proof runs after every verdict write, so it can only add to the result.
- */
-export async function proofAfterPost(ctx, proof, result, actions) {
-  if (!proof || !(result.posted || result.skipped === 'already-posted')) return result
-  if (proof.detach && !ctx.dryRun && proof.judged)
-    return {
-      ...result,
-      proof: (actions.spawnProof ?? spawnProof)({
-        cwd: actions.cwd,
-        env: actions.env,
-        ...ctx,
-        ...proof,
-      }),
-    }
-  const outcome = proof.judged
-    ? await recordHeadProof({ cwd: actions.cwd, env: actions.env, ...ctx, ...proof }, actions)
-    : { recorded: false, reason: 'judge-unreadable' }
-  return { ...result, proof: outcome }
-}
-
-/**
- * The `proof` verb: record the proof for `--head` from a saved judge output after its verdict was
- * posted elsewhere (the sweep runs it detached, off its post budget). Never writes a status.
- */
-export async function proofVerb(options, deps, actions) {
-  const { UsageError, writeAwareReader, commandReader, repoFor, readPr } = actions
-  const headSha = String(options.head ?? '').toLowerCase()
-  if (!/^[0-9a-f]{40}$/.test(headSha) || options.judge === undefined)
-    throw new UsageError('verify-gate: proof needs --head <40-hex sha> and --judge <file>')
-  const read = writeAwareReader(deps.read ?? commandReader(deps))
-  const repo = repoFor(read, options.repo)
-  const view = readPr(read, options.pr, repo)
-  if (!view.ok) return { recorded: false, reason: 'pr-unreadable' }
-  if (String(view.payload?.headRefOid ?? '').toLowerCase() !== headSha)
-    return { recorded: false, reason: 'head-moved' }
-  const writes = []
-  const result = await proofAfterPost(
-    {
-      read,
-      repo,
-      pr: options.pr,
-      headSha,
-      dryRun: options['dry-run'] === true,
-      writes,
-      prView: view.payload ?? {},
-    },
-    parseProofOptions(
-      { ...options, proofSpec: options['proof-spec'], proofMedia: options['proof-media'] },
-      'pass',
-      UsageError,
-    ).proof,
-    { skipped: 'already-posted' },
-    actions,
-  )
-  return { ...result.proof, ...(options['dry-run'] === true ? { dryRun: true, writes } : {}) }
-}
-
-/**
  * The proof marker a PR comment carries, for operatorMarkers: `proof-note` (the core's own note,
- * with its digest) or `repo-proof` (a valid boss-proof line in any other comment), else null.
+ * with its digest), `proof-missing` (the core's own missing/resolved note, with its digest), or
+ * `repo-proof` (a valid boss-proof line in any other comment), else null.
  * @param {string} body @param {string} last the comment's last non-empty line
  */
 export function proofCommentMarker(body, last) {
@@ -890,6 +873,13 @@ export function proofCommentMarker(body, last) {
       kind: 'proof-note',
       head: note[1],
       fields: { digest: note[2], page: parseProofLine(body)?.page ?? null },
+    }
+  const missing = last.match(PROOF_MISSING_MARKER)
+  if (missing)
+    return {
+      kind: 'proof-missing',
+      head: missing[1],
+      fields: { digest: missing[2], resolved: missing[3] === 'resolved' },
     }
   const line = parseProofLine(body)
   return line ? { kind: 'repo-proof', head: line.head, fields: { page: line.page } } : null

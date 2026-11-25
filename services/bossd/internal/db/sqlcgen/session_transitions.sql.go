@@ -53,6 +53,42 @@ func (q *Queries) UpdateSessionAdvanceOrphanedSessions(ctx context.Context, arg 
 	return q.db.ExecContext(ctx, updateSessionAdvanceOrphanedSessions, arg.AwaitingChecksState, arg.Now, arg.ImplementingPlanState)
 }
 
+const updateSessionCheckStateIfUnchanged = `-- name: UpdateSessionCheckStateIfUnchanged :execresult
+UPDATE sessions
+SET last_check_state = CAST(?1 AS INTEGER),
+    last_check_state_head_sha = ?2,
+    last_check_state_at = ?3,
+    updated_at = ?4
+WHERE id = ?5
+  AND last_check_state = CAST(?6 AS INTEGER)
+  AND last_check_state_head_sha IS ?7
+  AND last_check_state_at IS ?8
+`
+
+type UpdateSessionCheckStateIfUnchangedParams struct {
+	NewCheckState      int64
+	NewHeadSha         *string
+	ObservedAt         *string
+	UpdatedAt          string
+	ID                 string
+	ExpectedCheckState int64
+	ExpectedHeadSha    *string
+	ExpectedAt         *string
+}
+
+func (q *Queries) UpdateSessionCheckStateIfUnchanged(ctx context.Context, arg UpdateSessionCheckStateIfUnchangedParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, updateSessionCheckStateIfUnchanged,
+		arg.NewCheckState,
+		arg.NewHeadSha,
+		arg.ObservedAt,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ExpectedCheckState,
+		arg.ExpectedHeadSha,
+		arg.ExpectedAt,
+	)
+}
+
 const updateSessionClaimUnarchivedOrphan = `-- name: UpdateSessionClaimUnarchivedOrphan :execresult
 UPDATE sessions
 SET state = CAST(?1 AS INTEGER),

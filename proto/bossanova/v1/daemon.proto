@@ -29,6 +29,10 @@ service DaemonService {
 
   // Repo management
   rpc ValidateRepoPath(ValidateRepoPathRequest) returns (ValidateRepoPathResponse);
+  // DetectSetupScript inspects a local repository directory read-only to suggest
+  // a worktree setup command. Additive bossd-local RPC; the versioned
+  // OrchestratorService is unchanged.
+  rpc DetectSetupScript(DetectSetupScriptRequest) returns (DetectSetupScriptResponse);
   rpc RegisterRepo(RegisterRepoRequest) returns (RegisterRepoResponse);
   rpc CloneAndRegisterRepo(CloneAndRegisterRepoRequest) returns (CloneAndRegisterRepoResponse);
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
@@ -552,6 +556,22 @@ message ValidateRepoPathResponse {
   string default_branch = 5;   // detected default branch (HEAD ref)
 }
 
+message DetectSetupScriptRequest {
+  string local_path = 1;
+}
+
+message DetectSetupScriptResponse {
+  // Structured spec JSON, ready to send as RegisterRepoRequest.setup_script.
+  // Empty when nothing was detected.
+  string setup_script = 1;
+  // The spec as a human reads it, e.g. "make setup-worktree".
+  string display_command = 2;
+  // Where it came from, e.g. "Makefile target setup-worktree" or "pnpm-lock.yaml".
+  string source = 3;
+  // Every other signal seen, in precedence order, including non-adopted ones.
+  repeated string evidence = 4;
+}
+
 // --- Repo Management ---
 
 message RegisterRepoRequest {
@@ -564,6 +584,9 @@ message RegisterRepoRequest {
   // registers it untrusted.
   optional bool is_trusted = 6;
   optional string serve_script = 7;
+  // When true and setup_script is absent, the daemon stores the detected spec,
+  // if any.
+  optional bool should_detect_setup_script = 8;
 }
 
 message RegisterRepoResponse {
@@ -579,6 +602,9 @@ message CloneAndRegisterRepoRequest {
   optional string setup_script = 6;
   optional bool is_trusted = 7;
   optional string serve_script = 8;
+  // When true and setup_script is absent, the daemon stores the detected spec,
+  // if any.
+  optional bool should_detect_setup_script = 9;
 }
 
 message CloneAndRegisterRepoResponse {

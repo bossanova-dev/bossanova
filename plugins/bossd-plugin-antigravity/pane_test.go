@@ -12,6 +12,9 @@ import (
 func TestPaneGrammar(t *testing.T) {
 	staleMenuInScrollback := strings.Replace(string(readTestdata(t, "panes/idle-after-turn.txt")), "  done\n",
 		"  1. Yes, allow creation\n  2. No, deny creation\n  ↑/↓ Navigate · f full diff\n> 1. yes please\n  done\n", 1)
+	task := string(readTestdata(t, "panes/working-background-task.txt"))
+	countWithoutTray := withoutTray(t, task)
+	trayWithoutCount := strings.Replace(task, " · 1 task(s) · /tasks", "", 1)
 	tests := []struct {
 		name                          string
 		pane                          string
@@ -31,6 +34,11 @@ func TestPaneGrammar(t *testing.T) {
 		{name: "first ctrl+c", pane: "panes/exit-after-one-ctrl-c.txt"},
 		{name: "exited", pane: "panes/after-exit.txt"},
 		{name: "stale menu and numbered user turn in scrollback", pane: "inline:" + staleMenuInScrollback},
+		{name: "background command in the job tray", pane: "panes/working-background-task.txt", isWorking: true},
+		{name: "timer in the job tray", pane: "panes/working-background-timer.txt", isWorking: true},
+		{name: "subagent in the job tray", pane: "panes/working-subagent.txt", isWorking: true},
+		{name: "job count without its tray", pane: "inline:" + countWithoutTray, isWorking: true},
+		{name: "job tray without the count", pane: "inline:" + trayWithoutCount, isWorking: true},
 	}
 	s, _ := newTestServer(t)
 	for _, tt := range tests {
@@ -101,4 +109,18 @@ func TestDetectUsageLimit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// withoutTray drops agy's job tray, the "●" job line and the rule below it,
+// leaving the footer's job count alone.
+func withoutTray(t *testing.T, pane string) string {
+	t.Helper()
+	lines := strings.Split(pane, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "  ● [") {
+			return strings.Join(append(lines[:i:i], lines[i+2:]...), "\n")
+		}
+	}
+	t.Fatal("no job tray in the pane")
+	return ""
 }

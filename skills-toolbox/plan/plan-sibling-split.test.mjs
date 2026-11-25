@@ -70,13 +70,51 @@ test('normalizeSiblings rejects duplicate keys, the reserved key and malformed k
   assert.match(errorsFor([sibling('Has Space')]).join(), /key "Has Space"/)
 })
 
-test('normalizeSiblings rejects a blockedBy naming neither the source nor a sibling', () => {
-  assert.match(errorsFor([sibling('b', { blockedBy: ['zzz'] })]).join(), /unknown key\(s\): zzz/)
+test('normalizeSiblings accepts existing issue identifiers in blockedBy and rejects malformed ones', () => {
+  const { siblings, errors } = normalizeSiblings([sibling('b', { blockedBy: ['source', 'EXT-7'] })])
+  assert.deepEqual(errors, [])
+  assert.deepEqual(siblings[0].blockedBy, ['source', 'EXT-7'])
+
+  for (const bad of ['zzz', 'ext-7', 'EXT-0', 'EXT-07', '7-EXT', 'EXT-']) {
+    assert.match(
+      errorsFor([sibling('b', { blockedBy: [bad] })]).join(),
+      new RegExp(`unknown key\\(s\\): ${bad}`),
+      bad,
+    )
+  }
 })
 
 test('normalizeSiblings rejects a blockedBy cycle among siblings', () => {
   const errors = errorsFor([sibling('b', { blockedBy: ['c'] }), sibling('c', { blockedBy: ['b'] })])
   assert.match(errors.join(), /cycle/)
+})
+
+test('normalizeSiblings detects declared loops through external blockers without false cycles', () => {
+  assert.deepEqual(
+    errorsFor([
+      sibling('b', { blockedBy: ['EXT-7'] }),
+      sibling('c', { blockedBy: ['b', 'EXT-7'] }),
+    ]),
+    [],
+  )
+  assert.match(
+    errorsFor([sibling('b', { blockedBy: ['EXT-5'], blocks: ['EXT-5'] })]).join(),
+    /cycle/,
+  )
+  assert.match(
+    errorsFor([
+      sibling('b', { blockedBy: ['EXT-5'] }),
+      sibling('c', { blockedBy: ['b'], blocks: ['EXT-5'] }),
+    ]).join(),
+    /cycle/,
+  )
+  assert.deepEqual(
+    errorsFor([
+      sibling('b', { blockedBy: ['EXT-5'] }),
+      sibling('c', { blockedBy: ['source'], blocks: ['EXT-5'] }),
+    ]),
+    [],
+  )
 })
 
 test('normalizeSiblings rejects an empty list and more than SIBLING_MAX parts', () => {
@@ -173,6 +211,21 @@ test('siblingSplitPlan creates in dependency order with the marker in every body
   }
 })
 
+test('siblingSplitPlan ignores external blockers when ordering creates', () => {
+  const { creates } = siblingSplitPlan(
+    input({
+      siblings: [
+        sibling('c', { blockedBy: ['b', 'EXT-7'] }),
+        sibling('b', { blockedBy: ['source', 'EXT-8'] }),
+      ],
+    }),
+  )
+  assert.deepEqual(
+    creates.map((c) => c.key),
+    ['b', 'c'],
+  )
+})
+
 test('siblingSplitPlan reuses a child carrying the marker and creates only the rest', () => {
   const { creates, reused } = siblingSplitPlan(
     input({
@@ -239,7 +292,37 @@ test('siblingEdges points source, sibling and blocks edges the right way, dedupl
   assert.equal(edges.length, 5)
 })
 
-test('siblingEdges refuses a missing id and a blocks entry inside the split', () => {
+test('siblingEdges emits deduplicated external blockedBy edges and aliases sourceId', () => {
+  const edges = siblingEdges({
+    sourceId: 'SRC-1',
+    siblings: [
+      sibling('b', { blockedBy: ['source', 'EXT-7', 'EXT-7'] }),
+      sibling('c', { blockedBy: ['b', 'EXT-7'] }),
+    ],
+    idByKey: { b: 'NEW-B', c: 'NEW-C' },
+  })
+  assert.deepEqual(
+    new Set(edges.map((e) => `${e.issue}<-${e.blockedBy}`)),
+    new Set(['NEW-B<-SRC-1', 'NEW-B<-EXT-7', 'NEW-C<-NEW-B', 'NEW-C<-EXT-7']),
+  )
+  assert.equal(edges.length, 4)
+
+  const aliasedOnly = siblingEdges({
+    sourceId: 'SRC-1',
+    siblings: [sibling('b', { blockedBy: ['SRC-1'] })],
+    idByKey: { b: 'NEW-B' },
+  })
+  assert.deepEqual(aliasedOnly, [{ issue: 'NEW-B', blockedBy: 'SRC-1' }])
+
+  const aliasedBoth = siblingEdges({
+    sourceId: 'SRC-1',
+    siblings: [sibling('b', { blockedBy: ['source', 'SRC-1'] })],
+    idByKey: { b: 'NEW-B' },
+  })
+  assert.deepEqual(aliasedBoth, [{ issue: 'NEW-B', blockedBy: 'SRC-1' }])
+})
+
+test('siblingEdges refuses a missing id and an in-split id in blockedBy or blocks', () => {
   assert.throws(
     () => siblingEdges({ sourceId: 'SRC-1', siblings: [sibling('b')], idByKey: {} }),
     /no issue id for sibling "b"/,
@@ -252,6 +335,15 @@ test('siblingEdges refuses a missing id and a blocks entry inside the split', ()
         idByKey: { b: 'NEW-B' },
       }),
     /blocks SRC-1/,
+  )
+  assert.throws(
+    () =>
+      siblingEdges({
+        sourceId: 'SRC-1',
+        siblings: [sibling('b'), sibling('c', { blockedBy: ['KID-9'] })],
+        idByKey: { b: 'KID-9', c: 'NEW-C' },
+      }),
+    /part of this split; use its key/,
   )
 })
 
@@ -331,7 +423,17 @@ test('CLI edges and verify read the created map and the read-back, with verify e
   const inputFile = path.join(dir, 'in.json')
   const created = path.join(dir, 'created.json')
   const readBack = path.join(dir, 'readback.json')
-  writeFileSync(inputFile, JSON.stringify(input()))
+  writeFileSync(
+    inputFile,
+    JSON.stringify(
+      input({
+        siblings: [
+          sibling('c', { blockedBy: ['b'] }),
+          sibling('b', { blockedBy: ['source', 'EXT-7'] }),
+        ],
+      }),
+    ),
+  )
   writeFileSync(created, JSON.stringify({ b: 'NEW-B', c: 'NEW-C' }))
 
   const edges = runCli(['edges', '--input', inputFile, '--created', created])
@@ -339,6 +441,7 @@ test('CLI edges and verify read the created map and the read-back, with verify e
   assert.deepEqual(JSON.parse(edges.stdout), [
     { issue: 'NEW-C', blockedBy: 'NEW-B' },
     { issue: 'NEW-B', blockedBy: 'SRC-1' },
+    { issue: 'NEW-B', blockedBy: 'EXT-7' },
   ])
 
   writeFileSync(readBack, JSON.stringify({ b: readBackIssue('b'), c: readBackIssue('c') }))

@@ -52,6 +52,9 @@ const (
 	// DaemonServiceValidateRepoPathProcedure is the fully-qualified name of the DaemonService's
 	// ValidateRepoPath RPC.
 	DaemonServiceValidateRepoPathProcedure = "/bossanova.v1.DaemonService/ValidateRepoPath"
+	// DaemonServiceDetectSetupScriptProcedure is the fully-qualified name of the DaemonService's
+	// DetectSetupScript RPC.
+	DaemonServiceDetectSetupScriptProcedure = "/bossanova.v1.DaemonService/DetectSetupScript"
 	// DaemonServiceRegisterRepoProcedure is the fully-qualified name of the DaemonService's
 	// RegisterRepo RPC.
 	DaemonServiceRegisterRepoProcedure = "/bossanova.v1.DaemonService/RegisterRepo"
@@ -419,6 +422,10 @@ type DaemonServiceClient interface {
 	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
 	// Repo management
 	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
+	// DetectSetupScript inspects a local repository directory read-only to suggest
+	// a worktree setup command. Additive bossd-local RPC; the versioned
+	// OrchestratorService is unchanged.
+	DetectSetupScript(context.Context, *connect.Request[v1.DetectSetupScriptRequest]) (*connect.Response[v1.DetectSetupScriptResponse], error)
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
 	CloneAndRegisterRepo(context.Context, *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error)
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
@@ -862,6 +869,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceValidateRepoPathProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("ValidateRepoPath")),
+			connect.WithClientOptions(opts...),
+		),
+		detectSetupScript: connect.NewClient[v1.DetectSetupScriptRequest, v1.DetectSetupScriptResponse](
+			httpClient,
+			baseURL+DaemonServiceDetectSetupScriptProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DetectSetupScript")),
 			connect.WithClientOptions(opts...),
 		),
 		registerRepo: connect.NewClient[v1.RegisterRepoRequest, v1.RegisterRepoResponse](
@@ -1577,6 +1590,7 @@ type daemonServiceClient struct {
 	postProofCheckRun                    *connect.Client[v1.PostProofCheckRunRequest, v1.PostProofCheckRunResponse]
 	getFactoryHealth                     *connect.Client[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse]
 	validateRepoPath                     *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
+	detectSetupScript                    *connect.Client[v1.DetectSetupScriptRequest, v1.DetectSetupScriptResponse]
 	registerRepo                         *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
 	cloneAndRegisterRepo                 *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
 	listRepos                            *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
@@ -1724,6 +1738,11 @@ func (c *daemonServiceClient) GetFactoryHealth(ctx context.Context, req *connect
 // ValidateRepoPath calls bossanova.v1.DaemonService.ValidateRepoPath.
 func (c *daemonServiceClient) ValidateRepoPath(ctx context.Context, req *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error) {
 	return c.validateRepoPath.CallUnary(ctx, req)
+}
+
+// DetectSetupScript calls bossanova.v1.DaemonService.DetectSetupScript.
+func (c *daemonServiceClient) DetectSetupScript(ctx context.Context, req *connect.Request[v1.DetectSetupScriptRequest]) (*connect.Response[v1.DetectSetupScriptResponse], error) {
+	return c.detectSetupScript.CallUnary(ctx, req)
 }
 
 // RegisterRepo calls bossanova.v1.DaemonService.RegisterRepo.
@@ -2331,6 +2350,10 @@ type DaemonServiceHandler interface {
 	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
 	// Repo management
 	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
+	// DetectSetupScript inspects a local repository directory read-only to suggest
+	// a worktree setup command. Additive bossd-local RPC; the versioned
+	// OrchestratorService is unchanged.
+	DetectSetupScript(context.Context, *connect.Request[v1.DetectSetupScriptRequest]) (*connect.Response[v1.DetectSetupScriptResponse], error)
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
 	CloneAndRegisterRepo(context.Context, *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error)
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
@@ -2770,6 +2793,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceValidateRepoPathProcedure,
 		svc.ValidateRepoPath,
 		connect.WithSchema(daemonServiceMethods.ByName("ValidateRepoPath")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceDetectSetupScriptHandler := connect.NewUnaryHandler(
+		DaemonServiceDetectSetupScriptProcedure,
+		svc.DetectSetupScript,
+		connect.WithSchema(daemonServiceMethods.ByName("DetectSetupScript")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceRegisterRepoHandler := connect.NewUnaryHandler(
@@ -3488,6 +3517,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceGetFactoryHealthHandler.ServeHTTP(w, r)
 		case DaemonServiceValidateRepoPathProcedure:
 			daemonServiceValidateRepoPathHandler.ServeHTTP(w, r)
+		case DaemonServiceDetectSetupScriptProcedure:
+			daemonServiceDetectSetupScriptHandler.ServeHTTP(w, r)
 		case DaemonServiceRegisterRepoProcedure:
 			daemonServiceRegisterRepoHandler.ServeHTTP(w, r)
 		case DaemonServiceCloneAndRegisterRepoProcedure:
@@ -3753,6 +3784,10 @@ func (UnimplementedDaemonServiceHandler) GetFactoryHealth(context.Context, *conn
 
 func (UnimplementedDaemonServiceHandler) ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ValidateRepoPath is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DetectSetupScript(context.Context, *connect.Request[v1.DetectSetupScriptRequest]) (*connect.Response[v1.DetectSetupScriptResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DetectSetupScript is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error) {

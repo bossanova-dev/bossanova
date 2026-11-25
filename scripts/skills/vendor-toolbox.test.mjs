@@ -695,6 +695,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'epic/epic-io.mjs',
       'epic/epic-run.mjs',
       'epic/epic-subscription.mjs',
+      'label-identity.mjs',
       'linear-claim.mjs',
       'linear-deps-lib.mjs',
       'linear-gate-lib.mjs',
@@ -728,6 +729,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/blocker-graph.mjs',
       'tracker/blocker-graph-verb.mjs',
       'tracker/cli.mjs',
+      'tracker/dependency-link.mjs',
       'tracker/description-patch.mjs',
       'tracker/github-comment.mjs',
       'tracker/github-config.mjs',
@@ -814,8 +816,13 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
         files.includes('ci/required-checks.mjs'),
         `${core} must vendor the ci.required parser imported by skill-config.mjs`,
       )
+      assert.ok(
+        files.includes('label-identity.mjs'),
+        `${core} must vendor label-identity.mjs beside skill-config.mjs`,
+      )
     }
   }
+  assert.ok(VENDORED_FILES['boss-plan'].includes('plan/plan-label-merge.mjs'))
   assert.ok(VENDORED_FILES['boss-plan'].includes('cron-gates/boss-plan.mjs'))
   // Every core that ships a built-in notes extension must ship the helper it runs.
   for (const core of ['boss-build', 'boss-epic', 'boss-plan', 'boss-repair']) {

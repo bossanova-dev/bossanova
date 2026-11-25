@@ -70,6 +70,7 @@ func (w *daemonWiring) wireDaemon() {
 		ValidateBranchName:    gitpkg.ValidateBranchName,
 		RemoteBranchExists:    gitpkg.RemoteBranchExists,
 		ValidateRepoScript:    setupscript.ValidateStored,
+		DetectSetupScript:     detectSetupScript(w.settings.LoginShell),
 		VerifyProofKeys:       proofenv.Keys(),
 		BootstrapRunner:       bootstrapRunner,
 		AgentLogsDir:          w.agentLogsDir,
@@ -291,4 +292,27 @@ func (w *daemonWiring) wireDaemon() {
 // bosso sees local account changes, including newly derived identities.
 func (w *daemonWiring) publishAgentAccountsChanged() {
 	w.streamBus.Publish(upstream.StreamEvent{AgentAccounts: &upstream.AgentAccountsEvent{}})
+}
+
+func detectSetupScript(loginShell string) func(context.Context, string) (server.SetupScriptDetection, error) {
+	lookPath := setupscript.LoginShellLookPath(loginShell)
+	return func(_ context.Context, path string) (server.SetupScriptDetection, error) {
+		det, err := setupscript.Detect(path, setupscript.DetectOptions{LookPath: lookPath})
+		if err != nil {
+			return server.SetupScriptDetection{}, err
+		}
+		out := server.SetupScriptDetection{
+			Source:   det.Source,
+			Evidence: det.Evidence,
+		}
+		if det.Found() {
+			stored, err := det.Spec.Stored()
+			if err != nil {
+				return server.SetupScriptDetection{}, err
+			}
+			out.SetupScript = stored
+			out.DisplayCommand = det.Spec.DisplayCommand()
+		}
+		return out, nil
+	}
 }

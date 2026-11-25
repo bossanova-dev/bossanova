@@ -4,6 +4,8 @@ go_library(
     name = "setupscript",
     srcs = [
         "argv.go",
+        "detect.go",
+        "detect_lookpath.go",
         "setupscript.go",
     ],
     importpath = "github.com/recurser/bossd/internal/adapter/setupscript",
@@ -15,6 +17,8 @@ go_test(
     name = "setupscript_test",
     srcs = [
         "argv_test.go",
+        "detect_lookpath_test.go",
+        "detect_test.go",
         "perms_unix_test.go",
         "setupscript_test.go",
     ],

@@ -18,6 +18,62 @@ export const READ_ISSUE_SNAPSHOT_QUERY = `query IssueSnapshot($id: String!) {
     attachments(first: 250) { nodes { id title subtitle url createdAt } pageInfo { hasNextPage } }
   }
 }`
+/** @typedef {{id: string, identifier: string, state: {name: string, type: string}}} LinearRelatedIssue */
+/** @typedef {{type: string, issue?: LinearRelatedIssue, relatedIssue?: LinearRelatedIssue}} LinearRelationNode */
+/** @typedef {{nodes: LinearRelationNode[], pageInfo: {hasNextPage: boolean}}} LinearRelationConnection */
+/** @typedef {{id: string, identifier: string, uuid: string, state: {name: string, type: string}}} NormalizedLinearRelation */
+/** @typedef {{blockedBy: NormalizedLinearRelation[], blocks: NormalizedLinearRelation[], relatedTo: NormalizedLinearRelation[]}} NormalizedLinearRelations */
+/** @typedef {{ok: boolean, relations: NormalizedLinearRelations | null, field?: 'relations' | 'inverseRelations', reason?: 'connection' | 'target'}} BucketLinearRelationsResult */
+/** @param {unknown} value */
+const nonEmpty = (value) => typeof value === 'string' && value.trim().length > 0
+/**
+ * Bucket Linear's `relations` and `inverseRelations` connections into `{blockedBy, blocks, relatedTo}`,
+ * deduplicated by target UUID. Returns `{ok: false, relations: null, field, reason}` on any
+ * incomplete connection or target without throwing.
+ * @param {{relations?: LinearRelationConnection | null, inverseRelations?: LinearRelationConnection | null} | null | undefined} raw
+ * @returns {BucketLinearRelationsResult}
+ */
+export function bucketLinearRelations(raw) {
+  /** @type {NormalizedLinearRelations} */
+  const relations = { blockedBy: [], blocks: [], relatedTo: [] }
+  for (const [field, inverse] of /** @type {const} */ ([
+    ['relations', false],
+    ['inverseRelations', true],
+  ])) {
+    const connection = raw?.[field]
+    if (!Array.isArray(connection?.nodes) || connection?.pageInfo?.hasNextPage !== false)
+      return { ok: false, relations: null, field, reason: 'connection' }
+    for (const relation of connection.nodes) {
+      if (!relation || typeof relation !== 'object')
+        return { ok: false, relations: null, field, reason: 'target' }
+      const target = inverse ? relation.issue : relation.relatedIssue
+      const bucket =
+        relation.type === 'related'
+          ? relations.relatedTo
+          : relation.type === 'blocks'
+            ? inverse
+              ? relations.blockedBy
+              : relations.blocks
+            : null
+      if (!bucket) continue
+      if (
+        !nonEmpty(target?.id) ||
+        !nonEmpty(target?.identifier) ||
+        !nonEmpty(target?.state?.name) ||
+        !nonEmpty(target?.state?.type)
+      )
+        return { ok: false, relations: null, field, reason: 'target' }
+      if (!bucket.some((entry) => entry.uuid === target.id))
+        bucket.push({
+          id: target.identifier,
+          identifier: target.identifier,
+          uuid: target.id,
+          state: target.state,
+        })
+    }
+  }
+  return { ok: true, relations }
+}
 export async function linearReadIssueSnapshot({ apiKey, fetchImpl, endpoint, issueId }) {
   if (typeof issueId !== 'string' || !issueId.trim())
     throw new Error('readIssueSnapshot: non-empty issue id required')
@@ -53,6 +109,7 @@ export async function linearReadIssueSnapshot({ apiKey, fetchImpl, endpoint, iss
       throw new Error('readIssueSnapshot: invalid label node')
     return node.name
   })
+  const bucketed = bucketLinearRelations(issue)
   const snapshot = {
     id: issue.identifier,
     identifier: issue.identifier,
@@ -64,6 +121,7 @@ export async function linearReadIssueSnapshot({ apiKey, fetchImpl, endpoint, iss
     team: issue.team?.name ?? null,
     labels,
     attachments: issue.attachments.nodes,
+    ...(bucketed.ok ? { relations: bucketed.relations } : {}),
   }
   const problems = issueSnapshotProblems(snapshot)
   if (problems.length)

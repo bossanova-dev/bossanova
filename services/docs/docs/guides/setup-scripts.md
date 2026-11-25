@@ -30,6 +30,35 @@ cli='boss repo update my-repo --setup-script ""'
 mcp="update_repo"
 />
 
+### Detected setup commands
+
+When you add a repository, Bossanova inspects the repository without running any
+repository code and proposes the first matching setup command in this order:
+
+1. **Makefile target**: a `Makefile` target named `setup-worktree`, `setup`, or
+   `bootstrap` (in that order), including targets defined in literal relative
+   `include` files.
+2. **Executable setup script**: an executable regular file at `script/setup`,
+   `scripts/setup.sh`, or `bin/setup` (in that order; symlinks are not adopted).
+3. **Lockfile install**: `pnpm-lock.yaml` (`pnpm install --frozen-lockfile`),
+   `package-lock.json` (`npm ci`), `yarn.lock` (`yarn install --immutable` when
+   `.yarnrc.yml` is present, otherwise `yarn install --frozen-lockfile`),
+   `bun.lock` or `bun.lockb` (`bun install`), `uv.lock` (`uv sync`), or
+   `Gemfile.lock` (`bundle install`).
+4. **Tool versions**: `mise.toml` or `.mise.toml` (`mise install` when `mise`
+   resolves in your login shell), or `.tool-versions` (`mise install` when
+   `mise` resolves, otherwise `asdf install` when `asdf` resolves).
+
+A `.devcontainer/devcontainer.json` or `.devcontainer.json` file that declares
+`postCreateCommand` is reported as evidence only and is not adopted.
+
+In the TUI add-repository wizard's open flow, the **Setup command** field is
+pre-filled with the detected command and shows a `Detected from …` note.
+Accepting the pre-filled value stores the detected structured command, editing
+the field stores your custom text instead, and clearing the field registers the
+repository with no setup command. In the clone flow, leaving **Setup command**
+empty adopts whatever setup command is detected in the repository after cloning.
+
 ## Environment variables
 
 The following environment variables are available to the setup script:

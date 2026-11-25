@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildProofRecord, proofAreaName, reviewSidecar } from './verify-proof-build.mjs'
+import {
+  PROOF_EVIDENCE_SCHEMA,
+  buildProofRecord,
+  proofAreaName,
+  reviewSidecar,
+} from './verify-proof-build.mjs'
+import { proofPageModel } from './verify-proof-page.mjs'
 import { buildBlockers } from './verify-blockers.mjs'
 import { validateProof } from './verify-proof.mjs'
 import { canonicalAreaId, configAreaIds, reviewAreas } from './verify-areas.mjs'
@@ -302,4 +308,133 @@ test('describer blocks, signals and risks ride the sidecar areas and leave the r
   })
   assert.ok(!Object.hasOwn(sidecar(broken), 'described'), 'an invalid area is left out')
   assert.ok(Object.hasOwn(sidecar(broken), 'filesUrl'), 'and the rest of the sidecar stays')
+})
+
+test('boss-proof-evidence/1 sidecar contributes claims and health, caps high on unproven behaviour claims, and keeps non-behaviour claims out of Not proven', () => {
+  const intent = {
+    source: 'pr-body',
+    bullets: [
+      'Fixes proof page area accounting',
+      'Generated vendored skill toolboxes',
+      'Regression test additions',
+    ],
+  }
+  const evidence = {
+    schema: PROOF_EVIDENCE_SCHEMA,
+    head: HEAD,
+    intent,
+    claims: [
+      { proof: 'test', behaviour: true, test: 'areaAccounting', path: 'a.test.mjs' },
+      { proof: 'unproven', behaviour: false, note: 'generated output' },
+      { proof: 'unproven', behaviour: false, note: 'test addition' },
+    ],
+    health: [{ code: 'second-model-down', text: 'Second model down' }],
+  }
+  const readHeadFile = (file) => (file === 'a.test.mjs' ? "test('areaAccounting', () => {})" : null)
+  const built = buildProofRecord({
+    judged: judged({ verdict: 'pass', confidence: confidence('high') }),
+    intent,
+    evidence,
+    repo: 'acme/widgets',
+    pr: 4668,
+    readHeadFile,
+    changedPaths: ['a.test.mjs'],
+  })
+  assert.equal(built.ok, true, built.errors?.join('; '))
+  assert.equal(built.proof.confidence.level, 'high')
+  assert.equal(built.proof.health[0].code, 'second-model-down')
+  assert.equal(built.proof.whatItDoes.claims.length, 3)
+  const model = proofPageModel({ proof: built.proof })
+  assert.deepEqual(model.banner.unproven, [])
+
+  // An unproven behaviour claim caps high -> moderate and appears in Not proven.
+  const unprovenBehaviour = buildProofRecord({
+    judged: judged({ verdict: 'pass', confidence: confidence('high') }),
+    intent,
+    evidence: {
+      ...evidence,
+      claims: [
+        { proof: 'unproven', behaviour: true, note: 'no test' },
+        { proof: 'unproven', behaviour: false, note: 'generated output' },
+        { proof: 'unproven', behaviour: false, note: 'test addition' },
+      ],
+    },
+    repo: 'acme/widgets',
+    pr: 4668,
+    readHeadFile,
+    changedPaths: ['a.test.mjs'],
+  })
+  assert.equal(unprovenBehaviour.ok, true)
+  assert.equal(unprovenBehaviour.proof.confidence.level, 'moderate')
+  assert.ok(unprovenBehaviour.proof.confidence.loweredBy.some((r) => r.code === 'unproven-claim'))
+  const cappedModel = proofPageModel({ proof: unprovenBehaviour.proof })
+  assert.deepEqual(cappedModel.banner.unproven, ['Fixes proof page area accounting: no test'])
+
+  // Unverified test/clip sidecar claims fail closed to unproven.
+  const forged = buildProofRecord({
+    judged: judged({ verdict: 'pass', confidence: confidence('high') }),
+    intent,
+    evidence: {
+      ...evidence,
+      claims: [
+        { proof: 'test', behaviour: true, test: 'forgedTest', path: 'a.test.mjs' },
+        { proof: 'clip', behaviour: true, chapter: 'Forged clip', atMs: 100 },
+        { proof: 'unproven', behaviour: false, note: 'test addition' },
+      ],
+    },
+    repo: 'acme/widgets',
+    pr: 4668,
+    readHeadFile,
+    changedPaths: ['a.test.mjs'],
+    hasHeadClip: false,
+  })
+  assert.equal(forged.ok, true)
+  assert.equal(forged.proof.whatItDoes.claims[0].proof, 'unproven')
+  assert.equal(forged.proof.whatItDoes.claims[1].proof, 'unproven')
+  assert.equal(forged.proof.confidence.level, 'moderate')
+
+  // Stale sidecar claims with mismatched bullets are dropped; unknown caller intent falls back.
+  const mismatched = buildProofRecord({
+    judged: judged({ verdict: 'pass', confidence: confidence('high') }),
+    intent: { source: 'pr-body', bullets: ['Different bullet 1', 'Different 2', 'Different 3'] },
+    evidence,
+    repo: 'acme/widgets',
+    pr: 4668,
+    readHeadFile,
+    changedPaths: ['a.test.mjs'],
+  })
+  assert.equal(mismatched.ok, true)
+  assert.equal(mismatched.proof.whatItDoes.claims, undefined)
+
+  const unknownCaller = buildProofRecord({
+    judged: judged({ verdict: 'pass', confidence: confidence('high') }),
+    intent: { source: 'unknown', bullets: [] },
+    evidence,
+    repo: 'acme/widgets',
+    pr: 4668,
+    readHeadFile,
+    changedPaths: ['a.test.mjs'],
+  })
+  assert.equal(unknownCaller.ok, true)
+  assert.deepEqual(unknownCaller.proof.whatItDoes.bullets, intent.bullets)
+  assert.equal(unknownCaller.proof.whatItDoes.claims.length, 3)
+
+  // Many sidecar health entries cannot crowd out judge health.
+  const crowded = buildProofRecord({
+    judged: judged({
+      verdict: 'pass',
+      confidence: { ...confidence('high'), health: ['second-model-skipped'] },
+    }),
+    intent,
+    evidence: {
+      ...evidence,
+      health: Array.from({ length: 25 }, (_, i) => ({ code: `factory-${i}`, text: `F${i}` })),
+    },
+    repo: 'acme/widgets',
+    pr: 4668,
+    readHeadFile,
+    changedPaths: ['a.test.mjs'],
+  })
+  assert.equal(crowded.ok, true)
+  assert.ok(crowded.proof.health.some((entry) => entry.code === 'second-model-skipped'))
 })

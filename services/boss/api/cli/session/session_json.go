@@ -91,6 +91,8 @@ type sessionDetailJSON struct {
 	// DisplayStatus reuses displayStatusName so the JSON speaks the same
 	// vocabulary as the TUI and `boss session checks` ("passing", "failing", …).
 	DisplayStatus string `json:"display_status"`
+	// DisplayLabel is the daemon's formatted status label verbatim (e.g. "✓ ready").
+	DisplayLabel string `json:"display_label"`
 	// LastCheckState is the ChecksOverall enum name with its prefix trimmed
 	// ("PENDING" / "PASSED" / "FAILED"). UNSPECIFIED means the daemon has no
 	// verdict demonstrated at the current head.
@@ -98,8 +100,14 @@ type sessionDetailJSON struct {
 	LastCheckStateObserved string `json:"last_check_state_observed"`
 	LastCheckStateHeadSHA  string `json:"last_check_state_head_sha"`
 	LastCheckStateAt       string `json:"last_check_state_at"`
-	ArchivedAt             string `json:"archived_at"`
-	SetupError             string `json:"setup_error"`
+	// PrMergeable is null when mergeability is unknown, otherwise the PR's mergeable flag.
+	PrMergeable *bool `json:"pr_mergeable"`
+	// MergeBlock is null when the daemon has no merge-gate assessment for this session.
+	MergeBlock *sessionMergeBlockJSON `json:"merge_block"`
+	// AttentionStatus is null when the daemon has no attention status for this session.
+	AttentionStatus *sessionAttentionJSON `json:"attention_status"`
+	ArchivedAt      string                `json:"archived_at"`
+	SetupError      string                `json:"setup_error"`
 	// BlockedReason is the daemon's raw blocked reason, untruncated. It is a
 	// pointer so null ("this session is not blocked") stays distinguishable from
 	// "" — the same reason PrNumber is one.
@@ -110,6 +118,24 @@ type sessionDetailJSON struct {
 	BlockedReason *string            `json:"blocked_reason"`
 	LastRepair    *sessionRepairJSON `json:"last_repair"`
 	RepairActive  bool               `json:"repair_active"`
+}
+
+// sessionMergeBlockJSON explains why a session's PR cannot currently be merged.
+// BlockingReviewers is always a non-nil slice so an empty list marshals as `[]`,
+// never `null`.
+type sessionMergeBlockJSON struct {
+	Gate              string   `json:"gate"`
+	Detail            string   `json:"detail"`
+	BlockingReviewers []string `json:"blocking_reviewers"`
+	DisplayStatus     string   `json:"display_status"`
+}
+
+// sessionAttentionJSON reports whether and why a session needs human attention.
+type sessionAttentionJSON struct {
+	NeedsAttention bool   `json:"needs_attention"`
+	Reason         string `json:"reason"`
+	Summary        string `json:"summary"`
+	Since          string `json:"since"`
 }
 
 // sessionRepairJSON mirrors the "Last repair:" line runShow prints. It is nil
@@ -163,10 +189,14 @@ func newSessionDetailJSON(s *pb.Session) sessionDetailJSON {
 		AccountID:              s.GetAccountId(),
 		AccountLabel:           s.GetAccountLabel(),
 		DisplayStatus:          displayStatusName(s.GetDisplayStatus()),
+		DisplayLabel:           s.GetDisplayLabel(),
 		LastCheckState:         strings.TrimPrefix(s.GetLastCheckState().String(), "CHECKS_OVERALL_"),
 		LastCheckStateObserved: strings.TrimPrefix(s.GetLastCheckStateObserved().String(), "CHECKS_OVERALL_"),
 		LastCheckStateHeadSHA:  s.GetLastCheckStateHeadSha(),
 		LastCheckStateAt:       cliutil.Rfc3339OrEmpty(s.GetLastCheckStateAt()),
+		PrMergeable:            prMergeableJSON(s),
+		MergeBlock:             mergeBlockJSON(s),
+		AttentionStatus:        attentionJSON(s),
 		ArchivedAt:             cliutil.Rfc3339OrEmpty(s.GetArchivedAt()),
 		SetupError:             s.GetSetupError(),
 		RepairActive:           s.GetRepairActive(),
@@ -189,4 +219,38 @@ func newSessionDetailJSON(s *pb.Session) sessionDetailJSON {
 		}
 	}
 	return detail
+}
+
+func prMergeableJSON(s *pb.Session) *bool {
+	if s.PrMergeable == nil {
+		return nil
+	}
+	v := s.GetPrMergeable()
+	return &v
+}
+
+func mergeBlockJSON(s *pb.Session) *sessionMergeBlockJSON {
+	mb := s.GetMergeBlock()
+	if mb == nil {
+		return nil
+	}
+	return &sessionMergeBlockJSON{
+		Gate:              strings.TrimPrefix(mb.GetGate().String(), "GATE_"),
+		Detail:            mb.GetDetail(),
+		BlockingReviewers: append([]string{}, mb.GetBlockingReviewers()...),
+		DisplayStatus:     displayStatusName(mb.GetDisplayStatus()),
+	}
+}
+
+func attentionJSON(s *pb.Session) *sessionAttentionJSON {
+	att := s.GetAttentionStatus()
+	if att == nil {
+		return nil
+	}
+	return &sessionAttentionJSON{
+		NeedsAttention: att.GetNeedsAttention(),
+		Reason:         strings.TrimPrefix(att.GetReason().String(), "ATTENTION_REASON_"),
+		Summary:        att.GetSummary(),
+		Since:          cliutil.Rfc3339OrEmpty(att.GetSince()),
+	}
 }

@@ -10,6 +10,11 @@ import { precedes, region, regionUntilNext } from '../../scripts/test-infra/gate
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { commandReader, main, materializeTrustedTree } from './verify-gate.mjs'
 import { NO_UI_RECORDING } from './verify-proof-page-model.mjs'
+import {
+  PROOF_MISSING_MARKER,
+  proofMissingNote,
+  proofResolvedNote,
+} from './verify-proof-missing.mjs'
 import { proofPlayerScript } from './verify-proof-player.mjs'
 import { parseProofLine } from './verify-proof.mjs'
 import { PAGE_OBJECT, PLAYER_OBJECT } from './verify-publish-hook.mjs'
@@ -77,7 +82,7 @@ function sectionsExtension(root, title, body) {
  * A repository with stub hooks on its base and, on the head only, hooks that must never run. With
  * `sections`, the base declares a section that the head rewrites.
  */
-function repository(t, { sections = false, headPages = false } = {}) {
+function repository(t, { sections = false, headPages = false, origin = null } = {}) {
   const repo = tempDir('verify-proof-repo-', t)
   const git = (...args) =>
     execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
@@ -87,6 +92,7 @@ function repository(t, { sections = false, headPages = false } = {}) {
   git('init', '-q')
   git('config', 'user.email', 'verify@example.com')
   git('config', 'user.name', 'verify')
+  if (origin) git('remote', 'add', 'origin', origin)
   extension(repo, 'boss-verify-stub-host', 'proof-publish', 'publish', PUBLISH)
   extension(repo, 'boss-verify-stub-media', 'proof-media', 'media', MEDIA)
   fs.mkdirSync(path.join(repo, 'proto'))
@@ -122,13 +128,39 @@ function repository(t, { sections = false, headPages = false } = {}) {
 const INTENDED = 'A staff role may read every account. This is intended and never a risk.'
 const BASE_INSTRUCTIONS = 'List each deploy step, grouped by when it happens.'
 
-function world({ repo, base, head, config = null }) {
+function world({
+  repo,
+  base,
+  head,
+  config = null,
+  comments = [],
+  ghRepoViewFail = false,
+  ghRepoRestFail = false,
+}) {
   const writes = []
+  const bossNotes = []
+  const ghCalls = []
   const real = commandReader({ cwd: repo })
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
   const read = (command, args, opts) => {
+    if (command === 'gh') ghCalls.push(args)
     if (command === 'boss' && args[0] === 'ls') return ok({ sessions: [] })
     if (command === 'boss' && args[0] === 'pr') return ok({ head_sha: head, checks: [] })
+    if (command === 'boss' && args[0] === 'notes' && args[1] === 'add') {
+      bossNotes.push(args)
+      return ok({ id: `note-${bossNotes.length}` })
+    }
+    if (command === 'gh' && args[0] === 'repo' && args[1] === 'view') {
+      if (ghRepoViewFail)
+        return {
+          ok: false,
+          exit: 1,
+          output: '',
+          stderr: 'GraphQL: API rate limit already exceeded',
+          error: 'GraphQL: API rate limit already exceeded',
+        }
+      return ok({ nameWithOwner: 'acme/widgets' })
+    }
     if (command === 'gh' && args[0] === 'pr' && args[1] === 'view')
       return ok({
         headRefOid: head,
@@ -145,7 +177,7 @@ function world({ repo, base, head, config = null }) {
       const route = args[1]
       if (route === 'user') return ok({ login: 'verify' })
       if (route.includes('/statuses')) return ok([[]])
-      if (route.includes('/comments?')) return ok([[]])
+      if (route.includes('/comments?')) return ok([comments])
       if (route.includes('/permission')) return ok({ permission: 'write' })
       if (route.includes('/contents/') && config)
         return ok({
@@ -157,6 +189,17 @@ function world({ repo, base, head, config = null }) {
         return { ok: false, payload: { status: '404' }, error: 'HTTP 404', exit: 1, output: '' }
       if (route.endsWith('/commits/main')) return ok({ sha: base })
       if (route === 'repos/acme/widgets') return ok({ default_branch: 'main' })
+      if (route === 'repos/{owner}/{repo}') {
+        if (ghRepoRestFail)
+          return {
+            ok: false,
+            exit: 1,
+            output: '',
+            stderr: 'API rate limit exceeded',
+            error: 'API rate limit exceeded',
+          }
+        return ok({ full_name: 'acme/widgets', default_branch: 'main' })
+      }
       if (route === '--method') {
         const body = args.find((arg) => arg.startsWith('body='))?.slice(5)
         writes.push({ method: args[2], route: args[3], ...(body ? { body } : {}) })
@@ -169,7 +212,7 @@ function world({ repo, base, head, config = null }) {
       throw new Error(`unexpected ${command} ${args.join(' ')}`)
     return real(command, args, opts)
   }
-  return { writes, read }
+  return { writes, bossNotes, ghCalls, read }
 }
 
 const AREAS = [
@@ -243,7 +286,15 @@ async function setup(t, env = {}, config = null, options = {}) {
   const out = tempDir('verify-proof-out-', t)
   const secret = path.join(tempDir('verify-proof-secret-', t), 'id.png')
   fs.writeFileSync(secret, 'outside the evidence directory')
-  const w = world({ repo, base, head, config })
+  const w = world({
+    repo,
+    base,
+    head,
+    config,
+    comments: options.comments ?? [],
+    ghRepoViewFail: options.ghRepoViewFail === true,
+    ghRepoRestFail: options.ghRepoRestFail === true,
+  })
   const trees = tempDir('verify-proof-trees-', t)
   const deps = {
     read: w.read,
@@ -647,4 +698,354 @@ test('the bundle carries the base tip sections and instructions, never the head 
     ),
     'placed where Risks would be, before the areas',
   )
+})
+
+const lastNonEmptyLine = (body) =>
+  String(body ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1) ?? ''
+
+const proofMissingBossNotes = (notes) =>
+  notes.filter((args) => args.some((arg) => arg.includes('verify:proof-missing:')))
+
+test('origin remote resolves repo without gh repo view so the proof records under rate limits', async (t) => {
+  const { head, base, w, deps } = await setup(t, {}, null, {
+    origin: 'https://github.com/acme/widgets.git',
+    ghRepoViewFail: true,
+    ghRepoRestFail: true,
+  })
+  deps.proof = {
+    callDaemon: async () => ({
+      htmlUrl: 'https://github.com/acme/widgets/runs/99',
+      isCreated: true,
+    }),
+  }
+  const judge = judgeFile(tempDir('verify-proof-run-', t), { head, base })
+  const result = await main(
+    [
+      'post',
+      '--pr',
+      '7',
+      '--head',
+      head,
+      '--verdict',
+      'human',
+      '--reason',
+      'human-review:api-contract',
+      '--judge',
+      judge,
+    ],
+    deps,
+  )
+  assert.equal(result.posted, true)
+  assert.equal(result.proof.recorded, true)
+  assert.equal(result.proof.page.published, true)
+  assert.equal(result.proofMissing, undefined)
+  assert.equal(
+    w.ghCalls.some((args) => args[0] === 'repo' && args[1] === 'view'),
+    false,
+    'gh repo view is never called when origin is readable',
+  )
+  assert.equal(proofMissingBossNotes(w.bossNotes).length, 0)
+})
+
+test('unusable origin and gh repo view still post the verdict and report proofMissing via comment and boss note', async (t) => {
+  const { head, base, w, deps } = await setup(t, {}, null, {
+    ghRepoViewFail: true,
+    ghRepoRestFail: true,
+  })
+  const judge = judgeFile(tempDir('verify-proof-run-', t), { head, base })
+  const args = [
+    'post',
+    '--pr',
+    '7',
+    '--head',
+    head,
+    '--verdict',
+    'human',
+    '--reason',
+    'human-review:api-contract',
+    '--judge',
+    judge,
+  ]
+
+  const dry = await main([...args, '--dry-run'], deps)
+  assert.equal(dry.posted, true)
+  assert.equal(dry.proof.recorded, false)
+  assert.equal(dry.proof.reason, 'record-invalid')
+  assert.deepEqual(dry.proofMissing, {
+    problems: [{ part: 'record', reason: 'record-invalid' }],
+    comment: 'planned',
+    note: false,
+  })
+  assert.equal(proofMissingBossNotes(w.bossNotes).length, 0, 'dry run skips boss notes add')
+  const plannedMissing = dry.writes.find(
+    (entry) =>
+      entry.kind === 'pr-comment' && PROOF_MISSING_MARKER.test(lastNonEmptyLine(entry.body)),
+  )
+  assert.ok(plannedMissing, 'dry run plans the proof-missing pr-comment in writes')
+  assert.equal(parseProofLine(plannedMissing.body), null)
+
+  const live = await main(args, deps)
+  assert.equal(live.posted, true)
+  assert.equal(live.proof.recorded, false)
+  assert.equal(live.proof.reason, 'record-invalid')
+  assert.deepEqual(live.proofMissing, {
+    problems: [{ part: 'record', reason: 'record-invalid' }],
+    comment: 'posted',
+    note: true,
+  })
+  const missingWrite = w.writes.find(
+    (entry) => entry.method === 'POST' && PROOF_MISSING_MARKER.test(lastNonEmptyLine(entry.body)),
+  )
+  assert.ok(missingWrite, 'posts a proof-missing PR comment')
+  assert.equal(lastNonEmptyLine(missingWrite.body).match(PROOF_MISSING_MARKER)[1], head)
+  assert.equal(parseProofLine(missingWrite.body), null)
+  const notes = proofMissingBossNotes(w.bossNotes)
+  assert.equal(notes.length, 1)
+  const keyIndex = notes[0].indexOf('--idempotency-key')
+  assert.ok(keyIndex >= 0)
+  assert.equal(notes[0][keyIndex + 1], `verify:proof-missing:7:${head.slice(0, 12)}`)
+})
+
+test('a failing daemon check run still records the proof note and reports check-run-failed', async (t) => {
+  const { head, base, w, deps } = await setup(t)
+  deps.proof = {
+    callDaemon: async () => {
+      throw new Error('socket closed')
+    },
+  }
+  const judge = judgeFile(tempDir('verify-proof-run-', t), { head, base })
+  const result = await main(post(head, 'human', ['--judge', judge]), deps)
+  assert.equal(result.posted, true)
+  assert.equal(result.proof.recorded, true)
+  assert.equal(result.proof.page.published, true)
+  assert.deepEqual(result.proof.checkRun, { posted: false, reason: 'check-run-failed' })
+  assert.deepEqual(result.proofMissing, {
+    problems: [{ part: 'check-run', reason: 'check-run-failed' }],
+    comment: 'posted',
+    note: true,
+  })
+  assert.ok(w.writes.some((entry) => entry.body?.includes('boss-proof-note')))
+  assert.ok(
+    w.writes.some(
+      (entry) => entry.method === 'POST' && PROOF_MISSING_MARKER.test(lastNonEmptyLine(entry.body)),
+    ),
+  )
+  const notes = proofMissingBossNotes(w.bossNotes)
+  assert.equal(notes.length, 1)
+  assert.ok(notes[0].includes(`verify:proof-missing:7:${head.slice(0, 12)}`))
+})
+
+test('a succeeding proof republish patches a standing proof-missing comment in place and stays quiet when none stands', async (t) => {
+  const { head, base, w, deps } = await setup(t, {}, null, {
+    comments: [],
+  })
+  const standingBody = proofMissingNote({
+    headSha: head,
+    pr: 7,
+    repo: 'acme/widgets',
+    problems: [{ part: 'record', reason: 'record-invalid' }],
+  }).body
+  const standing = {
+    id: 99,
+    body: standingBody,
+    user: { login: 'verify' },
+    author_association: 'MEMBER',
+    created_at: '2026-11-10T00:00:00Z',
+    html_url: 'https://github.com/acme/widgets/pull/7#issuecomment-99',
+  }
+  const withStanding = await setup(t, {}, null, { comments: [standing] })
+  const okDaemon = async () => ({
+    htmlUrl: 'https://github.com/acme/widgets/runs/100',
+    isCreated: true,
+  })
+  withStanding.deps.proof = { callDaemon: okDaemon }
+  const judgeWithStanding = judgeFile(tempDir('verify-proof-run-', t), {
+    head: withStanding.head,
+    base: withStanding.base,
+  })
+  // Rebuild standing comment for withStanding.head so headSha matches.
+  standing.body = proofMissingNote({
+    headSha: withStanding.head,
+    pr: 7,
+    repo: 'acme/widgets',
+    problems: [{ part: 'record', reason: 'record-invalid' }],
+  }).body
+  const proofArgs = [
+    'proof',
+    '--pr',
+    '7',
+    '--head',
+    withStanding.head,
+    '--judge',
+    judgeWithStanding,
+    '--repo',
+    'acme/widgets',
+  ]
+
+  const dry = await main([...proofArgs, '--dry-run'], withStanding.deps)
+  assert.equal(dry.recorded, true)
+  assert.equal(dry.proofMissing, undefined)
+  const plannedPatch = dry.writes.find((entry) => entry.replaces === 99)
+  assert.ok(plannedPatch, 'dry run plans an in-place replacement of comment 99')
+  assert.match(lastNonEmptyLine(plannedPatch.body), PROOF_MISSING_MARKER)
+  assert.match(plannedPatch.body, /is now recorded/)
+
+  const live = await main(proofArgs, withStanding.deps)
+  assert.equal(live.recorded, true)
+  assert.equal(live.proofMissing, undefined)
+  const patches = withStanding.w.writes.filter(
+    (entry) => entry.method === 'PATCH' && entry.route.endsWith('/issues/comments/99'),
+  )
+  assert.equal(patches.length, 1, 'patches standing comment 99 in place')
+  assert.match(patches[0].body, /is now recorded/)
+  assert.ok(
+    patches[0].body.includes(
+      `https://proof.example/acme/widgets/7/${withStanding.head}/index.html`,
+    ),
+  )
+  assert.match(lastNonEmptyLine(patches[0].body), PROOF_MISSING_MARKER)
+  assert.equal(
+    withStanding.w.writes.some(
+      (entry) => entry.method === 'POST' && PROOF_MISSING_MARKER.test(lastNonEmptyLine(entry.body)),
+    ),
+    false,
+    'never posts a fresh proof-missing comment on resolution',
+  )
+
+  deps.proof = { callDaemon: okDaemon }
+  const judgeClean = judgeFile(tempDir('verify-proof-run-', t), { head, base })
+  const clean = await main(
+    ['proof', '--pr', '7', '--head', head, '--judge', judgeClean, '--repo', 'acme/widgets'],
+    deps,
+  )
+  assert.equal(clean.recorded, true)
+  assert.equal(clean.proofMissing, undefined)
+  assert.equal(
+    w.writes.some((entry) => PROOF_MISSING_MARKER.test(lastNonEmptyLine(entry.body))),
+    false,
+    'never posts a resolved comment when no proof-missing marker stands',
+  )
+})
+
+test('a resolved proof-missing comment is not rewritten to strip its URL or duplicated across logins', async (t) => {
+  const okDaemon = async () => ({
+    htmlUrl: 'https://github.com/acme/widgets/runs/101',
+    isCreated: true,
+  })
+
+  // Case 1: already-resolved comment with a page URL must not be patched when a later pass runs
+  // under proofDefaults.pages: "parked" (where page is not-parked and pageUrl is null).
+  const resolvedComment = {
+    id: 99,
+    body: '',
+    user: { login: 'verify' },
+    author_association: 'MEMBER',
+    created_at: '2026-11-10T00:01:00Z',
+    html_url: 'https://github.com/acme/widgets/pull/7#issuecomment-99',
+  }
+  const parked = await setup(t, {}, null, { comments: [resolvedComment] })
+  resolvedComment.body = proofResolvedNote({
+    headSha: parked.head,
+    pageUrl: `https://proof.example/acme/widgets/7/${parked.head}/index.html`,
+  }).body
+  parked.deps.proof = {
+    callDaemon: okDaemon,
+    loadConfig: () => ({ proofDefaults: { pages: 'parked' } }),
+  }
+  const judgePass = judgeFile(tempDir('verify-proof-run-', t), {
+    head: parked.head,
+    base: parked.base,
+    verdict: 'pass',
+  })
+  const passResult = await main(post(parked.head, 'pass', ['--judge', judgePass]), parked.deps)
+  assert.equal(passResult.posted, true)
+  assert.equal(passResult.proof.recorded, true)
+  assert.deepEqual(passResult.proof.page, { published: false, reason: 'not-parked' })
+  assert.equal(passResult.proofMissing, undefined)
+  assert.equal(
+    parked.w.writes.some((entry) => PROOF_MISSING_MARKER.test(lastNonEmptyLine(entry.body))),
+    false,
+    'already-resolved comment keeps its page URL on a later non-parked pass',
+  )
+
+  // Case 2: an operator resolved a bot-posted proof-missing comment under another login; a later
+  // clean run by the bot must not post a duplicate "is now recorded" comment.
+  const botMissing = {
+    id: 100,
+    body: '',
+    user: { login: 'verify' },
+    author_association: 'MEMBER',
+    created_at: '2026-11-10T00:00:00Z',
+    html_url: 'https://github.com/acme/widgets/pull/7#issuecomment-100',
+  }
+  const operatorResolved = {
+    id: 101,
+    body: '',
+    user: { login: 'operator' },
+    author_association: 'MEMBER',
+    created_at: '2026-11-10T00:02:00Z',
+    html_url: 'https://github.com/acme/widgets/pull/7#issuecomment-101',
+  }
+  const crossLogin = await setup(t, {}, null, { comments: [botMissing, operatorResolved] })
+  botMissing.body = proofMissingNote({
+    headSha: crossLogin.head,
+    pr: 7,
+    repo: 'acme/widgets',
+    problems: [{ part: 'record', reason: 'record-invalid' }],
+  }).body
+  operatorResolved.body = proofResolvedNote({
+    headSha: crossLogin.head,
+    pageUrl: `https://proof.example/acme/widgets/7/${crossLogin.head}/index.html`,
+  }).body
+  crossLogin.deps.proof = { callDaemon: okDaemon }
+  const judgeHuman = judgeFile(tempDir('verify-proof-run-', t), {
+    head: crossLogin.head,
+    base: crossLogin.base,
+  })
+  const cleanResult = await main(
+    [
+      'proof',
+      '--pr',
+      '7',
+      '--head',
+      crossLogin.head,
+      '--judge',
+      judgeHuman,
+      '--repo',
+      'acme/widgets',
+    ],
+    crossLogin.deps,
+  )
+  assert.equal(cleanResult.recorded, true)
+  assert.equal(cleanResult.proofMissing, undefined)
+  assert.equal(
+    crossLogin.w.writes.some((entry) => PROOF_MISSING_MARKER.test(lastNonEmptyLine(entry.body))),
+    false,
+    'later clean run by bot does not duplicate operator resolution comment',
+  )
+})
+
+test('a clean live proof reads PR comments only once despite posting proof-note', async (t) => {
+  const { head, base, w, deps } = await setup(t)
+  deps.proof = {
+    callDaemon: async () => ({
+      htmlUrl: 'https://github.com/acme/widgets/runs/102',
+      isCreated: true,
+    }),
+  }
+  const judge = judgeFile(tempDir('verify-proof-run-', t), { head, base })
+  const result = await main(
+    ['proof', '--pr', '7', '--head', head, '--judge', judge, '--repo', 'acme/widgets'],
+    deps,
+  )
+  assert.equal(result.recorded, true)
+  assert.equal(result.proofMissing, undefined)
+  const commentReads = w.ghCalls.filter(
+    (args) => args[0] === 'api' && typeof args[1] === 'string' && args[1].includes('/comments?'),
+  )
+  assert.equal(commentReads.length, 1, 'reportProofProblems reuses markers read by recordHeadProof')
 })

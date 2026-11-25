@@ -648,6 +648,17 @@ test('claim liveness is addressed under the current run and selected issue', () 
   assert.equal(planScratchToken('.linear-plans/run-run-1/APP-1.claim-liveness.json').ok, true)
 })
 
+test('current-labels scratch family resolves under the current run and issue', () => {
+  assert.equal(planScratchFamily('current-labels').template, '<ISSUE-ID>.current-labels.json')
+  assert.equal(
+    planScratchPath('r1', 'current-labels', { issueId: 'ABC-1' }),
+    '.linear-plans/run-r1/ABC-1.current-labels.json',
+  )
+  assert.deepEqual(planScratchToken('.linear-plans/run-r1/ABC-1.current-labels.json').families, [
+    'current-labels',
+  ])
+})
+
 for (const [family, suffix] of [
   ['child-plan', '.md'],
   ['child-plan-rejected', '.md.rejected'],

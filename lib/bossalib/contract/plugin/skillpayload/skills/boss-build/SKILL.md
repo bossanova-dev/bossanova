@@ -115,7 +115,7 @@ Once Preflight has pinned, read `references/…` and `agents/…` from `$BOSS_BU
 | Does an open PR collide with this plan?                                | `node build/open-pr-overlap.mjs check --plan <plan> --issue-json <issue> [--pr <n>]`                                                                    |
 | Would verify admit this named ticket?                                  | `node build/named-admission.mjs check\|apply …`                                                                                                         |
 | Which repo-local extensions exist?                                     | `node skill-extensions.mjs discover --core boss-build --role <role> --json`                                                                             |
-| Do the plan’s citations and premises still hold?                       | `node plan-recheck.mjs <plan> [--root <dir>]`                                                                                                           |
+| Do the plan’s citations and premises still hold?                       | `node plan-recheck.mjs <plan> [--root <dir>] [--issue-json <file>]`                                                                                     |
 | Is a failed criterion only "checkout behind origin"? Re-run it rebased | `node build/acceptance-retry.mjs classify\|retry\|certify …`                                                                                            |
 | What happens to a nothing-built ticket?                                | `node build/no-change-disposition.mjs decide …`                                                                                                         |
 | Did the base move under me?                                            | `node base-drift.mjs check …`                                                                                                                           |
@@ -625,11 +625,14 @@ recovery for a restarted orchestrator.
 
 ### Step 4.6: Check premises and criteria against the code
 
-Before Step 5, run `node "$BOSS_BUILD_TOOLBOX/plan-recheck.mjs" "$PLAN_FILE"` against the current
-worktree. Its JSON verdict determines the action: `current` → proceed; `drifted` → use the reported
-locations and record them under `## Autonomous decisions`; `stale` → apply rule 2 and record the
-departure in `## Premise discharge`; `unknown` → re-check the cited paths and symbols by hand and
-record that fallback. Re-run every `not-evaluated` premise by hand. The citation verdict does not block implementation.
+Before Step 5, run
+`node "$BOSS_BUILD_TOOLBOX/plan-recheck.mjs" "$PLAN_FILE" --issue-json "$ISSUE_JSON"` against the
+current worktree. Its JSON verdict determines the action: `current` → proceed; `drifted` → use the
+reported locations and record them under `## Autonomous decisions`; `stale` → apply rule 2 and record
+the departure in `## Premise discharge`; `unknown` → re-check the cited paths and symbols by hand
+and record that fallback (for `reason: "target-repo-mismatch"`, record the declared and actual
+repositories under `## Premise discharge` before the hand fallback). Re-run every `not-evaluated`
+premise by hand. The citation verdict does not block implementation.
 When the plan states no acceptance criteria, derive them from what it says done looks like. When the
 plan is an attachment, ignore the ticket's `## Original notes` (that is pre-planning history).
 

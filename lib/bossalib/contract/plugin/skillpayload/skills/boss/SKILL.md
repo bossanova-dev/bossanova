@@ -73,6 +73,11 @@ attached to an existing session (`attached_existing: true`, your prompt was **no
 with `start_chat`, or re-create with `detach: true` (headless) or `tmux_unattended: true` (durable
 pane); the result's `next_action` says which.
 
+To verify a PR you did not build, pass `pr_number` with `verify_only: true` (the MCP form of
+`boss new --pr <n> --verify-only`), so automatic repair never pushes to it. When another session
+already owns the PR, the result's `is_verify_only` is that session's own flag: `false` means repair
+can still act on it.
+
 ## Cron repair workflow
 
 Cron repair example — list the stalled sessions, then link the existing PR:

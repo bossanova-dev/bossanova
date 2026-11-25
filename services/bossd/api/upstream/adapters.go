@@ -1535,10 +1535,10 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 		Model:            cmd.Model,
 		Effort:           cmd.Effort,
 		IsTmuxUnattended: cmd.GetIsTmuxUnattended(),
-		// Carry defer_pr so the rebuilt request preserves the hosted create's
-		// skip-up-front-draft-PR behavior (PR opened at finalize only if commits
-		// land); dropping it here would silently re-enable the eager draft PR.
-		DeferPr: cmd.GetDeferPr(),
+		// Dropping these would silently re-enable the eager draft PR, or let
+		// automatic repair push to a PR the caller only asked to verify.
+		DeferPr:      cmd.GetDeferPr(),
+		IsVerifyOnly: cmd.GetIsVerifyOnly(),
 	}
 	if name := cmd.GetAgentName(); name != "" {
 		req.AgentName = &name

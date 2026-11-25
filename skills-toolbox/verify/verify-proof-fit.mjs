@@ -3,6 +3,7 @@
 // drops whole media units, largest first, until every limit the host has reported holds, is
 // re-rendered with the number of files left out, re-scanned, and uploaded again. The loop retries
 // once per new limit kind and every fit removes at least one unit, so it needs no attempt cap.
+import { failureDetail } from './verify-failure-detail.mjs'
 import { mediaFiles } from './verify-media-hook.mjs'
 import { validateProofMedia } from './verify-proof-media.mjs'
 
@@ -173,7 +174,7 @@ export function fittedExtras(extras, media, omitted) {
 }
 
 /**
- * @typedef {{ok: boolean, reason?: string, limit?: PageLimit, url?: string}} UploadResult
+ * @typedef {{ok: boolean, reason?: string, detail?: string, limit?: PageLimit, url?: string}} UploadResult
  * @typedef {{
  *   upload: (html: string, media: ProofMedia | null) => Promise<UploadResult>,
  *   render: (media: ProofMedia | null, omitted: number) => string,
@@ -232,7 +233,10 @@ export async function publishWithinLimits({
       sent = { html: page, omitted: fit.omitted }
     }
     return { uploaded, ...sent }
-  } catch {
-    return { uploaded: { ok: false, reason: 'upload-failed' }, ...sent }
+  } catch (error) {
+    return {
+      uploaded: { ok: false, reason: 'upload-failed', detail: failureDetail(error) },
+      ...sent,
+    }
   }
 }

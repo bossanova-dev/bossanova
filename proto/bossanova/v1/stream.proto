@@ -781,6 +781,9 @@ message CreateSessionCommand {
   // the up-front draft PR (PR opened at finalize only if commits land), matching
   // the local socket path. Default false = unchanged eager draft-PR behavior.
   bool defer_pr = 19;
+  // Mirror CreateSessionRequest.is_verify_only so a reverse-stream hosted
+  // create adopts an existing PR without automatic repair, like the socket path.
+  bool is_verify_only = 21;
 }
 
 // WakeChatCommand asks the daemon to bring a chat's tmux+claude back to

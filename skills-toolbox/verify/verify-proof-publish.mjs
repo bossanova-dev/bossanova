@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { classifyEntry, normalizeRollup } from '../pr-check-state.mjs'
 import { scanText } from '../plan/plan-secret-scan.mjs'
+import { failureDetail } from './verify-failure-detail.mjs'
 import { assertStageBlockReadable, loadSkillConfig } from '../skill-config.mjs'
 import { discoverExtensions } from '../skill-extensions.mjs'
 import { daemonSocket, daemonUnary } from './verify-daemon-rpc.mjs'
@@ -284,8 +285,8 @@ export async function uploadProofPage({
     // A returned page URL is the page; otherwise it sits under the prefix at the returned base.
     if (sent && 'url' in sent) return { ok: true, url: sent.url }
     return { ok: true, url: `${sent && 'base' in sent ? sent.base : ''}/${prefix}${PAGE_OBJECT}` }
-  } catch {
-    return { ok: false, reason: 'upload-failed' }
+  } catch (error) {
+    return { ok: false, reason: 'upload-failed', detail: failureDetail(error, env) }
   } finally {
     if (dir) {
       try {
@@ -645,7 +646,7 @@ export async function recordHeadProof(
     let headClipPublished = hasHeadClip
     const input = proofPageInput({ proof: record, areas, judged, git, prBody, repo, pr, branch })
     let html = null
-    /** @type {{published: boolean, reason?: string, url?: string, publisher?: string, omittedMedia?: number}} */
+    /** @type {{published: boolean, reason?: string, detail?: string, url?: string, publisher?: string, omittedMedia?: number}} */
     let page = { published: false, reason: 'render-failed' }
     try {
       html = renderProofHtml(input, parts.extras)
@@ -769,7 +770,13 @@ export async function recordHeadProof(
               block = null
             }
           } else {
-            page = { published: false, reason: uploaded.ok ? 'invalid-page-url' : uploaded.reason }
+            // A detail that carries a credential-named environment value is dropped, not shown.
+            const detail = uploaded.ok ? '' : (uploaded.detail ?? '')
+            page = {
+              published: false,
+              reason: uploaded.ok ? 'invalid-page-url' : uploaded.reason,
+              ...(detail && !findPageSecrets([detail], env).length ? { detail } : {}),
+            }
             // Publisher credentials can come from outside the environment scan above.
             if (!uploaded.ok && uploaded.reason === 'page-contains-secret') html = block = null
           }

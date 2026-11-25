@@ -179,11 +179,11 @@ test('Access PUT failures stop before index and never return credential or respo
     names: ['player.js'],
     credentials,
   }
-  for (const [status, reason] of [
+  for (const [status, reason, detail] of [
     [401, 'upload-refused'],
     [403, 'upload-refused'],
-    [500, 'upload-failed'],
-    [302, 'upload-failed'],
+    [500, 'upload-failed', 'HTTP 500'],
+    [302, 'upload-failed', 'HTTP 302'],
   ]) {
     const result = await putObjects({
       ...input,
@@ -194,16 +194,28 @@ test('Access PUT failures stop before index and never return credential or respo
         },
       }),
     })
-    assert.deepEqual(result, { ok: false, reason })
+    assert.deepEqual(result, { ok: false, reason, ...(detail ? { detail } : {}) })
   }
   assert.deepEqual(
     await putObjects({
       ...input,
       fetchImpl: async () => {
-        throw new Error(credentials.clientSecret)
+        throw new Error(`refused ${credentials.clientSecret}`)
       },
     }),
-    { ok: false, reason: 'upload-failed' },
+    { ok: false, reason: 'upload-failed', detail: 'Error: refused [redacted]' },
+  )
+  const unreachable = Object.assign(new TypeError('fetch failed'), {
+    cause: { code: 'ECONNREFUSED' },
+  })
+  assert.deepEqual(
+    await putObjects({
+      ...input,
+      fetchImpl: async () => {
+        throw unreachable
+      },
+    }),
+    { ok: false, reason: 'upload-failed', detail: 'TypeError: fetch failed (ECONNREFUSED)' },
   )
   assert.deepEqual(
     await putObjects({

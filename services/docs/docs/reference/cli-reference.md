@@ -660,6 +660,25 @@ over the working tree and git index with each other and with any uncommitted loc
 The two flags are mutually exclusive and passing both is rejected before any RPC is
 issued: a quick chat has no worktree, branch or draft PR for `--defer-pr` to defer.
 
+#### Verifying a PR you did not build
+
+`--pr <n>` creates the session on an existing pull request's head branch. Add
+`--verify-only` when the session is there to verify the PR rather than fix it:
+automatic repair never acts on a verify-only session, so it never pushes to the
+PR author's branch. `--verify-only` requires `--pr`. The MCP `create_session`
+tool takes the same pair as `pr_number` and `verify_only: true`:
+
+<CommandTabs
+chat='"open a verify-only session on bossanova PR 123 and run boss-verify there"'
+cli='boss new --repo <r> --pr 123 --verify-only --prompt "/boss-verify 123"'
+mcp="create_session"
+/>
+
+When another active session already owns the PR, the create attaches to it
+instead and does not run your prompt. That session keeps its own verify-only
+setting: the MCP result reports it as `is_verify_only`, and `false` means
+automatic repair still acts on the PR.
+
 Bind a scripted launch to a tracker issue and read the ids back as JSON:
 
 <CommandTabs

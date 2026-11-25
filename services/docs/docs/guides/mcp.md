@@ -258,10 +258,26 @@ the head is held for a person. Read `is_verify_passed` from
 non-blank line of the prompt (truncated to 72 characters), since bossd requires
 a non-empty session title. It also exposes the rest of the daemon's
 `CreateSession` surface: `base_branch`, `branch_name`, `force_branch`,
-`quick_chat`, `pr_number` (attach to an existing PR instead of creating one), and
-the external-tracker fields `tracker_id` / `tracker_url` / `tracker_source`. The
+`quick_chat`, `pr_number` (attach to an existing PR instead of creating one),
+`verify_only`, and the external-tracker fields `tracker_id` / `tracker_url` /
+`tracker_source`. The
 composite `tracker_issue` field is web-only (server-side plan formatting) and is
 intentionally **not** exposed here.
+
+`verify_only` matches `boss new --pr <n> --verify-only`: the session adopts an
+existing PR to verify it, and automatic repair never acts on it. A client that
+runs `/boss-verify <n>` on a PR it did not build therefore never has the daemon
+push to the author's branch. It requires `pr_number`; without one the call fails before any
+session is created. The local socket and the hosted gateway
+(`https://mcp.bossanova.dev/mcp`) both accept it.
+
+The result always carries `is_verify_only`. If a session already owns the PR,
+`create_session` attaches to it (`attached_existing: true`) and `is_verify_only`
+reports **that** session's flag, which `verify_only` on this call does not
+change. `false` there means automatic repair still pushes to the PR. If a fresh
+create comes back without the flag, because an older daemon or hosted
+orchestrator ignored it, the call returns an error naming the session it created,
+so you know which one to stop.
 
 `create_cron_job` and `update_cron_job` accept `model`, `gate_command`,
 `run_setup_command`, and `zero_output` alongside the schedule fields, matching the

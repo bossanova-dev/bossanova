@@ -736,6 +736,7 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 		Effort:           &effort,
 		IsTmuxUnattended: true,
 		DeferPr:          true,
+		IsVerifyOnly:     true,
 	}, "cmd-rt")
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -786,6 +787,9 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	// hosted defer_pr:true create silently re-enables the eager up-front draft PR.
 	if !req.GetDeferPr() {
 		t.Errorf("DeferPr: got false, want true")
+	}
+	if !req.GetIsVerifyOnly() {
+		t.Errorf("IsVerifyOnly: got false, want true")
 	}
 	if req.GetModel() != model {
 		t.Errorf("Model: got %q, want %q", req.GetModel(), model)

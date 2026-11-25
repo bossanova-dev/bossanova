@@ -50,11 +50,11 @@ func (s *Server) publishHosted(ctx context.Context, repo *domain.Repo, msg *pb.U
 	for _, f := range hostedPutOrder(files) {
 		body, readErr := io.ReadAll(io.LimitReader(f.file, f.size+1))
 		if readErr != nil || int64(len(body)) != f.size {
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("evidence object changed while uploading"))
+			return nil, evidenceFailure(connect.CodeUnavailable, "object-changed", "evidence object changed while uploading", readErr)
 		}
 		s.logger.Info().Str("upload_id", upload.UploadID).Str("object", f.name).Int64("size_bytes", f.size).Msg("uploading hosted verify evidence")
 		if err := publisher.PutHostedProofObject(ctx, HostedProofPut{UploadID: upload.UploadID, RepoOriginURL: repo.OriginURL, Name: f.name, Body: body}); err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("evidence object upload failed"))
+			return nil, evidenceFailure(connect.CodeUnavailable, "object-upload-failed", "evidence object upload failed", err)
 		}
 	}
 	slug := strings.SplitN(prefix, "/", 3)
@@ -94,7 +94,7 @@ func hostedStartError(err error) error {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("hosted proof manifest was refused"))
 	}
 	// Not signed in, not paying, not opted in, offline or no review origin.
-	return hostedNotConfigured()
+	return evidenceFailure(connect.CodeFailedPrecondition, "not-configured", "hosted proof is not available", err)
 }
 
 func hostedNotConfigured() error {

@@ -11132,6 +11132,12 @@ components:
             Mirror CreateSessionRequest.defer_pr so reverse-stream hosted creates skip
              the up-front draft PR (PR opened at finalize only if commits land), matching
              the local socket path. Default false = unchanged eager draft-PR behavior.
+        isVerifyOnly:
+          type: boolean
+          title: is_verify_only
+          description: |-
+            Mirror CreateSessionRequest.is_verify_only so a reverse-stream hosted
+             create adopts an existing PR without automatic repair, like the socket path.
       title: CreateSessionCommand
       additionalProperties: false
       description: |-
@@ -20200,6 +20206,12 @@ components:
             Mirror CreateSessionRequest.defer_pr so hosted MCP create_session can skip
              the up-front draft PR (PR opened at finalize only if commits land), matching
              the local socket path. Default false = unchanged eager draft-PR behavior.
+        isVerifyOnly:
+          type: boolean
+          title: is_verify_only
+          description: |-
+            Mirror CreateSessionRequest.is_verify_only so a hosted MCP create_session
+             can adopt an existing PR without automatic repair. Requires pr_number.
       title: ProxyCreateSessionRequest
       additionalProperties: false
       description: |-

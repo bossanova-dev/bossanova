@@ -261,5 +261,9 @@ test('any other refusal is returned unchanged, unfitted @sessions.AC261201', asy
     assert.deepEqual([result.uploaded, uploads.length, renders.length], [refusal, 1, 0])
   }
   const thrown = await loop([new Error('boom')])
-  assert.deepEqual(thrown.result.uploaded, { ok: false, reason: 'upload-failed' })
+  assert.deepEqual(thrown.result.uploaded, {
+    ok: false,
+    reason: 'upload-failed',
+    detail: 'Error: boom',
+  })
 })

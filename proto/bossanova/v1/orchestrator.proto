@@ -1764,6 +1764,9 @@ message ProxyCreateSessionRequest {
   // the up-front draft PR (PR opened at finalize only if commits land), matching
   // the local socket path. Default false = unchanged eager draft-PR behavior.
   bool defer_pr = 20;
+  // Mirror CreateSessionRequest.is_verify_only so a hosted MCP create_session
+  // can adopt an existing PR without automatic repair. Requires pr_number.
+  bool is_verify_only = 22;
 }
 
 // ProxyCreateSessionResponse is streamed from orchestrator to the client as

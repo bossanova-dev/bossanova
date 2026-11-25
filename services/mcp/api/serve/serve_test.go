@@ -137,6 +137,34 @@ func postMCP(t *testing.T, baseURL, authHeader string) (int, http.Header) {
 	return resp.StatusCode, resp.Header
 }
 
+// TestHTTPRefusesRebindingHost proves the local server keeps the SDK's DNS
+// rebinding guard: a loopback connection naming a public Host is refused even
+// with the right bearer, because a browser page can rebind its name to 127.0.0.1.
+func TestHTTPRefusesRebindingHost(t *testing.T) {
+	t.Parallel()
+
+	baseURL, stop := startHTTP(t, &stubBackend{})
+	defer stop()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Host = "rebind.example"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+testHTTPToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /mcp: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /mcp with Host rebind.example: status = %d, want 403", resp.StatusCode)
+	}
+}
+
 func TestHTTPRejectsMissingBearer(t *testing.T) {
 	t.Parallel()
 

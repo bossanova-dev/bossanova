@@ -317,9 +317,13 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// schema-share self-check green in the same run. create_session gained a
 	// `verify_only` argument (+139 bytes) and paid for it out of its own
 	// pr_number doc, which restated the description's DEDUP paragraph.
+	// RE-PINNED DOWN 2026-11-25 (BOS-2774): 83 tools / 67,963 bytes, same
+	// method. list_sessions gained order_by, direction and limit, and paid for
+	// them out of its own docs (a shorter description, trimmed filter docs)
+	// and the note repo_id doc repeated across four note tools.
 	const (
 		maxToolCount   = 83
-		maxSchemaBytes = 68001
+		maxSchemaBytes = 67963
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

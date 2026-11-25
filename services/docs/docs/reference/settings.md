@@ -99,6 +99,13 @@ to the installing shell's PATH on Linux (the systemd unit). The `bossd` service
 and the MCP service render this from the same helper, so they can never
 disagree about where `node` lives.
 
+At startup, `bossd` also asks the captured login shell (`login_shell`) where
+`node` is and prepends that directory to its own `PATH` when the service PATH
+lacks it, so cron gates, setup scripts, plugins and shims inherit your shell's
+`node`. `boss daemon doctor` shows the probe result under the service-PATH
+lines, and `daemon_path_extra` remains the override when the probe cannot
+answer.
+
 ### `daemon_path_extra`
 
 Set `daemon_path_extra` to put your own directories at the **front** of that

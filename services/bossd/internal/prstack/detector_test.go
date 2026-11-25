@@ -136,10 +136,10 @@ func TestDetectorRealGit(t *testing.T) {
 		return []Parent{{Number: 10, Title: "Parent", URL: "https://github.com/acme/widgets/pull/10", HeadBranch: "parent", SharedCommits: 2, Commits: 2, IsBaseBranch: isBase}}
 	}
 	want := map[string]Result{
-		"s10": {BaseBranch: "main", DefaultBranch: "main"},
-		"s12": {BaseBranch: "main", DefaultBranch: "main", StackedOn: onPR10(false)},
-		"s13": {BaseBranch: "production", DefaultBranch: "main"},
-		"s14": {BaseBranch: "parent", DefaultBranch: "main", StackedOn: onPR10(true)},
+		"s10": {PRNumber: 10, BaseBranch: "main", DefaultBranch: "main"},
+		"s12": {PRNumber: 12, BaseBranch: "main", DefaultBranch: "main", StackedOn: onPR10(false)},
+		"s13": {PRNumber: 13, BaseBranch: "production", DefaultBranch: "main"},
+		"s14": {PRNumber: 14, BaseBranch: "parent", DefaultBranch: "main", StackedOn: onPR10(true)},
 	}
 	assertResults(t, d, want, "s99", "no-pr")
 
@@ -149,8 +149,8 @@ func TestDetectorRealGit(t *testing.T) {
 	listing.prs = listing.prs[1:]
 	listing.prs[2].BaseBranch = "main"
 	d.Refresh(t.Context(), repoRow, sessions)
-	want["s12"] = Result{BaseBranch: "main", DefaultBranch: "main"}
-	want["s14"] = Result{BaseBranch: "main", DefaultBranch: "main"}
+	want["s12"] = Result{PRNumber: 12, BaseBranch: "main", DefaultBranch: "main"}
+	want["s14"] = Result{PRNumber: 14, BaseBranch: "main", DefaultBranch: "main"}
 	delete(want, "s10")
 	assertResults(t, d, want, "s10", "s99", "no-pr")
 }
@@ -188,8 +188,8 @@ func TestDetectorIgnoresCommitsMergedUnderNewSHAs(t *testing.T) {
 	d := NewDetector(listing, gitpkg.NewManager(zerolog.Nop()), zerolog.Nop())
 	d.Refresh(t.Context(), repoRow, []*models.Session{session("s20", 20), session("s21", 21)})
 	assertResults(t, d, map[string]Result{
-		"s20": {BaseBranch: "main", DefaultBranch: "main"},
-		"s21": {BaseBranch: "main", DefaultBranch: "main"},
+		"s20": {PRNumber: 20, BaseBranch: "main", DefaultBranch: "main"},
+		"s21": {PRNumber: 21, BaseBranch: "main", DefaultBranch: "main"},
 	})
 }
 
@@ -287,4 +287,31 @@ func TestDetectorRecomputeAndOnChange(t *testing.T) {
 	refresh("session PR back", 7, reads, "s1")
 	repoRow.LocalPath = ""
 	refresh("repo without a clone serves nothing", 7, reads, "s1")
+}
+
+// A session's Result carries its open PR's number, author and base. A changed
+// author or base reports the session; an unchanged listing reports nothing.
+func TestDetectorServesPRAuthorAndBase(t *testing.T) {
+	listing := &scriptedListing{prs: []vcs.PRSummary{{Number: 4, HeadBranch: "four", BaseBranch: "main", HeadSHA: "h4", Author: "octocat"}}}
+	d := NewDetector(listing, &countingGit{tip: strings.Repeat("0", 40)}, zerolog.Nop())
+	var changed []string
+	d.SetOnChange(func(id string) { changed = append(changed, id) })
+	repoRow := &models.Repo{ID: "r", LocalPath: "/repo", OriginURL: "o/r", DefaultBaseBranch: "main"}
+	sessions := []*models.Session{session("s", 4)}
+	refresh := func(step string, want Result, wantChanged ...string) {
+		t.Helper()
+		changed = nil
+		d.Refresh(t.Context(), repoRow, sessions)
+		got, ok := d.Stack("s")
+		if !ok || !reflect.DeepEqual(got, want) || !slices.Equal(changed, wantChanged) {
+			t.Fatalf("%s: result %+v (served %v), changed %v; want %+v, changed %v", step, got, ok, changed, want, wantChanged)
+		}
+	}
+
+	refresh("first pass", Result{PRNumber: 4, Author: "octocat", BaseBranch: "main", DefaultBranch: "main"}, "s")
+	refresh("unchanged listing", Result{PRNumber: 4, Author: "octocat", BaseBranch: "main", DefaultBranch: "main"})
+	listing.prs[0].BaseBranch = "dev"
+	refresh("retarget", Result{PRNumber: 4, Author: "octocat", BaseBranch: "dev", DefaultBranch: "main"}, "s")
+	listing.prs[0].Author = "hubot"
+	refresh("author change", Result{PRNumber: 4, Author: "hubot", BaseBranch: "dev", DefaultBranch: "main"}, "s")
 }

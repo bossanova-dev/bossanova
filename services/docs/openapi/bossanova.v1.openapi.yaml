@@ -9320,6 +9320,36 @@ components:
           description: |-
             Set when the captured pane cut off the top of detail, so a viewer never
              mistakes a partial command or diff for the whole thing.
+        isMultiSelect:
+          type: boolean
+          title: is_multi_select
+          description: |-
+            The question takes several choices: its menu draws a box on each option.
+             No dated API bump or transform: fields 10 to 14 are additive output
+             fields older clients ignore.
+        selectedOptionIndexes:
+          type: array
+          items:
+            type: integer
+          title: selected_option_indexes
+          description: |-
+            Zero-based indexes into options of the options ticked on screen: the
+             ticked boxes, or the choice already made on a tab of a single-choice
+             question the menu went back to.
+        tabs:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.ChatQuestionTab'
+          title: tabs
+          description: The menu's tab bar, in order; empty for a menu with no tab bar.
+        hasFreeText:
+          type: boolean
+          title: has_free_text
+          description: The menu offers a row that takes typed words as the answer.
+        freeText:
+          type: string
+          title: free_text
+          description: Words already typed into that row; empty while it shows its placeholder.
       title: ChatQuestion
       additionalProperties: false
       description: |-
@@ -9336,10 +9366,43 @@ components:
          prompt whose rows select by digit. A question with several parts or several
          choices is answered in the terminal.
 
+         A call with several questions, or a question with several choices, draws a
+         tabbed menu that shows one question at a time. A question read from such a
+         menu is the one on screen, with tabs listing every tab by title; the other
+         questions' words and options are read only once their tab is shown. The
+         fields from is_multi_select on describe what the menu shows right now (the
+         ticked boxes, the typed words); id never covers them, so it stays the same
+         while someone answers in the terminal.
+
          The agent may not record a prompt in its transcript until it is answered
          (Claude Code does not, and subagent permission prompts never appear in the
          main transcript), so a read with should_include_activity ends on the prompt
          the chat's terminal shows while its menu waits.
+    bossanova.v1.ChatQuestionTab:
+      type: object
+      properties:
+        title:
+          type: string
+          title: title
+        isActive:
+          type: boolean
+          title: is_active
+        isAnswered:
+          type: boolean
+          title: is_answered
+        isSubmit:
+          type: boolean
+          title: is_submit
+      title: ChatQuestionTab
+      additionalProperties: false
+      description: |-
+        ChatQuestionTab is one tab of a tabbed question menu. title is the
+         question's header, or the review tab's label. is_active is set on the tab
+         the menu shows when the pane tells which: a plain pane capture marks the
+         shown tab only by colour, so with several question tabs none is set unless
+         the review tab is shown. is_answered is set on a question tab whose answer
+         is chosen but not yet submitted. is_submit marks the review tab that sends
+         every answer.
     bossanova.v1.ChatRole:
       type: string
       title: ChatRole
@@ -21264,6 +21327,21 @@ components:
             Unset means every organization the caller belongs to. Set narrows to that
              organization after a membership check. Clients pinned below 2026-09-12
              retain the former single-organization behavior when this is unset.
+        ordering:
+          title: ordering
+          description: |-
+            Orders the sessions returned. Unspecified keeps the default order; an
+             undeclared value is INVALID_ARGUMENT. A client resolved older than
+             2026-09-15 still receives the legacy order, because the session-list
+             rank-order transform re-sorts the page after this ordering is applied.
+          $ref: '#/components/schemas/bossanova.v1.SessionListOrdering'
+        limit:
+          type: integer
+          title: limit
+          format: int32
+          description: |-
+            Caps the sessions returned after ordering; zero or negative means
+             unlimited.
       title: ProxyListSessionsRequest
       additionalProperties: false
     bossanova.v1.ProxyListSessionsResponse:
@@ -25813,6 +25891,25 @@ components:
             Labels attached to this session, ordered by name.
              No dated API bump: additive output field older clients ignore. See
              docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        prAuthorLogin:
+          type: string
+          title: pr_author_login
+          description: |-
+            The GitHub login of the author of the session's PR, read from bossd's
+             open-PR listing and stored, so it survives the PR's merge or close and a
+             daemon restart. Cleared when the session's PR number changes; empty when
+             unknown, including PRs merged before bossd stored it.
+        prTargetBranch:
+          type: string
+          title: pr_target_branch
+          description: |-
+            The branch the session's PR targets: the live pr_base_branch while the PR
+             is open, and the last one bossd stored after it merges or closes or the
+             daemon restarts. Cleared when the session's PR number changes. Unlike
+             base_branch, which is fixed at creation, it follows a retarget.
+             No dated API bump or transform: both fields are additive and older
+             clients ignore them. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -26165,6 +26262,18 @@ components:
       title: SessionLabel
       additionalProperties: false
       description: SessionLabel is a colored tag that can be attached to sessions (Linear-style).
+    bossanova.v1.SessionListOrdering:
+      type: string
+      title: SessionListOrdering
+      enum:
+        - SESSION_LIST_ORDERING_UNSPECIFIED
+        - SESSION_LIST_ORDERING_CREATED_OLDEST_FIRST
+        - SESSION_LIST_ORDERING_CREATED_NEWEST_FIRST
+        - SESSION_LIST_ORDERING_UPDATED_OLDEST_FIRST
+        - SESSION_LIST_ORDERING_UPDATED_NEWEST_FIRST
+      description: |-
+        SessionListOrdering orders a session list by one timestamp. Ties go by id,
+         ascending. Unspecified keeps the list's default order.
     bossanova.v1.SessionOpenTarget:
       type: string
       title: SessionOpenTarget

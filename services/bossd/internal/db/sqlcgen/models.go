@@ -369,6 +369,8 @@ type Session struct {
 	IsTrackerRankScheduled          bool
 	TrackerRankUnblockedTicketCount *int64
 	TrackerRankedAt                 *string
+	PrAuthorLogin                   string
+	PrTargetBranch                  string
 }
 
 type SessionCheckSnapshot struct {

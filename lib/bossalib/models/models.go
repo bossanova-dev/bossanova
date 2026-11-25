@@ -237,4 +237,11 @@ type Session struct {
 	// itself BLOCKED; nil means it made no report. It is kept apart from
 	// BlockedReason, which other writers overwrite, so finalize still finds it.
 	RunBlockedReason *string
+
+	// PRAuthorLogin is the GitHub login of the PR's author and PRTargetBranch
+	// the PR's last observed base branch, both read from the open-PR listing.
+	// Both are kept after the PR merges or closes and cleared when the
+	// session's PR number changes. BaseBranch stays the creation-time base.
+	PRAuthorLogin  string
+	PRTargetBranch string
 }

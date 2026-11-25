@@ -336,7 +336,7 @@ type DeleteGitHubCallbackArgs struct {
 // description, which must not read as optional just because the local adapter
 // ignores the value. Keep the tag in step with noteRepoIDRoutingField.
 type DeleteNoteArgs struct {
-	RepoID  string `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
+	RepoID  string `json:"repo_id" jsonschema:"the note's owning repo id (required, even locally; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, so repo_id is not a safety check"`
 	ID      string `json:"id" jsonschema:"the note id to delete"`
 	Confirm bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the note"`
 }

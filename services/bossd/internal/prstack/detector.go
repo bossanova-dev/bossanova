@@ -38,15 +38,19 @@ type Git interface {
 	PatchIDs(ctx context.Context, localPath, baseTip string, heads []string) (map[string][]string, error)
 }
 
-// Result is what a session's open PR serves about its base and stack.
+// Result is what a session's open PR serves about its author, base and
+// stack. PRNumber names the PR the result was read for.
 type Result struct {
+	PRNumber      int
+	Author        string
 	BaseBranch    string
 	DefaultBranch string
 	StackedOn     []Parent
 }
 
 func (r Result) equal(o Result) bool {
-	return r.BaseBranch == o.BaseBranch && r.DefaultBranch == o.DefaultBranch && slices.Equal(r.StackedOn, o.StackedOn)
+	return r.PRNumber == o.PRNumber && r.Author == o.Author && r.BaseBranch == o.BaseBranch &&
+		r.DefaultBranch == o.DefaultBranch && slices.Equal(r.StackedOn, o.StackedOn)
 }
 
 // repoState is one repository's last computation. ids holds patch ids by head
@@ -134,7 +138,13 @@ func (d *Detector) Refresh(ctx context.Context, repo *models.Repo, sessions []*m
 			continue
 		}
 		if pr, ok := open[*sess.PRNumber]; ok {
-			next[sess.ID] = Result{BaseBranch: pr.BaseBranch, DefaultBranch: repo.DefaultBaseBranch, StackedOn: st.parents[pr.Number]}
+			next[sess.ID] = Result{
+				PRNumber:      pr.Number,
+				Author:        pr.Author,
+				BaseBranch:    pr.BaseBranch,
+				DefaultBranch: repo.DefaultBaseBranch,
+				StackedOn:     st.parents[pr.Number],
+			}
 		}
 	}
 	d.apply(st, next)

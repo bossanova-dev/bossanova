@@ -19,7 +19,7 @@ const PAGE_FILE = `/${prefix}index.html`
 const EMAIL = 'reviewer@example.com'
 const CERTS = 'https://proof-team.cloudflareaccess.com/cdn-cgi/access/certs'
 const CSP =
-  "default-src 'none'; script-src 'self'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors https://app.bossanova.dev https://app-staging.bossanova.dev"
+  "default-src 'none'; script-src 'self'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors https://app.bossanova.dev https://app-staging.bossanova.dev http://localhost:5151"
 const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url')
 const signinFor = (path) => `${BASE}/_signin?next=${encodeURIComponent(path)}`
 

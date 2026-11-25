@@ -46,6 +46,8 @@ UPDATE sessions SET
  agent_session_id = CASE WHEN CAST(sqlc.arg(set_agent_session_id) AS BOOLEAN) THEN sqlc.narg(agent_session_id) ELSE agent_session_id END,
  pr_number = CASE WHEN CAST(sqlc.arg(set_pr_number) AS BOOLEAN) THEN sqlc.narg(pr_number) ELSE pr_number END,
  pr_url = CASE WHEN CAST(sqlc.arg(set_pr_url) AS BOOLEAN) THEN sqlc.narg(pr_url) ELSE pr_url END,
+ pr_author_login = CASE WHEN CAST(sqlc.arg(set_pr_number) AS BOOLEAN) AND pr_number IS NOT sqlc.narg(pr_number) THEN '' ELSE pr_author_login END,
+ pr_target_branch = CASE WHEN CAST(sqlc.arg(set_pr_number) AS BOOLEAN) AND pr_number IS NOT sqlc.narg(pr_number) THEN '' ELSE pr_target_branch END,
  tracker_id = CASE WHEN CAST(sqlc.arg(set_tracker_id) AS BOOLEAN) THEN sqlc.narg(tracker_id) ELSE tracker_id END,
  tracker_url = CASE WHEN CAST(sqlc.arg(set_tracker_url) AS BOOLEAN) THEN sqlc.narg(tracker_url) ELSE tracker_url END,
  tracker_ranked_at = CASE WHEN (CAST(sqlc.arg(set_tracker_id) AS BOOLEAN) AND tracker_id IS NOT sqlc.narg(tracker_id)) OR (CAST(sqlc.arg(set_tracker_url) AS BOOLEAN) AND tracker_url IS NOT sqlc.narg(tracker_url)) THEN NULL ELSE tracker_ranked_at END,
@@ -145,3 +147,11 @@ DELETE FROM sessions WHERE id = ?;
 
 -- name: SetSessionListRank :execrows
 UPDATE sessions SET list_rank = ? WHERE id = ?;
+
+-- name: SetSessionPRAuthorAndTarget :execrows
+UPDATE sessions SET
+ pr_author_login = CASE WHEN CAST(sqlc.arg(pr_author_login) AS TEXT) = '' THEN pr_author_login ELSE CAST(sqlc.arg(pr_author_login) AS TEXT) END,
+ pr_target_branch = CASE WHEN CAST(sqlc.arg(pr_target_branch) AS TEXT) = '' THEN pr_target_branch ELSE CAST(sqlc.arg(pr_target_branch) AS TEXT) END
+WHERE id = sqlc.arg(id) AND pr_number = CAST(sqlc.arg(pr_number) AS INTEGER)
+ AND ((CAST(sqlc.arg(pr_author_login) AS TEXT) != '' AND pr_author_login != CAST(sqlc.arg(pr_author_login) AS TEXT))
+  OR (CAST(sqlc.arg(pr_target_branch) AS TEXT) != '' AND pr_target_branch != CAST(sqlc.arg(pr_target_branch) AS TEXT)));

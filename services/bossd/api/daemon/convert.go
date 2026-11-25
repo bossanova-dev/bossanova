@@ -254,6 +254,10 @@ func SessionToProto(s *models.Session) *pb.Session {
 	if s.PRURL != nil {
 		p.PrUrl = protoStringPtr(s.PRURL)
 	}
+	// Stored PR author and target; hydratePRStack overlays the live values
+	// while the PR is open.
+	p.PrAuthorLogin = s.PRAuthorLogin
+	p.PrTargetBranch = s.PRTargetBranch
 	if s.TrackerID != nil {
 		p.TrackerId = protoStringPtr(s.TrackerID)
 	}

@@ -7,6 +7,7 @@ go_library(
         "daemon_doctor.go",
         "daemon_doctor_credential_devices.go",
         "daemon_doctor_github_credentials.go",
+        "daemon_doctor_login_shell_node.go",
         "daemon_rotate_token.go",
         "daemon_startup.go",
         "daemon_supervision.go",
@@ -40,6 +41,7 @@ go_test(
     srcs = [
         "daemon_doctor_credential_devices_test.go",
         "daemon_doctor_github_credentials_test.go",
+        "daemon_doctor_login_shell_node_test.go",
         "daemon_doctor_test.go",
         "daemon_rotate_token_test.go",
         "daemon_startup_test.go",

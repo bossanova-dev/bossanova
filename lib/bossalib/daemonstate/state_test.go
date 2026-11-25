@@ -31,6 +31,12 @@ func TestWriteReadAndRemoveMetadata(t *testing.T) {
 			{Path: "/Users/alice/Downloads", Status: TCCProbeStatusBlocked, Diagnostic: "probe timed out"},
 			{Path: "/Users/alice/Missing", Status: TCCProbeStatusAbsent},
 		},
+		LoginShellNode: &LoginShellNodeProbe{
+			Shell:    "/bin/zsh",
+			Status:   LoginShellNodeStatusPrepended,
+			NodePath: "/Users/alice/.nvm/versions/node/v22.14.0/bin/node",
+			Dir:      "/Users/alice/.nvm/versions/node/v22.14.0/bin",
+		},
 	}
 
 	if err := Write(dir, want); err != nil {
@@ -72,6 +78,9 @@ func TestWriteReadAndRemoveMetadata(t *testing.T) {
 	}
 	if decoded["daemon_id"] != "daemon-123" || decoded["display_name"] != "studio-mini" || decoded["display_name_override"] != true {
 		t.Fatalf("metadata JSON missing daemon identity: %s", string(raw))
+	}
+	if decoded["login_shell_node"] == nil {
+		t.Fatalf("metadata JSON missing login_shell_node: %s", string(raw))
 	}
 
 	if err := Remove(dir); err != nil {
@@ -206,5 +215,143 @@ func TestPathCleansAppDataDir(t *testing.T) {
 	want := filepath.Join(string(filepath.Separator), "tmp", "boss", MetadataFileName)
 	if got != want {
 		t.Fatalf("Path() = %q, want %q", got, want)
+	}
+}
+
+func TestWriteReadLoginShellNodeProbeRoundTrip(t *testing.T) {
+	cases := []struct {
+		name           string
+		probe          LoginShellNodeProbe
+		wantKeys       []string
+		wantAbsentKeys []string
+	}{
+		{
+			name: "prepended",
+			probe: LoginShellNodeProbe{
+				Shell:    "/bin/zsh",
+				Status:   LoginShellNodeStatusPrepended,
+				NodePath: "/Users/alice/.nvm/versions/node/v22.14.0/bin/node",
+				Dir:      "/Users/alice/.nvm/versions/node/v22.14.0/bin",
+			},
+			wantKeys:       []string{"shell", "status", "node_path", "dir"},
+			wantAbsentKeys: []string{"diagnostic"},
+		},
+		{
+			name: "on_path",
+			probe: LoginShellNodeProbe{
+				Shell:    "/bin/zsh",
+				Status:   LoginShellNodeStatusOnPath,
+				NodePath: "/opt/homebrew/bin/node",
+				Dir:      "/opt/homebrew/bin",
+			},
+			wantKeys:       []string{"shell", "status", "node_path", "dir"},
+			wantAbsentKeys: []string{"diagnostic"},
+		},
+		{
+			name: "not_found",
+			probe: LoginShellNodeProbe{
+				Shell:      "/bin/bash",
+				Status:     LoginShellNodeStatusNotFound,
+				Diagnostic: "command -v node returned no executable path",
+			},
+			wantKeys:       []string{"shell", "status", "diagnostic"},
+			wantAbsentKeys: []string{"node_path", "dir"},
+		},
+		{
+			name: "timed_out",
+			probe: LoginShellNodeProbe{
+				Shell:      "/bin/zsh",
+				Status:     LoginShellNodeStatusTimedOut,
+				Diagnostic: "context deadline exceeded",
+			},
+			wantKeys:       []string{"shell", "status", "diagnostic"},
+			wantAbsentKeys: []string{"node_path", "dir"},
+		},
+		{
+			name: "failed",
+			probe: LoginShellNodeProbe{
+				Shell:      "/opt/homebrew/bin/fish",
+				Status:     LoginShellNodeStatusFailed,
+				Diagnostic: "exit status 1",
+			},
+			wantKeys:       []string{"shell", "status", "diagnostic"},
+			wantAbsentKeys: []string{"node_path", "dir"},
+		},
+		{
+			name: "skipped",
+			probe: LoginShellNodeProbe{
+				Status: LoginShellNodeStatusSkipped,
+			},
+			wantKeys:       []string{"status"},
+			wantAbsentKeys: []string{"shell", "node_path", "dir", "diagnostic"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			want := Metadata{
+				PID:            42,
+				LoginShellNode: &tc.probe,
+			}
+			if err := Write(dir, want); err != nil {
+				t.Fatalf("Write() returned error: %v", err)
+			}
+
+			got, err := Read(dir)
+			if err != nil {
+				t.Fatalf("Read() returned error: %v", err)
+			}
+			if !reflect.DeepEqual(got.LoginShellNode, want.LoginShellNode) {
+				t.Fatalf("Read().LoginShellNode = %#v, want %#v", got.LoginShellNode, want.LoginShellNode)
+			}
+
+			raw, err := os.ReadFile(filepath.Join(dir, MetadataFileName))
+			if err != nil {
+				t.Fatalf("read metadata file: %v", err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("unmarshal metadata JSON: %v", err)
+			}
+			probeMap, ok := decoded["login_shell_node"].(map[string]any)
+			if !ok {
+				t.Fatalf("login_shell_node missing or wrong type in %s", string(raw))
+			}
+			for _, k := range tc.wantKeys {
+				if _, exists := probeMap[k]; !exists {
+					t.Fatalf("login_shell_node JSON missing key %q: %s", k, string(raw))
+				}
+			}
+			for _, k := range tc.wantAbsentKeys {
+				if _, exists := probeMap[k]; exists {
+					t.Fatalf("login_shell_node JSON unexpectedly contains empty key %q: %s", k, string(raw))
+				}
+			}
+		})
+	}
+}
+
+func TestReadLegacyMetadataWithoutLoginShellNode(t *testing.T) {
+	dir := t.TempDir()
+	legacy := []byte(`{"pid":123,"executable_path":"/tmp/bossd","tcc_probe_completed":true}`)
+	if err := os.WriteFile(filepath.Join(dir, MetadataFileName), legacy, 0o600); err != nil {
+		t.Fatalf("write legacy metadata: %v", err)
+	}
+
+	got, err := Read(dir)
+	if err != nil {
+		t.Fatalf("Read() legacy metadata returned error: %v", err)
+	}
+	if got.LoginShellNode != nil {
+		t.Fatalf("Read() legacy LoginShellNode = %#v, want nil", got.LoginShellNode)
+	}
+
+	raw, err := json.Marshal(Metadata{PID: 123})
+	if err != nil {
+		t.Fatalf("marshal Metadata without LoginShellNode: %v", err)
+	}
+	if strings.Contains(string(raw), "login_shell_node") {
+		t.Fatalf("Metadata with nil LoginShellNode unexpectedly contains login_shell_node: %s", string(raw))
 	}
 }

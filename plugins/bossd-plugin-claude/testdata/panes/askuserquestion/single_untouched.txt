@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /scratch/project
+
+
+⚠ Both claude.ai and ANTHROPIC_API_KEY set · auth may not work as expected
+  · to use claude.ai: Unset ANTHROPIC_API_KEY, or turn off "Use custom API key" in /config.
+  · to use ANTHROPIC_API_KEY: claude /logout to sign out of claude.ai.
+
+❯ Call the AskUserQuestion tool exactly once with exactly one question: header "Fruit", question "Which fruits do you
+  like?", multiSelect true, options "Apple" (description "Crisp"), "Banana" (description "Soft"), "Cherry" (description
+  "Small"). Do nothing else.
+
+⏺ Declined to answer Claude's questions:
+  ⎿  · Which fruits do you like? (Apple / Banana / Cherry)
+
+❯ Call the AskUserQuestion tool exactly once with exactly two questions in one call. Question 1: header "Size",
+  question "Which size?", multiSelect false, options "Small" (description "Fits one"), "Large" (description "Fits
+  two"). Question 2: header "Toppings", question "Which toppings?", multiSelect true, options "Cheese" (description
+  "Melted"), "Olives" (description "Black"). Do nothing else.
+
+⏺ Declined to answer Claude's questions:
+  ⎿  · Which size? (Small / Large)
+     · Which toppings? (Cheese / Olives)
+
+❯ Call the AskUserQuestion tool exactly once with exactly one question: header "Colour", question "Pick a colour",
+  multiSelect false, options "Red" (description "Choose Red"), "Green" (description "Choose Green"), "Blue"
+  (description "Choose Blue"). Do nothing else.
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Colour
+
+Pick a colour
+
+❯ 1. Red
+     Choose Red
+  2. Green
+     Choose Green
+  3. Blue
+     Choose Blue
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

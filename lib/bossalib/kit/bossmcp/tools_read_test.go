@@ -3,11 +3,14 @@ package bossmcp
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TestReadTools drives every read-only tool over an in-memory transport,
@@ -289,6 +292,81 @@ func TestStatusReadToolsExposePhase(t *testing.T) {
 			}
 			if len(rows) != 1 || rows[0]["phase"] != "reviewing" {
 				t.Fatalf("phase missing: %v", rows)
+			}
+		})
+	}
+}
+
+func TestListSessionsOrdersAndLimits_McpServer_AC277401(t *testing.T) {
+	at := func(day int) *timestamppb.Timestamp {
+		return timestamppb.New(time.Date(2026, 10, day, 0, 0, 0, 0, time.UTC))
+	}
+	// The backend order matches neither timestamp, so a default-order answer
+	// cannot pass as an ordered one.
+	backend := &fakeBackend{
+		listSessions: func(context.Context, *pb.ListSessionsRequest) ([]*pb.Session, error) {
+			return []*pb.Session{
+				{Id: "mid", CreatedAt: at(2), UpdatedAt: at(9)},
+				{Id: "newest", CreatedAt: at(4), UpdatedAt: at(1)},
+				{Id: "oldest", CreatedAt: at(1), UpdatedAt: at(5)},
+				{Id: "second", CreatedAt: at(3), UpdatedAt: at(3)},
+			}, nil
+		},
+	}
+	cs := newConnectedClient(t, backend, Options{})
+	call := func(t *testing.T, args map[string]any) *mcp.CallToolResult {
+		t.Helper()
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_sessions", Arguments: args})
+		if err != nil {
+			t.Fatalf("call list_sessions: %v", err)
+		}
+		return res
+	}
+
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want []string
+	}{
+		{"created oldest first, limit 2, returns the two oldest", map[string]any{"order_by": "created", "direction": "oldest_first", "limit": 2}, []string{"oldest", "mid"}},
+		{"updated without direction is newest first", map[string]any{"order_by": "updated"}, []string{"mid", "oldest", "second", "newest"}},
+		{"created newest first", map[string]any{"order_by": "created", "direction": "newest_first"}, []string{"newest", "second", "mid", "oldest"}},
+		{"no arguments keep the backend order", map[string]any{}, []string{"mid", "newest", "oldest", "second"}},
+		{"limit alone keeps the backend order", map[string]any{"limit": 3}, []string{"mid", "newest", "oldest"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := call(t, tc.args)
+			if res.IsError {
+				t.Fatalf("error result: %s", textOf(t, res))
+			}
+			var rows []struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal([]byte(textOf(t, res)), &rows); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got := make([]string, 0, len(rows))
+			for _, row := range rows {
+				got = append(got, row.ID)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("ids = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"unknown order_by", map[string]any{"order_by": "rank"}},
+		{"unknown direction", map[string]any{"order_by": "created", "direction": "sideways"}},
+		{"direction without order_by", map[string]any{"direction": "oldest_first"}},
+		{"negative limit", map[string]any{"limit": -1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if res := call(t, tc.args); !res.IsError {
+				t.Fatalf("want an error result, got %s", textOf(t, res))
 			}
 		})
 	}

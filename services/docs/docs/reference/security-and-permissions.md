@@ -67,14 +67,21 @@ does not show a difference in Boss's current trust settings.
 
 ### Claude Code
 
-Untrusted launches skip project MCP servers and project/local settings,
-including hooks, using `--strict-mcp-config --setting-sources user`.
+Untrusted launches still skip the repository's own MCP servers and
+project/local settings, including hooks, using
+`--strict-mcp-config --setting-sources user`. When the repository's tracker is
+Linear, Bossanova injects one Bossanova-owned Linear MCP server via
+`--mcp-config` that authenticates with the repository's stored `LINEAR_API_KEY`
+through environment-variable expansion (the key value is never written to disk).
+The repository chooses only the server name in `.boss-skills.json` and cannot
+change the server's address, headers, or credentials.
 
 For trusted interactive launches, Boss also records Claude's folder-trust
 acceptance for the worktree and its main checkout in existing `.claude.json`
 files in the plugin's home, `CLAUDE_CONFIG_DIR` and the launch's `HOME`, where
-applicable. It does not create these files or bypass Claude's onboarding. Claude still decides whether to show its folder-trust dialog when a file is
-missing or a trust write fails. Untrusted launches do not grant that acceptance.
+applicable. It does not create these files or bypass Claude's onboarding. Claude
+still decides whether to show its folder-trust dialog when a file is missing or
+a trust write fails. Untrusted launches do not grant that acceptance.
 
 ### Proof secrets
 

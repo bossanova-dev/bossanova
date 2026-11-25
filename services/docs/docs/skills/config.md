@@ -32,10 +32,17 @@ later, inside a tracker write.
 
 ## The minimum viable config
 
-`boss-plan` requires four roles under `states`: `unplanned` and `planned` for
-ticket selection and write-back, plus `inProgress` and `inReview` for the
-active-backlog reads. The only tracker currently supported is
-[Linear](https://linear.app/).
+Bossanova supports both [Linear](https://linear.app/) and
+[GitHub Issues](https://docs.github.com/en/issues). With no tracker block in
+`.boss-skills.json`, the loader detects Linear when `LINEAR_API_KEY` or a
+Linear-named MCP server is configured, and otherwise falls back to GitHub Issues
+for a repository whose `origin` remote is on GitHub (synthesizing
+`trackerConfig.github.repository` and filling the default state and label maps).
+
+When you pin a tracker explicitly, `boss-plan` relies on four workflow roles
+under `states` (`unplanned`, `planned`, `inProgress`, and `inReview`), which
+default to each tracker's standard names and only need overrides where your
+tracker differs:
 
 ```json
 {
@@ -50,6 +57,20 @@ active-backlog reads. The only tracker currently supported is
         "inProgress": "In Progress",
         "inReview": "In Review"
       }
+    }
+  }
+}
+```
+
+For GitHub Issues, pin `repository` (`OWNER/REPO` or `HOST/OWNER/REPO`) instead
+of `mcpServer` and `team`:
+
+```json
+{
+  "adapters": { "tracker": "github" },
+  "trackerConfig": {
+    "github": {
+      "repository": "acme/tasks"
     }
   }
 }
@@ -92,22 +113,22 @@ as it publishes the tracker's tools.
 
 ## Config reference
 
-| Section             | What it controls                                                                                                                                                                   | Absent, or present and wrong                                                                                                                                                                        |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `review`            | Which review `boss-build` runs: `skill` names a repo skill (or chain) that replaces `boss-review` and writes the same verdict; `secondModel` toggles the cross-agent second model. | Absent: `boss-review` with its second model on. A malformed value warns and falls back to that. The retired `lensMap` and `reviewLedger` keys warn and are ignored.                                 |
-| `commands`          | Command strings, read by name. Detection fills `build`, `lint`, `format`, and `test`.                                                                                              | Absent: detection fills the four detectable keys from the repository's marker files and `command()` returns `null` for the rest. A non-string or empty value fails validation.                      |
-| `test.manifestPath` | Path to this repository's test-command manifest.                                                                                                                                   | Never defaulted and never detected. Absent: `manifestPath()` returns `null`. An empty string fails validation.                                                                                      |
-| `reviewDefaults`    | `hangGuardMinutes` (one review dispatch) and `softBudgetMinutes` (the second model only).                                                                                          | Absent: 30 and 60. A non-object block fails validation. A value that is not a positive integer warns and falls back. Retired round and delta keys warn and are ignored.                             |
-| `env`               | Headless-detection signals, and whether an absent TTY counts as headless.                                                                                                          | Absent: the built-in signals apply. A signal without a string `var`, or a non-boolean `headlessWhenNoTty`, fails validation.                                                                        |
-| `adapters`          | Which implementation the `tracker`, `publish`, and `sessionRunner` seams resolve to.                                                                                               | Absent: `linear`, `proof`, and `bossd`. An empty or non-string selection fails validation. A tracker selection with no matching `trackerConfig` block resolves to null and the skills self-disable. |
-| `extensionRoots`    | Ordered repo-local skill roots scanned for `boss-*` extensions.                                                                                                                    | Absent: `.claude/skills` then `.codex/skills`. An empty array fails validation. A root that does not exist is passed over in silence.                                                               |
-| `trackerConfig`     | Per-tracker identity: `mcpServer`, `team`, and the `states`, `labels`, and `githubLabels` role maps.                                                                               | Absent: the tracker-driven skills self-disable. A block missing `mcpServer` or `team` fails validation. A role naming no real tracker entity fails inside a later tracker write.                    |
-| `publishConfig`     | Per-publisher `bucket` and `baseUrl` for proof artifacts. `proof: false` opts out of the hosted proof fallback.                                                                    | Absent: proof pages go to the daemon's hosted proof host. A present block missing either field fails validation. `proof` also accepts `false`; any other non-object fails validation.               |
-| `planStorage`       | Where `boss-plan` stores the implementation plan it writes.                                                                                                                        | Absent: `tracker-attachment`, the one accepted value. A `kind` of `r2` warns and is coerced back to it. Any other `kind` fails validation.                                                          |
-| `planContract`      | The section contract for the tracker description `boss-plan` writes (the plan itself is free-form).                                                                                | Absent: the shipped contract applies (only `## Summary` and `## Original notes` are required). A section with an unrecognised `required` class fails validation.                                    |
-| `planDependencies`  | `boss-plan`'s dependency-scan `moduleRoots`, `repoWideTokens`, and `areaAliases`.                                                                                                  | Absent: all empty; a per-run payload extends them. A non-object block, unknown key, empty entry, or non-string alias fails validation.                                                              |
-| `epicDefaults`      | `childWallClockMinutes`, the budget `boss-epic` gives one child before fail-isolating it.                                                                                          | Absent: 360. A non-object block fails validation. A value outside `[1, 1440]` warns and falls back to 360.                                                                                          |
-| `notesDefaults`     | `sampleRate`, the probability that a run performs its reporting phases at all.                                                                                                     | Absent: `1`, so every run reports. A non-object block fails validation. A number outside `[0, 1]` warns and falls back to `1`.                                                                      |
+| Section             | What it controls                                                                                                                                                                   | Absent, or present and wrong                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `review`            | Which review `boss-build` runs: `skill` names a repo skill (or chain) that replaces `boss-review` and writes the same verdict; `secondModel` toggles the cross-agent second model. | Absent: `boss-review` with its second model on. A malformed value warns and falls back to that. The retired `lensMap` and `reviewLedger` keys warn and are ignored.                                                                                                                                                                                                                                                                                                                     |
+| `commands`          | Command strings, read by name. Detection fills `build`, `lint`, `format`, and `test`.                                                                                              | Absent: detection fills the four detectable keys from the repository's marker files and `command()` returns `null` for the rest. A non-string or empty value fails validation.                                                                                                                                                                                                                                                                                                          |
+| `test.manifestPath` | Path to this repository's test-command manifest.                                                                                                                                   | Never defaulted and never detected. Absent: `manifestPath()` returns `null`. An empty string fails validation.                                                                                                                                                                                                                                                                                                                                                                          |
+| `reviewDefaults`    | `hangGuardMinutes` (one review dispatch) and `softBudgetMinutes` (the second model only).                                                                                          | Absent: 30 and 60. A non-object block fails validation. A value that is not a positive integer warns and falls back. Retired round and delta keys warn and are ignored.                                                                                                                                                                                                                                                                                                                 |
+| `env`               | Headless-detection signals, and whether an absent TTY counts as headless.                                                                                                          | Absent: the built-in signals apply. A signal without a string `var`, or a non-boolean `headlessWhenNoTty`, fails validation.                                                                                                                                                                                                                                                                                                                                                            |
+| `adapters`          | Which implementation the `tracker`, `publish`, and `sessionRunner` seams resolve to.                                                                                               | Absent: `publish` defaults to `proof`, `sessionRunner` to `bossd`, and `tracker` is detected in order: a single declared `trackerConfig.<name>` block, `linear` when `LINEAR_API_KEY` or a Linear-named MCP server is present, `github` for a GitHub `origin` remote (synthesizing `trackerConfig.github.repository`), else `linear`. Multiple declared `trackerConfig` blocks with no `adapters.tracker` keep the `linear` default. An empty or non-string selection fails validation. |
+| `extensionRoots`    | Ordered repo-local skill roots scanned for `boss-*` extensions.                                                                                                                    | Absent: `.claude/skills` then `.codex/skills`. An empty array fails validation. A root that does not exist is passed over in silence.                                                                                                                                                                                                                                                                                                                                                   |
+| `trackerConfig`     | Per-tracker identity and role maps: `mcpServer`, `team`, and `states`/`labels` for `linear`; `repository` (`OWNER/REPO` or `HOST/OWNER/REPO`) and `states`/`labels` for `github`.  | Absent: for `linear`, a team-less default block is synthesized (self-disabling if no MCP server or single team is reachable); for a GitHub `origin` with no Linear signal, `trackerConfig.github.repository` is synthesized with default GitHub states and labels. A role naming no real tracker entity fails inside a later tracker write.                                                                                                                                             |
+| `publishConfig`     | Per-publisher `bucket` and `baseUrl` for proof artifacts. `proof: false` opts out of the hosted proof fallback.                                                                    | Absent: proof pages go to the daemon's hosted proof host. A present block missing either field fails validation. `proof` also accepts `false`; any other non-object fails validation.                                                                                                                                                                                                                                                                                                   |
+| `planStorage`       | Where `boss-plan` stores the implementation plan it writes.                                                                                                                        | Absent: `tracker-attachment`, the one accepted value. A `kind` of `r2` warns and is coerced back to it. Any other `kind` fails validation.                                                                                                                                                                                                                                                                                                                                              |
+| `planContract`      | The section contract for the tracker description `boss-plan` writes (the plan itself is free-form).                                                                                | Absent: the shipped contract applies (only `## Summary` and `## Original notes` are required). A section with an unrecognised `required` class fails validation.                                                                                                                                                                                                                                                                                                                        |
+| `planDependencies`  | `boss-plan`'s dependency-scan `moduleRoots`, `repoWideTokens`, and `areaAliases`.                                                                                                  | Absent: all empty; a per-run payload extends them. A non-object block, unknown key, empty entry, or non-string alias fails validation.                                                                                                                                                                                                                                                                                                                                                  |
+| `epicDefaults`      | `childWallClockMinutes`, the budget `boss-epic` gives one child before fail-isolating it.                                                                                          | Absent: 360. A non-object block fails validation. A value outside `[1, 1440]` warns and falls back to 360.                                                                                                                                                                                                                                                                                                                                                                              |
+| `notesDefaults`     | `sampleRate`, the probability that a run performs its reporting phases at all.                                                                                                     | Absent: `1`, so every run reports. A non-object block fails validation. A number outside `[0, 1]` warns and falls back to `1`.                                                                                                                                                                                                                                                                                                                                                          |
 
 ## Failure modes
 
@@ -168,15 +189,30 @@ at the repository root for every skill run at or below that subdirectory. `boss
 init` warns when the file it writes shadows an ancestor. Nothing warns at
 skill-run time, so a nested config added by hand afterwards goes unannounced.
 
-## Tracker support today
+## Tracker support
 
-`linear` is the only tracker adapter that ships. `BUILDERS` in
-`skills-toolbox/tracker/adapter.mjs` holds one entry. A `trackerConfig` block
-keyed under another tracker name still validates, and once `adapters.tracker`
-names that same tracker the state and label lookups read it, but no adapter
-backs it. Adapter resolution reads the `TRACKER` environment variable and falls
-back to `linear`, and setting `TRACKER` to that name throws `unknown tracker:
-<name>` until someone registers a builder at that seam.
+Both `linear` and `github` tracker adapters ship, and `BUILDERS` in
+`skills-toolbox/tracker/adapter.mjs` registers both. When `adapters.tracker` is
+not set, `loadSkillConfig` selects the tracker in order:
+
+1. **Single declared `trackerConfig.<name>` block:** selects `<name>` without
+   reading the environment or git. Several declared blocks with no
+   `adapters.tracker` keep the `linear` default.
+2. **Linear signal:** selects `linear` when `LINEAR_API_KEY` is non-empty or a
+   Linear-named MCP server (`/linear/i`) is declared in `.mcp.json`,
+   `.codex/config.toml`, `~/.claude.json`, or `~/.codex/config.toml`.
+3. **GitHub origin:** selects `github` when `git remote get-url origin` points
+   to GitHub, synthesizing `trackerConfig.github.repository` (`OWNER/REPO` for
+   `github.com`, `HOST/OWNER/REPO` for `github.*`) and filling default GitHub
+   states and labels.
+4. **Fallback:** `linear`, preserving the existing self-disable behavior for
+   non-GitHub repositories with no tracker configuration.
+
+Setting `"adapters": { "tracker": "linear" }` (or `"github"`) pins the selection
+explicitly. This is useful when a repository relies on an implicit Linear
+MCP server that the harness scan cannot see. At runtime, the `TRACKER`
+environment variable overrides the resolved adapter; setting it to an
+unregistered name throws `unknown tracker: <name>`.
 
 ## See also
 

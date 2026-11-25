@@ -1968,6 +1968,11 @@ message AggregatedRepo {
   // of that organization. Empty also covers a holder outside the caller's
   // memberships, so it does not mean the origin is unclaimed.
   string organization_id = 5;
+  // True when an organization the caller is not a member of holds this
+  // origin. bosso files a session on it in that organization, where the
+  // caller cannot see it, so ProxyCreateSession refuses one. The holder is
+  // not named. Additive output field: older clients ignore it.
+  bool is_held_by_other_organization = 6;
 }
 
 // DaemonRepoRef ties a logical repo to one serving daemon: that daemon's local

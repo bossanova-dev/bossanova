@@ -85,7 +85,7 @@ type claudeInitEvent struct {
 // startup. Extracted as an interface so the RPC can be tested without a claude
 // binary on PATH.
 type claudeInitProber interface {
-	ProbeInit(ctx context.Context, workDir, model string, env map[string]string, projectTrust bossanovav1.ProjectTrustDecision) (claudeInitEvent, error)
+	ProbeInit(ctx context.Context, workDir, model string, env map[string]string, projectTrust bossanovav1.ProjectTrustDecision, trackerArgs []string) (claudeInitEvent, error)
 }
 
 // DescribeMCPSurface reports the MCP servers a claude session in work_dir
@@ -118,16 +118,27 @@ func (s *Server) DescribeMCPSurface(
 
 	prober := s.initProber
 	if prober == nil {
-		loginShell := ""
+		var loginShell, trackerMCPDir string
 		if s.runner != nil {
 			loginShell = s.runner.loginShell
+			trackerMCPDir = s.runner.trackerMCPDir
 		}
-		prober = liveClaudeInitProber{loginShell: loginShell}
+		prober = liveClaudeInitProber{loginShell: loginShell, trackerMCPDir: trackerMCPDir}
+	}
+
+	trusted := projectConfigTrusted(req.GetProjectTrust())
+	trackerArgs, serverName, trackerErr := resolveTrackerMCP(s.probeTrackerMCPDir(prober), req.GetWorkDir(), trusted)
+	var injectedServer string
+	if trackerErr != nil {
+		s.logger.Warn().Err(trackerErr).Msg("failed to write tracker MCP config for untrusted MCP surface probe; continuing with strict empty MCP surface")
+		trackerArgs = nil
+	} else if len(trackerArgs) > 0 {
+		injectedServer = serverName
 	}
 
 	// probe_env is secret-bearing: it reaches the probed process's environment
 	// and is deliberately never logged here and never copied into the response.
-	event, err := prober.ProbeInit(ctx, req.GetWorkDir(), req.GetModel(), req.GetProbeEnv(), req.GetProjectTrust())
+	event, err := prober.ProbeInit(ctx, req.GetWorkDir(), req.GetModel(), req.GetProbeEnv(), req.GetProjectTrust(), trackerArgs)
 	if err != nil {
 		resp.ProbeError = err.Error()
 		return resp, nil
@@ -140,11 +151,26 @@ func (s *Server) DescribeMCPSurface(
 		return resp, nil
 	}
 
-	attribution := newClaudeSourceAttribution(req.GetWorkDir(), req.GetProbeEnv())
+	attribution := newClaudeSourceAttribution(req.GetWorkDir(), req.GetProbeEnv(), injectedServer)
 	for _, server := range *event.McpServers {
 		resp.Servers = append(resp.Servers, claudeServerReport(server.Name, server.Status, event.Tools, attribution))
 	}
 	return resp, nil
+}
+
+func (s *Server) probeTrackerMCPDir(prober claudeInitProber) string {
+	if s.runner != nil && s.runner.trackerMCPDir != "" {
+		return s.runner.trackerMCPDir
+	}
+	switch live := prober.(type) {
+	case liveClaudeInitProber:
+		return live.trackerMCPDir
+	case *liveClaudeInitProber:
+		if live != nil {
+			return live.trackerMCPDir
+		}
+	}
+	return ""
 }
 
 // claudeServerReport derives one server's row from the init event.
@@ -198,7 +224,8 @@ func mcpToolNamePrefix(serverName string) string {
 
 // liveClaudeInitProber spawns a real claude process and reads its init event.
 type liveClaudeInitProber struct {
-	loginShell string
+	loginShell    string
+	trackerMCPDir string
 	// commandFactory is the exec seam; nil means exec.CommandContext.
 	commandFactory func(context.Context, string, ...string) *exec.Cmd
 	// timeout overrides claudeInitProbeTimeout in tests.
@@ -214,6 +241,7 @@ func (p liveClaudeInitProber) ProbeInit(
 	workDir, model string,
 	env map[string]string,
 	projectTrust bossanovav1.ProjectTrustDecision,
+	trackerArgs []string,
 ) (claudeInitEvent, error) {
 	timeout := p.timeout
 	if timeout <= 0 {
@@ -236,6 +264,7 @@ func (p liveClaudeInitProber) ProbeInit(
 		if err := runner.checkProjectIsolationSupport(ctx, env); err != nil {
 			return claudeInitEvent{}, err
 		}
+		args = append(args, trackerArgs...)
 	}
 	args = append(args, projectIsolationArgs(trusted)...)
 	args = loginshell.Wrap(p.loginShell, loginshell.Flags(p.loginShell), args)
@@ -435,11 +464,12 @@ func probeEnviron(extraEnv map[string]string) []string {
 // empty detail; the scan never guesses and never infers provenance from tool
 // names.
 //
-// MCP_SERVER_SOURCE_INJECTED is deliberately never produced here: this plugin
-// passes no --mcp-config on argv (boss does not own MCP configuration — see
-// docs/solutions/workflow-issues/repo-owns-its-mcp-servers.md), so no server it
-// observes can honestly be attributed to a launcher-supplied config. The enum
-// value stays in the contract for a launcher that does inject one.
+// MCP_SERVER_SOURCE_INJECTED is produced only when an untrusted launch actually
+// rendered and passed the boss-owned Linear tracker --mcp-config (see
+// docs/solutions/workflow-issues/repo-owns-its-mcp-servers.md). That entry is
+// checked before the repo-scope scans so a same-named server in .mcp.json —
+// which --strict-mcp-config never loaded — cannot shadow the injected source.
+// Trusted launches pass no --mcp-config and still produce no injected source.
 type claudeSourceAttribution struct {
 	entries []claudeSourceScope
 }
@@ -450,13 +480,18 @@ type claudeSourceScope struct {
 	detail string
 }
 
-func newClaudeSourceAttribution(workDir string, probeEnv map[string]string) claudeSourceAttribution {
+func newClaudeSourceAttribution(workDir string, probeEnv map[string]string, injectedServer string) claudeSourceAttribution {
 	attribution := claudeSourceAttribution{}
 	add := func(keys map[string]struct{}, source bossanovav1.MCPServerSource, detail string) {
 		if len(keys) == 0 {
 			return
 		}
 		attribution.entries = append(attribution.entries, claudeSourceScope{keys: keys, source: source, detail: detail})
+	}
+
+	if injectedServer != "" {
+		add(map[string]struct{}{injectedServer: {}},
+			bossanovav1.MCPServerSource_MCP_SERVER_SOURCE_INJECTED, injectedTrackerSourceDetail)
 	}
 
 	if strings.TrimSpace(workDir) != "" {

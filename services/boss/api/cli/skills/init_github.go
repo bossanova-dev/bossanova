@@ -270,26 +270,168 @@ func writeGitHubMapping(out io.Writer, m githubMappingResult, steps *initApplied
 	}
 }
 
-// selectedInitTracker resolves the merge default before any credential reads.
-func selectedInitTracker(tracker, dir string, merge bool) string {
-	if tracker != "" {
+type trackerDetectionResult struct {
+	Tracker    string `json:"tracker"`
+	Repository string `json:"repository,omitempty"`
+}
+
+func detectInitTracker(repoDir string) (trackerDetectionResult, error) {
+	bridge, cleanup, err := newNodeBridge()
+	if err != nil {
+		return trackerDetectionResult{}, err
+	}
+	defer cleanup()
+	return bridge.detectTracker(repoDir)
+}
+
+func (b *nodeBridge) detectTracker(repoDir string) (trackerDetectionResult, error) {
+	if repoDir != "" && !filepath.IsAbs(repoDir) {
+		abs, err := filepath.Abs(repoDir)
+		if err != nil {
+			return trackerDetectionResult{}, fmt.Errorf("resolve repository directory: %w", err)
+		}
+		repoDir = abs
+	}
+	script := fmt.Sprintf(`import { pathToFileURL } from 'node:url'
+const mod = await import(pathToFileURL(%s).href)
+const res = mod.detectTracker({ cwd: %s })
+process.stdout.write(JSON.stringify({ tracker: res.tracker, repository: res.block?.repository || '' }))
+`, jsString(b.module), jsString(repoDir))
+	stdout, err := b.run(script, "detect tracker")
+	if err != nil {
+		return trackerDetectionResult{}, err
+	}
+	var result trackerDetectionResult
+	dec := json.NewDecoder(bytes.NewReader(stdout))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&result); err != nil {
+		if permissiveErr := json.Unmarshal(stdout, new(map[string]any)); permissiveErr == nil {
+			return trackerDetectionResult{}, fmt.Errorf("%w: detect tracker: %v (output: %s)", errDetectionShape, err, truncate(stdout))
+		}
+		return trackerDetectionResult{}, fmt.Errorf("%w: detect tracker: %v (output: %s)", errNodeBadJSON, err, truncate(stdout))
+	}
+	if dec.More() {
+		return trackerDetectionResult{}, fmt.Errorf("%w: detect tracker: trailing output after the JSON result (output: %s)", errNodeBadJSON, truncate(stdout))
+	}
+	if result.Tracker != "linear" && result.Tracker != "github" {
+		return trackerDetectionResult{}, fmt.Errorf("%w: detect tracker: unexpected tracker %q", errDetectionShape, result.Tracker)
+	}
+	return result, nil
+}
+
+func trackerFromConfigData(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	var cfg struct {
+		Adapters struct {
+			Tracker string `json:"tracker"`
+		} `json:"adapters"`
+		TrackerConfig map[string]json.RawMessage `json:"trackerConfig"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return ""
+	}
+	if tracker := strings.TrimSpace(cfg.Adapters.Tracker); tracker != "" {
 		return tracker
 	}
-	if merge {
-		if dir == "" {
-			dir, _ = os.Getwd()
-		}
-		data, _ := os.ReadFile(filepath.Join(dir, ".boss-skills.json"))
-		var cfg struct {
-			Adapters struct {
-				Tracker string `json:"tracker"`
-			} `json:"adapters"`
-		}
-		if json.Unmarshal(data, &cfg) == nil && cfg.Adapters.Tracker != "" {
-			return cfg.Adapters.Tracker
+	if len(cfg.TrackerConfig) == 1 {
+		for name := range cfg.TrackerConfig {
+			return name
 		}
 	}
-	return "linear"
+	if len(cfg.TrackerConfig) > 1 {
+		return "linear"
+	}
+	return ""
+}
+
+func trackerFromExistingConfig(dir string) string {
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ConfigFilename))
+	if err != nil {
+		return ""
+	}
+	return trackerFromConfigData(data)
+}
+
+func (b *nodeBridge) hasGitHubOrigin(repoDir string) bool {
+	if b == nil || repoDir == "" {
+		return false
+	}
+	if !filepath.IsAbs(repoDir) {
+		abs, err := filepath.Abs(repoDir)
+		if err != nil {
+			return false
+		}
+		repoDir = abs
+	}
+	script := fmt.Sprintf(`import { pathToFileURL } from 'node:url'
+const mod = await import(pathToFileURL(%s).href)
+const res = mod.detectTracker({ cwd: %s, env: {}, home: null, readFile: () => null })
+process.stdout.write(JSON.stringify({ github: res.reason === 'github-origin' }))
+`, jsString(b.module), jsString(repoDir))
+	stdout, err := b.run(script, "check GitHub origin")
+	if err != nil {
+		return false
+	}
+	var result struct {
+		GitHub bool `json:"github"`
+	}
+	return json.Unmarshal(stdout, &result) == nil && result.GitHub
+}
+
+func needsExplicitLinearTracker(bridge *nodeBridge, repoDir string, existing []byte, opts *initOptions, teamPinned bool) bool {
+	existingTracker := trackerFromConfigData(existing)
+	if existingTracker == "github" {
+		return true
+	}
+	if opts.detectedGitHubRepo != "" {
+		return true
+	}
+	return !teamPinned && existingTracker != "linear" && bridge.hasGitHubOrigin(repoDir)
+}
+
+// resolveSelectedInitTracker resolves the tracker before any credential reads:
+// explicit --tracker, existing config when merging or interviewing without
+// --force, explicit Linear/GitHub flags, then embedded tracker detection with
+// a warned fallback to linear.
+func (g *Group) resolveSelectedInitTracker(c *cobra.Command, tracker, dir string, keepExisting bool) (string, string) {
+	if tracker != "" {
+		return tracker, ""
+	}
+	if keepExisting {
+		if existing := trackerFromExistingConfig(dir); existing != "" {
+			return existing, ""
+		}
+	}
+	if c.Flags().Changed("team") || c.Flags().Changed("linear-key-stdin") {
+		return "linear", ""
+	}
+	if c.Flags().Changed("github-repo") {
+		return "github", ""
+	}
+	repoDir := dir
+	if repoDir == "" {
+		repoDir, _ = os.Getwd()
+	}
+	if repoDir != "" {
+		if abs, err := filepath.Abs(repoDir); err == nil {
+			repoDir = abs
+		}
+	}
+	detect := g.initDetectTracker
+	if detect == nil {
+		detect = detectInitTracker
+	}
+	res, err := detect(repoDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(c.OutOrStdout(), "Warning: tracker detection failed (%s); falling back to linear\n", firstLine(err.Error()))
+		return "linear", ""
+	}
+	return res.Tracker, res.Repository
 }
 
 func parseTrackerOverrides(tracker string, states, labels []string, me bool) (linearOverrides, error) {
@@ -330,7 +472,7 @@ func validateInitTrackerFlags(c *cobra.Command, tracker, repository string, stat
 				return fmt.Errorf("--state %s is a closing role on github and cannot be overridden", role)
 			}
 		}
-		if repository != "" {
+		if c.Flags().Changed("github-repo") || repository != "" {
 			_, err := parseGitHubRepository(repository)
 			return err
 		}
@@ -383,13 +525,7 @@ func (g *Group) resolveInitTrackerFor(out io.Writer, bridge *nodeBridge, repoDir
 		_, _ = fmt.Fprintln(out, "--create-labels: no Linear team was verified with LINEAR_API_KEY, so no labels were looked up or created")
 	}
 	if ov.Tracker == "linear" && opts.command != nil && !opts.command.Flags().Changed("tracker") {
-		var old struct {
-			Adapters struct {
-				Tracker string `json:"tracker"`
-			} `json:"adapters"`
-		}
-		_ = json.Unmarshal(existing, &old)
-		if old.Adapters.Tracker != "github" {
+		if !needsExplicitLinearTracker(bridge, repoDir, existing, opts, tracker.team != "") {
 			ov.Tracker = ""
 		}
 	}

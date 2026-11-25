@@ -4330,8 +4330,13 @@ type AggregatedRepo struct {
 	// of that organization. Empty also covers a holder outside the caller's
 	// memberships, so it does not mean the origin is unclaimed.
 	OrganizationId string `protobuf:"bytes,5,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// True when an organization the caller is not a member of holds this
+	// origin. bosso files a session on it in that organization, where the
+	// caller cannot see it, so ProxyCreateSession refuses one. The holder is
+	// not named. Additive output field: older clients ignore it.
+	IsHeldByOtherOrganization bool `protobuf:"varint,6,opt,name=is_held_by_other_organization,json=isHeldByOtherOrganization,proto3" json:"is_held_by_other_organization,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *AggregatedRepo) Reset() {
@@ -4397,6 +4402,13 @@ func (x *AggregatedRepo) GetOrganizationId() string {
 		return x.OrganizationId
 	}
 	return ""
+}
+
+func (x *AggregatedRepo) GetIsHeldByOtherOrganization() bool {
+	if x != nil {
+		return x.IsHeldByOtherOrganization
+	}
+	return false
 }
 
 // DaemonRepoRef ties a logical repo to one serving daemon: that daemon's local
@@ -26743,14 +26755,15 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\tdelivered\x18\x02 \x01(\bR\tdelivered\x12\x1f\n" +
 	"\vnotice_text\x18\x03 \x01(\tR\n" +
 	"noticeText\x12Z\n" +
-	"\x0edelivery_state\x18\x04 \x01(\x0e23.bossanova.v1.SendChatMessageResponse.DeliveryStateR\rdeliveryState\"\xe2\x01\n" +
+	"\x0edelivery_state\x18\x04 \x01(\x0e23.bossanova.v1.SendChatMessageResponse.DeliveryStateR\rdeliveryState\"\xa4\x02\n" +
 	"\x0eAggregatedRepo\x12\x1d\n" +
 	"\n" +
 	"origin_url\x18\x01 \x01(\tR\toriginUrl\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12.\n" +
 	"\x13default_base_branch\x18\x03 \x01(\tR\x11defaultBaseBranch\x125\n" +
 	"\adaemons\x18\x04 \x03(\v2\x1b.bossanova.v1.DaemonRepoRefR\adaemons\x12'\n" +
-	"\x0forganization_id\x18\x05 \x01(\tR\x0eorganizationId\"\xba\x01\n" +
+	"\x0forganization_id\x18\x05 \x01(\tR\x0eorganizationId\x12@\n" +
+	"\x1dis_held_by_other_organization\x18\x06 \x01(\bR\x19isHeldByOtherOrganization\"\xba\x01\n" +
 	"\rDaemonRepoRef\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12$\n" +

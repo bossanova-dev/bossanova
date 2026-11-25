@@ -67,6 +67,7 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create repo: %w", err))
 	}
+	s.installFactorySkills(ctx, "repo-register")
 
 	return connect.NewResponse(&pb.RegisterRepoResponse{Repo: repoToProto(repo)}), nil
 }
@@ -149,6 +150,7 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create repo: %w", err))
 	}
+	s.installFactorySkills(ctx, "repo-register")
 
 	return connect.NewResponse(&pb.CloneAndRegisterRepoResponse{Repo: repoToProto(repo)}), nil
 }

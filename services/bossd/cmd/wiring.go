@@ -20,6 +20,7 @@ import (
 	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/adapter/accountcred"
 	"github.com/recurser/bossd/internal/adapter/anthropicorg"
+	"github.com/recurser/bossd/internal/adapter/factoryskills"
 	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/adapter/github"
 	"github.com/recurser/bossd/internal/adapter/proofenvkeyring"
@@ -159,6 +160,7 @@ type daemonWiring struct {
 	rawSessions                    *db.SQLiteSessionStore
 	repairLease                    *status.RepairLeaseManager
 	factoryRepoChecker             *verifyjob.Checker
+	factorySkills                  *factoryskills.Installer
 	repos                          *db.SQLiteRepoStore
 	resumeAttempts                 *db.SQLiteResumeAttemptStore
 	usageShare                     *rotation.UsageShare

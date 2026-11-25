@@ -123,12 +123,13 @@ func (g *Group) maybeInstallSkills() error {
 
 func skillPromptDeclined(settings config.Settings, agent libskillinstall.Agent, installed bool, manifest string) bool {
 	agentName := string(agent)
-	declined := settings.SkillsDeclinedByAgent[agentName]
-	declinedManifest := settings.SkillsDeclinedManifestByAgent[agentName]
-	if agent == libskillinstall.AgentClaude && settings.SkillsDeclined && !declined && declinedManifest == "" {
+	if agent == libskillinstall.AgentClaude && settings.SkillsDeclined && !settings.SkillsDeclinedByAgent[agentName] && settings.SkillsDeclinedManifestByAgent[agentName] == "" {
 		return !installed
 	}
-	return declined && declinedManifest == manifest
+	return libskillinstall.Declines{
+		ByAgent:         settings.SkillsDeclinedByAgent,
+		ManifestByAgent: settings.SkillsDeclinedManifestByAgent,
+	}.Declined(agent, manifest)
 }
 
 func rememberDeclinedSkillPrompt(settings *config.Settings, agentName, manifest string) bool {

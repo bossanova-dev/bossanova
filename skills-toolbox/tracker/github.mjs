@@ -38,13 +38,9 @@ export function issueNumber(value) {
 }
 
 /** @param {{config?: object, env?: object, spawn?: Function, sleep?: (ms: number) => Promise<void>}} [options] */
-export function createGithubAdapter({
-  config = loadSkillConfig(),
-  env = process.env,
-  spawn,
-  sleep,
-} = {}) {
-  const block = withTrackerDefaults(config).trackerConfig?.github
+export function createGithubAdapter({ config, env = process.env, spawn, sleep } = {}) {
+  const resolvedConfig = config ?? loadSkillConfig({ env })
+  const block = withTrackerDefaults(resolvedConfig).trackerConfig?.github
   const identity = parseRepository(block?.repository)
   const repository = `${identity.host}/${identity.owner}/${identity.repo}`
   const states = githubStates(block?.states)

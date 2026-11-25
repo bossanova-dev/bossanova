@@ -133,6 +133,18 @@ func sameRevision(a, b PayloadRecord) bool {
 	return len(shorter) >= 7 && strings.HasPrefix(longer, shorter)
 }
 
+// sameBuild reports whether two comparable records identify the same build:
+// identical origin, revision, version and dirty flag.
+func sameBuild(a, b PayloadRecord) bool {
+	if !a.Comparable() || !b.Comparable() {
+		return false
+	}
+	return a.Origin == b.Origin &&
+		a.Revision == b.Revision &&
+		a.Version == b.Version &&
+		a.Dirty == b.Dirty
+}
+
 // Ordering is an oracle's answer about whether a payload is older than the one
 // that wrote the installed tree.
 type Ordering int

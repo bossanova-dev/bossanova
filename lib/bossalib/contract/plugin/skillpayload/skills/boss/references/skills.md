@@ -26,7 +26,7 @@ Write a detected .boss-skills.json for this repository
 - `--state` — Tracker state override role=name (repeatable)
 - `--store-env-keys` — Store environment keys: LINEAR_API_KEY and SENTRY_AUTH_TOKEN on Linear; SENTRY_AUTH_TOKEN only on GitHub
 - `--team` — Linear team name to pin as trackerConfig.linear.team (a key or id resolves to the name only when LINEAR_API_KEY lists it)
-- `--tracker` — Issue tracker: linear or github (default: existing tracker on --merge, otherwise linear)
+- `--tracker` — Issue tracker: linear or github (default: existing tracker on --merge, otherwise detected: Linear with a key or Linear MCP server, else GitHub for a GitHub origin)
 - `--trusted` — Register the repository as trusted (Codex project trust and proof secrets for its sessions)
 - `--update-crons` — Update an existing pipeline job's prompt, gate and agent when they differ
 - `--yes` — Apply .boss-project.json cron prompt and gate changes without asking

@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "factoryskills",
+    srcs = ["factoryskills.go"],
+    importpath = "github.com/recurser/bossd/internal/adapter/factoryskills",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/contract/plugin/skillinstall",
+        "//lib/bossalib/contract/plugin/skillpayload",
+        "//lib/bossalib/kit/buildinfo",
+        "//lib/bossalib/kit/config",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "factoryskills_test",
+    srcs = ["factoryskills_test.go"],
+    embed = [":factoryskills"],
+    deps = [
+        "//lib/bossalib/contract/plugin/skillinstall",
+        "//lib/bossalib/kit/config",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

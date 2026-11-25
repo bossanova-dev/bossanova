@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-11-06'
+  version: '2026-11-07'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -8155,6 +8155,14 @@ components:
             Organization that holds this origin, but only when the caller is a member
              of that organization. Empty also covers a holder outside the caller's
              memberships, so it does not mean the origin is unclaimed.
+        isHeldByOtherOrganization:
+          type: boolean
+          title: is_held_by_other_organization
+          description: |-
+            True when an organization the caller is not a member of holds this
+             origin. bosso files a session on it in that organization, where the
+             caller cannot see it, so ProxyCreateSession refuses one. The holder is
+             not named. Additive output field: older clients ignore it.
       title: AggregatedRepo
       additionalProperties: false
       description: |-

@@ -27,6 +27,63 @@ export function parseRepository(value) {
   return { host, owner, repo, repository: value }
 }
 
+const GITHUB_HOST_SUFFIX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/
+
+/**
+ * Parse a GitHub git remote URL (`https://`, `ssh://`, or scp-like `git@host:owner/repo(.git)`)
+ * into `OWNER/REPO` for `github.com` or `HOST/OWNER/REPO` for a `github.*` host, or `null` for
+ * other hosts and malformed URLs.
+ * @param {unknown} url
+ * @returns {string | null}
+ */
+export function githubRepositoryFromOrigin(url) {
+  if (typeof url !== 'string') return null
+  const trimmed = url.trim()
+  if (!trimmed || /\s/.test(trimmed) || trimmed.includes('?') || trimmed.includes('#')) return null
+
+  let rawHost = ''
+  let rawPath = ''
+  if (trimmed.includes('://')) {
+    let parsed
+    try {
+      parsed = new URL(trimmed)
+    } catch {
+      return null
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'ssh:') return null
+    rawHost = parsed.hostname
+    if (!parsed.pathname.startsWith('/')) return null
+    rawPath = parsed.pathname.slice(1)
+  } else {
+    const scp = trimmed.match(/^([^@:/\s]+)@([^:/\s]+):(.+)$/)
+    if (!scp) return null
+    rawHost = scp[2]
+    rawPath = scp[3]
+  }
+
+  const host = rawHost.toLowerCase()
+  const isGithubCom = host === 'github.com'
+  const isGithubEnterprise =
+    !isGithubCom &&
+    host.startsWith('github.') &&
+    GITHUB_HOST_SUFFIX.test(host.slice('github.'.length))
+  if (!isGithubCom && !isGithubEnterprise) return null
+
+  let repoPath = rawPath
+  if (repoPath.endsWith('/')) repoPath = repoPath.slice(0, -1)
+  if (repoPath.endsWith('.git')) repoPath = repoPath.slice(0, -4)
+  const segments = repoPath.split('/')
+  if (segments.length !== 2) return null
+  if (segments[1] === '.' || segments[1] === '..') return null
+
+  const candidate = isGithubCom ? repoPath : `${host}/${repoPath}`
+  try {
+    return parseRepository(candidate).repository
+  } catch {
+    return null
+  }
+}
+
 /** @param {Record<string,string>} [overrides] */
 export function githubStates(overrides = {}) {
   const states = { ...GITHUB_DEFAULT_STATES, ...overrides }

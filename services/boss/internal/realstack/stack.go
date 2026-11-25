@@ -185,6 +185,7 @@ func (s *Stack) Close() error {
 func (s *Stack) boot() error {
 	s.cmd = exec.Command(s.binaries.Bossd)
 	s.cmd.Env = s.Env()
+	s.cmd.Env = append(s.cmd.Env, "BOSS_SKIP_SKILLS=1")
 	if s.interactiveStub {
 		s.cmd.Env = append(s.cmd.Env, "BOSS_STUB_INTERACTIVE=1")
 	}

@@ -130,6 +130,10 @@ type UpdateRepoArgs struct {
 // supplied prompt was not run.
 type createSessionOutput struct {
 	*pb.Session
+	// IsVerifyOnly shadows the embedded field's omitempty tag so false is
+	// reported too: on the attach path it is the existing session's own flag,
+	// which verify_only on this call does not change.
+	IsVerifyOnly     bool `json:"is_verify_only"`
 	AttachedExisting bool `json:"attached_existing"`
 	// AgentLaunched is true only when THIS create actually started an agent (a
 	// genuine create whose session carries a non-empty agent_session_id). It
@@ -178,10 +182,11 @@ type CreateSessionArgs struct {
 	DeferPR          bool    `json:"defer_pr,omitempty" jsonschema:"create a worktree-backed session but do NOT open a draft PR up front; a PR is opened at finalize only if the run produces commits. Meaningful only alongside detach/tmux_unattended (which install the finalize hook); use for read-only/planning sessions"`
 	Model            string  `json:"model,omitempty" jsonschema:"model id; empty=default"`
 	Effort           string  `json:"effort,omitempty" jsonschema:"reasoning effort; empty=default"`
-	PRNumber         *int32  `json:"pr_number,omitempty" jsonschema:"target an existing PR. If an active session already owns that PR's branch, create_session ATTACHES to it and returns attached_existing=true WITHOUT running prompt — run the prompt in that session (send_chat_message with the returned agent_session_id). force does NOT bypass this branch attach"`
+	PRNumber         *int32  `json:"pr_number,omitempty" jsonschema:"target an existing PR; an active session that owns its branch is attached to (see DEDUP)"`
 	TrackerID        *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176). If an active session already owns this tracker id (with no branch collision), create_session fails with AlreadyExists — pass force:true to create a second session for the same tracker"`
 	TrackerURL       *string `json:"tracker_url,omitempty" jsonschema:"URL to the issue in the external tracker"`
 	TrackerSource    *string `json:"tracker_source,omitempty" jsonschema:"tracker source: linear or sentry"`
+	VerifyOnly       bool    `json:"verify_only,omitempty" jsonschema:"requires pr_number: adopt the PR to verify it; automatic repair never acts on the session. On attach, is_verify_only is the existing session's own flag"`
 }
 
 // UpdateSessionArgs is the typed argument struct for update_session.

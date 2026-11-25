@@ -2523,7 +2523,10 @@ type ProxyCreateSessionRequest struct {
 	// Mirror CreateSessionRequest.defer_pr so hosted MCP create_session can skip
 	// the up-front draft PR (PR opened at finalize only if commits land), matching
 	// the local socket path. Default false = unchanged eager draft-PR behavior.
-	DeferPr       bool `protobuf:"varint,20,opt,name=defer_pr,json=deferPr,proto3" json:"defer_pr,omitempty"`
+	DeferPr bool `protobuf:"varint,20,opt,name=defer_pr,json=deferPr,proto3" json:"defer_pr,omitempty"`
+	// Mirror CreateSessionRequest.is_verify_only so a hosted MCP create_session
+	// can adopt an existing PR without automatic repair. Requires pr_number.
+	IsVerifyOnly  bool `protobuf:"varint,22,opt,name=is_verify_only,json=isVerifyOnly,proto3" json:"is_verify_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2701,6 +2704,13 @@ func (x *ProxyCreateSessionRequest) GetForceBranch() bool {
 func (x *ProxyCreateSessionRequest) GetDeferPr() bool {
 	if x != nil {
 		return x.DeferPr
+	}
+	return false
+}
+
+func (x *ProxyCreateSessionRequest) GetIsVerifyOnly() bool {
+	if x != nil {
+		return x.IsVerifyOnly
 	}
 	return false
 }
@@ -26605,7 +26615,7 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"outputLine\x12>\n" +
 	"\fstate_change\x18\x02 \x01(\v2\x19.bossanova.v1.StateChangeH\x00R\vstateChange\x12A\n" +
 	"\rsession_ended\x18\x03 \x01(\v2\x1a.bossanova.v1.SessionEndedH\x00R\fsessionEndedB\a\n" +
-	"\x05event\"\xdf\x06\n" +
+	"\x05event\"\x85\a\n" +
 	"\x19ProxyCreateSessionRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -26634,7 +26644,8 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\n" +
 	"account_id\x18\x12 \x01(\tH\bR\taccountId\x88\x01\x01\x12!\n" +
 	"\fforce_branch\x18\x13 \x01(\bR\vforceBranch\x12\x19\n" +
-	"\bdefer_pr\x18\x14 \x01(\bR\adeferPrB\f\n" +
+	"\bdefer_pr\x18\x14 \x01(\bR\adeferPr\x12$\n" +
+	"\x0eis_verify_only\x18\x16 \x01(\bR\fisVerifyOnlyB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
 	"\f_branch_nameB\r\n" +

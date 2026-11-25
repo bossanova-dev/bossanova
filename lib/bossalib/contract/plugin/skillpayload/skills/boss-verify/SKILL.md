@@ -143,7 +143,7 @@ whose verdict you post, plus `--intent <file>` when **Say what it does** recorde
 verdict lands, `post` records the head's [proof](references/proof-page.md). Pages default to `all`
 verdicts; base `proofDefaults.pages: "parked"` limits them to `human` parks and `"none"` opts out.
 Report `proof`; it never changes the verdict. When `post` returns `proofMissing`, report it as a
-warning beside the verdict naming each problem's part and reason, never as a clean result.
+warning beside the verdict naming each problem's part, reason and `detail`, never as a clean result.
 
 **Write the page.** Before a `post` for `human`, `pass`, `blocked` or `defect` that carries
 `--judge <file>`, run

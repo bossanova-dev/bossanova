@@ -370,6 +370,7 @@ go_test(
         "update_repo_trust_test.go",
         "update_session_test.go",
         "upload_evidence_hosted_test.go",
+        "upload_evidence_log_test.go",
         "upload_evidence_test.go",
         "verify_pr_test.go",
         "verify_wait_label_test.go",

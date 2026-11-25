@@ -4562,7 +4562,10 @@ type CreateSessionCommand struct {
 	// Mirror CreateSessionRequest.defer_pr so reverse-stream hosted creates skip
 	// the up-front draft PR (PR opened at finalize only if commits land), matching
 	// the local socket path. Default false = unchanged eager draft-PR behavior.
-	DeferPr       bool `protobuf:"varint,19,opt,name=defer_pr,json=deferPr,proto3" json:"defer_pr,omitempty"`
+	DeferPr bool `protobuf:"varint,19,opt,name=defer_pr,json=deferPr,proto3" json:"defer_pr,omitempty"`
+	// Mirror CreateSessionRequest.is_verify_only so a reverse-stream hosted
+	// create adopts an existing PR without automatic repair, like the socket path.
+	IsVerifyOnly  bool `protobuf:"varint,21,opt,name=is_verify_only,json=isVerifyOnly,proto3" json:"is_verify_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4733,6 +4736,13 @@ func (x *CreateSessionCommand) GetForceBranch() bool {
 func (x *CreateSessionCommand) GetDeferPr() bool {
 	if x != nil {
 		return x.DeferPr
+	}
+	return false
+}
+
+func (x *CreateSessionCommand) GetIsVerifyOnly() bool {
+	if x != nil {
+		return x.IsVerifyOnly
 	}
 	return false
 }
@@ -12250,7 +12260,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"5\n" +
 	"\x14AttachSessionCommand\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\xbd\x06\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xe3\x06\n" +
 	"\x14CreateSessionCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -12278,7 +12288,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\n" +
 	"account_id\x18\x11 \x01(\tH\bR\taccountId\x88\x01\x01\x12!\n" +
 	"\fforce_branch\x18\x12 \x01(\bR\vforceBranch\x12\x19\n" +
-	"\bdefer_pr\x18\x13 \x01(\bR\adeferPrB\f\n" +
+	"\bdefer_pr\x18\x13 \x01(\bR\adeferPr\x12$\n" +
+	"\x0eis_verify_only\x18\x15 \x01(\bR\fisVerifyOnlyB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
 	"\f_branch_nameB\r\n" +

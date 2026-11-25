@@ -187,7 +187,7 @@ test('a returned pageUrl is the page; without one the local prefix check holds @
 
 test('hosted refusals record their reason; other refusals keep the code map @sessions.AC261105', async (t) => {
   const refusal = (code, reason) => Object.assign(new Error('refused'), { code, reason })
-  for (const [publisher, error, reason] of [
+  for (const [publisher, error, reason, detail] of [
     ['hosted', refusal('failed_precondition', 'not-configured'), 'not-configured'],
     ['hosted', refusal('failed_precondition', 'quota-exhausted'), 'quota-exhausted'],
     ['hosted', refusal('resource_exhausted', 'over-limit'), 'over-limit'],
@@ -198,11 +198,15 @@ test('hosted refusals record their reason; other refusals keep the code map @ses
     ['hosted', refusal('failed_precondition', 'no-token'), 'page-refused'],
     ['daemon', refusal('resource_exhausted'), 'over-limit'],
     ['hosted', refusal('unimplemented'), 'daemon-unsupported'],
-    ['daemon', refusal('unavailable'), 'upload-failed'],
-    ['hosted', new Error('socket closed'), 'daemon-unavailable'],
+    ['daemon', refusal('unavailable'), 'upload-failed', 'unavailable: refused'],
+    ['hosted', new Error('socket closed'), 'daemon-unavailable', 'Error: socket closed'],
   ]) {
     const { result, calls } = await daemonUpload(t, { publisher, answer: error })
-    assert.deepEqual(result, { ok: false, reason }, `${publisher} ${error.reason ?? error.code}`)
+    assert.deepEqual(
+      result,
+      { ok: false, reason, ...(detail ? { detail } : {}) },
+      `${publisher} ${error.reason ?? error.code}`,
+    )
     assert.equal(calls.length, 1, 'a refusal is never retried')
   }
 })

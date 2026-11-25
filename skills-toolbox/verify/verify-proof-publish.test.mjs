@@ -431,6 +431,17 @@ test('a failed upload still notes the level, with a null page @sessions.AC248602
   })
 })
 
+test('a failed upload reports its detail on the page, unless it carries an env credential', async () => {
+  const detail = "EACCES: permission denied, mkdir '/repo/.verify-evidence'"
+  const { result } = await run({ upload: () => ({ ok: false, reason: 'upload-failed', detail }) })
+  assert.deepEqual(result.page, { published: false, reason: 'upload-failed', detail })
+  const leaked = await run({
+    env: { PROOF_UPLOAD_TOKEN: 'leaked-value-123' },
+    upload: () => ({ ok: false, reason: 'upload-failed', detail: 'refused leaked-value-123' }),
+  })
+  assert.deepEqual(leaked.result.page, { published: false, reason: 'upload-failed' })
+})
+
 /** A proof-media dir holding two head clips: a.mp4 (100 bytes) and b.mp4 (300 bytes). */
 function twoClips(t) {
   const dir = tempDir('proof-fit-media-', t)

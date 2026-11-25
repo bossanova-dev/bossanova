@@ -11,6 +11,7 @@ import { loadSkillConfig, publishConfigFor } from '../skill-config.mjs'
 import { discoverExtensions } from '../skill-extensions.mjs'
 import { isAccessPublishUrl } from './verify-access-put.mjs'
 import { daemonSocket } from './verify-daemon-rpc.mjs'
+import { failureDetail } from './verify-failure-detail.mjs'
 import { PAGE_LIMIT_KINDS } from './verify-proof-fit.mjs'
 import { PAGE_OBJECT, PUBLISH_HOOK_TIMEOUT_MS, PUBLISH_ROLE } from './verify-publish-hook.mjs'
 
@@ -117,6 +118,8 @@ const DAEMON_REASONS = {
   unavailable: 'upload-failed',
   resource_exhausted: 'over-limit',
 }
+// The refusals that name no cause of their own, so they carry the error's detail.
+const OPAQUE_REASONS = ['upload-failed', 'daemon-unavailable']
 // The hosted refusals each publisher records verbatim. The daemon publisher's own
 // `not-configured` (no bucket) stays `page-refused`.
 const HOSTED_REASONS = {
@@ -139,9 +142,10 @@ export function daemonRefusalReason(publisher, error) {
  * The refusal result for an UploadEvidence error through `publisher`. A ResourceExhausted
  * `over-limit` refusal also carries the hosted page limit it broke, `limit: {kind, max}`, from the
  * daemon's limit headers; with either header missing or malformed it carries none, so nothing is
- * fitted to a guessed limit.
+ * fitted to a guessed limit. An `upload-failed` or `daemon-unavailable` refusal carries the error's
+ * failureDetail as `detail`, with the daemon's stage reason after its code.
  * @param {{kind?: string}} publisher @param {unknown} error
- * @returns {{ok: false, reason: string, limit?: {kind: string, max: number}}}
+ * @returns {{ok: false, reason: string, detail?: string, limit?: {kind: string, max: number}}}
  */
 export function daemonRefusal(publisher, error) {
   const reason = daemonRefusalReason(publisher, error)
@@ -159,6 +163,17 @@ export function daemonRefusal(publisher, error) {
     max > 0
   )
     return { ok: false, reason, limit: { kind: limit, max } }
+  if (OPAQUE_REASONS.includes(reason)) {
+    // The daemon names the stage that failed in its reason header; its message is never reflected.
+    const stage = typeof header === 'string' && /^[a-z][a-z-]{0,39}$/.test(header) ? header : ''
+    const detail = failureDetail(error)
+    const at = detail.indexOf(':')
+    return {
+      ok: false,
+      reason,
+      detail: stage && at > 0 ? `${detail.slice(0, at)} (${stage})${detail.slice(at)}` : detail,
+    }
+  }
   return { ok: false, reason }
 }
 
@@ -168,7 +183,7 @@ export function daemonRefusal(publisher, error) {
  * @param {{publisher: {kind?: string}, names: string[], dir: string | null,
  *   target: {pr: number, headSha: string}, env: Record<string, string | undefined>,
  *   callDaemon: Function, timeoutMs: number}} input
- * @returns {Promise<{ok: true, url: string} | {ok: true, base: string} | {ok: false, reason: string, limit?: {kind: string, max: number}}>}
+ * @returns {Promise<{ok: true, url: string} | {ok: true, base: string} | {ok: false, reason: string, detail?: string, limit?: {kind: string, max: number}}>}
  */
 export async function sendDaemonCall({
   publisher,

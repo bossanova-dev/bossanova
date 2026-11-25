@@ -313,9 +313,13 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// adding the session labels family (list_session_labels, save_session_label,
 	// set_session_labels, delete_session_label). Create and update are folded
 	// into save_session_label to keep the surface minimal.
+	// RE-PINNED DOWN 2026-11-25: 83 tools / 68,001 bytes, same method,
+	// schema-share self-check green in the same run. create_session gained a
+	// `verify_only` argument (+139 bytes) and paid for it out of its own
+	// pr_number doc, which restated the description's DEDUP paragraph.
 	const (
 		maxToolCount   = 83
-		maxSchemaBytes = 68006
+		maxSchemaBytes = 68001
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

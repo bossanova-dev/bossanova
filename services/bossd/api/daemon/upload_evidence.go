@@ -54,23 +54,76 @@ var (
 )
 
 // UploadEvidence publishes only finished evidence belonging to a trusted registered workspace.
+// Every refusal is logged at warn level with the repo, PR, head and publisher it was for.
 func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.UploadEvidenceRequest]) (*connect.Response[pb.UploadEvidenceResponse], error) {
 	ctx, cancel := context.WithTimeout(ctx, evidenceUploadCeiling)
 	defer cancel()
-	destination := req.Msg.Destination
+	resp, repo, err := s.uploadEvidence(ctx, req.Msg)
+	if err != nil {
+		s.logEvidenceFailure(req.Msg, repo, err)
+	}
+	return resp, err
+}
+
+// logEvidenceFailure leaves the daemon's trace of a refused upload: the RPC
+// code and message the caller sees, plus any cause that message withholds.
+func (s *Server) logEvidenceFailure(msg *pb.UploadEvidenceRequest, repo *domain.Repo, err error) {
+	event := s.logger.Warn().
+		Str("publisher", msg.Destination.String()).
+		Int32("pr_number", msg.PrNumber).
+		Str("head_sha", msg.HeadSha).
+		Str("evidence_dir", msg.EvidenceDir).
+		Str("code", connect.CodeOf(err).String())
+	if repo != nil {
+		event = event.Str("repo_id", repo.ID).Str("repo", vcs.RepoSlug(repo.OriginURL))
+	}
+	var withheld *evidenceCause
+	if errors.As(err, &withheld) && withheld.cause != nil {
+		event = event.AnErr("cause", withheld.cause)
+	}
+	event.Err(err).Msg("verify evidence upload failed")
+}
+
+// evidenceCause is an RPC error whose message is fixed text, because the
+// toolbox may publish it in a PR comment, while its cause stays for the log.
+type evidenceCause struct {
+	message string
+	cause   error
+}
+
+func (e *evidenceCause) Error() string { return e.message }
+func (e *evidenceCause) Unwrap() error { return e.cause }
+
+// evidenceFailure is a connect error carrying message and the stage reason
+// header on the wire, and cause only in the daemon log.
+func evidenceFailure(code connect.Code, reason, message string, cause error) *connect.Error {
+	rpcErr := connect.NewError(code, &evidenceCause{message: message, cause: cause})
+	rpcErr.Meta().Set(EvidenceReasonHeader, reason)
+	return rpcErr
+}
+
+func (s *Server) uploadEvidence(ctx context.Context, msg *pb.UploadEvidenceRequest) (*connect.Response[pb.UploadEvidenceResponse], *domain.Repo, error) {
+	destination := msg.Destination
 	if _, known := pb.EvidenceDestination_name[int32(destination)]; !known {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unknown evidence destination"))
+		return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unknown evidence destination"))
 	}
-	deterministic, err := evidenceKeyed(req.Msg.PrNumber, req.Msg.HeadSha)
+	deterministic, err := evidenceKeyed(msg.PrNumber, msg.HeadSha)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	dir, repo, err := s.evidenceDirectory(ctx, req.Msg.EvidenceDir)
+	dir, repo, err := s.evidenceDirectory(ctx, msg.EvidenceDir)
 	if err != nil {
-		return nil, err
+		return nil, repo, err
 	}
 	defer func() { _ = dir.Close() }()
-	files, err := validateEvidenceObjects(dir, req.Msg.Objects)
+	resp, err := s.publishEvidence(ctx, dir, repo, msg, deterministic)
+	return resp, repo, err
+}
+
+// publishEvidence validates the request's objects and sends them to its destination.
+func (s *Server) publishEvidence(ctx context.Context, dir *os.Root, repo *domain.Repo, msg *pb.UploadEvidenceRequest, deterministic bool) (*connect.Response[pb.UploadEvidenceResponse], error) {
+	destination := msg.Destination
+	files, err := validateEvidenceObjects(dir, msg.Objects)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -86,9 +139,9 @@ func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.Upl
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("index.html and player.js require pr_number and head_sha"))
 	}
 	if destination == pb.EvidenceDestination_EVIDENCE_DESTINATION_HOSTED {
-		return s.publishHosted(ctx, repo, req.Msg, files, deterministic)
+		return s.publishHosted(ctx, repo, msg, files, deterministic)
 	}
-	prefix, err := evidencePrefix(repo, req.Msg.PrNumber, req.Msg.HeadSha, deterministic)
+	prefix, err := evidencePrefix(repo, msg.PrNumber, msg.HeadSha, deterministic)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +152,7 @@ func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.Upl
 	}
 	if err != nil {
 		if destination == pb.EvidenceDestination_EVIDENCE_DESTINATION_LOCAL_OR_HOSTED && evidenceDestinationMissing(err) {
-			return s.publishHosted(ctx, repo, req.Msg, files, deterministic)
+			return s.publishHosted(ctx, repo, msg, files, deterministic)
 		}
 		return nil, evidenceOpenError(err)
 	}
@@ -122,7 +175,7 @@ func (s *Server) publishLocal(ctx context.Context, bucket domain.EvidenceBucket,
 		key := prefix + object.name
 		s.logger.Info().Str("key_prefix", prefix).Str("object", object.name).Int64("size_bytes", object.size).Msg("uploading verify evidence")
 		if err := bucket.Put(ctx, key, object.contentType, object.file, object.size); err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("evidence object upload failed"))
+			return nil, evidenceFailure(connect.CodeUnavailable, "object-upload-failed", "evidence object upload failed", err)
 		}
 		keys = append(keys, key)
 	}
@@ -144,7 +197,7 @@ func evidenceOpenError(err error) error {
 		rpcErr.Meta().Set(EvidenceReasonHeader, reason)
 		return rpcErr
 	}
-	return connect.NewError(connect.CodeUnavailable, errors.New("open evidence upload destination"))
+	return evidenceFailure(connect.CodeUnavailable, "destination-open-failed", "open evidence upload destination", err)
 }
 
 // evidenceKeyed reports whether the request asks for the deterministic

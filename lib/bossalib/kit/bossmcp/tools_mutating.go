@@ -17,6 +17,58 @@ import (
 	"github.com/recurser/bossalib/models"
 )
 
+// newCreateSessionOutput shapes create_session's result from the drained
+// create. verifyOnly is what the caller asked for; the result reports the
+// session's own is_verify_only, which differs on the attach path.
+func newCreateSessionOutput(out *CreateSessionResult, verifyOnly bool) (createSessionOutput, error) {
+	// BOS-498: report loudly whether THIS create actually started an agent.
+	// headless/tmux create a chat synchronously (a non-empty
+	// agent_session_id); an idle session (attended or prompt-less) does not.
+	// The dedup-attach path (attached_existing) launched nothing and did not
+	// run the supplied prompt even when the pre-existing session already has a
+	// chat, so it reports agent_launched:false with the attach Note carrying
+	// the reachable id — never a false "your prompt is running" signal. A
+	// caller that sees agent_launched:false opted into idle mode (or was
+	// deduped) and must start/reach the session itself — the hint says how.
+	payload := createSessionOutput{
+		Session:          out.Session,
+		IsVerifyOnly:     out.Session.GetIsVerifyOnly(),
+		AttachedExisting: out.AttachedExisting,
+		AgentLaunched:    !out.AttachedExisting && out.Session.GetAgentSessionId() != "",
+	}
+	// A daemon or hosted orchestrator that predates is_verify_only drops the
+	// field and creates an ordinary session, which automatic repair may push
+	// to. Reporting that as success would hide the one thing the caller asked
+	// to prevent.
+	if verifyOnly && !out.AttachedExisting && !payload.IsVerifyOnly {
+		return createSessionOutput{}, fmt.Errorf("create_session created session %s (agent_session_id %q) but it is NOT verify-only: the daemon or hosted orchestrator on this path ignored verify_only, so automatic repair can push to the PR. Stop it with stop_session, or upgrade and retry", out.Session.GetId(), out.Session.GetAgentSessionId())
+	}
+	if out.AttachedExisting {
+		// The daemon deduped: an active session already owned the target
+		// branch/PR/tracker, so it attached instead of creating a new one and
+		// the supplied prompt was NOT run. Tell the caller to deliver the
+		// prompt to that session itself.
+		if out.Session.GetAgentSessionId() != "" {
+			payload.Note = "This branch/PR already had an active session, so create_session ATTACHED to it and did NOT run the supplied prompt. To run your prompt, send it to the existing session with send_chat_message using the returned agent_session_id. (force does not help here: whenever an active session already owns the target branch the daemon attaches — two active sessions cannot share one branch.)"
+		} else {
+			// An interactive session that has not been attached yet has no
+			// agent chat (agent_session_id is empty), so send_chat_message
+			// cannot reach it. The caller must open/attach the session first
+			// to start its chat, then deliver the prompt.
+			payload.Note = "This branch/PR already had an active session, so create_session ATTACHED to it and did NOT run the supplied prompt. That session has not started its agent chat yet (agent_session_id is empty), so send_chat_message cannot reach it — open/attach the session (e.g. in the boss TUI, or via wake_chat once it has an agent_session_id) to start its chat, then deliver your prompt with send_chat_message. (force does not help here: whenever an active session already owns the target branch the daemon attaches — two active sessions cannot share one branch.)"
+		}
+		if verifyOnly && !payload.IsVerifyOnly {
+			payload.Note += " The existing session is NOT verify-only (is_verify_only:false), so automatic repair can still push to this PR; verify_only on this call did not change it."
+		}
+	} else if !payload.AgentLaunched {
+		// A genuine create that started no agent: the session is idle awaiting
+		// attach (attended:true, or a prompt-less create). Say so loudly and
+		// point at the ways to start work.
+		payload.NextAction = "session is idle awaiting attach; no agent was launched. Re-create with detach:true or tmux_unattended:true to run the prompt unattended, or call start_chat to start a chat in this session."
+	}
+	return payload, nil
+}
+
 // maxDerivedTitleLen bounds titles auto-derived from a prompt so a long
 // first line does not become an unwieldy session title.
 const maxDerivedTitleLen = 72
@@ -121,6 +173,11 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). The bootstrap runs in the background, so the create continues on the daemon even if this call is cancelled; agent_launched means an agent process launched, not proof the prompt was consumed. This path has no turn-start observation, so verify work began with `get_chat_statuses`. DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach). By DEFAULT a create with a prompt runs unattended (the CLI's implicit --detach): agent_launched=true, env BOSS_UNATTENDED=true so skills run headless; no env arg needed. To instead create the session idle awaiting a human `boss attach`, pass attended:true — the result then reports agent_launched=false with a next_action hint. The composite tracker_issue field is web-only, not exposed here.\nZERO-CHANGE SESSIONS: planning-only work should use a subagent; for visible no-worktree/no-PR conversation use quick_chat. For read-only worktree planning without an up-front draft PR, set defer_pr:true with detach or tmux_unattended.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateSessionArgs) (*mcp.CallToolResult, any, error) {
+		// Refuse before the RPC, as `boss new --verify-only` does without --pr,
+		// so the caller gets the argument name it sent rather than the RPC's.
+		if args.VerifyOnly && args.PRNumber == nil {
+			return errorResult(fmt.Errorf("verify_only requires pr_number: a verify-only session adopts an existing PR")), nil, nil
+		}
 		// BOS-498: mirror the CLI's implicit --detach (services/boss/cmd
 		// newDetachRequest). A programmatic MCP caller that supplies a prompt but
 		// no attended opt-in wants the agent to actually run, not an idle session
@@ -164,6 +221,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			TrackerId:     args.TrackerID,
 			TrackerUrl:    args.TrackerURL,
 			TrackerSource: args.TrackerSource,
+			IsVerifyOnly:  args.VerifyOnly,
 		}
 		if args.Agent != "" {
 			req.AgentName = &args.Agent
@@ -184,39 +242,9 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		// BOS-498: report loudly whether THIS create actually started an agent.
-		// headless/tmux create a chat synchronously (a non-empty
-		// agent_session_id); an idle session (attended or prompt-less) does not.
-		// The dedup-attach path (attached_existing) launched nothing and did not
-		// run the supplied prompt even when the pre-existing session already has a
-		// chat, so it reports agent_launched:false with the attach Note carrying
-		// the reachable id — never a false "your prompt is running" signal. A
-		// caller that sees agent_launched:false opted into idle mode (or was
-		// deduped) and must start/reach the session itself — the hint says how.
-		payload := createSessionOutput{
-			Session:          out.Session,
-			AttachedExisting: out.AttachedExisting,
-			AgentLaunched:    !out.AttachedExisting && out.Session.GetAgentSessionId() != "",
-		}
-		if out.AttachedExisting {
-			// The daemon deduped: an active session already owned the target
-			// branch/PR/tracker, so it attached instead of creating a new one and
-			// the supplied prompt was NOT run. Tell the caller to deliver the
-			// prompt to that session itself.
-			if out.Session.GetAgentSessionId() != "" {
-				payload.Note = "This branch/PR already had an active session, so create_session ATTACHED to it and did NOT run the supplied prompt. To run your prompt, send it to the existing session with send_chat_message using the returned agent_session_id. (force does not help here: whenever an active session already owns the target branch the daemon attaches — two active sessions cannot share one branch.)"
-			} else {
-				// An interactive session that has not been attached yet has no
-				// agent chat (agent_session_id is empty), so send_chat_message
-				// cannot reach it. The caller must open/attach the session first
-				// to start its chat, then deliver the prompt.
-				payload.Note = "This branch/PR already had an active session, so create_session ATTACHED to it and did NOT run the supplied prompt. That session has not started its agent chat yet (agent_session_id is empty), so send_chat_message cannot reach it — open/attach the session (e.g. in the boss TUI, or via wake_chat once it has an agent_session_id) to start its chat, then deliver your prompt with send_chat_message. (force does not help here: whenever an active session already owns the target branch the daemon attaches — two active sessions cannot share one branch.)"
-			}
-		} else if !payload.AgentLaunched {
-			// A genuine create that started no agent: the session is idle awaiting
-			// attach (attended:true, or a prompt-less create). Say so loudly and
-			// point at the ways to start work.
-			payload.NextAction = "session is idle awaiting attach; no agent was launched. Re-create with detach:true or tmux_unattended:true to run the prompt unattended, or call start_chat to start a chat in this session."
+		payload, err := newCreateSessionOutput(out, args.VerifyOnly)
+		if err != nil {
+			return errorResult(err), nil, nil
 		}
 		r, err := jsonResult(payload)
 		return r, nil, err

@@ -113,8 +113,13 @@ when it cannot read the PR comments.
 A render, scan, media, upload, note or check-run failure is reported in `post`'s `proof` outcome. It
 never changes or fails the verdict, and none of a hook's or extension's output is kept. When any
 proof part is lost, `post` and `proof` also return `proofMissing` (listing each `part` and
-`reason`), leave a head-bound `boss-proof-missing` PR comment (rewritten in place as resolved if a
-later proof succeeds for the same head) and record a `proof-missing` boss note. Benign reasons
+`reason`, plus a `detail` when the failure has one), leave a head-bound `boss-proof-missing` PR
+comment (rewritten in place as resolved if a later proof succeeds for the same head) and record a
+`proof-missing` boss note. A `detail` such as `upload-failed`'s is one line of at most 160
+characters naming the error's code or class and message; a daemon refusal names its code and the
+failing stage, never the daemon's message. URLs are cut to their host, credential
+shapes and credential-named environment values are redacted, and the comment and note both show
+it. Benign reasons
 count as no loss: `repo-proof-present` for the record; `not-parked`, `dry-run`, `not-configured`,
 `disabled` and `opted-out` for the page; and `fallback-disabled`, `dry-run` and `daemon-unsupported`
 for the check run. The sweep's mechanical posts pass `--proof-detach`. Their proof then runs as a

@@ -830,7 +830,7 @@ export function runCli(
     errWrite = (s) => process.stderr.write(s),
     env = process.env,
     resolveAdapter = resolveTrackerAdapter,
-    loadConfig = () => loadSkillConfig(),
+    loadConfig = () => loadSkillConfig({ env }),
     sleep,
     now,
   } = {},

@@ -701,6 +701,13 @@ const V20261105 Version = "2026-11-05"
 // membership set, or which daemon answered.
 const V20261106 Version = "2026-11-06"
 
+// V20261107 refuses ProxyCreateSession for a repository mapped to an
+// organization the daemon owner is not a member of. Such a session is never
+// published, so its creator could not open it. Handler-gated
+// (IsForeignRepositoryCreateRefused): ProxyCreateSession is a server stream,
+// and ErrorTransform runs only on unary procedures.
+const V20261107 Version = "2026-11-07"
+
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions. The slice is ordered oldest→newest and its last member is Current
 // (the newest behavior). At most one trailing member is unreleased: every
@@ -774,8 +781,9 @@ func DefaultRegistry() *Registry {
 			V20261104,
 			V20261105,
 			V20261106,
+			V20261107,
 		},
-		V20261106,
+		V20261107,
 		Baseline,
 	)
 	if err != nil {
@@ -954,4 +962,12 @@ func IsCloudControlPrecondition(ctx context.Context) bool {
 // requested organization (V20261106 and newer).
 func IsOrganizationRepoMappedReads(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20261106, "IsOrganizationRepoMappedReads")
+}
+
+// IsForeignRepositoryCreateRefused reports whether ProxyCreateSession refuses a
+// repository mapped to an organization the daemon owner is not a member of
+// (V20261107 and newer). Older pins keep the create, whose session is never
+// published.
+func IsForeignRepositoryCreateRefused(ctx context.Context) bool {
+	return gateAtLeast(ctx, V20261107, "IsForeignRepositoryCreateRefused")
 }

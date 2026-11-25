@@ -6,6 +6,7 @@ import (
 	"github.com/recurser/bossd/internal/adapter/setupscript"
 
 	"github.com/recurser/bossd/internal/adapter/dotenv"
+	"github.com/recurser/bossd/internal/adapter/factoryskills"
 	"github.com/recurser/bossd/internal/adapter/factoryversions"
 	"github.com/recurser/bossd/internal/adapter/verifybridge"
 
@@ -47,6 +48,7 @@ func (w *daemonWiring) wireDaemon() {
 	// never on context.Background(): the first would put us back where BOS-720
 	// started, and the second would leave bootstraps running past shutdown.
 	bootstrapRunner := session.NewBootstrapRunner(w.pollerCtx, w.lifecycle, log.Logger)
+	w.factorySkills = factoryskills.New(log.Logger)
 
 	daemonConfig := server.Config{
 		Callers:                       w.callerAuthority(),
@@ -81,6 +83,7 @@ func (w *daemonWiring) wireDaemon() {
 		CronJobs:              w.cronJobs,
 		FactoryRepoChecker:    w.factoryRepoChecker,
 		FactoryHealthVersions: factoryversions.Read,
+		FactorySkills:         w.factorySkills,
 		GithubCallbacks:       w.githubCallbacks,
 		Telemetry:             w.telemetryClient,
 		Notes:                 w.notes,

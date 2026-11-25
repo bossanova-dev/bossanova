@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-11-06**. The engineering procedure for adding a new
+The current version is **2026-11-07**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/structure/contracts.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/structure/contracts.md)).
 
@@ -1042,7 +1042,7 @@ Older API versions omit `serve` from GetUserPreferences and UpdateUserPreference
 responses, preserving the actions those clients support. Other saved pins keep
 their order.
 
-### 2026-11-06 — Organization-scoped repository and fleet reads (Current)
+### 2026-11-06 — Organization-scoped repository and fleet reads
 
 Organization-filtered reads (`ProxyListReposAggregated`, `ListDaemons`,
 `ProxyListCronJobs`, and narrowed fleet commands) resolve across all of the
@@ -1051,3 +1051,12 @@ querying daemons whose stream authenticated into the requested organization.
 Mapped repositories belong to their mapped organization, and unmapped
 repositories belong to the caller's personal organization. Older pins retain the
 claimed-organization-only read behavior.
+
+### 2026-11-07 — Session creation refuses another organization's repository (Current)
+
+`ProxyCreateSession` returns `PermissionDenied` for a repository mapped to an
+organization the daemon's owner is not a member of. bosso never publishes a
+session on such a repository, so the old success left its creator with a
+session that opened as "session not found". `ProxyListReposAggregated` marks
+these repositories with `is_held_by_other_organization`, and the web New session
+picker leaves them out. Older pins still send the create to the daemon.

@@ -45,6 +45,9 @@ func (iv *initInterview) askGitHubRepo() error {
 		if existing, err := os.ReadFile(filepath.Join(iv.repoDir, ConfigFilename)); err == nil && (!iv.force || iv.opts.mergeExisting) {
 			repo = seedOverridesFromExisting(existing, iv.opts.overrides).Repository
 		}
+		if repo == "" {
+			repo = iv.opts.detectedGitHubRepo
+		}
 		resolved, err := iv.opts.github.Check(iv.ctx, iv.repoDir, repo)
 		if err != nil {
 			return err

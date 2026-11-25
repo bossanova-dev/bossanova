@@ -731,6 +731,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/cli.mjs',
       'tracker/dependency-link.mjs',
       'tracker/description-patch.mjs',
+      'tracker/detect-tracker.mjs',
       'tracker/github-comment.mjs',
       'tracker/github-config.mjs',
       'tracker/github-description.mjs',
@@ -819,6 +820,10 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       assert.ok(
         files.includes('label-identity.mjs'),
         `${core} must vendor label-identity.mjs beside skill-config.mjs`,
+      )
+      assert.ok(
+        files.includes('tracker/detect-tracker.mjs'),
+        `${core} must vendor tracker/detect-tracker.mjs beside skill-config.mjs`,
       )
     }
   }

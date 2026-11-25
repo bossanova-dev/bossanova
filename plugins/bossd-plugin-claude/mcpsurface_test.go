@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -18,11 +19,15 @@ import (
 )
 
 type fixtureInitProber struct {
-	event claudeInitEvent
-	err   error
+	event          claudeInitEvent
+	err            error
+	gotTrackerArgs *[]string
 }
 
-func (p fixtureInitProber) ProbeInit(context.Context, string, string, map[string]string, bossanovav1.ProjectTrustDecision) (claudeInitEvent, error) {
+func (p fixtureInitProber) ProbeInit(_ context.Context, _, _ string, _ map[string]string, _ bossanovav1.ProjectTrustDecision, trackerArgs []string) (claudeInitEvent, error) {
+	if p.gotTrackerArgs != nil {
+		*p.gotTrackerArgs = slices.Clone(trackerArgs)
+	}
 	return p.event, p.err
 }
 
@@ -302,7 +307,7 @@ func TestClaudeInitProberTerminatesAndReapsProbe(t *testing.T) {
 			var err error
 			go func() {
 				defer close(done)
-				event, err = prober.ProbeInit(context.Background(), t.TempDir(), "", nil, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED)
+				event, err = prober.ProbeInit(context.Background(), t.TempDir(), "", nil, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED, nil)
 				waited.Store(true)
 			}()
 			select {
@@ -347,7 +352,7 @@ func TestClaudeInitProberPassesWorkDirAndEnv(t *testing.T) {
 			return launched
 		},
 	}
-	if _, err := prober.ProbeInit(context.Background(), workDir, "claude-opus-5", map[string]string{"LINEAR_API_KEY": "shh"}, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT); err != nil {
+	if _, err := prober.ProbeInit(context.Background(), workDir, "claude-opus-5", map[string]string{"LINEAR_API_KEY": "shh"}, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT, nil); err != nil {
 		t.Fatalf("ProbeInit: %v", err)
 	}
 	if launched.Dir != workDir {
@@ -562,7 +567,7 @@ func TestClaudeInitProberSurfacesStderrInProbeError(t *testing.T) {
 			return exec.CommandContext(ctx, "/bin/sh", "-c", `/bin/echo "`+message+`" >&2; exit 1`)
 		},
 	}
-	_, err := prober.ProbeInit(context.Background(), t.TempDir(), "", nil, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED)
+	_, err := prober.ProbeInit(context.Background(), t.TempDir(), "", nil, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED, nil)
 	if err == nil {
 		t.Fatal("ProbeInit succeeded, want the no-init-event failure")
 	}
@@ -588,7 +593,7 @@ func TestClaudeInitProberCapsCapturedStderr(t *testing.T) {
 				`i=0; while [ $i -lt 400 ]; do /bin/echo "0123456789012345678901234567890123456789" >&2; i=$((i+1)); done; /bin/echo "LAST-LINE-MARKER" >&2`)
 		},
 	}
-	_, err := prober.ProbeInit(context.Background(), t.TempDir(), "", nil, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED)
+	_, err := prober.ProbeInit(context.Background(), t.TempDir(), "", nil, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED, nil)
 	if err == nil {
 		t.Fatal("ProbeInit succeeded, want the no-init-event failure")
 	}
@@ -683,10 +688,17 @@ func TestDescribeMCPSurfaceAppliesProjectTrust(t *testing.T) {
 				t.Fatalf("probe failed: %v %+v", err, resp)
 			}
 			denied := decision == bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE || decision == bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY
-			got := strings.Join(argv, "\x00")
-			for _, flag := range []string{"--strict-mcp-config", "--setting-sources\x00user"} {
-				if strings.Contains(got, flag) != denied {
-					t.Errorf("trust %v argv %q: expected isolation %v", decision, got, denied)
+			if denied {
+				idx := slices.Index(argv, "--mcp-config")
+				if idx < 0 || idx+1 >= len(argv) {
+					t.Fatalf("trust %v argv %v: expected --mcp-config <path>", decision, argv)
+				}
+				assertContainsContiguous(t, argv, []string{"--mcp-config", argv[idx+1], "--strict-mcp-config", "--setting-sources", "user"})
+			} else {
+				for _, forbidden := range []string{"--mcp-config", "--strict-mcp-config", "--setting-sources"} {
+					if slices.Contains(argv, forbidden) {
+						t.Errorf("trust %v argv %v: must not contain %q", decision, argv, forbidden)
+					}
 				}
 			}
 		})
@@ -732,6 +744,251 @@ func TestDescribeMCPSurfaceMissingIsolationFlagNeverStartsProbe(t *testing.T) {
 			}
 			if launches != 0 {
 				t.Fatalf("unsafe diagnostic launches = %d", launches)
+			}
+		})
+	}
+}
+
+func TestDescribeMCPSurfaceUntrustedTrackerMCPMatchesLaunchPath(t *testing.T) {
+	for _, decision := range []bossanovav1.ProjectTrustDecision{
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY,
+	} {
+		t.Run(decision.String(), func(t *testing.T) {
+			workDir := writeSkillsConfigFixture(t, `{"adapters":{"tracker":"linear"},"trackerConfig":{"linear":{"mcpServer":"acme-linear"}}}`)
+			cacheDir := t.TempDir()
+
+			interactiveSrv := newServer(nil, zerolog.Nop(), WithCommandFactory(fakeClaude(t, "exit 0")))
+			interactiveSrv.runner.trackerMCPDir = cacheDir
+			interactiveResp, err := interactiveSrv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+				SessionId:    "sid",
+				ProjectTrust: decision,
+				WorktreePath: workDir,
+			})
+			if err != nil {
+				t.Fatalf("BuildInteractiveCommand: %v", err)
+			}
+			launchIdx := slices.Index(interactiveResp.GetArgv(), "--mcp-config")
+			if launchIdx < 0 || launchIdx+1 >= len(interactiveResp.GetArgv()) {
+				t.Fatalf("interactive argv %v missing --mcp-config <path>", interactiveResp.GetArgv())
+			}
+			wantPath := interactiveResp.GetArgv()[launchIdx+1]
+
+			expectedArgs, err := trackerMCPArgs(cacheDir, workDir, false)
+			if err != nil || len(expectedArgs) != 2 || expectedArgs[1] != wantPath {
+				t.Fatalf("trackerMCPArgs = (%v, %v), want [--mcp-config %q]", expectedArgs, err, wantPath)
+			}
+
+			var probedArgv []string
+			prober := liveClaudeInitProber{
+				trackerMCPDir: cacheDir,
+				commandFactory: func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+					if slices.Contains(args, "--help") {
+						return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '%s' '--strict-mcp-config --setting-sources'")
+					}
+					probedArgv = slices.Clone(args)
+					return exec.CommandContext(ctx, "/bin/sh", "-c", `/bin/echo '{"type":"system","subtype":"init","tools":[],"mcp_servers":[{"name":"acme-linear","status":"connected"}]}'`)
+				},
+			}
+			srv := newMCPSurfaceServer(t, prober)
+			resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{
+				WorkDir:      workDir,
+				ProjectTrust: decision,
+			})
+			if err != nil || resp.GetProbeError() != "" {
+				t.Fatalf("DescribeMCPSurface failed: err=%v resp=%+v", err, resp)
+			}
+			assertContainsContiguous(t, probedArgv, []string{"--mcp-config", wantPath, "--strict-mcp-config", "--setting-sources", "user"})
+		})
+	}
+}
+
+func TestDescribeMCPSurfaceUntrustedInjectedAttribution(t *testing.T) {
+	setupWorkDir := func(t *testing.T) string {
+		t.Helper()
+		workDir := writeSkillsConfigFixture(t, `{"adapters":{"tracker":"linear"},"trackerConfig":{"linear":{"mcpServer":"acme-linear"}}}`)
+		mcpJSON := filepath.Join(workDir, ".mcp.json")
+		if err := os.WriteFile(mcpJSON, []byte(`{"mcpServers":{"acme-linear":{"command":"npx"},"repo-only":{"command":"npx"}}}`), 0o600); err != nil {
+			t.Fatalf("write .mcp.json: %v", err)
+		}
+		return workDir
+	}
+
+	initEvent := claudeInitEvent{
+		Type:    "system",
+		Subtype: "init",
+		Tools:   []string{"mcp__acme-linear__list_issues"},
+		McpServers: &[]struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		}{
+			{Name: "acme-linear", Status: "connected"},
+		},
+	}
+
+	for _, decision := range []bossanovav1.ProjectTrustDecision{
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY,
+	} {
+		t.Run(decision.String(), func(t *testing.T) {
+			workDir := setupWorkDir(t)
+			cacheDir := t.TempDir()
+
+			var gotTrackerArgs []string
+			srv := newMCPSurfaceServer(t, fixtureInitProber{event: initEvent, gotTrackerArgs: &gotTrackerArgs})
+			srv.runner.trackerMCPDir = cacheDir
+
+			resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{
+				WorkDir:      workDir,
+				ProjectTrust: decision,
+			})
+			if err != nil || resp.GetProbeError() != "" {
+				t.Fatalf("DescribeMCPSurface failed: err=%v resp=%+v", err, resp)
+			}
+
+			wantArgs, err := trackerMCPArgs(cacheDir, workDir, false)
+			if err != nil {
+				t.Fatalf("trackerMCPArgs: %v", err)
+			}
+			if !slices.Equal(gotTrackerArgs, wantArgs) {
+				t.Fatalf("prober trackerArgs = %v, want %v", gotTrackerArgs, wantArgs)
+			}
+
+			report := mcpServerReportByName(resp, "acme-linear")
+			if report == nil {
+				t.Fatal("acme-linear absent from response")
+			}
+			if report.GetSource() != bossanovav1.MCPServerSource_MCP_SERVER_SOURCE_INJECTED {
+				t.Fatalf("source = %v, want MCP_SERVER_SOURCE_INJECTED (must outrank .mcp.json)", report.GetSource())
+			}
+			if report.GetSourceDetail() != injectedTrackerSourceDetail {
+				t.Fatalf("source_detail = %q, want %q", report.GetSourceDetail(), injectedTrackerSourceDetail)
+			}
+		})
+	}
+
+	t.Run("trusted keeps repo attribution and injects nothing", func(t *testing.T) {
+		workDir := setupWorkDir(t)
+		var gotTrackerArgs []string
+		srv := newMCPSurfaceServer(t, fixtureInitProber{event: initEvent, gotTrackerArgs: &gotTrackerArgs})
+		srv.runner.trackerMCPDir = t.TempDir()
+
+		resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{
+			WorkDir:      workDir,
+			ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
+		})
+		if err != nil || resp.GetProbeError() != "" {
+			t.Fatalf("DescribeMCPSurface failed: err=%v resp=%+v", err, resp)
+		}
+		if len(gotTrackerArgs) != 0 {
+			t.Fatalf("trusted probe received trackerArgs %v, want empty", gotTrackerArgs)
+		}
+		report := mcpServerReportByName(resp, "acme-linear")
+		if report == nil {
+			t.Fatal("acme-linear absent from response")
+		}
+		if report.GetSource() != bossanovav1.MCPServerSource_MCP_SERVER_SOURCE_REPO_FILE || report.GetSourceDetail() != ".mcp.json" {
+			t.Fatalf("trusted attribution = (%v, %q), want (REPO_FILE, .mcp.json)", report.GetSource(), report.GetSourceDetail())
+		}
+	})
+}
+
+func TestDescribeMCPSurfaceTrackerMCPWriteFailure(t *testing.T) {
+	initEvent := claudeInitEvent{
+		Type:    "system",
+		Subtype: "init",
+		McpServers: &[]struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		}{
+			{Name: "acme-linear", Status: "connected"},
+		},
+	}
+
+	for _, decision := range []bossanovav1.ProjectTrustDecision{
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY,
+	} {
+		t.Run(decision.String(), func(t *testing.T) {
+			workDir := writeSkillsConfigFixture(t, `{"adapters":{"tracker":"linear"},"trackerConfig":{"linear":{"mcpServer":"acme-linear"}}}`)
+			blocker := filepath.Join(t.TempDir(), "not-a-dir")
+			if err := os.WriteFile(blocker, []byte("occupied"), 0o600); err != nil {
+				t.Fatalf("write blocker file: %v", err)
+			}
+
+			var logBuf bytes.Buffer
+			var gotTrackerArgs []string
+			srv := newServer(nil, zerolog.New(&logBuf))
+			srv.runner.trackerMCPDir = blocker
+			srv.initProber = fixtureInitProber{event: initEvent, gotTrackerArgs: &gotTrackerArgs}
+
+			resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{
+				WorkDir:      workDir,
+				ProjectTrust: decision,
+				ProbeEnv:     map[string]string{"LINEAR_API_KEY": "sekrit-probe-env"},
+			})
+			if err != nil || resp.GetProbeError() != "" {
+				t.Fatalf("DescribeMCPSurface degraded write failure: err=%v resp=%+v", err, resp)
+			}
+			if len(gotTrackerArgs) != 0 {
+				t.Fatalf("prober received trackerArgs %v on write failure, want empty", gotTrackerArgs)
+			}
+			report := mcpServerReportByName(resp, "acme-linear")
+			if report == nil {
+				t.Fatal("acme-linear absent from response")
+			}
+			if report.GetSource() == bossanovav1.MCPServerSource_MCP_SERVER_SOURCE_INJECTED {
+				t.Fatalf("source = MCP_SERVER_SOURCE_INJECTED on write failure; must not attribute uninjected server")
+			}
+			if report.GetSource() != bossanovav1.MCPServerSource_MCP_SERVER_SOURCE_UNKNOWN || report.GetSourceDetail() != "" {
+				t.Fatalf("source/detail = (%v, %q), want (UNKNOWN, empty)", report.GetSource(), report.GetSourceDetail())
+			}
+			if logBuf.Len() == 0 {
+				t.Fatal("expected warning log on tracker MCP config write failure")
+			}
+			if strings.Contains(logBuf.String(), "sekrit-probe-env") {
+				t.Fatalf("warning log leaked ProbeEnv value: %s", logBuf.String())
+			}
+		})
+	}
+}
+
+func TestDescribeMCPSurfaceGitHubTracker(t *testing.T) {
+	initEvent := claudeInitEvent{
+		Type:    "system",
+		Subtype: "init",
+		McpServers: &[]struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		}{
+			{Name: "linear", Status: "connected"},
+		},
+	}
+
+	for _, decision := range []bossanovav1.ProjectTrustDecision{
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY,
+	} {
+		t.Run(decision.String(), func(t *testing.T) {
+			workDir := writeSkillsConfigFixture(t, `{"adapters":{"tracker":"github"}}`)
+			var gotTrackerArgs []string
+			srv := newMCPSurfaceServer(t, fixtureInitProber{event: initEvent, gotTrackerArgs: &gotTrackerArgs})
+			srv.runner.trackerMCPDir = t.TempDir()
+
+			resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{
+				WorkDir:      workDir,
+				ProjectTrust: decision,
+			})
+			if err != nil || resp.GetProbeError() != "" {
+				t.Fatalf("DescribeMCPSurface failed: err=%v resp=%+v", err, resp)
+			}
+			if len(gotTrackerArgs) != 0 {
+				t.Fatalf("github tracker probe received trackerArgs %v, want empty", gotTrackerArgs)
+			}
+			for _, server := range resp.GetServers() {
+				if server.GetSource() == bossanovav1.MCPServerSource_MCP_SERVER_SOURCE_INJECTED {
+					t.Fatalf("server %q attributed as INJECTED for github tracker", server.GetName())
+				}
 			}
 		})
 	}

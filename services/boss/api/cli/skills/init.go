@@ -30,7 +30,7 @@ const skillConfigModulePath = "skills/boss-plan/toolbox/skill-config.mjs"
 // skillConfigSiblingModules are the toolbox modules skill-config.mjs imports by
 // relative path. Extract them at those paths, or the bridge's import fails
 // with ERR_MODULE_NOT_FOUND before any detector code runs.
-var skillConfigSiblingModules = []string{"check-command-shell.mjs", "label-identity.mjs", "selection.mjs", "main-module.mjs", "skill-config-validate.generated.mjs", "tracker/github-config.mjs", "verify/verify-review-policy.mjs", "ci/required-checks.mjs"}
+var skillConfigSiblingModules = []string{"check-command-shell.mjs", "label-identity.mjs", "selection.mjs", "main-module.mjs", "skill-config-validate.generated.mjs", "tracker/github-config.mjs", "tracker/detect-tracker.mjs", "verify/verify-review-policy.mjs", "ci/required-checks.mjs"}
 
 // nodeBridgeTimeout bounds each short-lived node subprocess. The detector reads
 // a handful of marker files and returns; anything slower is a hang, not work.
@@ -117,7 +117,8 @@ func (g *Group) initCmd() *cobra.Command {
 		// initialise the working directory instead.
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			trackerName = selectedInitTracker(trackerName, dir, merge)
+			var detectedRepo string
+			trackerName, detectedRepo = g.resolveSelectedInitTracker(c, trackerName, dir, merge || (g.InitIsTerminal() && !force))
 			if err := validateInitTrackerFlags(c, trackerName, githubRepo, states); err != nil {
 				return err
 			}
@@ -138,19 +139,23 @@ func (g *Group) initCmd() *cobra.Command {
 			}
 			opts := initOptions{
 				mergeExisting: merge, overrides: ov, tracker: trackerName, githubRepo: githubRepo,
-				team:         team,
-				command:      c,
-				repo:         repoOpts,
-				cron:         cronOpts,
-				applied:      &initAppliedSteps{},
-				createLabels: createLabels,
-				ProjectTrust: trust,
+				detectedGitHubRepo: detectedRepo,
+				team:               team,
+				command:            c,
+				repo:               repoOpts,
+				cron:               cronOpts,
+				applied:            &initAppliedSteps{},
+				createLabels:       createLabels,
+				ProjectTrust:       trust,
 			}
 			// On a terminal, boss init interviews: every question has a flag, a
 			// flag already passed answers its question, and the answers drive
 			// the same runInit the flags do. Elsewhere the flags alone decide.
 			if g.InitIsTerminal() {
 				return g.runInitInteractive(c, dir, force, opts)
+			}
+			if opts.githubRepo == "" && detectedRepo != "" {
+				opts.githubRepo = detectedRepo
 			}
 			if trackerName == "linear" {
 				opts.linear = g.linearAdminFromEnv(os.Getenv)
@@ -159,7 +164,7 @@ func (g *Group) initCmd() *cobra.Command {
 			return g.runInit(c.OutOrStdout(), dir, force, opts)
 		},
 	}
-	cmd.Flags().StringVar(&trackerName, "tracker", "", "Issue tracker: linear or github (default: existing tracker on --merge, otherwise linear)")
+	cmd.Flags().StringVar(&trackerName, "tracker", "", "Issue tracker: linear or github (default: existing tracker on --merge, otherwise detected: Linear with a key or Linear MCP server, else GitHub for a GitHub origin)")
 	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub repository: [HOST/]OWNER/REPO")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing .boss-skills.json instead of refusing")
 	cmd.Flags().StringVar(&dir, "dir", "", "Repository directory to inspect and write into (default: the working directory)")
@@ -186,17 +191,17 @@ func (g *Group) initCmd() *cobra.Command {
 
 // initOptions carries tracker and registration inputs.
 type initOptions struct {
-	mergeExisting       bool
-	tracker, githubRepo string
-	github              githubAdmin
-	overrides           linearOverrides
-	team                string
-	linear              linearAdmin
-	mapRoles            bool
-	createLabels        bool
-	validateLinearKey   func(context.Context, string) (string, error)
-	command             *cobra.Command
-	repo                initRepoOptions
+	mergeExisting                           bool
+	tracker, githubRepo, detectedGitHubRepo string
+	github                                  githubAdmin
+	overrides                               linearOverrides
+	team                                    string
+	linear                                  linearAdmin
+	mapRoles                                bool
+	createLabels                            bool
+	validateLinearKey                       func(context.Context, string) (string, error)
+	command                                 *cobra.Command
+	repo                                    initRepoOptions
 	// resolvedRepo is a registration the caller already resolved (and stored
 	// credentials for); runInit then skips its own registration step.
 	resolvedRepo *pb.Repo

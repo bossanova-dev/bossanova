@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   parseRepository,
+  githubRepositoryFromOrigin,
   githubStates,
   GITHUB_DEFAULT_STATES,
   GITHUB_CLOSING_ROLES,
@@ -104,4 +105,63 @@ test('GitHub ranking estimates match the plan library normalization set', async 
     [...new Set(spec.children.map((child) => child.estimate))],
     GITHUB_ESTIMATE_POINTS,
   )
+})
+
+test('githubRepositoryFromOrigin parses GitHub remotes and rejects other hosts or malformed URLs', () => {
+  const valid = [
+    ['https://github.com/acme/widgets', 'acme/widgets'],
+    ['https://github.com/acme/widgets.git', 'acme/widgets'],
+    ['https://github.com/acme/widgets/', 'acme/widgets'],
+    ['https://github.com/acme/widgets.git/', 'acme/widgets'],
+    ['https://user:pass@github.com/acme/widgets.git', 'acme/widgets'],
+    ['https://token@github.com/acme/widgets', 'acme/widgets'],
+    ['ssh://git@github.com/acme/widgets.git', 'acme/widgets'],
+    ['ssh://git@github.com:22/acme/widgets.git', 'acme/widgets'],
+    ['git@github.com:acme/widgets.git', 'acme/widgets'],
+    ['git@github.com:acme/widgets', 'acme/widgets'],
+    ['git@GITHUB.COM:Acme/Widgets.git', 'Acme/Widgets'],
+    ['https://GitHub.Example.COM/acme/widgets.git', 'github.example.com/acme/widgets'],
+    [
+      'ssh://git@github.enterprise.local:2222/acme/widgets.git',
+      'github.enterprise.local/acme/widgets',
+    ],
+    ['git@github.enterprise.local:acme/widgets.git', 'github.enterprise.local/acme/widgets'],
+    ['  https://github.com/acme/my.repo_1.git  ', 'acme/my.repo_1'],
+  ]
+  for (const [input, expected] of valid) {
+    assert.equal(githubRepositoryFromOrigin(input), expected, `expected ${expected} for ${input}`)
+  }
+
+  const invalid = [
+    '',
+    '   ',
+    null,
+    undefined,
+    123,
+    'https://gitlab.com/acme/widgets.git',
+    'git@gitlab.com:acme/widgets.git',
+    'https://bitbucket.org/acme/widgets.git',
+    'https://mygithub.com/acme/widgets.git',
+    'https://notgithub.com/acme/widgets.git',
+    'https://github-enterprise.com/acme/widgets.git',
+    'git@github.com-work:acme/widgets.git',
+    'git@github.personal:acme/widgets.git',
+    'https://github./acme/widgets.git',
+    'https://github..com/acme/widgets.git',
+    'https://github.-bad.com/acme/widgets.git',
+    'https://github.com/acme/widgets/extra',
+    'https://github.com/acme',
+    'https://github.com/acme/widgets?tab=readme',
+    'https://github.com/acme/widgets?',
+    'https://github.com/acme/widgets#top',
+    'https://github.com/acme/widgets#',
+    'http://github.com/acme/widgets.git',
+    'git://github.com/acme/widgets.git',
+    'git@github.com:/acme/widgets.git',
+    'https://github.com/acme/..',
+    'not-a-url',
+  ]
+  for (const input of invalid) {
+    assert.equal(githubRepositoryFromOrigin(input), null, `expected null for ${String(input)}`)
+  }
 })

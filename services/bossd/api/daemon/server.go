@@ -93,6 +93,7 @@ type Server struct {
 	cronJobs                  cronJobStore
 	factoryRepoChecker        *verifyjob.Checker
 	factoryHealthVersions     func(context.Context, string) (string, string, bool, error)
+	factorySkills             factorySkillsInstaller
 	resumeAttempts            resumeAttemptReader
 	// pendingTrackerMerges queues post-merge tracker writes for the worker;
 	// trackerMerges is what an operator merge leaves it besides the entry.
@@ -408,6 +409,7 @@ type Config struct {
 	CronJobs              cronJobStore
 	FactoryRepoChecker    *verifyjob.Checker
 	FactoryHealthVersions func(context.Context, string) (string, string, bool, error)
+	FactorySkills         factorySkillsInstaller
 	ResumeAttempts        resumeAttemptReader
 	// PendingTrackerMerges queues post-merge tracker writes to retry. Optional.
 	PendingTrackerMerges pendingTrackerMergeStore
@@ -642,6 +644,7 @@ func New(cfg Config) *Server {
 		cronJobs:              cfg.CronJobs,
 		factoryRepoChecker:    cfg.FactoryRepoChecker,
 		factoryHealthVersions: cfg.FactoryHealthVersions,
+		factorySkills:         cfg.FactorySkills,
 		resumeAttempts:        cfg.ResumeAttempts,
 
 		pendingTrackerMerges: cfg.PendingTrackerMerges,

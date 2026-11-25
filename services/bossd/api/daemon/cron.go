@@ -132,6 +132,7 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schedule cron job: %w", err))
 		}
 	}
+	s.installFactorySkills(ctx, "cron-create")
 
 	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.cronActivity, s.gatingJobIDs())}), nil
 }

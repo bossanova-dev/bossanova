@@ -23,8 +23,8 @@ func Read(ctx context.Context, _ string) (daemon, skills string, outdated bool, 
 	defer cancel()
 	payload := skillinstall.EmbeddedPayloadRecord(buildinfo.Commit, buildinfo.Version, skillinstall.WriterUnattended)
 	daemon = label(payload)
-	for _, agent := range []skillinstall.Agent{skillinstall.AgentClaude, skillinstall.AgentCodex, skillinstall.AgentHermes, skillinstall.AgentAntigravity} {
-		dir, dirErr := skillinstall.DirForAgent(agent)
+	for _, target := range skillinstall.AgentCLIs() {
+		dir, dirErr := skillinstall.DirForAgent(target.Agent)
 		if dirErr != nil {
 			err = errors.Join(err, fmt.Errorf("resolve skill directory: %w", dirErr))
 			continue

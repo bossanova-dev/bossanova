@@ -258,7 +258,9 @@ func (s *Server) BuildInteractiveCommand(ctx context.Context, req *bossanovav1.B
 		args = append(args, "--effort", effort)
 	}
 	// Repository-controlled MCP and settings load only for trusted repos.
-	args = append(args, projectIsolationArgs(projectConfigTrusted(req.GetProjectTrust()))...)
+	// Untrusted repos also receive the boss-owned tracker MCP server when their
+	// skill config selects Linear.
+	args = append(args, s.untrustedProjectArgs(req.GetWorktreePath(), projectConfigTrusted(req.GetProjectTrust()))...)
 	loginShell := ""
 	if s.runner != nil {
 		loginShell = s.runner.loginShell
@@ -289,6 +291,26 @@ func (s *Server) BuildInteractiveCommand(ctx context.Context, req *bossanovav1.B
 		CommandPrefix:             "/",
 		AppendSystemPromptSupport: appendSystemPromptSupport,
 	}, nil
+}
+
+// untrustedProjectArgs returns the isolation flags for an untrusted interactive
+// launch, placing the boss-owned tracker --mcp-config pair directly before
+// --strict-mcp-config --setting-sources user when one is rendered.
+func (s *Server) untrustedProjectArgs(workDir string, trusted bool) []string {
+	if trusted {
+		return nil
+	}
+	var trackerMCPDir string
+	if s.runner != nil {
+		trackerMCPDir = s.runner.trackerMCPDir
+	}
+	var out []string
+	if mcpArgs, err := trackerMCPArgs(trackerMCPDir, workDir, false); err != nil {
+		s.logger.Warn().Err(err).Msg("failed to write tracker MCP config for untrusted interactive launch; continuing with strict empty MCP surface")
+	} else {
+		out = append(out, mcpArgs...)
+	}
+	return append(out, projectIsolationArgs(false)...)
 }
 
 // installPromptSubmitHook installs the delivery-receipt UserPromptSubmit hook
@@ -404,6 +426,8 @@ func (s *Server) runClaudeOneShot(ctx context.Context, workDir, prompt string, e
 			return "", err
 		}
 	}
+	// Stay strict and empty without --mcp-config: runClaudeOneShot runs in plan
+	// mode to title PRs and never touches the issue tracker.
 	args := append([]string{"claude", "-p", "--permission-mode", "plan"}, projectIsolationArgs(trusted)...)
 	argv := loginshell.Wrap(runner.loginShell, loginshell.Flags(runner.loginShell), args)
 	factory := runner.cmdFactory

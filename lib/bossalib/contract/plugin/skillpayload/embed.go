@@ -1,9 +1,10 @@
 // Package skillpayload embeds the published boss-* skill tree. It is the one
-// payload both the boss CLI (extracted at startup) and bossd-plugin-claude
-// (restored at daemon start) ship, so the two binaries carry identical bytes
-// without a committed mirror. It is kept separate from lib/bossalib/contract/plugin/skillinstall
-// on purpose: bossd and revisiondrift import the installer and must not link a
-// multi-megabyte payload they never read.
+// payload the boss CLI, bossd's factoryskills adapter and bossd-plugin-claude
+// ship, so the binaries carry identical bytes without a committed mirror. It is
+// kept separate from lib/bossalib/contract/plugin/skillinstall on purpose:
+// importers that only read records (revisiondrift, factoryversions) do not link
+// the payload, while bossd's factoryskills adapter links it deliberately to
+// install on consent and refresh after upgrades.
 package skillpayload
 
 import "embed"

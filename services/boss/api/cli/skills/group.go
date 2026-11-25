@@ -22,6 +22,7 @@ type Group struct {
 	checkoutSkillSourceRewriteLockClaimRecoveryAcquired func()
 	initNewLinearAdmin                                  func(key string) linearAdmin
 	initNewGitHubAdmin                                  func() githubAdmin
+	initDetectTracker                                   func(repoDir string) (trackerDetectionResult, error)
 	StartupReadAnswer                                   func() string
 	checkoutSkillSourceRewriteLockClaimPublished        func(string)
 	checkoutSkillSourceRewriteLockBeforeRecoveryReclaim func()
@@ -41,6 +42,7 @@ func New(factory ClientFactory, cfg Config) *Group {
 	g.checkoutSkillSourceRewriteLockClaimRecoveryAcquired = func() {}
 	g.initNewLinearAdmin = newLinearAdmin
 	g.initNewGitHubAdmin = func() githubAdmin { return &ghGitHubAdmin{} }
+	g.initDetectTracker = detectInitTracker
 	g.StartupReadAnswer = func() string {
 		var answer string
 		if _, err := fmt.Scanln(&answer); err != nil {
@@ -50,11 +52,14 @@ func New(factory ClientFactory, cfg Config) *Group {
 	}
 	g.checkoutSkillSourceRewriteLockClaimPublished = func(string) {}
 	g.checkoutSkillSourceRewriteLockBeforeRecoveryReclaim = func() {}
-	g.skillInstallAgents = []skillInstallAgent{
-		{name: "Claude", command: "claude", agent: libskillinstall.AgentClaude},
-		{name: "Codex", command: "codex", agent: libskillinstall.AgentCodex},
-		{name: "Hermes", command: "hermes", agent: libskillinstall.AgentHermes},
-		{name: "Antigravity", command: "agy", agent: libskillinstall.AgentAntigravity},
+	agentCLIs := libskillinstall.AgentCLIs()
+	g.skillInstallAgents = make([]skillInstallAgent, 0, len(agentCLIs))
+	for _, cli := range agentCLIs {
+		g.skillInstallAgents = append(g.skillInstallAgents, skillInstallAgent{
+			name:    cli.Name,
+			command: cli.Command,
+			agent:   cli.Agent,
+		})
 	}
 	g.skillPayloadGit = checkoutGitOutput
 	g.InitIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }

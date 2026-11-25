@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -225,6 +227,116 @@ func TestBuildArgvUntrustedDisablesProjectConfiguration(t *testing.T) {
 	}
 }
 
+func TestBuildArgvUntrustedTrackerMCPConfigOrder(t *testing.T) {
+	r := NewRunner(zerolog.Nop())
+	cfgPath := "/tmp/tracker-mcp/0123456789abcdef.json"
+	got := r.buildArgv(agentruntime.BuildArgvInput{
+		ShouldTrustProjectConfig: false,
+		Options: map[string]string{
+			trackerMCPConfigOptionKey: cfgPath,
+		},
+	})
+	wantSeq := []string{"--mcp-config", cfgPath, "--strict-mcp-config", "--setting-sources", "user"}
+	assertContainsContiguous(t, got, wantSeq)
+}
+
+func TestBuildArgvTrustedIgnoresTrackerMCPConfig(t *testing.T) {
+	r := NewRunner(zerolog.Nop())
+	got := r.buildArgv(agentruntime.BuildArgvInput{
+		ShouldTrustProjectConfig: true,
+		Options: map[string]string{
+			trackerMCPConfigOptionKey: "/tmp/tracker-mcp/0123456789abcdef.json",
+		},
+	})
+	for _, a := range got {
+		if a == "--mcp-config" || a == "--strict-mcp-config" {
+			t.Fatalf("trusted buildArgv = %v, want no %s", got, a)
+		}
+	}
+}
+
+func TestStartWithProjectConfigTrustTrackerMCPWriteFailure(t *testing.T) {
+	var launchArgs []string
+	factory := func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		if slices.Contains(args, "--help") {
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '%s' '--strict-mcp-config --setting-sources'")
+		}
+		launchArgs = slices.Clone(args)
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "cat >/dev/null")
+	}
+	var logBuf bytes.Buffer
+	r := NewRunner(zerolog.New(&logBuf), WithCommandFactory(factory))
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("occupied"), 0o600); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+	r.trackerMCPDir = blocker
+
+	dir := t.TempDir()
+	sid, err := r.StartWithProjectConfigTrust(
+		context.Background(), dir, "plan", nil, "sid-write-fail", filepath.Join(dir, "log"), "", "",
+		map[string]string{"LINEAR_API_KEY": "sekrit-headless"}, false,
+	)
+	if err != nil {
+		t.Fatalf("StartWithProjectConfigTrust() degraded write failure returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := r.Stop(sid); err != nil {
+			t.Errorf("stop test run: %v", err)
+		}
+	})
+	if slices.Contains(launchArgs, "--mcp-config") {
+		t.Fatalf("launchArgs = %v, want no --mcp-config on write failure", launchArgs)
+	}
+	assertContainsContiguous(t, launchArgs, []string{"--strict-mcp-config", "--setting-sources", "user"})
+	if strings.Contains(logBuf.String(), "sekrit-headless") {
+		t.Fatalf("warning log leaked LINEAR_API_KEY: %s", logBuf.String())
+	}
+}
+
+func TestStartWithProjectConfigTrustGitHubTracker(t *testing.T) {
+	var launchArgs []string
+	factory := func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		if slices.Contains(args, "--help") {
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '%s' '--strict-mcp-config --setting-sources'")
+		}
+		launchArgs = slices.Clone(args)
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "cat >/dev/null")
+	}
+	r := NewRunner(zerolog.Nop(), WithCommandFactory(factory))
+	r.trackerMCPDir = t.TempDir()
+
+	workDir := writeSkillsConfigFixture(t, `{"adapters":{"tracker":"github"}}`)
+	sid, err := r.StartWithProjectConfigTrust(
+		context.Background(), workDir, "plan", nil, "sid-gh", filepath.Join(workDir, "log"), "", "", nil, false,
+	)
+	if err != nil {
+		t.Fatalf("StartWithProjectConfigTrust() error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := r.Stop(sid); err != nil {
+			t.Errorf("stop test run: %v", err)
+		}
+	})
+	if slices.Contains(launchArgs, "--mcp-config") {
+		t.Fatalf("launchArgs = %v, want no --mcp-config for github tracker", launchArgs)
+	}
+	assertContainsContiguous(t, launchArgs, []string{"--strict-mcp-config", "--setting-sources", "user"})
+}
+
+func assertContainsContiguous(t *testing.T, haystack, needle []string) {
+	t.Helper()
+	if len(needle) == 0 {
+		return
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if slices.Equal(haystack[i:i+len(needle)], needle) {
+			return
+		}
+	}
+	t.Fatalf("argv %v does not contain contiguous sequence %v", haystack, needle)
+}
+
 func TestProjectIsolationSupportFailsClosed(t *testing.T) {
 	for _, missing := range []string{"--strict-mcp-config", "--setting-sources"} {
 		t.Run(missing, func(t *testing.T) {
@@ -283,6 +395,21 @@ func TestStartAgentRunPropagatesProjectConfigurationTrust(t *testing.T) {
 			for _, flag := range []string{"--strict-mcp-config", "--setting-sources"} {
 				if got := slices.Contains(launchArgs, flag); got == trusted {
 					t.Fatalf("trusted %v: argv %v", trusted, launchArgs)
+				}
+			}
+			if trusted {
+				if slices.Contains(launchArgs, "--mcp-config") {
+					t.Fatalf("trusted launch must not emit --mcp-config: %v", launchArgs)
+				}
+			} else {
+				idx := slices.Index(launchArgs, "--mcp-config")
+				if idx < 0 || idx+1 >= len(launchArgs) {
+					t.Fatalf("untrusted launch missing --mcp-config <path>: %v", launchArgs)
+				}
+				cfgPath := launchArgs[idx+1]
+				assertContainsContiguous(t, launchArgs, []string{"--mcp-config", cfgPath, "--strict-mcp-config", "--setting-sources", "user"})
+				if _, err := os.Stat(cfgPath); err != nil {
+					t.Fatalf("injected tracker config %q missing on disk: %v", cfgPath, err)
 				}
 			}
 		})

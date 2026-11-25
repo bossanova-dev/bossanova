@@ -27,6 +27,8 @@ type Runner struct {
 	loginShell                 string
 	model                      string
 	effort                     string
+	trackerMCPDir              string
+	logger                     zerolog.Logger
 	cmdFactory                 agentruntime.CommandFactory
 }
 
@@ -34,14 +36,21 @@ const defaultClaudeEffort = "high"
 
 // StartWithProjectConfigTrust enforces the repository's configuration policy.
 func (r *Runner) StartWithProjectConfigTrust(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string, trusted bool) (string, error) {
+	opts := map[string]string{
+		"model": model, "effort": effort,
+	}
 	if !trusted {
 		if err := r.checkProjectIsolationSupport(ctx, extraEnv); err != nil {
 			return "", err
 		}
+		args, err := trackerMCPArgs(r.trackerMCPDir, workDir, false)
+		if err != nil {
+			r.logger.Warn().Err(err).Msg("failed to write tracker MCP config for untrusted launch; continuing with strict empty MCP surface")
+		} else if len(args) == 2 {
+			opts[trackerMCPConfigOptionKey] = args[1]
+		}
 	}
-	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{
-		"model": model, "effort": effort,
-	}, agentruntime.StartOptions{ShouldTrustProjectConfig: trusted})
+	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, opts, agentruntime.StartOptions{ShouldTrustProjectConfig: trusted})
 }
 
 // checkProjectIsolationSupport fails closed when this installation cannot
@@ -148,7 +157,7 @@ func WithCommandFactory(f agentruntime.CommandFactory) RunnerOption {
 
 // NewRunner creates a Claude process runner backed by agentruntime.
 func NewRunner(logger zerolog.Logger, opts ...RunnerOption) *Runner {
-	r := &Runner{effort: defaultClaudeEffort}
+	r := &Runner{effort: defaultClaudeEffort, logger: logger}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -198,7 +207,13 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 		args = append(args, "--effort", effort)
 	}
 	// Trusted repos retain native Claude configuration discovery. Untrusted
-	// repos disable MCP configuration and project/local settings together.
+	// repos disable project/local settings and restrict MCP servers strictly
+	// to the boss-owned tracker config when one was rendered.
+	if !in.ShouldTrustProjectConfig {
+		if cfg := in.Options[trackerMCPConfigOptionKey]; cfg != "" {
+			args = append(args, "--mcp-config", cfg)
+		}
+	}
 	args = append(args, projectIsolationArgs(in.ShouldTrustProjectConfig)...)
 	return loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 }

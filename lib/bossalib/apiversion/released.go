@@ -73,6 +73,7 @@ var ReleasedVersions = []Version{
 	"2026-11-03", // V20261103 — CloudControlDisabledCodeChange.
 	"2026-11-04", // V20261104 — organization-filtered daemon listing.
 	"2026-11-05", // V20261105 — ServePinnedActionChange (Services action pin).
+	"2026-11-06", // V20261106 — organization repo-mapped reads.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

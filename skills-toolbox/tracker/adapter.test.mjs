@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -346,5 +347,65 @@ test('credential requirements match the registered credential paths', () => {
   assert.equal(trackerCredentialGap({ tracker: 'github', env: {} }), null)
   for (const tracker of ['jira', '', 'constructor']) {
     assert.equal(trackerCredentialGap({ tracker, env: {} }), `unknown tracker: ${tracker}`)
+  }
+})
+
+test('configuredTrackerName detects github for an unconfigured GitHub checkout and honours overrides', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'adapter-detect-repo-'))
+  const home = mkdtempSync(join(tmpdir(), 'adapter-detect-home-'))
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo })
+    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/tasks.git'], {
+      cwd: repo,
+    })
+    assert.equal(configuredTrackerName({ env: {}, cwd: repo, home }), 'github')
+    assert.equal(configuredTrackerName({ env: { TRACKER: 'linear' }, cwd: repo, home }), 'linear')
+    assert.equal(
+      configuredTrackerName({ env: { LINEAR_API_KEY: 'key' }, cwd: repo, home }),
+      'linear',
+    )
+  } finally {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5 })
+    rmSync(home, { recursive: true, force: true, maxRetries: 5 })
+  }
+})
+
+test('resolveTrackerAdapter honours injected env over process.env and TRACKER=linear in detected GitHub repo', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'adapter-resolve-env-repo-'))
+  const home = mkdtempSync(join(tmpdir(), 'adapter-resolve-env-home-'))
+  const prevCwd = process.cwd()
+  const prevKey = process.env.LINEAR_API_KEY
+  const prevHome = process.env.HOME
+  const prevTracker = process.env.TRACKER
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo })
+    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/tasks.git'], {
+      cwd: repo,
+    })
+    process.chdir(repo)
+    process.env.HOME = home
+    delete process.env.TRACKER
+
+    // Injected env without LINEAR_API_KEY still constructs github even when process.env.LINEAR_API_KEY is set.
+    process.env.LINEAR_API_KEY = 'ambient-process-key'
+    const gh = resolveTrackerAdapter({ env: {} })
+    assert.equal(gh.tracker, 'github')
+    assertConforms(gh)
+
+    // TRACKER=linear override in an unconfigured GitHub checkout synthesizes trackerConfig.linear and Linear states.
+    delete process.env.LINEAR_API_KEY
+    const lin = resolveTrackerAdapter({ env: { TRACKER: 'linear' } })
+    assert.equal(lin.tracker, 'linear')
+    assert.equal(lin.states().planned, 'Todo')
+  } finally {
+    process.chdir(prevCwd)
+    if (prevKey === undefined) delete process.env.LINEAR_API_KEY
+    else process.env.LINEAR_API_KEY = prevKey
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    if (prevTracker === undefined) delete process.env.TRACKER
+    else process.env.TRACKER = prevTracker
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5 })
+    rmSync(home, { recursive: true, force: true, maxRetries: 5 })
   }
 })

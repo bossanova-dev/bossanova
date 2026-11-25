@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   globToRegExp,
@@ -29,6 +30,7 @@ import {
   mergeConfig,
   validateConfig,
   loadSkillConfig,
+  detectTracker,
   detectRepoDefaults,
   reviewTimeDefaults,
   reviewSkillFor,
@@ -5506,4 +5508,261 @@ test('parsePlanCheckItems keeps After merge items out of the criteria certificat
     parsed.afterMerge.map((c) => c.text),
     ['the nightly sweep fires once on main'],
   )
+})
+
+test('detectTracker follows the five-step precedence with zero I/O on explicit and declared configs', () => {
+  const noIo = {
+    readOrigin: () => {
+      throw new Error('readOrigin must not be called')
+    },
+    readFile: () => {
+      throw new Error('readFile must not be called')
+    },
+  }
+
+  // Step 1: explicit adapters.tracker wins with zero I/O.
+  assert.deepEqual(
+    detectTracker({
+      user: { adapters: { tracker: 'github' }, trackerConfig: { linear: { team: 'T' } } },
+      env: { LINEAR_API_KEY: 'key' },
+      cwd: '/repo',
+      home: '/home',
+      ...noIo,
+    }),
+    { tracker: 'github', reason: 'explicit' },
+  )
+
+  // Step 2: single declared trackerConfig block wins with zero I/O (regression for repo configs).
+  assert.deepEqual(
+    detectTracker({
+      user: { trackerConfig: { linear: { team: 'T' } } },
+      env: { LINEAR_API_KEY: '' },
+      cwd: '/repo',
+      home: '/home',
+      ...noIo,
+    }),
+    { tracker: 'linear', reason: 'declared-block' },
+  )
+  assert.deepEqual(
+    detectTracker({
+      user: { trackerConfig: { github: { repository: 'acme/tasks' } } },
+      env: { LINEAR_API_KEY: 'key' },
+      cwd: '/repo',
+      home: '/home',
+      ...noIo,
+    }),
+    { tracker: 'github', reason: 'declared-block' },
+  )
+
+  // Step 2b: multiple declared blocks keep the Linear default with zero I/O.
+  assert.deepEqual(
+    detectTracker({
+      user: {
+        trackerConfig: {
+          github: { repository: 'acme/tasks' },
+          linear: { team: 'T' },
+        },
+      },
+      env: {},
+      cwd: '/repo',
+      home: '/home',
+      ...noIo,
+    }),
+    { tracker: 'linear', reason: 'multiple-blocks-default' },
+  )
+
+  // Step 3a: non-empty LINEAR_API_KEY selects linear before file/git I/O.
+  assert.deepEqual(
+    detectTracker({
+      user: {},
+      env: { LINEAR_API_KEY: 'lin_api_token' },
+      cwd: '/repo',
+      home: '/home',
+      ...noIo,
+    }),
+    { tracker: 'linear', reason: 'linear-api-key' },
+  )
+
+  // Step 3b: Linear MCP server in each of the four harness files selects linear without running git.
+  const mcpCases = [
+    [
+      join('/repo', '.mcp.json'),
+      JSON.stringify({ mcpServers: { 'acme-Linear': { url: 'https://example.com' } } }),
+    ],
+    [join('/repo', '.codex', 'config.toml'), '[mcp_servers.linear]\ncommand = "npx"\n'],
+    [join('/repo', '.codex', 'config.toml'), '[mcp_servers."my-Linear".headers]\na = "b"\n'],
+    [join('/repo', '.codex', 'config.toml'), "[mcp_servers.'linear-mcp'.env]\nX = '1'\n"],
+    [
+      join('/home', '.claude.json'),
+      JSON.stringify({ mcpServers: { linear_server: { type: 'http' } } }),
+    ],
+    [join('/home', '.codex', 'config.toml'), '[mcp_servers.team_linear]\nurl = "x"\n'],
+  ]
+  for (const [filePath, content] of mcpCases) {
+    assert.deepEqual(
+      detectTracker({
+        user: {},
+        env: { LINEAR_API_KEY: '   ' },
+        cwd: '/repo',
+        home: '/home',
+        readFile: (p) => (p === filePath ? content : null),
+        readOrigin: () => {
+          throw new Error('readOrigin must not run when Linear MCP is found')
+        },
+      }),
+      { tracker: 'linear', reason: 'linear-mcp' },
+      `expected linear-mcp for ${filePath}`,
+    )
+  }
+
+  // Commented/unrelated TOML entries, unreadable or malformed harness files never throw and do not signal Linear.
+  assert.deepEqual(
+    detectTracker({
+      user: {},
+      env: {},
+      cwd: '/repo',
+      home: '/home',
+      readFile: (p) => {
+        if (p === join('/repo', '.mcp.json')) return '{not json'
+        if (p === join('/repo', '.codex', 'config.toml'))
+          return '# [mcp_servers.linear]\n[mcp_servers.github] # linear\n[mcp_servers.github.linear_note]\n'
+        if (p === join('/home', '.claude.json')) throw new Error('EACCES')
+        if (p === join('/home', '.codex', 'config.toml')) return '[mcp_servers."unclosed\n'
+        return null
+      },
+      readOrigin: () => 'git@github.com:acme/widgets.git',
+    }),
+    { tracker: 'github', reason: 'github-origin', block: { repository: 'acme/widgets' } },
+  )
+
+  // Step 4: enterprise github.* origin synthesizes HOST/OWNER/REPO.
+  assert.deepEqual(
+    detectTracker({
+      user: {},
+      env: {},
+      cwd: '/repo',
+      home: '',
+      readFile: () => null,
+      readOrigin: () => 'https://GitHub.Example.COM/acme/widgets.git',
+    }),
+    {
+      tracker: 'github',
+      reason: 'github-origin',
+      block: { repository: 'github.example.com/acme/widgets' },
+    },
+  )
+
+  // Step 5: non-GitHub origin, missing origin, or throwing readOrigin falls back to linear.
+  for (const readOrigin of [
+    () => 'https://gitlab.com/acme/widgets.git',
+    () => null,
+    () => {
+      throw new Error('git failed')
+    },
+  ]) {
+    assert.deepEqual(
+      detectTracker({
+        user: {},
+        env: {},
+        cwd: '/repo',
+        home: '',
+        readFile: () => null,
+        readOrigin,
+      }),
+      { tracker: 'linear', reason: 'default' },
+    )
+  }
+})
+
+test('loadSkillConfig layers detected GitHub tracker with defaults while preserving user config', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'skill-config-detect-repo-'))
+  const home = mkdtempSync(join(tmpdir(), 'skill-config-detect-home-'))
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo })
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/widgets.git'], {
+      cwd: repo,
+    })
+
+    // Unconfigured GitHub checkout selects github and synthesizes repository, states, and labels.
+    const auto = loadSkillConfig({ cwd: repo, env: { LINEAR_API_KEY: '' }, home })
+    assert.equal(auto.adapters.tracker, 'github')
+    assert.equal(auto.trackerConfig.github.repository, 'acme/widgets')
+    assert.equal(auto.trackerConfig.github.states.planned, 'boss:todo')
+    assert.equal(auto.trackerConfig.github.labels.agentBuild, 'agent-build')
+    assert.equal('trackerDetection' in auto, false)
+
+    // User-scope malformed ~/.claude.json must not throw and still falls through to GitHub.
+    writeFileSync(join(home, '.claude.json'), '{broken json')
+    const afterBadHome = loadSkillConfig({ cwd: repo, env: {}, home })
+    assert.equal(afterBadHome.adapters.tracker, 'github')
+    assert.equal(afterBadHome.trackerConfig.github.repository, 'acme/widgets')
+
+    // User-scope Linear MCP server in ~/.claude.json selects linear.
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({ mcpServers: { linear: { type: 'http' } } }),
+    )
+    const fromHomeMcp = loadSkillConfig({ cwd: repo, env: {}, home })
+    assert.equal(fromHomeMcp.adapters.tracker, 'linear')
+    rmSync(join(home, '.claude.json'), { force: true })
+
+    // Subdirectory cwd still finds repo-root .mcp.json and .codex/config.toml instead of flipping to GitHub.
+    const nested = join(repo, 'packages', 'app')
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(
+      join(repo, '.mcp.json'),
+      JSON.stringify({ mcpServers: { linear: { url: 'https://mcp.linear.app/mcp' } } }),
+    )
+    assert.equal(loadSkillConfig({ cwd: nested, env: {}, home }).adapters.tracker, 'linear')
+    rmSync(join(repo, '.mcp.json'), { force: true })
+
+    mkdirSync(join(repo, '.codex'), { recursive: true })
+    writeFileSync(join(repo, '.codex', 'config.toml'), '[mcp_servers.linear]\nurl = "x"\n')
+    assert.equal(loadSkillConfig({ cwd: nested, env: {}, home }).adapters.tracker, 'linear')
+    rmSync(join(repo, '.codex'), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+
+    // Explicit TRACKER=linear env override in an unconfigured GitHub checkout keeps linear and synthesizes defaults.
+    const envLinear = loadSkillConfig({ cwd: repo, env: { TRACKER: 'linear' }, home })
+    assert.equal(envLinear.adapters.tracker, 'linear')
+    assert.equal(envLinear.trackerConfig.linear.mcpServer, 'linear')
+    assert.equal(envLinear.trackerConfig.linear.states.planned, 'Todo')
+
+    // Explicit TRACKER=github env override bypasses LINEAR_API_KEY and synthesizes repository from origin.
+    const envGithub = loadSkillConfig({
+      cwd: repo,
+      env: { TRACKER: 'github', LINEAR_API_KEY: 'key' },
+      home,
+    })
+    assert.equal(envGithub.adapters.tracker, 'github')
+    assert.equal(envGithub.trackerConfig.github.repository, 'acme/widgets')
+
+    // Partial user config (adapters.publish only) preserves publish while applying detected github tracker.
+    writeFileSync(join(repo, CONFIG_FILENAME), JSON.stringify({ adapters: { publish: 'none' } }))
+    const partial = loadSkillConfig({ cwd: repo, env: {}, home })
+    assert.equal(partial.adapters.tracker, 'github')
+    assert.equal(partial.adapters.publish, 'none')
+    assert.equal(partial.trackerConfig.github.repository, 'acme/widgets')
+
+    // Regression: declared trackerConfig.linear alone stays linear with empty key and GitHub origin.
+    writeFileSync(
+      join(repo, CONFIG_FILENAME),
+      JSON.stringify({ trackerConfig: { linear: { team: 'Core' } } }),
+    )
+    const declaredLinear = loadSkillConfig({ cwd: repo, env: { LINEAR_API_KEY: '' }, home })
+    assert.equal(declaredLinear.adapters.tracker, 'linear')
+    assert.equal(declaredLinear.trackerConfig.linear.team, 'Core')
+
+    // Single declared trackerConfig.github with no adapters.tracker resolves to github even with LINEAR_API_KEY.
+    writeFileSync(
+      join(repo, CONFIG_FILENAME),
+      JSON.stringify({ trackerConfig: { github: { repository: 'acme/custom' } } }),
+    )
+    const declaredGithub = loadSkillConfig({ cwd: repo, env: { LINEAR_API_KEY: 'key' }, home })
+    assert.equal(declaredGithub.adapters.tracker, 'github')
+    assert.equal(declaredGithub.trackerConfig.github.repository, 'acme/custom')
+    assert.equal(declaredGithub.trackerConfig.github.states.planned, 'boss:todo')
+  } finally {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5 })
+    rmSync(home, { recursive: true, force: true, maxRetries: 5 })
+  }
 })

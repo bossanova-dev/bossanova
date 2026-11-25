@@ -17,7 +17,7 @@ rm -f -- "$prefix.blocker-graph.json"
 set -- --id "$issue"
 while IFS= read -r endpoint; do
   set -- "$@" --id "$endpoint"
-done < <(node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); for(const id of Object.keys(p.logicalDependencies||{})) console.log(id)' "$prefix.deps-in.json")
+done < <(node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); for(const [id,v] of Object.entries(p.logicalDependencies||{})) if(v===true||(typeof v==="string"&&v!=="")||(v&&typeof v==="object")) console.log(id)' "$prefix.deps-in.json")
 if [ "$#" -gt 2 ]; then
   if ! node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" fetch-blocker-graph --out-file "$prefix.blocker-graph.json" "$@" >&2; then
     echo "cycle safety could not be evaluated; no blocking writes without a fetched graph" >&2
@@ -27,4 +27,5 @@ set --
 if [ -f "$prefix.blocker-graph.json" ]; then set -- --graph "$prefix.blocker-graph.json"; fi
 if [ -f "$prefix.open-prs.json" ]; then set -- "$@" --open-prs "$prefix.open-prs.json"; fi
 if [ -f "$prefix.image-guard-final.md" ]; then set -- "$@" --saved-description "$prefix.image-guard-final.md"; fi
+if [ -f "$prefix.premises.json" ]; then set -- "$@" --premises "$prefix.premises.json"; fi
 node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" deps "$prefix.deps-in.json" "$prefix.candidates.json" --subject "$issue" "$@"

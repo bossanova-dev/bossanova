@@ -460,6 +460,15 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 	for i := range comments {
 		c := &comments[i]
 		if !vcs.IsTrustedReviewAuthor(c.AuthorLogin, c.AuthorAssociation) {
+			if strings.Contains(c.Body, ProofMarker) {
+				r.logger.Debug().
+					Str("session_id", obs.SessionID).
+					Int("pr_number", obs.PRNumber).
+					Int64("comment_id", c.ID).
+					Str("author", c.AuthorLogin).
+					Str("author_association", c.AuthorAssociation).
+					Msg("evidence reader: dropped proof comment from untrusted author")
+			}
 			continue
 		}
 		if summary, ok := Parse(c.Body); found.entry == nil && ok && sameHead(summary.Head, head) {

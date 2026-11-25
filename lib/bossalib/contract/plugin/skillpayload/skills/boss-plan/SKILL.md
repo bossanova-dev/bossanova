@@ -29,20 +29,20 @@ a human` and `## Open Questions` only when they apply, `## Planning` (with a `- 
   stamp, dependency notes, any `- Atomic-5:` justification), and `## Original notes` verbatim. The
   drafting brief has the template. On a `writePlan` tracker this description is composed and gated
   locally; the stored issue description stays unchanged.
-- **Labels**: the existing set, plus content labels that genuinely apply (`bug`, `feature`,
-  `improvement`, `docs` — names via `optionalLabelName(config, '<role>')`, else the literal), plus
-  exactly one of `agent-build` (the default) or `needs-human` (only when an agent genuinely could
-  not implement it; size and a predicted verify park are never the reason, and the plan explains
-  why), plus `agent-question`
-  when there are open questions (headless only). The planning-queue label (`agent-plan`) is removed.
-  Pipeline label roles resolve through `labelName(config, '<role>')`, whose keys are: `agentBuild`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic`
+- **Labels**: computed by `plan/plan-label-merge.mjs`, where an existing label's spelling always
+  wins — the existing set, plus content labels that genuinely apply (`bug`, `feature`,
+  `improvement`, `docs`), plus exactly one of `agent-build` (the default) or `needs-human` (only
+  when an agent genuinely could not implement it; size and a predicted verify park are never the
+  reason, and the plan explains why), plus `agent-question` when there are open questions (headless
+  only). The planning-queue label (`agent-plan`) is removed. Pipeline label roles resolve through
+  `labelName(config, '<role>')`, whose keys are: `agentBuild`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic`
   (it throws on an unknown role). Never create labels.
 - **Estimate** (Fibonacci): 0 trivial; 1/2/3 one PR; 5/8 means it is an **epic**
   ([`references/epic.md`](references/epic.md)) unless a 5 is genuinely atomic.
 - **Priority** 1–4 (`1=Urgent … 4=Low, 0=None`): keep a reporter-set priority, otherwise rank it
   against the planned backlog (security biases up). Not left at None.
 - **State**: moved from the configured unplanned state to the planned state.
-- **Dependencies**: `blockedBy` edges to tickets it genuinely conflicts with (Phase 4 step 5).
+- **Dependencies**: `blockedBy` edges to tickets it genuinely conflicts with (Phase 4 step 4).
 
 ## Workspace facts
 
@@ -92,7 +92,7 @@ bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh <step> [--flag value …]
 | Did the reporter's images and notes survive? | `node plan/plan-image-guard.mjs …`                                                    |
 | Is the description a plan description?       | `node plan/plan-contract-guard.mjs --description … --plan …`                          |
 | Have referenced tickets moved since recon?   | `node plan/plan-run-guards.mjs premises …`                                            |
-| Which tickets does this conflict with?       | `planDependencyEdges` in `plan/plan-deps-lib.mjs` (Phase 4 step 5)                    |
+| Which tickets does this conflict with?       | `planDependencyEdges` in `plan/plan-deps-lib.mjs` (Phase 4 step 4)                    |
 | Did the description land as written?         | `node plan/plan-writeback-verify.mjs --intended … --stored … --read-receipt …`        |
 | What scratch names may I use?                | `node plan/plan-scratch-paths.mjs families`                                           |
 | Is a tracker failure safe to retry?          | `node tracker/cli.mjs classify-outcome --observed "<err>" --operation read\|write`    |
@@ -114,8 +114,8 @@ bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh <step> [--flag value …]
    the same ticket) or tidy a peer's files. The run's skill pin is the declared sibling exception.
 5. **Leave nothing behind**, on every terminal path — except after a write-back `drift` verdict,
    where the scratch is the only copy of the intended bytes; idle unattended or completed skill pins are left for the Phase 0 reaper; unfinished interactive pins are retained so paused runs can resume.
-6. **Labels merge.** `save_issue` `labels` replaces the whole set: read, then write existing ∪
-   additions ∖ strips.
+6. **Labels merge.** `save_issue` `labels` replaces the whole set: compute it only with
+   `plan/plan-label-merge.mjs` from a fresh label read, never by hand.
 
 ## Phase 0 — Preflight
 
@@ -419,21 +419,34 @@ bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh contract-gate --run-scratch .linear
 ```
 
 It fails only on a missing `## Summary` / `## Original notes`, text that is not a plan description,
-an unsubstituted placeholder, an empty/truncated plan, or a plan criterion with no `— check:`
-command (`criterion-without-check`); everything else is a `warning:`.
+an unsubstituted placeholder, an empty/truncated plan, a plan criterion with no `— check:`
+command (`criterion-without-check`), or a mismatched `--target-root` (`target-root-mismatch`);
+everything else is a `warning:`.
 For code in another repository, add `- Target repo: <owner>/<name>` under the description’s
-`## Planning` and pass `--target-root <checkout>` to `plan-contract-guard.mjs` when a matching
-checkout exists; otherwise it prints one `target-repo-not-resolved` advisory in place of per-path
-warnings.
+`## Planning` and pass `--target-root <checkout>` to the `contract-gate`, `draft-verify` or
+`epic-verify` runner step when a matching checkout exists; a root whose origin differs from the
+declaration blocks the write (`target-root-mismatch`), while omitting the flag prints one
+`target-repo-not-resolved` advisory in place of per-path warnings.
 
 Then:
 
 1. **Store** the plan per [`references/plan-storage.md`](references/plan-storage.md) and assert
    exactly one `Implementation plan (<ISSUE-ID>)` plan record remains (the adapter exposes it as an
    attachment; duplicates ⇒ no further writes).
-2. **Labels**: read with `readLabels` and compute the merged set (see "What a planned ticket is").
-   Interactive runs strip a stale `agent-question` (a human answered every fork). Adopted
-   `siblings` hold `needs-human` until step 6 verifies them.
+2. **Labels**: headless runs already wrote
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json` in Phase 2 step 5;
+   interactive runs write `{labels, agentBuild, openQuestions}` (plus `siblings` when splitting)
+   there with the file-writing tool first. Read with `readLabels`, write the response (or the bare
+   label array) to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.current-labels.json` with the
+   file-writing tool, and run:
+
+   ```bash
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node plan/plan-label-merge.mjs --metadata .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json --current .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.current-labels.json
+   ```
+
+   Add `--interactive` on interactive runs. Save its `labels` verbatim; exit non-zero means no label
+   write.
+
 3. **Save** in one tracker write. On a tracker declaring `writePlan`, save only labels, estimate,
    priority and the planned state; never call `write-description` or use an inline description
    fallback. On other trackers, save the description from
@@ -445,15 +458,15 @@ Then:
    `classify-outcome` calls `indeterminate`:
    read the issue back before any retry; if it did not land, retry once without `--base-file`.
    If that retry fails the same way, split it: save everything except
-   labels, then the merged labels in a labels-only write, and name the split in the run report.
+   labels, then step 2's `labels` output in a labels-only write, and name the split in the run report.
    The save response can echo the pre-write issue; it is never evidence of what landed. Step 5's
    settled read-back supplies that evidence. After the description save, copy `image-guard-new.md`
    to `image-guard-final.md`: that file always holds the bytes of the run's last description save,
    including when step 4(f) is skipped.
 4. **Link dependencies** — `plan/plan-deps-lib.mjs` classifies each edge; the blocker-graph screen decides which blocking writes survive:
 
-   a. Fetch candidates (planned, in-progress, in-review, plus every related id):
-   `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --team <team> --id <ISSUE-ID> --id <related id>…`.
+   a. Fetch candidates (planned, in-progress, in-review, plus every related id, premise id and verdict id):
+   `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --team <team> --id <ISSUE-ID> --id <related, premise or verdict id>…`.
    Relations come from the separate blocker graph, not candidate rows.
    Read only the receipt and `jq -r '.[] | [.identifier, .title, .stateName] | @tsv'`; a
    non-zero exit means _could not evaluate_. Reuse the drafter's open-PR snapshot when present;
@@ -466,7 +479,9 @@ Then:
    A failed fetch records `- Open-PR overlap: could not evaluate (<reason>)` under `## Planning`;
    continue the independent ticket scan without `--open-prs`.
    b. Judge real logical dependencies yourself, with direction: `logicalDependencies[<id>] =
-{direction: 'blockedBy' | 'blocks', note}`. Only these verdicts create blocking edges. File
+{direction: 'blockedBy' | 'blocks', note}`. Only these verdicts create blocking edges. Every open
+   premise ticket needs a verdict key — `false` when the plan cites it but does not need it first —
+   or `deps` refuses with `premise-without-verdict`. File
    overlap is computed for you from each ticket's `## Key changes` (pass paths verbatim, never
    coarsened) and becomes a non-blocking `relatedTo` link — touching the same files is a rebase
    risk, not a prerequisite. Overlap only on regions shared with more than the fan-out cap
@@ -487,13 +502,26 @@ Then:
 
    Read the stderr line (`subjectAreas`, unresolved tokens, verdict) before writing anything.
    On `subject-description-stale`, re-run step a after the description save, rewrite the consumed scan input and classify again; report a second consecutive refusal as _could not evaluate_ (tracker read lag).
-   d. Act on the result: write each `edge.write` with `appendDependency` (append-only); `relatedTo`
-   edges with `appendRelatedTo` when the adapter has it; write `planningLines` verbatim under
-   `## Planning`, one `--item` each (also the overlap record when `appendRelatedTo` is unavailable),
-   and `notes` whose destination is `risks` under `## Risks`; `questions` under `## Open Questions`
-   plus `agent-question`. A `skipped` entry
-   with `expandChildren` true — add its children as `--id` and re-run (at most twice, excluding
-   parents already expanded). An `open-pr-ticket-unfetched` skip adds its id as `--id` and re-runs
+   d. Act on the result. Before each blocking write — command-transport trackers (such as GitHub)
+   write immediately — check whether a blocker's PR has already merged:
+   `bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node pr-state.mjs landed --url <url>`
+   (`merged: true`) gets `landed: {evidence: <url>@<mergeCommit>}` and a re-run instead. A failed
+   read leaves the blocker not landed and records `landed: could-not-evaluate`, never "not merged";
+   report a `degraded` result on a line starting `DEGRADED_READ`. For each surviving `edge.write`,
+   call `tracker/cli.mjs link-dependency` once per blocker id in `edge.write.blockedBy`:
+
+   ```bash
+   bash <PIN-DIR>/toolbox/plan/boss-plan-run.sh node tracker/cli.mjs link-dependency --issue <id> --blocked-by <id>
+   ```
+
+   On `descriptor-emitted`, run the emitted tool once, then run the emitted `next` command
+   (`--verify`) through the runner. Write `relatedTo` edges with `appendRelatedTo` when the adapter
+   has it; write `planningLines` verbatim under `## Planning`, one `--item` each (also the overlap
+   record when `appendRelatedTo` is unavailable), and `notes` whose destination is `risks` under
+   `## Risks`; `questions` under `## Open Questions` plus `agent-question` (computed in 4(f) with
+   `plan/plan-label-merge.mjs --add-agent-question`, never added by hand). A `skipped` entry with
+   `expandChildren` true — add its children as `--id` and re-run (at most twice, excluding parents
+   already expanded). An `open-pr-ticket-unfetched` skip adds its id as `--id` and re-runs
    fetch-candidates plus deps once, reusing the snapshot. Record `open-prs-truncated` warnings as-is.
    `no-candidates` is a clean result: record nothing.
    `screen: would-close-cycle` retains the edge record with `write: null` and a risks note naming
@@ -504,15 +532,17 @@ Then:
    `could-not-evaluate` is reported as such, never as "no dependencies"; an unresolved area is
    code-marked or declared in `moduleRoots` and re-run.
    e. The screen walks live downstream and parent edges plus writes accepted earlier in the same
-   set; only its surviving `edge.write` values may be written. A blocker whose PR is merged
-   (`bash <skill-dir>/toolbox/plan/boss-plan-run.sh node pr-state.mjs landed --url <url>`, `merged: true`) gets
-   `landed: {evidence: <url>@<mergeCommit>}` and a re-run instead. A failed read leaves the
-   blocker not landed and records `landed: could-not-evaluate`, never "not merged"; report a
-   `degraded` result on a line starting `DEGRADED_READ`.
-   After each relation write, re-read **both** sides; record a missing edge, never re-write it.
-   f. Skip this entire stored-description second pass on a tracker declaring `writePlan`; retain
-   dependency notes and questions in the run report and save any added `agent-question` label
-   without a description. Otherwise, only when `verdict.recordToDescription` is true or the second
+   set; only its surviving `edge.write` values may be written. When transitive-block warnings need
+   fresh per-edge relation reads, take them from `link-dependency`'s `relationsById` output. Act on
+   each `link-dependency` exit code: exit 3 ⇒ record a skipped cycle under `## Planning`; exit 4 ⇒
+   record a missing or one-sided edge in the run report and `## Risks`, never re-written; exit 2 ⇒
+   follow the named fallback once.
+   f. When adding `agent-question` for dependency questions (on either branch below), re-read the
+   issue's labels into `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.current-labels.json` and
+   re-run `plan/plan-label-merge.mjs` with `--add-agent-question`, saving its `labels` verbatim;
+   never add it by hand. Skip the stored-description second pass on a tracker declaring `writePlan`;
+   retain dependency notes and questions in the run report and save those merged `labels` without a
+   description. Otherwise, only when `verdict.recordToDescription` is true or the second
    premise pass changed the text:
    on the direct-read route, settle the stored description into `image-guard-base.md` first:
 
@@ -553,7 +583,7 @@ Then:
    The helper code-spans issue ids, PR references, URLs and paths, so pass them bare.
 
    Save the edited `$FINAL` with `write-description --body-file "$FINAL" --base-file "$BASE"`
-   (plus labels if `agent-question` was added), using step 3's read-before-retry rule on rejection. Record whether
+   (plus the re-merged `labels` if `agent-question` was added), using step 3's read-before-retry rule on rejection. Record whether
    this second description save happened; only then is `image-guard-base.md` the stale input for step 5.
    The description and the attachment then legitimately differ at `## Planning`.
 

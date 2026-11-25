@@ -32,6 +32,8 @@ export { adoptReturnedMetadata } from './plan-adopt-metadata.mjs'
 import { runPlanIdempotence, runPlanRecheck } from './plan-issue-guards.mjs'
 export { planIdempotencePrecheck } from './plan-issue-guards.mjs'
 import {
+  DEFAULT_CANCELED_STATE_TYPES,
+  DEFAULT_CLEARED_STATE_TYPES,
   dependencyScanVerdict,
   extractKeyChangeAreas,
   planDependencyEdges,
@@ -618,6 +620,57 @@ function candidateRowDefect(row) {
   return null
 }
 
+const SETTLED_PREMISE_STATE_TYPES = new Set([
+  ...DEFAULT_CLEARED_STATE_TYPES,
+  ...DEFAULT_CANCELED_STATE_TYPES,
+])
+
+const normId = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '')
+const issueAliases = (issue) => [issue?.id, issue?.identifier].map(normId).filter(Boolean)
+const rowStateType = (row) =>
+  normId(row?.stateType ?? row?.state?.type ?? row?.statusType ?? row?.status?.type)
+const validPremiseList = (value) =>
+  Array.isArray(value) &&
+  value.every((item) => plainObject(item) && typeof item.id === 'string' && item.id.trim() !== '')
+
+/**
+ * Return a `premise-without-verdict` defect for each cited premise ticket that is neither
+ * the subject, nor cleared/canceled/landed, nor given a `logicalDependencies` verdict (any
+ * value, `false` included).
+ *
+ * @param {{premises?: unknown, rows?: unknown, logicalDependencies?: unknown, subject?: object}} [input]
+ * @returns {{code: string, id: string, remedy: string}[]}
+ */
+export function premiseVerdictDefects({ premises, rows, logicalDependencies, subject } = {}) {
+  const rowList = Array.isArray(rows) ? rows : []
+  const subjectIds = new Set(issueAliases(subject))
+  const verdictKeys = new Set(
+    plainObject(logicalDependencies)
+      ? Object.keys(logicalDependencies).map(normId).filter(Boolean)
+      : [],
+  )
+  const defects = []
+  for (const premise of Array.isArray(premises) ? premises : []) {
+    const id = typeof premise?.id === 'string' ? premise.id.trim() : ''
+    const key = id.toLowerCase()
+    if (!key) continue
+    const row = rowList.find((candidate) => issueAliases(candidate).includes(key))
+    const keys = [key, ...issueAliases(row)]
+    if (keys.some((alias) => subjectIds.has(alias))) continue
+    if (keys.some((alias) => verdictKeys.has(alias))) continue
+    const landed = typeof row?.landed?.evidence === 'string' && row.landed.evidence.trim() !== ''
+    if (row && (SETTLED_PREMISE_STATE_TYPES.has(rowStateType(row)) || landed)) continue
+    defects.push({
+      code: 'premise-without-verdict',
+      id,
+      remedy: row
+        ? `give ${id} a logicalDependencies verdict, or false when the plan cites it but does not need it first`
+        : `fetch ${id} with fetch-candidates --id, then give it a logicalDependencies verdict, or false when the plan cites it but does not need it first`,
+    })
+  }
+  return defects
+}
+
 /**
  * The `deps` boundary: classify one subject against a `fetch-candidates` file. Both issue sides come
  * from that file — the subject is resolved from it by id or identifier — so nothing in the scan
@@ -626,7 +679,7 @@ function candidateRowDefect(row) {
  *
  * @param {{payload: unknown, rows: unknown, subjectId: string, config: object,
  *   rootEntries: {dirs: string[], files: string[], knownFiles?: string[]}, openPullRequests?: object,
- *   savedDescription?: string, graph?: object}} input
+ *   savedDescription?: string, graph?: object, premises?: unknown}} input
  * @returns {{status: 'refused', refusals: {code: string, message: string}[]} |
  *   {status: 'defects', defects: {code: string, id: string, remedy: string}[]} |
  *   {status: 'ok', result: object, verdict: object, subject: object}}
@@ -640,6 +693,7 @@ export function runDependencyScan({
   openPullRequests,
   savedDescription,
   graph,
+  premises,
 }) {
   const refusals = []
   const refuse = (code, message) => refusals.push({ code, message })
@@ -674,6 +728,9 @@ export function runDependencyScan({
     if (defect)
       refuse('open-prs-not-plan-open-prs', `${defect}; write it with plan-open-prs.mjs fetch`)
   }
+  if (premises !== undefined && !validPremiseList(premises)) {
+    refuse('premises-not-premise-list', 'the premises file must be a JSON array of {id} objects')
+  }
   if (refusals.length > 0) return { status: 'refused', refusals }
 
   const wanted = String(subjectId ?? '')
@@ -702,6 +759,15 @@ export function runDependencyScan({
   input.knownFiles = rootEntries.knownFiles ?? rootEntries.files
   const validated = validateDependencyScanInput(input)
   if (!validated.ok) return { status: 'defects', defects: validated.defects }
+  if (premises !== undefined) {
+    const premiseDefects = premiseVerdictDefects({
+      premises,
+      rows,
+      logicalDependencies: input.logicalDependencies,
+      subject,
+    })
+    if (premiseDefects.length > 0) return { status: 'defects', defects: premiseDefects }
+  }
 
   const areasOf = (issue) =>
     extractKeyChangeAreas(config, issue.description, {
@@ -1004,6 +1070,7 @@ function runGuardVerb(argv) {
           'open-prs': { type: 'string' },
           'saved-description': { type: 'string' },
           graph: { type: 'string' },
+          premises: { type: 'string' },
         },
       })
       const scan = runDependencyScan({
@@ -1013,6 +1080,7 @@ function runGuardVerb(argv) {
         savedDescription: values['saved-description']
           ? readFileSync(values['saved-description'], 'utf8')
           : undefined,
+        premises: values.premises ? readJSON(values.premises) : undefined,
         rows: readJSON(second),
         subjectId,
         config: loadSkillConfig({ cwd: process.cwd() }),
@@ -1133,7 +1201,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-receipt <path> --comments <file|json> [--liveness <file|json>]] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify-bundle --run-scratch <dir> --payload <json> | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID> [--open-prs <file>] [--graph <file>]\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-receipt <path> --comments <file|json> [--liveness <file|json>]] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify-bundle --run-scratch <dir> --payload <json> | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID> [--open-prs <file>] [--graph <file>] [--premises <file>]\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

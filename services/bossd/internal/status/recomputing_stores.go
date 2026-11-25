@@ -88,6 +88,18 @@ type RunResumeGiveUpper interface {
 	MarkAgentRunResumeAbandoned(ctx context.Context, id string, expectedState int, priorAgentID *string, reason string) error
 }
 
+type CheckStateLatchStore interface {
+	SetCheckStateIfUnchanged(
+		ctx context.Context,
+		id string,
+		expectedState machine.CheckState,
+		expectedHeadSHA *string,
+		expectedAt *time.Time,
+		newState machine.CheckState,
+		newHeadSHA string,
+	) (bool, error)
+}
+
 // SessionRecomputer is the small interface the recomputing store wrappers
 // depend on. It is implemented by status.DisplayStatusComputer in production;
 // the contract is owned here alongside its consumer.
@@ -551,9 +563,10 @@ func (s *RecomputingSessionStore) MarkOrphanResumeReparked(ctx context.Context, 
 }
 
 var (
-	_ RunDeathObserver   = (*RecomputingSessionStore)(nil)
-	_ RunResumeCommitter = (*RecomputingSessionStore)(nil)
-	_ RunResumeGiveUpper = (*RecomputingSessionStore)(nil)
+	_ RunDeathObserver     = (*RecomputingSessionStore)(nil)
+	_ RunResumeCommitter   = (*RecomputingSessionStore)(nil)
+	_ RunResumeGiveUpper   = (*RecomputingSessionStore)(nil)
+	_ CheckStateLatchStore = (*RecomputingSessionStore)(nil)
 )
 
 // RecordAgentRunDeath records retry timing without changing activity or display state.
@@ -593,6 +606,28 @@ func (s *RecomputingSessionStore) MarkAgentRunResumeAbandoned(ctx context.Contex
 		s.notifyPersistedState(ctx, id)
 	}
 	return nil
+}
+
+// SetCheckStateIfUnchanged delegates the conditional check-state latch and
+// recomputes display state only when the CAS actually updated the row.
+func (s *RecomputingSessionStore) SetCheckStateIfUnchanged(
+	ctx context.Context,
+	id string,
+	expectedState machine.CheckState,
+	expectedHeadSHA *string,
+	expectedAt *time.Time,
+	newState machine.CheckState,
+	newHeadSHA string,
+) (bool, error) {
+	inner, ok := s.SessionStore.(CheckStateLatchStore)
+	if !ok {
+		return false, fmt.Errorf("session store does not support conditional check-state latch")
+	}
+	updated, err := inner.SetCheckStateIfUnchanged(ctx, id, expectedState, expectedHeadSHA, expectedAt, newState, newHeadSHA)
+	if err == nil && updated {
+		_ = s.recomputer.Recompute(ctx, id)
+	}
+	return updated, err
 }
 
 // isComputerSelfWrite reports whether the only non-nil fields in params are

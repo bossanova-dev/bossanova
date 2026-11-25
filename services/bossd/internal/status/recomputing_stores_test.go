@@ -924,3 +924,43 @@ func TestRecomputingSessionStore_RollbackFailedResurrectDoesNotNotify(t *testing
 		t.Fatalf("observer calls = %d, want %d (rollback must notify nothing)", got, obsBefore)
 	}
 }
+
+func TestRecomputingSessionStore_SetCheckStateIfUnchanged(t *testing.T) {
+	ctx := context.Background()
+	store, _, id := newObservedSessionStore(t, machine.ReadyForReview)
+	spy := store.recomputer.(*spyRecomputer)
+
+	var _ db.CheckStateLatchStore = store
+	latchStore, ok := any(store).(db.CheckStateLatchStore)
+	if !ok {
+		t.Fatal("production decorator lacks db.CheckStateLatchStore")
+	}
+
+	snap, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := latchStore.SetCheckStateIfUnchanged(ctx, id, snap.LastCheckState, snap.LastCheckStateHeadSHA, snap.LastCheckStateAt, machine.CheckStatePassed, "head-1")
+	if err != nil {
+		t.Fatalf("SetCheckStateIfUnchanged: %v", err)
+	}
+	if !updated {
+		t.Fatal("SetCheckStateIfUnchanged = false, want true")
+	}
+	if got := spy.calls.Load(); got != 1 {
+		t.Fatalf("recompute calls = %d, want 1", got)
+	}
+
+	// Repeating with the stale snapshot must return false and skip recompute.
+	updated, err = latchStore.SetCheckStateIfUnchanged(ctx, id, snap.LastCheckState, snap.LastCheckStateHeadSHA, snap.LastCheckStateAt, machine.CheckStateFailed, "head-0")
+	if err != nil {
+		t.Fatalf("stale SetCheckStateIfUnchanged: %v", err)
+	}
+	if updated {
+		t.Fatal("stale SetCheckStateIfUnchanged = true, want false")
+	}
+	if got := spy.calls.Load(); got != 1 {
+		t.Fatalf("recompute calls after stale CAS = %d, want 1", got)
+	}
+}

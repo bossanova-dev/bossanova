@@ -85,6 +85,7 @@ type Server struct {
 	validateBranchName        func(context.Context, string) error
 	remoteBranchExists        func(context.Context, string, string) (bool, error)
 	validateRepoScript        func(string) error
+	detectSetupScript         func(context.Context, string) (SetupScriptDetection, error)
 	repos                     repoStore
 	sessions                  sessionStore
 	agentChats                agentChatStore
@@ -395,6 +396,8 @@ type Config struct {
 	RemoteBranchExists func(context.Context, string, string) (bool, error)
 	// ValidateRepoScript validates the stored structured command format.
 	ValidateRepoScript func(string) error
+	// DetectSetupScript detects a repository's worktree setup command.
+	DetectSetupScript func(context.Context, string) (SetupScriptDetection, error)
 
 	// AgentLogsDir is the daemon-owned directory containing live agent logs.
 	AgentLogsDir          string
@@ -631,6 +634,7 @@ func New(cfg Config) *Server {
 		validateBranchName:    cfg.ValidateBranchName,
 		remoteBranchExists:    cfg.RemoteBranchExists,
 		validateRepoScript:    cfg.ValidateRepoScript,
+		detectSetupScript:     cfg.DetectSetupScript,
 		repos:                 cfg.Repos,
 		sessions:              cfg.Sessions,
 		agentChats:            cfg.AgentChats,

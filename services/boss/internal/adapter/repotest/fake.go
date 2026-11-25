@@ -18,13 +18,14 @@ import (
 // RepoFake adds the repository and agent-list RPCs used by project and init commands.
 type RepoFake struct {
 	*crontest.CronFake
-	mu                   sync.RWMutex
-	socket               string
-	repos                []*pb.Repo
-	agents               []*pb.AgentInfo
-	validateRepoPathResp *pb.ValidateRepoPathResponse
-	registerRepoCalls    []*pb.RegisterRepoRequest
-	updateRepoCalls      []*pb.UpdateRepoRequest
+	mu                    sync.RWMutex
+	socket                string
+	repos                 []*pb.Repo
+	agents                []*pb.AgentInfo
+	validateRepoPathResp  *pb.ValidateRepoPathResponse
+	detectSetupScriptResp *pb.DetectSetupScriptResponse
+	registerRepoCalls     []*pb.RegisterRepoRequest
+	updateRepoCalls       []*pb.UpdateRepoRequest
 }
 
 // New starts a fake for repo and skills command tests.
@@ -135,6 +136,24 @@ func (m *RepoFake) SetValidateRepoPathResult(resp *pb.ValidateRepoPathResponse) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.validateRepoPathResp = resp
+}
+
+// DetectSetupScript supports the CLI consumer fixture.
+func (m *RepoFake) DetectSetupScript(_ context.Context, _ *connect.Request[pb.DetectSetupScriptRequest]) (*connect.Response[pb.DetectSetupScriptResponse], error) {
+	m.mu.RLock()
+	resp := m.detectSetupScriptResp
+	m.mu.RUnlock()
+	if resp != nil {
+		return connect.NewResponse(proto.CloneOf(resp)), nil
+	}
+	return connect.NewResponse(&pb.DetectSetupScriptResponse{}), nil
+}
+
+// SetDetectSetupScriptResult supports the CLI consumer fixture.
+func (m *RepoFake) SetDetectSetupScriptResult(resp *pb.DetectSetupScriptResponse) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.detectSetupScriptResp = proto.CloneOf(resp)
 }
 
 // RegisterRepo supports the CLI consumer fixture.

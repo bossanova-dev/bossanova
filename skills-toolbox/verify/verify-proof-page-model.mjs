@@ -21,6 +21,8 @@ export const UI_AREA = 'ui'
 export const NO_UI_RECORDING = 'No recording of the changed UI'
 /** The UI area's banner row when the page's recording or stills are all that show it. */
 export const UI_RECORDED = 'Shown in the recording'
+/** An area's banner row when its section shows an unparsed diff or excerpt on the page. */
+export const DIFF_SHOWN = 'Shown in the diff'
 const NAME_CHARS = 40
 const MAX_FINDINGS = 20
 /** Findings by state: what blocks merge first, what review fixed last. */
@@ -413,7 +415,7 @@ export function buildPageModel({ proof, input, view, extras = {} }) {
   /** @type {string[]} */
   const unproven = [
     ...(proof.whatItDoes.claims ?? []).flatMap((claim, i) =>
-      claim.proof === 'unproven' && proof.whatItDoes.bullets[i]
+      claim.proof === 'unproven' && claim.behaviour !== false && proof.whatItDoes.bullets[i]
         ? [`${proof.whatItDoes.bullets[i]}${claim.note ? `: ${claim.note}` : ''}`]
         : [],
     ),
@@ -812,15 +814,28 @@ export function buildPageModel({ proof, input, view, extras = {} }) {
       ? 'unrated'
       : proof.confidence.level
   // One row per reviewed area, saying what changed there: the spec's summary, the area's facts,
-  // else the files it covers, else for the UI the page's recording. An area with nothing to say
-  // joins Not proven instead.
+  // else the files it covers (or the files its section diffs/snippets show), else for the UI the
+  // page's recording, else its section's diff excerpt. An area with nothing to say joins Not proven
+  // instead.
+  /** @param {string} path */
+  const baseName = (path) => path.slice(path.lastIndexOf('/') + 1)
+  /** @param {string[]} list */
+  const changesFiles = (list) =>
+    list.length
+      ? `Changes ${joinList(list.length > 3 ? [...list.slice(0, 3), `${list.length - 3} more`] : list)}`
+      : ''
   /** @param {string} id */
   const fileNames = (id) => {
     const paths = new Set((extras.areas ?? []).find((entry) => entry.name === id)?.paths ?? [])
-    return (files ?? [])
-      .filter((f) => paths.has(f.path))
-      .map((f) => f.path.slice(f.path.lastIndexOf('/') + 1))
+    return (files ?? []).filter((f) => paths.has(f.path)).map((f) => baseName(f.path))
   }
+  /** @param {AreaItem} area */
+  const shownFileNames = (area) => [
+    ...new Set([
+      ...area.excerpts.flatMap((x) => x.files.map((f) => baseName(f.path))),
+      ...area.snippets.map((s) => baseName(s.path)),
+    ]),
+  ]
   /** @type {Signal[]} */
   const signals = []
   const keys = new Set()
@@ -842,13 +857,13 @@ export function buildPageModel({ proof, input, view, extras = {} }) {
       continue
     }
     const names = fileNames(area.id)
+    const hasExcerpt = area.excerpts.some((x) => x.files.length || x.text !== null)
     const summary =
       (area.id === NO_SIGN_OFF_AREA && area.changes.join('; ')) ||
       area.summary ||
       area.facts.map((fact) => fact.text).join('; ') ||
-      (names.length
-        ? `Changes ${joinList(names.length > 3 ? [...names.slice(0, 3), `${names.length - 3} more`] : names)}`
-        : '')
+      changesFiles(names.length ? names : shownFileNames(area)) ||
+      (hasExcerpt ? DIFF_SHOWN : '')
     if (summary)
       signals.push({
         label: area.name,

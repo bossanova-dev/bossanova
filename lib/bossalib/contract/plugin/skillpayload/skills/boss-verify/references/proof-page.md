@@ -110,11 +110,16 @@ when it cannot read the PR comments.
 
 ## Failures
 
-A render, scan, media, upload or note failure is reported in `post`'s `proof` outcome. It never
-changes or fails the verdict, and none of a hook's or extension's output is kept. The sweep's mechanical posts pass
-`--proof-detach`. Their proof then runs as a separate
-`verify-gate.mjs proof --pr <n> --head <sha> --judge <file>` process, so the upload never spends
-the sweep's post budget.
+A render, scan, media, upload, note or check-run failure is reported in `post`'s `proof` outcome. It
+never changes or fails the verdict, and none of a hook's or extension's output is kept. When any
+proof part is lost, `post` and `proof` also return `proofMissing` (listing each `part` and
+`reason`), leave a head-bound `boss-proof-missing` PR comment (rewritten in place as resolved if a
+later proof succeeds for the same head) and record a `proof-missing` boss note. Benign reasons
+count as no loss: `repo-proof-present` for the record; `not-parked`, `dry-run`, `not-configured`,
+`disabled` and `opted-out` for the page; and `fallback-disabled`, `dry-run` and `daemon-unsupported`
+for the check run. The sweep's mechanical posts pass `--proof-detach`. Their proof then runs as a
+separate `verify-gate.mjs proof --pr <n> --head <sha> --judge <file>` process, so the upload never
+spends the sweep's post budget.
 
 ## Area names
 

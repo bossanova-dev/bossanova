@@ -116,7 +116,7 @@ a.lk .loc{color:inherit}
 table.ac td.id{width:56px;max-width:56px;font:12px var(--mono);color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 table.ac td.st{width:1%;text-align:right}
 .ev{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
-.evc{font:12px var(--mono);color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 6px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.evc{font:12px var(--mono);color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 6px;max-width:100%}
 .evc code{background:none;border:0;padding:0;font-size:inherit;color:inherit}
 a.evc:hover{color:var(--accent-h);border-color:var(--accent-border)}
 .todos{border-top:1px solid var(--border)}

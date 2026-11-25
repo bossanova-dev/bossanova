@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "credential_devices.go",
         "remote.go",
+        "remote_setup_detect.go",
         "report.go",
         "review_queue.go",
         "session_labels.go",

@@ -68,7 +68,7 @@ var methodRoutes = map[string]route{
 	"GetReviewObservation":      routeRead,
 	"GetReviewInlineComments":   routeRead,
 	"BlockingThreadAuthors":     routeRead,
-	"FindPRCommentsWithMarker":  routeRead,
+	"FindPRCommentsWithMarker":  routeOperator, // repo-scoped installation tokens omit org members: read, hiding private org membership in author_association; conditional ETags keep unchanged polls free of user core quota
 	"ListOpenPRs":               routeRead,
 	"ListClosedPRs":             routeRead,
 	"SearchPRsByTitleTag":       routeRead,

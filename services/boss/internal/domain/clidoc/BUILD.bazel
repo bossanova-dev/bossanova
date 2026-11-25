@@ -6,6 +6,7 @@ go_library(
         "clidoc.go",
         "registry.go",
         "registry_chat.go",
+        "registry_show.go",
         "session_base_branch.go",
     ],
     importpath = "github.com/recurser/boss/internal/domain/clidoc",

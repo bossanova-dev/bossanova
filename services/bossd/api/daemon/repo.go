@@ -46,6 +46,8 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 	var setupScript *string
 	if msg.SetupScript != nil {
 		setupScript = msg.SetupScript
+	} else if msg.GetShouldDetectSetupScript() {
+		setupScript = s.detectedSetupScript(ctx, msg.LocalPath)
 	}
 
 	// Auto-detect origin URL from git config.
@@ -130,6 +132,8 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 	var setupScript *string
 	if msg.SetupScript != nil {
 		setupScript = msg.SetupScript
+	} else if msg.GetShouldDetectSetupScript() {
+		setupScript = s.detectedSetupScript(ctx, msg.LocalPath)
 	}
 
 	repo, err := s.repos.Create(ctx, domain.CreateRepoParams{

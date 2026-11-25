@@ -5,6 +5,7 @@ issue=
 plan=
 run_dir=
 run_id=
+target_root=
 allow_empty=0
 children=()
 while [ "$#" -gt 0 ]; do
@@ -15,6 +16,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --run-scratch) scratch=$2 ;; --issue) issue=$2 ;; --plan) plan=$2 ;;
     --run-dir) run_dir=$2 ;; --run-id) run_id=$2 ;; --child) children+=("$2") ;;
+    --target-root) target_root=$2 ;;
     *) exit 64 ;;
   esac
   shift 2
@@ -23,12 +25,14 @@ done
 prefix="$scratch/$issue"
 extra=()
 if [ "$allow_empty" = 1 ]; then extra+=(--allow-empty-original); fi
+guard_extra=()
+if [ -n "$target_root" ]; then guard_extra+=(--target-root "$target_root"); fi
 [ "${#children[@]}" -gt 0 ] || exit 64
 body="$prefix.epic-overview.md"
 node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$prefix.image-guard-orig.md" --rewritten "$prefix.attachment-guard-orig.md" --require-safe-source ${extra[@]+"${extra[@]}"}
 node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$prefix.attachment-guard-orig.md" --rewritten "$body" --require-verbatim --require-unsigned-uploads ${extra[@]+"${extra[@]}"}
 roots=$(git ls-tree --name-only HEAD | paste -sd, -)
-node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description "$body" --mode epic-parent --module-roots "$roots"
+node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description "$body" --mode epic-parent --module-roots "$roots" ${guard_extra[@]+"${guard_extra[@]}"}
 payload=$(node --input-type=module - "$scratch" "$issue" "${children[@]}" <<'NODE'
 import {existsSync, readFileSync} from 'node:fs'
 import {join} from 'node:path'

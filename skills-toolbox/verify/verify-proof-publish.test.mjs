@@ -10,7 +10,6 @@ import {
   discoverProofPublisher,
   proofPagesFor,
   readProofPages,
-  proofAfterPost,
   proofNote,
   recordHeadProof,
   uploadProofPage,
@@ -586,29 +585,6 @@ test('no failure inside the proof escapes it @sessions.AC248604', async () => {
     assert.deepEqual((await run({ overrides })).result, { recorded: false, reason: 'proof-failed' })
   const moved = await recordHeadProof({ judged: { ...judged, headSha: BASE }, headSha: HEAD }, {})
   assert.deepEqual(moved, { recorded: false, reason: 'judge-other-head' })
-})
-
-test('the proof follows only a landed verdict and only adds to its result @sessions.AC248604', async () => {
-  const ctx = { headSha: HEAD, repo: 'acme/widgets', pr: 7 }
-  const proof = { judged, detach: false }
-  const actions = { readOperatorMarkers: () => ({ readable: false }) }
-  const failed = { verdict: 'pass', posted: false, reason: 'status-post-failed' }
-  assert.equal(await proofAfterPost(ctx, proof, failed, actions), failed)
-  const landed = await proofAfterPost(ctx, proof, { verdict: 'pass', posted: true }, actions)
-  assert.deepEqual(landed, {
-    verdict: 'pass',
-    posted: true,
-    proof: { recorded: false, reason: 'comments-unreadable' },
-  })
-  const spawned = []
-  const detached = await proofAfterPost(
-    { ...ctx, pr: 7 },
-    { ...proof, detach: true, files: { judge: '/tmp/judge.json' } },
-    { verdict: 'pass', skipped: 'already-posted' },
-    { spawnProof: (input) => (spawned.push(input), { detached: true, log: '/tmp/log' }) },
-  )
-  assert.deepEqual(detached.proof, { detached: true, log: '/tmp/log' })
-  assert.equal(spawned[0].files.judge, '/tmp/judge.json')
 })
 
 function hook(root, name) {

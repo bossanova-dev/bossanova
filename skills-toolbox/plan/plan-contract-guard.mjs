@@ -50,6 +50,7 @@ import {
   resolveTargetContext,
   targetModuleRoots,
   targetRepoNotResolvedAdvisory,
+  targetRootMismatchViolation,
 } from './plan-target-repo.mjs'
 import {
   classifyCheckCommand,
@@ -1415,6 +1416,8 @@ export function checkPlanContract({
   violations.push(...checkUnmeasuredCountClaim(config, description))
   const advisories = [...commandVacuity.advisories]
   if (context.root === null) advisories.push(targetRepoNotResolvedAdvisory(context))
+  if (context.root === null && context.rootMismatch)
+    violations.push(targetRootMismatchViolation(context))
   // Since the attachment became the plan, its criteria and premises live in the plan FILE and the
   // description only points at it — so the same item-level checks must also read the plan, or every
   // one of them is dead at plan time. All of these codes are warnings; `ok` keeps its meaning.
@@ -1464,6 +1467,7 @@ export const BLOCKING_VIOLATION_CODES = new Set([
   'not-a-description',
   'placeholder-residue',
   'plan-file-residue',
+  'target-root-mismatch',
 ])
 
 /**

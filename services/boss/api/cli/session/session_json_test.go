@@ -429,3 +429,129 @@ func TestSessionDetailJSONVerifyOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionShowJSONCarriesEpicRoutingSignals(t *testing.T) {
+	verifySessionShowJSONCarriesEpicRoutingSignals(t)
+}
+
+func TestSessionShowJSONCarriesEpicRoutingSignals_Sessions_AC235402(t *testing.T) {
+	verifySessionShowJSONCarriesEpicRoutingSignals(t)
+}
+
+func verifySessionShowJSONCarriesEpicRoutingSignals(t *testing.T) {
+	t.Helper()
+	mergeableFalse := false
+	mergeableTrue := true
+	since := timestamppb.New(time.Date(2026, 11, 24, 7, 0, 0, 0, time.UTC))
+
+	populatedSession := &pb.Session{
+		Id:           "sess-populated",
+		DisplayLabel: "✓ ready",
+		PrMergeable:  &mergeableFalse,
+		MergeBlock: &pb.MergeBlock{
+			Gate:          pb.MergeBlock_GATE_CONFLICT,
+			Detail:        "PR has merge conflicts with main",
+			DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CONFLICT,
+		},
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED,
+			Summary:        "Agent requires login",
+			Since:          since,
+		},
+	}
+
+	reviewBlockedSession := &pb.Session{
+		Id:           "sess-review",
+		DisplayLabel: "changes requested",
+		PrMergeable:  &mergeableTrue,
+		MergeBlock: &pb.MergeBlock{
+			Gate:              pb.MergeBlock_GATE_REVIEW,
+			Detail:            "Changes requested by alice",
+			BlockingReviewers: []string{"alice", "bob"},
+			DisplayStatus:     pb.DisplayStatus_DISPLAY_STATUS_REJECTED,
+		},
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_REVIEW_REQUESTED,
+			Summary:        "Review requested",
+		},
+	}
+
+	for _, tt := range []struct {
+		name    string
+		session *pb.Session
+		want    map[string]string
+	}{
+		{
+			name:    "populated",
+			session: populatedSession,
+			want: map[string]string{
+				"display_label":    `"✓ ready"`,
+				"pr_mergeable":     `false`,
+				"merge_block":      `{"gate":"CONFLICT","detail":"PR has merge conflicts with main","blocking_reviewers":[],"display_status":"conflict"}`,
+				"attention_status": `{"needs_attention":true,"reason":"AGENT_AUTH_FAILED","summary":"Agent requires login","since":"2026-11-24T07:00:00Z"}`,
+			},
+		},
+		{
+			name:    "blocking_reviewers_populated",
+			session: reviewBlockedSession,
+			want: map[string]string{
+				"display_label":    `"changes requested"`,
+				"pr_mergeable":     `true`,
+				"merge_block":      `{"gate":"REVIEW","detail":"Changes requested by alice","blocking_reviewers":["alice","bob"],"display_status":"rejected"}`,
+				"attention_status": `{"needs_attention":true,"reason":"REVIEW_REQUESTED","summary":"Review requested","since":""}`,
+			},
+		},
+		{
+			name:    "absent",
+			session: &pb.Session{Id: "sess-absent"},
+			want: map[string]string{
+				"display_label":    `""`,
+				"pr_mergeable":     `null`,
+				"merge_block":      `null`,
+				"attention_status": `null`,
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(sessionShowJSON{
+				Session: newSessionDetailJSON(tt.session),
+			})
+			if err != nil {
+				t.Fatalf("json.Marshal(sessionShowJSON) error = %v", err)
+			}
+			var envelope struct {
+				Session map[string]json.RawMessage `json:"session"`
+			}
+			if err := json.Unmarshal(encoded, &envelope); err != nil {
+				t.Fatalf("json.Unmarshal(envelope) error = %v; encoded = %s", err, encoded)
+			}
+			for key, want := range tt.want {
+				got, ok := envelope.Session[key]
+				if !ok {
+					t.Fatalf("session missing key %q; encoded = %s", key, encoded)
+				}
+				if string(got) != want {
+					t.Fatalf("session.%s = %s, want %s", key, got, want)
+				}
+			}
+		})
+	}
+
+	t.Run("ls_row_omits_routing_fields", func(t *testing.T) {
+		encoded, err := json.Marshal(newSessionRowJSON(populatedSession))
+		if err != nil {
+			t.Fatalf("json.Marshal(newSessionRowJSON) error = %v", err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			t.Fatalf("json.Unmarshal(row) error = %v; encoded = %s", err, encoded)
+		}
+		for _, key := range []string{"display_label", "pr_mergeable", "merge_block", "attention_status"} {
+			if _, ok := fields[key]; ok {
+				t.Fatalf("boss ls --json row unexpectedly emitted %q: %s", key, encoded)
+			}
+		}
+	})
+}

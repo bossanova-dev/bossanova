@@ -139,29 +139,23 @@ export const bossSessionOperationMap = {
       'merge_block',
       'display_label',
     ],
-    // PARTIAL. `boss show --json` carries the lifecycle state (trimmed of its
-    // SESSION_STATE_ prefix, same vocabulary as the MCP enum) and
-    // `session.last_agent_activity_at`, plus `session.pr_number` /
-    // `session.pr_url` / `session.display_status` / `session.last_check_state` /
-    // `session.last_repair`. It still omits the remaining get_session routing
-    // signals, so those are named in missingResponse rather than left to read
-    // `undefined`: a CLI-mode run must detect auth death and
-    // conflict-after-green some other way (poll `session checks` for CI, treat
-    // an unreadable signal as not-settled) instead of silently routing on a
-    // missing field. A partial transport is still a transport, so getSession
-    // stays OUT of the degraded set.
+    // `boss show --json` carries every getSession routing signal under the
+    // `session.` envelope: lifecycle `state` (trimmed of its SESSION_STATE_
+    // prefix, same vocabulary as the MCP enum), `last_agent_activity_at`,
+    // `repair_active`, `attention_status.reason`, `pr_mergeable`,
+    // `merge_block`, and `display_label`, alongside `pr_number`, `pr_url`,
+    // `display_status`, `last_check_state`, and `last_repair`.
     cli: {
       cmd: 'boss',
       args: ['show', '<id>', '--json'],
-      response: ['session.state', 'session.last_agent_activity_at'],
-      // display_label absent ⇒ Ready reads absent and settling falls back to
-      // the IDLE/STOPPED rule (fail-safe).
-      missingResponse: [
-        'repair_active',
-        'attention_status.reason',
-        'pr_mergeable',
-        'merge_block',
-        'display_label',
+      response: [
+        'session.state',
+        'session.last_agent_activity_at',
+        'session.repair_active',
+        'session.attention_status.reason',
+        'session.pr_mergeable',
+        'session.merge_block',
+        'session.display_label',
       ],
     },
   },
@@ -586,11 +580,11 @@ export function bossCliDegradedCapabilities() {
  * "cannot do at all", this means "can do, but blind to these fields".
  *
  * It exists because reporting only `degraded` understated the cost of the CLI
- * transport. `getSession` is the live case: `boss show --json` works,
- * so the run reports ok, but it still lacks some routing signals the MCP
- * response carries — auth-death routing and conflict-after-green would
- * silently stop working if the CLI transport did not name the signals it is
- * flying without.
+ * transport whenever a CLI command existed without every MCP response field —
+ * callers would silently lose routing signals unless the partial transport
+ * named what it was flying without. Today every mapped CLI transport covers
+ * its full routing signal set, so this reports `[]` while keeping the shipped
+ * preflight contract intact for any future partial transport.
  *
  * Derived from the map rather than hand-kept, so a capability that later gains
  * a `missingResponse` is reported without editing a second list. Note the gate

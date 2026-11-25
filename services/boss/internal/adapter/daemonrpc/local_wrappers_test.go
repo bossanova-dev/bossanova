@@ -29,6 +29,16 @@ func (f *fakeDaemonRPC) ValidateRepoPath(_ context.Context, _ *connect.Request[p
 	})
 }
 
+func (f *fakeDaemonRPC) DetectSetupScript(_ context.Context, req *connect.Request[pb.DetectSetupScriptRequest]) (*connect.Response[pb.DetectSetupScriptResponse], error) {
+	return sessionResp(f, func() *pb.DetectSetupScriptResponse {
+		return &pb.DetectSetupScriptResponse{
+			SetupScript:    `{"type":"command","argv":["pnpm","install","--frozen-lockfile"]}`,
+			DisplayCommand: "pnpm install --frozen-lockfile",
+			Source:         req.Msg.GetLocalPath(),
+		}
+	})
+}
+
 func (f *fakeDaemonRPC) RegisterRepo(_ context.Context, _ *connect.Request[pb.RegisterRepoRequest]) (*connect.Response[pb.RegisterRepoResponse], error) {
 	return sessionResp(f, func() *pb.RegisterRepoResponse {
 		return &pb.RegisterRepoResponse{Repo: &pb.Repo{Id: "repo-1"}}
@@ -217,6 +227,10 @@ func TestLocalClientValueWrappers(t *testing.T) {
 		{"ValidateRepoPath", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.ValidateRepoPath(ctx, "/dir")
 			return err == nil && got.GetIsValid() && got.GetDefaultBranch() == "main", got == nil, err
+		}},
+		{"DetectSetupScript", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.DetectSetupScript(ctx, "/dir")
+			return err == nil && got.GetDisplayCommand() == "pnpm install --frozen-lockfile" && got.GetSource() == "/dir", got == nil, err
 		}},
 		{"RegisterRepo", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.RegisterRepo(ctx, &pb.RegisterRepoRequest{})

@@ -23,6 +23,7 @@ import {
   runDependencyScan,
   planIdempotencePrecheck,
   premiseDrift,
+  premiseVerdictDefects,
   reconcilePremiseAnnotations,
   validateDraftMetadata,
 } from './plan-run-guards.mjs'
@@ -2037,7 +2038,7 @@ function depsRepo() {
   return dir
 }
 
-function runDeps(dir, { payload = {}, rows, subject = 'TCK-1', outcomes, graph } = {}) {
+function runDeps(dir, { payload = {}, rows, subject = 'TCK-1', outcomes, graph, premises } = {}) {
   const payloadPath = path.join(dir, 'deps-in.json')
   const rowsPath = path.join(dir, 'candidates.json')
   writeFileSync(payloadPath, JSON.stringify(payload))
@@ -2047,6 +2048,11 @@ function runDeps(dir, { payload = {}, rows, subject = 'TCK-1', outcomes, graph }
     const graphPath = path.join(dir, 'graph.json')
     writeFileSync(graphPath, JSON.stringify(graph))
     args.push('--graph', graphPath)
+  }
+  if (premises !== undefined) {
+    const premisesPath = path.join(dir, 'premises.json')
+    writeFileSync(premisesPath, typeof premises === 'string' ? premises : JSON.stringify(premises))
+    args.push('--premises', premisesPath)
   }
   return spawnSync(process.execPath, args, {
     cwd: dir,
@@ -2746,4 +2752,278 @@ test('deps: links an Unplanned logical prerequisite and refuses an unfetched ver
   const refused = runDeps(dir, { rows, payload: { logicalDependencies: { 'TCK-99': true } } })
   assert.equal(refused.status, 1)
   assert.match(refused.stderr, /logical-dependency-not-fetched/)
+})
+
+const depsGraph = (rows) => ({
+  seeds: rows.map((row) => row.identifier),
+  maxNodes: 100,
+  complete: true,
+  nodes: rows.map((row) => ({
+    id: row.id,
+    identifier: row.identifier,
+    stateType: row.stateType,
+    parentId: null,
+    blocks: [],
+    blockedBy: [],
+    relationsComplete: true,
+  })),
+})
+
+test('deps: an open premise without a verdict is refused; blockedBy links and false accepts', () => {
+  const rows = [
+    depsRow(),
+    depsCandidate({
+      stateName: 'Todo',
+      stateType: 'unstarted',
+      source: 'id',
+      description: depsDescription(['- `app/ui/y.go`: edit the view']),
+    }),
+  ]
+  const base = {
+    rows,
+    graph: depsGraph(rows),
+    subjectId: 'TCK-1',
+    config: { ...DEFAULT_CONFIG, ...DEPS_CONFIG },
+    rootEntries: { dirs: ['app'], files: [] },
+    premises: [{ id: 'TCK-2', state: 'Todo' }],
+  }
+
+  const missing = runDependencyScan({ ...base, payload: {} })
+  assert.equal(missing.status, 'defects')
+  assert.deepEqual(missing.defects, [
+    {
+      code: 'premise-without-verdict',
+      id: 'TCK-2',
+      remedy:
+        'give TCK-2 a logicalDependencies verdict, or false when the plan cites it but does not need it first',
+    },
+  ])
+
+  const blocked = runDependencyScan({
+    ...base,
+    payload: {
+      logicalDependencies: { 'TCK-2': { direction: 'blockedBy', note: 'needs the store' } },
+    },
+  })
+  assert.equal(blocked.status, 'ok')
+  assert.equal(blocked.result.edges.length, 1)
+  assert.deepEqual(blocked.result.edges[0].write, { id: 'uuid-1', blockedBy: ['uuid-2'] })
+  assert.ok(blocked.result.notes.some((n) => n.reason === 'prerequisite-unplanned'))
+
+  const notNeeded = runDependencyScan({
+    ...base,
+    payload: { logicalDependencies: { 'TCK-2': false } },
+  })
+  assert.equal(notNeeded.status, 'ok')
+  assert.equal(notNeeded.result.edges.length, 0)
+})
+
+test('deps: an unfetched premise needs a fetch unless marked false', () => {
+  const base = {
+    rows: [depsRow()],
+    subjectId: 'TCK-1',
+    config: { ...DEFAULT_CONFIG, ...DEPS_CONFIG },
+    rootEntries: { dirs: ['app'], files: [] },
+    premises: [{ id: 'TCK-99', state: 'Todo' }],
+  }
+
+  const missing = runDependencyScan({ ...base, payload: {} })
+  assert.equal(missing.status, 'defects')
+  assert.deepEqual(missing.defects, [
+    {
+      code: 'premise-without-verdict',
+      id: 'TCK-99',
+      remedy:
+        'fetch TCK-99 with fetch-candidates --id, then give it a logicalDependencies verdict, or false when the plan cites it but does not need it first',
+    },
+  ])
+
+  const notNeeded = runDependencyScan({
+    ...base,
+    payload: { logicalDependencies: { 'TCK-99': false } },
+  })
+  assert.equal(notNeeded.status, 'ok')
+  assert.equal(notNeeded.result.edges.length, 0)
+})
+
+test('deps: cleared, canceled, landed and subject premises need no verdict', () => {
+  const scanWith = (candidateOver, premises = [{ id: 'TCK-2', state: 'Todo' }]) =>
+    runDependencyScan({
+      payload: {},
+      rows: [
+        depsRow(),
+        depsCandidate({
+          source: 'id',
+          description: depsDescription(['- `app/ui/y.go`: edit']),
+          ...candidateOver,
+        }),
+      ],
+      subjectId: 'TCK-1',
+      config: { ...DEFAULT_CONFIG, ...DEPS_CONFIG },
+      rootEntries: { dirs: ['app'], files: [] },
+      premises,
+    })
+
+  assert.equal(scanWith({ stateName: 'Done', stateType: 'completed' }).status, 'ok')
+  assert.equal(scanWith({ stateName: 'Canceled', stateType: 'canceled' }).status, 'ok')
+  assert.equal(
+    scanWith({ stateName: 'In Review', stateType: 'started', landed: { evidence: 'PR #42' } })
+      .status,
+    'ok',
+  )
+  // Blank landed evidence does not clear an open premise.
+  assert.equal(
+    scanWith({ stateName: 'In Review', stateType: 'started', landed: { evidence: '   ' } }).status,
+    'defects',
+  )
+  // Subject named by identifier, uuid or padded case needs no verdict.
+  for (const id of ['TCK-1', 'uuid-1', ' tck-1 ']) {
+    assert.equal(scanWith({ stateName: 'Todo', stateType: 'unstarted' }, [{ id }]).status, 'ok', id)
+  }
+  // Direct helper checks: nested state.type and subject matched through the candidate row.
+  assert.deepEqual(
+    premiseVerdictDefects({
+      premises: [{ id: 'uuid-1' }, { id: 'TCK-2' }],
+      rows: [
+        { id: 'uuid-1', identifier: 'TCK-1', stateType: 'unstarted' },
+        { id: 'uuid-2', identifier: 'TCK-2', state: { type: 'completed' } },
+      ],
+      logicalDependencies: {},
+      subject: { identifier: 'TCK-1' },
+    }),
+    [],
+  )
+})
+
+test('deps: verdict keys match premises case-insensitively and across uuid and identifier', () => {
+  const rows = [
+    depsRow(),
+    depsCandidate({
+      stateName: 'Todo',
+      stateType: 'unstarted',
+      source: 'id',
+      description: depsDescription(['- `app/ui/y.go`: edit']),
+    }),
+  ]
+  for (const [premiseId, logicalDependencies, expectedEdges] of [
+    ['TCK-2', { 'tck-2': false }, 0],
+    ['TCK-2', { ' TCK-2 ': true }, 1],
+    ['TCK-2', { 'uuid-2': false }, 0],
+    ['TCK-2', { 'UUID-2': { direction: 'blockedBy', note: 'needed' } }, 1],
+    ['uuid-2', { 'TCK-2': false }, 0],
+    ['uuid-2', { 'tck-2': true }, 1],
+  ]) {
+    const res = runDependencyScan({
+      payload: { logicalDependencies },
+      rows,
+      graph: depsGraph(rows),
+      subjectId: 'TCK-1',
+      config: { ...DEFAULT_CONFIG, ...DEPS_CONFIG },
+      rootEntries: { dirs: ['app'], files: [] },
+      premises: [{ id: premiseId }],
+    })
+    assert.equal(res.status, 'ok', JSON.stringify([premiseId, logicalDependencies]))
+    assert.equal(res.result.edges.length, expectedEdges)
+  }
+})
+
+test('deps: malformed premises are refused and scan-input defects run before premise checks', () => {
+  const base = {
+    payload: {},
+    rows: [depsRow(), depsCandidate({ stateName: 'Todo', stateType: 'unstarted', source: 'id' })],
+    subjectId: 'TCK-1',
+    config: { ...DEFAULT_CONFIG, ...DEPS_CONFIG },
+    rootEntries: { dirs: ['app'], files: [] },
+  }
+  for (const bad of [
+    null,
+    {},
+    'TCK-2',
+    42,
+    [null],
+    ['TCK-2'],
+    [[]],
+    [{}],
+    [{ id: '' }],
+    [{ id: '   ' }],
+    [{ id: 123 }],
+  ]) {
+    const refused = runDependencyScan({ ...base, premises: bad })
+    assert.equal(refused.status, 'refused', JSON.stringify(bad))
+    assert.deepEqual(
+      refused.refusals.map((r) => r.code),
+      ['premises-not-premise-list'],
+    )
+    assert.match(refused.refusals[0].message, /premises/i)
+  }
+
+  // Without premises, the scan is unchanged.
+  assert.equal(runDependencyScan(base).status, 'ok')
+
+  // Input validation runs before premiseVerdictDefects.
+  const inputDefectFirst = runDependencyScan({
+    ...base,
+    payload: { declaredRelatedIds: ['TCK-77'] },
+    premises: [{ id: 'TCK-2' }],
+  })
+  assert.equal(inputDefectFirst.status, 'defects')
+  assert.deepEqual(
+    inputDefectFirst.defects.map((d) => d.code),
+    ['declared-related-not-fetched'],
+  )
+})
+
+test('deps CLI: --premises refuses missing verdicts on stderr with empty stdout and accepts verdicts', (t) => {
+  const dir = depsRepo()
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const rows = [
+    depsRow(),
+    depsCandidate({
+      stateName: 'Todo',
+      stateType: 'unstarted',
+      source: 'id',
+      description: depsDescription(['- `app/ui/y.go`: edit']),
+    }),
+  ]
+  const outcomes = path.join(dir, 'outcomes.tsv')
+
+  const fetchedMissing = runDeps(dir, {
+    rows,
+    premises: [{ id: 'TCK-2', state: 'Todo' }],
+    outcomes,
+  })
+  assert.equal(fetchedMissing.status, 1)
+  assert.equal(fetchedMissing.stdout, '')
+  assert.match(fetchedMissing.stderr, /^premise-without-verdict TCK-2 give /m)
+  assert.deepEqual(recordedOutcomes(outcomes), [
+    ['plan-run-guards.deps', 'fire', 'scan-input-defect'],
+  ])
+
+  const unfetchedMissing = runDeps(dir, {
+    rows: [depsRow()],
+    premises: [{ id: 'TCK-99', state: 'Todo' }],
+  })
+  assert.equal(unfetchedMissing.status, 1)
+  assert.equal(unfetchedMissing.stdout, '')
+  assert.match(unfetchedMissing.stderr, /^premise-without-verdict TCK-99 fetch /m)
+
+  const malformed = runDeps(dir, { rows, premises: { id: 'TCK-2' } })
+  assert.equal(malformed.status, 1)
+  assert.equal(malformed.stdout, '')
+  assert.match(malformed.stderr, /premises-not-premise-list/)
+
+  const accepted = runDeps(dir, {
+    rows,
+    premises: [{ id: 'TCK-2', state: 'Todo' }],
+    payload: { logicalDependencies: { 'TCK-2': false } },
+  })
+  assert.equal(accepted.status, 0, accepted.stderr)
+  assert.equal(JSON.parse(accepted.stdout).edges.length, 0)
+
+  const usage = spawnSync(process.execPath, [GUARD, 'deps', 'a.json', 'b.json'], {
+    cwd: dir,
+    encoding: 'utf8',
+  })
+  assert.equal(usage.status, 2)
+  assert.match(usage.stderr, /\[--premises <file>\]/)
 })

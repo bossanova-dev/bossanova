@@ -4,7 +4,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { runCli } from './cli.mjs'
-import { linearReadIssueSnapshot } from './linear-issue-snapshot.mjs'
+import { bucketLinearRelations, linearReadIssueSnapshot } from './linear-issue-snapshot.mjs'
 const issue = {
   id: 'uuid',
   identifier: 'APP-1',
@@ -116,4 +116,110 @@ test('invalid id and credentials fail before network', async () => {
     code: 'TRACKER_CREDENTIALS_MISSING',
   })
   assert.equal(calls, 0)
+})
+const relationState = { name: 'Todo', type: 'unstarted' }
+const relatedTarget = (identifier, extra = {}) => ({
+  id: `uuid-${identifier}`,
+  identifier,
+  state: relationState,
+  ...extra,
+})
+const connection = (nodes = [], hasNextPage = false) => ({ nodes, pageInfo: { hasNextPage } })
+test('attaches complete normalized relations and deduplicates by uuid', async () => {
+  const snapshot = await linearReadIssueSnapshot(
+    options({
+      ...issue,
+      relations: connection([
+        { type: 'blocks', relatedIssue: relatedTarget('APP-2') },
+        { type: 'blocks', relatedIssue: relatedTarget('APP-2') },
+        { type: 'related', relatedIssue: relatedTarget('APP-4') },
+        { type: 'duplicate', relatedIssue: { id: 'uuid-dup' } },
+      ]),
+      inverseRelations: connection([
+        { type: 'blocks', issue: relatedTarget('APP-3') },
+        { type: 'blocks', issue: relatedTarget('APP-3') },
+        { type: 'related', issue: relatedTarget('APP-4') },
+        { type: 'related', issue: relatedTarget('APP-5') },
+      ]),
+    }),
+  )
+  assert.deepEqual(snapshot.relations, {
+    blockedBy: [{ id: 'APP-3', identifier: 'APP-3', uuid: 'uuid-APP-3', state: relationState }],
+    blocks: [{ id: 'APP-2', identifier: 'APP-2', uuid: 'uuid-APP-2', state: relationState }],
+    relatedTo: [
+      { id: 'APP-4', identifier: 'APP-4', uuid: 'uuid-APP-4', state: relationState },
+      { id: 'APP-5', identifier: 'APP-5', uuid: 'uuid-APP-5', state: relationState },
+    ],
+  })
+  const empty = await linearReadIssueSnapshot(
+    options({
+      ...issue,
+      relations: connection([]),
+      inverseRelations: connection([]),
+    }),
+  )
+  assert.deepEqual(empty.relations, { blockedBy: [], blocks: [], relatedTo: [] })
+  assert.deepEqual(
+    bucketLinearRelations({
+      relations: connection([{ type: 'blocks', relatedIssue: relatedTarget('APP-2') }]),
+      inverseRelations: connection([{ type: 'blocks', issue: relatedTarget('APP-3') }]),
+    }),
+    {
+      ok: true,
+      relations: {
+        blockedBy: [{ id: 'APP-3', identifier: 'APP-3', uuid: 'uuid-APP-3', state: relationState }],
+        blocks: [{ id: 'APP-2', identifier: 'APP-2', uuid: 'uuid-APP-2', state: relationState }],
+        relatedTo: [],
+      },
+    },
+  )
+})
+test('omits relations without throwing when connections or targets are incomplete', async () => {
+  const expectedBase = {
+    id: 'APP-1',
+    identifier: 'APP-1',
+    uuid: 'uuid',
+    title: 'title',
+    description: issue.description,
+    status: 'Planned',
+    state: issue.state,
+    team: 'Team',
+    labels: ['agent-build', 'epic'],
+    attachments: issue.attachments.nodes,
+  }
+  const cases = [
+    {
+      relations: connection([{ type: 'blocks', relatedIssue: relatedTarget('APP-2') }]),
+      inverseRelations: connection([], true),
+    },
+    {
+      relations: connection([], true),
+      inverseRelations: connection([{ type: 'blocks', issue: relatedTarget('APP-3') }]),
+    },
+    {
+      relations: { nodes: null, pageInfo: { hasNextPage: false } },
+      inverseRelations: connection([]),
+    },
+    {
+      relations: connection([
+        { type: 'blocks', relatedIssue: relatedTarget('APP-2', { state: { name: 'Todo' } }) },
+      ]),
+      inverseRelations: connection([]),
+    },
+    {
+      relations: connection([]),
+      inverseRelations: connection([
+        { type: 'blocks', issue: relatedTarget('APP-3', { state: { type: 'unstarted' } }) },
+      ]),
+    },
+    {
+      relations: connection([null]),
+      inverseRelations: connection([]),
+    },
+  ]
+  for (const extra of cases) {
+    const snapshot = await linearReadIssueSnapshot(options({ ...issue, ...extra }))
+    assert.equal(Object.hasOwn(snapshot, 'relations'), false)
+    assert.deepEqual(snapshot, expectedBase)
+  }
 })

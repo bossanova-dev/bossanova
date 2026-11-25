@@ -13,7 +13,7 @@ const issue = 'TCK-1'
 const description =
   '## Summary\n\nPersist premise verdicts across independent planning shells and preserve guard behavior.\n\n## Original notes\n\nKeep original context and enough implementation detail for a substantive saved description.\n'
 
-function fixture(t) {
+function fixture(t, shell = 'bash') {
   const dir = tempDir('plan-phase4-5-')
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
   mkdirSync(join(dir, 'app'))
@@ -49,11 +49,18 @@ function fixture(t) {
     put(suffix, description)
   put('premises.json', '[]')
   put('premise-states.json', '{}')
+  const env = { ...process.env, BOSS_GATE_OUTCOME_FILE: join(dir, 'outcomes.tsv') }
+  if (shell === '/bin/bash') {
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    symlinkSync(shell, join(bin, 'bash'))
+    env.PATH = `${bin}:${process.env.PATH}`
+  }
   const run = (step, ...args) =>
-    spawnSync('bash', [runner, step, '--run-scratch', dir, '--issue', issue, ...args], {
+    spawnSync(shell, [runner, step, '--run-scratch', dir, '--issue', issue, ...args], {
       encoding: 'utf8',
       cwd: dir,
-      env: { ...process.env, BOSS_GATE_OUTCOME_FILE: join(dir, 'outcomes.tsv') },
+      env,
     })
   const planArgs = ['--plan', file('plan.md')]
   return { dir, file, put, run, planArgs }
@@ -311,6 +318,187 @@ test('deps: subject-description-stale refuses stale rows and skips an absent fin
   }
 })
 
+test('deps: passes premises.json when present and skips it when absent', (t) => {
+  const f = fixture(t)
+  const subjectRow = {
+    source: 'id',
+    id: 'uuid-1',
+    identifier: issue,
+    title: 'Work',
+    description,
+    stateName: 'Planned',
+    stateType: 'unstarted',
+    parentId: null,
+    labels: [],
+  }
+  const openPremiseRow = {
+    source: 'id',
+    id: 'uuid-2',
+    identifier: 'TCK-2',
+    title: 'Open premise',
+    description: '',
+    stateName: 'Unplanned',
+    stateType: 'backlog',
+    parentId: null,
+    labels: [],
+  }
+  f.put('candidates.json', JSON.stringify([subjectRow, openPremiseRow]))
+  f.put(
+    'premises.json',
+    JSON.stringify([
+      { id: 'TCK-2', state: 'Unplanned' },
+      { id: 'TCK-3', state: 'Todo' },
+    ]),
+  )
+
+  f.put('deps-in.json', '{}')
+  const missingVerdict = f.run('deps')
+  assert.equal(missingVerdict.status, 1, missingVerdict.stderr)
+  assert.match(missingVerdict.stderr, /premise-without-verdict\s+TCK-2\b/)
+  assert.match(missingVerdict.stderr, /premise-without-verdict\s+TCK-3\b/)
+  assert.equal(existsSync(f.file('deps-in.json')), false)
+
+  f.put('deps-in.json', JSON.stringify({ logicalDependencies: { 'TCK-2': false, 'TCK-3': false } }))
+  const falseVerdict = f.run('deps')
+  assert.equal(falseVerdict.status, 0, falseVerdict.stderr)
+  assert.equal(existsSync(f.file('deps-in.json')), false)
+
+  rmSync(f.file('premises.json'), { force: true, maxRetries: 5 })
+  f.put('deps-in.json', '{}')
+  const absent = f.run('deps')
+  assert.equal(absent.status, 0, absent.stderr)
+  assert.equal(existsSync(f.file('deps-in.json')), false)
+})
+
+test('deps: fetch-blocker-graph seeds only active logicalDependencies verdicts', (t) => {
+  const f = fixture(t)
+  const fake = join(f.dir, 'deps-toolbox')
+  mkdirSync(join(fake, 'tracker'), { recursive: true })
+  mkdirSync(join(fake, 'plan'), { recursive: true })
+  symlinkSync(join(toolbox, 'plan/run-steps'), join(fake, 'plan/run-steps'), 'dir')
+  symlinkSync(join(toolbox, 'plan/plan-run-guards.mjs'), join(fake, 'plan/plan-run-guards.mjs'))
+  const callsPath = join(f.dir, 'fetch-calls.json')
+  const graphNode = (id, identifier, stateType) => ({
+    id,
+    identifier,
+    stateType,
+    parentId: null,
+    blockedBy: [],
+    blocks: [],
+    relationsComplete: true,
+  })
+  const graphNodes = {
+    [issue]: graphNode('uuid-1', issue, 'unstarted'),
+    'TCK-2': graphNode('uuid-2', 'TCK-2', 'backlog'),
+    'TCK-4': graphNode('uuid-4', 'TCK-4', 'backlog'),
+    'TCK-5': graphNode('uuid-5', 'TCK-5', 'backlog'),
+  }
+  writeFileSync(
+    join(fake, 'tracker/cli.mjs'),
+    `import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+const args = process.argv.slice(2)
+const calls = existsSync(${JSON.stringify(callsPath)})
+  ? JSON.parse(readFileSync(${JSON.stringify(callsPath)}, 'utf8'))
+  : []
+calls.push(args)
+writeFileSync(${JSON.stringify(callsPath)}, JSON.stringify(calls))
+const ids = []
+for (let i = 0; i < args.length; i++) if (args[i] === '--id') ids.push(args[i + 1])
+const known = ${JSON.stringify(graphNodes)}
+const nodes = []
+for (const id of ids) {
+  if (!Object.hasOwn(known, id)) process.exit(2)
+  nodes.push(known[id])
+}
+writeFileSync(
+  args[args.indexOf('--out-file') + 1],
+  JSON.stringify({ seeds: ids, maxNodes: 100, complete: true, nodes }),
+)
+`,
+  )
+  const runDeps = () =>
+    spawnSync(
+      'bash',
+      [join(fake, 'plan/run-steps/deps.sh'), '--run-scratch', f.dir, '--issue', issue],
+      {
+        encoding: 'utf8',
+        cwd: f.dir,
+        env: {
+          ...process.env,
+          BOSS_PLAN_TOOLBOX: fake,
+          BOSS_GATE_OUTCOME_FILE: join(f.dir, 'outcomes.tsv'),
+        },
+      },
+    )
+  const makeRow = (id, identifier, title, stateName, stateType, desc = '') => ({
+    source: 'id',
+    id,
+    identifier,
+    title,
+    description: desc,
+    stateName,
+    stateType,
+    parentId: null,
+    labels: [],
+  })
+  f.put(
+    'candidates.json',
+    JSON.stringify([
+      makeRow('uuid-1', issue, 'Work', 'Todo', 'unstarted', description),
+      makeRow('uuid-2', 'TCK-2', 'Prereq', 'Backlog', 'backlog'),
+      makeRow('uuid-4', 'TCK-4', 'Schema prereq', 'Backlog', 'backlog'),
+      makeRow('uuid-5', 'TCK-5', 'Downstream work', 'Backlog', 'backlog'),
+    ]),
+  )
+  f.put(
+    'premises.json',
+    JSON.stringify([
+      { id: 'TCK-2', state: 'Backlog' },
+      { id: 'TCK-3', state: 'Todo' },
+    ]),
+  )
+
+  f.put('deps-in.json', JSON.stringify({ logicalDependencies: { 'TCK-2': false, 'tck-3': false } }))
+  const allFalse = runDeps()
+  assert.equal(allFalse.status, 0, allFalse.stderr)
+  assert.doesNotMatch(allFalse.stderr, /cycle safety could not be evaluated/)
+  assert.equal(existsSync(callsPath), false)
+
+  f.put(
+    'deps-in.json',
+    JSON.stringify({
+      logicalDependencies: {
+        'TCK-2': true,
+        'TCK-4': 'needs schema',
+        'TCK-5': { direction: 'blocks', note: 'subject lands first' },
+        'tck-3': false,
+      },
+    }),
+  )
+  const mixed = runDeps()
+  assert.equal(mixed.status, 0, mixed.stderr)
+  assert.doesNotMatch(mixed.stderr, /cycle safety could not be evaluated/)
+  const calls = JSON.parse(readFileSync(callsPath, 'utf8'))
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], 'fetch-blocker-graph')
+  const seeded = calls[0].flatMap((arg, i) => (arg === '--id' ? [calls[0][i + 1]] : []))
+  assert.deepEqual(seeded, [issue, 'TCK-2', 'TCK-4', 'TCK-5'])
+  const out = JSON.parse(mixed.stdout)
+  assert.equal(out.screen?.accepted, 3)
+  assert.equal(
+    out.edges.some((e) => e.write?.id === 'uuid-1' && e.write.blockedBy.includes('uuid-2')),
+    true,
+  )
+  assert.equal(
+    out.edges.some((e) => e.write?.id === 'uuid-1' && e.write.blockedBy.includes('uuid-4')),
+    true,
+  )
+  assert.equal(
+    out.edges.some((e) => e.write?.id === 'uuid-5' && e.write.blockedBy.includes('uuid-1')),
+    true,
+  )
+})
+
 test('premise-repass: records changed annotation and merges the existing report', (t) => {
   const f = fixture(t)
   f.put('premises.json', JSON.stringify([{ id: 'TCK-2', state: 'Todo' }]))
@@ -340,3 +528,54 @@ for (const rc of [0, 7]) {
     assert.match(drift.stderr, /do NOT rewrite/)
   })
 }
+
+function addOrigin(dir, repo) {
+  const r = spawnSync('git', ['remote', 'add', 'origin', `https://github.com/acme/${repo}.git`], {
+    cwd: dir,
+    encoding: 'utf8',
+  })
+  assert.equal(r.status, 0, r.stderr)
+}
+
+function targetRepoFixture(t, repo) {
+  const dir = tempDir('plan-target-root-')
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
+  const init = spawnSync('git', ['init', '-q'], { cwd: dir, encoding: 'utf8' })
+  assert.equal(init.status, 0, init.stderr)
+  addOrigin(dir, repo)
+  return dir
+}
+
+test('contract-gate: forwards --target-root, passes matching root, and cleans sensitive copies on mismatch', (t) => {
+  const f = fixture(t, '/bin/bash')
+  addOrigin(f.dir, 'local')
+  const foreignDescription = description.replace(
+    '## Original notes',
+    '## Planning\n\n- Target repo: acme/target\n\n## Original notes',
+  )
+  f.put('image-guard-new.md', foreignDescription)
+  f.put('plan.md', foreignDescription)
+  const matching = targetRepoFixture(t, 'target')
+  const mismatched = targetRepoFixture(t, 'other')
+
+  const good = f.run('contract-gate', ...f.planArgs, '--target-root', matching)
+  assert.equal(good.status, 0, good.stderr)
+  assert.doesNotMatch(good.stderr, /target-repo-not-resolved/)
+  for (const suffix of ['image-guard-orig.md', 'attachment-guard-orig.md', 'image-guard-new.md'])
+    assert.equal(existsSync(f.file(suffix)), true)
+
+  const bad = f.run('contract-gate', ...f.planArgs, '--target-root', mismatched)
+  assert.equal(bad.status, 1, bad.stderr)
+  assert.match(bad.stderr, /target-root-mismatch/)
+  assert.match(bad.stderr, /plan-contract gate failed/)
+  for (const suffix of ['image-guard-orig.md', 'attachment-guard-orig.md', 'image-guard-new.md'])
+    assert.equal(existsSync(f.file(suffix)), false)
+})
+
+test('contract-gate: rejects dangling or empty --target-root with exit 64', (t) => {
+  const f = fixture(t, '/bin/bash')
+  assert.equal(f.run('contract-gate', ...f.planArgs, '--target-root').status, 64)
+  assert.equal(f.run('contract-gate', ...f.planArgs, '--target-root', '').status, 64)
+  for (const suffix of ['image-guard-orig.md', 'attachment-guard-orig.md', 'image-guard-new.md'])
+    assert.equal(existsSync(f.file(suffix)), true)
+})

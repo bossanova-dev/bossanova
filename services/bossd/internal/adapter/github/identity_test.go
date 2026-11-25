@@ -290,6 +290,41 @@ func TestMergeStrategiesAreReadOnTheUserLogin(t *testing.T) {
 	}
 }
 
+// GitHub hides private organization membership in author_association for a
+// repo-scoped installation token without org members: read, returning
+// CONTRIBUTOR or NONE instead of MEMBER and causing evidence.Reader to drop
+// proof comments posted by private org members. Reading comments on the
+// operator's login preserves MEMBER while conditional ETags keep unchanged
+// polls free of user core quota.
+func TestFindPRCommentsWithMarkerReadsOnTheUserLogin(t *testing.T) {
+	t.Parallel()
+	const head = "1ee2bf6574ab67092b0305bb5e5a6fea7151f263"
+	const page = "https://proof.example.test/org/repo/7441/" + head + "/index.html"
+	proofBody := `<details>\n<summary>Not verified</summary>\n\n[Full page](` + page + `)\n\n</details>\n\n<!-- boss-proof: {\"schema\":\"boss-proof/1\",\"head\":\"` + head + `\",\"page\":\"` + page + `\",\"level\":\"low\",\"asks\":[\"housekeeping\",\"other\"],\"loweredBy\":[\"It changes areas a person reviews.\"],\"digest\":\"sha256:9df2fc31fff011b6a08b31d5e282cdb4414954b9bf3d918eb570d83e90403388\"} -->\n\n<!-- boss-proof-note head=` + head + ` digest=0373eef95d5a38ab -->`
+	gh := &tokenGH{reply: func(_ []string, token string) (string, error) {
+		assoc := "MEMBER"
+		if token != "" {
+			// Repo-scoped installation token without org members: read hides
+			// private org membership.
+			assoc = "CONTRIBUTOR"
+		}
+		return `[{"id":7128617606,"user":{"login":"octocat"},"author_association":"` + assoc + `","created_at":"2026-11-24T10:19:20Z","updated_at":"2026-11-24T10:19:20Z","body":"` + proofBody + `"}]`, nil
+	}}
+	p := newRoutedProvider(gh, installationSource(map[string]string{"issues": "read", "pull_requests": "read"}))
+	got, err := p.FindPRCommentsWithMarker(context.Background(), testOrigin, 7441, "<!-- boss-")
+	if err != nil {
+		t.Fatalf("FindPRCommentsWithMarker: %v", err)
+	}
+	if len(got) != 1 || got[0].AuthorAssociation != "MEMBER" {
+		t.Fatalf("comments = %+v, want 1 comment with AuthorAssociation=MEMBER from the user login", got)
+	}
+	for _, c := range gh.snapshot() {
+		if c.token != "" {
+			t.Fatalf("gh %v ran with the installation token", c.args)
+		}
+	}
+}
+
 func TestNonGitHubReposUseTheUserLogin(t *testing.T) {
 	t.Parallel()
 	gh := &tokenGH{}

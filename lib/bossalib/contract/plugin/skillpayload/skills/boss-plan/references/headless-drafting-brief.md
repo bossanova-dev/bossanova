@@ -213,7 +213,11 @@ checks it). Some things help the implementer and the guards:
 
 The plan is visible to everyone with access to the ticket. Write no secrets, tokens, credentials,
 connection strings, private keys, cookies, internal hostnames/IPs or customer PII — including in
-`## Original notes`. Reference where a value lives (`[REDACTED: repo-root .env]`) instead.
+`## Original notes`. Reference where a value lives (`[REDACTED: repo-root .env]`) instead. Never
+copy a hostname, IP or machine name from a sibling or candidate ticket, a comment, a source note or
+a repo file into an artifact; name the role ("the build host") or use a placeholder.
+`plan-secret-scan.mjs` flags `internal-hostname` for private-use suffixes; a clean scan is not proof
+of absence, and the manual read still covers names outside that set.
 
 ## Step 7 — The description
 
@@ -266,9 +270,10 @@ matters.
 
 ## Step 8 — Verify, then write the sentinel
 
-For a declared foreign target, pass `--target-root <checkout>` to `plan-contract-guard.mjs` when a
-matching checkout exists; without one it prints one `target-repo-not-resolved` advisory in place of
-per-path warnings.
+For a declared foreign target, pass `--target-root <checkout>` to the `draft-verify` or
+`epic-verify` runner step when a matching checkout exists; a root whose origin differs from the
+declaration blocks the write (`target-root-mismatch`), while omitting the flag prints one
+`target-repo-not-resolved` advisory in place of per-path warnings.
 
 Write a redacted, signature-stripped copy of the snapshot to
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md`. Fix anything either guard
@@ -339,8 +344,9 @@ A sibling split adds `siblings`, the other parts the orchestrator files under th
 }
 ```
 
-`key` is `[a-z0-9-]{1,40}` and unique; `estimate` is 1–3; `blockedBy` names `source` or another
-key, acyclic; `blocks` lists existing issue ids that depend on that part. Omit `siblings` otherwise.
+`key` is `[a-z0-9-]{1,40}` and unique; `estimate` is 1–3; `blockedBy` names `source`, another key
+or an existing issue identifier, acyclic; `blocks` lists existing issue ids that depend on that
+part. Omit `siblings` otherwise.
 
 Epic runs return instead:
 

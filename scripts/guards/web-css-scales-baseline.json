@@ -34,12 +34,6 @@
   "services/web/src/features/cron/components/CronJobForm.css": {
     "size": 1
   },
-  "services/web/src/features/sessions/components/NewChatComposer.css": {
-    "size": 3
-  },
-  "services/web/src/features/sessions/components/NewSessionComposer.css": {
-    "size": 2
-  },
   "services/web/src/features/sessions/components/ProofFrame.css": {
     "size": 2
   },

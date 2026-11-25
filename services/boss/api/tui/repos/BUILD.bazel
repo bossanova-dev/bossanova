@@ -4,6 +4,7 @@ go_library(
     name = "repos",
     srcs = [
         "repo_add.go",
+        "repo_add_detect.go",
         "repo_client.go",
         "repo_list.go",
         "repo_routing.go",
@@ -28,6 +29,7 @@ go_library(
         "@land_charm_bubbletea_v2//:bubbletea",
         "@land_charm_huh_v2//:huh",
         "@land_charm_lipgloss_v2//:lipgloss",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -36,6 +38,7 @@ go_test(
     srcs = [
         "helpers_test.go",
         "mouse_phases_test.go",
+        "repo_add_detect_test.go",
         "repo_add_render_test.go",
         "repo_add_test.go",
         "repo_list_test.go",

@@ -436,3 +436,107 @@ test('epic-reverify-bundle reads the saved draft payload before building its bun
   assert.equal(failed.status, 21)
   assert.equal(failed.stdout, '')
 })
+
+function addOrigin(dir, repo) {
+  const r = spawnSync('git', ['remote', 'add', 'origin', `https://github.com/acme/${repo}.git`], {
+    cwd: dir,
+    encoding: 'utf8',
+  })
+  assert.equal(r.status, 0, r.stderr)
+}
+
+function targetRepoFixture(t, repo) {
+  const dir = tempDir('plan-target-root-')
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
+  const init = spawnSync('git', ['init', '-q'], { cwd: dir, encoding: 'utf8' })
+  assert.equal(init.status, 0, init.stderr)
+  addOrigin(dir, repo)
+  return dir
+}
+
+const foreignDescription = description.replace(
+  '## Original notes',
+  '## Planning\n\n- Target repo: acme/target\n\n## Original notes',
+)
+
+test('draft-verify forwards --target-root, stays advisory without it, and blocks mismatch', (t) => {
+  const f = fixture(t, '/bin/bash')
+  addOrigin(f.dir, 'local')
+  f.put('description.md', foreignDescription)
+  f.put('plan.md', foreignDescription)
+  const matching = targetRepoFixture(t, 'target')
+  const mismatched = targetRepoFixture(t, 'other')
+  const base = [...f.args, '--plan', f.file('plan.md'), '--estimate', '3']
+
+  const bad = f.run('draft-verify', ...base, '--target-root', mismatched)
+  assert.notEqual(bad.status, 0)
+  assert.match(bad.stderr, /target-root-mismatch/)
+  assert.equal(JSON.parse(f.sentinel().stdout).status, 'missing')
+
+  const good = f.run('draft-verify', ...base, '--target-root', matching)
+  assert.equal(good.status, 0, good.stderr)
+  assert.doesNotMatch(good.stderr, /target-repo-not-resolved/)
+  assert.equal(JSON.parse(f.sentinel().stdout).kind, 'ok')
+
+  const fNoFlag = fixture(t, '/bin/bash')
+  addOrigin(fNoFlag.dir, 'local')
+  fNoFlag.put('description.md', foreignDescription)
+  fNoFlag.put('plan.md', foreignDescription)
+  const advisory = fNoFlag.run(
+    'draft-verify',
+    ...fNoFlag.args,
+    '--plan',
+    fNoFlag.file('plan.md'),
+    '--estimate',
+    '3',
+  )
+  assert.equal(advisory.status, 0, advisory.stderr)
+  assert.match(advisory.stderr, /target-repo-not-resolved/)
+  assert.equal(JSON.parse(fNoFlag.sentinel().stdout).kind, 'ok')
+})
+
+test('epic-verify forwards --target-root to the contract guard', async (t) => {
+  const f = fixture(t, '/bin/bash')
+  addOrigin(f.dir, 'local')
+  const { epicChildMarker } = await import('./plan-epic-lib.mjs')
+  const children = [{ key: 'a', title: 'First change' }]
+  f.put('epic-spec.json', JSON.stringify({ parentId: issue, children }))
+  f.put(
+    'epic-overview.md',
+    description.replace(
+      '## Original notes',
+      '## Child tickets\n\n- TCK-2: First change\n\n## Planning\n\n- Target repo: acme/target\n\n## Original notes',
+    ),
+  )
+  writeFileSync(join(f.dir, `${issue}-child-a.md`), description)
+  for (const suffix of ['image-guard-orig.md', 'attachment-guard-orig.md', 'image-guard-new.md']) {
+    f.put(
+      `child-TCK-2.${suffix}`,
+      suffix === 'image-guard-new.md' ? `${description}\n${epicChildMarker('a')}` : notes,
+    )
+  }
+  const matching = targetRepoFixture(t, 'target')
+  const mismatched = targetRepoFixture(t, 'other')
+  const base = [...f.args, '--child', 'TCK-2=a']
+
+  const bad = f.run('epic-verify', ...base, '--target-root', mismatched)
+  assert.notEqual(bad.status, 0)
+  assert.match(bad.stderr, /target-root-mismatch/)
+  assert.equal(JSON.parse(f.sentinel().stdout).status, 'missing')
+
+  const good = f.run('epic-verify', ...base, '--target-root', matching)
+  assert.equal(good.status, 0, good.stdout + good.stderr)
+  assert.doesNotMatch(good.stderr, /target-repo-not-resolved/)
+  assert.equal(JSON.parse(f.sentinel().stdout).kind, 'ok')
+})
+
+test('draft-verify and epic-verify reject dangling or empty --target-root with exit 64', (t) => {
+  const f = fixture(t, '/bin/bash')
+  const draftBase = [...f.args, '--plan', f.file('plan.md'), '--estimate', '3']
+  assert.equal(f.run('draft-verify', ...draftBase, '--target-root').status, 64)
+  assert.equal(f.run('draft-verify', ...draftBase, '--target-root', '').status, 64)
+  const epicBase = [...f.args, '--child', 'TCK-2=a']
+  assert.equal(f.run('epic-verify', ...epicBase, '--target-root').status, 64)
+  assert.equal(f.run('epic-verify', ...epicBase, '--target-root', '').status, 64)
+  assert.equal(JSON.parse(f.sentinel().stdout).status, 'missing')
+})

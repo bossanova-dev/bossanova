@@ -417,49 +417,35 @@ test('the cli transports name the real boss CLI envelope paths, not the MCP ones
   assert.deepEqual(bossSessionOperationMap.sendChatMessage.cli.response, [])
 })
 
-test('partially-covered cli transports name what the CLI cannot supply', () => {
-  // `boss show --json` carries state/last_agent_activity_at/pr_number/pr_url,
-  // but not every getSession routing signal. A partial transport is still
-  // usable, so it stays OUT of `degraded` (which means "cannot do at all") —
-  // but it must say what is absent rather than let a caller read `undefined`
-  // and route on it.
-  const missing = bossSessionOperationMap.getSession.cli.missingResponse
-  assert.ok(Array.isArray(missing))
-  assert.deepEqual(bossSessionOperationMap.getSession.cli.response, [
-    'session.state',
-    'session.last_agent_activity_at',
-  ])
-  assert.equal(missing.includes('last_agent_activity_at'), false)
-  for (const field of ['attention_status.reason', 'pr_mergeable', 'merge_block', 'display_label']) {
-    assert.ok(missing.includes(field), `getSession cli must declare ${field} unavailable`)
+test('getSession cli transport covers every MCP routing signal under the session envelope', () => {
+  // `boss show --json` carries every getSession routing signal under `session.`,
+  // so getSession is neither degraded nor partial.
+  const { response: mcpResponse, cli } = bossSessionOperationMap.getSession
+  assert.equal('missingResponse' in cli, false)
+  for (const field of mcpResponse) {
+    assert.ok(
+      cli.response.includes(`session.${field}`),
+      `getSession cli response missing session.${field}`,
+    )
   }
+  assert.deepEqual(
+    cli.response,
+    mcpResponse.map((field) => `session.${field}`),
+  )
   assert.equal(bossCliDegradedCapabilities().includes('getSession'), false)
+  assert.deepEqual(bossCliPartialCapabilities(), [])
 })
 
-test('bossEpicTransportPreflight reports partially-covered capabilities on the CLI transport', () => {
-  // BOS-827. `degraded` only ever named the cli: null capabilities, so a
-  // capability whose CLI exists but is INCOMPLETE was reported as fine. Once the
-  // boss MCP server stopped being wired by default, every run took the CLI
-  // transport and reported ok:true while silently losing getSession's remaining
-  // missing routing signals — auth-death routing and conflict-after-green. The
-  // run must say so out loud instead.
+test('bossEpicTransportPreflight reports no partial capabilities on the CLI transport', () => {
+  // `boss show --json` now carries every getSession routing signal, so the CLI
+  // transport has no partially-covered capabilities and `partial` reports `[]`.
   const result = bossEpicTransportPreflight({
     availableTools: [],
     availableCliCommands: requiredBossCliCommandsForEpic(),
   })
   assert.equal(result.ok, true)
   assert.equal(result.transport, 'cli')
-  assert.deepEqual(
-    result.partial.map((entry) => entry.capability),
-    ['getSession'],
-  )
-  assert.deepEqual(result.partial[0].missingResponse, [
-    'repair_active',
-    'attention_status.reason',
-    'pr_mergeable',
-    'merge_block',
-    'display_label',
-  ])
+  assert.deepEqual(result.partial, [])
 })
 
 test('bossEpicTransportPreflight keeps `partial` and `degraded` disjoint and complete', () => {
@@ -511,21 +497,18 @@ test('bossEpicTransportPreflight reports no partial capabilities when it BLOCKs'
 test('bossCliPartialCapabilities derives from the map, not a hand-kept list', () => {
   // Derived, so a capability that later gains a missingResponse is reported
   // automatically rather than needing this list edited in a second place.
-  const derived = bossCliPartialCapabilities()
-  assert.deepEqual(
-    derived.map((entry) => entry.capability),
-    ['getSession'],
-  )
-  assert.deepEqual(
-    derived[0].missingResponse,
-    bossSessionOperationMap.getSession.cli.missingResponse,
-  )
-  // A capability with a cli transport but no missingResponse is complete and
-  // must NOT appear.
-  assert.equal(
-    derived.some((entry) => entry.capability === 'mergeSession'),
-    false,
-  )
+  assert.deepEqual(bossCliPartialCapabilities(), [])
+  const cli = bossSessionOperationMap.mergeSession.cli
+  cli.missingResponse = ['example_field']
+  try {
+    assert.deepEqual(bossCliPartialCapabilities(), [
+      { capability: 'mergeSession', missingResponse: ['example_field'] },
+    ])
+  } finally {
+    delete cli.missingResponse
+  }
+  // A capability with a cli transport and no missingResponse must NOT appear.
+  assert.deepEqual(bossCliPartialCapabilities(), [])
 })
 
 test('bossEpicToolPreflight does not leak `partial` into its return', () => {

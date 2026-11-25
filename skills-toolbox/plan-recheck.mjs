@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
+import { normalizeRepositoryIdentity } from './callback/epic-target.mjs'
 import {
   CITATION_PATTERN,
   citationAnchors,
@@ -10,6 +11,7 @@ import {
   resolveCitationCoordinate,
 } from './citation-coordinate.mjs'
 import { isMainModule } from './main-module.mjs'
+import { parseTargetRepoDeclaration, readOriginIdentity } from './plan/plan-target-repo.mjs'
 import {
   fixedStringNeedle,
   globToRegExp,
@@ -256,10 +258,48 @@ function plannedPaths(blocks) {
   return paths
 }
 
-export function recheckPlan(config, planText, { root = process.cwd() } = {}) {
+function checkTargetRepo(config, description, root, readOrigin) {
+  if (typeof description !== 'string' || description.length === 0) return null
+  const declaration = parseTargetRepoDeclaration(config, description)
+  if (!declaration.declared) return null
+  if ('error' in declaration) {
+    return { verdict: 'unknown', reason: declaration.error, root, checked: 0, items: [] }
+  }
+  const rootRepo = normalizeRepositoryIdentity(readOrigin(root))
+  if (!rootRepo) {
+    return {
+      verdict: 'unknown',
+      reason: 'origin-unreadable',
+      targetRepo: declaration.repo,
+      root,
+      checked: 0,
+      items: [],
+    }
+  }
+  if (rootRepo !== declaration.repo) {
+    return {
+      verdict: 'unknown',
+      reason: 'target-repo-mismatch',
+      targetRepo: declaration.repo,
+      rootRepo,
+      root,
+      checked: 0,
+      items: [],
+    }
+  }
+  return null
+}
+
+export function recheckPlan(
+  config,
+  planText,
+  { root = process.cwd(), description, readOrigin = readOriginIdentity } = {},
+) {
   root = resolve(root)
   if (typeof planText !== 'string' || !repoRootIsReadable(root))
     return { verdict: 'unknown', root, checked: 0, items: [] }
+  const targetRefusal = checkTargetRepo(config, description, root, readOrigin)
+  if (targetRefusal) return targetRefusal
   const parsed = parsePlanCheckItems(config, planText)
   const items = []
   const premiseTexts = parsed.premises.map((item) => item.text)
@@ -336,6 +376,16 @@ export function recheckPlan(config, planText, { root = process.cwd() } = {}) {
   }
 }
 
+function readIssueDescription(filePath) {
+  const issue = JSON.parse(readFileSync(filePath, 'utf8'))
+  if (!issue || typeof issue !== 'object' || Array.isArray(issue))
+    throw new Error('Expected issue JSON object')
+  if (issue.description === undefined || issue.description === null) return undefined
+  if (typeof issue.description !== 'string')
+    throw new Error('Expected issue description to be a string')
+  return issue.description
+}
+
 export function main(args = process.argv.slice(2)) {
   let result
   try {
@@ -343,15 +393,22 @@ export function main(args = process.argv.slice(2)) {
       args,
       strict: true,
       allowPositionals: true,
-      options: { root: { type: 'string' }, help: { type: 'boolean' } },
+      options: {
+        root: { type: 'string' },
+        'issue-json': { type: 'string' },
+        help: { type: 'boolean' },
+      },
     })
     if (values.help) {
-      process.stdout.write('Usage: plan-recheck.mjs <plan> [--root <dir>]\n')
+      process.stdout.write('Usage: plan-recheck.mjs <plan> [--root <dir>] [--issue-json <file>]\n')
       return 0
     }
     if (positionals.length !== 1) throw new Error('Expected one plan path')
+    const description =
+      values['issue-json'] !== undefined ? readIssueDescription(values['issue-json']) : undefined
     result = recheckPlan(loadSkillConfig(), readFileSync(positionals[0], 'utf8'), {
       root: values.root,
+      description,
     })
   } catch (error) {
     result = { verdict: 'unknown', checked: 0, items: [], error: error.message }

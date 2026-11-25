@@ -9638,6 +9638,14 @@ components:
             - string
             - "null"
           title: serve_script
+        shouldDetectSetupScript:
+          type:
+            - boolean
+            - "null"
+          title: should_detect_setup_script
+          description: |-
+            When true and setup_script is absent, the daemon stores the detected spec,
+             if any.
       title: CloneAndRegisterRepoRequest
       additionalProperties: false
     bossanova.v1.CloneAndRegisterRepoResponse:
@@ -12921,6 +12929,39 @@ components:
           title: probed_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: DescribeMCPSurfaceResponse
+      additionalProperties: false
+    bossanova.v1.DetectSetupScriptRequest:
+      type: object
+      properties:
+        localPath:
+          type: string
+          title: local_path
+      title: DetectSetupScriptRequest
+      additionalProperties: false
+    bossanova.v1.DetectSetupScriptResponse:
+      type: object
+      properties:
+        setupScript:
+          type: string
+          title: setup_script
+          description: |-
+            Structured spec JSON, ready to send as RegisterRepoRequest.setup_script.
+             Empty when nothing was detected.
+        displayCommand:
+          type: string
+          title: display_command
+          description: The spec as a human reads it, e.g. "make setup-worktree".
+        source:
+          type: string
+          title: source
+          description: Where it came from, e.g. "Makefile target setup-worktree" or "pnpm-lock.yaml".
+        evidence:
+          type: array
+          items:
+            type: string
+          title: evidence
+          description: Every other signal seen, in precedence order, including non-adopted ones.
+      title: DetectSetupScriptResponse
       additionalProperties: false
     bossanova.v1.DetectUsageLimitRequest:
       type: object
@@ -23046,6 +23087,14 @@ components:
             - string
             - "null"
           title: serve_script
+        shouldDetectSetupScript:
+          type:
+            - boolean
+            - "null"
+          title: should_detect_setup_script
+          description: |-
+            When true and setup_script is absent, the daemon stores the detected spec,
+             if any.
       title: RegisterRepoRequest
       additionalProperties: false
     bossanova.v1.RegisterRepoResponse:

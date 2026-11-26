@@ -105,9 +105,9 @@ func reviewStatus(att *pb.SessionAttention) (phrase, detail string) {
 	// A REVIEW never carries open_items: computePark serves them only with
 	// ParkCodeLedgerOpen, which is not a sign-off and so makes a FIX.
 	if att.GetProofUrl() != "" {
-		parts = append(parts, "proof recorded")
+		parts = append(parts, "review page recorded")
 	} else {
-		parts = append(parts, "no proof yet")
+		parts = append(parts, "no review page yet")
 	}
 	return phrase, strings.Join(parts, detailSeparator)
 }

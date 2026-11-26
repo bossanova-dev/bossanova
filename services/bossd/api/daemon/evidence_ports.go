@@ -18,6 +18,9 @@ type evidenceBucketOpener interface {
 type hostedProofPublisher interface {
 	StartHostedProof(context.Context, HostedProofStart) (HostedProofUpload, error)
 	PutHostedProofObject(context.Context, HostedProofPut) error
+	// AbortHostedProof releases a started upload that will not complete, so
+	// its reservation stops counting against the organization's quota.
+	AbortHostedProof(ctx context.Context, uploadID, repoOriginURL string) error
 }
 
 // HostedProofEntry declares one page object and its exact size.

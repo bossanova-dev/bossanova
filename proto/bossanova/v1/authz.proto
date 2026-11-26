@@ -45,6 +45,11 @@ enum Entitlement {
   ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION = 3;
   // The handler checks the requested organization after authorizing membership.
   ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION = 4;
+  // Hosted proof pages: met by any signed-in daemon owner acting for a
+  // repository-resolved organization they belong to. Paid cloud access does
+  // not gate it. The handler resolves the organization and its owner's off
+  // switch, so the interceptor passes it through.
+  ENTITLEMENT_PROOF_HOSTING = 5;
 }
 
 extend google.protobuf.MethodOptions {

@@ -1,6 +1,7 @@
 {
   "commands": {
     "build": "make build",
+    "generate": "make generate",
     "lint": "make lint",
     "format": "make format",
     "test": "make test-full",
@@ -291,7 +292,7 @@
       "services/web/src/gen/**/*_pb.ts",
       "services/docs/openapi/bossanova.v1.openapi.yaml"
     ],
-    "generatedChecks": ["drift"],
+    "generatedChecks": ["proto"],
     "evidence": true,
     "merge": {
       "auto": [{ "level": "high" }, { "area": "ui", "proof": "tests" }]

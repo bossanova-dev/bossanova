@@ -352,6 +352,29 @@ const verifyDefaults = object({
       type: 'boolean',
       'x-msg': 'verifyDefaults.requireGreenBase must be a boolean when present',
     },
+    // A head no CI reported on (skills-toolbox/verify/verify-ci-absent.mjs).
+    ci: object({
+      'x-msg': {
+        type: 'verifyDefaults.ci must be an object when present',
+        additionalProperties:
+          'verifyDefaults.ci.{extra} is unknown (expected whenAbsent, absentGraceMinutes)',
+      },
+      properties: {
+        whenAbsent: {
+          enum: ['wait', 'park'],
+          'x-msg': 'verifyDefaults.ci.whenAbsent must be "wait" or "park" when present',
+        },
+        absentGraceMinutes: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 10080,
+          'x-msg':
+            'verifyDefaults.ci.absentGraceMinutes must be a whole number of minutes from 0 to 10080 when present',
+        },
+      },
+      additionalProperties: false,
+      'x-unknown': 'warn',
+    }),
     generatedPaths: globList(`verifyDefaults.generatedPaths must be ${GLOB_LIST_SHAPE}`),
     generatedChecks: {
       type: 'array',
@@ -483,8 +506,42 @@ const publishAdapter = object({
 // `type` or `not` keyword here, since publishAdapter's object rules ignore non-objects, so a
 // malformed object keeps its specific message instead of collapsing into an anyOf.
 const PROOF_SHAPE = 'publishConfig.proof must be an object or false'
+// A block holding only `hostedFallback` names no publisher (a hook repo's opt-out), so it needs
+// neither baseUrl nor bucket. Any other block keeps the publisher requirements.
+const FALLBACK_ONLY = {
+  required: ['hostedFallback'],
+  properties: { hostedFallback: true },
+  maxProperties: 1,
+}
+const { required: _publisherRequired, ...publishShape } = publishAdapter
 const proofPublishAdapter = {
-  ...publishAdapter,
+  ...publishShape,
+  allOf: [
+    {
+      if: { not: FALLBACK_ONLY },
+      then: { required: ['baseUrl'], properties: { baseUrl: true } },
+      'x-msg': 'publishConfig.proof.baseUrl must be a non-empty string',
+    },
+    {
+      if: {
+        not: {
+          anyOf: [
+            { properties: { kind: { const: 'access-put' } }, required: ['kind'] },
+            FALLBACK_ONLY,
+          ],
+        },
+      },
+      then: { required: ['bucket'], properties: { bucket: true } },
+      'x-msg': 'publishConfig.proof.bucket must be a non-empty string',
+    },
+  ],
+  properties: {
+    ...publishAdapter.properties,
+    hostedFallback: {
+      type: 'boolean',
+      'x-msg': 'publishConfig.proof.hostedFallback must be a boolean',
+    },
+  },
   type: ['object', 'boolean'],
   not: { const: true, 'x-msg': PROOF_SHAPE },
   'x-msg': { type: PROOF_SHAPE },
@@ -650,8 +707,18 @@ export const schema = object({
         },
         fullGateCommands: {
           type: 'array',
-          items: nonBlankString,
-          'x-msg': 'acceptance.fullGateCommands must be an array of non-empty command strings',
+          items: {
+            anyOf: [
+              nonBlankString,
+              object({
+                required: ['dir', 'command'],
+                properties: { dir: nonBlankString, command: nonBlankString },
+                additionalProperties: false,
+              }),
+            ],
+          },
+          'x-msg':
+            'acceptance.fullGateCommands must be an array of non-empty command strings or {dir, command} objects',
         },
       },
       additionalProperties: false,

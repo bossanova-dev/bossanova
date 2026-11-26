@@ -188,6 +188,7 @@ function fakeRead({ bases = {}, trees = {}, replay = null, failOn = null } = {})
     if (args[0] === 'rev-parse')
       return { ok: true, output: trees[args.at(-1).replace('^{tree}', '')] ?? TREE }
     if (args[0] === 'merge-tree') return replay ?? assert.fail('merge-tree on a shared merge base')
+    if (args[0] === 'show') return { ok: false, status: 128 }
     assert.fail(`unexpected ${command} ${args.join(' ')}`)
   }
   return { read, calls }
@@ -213,7 +214,17 @@ test('reviewedTreeDrift: a moved base replays the reviewed head onto the pushed 
   assert.equal(reviewedTreeDrift(same.read, 'main', HEAD, OTHER), 'none')
   assert.deepEqual(
     same.calls.find(([, verb]) => verb === 'merge-tree'),
-    ['git', 'merge-tree', '--write-tree', `--merge-base=${MERGED}`, MOVED, HEAD],
+    [
+      'git',
+      'merge-tree',
+      '--write-tree',
+      '-z',
+      '--name-only',
+      '--no-messages',
+      `--merge-base=${MERGED}`,
+      MOVED,
+      HEAD,
+    ],
   )
   for (const [replay, drift] of [
     [{ ok: true, output: TREE2 }, 'changed'],
@@ -782,6 +793,7 @@ test('commandReader maps boss and preserves failed JSON payload error precedence
     status: 1,
     error: 'api-error',
     payload,
+    output: JSON.stringify(payload),
   })
   assert.equal(calls[0][0], '/custom/boss')
   assert.equal(calls[0][2].maxBuffer, 64 * 1024 * 1024)
@@ -899,4 +911,129 @@ test('remap: an unreadable reviewed commit is unknown and leaves the file intact
   const before = savedHead(r)
   assert.equal(remap(r).outcome, 'unknown')
   assert.equal(savedHead(r), before)
+})
+
+// Generated paths: the base's .boss-skills.json names them, with the CI check that proves them.
+const GENERATED_CONFIG = JSON.stringify({
+  verifyDefaults: { generatedPaths: ['gen'], generatedChecks: ['drift'] },
+})
+
+// A reviewed feature that changes `lib` and its one-line generated descriptor, then a base that
+// moves the same descriptor. The rebase takes the base's descriptor and regenerates it.
+function generatedRebase(t, { config = GENERATED_CONFIG } = {}) {
+  const r = gitRepo(t)
+  r.git('checkout', 'main')
+  if (config) {
+    writeFileSync(join(r.dir, '.boss-skills.json'), config)
+    r.git('add', '.boss-skills.json')
+  }
+  r.commit('gen', 'descriptor(base)\n', 'generate')
+  r.git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  r.git('checkout', 'feature')
+  r.git('rebase', 'main')
+  const reviewed = r.commit('gen', 'descriptor(feature)\n', 'regenerate feature')
+  writeFileSync(join(r.gitDir, 'boss-build-reviewed-head'), `${reviewed}\n`)
+  r.advanceBase('gen', 'descriptor(other)\n')
+  const rebase = r.run('rebase', '-X', 'ours', 'main')
+  assert.equal(rebase.status, 0, rebase.stderr)
+  r.commit('gen', 'descriptor(other+feature)\n', 'regenerate after rebase')
+  return r
+}
+
+test('real git: a rebase whose only change is to generated files keeps the review', (t) => {
+  const r = generatedRebase(t)
+  assert.deepEqual(r.drift(r.gate()), READY)
+  const before = savedHead(r)
+  assert.equal(remap(r).outcome, 'carried')
+  assert.equal(savedHead(r), `${r.git('rev-parse', 'HEAD')}\n`)
+  assert.notEqual(savedHead(r), before)
+})
+test('real git: generated paths without a named drift check prove nothing', (t) => {
+  const unproven = JSON.stringify({ verifyDefaults: { generatedPaths: ['gen'] } })
+  for (const config of [null, unproven]) {
+    const r = generatedRebase(t, { config })
+    assert.deepEqual(r.drift(r.gate()), CHANGED)
+  }
+})
+test('real git: a hand edit beside a generated-only conflict still changes the tree', (t) => {
+  const r = generatedRebase(t)
+  r.commit('lib', LINES.replace('l5', 'hello world, edited after review'), 'unreviewed edit')
+  r.git('reset', '--soft', 'HEAD~2')
+  r.git('commit', '-m', 'regenerate and edit')
+  assert.deepEqual(r.drift(r.gate()), CHANGED)
+})
+test('remap: a hand-resolved conflict asks for review of that commit only', (t) => {
+  const r = gitRepo(t)
+  r.git('reset', '--hard', 'main')
+  r.commit('other', 'independent\n', 'independent change')
+  const reviewed = r.commit('lib', LINES.replace('l5', 'hello world'), 'feature')
+  writeFileSync(join(r.gitDir, 'boss-build-reviewed-head'), `${reviewed}\n`)
+  r.advanceBase('lib', LINES.replace('l5', 'base l5'))
+  assert.notEqual(r.run('rebase', 'main').status, 0)
+  writeFileSync(join(r.dir, 'lib'), LINES.replace('l5', 'hello base world'))
+  r.git('add', 'lib')
+  r.git('-c', 'core.editor=true', 'rebase', '--continue')
+  const independent = r.git('rev-parse', 'HEAD~1')
+  const resolved = r.git('rev-parse', 'HEAD')
+  assert.deepEqual(remap(r), {
+    outcome: 'narrowed',
+    reviewedHead: reviewed,
+    mappedHead: independent,
+    head: resolved,
+    reviewCommits: [resolved],
+  })
+  assert.equal(savedHead(r), `${independent}\n`)
+})
+test('remap: a reviewed commit dropped by the rebase asks for the whole review', (t) => {
+  for (const keep of ['independent', 'feature']) {
+    const r = gitRepo(t)
+    r.git('reset', '--hard', 'main')
+    const independent = r.commit('other', 'independent\n', 'independent change')
+    const reviewed = r.commit('lib', LINES.replace('l5', 'hello world'), 'feature')
+    writeFileSync(join(r.gitDir, 'boss-build-reviewed-head'), `${reviewed}\n`)
+    const before = savedHead(r)
+    r.advanceBase('unrelated', 'base advanced\n')
+    r.git('checkout', '-B', 'feature', 'main')
+    r.git('cherry-pick', keep === 'independent' ? independent : reviewed)
+    writeFileSync(join(r.dir, 'third'), 'added after the drop\n')
+    r.git('add', 'third')
+    r.git('commit', '-m', 'new change')
+    const outcome = remap(r)
+    assert.equal(outcome.outcome, 'unmatched', keep)
+    assert.equal(outcome.reviewCommits, undefined, keep)
+    assert.equal(savedHead(r), before, keep)
+  }
+})
+
+test('remap: a dropped commit stays dropped when a new commit shares its author and second', (t) => {
+  // One author timestamp for every commit: the collision is the case, not a clock accident.
+  const at = '1700000000 +0000'
+  for (const resolve of [false, true]) {
+    const r = gitRepo(t)
+    r.git('reset', '--hard', 'main')
+    writeFileSync(join(r.dir, 'other'), 'independent\n')
+    r.git('add', 'other')
+    r.git('commit', '--date', at, '-m', 'independent change')
+    writeFileSync(join(r.dir, 'lib'), LINES.replace('l5', 'hello world'))
+    r.git('add', 'lib')
+    r.git('commit', '--date', at, '-m', 'feature')
+    const reviewed = r.git('rev-parse', 'HEAD')
+    writeFileSync(join(r.gitDir, 'boss-build-reviewed-head'), `${reviewed}\n`)
+    const before = savedHead(r)
+    r.advanceBase(resolve ? 'lib' : 'unrelated', resolve ? LINES.replace('l5', 'base l5') : 'x\n')
+    r.git('checkout', '-B', 'feature', 'main')
+    if (resolve) {
+      assert.notEqual(r.run('cherry-pick', reviewed).status, 0)
+      writeFileSync(join(r.dir, 'lib'), LINES.replace('l5', 'hello base world'))
+      r.git('add', 'lib')
+      r.git('-c', 'core.editor=true', 'cherry-pick', '--continue')
+    } else r.git('cherry-pick', reviewed)
+    writeFileSync(join(r.dir, 'third'), 'added after the drop\n')
+    r.git('add', 'third')
+    r.git('commit', '--date', at, '-m', 'new change')
+    const outcome = remap(r)
+    assert.equal(outcome.outcome, 'unmatched', `resolve=${resolve}`)
+    assert.equal(outcome.reviewCommits, undefined, `resolve=${resolve}`)
+    assert.equal(savedHead(r), before, `resolve=${resolve}`)
+  }
 })

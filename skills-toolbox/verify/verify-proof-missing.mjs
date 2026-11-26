@@ -105,7 +105,7 @@ export function proofMissingNote({ headSha, pr, repo, problems }) {
   const slug = nonEmpty(repo) || '<owner/name>'
   const republish = `verify-gate.mjs proof --pr ${pr} --head ${headSha} --judge <file> --repo ${slug}`
   const content = [
-    `The verdict for \`${headSha.slice(0, 12)}\` stands, but the proof is incomplete:`,
+    `The verdict for \`${headSha.slice(0, 12)}\` stands, but the review page is incomplete:`,
     '',
     ...bullets,
     '',
@@ -123,7 +123,7 @@ export function proofMissingNote({ headSha, pr, repo, problems }) {
  */
 export function proofResolvedNote({ headSha, pageUrl }) {
   const url = nonEmpty(pageUrl)
-  const content = `The proof for \`${headSha.slice(0, 12)}\` is now recorded${url ? `: ${url}` : '.'}`
+  const content = `The review page for \`${headSha.slice(0, 12)}\` is now recorded${url ? `: ${url}` : '.'}`
   const digest = noteDigest(content)
   return { body: `${content}\n\n${proofMissingMarker(headSha, digest, true)}`, digest }
 }
@@ -137,5 +137,5 @@ export function proofMissingBossNote({ pr, headSha, problems }) {
   const summary = problems
     .map((p) => `${p.part}: ${described(problem(p.part, p.reason, p.detail), (s) => s)}`)
     .join(', ')
-  return `PR #${pr} (${headSha.slice(0, 12)}) proof incomplete: ${summary}`
+  return `PR #${pr} (${headSha.slice(0, 12)}) review page incomplete: ${summary}`
 }

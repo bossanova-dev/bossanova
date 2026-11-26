@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -46,20 +47,40 @@ func (s *Server) publishHosted(ctx context.Context, repo *domain.Repo, msg *pb.U
 		return nil, hostedStartError(err)
 	}
 	// A failed Put leaves an incomplete upload behind. No view link is ever
-	// minted for an incomplete upload, and bosso's retention backstop removes it.
+	// minted for an incomplete upload; the daemon aborts it so its reservation
+	// is released, and bosso releases any it misses after a grace.
 	for _, f := range hostedPutOrder(files) {
 		body, readErr := io.ReadAll(io.LimitReader(f.file, f.size+1))
 		if readErr != nil || int64(len(body)) != f.size {
+			s.abortHosted(ctx, publisher, upload.UploadID, repo.OriginURL)
 			return nil, evidenceFailure(connect.CodeUnavailable, "object-changed", "evidence object changed while uploading", readErr)
 		}
 		s.logger.Info().Str("upload_id", upload.UploadID).Str("object", f.name).Int64("size_bytes", f.size).Msg("uploading hosted verify evidence")
 		if err := publisher.PutHostedProofObject(ctx, HostedProofPut{UploadID: upload.UploadID, RepoOriginURL: repo.OriginURL, Name: f.name, Body: body}); err != nil {
+			s.abortHosted(ctx, publisher, upload.UploadID, repo.OriginURL)
 			return nil, evidenceFailure(connect.CodeUnavailable, "object-upload-failed", "evidence object upload failed", err)
 		}
 	}
 	slug := strings.SplitN(prefix, "/", 3)
 	pageURL := fmt.Sprintf("%s/review/%s/%s/%d?head=%s", upload.ReviewOrigin, url.PathEscape(slug[0]), url.PathEscape(slug[1]), msg.PrNumber, msg.HeadSha)
 	return connect.NewResponse(&pb.UploadEvidenceResponse{ObjectKeys: names, PageUrl: pageURL, Destination: pb.EvidenceDestination_EVIDENCE_DESTINATION_HOSTED}), nil
+}
+
+// hostedAbortTimeout bounds the best-effort abort after a failed publish.
+const hostedAbortTimeout = 10 * time.Second
+
+// abortHosted releases an upload that will not complete. It runs even when
+// the publish's own context has ended, and a failure is only logged: the
+// caller returns the error that ended the publish, and bosso releases a
+// missed upload after its grace.
+func (s *Server) abortHosted(ctx context.Context, publisher hostedProofPublisher, uploadID, repoOriginURL string) {
+	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hostedAbortTimeout)
+	defer cancel()
+	if err := publisher.AbortHostedProof(abortCtx, uploadID, repoOriginURL); err != nil {
+		s.logger.Warn().Err(err).Str("upload_id", uploadID).Msg("abort hosted verify evidence upload failed; bosso releases it after its grace")
+		return
+	}
+	s.logger.Info().Str("upload_id", uploadID).Msg("aborted hosted verify evidence upload")
 }
 
 // hostedPutOrder keeps request order but moves index.html last, so a served

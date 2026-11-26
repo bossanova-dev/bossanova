@@ -335,9 +335,11 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// and asks its description to say what the new row fields mean. Its docs
 	// are cut to the minimum and list_tracker_issues dropped its repeated
 	// "optionally filtered by" clause; the MCP guide carries the field detail.
+	// LOWERED 2026-11-26: 84 tools / 68,803 bytes (-6), same method.
+	// get_proof_view_link says "review page" and names its head in fewer words.
 	const (
 		maxToolCount   = 84
-		maxSchemaBytes = 68809
+		maxSchemaBytes = 68803
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

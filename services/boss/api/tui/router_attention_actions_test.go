@@ -302,7 +302,7 @@ func TestAttentionActionNavigationAndAvailability(t *testing.T) {
 		url        string
 	}{
 		{"g", "g", pb.AttentionAction_ATTENTION_ACTION_GITHUB, "https://github.com/org/repo/pull/42"},
-		// [p]roof opens a served VIDEO's evidence when there is no proof page.
+		// [p] review page opens a served VIDEO's evidence when there is no proof page.
 		{"p", "p", pb.AttentionAction_ATTENTION_ACTION_VIDEO, "https://example.com/proof"},
 		// Details keeps t for [t]erminal and opens the tracker from its own [l]inear.
 		{"t", "l", pb.AttentionAction_ATTENTION_ACTION_TRACKER, "https://example.com/issue"},
@@ -399,10 +399,10 @@ const renderedHead = "0123456789abcdef0123456789abcdef01234567"
 
 func TestAttentionReviewMergeRecordsTheApprovalAndMergesOnce(t *testing.T) {
 	s := parkSession("human-review:ui")
-	if got, want := ui.AttentionFooter(s, false), []string{"[p] proof", "[m] merge"}; !slices.Equal(got, want) {
+	if got, want := ui.AttentionFooter(s, false), []string{"[p] review page", "[m] merge"}; !slices.Equal(got, want) {
 		t.Fatalf("home footer = %q, want %q", got, want)
 	}
-	if got, want := ui.AttentionFooter(s, true), []string{"[g] github", "[p] proof", "[m] merge"}; !slices.Equal(got, want) {
+	if got, want := ui.AttentionFooter(s, true), []string{"[g] github", "[p] review page", "[m] merge"}; !slices.Equal(got, want) {
 		t.Fatalf("details footer = %q, want %q", got, want)
 	}
 	for _, details := range []bool{false, true} {
@@ -625,7 +625,7 @@ func TestAttentionMergeIsNotOfferedTwiceWhileItRuns(t *testing.T) {
 
 // TestProofKeyIgnoresParkWithoutProof_Sessions_AC208902 takes verify parks on
 // a PR with no proof page or video: neither Home nor session details offers
-// [p]roof, and p opens nothing, not even the PR that [g]ithub opens.
+// [p] review page, and p opens nothing, not even the PR that [g]ithub opens.
 func TestProofKeyIgnoresParkWithoutProof_Sessions_AC208902(t *testing.T) {
 	var opened []string
 	original := home.OpenURLFunc
@@ -651,8 +651,8 @@ func TestProofKeyIgnoresParkWithoutProof_Sessions_AC208902(t *testing.T) {
 				if details {
 					model = attentionDetails(c, proto.CloneOf(s))
 				}
-				if view := ansi.Strip(model.View().Content); strings.Contains(view, "[p]roof") {
-					t.Errorf("details=%v: [p]roof advertised without a proof page or video:\n%s", details, view)
+				if view := ansi.Strip(model.View().Content); strings.Contains(view, "[p] review page") {
+					t.Errorf("details=%v: [p] review page advertised without a proof page or video:\n%s", details, view)
 				}
 				opened = nil
 				if _, cmd := model.Update(keyPress('p')); cmd != nil {
@@ -698,8 +698,8 @@ func TestProofKeyOpensTheProofTarget_Sessions_AC208902(t *testing.T) {
 				if details {
 					model = attentionDetails(c, proto.CloneOf(s))
 				}
-				if !strings.Contains(ansi.Strip(model.View().Content), "[p]roof") {
-					t.Errorf("details=%v: [p]roof not advertised:\n%s", details, ansi.Strip(model.View().Content))
+				if !strings.Contains(ansi.Strip(model.View().Content), "[p] review page") {
+					t.Errorf("details=%v: [p] review page not advertised:\n%s", details, ansi.Strip(model.View().Content))
 				}
 				if _, cmd := model.Update(keyPress('v')); cmd != nil {
 					t.Errorf("details=%v: v dispatched", details)
@@ -712,7 +712,7 @@ func TestProofKeyOpensTheProofTarget_Sessions_AC208902(t *testing.T) {
 					continue // details opens through its own external opener
 				}
 				opened = nil
-				if msg, _ := cmd().(ui.AttentionActionResultMsg); len(opened) != 1 || opened[0] != tc.want || msg.Text != "Opened proof" {
+				if msg, _ := cmd().(ui.AttentionActionResultMsg); len(opened) != 1 || opened[0] != tc.want || msg.Text != "Opened review page" {
 					t.Errorf("p opened %v (%q), want %s", opened, msg.Text, tc.want)
 				}
 			}

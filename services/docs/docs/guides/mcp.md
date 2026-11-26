@@ -210,39 +210,39 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 
 ### Read-only (31)
 
-| Tool                           | Description                                                                                            |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `list_sessions`                | Filter by repo, state, label, PR author/target, archived; order by created/updated; limit              |
-| `get_session`                  | Get a single session by id — `state`/`last_check_state` carry no push info, see below                  |
-| `get_proof_view_link`          | Mint a short-lived signed link to a session's hosted proof page. See [below](#reading-verify-results). |
-| `list_repos`                   | List every registered repository                                                                       |
-| `list_repo_prs`                | List open PRs with target branch, draft state, dates and owning session — filters below                |
-| `list_tracker_issues`          | List issues from an external tracker (Linear, Sentry)                                                  |
-| `resolve_context`              | Resolve repo + session for a working directory                                                         |
-| `validate_repo_path`           | Validate a local path is a usable git repo                                                             |
-| `list_chats`                   | List agent chats for a session                                                                         |
-| `get_chat_statuses`            | Get live chat status for a session — `last_output_at` is a floor, see below                            |
-| `get_session_statuses`         | Get best live status across chats for multiple sessions — aggregate only, see below                    |
-| `list_check_snapshots`         | List recent CI check snapshots, newest first. See [verify verdict](#verify-verdict).                   |
-| `repair_doctor`                | Run daemon repair-doctor diagnostics                                                                   |
-| `list_agents`                  | List loaded agent-runner plugins                                                                       |
-| `list_plugins`                 | List every plugin the daemon attempted to load                                                         |
-| `list_cron_jobs`               | List every scheduled cron job                                                                          |
-| `get_cron_job`                 | Get a single cron job by id                                                                            |
-| `get_chat_transcript`          | Return the conversation transcript and final assistant text for a chat                                 |
-| `list_accounts`                | List registry accounts and cached usage metadata; credentials are never returned                       |
-| `get_settings`                 | Get the daemon's global settings — the TUI-editable subset plus each agent's config                    |
-| `list_github_callbacks`        | List registered GitHub PR callbacks; the delivery message body is never returned                       |
-| `list_notes`                   | List repo-scoped notes, optionally filtered by repo, provenance, tags, or a body substring             |
-| `get_note`                     | Get a single note by id, including its full body and normalised tags                                   |
-| `list_broadcasts`              | List broadcasts and their lifecycle state; the message body is never returned                          |
-| `list_broadcast_subscriptions` | List standing broadcast subscriptions; the registered message body is never returned                   |
-| `list_organization_notes`      | List a page of an organization's cloud notes, filtered (hosted endpoint only)                          |
-| `get_organization_note`        | Get one organization note by id, with its body, origin and 90-day `expires_at`                         |
-| `get_organization_note_quota`  | Report an organization's hourly note-write quota without spending any                                  |
-| `export_project_config`        | Export this repo's boss setup as `.boss-project.json` content                                          |
-| `diff_project_config`          | Plan converging onto a `.boss-project.json` passed as an argument; writes nothing                      |
-| `list_session_labels`          | List colored session labels and their session counts                                                   |
+| Tool                           | Description                                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `list_sessions`                | Filter by repo, state, label, PR author/target, archived; order by created/updated; limit               |
+| `get_session`                  | Get a single session by id — `state`/`last_check_state` carry no push info, see below                   |
+| `get_proof_view_link`          | Mint a short-lived signed link to a session's hosted review page. See [below](#reading-verify-results). |
+| `list_repos`                   | List every registered repository                                                                        |
+| `list_repo_prs`                | List open PRs with target branch, draft state, dates and owning session — filters below                 |
+| `list_tracker_issues`          | List issues from an external tracker (Linear, Sentry)                                                   |
+| `resolve_context`              | Resolve repo + session for a working directory                                                          |
+| `validate_repo_path`           | Validate a local path is a usable git repo                                                              |
+| `list_chats`                   | List agent chats for a session                                                                          |
+| `get_chat_statuses`            | Get live chat status for a session — `last_output_at` is a floor, see below                             |
+| `get_session_statuses`         | Get best live status across chats for multiple sessions — aggregate only, see below                     |
+| `list_check_snapshots`         | List recent CI check snapshots, newest first. See [verify verdict](#verify-verdict).                    |
+| `repair_doctor`                | Run daemon repair-doctor diagnostics                                                                    |
+| `list_agents`                  | List loaded agent-runner plugins                                                                        |
+| `list_plugins`                 | List every plugin the daemon attempted to load                                                          |
+| `list_cron_jobs`               | List every scheduled cron job                                                                           |
+| `get_cron_job`                 | Get a single cron job by id                                                                             |
+| `get_chat_transcript`          | Return the conversation transcript and final assistant text for a chat                                  |
+| `list_accounts`                | List registry accounts and cached usage metadata; credentials are never returned                        |
+| `get_settings`                 | Get the daemon's global settings — the TUI-editable subset plus each agent's config                     |
+| `list_github_callbacks`        | List registered GitHub PR callbacks; the delivery message body is never returned                        |
+| `list_notes`                   | List repo-scoped notes, optionally filtered by repo, provenance, tags, or a body substring              |
+| `get_note`                     | Get a single note by id, including its full body and normalised tags                                    |
+| `list_broadcasts`              | List broadcasts and their lifecycle state; the message body is never returned                           |
+| `list_broadcast_subscriptions` | List standing broadcast subscriptions; the registered message body is never returned                    |
+| `list_organization_notes`      | List a page of an organization's cloud notes, filtered (hosted endpoint only)                           |
+| `get_organization_note`        | Get one organization note by id, with its body, origin and 90-day `expires_at`                          |
+| `get_organization_note_quota`  | Report an organization's hourly note-write quota without spending any                                   |
+| `export_project_config`        | Export this repo's boss setup as `.boss-project.json` content                                           |
+| `diff_project_config`          | Plan converging onto a `.boss-project.json` passed as an argument; writes nothing                       |
+| `list_session_labels`          | List colored session labels and their session counts                                                    |
 
 ### Verify verdict
 

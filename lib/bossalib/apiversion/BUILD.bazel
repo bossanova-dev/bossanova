@@ -60,6 +60,7 @@ go_test(
         "procedureset_test.go",
         "production_coverage_test.go",
         "proof_attention_test.go",
+        "proof_hosting_default_test.go",
         "proxy_list_repos_holder_resolution_test.go",
         "proxy_list_sessions_owner_resolution_test.go",
         "ready_test.go",

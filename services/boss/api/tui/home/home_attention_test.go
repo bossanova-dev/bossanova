@@ -219,7 +219,7 @@ func TestHomeAttentionFooterAndCursor(t *testing.T) {
 	h.Table.SetCursor(row)
 	h.BuildTableRows()
 	left, _, _ = h.SessionTableFooterActions()
-	if want := []string{"[n]ew session", "[enter] select", "[p] proof", "[m] merge", "[/] search"}; !reflect.DeepEqual(left, want) {
+	if want := []string{"[n]ew session", "[enter] select", "[p] review page", "[m] merge", "[/] search"}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("review footer=%v", left)
 	}
 

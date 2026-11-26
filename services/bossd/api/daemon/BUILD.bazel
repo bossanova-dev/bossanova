@@ -377,6 +377,7 @@ go_test(
         "update_repo_secret_concurrency_test.go",
         "update_repo_trust_test.go",
         "update_session_test.go",
+        "upload_evidence_extensions_test.go",
         "upload_evidence_hosted_test.go",
         "upload_evidence_log_test.go",
         "upload_evidence_record_test.go",
@@ -392,7 +393,10 @@ go_test(
         exclude = ["*_test.go"],
     ),  # keep: tests read migrations/*.sql from disk via runtime.Caller, and TestNoRawDoChanCallInThisPackage + TestSwitchFlightAttachedIsAssignedOnlyByTests both parse this package's own sources
     embed = [":daemon"],
-    embedsrcs = ["describe_chat_mcp.go"],
+    embedsrcs = [
+        "describe_chat_mcp.go",
+        "testdata/proof-extensions.json",
+    ],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     deps = [
         "//lib/bossalib/apiversion",

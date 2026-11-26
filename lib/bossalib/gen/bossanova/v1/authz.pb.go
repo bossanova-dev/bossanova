@@ -115,6 +115,11 @@ const (
 	Entitlement_ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION Entitlement = 3
 	// The handler checks the requested organization after authorizing membership.
 	Entitlement_ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION Entitlement = 4
+	// Hosted proof pages: met by any signed-in daemon owner acting for a
+	// repository-resolved organization they belong to. Paid cloud access does
+	// not gate it. The handler resolves the organization and its owner's off
+	// switch, so the interceptor passes it through.
+	Entitlement_ENTITLEMENT_PROOF_HOSTING Entitlement = 5
 )
 
 // Enum value maps for Entitlement.
@@ -125,6 +130,7 @@ var (
 		2: "ENTITLEMENT_CLOUD",
 		3: "ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION",
 		4: "ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION",
+		5: "ENTITLEMENT_PROOF_HOSTING",
 	}
 	Entitlement_value = map[string]int32{
 		"ENTITLEMENT_UNSPECIFIED":                   0,
@@ -132,6 +138,7 @@ var (
 		"ENTITLEMENT_CLOUD":                         2,
 		"ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION": 3,
 		"ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION":  4,
+		"ENTITLEMENT_PROOF_HOSTING":                 5,
 	}
 )
 
@@ -223,13 +230,14 @@ const file_bossanova_v1_authz_proto_rawDesc = "" +
 	"\x12AUTHZ_LEVEL_DAEMON\x10\x03\x12\x1e\n" +
 	"\x1aAUTHZ_LEVEL_USER_OR_DAEMON\x10\x04\x12\x1a\n" +
 	"\x16AUTHZ_LEVEL_ORG_MEMBER\x10\x05\x12\x19\n" +
-	"\x15AUTHZ_LEVEL_ORG_OWNER\x10\x06*\xb4\x01\n" +
+	"\x15AUTHZ_LEVEL_ORG_OWNER\x10\x06*\xd3\x01\n" +
 	"\vEntitlement\x12\x1b\n" +
 	"\x17ENTITLEMENT_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10ENTITLEMENT_NONE\x10\x01\x12\x15\n" +
 	"\x11ENTITLEMENT_CLOUD\x10\x02\x12-\n" +
 	")ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION\x10\x03\x12,\n" +
-	"(ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION\x10\x04:[\n" +
+	"(ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION\x10\x04\x12\x1d\n" +
+	"\x19ENTITLEMENT_PROOF_HOSTING\x10\x05:[\n" +
 	"\vauthz_level\x12\x1e.google.protobuf.MethodOptions\x18\xb9\x8e\x03 \x01(\x0e2\x18.bossanova.v1.AuthzLevelR\n" +
 	"authzLevel:]\n" +
 	"\ventitlement\x12\x1e.google.protobuf.MethodOptions\x18\xba\x8e\x03 \x01(\x0e2\x19.bossanova.v1.EntitlementR\ventitlement:@\n" +

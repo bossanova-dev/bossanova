@@ -353,6 +353,8 @@ node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check --repo "$(git rev-parse 
 Act on every list it reports:
 
 - `skippedCommits` ⇒ re-run the generators for those paths.
+- `regenerate` ⇒ both sides changed these generated files and the merge kept one: run
+  `command(config, 'generate')` (else the repo's generator) and commit the result.
 - `lostAdditions` ⇒ re-apply the branch change onto the base's new structure and re-verify the
   commit's own claim.
 - `baseAddedTests` ⇒ run them by name.

@@ -3,8 +3,14 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
+import { loadSkillConfig } from '../skill-config.mjs'
 import { recordHeadProof, uploadProofPage } from './verify-proof-publish.mjs'
-import { discoverProofPublisher } from './verify-proof-publisher.mjs'
+import {
+  discoverProofPublisher,
+  fallbackNotice,
+  isSetupFailure,
+  setupFailure,
+} from './verify-proof-publisher.mjs'
 import { parseProofLine } from './verify-proof.mjs'
 import { PAGE_OBJECT, PUBLISH_HOOK_TIMEOUT_MS } from './verify-publish-hook.mjs'
 
@@ -54,6 +60,7 @@ test('the trusted base tree picks hook, then publishConfig.proof, then hosted @s
   })
   assert.deepEqual(pick({ kind: 'access-put', baseUrl }), {
     publisher: { kind: 'access-put', baseUrl, keychainService: undefined },
+    fallback: { kind: 'hosted' },
   })
   assert.deepEqual(pick({ kind: 'access-put', baseUrl: 'http://proof.example' }), {
     publisher: null,
@@ -65,6 +72,23 @@ test('the trusted base tree picks hook, then publishConfig.proof, then hosted @s
   })
   hook(trusted, 'boss-verify-base-hook')
   assert.equal(pick({ baseUrl, bucket: 'proof' }).publisher.kind, 'hook')
+})
+
+test('a hostedFallback-only proof block loads, keeps a hook without fallback and names no publisher @sessions.AC278701', (t) => {
+  const trusted = tempDir('publisher-fallback-only-', t)
+  writeConfig(trusted, { publishConfig: { proof: { hostedFallback: false } } })
+  assert.equal(loadSkillConfig({ cwd: trusted }).publishConfig.proof.hostedFallback, false)
+  const discover = () =>
+    discoverProofPublisher({
+      baseSha: BASE,
+      cwd: tempDir('publisher-fallback-only-checkout-', t),
+      trustedTree: () => ({ ok: true, root: trusted }),
+    })
+  assert.deepEqual(discover(), { publisher: { kind: 'hosted' } })
+  hook(trusted, 'boss-verify-base-hook')
+  const found = discover()
+  assert.equal(found.publisher.kind, 'hook')
+  assert.equal(found.fallback, undefined)
 })
 
 test('a base opt-out or unreadable base config publishes nothing, unless a base hook exists @sessions.AC261102', (t) => {
@@ -245,7 +269,10 @@ test('an over-limit refusal carries its limit only when both headers are valid @
 })
 
 /** recordHeadProof for a parked head with real discovery over `trusted` and a recording daemon. */
-async function recordParked(t, { trusted, answer = HOSTED_PAGE, loadConfig }) {
+async function recordParked(
+  t,
+  { trusted, answer = HOSTED_PAGE, loadConfig, actions = {}, env = {} },
+) {
   const workspace = tempDir('publisher-record-', t)
   const daemon = []
   const notes = []
@@ -278,7 +305,7 @@ async function recordParked(t, { trusted, answer = HOSTED_PAGE, loadConfig }) {
     },
   }
   const result = await recordHeadProof(
-    { read, repo: 'acme/widgets', pr: 7, headSha: HEAD, judged, cwd: workspace, env: {} },
+    { read, repo: 'acme/widgets', pr: 7, headSha: HEAD, judged, cwd: workspace, env },
     {
       trustedTree: () => ({ ok: true, root: trusted }),
       ...(loadConfig ? { loadConfig } : {}),
@@ -290,6 +317,7 @@ async function recordParked(t, { trusted, answer = HOSTED_PAGE, loadConfig }) {
         if (method === 'UploadEvidence') return answer
         return { htmlUrl: 'https://github.com/acme/widgets/runs/1', isCreated: true }
       },
+      ...actions,
     },
   )
   return { result, daemon, notes }
@@ -324,4 +352,189 @@ test('an opted-out or unreadable base config never calls UploadEvidence @session
     assert.equal(notes.length, 1, 'the note still records the level')
     assert.ok(!daemon.some((call) => call.method === 'UploadEvidence'))
   }
+})
+
+const ACCESS = { kind: 'access-put', baseUrl: 'https://proof.example' }
+const NO_KEYCHAIN = { readKeychain: () => null }
+const uploads = (daemon) => daemon.filter((call) => call.method === 'UploadEvidence')
+function reportingHook(root, result) {
+  hook(root, 'boss-verify-base-hook')
+  const script = path.join(root, '.claude', 'skills', 'boss-verify-base-hook', 'publish.mjs')
+  if (result === null) fs.rmSync(script)
+  else {
+    const out = JSON.stringify({
+      extension: 'boss-verify-base-hook',
+      role: 'proof-publish',
+      ...result,
+    })
+    fs.writeFileSync(script, `process.stdout.write(${JSON.stringify(out)})\n`)
+  }
+}
+
+test('access-put without credentials publishes once to the hosted host and names the missing variables @sessions.AC278701', async (t) => {
+  const { result, daemon, notes } = await recordParked(t, {
+    trusted: tempDir('fallback-access-', t),
+    loadConfig: () => ({ publishConfig: { proof: ACCESS } }),
+    actions: {
+      ...NO_KEYCHAIN,
+      fetchImpl: () => {
+        throw new Error('must not reach the Access host')
+      },
+    },
+  })
+  const fallbackFrom = {
+    kind: 'access-put',
+    reason: 'credentials-missing',
+    detail: 'PROOF_ACCESS_CLIENT_ID, PROOF_ACCESS_CLIENT_SECRET',
+  }
+  assert.deepEqual(result.page, {
+    published: true,
+    url: REVIEW_URL,
+    publisher: 'hosted',
+    fallbackFrom,
+  })
+  assert.equal(uploads(daemon).length, 1)
+  assert.equal(uploads(daemon)[0].message.destination, HOSTED)
+  const body = notes[0].note.body
+  assert.ok(
+    body.includes(
+      'access-put: credentials missing (PROOF_ACCESS_CLIENT_ID, PROOF_ACCESS_CLIENT_SECRET); published to Bossanova hosting instead.',
+    ),
+  )
+  assert.equal(parseProofLine(body).page, REVIEW_URL)
+  assert.match(body.split('\n').at(-1), /^<!-- boss-proof-note head=/)
+})
+
+test('an unreachable Access host falls back; an Access host that answers never does @sessions.AC278701', async (t) => {
+  const env = {
+    PROOF_ACCESS_CLIENT_ID: 'client-id',
+    PROOF_ACCESS_CLIENT_SECRET: 'client-secret-value',
+  }
+  const record = (fetchImpl) =>
+    recordParked(t, {
+      trusted: tempDir('fallback-unreachable-', t),
+      loadConfig: () => ({ publishConfig: { proof: ACCESS } }),
+      actions: { fetchImpl },
+      env,
+    })
+  for (const code of ['ECONNREFUSED', 'ENOTFOUND']) {
+    const { result, daemon } = await record(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: { code } })
+    })
+    assert.equal(result.page.publisher, 'hosted', code)
+    assert.equal(result.page.fallbackFrom.reason, 'host-unreachable', code)
+    assert.equal(uploads(daemon).length, 1, code)
+  }
+  for (const [status, reason] of [
+    [401, 'upload-refused'],
+    [403, 'upload-refused'],
+    [500, 'upload-failed'],
+  ]) {
+    const { result, daemon } = await record(async () => ({ status }))
+    assert.equal(result.page.published, false, String(status))
+    assert.equal(result.page.reason, reason, String(status))
+    assert.equal(result.page.fallbackFrom, undefined)
+    assert.equal(uploads(daemon).length, 0, String(status))
+  }
+})
+
+test('a hook that reports not-configured or credentials-missing, or has no script, falls back @sessions.AC278701', async (t) => {
+  for (const [result, reason] of [
+    [{ ok: false, error: 'not-configured' }, 'not-configured'],
+    [{ ok: false, error: 'credentials-missing' }, 'credentials-missing'],
+    [null, 'not-configured'],
+  ]) {
+    const trusted = tempDir('fallback-hook-', t)
+    reportingHook(trusted, result)
+    const recorded = await recordParked(t, { trusted })
+    assert.deepEqual(recorded.result.page, {
+      published: true,
+      url: REVIEW_URL,
+      publisher: 'hosted',
+      fallbackFrom: { kind: 'hook', reason },
+    })
+    assert.equal(uploads(recorded.daemon).length, 1)
+    assert.ok(
+      recorded.notes[0].note.body.includes(`proof-publish hook: ${reason.replace('-', ' ')};`),
+    )
+  }
+  const trusted = tempDir('fallback-hook-other-', t)
+  reportingHook(trusted, { ok: false, error: 'quota-exhausted' })
+  const other = await recordParked(t, { trusted })
+  assert.equal(other.result.page.reason, 'hook-failed:invalid:ok must be true')
+  assert.equal(uploads(other.daemon).length, 0)
+})
+
+test('an opt-out, an unreadable config or a content failure never uploads to the hosted host @sessions.AC278701', async (t) => {
+  const missing = { ...NO_KEYCHAIN, fetchImpl: () => ({ status: 201 }) }
+  const optedOut = await recordParked(t, {
+    trusted: tempDir('fallback-optout-', t),
+    loadConfig: () => ({ publishConfig: { proof: { ...ACCESS, hostedFallback: false } } }),
+    actions: missing,
+  })
+  assert.deepEqual(optedOut.result.page, {
+    published: false,
+    reason: 'credentials-missing',
+    detail: 'PROOF_ACCESS_CLIENT_ID, PROOF_ACCESS_CLIENT_SECRET',
+  })
+  assert.equal(uploads(optedOut.daemon).length, 0)
+  for (const loadConfig of [
+    () => ({ publishConfig: { proof: false } }),
+    () => ({ publishConfig: { proof: { ...ACCESS, hostedFallback: false } } }),
+    () => {
+      throw new Error('bad config')
+    },
+  ]) {
+    const trusted = tempDir('fallback-hook-optout-', t)
+    reportingHook(trusted, { ok: false, error: 'not-configured' })
+    const { result, daemon } = await recordParked(t, { trusted, loadConfig })
+    assert.deepEqual(result.page, { published: false, reason: 'hook-failed:not-configured' })
+    assert.equal(uploads(daemon).length, 0)
+  }
+  const secret = await recordParked(t, {
+    trusted: tempDir('fallback-secret-', t),
+    loadConfig: () => ({ publishConfig: { proof: ACCESS } }),
+    actions: {
+      readKeychain: () => 'API contract',
+      fetchImpl: missing.fetchImpl,
+      uploadPage: (input) => uploadProofPage({ ...input, platform: 'darwin' }),
+    },
+  })
+  assert.deepEqual(secret.result.page, { published: false, reason: 'page-contains-secret' })
+  assert.equal(uploads(secret.daemon).length, 0)
+})
+
+test('only a hook or Access PUT setup failure is a fallback reason @sessions.AC278701', () => {
+  for (const reason of ['credentials-missing', 'not-configured', 'host-unreachable'])
+    assert.equal(isSetupFailure(reason), true, reason)
+  for (const reason of [
+    'page-contains-secret',
+    'over-limit',
+    'page-too-large',
+    'upload-refused',
+    'upload-failed',
+    'timeout',
+    'invalid-publish-config',
+  ]) {
+    assert.equal(isSetupFailure(reason), false, reason)
+    assert.equal(setupFailure(ACCESS, { ok: false, reason }), null, reason)
+    assert.equal(
+      setupFailure({ kind: 'hook' }, { ok: false, reason: `hook-failed:${reason}` }),
+      null,
+    )
+  }
+  for (const kind of ['hosted', 'daemon'])
+    assert.equal(setupFailure({ kind }, { ok: false, reason: 'not-configured' }), null, kind)
+  assert.equal(setupFailure(ACCESS, { ok: true, url: REVIEW_URL }), null)
+  assert.equal(
+    fallbackNotice(
+      {
+        kind: 'access-put',
+        reason: 'host-unreachable',
+        detail: 'TypeError: fetch failed (ENOTFOUND)',
+      },
+      { published: false, reason: 'quota-exhausted' },
+    ),
+    'access-put: host unreachable (TypeError: fetch failed (ENOTFOUND)); Bossanova hosting did not take the page either (quota-exhausted).',
+  )
 })

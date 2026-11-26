@@ -5,8 +5,9 @@
 //   derivedCheck     a criterion with no command that names a test file the repo maps to a runner
 //                    (`acceptance.derivedChecks: [{glob, command}]`) gets that runner as its check.
 //   isFullGateCheck  a check made only of the repo's full gate commands (`acceptance.
-//                    fullGateCommands`, default `commands.lint` and `commands.test`) is what CI
-//                    runs, so a recorded green CI wait on the head proves it (../ci/ci-wait-record.mjs).
+//                    fullGateCommands`, default `commands.lint` and `commands.test`), each in a
+//                    directory it counts in, is what CI runs, so a recorded green CI wait on the
+//                    head proves it (../ci/ci-wait-record.mjs).
 
 import { globToRegExp } from '../skill-config.mjs'
 
@@ -80,18 +81,122 @@ export function derivedCheck(config, text, files) {
 
 const normalise = (command) => command.trim().replace(/\s+/g, ' ')
 
-/** The repo's full gate commands: `acceptance.fullGateCommands`, else `commands.lint`/`.test`. */
-function fullGateCommands(config) {
-  const declared = config?.acceptance?.fullGateCommands
-  const list = Array.isArray(declared) ? declared : [config?.commands?.lint, config?.commands?.test]
-  return new Set(list.filter((c) => typeof c === 'string' && c.trim()).map(normalise))
+// A directory a gate step can follow: no absolute, home, option or shell-expanded path.
+const PLAIN_DIR = /^(?![-~/])[\w@%+=:,./-]+$/
+
+/** The repo-relative directory (`.` for the root) `dir` reaches from `cwd`; null above the root. */
+function within(cwd, dir) {
+  if (typeof dir !== 'string' || !PLAIN_DIR.test(dir)) return null
+  const parts = cwd === '.' ? [] : cwd.split('/')
+  for (const part of dir.split('/')) {
+    if (part === '..') {
+      if (!parts.length) return null
+      parts.pop()
+    } else if (part && part !== '.') parts.push(part)
+  }
+  return parts.length ? parts.join('/') : '.'
 }
 
-/** Whether every `&&` step of `check` is one of the repo's full gate commands. */
+// `make`'s directory options: `-C <dir>`, `-C<dir>`, `--directory <dir>`, `--directory=<dir>`.
+const MAKE_DIRECTORY = /^(?:-C(.*)|--directory(?:=(.*))?)$/
+
+function makeDirectory(words, i) {
+  const match = MAKE_DIRECTORY.exec(words[i])
+  if (!match) return null
+  const dir = match[1] || match[2]
+  return dir ? { dir, next: i + 1 } : { dir: words[i + 1], next: i + 2 }
+}
+
+/**
+ * The `{dir, command}` steps an `&&` chain runs, `dir` repo-relative (`.` for the root): a
+ * `cd <dir>` step moves the steps after it, and `make -C <dir> <args>` is `make <args>` run in
+ * `<dir>`. null when a step is empty or a directory cannot be followed.
+ * @param {string} command
+ * @returns {{dir: string, command: string}[] | null}
+ */
+export function gateSteps(command) {
+  let cwd = '.'
+  const steps = []
+  for (const raw of String(command).split('&&')) {
+    const words = normalise(raw).split(' ').filter(Boolean)
+    if (words[0] === 'cd') {
+      cwd = words.length === 2 ? within(cwd, words[1]) : null
+      if (cwd === null) return null
+      continue
+    }
+    if (!words.length) return null
+    let dir = cwd
+    const kept = words.slice(0, 1)
+    for (let i = 1; i < words.length;) {
+      const option = words[0] === 'make' ? makeDirectory(words, i) : null
+      if (!option) {
+        kept.push(words[i++])
+        continue
+      }
+      dir = within(dir, option.dir)
+      if (dir === null) return null
+      i = option.next
+    }
+    steps.push({ dir, command: kept.join(' ') })
+  }
+  return steps
+}
+
+/** The declared gate entries: `acceptance.fullGateCommands`, else `commands.lint`/`.test`. */
+function declaredGates(config) {
+  const declared = config?.acceptance?.fullGateCommands
+  return Array.isArray(declared) ? declared : [config?.commands?.lint, config?.commands?.test]
+}
+
+/**
+ * The repo's full gates as `{command, dir}`, `dir` the RegExp of the directories a gate counts in
+ * (null for any). A plain entry counts anywhere unless it moves directory itself (`make -C web
+ * test` is `make test` in `web`); a `{dir, command}` entry counts in the directories its glob
+ * matches. Entries that are not one command, such as a bare `cd <dir>`, are left out.
+ */
+function fullGates(config) {
+  const gates = []
+  for (const entry of declaredGates(config)) {
+    const scoped = typeof entry?.dir === 'string' && typeof entry?.command === 'string'
+    const steps = gateSteps(scoped ? entry.command : typeof entry === 'string' ? entry : '')
+    if (steps?.length !== 1 || !steps[0].command) continue
+    const [{ dir, command }] = steps
+    if (scoped) {
+      const glob =
+        entry.dir
+          .trim()
+          .replace(/^(?:\.\/)+/, '')
+          .replace(/\/+$/, '') || '.'
+      if (dir !== '.') continue
+      gates.push({ command, dir: globToRegExp(glob) })
+    } else gates.push({ command, dir: dir === '.' ? null : globToRegExp(dir) })
+  }
+  return gates
+}
+
+/** The pre-directory rule: every `&&` step is literally one of the plain entries. */
+function literalGateCheck(config, check) {
+  const literal = new Set(
+    declaredGates(config)
+      .filter((c) => typeof c === 'string' && c.trim())
+      .map(normalise),
+  )
+  return literal.size > 0 && check.split('&&').every((step) => literal.has(normalise(step)))
+}
+
+/** Whether every step of `check`, in the directory it runs in, is one of the repo's full gates. */
 export function isFullGateCheck(config, check) {
   if (typeof check !== 'string' || !check.trim()) return false
-  const gate = fullGateCommands(config)
-  return gate.size > 0 && check.split('&&').every((step) => gate.has(normalise(step)))
+  if (literalGateCheck(config, check)) return true
+  const gates = fullGates(config)
+  const steps = gateSteps(check)
+  return (
+    gates.length > 0 &&
+    Boolean(steps?.length) &&
+    steps.every((step) =>
+      gates.some((gate) => gate.command === step.command && (!gate.dir || gate.dir.test(step.dir))),
+    )
+  )
 }
 
 /** Recover a leading inline gate assertion, using only commands the repo declares as full gates. */

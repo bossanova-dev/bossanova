@@ -170,7 +170,7 @@ test('the proof-missing comment and boss note show the detail, sanitised and bou
   assert.match(note.body, /^- `page`: `upload-failed` \(`EACCES: permission denied`\)$/m)
   assert.equal(
     proofMissingBossNote({ pr: 7, headSha: HEAD, problems }),
-    'PR #7 (dddddddddddd) proof incomplete: page: upload-failed (EACCES: permission denied)',
+    'PR #7 (dddddddddddd) review page incomplete: page: upload-failed (EACCES: permission denied)',
   )
 
   const raw = `first line\n\`${LEAKY}\` ${'x'.repeat(400)}`

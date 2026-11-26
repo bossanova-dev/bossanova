@@ -1,4 +1,4 @@
-.PHONY: buf-path buf-check-version deps deps-golangci lint-check-version setup-worktree tidy tidy-check
+.PHONY: buf-path buf-check-version deps deps-golangci lint-check-version merge-drivers setup-worktree tidy tidy-check
 
 tidy:
 	bash .github/scripts/tidy-drift-all.sh --fix
@@ -44,6 +44,7 @@ deps:
 		echo "    $$pkg"; \
 		go install "$$pkg" || echo "    (warning: failed to install $$pkg; make debt-* will fetch it on demand)"; \
 	done
+	@$(MAKE) --no-print-directory merge-drivers
 	@echo "==> Done. Run 'make build' to build binaries ('make' is now a fast affected lint+test check; 'make all-full' is the full rebuild)."
 
 # Keys from the checkout's .env that setup-worktree writes into an agent worktree's .env
@@ -67,6 +68,8 @@ setup-worktree:
 
 .PHONY: setup-worktree-provision
 setup-worktree-provision:
+	@node "$$WORKTREE_DIR/scripts/dev/git-merge-drivers.mjs" install --repo "$$WORKTREE_DIR" \
+		|| echo "warning: git merge driver setup failed (non-fatal)"
 	@sh "$$WORKTREE_DIR/scripts/dev/ensure-buf.sh" install "$(BUF_VERSION)" "$(BUF)" \
 		|| echo "warning: pinned buf provisioning failed (non-fatal)"
 	@# Install JS deps so EVERY worktree (cron included) has node_modules and the
@@ -128,6 +131,11 @@ setup-worktree-provision:
 	else \
 		echo "bazel not found on PATH — make test will fall back to the native go test loop (run 'make deps' to install bazelisk)"; \
 	fi
+
+## merge-drivers: Define the git merge drivers .gitattributes names (generated output keeps the
+## current side, then regenerate). Idempotent; one run covers the clone and all its worktrees.
+merge-drivers:
+	@node scripts/dev/git-merge-drivers.mjs install --repo "$(CURDIR)"
 
 ## web-deps: Install web dependencies (needed for protoc-gen-es plugin)
 $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml

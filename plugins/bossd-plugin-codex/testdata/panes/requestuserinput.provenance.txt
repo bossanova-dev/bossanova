@@ -1,0 +1,31 @@
+# Written alongside capture-request-user-input.sh, which produced every pane
+# under requestuserinput/. Re-run the script instead of hand-editing a pane,
+# then update this file.
+codex-cli: codex-cli 0.167.2 (logged in with ChatGPT)
+launch: codex -s read-only --enable default_mode_request_user_input
+  (start-up dialogs: 1 "Run without daemon this time", 2 "Skip" the update,
+  Enter to trust the scratch folder, 3 "Continue without trusting" hooks)
+tmux: tmux 3.8, private socket, pane 200x50, `capture-pane -p`
+os: darwin-arm64 (macOS 26.5.1)
+captured: 2026-11-26
+redacted: the scratch project path, as /tmp/project
+keys (each capture is taken after the keys before it):
+  single_untouched     prompt: one question, Red / Green / Blue
+  single_down          Down
+  single_notes_open    Tab
+  single_notes_typed   "make it pastel"
+  single_answered      Escape (clears the notes), 3, turn ends
+  two_q1               prompt: two questions, colour then Small / Large
+  two_q2               2
+  two_q1_back          Left
+  two_q2_notes_typed   Right, Tab, "rounded corners"  (then Enter submits all)
+  none_q1              prompt: two questions, Circle / Square then Thin / Thick
+  none_q1_on_none      Down, Down
+  none_q1_notes_open   Tab
+  none_q1_notes_typed  "a hexagon"
+  none_q2              Enter
+  none_answered        2, turn ends
+findings: a digit picks its row and submits it at once (the next question, or
+  the call on its last question); the card draws no mark on a choice already
+  made; codex 0.167.2's schema has no several-choice question (the model
+  reports a question object as header, id, question and 2-3 options only).

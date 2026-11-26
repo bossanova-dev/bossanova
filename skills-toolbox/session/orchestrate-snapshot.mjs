@@ -34,7 +34,9 @@ import { DEFAULT_STATE_DIR, holdRows, readOutage } from './orchestrate-outage.mj
 import { paneVerb } from './orchestrate-pane.mjs'
 import { printTable } from './orchestrate-table.mjs'
 import {
+  CHAT_IDLE_AFTER,
   CRON_FINALIZE_WAIT,
+  chatsQuietFor,
   cronTurnEndedFor,
   isCronRun,
   isDependabotPr,
@@ -352,8 +354,14 @@ function classifyProgress({ session, chats, pr, residual, cronJob, now }) {
   }
   if (pr.is_draft) {
     if (live.length) return working('draft')
-    if (!chats.some(waitingOnReady))
+    if (!chats.some(waitingOnReady)) {
+      // One IDLE sample is not a stall: bossd serves it between turns, and for a busy agent whose
+      // pane stopped redrawing on a loaded host. Wait out the same quiet window as a stuck chat.
+      const quiet = chatsQuietFor(chats, now)
+      if (quiet !== null && quiet < CHAT_IDLE_AFTER)
+        return verdict('ok', `draft; chats quiet ${Math.floor(quiet / MINUTE)}m`)
       return verdict('stalled', 'draft PR with no live chat and no armed verify')
+    }
     const hold = pr.draftHold ?? { holder: 'born-draft', repaired: false }
     if (hold.holder === 'operator')
       return verdict('ask-operator', 'draft held by an unattributed conversion')

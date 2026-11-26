@@ -1073,3 +1073,14 @@ organizations. The chat's own organization still decides access: a caller it
 does not admit gets "chat not found", the same answer as a missing chat. Calls
 that name the session as well already crossed organizations from 2026-09-08.
 Older pins keep the former answer, "chat not found".
+
+This version also hosts proof pages by default. `StartProofUpload` accepts any
+organization the daemon owner belongs to, resolved from the repository, unless
+an owner turned hosting off, which answers `FailedPrecondition`. Paid cloud
+access no longer affects it. `SetOrganizationProofHosting` turns hosting off or
+on without cloud access, and `GetOrganizationProofHosting` reports `is_enabled`
+true until an owner turns it off, `is_available` true for every organization,
+and who turned it off and when in the new `disabled_by_user_id` and
+`disabled_at` fields. The `enabled_at` and `enabled_by_user_id` fields are
+deprecated and always unset. These changes apply to every version: each one
+turns a refusal into an acceptance.

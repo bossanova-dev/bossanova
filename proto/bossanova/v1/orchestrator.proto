@@ -827,15 +827,15 @@ service OrchestratorService {
     option (bossanova.v1.permission) = "none";
   }
   // StartProofUpload reserves one hosted proof page for a pull request head.
-  // Only a daemon may call it. bosso resolves the organization from the repo,
-  // requires its own cloud access and hosted-proof opt-in (FailedPrecondition),
-  // and validates the manifest (InvalidArgument). Limits are ResourceExhausted
-  // with a ProofUploadLimitExceeded detail. Returns page identity, never a URL.
-  // This additive RPC needs no dated API bump; see
-  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  // Only a daemon may call it. bosso resolves the organization from the repo
+  // (PermissionDenied for a non-member), refuses an organization whose owner
+  // turned hosted proof pages off (FailedPrecondition), and validates the
+  // manifest (InvalidArgument). Limits are ResourceExhausted with a
+  // ProofUploadLimitExceeded detail. Returns page identity, never a URL. Paid
+  // cloud access does not affect admission (apiversion V20261108).
   rpc StartProofUpload(StartProofUploadRequest) returns (StartProofUploadResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
-    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_PROOF_HOSTING;
     option (bossanova.v1.permission) = "none";
   }
   // PutProofObject writes one file of a hosted proof page started with
@@ -854,6 +854,23 @@ service OrchestratorService {
   rpc PutProofObject(PutProofObjectRequest) returns (PutProofObjectResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // AbortProofUpload releases the quota reservation of a proof upload the
+  // daemon could not finish, so a page that failed partway stops counting in
+  // the organization's and the global quota windows. Only a daemon may call
+  // it. bosso re-resolves the organization from repo_origin_url and the daemon
+  // owner's membership, as PutProofObject does, and requires its own cloud
+  // access (FailedPrecondition); the upload must belong to that organization
+  // and repository (NotFound otherwise). Aborting a completed upload is
+  // FailedPrecondition; aborting an already released one succeeds, so a
+  // retried call is idempotent. A later PutProofObject for an aborted upload
+  // is FailedPrecondition.
+  // This additive RPC needs no dated API bump; see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  rpc AbortProofUpload(AbortProofUploadRequest) returns (AbortProofUploadResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_PROOF_HOSTING;
     option (bossanova.v1.permission) = "none";
   }
   // MintProofViewLink returns a short-lived signed link to the newest
@@ -1019,20 +1036,20 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "organization:admin";
   }
-  // GetOrganizationProofHosting reports whether the organization has opted in to
-  // hosted proof pages, who turned it on and when, and whether the organization's
-  // own cloud access currently allows turning it on.
+  // GetOrganizationProofHosting reports whether the organization hosts proof
+  // pages (on unless an owner turned it off) and, while off, who turned it off
+  // and when.
   rpc GetOrganizationProofHosting(GetOrganizationProofHostingRequest) returns (GetOrganizationProofHostingResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "organization:read";
   }
   // SetOrganizationProofHosting turns hosted proof pages on or off for the
-  // caller's active organization. Owner only. Turning on requires the
-  // organization's own cloud access to be active; turning off never does.
+  // caller's active organization. Owner only. Neither direction needs cloud
+  // access (apiversion V20261108).
   rpc SetOrganizationProofHosting(SetOrganizationProofHostingRequest) returns (SetOrganizationProofHostingResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
-    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "organization:admin";
   }
   // SetMemberSessionSharing turns member session sharing on or off for the
@@ -2926,6 +2943,14 @@ message PutProofObjectResponse {
   bool is_completed = 3;
 }
 
+// AbortProofUploadRequest names a started proof upload to release.
+message AbortProofUploadRequest {
+  string upload_id = 1;
+  string repo_origin_url = 2;
+}
+
+message AbortProofUploadResponse {}
+
 // MintProofViewLinkRequest names one pull request's hosted proof page.
 message MintProofViewLinkRequest {
   // The repository's origin URL, canonicalized as StartProofUpload does.
@@ -3412,18 +3437,23 @@ message RenameOrganizationResponse {
   Organization organization = 1;
 }
 
-// OrganizationProofHosting is an organization's hosted proof pages opt-in.
+// OrganizationProofHosting is an organization's hosted proof pages setting:
+// on by default, off once an owner turns it off.
 message OrganizationProofHosting {
   bool is_enabled = 1;
-  // Unset while off.
-  google.protobuf.Timestamp enabled_at = 2;
-  // bosso-local users.id of the owner who turned it on; empty while off or
-  // when that user has been deleted.
-  string enabled_by_user_id = 3;
-  // Whether the organization's own cloud access is active, so an owner could
-  // turn it on now. Judged on this organization alone, never folded over the
-  // caller's other organizations.
+  // Always unset: hosting is on by default, so no enable time is stored
+  // (apiversion V20261108). Read disabled_at instead.
+  google.protobuf.Timestamp enabled_at = 2 [deprecated = true];
+  // Always empty. Read disabled_by_user_id instead.
+  string enabled_by_user_id = 3 [deprecated = true];
+  // Whether an owner could turn it on now. True for every organization;
+  // cloud access no longer gates the switch (apiversion V20261108).
   bool is_available = 4;
+  // When an owner turned it off; unset while on.
+  google.protobuf.Timestamp disabled_at = 5;
+  // bosso-local users.id of the owner who turned it off; empty while on or
+  // when that user has been deleted.
+  string disabled_by_user_id = 6;
 }
 
 message GetOrganizationProofHostingRequest {

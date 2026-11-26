@@ -808,6 +808,8 @@ Act on every list it reports, then record its stderr note in `## Autonomous deci
 base-drift `note`:
 
 - `skippedCommits` ⇒ re-run the generators for those paths.
+- `regenerate` ⇒ both sides changed these generated files and the merge kept one: run
+  `command(config, 'generate')` (else the repo's generator) and commit the result.
 - `lostAdditions` ⇒ re-apply the branch change onto the base's new structure; re-verify its claim.
 - `baseAddedTests` ⇒ run them by name.
 - `retiredByBase`, `conventionSuspects`, `baseRelocations` ⇒ move the branch's writes to the base's
@@ -1040,7 +1042,9 @@ below, and remove that file otherwise. The gate reads it on every later ask, so 
   Step 10 fix) is unreviewed, not a defect. When `tree-changed-since-review` is the gate's only
   reason, run `node "$BOSS_BUILD_TOOLBOX/build/ready-gate.mjs" remap-reviewed-head` (base: the PR's),
   record its `outcome` under `## Autonomous decisions`, and re-read the persisted `REVIEWED_HEAD`.
-  Then re-run Step 6 over the new tip (`REVIEW_BASE` = that persisted `REVIEWED_HEAD` when it is an
+  `carried` (only generated paths changed) needs no review: re-run the relevant tests and ask the
+  gate again. `narrowed` and `unmatched` name `reviewCommits`, the rebased commits whose own change
+  differs; give that list to the reviewer as the change to judge. Otherwise re-run Step 6 over the new tip (`REVIEW_BASE` = that persisted `REVIEWED_HEAD` when it is an
   ancestor of `HEAD`, else the whole branch) as a new pass — Step 6 pools it with every earlier pass,
   never clearing a blocking finding; a later pass may resolve earlier non-blocking findings it
   confirmed gone. Re-publish the review sections and comment,

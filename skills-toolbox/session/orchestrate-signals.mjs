@@ -66,6 +66,15 @@ export function chatQuietFor(chat, now = Date.now()) {
 }
 
 /**
+ * How long every chat of a session has produced no output: the shortest `chatQuietFor` among
+ * them. Null when no chat has an output time.
+ */
+export function chatsQuietFor(chats = [], now = Date.now()) {
+  const known = chats.map((chat) => chatQuietFor(chat, now)).filter((quiet) => quiet !== null)
+  return known.length ? Math.min(...known) : null
+}
+
+/**
  * The idle chat of an in-progress session that nothing will wake, with how long it has been idle,
  * or null: no chat is live, none has armed a callback (`waiting_reason`), and the newest one is
  * IDLE with no output for CHAT_IDLE_AFTER. Idle time is read from the last substantive output, else

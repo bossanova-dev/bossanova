@@ -110,6 +110,14 @@ it. The first publisher that applies uploads them; only the trusted base tree is
 5. Else the daemon's evidence upload with destination `HOSTED` (publisher `hosted`): the daemon's
    hosted proof host only.
 
+When a hook or `access-put` fails for a setup reason (`credentials-missing`, `not-configured` or
+`host-unreachable`), the same page goes through the `hosted` publisher instead, fitted to the same
+limits. The proof note names the failed publisher and its reason, for example `access-put:
+credentials missing (PROOF_ACCESS_CLIENT_ID)`, with variable names only. Content failures, HTTP
+refusals and timeouts never fall back. The trusted base config turns this off with
+`publishConfig.proof.hostedFallback: false`; `publishConfig.proof: false` and an unreadable config
+also mean no fallback.
+
 Both daemon uploads send the media, the player and the page (last) in one call when they fit 64
 objects, with the media timeout; a larger page goes as 64-object media calls, then the page alone.
 A hosted page is linked through the URL the daemon returns, not under the bucket prefix. A page

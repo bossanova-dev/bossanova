@@ -8,9 +8,9 @@
     CHAT          AGENT   CREATED  ACTIVE  STATUS                                   
   ❯ verify        claude  1h ago   1h ago  ⣾ waiting                                
     Run bs-build  claude  1h ago   1h ago  done · standby: wakes if CI turns red    
-                                                                                                            
-  [enter] open chat  [d]elete · [n]ew chat  [s]ettings  [g]ithub  [p]roof  [m]erge  [a]rchive · [esc] back  
-                                                                                                            
+                                                                                                                    
+  [enter] open chat  [d]elete · [n]ew chat  [s]ettings  [g]ithub  [p] review page  [m]erge  [a]rchive · [esc] back  
+                                                                                                                    
   Timeline                                                                           
     17:10  ✓ Build started                                                           
     17:20  ● Waiting for your answer  “Run make test now and tell me if it passes.”  

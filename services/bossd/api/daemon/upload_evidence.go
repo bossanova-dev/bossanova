@@ -45,10 +45,15 @@ const (
 	evidencePlayerName = "player.js"
 )
 
+// evidenceMediaExtensions are the extensions a proof page's media may end in.
+// They equal the daemonMedia list of testdata/proof-extensions.json, the table
+// bosso's allowed extensions and the proof host Worker are compared against.
+var evidenceMediaExtensions = []string{"mp4", "webm", "png", "jpg", "jpeg", "webp", "pdf"}
+
 var (
 	evidenceScreenshotName = regexp.MustCompile(`^screenshots/[A-Za-z0-9._-]+\.(png|jpg|jpeg|webp)$`)
 	// evidenceMediaName is a proof page's media, published flat beside it.
-	evidenceMediaName = regexp.MustCompile(`^media/[A-Za-z0-9._-]+\.(mp4|png|jpg|webp|pdf)$`)
+	evidenceMediaName = regexp.MustCompile(`^media/[A-Za-z0-9._-]+\.(` + strings.Join(evidenceMediaExtensions, "|") + `)$`)
 	evidenceHeadSHA   = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	evidenceRepoSlug  = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 )
@@ -366,6 +371,8 @@ func evidenceContentType(name string) string {
 		return "application/pdf"
 	case ".mp4":
 		return "video/mp4"
+	case ".webm":
+		return "video/webm"
 	case ".png":
 		return "image/png"
 	case ".jpg", ".jpeg":

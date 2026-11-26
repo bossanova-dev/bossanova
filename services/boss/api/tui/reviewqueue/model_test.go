@@ -181,7 +181,7 @@ func TestQueueRowReadsItsParkWhileTheChatAsks_Sessions_AC209301(t *testing.T) {
 	if !strings.Contains(rendered, "Migrations") || !strings.Contains(rendered, "3h") {
 		t.Fatalf("row does not show its park's asks and wait: %s", rendered)
 	}
-	if !strings.Contains(ansi.Strip(m.footer()), "[p]roof") {
+	if !strings.Contains(ansi.Strip(m.footer()), "[p] review page") {
 		t.Fatalf("footer misses the park's proof page: %s", m.footer())
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -317,9 +318,33 @@ func TestOpenPRSnapshotListMatchesGHPRList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want0 := vcs.PRSummary{Number: 1, Title: "clean", HeadBranch: "feature-1", BaseBranch: "main", State: vcs.PRStateOpen, Author: "app/dependabot", HeadSHA: "sha1"}
+	want0 := vcs.PRSummary{
+		Number: 1, Title: "clean", HeadBranch: "feature-1", BaseBranch: "main", State: vcs.PRStateOpen, Author: "app/dependabot", HeadSHA: "sha1",
+		CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), UpdatedAt: time.Date(2026, 1, 3, 4, 5, 6, 0, time.UTC),
+	}
 	if len(prs) != 9 || !reflect.DeepEqual(prs[0], want0) || prs[1].Author != "alice" {
 		t.Fatalf("open PRs = %+v; want 9 led by %+v", prs, want0)
+	}
+	if draft := prs[4]; draft.Number != 5 || !draft.IsDraft || !draft.CreatedAt.Before(draft.UpdatedAt) {
+		t.Fatalf("draft PR = %+v; want #5 as a draft with distinct created and updated times", draft)
+	}
+	if prs[1].IsDraft || !prs[1].CreatedAt.IsZero() {
+		t.Fatalf("PR #2 = %+v; want a non-draft with no reported times", prs[1])
+	}
+}
+
+// TestOpenPRQueriesSelectDraftAndDates pins the selections the routed fake
+// cannot see: it returns the fixture whatever the query asks for, so without
+// this the foreground list could ship zero draft flags and dates.
+func TestOpenPRQueriesSelectDraftAndDates(t *testing.T) {
+	queries := map[string]string{"openPRListQuery": openPRListQuery, "openPRSnapshotQuery": openPRSnapshotQuery}
+	for name, query := range queries {
+		fields := strings.Fields(query)
+		for _, want := range []string{"isDraft", "createdAt", "updatedAt"} {
+			if !slices.Contains(fields, want) {
+				t.Errorf("%s does not select %s", name, want)
+			}
+		}
 	}
 }
 

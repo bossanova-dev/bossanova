@@ -3031,6 +3031,47 @@ test('post claim --release re-posts the park beneath only its own claim', async 
   )
 })
 
+test('post claim --heartbeat re-posts only its own claim and reports a lost one', async () => {
+  const claim = (token, msAgo) => ({
+    context: 'boss/verify',
+    state: 'pending',
+    description: `verifying… ${token}`,
+    updated_at: iso(msAgo),
+  })
+  const beat = async (statuses) => {
+    const w = world({ statuses: [...statuses, receipt()] })
+    const opts = { pr: 7, head: HEAD, verdict: 'claim', heartbeat: true, token: 'feedf00d' }
+    return [await post({ ...opts, repo: REPO }, deps(w)), w.statusPosts()]
+  }
+  // Older than the stale window: still this run's own claim, so the beat renews it.
+  const [mine, renewed] = await beat([claim('feedf00d', 40 * 60_000)])
+  assert.deepEqual([mine.won, mine.refreshed], [true, true])
+  assert.deepEqual(renewed, [
+    { state: 'pending', description: 'verifying… feedf00d', target: undefined },
+  ])
+  const [taken, none] = await beat([claim('cafe0001', 1000)])
+  assert.deepEqual([taken.won, taken.reason, none], [false, 'claim-lost', []])
+  const [settled, kept] = await beat([
+    { context: 'boss/verify', state: 'success', description: 'verified', updated_at: iso(1000) },
+  ])
+  assert.deepEqual([settled.won, settled.reason, kept], [false, 'claim-lost', []])
+  // A dry run never posted its claim: the head's park still stands, and the beat holds.
+  const dry = async (statuses) => {
+    const w = world({ statuses: [...statuses, receipt()] })
+    const opts = { pr: 7, head: HEAD, verdict: 'claim', heartbeat: true, token: 'feedf00d' }
+    return [await post({ ...opts, repo: REPO, dryRun: true }, deps(w)), w.statusPosts()]
+  }
+  const parked = { context: 'boss/verify', state: 'pending', description: 'waiting: ci' }
+  const [held, unposted] = await dry([{ ...parked, updated_at: iso(1000) }])
+  assert.deepEqual([held.won, held.dryRun, unposted], [true, true, []])
+  const [peer] = await dry([claim('cafe0001', 1000)])
+  assert.deepEqual([peer.won, peer.reason], [false, 'claim-lost'])
+  await assert.rejects(
+    post({ pr: 7, head: HEAD, verdict: 'claim', heartbeat: true, repo: REPO }, deps(world())),
+    UsageError,
+  )
+})
+
 test('post claim takes over a stale claim with a note but not a fresh foreign one', async () => {
   const stale = world({
     statuses: [

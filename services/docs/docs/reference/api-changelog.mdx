@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-11-07**. The engineering procedure for adding a new
+The current version is **2026-11-08**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/structure/contracts.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/structure/contracts.md)).
 
@@ -1052,7 +1052,7 @@ Mapped repositories belong to their mapped organization, and unmapped
 repositories belong to the caller's personal organization. Older pins retain the
 claimed-organization-only read behavior.
 
-### 2026-11-07 — Session creation refuses another organization's repository (Current)
+### 2026-11-07 — Session creation refuses another organization's repository
 
 `ProxyCreateSession` returns `PermissionDenied` for a repository mapped to an
 organization the daemon's owner is not a member of. bosso never publishes a
@@ -1060,3 +1060,16 @@ session on such a repository, so the old success left its creator with a
 session that opened as "session not found". `ProxyListReposAggregated` marks
 these repositories with `is_held_by_other_organization`, and the web New session
 picker leaves them out. Older pins still send the create to the daemon.
+
+### 2026-11-08 — Chats addressed alone reach every organization you belong to (Current)
+
+A chat named only by its `agent_session_id` is found in any organization the
+caller belongs to, not only the organization the credential routes to. This
+covers `ProxySendChatMessage`, `ProxyGetChatTranscript`, `ProxyUpdateChatTitle`,
+`ProxyDeleteChat`, `ProxyReportChatStatus` and the GitHub callback create and
+delete calls, so the MCP `send_chat_message` tool reaches a chat that
+`start_chat` created on a daemon claimed in another of the caller's
+organizations. The chat's own organization still decides access: a caller it
+does not admit gets "chat not found", the same answer as a missing chat. Calls
+that name the session as well already crossed organizations from 2026-09-08.
+Older pins keep the former answer, "chat not found".

@@ -46,6 +46,9 @@ const (
 	// DaemonServicePostProofCheckRunProcedure is the fully-qualified name of the DaemonService's
 	// PostProofCheckRun RPC.
 	DaemonServicePostProofCheckRunProcedure = "/bossanova.v1.DaemonService/PostProofCheckRun"
+	// DaemonServiceMintHostedProofViewLinkProcedure is the fully-qualified name of the DaemonService's
+	// MintHostedProofViewLink RPC.
+	DaemonServiceMintHostedProofViewLinkProcedure = "/bossanova.v1.DaemonService/MintHostedProofViewLink"
 	// DaemonServiceGetFactoryHealthProcedure is the fully-qualified name of the DaemonService's
 	// GetFactoryHealth RPC.
 	DaemonServiceGetFactoryHealthProcedure = "/bossanova.v1.DaemonService/GetFactoryHealth"
@@ -418,6 +421,10 @@ type DaemonServiceClient interface {
 	// local RPC needs no dated API bump; see
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	PostProofCheckRun(context.Context, *connect.Request[v1.PostProofCheckRunRequest]) (*connect.Response[v1.PostProofCheckRunResponse], error)
+	// MintHostedProofViewLink relays MintProofViewLink to the orchestrator with the
+	// signed-in user's Bossanova Cloud token. Local socket API; additive, so no dated
+	// API bump (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+	MintHostedProofViewLink(context.Context, *connect.Request[v1.MintHostedProofViewLinkRequest]) (*connect.Response[v1.MintHostedProofViewLinkResponse], error)
 	// GetFactoryHealth reads host-local factory problems for one repository.
 	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
 	// Repo management
@@ -857,6 +864,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServicePostProofCheckRunProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("PostProofCheckRun")),
+			connect.WithClientOptions(opts...),
+		),
+		mintHostedProofViewLink: connect.NewClient[v1.MintHostedProofViewLinkRequest, v1.MintHostedProofViewLinkResponse](
+			httpClient,
+			baseURL+DaemonServiceMintHostedProofViewLinkProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("MintHostedProofViewLink")),
 			connect.WithClientOptions(opts...),
 		),
 		getFactoryHealth: connect.NewClient[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse](
@@ -1588,6 +1601,7 @@ type daemonServiceClient struct {
 	describeCaller                       *connect.Client[v1.DescribeCallerRequest, v1.DescribeCallerResponse]
 	uploadEvidence                       *connect.Client[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse]
 	postProofCheckRun                    *connect.Client[v1.PostProofCheckRunRequest, v1.PostProofCheckRunResponse]
+	mintHostedProofViewLink              *connect.Client[v1.MintHostedProofViewLinkRequest, v1.MintHostedProofViewLinkResponse]
 	getFactoryHealth                     *connect.Client[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse]
 	validateRepoPath                     *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
 	detectSetupScript                    *connect.Client[v1.DetectSetupScriptRequest, v1.DetectSetupScriptResponse]
@@ -1728,6 +1742,11 @@ func (c *daemonServiceClient) UploadEvidence(ctx context.Context, req *connect.R
 // PostProofCheckRun calls bossanova.v1.DaemonService.PostProofCheckRun.
 func (c *daemonServiceClient) PostProofCheckRun(ctx context.Context, req *connect.Request[v1.PostProofCheckRunRequest]) (*connect.Response[v1.PostProofCheckRunResponse], error) {
 	return c.postProofCheckRun.CallUnary(ctx, req)
+}
+
+// MintHostedProofViewLink calls bossanova.v1.DaemonService.MintHostedProofViewLink.
+func (c *daemonServiceClient) MintHostedProofViewLink(ctx context.Context, req *connect.Request[v1.MintHostedProofViewLinkRequest]) (*connect.Response[v1.MintHostedProofViewLinkResponse], error) {
+	return c.mintHostedProofViewLink.CallUnary(ctx, req)
 }
 
 // GetFactoryHealth calls bossanova.v1.DaemonService.GetFactoryHealth.
@@ -2346,6 +2365,10 @@ type DaemonServiceHandler interface {
 	// local RPC needs no dated API bump; see
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	PostProofCheckRun(context.Context, *connect.Request[v1.PostProofCheckRunRequest]) (*connect.Response[v1.PostProofCheckRunResponse], error)
+	// MintHostedProofViewLink relays MintProofViewLink to the orchestrator with the
+	// signed-in user's Bossanova Cloud token. Local socket API; additive, so no dated
+	// API bump (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+	MintHostedProofViewLink(context.Context, *connect.Request[v1.MintHostedProofViewLinkRequest]) (*connect.Response[v1.MintHostedProofViewLinkResponse], error)
 	// GetFactoryHealth reads host-local factory problems for one repository.
 	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
 	// Repo management
@@ -2781,6 +2804,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServicePostProofCheckRunProcedure,
 		svc.PostProofCheckRun,
 		connect.WithSchema(daemonServiceMethods.ByName("PostProofCheckRun")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceMintHostedProofViewLinkHandler := connect.NewUnaryHandler(
+		DaemonServiceMintHostedProofViewLinkProcedure,
+		svc.MintHostedProofViewLink,
+		connect.WithSchema(daemonServiceMethods.ByName("MintHostedProofViewLink")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceGetFactoryHealthHandler := connect.NewUnaryHandler(
@@ -3513,6 +3542,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceUploadEvidenceHandler.ServeHTTP(w, r)
 		case DaemonServicePostProofCheckRunProcedure:
 			daemonServicePostProofCheckRunHandler.ServeHTTP(w, r)
+		case DaemonServiceMintHostedProofViewLinkProcedure:
+			daemonServiceMintHostedProofViewLinkHandler.ServeHTTP(w, r)
 		case DaemonServiceGetFactoryHealthProcedure:
 			daemonServiceGetFactoryHealthHandler.ServeHTTP(w, r)
 		case DaemonServiceValidateRepoPathProcedure:
@@ -3776,6 +3807,10 @@ func (UnimplementedDaemonServiceHandler) UploadEvidence(context.Context, *connec
 
 func (UnimplementedDaemonServiceHandler) PostProofCheckRun(context.Context, *connect.Request[v1.PostProofCheckRunRequest]) (*connect.Response[v1.PostProofCheckRunResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.PostProofCheckRun is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) MintHostedProofViewLink(context.Context, *connect.Request[v1.MintHostedProofViewLinkRequest]) (*connect.Response[v1.MintHostedProofViewLinkResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.MintHostedProofViewLink is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error) {

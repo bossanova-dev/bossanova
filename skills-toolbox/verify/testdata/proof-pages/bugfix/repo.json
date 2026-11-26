@@ -1,0 +1,67 @@
+{
+  "repo": "acme/shop",
+  "pr": 61,
+  "commits": [
+    {
+      "message": "chore: start the basket",
+      "files": {
+        "README.md": ["# Shop", "", "The storefront basket."],
+        "src/cart.ts": [
+          "export type Line = { price: number; qty: number }",
+          "",
+          "export function lineTotal(line: Line): number {",
+          "  return Math.round(line.price * line.qty * 100) / 100",
+          "}",
+          "",
+          "export function total(lines: Line[]): number {",
+          "  const sum = lines.reduce((n, line) => n + lineTotal(line), 0)",
+          "  return Math.round(sum * 100) / 100",
+          "}"
+        ],
+        "src/ui/Total.tsx": [
+          "import { total, type Line } from '../cart'",
+          "",
+          "export function Total({ lines }: { lines: Line[] }) {",
+          "  return <p className=\"total\">{total(lines).toFixed(2)}</p>",
+          "}"
+        ]
+      }
+    },
+    {
+      "message": "fix: round the basket total once",
+      "files": {
+        "src/cart.ts": [
+          "export type Line = { price: number; qty: number }",
+          "",
+          "/** Pennies, so a total never rounds twice. */",
+          "export function linePennies(line: Line): number {",
+          "  return Math.round(line.price * 100) * line.qty",
+          "}",
+          "",
+          "export function total(lines: Line[]): number {",
+          "  const pennies = lines.reduce((n, line) => n + linePennies(line), 0)",
+          "  return pennies / 100",
+          "}"
+        ],
+        "src/cart.test.ts": [
+          "import { test } from 'node:test'",
+          "import assert from 'node:assert/strict'",
+          "import { total } from './cart'",
+          "",
+          "test('three lines at a third of a pound total once', () => {",
+          "  const lines = [0.33, 0.33, 0.34].map((price) => ({ price, qty: 1 }))",
+          "  assert.equal(total(lines), 1)",
+          "})"
+        ],
+        "src/ui/Total.tsx": [
+          "import { total, type Line } from '../cart'",
+          "",
+          "export function Total({ lines }: { lines: Line[] }) {",
+          "  const amount = total(lines)",
+          "  return <p className=\"total\">{amount.toFixed(2)}</p>",
+          "}"
+        ]
+      }
+    }
+  ]
+}

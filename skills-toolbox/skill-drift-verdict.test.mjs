@@ -753,6 +753,7 @@ function vendoredCopy(core) {
     'verify/verify-contract.mjs',
     'verify/verify-describe.mjs',
     'verify/verify-describe-blocks.mjs',
+    'verify/verify-leg-marker.mjs',
     'verify/verify-proof.mjs',
     'verify/verify-proof-sections.mjs',
     'verify/verify-publish-hook.mjs',

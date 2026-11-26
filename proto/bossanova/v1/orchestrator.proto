@@ -181,7 +181,10 @@ service OrchestratorService {
     option (bossanova.v1.permission) = "chats:write";
   }
   // Answers the question a chat's agent waits on in its terminal menu, with
-  // one of its options or with typed words. Writes to the agent like
+  // one of its options, with typed words, or with several choices. A question
+  // with several tabs is answered one tab at a time, each under the question_id
+  // of the tab on screen, and sent with the review tab's "Submit answers"
+  // option. Writes to the agent like
   // ProxySendChatMessage, so it takes the same permission and the same cloud
   // control. question_id must name the question the agent still waits on;
   // otherwise the daemon types nothing and the call fails FailedPrecondition.
@@ -1643,8 +1646,19 @@ message ProxyListSessionsRequest {
   // rank-order transform re-sorts the page after this ordering is applied.
   SessionListOrdering ordering = 6;
   // Caps the sessions returned after ordering; zero or negative means
-  // unlimited.
+  // unlimited. The limit counts only sessions that pass every filter.
   int32 limit = 7;
+  // Filter by PR author GitHub login (case-insensitive, matches any). Empty
+  // means no constraint; a session with no PR author never matches a set one.
+  repeated string pr_author_logins = 8;
+  // Filter by PR target (base) branch (exact, matches any). Empty means no
+  // constraint; a session with no PR target never matches a set one.
+  // No dated API bump or transform: both filters are additive and narrow only
+  // when set. The hosted MCP gateway, co-deployed with bosso, sets them; the
+  // version-skewed web app and TUI never do, and a request without them reads
+  // exactly as before, so no transform has anything to restore. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  repeated string pr_target_branches = 9;
 }
 
 message ProxyListSessionsResponse {
@@ -1662,8 +1676,10 @@ message ProxyListSessionsResponse {
 // Deprecated: use ProxyListSessions with organization_id instead.
 message ProxyListSessionsAcrossOrganizationsRequest {
   option deprecated = true;
-  // Mirrors ProxyListSessionsRequest field-for-field; each filter is applied
-  // per organization, exactly as the single-organization read applies it.
+  // Carries ProxyListSessionsRequest's original filters; each is applied per
+  // organization, exactly as the single-organization read applies it. Later
+  // ProxyListSessionsRequest fields (organization, ordering, limit and the PR
+  // author and target filters) are not mirrored here.
   // The archived flag carries the should_ prefix the bool naming rule requires;
   // ProxyListSessionsRequest.include_archived keeps its legacy spelling because
   // renaming a shipped field is an API-version change of its own.
@@ -1889,6 +1905,9 @@ message ProxyAnswerChatQuestionRequest {
     uint32 option_index = 4;
     // Words for the menu's own free-text answer. One line.
     string text = 5;
+    // The options to tick and the words to type, for a question that takes
+    // several choices. Its text follows the same one-line rule as text.
+    QuestionChoices choices = 6;
   }
 }
 // ProxyAnswerChatQuestionResponse mirrors AnswerChatQuestionResult.
@@ -1951,9 +1970,10 @@ message ProxySendChatMessageRequest {
   // optional so an omitting (pre-BOS-242) client is treated as submit=true
   // server-side, preserving the prior always-submit proxy behavior.
   optional bool submit = 4;
-  // session_id, when set, routes by the (session, chat) pair, which finds a
-  // chat whose daemon is claimed in another of the caller's organizations.
-  // Callers without a session (the MCP send tool) leave it empty.
+  // session_id, when set, routes by the (session, chat) pair. Either form
+  // finds a chat whose daemon is claimed in another of the caller's
+  // organizations (the chat-only form from API version 2026-11-08), so
+  // callers without a session (the MCP send tool) leave it empty.
   string session_id = 5;
   // attachment_upload_ids names files this chat's upload-only attach
   // (ATTACH_SCOPE_UPLOAD) already finished. The daemon types each file's
@@ -2214,6 +2234,9 @@ message ProxyTestAgentAccountResponse {
 message ProxyListRepoPRsRequest {
   string daemon_id = 1;
   string repo_id = 2;
+  // Optional filters, order and cap forwarded to the daemon. An older daemon
+  // ignores it.
+  PRListQuery query = 3;
 }
 message ProxyListRepoPRsResponse { repeated PRSummary pull_requests = 1; }
 
@@ -4576,12 +4599,19 @@ enum ViewOrdering {
   // High confidence first, then moderate, then low, then none; ties by most
   // recently updated.
   VIEW_ORDERING_CONFIDENT = 4;
+  // Most recently created first.
+  VIEW_ORDERING_CREATED_NEWEST_FIRST = 5;
+  // Least recently created first.
+  VIEW_ORDERING_CREATED_OLDEST_FIRST = 6;
+  // Least recently updated first; VIEW_ORDERING_LAST_UPDATED is newest first.
+  VIEW_ORDERING_UPDATED_OLDEST_FIRST = 7;
 }
 
 // ViewFilterClause is one filter chip: facet, is / is not, values. bosso
 // accepts the facets status, needs, repository, organization, daemon,
-// proof_page, size and agent, at most 50 values of at most 200 characters
-// each, and rejects anything else with INVALID_ARGUMENT.
+// proof_page, size, agent, author (the PR author's login) and target_branch
+// (the PR's base branch), at most 50 values of at most 200 characters each,
+// and rejects anything else with INVALID_ARGUMENT.
 message ViewFilterClause {
   string facet = 1;
   bool is_negated = 2;

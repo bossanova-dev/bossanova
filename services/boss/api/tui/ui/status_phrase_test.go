@@ -65,7 +65,7 @@ func TestRenderStatusPhraseStylesInProgressWork(t *testing.T) {
 		{"stopped", "stopped", StyleStatusMuted.Render, false},
 	} {
 		a := &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: tc.label, StatusPhrase: tc.phrase}
-		got, ok := RenderStatusPhrase(a, sp)
+		got, ok := RenderStatusPhrase(a, sp, false)
 		want := tc.phrase
 		if tc.spin {
 			want = sp.View() + want
@@ -74,7 +74,7 @@ func TestRenderStatusPhraseStylesInProgressWork(t *testing.T) {
 			t.Errorf("%q over %q = %q, want %q", tc.phrase, tc.label, got, tc.style(want))
 		}
 	}
-	if _, ok := RenderStatusPhrase(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW}, sp); ok {
+	if _, ok := RenderStatusPhrase(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW}, sp, false); ok {
 		t.Error("a phrase-less attention rendered a phrase")
 	}
 }
@@ -88,5 +88,33 @@ func TestSessionStatusDetailIsOneLine(t *testing.T) {
 	}
 	if got := SessionStatusDetail(&pb.Session{}); got != "" {
 		t.Errorf("no attention gives %q", got)
+	}
+}
+
+func TestRenderStatusPhraseSpinsTheMarkWhileAnAgentWorks(t *testing.T) {
+	sp := NewStatusSpinner()
+	fix := &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, StatusPhrase: "⨯ run stuck"}
+	unverified := &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, StatusPhrase: attention.UnverifiedMergePhrase, IsUnverified: true}
+	question := &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, StatusPhrase: "? question"}
+	review := &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, StatusPhrase: attention.ReviewPhrase}
+	for _, tc := range []struct {
+		name    string
+		a       *pb.SessionAttention
+		working bool
+		want    string
+	}{
+		{"a working fix", fix, true, StyleStatusDanger.Render(sp.View() + "run stuck")},
+		{"an idle fix", fix, false, StyleStatusDanger.Render("⨯ run stuck")},
+		{"a working unverified merge", unverified, true, StyleStatusWarning.Render(sp.View() + "merge")},
+		{"a working question", question, true, StyleStatusWarning.Render("? question")},
+		{"a working review", review, true, StyleStatusSuccess.Render(attention.ReviewPhrase)},
+	} {
+		if got, ok := RenderStatusPhrase(tc.a, sp, tc.working); !ok || got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	sess := &pb.Session{Attention: fix, DisplayLabel: StatusWorking}
+	if got := SessionStatusText(sess, sp); got != StyleStatusDanger.Render(sp.View()+"run stuck") {
+		t.Errorf("a working fix's header = %q, want the spinner in place of ⨯", got)
 	}
 }

@@ -142,10 +142,11 @@ func (h Model) sectionTitle(sessions []*pb.Session, i int) string {
 	return "IN PROGRESS"
 }
 
-// renderAttentionStatus styles a row's attention cell. A daemon that serves
-// the row's status phrase gets that phrase (ui.RenderStatusPhrase). Against an
-// older daemon the cell keeps its kind's words: working says an agent chat of
-// the row's session is working now (the session's served display label). An
+// renderAttentionStatus styles a row's attention cell. working says an agent
+// chat of the row's session is working now (the session's served display
+// label). A daemon that serves the row's status phrase gets that phrase
+// (ui.RenderStatusPhrase), its leading mark spun while working. Against an
+// older daemon the cell keeps its kind's words. An
 // outcome the row names (fix, ready) keeps its words and colour, but the
 // spinner takes the place of its leading glyph: the PR may be ready, but the
 // agent is still at it. A verified merge keeps its check mark, because the PR
@@ -153,7 +154,7 @@ func (h Model) sectionTitle(sessions []*pb.Session, i int) string {
 // is, because the agent is waiting on the operator.
 func (h Model) renderAttentionStatus(sess *pb.Session, working bool) string {
 	a := sess.GetAttention()
-	if cell, ok := ui.RenderStatusPhrase(a, h.Spinner); ok {
+	if cell, ok := ui.RenderStatusPhrase(a, h.Spinner, working); ok {
 		return cell
 	}
 	lead := func(resting string) string {

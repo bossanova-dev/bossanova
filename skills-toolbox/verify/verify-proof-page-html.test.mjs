@@ -589,7 +589,7 @@ test('the Files grid groups by reviewed area, then by kind, on the scale of the 
   ].map((m) => [m[1], ...m.slice(2).map(Number)])
   assert.deepEqual(groups, [
     ['Logic', 1, 3, 1, 8, 3],
-    ['No sign-off needed', 3, 7, 0, 18, 0],
+    ['Other changes', 3, 7, 0, 18, 0],
     ['Tests', 1, 40, 0, 100, 0],
     ['Generated', 1, 10, 10, 25, 25],
   ])
@@ -599,7 +599,7 @@ test('the Files grid groups by reviewed area, then by kind, on the scale of the 
         /<bdi>([^<]*)<\/bdi>/g,
       ),
     ].map((m) => m[1])
-  assert.deepEqual(rows('No sign-off needed'), ['src/view.tsx', 'README.md', 'assets/logo.png'])
+  assert.deepEqual(rows('Other changes'), ['src/view.tsx', 'README.md', 'assets/logo.png'])
   assert.ok(grid.includes('<span class="c3 z">bin</span>'), 'a binary file says so')
   assert.ok(grid.includes('<h2>Files<span class="n">6</span></h2>'))
   const style = /<style>([\s\S]*?)<\/style>/.exec(html)[1]

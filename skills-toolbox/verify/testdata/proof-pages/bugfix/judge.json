@@ -1,0 +1,24 @@
+{
+  "verdict": "human",
+  "reasons": ["human-review:ui"],
+  "label": "the basket total",
+  "confidence": {
+    "level": "moderate",
+    "asks": [{ "area": "ui", "label": "UI" }],
+    "loweredBy": ["area-asks"],
+    "health": []
+  },
+  "facts": {
+    "receipt": { "verdict": "present", "state": "success" },
+    "areas": [
+      {
+        "area": "ui",
+        "label": "UI",
+        "paths": ["src/ui/Total.tsx"],
+        "defaultAsk": "unless-proven",
+        "source": "builtin",
+        "items": ["The basket total reads the rounded amount once"]
+      }
+    ]
+  }
+}

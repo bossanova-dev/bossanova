@@ -246,6 +246,50 @@ test('daemonFirstReader: serves view, runs and checks from one envelope; never r
   assert.equal(io.spawns.length, 1)
 })
 
+test('daemonFirstReader: dispatched check runs are one labelled gh read for the envelope head', async () => {
+  const suites = {
+    data: {
+      repository: {
+        object: {
+          checkSuites: {
+            totalCount: 1,
+            nodes: [
+              {
+                commit: { oid: HEAD },
+                workflowRun: { event: 'workflow_dispatch', workflow: { name: 'Bazel' } },
+                checkRuns: {
+                  totalCount: 1,
+                  nodes: [{ name: 'go-test', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  }
+  const io = fakeIo({
+    bossAnswer: () => json(envelope()),
+    ghAnswer: (args) => (args[0] === 'repo' ? { status: 0, stdout: 'o/r\n' } : json(suites)),
+  })
+  const read = daemonFirstReader({ label: FALLBACK_LABELS.CI_WAIT, deps: io.deps })
+  await read({ what: 'view', pr: 7, timeoutMs: 5000 })
+  const moved = await read({ what: 'dispatched-checks', pr: 7, headSha: OTHER, timeoutMs: 5000 })
+  assert.deepEqual(moved, { ok: false, error: 'head moved' })
+  assert.equal(io.gh().length, 0)
+  const res = await read({ what: 'dispatched-checks', pr: 7, headSha: HEAD, timeoutMs: 5000 })
+  assert.equal(res.ok, true)
+  assert.deepEqual(
+    res.payload.map((row) => [row.name, row.conclusion, row.event, row.headSha]),
+    [['go-test', 'SUCCESS', 'workflow_dispatch', HEAD]],
+  )
+  const reads = io.gh().filter((s) => s.args[0] === 'api')
+  assert.equal(reads.length, 1)
+  assert.deepEqual(reads[0].args.slice(0, 2), ['api', 'graphql'])
+  for (const { opts } of io.gh()) assert.equal(opts.env[GH_USAGE_LABEL_ENV], 'fallback:ci-wait')
+  assert.equal(read.source(), 'daemon', 'the dispatched read does not switch the reader to gh')
+})
+
 test('daemonFirstReader: an envelope whose runs were not read serves no runs', async () => {
   const io = fakeIo({
     bossAnswer: () => json(envelope({ workflow_runs: [], is_workflow_runs_read: false })),

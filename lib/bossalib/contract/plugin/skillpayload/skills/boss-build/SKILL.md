@@ -737,6 +737,19 @@ if it is, re-dispatch once with what you verified folded in. Exclude the daemon 
 `.claude/scheduled_tasks.lock` and `.claude/settings.local.json` from every such check. Mechanics:
 [`references/resume-assessment.md`](references/resume-assessment.md#dispatch-snapshot-mechanics).
 
+## Step 5.5: Polish extensions (repo opt-in)
+
+Discover `--role polish`. None ⇒ nothing, no output. Otherwise dispatch each in ascending `order`,
+from a clean tree, as an awaited subagent whose instructions are the `SKILL.md` read from
+`skillPath` (pass `skillPath` and `dir`; never the Skill tool). Hand it
+`mergeBase` (`git merge-base "$BASE_REF" HEAD`), `planPath` (`$PLAN_FILE`) and an `outPath` outside
+the worktree. Validate with `skill-extensions.mjs validate --role polish --file <outPath>`. A valid
+result also leaves the tree clean with the log advanced by exactly its `commitsMade`; append its
+`summary` to `## Autonomous decisions` as `polish <name>: <summary>`. Otherwise restore the
+pre-dispatch tip (`git reset --hard`), record `extension <name>: skipped (<reason>)` and run
+`node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"`.
+Its commits are reviewed in Step 6. Never fatal.
+
 ## Step 6: Review
 
 Report the phase: `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" phase reviewing` (never fatal).

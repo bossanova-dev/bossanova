@@ -321,6 +321,11 @@ type PRSummary struct {
 	CommitAuthorsComplete bool
 	// IsConflicted is true only for a conclusive conflict in the list snapshot.
 	IsConflicted bool
+	// IsDraft is true when the PR is a draft, where the listing reads it.
+	IsDraft bool
+	// CreatedAt and UpdatedAt are the provider's PR times; zero when unread.
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // CreatePROpts contains options for creating a new pull/merge request.

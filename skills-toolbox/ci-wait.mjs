@@ -49,7 +49,11 @@ import { TREND_WINDOW_MS, TRENDS, trendOf } from './ci/wait-trend.mjs'
 // `unknown`/`not-requested` once that head's consecutive reads have agreed for
 // NOT_REQUESTED_SETTLE_MS, and never settles green on the light checks that did run; the missing
 // names are in `notRequested`. A head with no workflow run yet keeps waiting. With nothing required
-// the wait is exactly as before.
+// the wait is exactly as before. The rollup leaves out `workflow_dispatch` suites, so a draft head
+// whose heavy jobs were requested (ci/ci-request.mjs) shows them only as skipped: while a required
+// check is missing or skipped there, each reading adds one read of the head's dispatched check runs
+// (ci/dispatched-checks.mjs) and counts those for that exact head, whatever their result. A failed
+// read leaves the reading unreadable, never not-requested.
 //
 // Project-agnostic: only `boss`, `gh`, Node builtins and sibling toolbox modules.
 
@@ -83,6 +87,7 @@ import {
 import { confirmsGreen, freshGreenAnchor } from './ci/green-confirmation.mjs'
 import { requiredChecksFor } from './ci/required-checks.mjs'
 import { defaultStateDir } from './ci/ci-wait-record.mjs'
+import { dispatchedCheckRuns } from './ci/dispatched-checks.mjs'
 import { loadSkillConfig } from './skill-config.mjs'
 
 export { defaultStateDir }
@@ -233,32 +238,55 @@ export async function takeReading({
   }
   const withoutHold =
     held.hold === null ? (payload) => payload : (payload) => dropContext(payload, VERIFY_CONTEXT)
-  const classify = (buckets) =>
+  const classify = (buckets, checkRuns = null) =>
     classifyChecks({
       headSHA: headSha,
       observedSHA: headSha,
       rollup: withoutHold(view.payload ?? null),
       buckets: withoutHold(buckets),
+      checkRuns,
       priorContexts: dropContext(priorContexts, VERIFY_CONTEXT),
       workflowRuns,
       requiredChecks: requiredChecksFor(ciRequired, view.payload?.baseRefName ?? ''),
     })
+  let buckets = null
   let verdict = classify(null)
   if (verdict.reason === CHECK_REASONS.UNCLASSIFIED && timeoutFor() >= READ_FLOOR_MS) {
     const checks = await read({ what: 'checks', pr, timeoutMs: timeoutFor() })
-    if (checks?.ok) verdict = classify(checks.payload ?? null)
+    if (checks?.ok) verdict = classify((buckets = checks.payload ?? null))
   }
+  // Draft CI on request (see the header): one read of the head's dispatched check runs, only when a
+  // required check is missing or skipped in the rollup. Without it, not-requested is unproven.
+  let dispatchError = null
   if (
-    runsError !== null &&
+    headSha !== '' &&
+    verdict.notRequested?.length > 0 &&
+    verdict.state !== CHECK_STATES.FAILING
+  ) {
+    dispatchError = 'no time left to read dispatched check runs'
+    if (timeoutFor() >= READ_FLOOR_MS) {
+      const dispatched = await read({
+        what: 'dispatched-checks',
+        pr,
+        headSha,
+        timeoutMs: timeoutFor(),
+      })
+      if (dispatched?.ok) {
+        dispatchError = null
+        verdict = classify(buckets, dispatchedCheckRuns(dispatched.payload, headSha))
+      } else {
+        dispatchError = `dispatched check runs: ${dispatched?.error ?? 'read failed'}`
+      }
+    }
+  }
+  const evidenceError = runsError === null ? dispatchError : `workflow runs: ${runsError}`
+  if (
+    evidenceError !== null &&
     (verdict.state === CHECK_STATES.GREEN ||
       verdict.reason === CHECK_REASONS.ABSENT_GATE ||
       verdict.reason === CHECK_REASONS.NOT_REQUESTED)
   ) {
-    verdict = classifyChecks({
-      headSHA: headSha,
-      observedSHA: headSha,
-      readError: `workflow runs: ${runsError}`,
-    })
+    verdict = classifyChecks({ headSHA: headSha, observedSHA: headSha, readError: evidenceError })
   }
   return {
     atMs: now(),

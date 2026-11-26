@@ -128,7 +128,7 @@ func TestPlanQuestionAnswer_PressesWhatTheMenuTakes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			got := plan(t, planRequest(colourID, colourMenu, tc.answer))
-			want := &bossanovav1.PlanQuestionAnswerResponse{IsQuestionPending: true, Inputs: tc.want}
+			want := &bossanovav1.PlanQuestionAnswerResponse{IsQuestionPending: true, Inputs: tc.want, IsFinalStep: proto.Bool(true)}
 			if !proto.Equal(got, want) {
 				t.Fatalf("plan = %v, want %v", got, want)
 			}
@@ -176,11 +176,9 @@ func TestPlanQuestionAnswer_RefusesAnswersTheMenuCannotTake(t *testing.T) {
 		{"blank words", colourID, colourMenu, words("  ")},
 		{"an escape byte in the words", colourID, colourMenu, words("teal\x1b[2J")},
 	}
-	// Every captured shape but today's single-choice menu, named by its own id.
-	for _, name := range []string{
-		"multi_untouched", "multi_space1", "multi_freetext_typed", "multi_review",
-		"two_tab1", "two_tab1_back", "two_tab2", "two_review", "single_freetext_typed",
-	} {
+	// Every captured shape whose free-text row holds words someone typed,
+	// named by its own id.
+	for _, name := range []string{"multi_freetext_typed", "multi_submit_row", "single_freetext_typed"} {
 		pane := capturedMenu(t, name)
 		cases = append(cases, struct {
 			name       string
@@ -225,7 +223,7 @@ func TestPlanQuestionAnswer_AcceptsTheQuestionTheTranscriptEndsOn(t *testing.T) 
 	writeTranscript(t, questionCall(t, "toolu_highlight", highlight))
 	recorded := questionID("Highlight", "How should the selected row be highlighted?", []string{"Background tint and a bold label", "Bold blue text"})
 	got := plan(t, planRequest(recorded, wrappedMenu, option(0)))
-	want := &bossanovav1.PlanQuestionAnswerResponse{IsQuestionPending: true, Inputs: []*bossanovav1.PaneInput{key("1")}}
+	want := &bossanovav1.PlanQuestionAnswerResponse{IsQuestionPending: true, Inputs: []*bossanovav1.PaneInput{key("1")}, IsFinalStep: proto.Bool(true)}
 	if !proto.Equal(got, want) {
 		t.Fatalf("plan = %v, want %v", got, want)
 	}
@@ -266,7 +264,7 @@ func TestParseQuestionMenu_ReadsWrappedLabels(t *testing.T) {
 	if !ok {
 		t.Fatal("menu not read")
 	}
-	if !menu.shows([]string{"Background tint and a bold label", "Bold blue text"}) {
+	if !menu.offers([]string{"Background tint and a bold label", "Bold blue text"}) {
 		t.Fatalf("wrapped menu rows %q do not show their labels", menu.rows)
 	}
 }
@@ -318,11 +316,12 @@ func submitTab(isActive bool) *bossanovav1.ChatQuestionTab {
 
 func TestReadQuestionMenu_ReadsEveryCapturedShape(t *testing.T) {
 	fruits := []string{"Apple", "Banana", "Cherry"}
+	// A free-text row holding typed words is answered in the terminal.
 	fruit := func(selected []uint32, freeText string, fruitAnswered bool) *bossanovav1.ChatQuestion {
 		return &bossanovav1.ChatQuestion{
 			Kind: questionKindQuestion, Text: "Which fruits do you like?", Options: fruits,
 			Id:            questionID("Fruit", "Which fruits do you like?", fruits),
-			IsMultiSelect: true, SelectedOptionIndexes: selected,
+			IsMultiSelect: true, SelectedOptionIndexes: selected, IsAnswerable: freeText == "",
 			Tabs:        []*bossanovav1.ChatQuestionTab{tab("Fruit", true, fruitAnswered), submitTab(false)},
 			HasFreeText: true, FreeText: freeText,
 		}
@@ -331,7 +330,7 @@ func TestReadQuestionMenu_ReadsEveryCapturedShape(t *testing.T) {
 		options := []string{"Submit answers", "Cancel"}
 		return &bossanovav1.ChatQuestion{
 			Kind: questionKindQuestion, Text: text, Options: options,
-			Id: questionID("Submit", text, options), Tabs: tabs,
+			Id: questionID("Submit", text, options), Tabs: tabs, IsAnswerable: true,
 		}
 	}
 	sizes := []string{"Small", "Large"}
@@ -340,7 +339,7 @@ func TestReadQuestionMenu_ReadsEveryCapturedShape(t *testing.T) {
 		return &bossanovav1.ChatQuestion{
 			Kind: questionKindQuestion, Text: "Which size?", Options: sizes,
 			Id:                    questionID("", "Which size?", sizes),
-			SelectedOptionIndexes: selected, Tabs: tabs, HasFreeText: true,
+			SelectedOptionIndexes: selected, Tabs: tabs, HasFreeText: true, IsAnswerable: true,
 		}
 	}
 	toppings := []string{"Cheese", "Olives"}
@@ -367,7 +366,7 @@ func TestReadQuestionMenu_ReadsEveryCapturedShape(t *testing.T) {
 		// two_tab1, then 1: Small chosen, the menu moves to tab 2.
 		{"two_tab2", &bossanovav1.ChatQuestion{
 			Kind: questionKindQuestion, Text: "Which toppings?", Options: toppings,
-			Id: questionID("", "Which toppings?", toppings), IsMultiSelect: true,
+			Id: questionID("", "Which toppings?", toppings), IsMultiSelect: true, IsAnswerable: true,
 			Tabs:        []*bossanovav1.ChatQuestionTab{tab("Size", false, true), tab("Toppings", false, false), submitTab(false)},
 			HasFreeText: true,
 		}},
@@ -437,7 +436,7 @@ func TestQuestionID_SingleChoiceMenuKeepsItsID(t *testing.T) {
 func TestPlanQuestionAnswer_AnswersTheCapturedSingleChoiceMenuByDigit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	got := plan(t, planRequest(colourID, capturedMenu(t, "single_untouched"), option(2)))
-	want := &bossanovav1.PlanQuestionAnswerResponse{IsQuestionPending: true, Inputs: []*bossanovav1.PaneInput{key("3")}}
+	want := &bossanovav1.PlanQuestionAnswerResponse{IsQuestionPending: true, Inputs: []*bossanovav1.PaneInput{key("3")}, IsFinalStep: proto.Bool(true)}
 	if !proto.Equal(got, want) {
 		t.Fatalf("plan = %v, want %v", got, want)
 	}

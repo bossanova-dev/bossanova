@@ -1200,7 +1200,11 @@ message RemoveRepoCommand { string repo_id = 1; }
 
 // ListRepoPRsCommand asks the daemon for a repo's open PRs (new-session
 // "existing PR" picker). Reuses daemon.proto's ListRepoPRsResponse.
-message ListRepoPRsCommand { string repo_id = 1; }
+message ListRepoPRsCommand {
+  string repo_id = 1;
+  // Optional filters, order and cap. Absent keeps today's list.
+  PRListQuery query = 2;
+}
 
 // ListTrackerIssuesCommand asks the daemon for a repo's tracker issues, with an
 // optional server-side search query and source ("linear"|"sentry"). Reuses
@@ -1880,7 +1884,10 @@ message AgentModelsResult {
 // AnswerChatQuestionCommand answers the question a chat's agent waits on in
 // its terminal menu. question_id is ChatQuestion.id: the daemon refuses with
 // FAILED_PRECONDITION, typing nothing, unless the agent still waits on that
-// question and its terminal shows that question's menu.
+// question and its terminal shows that question's menu. An answer of several
+// steps is entered one step at a time, each checked against a fresh capture
+// of the terminal; if the menu changes part way, the daemon stops and fails
+// FAILED_PRECONDITION saying the answer was partly entered.
 message AnswerChatQuestionCommand {
   string agent_session_id = 1;
   string question_id = 2;
@@ -1889,6 +1896,9 @@ message AnswerChatQuestionCommand {
     uint32 option_index = 3;
     // Words for the menu's own free-text answer. One line.
     string text = 4;
+    // The options to tick and the words to type, for a question that takes
+    // several choices.
+    QuestionChoices choices = 5;
   }
 }
 

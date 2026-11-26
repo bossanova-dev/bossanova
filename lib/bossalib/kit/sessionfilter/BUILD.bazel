@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sessionfilter",
+    srcs = ["sessionfilter.go"],
+    importpath = "github.com/recurser/bossalib/kit/sessionfilter",
+    visibility = ["//visibility:public"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)
+
+go_test(
+    name = "sessionfilter_test",
+    srcs = ["sessionfilter_test.go"],
+    embed = [":sessionfilter"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)

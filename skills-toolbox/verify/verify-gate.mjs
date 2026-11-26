@@ -7,7 +7,11 @@ import {
 } from '../ci/gh-quota-alternates.mjs'
 import { repoFor } from './verify-repo.mjs'
 export { repoFor, canWrite }
-import { confirmClaimOrWithdraw, releaseOwnClaim } from './verify-claim-confirm.mjs'
+import {
+  confirmClaimOrWithdraw,
+  refreshOwnClaim,
+  releaseOwnClaim,
+} from './verify-claim-confirm.mjs'
 import { cachedReader, operatorReads } from './verify-read-rounds.mjs'
 export { cachedReader, WARM_CONCURRENCY } from './verify-read-rounds.mjs'
 import { CLAIM_RELEASE_REASONS } from './verify-vocabulary.mjs'
@@ -78,7 +82,8 @@ import {
 //            [--not-applicable <file>] [--token <t>] [--repo o/r] [--dry-run]
 //   proof    --pr <n> --head <sha> --judge <file> [--intent <file>] [--repo o/r] [--dry-run]
 //   proof-bundle --pr <n> --head <sha> --judge <file> --out <dir> [--repo o/r]  never writes
-//            (`--verdict claim --release --token <t>` withdraws that claim, re-posting the park beneath)
+//            (`--verdict claim --release --token <t>` withdraws that claim, re-posting the park beneath;
+//            `--verdict claim --heartbeat --token <t>` re-posts it so it does not expire)
 //   accept   --pr <n> --head <sha> --blocker <id> --reason-file <file> [--repo o/r] [--dry-run] [--json]
 //   send-back --pr <n> --head <sha> --note-file <file> [--repo o/r] [--dry-run] [--json]
 //   merge    --pr <n> --head <sha> [--token <t>] [--repo o/r] [--dry-run]
@@ -1952,8 +1957,9 @@ export function parsePostOptions(options) {
   if (!isSha(headSha)) throw new UsageError('verify-gate: post needs --head <40-hex sha>')
   if (!['claim', 'wait', 'pass', 'defect', 'blocked', 'human'].includes(verdict))
     throw new UsageError('verify-gate: post --verdict must be claim|wait|pass|defect|blocked|human')
-  if (options.release === true && (verdict !== 'claim' || !text(options.token)))
-    throw new UsageError('verify-gate: post --release needs --verdict claim and --token')
+  for (const flag of ['release', 'heartbeat'])
+    if (options[flag] === true && (verdict !== 'claim' || !text(options.token)))
+      throw new UsageError(`verify-gate: post --${flag} needs --verdict claim and --token`)
   const notes = options.notes === undefined ? undefined : readJsonFile(options.notes)
   if (options.notes !== undefined && (['claim', 'wait'].includes(verdict) || !Array.isArray(notes)))
     throw new UsageError('verify-gate: --notes needs an array file on pass|blocked|defect|human')
@@ -2156,6 +2162,10 @@ async function postClaim(ctx, parsed, options) {
     deps,
   } = ctx
   if (options.release === true) return releaseClaim(ctx, options)
+  if (options.heartbeat === true) {
+    const post = (w) => runStatus(status(w.state, w.description)).ok
+    return finish(refreshOwnClaim({ current, token: options.token, now, dryRun, post }))
+  }
   const view = readPr(read, pr, repo)
   if (!view.ok) return finish({ won: false, reason: 'pr-unreadable' })
   if (view.payload?.state !== 'OPEN') return finish({ won: false, reason: 'pr-not-open' })
@@ -4372,7 +4382,7 @@ const FLAGS = Object.freeze({
       'proof-spec',
       'proof-media',
     ],
-    bools: ['dry-run', 'takeover', 'release', 'proof-detach'],
+    bools: ['dry-run', 'takeover', 'release', 'heartbeat', 'proof-detach'],
   },
   proof: {
     values: ['pr', 'head', 'judge', 'intent', 'proof-spec', 'proof-media', 'repo'],
@@ -4456,6 +4466,7 @@ export function postOptionsFromArgv(argv) {
     dryRun: f['dry-run'] === true,
     takeover: f.takeover === true,
     release: f.release === true,
+    heartbeat: f.heartbeat === true,
   }
 }
 

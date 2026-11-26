@@ -30,7 +30,7 @@ var openPRSnapshotQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $c
     pullRequests(states: OPEN, first: %d, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title body state isDraft headRefName baseRefName headRefOid isCrossRepository
+        number title body state isDraft headRefName baseRefName headRefOid isCrossRepository createdAt updatedAt
         mergeable mergeStateStatus canBeRebased reviewDecision additions deletions changedFiles
         author { login __typename }
         reviews(last: 50) {
@@ -92,8 +92,10 @@ type snapshotPR struct {
 	// The embedded fields decode the shared status fields. Its reviews list
 	// is filled from ReviewPage, whose shallower "reviews" key wins the decode.
 	prStatusFields
-	Number       int  `json:"number"`
-	CanBeRebased bool `json:"canBeRebased"`
+	Number       int       `json:"number"`
+	CanBeRebased bool      `json:"canBeRebased"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 	Author       struct {
 		Login    string `json:"login"`
 		Typename string `json:"__typename"`
@@ -385,6 +387,9 @@ func (s *prSnapshot) openPRs() []vcs.PRSummary {
 			CommitAuthors:         authors,
 			CommitAuthorsComplete: complete,
 			IsConflicted:          pr.Mergeable == "CONFLICTING",
+			IsDraft:               pr.IsDraft,
+			CreatedAt:             pr.CreatedAt,
+			UpdatedAt:             pr.UpdatedAt,
 		})
 	}
 	return prs

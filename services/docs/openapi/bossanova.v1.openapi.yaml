@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-11-07'
+  version: '2026-11-08'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -2619,7 +2619,10 @@ paths:
       summary: ProxyAnswerChatQuestion
       description: |-
         Answers the question a chat's agent waits on in its terminal menu, with
-         one of its options or with typed words. Writes to the agent like
+         one of its options, with typed words, or with several choices. A question
+         with several tabs is answered one tab at a time, each under the question_id
+         of the tab on screen, and sent with the review tab's "Submit answers"
+         option. Writes to the agent like
          ProxySendChatMessage, so it takes the same permission and the same cloud
          control. question_id must name the question the agent still waits on;
          otherwise the daemon types nothing and the call fails FailedPrecondition.
@@ -8181,6 +8184,17 @@ components:
         - oneOf:
             - type: object
               properties:
+                choices:
+                  title: choices
+                  description: |-
+                    The options to tick and the words to type, for a question that takes
+                     several choices.
+                  $ref: '#/components/schemas/bossanova.v1.QuestionChoices'
+              title: choices
+              required:
+                - choices
+            - type: object
+              properties:
                 optionIndex:
                   type: integer
                   title: option_index
@@ -8203,7 +8217,10 @@ components:
         AnswerChatQuestionCommand answers the question a chat's agent waits on in
          its terminal menu. question_id is ChatQuestion.id: the daemon refuses with
          FAILED_PRECONDITION, typing nothing, unless the agent still waits on that
-         question and its terminal shows that question's menu.
+         question and its terminal shows that question's menu. An answer of several
+         steps is entered one step at a time, each checked against a fresh capture
+         of the terminal; if the menu changes part way, the daemon stops and fails
+         FAILED_PRECONDITION saying the answer was partly entered.
     bossanova.v1.AnswerChatQuestionResult:
       type: object
       properties:
@@ -9362,9 +9379,18 @@ components:
          carries it, so an answer meant for a prompt the agent has since moved past
          is refused rather than typed into whatever the terminal shows next.
          is_answerable is set when the agent's menu can take an answer through
-         ProxyAnswerChatQuestion: one question with a single choice, or a permission
-         prompt whose rows select by digit. A question with several parts or several
-         choices is answered in the terminal.
+         ProxyAnswerChatQuestion: a question with a single choice or several
+         choices, one tab of a call with several questions, that call's review tab,
+         or a permission prompt whose rows select by digit. A menu whose free-text
+         row already holds words someone typed in the terminal is answered there.
+
+         No dated API bump: is_answerable is set by the chat's own daemon and read
+         by the web, which is deployed with bosso and stamps Current. A client from
+         before several-choice answers that offers single-choice buttons for a
+         newly answerable question still gets a working answer: an option_index on
+         a several-choice question ticks that one box and submits, and text fills
+         the free-text row and submits, so no transform is needed. See
+         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 
          A call with several questions, or a question with several choices, draws a
          tabbed menu that shows one question at a time. A question read from such a
@@ -16379,6 +16405,10 @@ components:
         repoId:
           type: string
           title: repo_id
+        query:
+          title: query
+          description: Optional filters, order and cap. Absent keeps today's list.
+          $ref: '#/components/schemas/bossanova.v1.PRListQuery'
       title: ListRepoPRsCommand
       additionalProperties: false
       description: |-
@@ -16390,6 +16420,10 @@ components:
         repoId:
           type: string
           title: repo_id
+        query:
+          title: query
+          description: Optional filters, order and cap. Absent keeps today's list.
+          $ref: '#/components/schemas/bossanova.v1.PRListQuery'
       title: ListRepoPRsRequest
       additionalProperties: false
     bossanova.v1.ListRepoPRsResponse:
@@ -16657,6 +16691,28 @@ components:
             type: string
           title: label_ids
           description: Filter by label IDs or case-insensitive label names (matches any).
+        prAuthorLogins:
+          type: array
+          items:
+            type: string
+          title: pr_author_logins
+          description: |-
+            Filter by PR author GitHub login (case-insensitive, matches any). Empty
+             means no constraint; a session with no PR author never matches a set one.
+        prTargetBranches:
+          type: array
+          items:
+            type: string
+          title: pr_target_branches
+          description: |-
+            Filter by PR target (base) branch (exact, matches any). Empty means no
+             constraint; a session with no PR target never matches a set one.
+             No dated API bump or transform: both filters are additive and narrow only
+             when set. The local MCP list_sessions tool sets them; the TUI and the
+             orchestrator never do, so their reads are unchanged at every version. A
+             version-skewed daemon that predates the fields ignores them, so the MCP
+             tool re-applies the same filter to what it gets back. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: ListSessionsRequest
       additionalProperties: false
     bossanova.v1.ListSessionsResponse:
@@ -17123,6 +17179,35 @@ components:
       description: |-
         MergeStrategy is the merge method used when auto-merging PRs. Mirrors the
          domain values in lib/bossalib/models (merge / rebase / squash).
+    bossanova.v1.MintHostedProofViewLinkRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: The repository's canonical origin URL (https://github.com/owner/name).
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+        headSha:
+          type: string
+          title: head_sha
+          description: The head the page was made for; empty means the newest completed upload.
+      title: MintHostedProofViewLinkRequest
+      additionalProperties: false
+      description: MintHostedProofViewLinkRequest names one pull request's hosted proof page.
+    bossanova.v1.MintHostedProofViewLinkResponse:
+      type: object
+      properties:
+        viewUrl:
+          type: string
+          title: view_url
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: MintHostedProofViewLinkResponse
+      additionalProperties: false
     bossanova.v1.MintProofViewLinkRequest:
       type: object
       properties:
@@ -19022,6 +19107,57 @@ components:
       title: PRInfo
       additionalProperties: false
       description: PRInfo is the result of creating a pull request.
+    bossanova.v1.PRListOrder:
+      type: string
+      title: PRListOrder
+      enum:
+        - PR_LIST_ORDER_UNSPECIFIED
+        - PR_LIST_ORDER_CREATED_DESC
+        - PR_LIST_ORDER_CREATED_ASC
+        - PR_LIST_ORDER_UPDATED_DESC
+        - PR_LIST_ORDER_UPDATED_ASC
+      description: PRListOrder orders a ListRepoPRs result.
+    bossanova.v1.PRListOwnerFilter:
+      type: string
+      title: PRListOwnerFilter
+      enum:
+        - PR_LIST_OWNER_FILTER_UNSPECIFIED
+        - PR_LIST_OWNER_FILTER_ALL
+        - PR_LIST_OWNER_FILTER_UNOWNED
+      description: |-
+        PRListOwnerFilter chooses which PRs ListRepoPRs returns by session ownership.
+         A session owns a PR when it matches the PR's number or head branch.
+    bossanova.v1.PRListQuery:
+      type: object
+      properties:
+        author:
+          type: string
+          title: author
+          description: |-
+            Case-insensitive exact match on the author login. A bot reported as
+             app/<login> also matches <login>. Empty matches every author.
+        baseBranch:
+          type: string
+          title: base_branch
+          description: Exact match on the PR's target branch. Empty matches every branch.
+        order:
+          title: order
+          $ref: '#/components/schemas/bossanova.v1.PRListOrder'
+        limit:
+          type: integer
+          title: limit
+          format: int32
+          description: |-
+            Caps the result after filtering and ordering when greater than zero.
+             Zero or less means unlimited.
+        ownerFilter:
+          title: owner_filter
+          $ref: '#/components/schemas/bossanova.v1.PRListOwnerFilter'
+      title: PRListQuery
+      additionalProperties: false
+      description: |-
+        PRListQuery filters, orders and caps a ListRepoPRs result. An absent query
+         returns today's list: duplicate-blocking owners hidden, provider order, no cap.
     bossanova.v1.PRMergedEvent:
       type: object
       properties:
@@ -19097,6 +19233,34 @@ components:
           type: boolean
           title: is_conflicted
           description: True only when the open-PR snapshot conclusively reports a conflict.
+        isDraft:
+          type: boolean
+          title: is_draft
+          description: True when the PR is a draft on the hosting provider.
+        baseBranch:
+          type: string
+          title: base_branch
+          description: The PR's target branch, the branch it merges into.
+        createdAt:
+          title: created_at
+          description: When the provider created the PR. Unset when the provider reported none.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          description: When the provider last updated the PR. Unset when the provider reported none.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        sessionId:
+          type: string
+          title: session_id
+          description: |-
+            The non-archived boss session that owns the PR by PR number or head
+             branch. Empty when no session owns it. Set only by ListRepoPRs.
+        sessionDisplayStatus:
+          title: session_display_status
+          description: |-
+            The owning session's display status. UNSPECIFIED when session_id is empty
+             or the daemon has no display status for that session.
+          $ref: '#/components/schemas/bossanova.v1.DisplayStatus'
       title: PRSummary
       additionalProperties: false
       description: PRSummary is a lightweight representation of a PR for listing.
@@ -19295,6 +19459,17 @@ components:
         - oneOf:
             - type: object
               properties:
+                choices:
+                  title: choices
+                  description: |-
+                    The options to leave ticked, and words for the free-text row, for a
+                     question that takes several choices.
+                  $ref: '#/components/schemas/bossanova.v1.QuestionChoices'
+              title: choices
+              required:
+                - choices
+            - type: object
+              properties:
                 optionIndex:
                   type: integer
                   title: option_index
@@ -19329,11 +19504,21 @@ components:
             $ref: '#/components/schemas/bossanova.v1.PaneInput'
           title: inputs
           description: |-
-            What to send to the pane, in order. Empty when the question is pending
-             but this answer cannot be given here; reason then says why.
+            What to send to the pane, in order: the next step of the answer only.
+             Empty when the question is pending but this answer cannot be given here;
+             reason then says why.
         reason:
           type: string
           title: reason
+        isFinalStep:
+          type:
+            - boolean
+            - "null"
+          title: is_final_step
+          description: |-
+            Set when inputs finish the answer; false when the daemon must send them,
+             capture the pane again and plan the next step. Unset (a plugin from
+             before answers took several steps) means inputs are the whole answer.
       title: PlanQuestionAnswerResponse
       additionalProperties: false
     bossanova.v1.PluginInfo:
@@ -19612,6 +19797,33 @@ components:
          that applies project trust (Codex) applies every decision the same way on
          every request that carries it, and refuses a value it does not recognise; a
          runner whose agent has no project-trust gate ignores the field.
+    bossanova.v1.ProofConfidence:
+      type: object
+      properties:
+        headSha:
+          type: string
+          title: head_sha
+          description: 40 hex, the head the record was made for.
+        level:
+          title: level
+          $ref: '#/components/schemas/bossanova.v1.ConfidenceLevel'
+        loweredBy:
+          type: array
+          items:
+            type: string
+          title: lowered_by
+          description: Reasons that lowered the level, in record order.
+        asks:
+          type: array
+          items:
+            type: string
+          title: asks
+          description: Ask names as the record wrote them.
+      title: ProofConfidence
+      additionalProperties: false
+      description: |-
+        ProofConfidence is the verify proof record written for one PR head:
+         its confidence level, the reasons that lowered it and the asks for a person.
     bossanova.v1.ProofManifestEntry:
       type: object
       properties:
@@ -19750,6 +19962,17 @@ components:
               title: question_id
               description: ChatQuestion.id of the question being answered.
         - oneOf:
+            - type: object
+              properties:
+                choices:
+                  title: choices
+                  description: |-
+                    The options to tick and the words to type, for a question that takes
+                     several choices. Its text follows the same one-line rule as text.
+                  $ref: '#/components/schemas/bossanova.v1.QuestionChoices'
+              title: choices
+              required:
+                - choices
             - type: object
               properties:
                 optionIndex:
@@ -21102,6 +21325,12 @@ components:
         repoId:
           type: string
           title: repo_id
+        query:
+          title: query
+          description: |-
+            Optional filters, order and cap forwarded to the daemon. An older daemon
+             ignores it.
+          $ref: '#/components/schemas/bossanova.v1.PRListQuery'
       title: ProxyListRepoPRsRequest
       additionalProperties: false
     bossanova.v1.ProxyListRepoPRsResponse:
@@ -21240,8 +21469,10 @@ components:
             - "null"
           title: repo_id
           description: |-
-            Mirrors ProxyListSessionsRequest field-for-field; each filter is applied
-             per organization, exactly as the single-organization read applies it.
+            Carries ProxyListSessionsRequest's original filters; each is applied per
+             organization, exactly as the single-organization read applies it. Later
+             ProxyListSessionsRequest fields (organization, ordering, limit and the PR
+             author and target filters) are not mirrored here.
              The archived flag carries the should_ prefix the bool naming rule requires;
              ProxyListSessionsRequest.include_archived keeps its legacy spelling because
              renaming a shipped field is an API-version change of its own.
@@ -21341,7 +21572,28 @@ components:
           format: int32
           description: |-
             Caps the sessions returned after ordering; zero or negative means
-             unlimited.
+             unlimited. The limit counts only sessions that pass every filter.
+        prAuthorLogins:
+          type: array
+          items:
+            type: string
+          title: pr_author_logins
+          description: |-
+            Filter by PR author GitHub login (case-insensitive, matches any). Empty
+             means no constraint; a session with no PR author never matches a set one.
+        prTargetBranches:
+          type: array
+          items:
+            type: string
+          title: pr_target_branches
+          description: |-
+            Filter by PR target (base) branch (exact, matches any). Empty means no
+             constraint; a session with no PR target never matches a set one.
+             No dated API bump or transform: both filters are additive and narrow only
+             when set. The hosted MCP gateway, co-deployed with bosso, sets them; the
+             version-skewed web app and TUI never do, and a request without them reads
+             exactly as before, so no transform has anything to restore. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: ProxyListSessionsRequest
       additionalProperties: false
     bossanova.v1.ProxyListSessionsResponse:
@@ -21900,9 +22152,10 @@ components:
           type: string
           title: session_id
           description: |-
-            session_id, when set, routes by the (session, chat) pair, which finds a
-             chat whose daemon is claimed in another of the caller's organizations.
-             Callers without a session (the MCP send tool) leave it empty.
+            session_id, when set, routes by the (session, chat) pair. Either form
+             finds a chat whose daemon is claimed in another of the caller's
+             organizations (the chat-only form from API version 2026-11-08), so
+             callers without a session (the MCP send tool) leave it empty.
         attachmentUploadIds:
           type: array
           items:
@@ -22621,6 +22874,26 @@ components:
           description: True once every manifest entry has been written.
       title: PutProofObjectResponse
       additionalProperties: false
+    bossanova.v1.QuestionChoices:
+      type: object
+      properties:
+        optionIndexes:
+          type: array
+          items:
+            type: integer
+          title: option_indexes
+        text:
+          type: string
+          title: text
+      title: QuestionChoices
+      additionalProperties: false
+      description: |-
+        QuestionChoices answers a question that takes several choices: the options
+         to leave ticked, and the words for its free-text row. The menu ends with
+         exactly these boxes ticked, whatever was ticked before. option_indexes are
+         zero-based indexes into ChatQuestion.options. text is one line; empty
+         leaves the free-text row empty. An answer naming no option and no words is
+         refused.
     bossanova.v1.RateLimitPlanStatus:
       type: string
       title: RateLimitPlanStatus
@@ -25910,6 +26183,17 @@ components:
              No dated API bump or transform: both fields are additive and older
              clients ignore them. See
              docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+        prHeadProofConfidence:
+          title: pr_head_proof_confidence
+          description: |-
+            The verify proof record bossd holds for the head it currently tracks for
+             the PR, in any session state: the record's own level, lowered_by and asks,
+             never a sign-off park's operator-label view. Unset when the only record is
+             for another head, the record is legacy (no level), or there is no record.
+             Transport-only, never persisted. No dated API bump: additive output field
+             older clients ignore. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+          $ref: '#/components/schemas/bossanova.v1.ProofConfidence'
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -30874,8 +31158,9 @@ components:
       description: |-
         ViewFilterClause is one filter chip: facet, is / is not, values. bosso
          accepts the facets status, needs, repository, organization, daemon,
-         proof_page, size and agent, at most 50 values of at most 200 characters
-         each, and rejects anything else with INVALID_ARGUMENT.
+         proof_page, size, agent, author (the PR author's login) and target_branch
+         (the PR's base branch), at most 50 values of at most 200 characters each,
+         and rejects anything else with INVALID_ARGUMENT.
     bossanova.v1.ViewGrouping:
       type: string
       title: ViewGrouping
@@ -30893,6 +31178,9 @@ components:
         - VIEW_ORDERING_SMALLEST
         - VIEW_ORDERING_LAST_UPDATED
         - VIEW_ORDERING_CONFIDENT
+        - VIEW_ORDERING_CREATED_NEWEST_FIRST
+        - VIEW_ORDERING_CREATED_OLDEST_FIRST
+        - VIEW_ORDERING_UPDATED_OLDEST_FIRST
     bossanova.v1.ViewerDevice:
       type: object
       properties:

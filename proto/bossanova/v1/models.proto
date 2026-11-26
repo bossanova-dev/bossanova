@@ -733,6 +733,26 @@ message Session {
   // clients ignore them. See
   // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
   string pr_target_branch = 107;
+  // The verify proof record bossd holds for the head it currently tracks for
+  // the PR, in any session state: the record's own level, lowered_by and asks,
+  // never a sign-off park's operator-label view. Unset when the only record is
+  // for another head, the record is legacy (no level), or there is no record.
+  // Transport-only, never persisted. No dated API bump: additive output field
+  // older clients ignore. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  ProofConfidence pr_head_proof_confidence = 108;
+}
+
+// ProofConfidence is the verify proof record written for one PR head:
+// its confidence level, the reasons that lowered it and the asks for a person.
+message ProofConfidence {
+  // 40 hex, the head the record was made for.
+  string head_sha = 1;
+  ConfidenceLevel level = 2;
+  // Reasons that lowered the level, in record order.
+  repeated string lowered_by = 3;
+  // Ask names as the record wrote them.
+  repeated string asks = 4;
 }
 
 // SessionLabel is a colored tag that can be attached to sessions (Linear-style).
@@ -848,6 +868,57 @@ message PRSummary {
   bool has_all_commit_authors = 8;
   // True only when the open-PR snapshot conclusively reports a conflict.
   bool is_conflicted = 9;
+  // True when the PR is a draft on the hosting provider.
+  bool is_draft = 10;
+  // The PR's target branch, the branch it merges into.
+  string base_branch = 11;
+  // When the provider created the PR. Unset when the provider reported none.
+  google.protobuf.Timestamp created_at = 12;
+  // When the provider last updated the PR. Unset when the provider reported none.
+  google.protobuf.Timestamp updated_at = 13;
+  // The non-archived boss session that owns the PR by PR number or head
+  // branch. Empty when no session owns it. Set only by ListRepoPRs.
+  string session_id = 14;
+  // The owning session's display status. UNSPECIFIED when session_id is empty
+  // or the daemon has no display status for that session.
+  DisplayStatus session_display_status = 15;
+}
+
+// PRListOrder orders a ListRepoPRs result.
+enum PRListOrder {
+  // Keeps the provider's order: newest created first.
+  PR_LIST_ORDER_UNSPECIFIED = 0;
+  PR_LIST_ORDER_CREATED_DESC = 1;
+  PR_LIST_ORDER_CREATED_ASC = 2;
+  PR_LIST_ORDER_UPDATED_DESC = 3;
+  PR_LIST_ORDER_UPDATED_ASC = 4;
+}
+
+// PRListOwnerFilter chooses which PRs ListRepoPRs returns by session ownership.
+// A session owns a PR when it matches the PR's number or head branch.
+enum PRListOwnerFilter {
+  // Hides PRs that a duplicate-blocking session owns, as the New session
+  // pickers expect.
+  PR_LIST_OWNER_FILTER_UNSPECIFIED = 0;
+  // Returns every open PR.
+  PR_LIST_OWNER_FILTER_ALL = 1;
+  // Returns only PRs that no non-archived session owns.
+  PR_LIST_OWNER_FILTER_UNOWNED = 2;
+}
+
+// PRListQuery filters, orders and caps a ListRepoPRs result. An absent query
+// returns today's list: duplicate-blocking owners hidden, provider order, no cap.
+message PRListQuery {
+  // Case-insensitive exact match on the author login. A bot reported as
+  // app/<login> also matches <login>. Empty matches every author.
+  string author = 1;
+  // Exact match on the PR's target branch. Empty matches every branch.
+  string base_branch = 2;
+  PRListOrder order = 3;
+  // Caps the result after filtering and ordering when greater than zero.
+  // Zero or less means unlimited.
+  int32 limit = 4;
+  PRListOwnerFilter owner_filter = 5;
 }
 
 // CreatePROpts contains options for creating a new pull request.
@@ -1526,9 +1597,18 @@ message ChatEvent {
 // carries it, so an answer meant for a prompt the agent has since moved past
 // is refused rather than typed into whatever the terminal shows next.
 // is_answerable is set when the agent's menu can take an answer through
-// ProxyAnswerChatQuestion: one question with a single choice, or a permission
-// prompt whose rows select by digit. A question with several parts or several
-// choices is answered in the terminal.
+// ProxyAnswerChatQuestion: a question with a single choice or several
+// choices, one tab of a call with several questions, that call's review tab,
+// or a permission prompt whose rows select by digit. A menu whose free-text
+// row already holds words someone typed in the terminal is answered there.
+//
+// No dated API bump: is_answerable is set by the chat's own daemon and read
+// by the web, which is deployed with bosso and stamps Current. A client from
+// before several-choice answers that offers single-choice buttons for a
+// newly answerable question still gets a working answer: an option_index on
+// a several-choice question ticks that one box and submits, and text fills
+// the free-text row and submits, so no transform is needed. See
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 //
 // A call with several questions, or a question with several choices, draws a
 // tabbed menu that shows one question at a time. A question read from such a
@@ -1588,6 +1668,17 @@ message ChatQuestionTab {
   bool is_active = 2;
   bool is_answered = 3;
   bool is_submit = 4;
+}
+
+// QuestionChoices answers a question that takes several choices: the options
+// to leave ticked, and the words for its free-text row. The menu ends with
+// exactly these boxes ticked, whatever was ticked before. option_indexes are
+// zero-based indexes into ChatQuestion.options. text is one line; empty
+// leaves the free-text row empty. An answer naming no option and no words is
+// refused.
+message QuestionChoices {
+  repeated uint32 option_indexes = 1;
+  string text = 2;
 }
 
 // --- Inbound triggers (BOS-1348) ---

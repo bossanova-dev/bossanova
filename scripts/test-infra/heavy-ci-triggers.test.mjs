@@ -170,8 +170,7 @@ function assertInheritance(job) {
   const all = steps(job)
   let count = 0
   for (const step of all) {
-    if (/checkout/.test(step.fields.uses?.value ?? '')) continue
-    // The notice is the only non-checkout step allowed to run on inherited success.
+    // The notice is the only step allowed to run on inherited success.
     if (/needs\.dedup\.outputs\.skip == 'true'/.test(step.fields.if?.value ?? '')) {
       assert.match(
         step.fields.run?.body || step.fields.run?.value || '',
@@ -188,6 +187,14 @@ function assertInheritance(job) {
     )
   }
   assert.ok(count > 0, 'required check must still contain work')
+  // Inherited success boots the runner and prints a notice: no service container either.
+  for (const [id, service] of Object.entries(fields(props(job).services?.body ?? '', 6))) {
+    assert.match(
+      fields(service.body, 8).image?.value ?? '',
+      /^\$\{\{ needs\.dedup\.outputs\.skip != 'true' && '[^']+' \|\| '' \}\}$/,
+      `inherited success must start no ${id} service`,
+    )
+  }
   assert.ok(
     all.some((step) => /::notice::/.test(step.text)),
     'required check needs an inheritance notice',
@@ -307,6 +314,29 @@ for (const name of workflows) {
             body: job.body.replace(/^    if:/m, "    if: needs.dedup.outputs.skip != 'true' &&"),
           }),
         /never job skipping/,
+      )
+    })
+    test(`${name}/${id}: rejects a service started on inherited success`, () => {
+      assert.throws(
+        () =>
+          assertInheritance({
+            ...job,
+            body: job.body.replace(/image: \$\{\{.*\}\}/, 'image: postgres:16'),
+          }),
+        /start no postgres service/,
+      )
+    })
+    test(`${name}/${id}: rejects a checkout on inherited success`, () => {
+      assert.throws(
+        () =>
+          assertInheritance({
+            ...job,
+            body: job.body.replace(
+              /(uses: actions\/checkout@\S+.*\n(?:\s+#.*\n)*)\s+if: needs\.dedup\.outputs\.skip != 'true'\n/,
+              '$1',
+            ),
+          }),
+        /honor inheritance/,
       )
     })
     test(`${name}/${id}: rejects work running after inherited success`, () => {

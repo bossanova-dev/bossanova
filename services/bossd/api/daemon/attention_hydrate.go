@@ -196,6 +196,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 	p.Attention = attention.Compute(in)
 	p.VerifyPark = attention.SignOffPark(in)
 	s.hydrateMergedConfidence(ctx, p, d)
+	s.hydrateHeadProofConfidence(ctx, p, d)
 	p.Attention.ShouldShowDisplayLabel = p.Attention.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && displaystatus.FixShowsLabel(p)
 	if !session.CanResumeSessionRun(row) || (s.lifecycle != nil && !s.lifecycle.RunResumeAvailable(ctx, row, d.chats)) {
 		actions := p.Attention.Actions[:0]

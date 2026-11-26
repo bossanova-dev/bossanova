@@ -99,6 +99,23 @@ export function releaseUnknownDispatch({ release, remember, routed }) {
   return `dispatch-unknown: ${routed.route} (${why}${released ? '; released' : ''})`
 }
 
+/**
+ * A heartbeat: re-post this run's own claim so its age restarts. It never claims a head the run
+ * does not hold, so a peer that took an expired claim over keeps it. A dry run never posted its
+ * claim, so only a live claim of another run loses it there.
+ * @param {{current: {readable: boolean, status?: any}, token: string, now: number, dryRun?: boolean, post: (status: {state: string, description: string}) => boolean}} input
+ */
+export function refreshOwnClaim({ current, token, now, dryRun = false, post }) {
+  if (!current.readable) return { won: false, token, reason: 'status-unreadable' }
+  const kind = claimState(current.status, { token, now }).kind
+  if (kind !== 'mine' && (kind === 'foreign' || dryRun !== true))
+    return { won: false, token, reason: 'claim-lost' }
+  const description = `${VERIFY_DESCRIPTIONS.verifying} ${token}`
+  return post({ state: 'pending', description })
+    ? { won: true, token, refreshed: true }
+    : { won: false, token, reason: 'status-post-failed' }
+}
+
 /** @param {{current: {readable: boolean, status?: any}, read: () => {readable: boolean, status?: any}, readPark: () => any, token: string, now: number, sleep?: (ms: number) => any, post: Function, reason: string}} input */
 export async function releaseOwnClaim({
   current,

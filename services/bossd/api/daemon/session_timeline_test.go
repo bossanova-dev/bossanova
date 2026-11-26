@@ -51,6 +51,8 @@ func (s stubEvidence) ParkAsks(string, string) []string  { return nil }
 
 func (s stubEvidence) SentBack(string, string) bool { return false }
 
+func (s stubEvidence) RecordPublishedPage(context.Context, string, int, string, string) {}
+
 func checksJSON(t *testing.T, checks []vcs.CheckResult) string {
 	t.Helper()
 	raw, err := json.Marshal(checks)

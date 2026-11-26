@@ -117,49 +117,6 @@ export function removeTierAProbeRoot(probeRoot) {
 }
 
 // ---------------------------------------------------------------------------
-// resolveAgentBin(env, { overrideVar, binName }) → string | null
-//
-// Generic agent-binary resolver. Resolution order:
-//   1. env[overrideVar] — when set to a non-empty ABSOLUTE path, this wins.
-//      A relative override is rejected (→ null): in cron/daemon the cwd is not
-//      predictable, so a repo- or cwd-relative binary must never be executed,
-//      and we must NOT silently fall back to PATH (which would mask the bad
-//      config). If the absolute path is missing / not executable, return null.
-//   2. Ambient PATH lookup — search each dir in env.PATH for `binName`.
-//      Return the first executable match, or null if none.
-// ---------------------------------------------------------------------------
-export function resolveAgentBin(env, { overrideVar, binName } = {}) {
-  const rawOverride = overrideVar ? env?.[overrideVar] : undefined
-  const override = typeof rawOverride === 'string' ? rawOverride : ''
-  if (override !== '') {
-    // Enforce the documented absolute-path contract before touching the FS — a
-    // relative override is a misconfiguration, not a PATH fallback trigger.
-    if (!path.isAbsolute(override)) {
-      return null
-    }
-    try {
-      fs.accessSync(override, fs.constants.X_OK)
-      return override
-    } catch {
-      return null
-    }
-  }
-  // Fall back to PATH lookup.
-  const pathVar = typeof env?.PATH === 'string' ? env.PATH : ''
-  const dirs = pathVar.split(path.delimiter).filter(Boolean)
-  for (const dir of dirs) {
-    const candidate = path.join(dir, binName)
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK)
-      return candidate
-    } catch {
-      // not found in this dir, try next
-    }
-  }
-  return null
-}
-
-// ---------------------------------------------------------------------------
 // Classify spawn results, optionally matching sanitized adapter auth diagnostics.
 // Spawn errors and signals take precedence over output; callers without signatures
 // retain the legacy exit-status classification.

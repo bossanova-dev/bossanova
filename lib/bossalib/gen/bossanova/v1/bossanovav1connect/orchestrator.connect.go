@@ -690,7 +690,10 @@ type OrchestratorServiceClient interface {
 	// carries no session_id.
 	ProxySendChatMessage(context.Context, *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error)
 	// Answers the question a chat's agent waits on in its terminal menu, with
-	// one of its options or with typed words. Writes to the agent like
+	// one of its options, with typed words, or with several choices. A question
+	// with several tabs is answered one tab at a time, each under the question_id
+	// of the tab on screen, and sent with the review tab's "Submit answers"
+	// option. Writes to the agent like
 	// ProxySendChatMessage, so it takes the same permission and the same cloud
 	// control. question_id must name the question the agent still waits on;
 	// otherwise the daemon types nothing and the call fails FailedPrecondition.
@@ -3717,7 +3720,10 @@ type OrchestratorServiceHandler interface {
 	// carries no session_id.
 	ProxySendChatMessage(context.Context, *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error)
 	// Answers the question a chat's agent waits on in its terminal menu, with
-	// one of its options or with typed words. Writes to the agent like
+	// one of its options, with typed words, or with several choices. A question
+	// with several tabs is answered one tab at a time, each under the question_id
+	// of the tab on screen, and sent with the review tab's "Submit answers"
+	// option. Writes to the agent like
 	// ProxySendChatMessage, so it takes the same permission and the same cloud
 	// control. question_id must name the question the agent still waits on;
 	// otherwise the daemon types nothing and the call fails FailedPrecondition.

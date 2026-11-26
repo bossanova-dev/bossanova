@@ -472,15 +472,20 @@ service AgentRunnerService {
   // question menu returns codes.Unimplemented.
   rpc ReadQuestionMenu(ReadQuestionMenuRequest) returns (ReadQuestionMenuResponse);
 
-  // PlanQuestionAnswer works out the keystrokes that answer the question the
-  // agent is waiting on in its terminal menu, and refuses when that question
-  // is not the one named. pane_content must show the menu of the question
-  // question_id names, with its options in order and its free-text row
-  // untouched; a question the plugin's transcript still ends on counts when
-  // the menu shows its options. Otherwise it answers is_question_pending=false
-  // with no inputs, so a stale answer types nothing. The daemon sends the
-  // inputs and never interprets them. A plugin whose agent has no question
-  // menu returns codes.Unimplemented.
+  // PlanQuestionAnswer works out the keystrokes for the next step of the
+  // answer to the question the agent is waiting on in its terminal menu, and
+  // refuses when that question is not the one named. pane_content must show
+  // the menu of the question question_id names, with its options in order; a
+  // question the plugin's transcript still ends on counts when the menu shows
+  // its options. Otherwise it answers is_question_pending=false with no
+  // inputs, so a stale answer types nothing. An answer that takes several
+  // keys checked one at a time (ticking boxes, typing words, moving to the
+  // next tab or to Submit) comes back one step per call, planned from the
+  // pane as it is now; is_final_step marks the step that finishes it. A
+  // question with several tabs is answered one tab at a time, each tab under
+  // its own question_id, ending with the review tab's "Submit answers". The
+  // daemon sends the inputs and never interprets them. A plugin whose agent
+  // has no question menu returns codes.Unimplemented.
   rpc PlanQuestionAnswer(PlanQuestionAnswerRequest) returns (PlanQuestionAnswerResponse);
 }
 
@@ -1161,6 +1166,9 @@ message PlanQuestionAnswerRequest {
     uint32 option_index = 5;
     // Words typed into the menu's own free-text answer. One line.
     string text = 6;
+    // The options to leave ticked, and words for the free-text row, for a
+    // question that takes several choices.
+    QuestionChoices choices = 7;
   }
 }
 
@@ -1169,10 +1177,15 @@ message PlanQuestionAnswerResponse {
   // shows its menu. False when the agent moved past it or the terminal shows
   // something else; inputs is then empty.
   bool is_question_pending = 1;
-  // What to send to the pane, in order. Empty when the question is pending
-  // but this answer cannot be given here; reason then says why.
+  // What to send to the pane, in order: the next step of the answer only.
+  // Empty when the question is pending but this answer cannot be given here;
+  // reason then says why.
   repeated PaneInput inputs = 2;
   string reason = 3;
+  // Set when inputs finish the answer; false when the daemon must send them,
+  // capture the pane again and plan the next step. Unset (a plugin from
+  // before answers took several steps) means inputs are the whole answer.
+  optional bool is_final_step = 4;
 }
 
 // PaneInput is one thing to send to an agent's terminal: a named key, as

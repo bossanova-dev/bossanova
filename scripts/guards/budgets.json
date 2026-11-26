@@ -268,7 +268,7 @@
       "scripts/guards/check-price-parity.mjs": 1055,
       "scripts/guards/check-skill-shell.mjs": 6463,
       "scripts/sweeps/bs-security-findings.mjs": 1113,
-      "skills-toolbox/bs-dispatch-await.mjs": 1048,
+      "skills-toolbox/bs-dispatch-await.mjs": 1053,
       "skills-toolbox/epic/epic-driver.mjs": 1666,
       "skills-toolbox/plan/plan-contract-guard.mjs": 1688,
       "skills-toolbox/plan/plan-deps-lib.mjs": 2177,
@@ -279,8 +279,9 @@
       "skills-toolbox/pr-check-state.mjs": 1314,
       "skills-toolbox/retro/retro-notes.mjs": 1349,
       "skills-toolbox/skill-config.mjs": 3815,
+      "skills-toolbox/skill-extensions.mjs": 1031,
       "skills-toolbox/tracker/cli.mjs": 1066,
-      "skills-toolbox/verify/verify-gate.mjs": 4571,
+      "skills-toolbox/verify/verify-gate.mjs": 4576,
       "skills-toolbox/verify/verify-route.mjs": 1192
     }
   },

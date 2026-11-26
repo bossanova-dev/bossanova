@@ -16,6 +16,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/kit/daemoncaps"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // fakeDaemon is a minimal DaemonService implementation served over a Unix
@@ -25,6 +26,7 @@ type fakeDaemon struct {
 
 	sessions   []*pb.Session
 	refreshReq *pb.RefreshAgentAccountRequest
+	repoPRsReq *pb.ListRepoPRsRequest
 	// createOutputs are emitted as SetupOutput events before the terminal
 	// SessionCreated event, exercising the stream-draining behaviour.
 	createOutputs []string
@@ -43,6 +45,18 @@ type fakeDaemon struct {
 	omitHeadPinCapability bool
 	capabilityError       error
 	capabilityProbeCalls  int
+	// mintReq records the last MintHostedProofViewLinkRequest; mintErr, when
+	// set, is the relay's refusal.
+	mintReq *pb.MintHostedProofViewLinkRequest
+	mintErr error
+}
+
+func (f *fakeDaemon) MintHostedProofViewLink(_ context.Context, req *connect.Request[pb.MintHostedProofViewLinkRequest]) (*connect.Response[pb.MintHostedProofViewLinkResponse], error) {
+	f.mintReq = req.Msg
+	if f.mintErr != nil {
+		return nil, f.mintErr
+	}
+	return connect.NewResponse(&pb.MintHostedProofViewLinkResponse{ViewUrl: "https://acme.proofs.test/v1.1.sig/tok/", ExpiresAt: timestamppb.New(time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC))}), nil
 }
 
 func (f *fakeDaemon) MergeSession(_ context.Context, req *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
@@ -58,6 +72,11 @@ func (f *fakeDaemon) MergeSession(_ context.Context, req *connect.Request[pb.Mer
 
 func (f *fakeDaemon) ListSessions(_ context.Context, _ *connect.Request[pb.ListSessionsRequest]) (*connect.Response[pb.ListSessionsResponse], error) {
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: f.sessions}), nil
+}
+
+func (f *fakeDaemon) ListRepoPRs(_ context.Context, req *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
+	f.repoPRsReq = req.Msg
+	return connect.NewResponse(&pb.ListRepoPRsResponse{PullRequests: []*pb.PRSummary{{Number: 7, SessionId: "s1"}}}), nil
 }
 
 func (f *fakeDaemon) RefreshAgentAccount(_ context.Context, req *connect.Request[pb.RefreshAgentAccountRequest]) (*connect.Response[pb.RefreshAgentAccountResponse], error) {
@@ -567,5 +586,62 @@ func TestMergeLegacyUnpinned(t *testing.T) {
 	}
 	if fake.capabilityProbeCalls != 0 {
 		t.Fatalf("unpinned probes=%d, want zero", fake.capabilityProbeCalls)
+	}
+}
+
+// TestMintViewLink pins that the local backend maps the tool's
+// MintProofViewLink to bossd's MintHostedProofViewLink and back, and passes
+// the relay's refusal through with its code. The name stays short because the
+// fake daemon's socket path embeds it and Unix socket paths are length-capped.
+func TestMintViewLink(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeDaemon{}
+	backend, err := New(serveFakeDaemon(t, fake))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const head = "0a1b0a1b0a1b0a1b0a1b0a1b0a1b0a1b0a1b0a1b"
+	resp, err := backend.MintProofViewLink(context.Background(), &pb.MintProofViewLinkRequest{RepoOriginUrl: "https://github.com/acme/widgets", PrNumber: 7, HeadSha: head})
+	if err != nil {
+		t.Fatalf("MintProofViewLink: %v", err)
+	}
+	if got := fake.mintReq; got.GetRepoOriginUrl() != "https://github.com/acme/widgets" || got.GetPrNumber() != 7 || got.GetHeadSha() != head {
+		t.Fatalf("relay request = %v", got)
+	}
+	if resp.GetViewUrl() != "https://acme.proofs.test/v1.1.sig/tok/" || !resp.GetExpiresAt().AsTime().Equal(time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("response = %v", resp)
+	}
+
+	fake.mintErr = connect.NewError(connect.CodeFailedPrecondition, errors.New("sign in with boss login"))
+	if _, err := backend.MintProofViewLink(context.Background(), &pb.MintProofViewLinkRequest{RepoOriginUrl: "https://github.com/acme/widgets", PrNumber: 7}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("refusal = %v, want FailedPrecondition", err)
+	}
+}
+
+// TestListRepoPRsForwardsQuery proves the local backend sends the tool's PR
+// list query on ListRepoPRsRequest and returns the daemon's rows.
+func TestListRepoPRsForwardsQuery(t *testing.T) {
+	t.Parallel()
+	fake := &fakeDaemon{}
+	backend, err := New(serveFakeDaemon(t, fake))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	query := &pb.PRListQuery{
+		Author: "alice", BaseBranch: "main", Order: pb.PRListOrder_PR_LIST_ORDER_UPDATED_DESC,
+		Limit: 3, OwnerFilter: pb.PRListOwnerFilter_PR_LIST_OWNER_FILTER_ALL,
+	}
+	prs, err := backend.ListRepoPRs(context.Background(), &pb.ListRepoPRsRequest{RepoId: "r1", Query: query})
+	if err != nil {
+		t.Fatalf("ListRepoPRs: %v", err)
+	}
+	if len(prs) != 1 || prs[0].GetSessionId() != "s1" {
+		t.Fatalf("pull requests = %+v, want the daemon's row", prs)
+	}
+	got := fake.repoPRsReq.GetQuery()
+	if fake.repoPRsReq.GetRepoId() != "r1" || got.GetAuthor() != "alice" || got.GetBaseBranch() != "main" ||
+		got.GetOrder() != query.GetOrder() || got.GetLimit() != 3 || got.GetOwnerFilter() != query.GetOwnerFilter() {
+		t.Fatalf("ListRepoPRsRequest = %+v, want r1 with query %+v", fake.repoPRsReq, query)
 	}
 }

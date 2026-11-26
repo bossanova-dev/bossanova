@@ -10,11 +10,11 @@ import CommandTabs from '@site/src/components/CommandTabs';
 
 Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents (Claude Code, Claude Desktop, and any MCP-capable host) drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. The tool reference below describes the supported operations.
 
-The server exposes **83 tools** in three tiers:
+The server exposes **84 tools** in three tiers:
 
 | Tier        | Count | Behaviour                          |
 | ----------- | ----- | ---------------------------------- |
-| Read-only   | 30    | Always available                   |
+| Read-only   | 31    | Always available                   |
 | Mutating    | 37    | Non-destructive writes             |
 | Destructive | 16    | Require `confirm: true` to execute |
 
@@ -192,7 +192,7 @@ Claude Code keeps user-scope and local-scope server configuration in `~/.claude.
 - **stdio (default)** — `bin/mcp` with no flags; the MCP host spawns it and talks over stdin/stdout.
 - **Streamable HTTP** — `bin/mcp --http 127.0.0.1:7474` (any free loopback port; non-loopback addresses are refused) serves `/mcp`, `/healthz` and `/buildinfo`, useful for `curl` or a browser-based MCP inspector. `/mcp` requires `Authorization: Bearer <token>` (see [Authenticating HTTP clients](#authenticating-http-clients)). Pass `--socket /path/to/bossd.sock` for a non-default bossd socket.
 
-Pass `--read-only` to register only the 29 read-only tools; mutating and destructive tools then never appear in `tools/list`. Use `--only get_session,list_notes` to advertise a comma-separated allowlist; it composes with `--read-only`. An empty `--only` value registers the full surface allowed by the other flags.
+Pass `--read-only` to register only the 31 read-only tools; mutating and destructive tools then never appear in `tools/list`. Use `--only get_session,list_notes` to advertise a comma-separated allowlist; it composes with `--read-only`. An empty `--only` value registers the full surface allowed by the other flags.
 
 If tools fail while `/healthz` remains healthy, check that `bossd` is running. The MCP server talks to it over a Unix socket; pass `--socket` for a non-default socket path.
 
@@ -208,39 +208,41 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 
 ## Tool reference
 
-### Read-only (29)
+### Read-only (31)
 
-| Tool                           | Description                                                                                |
-| ------------------------------ | ------------------------------------------------------------------------------------------ |
-| `list_sessions`                | Filter sessions by repo, states, labels or archived; order by created/updated time; limit  |
-| `get_session`                  | Get a single session by id — `state`/`last_check_state` carry no push info, see below      |
-| `list_repos`                   | List every registered repository                                                           |
-| `list_repo_prs`                | List open pull requests for a repository                                                   |
-| `list_tracker_issues`          | List issues from an external tracker (Linear, Sentry)                                      |
-| `resolve_context`              | Resolve repo + session for a working directory                                             |
-| `validate_repo_path`           | Validate a local path is a usable git repo                                                 |
-| `list_chats`                   | List agent chats for a session                                                             |
-| `get_chat_statuses`            | Get live chat status for a session — `last_output_at` is a floor, see below                |
-| `get_session_statuses`         | Get best live status across chats for multiple sessions — aggregate only, see below        |
-| `list_check_snapshots`         | List recent CI check snapshots, newest first. See [verify verdict](#verify-verdict).       |
-| `repair_doctor`                | Run daemon repair-doctor diagnostics                                                       |
-| `list_agents`                  | List loaded agent-runner plugins                                                           |
-| `list_plugins`                 | List every plugin the daemon attempted to load                                             |
-| `list_cron_jobs`               | List every scheduled cron job                                                              |
-| `get_cron_job`                 | Get a single cron job by id                                                                |
-| `get_chat_transcript`          | Return the conversation transcript and final assistant text for a chat                     |
-| `list_accounts`                | List registry accounts and cached usage metadata; credentials are never returned           |
-| `get_settings`                 | Get the daemon's global settings — the TUI-editable subset plus each agent's config        |
-| `list_github_callbacks`        | List registered GitHub PR callbacks; the delivery message body is never returned           |
-| `list_notes`                   | List repo-scoped notes, optionally filtered by repo, provenance, tags, or a body substring |
-| `get_note`                     | Get a single note by id, including its full body and normalised tags                       |
-| `list_broadcasts`              | List broadcasts and their lifecycle state; the message body is never returned              |
-| `list_broadcast_subscriptions` | List standing broadcast subscriptions; the registered message body is never returned       |
-| `list_organization_notes`      | List a page of an organization's cloud notes, filtered (hosted endpoint only)              |
-| `get_organization_note`        | Get one organization note by id, with its body, origin and 90-day `expires_at`             |
-| `get_organization_note_quota`  | Report an organization's hourly note-write quota without spending any                      |
-| `export_project_config`        | Export this repo's boss setup as `.boss-project.json` content                              |
-| `diff_project_config`          | Plan converging onto a `.boss-project.json` passed as an argument; writes nothing          |
+| Tool                           | Description                                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `list_sessions`                | Filter by repo, state, label, PR author/target, archived; order by created/updated; limit              |
+| `get_session`                  | Get a single session by id — `state`/`last_check_state` carry no push info, see below                  |
+| `get_proof_view_link`          | Mint a short-lived signed link to a session's hosted proof page. See [below](#reading-verify-results). |
+| `list_repos`                   | List every registered repository                                                                       |
+| `list_repo_prs`                | List open PRs with target branch, draft state, dates and owning session — filters below                |
+| `list_tracker_issues`          | List issues from an external tracker (Linear, Sentry)                                                  |
+| `resolve_context`              | Resolve repo + session for a working directory                                                         |
+| `validate_repo_path`           | Validate a local path is a usable git repo                                                             |
+| `list_chats`                   | List agent chats for a session                                                                         |
+| `get_chat_statuses`            | Get live chat status for a session — `last_output_at` is a floor, see below                            |
+| `get_session_statuses`         | Get best live status across chats for multiple sessions — aggregate only, see below                    |
+| `list_check_snapshots`         | List recent CI check snapshots, newest first. See [verify verdict](#verify-verdict).                   |
+| `repair_doctor`                | Run daemon repair-doctor diagnostics                                                                   |
+| `list_agents`                  | List loaded agent-runner plugins                                                                       |
+| `list_plugins`                 | List every plugin the daemon attempted to load                                                         |
+| `list_cron_jobs`               | List every scheduled cron job                                                                          |
+| `get_cron_job`                 | Get a single cron job by id                                                                            |
+| `get_chat_transcript`          | Return the conversation transcript and final assistant text for a chat                                 |
+| `list_accounts`                | List registry accounts and cached usage metadata; credentials are never returned                       |
+| `get_settings`                 | Get the daemon's global settings — the TUI-editable subset plus each agent's config                    |
+| `list_github_callbacks`        | List registered GitHub PR callbacks; the delivery message body is never returned                       |
+| `list_notes`                   | List repo-scoped notes, optionally filtered by repo, provenance, tags, or a body substring             |
+| `get_note`                     | Get a single note by id, including its full body and normalised tags                                   |
+| `list_broadcasts`              | List broadcasts and their lifecycle state; the message body is never returned                          |
+| `list_broadcast_subscriptions` | List standing broadcast subscriptions; the registered message body is never returned                   |
+| `list_organization_notes`      | List a page of an organization's cloud notes, filtered (hosted endpoint only)                          |
+| `get_organization_note`        | Get one organization note by id, with its body, origin and 90-day `expires_at`                         |
+| `get_organization_note_quota`  | Report an organization's hourly note-write quota without spending any                                  |
+| `export_project_config`        | Export this repo's boss setup as `.boss-project.json` content                                          |
+| `diff_project_config`          | Plan converging onto a `.boss-project.json` passed as an argument; writes nothing                      |
+| `list_session_labels`          | List colored session labels and their session counts                                                   |
 
 ### Verify verdict
 
@@ -248,6 +250,58 @@ The `list_check_snapshots` tool returns GitHub's raw check states in `raw_json`.
 A `boss/verify` success with a description starting `needs human:` means
 the head is held for a person. Read `is_verify_passed` from
 `boss pr state <pr> --json` for the verify verdict.
+
+### Reading verify results
+
+`get_session` and `list_sessions` carry `pr_head_proof_confidence` when bossd
+holds a verify proof record for the PR head it currently tracks, in any session
+state. It reports the record as verify wrote it: `head_sha`, `level` (a
+`ConfidenceLevel` number, for example `1` for high), `lowered_by` (the reasons
+that lowered the level) and `asks` (what the record asks a person to check).
+Compare `head_sha` with `pr_display_head_sha`: when they match, the session's
+current head is verified at that level. The field is absent when the only record
+is for another head, when the record is a legacy one with no level, or when no
+proof exists. A sign-off park's own view, with operator labels, stays in
+`verify_park` and `attention`, so its level can differ.
+
+`pr_proof_url` needs a browser sign-in. To open the page from an agent, call
+`get_proof_view_link` with the session `id`. It returns a short-lived signed
+`view_url`, its `expires_at` (RFC 3339, UTC), the `head_sha` the page was made
+for (the session's `pr_proof_head_sha`) and `is_current_head`, which is true only
+when that head equals `pr_display_head_sha`. The link stops working at
+`expires_at`; call the tool again for a fresh one.
+
+The tool reads the session first, so a caller who cannot see the session gets
+that error and no link. A session without a pull request is an error. A page
+that does not exist, or belongs to another organization, is `NotFound`. Minting
+needs Bossanova Cloud: the hosted gateway mints as you, and the local server
+mints through bossd with your `boss login` session. A daemon that is not signed
+in, or runs local-only, fails with `FailedPrecondition` and asks you to sign in
+with `boss login`.
+
+### `list_repo_prs` filters and session fields
+
+Each PR carries `base_branch` (its target branch), `is_draft`, `head_sha`, and
+GitHub's `created_at` and `updated_at` as RFC3339 times. Enums such as `state`
+come back as names, for example `PR_STATE_OPEN`.
+
+`session_id` and `session_display_status` name the non-archived boss session
+that owns the PR by PR number or head branch. Both are empty, or
+`DISPLAY_STATUS_UNSPECIFIED`, when no session owns it. By default every open PR
+is returned, owned or not.
+
+These arguments narrow the list, and each one is off when left out:
+
+- `author` matches the login without regard to case. A bot shown as
+  `app/<login>` also matches `<login>`.
+- `base_branch` matches the target branch exactly.
+- `order` takes `PR_LIST_ORDER_CREATED_DESC`, `PR_LIST_ORDER_CREATED_ASC`,
+  `PR_LIST_ORDER_UPDATED_DESC` or `PR_LIST_ORDER_UPDATED_ASC`. Without it the
+  newest PR comes first. An unknown name is an error.
+- `limit` caps the list after filtering and ordering.
+- `without_session: true` returns only PRs that no non-archived session owns.
+
+A daemon older than this tool ignores the filters and returns no session fields.
 
 ### Mutating (35)
 
@@ -568,8 +622,8 @@ a bearer access token. Missing or invalid credentials return `401` with a
 `/.well-known/oauth-protected-resource/mcp` for the
 `https://mcp.bossanova.dev/mcp` resource.
 
-The gateway advertises the permitted tools from a 59-tool subset of the local catalog (23 read-only,
-24 mutating, 12 destructive): every session/repo/chat lifecycle tool, including the
+The gateway advertises the permitted tools from a 64-tool subset of the local catalog (25 read-only,
+26 mutating, 13 destructive): every session/repo/chat lifecycle tool, including the
 destructive ones (which still require `confirm: true`), the cron-job mutators, and
 the GitHub-callback, note, organization-note and project-config tools. Organization-note tools call the cloud API directly. `switch_account` is proxiable too: it acts on a
 session's live chat, so it routes like any other session operation.

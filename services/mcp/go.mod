@@ -8,6 +8,7 @@ require (
 	connectrpc.com/connect v1.21.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/recurser/bossalib v0.0.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -30,5 +31,4 @@ require (
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
 	google.golang.org/grpc v1.85.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 )

@@ -387,46 +387,6 @@ func (s *Server) GetRepoSettings(ctx context.Context, req *connect.Request[pb.Ge
 	return connect.NewResponse(&pb.GetRepoSettingsResponse{Settings: repoToRepoSettings(repo)}), nil
 }
 
-func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
-	if req.Msg.RepoId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
-	}
-
-	// Verify the repo exists and get its origin URL.
-	repo, err := s.repos.Get(ctx, req.Msg.RepoId)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
-	}
-
-	if repo.OriginURL == "" {
-		return connect.NewResponse(&pb.ListRepoPRsResponse{}), nil
-	}
-
-	prs, err := s.provider.ListOpenPRs(ctx, repo.OriginURL)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list PRs: %w", err))
-	}
-
-	keys, err := s.activeSessionKeysForRepo(ctx, req.Msg.RepoId)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list active sessions: %w", err))
-	}
-	prs = keys.excludePRs(prs)
-
-	pbPRs := make([]*pb.PRSummary, len(prs))
-	for i, pr := range prs {
-		pbPRs[i] = &pb.PRSummary{
-			Number:     clampInt32(pr.Number),
-			Title:      pr.Title,
-			HeadBranch: pr.HeadBranch,
-			State:      pb.PRState(clampInt32(int(pr.State))),
-			Author:     pr.Author,
-		}
-	}
-
-	return connect.NewResponse(&pb.ListRepoPRsResponse{PullRequests: pbPRs}), nil
-}
-
 func (s *Server) repoServeScript(value *string) (*string, error) {
 	if value == nil || *value == "" {
 		return nil, nil

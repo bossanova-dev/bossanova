@@ -53,6 +53,7 @@ function writeToolSources(repoRoot, names, hostedNames = []) {
   fs.writeFileSync(path.join(bossmcp, 'tools_mutating.go'), '')
   fs.writeFileSync(path.join(bossmcp, 'tools_destructive.go'), '')
   fs.writeFileSync(path.join(bossmcp, 'tools_session_labels.go'), '')
+  fs.writeFileSync(path.join(bossmcp, 'tools_repo_prs.go'), '')
   fs.writeFileSync(path.join(bossmcp, 'tools_triggers.go'), '')
   fs.writeFileSync(path.join(bossmcp, 'tools_session_webhooks.go'), body(hostedNames))
 }
@@ -159,6 +160,7 @@ test('parseToolNames over the real bossmcp sources equals the contract test tool
     'lib/bossalib/kit/bossmcp/tools_mutating.go',
     'lib/bossalib/kit/bossmcp/tools_destructive.go',
     'lib/bossalib/kit/bossmcp/tools_session_labels.go',
+    'lib/bossalib/kit/bossmcp/tools_repo_prs.go',
   ]
 
   const parsed = new Set()
@@ -176,7 +178,7 @@ test('parseToolNames over the real bossmcp sources equals the contract test tool
   assert.ok(block, 'expectedTools declaration not found in contract_test.go')
   const expected = [...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1])
 
-  assert.equal(expected.length, 83, 'contract_test.go should list 83 tools')
+  assert.equal(expected.length, 84, 'contract_test.go should list 84 tools')
   assert.deepEqual([...parsed].sort(), [...expected].sort())
 })
 
@@ -208,7 +210,7 @@ test('the hosted parse over the real bossmcp sources equals manifest.go hostedTo
   // default read stays the local catalog alone.
   const withHosted = readRegisteredToolNames(REPO_ROOT, [], { includeHosted: true })
   const local = readRegisteredToolNames(REPO_ROOT, [])
-  assert.equal(local.size, 83, 'the default read should stay the 83-tool local catalog')
+  assert.equal(local.size, 84, 'the default read should stay the 84-tool local catalog')
   assert.equal(withHosted.size, local.size + expected.length)
   for (const name of expected) assert.ok(!local.has(name), `${name} leaked into the default set`)
 })
@@ -231,11 +233,11 @@ test('checkDocsMcpProps accepts a hosted tool while checkDocsToolCounts counts o
   assert.match(counts.out.join('\n'), /against 2 registered tools/)
 })
 
-test('the real repository tool-count claims still count only the 83-tool local catalog', () => {
+test('the real repository tool-count claims still count only the 84-tool local catalog', () => {
   const { result, out, err } = captureConsole(() => checkDocsToolCounts(REPO_ROOT))
 
   assert.equal(result, true, err.join('\n'))
-  assert.match(out.join('\n'), /against 83 registered tools/)
+  assert.match(out.join('\n'), /against 84 registered tools/)
 })
 
 test('checkDocsMcpProps fails loudly when a hosted tool source file is missing', () => {

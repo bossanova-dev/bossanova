@@ -423,6 +423,7 @@ export function aggregateBlockerExtensions(
       timedOut: entry.timedOut === true,
       crashed: entry.crashed === true,
       optional: entry.optional === true,
+      dirtied: entry.dirtied === true,
       humanReasons: HUMAN_REASONS,
     }),
   }))

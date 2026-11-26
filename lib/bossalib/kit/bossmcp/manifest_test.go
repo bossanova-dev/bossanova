@@ -321,9 +321,23 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// method. list_sessions gained order_by, direction and limit, and paid for
 	// them out of its own docs (a shorter description, trimmed filter docs)
 	// and the note repo_id doc repeated across four note tools.
+	// RE-PINNED DOWN 2026-11-26 (BOS-2780): 83 tools / 67,950 bytes, same
+	// method. list_sessions gained pr_authors and pr_target_branches, and paid
+	// for them out of its own description and labels doc and out of
+	// list_notes' argument docs, which restated that an optional filter can be
+	// omitted, where the repo id comes from, and that the session may be gone.
+	// RAISED 2026-11-26 (BOS-2769): 84 tools / 68,338 bytes (+1 tool, +388
+	// bytes), same method. get_proof_view_link is the only way an agent outside
+	// the browser can open a session's hosted proof page; it takes the session
+	// id alone and its description is one sentence plus the sign-in need.
+	// RAISED 2026-11-26 (BOS-2768): 84 tools / 68,809 bytes (+471), same
+	// method. The planned decision gives list_repo_prs five filter arguments
+	// and asks its description to say what the new row fields mean. Its docs
+	// are cut to the minimum and list_tracker_issues dropped its repeated
+	// "optionally filtered by" clause; the MCP guide carries the field detail.
 	const (
-		maxToolCount   = 83
-		maxSchemaBytes = 67963
+		maxToolCount   = 84
+		maxSchemaBytes = 68809
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

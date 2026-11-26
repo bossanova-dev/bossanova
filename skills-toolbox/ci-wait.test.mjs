@@ -80,10 +80,21 @@ function memStore() {
 // recorded in `runCalls` rather than `calls`, so a script indexed by its own reads keeps its
 // meaning. The default is a successful read with no runs — every head run completed.
 const completedRuns = () => ({ ok: true, payload: [] })
-function harness({ script, runs = completedRuns, start = T0, inert = false }) {
+//
+// The dispatched check-runs read is answered by `dispatched` and recorded in `dispatchedCalls`;
+// the default is a successful read with nothing dispatched.
+const nothingDispatched = () => ({ ok: true, payload: [] })
+function harness({
+  script,
+  runs = completedRuns,
+  dispatched = nothingDispatched,
+  start = T0,
+  inert = false,
+}) {
   let clock = start
   const calls = []
   const runCalls = []
+  const dispatchedCalls = []
   const sleeps = []
   return {
     now: () => clock,
@@ -92,11 +103,16 @@ function harness({ script, runs = completedRuns, start = T0, inert = false }) {
     },
     calls,
     runCalls,
+    dispatchedCalls,
     sleeps,
     read: async (req) => {
       if (req.what === 'runs') {
         runCalls.push({ ...req, atMs: clock })
         return runs(req, runCalls.length - 1)
+      }
+      if (req.what === 'dispatched-checks') {
+        dispatchedCalls.push({ ...req, atMs: clock })
+        return dispatched(req, dispatchedCalls.length - 1)
       }
       calls.push({ ...req, atMs: clock })
       const res = script(req, calls.length - 1)
@@ -1203,6 +1219,113 @@ test('ci.required: an exempt base or no requirement behaves exactly as before', 
     const { verdict } = await run(h, memStore(), options)
     assert.equal(verdict.state, WAIT_STATES.SETTLED, JSON.stringify(options))
   }
+})
+
+// Draft CI on request, in PR #4734's shape: the draft pull_request run attaches skipped go-test and
+// scripts copies to the rollup, and the requested workflow_dispatch runs report on the same head in
+// suites the rollup leaves out.
+const DRAFT_REQUIRED = { checks: ['go-test', 'scripts'] }
+const draftRollup = () =>
+  baseView(HEAD_A, [passing('lint'), skipped('go-test'), skipped('scripts')])
+const dispatchedRow = (
+  name,
+  conclusion,
+  { headSha = HEAD_A, event = 'workflow_dispatch' } = {},
+) => ({
+  name,
+  status: conclusion === null ? 'IN_PROGRESS' : 'COMPLETED',
+  conclusion: conclusion ?? '',
+  startedAt: '2026-11-26T00:00:00Z',
+  workflowName: name === 'scripts' ? 'Scripts' : 'Bazel',
+  event,
+  headSha,
+})
+const dispatchedRows = (rows) => () => ({ ok: true, payload: rows })
+const draftReading = (dispatched, rollup = draftRollup) => {
+  const h = harness({ script: rollup, runs: startedRuns, dispatched })
+  return takeReading({
+    read: h.read,
+    pr: 7,
+    readTimeoutMs: 60_000,
+    deadline: T0 + 120_000,
+    ciRequired: DRAFT_REQUIRED,
+    now: h.now,
+  }).then((reading) => ({ ...reading, h }))
+}
+
+test('draft CI on request: dispatched successes on the head settle the wait green', async () => {
+  const h = harness({
+    script: draftRollup,
+    runs: startedRuns,
+    dispatched: dispatchedRows([
+      dispatchedRow('go-test', 'SUCCESS'),
+      dispatchedRow('scripts', 'SUCCESS'),
+    ]),
+  })
+  const { verdict } = await run(h, memStore(), { ciRequired: DRAFT_REQUIRED })
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.deepEqual(verdict.notRequested, [])
+  for (const call of h.dispatchedCalls) assert.equal(call.headSha, HEAD_A)
+})
+
+test('draft CI on request: a dispatched failure ends the wait red', async () => {
+  const h = harness({
+    script: draftRollup,
+    runs: startedRuns,
+    dispatched: dispatchedRows([
+      dispatchedRow('go-test', 'FAILURE'),
+      dispatchedRow('scripts', 'SUCCESS'),
+    ]),
+  })
+  const { verdict } = await run(h, memStore(), { ciRequired: DRAFT_REQUIRED })
+  assert.equal(verdict.state, WAIT_STATES.FAILED)
+})
+
+test('draft CI on request: a pending dispatched run keeps the wait open', async () => {
+  const { verdict } = await draftReading(
+    dispatchedRows([dispatchedRow('go-test', null), dispatchedRow('scripts', 'SUCCESS')]),
+  )
+  assert.equal(verdict.state, 'pending')
+  assert.deepEqual(verdict.notRequested, [])
+})
+
+test('draft CI on request: a dispatched run for another head, or another event, is not counted', async () => {
+  for (const options of [{ headSha: HEAD_B }, { event: 'push' }]) {
+    const h = harness({
+      script: draftRollup,
+      runs: startedRuns,
+      dispatched: dispatchedRows([
+        dispatchedRow('go-test', 'SUCCESS', options),
+        dispatchedRow('scripts', 'SUCCESS', options),
+      ]),
+    })
+    const { verdict } = await run(h, memStore(), { ciRequired: DRAFT_REQUIRED })
+    assert.equal(verdict.state, WAIT_STATES.UNKNOWN, JSON.stringify(options))
+    assert.equal(verdict.reason, CHECK_REASONS.NOT_REQUESTED)
+    assert.deepEqual(verdict.notRequested, ['go-test', 'scripts'])
+  }
+})
+
+test('draft CI on request: a dispatched pass never hides a pull_request-event failure', async () => {
+  const { verdict } = await draftReading(
+    dispatchedRows([dispatchedRow('go-test', 'SUCCESS'), dispatchedRow('scripts', 'SUCCESS')]),
+    () => baseView(HEAD_A, [passing('lint'), failing('go-test'), skipped('scripts')]),
+  )
+  assert.equal(verdict.state, 'failing')
+})
+
+test('draft CI on request: a failed dispatched read is unreadable, never not-requested', async () => {
+  const { verdict } = await draftReading(() => ({ ok: false, error: 'rate limited' }))
+  assert.equal(verdict.reason, CHECK_REASONS.UNREADABLE)
+})
+
+test('draft CI on request: no dispatched read while every required check ran in the rollup', async () => {
+  const { verdict, h } = await draftReading(
+    () => assert.fail('read dispatched checks with nothing missing'),
+    () => baseView(HEAD_A, [passing('go-test'), passing('scripts')]),
+  )
+  assert.equal(verdict.state, 'green')
+  assert.equal(h.dispatchedCalls.length, 0)
 })
 
 test('main: run reads ci.required once from the skill config', async () => {

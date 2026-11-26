@@ -23,6 +23,7 @@ import (
 // stub response. The other three methods return zero-value responses; they are
 // unused by these tests but required to satisfy SessionCommandServer.
 type fakeSessionCommandServer struct {
+	lastListRepoPRs            *pb.ListRepoPRsRequest
 	lastMergeReq               *pb.MergeSessionRequest
 	lastOperatorMergeReq       *pb.OperatorMergeSessionRequest
 	lastDismissReq             *pb.DismissSessionAlertRequest
@@ -181,7 +182,8 @@ func (f *fakeSessionCommandServer) RemoveRepo(_ context.Context, _ *connect.Requ
 	return connect.NewResponse(&pb.RemoveRepoResponse{}), nil
 }
 
-func (f *fakeSessionCommandServer) ListRepoPRs(_ context.Context, _ *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
+func (f *fakeSessionCommandServer) ListRepoPRs(_ context.Context, req *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
+	f.lastListRepoPRs = req.Msg
 	return connect.NewResponse(&pb.ListRepoPRsResponse{}), nil
 }
 
@@ -1799,7 +1801,7 @@ func TestCommandHandlerAdapter_ListRepoPRs(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.ListRepoPRs(context.Background(), "repo1"); err == nil || !strings.Contains(err.Error(), "list_repo_prs: command server not wired") {
+		if _, err := adapter.ListRepoPRs(context.Background(), "repo1", nil); err == nil || !strings.Contains(err.Error(), "list_repo_prs: command server not wired") {
 			t.Fatalf("ListRepoPRs error = %v, want command server not wired", err)
 		}
 	})
@@ -1807,20 +1809,25 @@ func TestCommandHandlerAdapter_ListRepoPRs(t *testing.T) {
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.ListRepoPRs(context.Background(), "repo1"); err == nil || !strings.Contains(err.Error(), "list repo prs: boom") {
+		if _, err := adapter.ListRepoPRs(context.Background(), "repo1", nil); err == nil || !strings.Contains(err.Error(), "list repo prs: boom") {
 			t.Fatalf("ListRepoPRs error = %v, want list repo prs: boom", err)
 		}
 	})
 
 	t.Run("returns the response on success", func(t *testing.T) {
 		t.Parallel()
-		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
-		resp, err := adapter.ListRepoPRs(context.Background(), "repo1")
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		query := &pb.PRListQuery{Author: "alice", Limit: 3, OwnerFilter: pb.PRListOwnerFilter_PR_LIST_OWNER_FILTER_UNOWNED}
+		resp, err := adapter.ListRepoPRs(context.Background(), "repo1", query)
 		if err != nil {
 			t.Fatalf("ListRepoPRs returned error: %v", err)
 		}
 		if resp == nil {
 			t.Fatal("ListRepoPRs returned nil response on success")
+		}
+		if got := fake.lastListRepoPRs; got.GetRepoId() != "repo1" || !proto.Equal(got.GetQuery(), query) {
+			t.Fatalf("command server request = %v, want repo1 with query %v", got, query)
 		}
 	})
 }

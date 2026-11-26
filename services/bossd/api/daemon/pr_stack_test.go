@@ -114,3 +114,53 @@ func TestPRAuthorAndTargetServedOnEveryReadSurface_Sessions_AC277501(t *testing.
 		})
 	}
 }
+
+// ListSessions narrows by PR author (any, case-insensitive) and PR target
+// branch (any, exact) after the live values are served, so a retargeted
+// session matches its new branch and not the stored one. Unset filters
+// change nothing.
+func TestListSessionsFiltersByPRAuthorAndTarget_Sessions_AC278001(t *testing.T) {
+	pr := func(n int) *int { return &n }
+	rows := []*models.Session{
+		{ID: "octo-main", RepoID: "r", State: machine.ReadyForReview, UpdatedAt: time.Now(), PRNumber: pr(1), PRAuthorLogin: "octocat", PRTargetBranch: "main"},
+		{ID: "octo-dev", RepoID: "r", State: machine.ReadyForReview, UpdatedAt: time.Now(), PRNumber: pr(2), PRAuthorLogin: "octocat", PRTargetBranch: "dev"},
+		{ID: "hubot-main", RepoID: "r", State: machine.ReadyForReview, UpdatedAt: time.Now(), PRNumber: pr(3), PRAuthorLogin: "hubot", PRTargetBranch: "main"},
+		{ID: "retargeted", RepoID: "r", State: machine.ReadyForReview, UpdatedAt: time.Now(), PRNumber: pr(4), PRAuthorLogin: "hubot", PRTargetBranch: "main"},
+		{ID: "no-pr", RepoID: "r", State: machine.ImplementingPlan, UpdatedAt: time.Now()},
+	}
+	for _, tc := range []struct {
+		name             string
+		authors, targets []string
+		want             []string
+	}{
+		{"unset filters list everything", nil, nil, []string{"octo-main", "octo-dev", "hubot-main", "retargeted", "no-pr"}},
+		{"author", []string{"OctoCat"}, nil, []string{"octo-main", "octo-dev"}},
+		{"target", nil, []string{"main"}, []string{"octo-main", "hubot-main"}},
+		{"retargeted session matches its new branch", nil, []string{"release"}, []string{"retargeted"}},
+		{"author and target", []string{"hubot", "nobody"}, []string{"main", "release"}, []string{"hubot-main", "retargeted"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newListSessionsDisplayStatusTestServer(rows, nil, status.NewDisplayTracker(), status.NewTracker())
+			s.stacks = stackResults{"retargeted": {PRNumber: 4, Author: "hubot", BaseBranch: "release", DefaultBranch: "main"}}
+			resp, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{
+				PrAuthorLogins:   tc.authors,
+				PrTargetBranches: tc.targets,
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]bool{}
+			for _, sess := range resp.Msg.GetSessions() {
+				got[sess.GetId()] = true
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("listed %v; want %v", got, tc.want)
+			}
+			for _, id := range tc.want {
+				if !got[id] {
+					t.Fatalf("listed %v; want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}

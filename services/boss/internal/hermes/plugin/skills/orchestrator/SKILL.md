@@ -24,7 +24,9 @@ example `/boss-build <ticket id>`, and then watch the session.
 - `bossanova_list_sessions` (filter by `repo_id`, `states`) and `bossanova_get_session` show sessions,
   their branch, PR and chats; `bossanova_list_chats` lists a session's chats and their
   `agent_session_id`s.
-- `bossanova_list_repo_prs` and `bossanova_list_tracker_issues` show work that could become a session.
+- `bossanova_list_repo_prs` lists open PRs and names the session that owns each one;
+  `bossanova_list_repo_prs` with `without_session: true` and `bossanova_list_tracker_issues` show
+  work that could become a session.
 - `/bossanova status` prints the resolved MCP binary, socket, settings file and a live status summary.
 
 ## Start work

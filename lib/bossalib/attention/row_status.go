@@ -38,11 +38,14 @@ const ReviewPhrase = "✓ review"
 // a client does on the words styles an older daemon's "checks N/M" by its
 // progress label. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 
+// ProblemMark leads every FIX phrase ("⨯ conflict"). A client may swap it for
+// a spinner while an agent chat of the session is working, keeping the words.
+const ProblemMark = "⨯ "
+
 // Status phrases with fixed words.
 const (
 	phraseQuestion        = "? question"
-	phraseFix             = problemMark + "fix"
-	problemMark           = "⨯ "
+	phraseFix             = ProblemMark + "fix"
 	detailUnverifiedMerge = "verify has not passed this head"
 	detailSeparator       = " · "
 )
@@ -144,20 +147,20 @@ func fixStatus(att *pb.SessionAttention) (phrase, detail string) {
 	switch {
 	case key == "repair-exhausted" || key == RepairFailedAlertKey ||
 		key == "" && slices.Contains(normalizeParkCodes(att.GetParkCodes()), "repair-exhausted"):
-		phrase = problemMark + "repair failed"
+		phrase = ProblemMark + "repair failed"
 	case key == "merge-conflict" || strings.HasPrefix(key, stuckWaitPrefix+"conflict:"):
-		return problemMark + "conflict", ""
+		return ProblemMark + "conflict", ""
 	case len(tallies) > 0 && (key == "" || strings.HasPrefix(key, stuckWaitPrefix+"failing:")):
-		phrase = problemMark + blockerNoun(tallies)
+		phrase = ProblemMark + blockerNoun(tallies)
 	case key == "":
 		phrase = phraseFix
 		if code, ok := DecidingParkCode(att.GetParkCodes()); ok {
-			phrase = fitOr(problemMark+parkProblem(code), phraseFix)
+			phrase = fitOr(ProblemMark+parkProblem(code), phraseFix)
 		}
 	default:
 		phrase = phraseFix
 		if short := fixShort(key, att.GetSentence()); short != "" {
-			phrase = problemMark + short
+			phrase = ProblemMark + short
 		}
 	}
 	return phrase, blockerDetail(tallies, 0, att.GetBlockerFiles())

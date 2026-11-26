@@ -86,6 +86,60 @@ func (k activeSessionKeys) excludePRs(prs []vcs.PRSummary) []vcs.PRSummary {
 	return out
 }
 
+// prOwnerIndex maps each PR number and head branch to the non-archived session
+// that owns it. It uses the same number-or-branch match as excludePRs, but it
+// counts every session, including Merged, Closed, Blocked and Orphaned ones,
+// so ListRepoPRs can name the session behind a PR the pickers would not hide.
+type prOwnerIndex struct {
+	byNumber map[int]*models.Session
+	byBranch map[string]*models.Session
+}
+
+// newPROwnerIndex indexes sessions by PR number and branch. Among several
+// sessions for one key it keeps a duplicate-blocking one over any other, then
+// the most recently updated.
+func newPROwnerIndex(sessions []*models.Session) prOwnerIndex {
+	idx := prOwnerIndex{byNumber: make(map[int]*models.Session), byBranch: make(map[string]*models.Session)}
+	for _, sess := range sessions {
+		if sess == nil || sess.ArchivedAt != nil {
+			continue
+		}
+		if sess.PRNumber != nil {
+			idx.byNumber[*sess.PRNumber] = preferPROwner(idx.byNumber[*sess.PRNumber], sess)
+		}
+		if sess.BranchName != "" {
+			idx.byBranch[sess.BranchName] = preferPROwner(idx.byBranch[sess.BranchName], sess)
+		}
+	}
+	return idx
+}
+
+func preferPROwner(current, candidate *models.Session) *models.Session {
+	if current == nil {
+		return candidate
+	}
+	currentBlocks := session.StateBlocksDuplicateTarget(current.State)
+	if candidateBlocks := session.StateBlocksDuplicateTarget(candidate.State); currentBlocks != candidateBlocks {
+		if candidateBlocks {
+			return candidate
+		}
+		return current
+	}
+	if candidate.UpdatedAt.After(current.UpdatedAt) {
+		return candidate
+	}
+	return current
+}
+
+// owner returns the session that owns pr, or nil. A PR-number match wins over
+// a head-branch match.
+func (idx prOwnerIndex) owner(pr vcs.PRSummary) *models.Session {
+	if sess, ok := idx.byNumber[pr.Number]; ok {
+		return sess
+	}
+	return idx.byBranch[pr.HeadBranch]
+}
+
 // excludeIssues returns the tracker issues that do NOT already have an active
 // session. An issue is matched by its tracker id, by the PR the tracker plugin
 // associated with it (pr_number), or by that PR's branch (existing_branch) —

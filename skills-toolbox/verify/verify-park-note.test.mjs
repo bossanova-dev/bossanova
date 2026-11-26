@@ -659,3 +659,32 @@ test('missing dependencies explain why a required extension crashed', () => {
   assert.equal(lines.length, 1)
   assert.match(lines[0], /could not load its packages/)
 })
+
+test('an extension that dirtied the worktree parks extension-failed and the note names its paths', async () => {
+  const { aggregateBlockerExtensions } = await import('./verify-blockers.mjs')
+  const { classifyVerifyOutcome } = await import('../skill-extensions.mjs')
+  const pass = {
+    ok: true,
+    extension: 'recorder',
+    role: 'verify',
+    verdict: 'pass',
+    evidence: [{ kind: 'recording', ref: 'demo.mp4' }],
+    findings: [],
+  }
+  const results = [
+    { extension: 'recorder', optional: true, result: pass, dirtied: true, changed: ['go.sum'] },
+  ]
+  const verdict = aggregateBlockerExtensions(
+    results,
+    [{ name: 'recorder', optional: true }],
+    classifyVerifyOutcome,
+    HUMAN_REASONS,
+  )
+  assert.deepEqual(
+    [verdict.verdict, verdict.reason, verdict.failed],
+    ['human', 'extension-failed', ['recorder']],
+  )
+  assert.deepEqual(extensionFailures(results), [
+    '`recorder` changed the worktree (tracked or unignored files, or ignored files it did not declare): go.sum',
+  ])
+})

@@ -35,7 +35,7 @@ test('every recorded proof note mirrors its lead and final page to a check run',
       message: {
         repo: 'acme/widgets',
         headSha: HEAD,
-        title: 'Proof: moderate',
+        title: 'Review page: moderate',
         summary: notes[0].note.body.split('\n\n<!-- boss-proof:')[0],
         detailsUrl: page,
       },
@@ -64,7 +64,7 @@ test('non-parked verdicts mirror their one-line proof when pages is parked', asy
       assert.equal(checkRuns.length, 1)
       assert.match(
         checkRuns[0].message.summary,
-        /^Verify's proof for `aaaaaaaaaaaa` is \*\*moderate\*\*\.$/,
+        /^Verify's review note for `aaaaaaaaaaaa` is \*\*moderate\*\*\.$/,
       )
       assert.equal(checkRuns[0].message.detailsUrl, '')
     }
@@ -514,6 +514,70 @@ test('an over-limit refusal publishes the fitted page with its note and omitted 
     omittedMedia: 1,
   })
   assert.equal(parseProofLine(notes[0].note.body).page, PAGE_URL)
+})
+
+const FELL = { kind: 'access-put', reason: 'credentials-missing', detail: 'PROOF_ACCESS_CLIENT_ID' }
+const WITH_FALLBACK = {
+  discoverPublisher: () => ({
+    publisher: { kind: 'access-put', baseUrl: 'https://access.example' },
+    fallback: { kind: 'hosted' },
+  }),
+}
+
+test('after a fallback, a fitted retry goes straight to the hosted host and keeps the reason @sessions.AC278701', async (t) => {
+  const mediaDir = twoClips(t)
+  const { result, uploads, notes } = await run({
+    input: { mediaDir },
+    overrides: WITH_FALLBACK,
+    upload: answers({ ...OVER('file-count', 3), fallbackFrom: FELL }),
+  })
+  assert.deepEqual(
+    uploads.map((upload) => [upload.publisher.kind, upload.fallback]),
+    [
+      ['access-put', { kind: 'hosted' }],
+      ['hosted', { kind: 'hosted' }],
+    ],
+  )
+  assert.deepEqual(result.page, {
+    published: true,
+    url: PAGE_URL,
+    publisher: 'hosted',
+    fallbackFrom: FELL,
+    omittedMedia: 1,
+  })
+  assert.ok(
+    notes[0].note.body.includes('access-put: credentials missing (PROOF_ACCESS_CLIENT_ID);'),
+  )
+})
+
+test('a fallback note is reused on a re-run, and a failed fallback says so @sessions.AC278701', async () => {
+  const fell = () => ({ ok: true, url: PAGE_URL, fallbackFrom: FELL })
+  const first = await run({ overrides: WITH_FALLBACK, upload: fell })
+  const standing = {
+    kind: 'proof-note',
+    head: HEAD,
+    digest: first.notes[0].note.digest,
+    page: PAGE_URL,
+    at: 1,
+    id: 1,
+  }
+  const again = await run({ markers: [standing], overrides: WITH_FALLBACK, upload: fell })
+  assert.equal(again.uploads.length, 0, 'the notice is outside the digest')
+  const failed = await run({
+    overrides: WITH_FALLBACK,
+    upload: () => ({ ok: false, reason: 'quota-exhausted', fallbackFrom: FELL }),
+  })
+  assert.deepEqual(failed.result.page, {
+    published: false,
+    reason: 'quota-exhausted',
+    fallbackFrom: FELL,
+  })
+  assert.ok(
+    failed.notes[0].note.body.includes(
+      'Bossanova hosting did not take the page either (quota-exhausted).',
+    ),
+  )
+  assert.equal(parseProofLine(failed.notes[0].note.body).page, null)
 })
 
 test('a fit that drops every media file publishes a page with no media problem @sessions.AC261202', async (t) => {

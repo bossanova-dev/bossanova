@@ -8,12 +8,12 @@
     CHAT          
   ❯ verify        
     Run bs-build  
-                                    
-  [enter] open chat  [d]elete       
-  [n]ew chat  [s]ettings  [g]ithub  
-  [p]roof  [m]erge  [a]rchive       
-  [esc] back                        
-                                    
+                                       
+  [enter] open chat  [d]elete          
+  [n]ew chat  [s]ettings  [g]ithub     
+  [p] review page  [m]erge  [a]rchive  
+  [esc] back                           
+                                       
   Timeline                            
     17:10  ✓ Build started            
     17:20  ● Waiting for your answer  

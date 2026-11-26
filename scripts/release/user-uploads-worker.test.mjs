@@ -6,7 +6,9 @@ import { createHmac } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import worker, {
+  CONTENT_TYPES,
   contentSecurityPolicy,
+  contentTypeFor,
   handleRequest,
 } from '../../infra/modules/cf-user-uploads/worker.mjs'
 
@@ -24,26 +26,13 @@ const CSP_PREFIX =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self'; connect-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors "
 const PRODUCTION_CSP = `${CSP_PREFIX}https://app.bossanova.dev https://app-staging.bossanova.dev`
 
-// The allow-list, restated here so a Worker change to it fails a test.
-const TYPES = {
-  html: 'text/html; charset=utf-8',
-  css: 'text/css; charset=utf-8',
-  js: 'text/javascript; charset=utf-8',
-  mjs: 'text/javascript; charset=utf-8',
-  json: 'application/json',
-  txt: 'text/plain; charset=utf-8',
-  ndjson: 'application/x-ndjson',
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  webp: 'image/webp',
-  gif: 'image/gif',
-  avif: 'image/avif',
-  svg: 'image/svg+xml',
-  mp4: 'video/mp4',
-  webm: 'video/webm',
-  pdf: 'application/pdf',
-  woff2: 'font/woff2',
-}
+// The proof extension table bosso and bossd each compare their own list against. Its two copies
+// must agree byte for byte, and the Worker serves exactly its extensions with its types.
+const TABLE_COPIES = [
+  '../../services/bosso/internal/domain/proofpage/testdata/proof-extensions.json',
+  '../../services/bossd/api/daemon/testdata/proof-extensions.json',
+].map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'))
+const TYPES = JSON.parse(TABLE_COPIES[0]).contentTypes
 
 function signature({ org = 'acme', token = TOKEN, exp = NOW_S + 3600, key = KEY } = {}) {
   const sig = createHmac('sha256', Buffer.from(key, 'hex'))
@@ -253,8 +242,21 @@ test('allow-listed extensions get their table type whatever the stored metadata 
     (await fetch(url({ path: 'LOUD.HTML' }), production(b))).headers.get('Content-Type'),
     TYPES.html,
   )
-  for (const path of ['file.exe', 'file.jpeg', 'file.html.bak', 'README', '.html', 'media/clip'])
+  for (const path of ['file.exe', 'file.mov', 'file.html.bak', 'README', '.html', 'media/clip'])
     await refused(url({ path }), production(bucket(entries)), path)
+})
+
+test('the Worker serves exactly the shared proof extension table @sessions.AC278201', () => {
+  assert.equal(TABLE_COPIES[1], TABLE_COPIES[0], "the bossd copy of the table differs from bosso's")
+  const table = JSON.parse(TABLE_COPIES[0])
+  assert.deepEqual({ ...CONTENT_TYPES }, table.contentTypes)
+  for (const [extension, type] of Object.entries(table.contentTypes))
+    assert.equal(contentTypeFor(`media/clip.${extension}`), type, extension)
+  for (const extension of table.daemonMedia)
+    assert.ok(Object.hasOwn(table.contentTypes, extension), `daemon media ${extension} has no type`)
+  assert.equal(contentTypeFor('screenshots/a.jpeg'), 'image/jpeg')
+  assert.equal(contentTypeFor('media/clip.webm'), 'video/webm')
+  assert.equal(contentTypeFor('media/clip.mov'), null)
 })
 
 test('every status carries the security headers and never a Set-Cookie', async () => {

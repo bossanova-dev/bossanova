@@ -230,17 +230,17 @@ The built-in uploader publishes verify evidence for repos that set
 It writes with the operator's upload token from the OS keyring
 (`boss proof set-secret`), and this block names where that token writes. The
 token is scoped to one bucket, so one daemon has one destination. A repo that
-hosts its own proof pages uses a `proof-publish` hook instead, with its own
+hosts its own review pages uses a `proof-publish` hook instead, with its own
 credentials.
 A repo that sets `publishConfig.proof` uses this bucket first, and the daemon's
-hosted proof host when this block is incomplete.
+hosted review page host when this block is incomplete.
 
-| Field             | Type   | Default | Description                                                                                                                                       |
-| ----------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `account_id`      | string | —       | Cloudflare account that owns the bucket. Not a secret.                                                                                            |
-| `bucket`          | string | —       | R2 bucket objects are written to.                                                                                                                 |
-| `public_base_url` | string | —       | Absolute `https://` origin that serves the bucket, with no credentials, query or fragment.                                                        |
-| `pages_enabled`   | bool   | `true`  | Allow `index.html` proof pages. Set `false` until the host in front of the bucket is protected for HTML pages, because pages quote the PR's code. |
+| Field             | Type   | Default | Description                                                                                                                                        |
+| ----------------- | ------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `account_id`      | string | —       | Cloudflare account that owns the bucket. Not a secret.                                                                                             |
+| `bucket`          | string | —       | R2 bucket objects are written to.                                                                                                                  |
+| `public_base_url` | string | —       | Absolute `https://` origin that serves the bucket, with no credentials, query or fragment.                                                         |
+| `pages_enabled`   | bool   | `true`  | Allow `index.html` review pages. Set `false` until the host in front of the bucket is protected for HTML pages, because pages quote the PR's code. |
 
 `account_id`, `bucket` and `public_base_url` are required. When any is missing,
 or the base URL is not absolute `https://`, the uploader reports "not

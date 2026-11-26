@@ -408,7 +408,7 @@ func TestUploadEvidencePageAssets_Sessions_AC248607(t *testing.T) {
 		keyed  bool
 	}{
 		{name: "player on a random prefix", object: "player.js"},
-		{name: "media of another type", object: "media/clip.webm", keyed: true},
+		{name: "media of another type", object: "media/clip.mov", keyed: true},
 		{name: "nested media", object: "media/clips/a.mp4", keyed: true},
 		{name: "a document of another type", object: "media/statement.docx", keyed: true},
 		{name: "a PDF outside media", object: "screenshots/statement.pdf", keyed: true},

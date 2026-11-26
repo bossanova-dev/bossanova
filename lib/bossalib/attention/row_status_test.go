@@ -159,14 +159,14 @@ func rowStatusCases() []rowStatusCase {
 	review, ask, mergeKind := pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_QUESTION, pb.AttentionKind_ATTENTION_KIND_MERGE
 	fix, progress, done := pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, pb.AttentionKind_ATTENTION_KIND_DONE
 	return []rowStatusCase{
-		{"review one ask with proof", withRowProof(withRowPark(openPR(), "human-review:security"), "https://proof.test/p", "Infrastructure"), review, ReviewPhrase, "Infrastructure · proof recorded", ""},
-		{"review two asks", withRowProof(withRowPark(openPR(), "human-review:security"), "", "API schema", "API compatibility"), review, ReviewPhrase, "API schema, API compatibility · no proof yet", ""},
-		{"review asks over budget", withRowProof(withRowPark(openPR(), "human-review:security"), "", "Infrastructure as code", "API schema", "API compatibility"), review, ReviewPhrase, "Infrastructure as code, API schema, API compatibility · no proof yet", ""},
-		{"review CJK ask that fits", withRowProof(withRowPark(openPR(), "human-review:security"), "", "セキュリティ"), review, ReviewPhrase, "セキュリティ · no proof yet", ""},
-		{"review CJK ask measured in cells", withRowProof(withRowPark(openPR(), "human-review:security"), "", "データベース移行"), review, ReviewPhrase, "データベース移行 · no proof yet", ""},
-		{"review codes without asks", withRowPark(openPR(), "human-review:database", "human-review:security"), review, ReviewPhrase, "database, security · no proof yet", ""},
-		{"review latest commit", withRowPark(openPR(), "no-receipt"), review, ReviewPhrase, "latest commit · no proof yet", ""},
-		{"human merge park", withRowPark(openPR(), ParkCodeHumanMerge), review, "✓ merge", "no proof yet", ""},
+		{"review one ask with proof", withRowProof(withRowPark(openPR(), "human-review:security"), "https://proof.test/p", "Infrastructure"), review, ReviewPhrase, "Infrastructure · review page recorded", ""},
+		{"review two asks", withRowProof(withRowPark(openPR(), "human-review:security"), "", "API schema", "API compatibility"), review, ReviewPhrase, "API schema, API compatibility · no review page yet", ""},
+		{"review asks over budget", withRowProof(withRowPark(openPR(), "human-review:security"), "", "Infrastructure as code", "API schema", "API compatibility"), review, ReviewPhrase, "Infrastructure as code, API schema, API compatibility · no review page yet", ""},
+		{"review CJK ask that fits", withRowProof(withRowPark(openPR(), "human-review:security"), "", "セキュリティ"), review, ReviewPhrase, "セキュリティ · no review page yet", ""},
+		{"review CJK ask measured in cells", withRowProof(withRowPark(openPR(), "human-review:security"), "", "データベース移行"), review, ReviewPhrase, "データベース移行 · no review page yet", ""},
+		{"review codes without asks", withRowPark(openPR(), "human-review:database", "human-review:security"), review, ReviewPhrase, "database, security · no review page yet", ""},
+		{"review latest commit", withRowPark(openPR(), "no-receipt"), review, ReviewPhrase, "latest commit · no review page yet", ""},
+		{"human merge park", withRowPark(openPR(), ParkCodeHumanMerge), review, "✓ merge", "no review page yet", ""},
 		{"question", question, ask, "? question", "", ""},
 		{"unverified merge", merge, mergeKind, "? merge", "verify has not passed this head", ""},
 		{"verified merge", verified, mergeKind, "✓ merge", "", ""},

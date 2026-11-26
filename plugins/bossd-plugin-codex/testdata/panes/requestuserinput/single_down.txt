@@ -1,0 +1,50 @@
+╭─────────────────────────────────────────────────╮
+│ ✨ Update available! 0.167.2 -> 0.172.0         │
+│ Run npm install -g @openai/codex to update.     │
+│                                                 │
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯
+
+
+  >_ OpenAI Codex (v0.167.2)
+     /tmp/project
+
+
+› Call the request_user_input tool now with exactly one question. Question: Which colour should the button be? Options: Red (warm), Green (calm), Blue (cool). Do not run any commands or read any
+  files first.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Question 1/1 (1 unanswered)
+  Which colour should the button be?
+
+    1. Red                warm
+  › 2. Green              calm
+    3. Blue               cool
+    4. None of the above  Optionally, add details in notes (tab)
+
+  tab to add notes | enter to submit answer | esc to interrupt
+

@@ -78,6 +78,57 @@ test('publishConfig.proof accepts false, refuses other non-objects and keeps obj
   // Only the proof block may be false.
   assert.equal(message(false, 'store'), 'publishConfig.store must be an object')
 })
+
+test('publishConfig.proof.hostedFallback takes a boolean @sessions.AC278701', () => {
+  const baseUrl = 'https://proof.example'
+  const check = (hostedFallback) =>
+    capture(() =>
+      validateConfig(
+        {
+          ...structuredClone(DEFAULT_CONFIG),
+          publishConfig: { proof: { kind: 'access-put', baseUrl, hostedFallback } },
+        },
+        'fixture.json',
+      ),
+    )
+  for (const value of [false, true]) {
+    const accepted = check(value)
+    assert.equal(accepted.error, undefined, String(value))
+    assert.deepEqual(accepted.warnings, [])
+  }
+  for (const value of ['false', 0, null, {}])
+    assert.equal(
+      String(check(value).error?.message).replace(
+        /^skill-config: invalid config from fixture\.json: /,
+        '',
+      ),
+      'publishConfig.proof.hostedFallback must be a boolean',
+      JSON.stringify(value),
+    )
+})
+
+test('a proof block holding only hostedFallback needs no publisher fields @sessions.AC278701', () => {
+  const message = (proof) =>
+    capture(() =>
+      validateConfig(
+        { ...structuredClone(DEFAULT_CONFIG), publishConfig: { proof } },
+        'fixture.json',
+      ),
+    ).error?.message?.replace(/^skill-config: invalid config from fixture\.json: /, '')
+  for (const hostedFallback of [false, true])
+    assert.equal(message({ hostedFallback }), undefined, String(hostedFallback))
+  const baseUrl = 'https://proof.example'
+  assert.equal(message({}), 'publishConfig.proof.baseUrl must be a non-empty string')
+  assert.equal(
+    message({ hostedFallback: false, bucket: 'proof' }),
+    'publishConfig.proof.baseUrl must be a non-empty string',
+  )
+  assert.equal(
+    message({ hostedFallback: false, baseUrl }),
+    'publishConfig.proof.bucket must be a non-empty string',
+  )
+  assert.equal(message({ hostedFallback: false, kind: 'access-put', baseUrl }), undefined)
+})
 // Any static or dynamic import, re-export, or require call. Ordinary words such as `required`
 // do not match.
 const MODULE_LOAD =
@@ -339,6 +390,44 @@ test('the acceptance block is a known key whose derived checks must name a file 
     capture(() => validateConfig(config, 'fixture.json')).error?.message ?? '',
     /acceptance\.derivedChecks/,
   )
+})
+
+test('fullGateCommands accept directory-scoped entries and reject malformed ones', () => {
+  const check = (fullGateCommands) =>
+    capture(() =>
+      validateConfig(
+        { ...structuredClone(DEFAULT_CONFIG), acceptance: { fullGateCommands } },
+        'fixture.json',
+      ),
+    )
+  assert.equal(check(['make test', { dir: 'apps/*', command: 'make test' }]).error, undefined)
+  for (const bad of [
+    [{ dir: 'apps/web' }],
+    [{ dir: '', command: 'make test' }],
+    [{ command: 'x', cwd: 'y', dir: 'z' }],
+  ])
+    assert.match(check(bad).error?.message ?? '', /acceptance\.fullGateCommands/)
+})
+
+test('verifyDefaults.ci accepts whenAbsent and absentGraceMinutes, warns on unknown keys and rejects bad values', () => {
+  const check = (ci) =>
+    capture(() =>
+      validateConfig(
+        { ...structuredClone(DEFAULT_CONFIG), verifyDefaults: { ci } },
+        'fixture.json',
+      ),
+    )
+  const good = check({ whenAbsent: 'wait', absentGraceMinutes: 0 })
+  assert.equal(good.error, undefined)
+  assert.deepEqual(good.warnings, [])
+  assert.equal(check({ later: true }).error, undefined)
+  assert.match(check({ later: true }).warnings.join('\n'), /verifyDefaults\.ci\.later/)
+  for (const bad of [
+    { whenAbsent: 'merge' },
+    { absentGraceMinutes: -1 },
+    { absentGraceMinutes: 1.5 },
+  ])
+    assert.match(check(bad).error?.message ?? '', /verifyDefaults\.ci\./)
 })
 
 test('proof media sources warn on unknown keys and reject malformed fields and overflow', () => {

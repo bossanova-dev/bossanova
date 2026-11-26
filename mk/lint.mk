@@ -50,11 +50,12 @@ lint-go-fmt:
 lint-proto: buf-check-version
 	"$(BUF)" lint
 
-BUF_BREAKING_BASE ?= .git\#branch=origin/main
+# Empty compares against the merge base of HEAD and origin/main; set it to any buf input to override.
+BUF_BREAKING_BASE ?=
 
-## lint-proto-breaking: Check proto wire compatibility against the base branch.
+## lint-proto-breaking: Check proto wire compatibility against the branch's merge base with main.
 lint-proto-breaking: buf-check-version
-	"$(BUF)" breaking --against '$(BUF_BREAKING_BASE)' --against-config buf.yaml
+	node scripts/dev/proto-breaking-check.mjs --buf '$(BUF)' --against '$(BUF_BREAKING_BASE)'
 
 ## apiversion-check: Reconcile this branch's API-version contracts against origin/main and
 ## origin/production, then run the apiversion ledger/registry/OpenAPI/web/changelog sync tests.

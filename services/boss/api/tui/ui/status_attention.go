@@ -49,13 +49,13 @@ var AttentionActionBindings = []AttentionActionBinding{
 	{Action: pb.AttentionAction_ATTENTION_ACTION_DISMISS, Key: "x", Label: "dismiss", Details: true, HomeHidden: true, DetailsHidden: true},
 	{Action: pb.AttentionAction_ATTENTION_ACTION_RESUME, Key: "r", Label: "resume", Details: true, HomeHidden: true, DetailsHidden: true},
 	{Action: pb.AttentionAction_ATTENTION_ACTION_GITHUB, Key: "g", Label: "github", Details: true, HomeHidden: true},
-	// [p]roof opens ProofTarget, offered exactly when it has one. It stands
+	// [p] review page opens ProofTarget, offered exactly when it has one. It stands
 	// for a served VIDEO too, so no key opens the video on its own.
-	{Action: pb.AttentionAction_ATTENTION_ACTION_PROOF, Key: "p", Label: "proof", Details: true},
+	{Action: pb.AttentionAction_ATTENTION_ACTION_PROOF, Key: "p", Label: "review page", Details: true},
 	{Action: pb.AttentionAction_ATTENTION_ACTION_TRACKER, Key: "t", Label: "tracker", HomeHidden: true},
 }
 
-// ProofTarget is what [p]roof opens: the proof page when PROOF is offered,
+// ProofTarget is what [p] review page opens: the proof page when PROOF is offered,
 // else the legacy evidence video when VIDEO is, else nothing. The PR is never
 // a proof target: [g]ithub already opens it.
 func ProofTarget(s *pb.Session) (string, bool) {
@@ -264,7 +264,7 @@ func AttentionActionCmd(ctx context.Context, c AttentionClient, s *pb.Session, a
 		case pb.AttentionAction_ATTENTION_ACTION_PROOF, pb.AttentionAction_ATTENTION_ACTION_VIDEO:
 			url, _ := ProofTarget(s)
 			result.Err = openURL(url)
-			result.Text = "Opened proof"
+			result.Text = "Opened review page"
 		case pb.AttentionAction_ATTENTION_ACTION_TRACKER:
 			result.Err = openURL(s.GetTrackerUrl())
 			result.Text = "Opened issue"

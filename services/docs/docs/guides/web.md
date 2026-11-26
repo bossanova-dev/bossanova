@@ -22,8 +22,8 @@ can also see and drive from the web.
   view you saved. Each card shows the repository and PR, the title, the
   PR's size, its ticket, its chats and when it last changed, with the
   session's status pill at the top right.
-- **Session page.** Open a session to see it on one page: its **Proof** (the
-  PR's proof page, framed in place), its **Chats** (each chat's
+- **Session page.** Open a session to see it on one page: its **Review page** (the
+  PR's review page, framed in place), its **Chats** (each chat's
   conversation, with a reply box) and its **Terminal**, plus a **Details**
   panel with its repository, PR, ticket, branch, size, checks and why it
   needs you. **Merge** sits beside them once the PR can merge. The round
@@ -42,7 +42,7 @@ can also see and drive from the web.
 - **Settings.** Your own settings (Preferences, Profile, Notifications,
   Security & access, Agent accounts, Session actions, Views & favorites),
   then each organization's (General, Members, Repositories, Daemons,
-  Scheduler, Triggers, Webhooks, Proof pages, Notes, Billing). The
+  Scheduler, Triggers, Webhooks, Review pages, Notes, Billing). The
   Scheduler lists every cron job; see
   [Cron Jobs](./cron-jobs.md#the-web-scheduler).
 
@@ -84,37 +84,37 @@ options** choose the board or the list, how to group and order sessions, and
 which properties the cards show.
 
 On a phone the sidebar opens from the menu button, and the page shows one thing
-at a time: Sessions, then a session with round buttons for its proof, chats and
+at a time: Sessions, then a session with round buttons for its review page, chats and
 details, then a chat on its own. The back arrow always goes up one level.
 
 ## Reviewing a PR
 
 A session whose PR waits for you shows under **Needs you**. Open it to read the
-PR's proof page in the **Proof** view, then **Merge** it, or **Send back**
-under **⋯** to return it to the agent. A PR with no proof page shows the proof
+PR's review page in the **Review page** view, then **Merge** it, or **Send back**
+under **⋯** to return it to the agent. A PR with no review page shows the review
 note verify left on it, with **Verify again**.
 
-The old review page is gone. A link to `/review` opens the **Needs you** view,
+The old review route is gone. A link to `/review` opens the **Needs you** view,
 and a link to `/review/<owner>/<name>/<pr>` opens that PR's session on its
-proof.
+review page.
 
 ## Routes
 
 These URL routes make up the web app. Every `/sessions` address is one
 page, so moving between sessions and chats keeps the list where it was:
 
-| Route                                | View        | What it shows                                                   |
-| ------------------------------------ | ----------- | --------------------------------------------------------------- |
-| `/` or `/sessions`                   | Sessions    | Every active session across every paired daemon.                |
-| `/sessions?view=needs`               | Needs you   | The sessions waiting for you.                                   |
-| `/sessions/:id`                      | Session     | The session on its proof, or on its chats when nothing applies. |
-| `/sessions/:id/proof`                | Proof       | The PR's proof page, or its proof note when it has no page.     |
-| `/sessions/:id/chats/:chat`          | Chat        | The chat's conversation and reply box.                          |
-| `/sessions/:id/chats/:chat/terminal` | Terminal    | The chat's live terminal.                                       |
-| `/sessions/:id/terminal`             | Terminal    | The live terminal of the session's default chat.                |
-| `/sessions/:id/chats/new`            | New chat    | The composer for a new chat in the session.                     |
-| `/sessions/new`                      | New session | The composer for a new session.                                 |
-| `/settings/…`, `/:org/settings/…`    | Settings    | Your settings, and each organization's.                         |
+| Route                                | View        | What it shows                                                         |
+| ------------------------------------ | ----------- | --------------------------------------------------------------------- |
+| `/` or `/sessions`                   | Sessions    | Every active session across every paired daemon.                      |
+| `/sessions?view=needs`               | Needs you   | The sessions waiting for you.                                         |
+| `/sessions/:id`                      | Session     | The session on its review page, or on its chats when nothing applies. |
+| `/sessions/:id/proof`                | Review page | The PR's review page, or its review note when it has no page.         |
+| `/sessions/:id/chats/:chat`          | Chat        | The chat's conversation and reply box.                                |
+| `/sessions/:id/chats/:chat/terminal` | Terminal    | The chat's live terminal.                                             |
+| `/sessions/:id/terminal`             | Terminal    | The live terminal of the session's default chat.                      |
+| `/sessions/:id/chats/new`            | New chat    | The composer for a new chat in the session.                           |
+| `/sessions/new`                      | New session | The composer for a new session.                                       |
+| `/settings/…`, `/:org/settings/…`    | Settings    | Your settings, and each organization's.                               |
 
 Bookmarkable URLs mean a teammate can paste you a link to a specific
 session or chat and you'll land in the same view, auth permitting.
@@ -167,26 +167,26 @@ Press `?` on any screen to list the keyboard shortcuts, and `⌘K` (or
 `Ctrl K`) to open the command menu. The page itself never shows key hints;
 the list is the one place they appear.
 
-| Screen    | Key                    | Action                    |
-| --------- | ---------------------- | ------------------------- |
-| Sessions  | `J` `K` or `↑` `↓`     | Move through the sessions |
-| Sessions  | `Enter` or `→`         | Open the selected session |
-| Sessions  | `F`                    | Add a filter              |
-| Sessions  | `⌘F` or `Ctrl F`       | Find in this view         |
-| Sessions  | `N` or `C`             | New session               |
-| Session   | `1` `2` `3`            | Proof, Chats, Terminal    |
-| Session   | `Esc`, `←` or `Ctrl X` | Back to Sessions          |
-| Session   | `N`                    | New chat                  |
-| Session   | `M`                    | Merge                     |
-| Session   | `S`                    | Send back                 |
-| Session   | `E`                    | Rename the session        |
-| Session   | `G`                    | Open on GitHub            |
-| Session   | `I`                    | Open the ticket           |
-| Session   | `A`                    | Archive the session       |
-| Scheduler | `N`                    | New job                   |
-| Scheduler | `R`                    | Run now                   |
-| Scheduler | `E`                    | Edit job                  |
-| Scheduler | `Space`                | Pause or resume           |
+| Screen    | Key                    | Action                       |
+| --------- | ---------------------- | ---------------------------- |
+| Sessions  | `J` `K` or `↑` `↓`     | Move through the sessions    |
+| Sessions  | `Enter` or `→`         | Open the selected session    |
+| Sessions  | `F`                    | Add a filter                 |
+| Sessions  | `⌘F` or `Ctrl F`       | Find in this view            |
+| Sessions  | `N` or `C`             | New session                  |
+| Session   | `1` `2` `3`            | Review page, Chats, Terminal |
+| Session   | `Esc`, `←` or `Ctrl X` | Back to Sessions             |
+| Session   | `N`                    | New chat                     |
+| Session   | `M`                    | Merge                        |
+| Session   | `S`                    | Send back                    |
+| Session   | `E`                    | Rename the session           |
+| Session   | `G`                    | Open on GitHub               |
+| Session   | `I`                    | Open the ticket              |
+| Session   | `A`                    | Archive the session          |
+| Scheduler | `N`                    | New job                      |
+| Scheduler | `R`                    | Run now                      |
+| Scheduler | `E`                    | Edit job                     |
+| Scheduler | `Space`                | Pause or resume              |
 
 In a chat's terminal, keys typed into the terminal go to the agent, so the
 keys above work only while focus is outside it; `Ctrl X` inside it leaves the

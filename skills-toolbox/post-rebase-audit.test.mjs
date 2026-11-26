@@ -773,3 +773,33 @@ test('whole-directory deletion still reports a sibling relocation', () => {
     },
   ])
 })
+
+const GENERATED = JSON.stringify({
+  verifyDefaults: { generatedPaths: ['gen/**'], generatedChecks: ['drift'] },
+})
+
+test('a generated file both sides changed must be regenerated', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { '.boss-skills.json': GENERATED, 'src.txt': 'a\n', 'gen/out.txt': 'gen(a)\n' },
+    branch: [{ message: 'branch', files: { 'src.txt': 'a\nb\n', 'gen/out.txt': 'gen(ab)\n' } }],
+    baseSide: [{ message: 'base', files: { 'src2.txt': 'c\n', 'gen/out.txt': 'gen(ac)\n' } }],
+  })
+  git(dir, ['rebase', '-q', '-X', 'ours', 'main'])
+  const report = audit(dir, preRebaseHead)
+  assert.deepEqual(report.regenerate, ['gen/out.txt'])
+  assert.equal(report.detectors.regenerate, 'ok')
+  assert.equal(report.verdict, VERDICT_FINDINGS)
+  assert.match(formatAuditNote(report), /regenerate 1/)
+})
+
+test('generated files only one side changed need no regeneration', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { '.boss-skills.json': GENERATED, 'src.txt': 'a\n', 'gen/out.txt': 'gen(a)\n' },
+    branch: [{ message: 'branch', files: { 'src.txt': 'a\nb\n', 'gen/out.txt': 'gen(ab)\n' } }],
+    baseSide: [{ message: 'base', files: { 'gen/other.txt': 'gen(other)\n' } }],
+  })
+  rebaseClean(dir)
+  const report = audit(dir, preRebaseHead)
+  assert.deepEqual(report.regenerate, [])
+  assert.equal(report.verdict, VERDICT_CLEAN, JSON.stringify(report))
+})

@@ -13,7 +13,7 @@ import (
 
 // TestQueueProofOpensOnlyTheProofPage_Sessions_AC209302: p opens the selected
 // row's proof page through the injected opener and never falls back to the PR,
-// which g opens; the footer offers [p]roof only when there is a page.
+// which g opens; the footer offers [p] review page only when there is a page.
 func TestQueueProofOpensOnlyTheProofPage_Sessions_AC209302(t *testing.T) {
 	for _, tc := range []struct {
 		name, proof, pr, want string
@@ -34,8 +34,8 @@ func TestQueueProofOpensOnlyTheProofPage_Sessions_AC209302(t *testing.T) {
 			row.Session.PrUrl = proto.String(tc.pr)
 			row.Session.Attention.ProofUrl = tc.proof
 			m := queueModel(&queueScreenClient{}, row)
-			if offered, want := strings.Contains(m.footer(), "[p]roof"), tc.proof == "https://proof.test/page"; offered != want {
-				t.Fatalf("footer %q offers [p]roof=%v for proof URL %q, want %v", m.footer(), offered, tc.proof, want)
+			if offered, want := strings.Contains(m.footer(), "[p] review page"), tc.proof == "https://proof.test/page"; offered != want {
+				t.Fatalf("footer %q offers [p] review page=%v for proof URL %q, want %v", m.footer(), offered, tc.proof, want)
 			}
 			opened := ""
 			m.openURL = func(url string) error { opened = url; return nil }

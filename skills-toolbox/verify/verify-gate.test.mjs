@@ -641,6 +641,7 @@ test('VERIFY_DESCRIPTIONS is frozen and carries the BOS-1382 prefixes', () => {
     'worktree-unsynced',
     'human-merge',
     'verify-post-failed',
+    'ci-absent',
     'human-review:database',
     'human-review:security',
     'human-review:ui',
@@ -12895,4 +12896,139 @@ test('judge infers missing packages for tree extensions without ever installing'
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
+})
+
+// ---------------------------------------------------------------------------
+// A head no CI reported on: `verifyDefaults.ci.whenAbsent`.
+
+const NO_CI = { pr: { statusCheckRollup: [] }, headRuns: [{ total_count: 0, workflow_runs: [] }] }
+const isHeadPushRead = (args) =>
+  args[1] === 'graphql' && args.some((a) => String(a).includes('READY_FOR_REVIEW_EVENT'))
+// A world whose head was pushed `pushedMsAgo` before NOW, reached through the head-push read.
+function absentCiWorld(opts = {}, pushedMsAgo = 3_600_000, make = world) {
+  const w = make({ ...NO_CI, ...opts, pr: { ...NO_CI.pr, ...opts.pr } })
+  const read = w.read
+  w.read = (command, args, o) => {
+    if (command !== 'gh' || !isHeadPushRead(args)) return read(command, args, o)
+    w.calls.push({ command, args: [...args] })
+    const payload = {
+      data: {
+        repository: {
+          object: { committedDate: iso(pushedMsAgo) },
+          pullRequest: { createdAt: iso(pushedMsAgo), timelineItems: { nodes: [] } },
+        },
+      },
+    }
+    return { ok: true, payload, output: JSON.stringify(payload), exit: 0 }
+  }
+  return w
+}
+
+test('judge parks a head with no CI once the grace has passed, after judging the rest', async () => {
+  const r = await judge({ pr: 7, repo: REPO }, deps(absentCiWorld()))
+  assert.equal(r.verdict, 'human')
+  assert.deepEqual(r.reasons, ['ci-absent'])
+  assert.equal(r.facts.ciAbsent, true)
+  // The rest of judging still runs: the model judge is asked for before the park.
+  const raw = await rawJudge({ pr: 7, repo: REPO }, deps(absentCiWorld()))
+  assert.equal(raw.verdict, 'judge-required')
+})
+
+test('judge keeps waiting on a head with no CI inside the grace, under whenAbsent wait, or on an unreadable push time', async () => {
+  const withinGrace = await judge({ pr: 7, repo: REPO }, deps(absentCiWorld({}, 5 * 60_000)))
+  assert.deepEqual([withinGrace.verdict, withinGrace.reason], ['wait', 'ci-not-green-on-head'])
+  const shortGrace = policyText({ ci: { absentGraceMinutes: 1 } })
+  const parked = await judge(
+    { pr: 7, repo: REPO },
+    deps(absentCiWorld({ baseConfig: shortGrace }, 5 * 60_000)),
+  )
+  assert.deepEqual(parked.reasons, ['ci-absent'])
+  const waits = policyText({ ci: { whenAbsent: 'wait' } })
+  const w = absentCiWorld({ baseConfig: waits })
+  const waited = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.deepEqual([waited.verdict, waited.reason], ['wait', 'ci-not-green-on-head'])
+  assert.equal(w.calls.filter((c) => isHeadPushRead(c.args)).length, 0)
+  const unreadable = await judge({ pr: 7, repo: REPO }, deps(world(NO_CI)))
+  assert.deepEqual([unreadable.verdict, unreadable.reason], ['wait', 'ci-not-green-on-head'])
+})
+
+test('judge never parks ci-absent while the base requires checks', async () => {
+  const required = JSON.stringify({
+    verifyDefaults: { merge: AUTO_HIGH },
+    ci: { required: { checks: ['go-test'] } },
+  })
+  const r = await judge({ pr: 7, repo: REPO }, deps(absentCiWorld({ baseConfig: required })))
+  assert.equal(r.verdict, 'wait')
+})
+
+test('no approval lifts ci-absent, so verify never passes or merges a head with no CI', async () => {
+  const w = approving(absentCiWorld(), 'ci-absent')
+  const r = await judge({ pr: 7, repo: REPO, waive: 'ci-absent' }, deps(w))
+  assert.equal(r.verdict, 'human')
+  assert.deepEqual(r.reasons, ['ci-absent'])
+  const facts = greenFacts({ ci: { settled: true, green: false, absent: true } })
+  for (const waive of [undefined, 'ci-absent'])
+    assert.equal(decideVerdict({ ...facts, waive }).reason, 'ci-absent')
+  assert.equal(decideVerdict(greenFacts({ ci: { settled: true, green: false } })).verdict, 'wait')
+  const park = { context: 'boss/verify', state: 'pending', description: 'needs human: ci-absent' }
+  const operator = { decision: 'approved', covers: 'ci-absent' }
+  assert.equal(classifyApproval({ status: park, operator }).approval, 'none')
+  assert.equal(classifyApproval({ status: park, reviewDecision: 'APPROVED' }).approval, 'none')
+})
+
+test('a head that later gains CI is judged as usual', async () => {
+  const r = await judge(
+    { pr: 7, repo: REPO },
+    deps(absentCiWorld({ pr: { statusCheckRollup: green } })),
+  )
+  assert.equal(r.verdict, 'pass')
+})
+
+test('candidates admit a no-CI head after the grace and re-judge its park once CI reports', async () => {
+  const late = absentCiWorld({ statuses: [receipt()] }, 3_600_000, sweepWorld)
+  const found = await candidates({ repo: REPO }, sweepDeps(late))
+  assert.deepEqual(
+    found.candidates.map((c) => c.pr),
+    [7],
+  )
+  const early = absentCiWorld({ statuses: [receipt()] }, 60_000, sweepWorld)
+  const held = await candidates({ repo: REPO }, sweepDeps(early))
+  assert.deepEqual(held.candidates, [])
+  assert.deepEqual(
+    held.skipped.map((s) => [s.pr, s.reason]),
+    [[7, 'unknown:ci']],
+  )
+  const d = sweepDeps(late)
+  const j = await judged(late, d)
+  assert.deepEqual(j.reasons, ['ci-absent'])
+  assert.equal((await parkPost(j, d)).posted, true)
+  const kept = await candidates({ repo: REPO }, d)
+  assert.deepEqual(kept.candidates, [])
+  late.pr.statusCheckRollup = green
+  const rejudged = await candidates({ repo: REPO }, d)
+  assert.equal(rejudged.candidates[0]?.rejudge, 'ci-arrived')
+  assert.equal((await judged(late, d)).verdict, 'pass')
+})
+
+test('judge parks a no-CI head whose earlier head ran Actions checks, as the candidate scan admits it', async () => {
+  const earlier = { priorHead: priorPayload([priorCommit([priorAction])]) }
+  const r = await judge({ pr: 7, repo: REPO }, deps(absentCiWorld(earlier)))
+  assert.equal(r.verdict, 'human')
+  assert.deepEqual(r.reasons, ['ci-absent'])
+  const early = await judge({ pr: 7, repo: REPO }, deps(absentCiWorld(earlier, 5 * 60_000)))
+  assert.deepEqual([early.verdict, early.reason], ['wait', 'ci-absent-gate'])
+  const late = absentCiWorld({ ...earlier, statuses: [receipt()] }, 3_600_000, sweepWorld)
+  const d = sweepDeps(late)
+  assert.deepEqual(
+    (await candidates({ repo: REPO }, d)).candidates.map((c) => c.pr),
+    [7],
+  )
+  assert.deepEqual((await judged(late, d)).reasons, ['ci-absent'])
+  const queued = { ...NO_CI.headRuns[0], total_count: 1 }
+  queued.workflow_runs = [{ id: 1, name: 'CI', status: 'queued', conclusion: null, head_sha: HEAD }]
+  const pending = await judge(
+    { pr: 7, repo: REPO },
+    deps(absentCiWorld({ ...earlier, headRuns: [queued] })),
+  )
+  assert.equal(pending.verdict, 'wait')
 })

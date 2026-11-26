@@ -1,0 +1,50 @@
+
+      ▄▀▀▄        Antigravity CLI 1.5.18
+     ▀▀▀▀▀▀       user@example.com (Google AI Ultra)
+    ▀▀▀▀▀▀▀▀      Gemini 4 Neon (Medium)
+   ▄▀▀    ▀▀▄     /tmp/project
+  ▄▀▀      ▀▀▄
+
+────────────────────────────────────────────────────────────
+> Call the ask_question tool now with exactly one single-select question. Question: Which colour should the button be? Options: Red (warm), Green (calm), Blue (cool). Do not run any commands or read
+  any files first.
+
+? Which colour should the button be?
+
+Question
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Question 1/1: Which colour should the button be?
+
+  1. Red (warm)
+  2. Green (calm)
+  3. Blue (cool)
+> 4. Write-in...
+
+  ↑/↓ Navigate · enter Write-in · esc Skip
+esc to cancel                                                                                                                                                              auto · Gemini 4 Neon · medium
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

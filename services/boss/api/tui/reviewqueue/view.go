@@ -40,7 +40,7 @@ func (m Model) footer() string {
 	if r := m.selected(); r != nil {
 		hints = []string{"[enter] details"}
 		if webURL(queue.Park(r.GetSession()).GetProofUrl()) {
-			hints = append(hints, "[p]roof")
+			hints = append(hints, "[p] review page")
 		}
 		if _, ok := ui.AttentionBinding(r.GetSession(), "m", false); ok && !m.action.MergeUnresolved() {
 			hints = append(hints, "[m]erge")

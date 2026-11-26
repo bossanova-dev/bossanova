@@ -1599,7 +1599,7 @@ test('the footer shows the head, base and proof with the build time the player f
   const foot = region(html, '<footer class="foot">', '</footer>')
   assert.ok(
     foot.includes(
-      `Head <code>${HEAD.slice(0, 12)}</code> on <code>${BASE.slice(0, 12)}</code>, proof <code>sha256:`,
+      `Head <code>${HEAD.slice(0, 12)}</code> on <code>${BASE.slice(0, 12)}</code>, review page <code>sha256:`,
     ),
   )
   assert.ok(

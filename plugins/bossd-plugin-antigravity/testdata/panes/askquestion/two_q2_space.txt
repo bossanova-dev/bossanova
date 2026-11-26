@@ -1,0 +1,50 @@
+
+      ▄▀▀▄        Antigravity CLI 1.5.18
+     ▀▀▀▀▀▀       user@example.com (Google AI Ultra)
+    ▀▀▀▀▀▀▀▀      Gemini 4 Neon (Medium)
+   ▄▀▀    ▀▀▄     /tmp/project
+  ▄▀▀      ▀▀▄
+
+────────────────────────────────────────────────────────────
+> Call the ask_question tool now with exactly one single-select question. Question: Which colour should the button be? Options: Red (warm), Green (calm), Blue (cool). Do not run any commands or read
+  any files first.
+
+? Which colour should the button be?
+> Purple
+
+  Got it — Purple it is!
+
+────────────────────────────────────────────────────────────
+> Call the ask_question tool now with exactly two questions in one call. Question 1 (single-select): Which size should the button be? Options: Small (compact), Large (prominent). Question 2
+  (multi-select): Which effects should the button have? Options: Shadow (depth), Glow (light), Border (outline). Do not run any commands or read any files first.
+
+▸ Thought for 4s, 99 tokens
+  Direct instruction requires bypassing initial file inspection or command execution. Proceeding immediately to formulate the two-part prompt covering button sizing and visual effects.
+
+? Which size should the button be?
+? Which effects should the button have?
+
+Question
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Question 2/2: Which effects should the button have?
+
+> 1. [x] Shadow (depth)
+  2. [ ] Glow (light)
+  3. [ ] Border (outline)
+  4. Write-in...
+
+  ↑/↓ Navigate · ← Back · space Toggle · enter Submit All · esc Skip
+esc to cancel                                                                                                                                                              auto · Gemini 4 Neon · medium
+
+
+
+
+
+
+
+
+
+
+
+

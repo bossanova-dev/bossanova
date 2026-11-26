@@ -714,6 +714,10 @@ const V20261107 Version = "2026-11-07"
 // were from V20260908. Older pins keep looking only in the routing and claim
 // organizations. Handler-gated (IsCrossOrganizationChatCommands): the change
 // turns a NotFound into a dispatched command, which no transform can undo.
+//
+// It also hosts proof pages by default for every client version, with no
+// transform or gate: each change turns a refusal into an acceptance. See
+// TestProofHostingDefault_NoTransformAtAnyVersion.
 const V20261108 Version = "2026-11-08"
 
 // DefaultRegistry returns a Registry seeded with the known production API

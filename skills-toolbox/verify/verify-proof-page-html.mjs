@@ -338,7 +338,7 @@ function evidence(m) {
   const parts = []
   if (ev.omitted > 0)
     parts.push(
-      `<div class="bnotice stacked" data-omitted="${ev.omitted}"><div><b>${plural(ev.omitted, 'evidence file')} ${ev.omitted === 1 ? 'was' : 'were'} not hosted.</b><span>The page was over the proof host's limits, so the largest media were left out.</span></div></div>`,
+      `<div class="bnotice stacked" data-omitted="${ev.omitted}"><div><b>${plural(ev.omitted, 'evidence file')} ${ev.omitted === 1 ? 'was' : 'were'} not hosted.</b><span>The page was over the review page host's limits, so the largest media were left out.</span></div></div>`,
     )
   if (ev.heads.length) {
     const first = ev.heads[0].clip
@@ -659,7 +659,7 @@ const FULLSCREEN = 'M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9'
 
 /** What the page shows and when it was built; the player turns the raw ISO time into the reader's local time. @param {PageModel} m */
 const footer = (m) =>
-  `<footer class="foot">Head <code>${m.head.slice(0, 12)}</code> on <code>${m.base.slice(0, 12)}</code>, proof <code>${e(m.digest.slice(0, 19))}</code> · Generated <time datetime="${e(m.generatedAt)}">${e(m.generatedAt)}</time></footer>`
+  `<footer class="foot">Head <code>${m.head.slice(0, 12)}</code> on <code>${m.base.slice(0, 12)}</code>, review page <code>${e(m.digest.slice(0, 19))}</code> · Generated <time datetime="${e(m.generatedAt)}">${e(m.generatedAt)}</time></footer>`
 
 /**
  * The lightbox the player opens a screenshot or a video in; with more than one screenshot, arrows
@@ -768,5 +768,5 @@ export function renderPageHtml(m) {
   const shots = body.split('class="shot"').length - 1
   const videos = body.split('<video').length - 1
   const box = shots || videos ? lightbox(shots, videos) : ''
-  return `<!doctype html><html lang="en"><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex"><title>Proof · ${e(m.repo)} #${m.pr}</title><style>${style}</style></head><body data-proof="${e(`${m.repo}#${m.pr}@${m.head}`)}"><main class="wrap">${linkPaths(header(m) + banner(m), m.diffHref)}${nav ? `<nav class="secnav" aria-label="Sections">${nav}</nav>` : ''}${linkPaths(body, m.diffHref)}${debug(m)}${footer(m)}</main>${box}<script src="${PROOF_PLAYER_FILE}" defer></script></body></html>`
+  return `<!doctype html><html lang="en"><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex"><title>Review · ${e(m.repo)} #${m.pr}</title><style>${style}</style></head><body data-proof="${e(`${m.repo}#${m.pr}@${m.head}`)}"><main class="wrap">${linkPaths(header(m) + banner(m), m.diffHref)}${nav ? `<nav class="secnav" aria-label="Sections">${nav}</nav>` : ''}${linkPaths(body, m.diffHref)}${debug(m)}${footer(m)}</main>${box}<script src="${PROOF_PLAYER_FILE}" defer></script></body></html>`
 }

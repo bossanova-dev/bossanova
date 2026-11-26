@@ -16,6 +16,7 @@ import (
 type hostedProofUpstream interface {
 	StartProofUpload(context.Context, *connect.Request[pb.StartProofUploadRequest]) (*connect.Response[pb.StartProofUploadResponse], error)
 	PutProofObject(context.Context, *connect.Request[pb.PutProofObjectRequest]) (*connect.Response[pb.PutProofObjectResponse], error)
+	AbortProofUpload(context.Context, *connect.Request[pb.AbortProofUploadRequest]) (*connect.Response[pb.AbortProofUploadResponse], error)
 }
 
 // hostedProofClient publishes proof pages through bosso with the daemon's own
@@ -71,6 +72,17 @@ func (c *hostedProofClient) PutHostedProofObject(ctx context.Context, in server.
 	req := connect.NewRequest(&pb.PutProofObjectRequest{RepoOriginUrl: in.RepoOriginURL, UploadId: in.UploadID, Name: in.Name, Content: in.Body})
 	req.Header().Set("Authorization", "Bearer "+token)
 	_, err := c.rpc.PutProofObject(ctx, req)
+	return err
+}
+
+func (c *hostedProofClient) AbortHostedProof(ctx context.Context, uploadID, repoOriginURL string) error {
+	token := c.sessionToken()
+	if token == "" {
+		return server.ErrHostedProofUnavailable
+	}
+	req := connect.NewRequest(&pb.AbortProofUploadRequest{UploadId: uploadID, RepoOriginUrl: repoOriginURL})
+	req.Header().Set("Authorization", "Bearer "+token)
+	_, err := c.rpc.AbortProofUpload(ctx, req)
 	return err
 }
 
@@ -135,4 +147,11 @@ func (d evidenceDestinations) PutHostedProofObject(ctx context.Context, in serve
 		return server.ErrHostedProofUnavailable
 	}
 	return d.hosted.PutHostedProofObject(ctx, in)
+}
+
+func (d evidenceDestinations) AbortHostedProof(ctx context.Context, uploadID, repoOriginURL string) error {
+	if d.hosted == nil {
+		return server.ErrHostedProofUnavailable
+	}
+	return d.hosted.AbortHostedProof(ctx, uploadID, repoOriginURL)
 }

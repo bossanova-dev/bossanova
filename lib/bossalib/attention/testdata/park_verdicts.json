@@ -43,6 +43,20 @@
   },
   {
     "codes": [
+      "ci-absent"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "no CI reported on the latest commit, so verify will not merge it; merge it yourself or give it CI",
+    "evidence": "",
+    "sentence": "Not verified · blocked · no CI reported on the latest commit, so verify will not merge it; merge it yourself or give it CI"
+  },
+  {
+    "codes": [
       "extension-failed"
     ],
     "label": "",

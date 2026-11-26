@@ -42,7 +42,7 @@ func (m Model) key(k tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		target, missing := s.GetPrUrl(), "No PR for #%d"
 		if k.String() == "p" {
-			target, missing = queue.Park(s).GetProofUrl(), "No proof page for #%d"
+			target, missing = queue.Park(s).GetProofUrl(), "No review page for #%d"
 		}
 		if !webURL(target) {
 			m.status = fmt.Sprintf(missing, s.GetPrNumber())

@@ -1,0 +1,22 @@
+# Written alongside capture-ask-question.sh, which produced every pane under
+# askquestion/. Re-run the script instead of hand-editing a pane, then update
+# this file.
+agy: 1.5.18 (signed in), launched as `agy` in a scratch project, trust
+  modal answered with Enter
+tmux: tmux 3.8, private socket, pane 200x50, `capture-pane -p`
+os: darwin-arm64 (macOS 26.5.1)
+captured: 2026-11-26
+redacted: the account line, as user@example.com; the scratch project path,
+  as /tmp/project
+keys (each capture is taken after the keys before it):
+  single                prompt: one single-select question, Red / Green / Blue
+  single_on_writein     Down, Down, Down
+  single_writein_typed  Enter, "Purple"  (then Enter submits)
+  two_q1                prompt: a single-select then a multi-select question
+  two_q2                Enter
+  two_q2_space          Space
+  two_q1_back           Left
+  two_answered          Right, Enter, turn ends
+finding: agy's ask_question tool is a question menu apart from its approval
+  menu; asked to list its tools, agy 1.5.18 named ask_question as asking "one
+  or more multiple-choice questions (single- or multi-select)".

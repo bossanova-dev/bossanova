@@ -11,7 +11,7 @@ import (
 func TestProof_Sessions_AC208704(t *testing.T) {
 	session := &pb.Session{Attention: &pb.SessionAttention{ProofUrl: "https://proof.test/page", Actions: []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_PROOF}}}
 	for _, details := range []bool{false, true} {
-		if got := AttentionFooter(session, details); len(got) != 1 || got[0] != "[p] proof" {
+		if got := AttentionFooter(session, details); len(got) != 1 || got[0] != "[p] review page" {
 			t.Fatalf("missing proof control: %v", got)
 		}
 		if b, ok := AttentionBinding(session, "p", details); !ok || b.Action != pb.AttentionAction_ATTENTION_ACTION_PROOF {
@@ -65,7 +65,7 @@ func TestProofTargetOrder_Sessions_AC208902(t *testing.T) {
 			}
 			for _, details := range []bool{false, true} {
 				footer := AttentionFooter(tc.session, details)
-				if slices.Contains(footer, "[p] proof") != ok {
+				if slices.Contains(footer, "[p] review page") != ok {
 					t.Errorf("details=%v footer %v, want [p] proof listed exactly when there is a target", details, footer)
 				}
 				for _, label := range footer {
@@ -85,7 +85,7 @@ func TestProofTargetOrder_Sessions_AC208902(t *testing.T) {
 				}
 				var opened string
 				msg := AttentionActionCmd(t.Context(), nil, tc.session, b.Action, func(url string) error { opened = url; return nil })()
-				if result, _ := msg.(AttentionActionResultMsg); opened != tc.want || result.Text != "Opened proof" {
+				if result, _ := msg.(AttentionActionResultMsg); opened != tc.want || result.Text != "Opened review page" {
 					t.Errorf("details=%v: p opened %q (%q), want %q", details, opened, result.Text, tc.want)
 				}
 			}
@@ -97,7 +97,7 @@ func TestProofTargetOrder_Sessions_AC208902(t *testing.T) {
 // merge whether the daemon served PROOF or VIDEO.
 func TestProofStandsWhereTheDaemonListedIt_Sessions_AC208902(t *testing.T) {
 	for _, tc := range proofCases()[:2] {
-		if got, want := AttentionFooter(tc.session, true), []string{"[g] github", "[p] proof"}; !slices.Equal(got[:min(2, len(got))], want) {
+		if got, want := AttentionFooter(tc.session, true), []string{"[g] github", "[p] review page"}; !slices.Equal(got[:min(2, len(got))], want) {
 			t.Errorf("%s: details footer = %v, want it to open %v", tc.name, got, want)
 		}
 	}

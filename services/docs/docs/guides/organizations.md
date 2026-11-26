@@ -9,7 +9,7 @@ description: 'Create a Bossanova Cloud organization, invite people, set their ro
 An organization is the group your Bossanova Cloud sessions, notes, webhooks and
 billing belong to. You manage organizations and their members in the
 [web app](./web.md) under **Settings**, where each organization has its own
-group of pages: **General**, **Members**, **Proof pages**, **Billing** and the
+group of pages: **General**, **Members**, **Review pages**, **Billing** and the
 rest. The `boss` CLI, the
 terminal UI and the MCP tools have no member-management commands. They only
 choose which organization a repository belongs to (see

@@ -20,8 +20,18 @@ import (
 type hostedProofRPC struct {
 	starts   []*connect.Request[pb.StartProofUploadRequest]
 	puts     []*connect.Request[pb.PutProofObjectRequest]
+	aborts   []*connect.Request[pb.AbortProofUploadRequest]
 	startErr error
 	putErr   error
+	abortErr error
+}
+
+func (r *hostedProofRPC) AbortProofUpload(_ context.Context, req *connect.Request[pb.AbortProofUploadRequest]) (*connect.Response[pb.AbortProofUploadResponse], error) {
+	r.aborts = append(r.aborts, req)
+	if r.abortErr != nil {
+		return nil, r.abortErr
+	}
+	return connect.NewResponse(&pb.AbortProofUploadResponse{}), nil
 }
 
 func (r *hostedProofRPC) StartProofUpload(_ context.Context, req *connect.Request[pb.StartProofUploadRequest]) (*connect.Response[pb.StartProofUploadResponse], error) {
@@ -236,5 +246,32 @@ func TestEvidenceDestinations_Sessions_AC260203(t *testing.T) {
 				t.Fatalf("starts %d, puts %v", len(rpc.starts), names)
 			}
 		})
+	}
+}
+
+func TestHostedProofClientAbortsWithTheDaemonBearer_Organizations_AC278201(t *testing.T) {
+	rpc := &hostedProofRPC{}
+	client := &hostedProofClient{rpc: rpc, token: func() string { return "daemon-session-token" }, reviewOrigin: "https://app.bossanova.dev"}
+	if err := client.AbortHostedProof(context.Background(), "upload-7", "https://github.com/acme/widgets"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpc.aborts) != 1 {
+		t.Fatalf("aborts = %d", len(rpc.aborts))
+	}
+	abort := rpc.aborts[0]
+	if abort.Header().Get("Authorization") != "Bearer daemon-session-token" || abort.Msg.UploadId != "upload-7" || abort.Msg.RepoOriginUrl != "https://github.com/acme/widgets" {
+		t.Fatalf("abort = %v (auth %q)", abort.Msg, abort.Header().Get("Authorization"))
+	}
+	rpc.abortErr = connect.NewError(connect.CodeFailedPrecondition, errors.New("complete"))
+	if err := client.AbortHostedProof(context.Background(), "upload-7", "https://github.com/acme/widgets"); !errors.Is(err, rpc.abortErr) {
+		t.Fatalf("abort error = %v, want the upstream error", err)
+	}
+
+	signedOut := &hostedProofClient{rpc: rpc, reviewOrigin: "https://app.bossanova.dev"}
+	if err := signedOut.AbortHostedProof(context.Background(), "upload-7", "https://github.com/acme/widgets"); !errors.Is(err, server.ErrHostedProofUnavailable) || len(rpc.aborts) != 2 {
+		t.Fatalf("signed-out abort = %v after %d calls", err, len(rpc.aborts))
+	}
+	if err := (evidenceDestinations{}).AbortHostedProof(context.Background(), "upload-7", "https://github.com/acme/widgets"); !errors.Is(err, server.ErrHostedProofUnavailable) {
+		t.Fatalf("abort without a hosted client = %v", err)
 	}
 }

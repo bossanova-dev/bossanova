@@ -11,7 +11,7 @@
     ],
     "proofUrl": "https://proof.test/p",
     "phrase": "✓ review",
-    "detail": "Infrastructure · proof recorded"
+    "detail": "Infrastructure · review page recorded"
   },
   {
     "name": "review two asks",
@@ -25,7 +25,7 @@
       "API compatibility"
     ],
     "phrase": "✓ review",
-    "detail": "API schema, API compatibility · no proof yet"
+    "detail": "API schema, API compatibility · no review page yet"
   },
   {
     "name": "review asks over budget",
@@ -40,7 +40,7 @@
       "API compatibility"
     ],
     "phrase": "✓ review",
-    "detail": "Infrastructure as code, API schema, API compatibility · no proof yet"
+    "detail": "Infrastructure as code, API schema, API compatibility · no review page yet"
   },
   {
     "name": "review CJK ask that fits",
@@ -53,7 +53,7 @@
       "セキュリティ"
     ],
     "phrase": "✓ review",
-    "detail": "セキュリティ · no proof yet"
+    "detail": "セキュリティ · no review page yet"
   },
   {
     "name": "review CJK ask measured in cells",
@@ -66,7 +66,7 @@
       "データベース移行"
     ],
     "phrase": "✓ review",
-    "detail": "データベース移行 · no proof yet"
+    "detail": "データベース移行 · no review page yet"
   },
   {
     "name": "review codes without asks",
@@ -77,7 +77,7 @@
       "human-review:security"
     ],
     "phrase": "✓ review",
-    "detail": "database, security · no proof yet"
+    "detail": "database, security · no review page yet"
   },
   {
     "name": "review latest commit",
@@ -87,7 +87,7 @@
       "no-receipt"
     ],
     "phrase": "✓ review",
-    "detail": "latest commit · no proof yet"
+    "detail": "latest commit · no review page yet"
   },
   {
     "name": "human merge park",
@@ -97,7 +97,7 @@
       "human-merge"
     ],
     "phrase": "✓ merge",
-    "detail": "no proof yet"
+    "detail": "no review page yet"
   },
   {
     "name": "question",

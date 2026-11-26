@@ -388,6 +388,9 @@ const (
 	// OrchestratorServicePutProofObjectProcedure is the fully-qualified name of the
 	// OrchestratorService's PutProofObject RPC.
 	OrchestratorServicePutProofObjectProcedure = "/bossanova.v1.OrchestratorService/PutProofObject"
+	// OrchestratorServiceAbortProofUploadProcedure is the fully-qualified name of the
+	// OrchestratorService's AbortProofUpload RPC.
+	OrchestratorServiceAbortProofUploadProcedure = "/bossanova.v1.OrchestratorService/AbortProofUpload"
 	// OrchestratorServiceMintProofViewLinkProcedure is the fully-qualified name of the
 	// OrchestratorService's MintProofViewLink RPC.
 	OrchestratorServiceMintProofViewLinkProcedure = "/bossanova.v1.OrchestratorService/MintProofViewLink"
@@ -968,12 +971,12 @@ type OrchestratorServiceClient interface {
 	// (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
 	UpsertProofCheckRun(context.Context, *connect.Request[v1.UpsertProofCheckRunRequest]) (*connect.Response[v1.UpsertProofCheckRunResponse], error)
 	// StartProofUpload reserves one hosted proof page for a pull request head.
-	// Only a daemon may call it. bosso resolves the organization from the repo,
-	// requires its own cloud access and hosted-proof opt-in (FailedPrecondition),
-	// and validates the manifest (InvalidArgument). Limits are ResourceExhausted
-	// with a ProofUploadLimitExceeded detail. Returns page identity, never a URL.
-	// This additive RPC needs no dated API bump; see
-	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	// Only a daemon may call it. bosso resolves the organization from the repo
+	// (PermissionDenied for a non-member), refuses an organization whose owner
+	// turned hosted proof pages off (FailedPrecondition), and validates the
+	// manifest (InvalidArgument). Limits are ResourceExhausted with a
+	// ProofUploadLimitExceeded detail. Returns page identity, never a URL. Paid
+	// cloud access does not affect admission (apiversion V20261108).
 	StartProofUpload(context.Context, *connect.Request[v1.StartProofUploadRequest]) (*connect.Response[v1.StartProofUploadResponse], error)
 	// PutProofObject writes one file of a hosted proof page started with
 	// StartProofUpload. It authenticates the daemon session; a user token is
@@ -989,6 +992,19 @@ type OrchestratorServiceClient interface {
 	// This additive RPC needs no dated API bump; see
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	PutProofObject(context.Context, *connect.Request[v1.PutProofObjectRequest]) (*connect.Response[v1.PutProofObjectResponse], error)
+	// AbortProofUpload releases the quota reservation of a proof upload the
+	// daemon could not finish, so a page that failed partway stops counting in
+	// the organization's and the global quota windows. Only a daemon may call
+	// it. bosso re-resolves the organization from repo_origin_url and the daemon
+	// owner's membership, as PutProofObject does, and requires its own cloud
+	// access (FailedPrecondition); the upload must belong to that organization
+	// and repository (NotFound otherwise). Aborting a completed upload is
+	// FailedPrecondition; aborting an already released one succeeds, so a
+	// retried call is idempotent. A later PutProofObject for an aborted upload
+	// is FailedPrecondition.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	AbortProofUpload(context.Context, *connect.Request[v1.AbortProofUploadRequest]) (*connect.Response[v1.AbortProofUploadResponse], error)
 	// MintProofViewLink returns a short-lived signed link to the newest
 	// completed hosted proof page of one pull request, for a signed-in user who
 	// is a member of the organization that uploaded it. Only a user scope gets a
@@ -1057,13 +1073,13 @@ type OrchestratorServiceClient interface {
 	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
 	CreateOrganization(context.Context, *connect.Request[v1.CreateOrganizationRequest]) (*connect.Response[v1.CreateOrganizationResponse], error)
 	RenameOrganization(context.Context, *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error)
-	// GetOrganizationProofHosting reports whether the organization has opted in to
-	// hosted proof pages, who turned it on and when, and whether the organization's
-	// own cloud access currently allows turning it on.
+	// GetOrganizationProofHosting reports whether the organization hosts proof
+	// pages (on unless an owner turned it off) and, while off, who turned it off
+	// and when.
 	GetOrganizationProofHosting(context.Context, *connect.Request[v1.GetOrganizationProofHostingRequest]) (*connect.Response[v1.GetOrganizationProofHostingResponse], error)
 	// SetOrganizationProofHosting turns hosted proof pages on or off for the
-	// caller's active organization. Owner only. Turning on requires the
-	// organization's own cloud access to be active; turning off never does.
+	// caller's active organization. Owner only. Neither direction needs cloud
+	// access (apiversion V20261108).
 	SetOrganizationProofHosting(context.Context, *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error)
 	// SetMemberSessionSharing turns member session sharing on or off for the
 	// caller's active organization (Organization.is_member_session_sharing_enabled).
@@ -2012,6 +2028,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("PutProofObject")),
 			connect.WithClientOptions(opts...),
 		),
+		abortProofUpload: connect.NewClient[v1.AbortProofUploadRequest, v1.AbortProofUploadResponse](
+			httpClient,
+			baseURL+OrchestratorServiceAbortProofUploadProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("AbortProofUpload")),
+			connect.WithClientOptions(opts...),
+		),
 		mintProofViewLink: connect.NewClient[v1.MintProofViewLinkRequest, v1.MintProofViewLinkResponse](
 			httpClient,
 			baseURL+OrchestratorServiceMintProofViewLinkProcedure,
@@ -2591,6 +2613,7 @@ type orchestratorServiceClient struct {
 	upsertProofCheckRun                    *connect.Client[v1.UpsertProofCheckRunRequest, v1.UpsertProofCheckRunResponse]
 	startProofUpload                       *connect.Client[v1.StartProofUploadRequest, v1.StartProofUploadResponse]
 	putProofObject                         *connect.Client[v1.PutProofObjectRequest, v1.PutProofObjectResponse]
+	abortProofUpload                       *connect.Client[v1.AbortProofUploadRequest, v1.AbortProofUploadResponse]
 	mintProofViewLink                      *connect.Client[v1.MintProofViewLinkRequest, v1.MintProofViewLinkResponse]
 	proxyStreamChats                       *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken                       *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
@@ -3264,6 +3287,11 @@ func (c *orchestratorServiceClient) StartProofUpload(ctx context.Context, req *c
 // PutProofObject calls bossanova.v1.OrchestratorService.PutProofObject.
 func (c *orchestratorServiceClient) PutProofObject(ctx context.Context, req *connect.Request[v1.PutProofObjectRequest]) (*connect.Response[v1.PutProofObjectResponse], error) {
 	return c.putProofObject.CallUnary(ctx, req)
+}
+
+// AbortProofUpload calls bossanova.v1.OrchestratorService.AbortProofUpload.
+func (c *orchestratorServiceClient) AbortProofUpload(ctx context.Context, req *connect.Request[v1.AbortProofUploadRequest]) (*connect.Response[v1.AbortProofUploadResponse], error) {
+	return c.abortProofUpload.CallUnary(ctx, req)
 }
 
 // MintProofViewLink calls bossanova.v1.OrchestratorService.MintProofViewLink.
@@ -3998,12 +4026,12 @@ type OrchestratorServiceHandler interface {
 	// (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
 	UpsertProofCheckRun(context.Context, *connect.Request[v1.UpsertProofCheckRunRequest]) (*connect.Response[v1.UpsertProofCheckRunResponse], error)
 	// StartProofUpload reserves one hosted proof page for a pull request head.
-	// Only a daemon may call it. bosso resolves the organization from the repo,
-	// requires its own cloud access and hosted-proof opt-in (FailedPrecondition),
-	// and validates the manifest (InvalidArgument). Limits are ResourceExhausted
-	// with a ProofUploadLimitExceeded detail. Returns page identity, never a URL.
-	// This additive RPC needs no dated API bump; see
-	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	// Only a daemon may call it. bosso resolves the organization from the repo
+	// (PermissionDenied for a non-member), refuses an organization whose owner
+	// turned hosted proof pages off (FailedPrecondition), and validates the
+	// manifest (InvalidArgument). Limits are ResourceExhausted with a
+	// ProofUploadLimitExceeded detail. Returns page identity, never a URL. Paid
+	// cloud access does not affect admission (apiversion V20261108).
 	StartProofUpload(context.Context, *connect.Request[v1.StartProofUploadRequest]) (*connect.Response[v1.StartProofUploadResponse], error)
 	// PutProofObject writes one file of a hosted proof page started with
 	// StartProofUpload. It authenticates the daemon session; a user token is
@@ -4019,6 +4047,19 @@ type OrchestratorServiceHandler interface {
 	// This additive RPC needs no dated API bump; see
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	PutProofObject(context.Context, *connect.Request[v1.PutProofObjectRequest]) (*connect.Response[v1.PutProofObjectResponse], error)
+	// AbortProofUpload releases the quota reservation of a proof upload the
+	// daemon could not finish, so a page that failed partway stops counting in
+	// the organization's and the global quota windows. Only a daemon may call
+	// it. bosso re-resolves the organization from repo_origin_url and the daemon
+	// owner's membership, as PutProofObject does, and requires its own cloud
+	// access (FailedPrecondition); the upload must belong to that organization
+	// and repository (NotFound otherwise). Aborting a completed upload is
+	// FailedPrecondition; aborting an already released one succeeds, so a
+	// retried call is idempotent. A later PutProofObject for an aborted upload
+	// is FailedPrecondition.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	AbortProofUpload(context.Context, *connect.Request[v1.AbortProofUploadRequest]) (*connect.Response[v1.AbortProofUploadResponse], error)
 	// MintProofViewLink returns a short-lived signed link to the newest
 	// completed hosted proof page of one pull request, for a signed-in user who
 	// is a member of the organization that uploaded it. Only a user scope gets a
@@ -4087,13 +4128,13 @@ type OrchestratorServiceHandler interface {
 	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
 	CreateOrganization(context.Context, *connect.Request[v1.CreateOrganizationRequest]) (*connect.Response[v1.CreateOrganizationResponse], error)
 	RenameOrganization(context.Context, *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error)
-	// GetOrganizationProofHosting reports whether the organization has opted in to
-	// hosted proof pages, who turned it on and when, and whether the organization's
-	// own cloud access currently allows turning it on.
+	// GetOrganizationProofHosting reports whether the organization hosts proof
+	// pages (on unless an owner turned it off) and, while off, who turned it off
+	// and when.
 	GetOrganizationProofHosting(context.Context, *connect.Request[v1.GetOrganizationProofHostingRequest]) (*connect.Response[v1.GetOrganizationProofHostingResponse], error)
 	// SetOrganizationProofHosting turns hosted proof pages on or off for the
-	// caller's active organization. Owner only. Turning on requires the
-	// organization's own cloud access to be active; turning off never does.
+	// caller's active organization. Owner only. Neither direction needs cloud
+	// access (apiversion V20261108).
 	SetOrganizationProofHosting(context.Context, *connect.Request[v1.SetOrganizationProofHostingRequest]) (*connect.Response[v1.SetOrganizationProofHostingResponse], error)
 	// SetMemberSessionSharing turns member session sharing on or off for the
 	// caller's active organization (Organization.is_member_session_sharing_enabled).
@@ -5038,6 +5079,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("PutProofObject")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceAbortProofUploadHandler := connect.NewUnaryHandler(
+		OrchestratorServiceAbortProofUploadProcedure,
+		svc.AbortProofUpload,
+		connect.WithSchema(orchestratorServiceMethods.ByName("AbortProofUpload")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceMintProofViewLinkHandler := connect.NewUnaryHandler(
 		OrchestratorServiceMintProofViewLinkProcedure,
 		svc.MintProofViewLink,
@@ -5732,6 +5779,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceStartProofUploadHandler.ServeHTTP(w, r)
 		case OrchestratorServicePutProofObjectProcedure:
 			orchestratorServicePutProofObjectHandler.ServeHTTP(w, r)
+		case OrchestratorServiceAbortProofUploadProcedure:
+			orchestratorServiceAbortProofUploadHandler.ServeHTTP(w, r)
 		case OrchestratorServiceMintProofViewLinkProcedure:
 			orchestratorServiceMintProofViewLinkHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
@@ -6363,6 +6412,10 @@ func (UnimplementedOrchestratorServiceHandler) StartProofUpload(context.Context,
 
 func (UnimplementedOrchestratorServiceHandler) PutProofObject(context.Context, *connect.Request[v1.PutProofObjectRequest]) (*connect.Response[v1.PutProofObjectResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.PutProofObject is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) AbortProofUpload(context.Context, *connect.Request[v1.AbortProofUploadRequest]) (*connect.Response[v1.AbortProofUploadResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.AbortProofUpload is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) MintProofViewLink(context.Context, *connect.Request[v1.MintProofViewLinkRequest]) (*connect.Response[v1.MintProofViewLinkResponse], error) {

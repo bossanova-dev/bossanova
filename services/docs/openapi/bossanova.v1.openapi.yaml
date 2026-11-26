@@ -7,6 +7,54 @@ info:
   license:
     name: Proprietary
 paths:
+  /bossanova.v1.OrchestratorService/AbortProofUpload:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: AbortProofUpload
+      description: |-
+        AbortProofUpload releases the quota reservation of a proof upload the
+         daemon could not finish, so a page that failed partway stops counting in
+         the organization's and the global quota windows. Only a daemon may call
+         it. bosso re-resolves the organization from repo_origin_url and the daemon
+         owner's membership, as PutProofObject does, and requires its own cloud
+         access (FailedPrecondition); the upload must belong to that organization
+         and repository (NotFound otherwise). Aborting a completed upload is
+         FailedPrecondition; aborting an already released one succeeds, so a
+         retried call is idempotent. A later PutProofObject for an aborted upload
+         is FailedPrecondition.
+         This additive RPC needs no dated API bump; see
+         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+      operationId: bossanova.v1.OrchestratorService.AbortProofUpload
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.AbortProofUploadRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.AbortProofUploadResponse'
   /bossanova.v1.OrchestratorService/AcquireAgentCredentialRefreshLease:
     post:
       tags:
@@ -1171,9 +1219,9 @@ paths:
         - bossanova.v1.OrchestratorService
       summary: GetOrganizationProofHosting
       description: |-
-        GetOrganizationProofHosting reports whether the organization has opted in to
-         hosted proof pages, who turned it on and when, and whether the organization's
-         own cloud access currently allows turning it on.
+        GetOrganizationProofHosting reports whether the organization hosts proof
+         pages (on unless an owner turned it off) and, while off, who turned it off
+         and when.
       operationId: bossanova.v1.OrchestratorService.GetOrganizationProofHosting
       parameters:
         - name: Connect-Protocol-Version
@@ -6411,8 +6459,8 @@ paths:
       summary: SetOrganizationProofHosting
       description: |-
         SetOrganizationProofHosting turns hosted proof pages on or off for the
-         caller's active organization. Owner only. Turning on requires the
-         organization's own cloud access to be active; turning off never does.
+         caller's active organization. Owner only. Neither direction needs cloud
+         access (apiversion V20261108).
       operationId: bossanova.v1.OrchestratorService.SetOrganizationProofHosting
       parameters:
         - name: Connect-Protocol-Version
@@ -6528,12 +6576,12 @@ paths:
       summary: StartProofUpload
       description: |-
         StartProofUpload reserves one hosted proof page for a pull request head.
-         Only a daemon may call it. bosso resolves the organization from the repo,
-         requires its own cloud access and hosted-proof opt-in (FailedPrecondition),
-         and validates the manifest (InvalidArgument). Limits are ResourceExhausted
-         with a ProofUploadLimitExceeded detail. Returns page identity, never a URL.
-         This additive RPC needs no dated API bump; see
-         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+         Only a daemon may call it. bosso resolves the organization from the repo
+         (PermissionDenied for a non-member), refuses an organization whose owner
+         turned hosted proof pages off (FailedPrecondition), and validates the
+         manifest (InvalidArgument). Limits are ResourceExhausted with a
+         ProofUploadLimitExceeded detail. Returns page identity, never a URL. Paid
+         cloud access does not affect admission (apiversion V20261108).
       operationId: bossanova.v1.OrchestratorService.StartProofUpload
       parameters:
         - name: Connect-Protocol-Version
@@ -7186,6 +7234,22 @@ components:
       title: APIToken
       additionalProperties: false
       description: APIToken contains display metadata only. The verifier and owner ID are private.
+    bossanova.v1.AbortProofUploadRequest:
+      type: object
+      properties:
+        uploadId:
+          type: string
+          title: upload_id
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+      title: AbortProofUploadRequest
+      additionalProperties: false
+      description: AbortProofUploadRequest names a started proof upload to release.
+    bossanova.v1.AbortProofUploadResponse:
+      type: object
+      title: AbortProofUploadResponse
+      additionalProperties: false
     bossanova.v1.AcceptSessionPRBlockerRequest:
       type: object
       properties:
@@ -13220,6 +13284,7 @@ components:
         - ENTITLEMENT_CLOUD
         - ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION
         - ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION
+        - ENTITLEMENT_PROOF_HOSTING
       description: |-
         Entitlement declares the paid-cloud policy required by an RPC.
          The orchestrator enforces it after identity authorization; request-scoped
@@ -18876,24 +18941,37 @@ components:
           title: is_enabled
         enabledAt:
           title: enabled_at
-          description: Unset while off.
+          description: |-
+            Always unset: hosting is on by default, so no enable time is stored
+             (apiversion V20261108). Read disabled_at instead.
+          deprecated: true
           $ref: '#/components/schemas/google.protobuf.Timestamp'
         enabledByUserId:
           type: string
           title: enabled_by_user_id
-          description: |-
-            bosso-local users.id of the owner who turned it on; empty while off or
-             when that user has been deleted.
+          description: Always empty. Read disabled_by_user_id instead.
+          deprecated: true
         isAvailable:
           type: boolean
           title: is_available
           description: |-
-            Whether the organization's own cloud access is active, so an owner could
-             turn it on now. Judged on this organization alone, never folded over the
-             caller's other organizations.
+            Whether an owner could turn it on now. True for every organization;
+             cloud access no longer gates the switch (apiversion V20261108).
+        disabledAt:
+          title: disabled_at
+          description: When an owner turned it off; unset while on.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        disabledByUserId:
+          type: string
+          title: disabled_by_user_id
+          description: |-
+            bosso-local users.id of the owner who turned it off; empty while on or
+             when that user has been deleted.
       title: OrganizationProofHosting
       additionalProperties: false
-      description: OrganizationProofHosting is an organization's hosted proof pages opt-in.
+      description: |-
+        OrganizationProofHosting is an organization's hosted proof pages setting:
+         on by default, off once an owner turns it off.
     bossanova.v1.OrganizationRepoReadFailure:
       type: object
       properties:

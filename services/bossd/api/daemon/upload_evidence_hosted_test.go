@@ -24,9 +24,17 @@ type fakeHostedOpener struct {
 	opened     int
 	starts     []HostedProofStart
 	puts       []HostedProofPut
+	aborts     []hostedAbort
 	startErr   error
 	putErr     error
+	abortErr   error
+	failPutAt  int // 1-based Put that fails with putErr; 0 fails every Put
 	afterStart func()
+}
+
+type hostedAbort struct {
+	uploadID, repoOriginURL string
+	ctxErr                  error
 }
 
 func (f *fakeHostedOpener) OpenEvidenceBucket() (domain.EvidenceBucket, error) {
@@ -50,7 +58,15 @@ func (f *fakeHostedOpener) StartHostedProof(_ context.Context, in HostedProofSta
 
 func (f *fakeHostedOpener) PutHostedProofObject(_ context.Context, in HostedProofPut) error {
 	f.puts = append(f.puts, in)
+	if f.failPutAt != 0 && len(f.puts) != f.failPutAt {
+		return nil
+	}
 	return f.putErr
+}
+
+func (f *fakeHostedOpener) AbortHostedProof(ctx context.Context, uploadID, repoOriginURL string) error {
+	f.aborts = append(f.aborts, hostedAbort{uploadID, repoOriginURL, ctx.Err()})
+	return f.abortErr
 }
 
 // hostedPage writes a proof page's objects into dir and returns them in the
@@ -229,7 +245,7 @@ func TestUploadEvidenceHostedRefusals_Sessions_AC260204(t *testing.T) {
 		{name: "no hosted port", opener: func(*fakeHostedOpener) evidenceBucketOpener { return r2upload.New(evidenceTargetSource{}) }, keyed: true, objects: page, code: connect.CodeFailedPrecondition, reason: "not-configured"},
 		{name: "no opener", opener: func(*fakeHostedOpener) evidenceBucketOpener { return nil }, keyed: true, objects: page, code: connect.CodeFailedPrecondition, reason: "not-configured"},
 		{name: "not signed in", startErr: ErrHostedProofUnavailable, keyed: true, objects: page, code: connect.CodeFailedPrecondition, reason: "not-configured", started: true},
-		{name: "not opted in", startErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("not opted in")), keyed: true, objects: page, code: connect.CodeFailedPrecondition, reason: "not-configured", started: true},
+		{name: "hosting turned off by an owner", startErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("hosted proof pages are turned off for this organization")), keyed: true, objects: page, code: connect.CodeFailedPrecondition, reason: "not-configured", started: true},
 		{name: "not a member", startErr: connect.NewError(connect.CodePermissionDenied, errors.New("denied")), keyed: true, objects: page, code: connect.CodeFailedPrecondition, reason: "not-configured", started: true},
 		{name: "unauthenticated", startErr: connect.NewError(connect.CodeUnauthenticated, errors.New("expired")), keyed: true, objects: page, code: connect.CodeFailedPrecondition, reason: "not-configured", started: true},
 		{name: "offline", startErr: connect.NewError(connect.CodeUnavailable, errors.New("offline")), keyed: true, objects: page, code: connect.CodeFailedPrecondition, reason: "not-configured", started: true},
@@ -285,6 +301,39 @@ func TestUploadEvidenceHostedRefusals_Sessions_AC260204(t *testing.T) {
 			}
 			if slices.ContainsFunc(fake.puts, func(p HostedProofPut) bool { return tc.shrink && p.Name == "index.html" }) {
 				t.Fatal("a short read was still uploaded")
+			}
+			if wantAborts := tc.putErr != nil || tc.shrink; (len(fake.aborts) == 1) != wantAborts || len(fake.aborts) > 1 {
+				t.Fatalf("aborts = %+v, want one only after a failed object", fake.aborts)
+			}
+		})
+	}
+}
+
+// A Put that fails partway aborts the upload once and still returns the Put's
+// own failure, whether or not the abort succeeds.
+func TestUploadEvidenceHostedAbortsAfterAFailedPut_Organizations_AC278201(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		abortErr error
+	}{
+		{name: "abort succeeds"},
+		{name: "abort fails", abortErr: connect.NewError(connect.CodeUnavailable, errors.New("bosso unreachable"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, dir := evidenceServer(t, "http://unused.invalid")
+			fake := &fakeHostedOpener{putErr: errors.New("connection reset"), failPutAt: 2, abortErr: tc.abortErr}
+			s.evidenceBucketOpener = fake
+			objects := hostedPage(t, dir, hostedContents, "media/a.png", "player.js", "manifest.json", "index.html")
+			_, rpcErr := callEvidence(t, s, &pb.UploadEvidenceRequest{EvidenceDir: dir, PrNumber: 42, HeadSha: evidenceTestSHA, Objects: objects, Destination: pb.EvidenceDestination_EVIDENCE_DESTINATION_HOSTED})
+			if rpcErr == nil || rpcErr.Code() != connect.CodeUnavailable || rpcErr.Meta().Get(EvidenceReasonHeader) != "object-upload-failed" {
+				t.Fatalf("error = %v, want the failed Put's Unavailable object-upload-failed", rpcErr)
+			}
+			if len(fake.puts) != 2 {
+				t.Fatalf("puts = %d, want the publish to stop at the failed second Put", len(fake.puts))
+			}
+			want := []hostedAbort{{uploadID: "upload-1", repoOriginURL: "git@github.com:acme/widgets.git"}}
+			if !slices.Equal(fake.aborts, want) {
+				t.Fatalf("aborts = %+v, want %+v", fake.aborts, want)
 			}
 		})
 	}

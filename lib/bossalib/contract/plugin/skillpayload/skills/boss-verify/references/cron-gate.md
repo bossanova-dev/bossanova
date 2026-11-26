@@ -62,6 +62,11 @@ restarts with each beat; that wake finds it live and stays quiet until the beats
 An unchanged tick refreshes the quiet entry's last-check time; a non-quiet event clears its
 matching cron entry so the next tick scans again. With neither variable set, cadence is unchanged.
 
+A head that no CI reported on (no check run or status besides `boss/*`) is skipped as `unknown:ci`,
+which keeps every tick scanning, until the base's `verifyDefaults.ci.absentGraceMinutes` (default 15) pass from its push. Then, under `whenAbsent: "park"` (the default) and with no `ci.required`
+checks on the base, it becomes a candidate and is judged to a `ci-absent` park. A `ci-absent` park
+is handed back as `rejudge: ci-arrived` once CI reports on that head.
+
 ## This gate dispatches
 
 A busy verify chat gets a fresh chat; confirmed delivery supersedes that session’s duplicate callbacks while preserving newer-head repair hand-offs.

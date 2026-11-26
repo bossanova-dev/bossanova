@@ -185,6 +185,38 @@ test('every runner failure is a reason that never carries hook output', (t) => {
   assert.deepEqual(missing, { ok: false, reason: 'script-missing' })
 })
 
+test('a hook may report only a closed setup failure in place of a base URL @sessions.AC278701', (t) => {
+  const extension = hookDir(t)
+  const failure = (error, extra = {}) => ({
+    ok: false,
+    extension: 'boss-verify-host',
+    role: 'proof-publish',
+    error,
+    ...extra,
+  })
+  const outcome = (result) =>
+    runProofPublish({
+      extension,
+      envelope,
+      cwd: '/checkout',
+      run: () => ({ status: 0, stdout: JSON.stringify(result) }),
+    })
+  for (const error of ['not-configured', 'credentials-missing'])
+    assert.deepEqual(outcome(failure(error)), { ok: false, reason: error })
+  for (const result of [
+    failure('quota-exhausted'),
+    failure(SECRET),
+    failure('not-configured', { extension: 'other' }),
+    failure('not-configured', { role: 'proof-media' }),
+    failure('not-configured', { baseUrl: 'https://proof.example' }),
+    failure('not-configured', { detail: SECRET }),
+  ]) {
+    const refused = outcome(result)
+    assert.ok(refused.reason.startsWith('invalid:'), JSON.stringify(result))
+    assert.ok(!JSON.stringify(refused).includes(SECRET))
+  }
+})
+
 test('a hook that logs more than the stdout bound to stderr still publishes', (t) => {
   const extension = hookDir(t)
   fs.writeFileSync(

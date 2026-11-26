@@ -34,6 +34,7 @@ var humanReasonsOrder = []string{
 	"worktree-unsynced",
 	ParkCodeHumanMerge,
 	"verify-post-failed",
+	"ci-absent",
 	"human-review:database",
 	"human-review:security",
 	"human-review:ui",
@@ -437,8 +438,13 @@ var knownParkCodes = map[string]parkCodeInfo{
 	// describes the failed post. There is no older answer to restore. See
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	"verify-post-failed": {category: "verify could not post", plain: "verify could not record its verdict on this commit"},
-	"repair-exhausted":   {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
-	"extension-failed":   {category: "verify extension failed", plain: "a verify extension failed to run"},
+	// No dated apiversion bump for ci-absent: a version-skewed TUI or web
+	// renders an unknown code as a blocked FIX, which truthfully says verify
+	// holds the PR. There is no older answer to restore. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	"ci-absent":        {category: "no CI", plain: "no CI reported on the latest commit, so verify will not merge it; merge it yourself or give it CI"},
+	"repair-exhausted": {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
+	"extension-failed": {category: "verify extension failed", plain: "a verify extension failed to run"},
 	// No dated apiversion bump: older TUI and web clients render unknown codes
 	// with the generic blocked sentence, which truthfully describes missing
 	// evidence. There is no older answer to restore. See

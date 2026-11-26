@@ -14,6 +14,13 @@
       "signOff": false,
       "restates": false
     },
+    "ci-absent": {
+      "decidingPriority": false,
+      "plain": "no CI reported on the latest commit, so verify will not merge it; merge it yourself or give it CI",
+      "category": "no CI",
+      "signOff": false,
+      "restates": false
+    },
     "extension-failed": {
       "decidingPriority": false,
       "plain": "a verify extension failed to run",
@@ -189,6 +196,7 @@
     "worktree-unsynced",
     "human-merge",
     "verify-post-failed",
+    "ci-absent",
     "human-review:database",
     "human-review:security",
     "human-review:ui",

@@ -16,6 +16,7 @@ const env = {
 }
 const publisher = { kind: 'access-put', baseUrl: 'https://proof.example' }
 const target = { repo: 'acme/widgets', pr: 7, headSha: HEAD }
+const PAGE = 'index.html'
 
 test('Access credentials prefer environment and use macOS keychain per missing account @sessions.AC256203', () => {
   const calls = []
@@ -215,7 +216,7 @@ test('Access PUT failures stop before index and never return credential or respo
         throw unreachable
       },
     }),
-    { ok: false, reason: 'upload-failed', detail: 'TypeError: fetch failed (ECONNREFUSED)' },
+    { ok: false, reason: 'host-unreachable', detail: 'TypeError: fetch failed (ECONNREFUSED)' },
   )
   assert.deepEqual(
     await putObjects({
@@ -243,6 +244,52 @@ test('Access PUT failures stop before index and never return credential or respo
   assert.ok(calls[0].endsWith('/player.js'))
 })
 
+test('only a DNS, connect or TLS failure before any response is host-unreachable @sessions.AC278701', async (t) => {
+  const dir = tempDir('access-unreachable-', t)
+  for (const name of ['player.js', PAGE]) fs.writeFileSync(path.join(dir, name), 'x')
+  const input = { ...publisher, prefix: `acme/widgets/7/${HEAD}/`, dir, credentials }
+  const thrown = (code) => Object.assign(new TypeError('fetch failed'), { cause: { code } })
+  for (const code of [
+    'ENOTFOUND',
+    'EAI_AGAIN',
+    'ECONNREFUSED',
+    'EHOSTUNREACH',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'CERT_HAS_EXPIRED',
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+    'SELF_SIGNED_CERT_IN_CHAIN',
+  ]) {
+    const result = await putObjects({
+      ...input,
+      names: ['player.js'],
+      fetchImpl: async () => {
+        throw thrown(code)
+      },
+    })
+    assert.equal(result.reason, 'host-unreachable', code)
+  }
+  for (const code of ['ECONNRESET', 'EPIPE', undefined]) {
+    const result = await putObjects({
+      ...input,
+      names: ['player.js'],
+      fetchImpl: async () => {
+        throw thrown(code)
+      },
+    })
+    assert.equal(result.reason, 'upload-failed', String(code))
+  }
+  let calls = 0
+  const partial = await putObjects({
+    ...input,
+    names: ['player.js', PAGE],
+    fetchImpl: async () => {
+      if (calls++ === 0) return { status: 201 }
+      throw thrown('ECONNREFUSED')
+    },
+  })
+  assert.equal(partial.reason, 'upload-failed')
+})
+
 test('missing credentials and invalid configured hosts issue no HTTP requests', async () => {
   const fetchImpl = () => {
     throw new Error('must not upload')
@@ -260,6 +307,19 @@ test('missing credentials and invalid configured hosts issue no HTTP requests', 
     ).reason,
     'credentials-missing',
   )
+  const named = await uploadProofPage({
+    publisher,
+    target,
+    html: '',
+    env: { PROOF_ACCESS_CLIENT_ID: credentials.clientId },
+    platform: 'linux',
+    fetchImpl,
+  })
+  assert.deepEqual(named, {
+    ok: false,
+    reason: 'credentials-missing',
+    detail: 'PROOF_ACCESS_CLIENT_SECRET',
+  })
   for (const baseUrl of [
     'http://proof.example',
     'https://proof.example/?token=value',

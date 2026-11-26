@@ -332,7 +332,7 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "get_proof_view_link",
-		Description: "Mint a short-lived signed link to a session's hosted proof page (the head `pr_proof_head_sha` names). Needs Bossanova Cloud sign-in.",
+		Description: "Mint a short-lived signed link to a session's hosted review page (at head `pr_proof_head_sha`). Needs Bossanova Cloud sign-in.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args IDArgs) (*mcp.CallToolResult, any, error) {
 		return getProofViewLink(ctx, backend, args.ID)

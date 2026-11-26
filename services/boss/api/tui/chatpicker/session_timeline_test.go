@@ -860,8 +860,8 @@ func TestChatPickerNeededFromYouFitsAtNamedSizes(t *testing.T) {
 		width, height, windowRows int
 	}{
 		{20, 10, 1},
-		{30, 18, 1},
-		{30, 19, 2},
+		{30, 19, 1},
+		{30, 20, 2},
 		{40, 20, 1},
 		{40, 21, 2},
 		{30, 24, 0},
@@ -916,8 +916,8 @@ func TestChatPickerTimelineFitsShortTerminal(t *testing.T) {
 		question     string
 		cut          bool
 	}{
-		{"long answer at 24 rows", 24, 3, long, false},
-		{"short answer at 18 rows", 18, 1, operatorQuestion, true},
+		{"long answer at 25 rows", 25, 3, long, false},
+		{"short answer at 19 rows", 19, 1, operatorQuestion, true},
 		{"short answer at 24 rows", 24, 3, operatorQuestion, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1063,14 +1063,14 @@ func TestChatPickerTimelineDatesStepsLeftAfterFold(t *testing.T) {
 		height int
 		want   []string
 	}{
-		{"fold drops the labelled step", 22, []string{
+		{"fold drops the labelled step", 23, []string{
 			"  … 2 earlier steps",
 			"  " + day(1, 0, 0).Format("Jan _2") + " 23:50  ✓ B",
 			"         23:55  ✓ B2",
 			"  Today  00:01  ✓ C",
 			"         00:05  ● Parked for you",
 		}},
-		{"fold leaves only today", 20, []string{
+		{"fold leaves only today", 21, []string{
 			"  … 4 earlier steps",
 			"  00:01  ✓ C",
 			"  00:05  ● Parked for you",
@@ -1116,7 +1116,7 @@ func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 	}
 	for _, token := range []int{59, 60} {
 		t.Run(fmt.Sprintf("token %d", token), func(t *testing.T) {
-			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 22)
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 23)
 			m.width = 80
 			m.session.Attention.Since = timestamppb.New(day(0, 0, 9))
 			m.timeline = []*pb.TimelineStep{
@@ -1126,7 +1126,7 @@ func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 				{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
 			}
 			block := stripANSI(m.timelineBlock())
-			t.Logf("timeline at 80x21:\n%s", block)
+			t.Logf("timeline at 80x22:\n%s", block)
 			rows := strings.Split(block, "\n")[1:]
 			want := []string{"  … 1 earlier step", "  Today  00:01  ✓ Built", strings.Repeat(" ", 18) + "x", "         00:02  ✓ CI passed", "         00:09  ● Parked for you"}
 			if len(rows) != len(want) {

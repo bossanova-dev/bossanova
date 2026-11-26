@@ -17,7 +17,6 @@ func TestAgentRunnerConformance(t *testing.T) {
 			bossanovav1.AgentRunnerService_PreflightHeadlessRun_FullMethodName,
 			bossanovav1.AgentRunnerService_ListModels_FullMethodName,
 			bossanovav1.AgentRunnerService_PlanQuestionAnswer_FullMethodName,
-			bossanovav1.AgentRunnerService_ReadQuestionMenu_FullMethodName,
 		},
 	})
 }

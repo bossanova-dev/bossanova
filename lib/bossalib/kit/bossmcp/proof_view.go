@@ -31,7 +31,7 @@ func getProofViewLink(ctx context.Context, backend Backend, id string) (*mcp.Cal
 	}
 	minter, ok := backend.(ProofViewBackend)
 	if !ok {
-		return errorResult(errors.New("proof view links are not supported by this backend")), nil, nil
+		return errorResult(errors.New("review page links are not supported by this backend")), nil, nil
 	}
 	head := s.GetPrProofHeadSha()
 	resp, err := minter.MintProofViewLink(ctx, &pb.MintProofViewLinkRequest{RepoOriginUrl: s.GetRepoOriginUrl(), PrNumber: s.GetPrNumber(), HeadSha: head})

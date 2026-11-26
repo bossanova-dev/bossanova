@@ -41,7 +41,8 @@ const maxDigitMenuRow = 9
 // "[ ] Type something" and an unnumbered Submit row under it; a single-choice
 // tab the menu went back to marks the choice made with a trailing " ✔". The
 // review tab lists the answers over "1. Submit answers" and "2. Cancel" and
-// draws no footer. A plain capture marks the shown tab only by colour, so
+// draws no footer. "❯" marks the row the cursor is on, the Submit row
+// included. A plain capture marks the shown tab only by colour, so
 // with several question tabs the shown one cannot be named. Claude Code
 // 2.1.329 to 2.1.332 write the tool call to the transcript only once it is
 // answered, so while the menu waits the pane is the only record of it.
@@ -58,6 +59,8 @@ var (
 const (
 	freeTextRowLabel = "Type something."
 	chatRowLabel     = "Chat about this"
+	submitRowLabel   = "Submit"
+	cursorMark       = "❯"
 	tabAnswered      = "☒"
 	tabSubmit        = "✔"
 	chosenMark       = " ✔"
@@ -71,6 +74,12 @@ type questionMenu struct {
 	rows     []menuRow
 	tabs     []*bossanovav1.ChatQuestionTab
 	isReview bool
+	// cursor is the index into rows of the row "❯" marks; -1 for none.
+	cursor int
+	// submitAfter is how many rows came before an unnumbered Submit row; 0
+	// when the menu draws none. isOnSubmit is set when "❯" marks it.
+	submitAfter int
+	isOnSubmit  bool
 }
 
 // menuRow is one numbered row of the menu: its first line, and that line with
@@ -93,9 +102,9 @@ func (s *Server) ReadQuestionMenu(_ context.Context, req *bossanovav1.ReadQuesti
 	return &bossanovav1.ReadQuestionMenuResponse{}, nil
 }
 
-// PlanQuestionAnswer plans the keys that answer the question or permission
-// prompt the agent waits on, after checking that prompt is the one named and
-// that its menu is on screen untouched. See the RPC in plugin.proto.
+// PlanQuestionAnswer plans the next keys of the answer to the question or
+// permission prompt the agent waits on, after checking that prompt is the one
+// named and that its menu is on screen. See the RPC in plugin.proto.
 func (s *Server) PlanQuestionAnswer(_ context.Context, req *bossanovav1.PlanQuestionAnswerRequest) (*bossanovav1.PlanQuestionAnswerResponse, error) {
 	pane := string(req.GetPaneContent())
 	menu, ok := parseQuestionMenu(pane)
@@ -111,16 +120,11 @@ func (s *Server) PlanQuestionAnswer(_ context.Context, req *bossanovav1.PlanQues
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "read transcript: %v", err)
 		}
-		if recorded == nil || !menu.shows(recorded.GetOptions()) {
+		if recorded == nil || !menu.offers(recorded.GetOptions()) {
 			return notPending("the agent is no longer waiting on this question"), nil
 		}
-		question = recorded
 	}
-	if !question.GetIsAnswerable() || !menu.shows(question.GetOptions()) {
-		return &bossanovav1.PlanQuestionAnswerResponse{IsQuestionPending: true, Reason: "answer this question in the terminal: it has several parts or choices, or someone is typing an answer there"}, nil
-	}
-	inputs, reason := answerKeys(len(question.GetOptions()), req)
-	return &bossanovav1.PlanQuestionAnswerResponse{IsQuestionPending: true, Inputs: inputs, Reason: reason}, nil
+	return planMenuStep(menu, question, req), nil
 }
 
 func notPending(reason string) *bossanovav1.PlanQuestionAnswerResponse {
@@ -156,7 +160,7 @@ func parseQuestionMenu(pane string) (questionMenu, bool) {
 	if hasFooter {
 		end--
 	}
-	menu, top := questionMenu{}, -1
+	menu, top := questionMenu{cursor: -1}, -1
 	for i := end - 1; i >= 0 && top < 0; i-- {
 		switch {
 		case menuTabsRe.MatchString(lines[i]):
@@ -177,27 +181,40 @@ func parseQuestionMenu(pane string) (questionMenu, bool) {
 		return questionMenu{}, false
 	}
 	menu.isReview = !hasFooter
-	var words []string
-	for _, line := range lines[top+1 : end] {
-		line = strings.TrimSpace(line)
-		if m := menuRowRe.FindStringSubmatch(line); m != nil {
-			if n, err := strconv.Atoi(m[1]); err == nil && n == len(menu.rows)+1 {
-				menu.rows = append(menu.rows, menuRow{first: m[2], block: m[2]})
-				continue
-			}
-		}
-		switch {
-		case len(menu.rows) == 0 && line != "":
-			words = append(words, line)
-		case len(menu.rows) > 0 && !menuRuleRe.MatchString(line):
-			menu.rows[len(menu.rows)-1].block += " " + line
-		}
-	}
-	menu.words = strings.Join(words, " ")
+	menu.words = menu.readRows(lines[top+1 : end])
 	if len(menu.tabs) > 0 {
 		menu.title = menu.markShownTab()
 	}
 	return menu, len(menu.rows) > 0
+}
+
+// readRows reads the menu's numbered rows, the cursor and an unnumbered
+// Submit row from the lines under its title or tab bar, and returns the
+// question's words above the rows.
+func (m *questionMenu) readRows(lines []string) string {
+	var words []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		isAtCursor := strings.HasPrefix(line, cursorMark)
+		if r := menuRowRe.FindStringSubmatch(line); r != nil {
+			if n, err := strconv.Atoi(r[1]); err == nil && n == len(m.rows)+1 {
+				m.rows = append(m.rows, menuRow{first: r[2], block: r[2]})
+				if isAtCursor {
+					m.cursor = len(m.rows) - 1
+				}
+				continue
+			}
+		}
+		switch {
+		case len(m.rows) > 0 && strings.TrimSpace(strings.TrimPrefix(line, cursorMark)) == submitRowLabel:
+			m.submitAfter, m.isOnSubmit = len(m.rows), isAtCursor
+		case len(m.rows) == 0 && line != "":
+			words = append(words, line)
+		case len(m.rows) > 0 && !menuRuleRe.MatchString(line):
+			m.rows[len(m.rows)-1].block += " " + line
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // parseTabBar reads the tabs of a "←  ☐ A  ☒ B  ✔ Submit  →" bar.
@@ -244,8 +261,7 @@ func (m questionMenu) markShownTab() string {
 }
 
 // question is the ChatQuestion the menu asks: the option rows' labels, what
-// is ticked or typed on screen, and answerable when it is one question taking
-// a single choice by a digit key with its free-text row untouched.
+// is ticked or typed on screen, and whether the step planner can answer it.
 func (m questionMenu) question() *bossanovav1.ChatQuestion {
 	q := &bossanovav1.ChatQuestion{Kind: questionKindQuestion, Text: m.words, Tabs: m.tabs}
 	optionRows := m.rows
@@ -267,9 +283,32 @@ func (m questionMenu) question() *bossanovav1.ChatQuestion {
 		}
 	}
 	q.Id = questionID(m.title, m.words, q.GetOptions())
-	options := len(q.GetOptions())
-	q.IsAnswerable = len(m.tabs) == 0 && !q.GetIsMultiSelect() && options > 0 && options+1 <= maxDigitMenuRow && m.shows(q.GetOptions())
+	q.IsAnswerable = m.isAnswerable(q)
 	return q
+}
+
+// isAnswerable reports whether planMenuStep can answer the menu's question q
+// from here: the review tab by digit, a several-choice question by cursor
+// and Space, and a single choice by digit or, past the digit keys, by cursor.
+// A free-text row holding words someone typed is answered in the terminal.
+func (m questionMenu) isAnswerable(q *bossanovav1.ChatQuestion) bool {
+	return m.isPlannable(q) && q.GetFreeText() == ""
+}
+
+// isPlannable is isAnswerable without its free-text rule for a several-choice
+// menu, whose typed words may be the answer's own from an earlier step.
+func (m questionMenu) isPlannable(q *bossanovav1.ChatQuestion) bool {
+	options := len(q.GetOptions())
+	switch {
+	case !m.offers(q.GetOptions()):
+		return false
+	case m.isReview:
+		return options <= maxDigitMenuRow
+	case q.GetIsMultiSelect():
+		return m.hasSubmitRow() && m.cursorAt() >= 0
+	default:
+		return q.GetFreeText() == "" && (options+1 <= maxDigitMenuRow || m.cursorAt() >= 0)
+	}
 }
 
 // optionLabel is a row's label without its box or chosen mark, whether the
@@ -290,19 +329,59 @@ func isFreeTextPlaceholder(label string) bool {
 	return label == freeTextRowLabel || label == strings.TrimSuffix(freeTextRowLabel, ".")
 }
 
-// shows reports whether the menu offers options, untouched: those options in
-// order, then the free-text row still empty, then the chat row. A label may
-// wrap, so each option row's text must begin with its label.
-func (m questionMenu) shows(options []string) bool {
-	if len(m.rows) != len(options)+2 {
+// offers reports whether the menu offers options: those options in order,
+// then (on a question tab) the free-text row and the chat row. A label may
+// wrap, so each option row's text, past its box, must begin with its label.
+func (m questionMenu) offers(options []string) bool {
+	extra := 2
+	if m.isReview {
+		extra = 0
+	}
+	if len(options) == 0 || len(m.rows) != len(options)+extra {
 		return false
 	}
 	for i, label := range options {
-		if !strings.HasPrefix(squash(m.rows[i].block), squash(label)) {
+		text, _, _ := optionLabel(m.rows[i].block)
+		if !strings.HasPrefix(squash(text), squash(label)) {
 			return false
 		}
 	}
-	return m.rows[len(options)].first == freeTextRowLabel && m.rows[len(options)+1].first == chatRowLabel
+	return m.isReview || m.rows[len(options)+1].first == chatRowLabel
+}
+
+// hasSubmitRow reports whether a several-choice menu draws its unnumbered
+// Submit row, between the free-text row and the chat row.
+func (m questionMenu) hasSubmitRow() bool {
+	return m.submitAfter > 0 && m.submitAfter == len(m.rows)-1
+}
+
+// cursorAt is the row the cursor is on, counted as menuPositions counts rows;
+// -1 when the pane shows no cursor.
+func (m questionMenu) cursorAt() int {
+	switch {
+	case !m.hasSubmitRow():
+		return m.cursor
+	case m.isOnSubmit:
+		return len(m.rows) - 1
+	case m.cursor == len(m.rows)-1:
+		return len(m.rows)
+	default:
+		return m.cursor
+	}
+}
+
+// typedWords is what the free-text row holds, however the pane wrapped it;
+// empty while it shows its placeholder.
+func (m questionMenu) typedWords() string {
+	if len(m.rows) < 2 {
+		return ""
+	}
+	row := m.rows[len(m.rows)-2]
+	if label, _, _ := optionLabel(row.first); isFreeTextPlaceholder(label) {
+		return ""
+	}
+	label, _, _ := optionLabel(row.block)
+	return label
 }
 
 // questionID names a question by its title, words and options, however a
@@ -324,30 +403,6 @@ func squash(s string) string {
 		}
 		return r
 	}, s)
-}
-
-// answerKeys is what to press for the answer req carries, given how many
-// options the menu offers; or why it cannot be given.
-func answerKeys(optionCount int, req *bossanovav1.PlanQuestionAnswerRequest) ([]*bossanovav1.PaneInput, string) {
-	switch answer := req.GetAnswer().(type) {
-	case *bossanovav1.PlanQuestionAnswerRequest_OptionIndex:
-		if int(answer.OptionIndex) >= optionCount {
-			return nil, "the question has no such option"
-		}
-		return []*bossanovav1.PaneInput{paneKey(int(answer.OptionIndex) + 1)}, ""
-	case *bossanovav1.PlanQuestionAnswerRequest_Text:
-		text := answer.Text
-		if strings.TrimSpace(text) == "" || strings.ContainsFunc(text, unicode.IsControl) {
-			return nil, "a typed answer must be one line of words"
-		}
-		return []*bossanovav1.PaneInput{
-			paneKey(optionCount + 1),
-			{Input: &bossanovav1.PaneInput_Text{Text: text}},
-			{Input: &bossanovav1.PaneInput_Key{Key: "Enter"}},
-		}, ""
-	default:
-		return nil, "the answer names neither an option nor words"
-	}
 }
 
 func paneKey(row int) *bossanovav1.PaneInput {

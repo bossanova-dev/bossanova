@@ -3,6 +3,7 @@ package bossmcp
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -168,4 +169,62 @@ func TestListSessionsTool_RepoIDFilter(t *testing.T) {
 			t.Errorf("RepoId = %v, want nil when repo_id absent", captured.GetRepoId())
 		}
 	})
+}
+
+// list_sessions forwards pr_authors and pr_target_branches to the daemon's
+// ListSessionsRequest, which filters, and leaves both unset when absent. A
+// daemon that predates the fields ignores them, so the tool filters what it
+// gets back as well.
+func TestListSessionsTool_PRFilters_McpServer_AC278001(t *testing.T) {
+	unfiltered := []*pb.Session{
+		{Id: "octo-main", PrAuthorLogin: "octocat", PrTargetBranch: "main"},
+		{Id: "hubot-dev", PrAuthorLogin: "hubot", PrTargetBranch: "dev"},
+		{Id: "no-pr"},
+	}
+	for _, tc := range []struct {
+		name                     string
+		args                     map[string]any
+		wantAuthors, wantTargets []string
+		wantIDs                  []string
+	}{
+		{"both forwarded and applied", map[string]any{"pr_authors": []any{"OctoCat", "hubot"}, "pr_target_branches": []any{"main"}}, []string{"OctoCat", "hubot"}, []string{"main"}, []string{"octo-main"}},
+		{"absent leaves both unset", map[string]any{}, nil, nil, []string{"octo-main", "hubot-dev", "no-pr"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured *pb.ListSessionsRequest
+			backend := &fakeBackend{
+				listSessions: func(_ context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error) {
+					captured = req
+					return unfiltered, nil
+				},
+			}
+			cs := newConnectedClient(t, backend, Options{})
+			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_sessions", Arguments: tc.args})
+			if err != nil {
+				t.Fatalf("call tool: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("tool returned error result: %s", textOf(t, res))
+			}
+			if captured == nil {
+				t.Fatal("backend did not receive a request")
+			}
+			if !slices.Equal(captured.GetPrAuthorLogins(), tc.wantAuthors) || !slices.Equal(captured.GetPrTargetBranches(), tc.wantTargets) {
+				t.Fatalf("forwarded (authors, targets) = (%v, %v), want (%v, %v)", captured.GetPrAuthorLogins(), captured.GetPrTargetBranches(), tc.wantAuthors, tc.wantTargets)
+			}
+			var rows []struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal([]byte(textOf(t, res)), &rows); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got := make([]string, 0, len(rows))
+			for _, row := range rows {
+				got = append(got, row.ID)
+			}
+			if !slices.Equal(got, tc.wantIDs) {
+				t.Fatalf("listed %v, want %v", got, tc.wantIDs)
+			}
+		})
+	}
 }

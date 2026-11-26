@@ -69,11 +69,12 @@ type fakeCommandHandler struct {
 	removedRepoID           string
 	updatedRepoRequest      *pb.UpdateRepoCommand
 	// ListRepoPRs / ListTrackerIssues knobs.
-	repoPRs    *pb.ListRepoPRsResponse
-	issues     *pb.ListTrackerIssuesResponse
-	lastRepoID string
-	lastQuery  string
-	lastSource *string
+	repoPRs          *pb.ListRepoPRsResponse
+	lastRepoPRsQuery *pb.PRListQuery
+	issues           *pb.ListTrackerIssuesResponse
+	lastRepoID       string
+	lastQuery        string
+	lastSource       *string
 	// issuesBlock, when non-nil, makes ListTrackerIssues block until the
 	// channel is closed — used to prove a slow tracker search doesn't wedge
 	// the single-threaded command reader.
@@ -287,8 +288,8 @@ func (f *fakeCommandHandler) RemoveRepo(_ context.Context, repoID string) error 
 	f.removedRepoID = repoID
 	return f.returnErr
 }
-func (f *fakeCommandHandler) ListRepoPRs(_ context.Context, repoID string) (*pb.ListRepoPRsResponse, error) {
-	f.lastRepoID = repoID
+func (f *fakeCommandHandler) ListRepoPRs(_ context.Context, repoID string, query *pb.PRListQuery) (*pb.ListRepoPRsResponse, error) {
+	f.lastRepoID, f.lastRepoPRsQuery = repoID, query
 	return f.repoPRs, f.returnErr
 }
 func (f *fakeCommandHandler) ListTrackerIssues(_ context.Context, repoID, query string, source *string) (*pb.ListTrackerIssuesResponse, error) {
@@ -517,7 +518,7 @@ func TestDispatch_ListRepoPRs(t *testing.T) {
 	out := make(chan *pb.DaemonEvent, 1)
 	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
 		CommandId: "c1",
-		Cmd:       &pb.OrchestratorCommand_ListRepoPrs{ListRepoPrs: &pb.ListRepoPRsCommand{RepoId: "r1"}},
+		Cmd:       &pb.OrchestratorCommand_ListRepoPrs{ListRepoPrs: &pb.ListRepoPRsCommand{RepoId: "r1", Query: &pb.PRListQuery{BaseBranch: "main"}}},
 	}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
 	}
@@ -534,8 +535,8 @@ func TestDispatch_ListRepoPRs(t *testing.T) {
 	if len(prs) == 0 || prs[0].GetNumber() != 7 {
 		t.Fatalf("expected PR number 7, got %+v", prs)
 	}
-	if fake.lastRepoID != "r1" {
-		t.Fatalf("lastRepoID = %q, want r1", fake.lastRepoID)
+	if fake.lastRepoID != "r1" || fake.lastRepoPRsQuery.GetBaseBranch() != "main" {
+		t.Fatalf("handler got repo %q query %v, want r1 with base_branch main", fake.lastRepoID, fake.lastRepoPRsQuery)
 	}
 }
 

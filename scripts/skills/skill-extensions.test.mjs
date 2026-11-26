@@ -382,6 +382,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
     'orchestrate-round',
     'orchestrate-rules',
     'plan-reviewer',
+    'polish',
     'promote',
     'proof-describe',
     'proof-media',

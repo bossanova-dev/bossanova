@@ -112,6 +112,9 @@ class El {
   getAttribute(name) {
     return this.attrs.has(name) ? this.attrs.get(name) : null
   }
+  hasAttribute(name) {
+    return this.attrs.has(name)
+  }
   setAttribute(name, value) {
     this.attrs.set(name, String(value))
   }
@@ -834,6 +837,15 @@ test('on a page with no video the player still handles links and lightboxes, and
 test('a framed page marks its root, so links a sandbox cannot follow give way to a note', () => {
   assert.equal(page({ framed: true }).root.classList.contains('proof-framed'), true)
   assert.equal(page().root.classList.contains('proof-framed'), false, 'a page in its own tab')
+})
+
+test('@sessions.AC277206 a framed page runs the highlight helper after the player, and answers its hello', () => {
+  const { win, parent, root } = page({ framed: true })
+  assert.equal(root.getAttribute('data-proof-quote'), '1')
+  win.fire('message', { source: parent, origin: APP, data: { type: 'proof:quote:hello', v: 1 } })
+  const ready = parent.posted.filter(([m]) => m.type === 'proof:quote:ready')
+  assert.deepEqual(JSON.parse(JSON.stringify(ready)), [[{ type: 'proof:quote:ready', v: 1 }, APP]])
+  assert.equal(page().root.getAttribute('data-proof-quote'), null, 'a page in its own tab')
 })
 
 test('a page with its own storage posts nothing to its parent or itself, framed or in its own tab', () => {

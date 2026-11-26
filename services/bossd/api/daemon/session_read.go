@@ -8,6 +8,7 @@ import (
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/safego"
+	"github.com/recurser/bossalib/kit/sessionfilter"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
@@ -279,6 +280,9 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	for _, p := range pbSessions {
 		s.hydrateAttention(ctx, p, attentionDeps{row: sessByID[p.Id], display: entries[p.Id], chats: chatsBySession[p.Id]})
 	}
+	// hydrateAttention serves the live PR author and target, so the PR filter
+	// runs after it and a retargeted session matches its new branch.
+	pbSessions = sessionfilter.ByPR(msg.GetPrAuthorLogins(), msg.GetPrTargetBranches()).Filter(pbSessions)
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: pbSessions}), nil
 }
 

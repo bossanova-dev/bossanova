@@ -1182,7 +1182,7 @@ func (c *StreamClient) dispatchListRepoPRs(ctx context.Context, cmdID string, re
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.ListRepoPRs(ctx, req.GetRepoId())
+		out, err := c.commandHandler.ListRepoPRs(ctx, req.GetRepoId(), req.GetQuery())
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}

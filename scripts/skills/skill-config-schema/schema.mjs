@@ -231,6 +231,10 @@ const proofDefaults = object({
       enum: ['all', 'parked', 'none'],
       'x-msg': 'proofDefaults.pages must be "all", "parked" or "none" when present',
     },
+    author: {
+      enum: ['all', 'parked', 'none'],
+      'x-msg': 'proofDefaults.author must be "all", "parked" or "none" when present',
+    },
     builtins: object({
       'x-msg': 'proofDefaults.builtins must be an object when present',
       'x-unknown': 'warn',

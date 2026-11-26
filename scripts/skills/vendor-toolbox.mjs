@@ -252,6 +252,7 @@ export const VENDOR_MAP = {
     'stage-chain.mjs',
     'verify/verify-draft.mjs',
     'verify/verify-gate.mjs',
+    'verify/verify-extension-leg.mjs',
     'verify/verify-trusted-tree.mjs',
     'verify/verify-await.mjs',
     'verify/verify-followups.mjs',

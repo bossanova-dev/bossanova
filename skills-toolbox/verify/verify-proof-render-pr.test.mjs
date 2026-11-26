@@ -50,7 +50,19 @@ const REMOVED = [
   'Gather evidence',
 ]
 const AREA_ORDER = ['a-migrations', 'a-api-contract', 'a-security', 'a-ui']
-const KIND_GROUPS = ['No sign-off needed', 'Tests', 'Generated']
+const HEAD_SECTIONS = ['risks', 'decide', 'fix', 'ticket']
+const TAIL_SECTIONS = [
+  'evidence',
+  'tests',
+  'findings',
+  'after',
+  'guardrails',
+  'refactoring',
+  'noise',
+  'files',
+  'debug',
+]
+const KIND_GROUPS = ['Other changes', 'Tests', 'Generated']
 
 /** Every fixture's page, rendered once through the CLI. */
 const pages = new Map()
@@ -100,7 +112,15 @@ const tree = (dir) =>
   )
 
 test('every committed fixture renders a validated page that names its head', (t) => {
-  assert.deepEqual(fixtureNames(), ['api', 'dbt', 'infra', 'mobile', 'review', 'sections'])
+  assert.deepEqual(fixtureNames(), [
+    'api',
+    'bugfix',
+    'dbt',
+    'infra',
+    'mobile',
+    'review',
+    'sections',
+  ])
   for (const name of fixtureNames()) {
     const { html, player } = fixturePage(t, name)
     const spec = JSON.parse(readFileSync(join(FIXTURES_DIR, name, 'spec.json'), 'utf8'))
@@ -111,6 +131,24 @@ test('every committed fixture renders a validated page that names its head', (t)
     assert.ok(html.includes(`<h1>${spec.title}</h1>`), `${name}: the spec titles the page`)
     assert.equal(player, proofPlayerScript())
   }
+})
+
+test('the bugfix fixture shows every review section, the lead and the author banner rows', (t) => {
+  const { html } = fixturePage(t, 'bugfix')
+  const ids = sectionIds(html)
+  for (const id of ['fix', 'tests', 'guardrails', 'refactoring', 'noise'])
+    assert.ok(ids.includes(id), `#${id} renders`)
+  assert.match(region(html, '<header class="pr">', '</header>'), /<p class="lead">Bug fix\. /)
+  const banner = region(html, '<div class="sig">', '</section>')
+  assert.deepEqual(
+    [...banner.matchAll(/<span class="k">([^<]*)<\/span>/g)].map((m) => m[1]),
+    ['UI', 'Revert', 'Bug fix', 'Tests', 'Checks'],
+  )
+  assert.match(section(html, 'guardrails'), /<span class="pill muted">lint<\/span>/)
+  assert.match(
+    section(html, 'risks'),
+    /<a class="locl" href="https:\/\/github\.com\/acme\/shop\/pull\/61\/changes#diff-[0-9a-f]{64}R5" target="_blank"/,
+  )
 })
 
 test('no fixture page shows a placeholder or pipeline line the banner design removed', (t) => {
@@ -149,11 +187,11 @@ test('every fixture page orders its sections and its Files grid the same way', (
     const ids = sectionIds(html).filter((id) => !id.startsWith('sec-'))
     assert.equal(ids.at(-1), 'debug', name)
     const rank = (id) =>
-      ['risks', 'decide', 'ticket'].includes(id)
-        ? ['risks', 'decide', 'ticket'].indexOf(id) / 3
+      HEAD_SECTIONS.includes(id)
+        ? HEAD_SECTIONS.indexOf(id) / HEAD_SECTIONS.length
         : id.startsWith('a-')
           ? 2 + (AREA_ORDER.includes(id) ? AREA_ORDER.indexOf(id) : 9) / 10
-          : 3 + ['evidence', 'findings', 'after', 'files', 'debug'].indexOf(id)
+          : 3 + TAIL_SECTIONS.indexOf(id)
     assert.deepEqual(
       ids,
       [...ids].sort((a, b) => rank(a) - rank(b)),
@@ -247,7 +285,7 @@ test('the no-sign-off area says what changed there and never reads as an ask or 
     'the judge note on its path is a finding with that path',
   )
   const group =
-    /<details class="fg"><summary class="frow"><span class="nm">No sign-off needed<\/span><span class="c2">(\d+)<\/span>/.exec(
+    /<details class="fg"><summary class="frow"><span class="nm">Other changes<\/span><span class="c2">(\d+)<\/span>/.exec(
       html,
     )
   assert.equal(group?.[1], '2', 'its files join the files that need no sign-off')
@@ -323,6 +361,28 @@ test('a branch context puts the notice above the title', (t) => {
   assert.match(html, /<div class="bnotice branch">.*Merges into <code>staging<\/code>/)
 })
 
+test('with no spec the page is titled from the PR and leads with its first paragraph', (t) => {
+  const dir = scratch(t)
+  const range = buildFixtureRepo('dbt', join(dir, 'repo'))
+  const out = join(dir, 'page')
+  renderPr({
+    cwd: join(dir, 'repo'),
+    base: range.base,
+    head: range.head,
+    out,
+    prTitle: 'Orders mart counts refunds once',
+    prBody:
+      '## Why\n\nRefunds were **counted twice** in `orders`, see [the report](https://x.test).\n\nSecond paragraph stays off the page.',
+  })
+  const html = readFileSync(join(out, 'index.html'), 'utf8')
+  assert.match(html, /<h1>Orders mart counts refunds once<\/h1>/)
+  assert.match(
+    html,
+    /<p class="lead">Refunds were counted twice in <code>orders<\/code>, see the report\.<\/p>/,
+  )
+  assert.doesNotMatch(html, /Second paragraph/)
+})
+
 test('a bad judge, an unknown ref or a mixed fixture call fails naming the input', (t) => {
   const dir = scratch(t)
   const range = buildFixtureRepo('api', join(dir, 'repo'))
@@ -342,7 +402,7 @@ test('a bad judge, an unknown ref or a mixed fixture call fails naming the input
   assert.equal(run(['--fixture', 'api', '--repo', '.', '--out', join(dir, 'out')]).status, 2)
   const unknown = run(['--fixture', 'nope', '--out', join(dir, 'out')])
   assert.equal(unknown.status, 2)
-  assert.ok(unknown.stderr.includes('api, dbt, infra, mobile'))
+  assert.ok(unknown.stderr.includes('api, bugfix, dbt, infra, mobile'))
 })
 
 test('the api and dbt fixtures carry describer output that renders every block kind', (t) => {

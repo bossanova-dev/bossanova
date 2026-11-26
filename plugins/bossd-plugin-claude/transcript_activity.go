@@ -47,11 +47,14 @@ type contentBlock struct {
 
 // activity builds the structured conversation one transcript line at a time.
 // Tool results arrive lines after their call, so it keeps each open call by
-// id and settles it when the result comes.
+// id and settles it when the result comes. Claude Code records the session's
+// PR again on nearly every turn, so it keeps the PR it last showed as linked
+// (repo#number) and shows a link only when the PR changes.
 type activity struct {
 	workDir  string
 	messages []*bossanovav1.ChatMessage
 	calls    map[string]openCall
+	linked   string
 }
 
 // openCall is a tool call still waiting on its result: its message, and the
@@ -62,8 +65,9 @@ type openCall struct {
 }
 
 // readActivity reads the transcript at path as the conversation a person
-// reads: what was said, each tool call as a step, notices as events, and a
-// question still waiting on its answer. Harness wrappers never appear as
+// reads: what was said, each tool call as a step, notices as events, a link
+// each time the session's PR changes, and a question still waiting on its
+// answer. Harness wrappers never appear as
 // user text. maxMessages and the final assistant text follow readTranscript.
 func readActivity(path, workDir string, maxMessages int32) (messages []*bossanovav1.ChatMessage, finalAssistant string, exists bool, err error) {
 	a := &activity{workDir: workDir, calls: map[string]openCall{}}
@@ -90,14 +94,29 @@ func (a *activity) add(raw []byte) {
 	case "attachment":
 		a.addQueued(line)
 	case "pr-link":
-		if line.PRNumber > 0 {
-			a.event(line.Timestamp, userturn.Notice{
-				Source: userturn.SourceGitHub,
-				Text:   fmt.Sprintf("Linked %s#%d", line.PRRepository, line.PRNumber),
-				URL:    line.PRURL,
-			})
-		}
+		a.prLink(line)
 	}
+}
+
+// prLink shows a pr-link record as a GitHub event when it names a PR other
+// than the one last shown. A record with no PR number shows nothing and
+// changes nothing. The web Chats view folds repeats of this "Linked " text the
+// same way for older plugins (Folder.event in
+// services/web/src/features/chat/lib/transcript.ts).
+func (a *activity) prLink(line activityLine) {
+	if line.PRNumber <= 0 {
+		return
+	}
+	pr := fmt.Sprintf("%s#%d", line.PRRepository, line.PRNumber)
+	if pr == a.linked {
+		return
+	}
+	a.linked = pr
+	a.event(line.Timestamp, userturn.Notice{
+		Source: userturn.SourceGitHub,
+		Text:   "Linked " + pr,
+		URL:    line.PRURL,
+	})
 }
 
 func (a *activity) addUser(line activityLine) {

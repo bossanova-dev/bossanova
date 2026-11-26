@@ -138,6 +138,7 @@ type daemonWiring struct {
 	credentialDevices              *server.CredentialDeviceService
 	trackerIssueLeaseUpstream      server.TrackerIssueLeaseUpstream
 	proofCheckRuns                 server.ProofCheckRuns
+	hostedProofViews               server.HostedProofViews
 	hostedProof                    *hostedProofClient
 	trackerIssueLeaseSessionToken  func() string
 	credentialEnrollment           *credentialEnrollmentWorker

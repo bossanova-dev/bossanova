@@ -3,7 +3,9 @@
 // recorded there, the proof page and confidence, and whether the operator's newest record on that head is a
 // legacy send-back. All come from generic machine-readable lines
 // (lib/bossalib/evidence) inside PR conversation comments, read in one pass,
-// so bossd never depends on a repo-local marker.
+// so bossd never depends on a repo-local marker. The one exception is a proof
+// page this daemon uploaded itself (RecordPublishedPage), served for its head
+// until the comments record a page there.
 //
 // Reads are cheap by construction: the display poller reports each session's
 // PR on every poll until the PR ends, then reports the head the PR ended on
@@ -153,6 +155,9 @@ type headState struct {
 	// trusted record on any head. A new head on the same PR starts from the
 	// previous head's latest until its first read answers.
 	latest *ProofRecord
+	// published is the proof page this daemon uploaded for head, merged into
+	// proof and latest whenever the comments record no page for head.
+	published string
 	// openItems is what the park note recorded as keeping the head's PR
 	// checklist open; nil when no note names this head.
 	openItems []string
@@ -365,6 +370,7 @@ func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq
 	cur.failed = err != nil
 	changed := false
 	if err == nil {
+		found.proof, found.latest = cur.withPublished(found.proof, found.latest)
 		entry := found.entry
 		changed = (cur.entry == nil) != (entry == nil)
 		if cur.entry != nil && entry != nil {

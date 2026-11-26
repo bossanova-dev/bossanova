@@ -50,6 +50,7 @@ type Backend struct {
 var (
 	_ bossmcp.Backend             = (*Backend)(nil)
 	_ bossmcp.ProjectLocalBackend = (*Backend)(nil)
+	_ bossmcp.ProofViewBackend    = (*Backend)(nil)
 )
 
 // dialWithRetry dials the bossd Unix socket, retrying a bounded number of times

@@ -20,6 +20,9 @@ import (
 //     the terminal SessionCreated frame (true when the daemon attached to an
 //     active session that already owned the target branch/PR/tracker rather than
 //     creating a new one — in which case the supplied prompt was NOT run).
+//   - ListRepoPRs takes the whole *pb.ListRepoPRsRequest, so the tool's
+//     filters, order and cap reach the daemon; the boss client keeps its
+//     repo-id-only call for the New session picker.
 //   - ListAgents returns []*pb.AgentInfo (the shared proto type) rather than the
 //     boss client's package-local AgentInfo, since this package may only import
 //     the shared proto types; the adapter converts.
@@ -36,7 +39,7 @@ type Backend interface {
 	ListRepos(ctx context.Context) ([]*pb.Repo, error)
 	RemoveRepo(ctx context.Context, id string) error
 	UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error)
-	ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error)
+	ListRepoPRs(ctx context.Context, req *pb.ListRepoPRsRequest) ([]*pb.PRSummary, error)
 	ListTrackerIssues(ctx context.Context, repoID, query, source string) ([]*pb.TrackerIssue, error)
 
 	// Sessions (CreateSession drains the setup stream and returns the final
@@ -290,4 +293,12 @@ type SessionLabelBackend interface {
 	UpdateSessionLabel(ctx context.Context, req *pb.UpdateSessionLabelRequest) (*pb.SessionLabel, error)
 	DeleteSessionLabel(ctx context.Context, id string) error
 	SetSessionLabels(ctx context.Context, sessionID string, labelIDs []string) (*pb.Session, error)
+}
+
+// ProofViewBackend is the optional backend interface that mints a
+// short-lived signed link to a PR's hosted proof page as the signed-in user.
+// Discovered via type assertion on Backend so Backend stays within its
+// method-width budget; get_proof_view_link calls it only after GetSession.
+type ProofViewBackend interface {
+	MintProofViewLink(ctx context.Context, req *pb.MintProofViewLinkRequest) (*pb.MintProofViewLinkResponse, error)
 }

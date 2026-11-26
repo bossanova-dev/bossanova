@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/githubcallback"
+	"github.com/recurser/bossalib/kit/sessionfilter"
 	"github.com/recurser/bossalib/sessionorder"
 	"google.golang.org/protobuf/proto"
 )
@@ -243,7 +244,7 @@ func addTool[In, Out any](s *mcp.Server, opts Options, t *mcp.Tool, h mcp.ToolHa
 func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 	addTool(server, opts, &mcp.Tool{
 		Name:        "list_sessions",
-		Description: "List bossanova sessions, optionally filtered, ordered and limited.",
+		Description: "List sessions, optionally filtered, ordered and limited.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListSessionsArgs) (*mcp.CallToolResult, any, error) {
 		r, err := listSessions(ctx, backend, args)
@@ -294,22 +295,11 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		return r, nil, err
 	})
 
-	addTool(server, opts, &mcp.Tool{
-		Name:        "list_repo_prs",
-		Description: "List open pull requests for a registered repository.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RepoIDArgs) (*mcp.CallToolResult, any, error) {
-		out, err := backend.ListRepoPRs(ctx, args.RepoID)
-		if err != nil {
-			return errorResult(err), nil, nil
-		}
-		r, err := jsonResult(out)
-		return r, nil, err
-	})
+	registerRepoPRsTool(server, backend, opts)
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "list_tracker_issues",
-		Description: "List issues from an external tracker (e.g. linear, sentry) for a repo, optionally filtered by query.",
+		Description: "List a repo's issues from an external tracker.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListTrackerIssuesArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.ListTrackerIssues(ctx, args.RepoID, args.Query, args.Source)
@@ -338,6 +328,14 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		}
 		r, err := jsonResult(out)
 		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "get_proof_view_link",
+		Description: "Mint a short-lived signed link to a session's hosted proof page (the head `pr_proof_head_sha` names). Needs Bossanova Cloud sign-in.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args IDArgs) (*mcp.CallToolResult, any, error) {
+		return getProofViewLink(ctx, backend, args.ID)
 	})
 
 	addTool(server, opts, &mcp.Tool{
@@ -794,13 +792,15 @@ type ListAgentAccountsArgs struct {
 
 // ListSessionsArgs is the typed argument struct for list_sessions.
 type ListSessionsArgs struct {
-	RepoID          string   `json:"repo_id,omitempty" jsonschema:"repo id filter"`
-	States          []string `json:"states,omitempty" jsonschema:"state enum names, e.g. SESSION_STATE_RUNNING"`
-	IncludeArchived bool     `json:"include_archived,omitempty" jsonschema:"include archived sessions"`
-	Labels          []string `json:"labels,omitempty" jsonschema:"label ids or names (case-insensitive, matches any)"`
-	OrderBy         string   `json:"order_by,omitempty" jsonschema:"created or updated"`
-	Direction       string   `json:"direction,omitempty" jsonschema:"oldest_first or newest_first (default)"`
-	Limit           int      `json:"limit,omitempty" jsonschema:"at most this many, after ordering"`
+	RepoID           string   `json:"repo_id,omitempty" jsonschema:"repo id filter"`
+	States           []string `json:"states,omitempty" jsonschema:"state enum names, e.g. SESSION_STATE_RUNNING"`
+	IncludeArchived  bool     `json:"include_archived,omitempty" jsonschema:"include archived sessions"`
+	Labels           []string `json:"labels,omitempty" jsonschema:"label ids or names (any, case-insensitive)"`
+	PRAuthors        []string `json:"pr_authors,omitempty" jsonschema:"PR author logins (any, case-insensitive)"`
+	PRTargetBranches []string `json:"pr_target_branches,omitempty" jsonschema:"PR base branches (any)"`
+	OrderBy          string   `json:"order_by,omitempty" jsonschema:"created or updated"`
+	Direction        string   `json:"direction,omitempty" jsonschema:"oldest_first or newest_first (default)"`
+	Limit            int      `json:"limit,omitempty" jsonschema:"at most this many, after ordering"`
 }
 
 // listSessions serves list_sessions. It orders and caps after the backend
@@ -812,8 +812,10 @@ func listSessions(ctx context.Context, backend Backend, args ListSessionsArgs) (
 		return errorResult(err), nil
 	}
 	req := &pb.ListSessionsRequest{
-		IncludeArchived: args.IncludeArchived,
-		LabelIds:        args.Labels,
+		IncludeArchived:  args.IncludeArchived,
+		LabelIds:         args.Labels,
+		PrAuthorLogins:   args.PRAuthors,
+		PrTargetBranches: args.PRTargetBranches,
 	}
 	if args.RepoID != "" {
 		repoID := args.RepoID
@@ -826,6 +828,9 @@ func listSessions(ctx context.Context, backend Backend, args ListSessionsArgs) (
 	if err != nil {
 		return errorResult(err), nil
 	}
+	// The backend filters by PR author and target; filtering again here keeps
+	// the answer right when a daemon that predates those fields ignores them.
+	sessions = sessionfilter.ByPR(args.PRAuthors, args.PRTargetBranches).Filter(sessions)
 	return jsonResult(sessionorder.Apply(sessions, ordering, int32(min(args.Limit, math.MaxInt32))))
 }
 
@@ -884,11 +889,11 @@ type ListGitHubCallbacksArgs struct {
 // request's optional pointers and leaves a blank one unset, so a blank argument
 // behaves as an omitted filter rather than a fail-closed one.
 type ListNotesArgs struct {
-	RepoID    string   `json:"repo_id,omitempty" jsonschema:"only notes owned by this repo id — the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL. Omit it to leave the repo unconstrained; on the hosted gateway an omitted repo_id fans the list out across your reachable daemons"`
-	SessionID string   `json:"session_id,omitempty" jsonschema:"only notes recorded by this session id (provenance; the session may no longer exist)"`
+	RepoID    string   `json:"repo_id,omitempty" jsonschema:"only notes in this daemon-local repo id, NOT a git origin URL; omitted, the hosted gateway fans out across your reachable daemons"`
+	SessionID string   `json:"session_id,omitempty" jsonschema:"only notes recorded by this session id (provenance)"`
 	ChatID    string   `json:"chat_id,omitempty" jsonschema:"only notes recorded by this chat id (provenance)"`
-	Tags      []string `json:"tags,omitempty" jsonschema:"only notes carrying ANY of these tags (OR, not all-of); entries are trimmed and lowercased to match the stored form"`
-	Search    string   `json:"search,omitempty" jsonschema:"literal substring match on the note body (SQL wildcards are matched literally; ASCII-only case folding); blank means no search"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"only notes with ANY of these tags (OR), trimmed and lowercased"`
+	Search    string   `json:"search,omitempty" jsonschema:"literal substring of the note body (SQL wildcards too; ASCII-only case folding); blank means no search"`
 	Limit     int32    `json:"limit,omitempty" jsonschema:"max notes to return (zero or negative = unlimited)"`
 }
 

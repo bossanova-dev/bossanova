@@ -56,6 +56,8 @@ subprocess reads until the safety-net window expires, printing
 `idle: webhooks deliver; next safety-net sweep after <ISO time>` and exiting `1`.
 The idle window also ends when a claim this machine posted (recorded in `claim-holders.json`) or
 one the quiet tick saw expires, because no webhook announces an expiry.
+A run holding a long extension leg re-posts its own claim while the leg runs, so the claim's age
+restarts with each beat; that wake finds it live and stays quiet until the beats stop.
 `--safety-net-minutes N` sets that gate-only window (default `60`; `0` disables it).
 An unchanged tick refreshes the quiet entry's last-check time; a non-quiet event clears its
 matching cron entry so the next tick scans again. With neither variable set, cadence is unchanged.

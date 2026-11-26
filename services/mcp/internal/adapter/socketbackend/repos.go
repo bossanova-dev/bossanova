@@ -62,8 +62,8 @@ func (b *Backend) UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest) (*p
 	return resp.Msg.GetRepo(), nil
 }
 
-func (b *Backend) ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error) {
-	resp, err := b.rpc.ListRepoPRs(ctx, connect.NewRequest(&pb.ListRepoPRsRequest{RepoId: repoID}))
+func (b *Backend) ListRepoPRs(ctx context.Context, req *pb.ListRepoPRsRequest) ([]*pb.PRSummary, error) {
+	resp, err := b.rpc.ListRepoPRs(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

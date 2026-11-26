@@ -16,18 +16,26 @@ func (s *Server) hydrateMergedConfidence(ctx context.Context, p *pb.Session, d a
 	if d.row.State != machine.Merged || s.evidence == nil {
 		return
 	}
-	head := ""
-	if d.display != nil {
-		head = d.display.HeadSHA
-	} else if s.checkSnapshots != nil {
-		if snaps, err := s.checkSnapshots.ListBySession(ctx, d.row.ID, 1); err == nil && len(snaps) > 0 {
-			head = snaps[0].HeadSHA
-		}
-	}
+	head := s.trackedPRHead(ctx, d)
 	if head == "" {
 		return
 	}
 	if proof, ok := s.evidence.Proof(d.row.ID, head); ok && strings.EqualFold(proof.Head, head) {
 		p.MergedConfidenceLevel = attention.ProofConfidenceLevel(proof.Level)
 	}
+}
+
+// trackedPRHead is the head bossd currently tracks for the session's PR: the
+// display entry's head, else the newest check snapshot's. Empty when neither
+// is known.
+func (s *Server) trackedPRHead(ctx context.Context, d attentionDeps) string {
+	if d.display != nil {
+		return d.display.HeadSHA
+	}
+	if s.checkSnapshots != nil {
+		if snaps, err := s.checkSnapshots.ListBySession(ctx, d.row.ID, 1); err == nil && len(snaps) > 0 {
+			return snaps[0].HeadSHA
+		}
+	}
+	return ""
 }

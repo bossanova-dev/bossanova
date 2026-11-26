@@ -1,0 +1,14 @@
+{"type": "user", "timestamp": "2026-11-19T10:00:00.000Z", "message": {"role": "user", "content": "Open a PR for the fix."}}
+{"type": "assistant", "timestamp": "2026-11-19T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Opened the PR."}]}}
+{"type": "pr-link", "sessionId": "0199a3c1-7b2e-7d40-9c55-000000000def", "prNumber": 4534, "prUrl": "https://github.com/recurser/bossanova/pull/4534", "prRepository": "recurser/bossanova", "timestamp": "2026-11-19T10:00:06.000Z"}
+{"type": "user", "timestamp": "2026-11-19T10:01:00.000Z", "message": {"role": "user", "content": "Now fix the lint."}}
+{"type": "pr-link", "sessionId": "0199a3c1-7b2e-7d40-9c55-000000000def", "prNumber": 4534, "prUrl": "https://github.com/recurser/bossanova/pull/4534", "prRepository": "recurser/bossanova", "timestamp": "2026-11-19T10:01:01.000Z"}
+{"type": "assistant", "timestamp": "2026-11-19T10:01:30.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Lint is clean."}]}}
+{"type": "user", "timestamp": "2026-11-19T10:02:00.000Z", "message": {"role": "user", "content": "Split the docs into their own PR."}}
+{"type": "pr-link", "sessionId": "0199a3c1-7b2e-7d40-9c55-000000000def", "prNumber": 4540, "prUrl": "https://github.com/recurser/bossanova/pull/4540", "prRepository": "recurser/bossanova", "timestamp": "2026-11-19T10:02:30.000Z"}
+{"type": "user", "timestamp": "2026-11-19T10:03:00.000Z", "message": {"role": "user", "content": "Back to the first PR."}}
+{"type": "pr-link", "sessionId": "0199a3c1-7b2e-7d40-9c55-000000000def", "prNumber": 4534, "prUrl": "https://github.com/recurser/bossanova/pull/4534", "prRepository": "recurser/bossanova", "timestamp": "2026-11-19T10:03:01.000Z"}
+{"type": "assistant", "timestamp": "2026-11-19T10:03:30.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Back on it."}]}}
+{"type": "pr-link", "sessionId": "0199a3c1-7b2e-7d40-9c55-000000000def", "prNumber": 0, "prUrl": "", "prRepository": "", "timestamp": "2026-11-19T10:04:00.000Z"}
+{"type": "user", "timestamp": "2026-11-19T10:04:30.000Z", "message": {"role": "user", "content": "Ship it."}}
+{"type": "pr-link", "sessionId": "0199a3c1-7b2e-7d40-9c55-000000000def", "prNumber": 4534, "prUrl": "https://github.com/recurser/bossanova/pull/4534", "prRepository": "recurser/bossanova", "timestamp": "2026-11-19T10:04:31.000Z"}

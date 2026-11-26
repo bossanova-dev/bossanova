@@ -42,6 +42,9 @@ export const isCannotAssess = (status) =>
 
 // A claim older than this is presumed abandoned and may be taken over.
 export const CLAIM_STALE_AFTER_MS = 30 * 60 * 1000
+// How often a run re-posts its own claim while one long extension leg runs: two missed beats still
+// leave the claim live, so only a run that stopped beating loses it.
+export const CLAIM_HEARTBEAT_EVERY_MS = CLAIM_STALE_AFTER_MS / 3
 
 // Classifies the latest `boss/verify` status on a head relative to this run's claim token.
 // `kind` is `none` (no status), `mine`, `foreign` (a live claim by another run), `stale` (a

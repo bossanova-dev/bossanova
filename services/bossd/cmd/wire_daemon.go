@@ -57,6 +57,7 @@ func (w *daemonWiring) wireDaemon() {
 		TrackerIssueLeaseUpstream:     w.trackerIssueLeaseUpstream,
 		TrackerIssueLeaseSessionToken: w.trackerIssueLeaseSessionToken,
 		ProofCheckRuns:                w.proofCheckRuns,
+		HostedProofViews:              w.hostedProofViews,
 		ProofCheckRunSessionToken:     w.trackerIssueLeaseSessionToken,
 		CredentialPublisher: func(ctx context.Context, syncedID, localID string) error {
 			if w.credentialSync == nil {

@@ -794,15 +794,20 @@ type AgentRunnerServiceClient interface {
 	// question it waits on until it is answered. A plugin whose agent has no
 	// question menu returns codes.Unimplemented.
 	ReadQuestionMenu(ctx context.Context, in *ReadQuestionMenuRequest, opts ...grpc.CallOption) (*ReadQuestionMenuResponse, error)
-	// PlanQuestionAnswer works out the keystrokes that answer the question the
-	// agent is waiting on in its terminal menu, and refuses when that question
-	// is not the one named. pane_content must show the menu of the question
-	// question_id names, with its options in order and its free-text row
-	// untouched; a question the plugin's transcript still ends on counts when
-	// the menu shows its options. Otherwise it answers is_question_pending=false
-	// with no inputs, so a stale answer types nothing. The daemon sends the
-	// inputs and never interprets them. A plugin whose agent has no question
-	// menu returns codes.Unimplemented.
+	// PlanQuestionAnswer works out the keystrokes for the next step of the
+	// answer to the question the agent is waiting on in its terminal menu, and
+	// refuses when that question is not the one named. pane_content must show
+	// the menu of the question question_id names, with its options in order; a
+	// question the plugin's transcript still ends on counts when the menu shows
+	// its options. Otherwise it answers is_question_pending=false with no
+	// inputs, so a stale answer types nothing. An answer that takes several
+	// keys checked one at a time (ticking boxes, typing words, moving to the
+	// next tab or to Submit) comes back one step per call, planned from the
+	// pane as it is now; is_final_step marks the step that finishes it. A
+	// question with several tabs is answered one tab at a time, each tab under
+	// its own question_id, ending with the review tab's "Submit answers". The
+	// daemon sends the inputs and never interprets them. A plugin whose agent
+	// has no question menu returns codes.Unimplemented.
 	PlanQuestionAnswer(ctx context.Context, in *PlanQuestionAnswerRequest, opts ...grpc.CallOption) (*PlanQuestionAnswerResponse, error)
 }
 
@@ -1247,15 +1252,20 @@ type AgentRunnerServiceServer interface {
 	// question it waits on until it is answered. A plugin whose agent has no
 	// question menu returns codes.Unimplemented.
 	ReadQuestionMenu(context.Context, *ReadQuestionMenuRequest) (*ReadQuestionMenuResponse, error)
-	// PlanQuestionAnswer works out the keystrokes that answer the question the
-	// agent is waiting on in its terminal menu, and refuses when that question
-	// is not the one named. pane_content must show the menu of the question
-	// question_id names, with its options in order and its free-text row
-	// untouched; a question the plugin's transcript still ends on counts when
-	// the menu shows its options. Otherwise it answers is_question_pending=false
-	// with no inputs, so a stale answer types nothing. The daemon sends the
-	// inputs and never interprets them. A plugin whose agent has no question
-	// menu returns codes.Unimplemented.
+	// PlanQuestionAnswer works out the keystrokes for the next step of the
+	// answer to the question the agent is waiting on in its terminal menu, and
+	// refuses when that question is not the one named. pane_content must show
+	// the menu of the question question_id names, with its options in order; a
+	// question the plugin's transcript still ends on counts when the menu shows
+	// its options. Otherwise it answers is_question_pending=false with no
+	// inputs, so a stale answer types nothing. An answer that takes several
+	// keys checked one at a time (ticking boxes, typing words, moving to the
+	// next tab or to Submit) comes back one step per call, planned from the
+	// pane as it is now; is_final_step marks the step that finishes it. A
+	// question with several tabs is answered one tab at a time, each tab under
+	// its own question_id, ending with the review tab's "Submit answers". The
+	// daemon sends the inputs and never interprets them. A plugin whose agent
+	// has no question menu returns codes.Unimplemented.
 	PlanQuestionAnswer(context.Context, *PlanQuestionAnswerRequest) (*PlanQuestionAnswerResponse, error)
 	mustEmbedUnimplementedAgentRunnerServiceServer()
 }

@@ -15,7 +15,7 @@
 // each signature via capture-baseline.mjs and byte-compares stableStringify()
 // against the committed baseline file. Part B (extension-discovery) asserts the
 // structural contract the generalized cores rely on: the authored draft/methodology/
-// knowledge/maintenance extensions and notes built-ins are discovered by name with zero
+// polish/knowledge/maintenance extensions and notes built-ins are discovered by name with zero
 // skips, and their roles
 // all resolve in ROLE_SCHEMAS — behaviour-shipping roles included, since BOS-744 derived
 // discovery and validation from one EXTENSION_ROLES table. Part C (directory
@@ -61,6 +61,12 @@ const EXPECTED_EXTENSIONS = [
     role: 'methodology',
     skill: 'boss-build',
     names: ['boss-build-ce'],
+  },
+  {
+    core: 'boss-build',
+    role: 'polish',
+    skill: 'boss-build',
+    names: ['boss-build-comments'],
   },
   {
     core: 'boss-build',

@@ -776,6 +776,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'verify/verify-describe.mjs',
       // verify-describe-blocks.mjs validates the typed facts verify-describe.mjs accepts.
       'verify/verify-describe-blocks.mjs',
+      // skill-extensions.mjs parses the verify leg keys (timeout, writes) through it.
+      'verify/verify-leg-marker.mjs',
       'verify/verify-proof.mjs',
       'verify/verify-review-policy.mjs',
       // skill-extensions.mjs imports the proof-publish marker parser and result validator.
@@ -938,12 +940,13 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       `${skill} must not vendor callback/ci-watch.mjs`,
     )
   }
-  // Asserted BY NAME for boss-verify: the verify stage's three entry points — the gate verbs, the
+  // Asserted BY NAME for boss-verify: the verify stage's entry points — the gate verbs, the leg hold,
   // sweep/router, and the dispatching cron gate — are invoked by path from its installed toolbox
   // (the cron job runs the gate from there), so a tree missing one is a stage that cannot RUN.
   for (const entry of [
     'verify/verify-gate.mjs',
     'verify/verify-route.mjs',
+    'verify/verify-extension-leg.mjs',
     'cron-gates/boss-verify.mjs',
   ]) {
     assert.ok(VENDORED_FILES['boss-verify'].includes(entry), `boss-verify must vendor ${entry}`)

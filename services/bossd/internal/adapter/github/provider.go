@@ -965,7 +965,7 @@ const openPRListQuery = `query($owner: String!, $name: String!, $cursor: String)
     pullRequests(states: OPEN, first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title headRefName baseRefName headRefOid state author { login __typename }
+        number title headRefName baseRefName headRefOid state isDraft createdAt updatedAt author { login __typename }
         authorship: commits(first: 10) {
           totalCount
           nodes { commit { authors(first: 5) { totalCount nodes { email user { login } } } } }

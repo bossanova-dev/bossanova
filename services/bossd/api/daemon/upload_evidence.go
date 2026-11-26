@@ -117,6 +117,9 @@ func (s *Server) uploadEvidence(ctx context.Context, msg *pb.UploadEvidenceReque
 	}
 	defer func() { _ = dir.Close() }()
 	resp, err := s.publishEvidence(ctx, dir, repo, msg, deterministic)
+	if err == nil {
+		s.recordPublishedPage(ctx, repo, msg, resp.Msg)
+	}
 	return resp, repo, err
 }
 

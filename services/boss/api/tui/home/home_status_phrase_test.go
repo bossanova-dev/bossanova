@@ -272,28 +272,34 @@ func TestHomeFilterMatchesPhraseAndDetail_Sessions_AC233601(t *testing.T) {
 	}
 }
 
-// TestHomePhraseStylesBySection: a NEEDS YOU phrase never takes a spinner,
-// even while a chat works, and reads danger for a fix, success for a merge
-// and warning otherwise.
+// TestHomePhraseStylesBySection: a NEEDS YOU phrase reads danger for a fix,
+// success for a merge and warning otherwise. While a chat works, a fix or an
+// unverified merge swaps its mark for the spinner, so the row shows the agent
+// is still at it; a verified merge, a review and a question keep their mark.
 func TestHomePhraseStylesBySection(t *testing.T) {
 	h := NewModel(nil, context.Background(), nil)
 	for _, tc := range []struct {
-		kind   pb.AttentionKind
-		phrase string
-		style  func(...string) string
+		kind    pb.AttentionKind
+		phrase  string
+		style   func(...string) string
+		working string
 	}{
-		{pb.AttentionKind_ATTENTION_KIND_FIX, "⨯ repair failed", ui.StyleStatusDanger.Render},
-		{pb.AttentionKind_ATTENTION_KIND_FIX, "⨯ conflict", ui.StyleStatusDanger.Render},
-		{pb.AttentionKind_ATTENTION_KIND_MERGE, attention.MergePhrase, ui.StyleStatusSuccess.Render},
-		{pb.AttentionKind_ATTENTION_KIND_MERGE, attention.UnverifiedMergePhrase, ui.StyleStatusWarning.Render},
-		{pb.AttentionKind_ATTENTION_KIND_REVIEW, attention.MergePhrase, ui.StyleStatusSuccess.Render},
-		{pb.AttentionKind_ATTENTION_KIND_REVIEW, attention.ReviewPhrase, ui.StyleStatusSuccess.Render},
-		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "? question", ui.StyleStatusWarning.Render},
+		{pb.AttentionKind_ATTENTION_KIND_FIX, "⨯ repair failed", ui.StyleStatusDanger.Render, "repair failed"},
+		{pb.AttentionKind_ATTENTION_KIND_FIX, "⨯ conflict", ui.StyleStatusDanger.Render, "conflict"},
+		{pb.AttentionKind_ATTENTION_KIND_MERGE, attention.MergePhrase, ui.StyleStatusSuccess.Render, ""},
+		{pb.AttentionKind_ATTENTION_KIND_MERGE, attention.UnverifiedMergePhrase, ui.StyleStatusWarning.Render, "merge"},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, attention.MergePhrase, ui.StyleStatusSuccess.Render, ""},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, attention.ReviewPhrase, ui.StyleStatusSuccess.Render, ""},
+		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "? question", ui.StyleStatusWarning.Render, ""},
 	} {
 		for _, label := range []string{"working", "passing"} {
 			s := &pb.Session{DisplayLabel: label, Attention: &pb.SessionAttention{Kind: tc.kind, StatusPhrase: tc.phrase}}
-			if got := h.RenderSessionStatus(s); got != tc.style(tc.phrase) {
-				t.Errorf("%v %q with a %s chat = %q, want %q", tc.kind, tc.phrase, label, got, tc.style(tc.phrase))
+			want := tc.style(tc.phrase)
+			if label == "working" && tc.working != "" {
+				want = tc.style(h.Spinner.View() + tc.working)
+			}
+			if got := h.RenderSessionStatus(s); got != want {
+				t.Errorf("%v %q with a %s chat = %q, want %q", tc.kind, tc.phrase, label, got, want)
 			}
 		}
 	}

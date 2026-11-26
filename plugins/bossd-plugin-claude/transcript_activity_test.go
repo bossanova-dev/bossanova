@@ -193,3 +193,24 @@ func TestReadActivityShowsMessagesQueuedMidTurn(t *testing.T) {
 		}
 	}
 }
+
+// Claude Code records the session's PR again on nearly every turn.
+// testdata/pr_links.jsonl links A, A again after another turn, B, A, then a
+// record with no PR number, then A again: six records, and a link shows only
+// when the PR changes from the one last shown.
+func TestReadActivityShowsALinkOnlyWhenThePRChanges_Chat_AC277101(t *testing.T) {
+	got, _, _, err := readActivity(filepath.Join("testdata", "pr_links.jsonl"), activityWorkDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var links []string
+	for _, m := range got {
+		if m.GetKind() == "event" {
+			links = append(links, m.GetEvent().GetText())
+		}
+	}
+	want := []string{"Linked recurser/bossanova#4534", "Linked recurser/bossanova#4540", "Linked recurser/bossanova#4534"}
+	if strings.Join(links, "|") != strings.Join(want, "|") {
+		t.Fatalf("link events = %q, want %q\n%s", links, want, dump(got))
+	}
+}

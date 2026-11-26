@@ -10,16 +10,15 @@ import { fileURLToPath } from 'node:url'
 
 import {
   buildClaudeArgs,
-  CLAUDE_AUTH_SIGNATURES,
   classifyProbe,
   probe,
   probeDetailed,
-  resolveClaudeBin,
   resolveTimeoutMs,
   resolveRunTimeoutMs,
   run,
   sanitizeOutput,
 } from './claude-review.mjs'
+import { CLAUDE_AUTH_SIGNATURES, resolveClaudeBin } from '../agent-cli.mjs'
 import { reviewTimeDefaults } from '../skill-config.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./claude-review.mjs', import.meta.url))

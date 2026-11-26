@@ -16,21 +16,50 @@ output:
 
 ## Which verdicts get a page
 
-By default (`proofDefaults.pages: "parked"`), only a `human` verdict gets a page. A `pass`,
-`blocked` or `defect` note keeps the level with a null page and uploads nothing. With
-`proofDefaults.pages: "all"` in the trusted base tree's config, every terminal verdict gets a
-page. A PR cannot enable pages for itself. Non-parked pages use the deterministic content, with
-no proof-author spec or park reasons; the proof-author agent still runs only on a park.
+By default (`proofDefaults.pages: "all"`), every terminal verdict gets a page. With
+`proofDefaults.pages: "parked"` in the trusted base tree's config, only a `human` verdict gets
+one, and a `pass`, `blocked` or `defect` note keeps the level with a null page and uploads
+nothing; `"none"` publishes no page. A PR cannot enable pages for itself.
 
-A parked head's page always shows the record's park reasons, blockers and breaking changes. On
-top of them:
+## Who writes the page
 
-- **The proof-author spec.** `post --proof-spec <file>` adds the `proof-spec/1` the
-  [proof-author](proof-author.md) wrote from the `proof-bundle` output: a title, risks, area
-  summaries and snippets, a checklist and notes. The core drops each invalid item and lists it in
-  the page's Generation check; a spec for another head is ignored whole. Every snippet is quoted
-  from `git diff base..head`, never from the spec. Without a usable spec the page is the
-  deterministic one. The sweep's mechanical posts never dispatch the agent.
+`proofDefaults.author`, read from the trusted base config like `pages`, says which pages the
+[proof-author](proof-author.md) writes: `"all"` (default), `"parked"` (only `human` verdicts) or
+`"none"`.
+
+- **Dispatched.** `post --proof-spec <file>` adds the `proof-spec/1` the author wrote from the
+  `proof-bundle` output.
+- **Headless.** When a `post` or `proof` would record a page with no `--proof-spec` and the policy
+  allows the author for this verdict, the proof process, including the sweep's detached one,
+  builds the bundle and runs the author headless from a checkout at the head. It parses the last
+  JSON object the author prints and records the page with it. `BOSS_PROOF_AUTHOR_TIMEOUT_MS`
+  bounds the run (default ten minutes).
+
+The core drops each invalid spec item and lists it in the page's Generation check; a spec for
+another head is ignored whole. Every snippet is quoted from `git diff base..head`, never from the
+spec. When the author is off, fails, times out or prints nothing usable, the page is the
+deterministic one and its Generation check gives the reason in one line. That never changes the
+verdict and is not a `proofMissing` loss.
+
+## What the page shows
+
+- **Header.** The spec's `title` and `lead`, the lead starting with the change type ("Bug fix.").
+  Without a spec, the PR title (cut to 110 characters) and the first paragraph of the PR body as
+  plain text (cut to 400 characters); an empty body gives no lead.
+- **Banner.** The level, the reason and one row per signal. An author `signals` row replaces the
+  describer's summary for its key and keeps the more severe pill; its `tests` and `checks` rows
+  replace the file lists of the deterministic Tests and Checks rows.
+- **Sections**, in order: Risks, Decisions, Bug fix, the ticket, repository and pack sections,
+  the areas, Evidence, Tests and checks (a summary, then Proves, Doesn't prove and Also), Findings,
+  After merge, Guardrails to add, Refactoring, Review noise, then Files. Bug fix, Tests and checks,
+  Guardrails, Refactoring and Review noise come from the spec, each with a nav entry and count,
+  and are left out when empty. Guardrail, refactoring and noise ids link like risk ids.
+- **Diff links.** A risk or decision location, a snippet's path and a backticked changed
+  `path:line` in prose open the PR's diff at that line in a new tab.
+
+A parked head's page also always shows the record's park reasons, blockers and breaking changes.
+Any page can also carry:
+
 - **Repository sections.** Each section the base tree's `proof-section` extensions declare shows
   where they place it, filled from the spec's `sections`, with a nav entry and its own anchor
   (`#sec-<id>`). A section the spec leaves out is not shown, and its ticks work like decisions'.
@@ -123,8 +152,8 @@ it. Benign reasons
 count as no loss: `repo-proof-present` for the record; `not-parked`, `dry-run`, `not-configured`,
 `disabled` and `opted-out` for the page; and `fallback-disabled`, `dry-run` and `daemon-unsupported`
 for the check run. The sweep's mechanical posts pass `--proof-detach`. Their proof then runs as a
-separate `verify-gate.mjs proof --pr <n> --head <sha> --judge <file>` process, so the upload never
-spends the sweep's post budget.
+separate `verify-gate.mjs proof --pr <n> --head <sha> --judge <file>` process, so neither the upload nor the
+author's run spends the sweep's post budget.
 
 ## Area names
 

@@ -439,6 +439,8 @@ func (w *daemonWiring) wireUpstream() {
 		// rejected, reRegister fires, and the holder is populated.
 		sessionTokenHolder = upstream.NewSessionTokenHolder(sessionToken)
 		w.wireCredentialDistribution(cfg, client, sessionTokenHolder, identityKey, authToken)
+		// The orchestrator mints proof view links only for a user scope.
+		w.hostedProofViews = hostedProofViewClient{rpc: client, userToken: userTokenOr(tokenProvider.Token, cfg.UserJWT)}
 		w.wireViewerApprovals(httpClient, cfg.OrchestratorURL, sessionTokenHolder.Get, identityKey)
 		// BOS-376: positive terminal-liveness signal shared by the
 		// TerminalStream reader (sets it healthy on TerminalReady) and its

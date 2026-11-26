@@ -708,6 +708,14 @@ const V20261106 Version = "2026-11-06"
 // and ErrorTransform runs only on unary procedures.
 const V20261107 Version = "2026-11-07"
 
+// V20261108 routes a chat addressed by its agent_session_id alone (send,
+// transcript, title, delete, status report, GitHub callbacks) through every
+// organization the caller belongs to, as session-routed chat commands already
+// were from V20260908. Older pins keep looking only in the routing and claim
+// organizations. Handler-gated (IsCrossOrganizationChatCommands): the change
+// turns a NotFound into a dispatched command, which no transform can undo.
+const V20261108 Version = "2026-11-08"
+
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions. The slice is ordered oldest→newest and its last member is Current
 // (the newest behavior). At most one trailing member is unreleased: every
@@ -782,8 +790,9 @@ func DefaultRegistry() *Registry {
 			V20261105,
 			V20261106,
 			V20261107,
+			V20261108,
 		},
-		V20261107,
+		V20261108,
 		Baseline,
 	)
 	if err != nil {
@@ -970,4 +979,16 @@ func IsOrganizationRepoMappedReads(ctx context.Context) bool {
 // published.
 func IsForeignRepositoryCreateRefused(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20261107, "IsForeignRepositoryCreateRefused")
+}
+
+// IsCrossOrganizationChatCommands reports whether a chat addressed by its
+// agent_session_id alone may be found in any organization the caller belongs
+// to (V20261108 and newer). Older pins look only in the routing organization
+// and the caller's claim organization.
+//
+// Handler-level for the same reason as IsCrossOrganizationSessionCommands: the
+// member-organization lookup turns a NotFound into a dispatched command, and
+// no transform can turn that success back into the former error.
+func IsCrossOrganizationChatCommands(ctx context.Context) bool {
+	return gateAtLeast(ctx, V20261108, "IsCrossOrganizationChatCommands")
 }

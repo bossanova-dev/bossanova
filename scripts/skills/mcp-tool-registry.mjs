@@ -2,12 +2,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 // The bossmcp registration files. `manifest.go` holds no `Name:` entries; the
-// tools are registered from these three siblings, split by mutability class.
+// tools are registered from these siblings, split by mutability class or family.
 export const TOOL_SOURCE_FILES = [
   path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools.go'),
   path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_mutating.go'),
   path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_destructive.go'),
   path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_session_labels.go'),
+  path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_repo_prs.go'),
 ]
 
 // The hosted-only tool families. They register only on the hosted Bossanova

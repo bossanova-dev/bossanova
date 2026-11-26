@@ -42,6 +42,7 @@ function writeToolSources(repoRoot, names) {
   fs.writeFileSync(path.join(bossmcp, 'tools_mutating.go'), '')
   fs.writeFileSync(path.join(bossmcp, 'tools_destructive.go'), '')
   fs.writeFileSync(path.join(bossmcp, 'tools_session_labels.go'), '')
+  fs.writeFileSync(path.join(bossmcp, 'tools_repo_prs.go'), '')
 }
 
 function writeDoc(repoRoot, relativePath, contents) {

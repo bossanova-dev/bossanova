@@ -43,6 +43,20 @@ func (b *Backend) GetSession(ctx context.Context, id string) (*pb.Session, error
 	return resp.Msg.GetSession(), nil
 }
 
+// MintProofViewLink relays to bossd's MintHostedProofViewLink, which mints
+// with the signed-in user's Bossanova Cloud token.
+func (b *Backend) MintProofViewLink(ctx context.Context, req *pb.MintProofViewLinkRequest) (*pb.MintProofViewLinkResponse, error) {
+	resp, err := b.rpc.MintHostedProofViewLink(ctx, connect.NewRequest(&pb.MintHostedProofViewLinkRequest{
+		RepoOriginUrl: req.GetRepoOriginUrl(),
+		PrNumber:      req.GetPrNumber(),
+		HeadSha:       req.GetHeadSha(),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.MintProofViewLinkResponse{ViewUrl: resp.Msg.GetViewUrl(), ExpiresAt: resp.Msg.GetExpiresAt()}, nil
+}
+
 func (b *Backend) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error) {
 	resp, err := b.rpc.ListSessions(ctx, connect.NewRequest(req))
 	if err != nil {

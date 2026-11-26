@@ -14,12 +14,15 @@ import (
 // RenderStatusPhrase styles a's served status phrase, the one STATUS text of
 // a session row. A NEEDS YOU fix ("⨯ conflict") reads in danger, a verified
 // review or merge ("✓ review", "✓ merge") in success, and a question or an
-// unverified merge ("? merge") in warning; no spinner leads it: the move is
-// the operator's. An IN PROGRESS
+// unverified merge ("? merge") in warning. While an agent chat of the session
+// is working, a fix or an unverified merge keeps its words and colour but the
+// spinner takes the place of its leading mark ("⣯ run stuck"): the agent is
+// still at it. A question, a review and a verified merge keep their mark,
+// since they wait on the operator whatever the agent does. An IN PROGRESS
 // phrase is styled, and led by its spinner, as ProgressStatusStyle styles the
 // state it names. ok is false when the daemon serves no phrase (an older
 // daemon, or a finished session), so the caller keeps its own cell.
-func RenderStatusPhrase(a *pb.SessionAttention, sp spinner.Model) (cell string, ok bool) {
+func RenderStatusPhrase(a *pb.SessionAttention, sp spinner.Model, working bool) (cell string, ok bool) {
 	phrase := a.GetStatusPhrase()
 	if phrase == "" {
 		return "", false
@@ -33,14 +36,22 @@ func RenderStatusPhrase(a *pb.SessionAttention, sp spinner.Model) (cell string, 
 	}
 	switch {
 	case a.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX:
-		return StyleStatusDanger.Render(phrase), true
+		return StyleStatusDanger.Render(spinIfWorking(phrase, attention.ProblemMark, sp, working)), true
 	case phrase == attention.UnverifiedMergePhrase:
-		return StyleStatusWarning.Render(phrase), true
+		return StyleStatusWarning.Render(spinIfWorking(phrase, "? ", sp, working)), true
 	case a.GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE, a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW:
 		return StyleStatusSuccess.Render(phrase), true
 	default:
 		return StyleStatusWarning.Render(phrase), true
 	}
+}
+
+// spinIfWorking swaps phrase's leading mark for the spinner while working.
+func spinIfWorking(phrase, mark string, sp spinner.Model, working bool) string {
+	if rest, cut := strings.CutPrefix(phrase, mark); working && cut {
+		return sp.View() + rest
+	}
+	return phrase
 }
 
 // phraseProgressKey is the text an IN PROGRESS phrase is styled by. A repair
@@ -91,7 +102,7 @@ func SessionStatusDetail(sess *pb.Session) string {
 // Home row.
 func SessionStatusText(sess *pb.Session, sp spinner.Model) string {
 	if a := sess.GetAttention(); a != nil && !displaystatus.IsStateEndingLabel(sess.GetDisplayLabel()) {
-		if cell, ok := RenderStatusPhrase(a, sp); ok {
+		if cell, ok := RenderStatusPhrase(a, sp, sess.GetDisplayLabel() == StatusWorking); ok {
 			return cell
 		}
 	}

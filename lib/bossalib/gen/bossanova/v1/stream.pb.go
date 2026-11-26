@@ -7021,8 +7021,10 @@ func (x *RemoveRepoCommand) GetRepoId() string {
 // ListRepoPRsCommand asks the daemon for a repo's open PRs (new-session
 // "existing PR" picker). Reuses daemon.proto's ListRepoPRsResponse.
 type ListRepoPRsCommand struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RepoId        string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	RepoId string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	// Optional filters, order and cap. Absent keeps today's list.
+	Query         *PRListQuery `protobuf:"bytes,2,opt,name=query,proto3" json:"query,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7062,6 +7064,13 @@ func (x *ListRepoPRsCommand) GetRepoId() string {
 		return x.RepoId
 	}
 	return ""
+}
+
+func (x *ListRepoPRsCommand) GetQuery() *PRListQuery {
+	if x != nil {
+		return x.Query
+	}
+	return nil
 }
 
 // ListTrackerIssuesCommand asks the daemon for a repo's tracker issues, with an
@@ -11387,7 +11396,10 @@ func (x *AgentModelsResult) GetRecentModelIds() []string {
 // AnswerChatQuestionCommand answers the question a chat's agent waits on in
 // its terminal menu. question_id is ChatQuestion.id: the daemon refuses with
 // FAILED_PRECONDITION, typing nothing, unless the agent still waits on that
-// question and its terminal shows that question's menu.
+// question and its terminal shows that question's menu. An answer of several
+// steps is entered one step at a time, each checked against a fresh capture
+// of the terminal; if the menu changes part way, the daemon stops and fails
+// FAILED_PRECONDITION saying the answer was partly entered.
 type AnswerChatQuestionCommand struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	AgentSessionId string                 `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
@@ -11396,6 +11408,7 @@ type AnswerChatQuestionCommand struct {
 	//
 	//	*AnswerChatQuestionCommand_OptionIndex
 	//	*AnswerChatQuestionCommand_Text
+	//	*AnswerChatQuestionCommand_Choices
 	Answer        isAnswerChatQuestionCommand_Answer `protobuf_oneof:"answer"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -11470,6 +11483,15 @@ func (x *AnswerChatQuestionCommand) GetText() string {
 	return ""
 }
 
+func (x *AnswerChatQuestionCommand) GetChoices() *QuestionChoices {
+	if x != nil {
+		if x, ok := x.Answer.(*AnswerChatQuestionCommand_Choices); ok {
+			return x.Choices
+		}
+	}
+	return nil
+}
+
 type isAnswerChatQuestionCommand_Answer interface {
 	isAnswerChatQuestionCommand_Answer()
 }
@@ -11484,9 +11506,17 @@ type AnswerChatQuestionCommand_Text struct {
 	Text string `protobuf:"bytes,4,opt,name=text,proto3,oneof"`
 }
 
+type AnswerChatQuestionCommand_Choices struct {
+	// The options to tick and the words to type, for a question that takes
+	// several choices.
+	Choices *QuestionChoices `protobuf:"bytes,5,opt,name=choices,proto3,oneof"`
+}
+
 func (*AnswerChatQuestionCommand_OptionIndex) isAnswerChatQuestionCommand_Answer() {}
 
 func (*AnswerChatQuestionCommand_Text) isAnswerChatQuestionCommand_Answer() {}
+
+func (*AnswerChatQuestionCommand_Choices) isAnswerChatQuestionCommand_Answer() {}
 
 // AnswerChatQuestionResult reports whether the agent took the answer. The
 // keys were sent either way; is_answered is false when the menu was still
@@ -12525,9 +12555,10 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x19_can_auto_delete_branchesB\x12\n" +
 	"\x10_can_auto_rotate\",\n" +
 	"\x11RemoveRepoCommand\x12\x17\n" +
-	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"-\n" +
+	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"^\n" +
 	"\x12ListRepoPRsCommand\x12\x17\n" +
-	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"q\n" +
+	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12/\n" +
+	"\x05query\x18\x02 \x01(\v2\x19.bossanova.v1.PRListQueryR\x05query\"q\n" +
 	"\x18ListTrackerIssuesCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05query\x18\x02 \x01(\tR\x05query\x12\x1b\n" +
@@ -12857,13 +12888,14 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"agent_name\x18\x01 \x01(\tR\tagentName\"o\n" +
 	"\x11AgentModelsResult\x120\n" +
 	"\x06models\x18\x01 \x03(\v2\x18.bossanova.v1.AgentModelR\x06models\x12(\n" +
-	"\x10recent_model_ids\x18\x02 \x03(\tR\x0erecentModelIds\"\xab\x01\n" +
+	"\x10recent_model_ids\x18\x02 \x03(\tR\x0erecentModelIds\"\xe6\x01\n" +
 	"\x19AnswerChatQuestionCommand\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x1f\n" +
 	"\vquestion_id\x18\x02 \x01(\tR\n" +
 	"questionId\x12#\n" +
 	"\foption_index\x18\x03 \x01(\rH\x00R\voptionIndex\x12\x14\n" +
-	"\x04text\x18\x04 \x01(\tH\x00R\x04textB\b\n" +
+	"\x04text\x18\x04 \x01(\tH\x00R\x04text\x129\n" +
+	"\achoices\x18\x05 \x01(\v2\x1d.bossanova.v1.QuestionChoicesH\x00R\achoicesB\b\n" +
 	"\x06answer\";\n" +
 	"\x18AnswerChatQuestionResult\x12\x1f\n" +
 	"\vis_answered\x18\x01 \x01(\bR\n" +
@@ -13109,13 +13141,15 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(CronJobConcurrencyPolicy)(0),                // 188: bossanova.v1.CronJobConcurrencyPolicy
 	(MergeStrategy)(0),                           // 189: bossanova.v1.MergeStrategy
 	(*SecretUpdate)(nil),                         // 190: bossanova.v1.SecretUpdate
-	(*ChatStatusReport)(nil),                     // 191: bossanova.v1.ChatStatusReport
-	(*NoteTagSet)(nil),                           // 192: bossanova.v1.NoteTagSet
-	(*BroadcastSelector)(nil),                    // 193: bossanova.v1.BroadcastSelector
-	(*UsageSnapshot)(nil),                        // 194: bossanova.v1.UsageSnapshot
-	(*DaemonSettingsUpdate)(nil),                 // 195: bossanova.v1.DaemonSettingsUpdate
-	(*DaemonSettings)(nil),                       // 196: bossanova.v1.DaemonSettings
-	(*AgentModel)(nil),                           // 197: bossanova.v1.AgentModel
+	(*PRListQuery)(nil),                          // 191: bossanova.v1.PRListQuery
+	(*ChatStatusReport)(nil),                     // 192: bossanova.v1.ChatStatusReport
+	(*NoteTagSet)(nil),                           // 193: bossanova.v1.NoteTagSet
+	(*BroadcastSelector)(nil),                    // 194: bossanova.v1.BroadcastSelector
+	(*UsageSnapshot)(nil),                        // 195: bossanova.v1.UsageSnapshot
+	(*DaemonSettingsUpdate)(nil),                 // 196: bossanova.v1.DaemonSettingsUpdate
+	(*DaemonSettings)(nil),                       // 197: bossanova.v1.DaemonSettings
+	(*AgentModel)(nil),                           // 198: bossanova.v1.AgentModel
+	(*QuestionChoices)(nil),                      // 199: bossanova.v1.QuestionChoices
 }
 var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	8,   // 0: bossanova.v1.DaemonEvent.snapshot:type_name -> bossanova.v1.DaemonSnapshot
@@ -13301,44 +13335,46 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	190, // 180: bossanova.v1.UpdateRepoCommand.linear_key:type_name -> bossanova.v1.SecretUpdate
 	190, // 181: bossanova.v1.UpdateRepoCommand.sentry_key:type_name -> bossanova.v1.SecretUpdate
 	142, // 182: bossanova.v1.UpdateRepoCommand.expected_updated_at:type_name -> google.protobuf.Timestamp
-	142, // 183: bossanova.v1.EmptyTrashCommand.older_than:type_name -> google.protobuf.Timestamp
-	191, // 184: bossanova.v1.ReportChatStatusCommand.reports:type_name -> bossanova.v1.ChatStatusReport
-	142, // 185: bossanova.v1.CreateGitHubCallbackCommand.expires_at:type_name -> google.protobuf.Timestamp
-	192, // 186: bossanova.v1.UpdateNoteCommand.tags:type_name -> bossanova.v1.NoteTagSet
-	136, // 187: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
-	193, // 188: bossanova.v1.BroadcastEgress.selector:type_name -> bossanova.v1.BroadcastSelector
-	142, // 189: bossanova.v1.BroadcastEgress.expires_at:type_name -> google.protobuf.Timestamp
-	193, // 190: bossanova.v1.BroadcastCommand.selector:type_name -> bossanova.v1.BroadcastSelector
-	142, // 191: bossanova.v1.BroadcastCommand.expires_at:type_name -> google.protobuf.Timestamp
-	92,  // 192: bossanova.v1.TerminalClientMessage.attach:type_name -> bossanova.v1.TerminalAttachCommand
-	93,  // 193: bossanova.v1.TerminalClientMessage.input:type_name -> bossanova.v1.TerminalInputCommand
-	94,  // 194: bossanova.v1.TerminalClientMessage.resize:type_name -> bossanova.v1.TerminalResizeCommand
-	95,  // 195: bossanova.v1.TerminalClientMessage.close:type_name -> bossanova.v1.TerminalCloseCommand
-	104, // 196: bossanova.v1.TerminalClientMessage.ready:type_name -> bossanova.v1.TerminalReady
-	105, // 197: bossanova.v1.TerminalClientMessage.ping:type_name -> bossanova.v1.TerminalPing
-	96,  // 198: bossanova.v1.TerminalClientMessage.upload_start:type_name -> bossanova.v1.TerminalUploadStart
-	97,  // 199: bossanova.v1.TerminalClientMessage.upload_chunk:type_name -> bossanova.v1.TerminalUploadChunk
-	98,  // 200: bossanova.v1.TerminalClientMessage.upload_finish:type_name -> bossanova.v1.TerminalUploadFinish
-	99,  // 201: bossanova.v1.TerminalClientMessage.upload_cancel:type_name -> bossanova.v1.TerminalUploadCancel
-	102, // 202: bossanova.v1.TerminalServerMessage.data:type_name -> bossanova.v1.TerminalDataChunk
-	103, // 203: bossanova.v1.TerminalServerMessage.exited:type_name -> bossanova.v1.TerminalAttachExited
-	106, // 204: bossanova.v1.TerminalServerMessage.pong:type_name -> bossanova.v1.TerminalPong
-	100, // 205: bossanova.v1.TerminalServerMessage.upload_ack:type_name -> bossanova.v1.TerminalUploadAck
-	101, // 206: bossanova.v1.TerminalServerMessage.upload_result:type_name -> bossanova.v1.TerminalUploadResult
-	108, // 207: bossanova.v1.TerminalServerMessage.sealed_key:type_name -> bossanova.v1.TerminalSealedKey
-	139, // 208: bossanova.v1.AgentAccountInventory.accounts:type_name -> bossanova.v1.AgentAccount
-	194, // 209: bossanova.v1.AgentAccountUsageReport.usage:type_name -> bossanova.v1.UsageSnapshot
-	142, // 210: bossanova.v1.AgentAccountUsageReport.throttled_until_at:type_name -> google.protobuf.Timestamp
-	194, // 211: bossanova.v1.ApplyAgentAccountUsageCommand.usage:type_name -> bossanova.v1.UsageSnapshot
-	142, // 212: bossanova.v1.ApplyAgentAccountUsageCommand.throttled_until_at:type_name -> google.protobuf.Timestamp
-	195, // 213: bossanova.v1.UpdateDaemonSettingsCommand.update:type_name -> bossanova.v1.DaemonSettingsUpdate
-	196, // 214: bossanova.v1.DaemonSettingsResult.settings:type_name -> bossanova.v1.DaemonSettings
-	197, // 215: bossanova.v1.AgentModelsResult.models:type_name -> bossanova.v1.AgentModel
-	216, // [216:216] is the sub-list for method output_type
-	216, // [216:216] is the sub-list for method input_type
-	216, // [216:216] is the sub-list for extension type_name
-	216, // [216:216] is the sub-list for extension extendee
-	0,   // [0:216] is the sub-list for field type_name
+	191, // 183: bossanova.v1.ListRepoPRsCommand.query:type_name -> bossanova.v1.PRListQuery
+	142, // 184: bossanova.v1.EmptyTrashCommand.older_than:type_name -> google.protobuf.Timestamp
+	192, // 185: bossanova.v1.ReportChatStatusCommand.reports:type_name -> bossanova.v1.ChatStatusReport
+	142, // 186: bossanova.v1.CreateGitHubCallbackCommand.expires_at:type_name -> google.protobuf.Timestamp
+	193, // 187: bossanova.v1.UpdateNoteCommand.tags:type_name -> bossanova.v1.NoteTagSet
+	136, // 188: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
+	194, // 189: bossanova.v1.BroadcastEgress.selector:type_name -> bossanova.v1.BroadcastSelector
+	142, // 190: bossanova.v1.BroadcastEgress.expires_at:type_name -> google.protobuf.Timestamp
+	194, // 191: bossanova.v1.BroadcastCommand.selector:type_name -> bossanova.v1.BroadcastSelector
+	142, // 192: bossanova.v1.BroadcastCommand.expires_at:type_name -> google.protobuf.Timestamp
+	92,  // 193: bossanova.v1.TerminalClientMessage.attach:type_name -> bossanova.v1.TerminalAttachCommand
+	93,  // 194: bossanova.v1.TerminalClientMessage.input:type_name -> bossanova.v1.TerminalInputCommand
+	94,  // 195: bossanova.v1.TerminalClientMessage.resize:type_name -> bossanova.v1.TerminalResizeCommand
+	95,  // 196: bossanova.v1.TerminalClientMessage.close:type_name -> bossanova.v1.TerminalCloseCommand
+	104, // 197: bossanova.v1.TerminalClientMessage.ready:type_name -> bossanova.v1.TerminalReady
+	105, // 198: bossanova.v1.TerminalClientMessage.ping:type_name -> bossanova.v1.TerminalPing
+	96,  // 199: bossanova.v1.TerminalClientMessage.upload_start:type_name -> bossanova.v1.TerminalUploadStart
+	97,  // 200: bossanova.v1.TerminalClientMessage.upload_chunk:type_name -> bossanova.v1.TerminalUploadChunk
+	98,  // 201: bossanova.v1.TerminalClientMessage.upload_finish:type_name -> bossanova.v1.TerminalUploadFinish
+	99,  // 202: bossanova.v1.TerminalClientMessage.upload_cancel:type_name -> bossanova.v1.TerminalUploadCancel
+	102, // 203: bossanova.v1.TerminalServerMessage.data:type_name -> bossanova.v1.TerminalDataChunk
+	103, // 204: bossanova.v1.TerminalServerMessage.exited:type_name -> bossanova.v1.TerminalAttachExited
+	106, // 205: bossanova.v1.TerminalServerMessage.pong:type_name -> bossanova.v1.TerminalPong
+	100, // 206: bossanova.v1.TerminalServerMessage.upload_ack:type_name -> bossanova.v1.TerminalUploadAck
+	101, // 207: bossanova.v1.TerminalServerMessage.upload_result:type_name -> bossanova.v1.TerminalUploadResult
+	108, // 208: bossanova.v1.TerminalServerMessage.sealed_key:type_name -> bossanova.v1.TerminalSealedKey
+	139, // 209: bossanova.v1.AgentAccountInventory.accounts:type_name -> bossanova.v1.AgentAccount
+	195, // 210: bossanova.v1.AgentAccountUsageReport.usage:type_name -> bossanova.v1.UsageSnapshot
+	142, // 211: bossanova.v1.AgentAccountUsageReport.throttled_until_at:type_name -> google.protobuf.Timestamp
+	195, // 212: bossanova.v1.ApplyAgentAccountUsageCommand.usage:type_name -> bossanova.v1.UsageSnapshot
+	142, // 213: bossanova.v1.ApplyAgentAccountUsageCommand.throttled_until_at:type_name -> google.protobuf.Timestamp
+	196, // 214: bossanova.v1.UpdateDaemonSettingsCommand.update:type_name -> bossanova.v1.DaemonSettingsUpdate
+	197, // 215: bossanova.v1.DaemonSettingsResult.settings:type_name -> bossanova.v1.DaemonSettings
+	198, // 216: bossanova.v1.AgentModelsResult.models:type_name -> bossanova.v1.AgentModel
+	199, // 217: bossanova.v1.AnswerChatQuestionCommand.choices:type_name -> bossanova.v1.QuestionChoices
+	218, // [218:218] is the sub-list for method output_type
+	218, // [218:218] is the sub-list for method input_type
+	218, // [218:218] is the sub-list for extension type_name
+	218, // [218:218] is the sub-list for extension extendee
+	0,   // [0:218] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_stream_proto_init() }
@@ -13551,6 +13587,7 @@ func file_bossanova_v1_stream_proto_init() {
 	file_bossanova_v1_stream_proto_msgTypes[121].OneofWrappers = []any{
 		(*AnswerChatQuestionCommand_OptionIndex)(nil),
 		(*AnswerChatQuestionCommand_Text)(nil),
+		(*AnswerChatQuestionCommand_Choices)(nil),
 	}
 	file_bossanova_v1_stream_proto_msgTypes[128].OneofWrappers = []any{}
 	type x struct{}

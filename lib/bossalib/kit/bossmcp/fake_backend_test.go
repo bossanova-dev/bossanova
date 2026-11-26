@@ -21,10 +21,11 @@ type fakeBackend struct {
 	listRepos            func(ctx context.Context) ([]*pb.Repo, error)
 	removeRepo           func(ctx context.Context, id string) error
 	updateRepo           func(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error)
-	listRepoPRs          func(ctx context.Context, repoID string) ([]*pb.PRSummary, error)
+	listRepoPRs          func(ctx context.Context, req *pb.ListRepoPRsRequest) ([]*pb.PRSummary, error)
 	listTrackerIssues    func(ctx context.Context, repoID, query, source string) ([]*pb.TrackerIssue, error)
 	createSession        func(ctx context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error)
 	getSession           func(ctx context.Context, id string) (*pb.Session, error)
+	mintProofViewLink    func(ctx context.Context, req *pb.MintProofViewLinkRequest) (*pb.MintProofViewLinkResponse, error)
 	listSessions         func(ctx context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error)
 	stopSession          func(ctx context.Context, id string) (*pb.Session, error)
 	pauseSession         func(ctx context.Context, id string) (*pb.Session, error)
@@ -154,9 +155,9 @@ func (f *fakeBackend) UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest)
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error) {
+func (f *fakeBackend) ListRepoPRs(ctx context.Context, req *pb.ListRepoPRsRequest) ([]*pb.PRSummary, error) {
 	if f.listRepoPRs != nil {
-		return f.listRepoPRs(ctx, repoID)
+		return f.listRepoPRs(ctx, req)
 	}
 	return nil, errNotImpl
 }
@@ -178,6 +179,13 @@ func (f *fakeBackend) CreateSession(ctx context.Context, req *pb.CreateSessionRe
 func (f *fakeBackend) GetSession(ctx context.Context, id string) (*pb.Session, error) {
 	if f.getSession != nil {
 		return f.getSession(ctx, id)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) MintProofViewLink(ctx context.Context, req *pb.MintProofViewLinkRequest) (*pb.MintProofViewLinkResponse, error) {
+	if f.mintProofViewLink != nil {
+		return f.mintProofViewLink(ctx, req)
 	}
 	return nil, errNotImpl
 }

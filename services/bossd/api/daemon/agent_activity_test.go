@@ -785,9 +785,11 @@ func settle(t *testing.T, c *WedgeActivityCache, sessionID string) {
 	if !ok {
 		return
 	}
+	// A bound, not a budget: parsing a 32 MB rollout under -race on a loaded
+	// host has taken over 10s, so match the cache's own readWait.
 	select {
 	case <-r.done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(time.Minute):
 		t.Fatal("background persisted read never finished")
 	}
 }

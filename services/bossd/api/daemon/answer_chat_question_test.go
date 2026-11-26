@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"testing/synctest"
 
 	"connectrpc.com/connect"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
@@ -17,11 +19,13 @@ import (
 )
 
 // fakeChatPane is a chat's terminal: whether it is live, what it shows, and
-// what was sent to it.
+// what was sent to it. after[n] is what it shows once the n+1th inputs are
+// sent; past its end the pane stays as it was.
 type fakeChatPane struct {
 	ChatTmuxSpawner
 	live    bool
 	pane    string
+	after   []string
 	sent    [][]domain.PaneInput
 	sendErr error
 }
@@ -32,6 +36,9 @@ func (p *fakeChatPane) CapturePane(context.Context, string) (string, error) {
 }
 func (p *fakeChatPane) SendPaneInputs(_ context.Context, _ string, inputs []domain.PaneInput) error {
 	p.sent = append(p.sent, inputs)
+	if n := len(p.sent); n <= len(p.after) {
+		p.pane = p.after[n-1]
+	}
 	return p.sendErr
 }
 
@@ -45,7 +52,7 @@ type fakePlanner struct {
 }
 
 func (f *fakePlanner) PlanQuestionAnswer(_ context.Context, req *pb.PlanQuestionAnswerRequest) (*pb.PlanQuestionAnswerResponse, error) {
-	f.asked = append(f.asked, req)
+	f.asked = append(f.asked, proto.CloneOf(req))
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -139,6 +146,9 @@ func TestAnswerChatQuestion_TypesNothingWhenRefused(t *testing.T) {
 		{"the agent has no question menu", &fakePlanner{err: grpcstatus.Error(codes.Unimplemented, "no")}, &fakeChatPane{live: true}, optionAnswer(0), nil, connect.CodeFailedPrecondition},
 		{"two lines of words", &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{pendingPlan(answerKeyTwo...)}}, &fakeChatPane{live: true}, &pb.AnswerChatQuestionCommand{AgentSessionId: "agent-1", QuestionId: "toolu_1", Answer: &pb.AnswerChatQuestionCommand_Text{Text: "a\nb"}}, nil, connect.CodeInvalidArgument},
 		{"an escape byte in the words", &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{pendingPlan(answerKeyTwo...)}}, &fakeChatPane{live: true}, &pb.AnswerChatQuestionCommand{AgentSessionId: "agent-1", QuestionId: "toolu_1", Answer: &pb.AnswerChatQuestionCommand_Text{Text: "teal\x1b[2J"}}, nil, connect.CodeInvalidArgument},
+		{"several choices naming nothing", &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{pendingPlan(answerKeyTwo...)}}, &fakeChatPane{live: true}, choicesAnswer(""), nil, connect.CodeInvalidArgument},
+		{"several choices with blank words", &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{pendingPlan(answerKeyTwo...)}}, &fakeChatPane{live: true}, choicesAnswer("  ", 0), nil, connect.CodeInvalidArgument},
+		{"several choices with two lines of words", &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{pendingPlan(answerKeyTwo...)}}, &fakeChatPane{live: true}, choicesAnswer("a\nb", 0), nil, connect.CodeInvalidArgument},
 		{"no question named", &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{pendingPlan(answerKeyTwo...)}}, &fakeChatPane{live: true}, &pb.AnswerChatQuestionCommand{AgentSessionId: "agent-1", Answer: &pb.AnswerChatQuestionCommand_OptionIndex{}}, nil, connect.CodeInvalidArgument},
 		{"cloud control refuses the repository", &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{pendingPlan(answerKeyTwo...)}}, &fakeChatPane{live: true}, optionAnswer(0), func(ctx context.Context) context.Context {
 			return domain.WithCloudRepoCheck(domain.WithCloudTarget(ctx, domain.CloudTarget{"repo:r1": "r1"}), func(context.Context, string) bool { return false })
@@ -266,6 +276,98 @@ func TestStopChat_RefusesWithoutStopping(t *testing.T) {
 			if stops != 0 {
 				t.Fatalf("stopped %d times, want none", stops)
 			}
+		})
+	}
+}
+
+func choicesAnswer(text string, indexes ...uint32) *pb.AnswerChatQuestionCommand {
+	return &pb.AnswerChatQuestionCommand{
+		AgentSessionId: "agent-1", QuestionId: "toolu_1",
+		Answer: &pb.AnswerChatQuestionCommand_Choices{Choices: &pb.QuestionChoices{OptionIndexes: indexes, Text: text}},
+	}
+}
+
+func stepPlan(isFinal bool, keys ...string) *pb.PlanQuestionAnswerResponse {
+	inputs := make([]*pb.PaneInput, 0, len(keys))
+	for _, k := range keys {
+		inputs = append(inputs, &pb.PaneInput{Input: &pb.PaneInput_Key{Key: k}})
+	}
+	return &pb.PlanQuestionAnswerResponse{IsQuestionPending: true, Inputs: inputs, IsFinalStep: proto.Bool(isFinal)}
+}
+
+func sentKeys(sent [][]domain.PaneInput) [][]string {
+	out := make([][]string, 0, len(sent))
+	for _, step := range sent {
+		keys := make([]string, 0, len(step))
+		for _, in := range step {
+			keys = append(keys, in.Key)
+		}
+		out = append(out, keys)
+	}
+	return out
+}
+
+func TestAnswerChatQuestion_EntersEachStepAgainstAFreshCapture_Chat_AC277701(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		planner := &fakePlanner{plans: []*pb.PlanQuestionAnswerResponse{
+			stepPlan(false, "Space"), stepPlan(false, "Down", "Space"), stepPlan(true, "Enter"), answeredPlan(),
+		}}
+		pane := &fakeChatPane{live: true, pane: "untouched", after: []string{"one ticked", "two ticked", "review"}}
+		s := newAnswerTestServer(t, planner, pane)
+
+		got, err := s.AnswerChatQuestion(t.Context(), choicesAnswer("Durian", 0, 1))
+		if err != nil {
+			t.Fatalf("AnswerChatQuestion: %v", err)
+		}
+		if !got.GetIsAnswered() {
+			t.Fatal("is_answered = false, want true once the plugin stops finding the question")
+		}
+		want := [][]string{{"Space"}, {"Down", "Space"}, {"Enter"}}
+		if got := sentKeys(pane.sent); !slices.EqualFunc(got, want, slices.Equal) {
+			t.Fatalf("sent %v, want %v: each step in order, nothing after the final one", got, want)
+		}
+		planned := []string{"untouched", "one ticked", "two ticked", "review"}
+		for i, wantPane := range planned {
+			if got := string(planner.asked[i].GetPaneContent()); got != wantPane {
+				t.Fatalf("plan %d against %q, want a fresh capture %q", i+1, got, wantPane)
+			}
+		}
+		choices := planner.asked[0].GetChoices()
+		if len(choices.GetOptionIndexes()) != 2 || choices.GetText() != "Durian" {
+			t.Fatalf("planned choices %v, want options 0 and 1 with the words", choices)
+		}
+	})
+}
+
+func TestAnswerChatQuestion_StopsAPartlyEnteredAnswer(t *testing.T) {
+	endless := make([]string, maxAnswerSteps+4)
+	for i := range endless {
+		endless[i] = "pane " + string(rune('a'+i))
+	}
+	cases := []struct {
+		name     string
+		plans    []*pb.PlanQuestionAnswerResponse
+		after    []string
+		wantSent int
+	}{
+		{"the menu changed to another question", []*pb.PlanQuestionAnswerResponse{stepPlan(false, "Space"), answeredPlan()}, []string{"another menu"}, 1},
+		{"the next step cannot be planned", []*pb.PlanQuestionAnswerResponse{stepPlan(false, "Space"), {IsQuestionPending: true, Reason: "someone is typing"}}, []string{"typed"}, 1},
+		{"the menu did not change after a step", []*pb.PlanQuestionAnswerResponse{stepPlan(false, "Space")}, nil, 1},
+		{"the menu wants more steps than an answer takes", []*pb.PlanQuestionAnswerResponse{stepPlan(false, "Space")}, endless, maxAnswerSteps},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				pane := &fakeChatPane{live: true, pane: "untouched", after: tc.after}
+				s := newAnswerTestServer(t, &fakePlanner{plans: tc.plans}, pane)
+				_, err := s.AnswerChatQuestion(t.Context(), choicesAnswer("", 0))
+				if connect.CodeOf(err) != connect.CodeFailedPrecondition || !errors.Is(err, ErrAnswerPartlyEntered) {
+					t.Fatalf("err = %v, want FailedPrecondition saying the answer was partly entered", err)
+				}
+				if len(pane.sent) != tc.wantSent {
+					t.Fatalf("sent %d steps, want %d and nothing more once the answer stops", len(pane.sent), tc.wantSent)
+				}
+			})
 		})
 	}
 }

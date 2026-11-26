@@ -1,0 +1,144 @@
+{
+  "schema": "proof-spec/1",
+  "head": "f1c8120b3c3d2be7c49788c6532366bccc166c56",
+  "title": "Round the basket total once, in pennies",
+  "reason": "A new test pins the three-line total that was a penny out, and the basket view still needs a person to look at it.",
+  "lead": {
+    "kind": "bug-fix",
+    "text": "A basket of three lines at a third of a pound showed 0.99 instead of 1.00, because each line and then the sum rounded. The total now adds whole pennies and divides once, in `src/cart.ts`."
+  },
+  "signals": [
+    { "key": "ui", "summary": "The basket total reads the rounded amount once", "pill": "safe" },
+    {
+      "key": "checks",
+      "summary": "The unit suite passed on this head",
+      "pill": "proven"
+    },
+    {
+      "key": "tests",
+      "summary": "A new test proves the three-line total; nothing tests a price below a penny",
+      "pill": "to review"
+    },
+    {
+      "key": "revert",
+      "summary": "Reverting restores the double rounding; it writes no data",
+      "pill": "safe"
+    },
+    {
+      "key": "bug-fix",
+      "summary": "Root cause named; the author reports the test failing before the fix",
+      "pill": "reported"
+    }
+  ],
+  "bugFix": {
+    "rows": [
+      {
+        "label": "symptom",
+        "text": "Three lines at 0.33, 0.33 and 0.34 showed a total of 0.99.",
+        "source": "reported"
+      },
+      {
+        "label": "root-cause",
+        "text": "`lineTotal` rounded each line to pennies and `total` rounded the sum again, so the errors added up.",
+        "source": "diff"
+      },
+      {
+        "label": "reproduction",
+        "text": "The new test in `src/cart.test.ts` builds the three-line basket.",
+        "source": "diff"
+      },
+      {
+        "label": "before",
+        "text": "Reported by the author: the test failed on the base commit.",
+        "source": "reported"
+      },
+      { "label": "after", "text": "The unit suite passed on this head.", "source": "ci" },
+      {
+        "label": "not-checked",
+        "text": "Prices with fractions of a penny, which `src/cart.ts:5` rounds per unit."
+      },
+      {
+        "label": "left-open",
+        "text": "Saved baskets keep the total they were stored with until they are repriced."
+      }
+    ]
+  },
+  "testing": {
+    "summary": "The new test proves the basket total no longer rounds twice. It does not prove what happens to a price below a penny.",
+    "proves": ["A three-line basket totals 1.00", "The total adds whole pennies before dividing"],
+    "gaps": ["A price with a fraction of a penny", "How the basket view looks"],
+    "also": ["The unit suite passed on this head"]
+  },
+  "risks": [
+    {
+      "id": "R1",
+      "level": "medium",
+      "title": "A price with a fraction of a penny rounds per unit",
+      "impact": "Ten items at 0.125 now total 1.30 rather than 1.25, because each unit rounds before the quantity multiplies.",
+      "guard": "None.",
+      "at": { "path": "src/cart.ts", "line": 5 },
+      "links": ["G1", "RF1"]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Should a price with fractions of a penny round per unit?",
+      "why": "It decides what a bulk order of cheap items costs.",
+      "suggestion": "Round the line, not the unit: multiply first, then round once per line.",
+      "at": { "path": "src/cart.ts", "line": 5 },
+      "links": ["R1"]
+    }
+  ],
+  "areas": [
+    {
+      "id": "ui",
+      "name": "UI",
+      "summary": "The basket view reads the total once and formats it.",
+      "facts": [{ "text": "No visual change", "flag": false }],
+      "snippets": [{ "path": "src/ui/Total.tsx", "start": 1, "end": 6, "pinLine": 4 }]
+    }
+  ],
+  "checklist": {
+    "after": [{ "text": "Reprice saved baskets once the fix is live", "done": false }]
+  },
+  "guardrails": [
+    {
+      "id": "G1",
+      "kind": "lint",
+      "title": "Money still moves as floating-point numbers",
+      "body": "`total` divides pennies back into a float, so the next change that adds a discount can round twice again.",
+      "proposal": "A lint rule that fails a new `Math.round` on a money value outside `src/cart.ts`.",
+      "evidence": "Two rounding fixes touched `src/cart.ts` this month.",
+      "links": ["R1"]
+    },
+    {
+      "id": "G2",
+      "kind": "check",
+      "title": "No test runs prices below a penny",
+      "body": "The suite only builds whole-penny prices, so R1 had nothing to catch it.",
+      "proposal": "A table test over fractional prices and quantities that fails on per-unit rounding."
+    }
+  ],
+  "refactoring": [
+    {
+      "id": "RF1",
+      "title": "Store prices as whole pennies",
+      "body": "Every caller converts floats to pennies and back. Storing pennies removes the conversion.",
+      "proposal": "Make `Line.price` an integer number of pennies and format only in the view.",
+      "evidence": "The code predates this PR.",
+      "links": []
+    }
+  ],
+  "noise": [
+    {
+      "id": "N1",
+      "title": "The UI was flagged for a one-line refactor",
+      "body": "`src/ui/Total.tsx` only names the amount before formatting it, yet the page wants a person to look at it.",
+      "proposal": "Treat a view change with no markup change as needing no recording.",
+      "evidence": "From this head's diff."
+    }
+  ],
+  "notes": [],
+  "uncertain": []
+}

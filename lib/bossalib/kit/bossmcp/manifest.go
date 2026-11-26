@@ -19,6 +19,7 @@ var readOnlyToolNames = []string{
 	"list_repo_prs",
 	"list_tracker_issues",
 	"get_session",
+	"get_proof_view_link",
 	"list_chats",
 	"get_chat_statuses",
 	"get_session_statuses",

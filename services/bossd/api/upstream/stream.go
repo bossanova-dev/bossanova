@@ -572,8 +572,9 @@ type SessionCommandHandler interface {
 	UpdateRepo(ctx context.Context, req *pb.UpdateRepoCommand) (*pb.UpdateRepoResponse, error)
 	// RemoveRepo removes a repo by ID.
 	RemoveRepo(ctx context.Context, repoID string) error
-	// ListRepoPRs returns a repo's open PRs for the web "existing PR" picker.
-	ListRepoPRs(ctx context.Context, repoID string) (*pb.ListRepoPRsResponse, error)
+	// ListRepoPRs returns a repo's open PRs for the web "existing PR" picker
+	// and hosted MCP, applying the optional query.
+	ListRepoPRs(ctx context.Context, repoID string, query *pb.PRListQuery) (*pb.ListRepoPRsResponse, error)
 	// ListTrackerIssues returns a repo's tracker issues (optional server-side
 	// query + source) for the web Linear/Sentry pickers.
 	ListTrackerIssues(ctx context.Context, repoID, query string, source *string) (*pb.ListTrackerIssuesResponse, error)

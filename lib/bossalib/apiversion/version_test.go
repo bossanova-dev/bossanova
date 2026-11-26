@@ -192,15 +192,15 @@ func TestDefaultRegistry(t *testing.T) {
 	// Current advances with behavior changes while Default stays Baseline
 	// (header-less callers pin to the oldest supported version).
 	// V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.V20261107 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20261107)
+	if reg.Current() != apiversion.V20261108 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20261108)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 51 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 51", len(all))
+	if len(all) != 52 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 52", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -349,7 +349,7 @@ func TestConstants(t *testing.T) {
 // named constant. Current may be one trailing unreleased contract; released.go
 // remains the immutable ledger of versions that have actually shipped.
 func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
-	const wantCurrent = apiversion.Version("2026-11-07")
+	const wantCurrent = apiversion.Version("2026-11-08")
 	if got := apiversion.DefaultRegistry().Current(); got != wantCurrent {
 		t.Errorf("DefaultRegistry().Current() = %q, want %q", got, wantCurrent)
 	}
@@ -357,7 +357,7 @@ func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
 	if len(released) == 0 {
 		t.Fatal("ReleasedVersions is empty")
 	}
-	const wantNewestReleased = apiversion.Version("2026-11-06")
+	const wantNewestReleased = apiversion.Version("2026-11-07")
 	if got := released[len(released)-1]; got != wantNewestReleased {
 		t.Errorf("newest ReleasedVersions entry = %q, want %q", got, wantNewestReleased)
 	}
@@ -756,6 +756,7 @@ func TestUnresolvedGateReadCoversEveryPredicate(t *testing.T) {
 		"IsDaemonServingOrganizationListing": apiversion.IsDaemonServingOrganizationListing,
 		"IsOrganizationRepoMappedReads":      apiversion.IsOrganizationRepoMappedReads,
 		"IsForeignRepositoryCreateRefused":   apiversion.IsForeignRepositoryCreateRefused,
+		"IsCrossOrganizationChatCommands":    apiversion.IsCrossOrganizationChatCommands,
 	}
 	for _, predicate := range predicates {
 		predicate(context.Background())
@@ -854,6 +855,29 @@ func TestIsForeignRepositoryCreateRefused(t *testing.T) {
 			next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
 				if got := apiversion.IsForeignRepositoryCreateRefused(ctx); got != tc.want {
 					t.Errorf("foreign repository create refused = %v, want %v", got, tc.want)
+				}
+				return connect.NewResponse(&struct{}{}), nil
+			}
+			if _, err := apiversion.Interceptor(apiversion.DefaultRegistry(), nil).WrapUnary(next)(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestIsCrossOrganizationChatCommands(t *testing.T) {
+	for _, tc := range []struct {
+		version apiversion.Version
+		want    bool
+	}{
+		{apiversion.V20261107, false}, {apiversion.V20261108, true},
+	} {
+		t.Run(tc.version.String(), func(t *testing.T) {
+			req := connect.NewRequest(&struct{}{})
+			req.Header().Set(apiversion.HeaderName, tc.version.String())
+			next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+				if got := apiversion.IsCrossOrganizationChatCommands(ctx); got != tc.want {
+					t.Errorf("cross-organization chat commands = %v, want %v", got, tc.want)
 				}
 				return connect.NewResponse(&struct{}{}), nil
 			}

@@ -618,6 +618,84 @@ test('discoverExtensions finds the committed boss-build methodology extension re
   assert.equal(found.role, 'methodology')
 })
 
+test('discoverExtensions finds the committed boss-build polish extension repo-local', () => {
+  const { status, stdout } = runCli([
+    'discover',
+    '--core',
+    'boss-build',
+    '--role',
+    'polish',
+    '--json',
+  ])
+  assert.equal(status, 0)
+  const found = JSON.parse(stdout).extensions.find((e) => e.name === 'boss-build-comments')
+  assert.ok(found, stdout)
+  assert.equal(found.role, 'polish')
+})
+
+test('discoverExtensions orders polish extensions by ascending order', () => {
+  const root = scratchRoot()
+  for (const [name, order] of [
+    ['boss-build-late', 90],
+    ['boss-build-early', 10],
+  ]) {
+    writeSkill(root, name, [
+      `name: ${name}`,
+      'x-boss-extension:',
+      '  extends: boss-build',
+      '  role: polish',
+      `  order: ${order}`,
+    ])
+  }
+  const { extensions, skipped } = discoverExtensions({ core: 'boss-build', root, role: 'polish' })
+  assert.deepEqual(
+    extensions.map((e) => [e.name, e.order]),
+    [
+      ['boss-build-early', 10],
+      ['boss-build-late', 90],
+    ],
+  )
+  assert.deepEqual(skipped, [])
+})
+
+test('validateResult checks the polish envelope', () => {
+  const polish = (fields) => ({ ok: true, extension: 'boss-build-x', role: 'polish', ...fields })
+  const landed = polish({ commitsMade: ['a1b2c3d chore: drop comments'], summary: 'dropped 3' })
+  assert.deepEqual(validateResult(landed, 'polish'), { ok: true, errors: [] })
+  assert.deepEqual(
+    validateResult(polish({ commitsMade: [], summary: 'nothing to tidy' }), 'polish'),
+    {
+      ok: true,
+      errors: [],
+    },
+  )
+  assert.deepEqual(validateResult(polish({ commitsMade: [''], summary: 'x' }), 'polish'), {
+    ok: false,
+    errors: ['commit 0 must be a non-empty string'],
+  })
+  assert.deepEqual(validateResult(polish({ commitsMade: 'a1b2c3d', summary: 'x' }), 'polish'), {
+    ok: false,
+    errors: ['commitsMade must be an array'],
+  })
+  assert.deepEqual(validateResult(polish({ commitsMade: [], summary: ' ' }), 'polish'), {
+    ok: false,
+    errors: ['summary must be a non-empty string'],
+  })
+  assert.deepEqual(validateResult(polish({ summary: 'x' }), 'polish'), {
+    ok: false,
+    errors: ['missing "commitsMade"'],
+  })
+  assert.deepEqual(
+    validateResult({ ...polish({ commitsMade: [], summary: 'x' }), role: 'methodology' }, 'polish'),
+    { ok: false, errors: ['envelope role "methodology" does not match expected "polish"'] },
+  )
+  const failed = { ok: false, extension: 'boss-build-x', role: 'polish', error: 'agent died' }
+  assert.deepEqual(validateResult({ ...failed, commitsMade: [], summary: 'x' }, 'polish'), {
+    ok: false,
+    errors: ['extension reported failure (ok:false): agent died'],
+  })
+})
+
 test('discoverExtensions is a no-op when the skills dir is absent', () => {
   const root = scratchRoot()
   const { extensions } = discoverExtensions({ core: 'bs-review', root })
@@ -925,6 +1003,19 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     '  role: verify',
     '  applies: ../outside.mjs',
   ])
+  // invalid-timeout and invalid-writes (also reached only by the verify pass)
+  writeSkill(root, 'bs-review-badtimeout', [
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: verify',
+    '  timeout: 90',
+  ])
+  writeSkill(root, 'bs-review-badwrites', [
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: verify',
+    '  writes: tracked',
+  ])
 
   writeSkill(root, 'bs-review-badrelease', [
     'x-boss-extension:',
@@ -1061,6 +1152,8 @@ test('configuration, non-extension and eligibility skips are classified delibera
     'invalid-release-marker',
     'invalid-script',
     'invalid-sections',
+    'invalid-timeout',
+    'invalid-writes',
     'malformed-frontmatter',
     'missing-marker',
     'mode-not-declared',
@@ -1248,6 +1341,7 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
     'orchestrate-round',
     'orchestrate-rules',
     'plan-reviewer',
+    'polish',
     'promote',
     'proof-describe',
     'proof-media',

@@ -23,12 +23,12 @@ import {
   removeTierAProbeRoot,
   REVIEW_PREAMBLE,
   reviewPreamble,
-  resolveAgentBin,
   resolveLegFitTimeout,
   reviewHelperTimeoutMs,
   sanitizeOutput,
   sliceLenUtf8Safe,
 } from './cross-review-lib.mjs'
+import { resolveAgentBin } from '../agent-cli.mjs'
 
 const LOAD_TOLERANT_WAIT_MS = 30_000
 

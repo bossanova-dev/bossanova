@@ -51,5 +51,6 @@ go_test(
         "//lib/bossalib/kit/projectconfig",
         "@com_connectrpc_connect//:connect",
         "@com_github_modelcontextprotocol_go_sdk//mcp",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

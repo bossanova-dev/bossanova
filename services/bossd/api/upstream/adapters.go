@@ -813,11 +813,11 @@ func (a *CommandHandlerAdapter) RemoveRepo(ctx context.Context, repoID string) e
 }
 
 // ListRepoPRs implements SessionCommandHandler.ListRepoPRs.
-func (a *CommandHandlerAdapter) ListRepoPRs(ctx context.Context, repoID string) (*pb.ListRepoPRsResponse, error) {
+func (a *CommandHandlerAdapter) ListRepoPRs(ctx context.Context, repoID string, query *pb.PRListQuery) (*pb.ListRepoPRsResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("list_repo_prs: command server not wired")
 	}
-	resp, err := a.Commands.ListRepoPRs(ctx, connect.NewRequest(&pb.ListRepoPRsRequest{RepoId: repoID}))
+	resp, err := a.Commands.ListRepoPRs(ctx, connect.NewRequest(&pb.ListRepoPRsRequest{RepoId: repoID, Query: query}))
 	if err != nil {
 		return nil, fmt.Errorf("list repo prs: %w", err)
 	}

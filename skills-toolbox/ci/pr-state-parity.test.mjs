@@ -260,7 +260,42 @@ const SCENARIOS = [
       verdict: verdictOf('unknown', 'not-requested'),
     }),
   },
+  {
+    name: 'draft CI on request: required checks pass in dispatched suites',
+    required: ['go-test'],
+    want: verdictOf(CHECK_STATES.GREEN, CHECK_REASONS.OK),
+    gh: {
+      rollup: [ghCheck('lint', 'SUCCESS'), ghCheck('go-test', 'SKIPPED')],
+      runs: [ghRun('CI', 'completed', 'success')],
+    },
+    dispatched: [{ event: 'workflow_dispatch', runs: [ghCheck('go-test', 'SUCCESS')] }],
+    daemon: envelope({
+      checks: [
+        daemonCheck('lint', 'completed', 'success'),
+        daemonCheck('go-test', 'completed', 'skipped'),
+      ],
+      runs: [daemonRun('CI', 'completed', 'success')],
+      verdict: verdictOf('unknown', 'not-requested'),
+      settled: true,
+    }),
+  },
 ]
+
+// The dispatched check-runs read both paths make with labelled gh: the head's check suites.
+function dispatchedSpawn(scenario, args) {
+  const out = (value) => ({ status: 0, stdout: JSON.stringify(value) })
+  if (args.slice(0, 2).join(' ') === 'repo set-default')
+    return { status: 0, stdout: 'acme/widgets\n' }
+  if (args[0] !== 'api' || args[1] !== 'graphql') return null
+  const nodes = (scenario.dispatched ?? []).map(({ event, runs }) => ({
+    commit: { oid: HEAD },
+    workflowRun: { event, workflow: { name: 'CI' } },
+    checkRuns: { totalCount: runs.length, nodes: runs },
+  }))
+  return out({
+    data: { repository: { object: { checkSuites: { totalCount: nodes.length, nodes } } } },
+  })
+}
 
 // The gh side answers the reads ghCheckReader spawns, keyed by the gh verb.
 function ghSpawn(scenario) {
@@ -268,6 +303,8 @@ function ghSpawn(scenario) {
     assert.equal(cmd, 'gh')
     const verb = args.slice(0, 2).join(' ')
     const out = (value) => ({ status: 0, stdout: JSON.stringify(value) })
+    const dispatched = dispatchedSpawn(scenario, args)
+    if (dispatched) return dispatched
     if (verb === 'pr view')
       return out({ headRefOid: HEAD, baseRefName: 'main', statusCheckRollup: scenario.gh.rollup })
     if (verb === 'run list') return out(scenario.gh.runs)
@@ -278,11 +315,14 @@ function ghSpawn(scenario) {
   }
 }
 
-// The daemon side answers `boss pr state` with the envelope and refuses every gh spawn.
+// The daemon side answers `boss pr state` with the envelope and refuses every gh spawn but the
+// dispatched check-runs read.
 function daemonDeps(scenario) {
   return {
     resolveBoss: () => ({ ok: true, path: '/fake/boss' }),
     spawn: (cmd, args) => {
+      const dispatched = cmd === 'gh' ? dispatchedSpawn(scenario, args) : null
+      if (dispatched) return dispatched
       assert.equal(cmd, '/fake/boss', `the daemon path spawned ${cmd} ${args.join(' ')}`)
       assert.deepEqual(args.slice(0, 2), ['pr', 'state'])
       return { status: 0, stdout: JSON.stringify(scenario.daemon) }

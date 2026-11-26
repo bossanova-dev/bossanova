@@ -24,6 +24,10 @@ service DaemonService {
   // local RPC needs no dated API bump; see
   // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
   rpc PostProofCheckRun(PostProofCheckRunRequest) returns (PostProofCheckRunResponse);
+  // MintHostedProofViewLink relays MintProofViewLink to the orchestrator with the
+  // signed-in user's Bossanova Cloud token. Local socket API; additive, so no dated
+  // API bump (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+  rpc MintHostedProofViewLink(MintHostedProofViewLinkRequest) returns (MintHostedProofViewLinkResponse);
   // GetFactoryHealth reads host-local factory problems for one repository.
   rpc GetFactoryHealth(GetFactoryHealthRequest) returns (GetFactoryHealthResponse);
 
@@ -674,6 +678,8 @@ message GetRepoSettingsResponse { RepoSettings settings = 1; }
 
 message ListRepoPRsRequest {
   string repo_id = 1;
+  // Optional filters, order and cap. Absent keeps today's list.
+  PRListQuery query = 2;
 }
 
 message ListRepoPRsResponse {
@@ -872,6 +878,18 @@ message ListSessionsRequest {
 
   // Filter by label IDs or case-insensitive label names (matches any).
   repeated string label_ids = 6;
+  // Filter by PR author GitHub login (case-insensitive, matches any). Empty
+  // means no constraint; a session with no PR author never matches a set one.
+  repeated string pr_author_logins = 7;
+  // Filter by PR target (base) branch (exact, matches any). Empty means no
+  // constraint; a session with no PR target never matches a set one.
+  // No dated API bump or transform: both filters are additive and narrow only
+  // when set. The local MCP list_sessions tool sets them; the TUI and the
+  // orchestrator never do, so their reads are unchanged at every version. A
+  // version-skewed daemon that predates the fields ignores them, so the MCP
+  // tool re-applies the same filter to what it gets back. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  repeated string pr_target_branches = 8;
 }
 
 message ListSessionsResponse {
@@ -3189,6 +3207,20 @@ message PostProofCheckRunRequest {
 message PostProofCheckRunResponse {
   string html_url = 1;
   bool is_created = 2;
+}
+
+// MintHostedProofViewLinkRequest names one pull request's hosted proof page.
+message MintHostedProofViewLinkRequest {
+  // The repository's canonical origin URL (https://github.com/owner/name).
+  string repo_origin_url = 1;
+  int32 pr_number = 2;
+  // The head the page was made for; empty means the newest completed upload.
+  string head_sha = 3;
+}
+
+message MintHostedProofViewLinkResponse {
+  string view_url = 1;
+  google.protobuf.Timestamp expires_at = 2;
 }
 
 // SessionServe is the latest snapshot of the repository serve command.

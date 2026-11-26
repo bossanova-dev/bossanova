@@ -74,6 +74,7 @@ var ReleasedVersions = []Version{
 	"2026-11-04", // V20261104 — organization-filtered daemon listing.
 	"2026-11-05", // V20261105 — ServePinnedActionChange (Services action pin).
 	"2026-11-06", // V20261106 — organization repo-mapped reads.
+	"2026-11-07", // V20261107 — foreign repository create refusal.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

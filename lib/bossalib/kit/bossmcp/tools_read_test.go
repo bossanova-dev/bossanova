@@ -56,9 +56,9 @@ func TestReadTools(t *testing.T) {
 		{
 			tool: "list_repo_prs",
 			args: map[string]any{"repo_id": "r1"},
-			backend: &fakeBackend{listRepoPRs: func(_ context.Context, id string) ([]*pb.PRSummary, error) {
-				if id != "r1" {
-					t.Errorf("repo_id not forwarded: %q", id)
+			backend: &fakeBackend{listRepoPRs: func(_ context.Context, req *pb.ListRepoPRsRequest) ([]*pb.PRSummary, error) {
+				if req.GetRepoId() != "r1" {
+					t.Errorf("repo_id not forwarded: %q", req.GetRepoId())
 				}
 				return []*pb.PRSummary{{Title: "pr-sentinel"}}, nil
 			}},

@@ -349,6 +349,22 @@ test('a parked verdict uploads the page and notes the proof line carrying its UR
   assert.deepEqual(parseProofLine(notes[0].note.body), { head: HEAD, page: url, level: 'moderate' })
 })
 
+test('a page with no spec titles itself from the PR and leads with its first paragraph', async () => {
+  const prView = {
+    title: 'Add the user message to the API',
+    body: '## Summary\n\nAdds a `User` message so clients can read **who** signed in.\n\n## Tests\n\n- none',
+  }
+  const { uploads } = await run({ input: { prView } })
+  const header = /<header class="pr">([\s\S]*?)<\/header>/.exec(uploads[0].html)?.[1] ?? ''
+  assert.match(header, /<h1>Add the user message to the API<\/h1>/)
+  assert.match(
+    header,
+    /<p class="lead">Adds a <code>User<\/code> message so clients can read who signed in\.<\/p>/,
+  )
+  const untitled = await run()
+  assert.ok(!untitled.uploads[0].html.includes('<p class="lead">Adds'), 'no body, no lead')
+})
+
 test('proof recording forwards injected Access transport and keychain readers', async () => {
   const fetchImpl = () => {}
   const readKeychain = () => null

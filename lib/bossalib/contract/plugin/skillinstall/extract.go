@@ -606,23 +606,7 @@ func ensureUpdated(dir string, fsys fs.FS, record *PayloadRecord, decide refresh
 		return GuardedResult{}, err
 	}
 	if !needs {
-		// An explicit writer over a tree that already matches its payload still
-		// claims the tree: without the stamp, a trusted reinstall that found
-		// nothing to change would leave an unstamped tree any older unattended
-		// writer may overwrite.
-		if record != nil && decide == nil {
-			return GuardedResult{}, stampPayloadRecordLocked(dir, *record)
-		}
-		// An unattended writer claims only an unstamped (legacy) matching tree:
-		// overwriting an existing record would erase the explicit or checkout
-		// floor that recorded who wrote these same bytes.
-		if record != nil {
-			if _, recorded, err := ReadPayloadRecord(dir); err != nil || recorded {
-				return GuardedResult{}, err
-			}
-			return GuardedResult{}, writePayloadRecord(dir, *record)
-		}
-		return GuardedResult{}, nil
+		return GuardedResult{}, claimCurrentTreeLocked(dir, record, decide == nil)
 	}
 	if decide != nil {
 		installed, recorded, err := ReadPayloadRecord(dir)
@@ -756,39 +740,94 @@ func acquireExistingUpdateLock(dir string) (*flock.Flock, bool, error) {
 	return lock, true, nil
 }
 
-// extract rewrites the tree and, when record is non-nil, stamps it once the
-// tree is complete. The previous record is removed first, so a record only ever
-// describes a tree some writer finished: an interrupted extract leaves an
-// unstamped (legacy) tree rather than one claiming the old payload.
+// claimCurrentTreeLocked stamps an already-matching installed tree under the
+// update lock. An explicit writer always claims the tree; an unattended writer
+// claims only an unstamped legacy tree and only when carrying a release payload.
+func claimCurrentTreeLocked(dir string, record *PayloadRecord, explicit bool) error {
+	if record == nil {
+		return nil
+	}
+	if explicit {
+		return stampPayloadRecordLocked(dir, *record)
+	}
+	if !record.IsRelease() {
+		return nil
+	}
+	if _, recorded, err := ReadPayloadRecord(dir); err != nil || recorded {
+		return err
+	}
+	return writePayloadRecord(dir, *record)
+}
+
+// extract stages the entire payload into a sibling temporary directory and then
+// swaps each skill directory into dir/bossanova/<skill> atomically so readers
+// never see a missing directory or a mix of old and new files. Top-level
+// dir/boss-* symlinks are left untouched when already pointing at
+// bossanova/boss-* or atomically replaced via rename. When record is non-nil,
+// it is stamped once the tree is complete.
 func extract(dir string, fsys fs.FS, record *PayloadRecord) error {
 	nsDir := filepath.Join(dir, Namespace)
 
+	stageRoot, err := os.MkdirTemp(dir, stageDirPrefix+"*")
+	if err != nil {
+		return fmt.Errorf("create skill staging dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(stageRoot) }()
+
+	// Stage every payload file into stageRoot before mutating the live tree.
+	// Any read or write error here leaves the existing install untouched.
+	if err := stagePayload(stageRoot, fsys); err != nil {
+		return err
+	}
+	if err := ensureNamespaceDir(nsDir); err != nil {
+		return err
+	}
+
+	// Remove the previous record right before swapping so an interrupted
+	// multi-skill swap leaves an unstamped tree rather than one claiming the
+	// old payload.
 	if err := removePayloadRecord(dir); err != nil {
 		return err
 	}
 
-	// Remove stale boss-* entries (symlinks or real directories) in the parent directory.
-	entries, err := os.ReadDir(dir)
+	expectedNs, expectedSkills, err := swapStagedSkills(dir, nsDir, stageRoot)
 	if err != nil {
-		return fmt.Errorf("read skill directory: %w", err)
+		return err
 	}
-	for _, e := range entries {
-		name := e.Name()
-		if !isBossSkill(name) {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
-			return fmt.Errorf("remove stale skill %q: %w", name, err)
-		}
+	if err := cleanupStaleSkills(dir, nsDir, filepath.Base(stageRoot), expectedNs, expectedSkills); err != nil {
+		return err
 	}
+	if record != nil {
+		return writePayloadRecord(dir, *record)
+	}
+	return nil
+}
 
-	// Remove the entire namespace directory so stale skills are cleaned up.
-	if err := os.RemoveAll(nsDir); err != nil {
-		return fmt.Errorf("remove skill namespace: %w", err)
+// ensureNamespaceDir ensures nsDir is a real directory owned inside dir, never
+// a symlink or regular file. If nsDir is a symlink (e.g. pointing to an outside
+// checkout or shared folder) or a non-directory, it removes the entry itself
+// without following it and creates a fresh directory so subsequent swaps and
+// stale cleanup can never read or delete inside an outside tree.
+func ensureNamespaceDir(nsDir string) error {
+	info, err := os.Lstat(nsDir)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
+			return nil
+		}
+		if err := os.Remove(nsDir); err != nil {
+			return fmt.Errorf("replace non-directory skill namespace: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat skill namespace: %w", err)
 	}
+	if err := os.Mkdir(nsDir, 0o750); err != nil {
+		return fmt.Errorf("create skill namespace: %w", err)
+	}
+	return nil
+}
 
-	// Extract embedded skill files into the namespace directory.
-	if err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
+func stagePayload(stageRoot string, fsys fs.FS) error {
+	return fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -798,9 +837,9 @@ func extract(dir string, fsys fs.FS, record *PayloadRecord) error {
 		// path is "skills/boss-build/SKILL.md"
 		// Strip leading "skills/" to get "boss-build/SKILL.md"
 		rel := strings.TrimPrefix(path, "skills/")
-		destPath := filepath.Join(nsDir, rel)
+		destPath := filepath.Join(stageRoot, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
-			return fmt.Errorf("create skill dir: %w", err)
+			return fmt.Errorf("create staged skill dir: %w", err)
 		}
 		data, err := fs.ReadFile(fsys, path)
 		if err != nil {
@@ -812,29 +851,78 @@ func extract(dir string, fsys fs.FS, record *PayloadRecord) error {
 		// scripts (e.g. support/.../scripts/review-package) are invoked directly
 		// by skill prose and would otherwise hit "permission denied".
 		return os.WriteFile(destPath, data, skillFileMode(path, data))
-	}); err != nil {
-		return err
-	}
+	})
+}
 
-	// Create symlinks from dir/boss-* → bossanova/boss-* for each skill.
-	entries, err = os.ReadDir(nsDir)
+func swapStagedSkills(dir, nsDir, stageRoot string) (expectedNs, expectedSkills map[string]bool, err error) {
+	stageEntries, err := os.ReadDir(stageRoot)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read staged skills: %w", err)
+	}
+	expectedNs = make(map[string]bool, len(stageEntries))
+	expectedSkills = make(map[string]bool, len(stageEntries))
+	for _, e := range stageEntries {
+		name := e.Name()
+		expectedNs[name] = true
+		stagedPath := filepath.Join(stageRoot, name)
+		targetPath := filepath.Join(nsDir, name)
+		if !e.IsDir() {
+			if err := os.Rename(stagedPath, targetPath); err != nil {
+				return nil, nil, fmt.Errorf("install skill file %q: %w", name, err)
+			}
+			continue
+		}
+		if err := replaceDirAtomic(stagedPath, targetPath); err != nil {
+			return nil, nil, fmt.Errorf("swap skill %q: %w", name, err)
+		}
+		if !isBossSkill(name) {
+			continue
+		}
+		expectedSkills[name] = true
+		if err := replaceSymlinkAtomic(dir, filepath.Join(Namespace, name), filepath.Join(dir, name)); err != nil {
+			return nil, nil, fmt.Errorf("link skill %q: %w", name, err)
+		}
+	}
+	return expectedNs, expectedSkills, nil
+}
+
+func isStagingArtifact(name, activeStage string) bool {
+	if name == activeStage {
+		return false
+	}
+	return strings.HasPrefix(name, stageDirPrefix) ||
+		strings.HasPrefix(name, tempLinkPrefix) ||
+		strings.HasPrefix(name, backupDirPrefix)
+}
+
+func cleanupStaleSkills(dir, nsDir, stageBase string, expectedNs, expectedSkills map[string]bool) error {
+	parentEntries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read skill directory: %w", err)
+	}
+	for _, e := range parentEntries {
+		name := e.Name()
+		if isBossSkill(name) && !expectedSkills[name] {
+			if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+				return fmt.Errorf("remove stale skill %q: %w", name, err)
+			}
+			continue
+		}
+		if isStagingArtifact(name, stageBase) {
+			_ = os.RemoveAll(filepath.Join(dir, name))
+		}
+	}
+	nsEntries, err := os.ReadDir(nsDir)
 	if err != nil {
 		return fmt.Errorf("read namespace dir: %w", err)
 	}
-	for _, e := range entries {
-		if !e.IsDir() || !isBossSkill(e.Name()) {
+	for _, e := range nsEntries {
+		if expectedNs[e.Name()] {
 			continue
 		}
-		// Use a relative target so the symlink works regardless of home dir.
-		target := filepath.Join(Namespace, e.Name())
-		link := filepath.Join(dir, e.Name())
-		if err := os.Symlink(target, link); err != nil {
-			return fmt.Errorf("create skill symlink: %w", err)
+		if err := os.RemoveAll(filepath.Join(nsDir, e.Name())); err != nil {
+			return fmt.Errorf("remove stale namespace entry %q: %w", e.Name(), err)
 		}
-	}
-
-	if record != nil {
-		return writePayloadRecord(dir, *record)
 	}
 	return nil
 }

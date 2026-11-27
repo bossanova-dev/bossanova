@@ -100,6 +100,19 @@ func (r PayloadRecord) Comparable() bool {
 	return r.Version != "dev" && !r.Dirty
 }
 
+// IsRelease reports whether the record describes a clean embedded release
+// payload: embedded origin, a clean vX.Y.Z release version, and not dirty.
+// Checkout payloads, dev builds, dirty builds, and branch builds
+// (e.g. v1.2.3-5-gabc1234) are not releases and must not overwrite global
+// skill trees unattended.
+func (r PayloadRecord) IsRelease() bool {
+	if r.Origin != OriginEmbedded || r.Dirty {
+		return false
+	}
+	_, ok := parseReleaseVersion(r.Version)
+	return ok
+}
+
 // String renders the record for a one-line operator message.
 func (r PayloadRecord) String() string {
 	revision := r.Revision
@@ -222,11 +235,26 @@ type RefreshDecision struct {
 }
 
 // DecideRefresh applies the unattended no-downgrade matrix. An unattended
-// writer may move a tree forward, never backward: it replaces the installed
-// bytes only when its payload is provably not older than the one that wrote
-// them, or when nothing recorded which payload that was.
+// writer may only refresh global trees from a clean embedded release payload
+// (never from a checkout or branch/dev build), and may only move a tree
+// forward, never backward: it replaces the installed bytes only when its
+// release payload is provably not older than the one that wrote them, or when
+// nothing recorded which payload that was.
 func DecideRefresh(installed PayloadRecord, recorded bool, payload PayloadRecord, order OrderFunc) RefreshDecision {
 	decision := RefreshDecision{Recorded: recorded, Installed: installed}
+	if recorded && order != nil {
+		decision.Ordering = order(installed, payload)
+	}
+	if payload.Writer != WriterExplicit {
+		if payload.Origin == OriginCheckout {
+			decision.Reason = "unattended refresh refuses checkout payload"
+			return decision
+		}
+		if !payload.IsRelease() {
+			decision.Reason = "unattended refresh requires a release payload"
+			return decision
+		}
+	}
 	if !recorded {
 		decision.Refresh = true
 		decision.Reason = "no payload record (legacy tree)"
@@ -236,9 +264,6 @@ func DecideRefresh(installed PayloadRecord, recorded bool, payload PayloadRecord
 		decision.Refresh = true
 		decision.Reason = "same revision"
 		return decision
-	}
-	if order != nil {
-		decision.Ordering = order(installed, payload)
 	}
 	switch decision.Ordering {
 	case OrderNotOlder:

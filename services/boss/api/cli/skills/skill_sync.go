@@ -471,13 +471,13 @@ func (g *Group) runSkillGateWithHeal(out io.Writer, only string, heal bool) erro
 	payload := selectedSkillPayload{srcRoot: srcRoot, fromSource: true}
 	var healRecord libskillinstall.PayloadRecord
 	if heal {
-		before := g.skillPayloadRecord(payload, libskillinstall.WriterUnattended)
+		before := g.skillPayloadRecord(payload, libskillinstall.WriterExplicit)
 		frozen, err := snapshotCheckoutSkillFSReadOnly(srcRoot)
 		if err != nil {
 			return err
 		}
 		payload.fsys = frozen
-		healRecord = g.skillPayloadRecord(payload, libskillinstall.WriterUnattended)
+		healRecord = g.skillPayloadRecord(payload, libskillinstall.WriterExplicit)
 		if before != healRecord {
 			healRecord.Dirty = true
 		}

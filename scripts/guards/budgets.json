@@ -14,7 +14,6 @@
       "lib/bossalib/contract/plugin/agentruntime:Runner.StartWithOptions": 43,
       "lib/bossalib/contract/plugin/plugin/agentrunnertest:checkMethod": 123,
       "lib/bossalib/contract/plugin/skillinstall:driftReportLocked": 48,
-      "lib/bossalib/contract/plugin/skillinstall:ensureUpdated": 33,
       "lib/bossalib/contract/plugin/skillinstall:needsUpdateLocked": 48,
       "lib/bossalib/kit/bossmcp:registerDestructiveTools": 49,
       "lib/bossalib/kit/bossmcp:registerMutatingTools": 142,

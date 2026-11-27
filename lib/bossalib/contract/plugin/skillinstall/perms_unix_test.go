@@ -23,7 +23,7 @@ func TestExtractReportsCleanupPermissionErrors(t *testing.T) {
 	}{
 		{name: "read directory", blocked: ".", mode: 0o300, want: "read skill directory"},
 		{name: "remove top-level skill", blocked: "boss-obsolete", mode: 0o500, want: "remove stale skill"},
-		{name: "remove namespace", blocked: Namespace, mode: 0o500, want: "remove skill namespace"},
+		{name: "swap into namespace", blocked: Namespace, mode: 0o500, want: "swap skill"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dest := t.TempDir()
@@ -46,8 +46,10 @@ func TestExtractReportsCleanupPermissionErrors(t *testing.T) {
 			if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Extract = %v, want permission error from %s", err, tc.want)
 			}
-			if _, err := os.Stat(filepath.Join(dest, Namespace, "boss-test", "SKILL.md")); !os.IsNotExist(err) {
-				t.Fatalf("new skill written after failed cleanup: %v", err)
+			if tc.blocked == Namespace {
+				if _, err := os.Stat(filepath.Join(dest, Namespace, "boss-test", "SKILL.md")); !os.IsNotExist(err) {
+					t.Fatalf("new skill written into unwritable namespace: %v", err)
+				}
 			}
 		})
 	}

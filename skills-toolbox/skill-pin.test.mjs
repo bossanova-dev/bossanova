@@ -277,3 +277,32 @@ test('explicit pin root creates, verifies and removes independently of git and c
   assert.equal(run('remove').status, 0)
   assert.equal(fs.existsSync(dir), false)
 })
+
+test('a session can pin a checkout skill dir via BOSS_SKILLS_HOME without touching global trees', async (t) => {
+  const f = fixture(t)
+  const checkoutSkills = path.join(f.root, 'checkout', 'skills')
+  const branchSkill = path.join(checkoutSkills, f.skill)
+  fs.mkdirSync(path.join(branchSkill, 'toolbox'), { recursive: true })
+  fs.writeFileSync(path.join(branchSkill, 'SKILL.md'), 'branch instructions')
+  fs.writeFileSync(path.join(branchSkill, 'toolbox', 'helper.mjs'), 'branch helper')
+
+  const globalBefore = captureManifest(f.source)
+  const branchExpected = captureManifest(branchSkill)
+  const pin = await createPin({
+    skill: f.skill,
+    gitDir: f.gitDir,
+    home: f.home,
+    env: { BOSS_SKILLS_HOME: checkoutSkills, BOSS_AGENT_SESSION_ID: 'branch-run' },
+  })
+  assert.deepEqual(captureManifest(pin.skillDir), branchExpected)
+  assert.equal(pin.payloadRecord, null)
+  assert.deepEqual(captureManifest(f.source), globalBefore)
+  assert.equal(
+    verifyPin({
+      skill: f.skill,
+      gitDir: f.gitDir,
+      env: { BOSS_AGENT_SESSION_ID: 'branch-run' },
+    }).status,
+    0,
+  )
+})

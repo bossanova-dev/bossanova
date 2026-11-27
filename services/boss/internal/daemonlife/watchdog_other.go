@@ -24,3 +24,5 @@ func observeUnattendedInstall() UnattendedInstall {
 // WatchdogOwnershipNotObserved, so a Linux caller that ignored the platform and
 // asked anyway is told nothing was observed rather than handed a claim.
 func observeWatchdogOwnership() WatchdogOwnership { return WatchdogOwnership{} }
+
+func platformWatchdogPlistPresent() bool { return false }

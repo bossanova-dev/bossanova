@@ -52,6 +52,11 @@ var watchdogFilesystemRoot = "/"
 // under their own roots; only this process-wide accessor is darwin-only.
 func watchdogPaths() watchdogLayout { return newWatchdogLayout(watchdogFilesystemRoot) }
 
+func platformWatchdogPlistPresent() bool {
+	_, err := os.Stat(watchdogPaths().PlistPath)
+	return err == nil
+}
+
 // The package-var seams below follow the runLaunchctl / executablePath idiom.
 // They exist so the install, uninstall and verification paths are testable
 // without root and without mutating this host: a test cannot chown a file to

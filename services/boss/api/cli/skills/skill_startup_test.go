@@ -253,6 +253,7 @@ func TestMaybeInstallSkillsSelfHealsStaleTreeNonInteractively(t *testing.T) {
 	g := newTestGroup()
 
 	home := g.setupSkillStartupTest(t)
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "v1.2.0")
 	codexDir := filepath.Join(home, ".codex", "skills")
 	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
@@ -317,7 +318,7 @@ func TestSelfHealSkillsSkipsCheckoutRefreshWhenGitAuthenticationFails(t *testing
 	}
 }
 
-func TestSelfHealSkillsNonInteractiveUsesExplicitlyTrustedCheckoutSkillPayload(t *testing.T) {
+func TestSelfHealSkillsNonInteractiveNeverInstallsCheckoutSkillPayload(t *testing.T) {
 	g := newTestGroup()
 
 	home := g.setupSkillStartupTest(t)
@@ -333,22 +334,24 @@ func TestSelfHealSkillsNonInteractiveUsesExplicitlyTrustedCheckoutSkillPayload(t
 	}
 	g.StartupIsTerminal = func() bool { return false }
 
-	if err := g.maybeInstallSkills(); err != nil {
-		t.Fatalf("maybeInstallSkills: %v", err)
-	}
+	stderr := captureStderr(t, func() {
+		if err := g.maybeInstallSkills(); err != nil {
+			t.Fatalf("maybeInstallSkills: %v", err)
+		}
+	})
 	got, err := os.ReadFile(installedBossSkillPath(codexDir))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != checkoutSkillFixture {
-		embed, readErr := fs.ReadFile(skillpayload.SkillsFS, "skills/boss/SKILL.md")
-		if readErr != nil {
-			t.Fatalf("read embedded skill: %v", readErr)
-		}
-		if bytes.Equal(got, embed) {
-			t.Fatal("self-heal installed the embedded payload, want checkout source")
-		}
-		t.Fatal("self-heal did not install checkout source")
+	embed, readErr := fs.ReadFile(skillpayload.SkillsFS, "skills/boss/SKILL.md")
+	if readErr != nil {
+		t.Fatalf("read embedded skill: %v", readErr)
+	}
+	if !bytes.Equal(got, embed) {
+		t.Fatalf("self-heal overwrote installed tree from checkout: got %q", got)
+	}
+	if !strings.Contains(stderr, "held Codex skill refresh") {
+		t.Fatalf("stderr = %q, want hold notice", stderr)
 	}
 }
 
@@ -356,6 +359,7 @@ func TestSelfHealSkillsNonInteractiveRequiresExplicitCheckoutTrust(t *testing.T)
 	g := newTestGroup()
 
 	home := g.setupSkillStartupTest(t)
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "v1.2.0")
 	setupCheckoutSkillSource(t)
 	t.Setenv(trustCheckoutSkillSourcesEnv, "")
 	codexDir := filepath.Join(home, ".codex", "skills")
@@ -458,6 +462,7 @@ func TestSelfHealSkillsRefreshesAfterDeclinedManifestChanges(t *testing.T) {
 	g := newTestGroup()
 
 	home := g.setupSkillStartupTest(t)
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "v1.2.0")
 	// A decline is recorded against an older manifest. The embedded payload has
 	// since changed, so the opt-out no longer applies and self-heal should
 	// refresh the stale tree — mirroring the interactive re-prompt behavior.
@@ -502,6 +507,7 @@ func TestSelfHealSkillsPreservesMalformedSettings(t *testing.T) {
 	g := newTestGroup()
 
 	home := g.setupSkillStartupTest(t)
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "v1.2.0")
 	// A malformed settings.json makes config.Load return defaults plus an error.
 	// Self-heal must refresh the stale tree without persisting those defaults —
 	// otherwise config.Save would clobber the user's real (broken) file.
@@ -572,6 +578,7 @@ func TestSelfHealSkillsRefreshesStaleHermesTreeUnderHermesHome(t *testing.T) {
 	g := newTestGroup()
 
 	g.setupSkillStartupTest(t)
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "v1.2.0")
 	hermesHome := t.TempDir()
 	t.Setenv("HERMES_HOME", hermesHome)
 	hermesDir := filepath.Join(hermesHome, "skills")
@@ -666,8 +673,8 @@ func TestSelfHealSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
 		}
 	})
 	assertNamesFullSkillRebuildRemedy(t, got, root)
-	if !strings.Contains(got, binarySkillsDriftWarning(srcRoot)) {
-		t.Fatalf("warning = %q, want exact post-refresh wording %q", got, binarySkillsDriftWarning(srcRoot))
+	if !strings.Contains(got, binarySkillsDriftCheckWarning(srcRoot)) {
+		t.Fatalf("warning = %q, want claim-free drift warning %q", got, binarySkillsDriftCheckWarning(srcRoot))
 	}
 }
 

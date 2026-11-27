@@ -221,16 +221,11 @@ func (g *Group) selfHealSkills() error {
 	settingsChanged := false
 	refreshed := false
 	installedTargetsCurrent := true
-	// A trusted checkout is an explicit opt-in, so it keeps today's overwrite
-	// and stamps an explicit record. The embedded payload is the unattended
-	// case — any peer session calling an older boss — and goes through the
-	// no-downgrade guard.
-	guarded := !payload.fromSource
-	writer := libskillinstall.WriterExplicit
-	if guarded {
-		writer = libskillinstall.WriterUnattended
-	}
-	record := g.skillPayloadRecord(payload, writer)
+	// Headless startup self-heal is always an unattended writer: it goes
+	// through EnsureUpdatedGuarded so checkout and non-release branch builds
+	// never overwrite global skill trees. A checkout payload requires an
+	// explicit operator command (`BOSS_TRUST_CHECKOUT_SKILLS=1 boss skills install`).
+	record := g.skillPayloadRecord(payload, libskillinstall.WriterUnattended)
 	order := g.skillPayloadOrder()
 	for _, target := range g.skillInstallAgents {
 		dir, err := libskillinstall.DirForAgent(target.agent)
@@ -257,20 +252,20 @@ func (g *Group) selfHealSkills() error {
 			installedTargetsCurrent = false
 			continue
 		}
-		updated, held, decision, err := selfHealAgentSkills(dir, payload, record, guarded, order)
+		result, err := libskillinstall.EnsureUpdatedGuarded(dir, payload.fsys, record, order)
 		if err != nil {
 			installedTargetsCurrent = false
 			fmt.Fprintf(os.Stderr, "Warning: failed to refresh %s skills: %v\n", target.name, err)
 			continue
 		}
-		if held {
+		if result.Held {
 			// A held refresh left the tree as it was: it is neither current
 			// nor recorded as installed, so recordSkillInstall is not called.
 			installedTargetsCurrent = false
-			settingsChanged = reportSkillRefreshHold(&settings, loadErr == nil, target, decision, record) || settingsChanged
+			settingsChanged = reportSkillRefreshHold(&settings, loadErr == nil, target, result.Decision, record) || settingsChanged
 			continue
 		}
-		if !updated {
+		if !result.Updated {
 			continue
 		}
 		refreshed = true
@@ -281,17 +276,6 @@ func (g *Group) selfHealSkills() error {
 	saveSkillSettings(settings, settingsChanged, loadErr)
 	warnBinarySkillsDrift(payload, refreshed && installedTargetsCurrent, manifest)
 	return nil
-}
-
-// selfHealAgentSkills refreshes one agent's tree and returns any guarded hold
-// decision so the caller can report it with settings-aware notice bookkeeping.
-func selfHealAgentSkills(dir string, payload selectedSkillPayload, record libskillinstall.PayloadRecord, guarded bool, order libskillinstall.OrderFunc) (updated, held bool, decision libskillinstall.RefreshDecision, err error) {
-	if !guarded {
-		updated, err = libskillinstall.EnsureUpdatedRecorded(dir, payload.fsys, record)
-		return updated, false, decision, err
-	}
-	result, err := libskillinstall.EnsureUpdatedGuarded(dir, payload.fsys, record, order)
-	return result.Updated, result.Held, result.Decision, err
 }
 
 // skillPayloadProvablyOlder reports whether the tree at dir was stamped by a

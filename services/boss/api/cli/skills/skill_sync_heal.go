@@ -36,6 +36,9 @@ func (g *Group) healSkillGateTree(out io.Writer, agent, dir string, payload sele
 	if os.Getenv("BOSS_SKIP_SKILLS") != "" {
 		reason = "BOSS_SKIP_SKILLS is set"
 	}
+	if reason == "" && os.Getenv(trustCheckoutSkillSourcesEnv) != "1" {
+		reason = "checkout heal requires " + trustCheckoutSkillSourcesEnv + "=1"
+	}
 	trusted, trustErr := TrustedSkillSourceRoot(payload.srcRoot)
 	if reason == "" && (trustErr != nil || !trusted) {
 		reason = "checkout is untrusted"

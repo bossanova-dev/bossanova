@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -1197,5 +1200,206 @@ func TestEnsureUpdatedFromSourceDoesNotInstallIntoEmptyDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, Namespace)); !os.IsNotExist(err) {
 		t.Fatalf("namespace exists after no-op, err=%v", err)
+	}
+}
+
+type pausingFS struct {
+	fsys    fs.FS
+	pauseOn string
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (p *pausingFS) Open(name string) (fs.File, error) {
+	if name == p.pauseOn {
+		p.once.Do(func() {
+			close(p.entered)
+			<-p.release
+		})
+	}
+	return p.fsys.Open(name)
+}
+
+func (p *pausingFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	return fs.ReadDir(p.fsys, name)
+}
+
+func (p *pausingFS) ReadFile(name string) ([]byte, error) {
+	if name == p.pauseOn {
+		p.once.Do(func() {
+			close(p.entered)
+			<-p.release
+		})
+	}
+	return fs.ReadFile(p.fsys, name)
+}
+
+func atomicModuleFS(rev string) fstest.MapFS {
+	exportName := "export_" + rev
+	return fstest.MapFS{
+		"skills/boss-verify/SKILL.md":            {Data: []byte("# Verify " + rev + "\n")},
+		"skills/boss-verify/toolbox/a-entry.mjs": {Data: []byte(fmt.Sprintf("import { %s } from './z-dep.mjs'\nconsole.log(%s())\n", exportName, exportName))},
+		"skills/boss-verify/toolbox/z-dep.mjs":   {Data: []byte(fmt.Sprintf("export function %s() { return %q }\n", exportName, rev))},
+		"skills/boss-other/SKILL.md":             {Data: []byte("# Other " + rev + "\n")},
+	}
+}
+
+// TestExtractAtomicPerSkillSwap proves a reader looping over an installed skill
+// during an extract never sees a missing symlink/directory, a broken module
+// import, or a mixed revision — even when paused halfway through writing the
+// new skill's files.
+func TestExtractAtomicPerSkillSwap(t *testing.T) {
+	nodeBin, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not on PATH")
+	}
+
+	dest := t.TempDir()
+	rev1 := atomicModuleFS("rev1")
+	rev2 := atomicModuleFS("rev2")
+	if err := Extract(dest, rev1); err != nil {
+		t.Fatalf("seed rev1: %v", err)
+	}
+
+	entryPath := filepath.Join(dest, "boss-verify", "toolbox", "a-entry.mjs")
+	runNode := func() (string, error) {
+		out, err := exec.Command(nodeBin, entryPath).CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+
+	if got, err := runNode(); err != nil || got != "rev1" {
+		t.Fatalf("initial node import = (%q, %v), want (rev1, nil)", got, err)
+	}
+
+	// Pause rev2 extract right before writing z-dep.mjs (after a-entry.mjs has
+	// already been read/written). A non-atomic extract has either deleted the
+	// directory or written rev2's a-entry.mjs alongside rev1's z-dep.mjs, so
+	// node crashes with ERR_MODULE_NOT_FOUND or SyntaxError.
+	paused := &pausingFS{
+		fsys:    rev2,
+		pauseOn: "skills/boss-verify/toolbox/z-dep.mjs",
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	extractErr := make(chan error, 1)
+	go func() {
+		extractErr <- Extract(dest, paused)
+	}()
+
+	<-paused.entered
+	// While paused mid-install, the live tree must still be pure rev1 and its
+	// top-level symlink must remain intact.
+	target, linkErr := os.Readlink(filepath.Join(dest, "boss-verify"))
+	if linkErr != nil || target != filepath.Join(Namespace, "boss-verify") {
+		close(paused.release)
+		<-extractErr
+		t.Fatalf("mid-install symlink = (%q, %v), want %q", target, linkErr, filepath.Join(Namespace, "boss-verify"))
+	}
+	for range 5 {
+		got, err := runNode()
+		if err != nil || got != "rev1" {
+			close(paused.release)
+			<-extractErr
+			t.Fatalf("mid-install node import = (%q, %v), want clean (rev1, nil)", got, err)
+		}
+	}
+
+	close(paused.release)
+	if err := <-extractErr; err != nil {
+		t.Fatalf("Extract rev2: %v", err)
+	}
+	if got, err := runNode(); err != nil || got != "rev2" {
+		t.Fatalf("post-install node import = (%q, %v), want (rev2, nil)", got, err)
+	}
+
+	// Concurrent loop: repeatedly alternate rev1 and rev2 while a reader checks
+	// that the symlink and directory are never absent or broken.
+	stop := make(chan struct{})
+	readerErr := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				readerErr <- nil
+				return
+			default:
+				link := filepath.Join(dest, "boss-verify")
+				gotTarget, err := os.Readlink(link)
+				if err != nil || gotTarget != filepath.Join(Namespace, "boss-verify") {
+					readerErr <- fmt.Errorf("symlink during concurrent extract: (%q, %v)", gotTarget, err)
+					return
+				}
+				info, err := os.Stat(link)
+				if err != nil || !info.IsDir() {
+					readerErr <- fmt.Errorf("stat during concurrent extract: (%v, %v)", info, err)
+					return
+				}
+				if _, err := os.ReadFile(filepath.Join(link, "SKILL.md")); err != nil {
+					readerErr <- fmt.Errorf("read SKILL.md during concurrent extract: %v", err)
+					return
+				}
+			}
+		}
+	}()
+
+	for i := range 20 {
+		fsys := rev1
+		if i%2 == 1 {
+			fsys = rev2
+		}
+		if err := Extract(dest, fsys); err != nil {
+			close(stop)
+			<-readerErr
+			t.Fatalf("concurrent Extract %d: %v", i, err)
+		}
+	}
+	close(stop)
+	if err := <-readerErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExtractReplacesSymlinkedNamespaceWithoutTouchingOutsideTarget(t *testing.T) {
+	outside := t.TempDir()
+	outsideKeep := filepath.Join(outside, "keep.txt")
+	outsideSkill := filepath.Join(outside, "boss-test", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(outsideSkill), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outsideKeep, []byte("outside keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outsideSkill, []byte("outside skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := t.TempDir()
+	nsLink := filepath.Join(dest, Namespace)
+	if err := os.Symlink(outside, nsLink); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract over symlinked namespace: %v", err)
+	}
+
+	info, err := os.Lstat(nsLink)
+	if err != nil {
+		t.Fatalf("Lstat namespace: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		t.Fatalf("namespace mode = %v, want real directory (not symlink)", info.Mode())
+	}
+
+	// Nothing in the outside directory may have been deleted, modified, or added.
+	if got, err := os.ReadFile(outsideKeep); err != nil || string(got) != "outside keep\n" {
+		t.Fatalf("outside keep.txt = (%q, %v), want untouched", got, err)
+	}
+	if got, err := os.ReadFile(outsideSkill); err != nil || string(got) != "outside skill\n" {
+		t.Fatalf("outside boss-test/SKILL.md = (%q, %v), want untouched", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "boss-other")); !os.IsNotExist(err) {
+		t.Fatalf("Extract wrote into outside target dir: stat boss-other err = %v", err)
 	}
 }

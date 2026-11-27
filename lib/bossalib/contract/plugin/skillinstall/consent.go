@@ -333,6 +333,9 @@ func refreshInstalledLocked(agent Agent, dir string, fsys fs.FS, record PayloadR
 }
 
 func shouldRestamp(existing PayloadRecord, recorded bool, record PayloadRecord) bool {
+	if !record.IsRelease() {
+		return false
+	}
 	if !recorded {
 		return true
 	}

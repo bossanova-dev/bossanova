@@ -96,7 +96,7 @@ func TestRunSkillGateHeal_BossSkills_AC246401(t *testing.T) {
 				t.Fatalf("record: %+v %v", record, recordErr)
 			}
 			if scenario == "recoverable" {
-				if err != nil || strings.Contains(out.String(), "  - ") || record.Origin != libskillinstall.OriginCheckout || record.Writer != libskillinstall.WriterUnattended {
+				if err != nil || strings.Contains(out.String(), "  - ") || record.Origin != libskillinstall.OriginCheckout || record.Writer != libskillinstall.WriterExplicit {
 					t.Fatalf("heal result: %v %s %+v", err, &out, record)
 				}
 				var check bytes.Buffer
@@ -130,6 +130,45 @@ func TestRunSkillCheckHealRequiresGate(t *testing.T) {
 	cmd.SetArgs([]string{"check", "--heal"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("heal without gate accepted")
+	}
+}
+
+func TestRunSkillGateHealSkipsWithoutCheckoutTrust(t *testing.T) {
+	g := newTestGroup()
+	home := g.setupSkillStartupTest(t)
+	root := t.TempDir()
+	old := gateSkillFS()
+	srcRoot := writeSkillSources(t, root, old)
+	t.Setenv(trustCheckoutSkillSourcesEnv, "")
+	commitCheckoutAsOriginHead(t, root)
+	dir := filepath.Join(home, ".claude", "skills")
+	original := libskillinstall.EmbeddedPayloadRecord("abc1234", "v1.0.0", libskillinstall.WriterUnattended)
+	if err := libskillinstall.ExtractRecorded(dir, old, original); err != nil {
+		t.Fatal(err)
+	}
+	sourceFile := filepath.Join(srcRoot, "skills", "boss", "SKILL.md")
+	if err := os.WriteFile(sourceFile, []byte("new boss skill\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", ".")
+	runGit(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "new payload")
+	runGit(t, root, "update-ref", "refs/remotes/origin/main", "HEAD")
+	t.Chdir(root)
+
+	var out bytes.Buffer
+	_ = g.runSkillGateWithHeal(&out, "claude", true)
+	if !strings.Contains(out.String(), "heal skipped") || !strings.Contains(out.String(), trustCheckoutSkillSourcesEnv) {
+		t.Fatalf("output = %s, want heal skipped requiring %s", &out, trustCheckoutSkillSourcesEnv)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, libskillinstall.Namespace, "boss", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, old["skills/boss/SKILL.md"].Data) {
+		t.Fatalf("untrusted gate heal rewrote global skill: %q", got)
+	}
+	if record, _, err := libskillinstall.ReadPayloadRecord(dir); err != nil || record != original {
+		t.Fatalf("record = %+v (err %v), want %+v untouched", record, err, original)
 	}
 }
 

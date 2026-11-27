@@ -83,6 +83,7 @@ export function proofPlayer(doc) {
   // with `proof:ticks:get` and `proof:ticks:set`, and the app answers a get with `proof:ticks`.
   // Messages wait for the app's first one, which names the origin to send them to, so ticks never
   // reach a window that is not the app. The app also sends `proof:theme`, its explicit theme or null.
+  // A click on a stacked parent's link sends `proof:open-pr` with the repository and PR number.
   /** @type {any} */
   let store = null
   try {
@@ -432,6 +433,14 @@ export function proofPlayer(doc) {
     if (lb && link.classList.contains('shot')) {
       event.preventDefault()
       return open(link)
+    }
+    // A review app that framed the page opens a stacked parent's PR in place rather than a tab.
+    const stacked = Number(link.getAttribute('data-stack-pr'))
+    if (stacked > 0 && appOrigin) {
+      event.preventDefault()
+      const repo = (doc.body ? (doc.body.getAttribute('data-proof') ?? '') : '').split('#')[0]
+      send({ type: 'proof:open-pr', repo, pr: stacked })
+      return
     }
     const href = link.getAttribute('href') ?? ''
     if (!href.startsWith('#')) return

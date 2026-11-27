@@ -462,6 +462,8 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 		proofAt   time.Time
 		latest    *ProofLine
 		latestAt  time.Time
+		// The newest page problem noted for each head, by lower-case head.
+		problems = map[string]PageProblem{}
 	)
 	for i := range comments {
 		c := &comments[i]
@@ -489,6 +491,7 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 				latest, latestAt = &line, c.WrittenAt
 			}
 		}
+		notePageProblem(problems, c.Body)
 		found.readParkNote(c.Body, head)
 		rec, ok := ParseOperatorRecord(c.Body)
 		if !ok || !sameHead(rec.Head, head) || !vcs.IsTrustedAuthorAssociation(c.AuthorAssociation) ||
@@ -500,13 +503,21 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 			found.sentBack, decider = rec.IsSendBack, c
 		}
 	}
-	found.proof = buildRecord(proof, proofAt, found.entry)
-	found.latest = buildRecord(latest, latestAt, nil)
+	found.proof = withPageProblem(buildRecord(proof, proofAt, found.entry), problems)
+	found.latest = withPageProblem(buildRecord(latest, latestAt, nil), problems)
 	if proof != nil {
 		found.latest = found.proof
 	}
 	found.sentBack = found.sentBack || unordered
 	return found, nil
+}
+
+// withPageProblem attaches the page problem noted for a page-less record's head.
+func withPageProblem(record *ProofRecord, problems map[string]PageProblem) *ProofRecord {
+	if record != nil && record.Page == "" && !record.Legacy {
+		record.PageProblem = problems[strings.ToLower(record.Head)]
+	}
+	return record
 }
 
 // postedAfter reports whether a was posted after b, the larger comment id

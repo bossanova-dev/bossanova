@@ -526,6 +526,7 @@ func TestSlowProcedures_KeysAreGeneratedProcedureConstants(t *testing.T) {
 		bossanovav1connect.DaemonServiceListRepoPRsProcedure:               true,
 		bossanovav1connect.DaemonServiceListAgentAccountsProcedure:         true,
 		bossanovav1connect.DaemonServiceRepairDoctorProcedure:              true,
+		bossanovav1connect.DaemonServiceListSetupChecksProcedure:           true,
 		bossanovav1connect.DaemonServiceTestAgentAccountProcedure:          true,
 		bossanovav1connect.DaemonServiceAddAgentAccountProcedure:           true,
 		bossanovav1connect.DaemonServiceRefreshAgentAccountProcedure:       true,
@@ -609,6 +610,7 @@ func TestDeadlineFor(t *testing.T) {
 		want      time.Duration
 	}{
 		{"table member gets the slow bound", bossanovav1connect.DaemonServiceMergeSessionProcedure, slowRPCDeadline},
+		{"list setup checks gets the slow bound", bossanovav1connect.DaemonServiceListSetupChecksProcedure, slowRPCDeadline},
 		// bossd runs the operator's merge detached for up to its ceiling; a
 		// client that stopped listening first would report a landing merge
 		// as failed.

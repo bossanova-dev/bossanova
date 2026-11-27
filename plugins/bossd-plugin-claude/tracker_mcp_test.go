@@ -24,11 +24,21 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "create tracker MCP temp dir: %v\n", err)
 		os.Exit(1)
 	}
+	policyDir, err := os.MkdirTemp("", "bossd-plugin-claude-policy-default-*")
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		fmt.Fprintf(os.Stderr, "create policy settings temp dir: %v\n", err)
+		os.Exit(1)
+	}
 	prev := trackerMCPDefaultDir
+	prevPolicy := policySettingsDefaultDir
 	trackerMCPDefaultDir = func() (string, error) { return dir, nil }
+	policySettingsDefaultDir = func() (string, error) { return policyDir, nil }
 	code := m.Run()
 	trackerMCPDefaultDir = prev
+	policySettingsDefaultDir = prevPolicy
 	_ = os.RemoveAll(dir)
+	_ = os.RemoveAll(policyDir)
 	os.Exit(code)
 }
 

@@ -81,6 +81,8 @@ func NewRunner(logger zerolog.Logger, opts ...Option) *Runner {
 	return r
 }
 
+const agyOptionUnattendedPolicy = "unattended_policy"
+
 // buildArgv renders the headless argv. The plan arrives on stdin as one
 // stream-json turn (see encodeStreamTurn), never on argv.
 func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
@@ -88,7 +90,7 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	if in.Resume != nil && *in.Resume != "" {
 		args = append(args, "--conversation", *in.Resume)
 	}
-	args = append(args, r.sessionFlags(in.Options["model"], in.Options["effort"], in.WorkDir)...)
+	args = append(args, r.sessionFlags(in.Options["model"], in.Options["effort"], in.WorkDir, in.Options[agyOptionUnattendedPolicy] == "1")...)
 	return loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 }
 
@@ -103,6 +105,10 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 var errConversationNotResumed = errors.New("agy did not resume the conversation")
 
 func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string) (string, error) {
+	return r.startRun(ctx, workDir, plan, resume, sessionID, logPath, model, effort, extraEnv, false)
+}
+
+func (r *Runner) startRun(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string, hasUnattendedPolicy bool) (string, error) {
 	input, err := encodeStreamTurn(plan)
 	if err != nil {
 		return "", fmt.Errorf("encode plan: %w", err)
@@ -111,8 +117,11 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	if key == "" {
 		key = uuid.NewString()
 	}
-	key, err = r.StartWithOptions(ctx, workDir, input, resume, key, logPath, extraEnv,
-		map[string]string{"model": model, "effort": effort})
+	opts := map[string]string{"model": model, "effort": effort}
+	if hasUnattendedPolicy {
+		opts[agyOptionUnattendedPolicy] = "1"
+	}
+	key, err = r.StartWithOptions(ctx, workDir, input, resume, key, logPath, extraEnv, opts)
 	if err != nil {
 		return "", err
 	}

@@ -91,12 +91,18 @@ details, then a chat on its own. The back arrow always goes up one level.
 
 A session whose PR waits for you shows under **Needs you**. Open it to read the
 PR's review page in the **Review page** view, then **Merge** it, or **Send back**
-under **⋯** to return it to the agent. A PR with no review page shows the review
-note verify left on it, with **Verify again**.
+under **⋯** to return it to the agent. A PR with no review page shows one built
+from what verify recorded: its confidence, the areas it asks you to review, the
+PR's size and head. A notice above the title says why the page wasn't
+published. When review page hosting isn't set up it links to the setup docs;
+otherwise it offers **Verify again**.
 
-The old review route is gone. A link to `/review` opens the **Needs you** view,
-and a link to `/review/<owner>/<name>/<pr>` opens that PR's session on its
-review page.
+A link to `/review` opens the **Needs you** view. A link to
+`/review/<owner>/<name>/<pr>` opens that PR's session, on its review page when
+it has one, or the PR on GitHub when you have no session for it. Review pages
+link a stacked PR's parent there, so clicking it opens the parent's session.
+Inside the app the click opens it in place; on a page opened on its own it
+opens a new tab.
 
 ## Routes
 
@@ -108,7 +114,7 @@ page, so moving between sessions and chats keeps the list where it was:
 | `/` or `/sessions`                   | Sessions    | Every active session across every paired daemon.                      |
 | `/sessions?view=needs`               | Needs you   | The sessions waiting for you.                                         |
 | `/sessions/:id`                      | Session     | The session on its review page, or on its chats when nothing applies. |
-| `/sessions/:id/proof`                | Review page | The PR's review page, or its review note when it has no page.         |
+| `/sessions/:id/proof`                | Review page | The PR's review page, or one built from its record when it has none.  |
 | `/sessions/:id/chats/:chat`          | Chat        | The chat's conversation and reply box.                                |
 | `/sessions/:id/chats/:chat/terminal` | Terminal    | The chat's live terminal.                                             |
 | `/sessions/:id/terminal`             | Terminal    | The live terminal of the session's default chat.                      |

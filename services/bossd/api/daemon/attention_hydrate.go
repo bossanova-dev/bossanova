@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/evidence"
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/attention"
@@ -99,6 +100,9 @@ func (s *Server) hydrateLatestProof(p *pb.Session, row *models.Session) {
 		p.PrProofUrl, p.PrProofHeadSha = proof.Page, proof.Head
 	case proof.Summary != "":
 		p.PrProofSummary, p.PrProofHeadSha = proof.Summary, proof.Head
+		if problem := proof.PageProblem; problem != (evidence.PageProblem{}) {
+			p.PrProofPageProblem = &pb.ProofPageProblem{Reason: problem.Reason, Detail: problem.Detail}
+		}
 	}
 }
 
@@ -107,7 +111,7 @@ func (s *Server) hydrateLatestProof(p *pb.Session, row *models.Session) {
 // never writes the legacy display fields.
 // The additive field already has its compatibility transform (SessionAttentionChange).
 func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentionDeps) {
-	p.PrProofDigest, p.PrProofUrl, p.PrProofHeadSha, p.PrProofSummary = "", "", "", ""
+	p.PrProofDigest, p.PrProofUrl, p.PrProofHeadSha, p.PrProofSummary, p.PrProofPageProblem = "", "", "", "", nil
 	row := d.row
 	s.hydratePRStack(p, row)
 	if row == nil {

@@ -724,8 +724,9 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// untrusted, and an untrusted launch revokes any earlier pre-trust —
 		// except in the repo's own checkout, where it denies: that launch runs
 		// untrusted and nothing is persisted.
-		ProjectTrust:     repotrust.ProjectTrustFor(repo, sess.WorktreePath),
-		HookReceiptToken: l.PromptReceiptToken(providerSessionID),
+		ProjectTrust:               repotrust.ProjectTrustFor(repo, sess.WorktreePath),
+		HookReceiptToken:           l.PromptReceiptToken(providerSessionID),
+		UnattendedPermissionPolicy: unattendedPermissionPolicyIf(launchFacts.IsUnattended, sess.WorktreePath, repo),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -734,6 +735,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		return "", grpcstatus.Errorf(codes.FailedPrecondition,
 			"agent runner for session %s returned empty argv", sessionID)
 	}
+	defer RemoveClaudePolicySettingsFromArgvOnError(&retErr, cmdResp.Argv, l.logger)
 	// A runner can only consume an input it was offered. Honouring the flag
 	// without one would silently drop a prefill this launch never handed over.
 	consumesInitialInput := cmdResp.GetConsumesInitialInput() && launch.offered()
@@ -2266,6 +2268,9 @@ func managedSessionEnv(f Facts) map[string]string {
 	if f.BossBin != "" {
 		env["BOSS_BIN"] = f.BossBin
 	}
+	if f.ReviewAppURL != "" {
+		env[ReviewAppURLEnv] = f.ReviewAppURL
+	}
 	if f.McpBin != "" {
 		env["BOSS_MCP_BIN"] = f.McpBin
 	}
@@ -2305,6 +2310,7 @@ type Facts struct {
 	Socket         string
 	BossBin        string // "" when neither a trusted boss binary nor a repo-local <worktree>/bin/boss resolved
 	McpBin         string // "" when no trusted mcp binary was resolved
+	ReviewAppURL   string // the daemon's ReviewAppURLEnv; "" when it serves no review app
 	RepoTrusted    bool
 	IsCron         bool
 	IsQuickChat    bool
@@ -2363,6 +2369,7 @@ func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string,
 		f.BossBin = resolveRepoLocalBoss(f.Worktree)
 	}
 	f.McpBin = config.ResolveMcpBinary()
+	f.ReviewAppURL = os.Getenv(ReviewAppURLEnv)
 	return f
 }
 

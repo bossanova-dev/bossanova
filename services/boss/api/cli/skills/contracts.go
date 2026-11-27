@@ -25,6 +25,7 @@ type Client interface {
 	ListCronJobs(context.Context, string) ([]*pb.CronJob, error)
 	CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error)
 	UpdateCronJob(context.Context, *pb.UpdateCronJobRequest) (*pb.CronJob, error)
+	ListSetupChecks(context.Context, *pb.ListSetupChecksRequest) (*pb.ListSetupChecksResponse, error)
 }
 type ClientFactory func(*cobra.Command) (Client, error)
 
@@ -33,6 +34,18 @@ type Config struct {
 	ShutdownHostTunnel func()
 
 	LoadProject func(context.Context, string) (*Project, error)
+
+	// NewSetupCheckClient builds the read-only client for `boss init check`
+	// without auto-starting bossd. When nil, Group falls back to its default
+	// client factory.
+	NewSetupCheckClient ClientFactory
+	// SetupCheckSocketPath resolves the local daemon socket path reported in
+	// unreachable-daemon evidence.
+	SetupCheckSocketPath func() (string, error)
+	// SetupCheckServiceInstalled reports whether the bossd service is installed
+	// on this host, choosing between `boss daemon start` and `boss daemon install`
+	// when the daemon is unreachable.
+	SetupCheckServiceInstalled func() bool
 }
 type Project struct {
 	Path         string

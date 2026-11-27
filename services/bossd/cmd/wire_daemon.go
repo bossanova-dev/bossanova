@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os/exec"
 
 	"github.com/recurser/bossd/internal/adapter/setupscript"
 
@@ -186,6 +187,11 @@ func (w *daemonWiring) wireDaemon() {
 		SessionServeRunner: w.serveRunner,
 		ServeTmuxName:      w.serveRunner.LiveTmuxName,
 		ProtectedRoots:     w.startupProtectedRoots,
+
+		SetupProbes: server.SetupProbes{
+			LookPath: exec.LookPath,
+			Skills:   factoryversions.ReadSetupSkills,
+		},
 	}
 	setGitHubCredentialReporter(&daemonConfig, w.githubCredentials)
 	// Assigned only when the manager exists: a typed-nil *chatupload.Manager

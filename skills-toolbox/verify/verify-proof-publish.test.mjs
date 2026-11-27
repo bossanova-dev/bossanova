@@ -17,6 +17,7 @@ import {
 import { buildProofRecord } from './verify-proof-build.mjs'
 import { parseProofLine, proofLine } from './verify-proof.mjs'
 import { PAGE_OBJECT } from './verify-publish-hook.mjs'
+import { trialProofActions } from './verify-policy-ref.mjs'
 
 const HEAD = 'a'.repeat(40)
 const BASE = 'b'.repeat(40)
@@ -336,6 +337,45 @@ async function run({
   return { result, uploads, notes, calls, checkRuns }
 }
 
+test('a trial-policy run says so on the page and in the PR proof note, and only the session can claim it', async () => {
+  const trial = { ref: 'config/trial', sha: 'c'.repeat(40) }
+  const { uploads, notes } = await run({ overrides: { trialPolicy: trial } })
+  assert.ok(
+    uploads[0].html.includes('Judged with trial policy from <code>config/trial@ccccccc</code>.'),
+    'the page header names the trial',
+  )
+  assert.ok(
+    notes[0].note.body.startsWith(
+      "**Trial policy.** Verify judged this page with trial policy from `config/trial@ccccccc`, not the policy on the PR's base branch.",
+    ),
+    notes[0].note.body,
+  )
+  // A judge file that claims a trial outside a trial session is not believed.
+  const claimed = await run({ judgement: { ...judged, trialPolicy: trial } })
+  assert.ok(!claimed.uploads[0].html.includes('trial policy'))
+  assert.ok(!claimed.notes[0].note.body.includes('Trial policy'))
+})
+
+test('a trial-policy run discovers its publisher on the trusted base tree', async () => {
+  const trial = { ref: 'config/trial', sha: 'c'.repeat(40) }
+  const roots = []
+  const { uploads } = await run({
+    overrides: trialProofActions(
+      {
+        trustedTree: ({ baseSha }) => ({ ok: true, root: `/tree/${baseSha.slice(0, 1)}` }),
+        loadConfig: () => ({}),
+        discoverPublisher: ({ baseSha, cwd, read, trustedTree }) => {
+          roots.push(trustedTree({ baseSha, cwd, read }).root)
+          return { publisher: { kind: 'hook', extension: { name: 'host' } } }
+        },
+      },
+      trial,
+    ),
+  })
+  assert.equal(uploads.length, 1)
+  assert.deepEqual(roots, ['/tree/b'])
+})
+
 test('a parked verdict uploads the page and notes the proof line carrying its URL @sessions.AC248601', async () => {
   const { result, uploads, notes } = await run()
   const url = `https://proof.example/acme/widgets/7/${HEAD}/index.html`
@@ -578,6 +618,61 @@ test('a fallback note is reused on a re-run, and a failed fallback says so @sess
     ),
   )
   assert.equal(parseProofLine(failed.notes[0].note.body).page, null)
+})
+
+function hostedWithLimits(limits, reads) {
+  return {
+    discoverPublisher: () => ({ publisher: { kind: 'hosted' } }),
+    callDaemon: async (_socket, method, message) => {
+      reads.push({ method, message })
+      if (method !== 'GetHostedProofLimits') return {}
+      if (limits instanceof Error) throw limits
+      return limits
+    },
+  }
+}
+
+test('a hosted page fits the limits bosso last returned before its first upload @sessions.AC278401', async (t) => {
+  const reads = []
+  const { result, uploads } = await run({
+    input: { mediaDir: twoClips(t) },
+    overrides: hostedWithLimits({ limits: { maxFileCount: 5, maxPageBytes: '9000000' } }, reads),
+    upload: answers(),
+  })
+  assert.deepEqual(reads[0], {
+    method: 'GetHostedProofLimits',
+    message: { workspacePath: '/repo' },
+  })
+  assert.equal(uploads.length, 1, 'one upload and no refusal')
+  assert.deepEqual(
+    uploads[0].assets.map((a) => a.name),
+    ['media/a.mp4', 'player.js'],
+  )
+  assert.ok(uploads[0].html.includes('data-omitted="1"'))
+  assert.deepEqual(result.page, {
+    published: true,
+    url: PAGE_URL,
+    publisher: 'hosted',
+    omittedMedia: 1,
+  })
+})
+
+test('a daemon with no limits keeps the refusal loop @sessions.AC278401', async (t) => {
+  for (const limits of [{}, new Error('GetHostedProofLimits → HTTP 404')]) {
+    const reads = []
+    const { result, uploads } = await run({
+      input: { mediaDir: twoClips(t) },
+      overrides: hostedWithLimits(limits, reads),
+      upload: answers(OVER('file-count', 3)),
+    })
+    assert.equal(reads[0].method, 'GetHostedProofLimits')
+    assert.equal(uploads.length, 2)
+    assert.deepEqual(
+      uploads[0].assets.map((a) => a.name),
+      ['media/a.mp4', 'media/b.mp4', 'player.js'],
+    )
+    assert.equal(result.page.omittedMedia, 1)
+  }
 })
 
 test('a fit that drops every media file publishes a page with no media problem @sessions.AC261202', async (t) => {
@@ -928,4 +1023,56 @@ test('after the base moves, the page diffs and lists only the branch, on its mer
   assert.doesNotMatch(html, /message Main|main\.ts|Trunk moves on/)
   assert.match(html, new RegExp(`on <code>${fork.slice(0, 12)}</code>`))
   assert.ok(!html.includes(base.slice(0, 7)), 'the base tip is never shown')
+})
+
+test('the page reads its stack with the review app BOSS_REVIEW_APP_URL names', async (t) => {
+  const dir = tempDir('proof-app-url-', t)
+  const git = (...args) =>
+    execFileSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args],
+      { cwd: dir, encoding: 'utf8' },
+    ).trim()
+  git('init', '-q', '-b', 'trunk')
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n')
+  git('add', '.')
+  git('commit', '-qm', 'base')
+  const base = git('rev-parse', 'HEAD')
+  fs.appendFileSync(path.join(dir, 'a.txt'), 'b\n')
+  git('commit', '-qam', 'change')
+  const head = git('rev-parse', 'HEAD')
+  const read = (command, args) => {
+    try {
+      return { ok: true, output: execFileSync(command, args, { cwd: dir, encoding: 'utf8' }) }
+    } catch {
+      return { ok: false }
+    }
+  }
+  const asked = []
+  for (const env of [{ BOSS_REVIEW_APP_URL: 'https://review.example/' }, {}])
+    await recordHeadProof(
+      {
+        read,
+        repo: 'acme/widgets',
+        pr: 7,
+        headSha: head,
+        judged: { ...judged, headSha: head, baseSha: base },
+        cwd: dir,
+        env,
+      },
+      {
+        readOperatorMarkers: () => ({ readable: true, markers: [] }),
+        recordHeadNote: () => ({
+          outcome: 'posted',
+          url: 'https://github.com/acme/widgets/pull/7',
+        }),
+        readBranchContext: (input) => {
+          asked.push(input.appUrl)
+          return undefined
+        },
+        discoverPublisher: () => ({ publisher: { kind: 'hook', extension: { name: 'host' } } }),
+        uploadPage: async () => ({ ok: false, reason: 'upload-failed' }),
+      },
+    )
+  assert.deepEqual(asked, ['https://review.example', null])
 })

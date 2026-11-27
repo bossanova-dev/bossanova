@@ -35,6 +35,7 @@ var humanReasonsOrder = []string{
 	ParkCodeHumanMerge,
 	"verify-post-failed",
 	"ci-absent",
+	"trial-policy",
 	"human-review:database",
 	"human-review:security",
 	"human-review:ui",
@@ -442,7 +443,12 @@ var knownParkCodes = map[string]parkCodeInfo{
 	// renders an unknown code as a blocked FIX, which truthfully says verify
 	// holds the PR. There is no older answer to restore. See
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
-	"ci-absent":        {category: "no CI", plain: "no CI reported on the latest commit, so verify will not merge it; merge it yourself or give it CI"},
+	"ci-absent": {category: "no CI", plain: "no CI reported on the latest commit, so verify will not merge it; merge it yourself or give it CI"},
+	// No dated apiversion bump for trial-policy: an older TUI or web renders
+	// the unknown code as a blocked park, which truthfully says the PR is held.
+	// There is no older answer to restore. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	"trial-policy":     {hasDecidingPriority: true, category: "trial policy", plain: "verify judged this commit with an operator's trial policy, so its result can never merge"},
 	"repair-exhausted": {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
 	"extension-failed": {category: "verify extension failed", plain: "a verify extension failed to run"},
 	// No dated apiversion bump: older TUI and web clients render unknown codes

@@ -29,7 +29,7 @@ func (r *Runner) buildInteractiveCommand(req *bossanovav1.BuildInteractiveComman
 	if req.GetResume() && req.GetSessionId() != "" {
 		args = append(args, "--conversation", req.GetSessionId())
 	}
-	args = append(args, r.sessionFlags(req.GetModel(), req.GetEffort(), req.GetWorktreePath())...)
+	args = append(args, r.sessionFlags(req.GetModel(), req.GetEffort(), req.GetWorktreePath(), req.GetUnattendedPermissionPolicy() != nil)...)
 
 	input := interactiveInitialInput(req)
 	support := bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE

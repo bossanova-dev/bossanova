@@ -741,6 +741,28 @@ message Session {
   // older clients ignore. See
   // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
   ProofConfidence pr_head_proof_confidence = 108;
+  // Why the record pr_proof_summary comes from has no review page, from
+  // verify's proof-missing note for that head: its reason code (for example
+  // upload-failed) and bounded detail. Unset when the record has a page or
+  // verify noted no page problem, as when it never tried to publish one.
+  // Transport-only, never persisted. No dated API bump: additive output field
+  // older clients ignore. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  ProofPageProblem pr_proof_page_problem = 109;
+  // The origin branch boss-verify reads trial policy from in this
+  // verify-only session; empty for every other session. Set at creation by
+  // an operator and never changes afterwards.
+  // No dated API bump: additive output field older clients ignore. See
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  string policy_ref = 110;
+}
+
+// ProofPageProblem is why verify could not publish a PR head's review page.
+message ProofPageProblem {
+  // The writer's reason code, such as upload-failed.
+  string reason = 1;
+  // What the publisher said, made safe and bounded by verify; may be empty.
+  string detail = 2;
 }
 
 // ProofConfidence is the verify proof record written for one PR head:

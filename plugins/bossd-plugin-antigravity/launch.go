@@ -30,8 +30,10 @@ var agyEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 func validMode(mode string) bool { return slices.Contains(agyModes, mode) }
 
 // sessionFlags renders the per-launch flags shared by every agy surface.
-// requestModel wins over the plugin's fallback model.
-func (c launchConfig) sessionFlags(requestModel, effort, workDir string) []string {
+// requestModel wins over the plugin's fallback model. When hasUnattendedPolicy
+// is set with bypass off and no configured mode, --mode auto is emitted so
+// unattended runs execute tools without prompting.
+func (c launchConfig) sessionFlags(requestModel, effort, workDir string, hasUnattendedPolicy bool) []string {
 	var args []string
 	model := requestModel
 	if model == "" {
@@ -46,8 +48,12 @@ func (c launchConfig) sessionFlags(requestModel, effort, workDir string) []strin
 	if c.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	if c.mode != "" {
-		args = append(args, "--mode", c.mode)
+	mode := c.mode
+	if mode == "" && hasUnattendedPolicy && !c.dangerouslySkipPermissions {
+		mode = "auto"
+	}
+	if mode != "" {
+		args = append(args, "--mode", mode)
 	}
 	if settings := trustedWorkspacesSettings(workDir); settings != "" {
 		args = append(args, "--settings", settings)

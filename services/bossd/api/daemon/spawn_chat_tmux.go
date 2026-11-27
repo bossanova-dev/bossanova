@@ -168,7 +168,7 @@ type argvBuilder interface {
 	// BOS-1562). Only a real launch decides (repotrust.ProjectTrustFor); anything
 	// that merely renders argv sends UNSPECIFIED, because a revoke sent from a
 	// preview would strip a trusted repo's trust.
-	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, isClaudeProxyEnabled bool, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error)
+	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, isClaudeProxyEnabled bool, trust bossanovav1.ProjectTrustDecision, unattendedPolicy *bossanovav1.UnattendedPermissionPolicy) (*bossanovav1.BuildInteractiveCommandResponse, error)
 }
 
 type interactiveSessionResolution struct {
@@ -246,6 +246,15 @@ type spawnInput struct {
 	// pane exists: BOS-1142 made a bound account whose credentials cannot be
 	// injected a refusal, not a downgrade to the ambient CLI login.
 	SessionEnvFunc func() (map[string]string, error)
+	// IsUnattended reports whether the parent session runs unattended (cron,
+	// tmux-unattended, or detach) so a re-spawned pane keeps the session's
+	// unattended tool-permission policy (BOS-2678).
+	IsUnattended bool
+	// LogPath is the per-chat agent log path under the daemon's agentLogsDir.
+	// Passed through to BuildInteractive so plugins (such as Claude's
+	// unattended permission policy) place per-launch files beside the agent log
+	// instead of creating fallback directories in $TMPDIR.
+	LogPath string
 }
 
 type spawnResult struct {
@@ -403,13 +412,11 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 	if deps.Argv == nil {
 		return spawnResult{}, fmt.Errorf("spawn chat tmux: argv builder not configured")
 	}
-	// LogPath is intentionally empty: this is the user-attached path
-	// where the operator is reading tmux directly, not the unattended-
-	// headless path StartTmuxChat handles. Even if it weren't empty,
-	// the plugin's BuildInteractiveCommand no longer consumes LogPath
-	// at all — pane capture is wired post-NewSession via tmux pipe-pane
-	// by StartTmuxChat, and the WakeChat path here just doesn't need
-	// any. Keeping the empty argument makes the contract explicit.
+	// LogPath is forwarded so plugins that write per-launch policy files
+	// (such as Claude's unattended permission settings) place them beside the
+	// chat's log in agentLogsDir instead of leaking fallback directories in
+	// $TMPDIR. Pane output capture itself stays wired post-NewSession via
+	// tmux pipe-pane by StartTmuxChat.
 	// Resolve the spawn environment before building argv: Codex uses CODEX_HOME
 	// or HOME to choose the account home that strict MCP setup must mirror.
 	// Liveness was checked above, so this remains lazy for already-live panes.
@@ -424,7 +431,7 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 		}
 	}
 	model, effort := in.launchModelAndEffort()
-	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, model, effort, configHomeEnv(sessionEnv, in.WorktreePath), sessionEnv["ANTHROPIC_API_KEY"] == domain.SentinelAPIKey, repotrust.ProjectTrustFor(in.Repo, in.WorktreePath))
+	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, in.LogPath, in.AppendSystemPrompt, model, effort, configHomeEnv(sessionEnv, in.WorktreePath), sessionEnv["ANTHROPIC_API_KEY"] == domain.SentinelAPIKey, repotrust.ProjectTrustFor(in.Repo, in.WorktreePath), unattendedPermissionPolicyIf(in.IsUnattended, in.WorktreePath, in.Repo))
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)
 	}
@@ -432,6 +439,7 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 	if len(args) == 0 {
 		return spawnResult{}, fmt.Errorf("argv builder returned empty command for agent %q", in.Chat.AgentName)
 	}
+	defer session.RemoveClaudePolicySettingsFromArgvOnError(&err, args, deps.Logger)
 	// Report — never enforce. argv is already resolved above and is not touched
 	// by what the runner did or did not declare about the instruction suffix.
 	session.LogUndeliveredInstructions(deps.Logger, in.Chat.SessionID, in.Chat.AgentSessionID,
@@ -658,7 +666,7 @@ type liveArgvBuilder struct {
 // BuildInteractive resolves argv for (agentName, resume) by calling the
 // matching plugin's BuildInteractiveCommand RPC. Plugins own their own CLI
 // shape and per-plugin settings, so spawnChatTmux stays agnostic to either.
-func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, isClaudeProxyEnabled bool, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, isClaudeProxyEnabled bool, trust bossanovav1.ProjectTrustDecision, unattendedPolicy *bossanovav1.UnattendedPermissionPolicy) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	name := agentName
 	if name == "" {
 		name = defaultLegacyAgent
@@ -671,16 +679,17 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 		return nil, agent.RunnerNotLoaded(name, b.clients)
 	}
 	resp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:            agentSessionID,
-		Resume:               resume,
-		WorktreePath:         worktreePath,
-		LogPath:              logPath,
-		AppendSystemPrompt:   appendSystemPrompt,
-		Model:                model,
-		Effort:               effort,
-		ConfigHomeEnv:        configHomeEnv,
-		IsClaudeProxyEnabled: isClaudeProxyEnabled,
-		ProjectTrust:         trust,
+		SessionId:                  agentSessionID,
+		Resume:                     resume,
+		WorktreePath:               worktreePath,
+		LogPath:                    logPath,
+		AppendSystemPrompt:         appendSystemPrompt,
+		Model:                      model,
+		Effort:                     effort,
+		ConfigHomeEnv:              configHomeEnv,
+		IsClaudeProxyEnabled:       isClaudeProxyEnabled,
+		ProjectTrust:               trust,
+		UnattendedPermissionPolicy: unattendedPolicy,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent %q BuildInteractiveCommand: %w", name, err)
@@ -689,6 +698,18 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 		return nil, fmt.Errorf("agent %q returned empty argv", name)
 	}
 	return resp, nil
+}
+
+func unattendedPermissionPolicyIf(isUnattended bool, worktree string, repo *models.Repo) *bossanovav1.UnattendedPermissionPolicy {
+	if !isUnattended {
+		return nil
+	}
+	policy := session.UnattendedPermissionPolicyFor(worktree, repo)
+	return &bossanovav1.UnattendedPermissionPolicy{
+		WorktreePath:           policy.WorktreePath,
+		AllowedCommandPrefixes: policy.AllowedCommandPrefixes,
+		IsNetworkAllowed:       policy.IsNetworkAllowed,
+	}
 }
 
 // configHomeEnv forwards only the home selectors needed while argv is built;

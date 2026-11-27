@@ -101,9 +101,23 @@ test('unreadable run count skips claims and other contexts, adds mixed reasons a
     node('cannot assess: base-ci-unknown', 'error'),
   ]
   assert.equal(unreadableRunCount(counted, reasons), 3)
+  assert.equal(
+    unreadableRunCount(
+      [
+        claim,
+        node('waiting: extension-retry · pr-unreadable'),
+        claim,
+        node('waiting: extension-retry · receipt-unknown'),
+      ],
+      reasons,
+    ),
+    2,
+  )
   assert.equal(unreadableRunCount([], reasons), 0)
   for (const reset of [
     wait('ci-not-settled'),
+    node('waiting: extension-retry · stack-busy'),
+    node('waiting: extension-retry'),
     node('verified', 'success'),
     node('defect: tests', 'failure'),
     node('blocked: review', 'failure'),

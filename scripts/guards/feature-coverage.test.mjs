@@ -195,6 +195,20 @@ test('criterion proofs track Node behavioral tests and reject removing their ann
   assert.match(result.stderr, /scheduled-jobs.AC1/)
 })
 
+test('criterion proofs track repository script tests', (t) => {
+  const root = fixture(t)
+  assert.equal(run(root, 'proofs', '--update').status, 0)
+  writeFileSync(path.join(root, file), "test('unrelated', () => {})")
+  const nodeFile = 'scripts/release/accept.test.mjs'
+  mkdirSync(path.dirname(path.join(root, nodeFile)), { recursive: true })
+  writeFileSync(path.join(root, nodeFile), "test('accepts @scheduled-jobs.AC1', () => {})")
+  spawnSync('git', ['add', nodeFile], { cwd: root })
+  assert.equal(run(root, 'proofs', '--check').status, 0)
+  assert.match(run(root, 'page').stdout, /`scripts\/release\/accept\.test\.mjs`/)
+  writeFileSync(path.join(root, nodeFile), "test('unannotated', () => {})")
+  assert.match(run(root, 'proofs', '--check').stderr, /scheduled-jobs.AC1/)
+})
+
 test('a criteria-file criterion is on the coverage page and proven by its Go test name', (t) => {
   const root = fixture(t)
   mkdirSync(path.join(root, 'docs/features/criteria/scheduled-jobs'), { recursive: true })

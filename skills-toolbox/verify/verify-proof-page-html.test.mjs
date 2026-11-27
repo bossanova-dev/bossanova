@@ -853,10 +853,45 @@ test('a PR stacked by its base says so in amber above the title, and links the p
   )
   assert.ok(
     html.includes(
-      '<a href="https://github.com/acme/shop/pull/12" target="_blank" rel="noopener noreferrer">#12</a>',
+      '<a href="https://github.com/acme/shop/pull/12" target="_blank" rel="noopener noreferrer" data-stack-pr="12">#12</a>',
     ),
   )
   assert.ok(html.includes('<code>feat/refunds</code>'))
+})
+
+test('a stacked parent links to the review app’s PR route when the page knows the app, else to GitHub', () => {
+  const appUrl = 'https://review.example/review/acme/shop/12'
+  for (const how of ['base', 'content']) {
+    const linked = notice({
+      base: 'main',
+      default: 'main',
+      stackedOn: [{ ...PARENT, how, appUrl }],
+    })
+    const hrefs = [...linked.matchAll(/<a href="([^"]+)"[^>]*data-stack-pr="12">#12<\/a>/g)]
+    assert.deepEqual(
+      hrefs.map((m) => m[1]),
+      [appUrl, appUrl],
+      how,
+    )
+    const plain = notice({ base: 'main', default: 'main', stackedOn: [{ ...PARENT, how }] })
+    assert.deepEqual(
+      [...plain.matchAll(/<a href="([^"]+)"/g)].map((m) => m[1]),
+      [PARENT.url, PARENT.url],
+      how,
+    )
+  }
+  assert.throws(
+    () =>
+      renderProofHtml({
+        ...input(),
+        branch: {
+          base: 'main',
+          default: 'main',
+          stackedOn: [{ ...PARENT, how: 'base', appUrl: 'javascript:alert(1)' }],
+        },
+      }),
+    TypeError,
+  )
 })
 
 test('a PR that carries another PR’s commits says how many, and how far behind its copy is', () => {

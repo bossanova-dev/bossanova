@@ -104,6 +104,12 @@ forms).
 This normally runs in the PR's own session, in its verify chat (role `verify`). First report the phase:
 `node "$BOSS_VERIFY_TOOLBOX/stage-chain.mjs" phase verifying` (never fatal).
 
+A verify-only session an operator created with a policy ref is a **trial**. The gate reads policy,
+the trusted tree and its extensions from origin/`<ref>` at one commit per run and refuses a ref
+origin lacks. Every deciding verdict parks as `trial-policy`, and `post` and `merge` refuse to pass
+or merge there, so act on each verdict as below. No standing park holds a trial: there `approval`
+answers `reverify` where it would answer `none`. See [trial policy](references/proof-page.md#trial-policy).
+
 1. **Hand-back.** If the head's `boss/verify` status reads `needs human:` or is a `failure`, run
    `node "$BOSS_VERIFY_TOOLBOX/verify/verify-gate.mjs" approval --pr <n>`:
    - `policy-park-approved` → judge with `--waive <waive>`;
@@ -177,7 +183,9 @@ When `post --verdict claim` returns `won: false` with `reason: claim-held` or no
 - `unknown` → report its `why` and stop; a failed read is unknown, never a pass.
 
 Other `won: false` reasons (`pr-unreadable`, `pr-not-open`, `status-unreadable`,
-`status-post-failed`) are reported and stop.
+`status-post-failed`, `base-failure-standing`, a trial session over a head base policy
+failed, and `policy-ref-unreadable`, a session that cannot say whether it is a trial) are
+reported and stop.
 
 ### Running the `verify` extensions
 
@@ -190,7 +198,7 @@ Other `won: false` reasons (`pr-unreadable`, `pr-not-open`, `status-unreadable`,
    stop; else `post --verdict wait --reason worktree-head-mismatch`, then rearm as for `wait`, and
    stop. Never verify a different tree.
 3. **Discover from the base revision.** Extensions are read from the judge's trusted tree — a
-   snapshot of the base revision — never from this worktree, so a PR cannot change how its own
+   snapshot of the base revision, or of the trial commit in a trial session — never from this worktree, so a PR cannot change how its own
    verdict is decided. Save the judge output to a run-temp file first, then run
    `node "$BOSS_VERIFY_TOOLBOX/verify/verify-trusted-tree.mjs" deps --judge <file>` with up to six
    minutes for a frozen, script-free install of the base lockfile. Discover from its returned

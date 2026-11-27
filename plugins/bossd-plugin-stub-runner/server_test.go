@@ -102,6 +102,48 @@ func TestBuildInteractiveCommandDeclaresNoAppendSystemPromptSupport(t *testing.T
 	}
 }
 
+func TestIgnoresUnattendedPermissionPolicy(t *testing.T) {
+	s := newServer(zerolog.Nop())
+	worktree := t.TempDir()
+	policy := &bossanovav1.UnattendedPermissionPolicy{
+		WorktreePath:           worktree,
+		AllowedCommandPrefixes: []string{"git", "make"},
+		IsNetworkAllowed:       true,
+	}
+
+	runResp, err := s.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+		WorkDir:                    worktree,
+		Plan:                       "work",
+		SessionId:                  "stub-policy-run",
+		UnattendedPermissionPolicy: policy,
+	})
+	if err != nil {
+		t.Fatalf("StartAgentRun with policy: %v", err)
+	}
+	if runResp.GetSessionId() != "stub-policy-run" {
+		t.Fatalf("SessionId = %q, want stub-policy-run", runResp.GetSessionId())
+	}
+
+	plainResp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:    "stub-plain",
+		WorktreePath: worktree,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand without policy: %v", err)
+	}
+	policyResp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:                  "stub-policy",
+		WorktreePath:               worktree,
+		UnattendedPermissionPolicy: policy,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand with policy: %v", err)
+	}
+	if len(policyResp.GetArgv()) == 0 || strings.Join(policyResp.GetArgv(), "\x00") != strings.Join(plainResp.GetArgv(), "\x00") {
+		t.Fatalf("stub interactive argv with policy = %v, want unchanged %v", policyResp.GetArgv(), plainResp.GetArgv())
+	}
+}
+
 func newGeneratedTestClient(t *testing.T) bossanovav1.AgentRunnerServiceClient {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)

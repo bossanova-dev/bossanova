@@ -147,6 +147,8 @@ Launching a session to run work unattended: supplying a prompt launches the agen
 
 Tracker binding: --tracker-id, --tracker-source (linear or sentry) and --tracker-url bind the session to an external issue, which is what the daemon's tracker-id dedup keys on — more robust than the `[<TICKET>] <title>` title convention, which silently duplicates a session when the title drifts. Each flag is independent and an omitted one leaves its field unset; an unrecognised --tracker-source is rejected before any session is created.
 
+Trial verify policy: --pr <n> --verify-only --policy-ref <branch> creates a verify-only session whose boss-verify reads verify policy, .boss-skills.json and every verify extension from origin/<branch> instead of the PR's base tip, so a team can trial a configuration change on real PRs before merging it. The MCP `create_session` tool takes pr_number and policy_ref; policy_ref alone makes the session verify-only. A trial for a PR whose branch already has an active session judging without that ref is refused, not attached. Only these operator entry points set it; nothing in a PR can. Each verify run resolves the branch to one commit and refuses a branch that is not on origin. Every verdict parks as `trial-policy` with the branch and commit in its label, and never merges.
+
 Use --json on the non-interactive path for a machine-readable envelope instead of the two-line output: success prints {session:{id, title, chat_id}} on stdout, failure prints {error:{code, connect_code, message}} with a stable `code` such as INVALID_ARGUMENT or NOT_FOUND, and every failure still exits 1. Setup output goes to stderr either way, so stdout carries exactly one JSON object. Without --json the two-line `session-id:` / `chat-id:` output is unchanged; session-id appears as soon as the session exists, and chat-id appears later if the daemon provides one.
 
 **Flags:**
@@ -161,6 +163,7 @@ Use --json on the non-interactive path for a machine-readable envelope instead o
 - `--json` — Emit the created session as a stable JSON schema instead of the two-line output
 - `--model` — Agent model id to run this session under (e.g. an Opus id); empty = agent default
 - `--no-attach` — Alias for --detach
+- `--policy-ref` — Trial verify policy for a --verify-only session: boss-verify judges with the .boss-skills.json and verify extensions on origin/<ref> instead of the PR base, and every verdict parks without merging. Requires --verify-only
 - `--pr` — Create the session on an existing pull request's head branch, bound to that PR, instead of a fresh branch. Mutually exclusive with --quick-chat and --defer-pr. Non-interactive --repo + --prompt path only (default: 0)
 - `--prompt` — Initial prompt / plan for the session (enables non-interactive mode when combined with --repo)
 - `--quick-chat` — Create a session with no worktree, branch, or PR, in the repository checkout. The agent starts when you attach; unattended runs want --defer-pr. Mutually exclusive with --defer-pr. Non-interactive --repo + --prompt path only

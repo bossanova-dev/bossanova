@@ -1593,17 +1593,18 @@ type mockPreflightCall struct {
 }
 
 type mockStartCall struct {
-	shouldTrustProjectConfig bool
-	workDir                  string
-	plan                     string
-	resume                   *string
-	model                    string
-	effort                   string
-	env                      map[string]string
-	profile                  pb.HeadlessCapabilityProfile
-	bossSessionID            string
-	effectiveModel           string
-	projectTrust             pb.ProjectTrustDecision
+	shouldTrustProjectConfig   bool
+	workDir                    string
+	plan                       string
+	resume                     *string
+	model                      string
+	effort                     string
+	env                        map[string]string
+	profile                    pb.HeadlessCapabilityProfile
+	bossSessionID              string
+	effectiveModel             string
+	projectTrust               pb.ProjectTrustDecision
+	unattendedPermissionPolicy *pb.UnattendedPermissionPolicy
 }
 
 func newMockAgentRunner() *mockAgentRunner {
@@ -1677,17 +1678,18 @@ func (m *mockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.
 
 func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Context, _ string, workDir, plan string, resume *string, _ string, model, effort string, env map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
 	m.started = append(m.started, mockStartCall{
-		workDir:                  workDir,
-		plan:                     plan,
-		resume:                   resume,
-		model:                    model,
-		effort:                   effort,
-		env:                      env,
-		profile:                  options.HeadlessCapabilityProfile,
-		bossSessionID:            options.BossSessionID,
-		effectiveModel:           options.EffectiveModel,
-		projectTrust:             options.ProjectTrust,
-		shouldTrustProjectConfig: options.ShouldTrustProjectConfig,
+		workDir:                    workDir,
+		plan:                       plan,
+		resume:                     resume,
+		model:                      model,
+		effort:                     effort,
+		env:                        env,
+		profile:                    options.HeadlessCapabilityProfile,
+		bossSessionID:              options.BossSessionID,
+		effectiveModel:             options.EffectiveModel,
+		projectTrust:               options.ProjectTrust,
+		shouldTrustProjectConfig:   options.ShouldTrustProjectConfig,
+		unattendedPermissionPolicy: options.UnattendedPermissionPolicy,
 	})
 	if m.startErr != nil {
 		return "", m.startErr

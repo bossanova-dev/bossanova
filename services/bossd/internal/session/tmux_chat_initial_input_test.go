@@ -217,3 +217,65 @@ func TestSweepStaleInitialInputFiles(t *testing.T) {
 		t.Fatalf("no logs dir must be a no-op, removed %d", n)
 	}
 }
+
+func TestSweepStalePolicySettingsFiles(t *testing.T) {
+	dir := t.TempDir()
+	lc := &Lifecycle{agentLogsDir: dir}
+	now := time.Now()
+	write := func(name string, age time.Duration) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, now.Add(-age), now.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	stale := write("claude-policy-agent1-1111.json", 25*time.Hour)
+	fresh := write("claude-policy-agent2-2222.json", time.Hour)
+	logFile := write("agent-1.log", 48*time.Hour)
+	otherJSON := write("other.json", 48*time.Hour)
+
+	if n := lc.SweepStalePolicySettingsFiles(now); n != 1 {
+		t.Fatalf("removed = %d, want 1", n)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale policy settings file survived: %v", err)
+	}
+	for _, keep := range []string{fresh, logFile, otherJSON} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Fatalf("%s must be kept: %v", keep, err)
+		}
+	}
+	if n := (&Lifecycle{}).SweepStalePolicySettingsFiles(now); n != 0 {
+		t.Fatalf("no logs dir must be a no-op, removed %d", n)
+	}
+}
+
+func TestStartTmuxChat_RemovesPolicySettingsFileWhenLaunchFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newStartTmuxChatHarness(t)
+	policyPath := filepath.Join(h.logsDir, "claude-policy-test-1234.json")
+	if err := os.WriteFile(policyPath, []byte(`{"permissions":{"allow":[]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	userSettings := filepath.Join(h.logsDir, "user-settings.json")
+	if err := os.WriteFile(userSettings, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.agentFake.ExtraInteractiveArgv = []string{"--settings", policyPath, "--settings", userSettings, "--permission-mode", "acceptEdits"}
+	h.tmuxFake.failSubcommand["new-session"] = true
+
+	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "go", Delivery: DeliverySubmit}, "T", HookOpts{AutonomousRun: true}); err == nil {
+		t.Fatal("StartTmuxChat succeeded with failing tmux new-session")
+	}
+	if _, err := os.Stat(policyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("policy settings file must be removed when launch fails; stat err=%v", err)
+	}
+	if _, err := os.Stat(userSettings); err != nil {
+		t.Fatalf("non-policy --settings file must be preserved; stat err=%v", err)
+	}
+}

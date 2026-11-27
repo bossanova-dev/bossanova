@@ -54,7 +54,8 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 }
 
 // StartAgentRun records the session as immediately complete (clean exit).
-// No subprocess is spawned. If req.SessionId is empty, a deterministic
+// No subprocess is spawned, and any UnattendedPermissionPolicy on the request
+// is accepted and ignored. If req.SessionId is empty, a deterministic
 // placeholder is generated. The resolved session ID is returned.
 func (s *Server) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	sid := req.SessionId
@@ -111,6 +112,7 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgen
 // BuildInteractiveCommand returns a benign argv for the tmux pane: `true`
 // (exits 0, no output) unless the worktree carries a .stub-question file, in
 // which case the pane asks that question and stays open (see question.go).
+// Any UnattendedPermissionPolicy on the request is accepted and ignored.
 func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{
 		Argv: interactiveArgv(req.GetWorktreePath()),

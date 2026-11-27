@@ -257,6 +257,9 @@ func (c *LocalClient) ListTrackerIssues(ctx context.Context, repoID, query, sour
 // --- Session Lifecycle ---
 
 func (c *LocalClient) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (rpc.CreateSessionStream, error) {
+	if err := c.requirePolicyRefCapability(ctx, req); err != nil {
+		return nil, err
+	}
 	stream, err := c.rpc.CreateSession(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, rpcerror.WrapError(mapClientErr(err))

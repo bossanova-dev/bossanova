@@ -56,10 +56,6 @@
   "services/web/src/features/sessions/components/SessionPhone.css": {
     "size": 1
   },
-  "services/web/src/features/sessions/components/SessionProof.css": {
-    "size": 2,
-    "space": 2
-  },
   "services/web/src/features/sessions/components/SessionRow.css": {
     "size": 3
   },

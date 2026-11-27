@@ -118,3 +118,19 @@ func (l *Lifecycle) trackerAdapterForSession(sess *models.Session, repo *models.
 	}
 	return resolveTrackerAdapter(worktreePath, repoPath)
 }
+
+func unattendedPermissionPolicyProto(worktree string, repo *models.Repo) *bossanovav1.UnattendedPermissionPolicy {
+	policy := UnattendedPermissionPolicyFor(worktree, repo)
+	return &bossanovav1.UnattendedPermissionPolicy{
+		WorktreePath:           policy.WorktreePath,
+		AllowedCommandPrefixes: policy.AllowedCommandPrefixes,
+		IsNetworkAllowed:       policy.IsNetworkAllowed,
+	}
+}
+
+func unattendedPermissionPolicyIf(isUnattended bool, worktree string, repo *models.Repo) *bossanovav1.UnattendedPermissionPolicy {
+	if !isUnattended {
+		return nil
+	}
+	return unattendedPermissionPolicyProto(worktree, repo)
+}

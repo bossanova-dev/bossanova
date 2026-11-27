@@ -27,6 +27,7 @@ var refusals = map[string]string{
 	"sent-back-approved-head": "this commit passed under an approval, but an older send-back still holds it, so verify will not merge it",
 	"comments-unreadable":     "the PR's comments could not be read, so an earlier decision cannot be ruled out",
 	"park-codes-unknown":      "the PR is waiting on an issue this version of boss does not recognise",
+	"trial-park":              "the PR is parked by a trial-policy verify run, which nothing approves; once its trial session is archived, verify judges it under base policy",
 	"pr-not-open":             "the PR is not open",
 	"pr-unreadable":           "the PR could not be read",
 	"status-unreadable":       "the PR's verify status could not be read",

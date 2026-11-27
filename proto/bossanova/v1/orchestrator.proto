@@ -831,8 +831,10 @@ service OrchestratorService {
   // (PermissionDenied for a non-member), refuses an organization whose owner
   // turned hosted proof pages off (FailedPrecondition), and validates the
   // manifest (InvalidArgument). Limits are ResourceExhausted with a
-  // ProofUploadLimitExceeded detail. Returns page identity, never a URL. Paid
-  // cloud access does not affect admission (apiversion V20261108).
+  // ProofUploadLimitExceeded detail. A server with no proof page storage
+  // answers Unavailable with a ProofHostingNotConfigured detail before it
+  // reserves anything. Returns page identity, never a URL. Paid cloud access
+  // does not affect admission (apiversion V20261108).
   rpc StartProofUpload(StartProofUploadRequest) returns (StartProofUploadResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
     option (bossanova.v1.entitlement) = ENTITLEMENT_PROOF_HOSTING;
@@ -2985,6 +2987,11 @@ message ProofUploadLimitExceeded {
   int64 max_value = 2;
   int64 actual_value = 3;
 }
+
+// ProofHostingNotConfigured accompanies Unavailable from the proof upload
+// RPCs when this server has no hosted proof page storage configured, so a
+// daemon can tell a server that cannot host pages from a transient outage.
+message ProofHostingNotConfigured {}
 
 message SyncDaemonNotesResponse {
   // Exactly one result per request item, in request order.

@@ -68,6 +68,10 @@ type sessionJSON struct {
 	// last_substantive_output_at, last_output_seeded) — the same three the MCP
 	// get_chat_statuses tool description names.
 	LastAgentActivityAt string `json:"last_agent_activity_at"`
+	// PolicyRef is the origin branch a trial verify session reads policy from,
+	// empty for every other session. Always present, so verify can tell an
+	// older CLI (no key) from a session with no trial.
+	PolicyRef string `json:"policy_ref"`
 }
 
 // sessionDetailJSON is `boss show --json`: an ls row plus the detail runShow
@@ -165,6 +169,7 @@ func newSessionRowJSON(s *pb.Session) sessionJSON {
 		CreatedAt:           cliutil.Rfc3339OrEmpty(s.GetCreatedAt()),
 		UpdatedAt:           cliutil.Rfc3339OrEmpty(s.GetUpdatedAt()),
 		LastAgentActivityAt: cliutil.Rfc3339OrEmpty(s.GetLastAgentActivityAt()),
+		PolicyRef:           s.GetPolicyRef(),
 		TrackerRank:         trackerRankForJSON(s.GetTrackerRank()),
 		Labels:              sessionLabelsToJSON(s.GetLabels()),
 	}

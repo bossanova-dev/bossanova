@@ -576,7 +576,10 @@ type verifyOnlyCreateClient struct {
 
 func (c *verifyOnlyCreateClient) CreateSession(_ context.Context, req *pb.CreateSessionRequest) (rpc.CreateSessionStream, error) {
 	c.request = req
-	return &createFrameStream{frames: []*pb.CreateSessionResponse{createdFrame("chat-created")}}, nil
+	frame := createdFrame("chat-created")
+	// A current daemon stores the trial policy ref and echoes it.
+	frame.GetSessionCreated().Session.PolicyRef = req.GetPolicyRef()
+	return &createFrameStream{frames: []*pb.CreateSessionResponse{frame}}, nil
 }
 
 // Feature: sessions.AC153

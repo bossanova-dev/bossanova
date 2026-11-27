@@ -117,13 +117,24 @@ function header(m) {
   const lead = m.lead
     ? `<p class="lead">${m.lead.prefix ? `${e(m.lead.prefix)} ` : ''}${proseHtml(m.lead.text, m.tickets)}</p>`
     : ''
-  return `<header class="pr">${branchNotice(m.branch)}<h1>${m.title ? proseHtml(m.title, m.tickets) : prLink}</h1><div class="meta">${meta.join('')}</div>${lead}</header>`
+  return `<header class="pr">${trialNotice(m.trialPolicy)}${branchNotice(m.branch)}<h1>${m.title ? proseHtml(m.title, m.tickets) : prLink}</h1><div class="meta">${meta.join('')}</div>${lead}</header>`
 }
 
 const BRANCH_ICON =
   '<svg class="bi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.6"/><circle cx="4.5" cy="12.5" r="1.6"/><circle cx="11.5" cy="5.5" r="1.6"/><path d="M4.5 5.1v5.8M11.5 7.1c0 2.4-2 3-7 3.6"/></svg>'
 const STACK_ICON =
   '<svg class="bi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2 14 5 8 8 2 5z"/><path d="M2 8l6 3 6-3M2 11l6 3 6-3"/></svg>'
+
+/**
+ * Says the page was judged with an operator's trial policy rather than the base branch's, so no
+ * reader takes its verdict as one that can merge.
+ * @param {PageModel['trialPolicy']} trial
+ */
+function trialNotice(trial) {
+  if (!trial) return ''
+  const name = `${e(trial.ref)}@${e(trial.sha.slice(0, 7))}`
+  return `<div class="bnotice stacked" data-trial-policy="${name}">${BRANCH_ICON}<div><b>Judged with trial policy from <code>${name}</code>.</b><span>Verify read its policy, sections and extensions from that branch, not the PR's base branch. This verdict never merges.</span></div></div>`
+}
 
 /**
  * Where the PR merges, above its title: stacked on another open PR (by its base or by the commits
@@ -134,8 +145,9 @@ const STACK_ICON =
 function branchNotice(b) {
   if (!b) return ''
   const parent = b.stackedOn[0]
+  // The app route when the page knows the review app; a review app framing the page opens it in place.
   const link = (/** @type {typeof parent} */ p) =>
-    `<a href="${e(p.url)}" target="_blank" rel="noopener noreferrer">#${p.pr}</a>`
+    `<a href="${e(p.appUrl ?? p.url)}" target="_blank" rel="noopener noreferrer" data-stack-pr="${p.pr}">#${p.pr}</a>`
   const notice = (
     /** @type {string} */ kind,
     /** @type {string} */ head,

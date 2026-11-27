@@ -88,6 +88,7 @@ go_test(
         "main_test.go",
         "mcpsurface_test.go",
         "models_test.go",
+        "permission_policy_test.go",
         "probe_test.go",
         "process_inspector_test.go",
         "progress_test.go",

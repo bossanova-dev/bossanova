@@ -701,6 +701,14 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 			"webhooks, crons on your daemons. Secrets are never resolved or minted: those changes are skips for the CLI.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, diffProjectConfigHandler(backend))
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "list_setup_checks",
+		Description: "Evaluate read-only machine and repository setup checks.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListSetupChecksArgs) (*mcp.CallToolResult, any, error) {
+		return listSetupChecks(ctx, backend, args)
+	})
 }
 
 // registerOrganizationNoteReadTools installs the three read-only

@@ -193,6 +193,11 @@ const DAEMON_REASONS = {
 }
 // The refusals that name no cause of their own, so they carry the error's detail.
 const OPAQUE_REASONS = ['upload-failed', 'daemon-unavailable']
+// Plain words for a daemon stage an operator must act on, put before the detail. The daemon's
+// own message is never reflected, so the words live here.
+const STAGE_EXPLANATIONS = {
+  'server-not-configured': "Hosted review pages aren't set up on this server",
+}
 // The hosted refusals each publisher records verbatim. The daemon publisher's own
 // `not-configured` (no bucket) stays `page-refused`.
 const HOSTED_REASONS = {
@@ -216,7 +221,8 @@ export function daemonRefusalReason(publisher, error) {
  * `over-limit` refusal also carries the hosted page limit it broke, `limit: {kind, max}`, from the
  * daemon's limit headers; with either header missing or malformed it carries none, so nothing is
  * fitted to a guessed limit. An `upload-failed` or `daemon-unavailable` refusal carries the error's
- * failureDetail as `detail`, with the daemon's stage reason after its code.
+ * failureDetail as `detail`, with the daemon's stage reason after its code and, for a stage an
+ * operator must act on, plain words before it.
  * @param {{kind?: string}} publisher @param {unknown} error
  * @returns {{ok: false, reason: string, detail?: string, limit?: {kind: string, max: number}}}
  */
@@ -241,11 +247,9 @@ export function daemonRefusal(publisher, error) {
     const stage = typeof header === 'string' && /^[a-z][a-z-]{0,39}$/.test(header) ? header : ''
     const detail = failureDetail(error)
     const at = detail.indexOf(':')
-    return {
-      ok: false,
-      reason,
-      detail: stage && at > 0 ? `${detail.slice(0, at)} (${stage})${detail.slice(at)}` : detail,
-    }
+    const staged = stage && at > 0 ? `${detail.slice(0, at)} (${stage})${detail.slice(at)}` : detail
+    const explanation = STAGE_EXPLANATIONS[/** @type {keyof typeof STAGE_EXPLANATIONS} */ (stage)]
+    return { ok: false, reason, detail: explanation ? `${explanation}; ${staged}` : staged }
   }
   return { ok: false, reason }
 }
@@ -296,4 +300,39 @@ export async function sendDaemonCall({
   if (!keyed.test(String(result?.keyPrefix ?? '')))
     return { ok: false, reason: 'page-url-mismatch' }
   return { ok: true, base: String(result.publicBaseUrl ?? '').replace(/\/+$/, '') }
+}
+
+const HOSTED_LIMIT_FIELDS = Object.freeze({
+  'file-count': 'maxFileCount',
+  'file-bytes': 'maxFileBytes',
+  'page-bytes': 'maxPageBytes',
+})
+
+/**
+ * The page limits the daemon last saw bosso return for `workspacePath`'s repository, as
+ * `[{kind, max}]`. Empty when the daemon has none fresh, predates the read, or the call fails, so
+ * the caller keeps fitting on refusal. Never throws.
+ * @param {{workspacePath: string, env: Record<string, string | undefined>, callDaemon: Function,
+ *   timeoutMs?: number}} input
+ * @returns {Promise<{kind: string, max: number}[]>}
+ */
+export async function hostedPageLimits({ workspacePath, env, callDaemon, timeoutMs = 5000 }) {
+  let result
+  try {
+    result = await callDaemon(
+      daemonSocket(env),
+      'GetHostedProofLimits',
+      { workspacePath },
+      { timeoutMs },
+    )
+  } catch {
+    return []
+  }
+  const limits = /** @type {Record<string, unknown>} */ (result?.limits ?? {})
+  return Object.entries(HOSTED_LIMIT_FIELDS).flatMap(([kind, field]) => {
+    // Connect JSON carries int64 as a decimal string.
+    const raw = limits[field]
+    const max = typeof raw === 'string' && /^[1-9][0-9]*$/.test(raw) ? Number(raw) : raw
+    return typeof max === 'number' && Number.isSafeInteger(max) && max > 0 ? [{ kind, max }] : []
+  })
 }

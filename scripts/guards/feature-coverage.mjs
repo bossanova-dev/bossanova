@@ -275,7 +275,7 @@ function collect(root, record, features, files) {
     else if (
       /^(services|lib|plugins)\/.*_test\.go$/.test(file) ||
       /^services\/web\/src\/.*\.test\.tsx?$/.test(file) ||
-      /^skills-toolbox\/.*\.test\.mjs$/.test(file)
+      /^(skills-toolbox|scripts)\/.*\.test\.mjs$/.test(file)
     )
       proofs.push(...lowerLevelProofs(file, source, features))
   }

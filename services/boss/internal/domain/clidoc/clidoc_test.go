@@ -154,6 +154,18 @@ func TestRegistryBuilderPreservesSessionAndChatDocumentation(t *testing.T) {
 				"session when the title drifts. Each flag is independent and an " +
 				"omitted one leaves its field unset; an unrecognised --tracker-source " +
 				"is rejected before any session is created.\n\n" +
+				"Trial verify policy: --pr <n> --verify-only --policy-ref <branch> " +
+				"creates a verify-only session whose boss-verify reads verify policy, " +
+				".boss-skills.json and every verify extension from origin/<branch> " +
+				"instead of the PR's base tip, so a team can trial a configuration " +
+				"change on real PRs before merging it. The MCP `create_session` tool " +
+				"takes pr_number and policy_ref; policy_ref alone makes the session " +
+				"verify-only. A trial for a PR whose branch already has an active " +
+				"session judging without that ref is refused, not attached. Only these operator " +
+				"entry points set it; nothing in a PR can. Each verify run resolves " +
+				"the branch to one commit and refuses a branch that is not on origin. " +
+				"Every verdict parks as `trial-policy` with the branch and commit in " +
+				"its label, and never merges.\n\n" +
 				"Use --json on the non-interactive path for a machine-readable " +
 				"envelope instead of the two-line output: success prints " +
 				"{session:{id, title, chat_id}} on stdout, failure prints " +

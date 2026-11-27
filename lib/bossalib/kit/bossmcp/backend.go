@@ -302,3 +302,10 @@ type SessionLabelBackend interface {
 type ProofViewBackend interface {
 	MintProofViewLink(ctx context.Context, req *pb.MintProofViewLinkRequest) (*pb.MintProofViewLinkResponse, error)
 }
+
+// SetupCheckBackend is the optional backend interface for read-only setup
+// check evaluation. Discovered via type assertion on Backend so Backend
+// stays within its method-width budget.
+type SetupCheckBackend interface {
+	ListSetupChecks(ctx context.Context, repoID, workspacePath string) (*pb.ListSetupChecksResponse, error)
+}

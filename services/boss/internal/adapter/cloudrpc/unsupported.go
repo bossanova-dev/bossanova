@@ -2,6 +2,7 @@ package cloudrpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -47,4 +48,10 @@ func (c *RemoteClient) FollowUpSessionPRNotes(context.Context, string, []string,
 // GetGitHubReadCredential exposes a secret on the local socket only.
 func (c *RemoteClient) GetGitHubReadCredential(context.Context, *pb.GetGitHubReadCredentialRequest) (*pb.GetGitHubReadCredentialResponse, error) {
 	return nil, errLocalOnly("GitHub read credential")
+}
+
+// ListSetupChecks is host-local by design: setup checks inspect the daemon's
+// machine environment and local checkout, so the remote orchestrator refuses it.
+func (c *RemoteClient) ListSetupChecks(_ context.Context, _ *pb.ListSetupChecksRequest) (*pb.ListSetupChecksResponse, error) {
+	return nil, rpcerror.WrapError(connect.NewError(connect.CodeUnimplemented, errors.New("setup checks are host-local; run boss init check on the host")))
 }

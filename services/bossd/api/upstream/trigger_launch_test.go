@@ -199,6 +199,7 @@ func TestLaunchTriggerSessionClassifiesEveryCreateSessionRequestField(t *testing
 		"force":                    "fixed",
 		"pr_number":                "unused",
 		"is_verify_only":           "unused", // Trigger sessions have no existing PR to adopt.
+		"policy_ref":               "unused", // Trial verify policy needs a verify-only session.
 		"force_branch":             "unused",
 		"is_quick_chat":            "unused",
 		"branch_name":              "unused",

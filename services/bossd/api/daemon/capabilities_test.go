@@ -16,7 +16,9 @@ func TestGetDaemonCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(response.Msg.GetCapabilities(), daemoncaps.MergeExpectedHeadSHA) {
-		t.Fatalf("capabilities=%v, want merge head pin support", response.Msg.GetCapabilities())
+	for _, want := range []string{daemoncaps.MergeExpectedHeadSHA, daemoncaps.CreateSessionPolicyRef} {
+		if !slices.Contains(response.Msg.GetCapabilities(), want) {
+			t.Fatalf("capabilities=%v, want %s", response.Msg.GetCapabilities(), want)
+		}
 	}
 }

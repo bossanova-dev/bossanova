@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "proofseal",
+    srcs = [
+        "loader.go",
+        "seal.go",
+    ],
+    embedsrcs = [
+        "loader/index.html",
+        "loader/proof-shim.js",
+    ],
+    importpath = "github.com/recurser/bossd/internal/proofseal",
+    visibility = ["//services/bossd:__subpackages__"],
+)
+
+go_test(
+    name = "proofseal_test",
+    srcs = [
+        "seal_test.go",
+        "vectors_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":proofseal"],
+)

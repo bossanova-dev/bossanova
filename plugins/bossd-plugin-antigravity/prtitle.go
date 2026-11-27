@@ -26,7 +26,7 @@ func (r *Runner) suggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRT
 		return "", err
 	}
 	plan := launchConfig{model: r.model, mode: "plan"}
-	args := append([]string{"--input-format", "stream-json", "--output-format", "stream-json"}, plan.sessionFlags("", "", req.GetWorkDir())...)
+	args := append([]string{"--input-format", "stream-json", "--output-format", "stream-json"}, plan.sessionFlags("", "", req.GetWorkDir(), false)...)
 	out, err := r.runAgy(ctx, req.GetWorkDir(), args, input, req.GetExtraEnv())
 	if err != nil {
 		return "", err

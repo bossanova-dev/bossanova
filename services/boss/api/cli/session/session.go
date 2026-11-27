@@ -178,6 +178,7 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 	deferPR, _ := cmd.Flags().GetBool("defer-pr")
 	quickChat, _ := cmd.Flags().GetBool("quick-chat")
 	verifyOnly, _ := cmd.Flags().GetBool("verify-only")
+	policyRef, _ := cmd.Flags().GetString("policy-ref")
 	force, _ := cmd.Flags().GetBool("force")
 	trackerID, _ := cmd.Flags().GetString("tracker-id")
 	trackerSource, _ := cmd.Flags().GetString("tracker-source")
@@ -245,9 +246,8 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 		return cliutil.EmitJSONFailure(cmd, asJSON, err)
 	}
 
-	if verifyOnly && prNumber == nil {
-		return cliutil.EmitJSONFailure(cmd, asJSON, cliutil.CodedError(cliutil.CodeInvalidArgument, fmt.Errorf(
-			"--verify-only requires --pr")))
+	if err := validateVerifyFlags(verifyOnly, prNumber, cmd.Flags().Changed("policy-ref"), policyRef); err != nil {
+		return cliutil.EmitJSONFailure(cmd, asJSON, err)
 	}
 
 	// Non-interactive path: --repo and --prompt both provided.
@@ -265,6 +265,7 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 			DeferPR:        deferPR,
 			QuickChat:      quickChat,
 			VerifyOnly:     verifyOnly,
+			PolicyRef:      policyRef,
 			Force:          force,
 			TrackerID:      trackerID,
 			TrackerSource:  trackerSource,
@@ -319,6 +320,7 @@ func newDetachRequest(opts newSessionOpts) *pb.CreateSessionRequest {
 		DeferPr:      opts.DeferPR,
 		IsQuickChat:  opts.QuickChat,
 		IsVerifyOnly: opts.VerifyOnly,
+		PolicyRef:    opts.PolicyRef,
 		Force:        opts.Force,
 	}
 	if opts.AgentName != "" {
@@ -379,6 +381,7 @@ type newSessionOpts struct {
 	QuickChat bool
 	// VerifyOnly prevents automatic repair for a session adopted to verify a PR.
 	VerifyOnly bool
+	PolicyRef  string // origin branch a verify-only session reads trial verify policy from
 	// Force bypasses the daemon's already-shipped and duplicate-session guards.
 	Force bool
 	// Tracker* bind the session to an external issue. Empty = flag absent, which
@@ -507,8 +510,8 @@ func (g *Group) runNewDetach(cmd *cobra.Command, opts newSessionOpts, asJSON boo
 	if err := stream.Err(); err != nil {
 		return cliutil.EmitJSONFailure(cmd, asJSON, fmt.Errorf("create session: %w", err))
 	}
-	if session == nil {
-		return cliutil.EmitJSONFailure(cmd, asJSON, fmt.Errorf("daemon did not return a session"))
+	if err := createdSessionError(session, opts.PolicyRef); err != nil {
+		return cliutil.EmitJSONFailure(cmd, asJSON, err)
 	}
 
 	// A session that came back without a chat id started no agent — the

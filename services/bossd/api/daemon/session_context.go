@@ -60,7 +60,7 @@ func (s *Server) workspaceOwner(ctx context.Context, path string) (*domain.Repo,
 		}
 		sessions, err := s.sessions.List(ctx, repo.ID)
 		if err != nil {
-			continue
+			return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list sessions for repo %s: %w", repo.ID, err))
 		}
 		for _, sess := range sessions {
 			if sess == nil {
@@ -89,4 +89,14 @@ func canonicalWorkspacePath(path string) string {
 		return resolved
 	}
 	return filepath.Clean(path)
+}
+
+// isSubdirOf checks if child is the same as or a subdirectory of parent.
+func isSubdirOf(child, parent string) bool {
+	child, parent = filepath.Clean(child), filepath.Clean(parent)
+	if child == parent {
+		return true
+	}
+	parentPrefix := parent + string(filepath.Separator)
+	return len(child) > len(parentPrefix) && child[:len(parentPrefix)] == parentPrefix
 }

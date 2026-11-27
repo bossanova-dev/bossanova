@@ -23,7 +23,8 @@ type hostedProofPublisher interface {
 	AbortHostedProof(ctx context.Context, uploadID, repoOriginURL string) error
 }
 
-// HostedProofEntry declares one page object and its exact size.
+// HostedProofEntry declares one page object and its exact stored size, which
+// for a sealed object is its ciphertext size.
 type HostedProofEntry struct {
 	Name string
 	Size int64
@@ -36,9 +37,21 @@ type HostedProofStart struct {
 	Manifest               []HostedProofEntry
 }
 
-// HostedProofUpload identifies a started upload and the review app that frames it.
+// HostedProofUpload identifies a started upload and the review app that frames
+// it, with the page-shape limits bosso returned for it.
 type HostedProofUpload struct {
 	UploadID, ReviewOrigin string
+	Limits                 HostedProofLimits
+}
+
+// HostedProofLimits are bosso's page-shape limits for a hosted proof page. A
+// zero field is a limit bosso has not reported.
+type HostedProofLimits struct {
+	FileCount, FileBytes, PageBytes int64
+}
+
+type hostedProofLimitsReader interface {
+	HostedProofLimits(repoOriginURL string) (limits HostedProofLimits, ok bool)
 }
 
 // HostedProofPut carries one object of a started upload. The repo origin rides
@@ -51,6 +64,12 @@ type HostedProofPut struct {
 // ErrHostedProofUnavailable means this daemon cannot reach the hosted proof
 // host: it is not signed in, or its Cloud environment has no review app.
 var ErrHostedProofUnavailable = errors.New("hosted proof host is unavailable")
+
+// ErrHostedProofServerNotConfigured means bosso answered that it has no
+// hosted proof page storage: an operator must configure the server before
+// any page can publish, so it is not the benign "not-configured" of a
+// signed-out daemon.
+var ErrHostedProofServerNotConfigured = errors.New("hosted review pages aren't set up on this server")
 
 // HostedProofLimitError is bosso's page-shape or quota refusal. Limit is the
 // kind (file-count, file-bytes, page-bytes, a window kind, or unknown) and Max

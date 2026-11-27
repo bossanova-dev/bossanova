@@ -116,9 +116,7 @@ func checkMethod(parent context.Context, r Runner, e Env, row contract) []Violat
 			fail("absent hook removal failed")
 		}
 	case *v1.BuildInteractiveCommandResponse:
-		if len(v.GetArgv()) == 0 || v.GetArgv()[0] == "" {
-			fail("argv must have a non-empty executable")
-		}
+		out = append(out, interactiveCommandViolations(ctx, r.Client, e, row.name, v)...)
 	case *v1.ResolveInteractiveSessionIDResponse:
 		if v.GetFound() && v.GetSessionId() == "" {
 			fail("found session must have a session_id")
@@ -226,6 +224,32 @@ func checkMethod(parent context.Context, r Runner, e Env, row contract) []Violat
 		out = append(out, modelListViolations(row.name, v.GetModels())...)
 	case *v1.ReadQuestionMenuResponse, *v1.PlanQuestionAnswerResponse:
 		out = append(out, questionMenuViolations(row.name, v)...)
+	}
+	return out
+}
+
+// interactiveCommandViolations checks both the baseline BuildInteractiveCommand
+// response and a second request carrying an UnattendedPermissionPolicy.
+func interactiveCommandViolations(ctx context.Context, client v1.AgentRunnerServiceClient, e Env, method string, resp *v1.BuildInteractiveCommandResponse) []Violation {
+	var out []Violation
+	fail := func(problem string) { out = append(out, Violation{Method: method, Problem: problem}) }
+	if len(resp.GetArgv()) == 0 || resp.GetArgv()[0] == "" {
+		fail("argv must have a non-empty executable")
+	}
+	withPolicy, err := client.BuildInteractiveCommand(ctx, &v1.BuildInteractiveCommandRequest{
+		WorktreePath: e.WorkDir,
+		SessionId:    e.UnknownSessionID,
+		LogPath:      e.LogPath,
+		UnattendedPermissionPolicy: &v1.UnattendedPermissionPolicy{
+			WorktreePath:           e.WorkDir,
+			AllowedCommandPrefixes: []string{"git"},
+			IsNetworkAllowed:       true,
+		},
+	})
+	if err != nil {
+		fail("unattended permission policy request failed with " + status.Code(err).String())
+	} else if len(withPolicy.GetArgv()) == 0 || withPolicy.GetArgv()[0] == "" {
+		fail("unattended permission policy request must return a non-empty executable")
 	}
 	return out
 }

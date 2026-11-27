@@ -8,6 +8,7 @@ import {
   BENIGN_PAGE_REASONS,
   BENIGN_RECORD_REASONS,
   PROOF_MISSING_MARKER,
+  parseProofProblems,
   proofMissingBossNote,
   proofMissingMarker,
   proofMissingNote,
@@ -191,6 +192,28 @@ test('proofMissingNote lists problems, republish command, marker, and no boss-pr
     new RegExp(`verify-gate\\.mjs proof --pr 42 --head ${HEAD} --judge <file> --repo <owner/name>`),
   )
   assert.notEqual(fallbackRepo.digest, note.digest)
+})
+
+test('proofMissingNote carries the problems as a head-bound machine line a reader parses back', () => {
+  const problems = [
+    {
+      part: 'page',
+      reason: 'upload-failed',
+      detail: 'hosted proof pages are not configured --> <b>',
+    },
+    { part: 'check-run', reason: 'check-run-failed' },
+  ]
+  const note = proofMissingNote({ headSha: HEAD, pr: 42, repo: 'Acme/Widgets', problems })
+
+  assert.deepEqual(parseProofProblems(note.body), { head: HEAD, problems })
+  const line = note.body.split('\n').find((l) => l.startsWith('<!-- boss-proof-problems:')) ?? ''
+  assert.equal(line.indexOf('-->'), line.length - 3, 'the detail cannot close the comment early')
+  assert.equal(lastNonEmptyLine(note.body), proofMissingMarker(HEAD, note.digest))
+  assert.equal(parseProofProblems(proofResolvedNote({ headSha: HEAD }).body), null)
+  assert.equal(
+    parseProofProblems('<!-- boss-proof-problems: {"head":"nope","problems":[]} -->'),
+    null,
+  )
 })
 
 test('proofResolvedNote formats with and without pageUrl and carries a distinct marker digest', () => {

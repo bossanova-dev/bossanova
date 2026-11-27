@@ -85,6 +85,7 @@ func (w *daemonWiring) wireUpstream() {
 			log.Warn().Err(idErr).Str("daemon_id", cfg.DaemonID).Msg("stable daemon id unavailable; using fallback")
 		}
 		w.persistedDaemonID = cfg.DaemonID
+		exportReviewAppURL(cfg.OrchestratorURL)
 		w.usageShare = rotation.NewUsageShare(w.publishUsageReport, w.settings.ManagedAccounts.UsageStalenessWindow())
 		// EGRESS: a broadcast issued here whose audience reaches beyond this
 		// daemon rides the reverse stream to bosso for routing. The bus is

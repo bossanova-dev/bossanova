@@ -5,9 +5,23 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/bossmcp"
 )
 
+var _ bossmcp.SetupCheckBackend = (*Backend)(nil)
+
 // --- Diagnostics ---
+
+func (b *Backend) ListSetupChecks(ctx context.Context, repoID, workspacePath string) (*pb.ListSetupChecksResponse, error) {
+	resp, err := b.rpc.ListSetupChecks(ctx, connect.NewRequest(&pb.ListSetupChecksRequest{
+		RepoId:        repoID,
+		WorkspacePath: workspacePath,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
 
 func (b *Backend) ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error) {
 	resp, err := b.rpc.ListCheckSnapshots(ctx, connect.NewRequest(&pb.ListCheckSnapshotsRequest{

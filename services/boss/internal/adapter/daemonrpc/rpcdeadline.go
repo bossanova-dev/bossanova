@@ -155,6 +155,7 @@ var slowProcedures = map[string]struct{}{
 	bossanovav1connect.DaemonServiceListRepoPRsProcedure:               {},
 	bossanovav1connect.DaemonServiceListAgentAccountsProcedure:         {},
 	bossanovav1connect.DaemonServiceRepairDoctorProcedure:              {},
+	bossanovav1connect.DaemonServiceListSetupChecksProcedure:           {},
 	bossanovav1connect.DaemonServiceTestAgentAccountProcedure:          {},
 	bossanovav1connect.DaemonServiceAddAgentAccountProcedure:           {},
 	bossanovav1connect.DaemonServiceRefreshAgentAccountProcedure:       {},

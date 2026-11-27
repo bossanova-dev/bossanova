@@ -212,7 +212,7 @@ const ORIGIN = 'https://proof.example/acme/edge/9'
  * The rendered page: a UI area with two clips and stills, its own inline video, one breaking
  * change and ticks.
  */
-function pageHtml({ media = true, inline = true } = {}) {
+function pageHtml({ media = true, inline = true, branch = undefined } = {}) {
   const proof = withDigest({
     schema: 'boss-proof/1',
     repo: 'acme/edge',
@@ -265,6 +265,7 @@ function pageHtml({ media = true, inline = true } = {}) {
       proof,
       afterMerge: ['Watch the rollout'],
       filesUrl: 'https://github.com/acme/edge/pull/9/files',
+      ...(branch ? { branch } : {}),
     },
     {
       spec: {
@@ -952,6 +953,35 @@ test('the PR link opens in a new tab and the page never intercepts it, framed or
     assert.equal(p.click(pr), false, 'the browser follows the link')
     assert.equal(p.parent.posted.length, 0)
   }
+})
+
+test('a stacked parent link asks the framing app to open that PR, once the app has spoken', () => {
+  const html = pageHtml({
+    branch: {
+      base: 'feat/a',
+      default: 'main',
+      stackedOn: [
+        {
+          pr: 8,
+          title: 'Parent',
+          url: 'https://github.com/acme/edge/pull/8',
+          branch: 'feat/a',
+          shared: 0,
+          total: 2,
+          how: 'base',
+        },
+      ],
+    },
+  })
+  const alone = page({ html })
+  assert.equal(alone.click(alone.$('a[data-stack-pr]')), false, 'its own tab follows the link')
+  const p = page({ html, framed: true, storage: 'throws' })
+  const link = p.$('a[data-stack-pr]')
+  assert.equal(p.click(link), false, 'before the app speaks the link opens a tab')
+  assert.deepEqual(sent(p), [])
+  p.win.fire('message', { source: p.parent, origin: APP, data: THEME_DARK })
+  assert.equal(p.click(link), true, 'the app opens it in place')
+  assert.deepEqual(sent(p).at(-1), [{ type: 'proof:open-pr', repo: 'acme/edge', pr: 8 }, APP])
 })
 
 test('the footer time reads in the reader time zone, with how long ago it was', (t) => {

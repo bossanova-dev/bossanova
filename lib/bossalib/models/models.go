@@ -119,8 +119,11 @@ type Session struct {
 	LastObservedReviewState int
 	IsAutomationEnabled     bool
 	IsVerifyOnly            bool
-	AttemptCount            int
-	BlockedReason           *string
+	// PolicyRef is the origin branch a verify-only session judges with as
+	// trial verify policy; empty for every other session.
+	PolicyRef     string
+	AttemptCount  int
+	BlockedReason *string
 
 	// LastAttemptHeadSHA is the PR head commit SHA at which the last fix-loop
 	// attempt was counted. The dispatcher only consumes a new attempt when the

@@ -534,6 +534,22 @@ message PreflightHeadlessRunResponse {
   repeated string provided = 2;
 }
 
+// UnattendedPermissionPolicy grants an unattended agent launch (cron,
+// tmux-unattended, detached, or headless) a scoped tool-permission policy so
+// it can run allowed commands and edit inside its worktree without dangerous
+// mode and without stopping for an interactive permission prompt. Unset (nil)
+// preserves the runner's existing behaviour (attended chats and older bossd
+// binaries).
+message UnattendedPermissionPolicy {
+  // Absolute path to the worktree directory the launch may edit and write in.
+  string worktree_path = 1;
+  // Command prefixes (first executable words, e.g. "git", "go", "make") that
+  // the launch may execute without prompting.
+  repeated string allowed_command_prefixes = 2;
+  // Whether commands run under this policy may access the network.
+  bool is_network_allowed = 3;
+}
+
 message StartAgentRunRequest {
   string work_dir = 1;
   string plan = 2;
@@ -575,6 +591,9 @@ message StartAgentRunRequest {
   ProjectTrustDecision project_trust = 12;
   // Whether this run may load repository MCP servers and project settings.
   bool should_trust_project_config = 13;
+  // Scoped tool-permission policy for this unattended run; unset preserves
+  // existing behaviour.
+  UnattendedPermissionPolicy unattended_permission_policy = 14;
 }
 message StartAgentRunResponse {
   string session_id = 1;   // resolved session ID
@@ -732,6 +751,9 @@ message BuildInteractiveCommandRequest {
   // bossd derives it per chat and sets it beside hook_port. Empty (an older
   // bossd) means the hook is installed without the header.
   string hook_receipt_token = 19;
+  // Scoped tool-permission policy for an unattended interactive launch; unset
+  // for attended chats and older bossd binaries, preserving existing behaviour.
+  UnattendedPermissionPolicy unattended_permission_policy = 21;
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;

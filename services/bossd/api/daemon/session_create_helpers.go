@@ -105,7 +105,11 @@ func (s *Server) activeSessionOwnsBranch(ctx context.Context, repoID, branch str
 	return false
 }
 
-func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branch string, emit createSessionSender) (bool, error) {
+// sendExistingSessionForBranch attaches the create to the active session that
+// owns branch. A trial create (policyRef set) never attaches to a session that
+// judges with a different policy: the attach would drop the ref and run verify
+// under the base policy, which can merge.
+func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branch, policyRef string, emit createSessionSender) (bool, error) {
 	if branch == "" {
 		return false, nil
 	}
@@ -116,6 +120,9 @@ func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branc
 	for _, sess := range active {
 		if sess.BranchName != branch {
 			continue
+		}
+		if policyRef != "" && sess.PolicyRef != policyRef {
+			return true, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("branch %q already has active session %s, which does not judge with policy ref %q; finish or archive it before starting a trial verify", branch, sess.ID, policyRef))
 		}
 		if sess.WorktreePath == "" {
 			return true, createSessionConflictError(fmt.Errorf("session already starting for branch %q", branch), &pb.CreateSessionConflict{

@@ -58,6 +58,7 @@ go_test(
         "live_test.go",
         "mcpsurface_test.go",
         "pane_test.go",
+        "permission_policy_test.go",
         "prtitle_test.go",
         "question_menu_test.go",
         "resolve_test.go",

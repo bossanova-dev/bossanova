@@ -186,6 +186,7 @@ func (g *Group) initCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&cronOpts.updateConsent, "update-crons", false, "Update an existing pipeline job's prompt, gate and agent when they differ")
 	cmd.Flags().BoolVar(&trust.Yes, "yes", false, "Apply .boss-project.json cron prompt and gate changes without asking")
 	cmd.Flags().BoolVar(&trust.AllowBranch, "allow-branch", false, "Apply .boss-project.json from a checkout that is not on the repo's default branch")
+	cmd.AddCommand(g.initCheckCmd())
 	return cmd
 }
 

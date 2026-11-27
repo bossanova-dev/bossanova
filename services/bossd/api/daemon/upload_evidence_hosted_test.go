@@ -108,7 +108,7 @@ func callEvidence(t *testing.T, s *Server, req *pb.UploadEvidenceRequest) (*pb.U
 	return resp.Msg, nil
 }
 
-func TestUploadEvidenceHostedPublishes_Sessions_AC260202(t *testing.T) {
+func TestUploadEvidenceHostedPublishesPlaintextWhileSealingIsOff(t *testing.T) {
 	rec := newRecordingEndpoint(t)
 	s, dir := evidenceServer(t, rec.server.URL)
 	local := s.evidenceBucketOpener
@@ -258,6 +258,8 @@ func TestUploadEvidenceHostedRefusals_Sessions_AC260204(t *testing.T) {
 		{name: "unknown limit", startErr: &HostedProofLimitError{Limit: "unknown"}, keyed: true, objects: page, code: connect.CodeFailedPrecondition, reason: "quota-exhausted", started: true},
 		{name: "manifest shape", startErr: connect.NewError(connect.CodeInvalidArgument, errors.New("bad name")), keyed: true, objects: page, code: connect.CodeInvalidArgument, started: true},
 		{name: "put failure", putErr: errors.New("reset"), keyed: true, objects: page, code: connect.CodeUnavailable, reason: "object-upload-failed", started: true},
+		{name: "server has no proof storage", startErr: ErrHostedProofServerNotConfigured, keyed: true, objects: page, code: connect.CodeUnavailable, reason: "server-not-configured", started: true},
+		{name: "server lost its proof storage mid-upload", putErr: ErrHostedProofServerNotConfigured, keyed: true, objects: page, code: connect.CodeUnavailable, reason: "server-not-configured", started: true},
 		{name: "short read", shrink: true, keyed: true, objects: page, code: connect.CodeUnavailable, reason: "object-changed", started: true},
 		{name: "random prefix without page objects", objects: []string{"manifest.json"}, code: connect.CodeFailedPrecondition, reason: "not-configured"},
 		{name: "random prefix with index.html", objects: page, code: connect.CodeInvalidArgument},
@@ -336,5 +338,21 @@ func TestUploadEvidenceHostedAbortsAfterAFailedPut_Organizations_AC278201(t *tes
 				t.Fatalf("aborts = %+v, want %+v", fake.aborts, want)
 			}
 		})
+	}
+}
+
+// A server with no proof page storage reaches the caller as its own stage
+// with a plain-words message, and bosso's text stays in the daemon log.
+func TestUploadEvidenceHostedNamesAServerWithNoProofStorage(t *testing.T) {
+	s, dir := evidenceServer(t, "http://unused.invalid")
+	upstream := errors.Join(ErrHostedProofServerNotConfigured, errors.New("bosso private detail"))
+	s.evidenceBucketOpener = &fakeHostedOpener{startErr: upstream}
+	req := &pb.UploadEvidenceRequest{EvidenceDir: dir, PrNumber: 42, HeadSha: evidenceTestSHA, Objects: hostedPage(t, dir, hostedContents, "index.html"), Destination: pb.EvidenceDestination_EVIDENCE_DESTINATION_HOSTED}
+	_, rpcErr := callEvidence(t, s, req)
+	if rpcErr == nil || rpcErr.Code() != connect.CodeUnavailable || rpcErr.Meta().Get(EvidenceReasonHeader) != "server-not-configured" {
+		t.Fatalf("error = %v, want Unavailable server-not-configured", rpcErr)
+	}
+	if rpcErr.Message() != "hosted review pages aren't set up on this server" {
+		t.Fatalf("message = %q, want the plain-words reason and no upstream detail", rpcErr.Message())
 	}
 }

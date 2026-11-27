@@ -171,6 +171,11 @@ BOSSO_MIGRATION_DIRS := services/bosso/migrations_postgres
 # is needed: `go:embed bossd-question.js` names one file, so deleting it fails the
 # compile loudly instead of silently shipping a stale embed.
 OPENCODE_HOOK_FILES := plugins/bossd-plugin-opencode/bossd-question.js
+# services/bossd/internal/proofseal embeds exactly these two loader files, so they
+# are named rather than discovered; bin/bossd lists them, or editing the loader
+# would leave the daemon's embedded copy stale.
+PROOFSEAL_LOADER_FILES := services/bossd/internal/proofseal/loader/index.html \
+	services/bossd/internal/proofseal/loader/proof-shim.js
 
 
 .PHONY: all all-full

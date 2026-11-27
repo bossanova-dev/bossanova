@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,6 +15,7 @@ import (
 	"github.com/recurser/bossd/internal/adapter/r2upload"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/rs/zerolog"
 )
 
@@ -24,6 +26,7 @@ type hostedProofRPC struct {
 	startErr error
 	putErr   error
 	abortErr error
+	limits   *pb.ProofUploadLimits
 }
 
 func (r *hostedProofRPC) AbortProofUpload(_ context.Context, req *connect.Request[pb.AbortProofUploadRequest]) (*connect.Response[pb.AbortProofUploadResponse], error) {
@@ -39,7 +42,7 @@ func (r *hostedProofRPC) StartProofUpload(_ context.Context, req *connect.Reques
 	if r.startErr != nil {
 		return nil, r.startErr
 	}
-	return connect.NewResponse(&pb.StartProofUploadResponse{UploadId: "upload-7", OrgLabel: "acme-org", PageToken: "page-token"}), nil
+	return connect.NewResponse(&pb.StartProofUploadResponse{UploadId: "upload-7", OrgLabel: "acme-org", PageToken: "page-token", Limits: r.limits}), nil
 }
 
 func (r *hostedProofRPC) PutProofObject(_ context.Context, req *connect.Request[pb.PutProofObjectRequest]) (*connect.Response[pb.PutProofObjectResponse], error) {
@@ -239,10 +242,14 @@ func TestEvidenceDestinations_Sessions_AC260203(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if resp.Msg.PageUrl != "https://app.bossanova.dev/review/acme/widgets/9?head="+hostedTestSHA || resp.Msg.Destination != pb.EvidenceDestination_EVIDENCE_DESTINATION_HOSTED {
+			if !strings.HasPrefix(resp.Msg.PageUrl, "https://app.bossanova.dev/review/acme/widgets/9?head="+hostedTestSHA+"#k=") || resp.Msg.Destination != pb.EvidenceDestination_EVIDENCE_DESTINATION_HOSTED {
 				t.Fatalf("response = %v", resp.Msg)
 			}
-			if names := []string{rpc.puts[0].Msg.Name}; len(rpc.starts) != 1 || !slices.Equal(names, []string{"index.html"}) {
+			names := make([]string, 0, len(rpc.puts))
+			for _, put := range rpc.puts {
+				names = append(names, put.Msg.Name)
+			}
+			if len(rpc.starts) != 1 || !slices.Equal(names, []string{"page.html.enc", "proof-shim.js", "index.html"}) {
 				t.Fatalf("starts %d, puts %v", len(rpc.starts), names)
 			}
 		})
@@ -273,5 +280,57 @@ func TestHostedProofClientAbortsWithTheDaemonBearer_Organizations_AC278201(t *te
 	}
 	if err := (evidenceDestinations{}).AbortHostedProof(context.Background(), "upload-7", "https://github.com/acme/widgets"); !errors.Is(err, server.ErrHostedProofUnavailable) {
 		t.Fatalf("abort without a hosted client = %v", err)
+	}
+}
+
+// The daemon exports its orchestrator's review app for verify, and keeps an
+// operator's own value.
+func TestExportReviewAppURL(t *testing.T) {
+	t.Setenv(session.ReviewAppURLEnv, "")
+	if err := os.Unsetenv(session.ReviewAppURLEnv); err != nil {
+		t.Fatal(err)
+	}
+	exportReviewAppURL("https://orchestrator.bossanova.dev")
+	if got := os.Getenv(session.ReviewAppURLEnv); got != "https://app.bossanova.dev" {
+		t.Fatalf("exported %q, want the production review app", got)
+	}
+	t.Setenv(session.ReviewAppURLEnv, "https://mine.example")
+	exportReviewAppURL("https://orchestrator.bossanova.dev")
+	if got := os.Getenv(session.ReviewAppURLEnv); got != "https://mine.example" {
+		t.Fatalf("overwrote the operator's value with %q", got)
+	}
+}
+
+// notConfiguredRefusal is bosso's answer from a server with no proof page
+// storage: Unavailable with a ProofHostingNotConfigured detail.
+func notConfiguredRefusal(t *testing.T) error {
+	t.Helper()
+	rpcErr := connect.NewError(connect.CodeUnavailable, errors.New("hosted proof pages are not configured"))
+	d, err := connect.NewErrorDetail(&pb.ProofHostingNotConfigured{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rpcErr.AddDetail(d)
+	return rpcErr
+}
+
+func TestHostedProofClientNamesAServerWithNoProofStorage(t *testing.T) {
+	client := func(rpc *hostedProofRPC) *hostedProofClient {
+		return &hostedProofClient{rpc: rpc, token: func() string { return "token" }, reviewOrigin: "https://app.bossanova.dev"}
+	}
+	refusal := notConfiguredRefusal(t)
+	if _, err := client(&hostedProofRPC{startErr: refusal}).StartHostedProof(context.Background(), server.HostedProofStart{}); !errors.Is(err, server.ErrHostedProofServerNotConfigured) || !errors.Is(err, refusal) {
+		t.Fatalf("start error = %v, want the server-not-configured refusal wrapping bosso's", err)
+	}
+	if err := client(&hostedProofRPC{putErr: refusal}).PutHostedProofObject(context.Background(), server.HostedProofPut{}); !errors.Is(err, server.ErrHostedProofServerNotConfigured) || !errors.Is(err, refusal) {
+		t.Fatalf("put error = %v, want the server-not-configured refusal wrapping bosso's", err)
+	}
+	// A detail-less Unavailable is an outage, not a server without storage.
+	outage := connect.NewError(connect.CodeUnavailable, errors.New("offline"))
+	if _, err := client(&hostedProofRPC{startErr: outage}).StartHostedProof(context.Background(), server.HostedProofStart{}); errors.Is(err, server.ErrHostedProofServerNotConfigured) || !errors.Is(err, outage) {
+		t.Fatalf("outage start error = %v, want it unchanged", err)
+	}
+	if err := client(&hostedProofRPC{putErr: outage}).PutHostedProofObject(context.Background(), server.HostedProofPut{}); errors.Is(err, server.ErrHostedProofServerNotConfigured) || !errors.Is(err, outage) {
+		t.Fatalf("outage put error = %v, want it unchanged", err)
 	}
 }

@@ -43,6 +43,7 @@ var readOnlyToolNames = []string{
 	"export_project_config",
 	"diff_project_config",
 	"list_session_labels",
+	"list_setup_checks",
 }
 
 // writeToolNames is the canonical union of mutating + destructive tool names,

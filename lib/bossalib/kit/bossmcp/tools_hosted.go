@@ -1,10 +1,12 @@
 package bossmcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -25,6 +27,26 @@ const hostedSecretNote = "store it now; it is not shown again"
 // keeps false/zero scalars visible (is_enabled: false is information) without
 // emitting unset messages such as an absent last_invocation.
 var hostedJSON = protojson.MarshalOptions{UseProtoNames: true, EmitDefaultValues: true}
+
+// MarshalSetupChecks renders a ListSetupChecksResponse using hostedJSON
+// (proto field names and enum value names) and normalizes the output through
+// json.Indent with a trailing newline so repeated calls and CLI vs MCP outputs
+// are byte-identical (protojson.Marshal otherwise injects random spacing).
+func MarshalSetupChecks(resp *pb.ListSetupChecksResponse) ([]byte, error) {
+	if resp == nil {
+		resp = &pb.ListSetupChecksResponse{}
+	}
+	raw, err := hostedJSON.Marshal(resp)
+	if err != nil {
+		return nil, fmt.Errorf("marshal setup checks: %w", err)
+	}
+	var out bytes.Buffer
+	if err := json.Indent(&out, raw, "", "  "); err != nil {
+		return nil, fmt.Errorf("indent setup checks: %w", err)
+	}
+	out.WriteByte('\n')
+	return out.Bytes(), nil
+}
 
 func hostedMessageJSON(m proto.Message) (json.RawMessage, error) {
 	b, err := hostedJSON.Marshal(m)

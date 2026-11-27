@@ -47,8 +47,13 @@ type fakeDaemon struct {
 	capabilityProbeCalls  int
 	// mintReq records the last MintHostedProofViewLinkRequest; mintErr, when
 	// set, is the relay's refusal.
-	mintReq *pb.MintHostedProofViewLinkRequest
-	mintErr error
+	mintReq         *pb.MintHostedProofViewLinkRequest
+	mintErr         error
+	setupChecksReq  *pb.ListSetupChecksRequest
+	setupChecksResp *pb.ListSetupChecksResponse
+	// omitPolicyRefCapability models a daemon that predates trial policy refs.
+	omitPolicyRefCapability bool
+	createCalls             int
 }
 
 func (f *fakeDaemon) MintHostedProofViewLink(_ context.Context, req *connect.Request[pb.MintHostedProofViewLinkRequest]) (*connect.Response[pb.MintHostedProofViewLinkResponse], error) {
@@ -57,6 +62,14 @@ func (f *fakeDaemon) MintHostedProofViewLink(_ context.Context, req *connect.Req
 		return nil, f.mintErr
 	}
 	return connect.NewResponse(&pb.MintHostedProofViewLinkResponse{ViewUrl: "https://acme.proofs.test/v1.1.sig/tok/", ExpiresAt: timestamppb.New(time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC))}), nil
+}
+
+func (f *fakeDaemon) ListSetupChecks(_ context.Context, req *connect.Request[pb.ListSetupChecksRequest]) (*connect.Response[pb.ListSetupChecksResponse], error) {
+	f.setupChecksReq = req.Msg
+	if f.setupChecksResp != nil {
+		return connect.NewResponse(f.setupChecksResp), nil
+	}
+	return connect.NewResponse(&pb.ListSetupChecksResponse{}), nil
 }
 
 func (f *fakeDaemon) MergeSession(_ context.Context, req *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
@@ -89,6 +102,7 @@ func (f *fakeDaemon) RefreshAgentAccount(_ context.Context, req *connect.Request
 }
 
 func (f *fakeDaemon) CreateSession(_ context.Context, _ *connect.Request[pb.CreateSessionRequest], stream *connect.ServerStream[pb.CreateSessionResponse]) error {
+	f.createCalls++
 	for _, line := range f.createOutputs {
 		if err := stream.Send(&pb.CreateSessionResponse{
 			Event: &pb.CreateSessionResponse_SetupOutput{SetupOutput: &pb.SetupScriptOutput{Text: line}},
@@ -541,6 +555,9 @@ func (f *fakeDaemon) GetDaemonCapabilities(context.Context, *connect.Request[pb.
 	if f.omitHeadPinCapability {
 		capabilities = nil
 	}
+	if !f.omitPolicyRefCapability {
+		capabilities = append(capabilities, daemoncaps.CreateSessionPolicyRef)
+	}
 	return connect.NewResponse(&pb.GetDaemonCapabilitiesResponse{Capabilities: capabilities}), nil
 }
 
@@ -643,5 +660,95 @@ func TestListRepoPRsForwardsQuery(t *testing.T) {
 	if fake.repoPRsReq.GetRepoId() != "r1" || got.GetAuthor() != "alice" || got.GetBaseBranch() != "main" ||
 		got.GetOrder() != query.GetOrder() || got.GetLimit() != 3 || got.GetOwnerFilter() != query.GetOwnerFilter() {
 		t.Fatalf("ListRepoPRsRequest = %+v, want r1 with query %+v", fake.repoPRsReq, query)
+	}
+}
+
+func TestListSetupChecksRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeDaemon{
+		setupChecksResp: &pb.ListSetupChecksResponse{
+			RepoId: "repo-1",
+			Checks: []*pb.SetupCheck{{
+				Id:     "gh-auth",
+				Area:   pb.SetupCheckArea_SETUP_CHECK_AREA_MACHINE,
+				Status: pb.SetupCheckStatus_SETUP_CHECK_STATUS_OK,
+				Title:  "GitHub CLI authenticated",
+			}},
+		},
+	}
+	backend, err := New(serveFakeDaemon(t, fake))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got, err := backend.ListSetupChecks(context.Background(), "repo-1", "/tmp/work")
+	if err != nil {
+		t.Fatalf("ListSetupChecks: %v", err)
+	}
+	if fake.setupChecksReq.GetRepoId() != "repo-1" || fake.setupChecksReq.GetWorkspacePath() != "/tmp/work" {
+		t.Fatalf("request not forwarded: %+v", fake.setupChecksReq)
+	}
+	if got.GetRepoId() != "repo-1" || len(got.GetChecks()) != 1 || got.GetChecks()[0].GetId() != "gh-auth" {
+		t.Fatalf("unexpected response: %+v", got)
+	}
+}
+
+func TestCreatePolicyRefRefusedBeforeCreate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fake *fakeDaemon
+		code connect.Code
+	}{
+		{"legacy", &fakeDaemon{legacyNoHeadPin: true}, connect.CodeUnimplemented},
+		{"missing", &fakeDaemon{omitPolicyRefCapability: true}, connect.CodeUnimplemented},
+		{"unavailable", &fakeDaemon{capabilityError: connect.NewError(connect.CodeUnavailable, errors.New("offline"))}, connect.CodeUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socketPath := shortSocketPath(t)
+			serveFakeDaemonAt(t, tc.fake, socketPath)
+			backend, err := New(socketPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = backend.CreateSession(context.Background(), &pb.CreateSessionRequest{IsVerifyOnly: true, PolicyRef: "config/trial"})
+			if connect.CodeOf(err) != tc.code {
+				t.Errorf("code=%v, want %v (err=%v)", connect.CodeOf(err), tc.code, err)
+			}
+			if tc.fake.createCalls != 0 {
+				t.Fatalf("session created %d times on a daemon that cannot carry policy_ref", tc.fake.createCalls)
+			}
+		})
+	}
+}
+
+func TestCreateProbesOnlyForPolicyRef(t *testing.T) {
+	serve := func(fake *fakeDaemon) string {
+		socketPath := shortSocketPath(t)
+		serveFakeDaemonAt(t, fake, socketPath)
+		return socketPath
+	}
+	fake := &fakeDaemon{created: &pb.Session{Id: "sess-1", PolicyRef: "config/trial"}}
+	backend, err := New(serve(fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.CreateSession(context.Background(), &pb.CreateSessionRequest{IsVerifyOnly: true, PolicyRef: "config/trial"}); err != nil {
+		t.Fatalf("trial create on a capable daemon: %v", err)
+	}
+	if fake.capabilityProbeCalls != 1 || fake.createCalls != 1 {
+		t.Fatalf("probes=%d creates=%d, want 1 and 1", fake.capabilityProbeCalls, fake.createCalls)
+	}
+
+	legacy := &fakeDaemon{legacyNoHeadPin: true, created: &pb.Session{Id: "sess-2"}}
+	backend, err = New(serve(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.CreateSession(context.Background(), &pb.CreateSessionRequest{}); err != nil {
+		t.Fatalf("ordinary create on a legacy daemon: %v", err)
+	}
+	if legacy.capabilityProbeCalls != 0 || legacy.createCalls != 1 {
+		t.Fatalf("probes=%d creates=%d, want 0 and 1", legacy.capabilityProbeCalls, legacy.createCalls)
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	bossalog "github.com/recurser/bossalib/kit/log"
 
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
@@ -248,6 +249,8 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *domain.AgentCh
 		SessionAgentName:       sess.AgentName,
 		SessionModel:           sess.Model,
 		SessionEffectiveEffort: sess.EffectiveEffort,
+		IsUnattended:           session.IsUnattendedSession(sess),
+		LogPath:                bossalog.AgentLogFile(s.agentLogsDir, chat.AgentSessionID),
 	})
 	if err != nil {
 		return err

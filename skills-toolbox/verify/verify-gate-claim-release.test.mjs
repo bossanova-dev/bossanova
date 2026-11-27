@@ -132,6 +132,36 @@ test('release without a readable status still makes the head dispatchable', asyn
   assert.deepEqual(w.sleeps, [250, 500, 1000])
 })
 
+test('withdrawal over an extension-failed park or extension-retry wait posts waiting instead of reposting the park', async () => {
+  const extPark = {
+    context: 'boss/verify',
+    state: 'success',
+    description: 'needs human: extension-failed',
+    updated_at: new Date(now - 6000).toISOString(),
+  }
+  const retry = {
+    context: 'boss/verify',
+    state: 'pending',
+    description: 'waiting: extension-retry',
+    updated_at: new Date(now - 2000).toISOString(),
+  }
+  for (const initial of [
+    [extPark],
+    [retry, claim('prev', 4000), extPark],
+    [retry, claim('prev', 4000), park],
+  ]) {
+    const unconfirmed = claimStatusWorld({ initial, back: [null, null, null, null] })
+    const r1 = await post(options, unconfirmed.deps)
+    assert.deepEqual([r1.won, r1.reason, r1.released], [false, 'claim-unconfirmed', true])
+    assert.equal(unconfirmed.writes.at(-1).description, 'waiting: claim-unconfirmed')
+
+    const released = claimStatusWorld({ initial: [claim('mine'), ...initial] })
+    const r2 = await post({ ...options, release: true, token: 'mine' }, released.deps)
+    assert.equal(r2.released, true)
+    assert.equal(released.writes.at(-1).description, 'waiting: dispatch-unknown')
+  }
+})
+
 test('release preserves a readable empty head after its first read was unreadable', async () => {
   const w = claimStatusWorld()
   let first = true

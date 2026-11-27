@@ -14,8 +14,15 @@ import (
 
 // CreateSession opens the daemon's setup stream and drains it to the terminal
 // SessionCreated event, returning the final Session together with whether the
-// daemon attached to an existing session (captured from the same frame).
+// daemon attached to an existing session (captured from the same frame). A
+// trial create probes first, so an older daemon cannot drop policy_ref and
+// launch a session that verifies under the base policy.
 func (b *Backend) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*bossmcp.CreateSessionResult, error) {
+	if req.GetPolicyRef() != "" {
+		if err := daemoncaps.Require(ctx, b.rpc, daemoncaps.CreateSessionPolicyRef); err != nil {
+			return nil, err
+		}
+	}
 	stream, err := b.rpc.CreateSession(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err

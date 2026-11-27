@@ -18,6 +18,7 @@ export default {
     'plugins/**/*_test.go',
     'services/web/src/**/*.test.ts*',
     'skills-toolbox/**/*.test.mjs',
+    'scripts/**/*.test.mjs',
   ],
   baseline: 'scripts/guards/criterion-proofs-kept-baseline.json',
   proof: {

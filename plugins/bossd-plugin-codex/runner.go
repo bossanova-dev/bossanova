@@ -175,21 +175,23 @@ func parseThreadStartedID(data []byte) string {
 // out of stdout and returns it back to bossd.
 func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	args := []string{"codex", "exec"}
+	permArgs := codexPermissionArgs(
+		r.sandbox,
+		r.approval,
+		r.dangerouslyBypass,
+		in.Options[codexOptionUnattendedPolicy] == "1",
+		in.Options[codexOptionUnattendedNetworkAllowed] == "1",
+		true,
+	)
 	if in.Resume != nil {
+		// `codex exec resume` rejects `--sandbox` after the `resume` subcommand;
+		// emit permission flags before `resume` where `codex exec` accepts them.
+		args = append(args, permArgs...)
 		args = append(args, "resume", *in.Resume)
 	}
 	args = append(args, "--json", "--skip-git-repo-check")
-	if r.dangerouslyBypass {
-		// Mutually exclusive with --sandbox / --ask-for-approval (codex
-		// errors out when combined), so drop those flags entirely here.
-		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
-	} else {
-		if r.sandbox != "" {
-			args = append(args, "--sandbox", r.sandbox)
-		}
-		if r.approval != "" {
-			args = append(args, "--ask-for-approval", r.approval)
-		}
+	if in.Resume == nil {
+		args = append(args, permArgs...)
 	}
 	// A per-request model (carried via Options) overrides the plugin-global
 	// BOSS_PLUGIN_model env default; empty falls back to the env default.
@@ -225,25 +227,79 @@ func resolveCodexEffort(reqEffort, envEffort string) string {
 	return envEffort
 }
 
+// codexPermissionArgs renders Codex's sandbox, approval, and unattended network
+// flags. When dangerouslyBypass is on, only the bypass flag is emitted because
+// Codex rejects combining it with --sandbox or --ask-for-approval. Otherwise an
+// unattended policy fills in workspace-write / never defaults (with explicit
+// user sandbox/approval settings winning for their own flag) and enables
+// workspace-write network access when permitted. Headless `codex exec` rejects
+// `--ask-for-approval`, so the policy default uses `-c approval_policy="never"`
+// there; interactive `codex` accepts `--ask-for-approval never`.
+func codexPermissionArgs(sandbox, approval string, dangerouslyBypass, hasPolicy, isNetworkAllowed, isHeadless bool) []string {
+	if dangerouslyBypass {
+		return []string{"--dangerously-bypass-approvals-and-sandbox"}
+	}
+	var args []string
+	switch {
+	case sandbox != "":
+		args = append(args, "--sandbox", sandbox)
+	case hasPolicy:
+		args = append(args, "--sandbox", "workspace-write")
+	}
+	switch {
+	case approval != "":
+		args = append(args, "--ask-for-approval", approval)
+	case hasPolicy && isHeadless:
+		args = append(args, "-c", `approval_policy="never"`)
+	case hasPolicy:
+		args = append(args, "--ask-for-approval", "never")
+	}
+	if hasPolicy && isNetworkAllowed {
+		args = append(args, "-c", "sandbox_workspace_write.network_access=true")
+	}
+	return args
+}
+
 // Start spawns the codex CLI subprocess. Delegates to the embedded
 // agentruntime.Runner.Start. The returned session ID is the codex-generated
 // UUID parsed from `thread.started` (via the SessionIDFromOutput hook wired
 // in C.6); falls back to the caller-supplied hint if no UUID was observed
 // in time.
 func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string) (string, error) {
-	return r.startRun(ctx, workDir, plan, resume, sessionID, logPath, model, effort, "", extraEnv)
+	return r.startRun(ctx, workDir, plan, resume, sessionID, logPath, model, effort, codexRunOptions{}, extraEnv)
 }
 
-// codexOptionProjectTrustOverride carries a run's per-process project-trust
-// `-c` override (applyCodexProjectTrust) from startRun to buildArgv.
-const codexOptionProjectTrustOverride = "project_trust_override"
+const (
+	// codexOptionProjectTrustOverride carries a run's per-process project-trust
+	// `-c` override (applyCodexProjectTrust) from startRun to buildArgv.
+	codexOptionProjectTrustOverride = "project_trust_override"
+	// codexOptionUnattendedPolicy marks a headless run carrying an
+	// UnattendedPermissionPolicy.
+	codexOptionUnattendedPolicy = "unattended_policy"
+	// codexOptionUnattendedNetworkAllowed enables workspace-write network
+	// access when codexOptionUnattendedPolicy is set.
+	codexOptionUnattendedNetworkAllowed = "unattended_network_allowed"
+)
 
-// startRun is Start with the run's project-trust override; an empty override
-// adds nothing to the argv.
-func (r *Runner) startRun(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort, trustOverride string, extraEnv map[string]string) (string, error) {
-	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{
+type codexRunOptions struct {
+	trustOverride            string
+	hasUnattendedPolicy      bool
+	unattendedNetworkAllowed bool
+}
+
+// startRun is Start with the run's project-trust override and unattended
+// permission policy; zero options add nothing to the argv.
+func (r *Runner) startRun(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, runOpts codexRunOptions, extraEnv map[string]string) (string, error) {
+	opts := map[string]string{
 		"model":                         model,
 		"effort":                        effort,
-		codexOptionProjectTrustOverride: trustOverride,
-	})
+		codexOptionProjectTrustOverride: runOpts.trustOverride,
+	}
+	if runOpts.hasUnattendedPolicy {
+		opts[codexOptionUnattendedPolicy] = "1"
+		if runOpts.unattendedNetworkAllowed {
+			opts[codexOptionUnattendedNetworkAllowed] = "1"
+		}
+	}
+	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, opts)
 }

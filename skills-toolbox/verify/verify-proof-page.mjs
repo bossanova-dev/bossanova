@@ -7,6 +7,7 @@ import { parseArgs } from 'node:util'
 import { isMainModule } from '../main-module.mjs'
 import { DESCRIBED_KEYS, refineDescribed } from './verify-describe-blocks.mjs'
 import { parkVerdict } from './verify-park-note.mjs'
+import { parseTrialPolicy } from './verify-policy-ref.mjs'
 import { areaItems, buildPageModel } from './verify-proof-page-model.mjs'
 import { renderPageHtml } from './verify-proof-page-html.mjs'
 import {
@@ -45,7 +46,7 @@ export const LEVEL_GUIDANCE = Object.freeze({
 })
 /**
  * @typedef {import('./verify-proof.mjs').Proof} Proof
- * @typedef {{pr: number, title: string, url: string, branch: string, shared: number, total: number, how: 'content' | 'base'}} StackParent
+ * @typedef {{pr: number, title: string, url: string, appUrl?: string, branch: string, shared: number, total: number, how: 'content' | 'base'}} StackParent
  * @typedef {{base: string, default: string, stackedOn: StackParent[]}} BranchContext
  *   Where the PR merges and the open PRs it is stacked on: by `base`, its base is that PR's branch;
  *   by `content`, it carries `shared` of that PR's `total` commits.
@@ -53,7 +54,7 @@ export const LEVEL_GUIDANCE = Object.freeze({
  * @typedef {import('./verify-proof-build.mjs').AcceptanceRow} AcceptanceRow
  * @typedef {{findings: ReviewFinding[], acceptance: AcceptanceRow[]}} ReviewInput
  *   What review found and certified, with the code locations the page quotes.
- * @typedef {{proof: Proof, asks?: Record<string, {diff?: string, plan?: string}>, described?: Record<string, import('./verify-describe-blocks.mjs').Described>, rates?: Record<string, {fixed: number, total: number}>, timeline?: {at: string, text: string}[], afterMerge?: string[], filesUrl?: string, reviewUrl?: string, verdict?: {codes: string[], label?: string}, branch?: BranchContext | null, review?: ReviewInput, ticket?: {id: string, url: string}, pullRequest?: {title: string, body?: string}}} PageInput
+ * @typedef {{proof: Proof, asks?: Record<string, {diff?: string, plan?: string}>, described?: Record<string, import('./verify-describe-blocks.mjs').Described>, rates?: Record<string, {fixed: number, total: number}>, timeline?: {at: string, text: string}[], afterMerge?: string[], filesUrl?: string, reviewUrl?: string, verdict?: {codes: string[], label?: string}, branch?: BranchContext | null, review?: ReviewInput, ticket?: {id: string, url: string}, pullRequest?: {title: string, body?: string}, trialPolicy?: {ref: string, sha: string}}} PageInput
  * @typedef {{label: string, lines: string[], total: number, remaining: number}} Excerpt
  * @typedef {{label: string, items: string[], excerpts: Excerpt[], media: {kind: string, url: string, caption: string, inline: boolean, poster?: string}[]}} Ask
  * @typedef {{title: string, bullets: string[], folded?: boolean, asks?: Ask[], state?: 'known'|'unknown', source?: string}} Section
@@ -90,11 +91,12 @@ function checkBranch(value, errors) {
       errors.push(`${at}: expected object`)
       continue
     }
-    keys(parent, ['pr', 'title', 'url', 'branch', 'shared', 'total', 'how'], at, errors)
+    keys(parent, ['pr', 'title', 'url', 'appUrl', 'branch', 'shared', 'total', 'how'], at, errors)
     if (!Number.isSafeInteger(parent.pr) || Number(parent.pr) < 1) errors.push(`${at}.pr: invalid`)
     for (const name of ['title', 'branch'])
       if (!short(parent[name])) errors.push(`${at}.${name}: invalid text`)
     checkProofUrl(parent.url, `${at}.url`, errors)
+    if (Object.hasOwn(parent, 'appUrl')) checkProofUrl(parent.appUrl, `${at}.appUrl`, errors)
     if (parent.how !== 'content' && parent.how !== 'base') errors.push(`${at}.how: invalid`)
     if (
       !Number.isSafeInteger(parent.shared) ||
@@ -177,6 +179,7 @@ export function validatePageInput(value) {
       'review',
       'ticket',
       'pullRequest',
+      'trialPolicy',
     ],
     'input',
     errors,
@@ -194,6 +197,8 @@ export function validatePageInput(value) {
         errors.push(`pullRequest.body: expected at most ${MAX_PR_BODY_CHARS} characters`)
     }
   }
+  if (Object.hasOwn(value, 'trialPolicy') && !parseTrialPolicy(value.trialPolicy))
+    errors.push('trialPolicy: expected {ref, sha} naming an origin branch and a 40-hex commit')
   if (Object.hasOwn(value, 'review')) checkReview(value.review, errors)
   if (Object.hasOwn(value, 'ticket')) {
     const ticket = value.ticket

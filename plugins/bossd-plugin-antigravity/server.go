@@ -79,7 +79,7 @@ func (s *Server) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRun
 	if err := requireTrustedProject(req.GetProjectTrust()); err != nil {
 		return nil, err
 	}
-	sid, err := s.runner.Start(context.Background(), req.GetWorkDir(), req.GetPlan(), req.ResumeId, req.GetSessionId(), req.GetLogPath(), req.GetModel(), req.GetEffort(), req.GetExtraEnv())
+	sid, err := s.runner.startRun(context.Background(), req.GetWorkDir(), req.GetPlan(), req.ResumeId, req.GetSessionId(), req.GetLogPath(), req.GetModel(), req.GetEffort(), req.GetExtraEnv(), req.GetUnattendedPermissionPolicy() != nil)
 	if errors.Is(err, errConversationNotResumed) {
 		return nil, status.Errorf(codes.FailedPrecondition, "start run: %v", err)
 	}

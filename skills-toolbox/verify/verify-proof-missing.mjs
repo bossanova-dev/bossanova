@@ -45,6 +45,48 @@ export const PROOF_MISSING_MARKER =
 export const proofMissingMarker = (headSha, digest, resolved = false) =>
   `<!-- boss-proof-missing head=${headSha} digest=${digest}${resolved ? ' state=resolved' : ''} -->`
 
+/**
+ * Opens the note's machine line: `{head, problems}` as JSON, so a reader learns why a head has no
+ * page without reading the note's prose.
+ */
+export const PROOF_PROBLEMS_MARKER = '<!-- boss-proof-problems:'
+const PROOF_PROBLEM_PARTS = Object.freeze(['record', 'page', 'check-run'])
+
+/** @param {string} headSha @param {readonly ProofProblem[]} problems */
+const proofProblemsLine = (headSha, problems) =>
+  `${PROOF_PROBLEMS_MARKER} ${JSON.stringify({
+    head: headSha,
+    problems: problems.map((p) => problem(p.part, p.reason, p.detail)),
+  }).replace(/[<>&]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)} -->`
+
+/**
+ * The last well-formed problems line in `body` as `{head, problems}`, or null.
+ * @param {string} body
+ * @returns {{head: string, problems: ProofProblem[]} | null}
+ */
+export function parseProofProblems(body) {
+  for (const line of String(body).split('\n').reverse()) {
+    const text = line.trim()
+    if (!text.startsWith(PROOF_PROBLEMS_MARKER) || !text.endsWith('-->')) continue
+    try {
+      const parsed = JSON.parse(text.slice(PROOF_PROBLEMS_MARKER.length, -3))
+      const ok =
+        /^[0-9a-fA-F]{40}$/.test(parsed?.head) &&
+        Array.isArray(parsed.problems) &&
+        parsed.problems.every(
+          (/** @type {any} */ p) =>
+            PROOF_PROBLEM_PARTS.includes(p?.part) &&
+            nonEmpty(p.reason) &&
+            (p.detail === undefined || typeof p.detail === 'string'),
+        )
+      if (ok) return { head: parsed.head, problems: parsed.problems }
+    } catch {
+      /* A malformed line is skipped like a missing one. */
+    }
+  }
+  return null
+}
+
 /** @param {unknown} value @returns {string} */
 const nonEmpty = (value) => (typeof value === 'string' && value.trim() !== '' ? value : '')
 
@@ -110,6 +152,8 @@ export function proofMissingNote({ headSha, pr, repo, problems }) {
     ...bullets,
     '',
     `Re-run verify on this head, or republish with \`${republish}\`.`,
+    '',
+    proofProblemsLine(headSha, problems),
   ].join('\n')
   const digest = noteDigest(content)
   return { body: `${content}\n\n${proofMissingMarker(headSha, digest)}`, digest }

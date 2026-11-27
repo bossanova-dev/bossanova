@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"strings"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/proto"
@@ -101,6 +102,13 @@ func (r *cloudRedactor) redactContent(ctx context.Context, obj proto.Message) bo
 		// A repo-less session (a delete delta) has no effective mode to publish.
 		if value.GetRepoId() != "" {
 			value.CloudControl = mode
+		}
+		// A sealed proof page's key rides in the URL fragment and never reaches bosso.
+		value.PrProofUrl = withoutFragment(value.GetPrProofUrl())
+		for _, att := range []*pb.SessionAttention{value.GetAttention(), value.GetVerifyPark()} {
+			if att != nil {
+				att.ProofUrl = withoutFragment(att.GetProofUrl())
+			}
 		}
 		if mode == pb.CloudControl_CLOUD_CONTROL_PRIVATE {
 			value.Plan = ""
@@ -205,4 +213,9 @@ func (r *cloudRedactor) repoRegistered(ctx context.Context, id string) bool {
 		return err == nil && object.RepoID == id
 	}
 	return true
+}
+
+func withoutFragment(rawURL string) string {
+	before, _, _ := strings.Cut(rawURL, "#")
+	return before
 }

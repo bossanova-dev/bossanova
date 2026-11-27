@@ -6,6 +6,7 @@ import (
 	"os/exec"
 
 	"github.com/recurser/boss/internal/accountflow"
+	daemon "github.com/recurser/boss/internal/daemonlife"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	"github.com/recurser/bossalib/kit/buildinfo"
 	"github.com/spf13/cobra"
@@ -73,5 +74,14 @@ func New(factory ClientFactory, cfg Config) *Group {
 		return buildinfo.Commit, buildinfo.Version
 	}
 	g.StartupIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	if g.Config.SetupCheckServiceInstalled == nil {
+		g.Config.SetupCheckServiceInstalled = func() bool {
+			st, err := daemon.GetStatus()
+			if err != nil || st == nil {
+				return true
+			}
+			return st.Installed
+		}
+	}
 	return g
 }

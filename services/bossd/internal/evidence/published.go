@@ -47,6 +47,6 @@ func (st *headState) withPublished(proof, latest *ProofRecord) (*ProofRecord, *P
 	if proof != nil {
 		merged = proof.clone()
 	}
-	merged.Page, merged.Legacy = st.published, false
+	merged.Page, merged.Legacy, merged.PageProblem = st.published, false, PageProblem{}
 	return &merged, &merged
 }

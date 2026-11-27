@@ -237,6 +237,7 @@ func SessionToProto(s *models.Session) *pb.Session {
 		AgentName:              protoString(s.AgentName),
 		IsAutomationEnabled:    s.IsAutomationEnabled,
 		IsVerifyOnly:           s.IsVerifyOnly,
+		PolicyRef:              s.PolicyRef,
 		AttemptCount:           clampInt32(s.AttemptCount),
 		CreatedAt:              timestamppb.New(s.CreatedAt),
 		UpdatedAt:              timestamppb.New(s.UpdatedAt),

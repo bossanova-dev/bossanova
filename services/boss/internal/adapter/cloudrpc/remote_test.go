@@ -1027,3 +1027,23 @@ func TestRemoteClient_AttentionDismissAndResumeUseProxies(t *testing.T) {
 		t.Fatalf("resume request = %v", fake.resumeReq)
 	}
 }
+
+func TestRemoteClient_ListSetupChecksReturnsUnimplemented(t *testing.T) {
+	t.Parallel()
+	c, _ := newTestRemote(t)
+
+	resp, err := c.ListSetupChecks(context.Background(), &pb.ListSetupChecksRequest{WorkspacePath: "/tmp/repo"})
+	if resp != nil {
+		t.Fatalf("resp = %v, want nil", resp)
+	}
+	if err == nil {
+		t.Fatal("ListSetupChecks on RemoteClient returned nil error, want CodeUnimplemented")
+	}
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("code = %v, want %v (err: %v)", connect.CodeOf(err), connect.CodeUnimplemented, err)
+	}
+	const wantMsg = "setup checks are host-local; run boss init check on the host"
+	if !strings.Contains(err.Error(), wantMsg) {
+		t.Fatalf("error = %q, want %q", err.Error(), wantMsg)
+	}
+}

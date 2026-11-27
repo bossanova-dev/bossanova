@@ -10,11 +10,11 @@ import CommandTabs from '@site/src/components/CommandTabs';
 
 Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents (Claude Code, Claude Desktop, and any MCP-capable host) drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. The tool reference below describes the supported operations.
 
-The server exposes **84 tools** in three tiers:
+The server exposes **85 tools** in three tiers:
 
 | Tier        | Count | Behaviour                          |
 | ----------- | ----- | ---------------------------------- |
-| Read-only   | 31    | Always available                   |
+| Read-only   | 32    | Always available                   |
 | Mutating    | 37    | Non-destructive writes             |
 | Destructive | 16    | Require `confirm: true` to execute |
 
@@ -192,7 +192,7 @@ Claude Code keeps user-scope and local-scope server configuration in `~/.claude.
 - **stdio (default)** — `bin/mcp` with no flags; the MCP host spawns it and talks over stdin/stdout.
 - **Streamable HTTP** — `bin/mcp --http 127.0.0.1:7474` (any free loopback port; non-loopback addresses are refused) serves `/mcp`, `/healthz` and `/buildinfo`, useful for `curl` or a browser-based MCP inspector. `/mcp` requires `Authorization: Bearer <token>` (see [Authenticating HTTP clients](#authenticating-http-clients)). Pass `--socket /path/to/bossd.sock` for a non-default bossd socket.
 
-Pass `--read-only` to register only the 31 read-only tools; mutating and destructive tools then never appear in `tools/list`. Use `--only get_session,list_notes` to advertise a comma-separated allowlist; it composes with `--read-only`. An empty `--only` value registers the full surface allowed by the other flags.
+Pass `--read-only` to register only the 32 read-only tools; mutating and destructive tools then never appear in `tools/list`. Use `--only get_session,list_notes` to advertise a comma-separated allowlist; it composes with `--read-only`. An empty `--only` value registers the full surface allowed by the other flags.
 
 If tools fail while `/healthz` remains healthy, check that `bossd` is running. The MCP server talks to it over a Unix socket; pass `--socket` for a non-default socket path.
 
@@ -208,7 +208,7 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 
 ## Tool reference
 
-### Read-only (31)
+### Read-only (32)
 
 | Tool                           | Description                                                                                             |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
@@ -225,6 +225,7 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 | `get_session_statuses`         | Get best live status across chats for multiple sessions — aggregate only, see below                     |
 | `list_check_snapshots`         | List recent CI check snapshots, newest first. See [verify verdict](#verify-verdict).                    |
 | `repair_doctor`                | Run daemon repair-doctor diagnostics                                                                    |
+| `list_setup_checks`            | Evaluate read-only machine and repository setup checks                                                  |
 | `list_agents`                  | List loaded agent-runner plugins                                                                        |
 | `list_plugins`                 | List every plugin the daemon attempted to load                                                          |
 | `list_cron_jobs`               | List every scheduled cron job                                                                           |
@@ -628,13 +629,13 @@ destructive ones (which still require `confirm: true`), the cron-job mutators, a
 the GitHub-callback, note, organization-note and project-config tools. Organization-note tools call the cloud API directly. `switch_account` is proxiable too: it acts on a
 session's live chat, so it routes like any other session operation.
 
-The other 20 tools stay local-only, because they have no session/daemon-routed
+The other 21 tools stay local-only, because they have no session/daemon-routed
 backing RPC: repo bootstrap (`resolve_context`, `validate_repo_path`,
 `register_repo`, `clone_and_register_repo`), the six account tools
 (`list_accounts`, `add_account`, `refresh_account`, `update_account`,
 `remove_account`, `test_account`), whose credentials never leave your daemon;
 the six broadcast tools; the daemon settings tools (`get_settings`,
-`update_settings`); `start_repair_workflow`; and `refresh_session_pr`.
+`update_settings`); `list_setup_checks`; `start_repair_workflow`; and `refresh_session_pr`.
 
 ### Personal API tokens
 

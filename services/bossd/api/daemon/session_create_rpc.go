@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,10 +31,30 @@ func validateCreateSessionFields(msg *pb.CreateSessionRequest) error {
 	if msg.GetIsVerifyOnly() && msg.PrNumber == nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_verify_only requires pr_number"))
 	}
+	if ref := msg.GetPolicyRef(); ref != "" {
+		if !msg.GetIsVerifyOnly() {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("policy_ref requires is_verify_only"))
+		}
+		if !validPolicyRef(ref) {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("policy_ref %q is not a plain branch name", ref))
+		}
+	}
 	if msg.Title == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
 	}
 	return nil
+}
+
+// policyRefPattern is the branch-name shape boss-verify accepts for a trial
+// policy ref (POLICY_REF_PATTERN in skills-toolbox/verify/verify-policy-ref.mjs):
+// path segments of letters, digits, '.', '_' and '-' that start with a letter
+// or digit, so the ref can never be read as an option, a revision expression
+// or a park-code separator.
+var policyRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
+
+func validPolicyRef(ref string) bool {
+	return len(ref) <= 200 && policyRefPattern.MatchString(ref) &&
+		!strings.Contains(ref, "..") && !strings.HasSuffix(ref, ".lock") && !strings.HasSuffix(ref, ".")
 }
 
 // resolveSessionAgentAccount resolves the agent a new session runs on, then the
@@ -266,7 +287,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	}
 
 	if !msg.IsQuickChat {
-		if handled, err := s.sendExistingSessionForBranch(ctx, msg.RepoId, headBranch, emitSender{emit}); handled || err != nil {
+		if handled, err := s.sendExistingSessionForBranch(ctx, msg.RepoId, headBranch, msg.GetPolicyRef(), emitSender{emit}); handled || err != nil {
 			return err
 		}
 
@@ -356,6 +377,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		EffectiveEffort: effectiveAgentSetting(agentName, "effort", msg.GetEffort()),
 		PRNumber:        prNumber,
 		IsVerifyOnly:    msg.GetIsVerifyOnly(),
+		PolicyRef:       msg.GetPolicyRef(),
 		TrackerID:       msg.TrackerId,
 		TrackerURL:      msg.TrackerUrl,
 	}

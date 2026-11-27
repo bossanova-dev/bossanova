@@ -170,17 +170,18 @@ func (r *PluginRunner) startWithBossSession(ctx context.Context, workDir, plan s
 	logPath := r.logPathFor(logKey)
 	startedAt := time.Now()
 	req := &bossanovav1.StartAgentRunRequest{
-		WorkDir:                   workDir,
-		Plan:                      plan,
-		ResumeId:                  resume,
-		SessionId:                 sessionID,
-		LogPath:                   logPath,
-		Model:                     model,
-		Effort:                    effort,
-		ExtraEnv:                  extraEnv,
-		HeadlessCapabilityProfile: options.HeadlessCapabilityProfile,
-		ProjectTrust:              options.ProjectTrust,
-		ShouldTrustProjectConfig:  options.ShouldTrustProjectConfig,
+		WorkDir:                    workDir,
+		Plan:                       plan,
+		ResumeId:                   resume,
+		SessionId:                  sessionID,
+		LogPath:                    logPath,
+		Model:                      model,
+		Effort:                     effort,
+		ExtraEnv:                   extraEnv,
+		HeadlessCapabilityProfile:  options.HeadlessCapabilityProfile,
+		ProjectTrust:               options.ProjectTrust,
+		ShouldTrustProjectConfig:   options.ShouldTrustProjectConfig,
+		UnattendedPermissionPolicy: options.UnattendedPermissionPolicy,
 	}
 	resp, err := r.client.StartAgentRun(ctx, req)
 	if err != nil {

@@ -18,6 +18,7 @@ type CreateSessionParams struct {
 	AccountID    *string
 	PRNumber     *int
 	IsVerifyOnly bool
+	PolicyRef    string
 	PRURL        *string
 	TrackerID    *string
 	TrackerURL   *string

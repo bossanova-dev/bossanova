@@ -342,7 +342,7 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionPar
 		Model: params.Model, EffectiveModel: params.EffectiveModel, EffectiveEffort: params.EffectiveEffort,
 		AccountID: params.AccountID, PrNumber: sessionInt64(params.PRNumber), PrUrl: params.PRURL,
 		TrackerID: params.TrackerID, TrackerUrl: params.TrackerURL, CreatedAt: now, UpdatedAt: now,
-		IsVerifyOnly: params.IsVerifyOnly,
+		IsVerifyOnly: params.IsVerifyOnly, PolicyRef: params.PolicyRef,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("insert session: %w", err)
@@ -827,6 +827,7 @@ func sessionFromRow(row sqlcgen.Session) *domain.Session {
 		LastObservedReviewState:     int(row.LastObservedReviewState),
 		IsAutomationEnabled:         row.IsAutomationEnabled,
 		IsVerifyOnly:                row.IsVerifyOnly,
+		PolicyRef:                   row.PolicyRef,
 		IsTmuxUnattended:            row.IsTmuxUnattended,
 		IsQuickChat:                 row.IsQuickChat,
 		Detach:                      row.IsDetached,

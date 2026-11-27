@@ -371,6 +371,7 @@ type Session struct {
 	TrackerRankedAt                 *string
 	PrAuthorLogin                   string
 	PrTargetBranch                  string
+	PolicyRef                       string
 }
 
 type SessionCheckSnapshot struct {

@@ -1,7 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mediaFiles } from './verify-media-hook.mjs'
-import { fitProofMedia, fixedSize, measure, publishWithinLimits } from './verify-proof-fit.mjs'
+import {
+  fitProofMedia,
+  fixedSize,
+  LOADER_FILES,
+  measure,
+  publishWithinLimits,
+  SEALED_FILE_OVERHEAD_BYTES,
+} from './verify-proof-fit.mjs'
 
 const HEAD = 'c'.repeat(40)
 
@@ -166,7 +173,10 @@ test('the fixed size counts index.html and every non-media asset', () => {
 })
 
 /** publishWithinLimits over fakes: `answers` are the upload results in order. */
-async function loop(answers, { scan = () => false, render, media = MEDIA, map = SIZES } = {}) {
+async function loop(
+  answers,
+  { scan = () => false, render, media = MEDIA, map = SIZES, known } = {},
+) {
   const uploads = []
   const renders = []
   const result = await publishWithinLimits({
@@ -186,6 +196,7 @@ async function loop(answers, { scan = () => false, render, media = MEDIA, map = 
     sizeOf: sizes(map),
     head: HEAD,
     fixedFor: (html) => fixedSize(html, [{ text: 'player' }]),
+    ...(known ? { known } : {}),
   })
   return { result, uploads, renders }
 }
@@ -266,4 +277,77 @@ test('any other refusal is returned unchanged, unfitted @sessions.AC261201', asy
     reason: 'upload-failed',
     detail: 'Error: boom',
   })
+})
+
+const SEALED_BYTES = 17 + 485 + 8 * SEALED_FILE_OVERHEAD_BYTES + LOADER_FILES.bytes
+
+test('known limits the sealed page meets upload it once, unchanged @sessions.AC278401', async () => {
+  const known = [
+    { kind: 'file-count', max: 10 },
+    { kind: 'page-bytes', max: SEALED_BYTES },
+  ]
+  const { result, uploads, renders } = await loop([], { known })
+  assert.deepEqual([uploads.length, renders.length], [1, 0])
+  assert.deepEqual([result.uploaded.ok, result.html, result.omitted], [true, '<p>page</p>', 0])
+  assert.deepEqual(uploads[0].files, mediaFiles(MEDIA))
+})
+
+test('known limits fit the page before its first upload, at ciphertext sizes @sessions.AC278401', async () => {
+  const map = { ...SIZES, 'b.mp4': 20_000 }
+  const fitted = await loop([], {
+    map,
+    known: [{ kind: 'file-bytes', max: 20_000 + SEALED_FILE_OVERHEAD_BYTES - 1 }],
+  })
+  assert.equal(fitted.uploads.length, 1, 'one upload and no refusal')
+  assert.deepEqual(
+    [fitted.result.uploaded.ok, fitted.result.omitted, fitted.renders],
+    [true, 1, [1]],
+  )
+  assert.deepEqual(fitted.uploads[0].files, ['a.mp4', 'a.png', 'a1.png', 'd.pdf', 'd1.png'])
+  const kept = await loop([], {
+    map,
+    known: [{ kind: 'file-bytes', max: 20_000 + SEALED_FILE_OVERHEAD_BYTES }],
+  })
+  assert.deepEqual([kept.uploads.length, kept.renders.length], [1, 0])
+  const counted = await loop([], { known: [{ kind: 'file-count', max: 9 }] })
+  assert.deepEqual([counted.uploads.length, counted.result.omitted], [1, 1])
+})
+
+test('a refusal after a known-limit fit replaces that limit and is fitted once @sessions.AC278401', async () => {
+  const known = [{ kind: 'page-bytes', max: SEALED_BYTES }]
+  const lowered = await loop([over('page-bytes', SEALED_BYTES - 1)], { known })
+  assert.equal(lowered.uploads.length, 2)
+  assert.deepEqual([lowered.result.uploaded.ok, lowered.result.omitted], [true, 1])
+  assert.ok(!lowered.uploads[1].files.includes('b.mp4'), 'the largest unit went')
+  const repeated = await loop([over('page-bytes', SEALED_BYTES - 1), over('page-bytes', 1000)], {
+    known,
+  })
+  assert.deepEqual(
+    [repeated.result.uploaded, repeated.uploads.length],
+    [{ ok: false, reason: 'over-limit' }, 2],
+  )
+})
+
+test('known limits the page cannot meet leave it unfitted for the host to decide @sessions.AC278401', async () => {
+  const { result, uploads, renders } = await loop([], { known: [{ kind: 'file-count', max: 3 }] })
+  assert.deepEqual([uploads.length, renders.length, result.uploaded.ok], [1, 0, true])
+  assert.deepEqual(uploads[0].files, mediaFiles(MEDIA))
+})
+
+test('a secret in the page fitted to known limits uploads nothing @sessions.AC278401', async () => {
+  const { result, uploads } = await loop([], {
+    known: [{ kind: 'file-count', max: 9 }],
+    scan: () => true,
+  })
+  assert.deepEqual(
+    [result.uploaded, uploads.length],
+    [{ ok: false, reason: 'page-contains-secret' }, 0],
+  )
+})
+
+test('no known limits keeps the refusal loop at plaintext sizes @sessions.AC278401', async () => {
+  const { result, uploads } = await loop([over('file-count', 7)], { known: [] })
+  assert.equal(uploads.length, 2)
+  assert.deepEqual([result.uploaded.ok, result.omitted], [true, 1])
+  assert.deepEqual(uploads[1].files, ['a.mp4', 'a.png', 'a1.png', 'd.pdf', 'd1.png'])
 })

@@ -500,9 +500,10 @@ func (l *Lifecycle) SwitchAgentAccount(ctx context.Context, p SwitchAgentAccount
 	// the gate keyed on the account.
 	repo := RepoForSessionEnv(ctx, l.repos, session.RepoID, session.ID, "switch account", l.logger)
 	trackerAdapter := l.trackerAdapterForSession(session, repo)
+	isRepairChat := chat.Role == domain.AgentChatRoleRepair
 	capabilityProfile := headlessCapabilityProfileFor(resolvedProvider, trackerAdapter, respawnOpts)
 	if capabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED &&
-		chat.Role == domain.AgentChatRoleRepair {
+		isRepairChat {
 		capabilityProfile = headlessCapabilityProfileForAutonomousRun(resolvedProvider, trackerAdapter)
 	}
 	// AllowSiblingChat bypasses StartTmuxChat's session-wide live-chat idempotency
@@ -512,9 +513,15 @@ func (l *Lifecycle) SwitchAgentAccount(ctx context.Context, p SwitchAgentAccount
 	// sibling's pane and return AlreadyExists instead of respawning the just-killed
 	// target, leaving a multi-chat session on the new account with the selected
 	// chat stopped/failed.
+	//
+	// AutonomousRun is preserved for repair chats so StartTmuxChat keeps
+	// launchFacts.IsUnattended (UnattendedPermissionPolicy and BOSS_UNATTENDED /
+	// BOSS_CRON) when rotating a repair chat on an otherwise interactive session,
+	// while the explicit HeadlessCapabilityProfile above still takes precedence.
 	if _, err := l.StartTmuxChat(ctx, p.SessionID, respawn, chat.Title, HookOpts{
 		AllowSiblingChat:          true,
 		HeadlessCapabilityProfile: capabilityProfile,
+		AutonomousRun:             isRepairChat,
 	}); err != nil {
 		l.stampSwitchStartError(ctx, p.AgentSessionID, "respawn after switch failed: "+err.Error())
 		return SwitchAgentAccountResult{}, fmt.Errorf("respawn chat after switch: %w", err)

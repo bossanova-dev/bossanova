@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { daemonUnary } from './verify-daemon-rpc.mjs'
 import { daemonRefusal } from './verify-proof-publisher.mjs'
+import { proofMissingBossNote, proofMissingNote, proofProblems } from './verify-proof-missing.mjs'
 
 test('daemon RPC preserves proof-check and evidence refusal reasons', async (t) => {
   const dir = tempDir('proof-rpc-', t)
@@ -91,4 +92,40 @@ test('an unavailable upload names its code and failing stage, never the daemon m
     reason: 'upload-failed',
     detail: 'unavailable (object-upload-failed): UploadEvidence → HTTP 503',
   })
+})
+
+test('a server with no proof page storage reaches the PR note and boss note in plain words', async (t) => {
+  const dir = tempDir('proof-rpc-server-', t)
+  const socket = path.join(dir, 'd.sock')
+  fs.writeFileSync(path.join(dir, 'bossd.token'), 'local-test-token')
+  const server = http.createServer((_req, res) => {
+    res.writeHead(503, {
+      'content-type': 'application/json',
+      'Bossd-Evidence-Reason': 'server-not-configured',
+    })
+    res.end(JSON.stringify({ code: 'unavailable', message: 'private upstream detail' }))
+  })
+  server.listen(socket)
+  await once(server, 'listening')
+  t.after(() => new Promise((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))))
+  const error = await daemonUnary(socket, 'UploadEvidence').catch((thrown) => thrown)
+  const refusal = daemonRefusal({ kind: 'hosted' }, error)
+  assert.deepEqual(refusal, {
+    ok: false,
+    reason: 'upload-failed',
+    detail:
+      "Hosted review pages aren't set up on this server; unavailable (server-not-configured): UploadEvidence → HTTP 503",
+  })
+  const problems = proofProblems({
+    recorded: true,
+    page: { published: false, reason: refusal.reason, detail: refusal.detail },
+  })
+  const headSha = 'a'.repeat(40)
+  const note = proofMissingNote({ headSha, pr: 151, repo: 'acme/widgets', problems }).body
+  const bossNote = proofMissingBossNote({ pr: 151, headSha, problems })
+  for (const text of [note, bossNote]) {
+    assert.match(text, /Hosted review pages aren't set up on this server/)
+    assert.match(text, /upload-failed/)
+    assert.doesNotMatch(text, /private upstream detail/)
+  }
 })

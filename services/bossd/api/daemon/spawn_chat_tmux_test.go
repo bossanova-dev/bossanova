@@ -340,12 +340,13 @@ type argvCall struct {
 	configHomeEnv        map[string]string
 	isClaudeProxyEnabled bool
 	trust                bossanovav1.ProjectTrustDecision
+	unattendedPolicy     *bossanovav1.UnattendedPermissionPolicy
 }
 
-func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, isClaudeProxyEnabled bool, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, isClaudeProxyEnabled bool, trust bossanovav1.ProjectTrustDecision, unattendedPolicy *bossanovav1.UnattendedPermissionPolicy) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, effort: effort, configHomeEnv: configHomeEnv, isClaudeProxyEnabled: isClaudeProxyEnabled, trust: trust})
+	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, effort: effort, configHomeEnv: configHomeEnv, isClaudeProxyEnabled: isClaudeProxyEnabled, trust: trust, unattendedPolicy: unattendedPolicy})
 	// Mirror liveArgvBuilder's legacy default so tests with chat.AgentName=""
 	// (rows that predate the agent_name column) route to claude rather than
 	// erroring out. liveArgvBuilder does the same at spawn_chat_tmux.go.
@@ -433,7 +434,7 @@ func TestLiveArgvBuilder_MapsTrustDecisionToRequest(t *testing.T) {
 	} {
 		client := &trustRecordingAgentClient{listAgentsFakeClient: &listAgentsFakeClient{}}
 		builder := liveArgvBuilder{clients: map[string]agent.RunnerClient{"codex": client}}
-		if _, err := builder.BuildInteractive(context.Background(), "codex", "a1", false, t.TempDir(), "", "", "", "", nil, false, tc.trust); err != nil {
+		if _, err := builder.BuildInteractive(context.Background(), "codex", "a1", false, t.TempDir(), "", "", "", "", nil, false, tc.trust, nil); err != nil {
 			t.Fatalf("trust=%v: BuildInteractive: %v", tc.trust, err)
 		}
 		if got := client.last.GetProjectTrust(); got != tc.trust {

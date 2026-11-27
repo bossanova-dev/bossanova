@@ -337,9 +337,16 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// "optionally filtered by" clause; the MCP guide carries the field detail.
 	// LOWERED 2026-11-26: 84 tools / 68,803 bytes (-6), same method.
 	// get_proof_view_link says "review page" and names its head in fewer words.
+	// RAISED 2026-11-26 (BOS-2683): 85 tools / 69,196 bytes (+1 tool, +393 bytes),
+	// adding the read-only list_setup_checks tool so agents read the same setup
+	// check registry as `boss init check --json` without shelling out.
+	// RE-PINNED DOWN 2026-11-27: 85 tools / 69,180 bytes (-16), same method.
+	// create_session gained `policy_ref` and paid for it out of its
+	// branch_name doc (DEDUP again) and verify_only's attach sentence, which
+	// the attach Note already states.
 	const (
-		maxToolCount   = 84
-		maxSchemaBytes = 68803
+		maxToolCount   = 85
+		maxSchemaBytes = 69180
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

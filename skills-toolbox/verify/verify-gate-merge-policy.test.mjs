@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { decideVerdict, judge } from './verify-gate.mjs'
+import { decideVerdict, judge, merge, post } from './verify-gate.mjs'
 import { describeAreas } from './verify-describe.mjs'
 import { pathParkFacts } from './verify-path-parks.mjs'
 import { verifyPolicyFromConfigText } from '../skill-config.mjs'
@@ -11,6 +11,7 @@ import { verifyPolicyFromConfigText } from '../skill-config.mjs'
 const HEAD = 'a'.repeat(40)
 const BASE = 'b'.repeat(40)
 const PR_URL = 'https://github.com/o/r/pull/7'
+const TRIAL = 'c'.repeat(40)
 const AUTO_MODERATE = { auto: [{ level: 'moderate' }, { level: 'low' }] }
 const REPO_CONFIG = readFileSync(
   fileURLToPath(new URL('../../.boss-skills.json', import.meta.url)),
@@ -193,12 +194,34 @@ test("Bossanova's own rules merge a high head and a tested UI head, and park an 
   ])
 })
 
-/** A judge world over one PR, its changed files, the base tip's config and the head's. */
-function fixture({ paths, baseConfig, headConfig = {} }) {
+/**
+ * A judge world over one PR, its changed files, the base tip's config and the head's. `trial`
+ * makes the gate's session a verify-only one with policy ref `dev-config`: `session` is its row
+ * (null for an unreadable read), `config` the config on origin/dev-config at TRIAL, and `missing`
+ * a ref origin does not have. `verify` is a `boss/verify` status standing on the head.
+ */
+function fixture({ paths, baseConfig, headConfig = {}, trial = null, verify = null }) {
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
   const fail = () => ({ ok: false, exit: 1, output: '' })
+  const trees = []
+  const config = (value) =>
+    ok({
+      type: 'file',
+      encoding: 'base64',
+      content: Buffer.from(JSON.stringify(value)).toString('base64'),
+    })
   const read = (command, args) => {
+    if (trial && command === 'boss' && args[0] === 'show')
+      return trial.session === null
+        ? fail()
+        : ok({ session: trial.session ?? { is_verify_only: true, policy_ref: 'dev-config' } })
+    if (trial && command === 'git' && args[0] === 'ls-remote')
+      return trial.missing
+        ? { ok: false, exit: 2, output: '' }
+        : { ok: true, exit: 0, output: `${TRIAL}\trefs/heads/dev-config` }
     if (command !== 'gh') return fail()
+    if (trial && args.includes(`repos/o/r/contents/.boss-skills.json?ref=${TRIAL}`))
+      return config(trial.config ?? baseConfig)
     if (args[0] === 'pr')
       return ok({
         state: 'OPEN',
@@ -245,7 +268,14 @@ function fixture({ paths, baseConfig, headConfig = {} }) {
       })
     if (path.includes('/contents/')) return { ...fail(), payload: { status: '404' } }
     if (path.includes('/statuses'))
-      return ok([[{ context: 'boss/build', state: 'success', updated_at: '2026-10-01T00:00:00Z' }]])
+      return ok([
+        [
+          ...(verify
+            ? [{ context: 'boss/verify', updated_at: '2026-10-01T12:00:00Z', ...verify }]
+            : []),
+          { context: 'boss/build', state: 'success', updated_at: '2026-10-01T00:00:00Z' },
+        ],
+      ])
     if (path.includes('actions/runs?'))
       return ok([
         {
@@ -268,12 +298,140 @@ function fixture({ paths, baseConfig, headConfig = {} }) {
     read,
     now: () => Date.parse('2026-10-02T00:00:00Z'),
     discover: () => ({ extensions: [], skipped: [] }),
-    trustedTree: () => ({ ok: true, root: '/trusted' }),
+    trustedTree: ({ baseSha }) => {
+      trees.push(baseSha)
+      return { ok: true, root: '/trusted' }
+    },
+    trees,
     treeAreaFacts: pathParkFacts,
     loadConfig: () => headConfig,
     exists: () => false,
+    ...(trial ? { sessionId: 'sess-trial', runDir: null } : {}),
   }
 }
+
+const AUTO_HIGH = { verifyDefaults: { merge: { auto: [{ level: 'high' }] } } }
+
+test('judge: a trial session reads policy and extensions from origin/<ref> and parks what it would merge', async () => {
+  const plain = await judge(
+    { pr: 7, repo: 'o/r' },
+    fixture({ paths: ['src/a.go'], baseConfig: AUTO_HIGH }),
+  )
+  assert.deepEqual(outcome(plain), ['pass', 'verified'])
+  assert.equal(plain.trialPolicy, undefined)
+
+  const trialPass = fixture({ paths: ['src/a.go'], baseConfig: AUTO_HIGH, trial: {} })
+  const parked = await judge({ pr: 7, repo: 'o/r' }, trialPass)
+  assert.deepEqual(outcome(parked), ['human', 'trial-policy'])
+  assert.deepEqual(parked.reasons, ['trial-policy'])
+  assert.equal(parked.label, 'trial policy dev-config@ccccccc')
+  assert.deepEqual(parked.trialOf, { verdict: 'pass', reason: 'verified' })
+  assert.deepEqual(parked.trialPolicy, { ref: 'dev-config', sha: TRIAL })
+  assert.deepEqual(
+    trialPass.trees,
+    [TRIAL],
+    'the trusted tree is the trial commit, never the base tip',
+  )
+
+  // The trial ref's own policy decides: a trial config with no merge rule holds a high head.
+  const stricter = fixture({
+    paths: ['src/a.go'],
+    baseConfig: AUTO_HIGH,
+    trial: { config: { verifyDefaults: {} } },
+  })
+  const held = await judge({ pr: 7, repo: 'o/r' }, stricter)
+  assert.deepEqual(outcome(held), ['human', 'trial-policy'])
+  assert.deepEqual(held.trialOf, { verdict: 'human', reason: 'human-merge' })
+  // An approval of the park waives nothing in a trial session: it parks again.
+  const waived = await judge({ pr: 7, repo: 'o/r', waive: 'trial-policy' }, stricter)
+  assert.deepEqual(outcome(waived), ['human', 'trial-policy'])
+})
+
+// A standing park was raised under base policy; held, it would stop the trial's own judge running.
+test('judge: a standing base-policy park holds an ordinary judge but never a trial', async () => {
+  const park = { state: 'pending', description: 'needs human: worktree-diverged' }
+  const held = await judge(
+    { pr: 7, repo: 'o/r' },
+    fixture({ paths: ['src/a.go'], baseConfig: AUTO_HIGH, verify: park }),
+  )
+  assert.deepEqual([...outcome(held), held.held], ['human', 'worktree-diverged', true])
+  const trial = await judge(
+    { pr: 7, repo: 'o/r' },
+    fixture({ paths: ['src/a.go'], baseConfig: AUTO_HIGH, verify: park, trial: {} }),
+  )
+  assert.deepEqual(outcome(trial), ['human', 'trial-policy'])
+  assert.equal(trial.held, undefined)
+  assert.deepEqual(trial.trialOf, { verdict: 'pass', reason: 'verified' })
+})
+
+test('judge: a trial ref origin does not have is refused, and an unreadable session waits', async () => {
+  const missing = fixture({ paths: ['src/a.go'], baseConfig: AUTO_HIGH, trial: { missing: true } })
+  await assert.rejects(
+    judge({ pr: 7, repo: 'o/r' }, missing),
+    /"dev-config" is not a branch on origin/,
+  )
+  assert.deepEqual(missing.trees, [], 'a refused ref materializes no tree')
+
+  const unreadable = fixture({
+    paths: ['src/a.go'],
+    baseConfig: AUTO_HIGH,
+    trial: { session: null },
+  })
+  assert.deepEqual(outcome(await judge({ pr: 7, repo: 'o/r' }, unreadable)), [
+    'wait',
+    'policy-ref-unreadable',
+  ])
+  const stale = fixture({
+    paths: ['src/a.go'],
+    baseConfig: AUTO_HIGH,
+    trial: { session: { is_verify_only: true } },
+  })
+  assert.deepEqual(outcome(await judge({ pr: 7, repo: 'o/r' }, stale)), [
+    'wait',
+    'policy-ref-unreadable',
+  ])
+})
+
+test('post and merge: a trial session never posts a pass or merges', async () => {
+  const deps = fixture({ paths: ['src/a.go'], baseConfig: AUTO_HIGH, trial: {} })
+  for (const verdict of ['pass', 'defect', 'blocked'])
+    assert.deepEqual(await post({ pr: 7, repo: 'o/r', head: HEAD, verdict }, deps), {
+      verdict,
+      posted: false,
+      reason: 'trial-policy',
+    })
+  const merged = await merge({ pr: 7, repo: 'o/r', head: HEAD }, deps)
+  assert.equal(merged.merged, false)
+  assert.deepEqual([merged.verdict, merged.reason], ['human', 'trial-policy'])
+  assert.deepEqual(merged.writes, [])
+  const unknown = fixture({ paths: ['src/a.go'], baseConfig: AUTO_HIGH, trial: { session: null } })
+  const waited = await merge({ pr: 7, repo: 'o/r', head: HEAD }, unknown)
+  assert.deepEqual(
+    [waited.merged, waited.verdict, waited.reason],
+    [false, 'wait', 'policy-ref-unreadable'],
+  )
+})
+
+test("post: a trial park's policy record never matches the base policy, so the sweep re-judges it", async () => {
+  const adapter = {
+    applyIssueWrites: async () => ({ ok: true, outcome: 'ok', applied: [], issue: { id: 'u' } }),
+  }
+  const recorded = async (trial) => {
+    const deps = { ...fixture({ paths: ['src/a.go'], baseConfig: AUTO_HIGH, trial }), adapter }
+    const r = await post(
+      { pr: 7, repo: 'o/r', head: HEAD, verdict: 'human', reason: 'human-merge', dryRun: true },
+      deps,
+    )
+    assert.equal(r.posted, true)
+    const bodies = r.writes.map((w) => String(w.body ?? ''))
+    return bodies.map((b) => b.match(/boss-policy-record head=\w+ policy=(\w+)/)?.[1]).find(Boolean)
+  }
+  const base = await recorded(null)
+  const trial = await recorded({})
+  assert.match(base, /^[0-9a-f]{16}$/)
+  assert.match(trial, /^[0-9a-f]{16}$/)
+  assert.notEqual(trial, base)
+})
 
 test('judge: a base tip with no merge block parks a high head human-merge', async () => {
   const r = await judge(

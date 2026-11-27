@@ -67,6 +67,8 @@ type fakeAgentForLifecycle struct {
 	// refusal — or a degraded gate — supplies one.
 	HasQuestionPromptFunc func(*bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
 	IgnoredDirtyFiles     []string
+	// ExtraInteractiveArgv, when non-empty, is appended to BuildInteractiveCommand's argv.
+	ExtraInteractiveArgv []string
 	// InitialInputFileMode, when non-zero and the request carries an
 	// initial_input_path, makes the fake behave like a plugin that delivers the
 	// first input from a file: it writes the input with this mode and returns
@@ -134,6 +136,7 @@ func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *
 	// directly on a PTY; capture-to-disk is handled by `tmux pipe-pane`
 	// after the spawn, not by piping stdout through tee.
 	argv := []string{"claude", "--session-id", req.SessionId}
+	argv = append(argv, f.ExtraInteractiveArgv...)
 	if path := req.GetInitialInputPath(); f.ConsumesInitialInput && path != "" && (f.InitialInputFileMode != 0 || f.ReferenceInitialInputFileOnly) {
 		if f.InitialInputFileMode != 0 {
 			input := req.GetInitialPrompt()

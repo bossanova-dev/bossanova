@@ -975,8 +975,10 @@ type OrchestratorServiceClient interface {
 	// (PermissionDenied for a non-member), refuses an organization whose owner
 	// turned hosted proof pages off (FailedPrecondition), and validates the
 	// manifest (InvalidArgument). Limits are ResourceExhausted with a
-	// ProofUploadLimitExceeded detail. Returns page identity, never a URL. Paid
-	// cloud access does not affect admission (apiversion V20261108).
+	// ProofUploadLimitExceeded detail. A server with no proof page storage
+	// answers Unavailable with a ProofHostingNotConfigured detail before it
+	// reserves anything. Returns page identity, never a URL. Paid cloud access
+	// does not affect admission (apiversion V20261108).
 	StartProofUpload(context.Context, *connect.Request[v1.StartProofUploadRequest]) (*connect.Response[v1.StartProofUploadResponse], error)
 	// PutProofObject writes one file of a hosted proof page started with
 	// StartProofUpload. It authenticates the daemon session; a user token is
@@ -4030,8 +4032,10 @@ type OrchestratorServiceHandler interface {
 	// (PermissionDenied for a non-member), refuses an organization whose owner
 	// turned hosted proof pages off (FailedPrecondition), and validates the
 	// manifest (InvalidArgument). Limits are ResourceExhausted with a
-	// ProofUploadLimitExceeded detail. Returns page identity, never a URL. Paid
-	// cloud access does not affect admission (apiversion V20261108).
+	// ProofUploadLimitExceeded detail. A server with no proof page storage
+	// answers Unavailable with a ProofHostingNotConfigured detail before it
+	// reserves anything. Returns page identity, never a URL. Paid cloud access
+	// does not affect admission (apiversion V20261108).
 	StartProofUpload(context.Context, *connect.Request[v1.StartProofUploadRequest]) (*connect.Response[v1.StartProofUploadResponse], error)
 	// PutProofObject writes one file of a hosted proof page started with
 	// StartProofUpload. It authenticates the daemon session; a user token is

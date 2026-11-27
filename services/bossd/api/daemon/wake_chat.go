@@ -177,6 +177,8 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			SessionAgentName:       sess.AgentName,
 			SessionModel:           sess.Model,
 			SessionEffectiveEffort: sess.EffectiveEffort,
+			IsUnattended:           session.IsUnattendedSession(sess),
+			LogPath:                bossalog.AgentLogFile(s.agentLogsDir, chat.AgentSessionID),
 		})
 		if err != nil {
 			return nil, err

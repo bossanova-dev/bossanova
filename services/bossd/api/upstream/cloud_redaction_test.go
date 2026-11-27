@@ -137,3 +137,41 @@ func TestCloudRedactionQueuedDeltaAfterRepoRemoval(t *testing.T) {
 		t.Fatal("queued delta leaked content after its repo registration disappeared")
 	}
 }
+
+func TestCloudRedactionStripsProofPageKey_Sessions_AC278601(t *testing.T) {
+	const page = "https://review.example.test/review/owner/repo/42?head=abc"
+	session := &pb.Session{
+		Id: "session", RepoId: "repo", PrNumber: proto.Int32(42),
+		PrProofUrl: page + "#k=secret-page-key",
+		Attention:  &pb.SessionAttention{ProofUrl: page + "#k=secret-page-key"},
+		VerifyPark: &pb.SessionAttention{ProofUrl: page + "#k=secret-page-key"},
+	}
+	original := proto.Clone(session).(*pb.Session)
+	client := newTestClient(StreamStores{Sessions: &fakeSessionReader{sessions: []*pb.Session{session}}})
+	client.targetObjects = &targetFixture{objects: map[targetKey]CommandTargetObject{{"session", "session"}: {RepoID: "repo"}, {"repo", "repo"}: {RepoID: "repo"}}}
+	assertNoKey := func(name string, got *pb.Session) {
+		t.Helper()
+		for _, u := range []string{got.GetPrProofUrl(), got.GetAttention().GetProofUrl(), got.GetVerifyPark().GetProofUrl()} {
+			if u != page {
+				t.Fatalf("%s proof URL = %q, want %q", name, u, page)
+			}
+		}
+	}
+	snapshot, err := client.buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Sessions) != 1 {
+		t.Fatalf("snapshot sessions = %v", snapshot.Sessions)
+	}
+	assertNoKey("snapshot", snapshot.Sessions[0])
+	out := make(chan *pb.DaemonEvent, 1)
+	client.forwardEvent(context.Background(), StreamEvent{Session: &SessionEvent{Kind: pb.SessionDelta_KIND_UPDATED, Session: session}}, out, nil)
+	assertNoKey("delta", (<-out).GetSession().GetSession())
+	result := &pb.ListSessionsResponse{Sessions: []*pb.Session{proto.Clone(session).(*pb.Session)}}
+	client.newCloudRedactor().redactForCloud(context.Background(), result)
+	assertNoKey("result", result.GetSessions()[0])
+	if !proto.Equal(session, original) {
+		t.Fatal("redaction mutated the store-owned session, which local surfaces still open with the key")
+	}
+}

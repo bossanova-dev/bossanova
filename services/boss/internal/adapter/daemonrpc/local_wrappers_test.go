@@ -129,6 +129,15 @@ func (f *fakeDaemonRPC) RepairDoctor(_ context.Context, _ *connect.Request[pb.Re
 	})
 }
 
+func (f *fakeDaemonRPC) ListSetupChecks(_ context.Context, req *connect.Request[pb.ListSetupChecksRequest]) (*connect.Response[pb.ListSetupChecksResponse], error) {
+	return sessionResp(f, func() *pb.ListSetupChecksResponse {
+		return &pb.ListSetupChecksResponse{
+			RepoId: req.Msg.GetRepoId(),
+			Checks: []*pb.SetupCheck{{Id: "daemon-running", Status: pb.SetupCheckStatus_SETUP_CHECK_STATUS_OK}},
+		}
+	})
+}
+
 func (f *fakeDaemonRPC) StartRepairWorkflow(_ context.Context, _ *connect.Request[pb.StartRepairWorkflowRequest]) (*connect.Response[pb.StartRepairWorkflowResponse], error) {
 	return sessionResp(f, func() *pb.StartRepairWorkflowResponse {
 		return &pb.StartRepairWorkflowResponse{AlreadyRunning: false, Detail: "re-armed (was CANCELLED)"}
@@ -291,6 +300,10 @@ func TestLocalClientValueWrappers(t *testing.T) {
 		{"RepairDoctor", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.RepairDoctor(ctx)
 			return err == nil && len(got.GetChecks()) == 1 && got.GetChecks()[0].GetName() == "socket", got == nil, err
+		}},
+		{"ListSetupChecks", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.ListSetupChecks(ctx, &pb.ListSetupChecksRequest{RepoId: "repo-1"})
+			return err == nil && got.GetRepoId() == "repo-1" && len(got.GetChecks()) == 1 && got.GetChecks()[0].GetId() == "daemon-running", got == nil, err
 		}},
 		{"StartRepairWorkflow", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.StartRepairWorkflow(ctx)

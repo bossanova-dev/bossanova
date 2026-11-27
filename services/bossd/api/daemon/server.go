@@ -79,7 +79,9 @@ type Server struct {
 	// asked the chat's live pane for its provider session (time.Time values).
 	providerSessionReadBinds sync.Map
 
-	evidenceBucketOpener      evidenceBucketOpener
+	evidenceBucketOpener evidenceBucketOpener
+	// sealHostedProof seals hosted proof pages under a per-page key.
+	sealHostedProof           bool
 	proofCheckRuns            ProofCheckRuns
 	hostedProofViews          HostedProofViews
 	proofCheckRunSessionToken func() string
@@ -314,6 +316,7 @@ type Server struct {
 	// operatorMergeBudget bounds OperatorMergeSession; the zero value means
 	// defaultOperatorMergeBudget. Tests shrink it.
 	operatorMergeBudget operatorMergeBudget
+	setupProbes         SetupProbes
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
@@ -603,6 +606,7 @@ type Config struct {
 	// ChatAttachments resolves the files a chat reply box uploaded for a
 	// send. Nil refuses every send that names an attachment.
 	ChatAttachments ChatAttachmentResolver
+	SetupProbes     SetupProbes
 }
 
 // AuthNotifier is the narrow interface the NotifyAuthChange RPC
@@ -661,6 +665,7 @@ func New(cfg Config) *Server {
 		notes:                     cfg.Notes,
 		sessionLabels:             cfg.SessionLabels,
 		evidenceBucketOpener:      cfg.EvidenceBucketOpener,
+		sealHostedProof:           hostedProofSealing,
 		proofCheckRuns:            cfg.ProofCheckRuns,
 		hostedProofViews:          cfg.HostedProofViews,
 		proofCheckRunSessionToken: cfg.ProofCheckRunSessionToken,
@@ -734,6 +739,7 @@ func New(cfg Config) *Server {
 
 		endpointNamespaceGate: cfg.EndpointNamespaceGate,
 		chatAttachments:       cfg.ChatAttachments,
+		setupProbes:           cfg.SetupProbes,
 	}
 	if srv.endpointNamespaceGate == nil {
 		srv.endpointNamespaceGate = platformEndpointNamespaceGate
@@ -1024,14 +1030,4 @@ func installedPluginStatus(p plugin.Status) pb.InstalledPlugin_Status {
 	default:
 		return pb.InstalledPlugin_STATUS_LOAD_FAILED
 	}
-}
-
-// isSubdirOf checks if child is the same as or a subdirectory of parent.
-func isSubdirOf(child, parent string) bool {
-	child, parent = filepath.Clean(child), filepath.Clean(parent)
-	if child == parent {
-		return true
-	}
-	parentPrefix := parent + string(filepath.Separator)
-	return len(child) > len(parentPrefix) && child[:len(parentPrefix)] == parentPrefix
 }

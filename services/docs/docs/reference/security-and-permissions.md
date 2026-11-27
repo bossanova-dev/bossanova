@@ -115,9 +115,40 @@ docs](https://docs.anthropic.com/en/docs/claude-code/permissions) for the full
 list of tool gates and how to configure them in
 `~/.claude/settings.json`.
 
-Bossanova's only contribution to per-tool permissions is the
-`dangerously_skip_permissions` toggle below, i.e. the single switch
-that turns the prompts off.
+For attended chats, Bossanova leaves those per-tool prompts untouched
+unless you enable the `dangerously_skip_permissions` toggle below. For
+unattended runs with dangerous mode off, Bossanova applies a scoped
+per-worktree permission policy instead.
+
+## Unattended permission policy
+
+When `dangerously_skip_permissions` (or Codex bypass) is off, unattended
+runs (cron, tmux-unattended, detached, autonomous, and headless runs
+including resumptions and rotations) receive a scoped per-worktree
+permission policy so they run allowed commands and edit inside their
+worktree without stopping for a permission prompt. Attended chats receive
+no unattended policy and continue to follow your own agent settings.
+
+- **Claude Code:** Bossanova writes a mode-0600 `--settings` file outside
+  the worktree (so it still applies to untrusted repositories running with
+  `--setting-sources user`) and passes `--permission-mode acceptEdits`.
+  The file allows `git`, `gh`, `boss`, `node`, `make`, lockfile-detected
+  package managers (`pnpm`, `npm`, `yarn`, `bun`, `go`, `cargo`, `uv`),
+  and (for trusted repositories only) safe first command words from
+  `.boss-skills.json`, plus `Edit` and `Write` anchored inside the
+  worktree. Untrusted repositories never widen the allowlist, and your own
+  user or managed deny rules still win.
+- **Codex:** runs with `--sandbox workspace-write`, network access enabled
+  (`-c sandbox_workspace_write.network_access=true`), and no approval
+  prompts (`--ask-for-approval never` interactively,
+  `-c approval_policy="never"` headless), unless you have configured an
+  explicit Codex sandbox or approval setting.
+- **Antigravity:** passes `--mode auto` unless a mode or bypass is already
+  configured.
+- **OpenCode:** keeps its version-gated `--auto` flag on OpenCode 1.18+.
+  On older or unprobed OpenCode CLIs where `--auto` is unsupported, it
+  retains its pre-existing `--dangerously-skip-permissions` fallback (full
+  bypass).
 
 ## The `dangerously_skip_permissions` toggle
 

@@ -137,6 +137,21 @@ This also shows proof in the checks list when no publisher is configured. A repo
 with `proofDefaults.fallback: "none"` in its trusted base config. The check never gates a merge;
 a failed check publication is reported without changing the note or verdict.
 
+## Trial policy
+
+In a trial session (a verify-only session created with `boss new --pr <n> --verify-only
+--policy-ref <branch>` or MCP `create_session` `policy_ref`), the proof config, sections and media
+come from the trial commit of origin/`<branch>` the run pinned, not the base tree; the publisher
+stays the base tree's. The page header and the PR proof note both say the page was judged with trial
+policy from `<branch>@<sha7>`, and the park reads `needs human: trial-policy · trial policy
+<branch>@<sha7>`. Only the session decides this: a judge file that claims a trial outside one is
+ignored.
+
+`verify-proof-page.mjs render-pr --repo <checkout> --base <ref> --head <ref> --out <dir>` renders a
+local head's page the way the gate judges it: the diff from the merge base, the policy and sections
+from the `--base` tip. `--policy-ref <branch>` reads them from a fetched origin/`<branch>` instead,
+as a trial session does, and the page names the trial.
+
 ## A repo's own proof wins
 
 A repository extension can post a richer proof, with media, for a head. When any comment other than

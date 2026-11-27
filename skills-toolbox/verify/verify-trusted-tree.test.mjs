@@ -188,6 +188,18 @@ test('deps CLI declines absent extensions, missing locks, and mismatched roots w
       .why,
     'root-mismatch',
   )
+  // A trial-policy judge's root is the trial commit's tree, which the base SHA would call a mismatch.
+  writeFileSync(
+    judge,
+    JSON.stringify({
+      trialPolicy: { ref: 'trial', sha: f.baseSha },
+      facts: { trustedRoot: root, base: { sha: 'e'.repeat(40) }, extensionPaths: [] },
+    }),
+  )
+  assert.equal(
+    runCli(['deps', '--judge', judge], { tmpRoot: f.dir, install: () => assert.fail() }).out.deps,
+    'not-needed',
+  )
   const n = fixture(t, null)
   materializeTrustedTree(n.options)
   const noLockRoot = trustedTreePath(n.baseSha, n.dir)

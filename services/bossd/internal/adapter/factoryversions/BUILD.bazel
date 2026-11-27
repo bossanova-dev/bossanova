@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//lib/bossalib/contract/plugin/skillinstall",
         "//lib/bossalib/kit/buildinfo",
+        "//services/bossd/internal/setupcheck",
     ],
 )
 
@@ -15,5 +16,8 @@ go_test(
     name = "factoryversions_test",
     srcs = ["versions_test.go"],
     embed = [":factoryversions"],
-    deps = ["//lib/bossalib/contract/plugin/skillinstall"],
+    deps = [
+        "//lib/bossalib/contract/plugin/skillinstall",
+        "//services/bossd/internal/setupcheck",
+    ],
 )

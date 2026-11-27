@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"slices"
 	"strconv"
@@ -14,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/proofseal"
 )
 
 // publishHosted uploads a whole proof page to bosso's hosted proof host. The
@@ -36,11 +36,18 @@ func (s *Server) publishHosted(ctx context.Context, repo *domain.Repo, msg *pb.U
 	if !ok {
 		return nil, hostedNotConfigured()
 	}
-	manifest := make([]HostedProofEntry, 0, len(files))
-	names := make([]string, 0, len(files))
-	for _, f := range files {
-		manifest = append(manifest, HostedProofEntry{Name: f.name, Size: f.size})
-		names = append(names, f.name)
+	var key []byte
+	if s.sealHostedProof {
+		if key, err = proofseal.NewPageKey(); err != nil {
+			return nil, evidenceFailure(connect.CodeInternal, "seal-failed", "hosted proof page key could not be drawn", err)
+		}
+	}
+	objects := hostedObjects(files, key)
+	manifest := make([]HostedProofEntry, 0, len(objects))
+	names := make([]string, 0, len(objects))
+	for _, o := range objects {
+		manifest = append(manifest, HostedProofEntry{Name: o.name, Size: o.size})
+		names = append(names, o.name)
 	}
 	upload, err := publisher.StartHostedProof(ctx, HostedProofStart{RepoOriginURL: repo.OriginURL, HeadSHA: msg.HeadSha, PR: msg.PrNumber, Manifest: manifest})
 	if err != nil {
@@ -49,21 +56,27 @@ func (s *Server) publishHosted(ctx context.Context, repo *domain.Repo, msg *pb.U
 	// A failed Put leaves an incomplete upload behind. No view link is ever
 	// minted for an incomplete upload; the daemon aborts it so its reservation
 	// is released, and bosso releases any it misses after a grace.
-	for _, f := range hostedPutOrder(files) {
-		body, readErr := io.ReadAll(io.LimitReader(f.file, f.size+1))
-		if readErr != nil || int64(len(body)) != f.size {
-			s.abortHosted(ctx, publisher, upload.UploadID, repo.OriginURL)
-			return nil, evidenceFailure(connect.CodeUnavailable, "object-changed", "evidence object changed while uploading", readErr)
+	for _, o := range hostedPutOrder(objects) {
+		body, putErr := o.body()
+		if putErr == nil {
+			s.logger.Info().Str("upload_id", upload.UploadID).Str("object", o.name).Int64("size_bytes", o.size).Msg("uploading hosted verify evidence")
+			if err := publisher.PutHostedProofObject(ctx, HostedProofPut{UploadID: upload.UploadID, RepoOriginURL: repo.OriginURL, Name: o.name, Body: body}); errors.Is(err, ErrHostedProofServerNotConfigured) {
+				putErr = hostedServerNotConfigured(err)
+			} else if err != nil {
+				putErr = evidenceFailure(connect.CodeUnavailable, "object-upload-failed", "evidence object upload failed", err)
+			}
 		}
-		s.logger.Info().Str("upload_id", upload.UploadID).Str("object", f.name).Int64("size_bytes", f.size).Msg("uploading hosted verify evidence")
-		if err := publisher.PutHostedProofObject(ctx, HostedProofPut{UploadID: upload.UploadID, RepoOriginURL: repo.OriginURL, Name: f.name, Body: body}); err != nil {
+		if putErr != nil {
 			s.abortHosted(ctx, publisher, upload.UploadID, repo.OriginURL)
-			return nil, evidenceFailure(connect.CodeUnavailable, "object-upload-failed", "evidence object upload failed", err)
+			return nil, putErr
 		}
 	}
 	slug := strings.SplitN(prefix, "/", 3)
 	pageURL := fmt.Sprintf("%s/review/%s/%s/%d?head=%s", upload.ReviewOrigin, url.PathEscape(slug[0]), url.PathEscape(slug[1]), msg.PrNumber, msg.HeadSha)
-	return connect.NewResponse(&pb.UploadEvidenceResponse{ObjectKeys: names, PageUrl: pageURL, Destination: pb.EvidenceDestination_EVIDENCE_DESTINATION_HOSTED}), nil
+	if key != nil {
+		pageURL += "#k=" + proofseal.FragmentKey(key)
+	}
+	return connect.NewResponse(&pb.UploadEvidenceResponse{ObjectKeys: names, PageUrl: pageURL, Destination: pb.EvidenceDestination_EVIDENCE_DESTINATION_HOSTED, HostedLimits: hostedProofLimitsProto(upload.Limits)}), nil
 }
 
 // hostedAbortTimeout bounds the best-effort abort after a failed publish.
@@ -85,9 +98,9 @@ func (s *Server) abortHosted(ctx context.Context, publisher hostedProofPublisher
 
 // hostedPutOrder keeps request order but moves index.html last, so a served
 // page never links a file that is not written yet.
-func hostedPutOrder(files []evidenceUploadFile) []evidenceUploadFile {
-	ordered := slices.Clone(files)
-	slices.SortStableFunc(ordered, func(a, b evidenceUploadFile) int {
+func hostedPutOrder(objects []hostedObject) []hostedObject {
+	ordered := slices.Clone(objects)
+	slices.SortStableFunc(ordered, func(a, b hostedObject) int {
 		switch {
 		case a.name == evidencePageName && b.name != evidencePageName:
 			return 1
@@ -104,6 +117,8 @@ func hostedPutOrder(files []evidenceUploadFile) []evidenceUploadFile {
 func hostedStartError(err error) error {
 	var limit *HostedProofLimitError
 	switch {
+	case errors.Is(err, ErrHostedProofServerNotConfigured):
+		return hostedServerNotConfigured(err)
 	case errors.As(err, &limit):
 		switch limit.Limit {
 		case "file-count", "file-bytes", "page-bytes":
@@ -116,6 +131,13 @@ func hostedStartError(err error) error {
 	}
 	// Not signed in, not paying, not opted in, offline or no review origin.
 	return evidenceFailure(connect.CodeFailedPrecondition, "not-configured", "hosted proof is not available", err)
+}
+
+// hostedServerNotConfigured is bosso's answer that it has no proof page
+// storage. Unlike the daemon's own not-configured, an operator must act, so it
+// is Unavailable with its own stage and a message the toolbox can explain.
+func hostedServerNotConfigured(cause error) error {
+	return evidenceFailure(connect.CodeUnavailable, "server-not-configured", ErrHostedProofServerNotConfigured.Error(), cause)
 }
 
 func hostedNotConfigured() error {

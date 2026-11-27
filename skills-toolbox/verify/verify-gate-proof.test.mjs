@@ -633,6 +633,45 @@ test('non-parked verdicts publish by default and keep null pages only under trus
   }
 })
 
+test('a session that cannot say whether it is a trial gets no proof page, bundle or note', async (t) => {
+  for (const unknown of [
+    { 'boss show': { ok: false, exit: 1 } },
+    {
+      'boss show': {
+        ok: true,
+        payload: { session: { is_verify_only: true, policy_ref: 'config/trial' } },
+      },
+      'git ls-remote': { ok: false, exit: 2, output: '' },
+    },
+  ]) {
+    const { head, base, out, w, deps } = await setup(t)
+    const read = w.read
+    deps.read = (command, args, opts) =>
+      unknown[`${command} ${args[0]}`] ?? read(command, args, opts)
+    deps.sessionId = 'sess-1'
+    const run = tempDir('verify-proof-run-', t)
+    const judge = judgeFile(run, { head, base })
+    const parked = await main(post(head, 'human', ['--judge', judge]), deps)
+    assert.equal(parked.posted, true, 'the park still lands')
+    assert.deepEqual(parked.proof, { recorded: false, reason: 'policy-ref-unreadable' })
+    const proofArgs = ['--pr', '7', '--head', head, '--judge', judge, '--repo', 'acme/widgets']
+    assert.deepEqual(await main(['proof', ...proofArgs], deps), {
+      recorded: false,
+      reason: 'policy-ref-unreadable',
+    })
+    assert.deepEqual(await main(['proof-bundle', ...proofArgs, '--out', run], deps), {
+      written: false,
+      reason: 'policy-ref-unreadable',
+    })
+    assert.equal(calls(out).length, 0, 'nothing reached the publisher')
+    assert.equal(
+      w.writes.some((x) => x.body?.includes('boss-proof-note')),
+      false,
+      'no proof note',
+    )
+  }
+})
+
 test('a failing hook leaves the verdict posted and the note with a null page @sessions.AC248604', async (t) => {
   const { head, base, w, deps } = await setup(t, { STUB_FAIL: '1' })
   const judge = judgeFile(tempDir('verify-proof-run-', t), { head, base })

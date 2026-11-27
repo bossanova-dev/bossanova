@@ -946,3 +946,35 @@ func TestRunnerStart_OperatorPassthroughSurvivesSecondFilter(t *testing.T) {
 		t.Errorf("passthrough lost: %v", texts)
 	}
 }
+
+func TestRunnerStartWithOptions_OnExit(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{name: "clean_exit", script: "cat >/dev/null"},
+		{name: "error_exit", script: "cat >/dev/null; exit 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			r := agentruntime.NewRunner(zerolog.Nop(), agentruntime.Options{BuildArgv: argvNoop(), BinaryName: "fake"},
+				agentruntime.WithCommandFactory(fakeCmd(t, tc.script)))
+			var calls atomic.Int32
+			sid, err := r.StartWithOptions(context.Background(), dir, "plan", nil, tc.name, filepath.Join(dir, "agent.log"), nil, nil, agentruntime.StartOptions{
+				OnExit: func() { calls.Add(1) },
+			})
+			if err != nil {
+				t.Fatalf("StartWithOptions: %v", err)
+			}
+			ch, err := r.Subscribe(context.Background(), sid)
+			if err != nil {
+				t.Fatalf("Subscribe: %v", err)
+			}
+			for range ch {
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("OnExit calls = %d, want 1", got)
+			}
+		})
+	}
+}

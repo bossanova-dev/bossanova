@@ -154,6 +154,13 @@
       "signOff": false,
       "restates": false
     },
+    "trial-policy": {
+      "decidingPriority": true,
+      "plain": "verify judged this commit with an operator's trial policy, so its result can never merge",
+      "category": "trial policy",
+      "signOff": false,
+      "restates": false
+    },
     "verify-post-failed": {
       "decidingPriority": false,
       "plain": "verify could not record its verdict on this commit",
@@ -197,6 +204,7 @@
     "human-merge",
     "verify-post-failed",
     "ci-absent",
+    "trial-policy",
     "human-review:database",
     "human-review:security",
     "human-review:ui",

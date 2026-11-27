@@ -733,3 +733,140 @@ test('--inventory lists what the page carries, from the model its HTML is render
   for (const id of listed.sections) assert.ok(sectionIds(html).includes(id), `the page has #${id}`)
   for (const item of listed.items) assert.ok(html.includes(item.split(' ').at(-1)), item)
 })
+
+/**
+ * A repo whose `main` gained a `rollout` proof section after `feature` branched off it, and an
+ * origin branch `trial` (from `main`) that adds a `canary` section: what a gate judging `feature`
+ * into `main` sees, and what a trial verify session on `trial` sees.
+ * @param {{after: (fn: () => void) => void}} t
+ */
+function sectionsAfterMergeBase(t) {
+  const dir = scratch(t)
+  const repo = join(dir, 'repo')
+  const git = (args) => {
+    const out = spawnSync(
+      'git',
+      ['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+      {
+        cwd: repo,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: '/dev/null',
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_AUTHOR_NAME: 'Fixture',
+          GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+          GIT_COMMITTER_NAME: 'Fixture',
+          GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
+        },
+      },
+    )
+    assert.equal(out.status, 0, out.stderr)
+    return out.stdout.trim()
+  }
+  const write = (file, text) => {
+    mkdirSync(dirname(join(repo, file)), { recursive: true })
+    writeFileSync(join(repo, file), text)
+  }
+  const commit = (message) => {
+    git(['add', '--all'])
+    git(['commit', '--quiet', '-m', message])
+  }
+  const section = (id) =>
+    write(
+      `.claude/skills/boss-verify-${id}/SKILL.md`,
+      [
+        '---',
+        `name: boss-verify-${id}`,
+        'x-boss-extension:',
+        '  extends: boss-verify',
+        '  role: proof-section',
+        '  sections:',
+        `    - id: ${id}`,
+        `      title: ${id}`,
+        '---',
+        '',
+      ].join('\n'),
+    )
+  mkdirSync(repo)
+  git(['init', '--quiet', '--initial-branch=main'])
+  write('.boss-skills.json', '{}\n')
+  write('billing/rates.txt', 'basic 10\n')
+  commit('start')
+  git(['checkout', '--quiet', '-b', 'feature'])
+  write('billing/rates.txt', 'basic 12\n')
+  commit('raise the basic rate')
+  git(['checkout', '--quiet', 'main'])
+  section('rollout')
+  commit('declare the rollout section')
+  git(['checkout', '--quiet', '-b', 'trial'])
+  section('canary')
+  commit('trial the canary section')
+  const trial = git(['rev-parse', 'HEAD'])
+  git(['update-ref', 'refs/remotes/origin/trial', trial])
+  git(['checkout', '--quiet', 'main'])
+  // The author fills both sections; the page carries only those its policy tree declares.
+  const spec = join(dir, 'spec.json')
+  const fill = (id) => ({
+    id,
+    parts: [{ kind: 'checklist', items: [{ id: `${id}-1`, text: `Check the ${id}.` }] }],
+  })
+  writeFileSync(
+    spec,
+    JSON.stringify({
+      schema: 'proof-spec/1',
+      head: git(['rev-parse', 'feature']),
+      sections: [fill('rollout'), fill('canary')],
+    }),
+  )
+  return { dir, repo, trial, spec }
+}
+
+test('render-pr carries the sections the base tip declares after the merge base, diffing from the merge base', (t) => {
+  const { dir, repo, spec } = sectionsAfterMergeBase(t)
+  const inventory = join(dir, 'inv.json')
+  const rendered = renderPr({
+    cwd: repo,
+    spec,
+    base: 'main',
+    head: 'feature',
+    out: join(dir, 'page'),
+    inventory,
+  })
+  const sections = readInventoryFile(inventory).sections
+  assert.ok(sections.includes('sec-rollout'), JSON.stringify(sections))
+  assert.ok(!sections.includes('sec-canary'), JSON.stringify(sections))
+  const mergeBase = spawnSync('git', ['merge-base', 'main', 'feature'], {
+    cwd: repo,
+    encoding: 'utf8',
+  })
+  assert.equal(rendered.base, mergeBase.stdout.trim(), 'the diff still runs from the merge base')
+})
+
+test('render-pr --policy-ref reads policy and sections from origin/<ref> and says the page used trial policy', (t) => {
+  const { dir, repo, trial, spec } = sectionsAfterMergeBase(t)
+  const inventory = join(dir, 'inv.json')
+  const out = join(scratch(t), 'page')
+  const args = ['--repo', repo, '--base', 'main', '--head', 'feature', '--spec', spec, '--out', out]
+  const ran = run([...args, '--policy-ref', 'trial', '--inventory', inventory])
+  assert.equal(ran.status, 0, ran.stderr)
+  const sections = readInventoryFile(inventory).sections
+  assert.ok(
+    sections.includes('sec-canary') && sections.includes('sec-rollout'),
+    JSON.stringify(sections),
+  )
+  const html = readFileSync(join(out, 'index.html'), 'utf8')
+  assert.ok(html.includes(`Judged with trial policy from <code>trial@${trial.slice(0, 7)}</code>.`))
+
+  // A ref that is not an origin branch, or one given alongside --extensions, writes nothing.
+  for (const extra of [
+    ['--policy-ref', 'main'],
+    ['--policy-ref', '-x'],
+    ['--policy-ref', 'trial', '--extensions', repo],
+  ]) {
+    const failed = run([...args.slice(0, -1), join(dir, 'refused'), ...extra])
+    assert.equal(failed.status, 2, failed.stderr)
+    assert.ok(/--policy-ref/.test(failed.stderr), failed.stderr)
+  }
+  assert.equal(existsSync(join(dir, 'refused')), false)
+})

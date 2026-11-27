@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -376,6 +377,63 @@ func TestPluginRunner_StartWithHeadlessLaunchOptionsForwardsProjectTrust(t *test
 			t.Fatalf("StartAgentRunRequest.project_trust = %v, want %v", got, want)
 		}
 	}
+}
+
+func TestHeadlessRunsForwardPolicy_PluginRunner(t *testing.T) {
+	want := &bossanovav1.UnattendedPermissionPolicy{
+		WorktreePath:           "/tmp/worktree/bos-2678",
+		AllowedCommandPrefixes: []string{"git", "gh", "boss", "node", "make", "go"},
+		IsNetworkAllowed:       true,
+	}
+
+	t.Run("PluginRunner forwards non-nil and nil policy", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			policy *bossanovav1.UnattendedPermissionPolicy
+		}{
+			{name: "with policy", policy: want},
+			{name: "nil policy", policy: nil},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
+				pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+				if _, err := pr.StartWithHeadlessLaunchOptions(context.Background(), "/work", "plan", nil, "", "", "", nil, HeadlessLaunchOptions{
+					BossSessionID:              "boss-session",
+					UnattendedPermissionPolicy: tc.policy,
+				}); err != nil {
+					t.Fatalf("StartWithHeadlessLaunchOptions: %v", err)
+				}
+				_ = pr.Stop("sid")
+				got := fc.startReq.Load().GetUnattendedPermissionPolicy()
+				if tc.policy == nil {
+					if got != nil {
+						t.Fatalf("UnattendedPermissionPolicy = %+v, want nil", got)
+					}
+					return
+				}
+				if got == nil || got.GetWorktreePath() != tc.policy.GetWorktreePath() || got.GetIsNetworkAllowed() != tc.policy.GetIsNetworkAllowed() || !slices.Equal(got.GetAllowedCommandPrefixes(), tc.policy.GetAllowedCommandPrefixes()) {
+					t.Fatalf("UnattendedPermissionPolicy = %+v, want %+v", got, tc.policy)
+				}
+			})
+		}
+	})
+
+	t.Run("Dispatcher forwards policy through StartByAgentWithHeadlessLaunchOptions", func(t *testing.T) {
+		fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
+		pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+		d := NewDispatcher(map[string]Runner{"claude": pr}, func(string) (string, error) { return "claude", nil }, "claude", zerolog.Nop())
+		if _, err := d.StartByAgentWithHeadlessLaunchOptions(context.Background(), "claude", "/work", "plan", nil, "", "", "", nil, HeadlessLaunchOptions{
+			BossSessionID:              "boss-session",
+			UnattendedPermissionPolicy: want,
+		}); err != nil {
+			t.Fatalf("StartByAgentWithHeadlessLaunchOptions: %v", err)
+		}
+		_ = pr.Stop("sid")
+		got := fc.startReq.Load().GetUnattendedPermissionPolicy()
+		if got == nil || got.GetWorktreePath() != want.GetWorktreePath() || !got.GetIsNetworkAllowed() || !slices.Equal(got.GetAllowedCommandPrefixes(), want.GetAllowedCommandPrefixes()) {
+			t.Fatalf("UnattendedPermissionPolicy = %+v, want %+v", got, want)
+		}
+	})
 }
 
 func TestPluginRunner_StopRecordsTelemetryFromLog(t *testing.T) {

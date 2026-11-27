@@ -377,16 +377,17 @@ func TestMutatingTools(t *testing.T) {
 				"base_branch": "develop", "branch_name": "feat/x", "force_branch": true,
 				"quick_chat": true, "pr_number": 42, "detach": true, "model": "claude-opus-4-8", "effort": "high",
 				"tracker_id": "BOS-1", "tracker_url": "https://linear.app/x", "tracker_source": "linear",
-				"defer_pr": true,
+				"defer_pr": true, "policy_ref": "config/trial",
 			},
 			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*CreateSessionResult, error) {
 				if req.GetBaseBranch() != "develop" || req.GetBranchName() != "feat/x" || !req.GetForceBranch() ||
 					!req.GetIsQuickChat() || req.GetPrNumber() != 42 || req.GetTrackerId() != "BOS-1" ||
 					req.GetTrackerUrl() != "https://linear.app/x" || req.GetTrackerSource() != "linear" ||
-					!req.GetDetach() || req.GetModel() != "claude-opus-4-8" || req.GetEffort() != "high" || !req.GetDeferPr() {
+					!req.GetDetach() || req.GetModel() != "claude-opus-4-8" || req.GetEffort() != "high" || !req.GetDeferPr() ||
+					!req.GetIsVerifyOnly() || req.GetPolicyRef() != "config/trial" {
 					t.Errorf("create_session full field set not forwarded: %+v", req)
 				}
-				return &CreateSessionResult{Session: &pb.Session{Id: "sess-cs-full"}}, nil
+				return &CreateSessionResult{Session: &pb.Session{Id: "sess-cs-full", IsVerifyOnly: true, PolicyRef: "config/trial"}}, nil
 			}},
 			sentinel: "sess-cs-full",
 		},

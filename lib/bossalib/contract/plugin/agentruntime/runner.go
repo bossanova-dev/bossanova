@@ -120,6 +120,7 @@ type process struct {
 	subs      *subscribers
 	logFile   *os.File
 	logPath   string        // for PostExit log-tail reads
+	onExit    func()        // optional per-run cleanup invoked before done closes
 	done      chan struct{} // closed when process exits
 	exitErr   error
 
@@ -198,6 +199,9 @@ func defaultBinName(s string) string {
 // StartOptions carries typed per-run launch policy.
 type StartOptions struct {
 	ShouldTrustProjectConfig bool
+	// OnExit, when non-nil, runs once after cmd.Wait returns (clean or error)
+	// and before done closes. Not called if StartWithOptions fails before start.
+	OnExit func()
 }
 
 // Start spawns an agent CLI process. The argv is constructed by the
@@ -295,8 +299,10 @@ func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, res
 		return "", fmt.Errorf("agentruntime: BuildArgv is required")
 	}
 	shouldTrustProjectConfig := false
+	var onExit func()
 	if len(launchOptions) > 0 {
 		shouldTrustProjectConfig = launchOptions[0].ShouldTrustProjectConfig
+		onExit = launchOptions[0].OnExit
 	}
 	argv := r.buildArgv(BuildArgvInput{
 		ShouldTrustProjectConfig: shouldTrustProjectConfig,
@@ -368,6 +374,7 @@ func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, res
 		subs:      newSubscribers(),
 		logFile:   logFile,
 		logPath:   logPath,
+		onExit:    onExit,
 		done:      make(chan struct{}),
 	}
 	if r.sessionIDFromOutput != nil {
@@ -463,6 +470,7 @@ func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, res
 			writeRunnerEntry(p.logFile, "[runner] exited cleanly")
 		}
 		_ = p.logFile.Close()
+		p.runOnExit()
 		p.subs.close()
 		close(p.done)
 
@@ -516,6 +524,12 @@ func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, res
 	}
 
 	return sessionID, nil
+}
+
+func (p *process) runOnExit() {
+	if p.onExit != nil {
+		p.onExit()
+	}
 }
 
 func (p *process) snapshotEarlyOutput() []byte {

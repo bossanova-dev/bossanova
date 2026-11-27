@@ -8,6 +8,8 @@ import (
 	"time"
 
 	v1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // guard-id: agent-runner-conformance
@@ -144,6 +146,24 @@ func (*missingStatusRunner) ProbeRateLimit(context.Context, *v1.ProbeRateLimitRe
 	return &v1.ProbeRateLimitResponse{}, nil
 }
 
+type rejectPolicyRunner struct{ referenceRunner }
+
+func (*rejectPolicyRunner) BuildInteractiveCommand(_ context.Context, req *v1.BuildInteractiveCommandRequest) (*v1.BuildInteractiveCommandResponse, error) {
+	if req.GetUnattendedPermissionPolicy() != nil {
+		return nil, status.Error(codes.InvalidArgument, "policy unsupported")
+	}
+	return &v1.BuildInteractiveCommandResponse{Argv: []string{"reference-agent"}}, nil
+}
+
+type emptyPolicyArgvRunner struct{ referenceRunner }
+
+func (*emptyPolicyArgvRunner) BuildInteractiveCommand(_ context.Context, req *v1.BuildInteractiveCommandRequest) (*v1.BuildInteractiveCommandResponse, error) {
+	if req.GetUnattendedPermissionPolicy() != nil {
+		return &v1.BuildInteractiveCommandResponse{}, nil
+	}
+	return &v1.BuildInteractiveCommandResponse{Argv: []string{"reference-agent"}}, nil
+}
+
 func testEnv(t *testing.T) Env {
 	t.Helper()
 	return Env{WorkDir: t.TempDir(), LogPath: filepath.Join(t.TempDir(), "agent.log"), UnknownSessionID: "never-started"}
@@ -167,6 +187,8 @@ func TestCheckFailsOnSeededViolations(t *testing.T) {
 		{name: "blank non-default model id", server: &blankModelIDRunner{}, method: "ListModels"},
 		{name: "plans keys for a question nobody asked", server: &staleAnswerRunner{}, method: "PlanQuestionAnswer"},
 		{name: "falsely declared models unsupported", server: &referenceRunner{}, unsupported: []string{v1.AgentRunnerService_ListModels_FullMethodName}, method: "ListModels"},
+		{name: "rejects unattended permission policy", server: &rejectPolicyRunner{}, method: "BuildInteractiveCommand"},
+		{name: "empty argv with unattended permission policy", server: &emptyPolicyArgvRunner{}, method: "BuildInteractiveCommand"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

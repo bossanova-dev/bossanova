@@ -5,6 +5,7 @@ package main
 
 import (
 	"os"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -31,6 +32,10 @@ func main() {
 			Str("payload", pluginSkillPayloadRecord().String()).
 			Str("reason", result.Decision.Reason).
 			Msg("held boss skill refresh: this plugin's embedded payload is not provably newer than the installed one; run `boss skills install` to replace it explicitly")
+	}
+
+	if n := sweepDefaultPolicySettingsDir(time.Now()); n > 0 {
+		logger.Info().Int("removed", n).Msg("removed stale claude policy settings files")
 	}
 
 	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, newAgentRunnerPlugin(logger, runnerOptsFromEnv()...))

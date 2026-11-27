@@ -131,6 +131,7 @@ go_test(
         "session_list_rank_migration_test.go",
         "session_list_rank_move_test.go",
         "session_list_rank_test.go",
+        "session_policy_ref_test.go",
         "session_pr_identity_migration_test.go",
         "session_pr_identity_test.go",
         "session_pr_readied_test.go",

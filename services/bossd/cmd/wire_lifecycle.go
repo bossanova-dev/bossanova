@@ -56,9 +56,12 @@ func (w *daemonWiring) wireLifecycle() {
 	// can pass a deterministic log path to BuildInteractiveCommand. Without
 	// this, the extracted method would fail-closed with FailedPrecondition.
 	w.lifecycle.SetAgentLogsDir(w.agentLogsDir)
-	// A bossd that crashed mid-start can leave a first-input file behind.
+	// A bossd that crashed mid-start can leave a first-input or policy file behind.
 	if n := w.lifecycle.SweepStaleInitialInputFiles(time.Now()); n > 0 {
 		log.Info().Int("removed", n).Msg("removed stale initial input files")
+	}
+	if n := w.lifecycle.SweepStalePolicySettingsFiles(time.Now()); n > 0 {
+		log.Info().Int("removed", n).Msg("removed stale claude policy settings files")
 	}
 	w.lifecycle.SetAgentRunStore(w.agentRuns)
 	w.lifecycle.SetChatStatus(w.chatStatusTracker)

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { readBranchContext } from './verify-branch-context.mjs'
+import { readBranchContext, reviewAppUrl } from './verify-branch-context.mjs'
 import { gitFixture } from './verify-git-fixture.mjs'
 
 const REPO = 'acme/widgets'
@@ -45,7 +45,8 @@ function forge(t) {
     const out = spawnSync(command, args, { cwd: fx.dir, input, encoding: 'utf8' })
     return { ok: out.status === 0, output: out.stdout }
   }
-  const context = (/** @type {number} */ pr) => readBranchContext({ read, repo: REPO, pr })
+  const context = (/** @type {number} */ pr, /** @type {string | null} */ appUrl = null) =>
+    readBranchContext({ read, repo: REPO, pr, appUrl })
   return { ...fx, commit, open, context }
 }
 
@@ -196,4 +197,39 @@ test('an unreadable default branch or PR gives no context rather than a guess', 
     undefined,
     'a forge that cannot be read',
   )
+})
+
+test('with a review app, each parent also links to the app route for its PR', (t) => {
+  const f = forge(t)
+  f.commit('root')
+  f.git('checkout', '-q', '-b', 'feature-a')
+  f.commit('a1')
+  f.open(20, 'feature-a')
+  f.git('checkout', '-q', '-b', 'feature-b')
+  f.commit('b1')
+  f.open(21, 'feature-b', 'feature-a')
+  assert.deepEqual(
+    f.context(21, 'https://review.example')?.stackedOn.map((p) => [p.pr, p.url, p.appUrl]),
+    [[20, url(20), `https://review.example/review/${REPO}/20`]],
+  )
+  assert.equal(f.context(21)?.stackedOn[0].appUrl, undefined)
+})
+
+test('the review app comes from BOSS_REVIEW_APP_URL as an https origin, or there is none', () => {
+  assert.equal(
+    reviewAppUrl({ BOSS_REVIEW_APP_URL: 'https://review.example/' }),
+    'https://review.example',
+  )
+  assert.equal(
+    reviewAppUrl({ BOSS_REVIEW_APP_URL: 'https://review.example/x?y' }),
+    'https://review.example',
+  )
+  for (const value of [
+    undefined,
+    '',
+    'http://review.example',
+    'review.example',
+    'https://u:p@review.example',
+  ])
+    assert.equal(reviewAppUrl({ BOSS_REVIEW_APP_URL: value }), null, String(value))
 })

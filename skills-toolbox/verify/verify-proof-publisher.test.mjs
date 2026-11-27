@@ -8,6 +8,7 @@ import { recordHeadProof, uploadProofPage } from './verify-proof-publish.mjs'
 import {
   discoverProofPublisher,
   fallbackNotice,
+  hostedPageLimits,
   isSetupFailure,
   setupFailure,
 } from './verify-proof-publisher.mjs'
@@ -537,4 +538,44 @@ test('only a hook or Access PUT setup failure is a fallback reason @sessions.AC2
     ),
     'access-put: host unreachable (TypeError: fetch failed (ENOTFOUND)); Bossanova hosting did not take the page either (quota-exhausted).',
   )
+})
+
+test('hostedPageLimits reads the daemon cache as page limits, and none on any failure @sessions.AC278401', async () => {
+  const calls = []
+  const read = (answer) =>
+    hostedPageLimits({
+      workspacePath: '/repo',
+      env: { BOSS_SOCKET: '/s' },
+      callDaemon: async (socket, method, message, options) => {
+        calls.push({ socket, method, message, options })
+        if (answer instanceof Error) throw answer
+        return answer
+      },
+    })
+  assert.deepEqual(
+    await read({
+      limits: { maxFileCount: 64, maxFileBytes: '52428800', maxPageBytes: '209715200' },
+    }),
+    [
+      { kind: 'file-count', max: 64 },
+      { kind: 'file-bytes', max: 52428800 },
+      { kind: 'page-bytes', max: 209715200 },
+    ],
+  )
+  assert.deepEqual(calls[0], {
+    socket: '/s',
+    method: 'GetHostedProofLimits',
+    message: { workspacePath: '/repo' },
+    options: { timeoutMs: 5000 },
+  })
+  assert.deepEqual(
+    await read({ limits: { maxFileCount: 0, maxFileBytes: '-1', maxPageBytes: '12abc' } }),
+    [],
+  )
+  assert.deepEqual(await read({ limits: { maxPageBytes: '4096' } }), [
+    { kind: 'page-bytes', max: 4096 },
+  ])
+  assert.deepEqual(await read({}), [])
+  assert.deepEqual(await read(null), [])
+  assert.deepEqual(await read(new Error('GetHostedProofLimits → HTTP 404')), [])
 })

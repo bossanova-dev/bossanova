@@ -18,9 +18,9 @@ import (
 )
 
 // newCreateSessionOutput shapes create_session's result from the drained
-// create. verifyOnly is what the caller asked for; the result reports the
-// session's own is_verify_only, which differs on the attach path.
-func newCreateSessionOutput(out *CreateSessionResult, verifyOnly bool) (createSessionOutput, error) {
+// create. verifyOnly and policyRef are what the caller asked for; the result
+// reports the session's own is_verify_only, which differs on the attach path.
+func newCreateSessionOutput(out *CreateSessionResult, verifyOnly bool, policyRef string) (createSessionOutput, error) {
 	// BOS-498: report loudly whether THIS create actually started an agent.
 	// headless/tmux create a chat synchronously (a non-empty
 	// agent_session_id); an idle session (attended or prompt-less) does not.
@@ -42,6 +42,13 @@ func newCreateSessionOutput(out *CreateSessionResult, verifyOnly bool) (createSe
 	// to prevent.
 	if verifyOnly && !out.AttachedExisting && !payload.IsVerifyOnly {
 		return createSessionOutput{}, fmt.Errorf("create_session created session %s (agent_session_id %q) but it is NOT verify-only: the daemon or hosted orchestrator on this path ignored verify_only, so automatic repair can push to the PR. Stop it with stop_session, or upgrade and retry", out.Session.GetId(), out.Session.GetAgentSessionId())
+	}
+	// A daemon that predates trial policy refs drops policy_ref and returns an
+	// ordinary verify-only session, which judges under the base policy and may
+	// merge. A current daemon refuses an attach whose session judges with
+	// another ref, so a mismatch on either path means the ref was dropped.
+	if policyRef != "" && out.Session.GetPolicyRef() != policyRef {
+		return createSessionOutput{}, fmt.Errorf("create_session returned session %s (agent_session_id %q) without policy_ref %q: the daemon on this path predates trial policy refs, so the session verifies under the base policy and may merge the PR. Archive it with archive_session, then upgrade bossd and retry", out.Session.GetId(), out.Session.GetAgentSessionId(), policyRef)
 	}
 	if out.AttachedExisting {
 		// The daemon deduped: an active session already owned the target
@@ -221,7 +228,9 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			TrackerId:     args.TrackerID,
 			TrackerUrl:    args.TrackerURL,
 			TrackerSource: args.TrackerSource,
-			IsVerifyOnly:  args.VerifyOnly,
+			// A trial policy ref only exists on a verify-only session.
+			IsVerifyOnly: args.VerifyOnly || args.PolicyRef != "",
+			PolicyRef:    args.PolicyRef,
 		}
 		if args.Agent != "" {
 			req.AgentName = &args.Agent
@@ -242,7 +251,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		payload, err := newCreateSessionOutput(out, args.VerifyOnly)
+		payload, err := newCreateSessionOutput(out, args.VerifyOnly || args.PolicyRef != "", args.PolicyRef)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}

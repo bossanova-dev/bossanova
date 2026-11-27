@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Proof page</title>
+    <script src="proof-shim.js" defer></script>
+  </head>
+  <body>
+    <p data-proof-state="opening" hidden>Opening the proof page…</p>
+    <main data-proof-state="missing-key" hidden>
+      <h1>This link is missing its key</h1>
+      <p>
+        A proof page is encrypted, and its key is the part of the link after the #. Open the page
+        from the full link in its pull request.
+      </p>
+    </main>
+    <main data-proof-state="unavailable" hidden>
+      <h1>This proof page could not be opened</h1>
+      <p>Reload the page to try again.</p>
+    </main>
+    <noscript>This proof page is encrypted and needs JavaScript to open.</noscript>
+  </body>
+</html>

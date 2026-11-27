@@ -204,6 +204,20 @@ function prView(overrides = {}) {
 }
 
 const receipt = () => ({ context: 'boss/build', state: 'success', updated_at: iso(60_000) })
+const retryWait = (msAgo) => ({
+  context: 'boss/verify',
+  state: 'pending',
+  description: 'waiting: extension-retry',
+  updated_at: iso(msAgo),
+})
+// Two reruns already spent on the head: a malfunction now is its last attempt, so it parks.
+const rerunsSpent = () => [receipt(), retryWait(30_000), retryWait(20_000)]
+const parkStatusOf = (description) => ({
+  context: 'boss/verify',
+  state: 'success',
+  description,
+  updated_at: iso(40_000),
+})
 
 // The approval-anchor GraphQL payload: the PR's reviews plus its commit and force-push timeline.
 const ANCHOR = 'e'.repeat(40)
@@ -642,6 +656,7 @@ test('VERIFY_DESCRIPTIONS is frozen and carries the BOS-1382 prefixes', () => {
     'human-merge',
     'verify-post-failed',
     'ci-absent',
+    'trial-policy',
     'human-review:database',
     'human-review:security',
     'human-review:ui',
@@ -1687,7 +1702,7 @@ test('judge maps every extension malfunction to human extension-failed with a no
       ['missing result', null],
     ]) {
       const file = jsonFile(dir, 'r.json', entry ? [entry] : [])
-      const w = world()
+      const w = world({ statuses: rerunsSpent() })
       const r = await judge(
         { pr: 7, repo: REPO, extensionResults: file },
         deps(w, { discover: () => ({ extensions: [EXT] }) }),
@@ -1707,6 +1722,47 @@ test('judge maps every extension malfunction to human extension-failed with a no
       deps(world(), { discover: () => ({ extensions: [EXT] }) }),
     )
     assert.equal(r.reason, 'extension-failed')
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('judge: a timed-out or crashed extension waits to rerun until its head spends its reruns', async () => {
+  const dir = tmp()
+  try {
+    const discover = () => ({ extensions: [EXT] })
+    const run = (entry, statuses) =>
+      judge(
+        { pr: 7, repo: REPO, extensionResults: jsonFile(dir, 'r.json', [entry]) },
+        deps(world({ statuses }), { discover }),
+      )
+    const timedOut = { extension: EXT.name, timedOut: true }
+    const crashed = { extension: EXT.name, crashed: true }
+    for (const [label, entry, statuses] of [
+      ['first timeout', timedOut, [receipt()]],
+      ['crash after one rerun', crashed, [receipt(), retryWait(20_000)]],
+    ]) {
+      const r = await run(entry, statuses)
+      assert.deepEqual([r.verdict, r.reason], ['wait', 'extension-retry'], label)
+      assert.deepEqual(
+        r.notes.map((n) => n.trigger),
+        ['extension-failed'],
+        label,
+      )
+    }
+    // The third malfunction on a head parks for a person; an earlier park counts as a run.
+    for (const statuses of [
+      rerunsSpent(),
+      [receipt(), parkStatusOf('needs human: extension-failed'), retryWait(20_000)],
+    ]) {
+      const parked = await run(timedOut, statuses)
+      assert.deepEqual([parked.verdict, parked.reason], ['human', 'extension-failed'])
+    }
+    // A malformed result says the same thing on a rerun, so it parks at once.
+    const malformed = await run({ extension: EXT.name, result: { ok: true, verdict: 'maybe' } }, [
+      receipt(),
+    ])
+    assert.deepEqual([malformed.verdict, malformed.reason], ['human', 'extension-failed'])
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
@@ -2015,7 +2071,7 @@ test('judge: a malfunctioning judge with malfunctionReason parks it beside exten
     ])
     const parked = await judge(
       { pr: 7, repo: REPO, extensionResults: file },
-      deps(world(), { discover }),
+      deps(world({ statuses: rerunsSpent() }), { discover }),
     )
     assert.equal(parked.verdict, 'human')
     assert.equal(parked.reason, 'extension-failed,human-review:security')
@@ -2315,7 +2371,9 @@ test('judge: a malfunction parks with the path codes and extension reasons in on
     const crashed = jsonFile(dir, 'c.json', [{ extension: EXT.name, crashed: true }])
     const r1 = await judge(
       { pr: 7, repo: REPO, extensionResults: crashed },
-      deps(world({ diff: ['web/a.tsx'], baseConfig }), { discover: () => ({ extensions: [EXT] }) }),
+      deps(world({ diff: ['web/a.tsx'], baseConfig, statuses: rerunsSpent() }), {
+        discover: () => ({ extensions: [EXT] }),
+      }),
     )
     assert.equal(r1.verdict, 'human')
     assert.equal(r1.reason, 'extension-failed,human-review:ui')
@@ -2331,7 +2389,9 @@ test('judge: a malfunction parks with the path codes and extension reasons in on
     ])
     const r2 = await judge(
       { pr: 7, repo: REPO, extensionResults: mixed },
-      deps(world({ diff: ['web/a.tsx'], baseConfig }), { discover: discoverBoth }),
+      deps(world({ diff: ['web/a.tsx'], baseConfig, statuses: rerunsSpent() }), {
+        discover: discoverBoth,
+      }),
     )
     assert.equal(r2.reason, 'extension-failed,human-review:security,human-review:ui')
 
@@ -2979,6 +3039,48 @@ test('post claim posts a verifying status, reads it back and wins', async () => 
     { state: 'pending', description: 'verifying… feedf00d', target: undefined },
   ])
   assert.equal(w.notes().length, 0)
+})
+
+// A trial never posts a failure, so one on the head is base policy's. A trial park over it would turn
+// the required check green on a head base policy rejected.
+test('a trial session neither claims nor parks a head base policy failed; an ordinary run still claims it', async () => {
+  const failed = () =>
+    world({
+      statuses: [
+        { context: 'boss/verify', state: 'failure', description: 'defect: 2 finding(s)' },
+        receipt(),
+      ],
+    })
+  const w = failed()
+  const d = deps(w, { sessionId: 'sess-trial', runDir: null })
+  const read = d.read
+  d.read = (command, args, ...rest) => {
+    if (command === 'boss' && args[0] === 'show') {
+      const payload = { session: { is_verify_only: true, policy_ref: 'config/trial' } }
+      return { ok: true, exit: 0, payload, output: JSON.stringify(payload) }
+    }
+    if (command === 'git' && args[0] === 'ls-remote')
+      return { ok: true, exit: 0, output: `${'1'.repeat(40)}\trefs/heads/config/trial\n` }
+    return read(command, args, ...rest)
+  }
+  const trial = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, d)
+  assert.deepEqual([trial.won, trial.reason], [false, 'base-failure-standing'])
+  // The judge turns every trial verdict into a park, which the skill posts without a claim.
+  const park = { pr: 7, head: HEAD, verdict: 'human', reason: 'human-merge', repo: REPO }
+  const parked = await post(park, d)
+  assert.deepEqual([parked.posted, parked.reason], [false, 'base-failure-standing'])
+  assert.equal(w.mutating().length, 0)
+  // A session that cannot say whether it is a trial never claims, or the guard above could not run.
+  const unknown = failed()
+  const u = deps(unknown, { sessionId: 'sess-trial', runDir: null })
+  const plainRead = u.read
+  u.read = (command, args, ...rest) =>
+    command === 'boss' ? { ok: false, exit: 1, output: '' } : plainRead(command, args, ...rest)
+  const blind = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, u)
+  assert.deepEqual([blind.won, blind.reason], [false, 'policy-ref-unreadable'])
+  assert.equal(unknown.mutating().length, 0)
+  const plain = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, deps(failed()))
+  assert.equal(plain.won, true)
 })
 
 test('post claim loses to a later token, and a lost claim abandons the terminal post', async () => {
@@ -6683,6 +6785,11 @@ test('approve refuses with no park, a superseded park, an older-head park or an 
       world({ statuses: parkedHuman('partial-build,human-review:ux') }),
       'park-codes-unknown',
     ],
+    [
+      'a trial-policy run raised the park, so base policy never judged the head',
+      world({ statuses: parkedHuman('human-merge,trial-policy') }),
+      'trial-park',
+    ],
   ]
   for (const [name, w, reason] of cases) {
     const adapter = fakeAdapter()
@@ -6691,6 +6798,7 @@ test('approve refuses with no park, a superseded park, an older-head park or an 
     assert.equal(r.reason, reason, name)
     assert.equal(r.headSha, HEAD, name)
     assert.deepEqual(adapter.writeCalls(), [], `${name}: no tracker write`)
+    assert.deepEqual(w.mutating(), [], `${name}: no PR write`)
   }
 })
 
@@ -8254,6 +8362,7 @@ function sweepWorld(opts = {}) {
         statuses: w.statuses[w.pr.headRefOid],
         rollup: w.pr.statusCheckRollup,
         mergeStateStatus: w.pr.mergeStateStatus,
+        ...(opts.baseTip ? { baseTip: opts.baseTip } : {}),
       })
       return openPrsPage(args, [node])
     }
@@ -8330,6 +8439,1046 @@ test('a new head under a needs-human label an older head left is judged, and its
   const passed = await post({ pr: 7, head: j.headSha, verdict: 'pass', repo: REPO }, d)
   assert.deepEqual([passed.posted, passed.staleLabel], [true, { outcome: 'ok' }])
   assert.deepEqual(adapter.writeCalls(), [{ issueId: 'BOS-1', removeLabels: ['needs-human'] }])
+})
+
+test('an unmarked extension-failed park is re-judged once to rerun its extensions until its head spends its reruns', async () => {
+  const discover = () => ({ extensions: [EXT] })
+  const parkedWorld = (statuses) =>
+    sweepWorld({
+      // The claim beneath the park is the run whose extensions malfunctioned.
+      statuses: [parkStatus('needs human: extension-failed'), claimStatus(2000), ...statuses],
+    })
+  const fresh = parkedWorld([receipt()])
+  const d = sweepDeps(fresh, { discover })
+  const found = await candidates({ repo: REPO }, d)
+  assert.deepEqual(
+    found.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'unrecorded']],
+  )
+  const rerun = await judged(fresh, d)
+  assert.deepEqual([rerun.verdict, rerun.held], ['extensions-required', undefined])
+
+  const spent = parkedWorld([retryWait(30_000), retryWait(20_000), receipt()])
+  const spentDeps = sweepDeps(spent, { discover })
+  const held = await judged(spent, spentDeps)
+  assert.deepEqual([held.verdict, held.reason, held.held], ['human', 'extension-failed', true])
+  // Recorded under the current policy, the spent park is no longer a candidate.
+  spent.comments.push(operatorComment(policyMarker(HEAD, held.policyFingerprint)))
+  const skipped = await candidates({ repo: REPO }, spentDeps)
+  assert.deepEqual(skipped.candidates, [])
+  assert.deepEqual(spent.mutating(), [])
+})
+
+test('waiting: extension-retry over a standing extension-failed park keeps reruns and approvals live under needs-human', async () => {
+  const discover = () => ({ extensions: [EXT] })
+  const retryStatuses = [
+    retryWait(10_000),
+    claimStatus(15_000),
+    parkStatusOf('needs human: extension-failed'),
+    claimStatus(50_000),
+    receipt(),
+  ]
+  const w = sweepWorld({ statuses: retryStatuses })
+  const d = sweepDeps(w, { discover })
+  const found = await candidates({ repo: REPO }, d)
+  assert.deepEqual(
+    found.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'extension-retry']],
+  )
+  const beforeClaim = await judged(w, d)
+  assert.deepEqual([beforeClaim.verdict, beforeClaim.held], ['extensions-required', undefined])
+
+  // Once a live claim sits over the retry wait, judge still runs the extensions.
+  const claimed = sweepWorld({ statuses: [claimStatus(5_000), ...retryStatuses] })
+  const underClaim = await judged(claimed, sweepDeps(claimed, { discover }))
+  assert.deepEqual([underClaim.verdict, underClaim.held], ['extensions-required', undefined])
+
+  // A GitHub PR approval arriving during the retry wait reaches approval() instead of skipping needs-human.
+  const approved = sweepWorld({
+    statuses: retryStatuses,
+    pr: prView({ reviewDecision: 'APPROVED' }),
+  })
+  const approvedFound = await candidates({ repo: REPO }, sweepDeps(approved, { discover }))
+  assert.deepEqual(
+    approvedFound.candidates.map((c) => [c.pr, c.approval, c.waive]),
+    [[7, 'policy-park-approved', 'extension-failed']],
+  )
+})
+
+test('claim withdrawals over an extension-failed park or extension-retry wait do not consume extension reruns', async () => {
+  const discover = () => ({ extensions: [EXT] })
+  // Case 1: failed dispatch over [waiting: extension-retry, verifying…, needs human: extension-failed]
+  const retryWorld = sweepWorld({
+    statuses: [
+      retryWait(10_000),
+      claimStatus(15_000),
+      parkStatusOf('needs human: extension-failed'),
+      claimStatus(50_000),
+      receipt(),
+    ],
+  })
+  const retryDeps = sweepDeps(retryWorld, { discover })
+  const retryClaim = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, retryDeps)
+  assert.equal(retryClaim.won, true)
+  const retryRelease = await post(
+    { pr: 7, head: HEAD, verdict: 'claim', release: true, token: retryClaim.token, repo: REPO },
+    retryDeps,
+  )
+  assert.equal(retryRelease.released, true)
+  assert.equal(retryWorld.statuses[HEAD][0].description, 'waiting: dispatch-unknown')
+  const retryFound = await candidates({ repo: REPO }, retryDeps)
+  assert.deepEqual(
+    retryFound.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'extension-retry']],
+  )
+  const retryJudged = await judged(retryWorld, retryDeps)
+  assert.deepEqual([retryJudged.verdict, retryJudged.held], ['extensions-required', undefined])
+
+  // A GitHub PR approval arriving after a claim withdrawal over the retry wait still reaches approval().
+  const retryApproved = sweepWorld({
+    statuses: retryWorld.statuses[HEAD],
+    pr: prView({ reviewDecision: 'APPROVED' }),
+  })
+  const retryApprovedFound = await candidates(
+    { repo: REPO },
+    sweepDeps(retryApproved, { discover }),
+  )
+  assert.deepEqual(
+    retryApprovedFound.candidates.map((c) => [c.pr, c.approval, c.waive]),
+    [[7, 'policy-park-approved', 'extension-failed']],
+  )
+
+  // Case 2: repeated failed dispatches over an unrecorded extension-failed park never exhaust its reruns.
+  const parkWorld = sweepWorld({
+    statuses: [parkStatusOf('needs human: extension-failed'), claimStatus(50_000), receipt()],
+  })
+  const parkDeps = sweepDeps(parkWorld, { discover })
+  for (let i = 0; i < 3; i++) {
+    const claimed = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, parkDeps)
+    assert.equal(claimed.won, true)
+    const released = await post(
+      { pr: 7, head: HEAD, verdict: 'claim', release: true, token: claimed.token, repo: REPO },
+      parkDeps,
+    )
+    assert.equal(released.released, true)
+    assert.equal(parkWorld.statuses[HEAD][0].description, 'waiting: dispatch-unknown')
+  }
+  const parkFound = await candidates({ repo: REPO }, parkDeps)
+  assert.deepEqual(
+    parkFound.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'unrecorded']],
+  )
+  const parkJudged = await judged(parkWorld, parkDeps)
+  assert.deepEqual([parkJudged.verdict, parkJudged.held], ['extensions-required', undefined])
+})
+
+test('ordinary waits over an extension-failed park on a needs-human ticket preserve retry eligibility', async () => {
+  const discover = () => ({ extensions: [EXT] })
+
+  // Case 1: unrecorded older extension-failed park on a needs-human ticket sitting under waiting: stack-busy.
+  const unrecordedWorld = sweepWorld({
+    statuses: [
+      {
+        context: 'boss/verify',
+        state: 'pending',
+        description: 'waiting: stack-busy',
+        updated_at: iso(5_000),
+      },
+      claimStatus(15_000),
+      parkStatusOf('needs human: extension-failed'),
+      claimStatus(50_000),
+      receipt(),
+    ],
+  })
+  const unrecordedDeps = sweepDeps(unrecordedWorld, { discover })
+  const unrecordedFound = await candidates({ repo: REPO }, unrecordedDeps)
+  assert.deepEqual(
+    unrecordedFound.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'unrecorded']],
+  )
+  const unrecordedJudged = await judged(unrecordedWorld, unrecordedDeps)
+  assert.deepEqual(
+    [unrecordedJudged.verdict, unrecordedJudged.held],
+    ['extensions-required', undefined],
+  )
+
+  // Case 2: recorded extension-failed park with active waiting: extension-retry beneath waiting: stack-busy.
+  const fp = (
+    await judged(sweepWorld({ statuses: [receipt()] }), sweepDeps(sweepWorld(), { discover }))
+  ).policyFingerprint
+  const retryBusyWorld = sweepWorld({
+    statuses: [
+      {
+        context: 'boss/verify',
+        state: 'pending',
+        description: 'waiting: stack-busy',
+        updated_at: iso(5_000),
+      },
+      claimStatus(8_000),
+      retryWait(10_000),
+      claimStatus(15_000),
+      parkStatusOf('needs human: extension-failed'),
+      claimStatus(50_000),
+      receipt(),
+    ],
+    comments: [operatorComment(policyMarker(HEAD, fp))],
+  })
+  const retryBusyDeps = sweepDeps(retryBusyWorld, { discover })
+  const retryBusyFound = await candidates({ repo: REPO }, retryBusyDeps)
+  assert.deepEqual(
+    retryBusyFound.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'extension-retry']],
+  )
+  const retryBusyJudged = await judged(retryBusyWorld, retryBusyDeps)
+  assert.deepEqual(
+    [retryBusyJudged.verdict, retryBusyJudged.held],
+    ['extensions-required', undefined],
+  )
+
+  // Case 3: an operator send-back still holds the needs-human ticket.
+  const sentBackWorld = sweepWorld({
+    statuses: retryBusyWorld.statuses[HEAD],
+    comments: [operatorComment(policyMarker(HEAD, fp)), operatorComment(sendBackMarker(HEAD))],
+  })
+  const sentBackFound = await candidates({ repo: REPO }, sweepDeps(sentBackWorld, { discover }))
+  assert.deepEqual(sentBackFound.candidates, [])
+  assert.deepEqual(
+    sentBackFound.skipped.map((x) => [x.pr, x.reason]),
+    [[7, 'needs-human']],
+  )
+})
+
+test('claim-release and retry waits over a recorded standing park re-judge to restore the park status', async () => {
+  const discover = () => ({ extensions: [EXT] })
+  const fp = (
+    await judged(sweepWorld({ statuses: [receipt()] }), sweepDeps(sweepWorld(), { discover }))
+  ).policyFingerprint
+
+  for (const [label, waitDesc, parkDesc, expectedReason, prOverrides] of [
+    [
+      'claim withdrawal over recorded extension-failed park',
+      'waiting: dispatch-unknown',
+      'needs human: extension-failed',
+      'extension-failed',
+      {},
+    ],
+    [
+      'extension-retry wait over recorded non-extension-failed park',
+      'waiting: extension-retry',
+      'needs human: partial-build',
+      'partial-build',
+      { body: PARTIAL_BODY },
+    ],
+    [
+      'claim-expired wait over recorded standing park',
+      'waiting: claim-expired',
+      'needs human: partial-build',
+      'partial-build',
+      { body: PARTIAL_BODY },
+    ],
+  ]) {
+    const w = sweepWorld({
+      pr: prView(prOverrides),
+      statuses: [
+        { context: 'boss/verify', state: 'pending', description: waitDesc, updated_at: iso(5_000) },
+        claimStatus(10_000),
+        parkStatusOf(parkDesc),
+        claimStatus(50_000),
+        receipt(),
+      ],
+      comments: [operatorComment(policyMarker(HEAD, fp))],
+    })
+    const d = sweepDeps(w, { discover })
+    const found = await candidates({ repo: REPO }, d)
+    assert.deepEqual(
+      found.candidates.map((c) => [c.pr, c.rejudge]),
+      [[7, 'restore-park']],
+      label,
+    )
+    const held = await judged(w, d)
+    assert.deepEqual([held.verdict, held.reason, held.held], ['human', expectedReason, true], label)
+    const posted = await parkPost(held, d)
+    assert.equal(posted.posted, true, label)
+    assert.equal(w.statuses[HEAD][0].state, 'success', label)
+    assert.equal(w.statuses[HEAD][0].description, parkDesc, label)
+
+    const next = await candidates({ repo: REPO }, d)
+    assert.deepEqual(next.candidates, [], `${label}: settles after restore`)
+    assert.deepEqual(
+      next.skipped.map((x) => [x.pr, x.reason]),
+      [[7, 'parked']],
+      `${label}: skipped as parked after restore`,
+    )
+  }
+})
+
+test('re-posting an extension-failed park via restore-park or prior re-posts does not consume extension attempts', async () => {
+  const dir = tmp()
+  try {
+    const discover = () => ({ extensions: [EXT] })
+    const timedOut = jsonFile(dir, 'timed-out.json', [{ extension: EXT.name, timedOut: true }])
+    const baseConfigV1 = UI_POLICY
+    const baseConfigV2 = policyText({ humanReview: { security: [] } })
+    const fpV1 = (
+      await judged(
+        sweepWorld({ statuses: [receipt()], baseConfig: baseConfigV1 }),
+        sweepDeps(sweepWorld({ baseConfig: baseConfigV1 }), { discover }),
+      )
+    ).policyFingerprint
+
+    // Path 1: repeated restore-park cycles over a recorded extension-failed park never spend
+    // EXTENSION_ATTEMPTS, so a later policy change still reruns and preserves its retry budget.
+    const w = sweepWorld({
+      baseConfig: baseConfigV1,
+      statuses: [
+        parkStatus('needs human: extension-failed', 60_000),
+        claimStatus(70_000),
+        receipt(),
+      ],
+      comments: [operatorComment(policyMarker(HEAD, fpV1))],
+    })
+    const d1 = sweepDeps(w, { discover })
+    for (const [waitDesc, age] of [
+      ['waiting: dispatch-unknown', 40_000],
+      ['waiting: claim-expired', 30_000],
+      ['waiting: extension-retry · stack-busy', 20_000],
+    ]) {
+      w.statuses[HEAD].unshift(
+        { context: 'boss/verify', state: 'pending', description: waitDesc, updated_at: iso(age) },
+        claimStatus(age + 2_000),
+      )
+      const found = await candidates({ repo: REPO }, d1)
+      assert.deepEqual(
+        found.candidates.map((c) => [c.pr, c.rejudge]),
+        [[7, 'restore-park']],
+        waitDesc,
+      )
+      const held = await judged(w, d1)
+      assert.deepEqual([held.verdict, held.reason, held.held], ['human', 'extension-failed', true])
+      const posted = await parkPost(held, d1)
+      assert.equal(posted.posted, true, waitDesc)
+      w.statuses[HEAD][0].updated_at = iso(age - 1_000)
+    }
+    // Four extension-failed park entries now sit in history, all from one malfunction episode.
+    assert.equal(
+      w.statuses[HEAD].filter((s) => s.description === 'needs human: extension-failed').length,
+      4,
+    )
+    // When base policy changes, the single episode still reruns and a transient failure waits.
+    w.baseConfig = baseConfigV2
+    const d2 = sweepDeps(w, { discover })
+    const afterPolicy = await candidates({ repo: REPO }, d2)
+    assert.deepEqual(
+      afterPolicy.candidates.map((c) => [c.pr, c.rejudge]),
+      [[7, 'policy-changed']],
+    )
+    const rerun = await judged(w, d2)
+    assert.deepEqual([rerun.verdict, rerun.held], ['extensions-required', undefined])
+    const retryAfterRestore = await judge({ pr: 7, repo: REPO, extensionResults: timedOut }, d2)
+    assert.deepEqual(
+      [retryAfterRestore.verdict, retryAfterRestore.reason],
+      ['wait', 'extension-retry'],
+    )
+
+    // Path 2: legacy pending->success park upgrade and pre-change claim withdrawals that
+    // re-posted needs human: extension-failed still count as one malfunction on PARK_HOLD_REVISION
+    // rerun, leaving two reruns before exhaustion.
+    const legacy = sweepWorld({
+      statuses: [
+        parkStatus('needs human: extension-failed', 10_000),
+        claimStatus(15_000),
+        parkStatus('needs human: extension-failed', 20_000),
+        claimStatus(25_000),
+        parkStatus('needs human: extension-failed', 30_000),
+        {
+          context: 'boss/verify',
+          state: 'pending',
+          description: 'needs human: extension-failed',
+          updated_at: iso(40_000),
+        },
+        claimStatus(50_000),
+        receipt(),
+      ],
+    })
+    const legacyDeps = sweepDeps(legacy, { discover })
+    const legacyFound = await candidates({ repo: REPO }, legacyDeps)
+    assert.deepEqual(
+      legacyFound.candidates.map((c) => [c.pr, c.rejudge]),
+      [[7, 'unrecorded']],
+    )
+    const legacyJudged = await judged(legacy, legacyDeps)
+    assert.deepEqual([legacyJudged.verdict, legacyJudged.held], ['extensions-required', undefined])
+    const legacyRetry = await judge({ pr: 7, repo: REPO, extensionResults: timedOut }, legacyDeps)
+    assert.deepEqual([legacyRetry.verdict, legacyRetry.reason], ['wait', 'extension-retry'])
+
+    // After an intervening waiting: extension-retry, a second retry + final park spends all 3.
+    const exhausted = sweepWorld({
+      statuses: [
+        parkStatus('needs human: extension-failed', 5_000),
+        claimStatus(7_000),
+        retryWait(10_000),
+        claimStatus(15_000),
+        ...legacy.statuses[HEAD],
+      ],
+    })
+    const exhaustedJudged = await judged(exhausted, sweepDeps(exhausted, { discover }))
+    assert.deepEqual(
+      [exhaustedJudged.verdict, exhaustedJudged.reason, exhaustedJudged.held],
+      ['human', 'extension-failed', true],
+    )
+
+    // A non-extension-failed verdict between two extension-failed parks starts a new episode.
+    const resetEpisode = sweepWorld({
+      statuses: [
+        parkStatus('needs human: extension-failed', 10_000),
+        claimStatus(15_000),
+        {
+          context: 'boss/verify',
+          state: 'failure',
+          description: 'defect: 1 finding(s)',
+          updated_at: iso(25_000),
+        },
+        parkStatus('needs human: extension-failed', 40_000),
+        claimStatus(50_000),
+        receipt(),
+      ],
+    })
+    const thirdMalfunction = await judge(
+      { pr: 7, repo: REPO, extensionResults: timedOut },
+      sweepDeps(resetEpisode, { discover }),
+    )
+    assert.deepEqual(
+      [thirdMalfunction.verdict, thirdMalfunction.reason],
+      ['human', 'extension-failed'],
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('tickFingerprint includes baseTip for heads sitting under replacesPark statuses (waits, cannot-assess, and claims)', () => {
+  for (const [state, description, ageMs] of [
+    ['pending', 'waiting: extension-retry', 5_000],
+    ['pending', 'waiting: claim-unconfirmed', 5_000],
+    ['pending', 'waiting: dispatch-unknown', 5_000],
+    ['pending', 'waiting: claim-expired', 5_000],
+    ['pending', 'waiting: stack-busy', 5_000],
+    ['pending', 'verifying… stale-run', CLAIM_STALE_AFTER_MS + 60_000],
+    ['pending', 'verifying… live-run', 5_000],
+    ['error', 'cannot assess: pr-unreadable', 5_000],
+  ]) {
+    const mk = (baseTip) =>
+      tickFingerprint(
+        fpInput({
+          tickets: [fpTicket(3)],
+          rows: fpRows([
+            openPrsNode(fpPr(3, { baseRefName: 'release' }), {
+              statuses: verifyStatus(state, description, ageMs),
+              rollup: green,
+              baseTip,
+            }),
+          ]),
+        }),
+      )
+    assert.notEqual(mk(MERGED_SHA), mk(OTHER), `${state}: ${description}`)
+  }
+})
+
+test('stale claim over a recorded extension-failed park on a needs-human ticket invalidates quietFingerprint when baseTip moves', async () => {
+  const discover = () => ({ extensions: [EXT] })
+  const baseConfigV1 = UI_POLICY
+  const baseConfigV2 = policyText({ humanReview: { security: [] } })
+  const fpV1 = (
+    await judged(
+      sweepWorld({ statuses: [receipt()], baseConfig: baseConfigV1 }),
+      sweepDeps(sweepWorld({ baseConfig: baseConfigV1 }), { discover }),
+    )
+  ).policyFingerprint
+  const staleStatuses = [
+    claimStatus(CLAIM_STALE_AFTER_MS + 60_000),
+    parkStatus('needs human: extension-failed', CLAIM_STALE_AFTER_MS + 120_000),
+    claimStatus(CLAIM_STALE_AFTER_MS + 180_000),
+    receipt(),
+  ]
+  const w1 = sweepWorld({
+    statuses: staleStatuses,
+    comments: [operatorComment(policyMarker(HEAD, fpV1))],
+    baseConfig: baseConfigV1,
+  })
+  const first = await candidates({ repo: REPO }, sweepDeps(w1, { discover }))
+  assert.deepEqual(first.candidates, [])
+  assert.deepEqual(
+    first.skipped.map((s) => [s.pr, s.reason]),
+    [[7, 'needs-human']],
+  )
+  assert.equal(first.skippable, true)
+  assert.equal(first.wakeAt, undefined)
+
+  const quiet = await candidates(
+    { repo: REPO, quietFingerprint: first.fingerprint },
+    sweepDeps(
+      sweepWorld({
+        statuses: staleStatuses,
+        comments: [operatorComment(policyMarker(HEAD, fpV1))],
+        baseConfig: baseConfigV1,
+      }),
+      { discover },
+    ),
+  )
+  assert.equal(quiet.unchanged, true)
+
+  const movedWorld = sweepWorld({
+    statuses: staleStatuses,
+    comments: [operatorComment(policyMarker(HEAD, fpV1))],
+    baseConfig: baseConfigV2,
+    baseTip: OTHER,
+  })
+  const moved = await candidates(
+    { repo: REPO, quietFingerprint: first.fingerprint },
+    sweepDeps(movedWorld, { discover }),
+  )
+  assert.equal(moved.unchanged, undefined)
+  assert.deepEqual(
+    moved.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'policy-changed']],
+  )
+})
+
+test('candidates admit off-selection PRs sitting on extension-retry and claim-release waits', async () => {
+  const discover = () => ({ extensions: [EXT] })
+  const baseConfig = UI_POLICY
+  const fp = (
+    await judged(
+      sweepWorld({ statuses: [receipt()], baseConfig }),
+      sweepDeps(sweepWorld({ baseConfig }), { discover }),
+    )
+  ).policyFingerprint
+
+  const prs = [1, 2, 3, 4, 5].map((n) => ({
+    number: n,
+    url: `https://github.com/o/r/pull/${n}`,
+    body: n === 4 ? `${ticketBody(`BOS-${n}`)}\n${PARTIAL_BODY}` : ticketBody(`BOS-${n}`),
+    headRefOid: SHA_OF(n),
+    isDraft: false,
+  }))
+  const w = candidateWorld({
+    tickets: [],
+    prs,
+    labels: {
+      'BOS-1': ['bug'],
+      'BOS-2': ['needs-human'],
+      'BOS-3': ['needs-human'],
+      'BOS-4': ['bug'],
+      'BOS-5': ['needs-human'],
+    },
+    statuses: {
+      // Off-selection PR with first transient extension malfunction (no standing park beneath).
+      [SHA_OF(1)]: verifyNodes(['pending', 'waiting: extension-retry', 5_000]),
+      // Off-selection needs-human PR with extension-retry over standing extension-failed park.
+      [SHA_OF(2)]: verifyNodes(
+        ['pending', 'waiting: extension-retry', 5_000],
+        ['pending', 'needs human: extension-failed', 20_000],
+      ),
+      // Off-selection needs-human PR with extension-retry over standing park, approved by human.
+      [SHA_OF(3)]: verifyNodes(
+        ['pending', 'waiting: extension-retry', 5_000],
+        ['pending', 'needs human: extension-failed', 20_000],
+      ),
+      // Off-selection PR with extension-retry over recorded non-extension-failed park -> restore-park.
+      [SHA_OF(4)]: verifyNodes(
+        ['pending', 'waiting: extension-retry', 5_000],
+        ['pending', 'needs human: partial-build', 20_000],
+      ),
+      // Off-selection needs-human PR with withdrawn claim over unrecorded extension-failed park.
+      [SHA_OF(5)]: verifyNodes(
+        ['pending', 'waiting: dispatch-unknown', 5_000],
+        ['pending', 'needs human: extension-failed', 20_000],
+      ),
+    },
+    reviews: { 3: 'APPROVED' },
+    comments: {
+      4: [operatorComment(policyMarker(SHA_OF(4), fp))],
+    },
+  })
+  const baseRead = w.read
+  w.read = (command, args, opts) => {
+    if (command === 'gh' && args[0] === 'api' && args[1] === `repos/${REPO}/commits/main`) {
+      const payload = { sha: BASE }
+      return { ok: true, payload, output: JSON.stringify(payload), exit: 0 }
+    }
+    if (command === 'gh' && args[0] === 'api' && args[1]?.includes('/contents/.boss-skills.json')) {
+      const payload = {
+        type: 'file',
+        encoding: 'base64',
+        content: Buffer.from(baseConfig).toString('base64'),
+      }
+      return { ok: true, payload, output: JSON.stringify(payload), exit: 0 }
+    }
+    return baseRead(command, args, opts)
+  }
+  const result = await candidates(
+    { repo: REPO },
+    deps(w, { discover, adapter: w.adapter, loadConfig: () => candidateConfig() }),
+  )
+  assert.deepEqual(
+    result.candidates.map((c) => [c.pr, c.approval ?? null, c.rejudge ?? null]),
+    [
+      [1, null, null],
+      [2, null, 'extension-retry'],
+      [3, 'policy-park-approved', null],
+      [4, null, 'restore-park'],
+      [5, null, 'unrecorded'],
+    ],
+  )
+  for (const n of [1, 2, 3, 4, 5])
+    assert.deepEqual(
+      result.admission.find(({ pr }) => pr === n),
+      {
+        pr: n,
+        head: SHA_OF(n),
+        state: 'admitted',
+        reason: 'judged',
+      },
+    )
+})
+
+test('ordinary waits during extension-retry or extension-failed reruns preserve off-selection admission and retry budget', async () => {
+  const dir = tmp()
+  try {
+    const discover = () => ({ extensions: [EXT] })
+    const baseConfig = UI_POLICY
+    const fp = (
+      await judged(
+        sweepWorld({ statuses: [receipt()], baseConfig }),
+        sweepDeps(sweepWorld({ baseConfig }), { discover }),
+      )
+    ).policyFingerprint
+
+    // 1. postWait prefixes ordinary waits over an active extension-retry or extension-failed park,
+    // without touching claim-release waits or ordinary non-extension-failed parks.
+    const stackBusyFile = jsonFile(dir, 'stack-busy.json', [
+      { extension: EXT.name, result: { ...waitResult('stack-busy'), extension: EXT.name } },
+    ])
+    const timedOutFile = jsonFile(dir, 'timed-out.json', [{ extension: EXT.name, timedOut: true }])
+
+    const retryWorld = sweepWorld({
+      statuses: [retryWait(10_000), claimStatus(20_000), receipt()],
+      baseConfig,
+    })
+    const retryDeps = sweepDeps(retryWorld, { discover })
+    const claimed = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, retryDeps)
+    assert.equal(claimed.won, true)
+    const busyVerdict = await judge(
+      { pr: 7, repo: REPO, extensionResults: stackBusyFile },
+      retryDeps,
+    )
+    assert.deepEqual([busyVerdict.verdict, busyVerdict.reason], ['wait', 'stack-busy'])
+    const postedBusy = await post(
+      {
+        pr: 7,
+        head: HEAD,
+        verdict: 'wait',
+        reason: busyVerdict.reason,
+        token: claimed.token,
+        repo: REPO,
+      },
+      retryDeps,
+    )
+    assert.equal(postedBusy.posted, true)
+    assert.equal(retryWorld.statuses[HEAD][0].description, 'waiting: extension-retry · stack-busy')
+    // Re-posting the same wait without a new claim is a no-op and never downgrades to plain waiting.
+    const repost = await post(
+      { pr: 7, head: HEAD, verdict: 'wait', reason: 'stack-busy', repo: REPO },
+      retryDeps,
+    )
+    assert.equal(repost.skipped, 'already-posted')
+    assert.equal(retryWorld.statuses[HEAD][0].description, 'waiting: extension-retry · stack-busy')
+    // The stack-busy wait did not consume retry budget: a second transient malfunction still waits.
+    const claimed2 = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, retryDeps)
+    assert.equal(claimed2.won, true)
+    const secondMalfunction = await judge(
+      { pr: 7, repo: REPO, extensionResults: timedOutFile },
+      retryDeps,
+    )
+    assert.deepEqual(
+      [secondMalfunction.verdict, secondMalfunction.reason],
+      ['wait', 'extension-retry'],
+    )
+
+    // Unrecorded extension-failed park: postWait also tags ordinary waits, while claim-expired stays exact.
+    const parkWorld = sweepWorld({
+      statuses: [parkStatusOf('needs human: extension-failed'), claimStatus(50_000), receipt()],
+      baseConfig,
+    })
+    const parkDeps = sweepDeps(parkWorld, { discover })
+    const parkClaim = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, parkDeps)
+    assert.equal(parkClaim.won, true)
+    const parkBusy = await post(
+      {
+        pr: 7,
+        head: HEAD,
+        verdict: 'wait',
+        reason: 'stack-busy',
+        token: parkClaim.token,
+        repo: REPO,
+      },
+      parkDeps,
+    )
+    assert.equal(parkBusy.posted, true)
+    assert.equal(parkWorld.statuses[HEAD][0].description, 'waiting: extension-retry · stack-busy')
+    const parkExpired = await post(
+      { pr: 7, head: HEAD, verdict: 'wait', reason: 'claim-expired', repo: REPO },
+      parkDeps,
+    )
+    assert.equal(parkExpired.posted, true)
+    assert.equal(parkWorld.statuses[HEAD][0].description, 'waiting: claim-expired')
+
+    // Non-extension-failed park (partial-build) keeps plain waiting: stack-busy.
+    const partialWorld = sweepWorld({
+      statuses: [claimStatus(5_000), parkStatusOf('needs human: partial-build'), receipt()],
+      baseConfig,
+    })
+    const partialBusy = await post(
+      { pr: 7, head: HEAD, verdict: 'wait', reason: 'stack-busy', token: 't0k3n', repo: REPO },
+      sweepDeps(partialWorld, { discover }),
+    )
+    assert.equal(partialBusy.posted, true)
+    assert.equal(partialWorld.statuses[HEAD][0].description, 'waiting: stack-busy')
+
+    // 2. Subsequent candidates() scans admit off-selection PRs carrying the tagged ordinary wait
+    // across fallback: 'gate' for both ticket-not-selected and ticket-needs-person tickets.
+    const prs = [1, 2, 3, 4, 5].map((n) => ({
+      number: n,
+      url: `https://github.com/o/r/pull/${n}`,
+      body: ticketBody(`BOS-${n}`),
+      headRefOid: SHA_OF(n),
+      isDraft: false,
+    }))
+    const w = candidateWorld({
+      tickets: [],
+      prs,
+      labels: {
+        'BOS-1': ['bug'],
+        'BOS-2': ['needs-human'],
+        'BOS-3': ['needs-human'],
+        'BOS-4': ['needs-human'],
+        'BOS-5': ['needs-human'],
+      },
+      statuses: {
+        // Off-selection PR (ticket-not-selected) on follow-up wait after first transient malfunction.
+        [SHA_OF(1)]: verifyNodes(
+          ['pending', 'waiting: extension-retry · stack-busy', 2_000],
+          ['pending', 'verifying… t2', 4_000],
+          ['pending', 'waiting: extension-retry', 10_000],
+        ),
+        // Off-selection needs-human PR on follow-up wait over recorded extension-failed + active retry.
+        [SHA_OF(2)]: verifyNodes(
+          ['pending', 'waiting: extension-retry · stack-busy', 2_000],
+          ['pending', 'verifying… t2', 4_000],
+          ['pending', 'waiting: extension-retry', 10_000],
+          ['pending', 'needs human: extension-failed', 20_000],
+        ),
+        // Off-selection needs-human PR on follow-up wait over unrecorded extension-failed park.
+        [SHA_OF(3)]: verifyNodes(
+          ['pending', 'waiting: extension-retry · stack-busy', 2_000],
+          ['pending', 'verifying… t2', 4_000],
+          ['pending', 'needs human: extension-failed', 20_000],
+        ),
+        // Off-selection needs-human PR on follow-up wait over recorded extension-failed park, approved.
+        [SHA_OF(4)]: verifyNodes(
+          ['pending', 'waiting: extension-retry · stack-busy', 2_000],
+          ['pending', 'verifying… t2', 4_000],
+          ['pending', 'needs human: extension-failed', 20_000],
+        ),
+        // Off-selection needs-human PR on follow-up wait over recorded extension-failed park with no
+        // active extension-retry and no approval -> restore-park (never falsely reruns as extension-retry).
+        [SHA_OF(5)]: verifyNodes(
+          ['pending', 'waiting: extension-retry · stack-busy', 2_000],
+          ['pending', 'verifying… t2', 4_000],
+          ['pending', 'needs human: extension-failed', 20_000],
+        ),
+      },
+      reviews: { 4: 'APPROVED' },
+      comments: {
+        2: [operatorComment(policyMarker(SHA_OF(2), fp))],
+        4: [operatorComment(policyMarker(SHA_OF(4), fp))],
+        5: [operatorComment(policyMarker(SHA_OF(5), fp))],
+      },
+    })
+    const baseRead = w.read
+    w.read = (command, args, opts) => {
+      if (command === 'gh' && args[0] === 'api' && args[1] === `repos/${REPO}/commits/main`) {
+        const payload = { sha: BASE }
+        return { ok: true, payload, output: JSON.stringify(payload), exit: 0 }
+      }
+      if (
+        command === 'gh' &&
+        args[0] === 'api' &&
+        args[1]?.includes('/contents/.boss-skills.json')
+      ) {
+        const payload = {
+          type: 'file',
+          encoding: 'base64',
+          content: Buffer.from(baseConfig).toString('base64'),
+        }
+        return { ok: true, payload, output: JSON.stringify(payload), exit: 0 }
+      }
+      return baseRead(command, args, opts)
+    }
+    const result = await candidates(
+      { repo: REPO },
+      deps(w, { discover, adapter: w.adapter, loadConfig: () => candidateConfig() }),
+    )
+    assert.deepEqual(
+      result.candidates.map((c) => [c.pr, c.approval ?? null, c.rejudge ?? null]),
+      [
+        [1, null, null],
+        [2, null, 'extension-retry'],
+        [3, null, 'unrecorded'],
+        [4, 'policy-park-approved', null],
+        [5, null, 'restore-park'],
+      ],
+    )
+    for (const n of [1, 2, 3, 4, 5])
+      assert.deepEqual(
+        result.admission.find(({ pr }) => pr === n),
+        {
+          pr: n,
+          head: SHA_OF(n),
+          state: 'admitted',
+          reason: 'judged',
+        },
+      )
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('off-selection claim-release waits and cannot-assess holds require a standing park or active extension-retry', async () => {
+  const prs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => ({
+    number: n,
+    url: `https://github.com/o/r/pull/${n}`,
+    body: ticketBody(`BOS-${n}`),
+    headRefOid: SHA_OF(n),
+    isDraft: false,
+  }))
+  const w = candidateWorld({
+    tickets: [],
+    prs,
+    labels: {
+      'BOS-1': ['bug'],
+      'BOS-2': ['bug'],
+      'BOS-3': ['bug'],
+      'BOS-4': ['bug'],
+      'BOS-5': ['needs-human'],
+      'BOS-6': ['needs-human'],
+      'BOS-7': ['bug'],
+      'BOS-8': ['needs-human'],
+      'BOS-9': ['needs-human'],
+      'BOS-10': ['bug'],
+    },
+    statuses: {
+      // Unparked off-selection PRs with claim-release waits, cannot-assess, or unbacked follow-up wait.
+      [SHA_OF(1)]: verifyNodes(['pending', 'waiting: claim-unconfirmed', 5_000]),
+      [SHA_OF(2)]: verifyNodes(['pending', 'waiting: dispatch-unknown', 5_000]),
+      [SHA_OF(3)]: verifyNodes(['pending', 'waiting: claim-expired', 5_000]),
+      [SHA_OF(4)]: verifyNodes(['error', 'cannot assess: pr-unreadable', 5_000]),
+      [SHA_OF(5)]: verifyNodes(['pending', 'waiting: dispatch-unknown', 5_000]),
+      [SHA_OF(6)]: verifyNodes(['error', 'cannot assess: pr-unreadable', 5_000]),
+      [SHA_OF(7)]: verifyNodes(['pending', 'waiting: extension-retry · stack-busy', 5_000]),
+      // Standing park beneath cannot-assess (unapproved): admitted as judged, held as parked.
+      [SHA_OF(8)]: verifyNodes(
+        ['error', 'cannot assess: pr-unreadable', 5_000],
+        ['pending', 'needs human: partial-build', 20_000],
+      ),
+      // Standing park beneath cannot-assess (approved): admitted as judged and emitted with approval.
+      [SHA_OF(9)]: verifyNodes(
+        ['error', 'cannot assess: pr-unreadable', 5_000],
+        ['pending', 'needs human: partial-build', 20_000],
+      ),
+      // Active extension-retry beneath claim-release wait: still admitted as judged.
+      [SHA_OF(10)]: verifyNodes(
+        ['pending', 'waiting: dispatch-unknown', 5_000],
+        ['pending', 'verifying… t2', 10_000],
+        ['pending', 'waiting: extension-retry', 20_000],
+      ),
+    },
+    reviews: { 9: 'APPROVED' },
+  })
+  const result = await candidates(
+    { repo: REPO },
+    deps(w, { adapter: w.adapter, loadConfig: () => candidateConfig() }),
+  )
+  assert.deepEqual(
+    result.candidates.map((c) => [c.pr, c.approval ?? null]),
+    [
+      [9, 'policy-park-approved'],
+      [10, null],
+    ],
+  )
+  assert.deepEqual(
+    result.skipped.find((s) => s.pr === 8),
+    { ticket: 'BOS-8', pr: 8, reason: 'parked' },
+  )
+  for (const n of [1, 2, 3, 4, 7]) {
+    assert.deepEqual(
+      result.admission.find(({ pr }) => pr === n),
+      {
+        pr: n,
+        head: SHA_OF(n),
+        state: 'pending',
+        reason: 'ticket-not-selected',
+        rule: 'labels',
+      },
+    )
+  }
+  for (const n of [5, 6]) {
+    assert.deepEqual(
+      result.admission.find(({ pr }) => pr === n),
+      {
+        pr: n,
+        head: SHA_OF(n),
+        state: 'pending',
+        reason: 'ticket-needs-person',
+      },
+    )
+  }
+  for (const n of [8, 9, 10]) {
+    assert.deepEqual(
+      result.admission.find(({ pr }) => pr === n),
+      {
+        pr: n,
+        head: SHA_OF(n),
+        state: 'admitted',
+        reason: 'judged',
+      },
+    )
+  }
+
+  // Unreadable status history during off-selection judgedHead check fails closed: never admitted as
+  // a candidate and never marked skippable for a quiet tick.
+  const unreadPr = {
+    number: 11,
+    url: 'https://github.com/o/r/pull/11',
+    body: ticketBody('BOS-11'),
+    headRefOid: SHA_OF(11),
+    isDraft: false,
+  }
+  const unreadWorld = candidateWorld({
+    tickets: [],
+    prs: [unreadPr],
+    labels: { 'BOS-11': ['bug'] },
+    statuses: {
+      [SHA_OF(11)]: verifyNodes(
+        ['pending', 'waiting: dispatch-unknown', 5_000],
+        ['pending', 'needs human: extension-failed', 20_000],
+      ),
+    },
+  })
+  const unreadBaseRead = unreadWorld.read
+  unreadWorld.read = (command, args, opts) => {
+    if (
+      command === 'gh' &&
+      args[0] === 'api' &&
+      typeof args[1] === 'string' &&
+      args[1].includes(`/commits/${SHA_OF(11)}/status`)
+    ) {
+      return { ok: false, exit: 1, output: '502 Bad Gateway' }
+    }
+    return unreadBaseRead(command, args, opts)
+  }
+  const unreadResult = await candidates(
+    { repo: REPO },
+    deps(unreadWorld, { adapter: unreadWorld.adapter, loadConfig: () => candidateConfig() }),
+  )
+  assert.deepEqual(unreadResult.candidates, [])
+  assert.equal(unreadResult.skippable, false)
+  assert.deepEqual(
+    unreadResult.admission.find(({ pr }) => pr === 11),
+    {
+      pr: 11,
+      head: SHA_OF(11),
+      state: 'pending',
+      reason: 'candidate-unread',
+    },
+  )
+})
+
+test('an unusable-review extension-failed park records its policy once and settles to a quiet tick', async () => {
+  const baseConfig = admissionText({ human: { admit: true } })
+  const pr = { ...handView({ labels: [{ name: 'boss-merge-on-pass' }] }), number: 7 }
+  const w = sweepWorld({
+    pr,
+    statuses: [parkStatusOf('needs human: extension-failed'), claimStatus(50_000)],
+    baseConfig,
+  })
+  const d = deps(w, {
+    discover: () => ({ extensions: [] }),
+    loadConfig: () => candidateConfig(),
+    adapter: { ...fakeAdapter(), selectPlanned: async () => [] },
+  })
+  const first = await candidates({ repo: REPO }, d)
+  assert.deepEqual(
+    first.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'unrecorded']],
+  )
+  const held = await judged(w, d)
+  assert.deepEqual([held.verdict, held.reason, held.held], ['human', 'extension-failed', true])
+  const posted = await parkPost(held, d)
+  assert.deepEqual([posted.skipped, posted.policyRecord], ['already-posted', 'posted'])
+
+  const second = await candidates({ repo: REPO }, d)
+  assert.deepEqual(second.candidates, [])
+  assert.deepEqual(
+    second.skipped.map((x) => [x.pr, x.reason]),
+    [[7, 'parked']],
+  )
+  assert.equal(tickWasQuiet(second, [], false), true)
+})
+
+test('a non-transient extension-failed park holds at once under its recorded policy without rerunning', async () => {
+  const dir = tmp()
+  try {
+    const discover = () => ({ extensions: [EXT] })
+    const malformed = jsonFile(dir, 'malformed.json', [
+      { extension: EXT.name, result: { ok: true, verdict: 'maybe' } },
+    ])
+    const w = sweepWorld({ statuses: [receipt()] })
+    const d = sweepDeps(w, { discover })
+    const claimed = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, d)
+    assert.equal(claimed.won, true)
+    const parked = await judge({ pr: 7, repo: REPO, extensionResults: malformed }, d)
+    assert.deepEqual([parked.verdict, parked.reason], ['human', 'extension-failed'])
+    const posted = await post(
+      {
+        pr: 7,
+        head: parked.headSha,
+        verdict: 'human',
+        reason: parked.reason,
+        policy: parked.policyFingerprint,
+        token: claimed.token,
+        repo: REPO,
+      },
+      d,
+    )
+    assert.deepEqual([posted.posted, posted.policyRecord], [true, 'posted'])
+
+    const next = await candidates({ repo: REPO }, d)
+    assert.deepEqual(next.candidates, [])
+    assert.deepEqual(
+      next.skipped.map((x) => [x.pr, x.reason]),
+      [[7, 'parked']],
+    )
+    assert.equal(tickWasQuiet(next, [], false), true)
+
+    const rejudged = await judged(w, d)
+    assert.deepEqual(
+      [rejudged.verdict, rejudged.reason, rejudged.held],
+      ['human', 'extension-failed', true],
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
 })
 
 test('a park whose codes still stand under the recorded policy is never re-judged and writes nothing', async () => {
@@ -8417,6 +9566,78 @@ test('a park posted without --policy records the base policy, so the next sweep 
     second.skipped.map((x) => [x.pr, x.reason]),
     [[7, 'parked']],
   )
+})
+
+// A trial park's policy record never matches base policy. Re-judging it while its trial session
+// lives would route straight back into that trial, which parks it again on every sweep.
+test('a standing trial park holds while a trial session lives and is re-judged once none does', async () => {
+  const sweep = async (sessions) => {
+    const w = sweepWorld({
+      statuses: [parkStatus('needs human: human-merge,trial-policy'), receipt()],
+      comments: [operatorComment(policyMarker(HEAD, OLD_POLICY))],
+      sessions,
+    })
+    const r = await candidates({ repo: REPO }, sweepDeps(w))
+    return [r.candidates.map((c) => c.rejudge), r.skipped.map((x) => x.reason)]
+  }
+  const row = (extra) => ({ id: 'sess-1', pr_url: PR_URL, ...extra })
+  assert.deepEqual(await sweep([row({ policy_ref: 'config/trial' })]), [[], ['parked']])
+  assert.deepEqual(await sweep([row()]), [[], ['parked']], 'a row that cannot say holds')
+  assert.deepEqual(await sweep(null), [[], ['parked']], 'an unreadable list holds')
+  assert.deepEqual(await sweep([row({ policy_ref: '' })]), [['policy-changed'], []])
+  assert.deepEqual(await sweep([]), [['policy-changed'], []])
+})
+
+// The tick that held the park is quiet, so archiving the trial session must end that quiet run, or
+// nothing re-judges the park until an unrelated input changes.
+test('archiving the trial session ends a quiet run, so base policy re-judges the held trial park', async () => {
+  const sweep = (sessions, quietFingerprint) =>
+    candidates(
+      { repo: REPO, quietFingerprint },
+      sweepDeps(
+        sweepWorld({
+          statuses: [parkStatus('needs human: human-merge,trial-policy'), receipt()],
+          comments: [operatorComment(policyMarker(HEAD, OLD_POLICY))],
+          sessions,
+        }),
+      ),
+    )
+  const live = { id: 'sess-1', pr_url: PR_URL, policy_ref: 'config/trial' }
+  const held = await sweep([live])
+  assert.deepEqual(
+    held.skipped.map((x) => x.reason),
+    ['parked'],
+  )
+  assert.equal((await sweep([live], held.fingerprint)).unchanged, true)
+  const archived = await sweep([{ ...live, archived_at: '2026-11-26T00:00:00Z' }], held.fingerprint)
+  assert.notEqual(archived.unchanged, true)
+  assert.deepEqual(
+    archived.candidates.map((c) => c.rejudge),
+    ['policy-changed'],
+  )
+})
+
+// An approval waives nothing in the trial session, and outside it base policy never judged the head.
+test('an approved trial park waives nothing: it holds while a trial session lives, then base policy re-judges it', async () => {
+  const sweep = async (sessions) => {
+    const w = sweepWorld({
+      pr: { reviewDecision: 'APPROVED' },
+      statuses: [parkStatus('needs human: human-merge,trial-policy'), receipt()],
+      comments: [operatorComment(policyMarker(HEAD, OLD_POLICY))],
+      sessions,
+    })
+    const r = await candidates({ repo: REPO }, sweepDeps(w))
+    return [
+      r.candidates.map((c) => [c.rejudge, c.approval, c.waive]),
+      r.skipped.map((x) => x.reason),
+    ]
+  }
+  const trial = { id: 'sess-1', pr_url: PR_URL, policy_ref: 'config/trial' }
+  assert.deepEqual(await sweep([trial]), [[], ['parked']])
+  assert.deepEqual(await sweep([]), [[['policy-changed', undefined, undefined]], []])
+  const park = { state: 'pending', description: 'needs human: human-merge,trial-policy' }
+  const operator = { decision: 'approved', covers: 'human-merge,trial-policy' }
+  assert.deepEqual(classifyApproval({ status: park, operator }), { approval: 'none' })
 })
 
 test('a park raised by an extension stands while it is installed and is released once it is removed', async () => {

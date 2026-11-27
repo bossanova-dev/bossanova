@@ -18,7 +18,8 @@
     "mp4": "video/mp4",
     "webm": "video/webm",
     "pdf": "application/pdf",
-    "woff2": "font/woff2"
+    "woff2": "font/woff2",
+    "enc": "application/octet-stream"
   },
   "daemonMedia": ["mp4", "webm", "png", "jpg", "jpeg", "webp", "pdf"]
 }

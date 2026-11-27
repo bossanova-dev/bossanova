@@ -171,6 +171,10 @@ func (g *Group) NewCmd() *cobra.Command {
 			"Non-interactive --repo + --prompt path only")
 	cmd.Flags().Bool("verify-only", false,
 		"Mark a --pr session as verify-only: automatic repair never acts on it. Requires --pr")
+	cmd.Flags().String("policy-ref", "",
+		"Trial verify policy for a --verify-only session: boss-verify judges with the "+
+			".boss-skills.json and verify extensions on origin/<ref> instead of the PR base, "+
+			"and every verdict parks without merging. Requires --verify-only")
 	cmd.Flags().Bool("force", false,
 		"Create the session even if the ticket already shipped via a tagged PR or another "+
 			"active session already owns it (bypasses the already-shipped and duplicate-session "+

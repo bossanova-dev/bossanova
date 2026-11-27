@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"os"
 	"strings"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	server "github.com/recurser/bossd/api/daemon"
 	"github.com/recurser/bossd/internal/adapter/r2upload"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // hostedProofUpstream is the part of bosso's client the hosted proof host needs.
@@ -26,6 +28,7 @@ type hostedProofClient struct {
 	rpc          hostedProofUpstream
 	token        func() string
 	reviewOrigin string
+	limits       hostedProofLimitsCache
 }
 
 // hostedProofLimitKinds names each bosso limit as the door reports it.
@@ -59,9 +62,20 @@ func (c *hostedProofClient) StartHostedProof(ctx context.Context, in server.Host
 	req.Header().Set("Authorization", "Bearer "+token)
 	resp, err := c.rpc.StartProofUpload(ctx, req)
 	if err != nil {
-		return server.HostedProofUpload{}, hostedProofLimit(err)
+		err = hostedProofLimit(hostedProofServerNotConfigured(err))
+		var refusal *server.HostedProofLimitError
+		if errors.As(err, &refusal) {
+			c.limits.refused(in.RepoOriginURL, refusal)
+		}
+		return server.HostedProofUpload{}, err
 	}
-	return server.HostedProofUpload{UploadID: resp.Msg.UploadId, ReviewOrigin: c.reviewOrigin}, nil
+	limits := hostedProofLimitsFrom(resp.Msg.Limits)
+	c.limits.store(in.RepoOriginURL, limits)
+	return server.HostedProofUpload{UploadID: resp.Msg.UploadId, ReviewOrigin: c.reviewOrigin, Limits: limits}, nil
+}
+
+func (c *hostedProofClient) HostedProofLimits(repoOriginURL string) (server.HostedProofLimits, bool) {
+	return c.limits.get(repoOriginURL)
 }
 
 func (c *hostedProofClient) PutHostedProofObject(ctx context.Context, in server.HostedProofPut) error {
@@ -72,7 +86,7 @@ func (c *hostedProofClient) PutHostedProofObject(ctx context.Context, in server.
 	req := connect.NewRequest(&pb.PutProofObjectRequest{RepoOriginUrl: in.RepoOriginURL, UploadId: in.UploadID, Name: in.Name, Content: in.Body})
 	req.Header().Set("Authorization", "Bearer "+token)
 	_, err := c.rpc.PutProofObject(ctx, req)
-	return err
+	return hostedProofServerNotConfigured(err)
 }
 
 func (c *hostedProofClient) AbortHostedProof(ctx context.Context, uploadID, repoOriginURL string) error {
@@ -83,6 +97,24 @@ func (c *hostedProofClient) AbortHostedProof(ctx context.Context, uploadID, repo
 	req := connect.NewRequest(&pb.AbortProofUploadRequest{UploadId: uploadID, RepoOriginUrl: repoOriginURL})
 	req.Header().Set("Authorization", "Bearer "+token)
 	_, err := c.rpc.AbortProofUpload(ctx, req)
+	return err
+}
+
+// hostedProofServerNotConfigured marks bosso's Unavailable that carries a
+// ProofHostingNotConfigured detail as the door's server-not-configured error,
+// keeping bosso's error for the log. Any other error passes through unchanged.
+func hostedProofServerNotConfigured(err error) error {
+	var rpcErr *connect.Error
+	if !errors.As(err, &rpcErr) || rpcErr.Code() != connect.CodeUnavailable {
+		return err
+	}
+	for _, detail := range rpcErr.Details() {
+		if value, valueErr := detail.Value(); valueErr == nil {
+			if _, ok := value.(*pb.ProofHostingNotConfigured); ok {
+				return errors.Join(server.ErrHostedProofServerNotConfigured, err)
+			}
+		}
+	}
 	return err
 }
 
@@ -128,6 +160,18 @@ func reviewAppOrigin(orchestratorURL string) string {
 	return ""
 }
 
+// exportReviewAppURL puts the orchestrator's review app in the daemon's own
+// environment, for the cron gates it runs and the chats it starts, unless the
+// operator already set one.
+func exportReviewAppURL(orchestratorURL string) {
+	if _, set := os.LookupEnv(session.ReviewAppURLEnv); set {
+		return
+	}
+	if origin := reviewAppOrigin(orchestratorURL); origin != "" {
+		_ = os.Setenv(session.ReviewAppURLEnv, origin)
+	}
+}
+
 // evidenceDestinations is the daemon's evidence opener: the local proof_upload
 // bucket, promoted from the embedded uploader, plus the hosted proof host.
 type evidenceDestinations struct {
@@ -147,6 +191,13 @@ func (d evidenceDestinations) PutHostedProofObject(ctx context.Context, in serve
 		return server.ErrHostedProofUnavailable
 	}
 	return d.hosted.PutHostedProofObject(ctx, in)
+}
+
+func (d evidenceDestinations) HostedProofLimits(repoOriginURL string) (server.HostedProofLimits, bool) {
+	if d.hosted == nil {
+		return server.HostedProofLimits{}, false
+	}
+	return d.hosted.HostedProofLimits(repoOriginURL)
 }
 
 func (d evidenceDestinations) AbortHostedProof(ctx context.Context, uploadID, repoOriginURL string) error {

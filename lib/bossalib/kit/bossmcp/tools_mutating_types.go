@@ -172,7 +172,7 @@ type CreateSessionArgs struct {
 	Agent            string  `json:"agent,omitempty" jsonschema:"agent runner plugin name (empty = server default)"`
 	Account          *string `json:"account,omitempty" jsonschema:"Account id or label to run this session under; empty = system default"`
 	BaseBranch       string  `json:"base_branch,omitempty" jsonschema:"base branch to create the session from (empty = repo default)"`
-	BranchName       *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch). If an active session already owns it, create_session attaches because two active sessions cannot share one branch"`
+	BranchName       *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch); an active owner is attached (see DEDUP)"`
 	ForceBranch      bool    `json:"force_branch,omitempty" jsonschema:"remove any existing branch with the same name before creating"`
 	Force            bool    `json:"force,omitempty" jsonschema:"bypass tracker-issue dedup and create a second session for a tracker/PR/branch that already has an active one"`
 	IsQuickChat      bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
@@ -186,7 +186,8 @@ type CreateSessionArgs struct {
 	TrackerID        *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176). If an active session already owns this tracker id (with no branch collision), create_session fails with AlreadyExists — pass force:true to create a second session for the same tracker"`
 	TrackerURL       *string `json:"tracker_url,omitempty" jsonschema:"URL to the issue in the external tracker"`
 	TrackerSource    *string `json:"tracker_source,omitempty" jsonschema:"tracker source: linear or sentry"`
-	VerifyOnly       bool    `json:"verify_only,omitempty" jsonschema:"requires pr_number: adopt the PR to verify it; automatic repair never acts on the session. On attach, is_verify_only is the existing session's own flag"`
+	VerifyOnly       bool    `json:"verify_only,omitempty" jsonschema:"requires pr_number: adopt the PR to verify it; automatic repair never acts on the session."`
+	PolicyRef        string  `json:"policy_ref,omitempty" jsonschema:"trial verify policy branch on origin; implies verify_only; never merges"`
 }
 
 // UpdateSessionArgs is the typed argument struct for update_session.

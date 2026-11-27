@@ -57,16 +57,19 @@ type Media struct {
 // ProofRecord combines proof confidence with the same head's legacy media.
 // Legacy records have no proof page, level, asks or digest.
 type ProofRecord struct {
-	Head       string
-	Page       string
-	Level      string
-	Asks       []string
-	LoweredBy  []string
-	Digest     string
-	Summary    string
-	Media      []Media
-	Legacy     bool
-	RecordedAt time.Time
+	Head      string
+	Page      string
+	Level     string
+	Asks      []string
+	LoweredBy []string
+	Digest    string
+	Summary   string
+	// PageProblem is why verify published no page for Head, from its
+	// proof-missing note; zero when the record has a page or none was noted.
+	PageProblem PageProblem
+	Media       []Media
+	Legacy      bool
+	RecordedAt  time.Time
 }
 
 func (p *ProofRecord) equal(other *ProofRecord) bool {
@@ -74,7 +77,7 @@ func (p *ProofRecord) equal(other *ProofRecord) bool {
 		return p == other
 	}
 	return p.Head == other.Head && p.Page == other.Page && p.Level == other.Level &&
-		p.Digest == other.Digest && p.Summary == other.Summary && p.Legacy == other.Legacy && p.RecordedAt.Equal(other.RecordedAt) &&
+		p.Digest == other.Digest && p.Summary == other.Summary && p.PageProblem == other.PageProblem && p.Legacy == other.Legacy && p.RecordedAt.Equal(other.RecordedAt) &&
 		slices.Equal(p.LoweredBy, other.LoweredBy) && slices.Equal(p.Asks, other.Asks) && slices.Equal(p.Media, other.Media)
 }
 

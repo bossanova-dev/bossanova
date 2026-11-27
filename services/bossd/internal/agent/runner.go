@@ -101,6 +101,9 @@ type HeadlessLaunchOptions struct {
 	// pre-trust left from an earlier trusted period, or trust inherited from the
 	// repo's main checkout — before the agent loads the repo's own configuration.
 	ProjectTrust bossanovav1.ProjectTrustDecision
+	// UnattendedPermissionPolicy carries the scoped command/worktree tool
+	// permissions for an unattended headless launch (BOS-2678).
+	UnattendedPermissionPolicy *bossanovav1.UnattendedPermissionPolicy
 }
 
 // HeadlessLaunchOptionsRunner is implemented by runners that preserve the

@@ -96,6 +96,7 @@ go_test(
         "hangup_test.go",
         "host_wiring_test.go",
         "lease_wiring_test.go",
+        "setup_check_wiring_test.go",
         "skill_coverage_test.go",
         "skill_startup_integration_test.go",
         "startup_test.go",

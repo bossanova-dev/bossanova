@@ -14,6 +14,7 @@ import (
 
 	"github.com/recurser/bossalib/contract/plugin/agentruntime"
 	"github.com/recurser/bossalib/contract/plugin/loginshell"
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // Runner wraps agentruntime.Runner with claude-specific argv building. The
@@ -36,6 +37,13 @@ const defaultClaudeEffort = "high"
 
 // StartWithProjectConfigTrust enforces the repository's configuration policy.
 func (r *Runner) StartWithProjectConfigTrust(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string, trusted bool) (string, error) {
+	return r.StartWithPolicy(ctx, workDir, plan, resume, sessionID, logPath, model, effort, extraEnv, trusted, nil)
+}
+
+// StartWithPolicy enforces project configuration trust and, when an unattended
+// permission policy is supplied with dangerous mode off, writes its flag
+// settings file outside the worktree before launching Claude.
+func (r *Runner) StartWithPolicy(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string, trusted bool, policy *bossanovav1.UnattendedPermissionPolicy) (string, error) {
 	opts := map[string]string{
 		"model": model, "effort": effort,
 	}
@@ -50,7 +58,23 @@ func (r *Runner) StartWithProjectConfigTrust(ctx context.Context, workDir, plan 
 			opts[trackerMCPConfigOptionKey] = args[1]
 		}
 	}
-	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, opts, agentruntime.StartOptions{ShouldTrustProjectConfig: trusted})
+	var policySettings writtenPolicySettings
+	if policy != nil && !r.dangerouslySkipPermissions {
+		var err error
+		policySettings, err = writeUnattendedPolicySettings(policy, workDir, logPath, sessionID)
+		if err != nil {
+			return "", fmt.Errorf("write unattended permission policy: %w", err)
+		}
+		opts[unattendedPolicySettingsOpt] = policySettings.path
+	}
+	sid, err := r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, opts, agentruntime.StartOptions{
+		ShouldTrustProjectConfig: trusted,
+		OnExit:                   policySettings.cleanup,
+	})
+	if err != nil {
+		policySettings.cleanup()
+	}
+	return sid, err
 }
 
 // checkProjectIsolationSupport fails closed when this installation cannot
@@ -199,6 +223,8 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	}
 	if r.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
+	} else if settingsPath := in.Options[unattendedPolicySettingsOpt]; settingsPath != "" {
+		args = append(args, unattendedPolicyArgs(settingsPath)...)
 	}
 	if model := resolveClaudeModel(in.Options["model"], r.model); model != "" {
 		args = append(args, "--model", model)

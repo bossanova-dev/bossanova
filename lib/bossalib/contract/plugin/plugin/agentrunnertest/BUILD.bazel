@@ -26,5 +26,9 @@ go_test(
     name = "agentrunnertest_test",
     srcs = ["agentrunnertest_test.go"],
     embed = [":agentrunnertest"],
-    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
 )

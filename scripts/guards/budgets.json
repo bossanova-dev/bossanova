@@ -281,7 +281,7 @@
       "skills-toolbox/skill-config.mjs": 3815,
       "skills-toolbox/skill-extensions.mjs": 1031,
       "skills-toolbox/tracker/cli.mjs": 1066,
-      "skills-toolbox/verify/verify-gate.mjs": 4576,
+      "skills-toolbox/verify/verify-gate.mjs": 4596,
       "skills-toolbox/verify/verify-route.mjs": 1192
     }
   },

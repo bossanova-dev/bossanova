@@ -28,7 +28,7 @@ $(BIN_DIR)/boss: $(GEN_STAMP) $(BOSS_SKILL_DIRS) $(BOSS_SKILL_FILES) $(BOSS_HERM
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd/boss
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
-$(BIN_DIR)/bossd: $(GEN_STAMP) $(BOSSD_MIGRATION_DIRS) $(BOSSD_MIGRATION_FILES)
+$(BIN_DIR)/bossd: $(GEN_STAMP) $(BOSSD_MIGRATION_DIRS) $(BOSSD_MIGRATION_FILES) $(PROOFSEAL_LOADER_FILES)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/bossd; fi
 

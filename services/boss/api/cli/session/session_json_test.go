@@ -118,6 +118,7 @@ func TestSessionRowJSONKeySet(t *testing.T) {
 		"updated_at":             `"2026-01-02T04:05:06Z"`,
 		"tracker_id":             `"BOS-908"`,
 		"last_agent_activity_at": `"2026-01-02T05:06:07Z"`,
+		"policy_ref":             `""`,
 	}
 	if len(fields) != len(wantFields) {
 		t.Fatalf("keys = %v, want exactly %v", sortedJSONKeys(fields), sortedStringKeys(wantFields))

@@ -6580,8 +6580,10 @@ paths:
          (PermissionDenied for a non-member), refuses an organization whose owner
          turned hosted proof pages off (FailedPrecondition), and validates the
          manifest (InvalidArgument). Limits are ResourceExhausted with a
-         ProofUploadLimitExceeded detail. Returns page identity, never a URL. Paid
-         cloud access does not affect admission (apiversion V20261108).
+         ProofUploadLimitExceeded detail. A server with no proof page storage
+         answers Unavailable with a ProofHostingNotConfigured detail before it
+         reserves anything. Returns page identity, never a URL. Paid cloud access
+         does not affect admission (apiversion V20261108).
       operationId: bossanova.v1.OrchestratorService.StartProofUpload
       parameters:
         - name: Connect-Protocol-Version
@@ -9139,6 +9141,12 @@ components:
              "Authorization: Bearer <token>" on POST /hooks/prompt-submitted/{session_id}.
              bossd derives it per chat and sets it beside hook_port. Empty (an older
              bossd) means the hook is installed without the header.
+        unattendedPermissionPolicy:
+          title: unattended_permission_policy
+          description: |-
+            Scoped tool-permission policy for an unattended interactive launch; unset
+             for attended chats and older bossd binaries, preserving existing behaviour.
+          $ref: '#/components/schemas/bossanova.v1.UnattendedPermissionPolicy'
       title: BuildInteractiveCommandRequest
       additionalProperties: false
     bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntry:
@@ -11536,6 +11544,14 @@ components:
             type: string
           title: label_ids
           description: Optional label IDs to attach to the session on creation.
+        policyRef:
+          type: string
+          title: policy_ref
+          description: |-
+            Operator-only trial policy: the branch on origin whose verify policy,
+             .boss-skills.json and verify extensions this session's boss-verify judges
+             with instead of the PR base tip. A trial-policy verdict always parks and
+             never merges. Requires is_verify_only. Set at creation and never changes.
       title: CreateSessionRequest
       additionalProperties: false
     bossanova.v1.CreateSessionResponse:
@@ -14047,6 +14063,28 @@ components:
           $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: GetGitHubUsageResponse
       additionalProperties: false
+    bossanova.v1.GetHostedProofLimitsRequest:
+      type: object
+      properties:
+        workspacePath:
+          type: string
+          title: workspace_path
+      title: GetHostedProofLimitsRequest
+      additionalProperties: false
+      description: |-
+        GetHostedProofLimitsRequest names a registered workspace; the daemon reads
+         the limits for its repository.
+    bossanova.v1.GetHostedProofLimitsResponse:
+      type: object
+      properties:
+        limits:
+          title: limits
+          $ref: '#/components/schemas/bossanova.v1.HostedProofPageLimits'
+      title: GetHostedProofLimitsResponse
+      additionalProperties: false
+      description: |-
+        GetHostedProofLimitsResponse leaves limits unset when bosso has returned none
+         for the repository in the last hour.
     bossanova.v1.GetNewsletterStatusRequest:
       type: object
       title: GetNewsletterStatusRequest
@@ -15181,6 +15219,30 @@ components:
           title: sessions
       title: HostServiceListSessionsResponse
       additionalProperties: false
+    bossanova.v1.HostedProofPageLimits:
+      type: object
+      properties:
+        maxFileCount:
+          type: integer
+          title: max_file_count
+          format: int32
+        maxFileBytes:
+          type:
+            - integer
+            - string
+          title: max_file_bytes
+          format: int64
+        maxPageBytes:
+          type:
+            - integer
+            - string
+          title: max_page_bytes
+          format: int64
+      title: HostedProofPageLimits
+      additionalProperties: false
+      description: |-
+        HostedProofPageLimits are bosso's page-shape limits for a hosted proof page.
+         A zero field is a limit bosso has not reported.
     bossanova.v1.InstalledPlugin:
       type: object
       properties:
@@ -16789,6 +16851,35 @@ components:
             $ref: '#/components/schemas/bossanova.v1.Session'
           title: sessions
       title: ListSessionsResponse
+      additionalProperties: false
+    bossanova.v1.ListSetupChecksRequest:
+      type: object
+      properties:
+        repoId:
+          type: string
+          title: repo_id
+          description: set at most one of repo_id / workspace_path
+        workspacePath:
+          type: string
+          title: workspace_path
+      title: ListSetupChecksRequest
+      additionalProperties: false
+    bossanova.v1.ListSetupChecksResponse:
+      type: object
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SetupCheck'
+          title: checks
+        checkedAt:
+          title: checked_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        repoId:
+          type: string
+          title: repo_id
+          description: empty when the path is unregistered or none was given
+      title: ListSetupChecksResponse
       additionalProperties: false
     bossanova.v1.ListSyncedAgentAccountsRequest:
       type: object
@@ -19902,6 +19993,14 @@ components:
       description: |-
         ProofConfidence is the verify proof record written for one PR head:
          its confidence level, the reasons that lowered it and the asks for a person.
+    bossanova.v1.ProofHostingNotConfigured:
+      type: object
+      title: ProofHostingNotConfigured
+      additionalProperties: false
+      description: |-
+        ProofHostingNotConfigured accompanies Unavailable from the proof upload
+         RPCs when this server has no hosted proof page storage configured, so a
+         daemon can tell a server that cannot host pages from a transient outage.
     bossanova.v1.ProofManifestEntry:
       type: object
       properties:
@@ -19917,6 +20016,20 @@ components:
       title: ProofManifestEntry
       additionalProperties: false
       description: ProofManifestEntry declares one file before any proof bytes are uploaded.
+    bossanova.v1.ProofPageProblem:
+      type: object
+      properties:
+        reason:
+          type: string
+          title: reason
+          description: The writer's reason code, such as upload-failed.
+        detail:
+          type: string
+          title: detail
+          description: What the publisher said, made safe and bounded by verify; may be empty.
+      title: ProofPageProblem
+      additionalProperties: false
+      description: ProofPageProblem is why verify could not publish a PR head's review page.
     bossanova.v1.ProofUploadLimit:
       type: string
       title: ProofUploadLimit
@@ -26272,6 +26385,26 @@ components:
              older clients ignore. See
              docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
           $ref: '#/components/schemas/bossanova.v1.ProofConfidence'
+        prProofPageProblem:
+          title: pr_proof_page_problem
+          description: |-
+            Why the record pr_proof_summary comes from has no review page, from
+             verify's proof-missing note for that head: its reason code (for example
+             upload-failed) and bounded detail. Unset when the record has a page or
+             verify noted no page problem, as when it never tried to publish one.
+             Transport-only, never persisted. No dated API bump: additive output field
+             older clients ignore. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+          $ref: '#/components/schemas/bossanova.v1.ProofPageProblem'
+        policyRef:
+          type: string
+          title: policy_ref
+          description: |-
+            The origin branch boss-verify reads trial policy from in this
+             verify-only session; empty for every other session. Set at creation by
+             an operator and never changes afterwards.
+             No dated API bump: additive output field older clients ignore. See
+             docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -27272,6 +27405,80 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: SetSessionTrackerResponse
       additionalProperties: false
+    bossanova.v1.SetupCheck:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          description: kebab-case, stable forever
+        area:
+          title: area
+          $ref: '#/components/schemas/bossanova.v1.SetupCheckArea'
+        status:
+          title: status
+          $ref: '#/components/schemas/bossanova.v1.SetupCheckStatus'
+        title:
+          type: string
+          title: title
+        evidence:
+          type: string
+          title: evidence
+        recommendation:
+          type: string
+          title: recommendation
+        fix:
+          title: fix
+          $ref: '#/components/schemas/bossanova.v1.SetupCheckFix'
+        addedInVersion:
+          type: string
+          title: added_in_version
+      title: SetupCheck
+      additionalProperties: false
+    bossanova.v1.SetupCheckArea:
+      type: string
+      title: SetupCheckArea
+      enum:
+        - SETUP_CHECK_AREA_UNSPECIFIED
+        - SETUP_CHECK_AREA_MACHINE
+        - SETUP_CHECK_AREA_REPO
+        - SETUP_CHECK_AREA_TRACKER
+        - SETUP_CHECK_AREA_CI
+        - SETUP_CHECK_AREA_PROOF
+        - SETUP_CHECK_AREA_CRONS
+        - SETUP_CHECK_AREA_CLOUDS_AND_DEVICES
+    bossanova.v1.SetupCheckFix:
+      type: object
+      properties:
+        kind:
+          title: kind
+          $ref: '#/components/schemas/bossanova.v1.SetupCheckFixKind'
+        command:
+          type: string
+          title: command
+        agentTask:
+          type: string
+          title: agent_task
+      title: SetupCheckFix
+      additionalProperties: false
+    bossanova.v1.SetupCheckFixKind:
+      type: string
+      title: SetupCheckFixKind
+      enum:
+        - SETUP_CHECK_FIX_KIND_UNSPECIFIED
+        - SETUP_CHECK_FIX_KIND_COMMAND
+        - SETUP_CHECK_FIX_KIND_AGENT_TASK
+    bossanova.v1.SetupCheckStatus:
+      type: string
+      title: SetupCheckStatus
+      enum:
+        - SETUP_CHECK_STATUS_UNSPECIFIED
+        - SETUP_CHECK_STATUS_OK
+        - SETUP_CHECK_STATUS_MISSING
+        - SETUP_CHECK_STATUS_OUTDATED
+        - SETUP_CHECK_STATUS_RECOMMENDED
+        - SETUP_CHECK_STATUS_DECLINED
+        - SETUP_CHECK_STATUS_BLOCKED
     bossanova.v1.SetupScriptOutput:
       type: object
       properties:
@@ -27430,6 +27637,12 @@ components:
           type: boolean
           title: should_trust_project_config
           description: Whether this run may load repository MCP servers and project settings.
+        unattendedPermissionPolicy:
+          title: unattended_permission_policy
+          description: |-
+            Scoped tool-permission policy for this unattended run; unset preserves
+             existing behaviour.
+          $ref: '#/components/schemas/bossanova.v1.UnattendedPermissionPolicy'
       title: StartAgentRunRequest
       additionalProperties: false
     bossanova.v1.StartAgentRunRequest.ExtraEnvEntry:
@@ -29533,6 +29746,34 @@ components:
       title: TriggerTypeSpec
       additionalProperties: false
       description: TriggerTypeSpec describes one trigger type.
+    bossanova.v1.UnattendedPermissionPolicy:
+      type: object
+      properties:
+        worktreePath:
+          type: string
+          title: worktree_path
+          description: Absolute path to the worktree directory the launch may edit and write in.
+        allowedCommandPrefixes:
+          type: array
+          items:
+            type: string
+          title: allowed_command_prefixes
+          description: |-
+            Command prefixes (first executable words, e.g. "git", "go", "make") that
+             the launch may execute without prompting.
+        isNetworkAllowed:
+          type: boolean
+          title: is_network_allowed
+          description: Whether commands run under this policy may access the network.
+      title: UnattendedPermissionPolicy
+      additionalProperties: false
+      description: |-
+        UnattendedPermissionPolicy grants an unattended agent launch (cron,
+         tmux-unattended, detached, or headless) a scoped tool-permission policy so
+         it can run allowed commands and edit inside its worktree without dangerous
+         mode and without stopping for an interactive permission prompt. Unset (nil)
+         preserves the runner's existing behaviour (attended chats and older bossd
+         binaries).
     bossanova.v1.UnsnoozeSessionRequest:
       type: object
       properties:
@@ -30701,6 +30942,12 @@ components:
           title: destination
           description: 'destination is the one used: LOCAL or HOSTED.'
           $ref: '#/components/schemas/bossanova.v1.EvidenceDestination'
+        hostedLimits:
+          title: hosted_limits
+          description: |-
+            hosted_limits are the page-shape limits bosso returned for a hosted page;
+             unset for a local upload.
+          $ref: '#/components/schemas/bossanova.v1.HostedProofPageLimits'
       title: UploadEvidenceResponse
       additionalProperties: false
       description: UploadEvidenceResponse is returned only after every object was uploaded.

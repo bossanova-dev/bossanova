@@ -125,7 +125,7 @@ func (s *Server) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRun
 	// would propagate to runner.Start's procCtx and SIGTERM the just-started
 	// claude process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths.
-	sid, err := s.runner.StartWithProjectConfigTrust(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), req.GetExtraEnv(), req.GetShouldTrustProjectConfig())
+	sid, err := s.runner.StartWithPolicy(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), req.GetExtraEnv(), req.GetShouldTrustProjectConfig(), req.GetUnattendedPermissionPolicy())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -209,15 +209,16 @@ func projectConfigTrusted(decision bossanovav1.ProjectTrustDecision) bool {
 // request, which mirrors pane output to disk without touching claude's
 // stdio.
 //
-// req.LogPath is accepted for API compatibility but intentionally
-// unused — bossd reads it from its own state, not from this response.
+// req.LogPath is not wired into stdout/stderr capture — bossd owns pane logging
+// — but its parent directory is used to place the mode-0600 flag-settings file
+// when an unattended_permission_policy is attached.
 //
 // A fresh start whose prompt bossd asked to have submitted is delivered as a
 // launch argument read from req.InitialInputPath (see claudeLaunchPrompt), so a
 // long prompt is never typed into the composer. The only error is a failure to
 // write that file.
 
-func (s *Server) BuildInteractiveCommand(ctx context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (s *Server) BuildInteractiveCommand(ctx context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (_ *bossanovav1.BuildInteractiveCommandResponse, retErr error) {
 	s.applyClaudeProjectTrust(req.GetWorktreePath(), req.GetConfigHomeEnv(), req.GetProjectTrust())
 	if !projectConfigTrusted(req.GetProjectTrust()) {
 		if s.runner == nil {
@@ -233,8 +234,17 @@ func (s *Server) BuildInteractiveCommand(ctx context.Context, req *bossanovav1.B
 	} else {
 		args = append(args, "--session-id", req.SessionId)
 	}
+	var policySettings writtenPolicySettings
+	defer policySettings.cleanupOnError(&retErr)
 	if s.runner != nil && s.runner.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
+	} else if policy := req.GetUnattendedPermissionPolicy(); policy != nil {
+		var err error
+		policySettings, err = writeUnattendedPolicySettings(policy, req.GetWorktreePath(), req.GetLogPath(), req.GetSessionId())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "write unattended permission policy: %v", err)
+		}
+		args = append(args, unattendedPolicyArgs(policySettings.path)...)
 	}
 	// The declaration is set in the same branch that appends the flag, so it
 	// cannot drift from what actually reached argv: no append, no claim.

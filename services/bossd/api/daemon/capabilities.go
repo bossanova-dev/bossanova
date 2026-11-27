@@ -9,7 +9,7 @@ import (
 	"github.com/recurser/bossalib/kit/daemoncaps"
 )
 
-var daemonCapabilities = []string{daemoncaps.MergeExpectedHeadSHA}
+var daemonCapabilities = []string{daemoncaps.MergeExpectedHeadSHA, daemoncaps.CreateSessionPolicyRef}
 
 // GetDaemonCapabilities advertises optional request features this bossd honours.
 // This is a local daemon RPC, outside the versioned orchestrator surface.

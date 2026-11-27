@@ -28,8 +28,17 @@ service DaemonService {
   // signed-in user's Bossanova Cloud token. Local socket API; additive, so no dated
   // API bump (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
   rpc MintHostedProofViewLink(MintHostedProofViewLinkRequest) returns (MintHostedProofViewLinkResponse);
+  // GetHostedProofLimits reads the page-shape limits bosso last returned for a
+  // workspace's repository, so a proof page can fit them before its first
+  // upload. Local socket API; additive, so no dated API bump
+  // (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+  rpc GetHostedProofLimits(GetHostedProofLimitsRequest) returns (GetHostedProofLimitsResponse);
   // GetFactoryHealth reads host-local factory problems for one repository.
   rpc GetFactoryHealth(GetFactoryHealthRequest) returns (GetFactoryHealthResponse);
+
+  // ListSetupChecks evaluates every registered setup check for this machine and,
+  // when given, one repository. Read-only: it never writes state.
+  rpc ListSetupChecks(ListSetupChecksRequest) returns (ListSetupChecksResponse);
 
   // Repo management
   rpc ValidateRepoPath(ValidateRepoPathRequest) returns (ValidateRepoPathResponse);
@@ -765,6 +774,11 @@ message CreateSessionRequest {
   bool is_verify_only = 23;
   // Optional label IDs to attach to the session on creation.
   repeated string label_ids = 24;
+  // Operator-only trial policy: the branch on origin whose verify policy,
+  // .boss-skills.json and verify extensions this session's boss-verify judges
+  // with instead of the PR base tip. A trial-policy verdict always parks and
+  // never merges. Requires is_verify_only. Set at creation and never changes.
+  string policy_ref = 25;
 }
 
 message CreateSessionResponse {
@@ -3016,6 +3030,17 @@ message UploadEvidenceResponse {
   string page_url = 4;
   // destination is the one used: LOCAL or HOSTED.
   EvidenceDestination destination = 5;
+  // hosted_limits are the page-shape limits bosso returned for a hosted page;
+  // unset for a local upload.
+  HostedProofPageLimits hosted_limits = 6;
+}
+
+// HostedProofPageLimits are bosso's page-shape limits for a hosted proof page.
+// A zero field is a limit bosso has not reported.
+message HostedProofPageLimits {
+  int32 max_file_count = 1;
+  int64 max_file_bytes = 2;
+  int64 max_page_bytes = 3;
 }
 
 message RenewAgentCredentialDeviceEnrollmentRequest {}
@@ -3084,6 +3109,63 @@ message FactoryHealthProblem {
   string code = 1;
   string text = 2;
   google.protobuf.Timestamp started_at = 3;
+}
+
+// --- Setup Checks ---
+
+message ListSetupChecksRequest {
+  string repo_id = 1; // set at most one of repo_id / workspace_path
+  string workspace_path = 2;
+}
+
+message ListSetupChecksResponse {
+  repeated SetupCheck checks = 1;
+  google.protobuf.Timestamp checked_at = 2;
+  string repo_id = 3; // empty when the path is unregistered or none was given
+}
+
+message SetupCheck {
+  string id = 1; // kebab-case, stable forever
+  SetupCheckArea area = 2;
+  SetupCheckStatus status = 3;
+  string title = 4;
+  string evidence = 5;
+  string recommendation = 6;
+  SetupCheckFix fix = 7;
+  string added_in_version = 8;
+}
+
+message SetupCheckFix {
+  SetupCheckFixKind kind = 1;
+  string command = 2;
+  string agent_task = 3;
+}
+
+enum SetupCheckArea {
+  SETUP_CHECK_AREA_UNSPECIFIED = 0;
+  SETUP_CHECK_AREA_MACHINE = 1;
+  SETUP_CHECK_AREA_REPO = 2;
+  SETUP_CHECK_AREA_TRACKER = 3;
+  SETUP_CHECK_AREA_CI = 4;
+  SETUP_CHECK_AREA_PROOF = 5;
+  SETUP_CHECK_AREA_CRONS = 6;
+  SETUP_CHECK_AREA_CLOUDS_AND_DEVICES = 7;
+}
+
+enum SetupCheckStatus {
+  SETUP_CHECK_STATUS_UNSPECIFIED = 0;
+  SETUP_CHECK_STATUS_OK = 1;
+  SETUP_CHECK_STATUS_MISSING = 2;
+  SETUP_CHECK_STATUS_OUTDATED = 3;
+  SETUP_CHECK_STATUS_RECOMMENDED = 4;
+  SETUP_CHECK_STATUS_DECLINED = 5;
+  SETUP_CHECK_STATUS_BLOCKED = 6;
+}
+
+enum SetupCheckFixKind {
+  SETUP_CHECK_FIX_KIND_UNSPECIFIED = 0;
+  SETUP_CHECK_FIX_KIND_COMMAND = 1;
+  SETUP_CHECK_FIX_KIND_AGENT_TASK = 2;
 }
 
 message VerifyBlocker {
@@ -3221,6 +3303,18 @@ message MintHostedProofViewLinkRequest {
 message MintHostedProofViewLinkResponse {
   string view_url = 1;
   google.protobuf.Timestamp expires_at = 2;
+}
+
+// GetHostedProofLimitsRequest names a registered workspace; the daemon reads
+// the limits for its repository.
+message GetHostedProofLimitsRequest {
+  string workspace_path = 1;
+}
+
+// GetHostedProofLimitsResponse leaves limits unset when bosso has returned none
+// for the repository in the last hour.
+message GetHostedProofLimitsResponse {
+  HostedProofPageLimits limits = 1;
 }
 
 // SessionServe is the latest snapshot of the repository serve command.

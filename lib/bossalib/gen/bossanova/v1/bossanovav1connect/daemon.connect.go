@@ -49,9 +49,15 @@ const (
 	// DaemonServiceMintHostedProofViewLinkProcedure is the fully-qualified name of the DaemonService's
 	// MintHostedProofViewLink RPC.
 	DaemonServiceMintHostedProofViewLinkProcedure = "/bossanova.v1.DaemonService/MintHostedProofViewLink"
+	// DaemonServiceGetHostedProofLimitsProcedure is the fully-qualified name of the DaemonService's
+	// GetHostedProofLimits RPC.
+	DaemonServiceGetHostedProofLimitsProcedure = "/bossanova.v1.DaemonService/GetHostedProofLimits"
 	// DaemonServiceGetFactoryHealthProcedure is the fully-qualified name of the DaemonService's
 	// GetFactoryHealth RPC.
 	DaemonServiceGetFactoryHealthProcedure = "/bossanova.v1.DaemonService/GetFactoryHealth"
+	// DaemonServiceListSetupChecksProcedure is the fully-qualified name of the DaemonService's
+	// ListSetupChecks RPC.
+	DaemonServiceListSetupChecksProcedure = "/bossanova.v1.DaemonService/ListSetupChecks"
 	// DaemonServiceValidateRepoPathProcedure is the fully-qualified name of the DaemonService's
 	// ValidateRepoPath RPC.
 	DaemonServiceValidateRepoPathProcedure = "/bossanova.v1.DaemonService/ValidateRepoPath"
@@ -425,8 +431,16 @@ type DaemonServiceClient interface {
 	// signed-in user's Bossanova Cloud token. Local socket API; additive, so no dated
 	// API bump (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
 	MintHostedProofViewLink(context.Context, *connect.Request[v1.MintHostedProofViewLinkRequest]) (*connect.Response[v1.MintHostedProofViewLinkResponse], error)
+	// GetHostedProofLimits reads the page-shape limits bosso last returned for a
+	// workspace's repository, so a proof page can fit them before its first
+	// upload. Local socket API; additive, so no dated API bump
+	// (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+	GetHostedProofLimits(context.Context, *connect.Request[v1.GetHostedProofLimitsRequest]) (*connect.Response[v1.GetHostedProofLimitsResponse], error)
 	// GetFactoryHealth reads host-local factory problems for one repository.
 	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
+	// ListSetupChecks evaluates every registered setup check for this machine and,
+	// when given, one repository. Read-only: it never writes state.
+	ListSetupChecks(context.Context, *connect.Request[v1.ListSetupChecksRequest]) (*connect.Response[v1.ListSetupChecksResponse], error)
 	// Repo management
 	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
 	// DetectSetupScript inspects a local repository directory read-only to suggest
@@ -872,10 +886,22 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("MintHostedProofViewLink")),
 			connect.WithClientOptions(opts...),
 		),
+		getHostedProofLimits: connect.NewClient[v1.GetHostedProofLimitsRequest, v1.GetHostedProofLimitsResponse](
+			httpClient,
+			baseURL+DaemonServiceGetHostedProofLimitsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetHostedProofLimits")),
+			connect.WithClientOptions(opts...),
+		),
 		getFactoryHealth: connect.NewClient[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse](
 			httpClient,
 			baseURL+DaemonServiceGetFactoryHealthProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("GetFactoryHealth")),
+			connect.WithClientOptions(opts...),
+		),
+		listSetupChecks: connect.NewClient[v1.ListSetupChecksRequest, v1.ListSetupChecksResponse](
+			httpClient,
+			baseURL+DaemonServiceListSetupChecksProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListSetupChecks")),
 			connect.WithClientOptions(opts...),
 		),
 		validateRepoPath: connect.NewClient[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse](
@@ -1602,7 +1628,9 @@ type daemonServiceClient struct {
 	uploadEvidence                       *connect.Client[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse]
 	postProofCheckRun                    *connect.Client[v1.PostProofCheckRunRequest, v1.PostProofCheckRunResponse]
 	mintHostedProofViewLink              *connect.Client[v1.MintHostedProofViewLinkRequest, v1.MintHostedProofViewLinkResponse]
+	getHostedProofLimits                 *connect.Client[v1.GetHostedProofLimitsRequest, v1.GetHostedProofLimitsResponse]
 	getFactoryHealth                     *connect.Client[v1.GetFactoryHealthRequest, v1.GetFactoryHealthResponse]
+	listSetupChecks                      *connect.Client[v1.ListSetupChecksRequest, v1.ListSetupChecksResponse]
 	validateRepoPath                     *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
 	detectSetupScript                    *connect.Client[v1.DetectSetupScriptRequest, v1.DetectSetupScriptResponse]
 	registerRepo                         *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
@@ -1749,9 +1777,19 @@ func (c *daemonServiceClient) MintHostedProofViewLink(ctx context.Context, req *
 	return c.mintHostedProofViewLink.CallUnary(ctx, req)
 }
 
+// GetHostedProofLimits calls bossanova.v1.DaemonService.GetHostedProofLimits.
+func (c *daemonServiceClient) GetHostedProofLimits(ctx context.Context, req *connect.Request[v1.GetHostedProofLimitsRequest]) (*connect.Response[v1.GetHostedProofLimitsResponse], error) {
+	return c.getHostedProofLimits.CallUnary(ctx, req)
+}
+
 // GetFactoryHealth calls bossanova.v1.DaemonService.GetFactoryHealth.
 func (c *daemonServiceClient) GetFactoryHealth(ctx context.Context, req *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error) {
 	return c.getFactoryHealth.CallUnary(ctx, req)
+}
+
+// ListSetupChecks calls bossanova.v1.DaemonService.ListSetupChecks.
+func (c *daemonServiceClient) ListSetupChecks(ctx context.Context, req *connect.Request[v1.ListSetupChecksRequest]) (*connect.Response[v1.ListSetupChecksResponse], error) {
+	return c.listSetupChecks.CallUnary(ctx, req)
 }
 
 // ValidateRepoPath calls bossanova.v1.DaemonService.ValidateRepoPath.
@@ -2369,8 +2407,16 @@ type DaemonServiceHandler interface {
 	// signed-in user's Bossanova Cloud token. Local socket API; additive, so no dated
 	// API bump (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
 	MintHostedProofViewLink(context.Context, *connect.Request[v1.MintHostedProofViewLinkRequest]) (*connect.Response[v1.MintHostedProofViewLinkResponse], error)
+	// GetHostedProofLimits reads the page-shape limits bosso last returned for a
+	// workspace's repository, so a proof page can fit them before its first
+	// upload. Local socket API; additive, so no dated API bump
+	// (docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff).
+	GetHostedProofLimits(context.Context, *connect.Request[v1.GetHostedProofLimitsRequest]) (*connect.Response[v1.GetHostedProofLimitsResponse], error)
 	// GetFactoryHealth reads host-local factory problems for one repository.
 	GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error)
+	// ListSetupChecks evaluates every registered setup check for this machine and,
+	// when given, one repository. Read-only: it never writes state.
+	ListSetupChecks(context.Context, *connect.Request[v1.ListSetupChecksRequest]) (*connect.Response[v1.ListSetupChecksResponse], error)
 	// Repo management
 	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
 	// DetectSetupScript inspects a local repository directory read-only to suggest
@@ -2812,10 +2858,22 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("MintHostedProofViewLink")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetHostedProofLimitsHandler := connect.NewUnaryHandler(
+		DaemonServiceGetHostedProofLimitsProcedure,
+		svc.GetHostedProofLimits,
+		connect.WithSchema(daemonServiceMethods.ByName("GetHostedProofLimits")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceGetFactoryHealthHandler := connect.NewUnaryHandler(
 		DaemonServiceGetFactoryHealthProcedure,
 		svc.GetFactoryHealth,
 		connect.WithSchema(daemonServiceMethods.ByName("GetFactoryHealth")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListSetupChecksHandler := connect.NewUnaryHandler(
+		DaemonServiceListSetupChecksProcedure,
+		svc.ListSetupChecks,
+		connect.WithSchema(daemonServiceMethods.ByName("ListSetupChecks")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceValidateRepoPathHandler := connect.NewUnaryHandler(
@@ -3544,8 +3602,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServicePostProofCheckRunHandler.ServeHTTP(w, r)
 		case DaemonServiceMintHostedProofViewLinkProcedure:
 			daemonServiceMintHostedProofViewLinkHandler.ServeHTTP(w, r)
+		case DaemonServiceGetHostedProofLimitsProcedure:
+			daemonServiceGetHostedProofLimitsHandler.ServeHTTP(w, r)
 		case DaemonServiceGetFactoryHealthProcedure:
 			daemonServiceGetFactoryHealthHandler.ServeHTTP(w, r)
+		case DaemonServiceListSetupChecksProcedure:
+			daemonServiceListSetupChecksHandler.ServeHTTP(w, r)
 		case DaemonServiceValidateRepoPathProcedure:
 			daemonServiceValidateRepoPathHandler.ServeHTTP(w, r)
 		case DaemonServiceDetectSetupScriptProcedure:
@@ -3813,8 +3875,16 @@ func (UnimplementedDaemonServiceHandler) MintHostedProofViewLink(context.Context
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.MintHostedProofViewLink is not implemented"))
 }
 
+func (UnimplementedDaemonServiceHandler) GetHostedProofLimits(context.Context, *connect.Request[v1.GetHostedProofLimitsRequest]) (*connect.Response[v1.GetHostedProofLimitsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetHostedProofLimits is not implemented"))
+}
+
 func (UnimplementedDaemonServiceHandler) GetFactoryHealth(context.Context, *connect.Request[v1.GetFactoryHealthRequest]) (*connect.Response[v1.GetFactoryHealthResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetFactoryHealth is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListSetupChecks(context.Context, *connect.Request[v1.ListSetupChecksRequest]) (*connect.Response[v1.ListSetupChecksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListSetupChecks is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error) {

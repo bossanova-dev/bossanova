@@ -1404,10 +1404,11 @@ func (l *Lifecycle) startHeadlessReplacementRun(ctx context.Context, session *mo
 	}
 	if runner, ok := l.agentRunner.(agent.HeadlessLaunchOptionsDispatcher); ok {
 		return runner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, worktreePath, plan, resume, "", session.Model, session.EffectiveEffort, extraEnv, agent.HeadlessLaunchOptions{
-			BossSessionID:            session.ID,
-			EffectiveModel:           session.EffectiveModel,
-			ProjectTrust:             repotrust.ProjectTrustFor(repo, worktreePath),
-			ShouldTrustProjectConfig: repo != nil && repo.IsTrusted,
+			BossSessionID:              session.ID,
+			EffectiveModel:             session.EffectiveModel,
+			ProjectTrust:               repotrust.ProjectTrustFor(repo, worktreePath),
+			ShouldTrustProjectConfig:   repo != nil && repo.IsTrusted,
+			UnattendedPermissionPolicy: unattendedPermissionPolicyProto(worktreePath, repo),
 		})
 	}
 	return l.agentRunner.StartByAgent(ctx, session.AgentName, worktreePath, plan, resume, "", session.Model, session.EffectiveEffort, extraEnv)
@@ -2662,11 +2663,12 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			return fmt.Errorf("headless launch for agent %q requires a launch-options-aware agent dispatcher", resolvedAgentName)
 		}
 		claudeSessionID, err = launchRunner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, session.EffectiveEffort, headlessEnv, agent.HeadlessLaunchOptions{
-			HeadlessCapabilityProfile: opts.HeadlessCapabilityProfile,
-			BossSessionID:             session.ID,
-			EffectiveModel:            session.EffectiveModel,
-			ProjectTrust:              repotrust.ProjectTrustFor(repo, result.WorktreePath),
-			ShouldTrustProjectConfig:  repo.IsTrusted,
+			HeadlessCapabilityProfile:  opts.HeadlessCapabilityProfile,
+			BossSessionID:              session.ID,
+			EffectiveModel:             session.EffectiveModel,
+			ProjectTrust:               repotrust.ProjectTrustFor(repo, result.WorktreePath),
+			ShouldTrustProjectConfig:   repo.IsTrusted,
+			UnattendedPermissionPolicy: unattendedPermissionPolicyProto(result.WorktreePath, repo),
 		})
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)

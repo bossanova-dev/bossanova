@@ -35,6 +35,9 @@ const reAuthHeaderMulti = /(\bAuthorization:\s*(?:Digest|MAC|AWS4-HMAC-SHA256)\s
 const reBearer = /(\bBearer\s+)[A-Za-z0-9._~+/-]{20,}/gi
 const reEmail = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 const reEnvSecret = /((?:api[_-]?key|secret|token|password|passwd)\s*[=:]\s*)\S+/gi
+// A hosted proof page's decryption key rides in the URL fragment `#k=<key>`, which the SDK keeps
+// in request.url and navigation breadcrumbs.
+const reProofKey = /(#k=)[A-Za-z0-9_-]+/g
 
 // Third-party denylist: drop Cloudflare Web Analytics beacon noise (BOS-352).
 // The beacon is auto-injected at the Cloudflare Pages edge and is not our code.
@@ -80,6 +83,7 @@ export function scrub(input: string): string {
     .replace(reBearer, `$1${redacted}`)
     .replace(reEmail, redacted)
     .replace(reEnvSecret, `$1${redacted}`)
+    .replace(reProofKey, `$1${redacted}`)
 }
 
 /** Per-site inputs to {@link sentryInitOptions}. */

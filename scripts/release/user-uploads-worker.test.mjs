@@ -23,7 +23,7 @@ const WEEK_S = 7 * 24 * 60 * 60
 const PRODUCTION_ANCESTORS = 'https://app.bossanova.dev https://app-staging.bossanova.dev'
 const STAGING_ANCESTORS = 'https://app-staging.bossanova.dev'
 const CSP_PREFIX =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self'; connect-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors "
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors "
 const PRODUCTION_CSP = `${CSP_PREFIX}https://app.bossanova.dev https://app-staging.bossanova.dev`
 
 // The proof extension table bosso and bossd each compare their own list against. Its two copies
@@ -259,6 +259,44 @@ test('the Worker serves exactly the shared proof extension table @sessions.AC278
   assert.equal(contentTypeFor('media/clip.mov'), null)
 })
 
+test('the Worker serves sealed proof objects as opaque bytes @sessions.AC278601', () => {
+  for (const path of [
+    'page.html.enc',
+    'screenshots/a.png.enc',
+    'manifest.json.enc',
+    'media/clip.webm.enc',
+  ])
+    assert.equal(contentTypeFor(path), 'application/octet-stream', path)
+  assert.equal(contentTypeFor('index.html'), TYPES.html)
+  assert.equal(contentTypeFor('proof-shim.js'), TYPES.js)
+})
+
+test('only a stored sealed object is readable by the opaque-origin review frame, never with credentials', async () => {
+  const env = production(
+    bucket({
+      [`acme/${TOKEN}/page.html.enc`]: 'ciphertext',
+      [`acme/${TOKEN}/index.html`]: '<html>proof</html>',
+      [`acme/${TOKEN}/player.js`]: 'play()',
+    }),
+  )
+  const origin = { headers: { Origin: 'null' } }
+  for (const init of [origin, { headers: { Origin: 'null', 'If-None-Match': '"etag"' } }]) {
+    const response = await fetch(url({ path: 'page.html.enc' }), env, init)
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*', String(response.status))
+    assert.equal(response.headers.get('Access-Control-Allow-Credentials'), null)
+    secure(response)
+  }
+  for (const [target, label] of [
+    [url({ path: 'index.html' }), 'plain page'],
+    [url({ path: 'player.js' }), 'plain script'],
+    [url({ path: 'missing.png.enc' }), 'absent sealed object'],
+    [url({ path: 'page.html.enc', segment: signature({ token: OTHER_TOKEN }) }), 'bad signature'],
+  ]) {
+    const response = await fetch(target, env, origin)
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), null, label)
+  }
+})
+
 test('every status carries the security headers and never a Set-Cookie', async () => {
   const b = pageBucket()
   const env = production(b)
@@ -300,6 +338,28 @@ test('frame-ancestors lists exactly the configured https origins and fails close
   const response = await fetch(url(), production(pageBucket(), { FRAME_ANCESTORS: '' }))
   assert.equal(response.status, 200)
   assert.equal(response.headers.get('Content-Security-Policy'), `${CSP_PREFIX}'none'`)
+})
+
+test('@sessions.AC278801 the CSP widens only what the proof reader needs', () => {
+  const directives = Object.fromEntries(
+    contentSecurityPolicy(PRODUCTION_ANCESTORS)
+      .split('; ')
+      .map((directive) => {
+        const [name, ...sources] = directive.split(' ')
+        return [name, sources]
+      }),
+  )
+  assert.deepEqual(directives['connect-src'], ["'self'"])
+  assert.deepEqual(directives['img-src'], ["'self'", 'data:', 'blob:'])
+  assert.deepEqual(directives['media-src'], ["'self'", 'blob:'])
+  assert.deepEqual(directives['script-src'], ["'self'"])
+  assert.deepEqual(directives['default-src'], ["'self'"])
+  assert.deepEqual(directives['worker-src'], ["'none'"])
+  assert.deepEqual(directives['form-action'], ["'none'"])
+  assert.deepEqual(directives['base-uri'], ["'none'"])
+  assert.deepEqual(directives['frame-ancestors'], PRODUCTION_ANCESTORS.split(' '))
+  assert.equal(directives['script-src-elem'], undefined)
+  assert.equal(directives['script-src-attr'], undefined)
 })
 
 test('signed ranges, HEAD and conditional reads use R2 native handling', async () => {

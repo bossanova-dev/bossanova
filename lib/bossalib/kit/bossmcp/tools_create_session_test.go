@@ -88,14 +88,43 @@ func TestCreateSessionVerifyOnlyDroppedIsAnError(t *testing.T) {
 		return &CreateSessionResult{Session: &pb.Session{Id: "sess-dropped"}}, nil
 	}}
 
-	res := callCreateSession(t, backend, map[string]any{
-		"repo_id": "r1", "prompt": "verify", "pr_number": 7, "verify_only": true,
-	})
-	if !res.IsError {
-		t.Fatalf("a created session that is not verify-only must be a tool error, got %s", textOf(t, res))
+	// policy_ref implies verify-only, so dropping it is the same hazard.
+	for _, flag := range []map[string]any{{"verify_only": true}, {"policy_ref": "config/trial"}} {
+		args := map[string]any{"repo_id": "r1", "prompt": "verify", "pr_number": 7}
+		for k, v := range flag {
+			args[k] = v
+		}
+		res := callCreateSession(t, backend, args)
+		if !res.IsError {
+			t.Fatalf("%v: a created session that is not verify-only must be a tool error, got %s", flag, textOf(t, res))
+		}
+		if !strings.Contains(textOf(t, res), "sess-dropped") {
+			t.Errorf("%v: error must name the created session so the caller can stop it: %s", flag, textOf(t, res))
+		}
 	}
-	if !strings.Contains(textOf(t, res), "sess-dropped") {
-		t.Errorf("error must name the created session so the caller can stop it: %s", textOf(t, res))
+}
+
+// A daemon that predates trial policy refs creates a verify-only session
+// without the ref, which judges under base policy and may merge; success would
+// hide that. A session carrying the ref succeeds.
+func TestCreateSessionPolicyRefDroppedIsAnError(t *testing.T) {
+	for _, attached := range []bool{false, true} {
+		for _, echoed := range []string{"", "config/trial"} {
+			backend := &fakeBackend{createSession: func(context.Context, *pb.CreateSessionRequest) (*CreateSessionResult, error) {
+				return &CreateSessionResult{
+					Session:          &pb.Session{Id: "sess-trial", IsVerifyOnly: true, PolicyRef: echoed},
+					AttachedExisting: attached,
+				}, nil
+			}}
+			args := map[string]any{"repo_id": "r1", "prompt": "verify", "pr_number": 7, "policy_ref": "config/trial"}
+			res := callCreateSession(t, backend, args)
+			if want := echoed == ""; res.IsError != want {
+				t.Fatalf("attached=%t echoed=%q: IsError=%t, want %t: %s", attached, echoed, res.IsError, want, textOf(t, res))
+			}
+			if res.IsError && !strings.Contains(textOf(t, res), "sess-trial") {
+				t.Errorf("attached=%t: error must name the session so the caller can archive it: %s", attached, textOf(t, res))
+			}
+		}
 	}
 }
 

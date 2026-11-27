@@ -206,7 +206,8 @@ func rootCmdWithGroups(g *skills.Group, daemonGroup daemonCommands) *cobra.Comma
 			// cron preflight remedy, exactly where the skills are needed.
 			path := cmd.CommandPath()
 			if path == "boss gen-skill" || path == "boss fix-terminal" ||
-				path == "boss tail" || path == "boss cost" || path == "boss init" ||
+				path == "boss tail" || path == "boss cost" ||
+				path == "boss init" || strings.HasPrefix(path, "boss init ") ||
 				path == "boss skills" || strings.HasPrefix(path, "boss skills ") {
 				return nil
 			}

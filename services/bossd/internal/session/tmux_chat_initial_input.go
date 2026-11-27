@@ -11,11 +11,21 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // initialInputFileSuffix names the per-launch file a runner writes its rendered
 // first input to. It lives beside the agent log (outside every worktree).
 const initialInputFileSuffix = ".initial-input"
+
+// claudePolicySettingsPrefix/Suffix match the per-launch Claude unattended
+// permission policy files written beside agent logs.
+const (
+	claudePolicySettingsPrefix = "claude-policy-"
+	claudePolicySettingsSuffix = ".json"
+	claudeFallbackPolicyPrefix = "bossd-claude-policy-"
+)
 
 // staleInitialInputFileAge is how old a leftover input file must be before the
 // startup sweep removes it. A live launch reads (and removes) its file within
@@ -160,4 +170,76 @@ func (l *Lifecycle) SweepStaleInitialInputFiles(now time.Time) int {
 		removed++
 	}
 	return removed
+}
+
+// SweepStalePolicySettingsFiles removes Claude unattended policy settings files
+// older than a day from the agent logs directory. Interactive panes read their
+// --settings file at startup and leave it behind when the pane exits; the
+// startup sweep (paired with the plugin's write-time sweep) keeps agentLogsDir
+// bounded.
+func (l *Lifecycle) SweepStalePolicySettingsFiles(now time.Time) int {
+	if l.agentLogsDir == "" {
+		return 0
+	}
+	entries, err := os.ReadDir(l.agentLogsDir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			l.logger.Warn().Err(err).Str("dir", l.agentLogsDir).Msg("could not list agent logs dir for stale policy files")
+		}
+		return 0
+	}
+	removed := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() || !isClaudePolicySettingsName(name) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) < staleInitialInputFileAge {
+			continue
+		}
+		path := filepath.Join(l.agentLogsDir, name)
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			l.logger.Warn().Err(err).Str("path", path).Msg("could not remove stale policy settings file")
+			continue
+		}
+		removed++
+	}
+	return removed
+}
+
+// RemoveClaudePolicySettingsFromArgvOnError removes any plugin-generated
+// Claude policy settings file referenced in argv when *errp is non-nil.
+func RemoveClaudePolicySettingsFromArgvOnError(errp *error, argv []string, logger zerolog.Logger) {
+	if *errp != nil {
+		RemoveClaudePolicySettingsFromArgv(argv, logger)
+	}
+}
+
+// RemoveClaudePolicySettingsFromArgv deletes any plugin-generated Claude
+// unattended policy file referenced via --settings in argv. Call this on
+// launch-failure paths after BuildInteractiveCommand has already written the
+// file so failed tmux spawns never leak settings files.
+func RemoveClaudePolicySettingsFromArgv(argv []string, logger zerolog.Logger) {
+	for i := 0; i < len(argv)-1; i++ {
+		if argv[i] != "--settings" {
+			continue
+		}
+		path := argv[i+1]
+		if !isClaudePolicySettingsName(filepath.Base(path)) {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			logger.Warn().Err(err).Str("path", path).Msg("could not remove claude policy settings file after failed launch")
+			continue
+		}
+		parent := filepath.Dir(path)
+		if strings.HasPrefix(filepath.Base(parent), claudeFallbackPolicyPrefix) {
+			_ = os.Remove(parent)
+		}
+	}
+}
+
+func isClaudePolicySettingsName(name string) bool {
+	return strings.HasPrefix(name, claudePolicySettingsPrefix) && strings.HasSuffix(name, claudePolicySettingsSuffix)
 }

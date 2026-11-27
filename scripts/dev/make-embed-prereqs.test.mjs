@@ -61,7 +61,12 @@ const embedTargets = [
   },
   {
     target: 'bin/bossd',
-    payloads: [{ dir: 'services/bossd/migrations', filter: isSQL }],
+    payloads: [
+      { dir: 'services/bossd/migrations', filter: isSQL },
+      // services/bossd/internal/proofseal: go:embed loader/index.html and loader/proof-shim.js.
+      { file: 'services/bossd/internal/proofseal/loader/index.html' },
+      { file: 'services/bossd/internal/proofseal/loader/proof-shim.js' },
+    ],
   },
   {
     target: 'bin/bosso',
@@ -282,6 +287,8 @@ const embedSites = [
   'lib/bossalib/kit/projectconfig :: schema/boss-project.schema.json',
   'plugins/bossd-plugin-opencode :: bossd-question.js',
   'services/boss/internal/hermes :: plugin/*.py plugin/skills/*/SKILL.md',
+  'services/bossd/internal/proofseal :: loader/index.html',
+  'services/bossd/internal/proofseal :: loader/proof-shim.js',
   'services/bossd/migrations :: *.sql',
   'services/bosso/migrations_postgres :: *.sql',
 ]

@@ -38,6 +38,10 @@ type MockAgentRunner struct {
 	// subprocesses on negative-path runs.
 	Started []string
 
+	// LaunchOptions records every HeadlessLaunchOptions passed to
+	// StartByAgentWithHeadlessLaunchOptions in call order.
+	LaunchOptions []agent.HeadlessLaunchOptions
+
 	// StartFunc overrides the default Start behavior when set.
 	StartFunc func(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error)
 
@@ -293,10 +297,11 @@ func (m *MockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.
 	return m.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 
-// StartByAgentWithHeadlessLaunchOptions forwards to StartByAgent. The mock
-// records process behavior only; managed launch controls are covered by the
-// PluginRunner contract tests.
-func (m *MockAgentRunner) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, _ agent.HeadlessLaunchOptions) (string, error) {
+// StartByAgentWithHeadlessLaunchOptions records options and forwards to StartByAgent.
+func (m *MockAgentRunner) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
+	m.mu.Lock()
+	m.LaunchOptions = append(m.LaunchOptions, options)
+	m.mu.Unlock()
 	return m.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 

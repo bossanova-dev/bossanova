@@ -243,7 +243,12 @@ func (s *Server) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentR
 	// codex process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths. (Mirrors the claude plugin
 	// fix in services/bossd's host_service.)
-	sid, err := s.runner.startRun(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), trustOverride, extraEnv)
+	policy := req.GetUnattendedPermissionPolicy()
+	sid, err := s.runner.startRun(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), codexRunOptions{
+		trustOverride:            trustOverride,
+		hasUnattendedPolicy:      policy != nil,
+		unattendedNetworkAllowed: policy.GetIsNetworkAllowed(),
+	}, extraEnv)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -363,20 +368,16 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if req.Resume {
 		args = append(args, "resume", req.SessionId)
 	}
+	var sandbox, approval string
+	var dangerouslyBypass bool
 	if s.runner != nil {
-		if s.runner.dangerouslyBypass {
-			// Mutually exclusive with --sandbox / --ask-for-approval
-			// (codex errors out when combined); drop them here to mirror
-			// runner.buildArgv.
-			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
-		} else {
-			if s.runner.sandbox != "" {
-				args = append(args, "--sandbox", s.runner.sandbox)
-			}
-			if s.runner.approval != "" {
-				args = append(args, "--ask-for-approval", s.runner.approval)
-			}
-		}
+		sandbox = s.runner.sandbox
+		approval = s.runner.approval
+		dangerouslyBypass = s.runner.dangerouslyBypass
+	}
+	policy := req.GetUnattendedPermissionPolicy()
+	args = append(args, codexPermissionArgs(sandbox, approval, dangerouslyBypass, policy != nil, policy.GetIsNetworkAllowed(), false)...)
+	if s.runner != nil {
 		if model := resolveCodexModel(req.GetModel(), s.runner.model); model != "" {
 			args = append(args, "--model", model)
 		}

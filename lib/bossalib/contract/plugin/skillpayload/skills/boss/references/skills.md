@@ -31,6 +31,15 @@ Write a detected .boss-skills.json for this repository
 - `--update-crons` — Update an existing pipeline job's prompt, gate and agent when they differ
 - `--yes` — Apply .boss-project.json cron prompt and gate changes without asking
 
+### `boss init check [flags]`
+
+Inspect Bossanova setup checks without changing anything
+
+**Flags:**
+
+- `--dir` — Repository directory to inspect (default: the working directory)
+- `--json` — Emit setup checks as JSON matching the MCP list_setup_checks tool
+
 ### `boss skills`
 
 Manage installed boss skills

@@ -152,6 +152,7 @@ func TestAttentionProofURL_ServedWhileAChatWorks_Sessions_AC255701(t *testing.T)
 		{"older head", &evidence.ProofRecord{Head: older, Page: page, Digest: digest}, page, older, ""},
 		{"page with a summary", &evidence.ProofRecord{Head: timelineHead, Page: page, Digest: digest, Summary: summary}, page, timelineHead, ""},
 		{"summary without a page", &evidence.ProofRecord{Head: older, Digest: digest, Summary: summary}, "", older, summary},
+		{"summary and why there is no page", &evidence.ProofRecord{Head: older, Digest: digest, Summary: summary, PageProblem: evidence.PageProblem{Reason: "upload-failed", Detail: "hosted proof pages are not configured"}}, "", older, summary},
 		{"no page", &evidence.ProofRecord{Head: timelineHead, Digest: digest}, "", "", ""},
 		{"no record", nil, "", "", ""},
 	} {
@@ -174,7 +175,7 @@ func TestAttentionProofURL_ServedWhileAChatWorks_Sessions_AC255701(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			streamed := &pb.Session{Id: row.ID, PrProofUrl: "stale", PrProofHeadSha: "stale", PrProofSummary: "stale"}
+			streamed := &pb.Session{Id: row.ID, PrProofUrl: "stale", PrProofHeadSha: "stale", PrProofSummary: "stale", PrProofPageProblem: &pb.ProofPageProblem{Reason: "stale"}}
 			s.HydrateAttentionForStream(t.Context(), streamed)
 			for _, got := range []*pb.Session{onlySession(t, listed.Msg.Sessions), fetched.Msg.Session, streamed} {
 				if kind := got.GetAttention().GetKind(); kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || got.GetAttention().GetProofUrl() != "" {
@@ -182,6 +183,13 @@ func TestAttentionProofURL_ServedWhileAChatWorks_Sessions_AC255701(t *testing.T)
 				}
 				if got.GetPrProofUrl() != tc.wantURL || got.GetPrProofHeadSha() != tc.wantHead || got.GetPrProofSummary() != tc.wantSummary {
 					t.Fatalf("pr_proof_url=%q pr_proof_head_sha=%q pr_proof_summary=%q; want %q, %q, %q", got.GetPrProofUrl(), got.GetPrProofHeadSha(), got.GetPrProofSummary(), tc.wantURL, tc.wantHead, tc.wantSummary)
+				}
+				var want evidence.PageProblem
+				if tc.wantSummary != "" {
+					want = tc.latest.PageProblem
+				}
+				if problem := got.GetPrProofPageProblem(); problem.GetReason() != want.Reason || problem.GetDetail() != want.Detail || (want == evidence.PageProblem{}) != (problem == nil) {
+					t.Fatalf("pr_proof_page_problem = %v; want %+v", problem, want)
 				}
 			}
 		})

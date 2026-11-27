@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "encoding": "hex",
+  "format": "0x01 || nonce(12) || AES-256-GCM(key, nonce, plaintext, aad=name) ciphertext+tag(16)",
+  "vectors": [
+    {
+      "name": "page.html.enc",
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "fragmentKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "nonce": "a0a0a0a0a0a0a0a0a0a0a0a0",
+      "plaintext": "3c21646f63747970652068746d6c3e0a3c7469746c653e50726f6f663c2f7469746c653e0a3c696d67207372633d2273637265656e73686f74732f612e706e67223e0a",
+      "ciphertext": "01a0a0a0a0a0a0a0a0a0a0a0a01990068cddb037addc71e6f68053cea4f9ccf091de88174b7b612a545e3b79041cce1d15c509bfa56a4c24d4529258c6d525f3ca35b0a8f91b26cf5b47fde5e7dd6d43f51c271e6ffac809a7607ce1c864ba9b"
+    },
+    {
+      "name": "screenshots/a.png.enc",
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "fragmentKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1",
+      "plaintext": "89504e470d0a1a0a",
+      "ciphertext": "01a1a1a1a1a1a1a1a1a1a1a1a12c90b519de146bde9aa2b10ea850b9239612ae21e4ee6e7d"
+    },
+    {
+      "name": "manifest.json.enc",
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "fragmentKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "nonce": "a2a2a2a2a2a2a2a2a2a2a2a2",
+      "plaintext": "7b226372697465726961223a5b5d7d",
+      "ciphertext": "01a2a2a2a2a2a2a2a2a2a2a2a22eac7b70244e1e9e6020338f67690c1fae4194ed5ab73363fff27439c5033e"
+    },
+    {
+      "name": "media/empty.webm.enc",
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "fragmentKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "nonce": "a3a3a3a3a3a3a3a3a3a3a3a3",
+      "plaintext": "",
+      "ciphertext": "01a3a3a3a3a3a3a3a3a3a3a3a3ad4471afa46915554f6f1ef0a0cdc689"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-.PHONY: feature-coverage gen-skill generate glossary-update sweep-schedule-update merging-doc-update feature-index-update projectconfig-schema projectconfig-schema-check readme-gifs rules-table-update skill-config-validator skill-config-validator-check proof-tokens proof-tokens-check test-manifest-update
+.PHONY: feature-coverage gen-skill generate glossary-update sweep-schedule-update merging-doc-update feature-index-update projectconfig-schema projectconfig-schema-check readme-gifs rules-table-update skill-config-validator skill-config-validator-check proof-tokens proof-tokens-check review-page-style review-page-style-check test-manifest-update
 
 ## gen-skill: Regenerate the /boss skill command reference from the CLI.
 ## The reference region of lib/bossalib/contract/plugin/skillpayload/skills/boss/SKILL.md is
@@ -111,6 +111,14 @@ proof-tokens:
 ## proof-tokens-check: Fail if the generated proof page theme is stale against lib/ui-tokens.
 proof-tokens-check:
 	node scripts/skills/proof-tokens/build.mjs --check
+
+## review-page-style: Regenerate the web app's shadow-root copy of the hosted review page stylesheet
+review-page-style:
+	node scripts/skills/review-page-style/build.mjs
+
+## review-page-style-check: Fail if the web app's review page stylesheet is stale against PROOF_STYLE.
+review-page-style-check:
+	node scripts/skills/review-page-style/build.mjs --check
 
 .PHONY: sqlc-bin sqlc-generate sqlc-diff sqlc-vet sqlc-check store-only-sql-update
 

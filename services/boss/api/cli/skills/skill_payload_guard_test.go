@@ -148,7 +148,7 @@ func TestSelfHealNoDowngradeRefreshesDescendantPayload(t *testing.T) {
 
 	home := g.setupSkillStartupTest(t)
 	first, second := setupOrderedCheckout(t)
-	g.stubSkillPayloadBuildInfo(t, second[:9], "v1.0.0-2-g"+second[:9])
+	g.stubSkillPayloadBuildInfo(t, second[:9], "v1.2.0")
 	installed := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginCheckout, Revision: first, Writer: libskillinstall.WriterExplicit}
 	dir, probe := seedStampedCodexTree(t, home, &installed)
 
@@ -167,9 +167,9 @@ func TestSelfHealNoDowngradeHoldsProvablyOlderPayload(t *testing.T) {
 
 	home := g.setupSkillStartupTest(t)
 	first, second := setupOrderedCheckout(t)
-	g.stubSkillPayloadBuildInfo(t, first[:9], "v1.0.0-1-g"+first[:9])
-	// Even an unattended record is protected from a provably older payload.
-	installed := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginEmbedded, Revision: second[:9], Version: "v1.0.0-2-g" + second[:9], Writer: libskillinstall.WriterUnattended}
+	g.stubSkillPayloadBuildInfo(t, first[:9], "v1.1.0")
+	// Even an unattended record is protected from a provably older release payload.
+	installed := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginEmbedded, Revision: second[:9], Version: "v1.2.0", Writer: libskillinstall.WriterUnattended}
 	_, probe := seedStampedCodexTree(t, home, &installed)
 
 	stderr := g.runHeadlessSelfHeal(t)
@@ -186,7 +186,7 @@ func TestSelfHealNoDowngradeRefreshesAndStampsLegacyTree(t *testing.T) {
 
 	home := g.setupSkillStartupTest(t)
 	t.Chdir(t.TempDir())
-	g.stubSkillPayloadBuildInfo(t, "abc1234", "v1.0.0-5-gabc1234")
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "v1.2.0")
 	dir, probe := seedStampedCodexTree(t, home, nil)
 
 	g.runHeadlessSelfHeal(t)
@@ -199,13 +199,14 @@ func TestSelfHealNoDowngradeRefreshesAndStampsLegacyTree(t *testing.T) {
 	}
 }
 
-// A trusted-checkout self-heal is explicit: it keeps its overwrite and claims
-// the tree for the checkout, even over a newer-looking record.
-func TestSelfHealNoDowngradeTrustedCheckoutOverwritesAndStampsExplicit(t *testing.T) {
+// Headless self-heal never installs a checkout payload globally, even when
+// BOSS_TRUST_CHECKOUT_SKILLS=1 is set in the environment. Installing from a
+// checkout requires an explicit operator command (`boss skills install`).
+func TestSelfHealNoDowngradeTrustedCheckoutHoldsInHeadlessStartup(t *testing.T) {
 	g := newTestGroup()
 
 	home := g.setupSkillStartupTest(t)
-	_, second := setupOrderedCheckout(t)
+	setupOrderedCheckout(t)
 	t.Setenv(trustCheckoutSkillSourcesEnv, "1")
 	installed := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginEmbedded, Revision: "fffffff", Version: "v9.9.9", Writer: libskillinstall.WriterExplicit}
 	dir := filepath.Join(home, ".codex", "skills")
@@ -213,17 +214,13 @@ func TestSelfHealNoDowngradeTrustedCheckoutOverwritesAndStampsExplicit(t *testin
 		t.Fatal(err)
 	}
 
-	g.runHeadlessSelfHeal(t)
+	stderr := g.runHeadlessSelfHeal(t)
+	if !strings.Contains(stderr, "held Codex skill refresh") {
+		t.Fatalf("stderr = %q, want hold notice", stderr)
+	}
 	record, recorded := mustPayloadRecord(t, dir)
-	if !recorded || record.Origin != libskillinstall.OriginCheckout || record.Writer != libskillinstall.WriterExplicit {
-		t.Fatalf("record = %+v (recorded %t), want an explicit checkout stamp", record, recorded)
-	}
-	if record.Revision != second || record.Dirty {
-		t.Fatalf("record = %+v, want the clean checkout HEAD %s", record, second)
-	}
-	root, err := os.Getwd()
-	if err != nil || record.SourceRoot != root {
-		t.Fatalf("source checkout = %q, want %q (error %v)", record.SourceRoot, root, err)
+	if !recorded || record != installed {
+		t.Fatalf("record = %+v (recorded %t), want %+v untouched", record, recorded, installed)
 	}
 }
 
@@ -253,6 +250,12 @@ func TestMaybeInstallSkillsNoDowngradeDoesNotOfferOlderPayload(t *testing.T) {
 	}
 	if got := readProbe(t, probe); got != staleInstalledSkill {
 		t.Fatal("older payload was written")
+	}
+	if !strings.Contains(stderr, "payload is older than the installed payload") {
+		t.Fatalf("stderr = %q, want older-payload hold reason for interactive startup", stderr)
+	}
+	if strings.Contains(stderr, "unattended refresh") {
+		t.Fatalf("stderr = %q, interactive startup must not report an unattended-refresh refusal reason", stderr)
 	}
 }
 
@@ -455,8 +458,10 @@ func TestSkillCheckReportsHoldAfterStartup_BossSkills_AC11(t *testing.T) {
 	if strings.Contains(out.String(), "  held: ") {
 		t.Fatalf("current tree reports hold: %s", &out)
 	}
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "v1.2.0")
 	installed.Writer = libskillinstall.WriterUnattended
 	installed.Origin = libskillinstall.OriginEmbedded
+	installed.Version = "v1.1.0"
 	seedStampedCodexTree(t, home, &installed)
 	out.Reset()
 	_ = g.runSkillCheck(&out, "codex")
@@ -495,4 +500,82 @@ func TestSkillInstallClearsHeldNotice(t *testing.T) {
 	if stderr := g.runHeadlessSelfHeal(t); !strings.Contains(stderr, "held Codex skill refresh") {
 		t.Fatalf("new hold not announced: %q", stderr)
 	}
+}
+
+func TestSelfHealNeverInstallsCheckoutOrBranchBuildGlobally(t *testing.T) {
+	t.Run("trusted checkout env in headless startup leaves global tree untouched and records why", func(t *testing.T) {
+		g := newTestGroup()
+		home := g.setupSkillStartupTest(t)
+		setupOrderedCheckout(t)
+		t.Setenv(trustCheckoutSkillSourcesEnv, "1")
+		installed := libskillinstall.EmbeddedPayloadRecord("1111111", "v1.0.0", libskillinstall.WriterUnattended)
+		dir, probe := seedStampedCodexTree(t, home, &installed)
+
+		stderr := g.runHeadlessSelfHeal(t)
+		if got := readProbe(t, probe); got != staleInstalledSkill {
+			t.Fatalf("headless self-heal overwrote global tree from checkout: %q", got)
+		}
+		if !strings.Contains(stderr, "held Codex skill refresh") || !strings.Contains(stderr, "checkout") {
+			t.Fatalf("stderr = %q, want hold reason naming checkout refusal", stderr)
+		}
+		if record, _ := mustPayloadRecord(t, dir); record != installed {
+			t.Fatalf("record = %+v, want %+v untouched", record, installed)
+		}
+	})
+
+	t.Run("branch-built binary with newer commit leaves global tree untouched and records why", func(t *testing.T) {
+		g := newTestGroup()
+		home := g.setupSkillStartupTest(t)
+		first, second := setupOrderedCheckout(t)
+		g.stubSkillPayloadBuildInfo(t, second[:9], "v1.0.0-2-g"+second[:9])
+		installed := libskillinstall.EmbeddedPayloadRecord(first[:9], "v1.0.0", libskillinstall.WriterUnattended)
+		dir, probe := seedStampedCodexTree(t, home, &installed)
+
+		stderr := g.runHeadlessSelfHeal(t)
+		if got := readProbe(t, probe); got != staleInstalledSkill {
+			t.Fatalf("headless self-heal overwrote global tree from branch build: %q", got)
+		}
+		if !strings.Contains(stderr, "held Codex skill refresh") || !strings.Contains(stderr, "release") {
+			t.Fatalf("stderr = %q, want hold reason requiring a release payload", stderr)
+		}
+		if record, _ := mustPayloadRecord(t, dir); record != installed {
+			t.Fatalf("record = %+v, want %+v untouched", record, installed)
+		}
+	})
+
+	t.Run("release payload still self-heals", func(t *testing.T) {
+		g := newTestGroup()
+		home := g.setupSkillStartupTest(t)
+		t.Chdir(t.TempDir())
+		g.stubSkillPayloadBuildInfo(t, "def5678", "v1.2.0")
+		installed := libskillinstall.EmbeddedPayloadRecord("abc1234", "v1.1.0", libskillinstall.WriterUnattended)
+		dir, probe := seedStampedCodexTree(t, home, &installed)
+
+		g.runHeadlessSelfHeal(t)
+		if got := readProbe(t, probe); got == staleInstalledSkill {
+			t.Fatal("newer release payload did not self-heal")
+		}
+		record, recorded := mustPayloadRecord(t, dir)
+		if !recorded || record.Origin != libskillinstall.OriginEmbedded || record.Version != "v1.2.0" || record.Writer != libskillinstall.WriterUnattended {
+			t.Fatalf("record = %+v (recorded %t), want unattended release v1.2.0", record, recorded)
+		}
+	})
+
+	t.Run("explicit trusted install still installs a checkout", func(t *testing.T) {
+		g := newTestGroup()
+		home := g.setupSkillStartupTest(t)
+		_, second := setupOrderedCheckout(t)
+		t.Setenv(trustCheckoutSkillSourcesEnv, "1")
+		g.setAvailableSkillAgents(map[string]bool{"codex": true})
+		dir := filepath.Join(home, ".codex", "skills")
+
+		var out bytes.Buffer
+		if err := g.runSkillSync(&out, skillSyncInstall, "codex"); err != nil {
+			t.Fatalf("runSkillSync: %v\n%s", err, out.String())
+		}
+		record, recorded := mustPayloadRecord(t, dir)
+		if !recorded || record.Origin != libskillinstall.OriginCheckout || record.Writer != libskillinstall.WriterExplicit || record.Revision != second {
+			t.Fatalf("record = %+v (recorded %t), want explicit checkout at %s", record, recorded, second)
+		}
+	})
 }

@@ -163,6 +163,17 @@ func GetStatus() (*Status, error) {
 	return platformGetStatus()
 }
 
+// ServiceRegistered reports whether this profile already has a service-manager
+// registration: the bossd LaunchAgent plist or systemd unit, or, on macOS, the
+// root watchdog's plist.
+func ServiceRegistered() (bool, error) {
+	st, err := GetStatus()
+	if err != nil {
+		return false, err
+	}
+	return st.Installed || platformWatchdogPlistPresent(), nil
+}
+
 // McpInstall registers the local MCP server with the system service manager so
 // it auto-starts and serves Streamable HTTP on 127.0.0.1:port. mcpBinPath is
 // the absolute path to the mcp binary.

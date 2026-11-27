@@ -32,7 +32,9 @@ Install with Homebrew:
 brew install bossanova-dev/tap/bossanova
 ```
 
-Then register the daemon service:
+The first `boss` launch automatically registers the `bossd` LaunchAgent so the
+daemon starts at login. Set `BOSS_NO_AUTO_DAEMON_INSTALL=1` to opt out, or
+register the daemon service by hand:
 
 <CommandTabs
 cli="boss daemon install"

@@ -485,12 +485,22 @@ func requireSingleTransport(cmd *cobra.Command) error {
 
 var newHostClient = sshhost.NewClient
 
+var dialTUIRemoteClient = newRemoteClient
+
 // newTUIClient resolves the transport for the router's screen contracts.
 func newTUIClient(cmd *cobra.Command) (startupClient, error) {
 	if remote := remoteURL(cmd); remote != "" {
-		return newRemoteClient(cmd, remote)
+		c, err := dialTUIRemoteClient(cmd, remote)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
-	return newDaemonClient(cmd)
+	c, err := newDaemonClientRegisteringDaemon(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // startupClient is the router contract plus the probes owned by startup wiring.

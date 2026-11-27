@@ -248,3 +248,67 @@ func TestEnsureRunningWithPolicySpawnsWhenNoServiceIsInstalled(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceRegistered(t *testing.T) {
+	t.Run("no plist", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		useTempWatchdogRoot(t)
+
+		got, err := ServiceRegistered()
+		if err != nil {
+			t.Fatalf("ServiceRegistered() error = %v, want nil", err)
+		}
+		if got {
+			t.Errorf("ServiceRegistered() = true, want false with no plist installed")
+		}
+	})
+
+	t.Run("launch agent plist", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		useTempWatchdogRoot(t)
+
+		plistPath, err := platformServicePath()
+		if err != nil {
+			t.Fatalf("platformServicePath: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+			t.Fatalf("mkdir LaunchAgents dir: %v", err)
+		}
+		if err := os.WriteFile(plistPath, []byte("<plist/>\n"), 0o600); err != nil {
+			t.Fatalf("write LaunchAgent plist: %v", err)
+		}
+
+		got, err := ServiceRegistered()
+		if err != nil {
+			t.Fatalf("ServiceRegistered() error = %v, want nil", err)
+		}
+		if !got {
+			t.Errorf("ServiceRegistered() = false, want true once LaunchAgent plist exists")
+		}
+	})
+
+	t.Run("watchdog plist only", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		layout := useTempWatchdogRoot(t)
+
+		if err := os.WriteFile(layout.PlistPath, []byte("<plist/>\n"), 0o644); err != nil {
+			t.Fatalf("write watchdog plist: %v", err)
+		}
+
+		st, err := GetStatus()
+		if err != nil || st.Installed {
+			t.Fatalf("fixture GetStatus() = (%+v, %v), want no LaunchAgent installed", st, err)
+		}
+
+		got, err := ServiceRegistered()
+		if err != nil {
+			t.Fatalf("ServiceRegistered() error = %v, want nil", err)
+		}
+		if !got {
+			t.Errorf("ServiceRegistered() = false, want true when only the watchdog plist exists")
+		}
+	})
+}

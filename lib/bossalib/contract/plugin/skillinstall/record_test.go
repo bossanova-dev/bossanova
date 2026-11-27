@@ -83,9 +83,9 @@ func assertTreeMatches(t *testing.T, dir string, fsys fs.FS) {
 var (
 	oldCheckoutRecord = PayloadRecord{Origin: OriginCheckout, Revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Writer: WriterExplicit}
 	explicitEmbedded  = PayloadRecord{Origin: OriginEmbedded, Revision: "bbbbbbb", Version: "v1.0.0-5-gbbbbbbb", Writer: WriterExplicit}
-	unattendedEmbed   = PayloadRecord{Origin: OriginEmbedded, Revision: "ccccccc", Version: "v1.0.0-6-gccccccc", Writer: WriterUnattended}
-	payloadEmbedded   = PayloadRecord{Origin: OriginEmbedded, Revision: "ddddddd", Version: "v1.0.0-7-gddddddd", Writer: WriterUnattended}
-	pinnedEmbed       = PayloadRecord{Origin: OriginEmbedded, Revision: "fffffff", Version: "v1.0.0-6-gfffffff", Writer: WriterUnattended, Pinned: true}
+	unattendedEmbed   = PayloadRecord{Origin: OriginEmbedded, Revision: "ccccccc", Version: "v1.1.0", Writer: WriterUnattended}
+	payloadEmbedded   = PayloadRecord{Origin: OriginEmbedded, Revision: "ddddddd", Version: "v1.2.0", Writer: WriterUnattended}
+	pinnedEmbed       = PayloadRecord{Origin: OriginEmbedded, Revision: "fffffff", Version: "v1.1.0", Writer: WriterUnattended, Pinned: true}
 )
 
 // pinned is want as the guarded pipeline stamps it after refreshing over an
@@ -232,7 +232,7 @@ func TestNoDowngradePinnedFloorSurvivesAnUnprovableWriter(t *testing.T) {
 	if err := ExtractRecorded(dir, testFS(), checkout); err != nil {
 		t.Fatal(err)
 	}
-	forward := PayloadRecord{Origin: OriginEmbedded, Revision: "89abcde", Version: "v1.0.0-9-g89abcde", Writer: WriterUnattended}
+	forward := PayloadRecord{Origin: OriginEmbedded, Revision: "89abcde", Version: "v1.2.0", Writer: WriterUnattended}
 	result, err := EnsureUpdatedGuarded(dir, changedFS(), forward, fixedOrder(OrderNotOlder, nil))
 	if err != nil || !result.Updated {
 		t.Fatalf("forward refresh = %+v, %v; want refreshed", result, err)
@@ -274,8 +274,8 @@ func TestNoDowngradeNeverFreshInstalls(t *testing.T) {
 // Whatever the interleaving, the final tree and its record must describe one
 // payload, never a mix.
 func TestNoDowngradeConcurrentWritersLeaveOneCoherentPayload(t *testing.T) {
-	older := PayloadRecord{Origin: OriginEmbedded, Revision: "1111111", Version: "v1.0.0-1-g1111111", Writer: WriterUnattended}
-	newer := PayloadRecord{Origin: OriginEmbedded, Revision: "2222222", Version: "v1.0.0-2-g2222222", Writer: WriterUnattended}
+	older := PayloadRecord{Origin: OriginEmbedded, Revision: "1111111", Version: "v1.0.0", Writer: WriterUnattended}
+	newer := PayloadRecord{Origin: OriginEmbedded, Revision: "2222222", Version: "v1.2.0", Writer: WriterUnattended}
 	installed := PayloadRecord{Origin: OriginCheckout, Revision: "1234567", Writer: WriterExplicit}
 	order := func(base, payload PayloadRecord) Ordering {
 		rank := map[string]int{older.Revision: 1, installed.Revision: 2, newer.Revision: 3}
@@ -477,5 +477,106 @@ func TestNoDowngradeEmbeddedPayloadRecordNormalises(t *testing.T) {
 				t.Fatalf("%+v is comparable; an unknown or dirty payload must not be", got)
 			}
 		})
+	}
+}
+
+func TestDecideRefreshRefusesCheckoutAndNonReleasePayloads(t *testing.T) {
+	installedRelease := EmbeddedPayloadRecord("1111111", "v1.0.0", WriterUnattended)
+	cases := []struct {
+		name      string
+		installed *PayloadRecord
+		payload   PayloadRecord
+		order     Ordering
+	}{
+		{
+			name:      "checkout payload over legacy tree",
+			installed: nil,
+			payload:   PayloadRecord{Origin: OriginCheckout, SourceRoot: "/repo/wt", Revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Writer: WriterUnattended},
+			order:     OrderNotOlder,
+		},
+		{
+			name:      "checkout payload over installed release",
+			installed: &installedRelease,
+			payload:   PayloadRecord{Origin: OriginCheckout, SourceRoot: "/repo/wt", Revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Writer: WriterUnattended},
+			order:     OrderNotOlder,
+		},
+		{
+			name:      "branch embedded build over legacy tree",
+			installed: nil,
+			payload:   EmbeddedPayloadRecord("2222222", "v1.0.0-5-g2222222", WriterUnattended),
+			order:     OrderNotOlder,
+		},
+		{
+			name:      "branch embedded build over installed release",
+			installed: &installedRelease,
+			payload:   EmbeddedPayloadRecord("2222222", "v1.0.0-5-g2222222", WriterUnattended),
+			order:     OrderNotOlder,
+		},
+		{
+			name:      "dev embedded build over unattended release",
+			installed: &installedRelease,
+			payload:   EmbeddedPayloadRecord("2222222", "dev", WriterUnattended),
+			order:     OrderNotOlder,
+		},
+		{
+			name:      "dirty release build over unattended release",
+			installed: &installedRelease,
+			payload:   EmbeddedPayloadRecord("2222222", "v1.1.0-dirty", WriterUnattended),
+			order:     OrderNotOlder,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.installed == nil {
+				if err := Extract(dir, testFS()); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := ExtractRecorded(dir, testFS(), *tc.installed); err != nil {
+				t.Fatal(err)
+			}
+			before := treeFingerprint(t, dir)
+
+			result, err := EnsureUpdatedGuarded(dir, changedFS(), tc.payload, fixedOrder(tc.order, nil))
+			if err != nil {
+				t.Fatalf("EnsureUpdatedGuarded: %v", err)
+			}
+			if result.Updated || !result.Held {
+				t.Fatalf("result = %+v, want held (no refresh)", result)
+			}
+			if result.Decision.Reason == "" {
+				t.Fatal("held decision has empty reason")
+			}
+			if after := treeFingerprint(t, dir); after != before {
+				t.Fatalf("refused payload mutated installed tree:\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
+	}
+}
+
+func TestDecideRefreshReasonMatchesCallerWriter(t *testing.T) {
+	installed := PayloadRecord{Origin: OriginCheckout, Revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Writer: WriterExplicit}
+	olderDev := EmbeddedPayloadRecord("aaaaaaa", "v1.0.0-1-gaaaaaaa", WriterExplicit)
+	decision := DecideRefresh(installed, true, olderDev, fixedOrder(OrderOlder, nil))
+	if decision.Refresh || decision.Ordering != OrderOlder {
+		t.Fatalf("interactive older dev decision = %+v, want held OrderOlder", decision)
+	}
+	if decision.Reason != "payload is older than the installed payload" {
+		t.Fatalf("interactive older dev reason = %q, want older-payload reason (not unattended refusal)", decision.Reason)
+	}
+
+	olderCheckout := PayloadRecord{Origin: OriginCheckout, Revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Writer: WriterExplicit}
+	checkoutDecision := DecideRefresh(installed, true, olderCheckout, fixedOrder(OrderOlder, nil))
+	if checkoutDecision.Refresh || checkoutDecision.Ordering != OrderOlder {
+		t.Fatalf("interactive older checkout decision = %+v, want held OrderOlder", checkoutDecision)
+	}
+	if checkoutDecision.Reason != "payload is older than the installed payload" {
+		t.Fatalf("interactive older checkout reason = %q, want older-payload reason", checkoutDecision.Reason)
+	}
+
+	unattendedDev := EmbeddedPayloadRecord("aaaaaaa", "v1.0.0-1-gaaaaaaa", WriterUnattended)
+	unattendedDecision := DecideRefresh(installed, true, unattendedDev, fixedOrder(OrderOlder, nil))
+	if unattendedDecision.Refresh || !strings.Contains(unattendedDecision.Reason, "unattended refresh") {
+		t.Fatalf("unattended dev decision = %+v, want unattended refusal reason", unattendedDecision)
 	}
 }

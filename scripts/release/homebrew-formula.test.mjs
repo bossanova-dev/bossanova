@@ -83,3 +83,19 @@ test('BOS-696: caveats explain why `brew upgrade` requires a daemon restart', ()
       'version-stable real path, which keeps macOS privacy permissions matched.',
   )
 })
+
+test('BOS-2714: caveats name first-launch opt-out and manual daemon install command', () => {
+  const caveats = extractCaveats(formula)
+
+  assert.match(
+    caveats,
+    /BOSS_NO_AUTO_DAEMON_INSTALL/,
+    'BOS-2714: caveats must name the BOSS_NO_AUTO_DAEMON_INSTALL opt-out.',
+  )
+
+  assert.match(
+    caveats,
+    /boss daemon install/,
+    'BOS-2714: caveats must name the manual `boss daemon install` command.',
+  )
+})

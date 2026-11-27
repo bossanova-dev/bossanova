@@ -930,3 +930,33 @@ func TestSystemdInstallRefusesAnUnbakeableSettingsPathWithoutWritingTheUnit(t *t
 		})
 	}
 }
+
+func TestServiceRegistered(t *testing.T) {
+	t.Run("no unit", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+
+		got, err := ServiceRegistered()
+		if err != nil {
+			t.Fatalf("ServiceRegistered() error = %v, want nil", err)
+		}
+		if got {
+			t.Errorf("ServiceRegistered() = true, want false with no systemd unit")
+		}
+	})
+
+	t.Run("systemd user unit", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		writeBossdUnitFile(t, home)
+
+		got, err := ServiceRegistered()
+		if err != nil {
+			t.Fatalf("ServiceRegistered() error = %v, want nil", err)
+		}
+		if !got {
+			t.Errorf("ServiceRegistered() = false, want true once systemd user unit exists")
+		}
+	})
+}

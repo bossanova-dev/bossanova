@@ -64,6 +64,7 @@ func TestEnsureSkillsInstalled_NoOpWhenNotInstalled(t *testing.T) {
 }
 
 func TestEnsureSkillsInstalled_UpdatesWhenInstalled(t *testing.T) {
+	stubPluginBuildInfo(t, "def5678", "v1.3.0")
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	// Pre-create a marker file the existing IsInstalled checks for.
@@ -182,7 +183,7 @@ func TestEnsureSkillsInstalled_NoDowngradeHoldsOverCheckoutStampedTree(t *testin
 }
 
 func TestEnsureSkillsInstalled_NoDowngradeRefreshesUnstampedTree(t *testing.T) {
-	stubPluginBuildInfo(t, "abc1234", "v1.0.0-staging.19-11868-gabc1234")
+	stubPluginBuildInfo(t, "abc1234", "v1.3.0")
 	skillsDir, probe := seedStaleSkillTree(t, nil)
 
 	result, err := ensureSkillsInstalled()
@@ -202,6 +203,22 @@ func TestEnsureSkillsInstalled_NoDowngradeRefreshesUnstampedTree(t *testing.T) {
 	record, recorded, err := libskillinstall.ReadPayloadRecord(skillsDir)
 	if err != nil || !recorded || record != pluginSkillPayloadRecord() {
 		t.Fatalf("record = %+v (recorded %t, err %v), want the plugin payload stamped", record, recorded, err)
+	}
+}
+
+func TestEnsureSkillsInstalled_HoldsForNonReleaseBuild(t *testing.T) {
+	stubPluginBuildInfo(t, "abc1234", "v1.0.0-staging.19-11868-gabc1234")
+	_, probe := seedStaleSkillTree(t, nil)
+
+	result, err := ensureSkillsInstalled()
+	if err != nil {
+		t.Fatalf("ensureSkillsInstalled: %v", err)
+	}
+	if !result.Held || result.Updated {
+		t.Fatalf("result = %+v, want non-release plugin build to hold", result)
+	}
+	if data, _ := os.ReadFile(probe); string(data) != "installed by a different payload\n" {
+		t.Fatalf("non-release plugin rewrote the installed tree: %q", data)
 	}
 }
 

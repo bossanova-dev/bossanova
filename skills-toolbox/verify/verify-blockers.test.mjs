@@ -412,3 +412,23 @@ test('blocker comment lists ids and accepted lines before its unchanged trailer 
 test('missing review is never generated even for legacy callers', () => {
   assert.deepEqual(buildBlockers({ noReview: true }), [])
 })
+
+test('splitEligibility judges CI and conflict reasons elsewhere and waits on every other merge-state reason', () => {
+  const { splitEligibility } = blockerRules
+  assert.deepEqual(
+    splitEligibility(['ci-not-settled', 'ci-not-green-on-head', 'merge-state-dirty']).wait,
+    [],
+  )
+  assert.deepEqual(splitEligibility(['partial-marker']).partial, true)
+  for (const reason of [
+    'merge-state-blocked',
+    'merge-state-behind',
+    'merge-state-unknown',
+    'merge-state-draft',
+    'pr-not-open',
+    'pr-draft',
+    'head-unknown',
+    'head-mismatch',
+  ])
+    assert.deepEqual(splitEligibility([reason]).wait, [reason], reason)
+})

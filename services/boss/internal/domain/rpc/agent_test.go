@@ -83,3 +83,84 @@ func TestSettingTypeFromProto_Unspecified(t *testing.T) {
 		t.Errorf("unspecified = %v, want SettingTypeUnspecified", got)
 	}
 }
+
+func TestAgentLoginFromProto(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *pb.AgentLogin
+		want AgentLogin
+	}{
+		{
+			name: "nil",
+			in:   nil,
+			want: AgentLogin{},
+		},
+		{
+			name: "logged out",
+			in: &pb.AgentLogin{
+				AgentName: "codex",
+				Status:    pb.AgentLoginStatus_AGENT_LOGIN_STATUS_LOGGED_OUT,
+				Remedy:    "run codex login",
+			},
+			want: AgentLogin{
+				AgentName: "codex",
+				LoggedOut: true,
+				Remedy:    "run codex login",
+			},
+		},
+		{
+			name: "logged in",
+			in: &pb.AgentLogin{
+				AgentName: "claude",
+				Status:    pb.AgentLoginStatus_AGENT_LOGIN_STATUS_LOGGED_IN,
+			},
+			want: AgentLogin{
+				AgentName: "claude",
+				LoggedOut: false,
+			},
+		},
+		{
+			name: "unknown",
+			in: &pb.AgentLogin{
+				AgentName: "opencode",
+				Status:    pb.AgentLoginStatus_AGENT_LOGIN_STATUS_UNKNOWN,
+			},
+			want: AgentLogin{
+				AgentName: "opencode",
+				LoggedOut: false,
+			},
+		},
+		{
+			name: "managed unknown",
+			in: &pb.AgentLogin{
+				AgentName:         "claude",
+				Status:            pb.AgentLoginStatus_AGENT_LOGIN_STATUS_UNKNOWN,
+				HasManagedAccount: true,
+			},
+			want: AgentLogin{
+				AgentName: "claude",
+				LoggedOut: false,
+			},
+		},
+		{
+			name: "unspecified",
+			in: &pb.AgentLogin{
+				AgentName: "gemini",
+				Status:    pb.AgentLoginStatus_AGENT_LOGIN_STATUS_UNSPECIFIED,
+			},
+			want: AgentLogin{
+				AgentName: "gemini",
+				LoggedOut: false,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AgentLoginFromProto(tt.in)
+			if got != tt.want {
+				t.Errorf("AgentLoginFromProto(%v) = %+v, want %+v", tt.in, got, tt.want)
+			}
+		})
+	}
+}

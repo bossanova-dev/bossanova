@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/bossalib/contract/cloud/cloudorigin"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/telemetry"
 )
@@ -111,9 +112,11 @@ func envOr(key, fallback string) string {
 
 func NewAuthManager(cmd *cobra.Command) (*auth.Manager, error) {
 	var store auth.TokenStore
+	explicitStore := false
 	if override := resolveE2ETokenStore(); override != nil {
 		// Only reachable under the `e2e` build tag; see authstore_e2e.go.
 		store = override
+		explicitStore = true
 	} else {
 		ks, err := auth.NewKeychainStore(AllowInsecureKeyring(cmd))
 		if err != nil {
@@ -128,6 +131,9 @@ func NewAuthManager(cmd *cobra.Command) (*auth.Manager, error) {
 	}
 
 	mgr := auth.NewManager(store, cfg)
+	if explicitStore {
+		mgr.MarkExplicitCredential()
+	}
 	if email := ResolveE2ELoginEmail(); email != "" {
 		mgr.SetE2ELogin(email)
 	}
@@ -177,17 +183,24 @@ func (g *Group) runLogin(cmd *cobra.Command) error {
 		if cloudURL := cliutil.CloudURL(cmd); cloudURL != "" {
 			cloudAccess := ResolveE2ECloudAccessClient()
 			if cloudAccess == nil {
-				token, err := mgr.AccessToken(ctx)
+				token, err := cliutil.CloudToken(ctx, mgr, cloudURL)
 				if err != nil {
-					return fmt.Errorf("access token: %w", err)
+					if errors.Is(err, cloudorigin.ErrUnknownOrchestrator) || errors.Is(err, cloudorigin.ErrEnvironmentMismatch) {
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), err)
+					} else {
+						return fmt.Errorf("access token: %w", err)
+					}
+				} else {
+					cloudAccess = cloudrpc.NewRemote(cloudURL, token)
 				}
-				cloudAccess = cloudrpc.NewRemote(cloudURL, token)
 			}
-			active := g.checkLoginCloudGateWithTelemetry(ctx, cloudAccess, cmd.OutOrStdout(), g.options.TelemetryClient(cmd))
-			if !active {
-				daemonNote := g.announceLoginSuccess(cmd, verdict.Email, g.notifyDaemonAuthChange)
-				writeDaemonLoginNote(cmd, daemonNote)
-				return nil
+			if cloudAccess != nil {
+				active := g.checkLoginCloudGateWithTelemetry(ctx, cloudAccess, cmd.OutOrStdout(), g.options.TelemetryClient(cmd))
+				if !active {
+					daemonNote := g.announceLoginSuccess(cmd, verdict.Email, g.notifyDaemonAuthChange)
+					writeDaemonLoginNote(cmd, daemonNote)
+					return nil
+				}
 			}
 		}
 	}
@@ -342,7 +355,7 @@ func NewAuthCloudAccessClient(mgr *auth.Manager, url string) appCloudAccessClien
 }
 
 func (c *authCloudAccessClient) remote(ctx context.Context) (*cloudrpc.RemoteClient, error) {
-	token, err := c.mgr.AccessToken(ctx)
+	token, err := cliutil.CloudToken(ctx, c.mgr, c.url)
 	if err != nil {
 		return nil, err
 	}

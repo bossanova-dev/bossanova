@@ -7,10 +7,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/recurser/boss/internal/domain/rpc"
-
 	daemon "github.com/recurser/boss/internal/daemonlife"
+	"github.com/recurser/boss/internal/domain/rpc"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 const (
@@ -19,10 +19,18 @@ const (
 	cronAgentAntigravity = "antigravity"
 )
 
-// cronAgent is one agent a factory job may run under. cli is the executable
-// the daemon's runner plugin launches; harness is the supportedHarnesses row
-// that declares its project MCP servers, empty when boss knows none; and
-// trustedOnly marks a runner that refuses to launch an untrusted repository.
+type cronAgentHost struct {
+	harness     string
+	skill       libskillinstall.Agent
+	trustedOnly bool
+}
+
+var cronAgentHosts = map[string]cronAgentHost{
+	cronAgentClaude:      {harness: "Claude Code", skill: libskillinstall.AgentClaude},
+	cronAgentCodex:       {harness: "Codex", skill: libskillinstall.AgentCodex},
+	cronAgentAntigravity: {skill: libskillinstall.AgentAntigravity, trustedOnly: true},
+}
+
 type cronAgent struct {
 	name, cli, harness string
 	skill              libskillinstall.Agent
@@ -30,11 +38,25 @@ type cronAgent struct {
 }
 
 // cronAgents are the agents a factory job may run under, in default-preference
-// order.
-var cronAgents = []cronAgent{
-	{name: cronAgentClaude, cli: "claude", harness: "Claude Code", skill: libskillinstall.AgentClaude},
-	{name: cronAgentCodex, cli: "codex", harness: "Codex", skill: libskillinstall.AgentCodex},
-	{name: cronAgentAntigravity, cli: "agy", skill: libskillinstall.AgentAntigravity, trustedOnly: true},
+// order, built from projectconfig.FactoryAgents.
+var cronAgents = cliCronAgents(projectconfig.FactoryAgents())
+
+func cliCronAgents(agents []projectconfig.FactoryAgent) []cronAgent {
+	out := make([]cronAgent, len(agents))
+	for i, a := range agents {
+		host, ok := cronAgentHosts[a.Name]
+		if !ok {
+			panic("factory agent table has no CLI host metadata for " + a.Name)
+		}
+		out[i] = cronAgent{
+			name:        a.Name,
+			cli:         a.CLI,
+			harness:     host.harness,
+			skill:       host.skill,
+			trustedOnly: host.trustedOnly,
+		}
+	}
+	return out
 }
 
 func cronAgentByName(name string) (cronAgent, bool) {

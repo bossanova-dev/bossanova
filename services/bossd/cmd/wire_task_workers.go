@@ -12,6 +12,7 @@ import (
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/domain/questionsignal"
+	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/taskorchestrator"
@@ -27,14 +28,16 @@ func (w *daemonWiring) wireTaskWorkers() {
 		log.Warn().Msg("tmux is not installed or not in PATH; interactive sessions will not work, and cron fires will record fire_failed")
 	}
 
-	sessionCreator := taskorchestrator.NewSessionCreatorWithAgentAccountResolver(w.sessions, w.lifecycle, func() string {
+	defaultAgent := func() string {
 		loaded, err := config.Load()
 		if err != nil {
 			log.Warn().Err(err).Msg("load config for orchestrated session default agent")
 			return w.settings.DefaultAgent
 		}
 		return loaded.DefaultAgent
-	}, w.livenessChecker, func(_ context.Context, sessionID string) {
+	}
+
+	sessionCreator := taskorchestrator.NewSessionCreatorWithAgentAccountResolver(w.sessions, w.lifecycle, defaultAgent, w.livenessChecker, func(_ context.Context, sessionID string) {
 		// Propagate cleanup of a half-started session so it doesn't linger
 		// as a phantom row in the web read model until the daemon reconnects.
 		w.streamBus.Publish(upstream.StreamEvent{
@@ -78,7 +81,18 @@ func (w *daemonWiring) wireTaskWorkers() {
 		// Cron gates receive only the scoped proof model key, never the upload token.
 		GateProofEnv: proofenvkeyring.New(log.Logger),
 		// Scheduled fires leave the daemon token's GitHub quota floor for verify.
-		Quota:     w.ghProvider,
+		Quota: w.ghProvider,
+		AgentLogin: newAgentLoginChecker(
+			defaultAgent,
+			func(name string) plugin.AgentRunner {
+				if w.pluginHost == nil {
+					return nil
+				}
+				return w.pluginHost.AgentRunnerByName(name)
+			},
+			w.accountResolver,
+			nil,
+		),
 		GHUsage:   w.ghUsageShim,
 		Logger:    log.Logger,
 		Telemetry: w.telemetryClient,

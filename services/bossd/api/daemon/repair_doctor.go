@@ -50,6 +50,7 @@ const fileLimitSoftFloor = 8192
 // what's broken, instead of a single "FAIL" with no context.
 func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav1.RepairDoctorRequest]) (*connect.Response[bossanovav1.RepairDoctorResponse], error) {
 	resp := &bossanovav1.RepairDoctorResponse{}
+	collectAgentLogins := s.startAgentLoginChecks(ctx)
 
 	// Check 1: repair plugin loaded?
 	repairSvc := s.findRepairWorkflow(ctx)
@@ -100,13 +101,7 @@ func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav
 
 	// Check 3: agent runner client wired?
 	agentNames := s.pluginHost.AgentClientNames()
-	hasClaude := false
-	for _, n := range agentNames {
-		if n == "claude" {
-			hasClaude = true
-			break
-		}
-	}
+	hasClaude := slices.Contains(agentNames, "claude")
 	if hasClaude {
 		resp.Checks = append(resp.Checks, &bossanovav1.RepairDoctorCheck{
 			Name:   "agent runner client wired",
@@ -180,6 +175,8 @@ func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav
 
 	// Check 16: failover proxy lost its configured fixed port? (BOS-1632)
 	resp.Checks = append(resp.Checks, fixedPortCheck(s.fixedPortStatus))
+
+	resp.Checks = append(resp.Checks, collectAgentLogins()...)
 
 	// Recent repair logs (seeded into the response so the CLI
 	// can render the file list independent of the pass/fail check).

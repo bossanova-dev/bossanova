@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
 	"github.com/recurser/bossalib/contract/plugin/loginshell"
 	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -48,6 +49,8 @@ type Server struct {
 	// for any number of concurrent runs, unlike a shared completion slot. nil
 	// in production, where nothing observes cleanup at all.
 	onHookCleanup func(sessionID string)
+
+	loginProbe func(context.Context) agentruntime.LoginStatusOutput
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Option) *Server {

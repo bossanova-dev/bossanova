@@ -186,6 +186,7 @@ func TestProjectExport(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 		mgr := auth.NewManager(emptyTokenStore{}, auth.Config{})
+		mgr.MarkExplicitCredential()
 		f.env.cloud = func(cmd *cobra.Command) (CloudClient, error) {
 			return projectCloudRemote(cmd.Context(), mgr, srv.URL)
 		}

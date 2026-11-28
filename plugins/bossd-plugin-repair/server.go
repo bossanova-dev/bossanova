@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -53,14 +52,6 @@ const repairCleanupTimeout = 30 * time.Second
 const repairStatusClearTimeout = 5 * time.Second
 
 const (
-	// defaultCooldownDuration is the minimum time between repair attempts
-	// for the same session. The actual wait between attempts is then
-	// extended by exponential backoff via cooldownFor — see that helper
-	// for the schedule. This default is the base of the exponent and the
-	// post-success / post-restart cooldown.
-	defaultCooldownDuration = 1 * time.Minute
-	// defaultSweepInterval is how often the periodic sweep runs.
-	defaultSweepInterval = 1 * time.Minute
 	// maxCooldownDuration caps the exponential backoff so a long-running
 	// hammer loop on a genuinely-broken PR never waits more than 30 m
 	// between attempts. The previous code had no cap and a flat 1 m
@@ -69,21 +60,8 @@ const (
 	// backoff: steady-state cadence is one attempt per 30 m (~48/day),
 	// down from one per minute (~1440/day).
 	maxCooldownDuration = 30 * time.Minute
-	// defaultStuckTimeout is how long a session must be in ImplementingPlan
-	// before it is considered stuck and eligible for automatic advancement.
-	defaultStuckTimeout = 5 * time.Minute
-	// defaultForceAdvanceTimeout is how long a session with an active chat
-	// must be stuck before force-advancing (zombie/idle chat suspected).
-	defaultForceAdvanceTimeout = 1 * time.Hour
-	// defaultIdleRepairThreshold is how long a session's chat must have been
-	// quiet (no new output) before auto-repair is allowed to proceed despite
-	// the chat process still being attached. Default is 5 minutes — the user
-	// may have stepped away; we don't want to wait forever.
-	defaultIdleRepairThreshold = 5 * time.Minute
 
-	defaultPostRepairPollInterval = 2 * time.Second
-	defaultPostRepairWaitTimeout  = 30 * time.Minute
-	maxRepairLoopAttempts         = 5
+	maxRepairLoopAttempts = 5
 
 	// defaultRunIdleFailAfter arms the daemon's WaitChatRun idle watchdog
 	// (BOS-153): if the repair agent's chat is continuously idle for this
@@ -93,25 +71,6 @@ const (
 	// enough to fail the run" thresholds stay aligned.
 	defaultRunIdleFailAfter = 5 * time.Minute
 )
-
-// repairConfig holds parsed config for a repair workflow. Fields mirror
-// config.RepairConfig but are local to the plugin to avoid importing
-// the config package.
-type repairConfig struct {
-	Skills                     repairSkillOverrides `json:"skills,omitempty"`
-	CooldownMinutes            int                  `json:"cooldown_minutes,omitempty"`
-	PollIntervalSeconds        int                  `json:"poll_interval_seconds,omitempty"`
-	SweepIntervalMinutes       int                  `json:"sweep_interval_minutes,omitempty"`
-	StuckTimeoutMinutes        int                  `json:"stuck_timeout_minutes,omitempty"`
-	ForceAdvanceTimeoutMinutes int                  `json:"force_advance_timeout_minutes,omitempty"`
-	IdleRepairThresholdMinutes int                  `json:"idle_repair_threshold_minutes,omitempty"`
-	PostRepairPollMilliseconds int                  `json:"post_repair_poll_milliseconds,omitempty"`
-	PostRepairWaitMilliseconds int                  `json:"post_repair_wait_milliseconds,omitempty"`
-}
-
-type repairSkillOverrides struct {
-	Repair string `json:"repair,omitempty"`
-}
 
 type postRepairStatus string
 
@@ -130,13 +89,6 @@ type postRepairAssessment struct {
 	ReviewFingerprint          string
 	ReviewFingerprintAvailable bool
 	HeadSHA                    string
-}
-
-func (c *repairConfig) cooldownDuration() time.Duration {
-	if c != nil && c.CooldownMinutes > 0 {
-		return time.Duration(c.CooldownMinutes) * time.Minute
-	}
-	return defaultCooldownDuration
 }
 
 // cooldownFor returns the wait that must elapse since the last repair
@@ -182,59 +134,6 @@ func cooldownFor(attemptCount int32, base time.Duration) time.Duration {
 	return base * factor
 }
 
-func (c *repairConfig) sweepInterval() time.Duration {
-	if c != nil && c.SweepIntervalMinutes > 0 {
-		return time.Duration(c.SweepIntervalMinutes) * time.Minute
-	}
-	return defaultSweepInterval
-}
-
-func (c *repairConfig) stuckTimeout() time.Duration {
-	if c != nil && c.StuckTimeoutMinutes > 0 {
-		return time.Duration(c.StuckTimeoutMinutes) * time.Minute
-	}
-	return defaultStuckTimeout
-}
-
-func (c *repairConfig) forceAdvanceTimeout() time.Duration {
-	if c != nil && c.ForceAdvanceTimeoutMinutes > 0 {
-		return time.Duration(c.ForceAdvanceTimeoutMinutes) * time.Minute
-	}
-	return defaultForceAdvanceTimeout
-}
-
-func (c *repairConfig) idleRepairThreshold() time.Duration {
-	if c != nil && c.IdleRepairThresholdMinutes > 0 {
-		return time.Duration(c.IdleRepairThresholdMinutes) * time.Minute
-	}
-	return defaultIdleRepairThreshold
-}
-
-func (c *repairConfig) postRepairPollInterval() time.Duration {
-	if c != nil && c.PostRepairPollMilliseconds > 0 {
-		return time.Duration(c.PostRepairPollMilliseconds) * time.Millisecond
-	}
-	return defaultPostRepairPollInterval
-}
-
-func (c *repairConfig) postRepairWaitTimeout() time.Duration {
-	if c != nil && c.PostRepairWaitMilliseconds > 0 {
-		return time.Duration(c.PostRepairWaitMilliseconds) * time.Millisecond
-	}
-	return defaultPostRepairWaitTimeout
-}
-
-func parseRepairConfig(configJSON string) (*repairConfig, error) {
-	cfg := &repairConfig{}
-	if configJSON == "" {
-		return cfg, nil
-	}
-	if err := json.Unmarshal([]byte(configJSON), cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
-	}
-	return cfg, nil
-}
-
 // repairMonitor implements the WorkflowService gRPC server for the repair
 // plugin. It watches for status changes and triggers repair workflows when
 // PRs fail checks, have conflicts, or receive rejection feedback.
@@ -273,6 +172,8 @@ type repairMonitor struct {
 	paused                  bool               // True after PauseWorkflow until ResumeWorkflow
 	config                  *repairConfig      // Parsed config from StartWorkflowRequest
 	dependabotDeferrals     map[string]bool
+	capacityDeferrals       map[string]bool
+	queued                  map[string]bool
 	repairing               map[string]bool        // Sessions currently being repaired
 	cooldowns               map[string]time.Time   // Last repair attempt time per session
 	lastAttempt             map[string]repairInput // Input of the last repair attempt that ran, per session
@@ -304,17 +205,19 @@ func newDispatcherID() string {
 func newRepairMonitor(host hostClient, logger zerolog.Logger) *repairMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &repairMonitor{
-		host:         host,
-		logger:       logger,
-		dispatcherID: newDispatcherID(),
-		ctx:          ctx,
-		cancel:       cancel,
-		stopped:      true, // Reject notifications until StartWorkflow sets config.
-		repairing:    make(map[string]bool),
-		cooldowns:    make(map[string]time.Time),
-		lastAttempt:  make(map[string]repairInput),
-		refusals:     make(map[string]refusalStreak),
-		baseMoves:    make(map[string]baseMoveStreak),
+		host:              host,
+		logger:            logger,
+		dispatcherID:      newDispatcherID(),
+		ctx:               ctx,
+		cancel:            cancel,
+		stopped:           true, // Reject notifications until StartWorkflow sets config.
+		capacityDeferrals: make(map[string]bool),
+		queued:            make(map[string]bool),
+		repairing:         make(map[string]bool),
+		cooldowns:         make(map[string]time.Time),
+		lastAttempt:       make(map[string]repairInput),
+		refusals:          make(map[string]refusalStreak),
+		baseMoves:         make(map[string]baseMoveStreak),
 	}
 }
 
@@ -722,8 +625,9 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 			Msg("already attempted repair on this input, skipping")
 		return
 	}
-	if m.deferDependabotLocked(sessionID, info) {
+	if m.deferStartLocked(sessionID, info) {
 		m.mu.Unlock()
+		m.flushQueuedStatus(repairCtx, sessionID)
 		return
 	}
 	if streak, exhausted := m.noteBaseMoveRetryLocked(sessionID, input, baseMoveRetry); exhausted {

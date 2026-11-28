@@ -127,6 +127,9 @@ type Config struct {
 	// Quota reads the GitHub quotas a scheduled fire must leave its floor of.
 	// Nil never reserves quota.
 	Quota QuotaReader
+	// AgentLogin checks whether the job's agent CLI is logged in before
+	// spawning a session. Nil disables the check.
+	AgentLogin AgentLoginChecker
 	// GHUsage meters gate gh calls into the usage ledger. Nil leaves gates
 	// unmetered.
 	GHUsage       *ghusage.Shim
@@ -154,6 +157,7 @@ type Scheduler struct {
 	canceller     RunCanceller
 	gateProofEnv  GateProofEnvResolver
 	quota         QuotaReader
+	loginGate     *loginGate
 	webhookHealth WebhookHealth
 	ghUsage       *ghusage.Shim
 	logger        zerolog.Logger
@@ -206,7 +210,7 @@ func New(cfg Config) *Scheduler {
 		nowFn = time.Now
 	}
 	logger := cfg.Logger.With().Str("component", "cron-scheduler").Logger()
-	return &Scheduler{
+	s := &Scheduler{
 		store:        cfg.Store,
 		sessions:     cfg.Sessions,
 		repos:        cfg.Repos,
@@ -227,6 +231,10 @@ func New(cfg Config) *Scheduler {
 		nowFunc:   nowFn,
 		telemetry: cfg.Telemetry,
 	}
+	if cfg.AgentLogin != nil {
+		s.loginGate = newLoginGate(cfg.AgentLogin, func() time.Time { return s.nowFunc() })
+	}
+	return s
 }
 
 // SetWebhookHealth wires the optional per-repo webhook tracker. Call before Start.
@@ -618,6 +626,10 @@ func (s *Scheduler) fireWith(ctx context.Context, jobID string, scheduled bool) 
 		logger.Debug().Str("gate_output", buf.String()).Msg("fire: gate command passed")
 	}
 
+	if err := s.checkAgentLogin(ctx, job, scheduled, logger); err != nil {
+		return nil, "", err
+	}
+
 	opts := taskorchestrator.CreateSessionOpts{
 		RepoID:          job.RepoID,
 		Title:           job.Name,
@@ -641,14 +653,8 @@ func (s *Scheduler) fireWith(ctx context.Context, jobID string, scheduled bool) 
 		opts.BranchName = cronBranchName(job.Name, s.nowFunc())
 	}
 
-	if previous != nil {
-		if err := s.canceller.CancelRun(ctx, previous.ID); err != nil {
-			logger.Warn().Err(err).Str("previous_session_id", previous.ID).
-				Str("last_run_session_id", strOrEmpty(job.LastRunSessionID)).
-				Msg("fire: failed to cancel previous run; skipping replacement")
-			return nil, SkipReasonOverlapPrevActive, nil
-		}
-		logger.Info().Str("previous_session_id", previous.ID).Msg("cancelled in-progress previous run before replacement")
+	if !s.cancelPreviousRun(ctx, job, previous, logger) {
+		return nil, SkipReasonOverlapPrevActive, nil
 	}
 
 	sess, err := s.creator.CreateSession(ctx, opts)
@@ -686,6 +692,22 @@ func (s *Scheduler) fireWith(ctx context.Context, jobID string, scheduled bool) 
 		Str("name", job.Name).
 		Msg("fire: cron session spawned")
 	return sess, "", nil
+}
+
+// cancelPreviousRun stops previous when cancel_in_progress selected one.
+// Returns false if cancellation failed and the replacement fire should skip.
+func (s *Scheduler) cancelPreviousRun(ctx context.Context, job *domain.CronJob, previous *models.Session, logger zerolog.Logger) bool {
+	if previous == nil {
+		return true
+	}
+	if err := s.canceller.CancelRun(ctx, previous.ID); err != nil {
+		logger.Warn().Err(err).Str("previous_session_id", previous.ID).
+			Str("last_run_session_id", strOrEmpty(job.LastRunSessionID)).
+			Msg("fire: failed to cancel previous run; skipping replacement")
+		return false
+	}
+	logger.Info().Str("previous_session_id", previous.ID).Msg("cancelled in-progress previous run before replacement")
+	return true
 }
 
 // recordBlockedFire records a fire that spawned nothing and advances

@@ -29,6 +29,20 @@
   },
   {
     "codes": [
+      "approval-required"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Verified",
+    "wait": "waiting for you",
+    "reason": "verify passed; the repository requires an approving review before this PR can merge",
+    "evidence": "",
+    "sentence": "Verified · waiting for you · verify passed; the repository requires an approving review before this PR can merge"
+  },
+  {
+    "codes": [
       "cannot-assess"
     ],
     "label": "",

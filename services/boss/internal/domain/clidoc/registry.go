@@ -227,7 +227,10 @@ func newRegistry() map[string]Prose {
 
 		// --- Repository Management ---
 		"boss repo add": {
-			Examples: []Example{{Command: "boss repo add"}},
+			Examples: []Example{
+				{Command: "boss repo add"},
+				{Command: "boss repo add ~/code/app"},
+			},
 		},
 		"boss repo ls": {
 			Examples: []Example{{Command: "boss repo ls"}},
@@ -799,10 +802,10 @@ func newRegistry() map[string]Prose {
 				{Command: "boss settings --skip-permissions"},
 			},
 		},
-		"boss config init": {
+		"boss init plugins": {
 			Examples: []Example{
-				{Command: "boss config init"},
-				{Command: "boss config init --plugin-dir ./plugins"},
+				{Command: "boss init plugins"},
+				{Command: "boss init plugins --plugin-dir ./plugins"},
 			},
 		},
 		"boss login": {

@@ -1,4 +1,4 @@
-.PHONY: feature-coverage gen-skill generate glossary-update sweep-schedule-update merging-doc-update feature-index-update projectconfig-schema projectconfig-schema-check readme-gifs rules-table-update skill-config-validator skill-config-validator-check proof-tokens proof-tokens-check review-page-style review-page-style-check test-manifest-update
+.PHONY: feature-coverage gen-skill generate glossary-update sweep-schedule-update merging-doc-update feature-index-update projectconfig-schema projectconfig-schema-check setup-check-ids setup-check-ids-check readme-gifs rules-table-update skill-config-validator skill-config-validator-check proof-tokens proof-tokens-check review-page-style review-page-style-check test-manifest-update
 
 ## gen-skill: Regenerate the /boss skill command reference from the CLI.
 ## The reference region of lib/bossalib/contract/plugin/skillpayload/skills/boss/SKILL.md is
@@ -92,6 +92,15 @@ projectconfig-schema:
 ## projectconfig-schema-check: Fail if $(PROJECTCONFIG_SCHEMA) is stale against the Go types.
 projectconfig-schema-check:
 	cd lib/bossalib && go test -count=1 -run '^TestSchemaGenerated$$' ./kit/projectconfig
+
+## setup-check-ids: Regenerate services/bossd/internal/setupcheck/ids.json from
+## setupcheck.IDs() (the TestIDsGenerated golden test with -update).
+setup-check-ids:
+	cd services/bossd && go test -count=1 -run '^TestIDsGenerated$$' ./internal/setupcheck -update
+
+## setup-check-ids-check: Fail if services/bossd/internal/setupcheck/ids.json is stale against setupcheck.IDs().
+setup-check-ids-check:
+	cd services/bossd && go test -count=1 -run '^TestIDsGenerated$$' ./internal/setupcheck
 
 ## skill-config-validator: Regenerate skills-toolbox/skill-config-validate.generated.mjs (the
 ## dependency-free .boss-skills.json validator) from scripts/skills/skill-config-schema/schema.mjs, then

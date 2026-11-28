@@ -653,6 +653,7 @@ test('VERIFY_DESCRIPTIONS is frozen and carries the BOS-1382 prefixes', () => {
     'no-session',
     'worktree-diverged',
     'worktree-unsynced',
+    'approval-required',
     'human-merge',
     'verify-post-failed',
     'ci-absent',
@@ -6790,6 +6791,11 @@ test('approve refuses with no park, a superseded park, an older-head park or an 
       world({ statuses: parkedHuman('human-merge,trial-policy') }),
       'trial-park',
     ],
+    [
+      'GitHub still requires the review, which only GitHub lifts',
+      world({ statuses: parkedHuman('approval-required,human-merge') }),
+      'approval-required',
+    ],
   ]
   for (const [name, w, reason] of cases) {
     const adapter = fakeAdapter()
@@ -6800,6 +6806,15 @@ test('approve refuses with no park, a superseded park, an older-head park or an 
     assert.deepEqual(adapter.writeCalls(), [], `${name}: no tracker write`)
     assert.deepEqual(w.mutating(), [], `${name}: no PR write`)
   }
+})
+
+test('approve takes an approval-required park once GitHub has approved the PR', async () => {
+  const w = world({
+    statuses: parkedHuman('approval-required,human-merge'),
+    pr: { reviewDecision: 'APPROVED' },
+  })
+  const r = await approve({ pr: 7, repo: REPO }, deps(w, { adapter: fakeAdapter() }))
+  assert.deepEqual([r.approved, r.waives], [true, 'approval-required,human-merge'])
 })
 
 test('approve posts nothing for a head pushed after it read the park', async () => {
@@ -14252,4 +14267,83 @@ test('judge parks a no-CI head whose earlier head ran Actions checks, as the can
     deps(absentCiWorld({ ...earlier, headRuns: [queued] })),
   )
   assert.equal(pending.verdict, 'wait')
+})
+
+// A ruleset that requires a code-owner approval reports every unapproved PR as BLOCKED, with CI green
+// and `mergeable: MERGEABLE`.
+const reviewBlocked = (pr = {}, extra = {}) =>
+  world({ ...extra, pr: { mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED', ...pr } })
+
+test('judge judges a head GitHub blocks only for a required review and parks it for an approval', async () => {
+  const w = reviewBlocked()
+  const r = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.deepEqual([r.verdict, r.reasons], ['human', ['approval-required']])
+  assert.equal(w.calls.filter(isPrFilesRead).length, 1, 'the head was judged, not waited on')
+  assert.equal(w.mutating().length, 0)
+  // Once GitHub records the approval, the waived head passes and merge's own clean-state rule decides.
+  const approved = world({ pr: { reviewDecision: 'APPROVED' } })
+  const waived = await judge({ pr: 7, repo: REPO, waive: 'approval-required' }, deps(approved))
+  assert.equal(waived.verdict, 'pass')
+})
+
+test('judge waits on a BLOCKED head whose block a review cannot explain', async () => {
+  const cases = {
+    approved: reviewBlocked({ reviewDecision: 'APPROVED' }),
+    'no review rule': reviewBlocked({ reviewDecision: '' }),
+  }
+  for (const [name, w] of Object.entries(cases)) {
+    const r = await judge({ pr: 7, repo: REPO }, deps(w))
+    assert.deepEqual([r.verdict, r.reason], ['wait', 'merge-state-blocked'], name)
+  }
+  // A required check that is not CI is still a rollup context, so it waits as CI before merge state.
+  const pending = reviewBlocked({
+    statusCheckRollup: [...green, { context: 'compliance/sign-off', state: 'PENDING' }],
+  })
+  const r = await judge({ pr: 7, repo: REPO }, deps(pending))
+  assert.deepEqual([r.verdict, r.reason], ['wait', 'ci-not-settled'])
+  for (const state of ['UNKNOWN', 'BEHIND']) {
+    const r = await judge({ pr: 7, repo: REPO }, deps(reviewBlocked({ mergeStateStatus: state })))
+    assert.deepEqual([r.verdict, r.reason], ['wait', `merge-state-${state.toLowerCase()}`], state)
+  }
+})
+
+test('merge never merges a verified head GitHub blocks for a required review', async () => {
+  const w = reviewBlocked({}, { statuses: verified() })
+  const r = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(w))
+  assert.deepEqual([r.merged, r.verdict, r.reasons], [false, 'wait', ['merge-state-blocked']])
+  assert.deepEqual(w.mutating(), [])
+})
+
+// A trial session (`--verify-only --policy-ref`) whose trial branch serves the base config.
+const TRIAL_SHA = '1'.repeat(40)
+function trialDeps(w) {
+  const d = deps(w, { sessionId: 'sess-trial', runDir: null })
+  const read = d.read
+  d.read = (command, args, ...rest) => {
+    if (command === 'boss' && args[0] === 'show') {
+      const payload = { session: { is_verify_only: true, policy_ref: 'config/trial' } }
+      return { ok: true, exit: 0, payload, output: JSON.stringify(payload) }
+    }
+    if (command === 'git' && args[0] === 'ls-remote')
+      return { ok: true, exit: 0, output: `${TRIAL_SHA}\trefs/heads/config/trial\n` }
+    const swapped = args.map((a) => (typeof a === 'string' ? a.replaceAll(TRIAL_SHA, BASE) : a))
+    return read(command, swapped, ...rest)
+  }
+  return d
+}
+
+test('a trial session judges a head GitHub blocks or holds behind its base, since it never merges', async () => {
+  for (const pr of [
+    { mergeStateStatus: 'BLOCKED', reviewDecision: '' },
+    { mergeStateStatus: 'BEHIND' },
+    {},
+  ]) {
+    const r = await judge({ pr: 7, repo: REPO }, trialDeps(world({ pr })))
+    assert.deepEqual([r.verdict, r.reason, r.trialOf?.verdict], ['human', 'trial-policy', 'pass'])
+  }
+  const unknown = await judge(
+    { pr: 7, repo: REPO },
+    trialDeps(world({ pr: { mergeStateStatus: 'UNKNOWN' } })),
+  )
+  assert.deepEqual([unknown.verdict, unknown.reason], ['wait', 'merge-state-unknown'])
 })

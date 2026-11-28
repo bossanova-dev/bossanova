@@ -2,11 +2,15 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/contract/cloud/cloudorigin"
 )
 
 type memoryRefreshStore struct {
@@ -273,4 +277,150 @@ func TestManagerRefreshPreservesEmail(t *testing.T) {
 	if store.tokens.Email != "old@example.com" {
 		t.Fatalf("email = %q, want old@example.com", store.tokens.Email)
 	}
+}
+
+func makeRefreshScopeJWT(t *testing.T, iss string) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	payloadBytes, err := json.Marshal(map[string]string{
+		"iss": iss,
+		"aud": "bosso",
+		"sub": "user_refresh_scope",
+	})
+	if err != nil {
+		t.Fatalf("marshal jwt payload: %v", err)
+	}
+	return header + "." + base64.RawURLEncoding.EncodeToString(payloadBytes) + ".sig"
+}
+
+func TestManagerAccessTokenForRefusesExpiredCrossEnvBeforeRefresh(t *testing.T) {
+	const (
+		prodOrigin    = "https://orchestrator.bossanova.dev"
+		stagingOrigin = "https://orchestrator-staging.bossanova.dev"
+		prodIssuer    = "https://api.workos.com/user_management/client_01KP805YXXAMZSN2YB4NGXS9XB"
+		stagingIssuer = "https://api.workos.com/user_management/client_01KP805YA85J1BJ4FZN39R7MRT"
+	)
+
+	expiredStagingJWT := makeRefreshScopeJWT(t, stagingIssuer)
+	expiredProdJWT := makeRefreshScopeJWT(t, prodIssuer)
+	freshProdJWT := makeRefreshScopeJWT(t, prodIssuer)
+
+	t.Run("expired staging token against production returns ErrEnvironmentMismatch without refreshing", func(t *testing.T) {
+		store := &memoryRefreshStore{tokens: &Tokens{
+			AccessToken:  expiredStagingJWT,
+			RefreshToken: "rt-staging",
+			ExpiresAt:    time.Now().Add(-time.Hour),
+		}}
+		var lockMu sync.Mutex
+		refreshCalls := 0
+		lockCalls := 0
+		withRefreshHooks(t, &lockMu, func(context.Context, Config, string) (*Tokens, error) {
+			refreshCalls++
+			return nil, errors.New("WorkOS rejected staging refresh token")
+		})
+		origAcquire := acquireRefreshLock
+		acquireRefreshLock = func(ctx context.Context) (refreshUnlocker, error) {
+			lockCalls++
+			return origAcquire(ctx)
+		}
+
+		tok, err := NewManager(store, Config{}).AccessTokenFor(context.Background(), prodOrigin)
+		if !errors.Is(err, cloudorigin.ErrEnvironmentMismatch) {
+			t.Fatalf("AccessTokenFor() err = %v, want ErrEnvironmentMismatch", err)
+		}
+		if tok != "" {
+			t.Fatalf("AccessTokenFor() token = %q, want empty", tok)
+		}
+		if refreshCalls != 0 {
+			t.Fatalf("WorkOS refresh calls = %d, want 0", refreshCalls)
+		}
+		if lockCalls != 0 {
+			t.Fatalf("refresh lock calls = %d, want 0", lockCalls)
+		}
+		if store.tokens.RefreshToken != "rt-staging" {
+			t.Fatalf("stored refresh token = %q, want unchanged rt-staging", store.tokens.RefreshToken)
+		}
+	})
+
+	t.Run("expired production token against staging returns ErrEnvironmentMismatch without refreshing", func(t *testing.T) {
+		store := &memoryRefreshStore{tokens: &Tokens{
+			AccessToken:  expiredProdJWT,
+			RefreshToken: "rt-prod",
+			ExpiresAt:    time.Now().Add(-time.Hour),
+		}}
+		var lockMu sync.Mutex
+		refreshCalls := 0
+		withRefreshHooks(t, &lockMu, func(context.Context, Config, string) (*Tokens, error) {
+			refreshCalls++
+			return nil, errors.New("unexpected refresh")
+		})
+
+		tok, err := NewManager(store, Config{}).AccessTokenFor(context.Background(), stagingOrigin)
+		if !errors.Is(err, cloudorigin.ErrEnvironmentMismatch) {
+			t.Fatalf("AccessTokenFor() err = %v, want ErrEnvironmentMismatch", err)
+		}
+		if tok != "" || refreshCalls != 0 {
+			t.Fatalf("got token=%q refreshCalls=%d, want empty and 0", tok, refreshCalls)
+		}
+	})
+
+	t.Run("expired matching production token still refreshes", func(t *testing.T) {
+		store := &memoryRefreshStore{tokens: &Tokens{
+			AccessToken:  expiredProdJWT,
+			RefreshToken: "rt-prod-old",
+			ExpiresAt:    time.Now().Add(-time.Hour),
+		}}
+		var lockMu sync.Mutex
+		refreshCalls := 0
+		withRefreshHooks(t, &lockMu, func(context.Context, Config, string) (*Tokens, error) {
+			refreshCalls++
+			return &Tokens{
+				AccessToken:  freshProdJWT,
+				RefreshToken: "rt-prod-new",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}, nil
+		})
+
+		tok, err := NewManager(store, Config{}).AccessTokenFor(context.Background(), prodOrigin)
+		if err != nil {
+			t.Fatalf("AccessTokenFor() unexpected error: %v", err)
+		}
+		if tok != freshProdJWT {
+			t.Fatalf("AccessTokenFor() token = %q, want refreshed production JWT", tok)
+		}
+		if refreshCalls != 1 {
+			t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+		}
+	})
+
+	t.Run("cross-environment token written before lock acquisition is refused before refresh", func(t *testing.T) {
+		store := &memoryRefreshStore{tokens: &Tokens{
+			AccessToken:  expiredProdJWT,
+			RefreshToken: "rt-prod",
+			ExpiresAt:    time.Now().Add(-time.Hour),
+		}}
+		var lockMu sync.Mutex
+		refreshCalls := 0
+		withRefreshHooks(t, &lockMu, func(context.Context, Config, string) (*Tokens, error) {
+			refreshCalls++
+			return nil, errors.New("unexpected refresh")
+		})
+		origAcquire := acquireRefreshLock
+		acquireRefreshLock = func(ctx context.Context) (refreshUnlocker, error) {
+			_ = store.Save(&Tokens{
+				AccessToken:  expiredStagingJWT,
+				RefreshToken: "rt-staging-concurrent",
+				ExpiresAt:    time.Now().Add(-time.Hour),
+			})
+			return origAcquire(ctx)
+		}
+
+		tok, err := NewManager(store, Config{}).AccessTokenFor(context.Background(), prodOrigin)
+		if !errors.Is(err, cloudorigin.ErrEnvironmentMismatch) {
+			t.Fatalf("AccessTokenFor() err = %v, want ErrEnvironmentMismatch", err)
+		}
+		if tok != "" || refreshCalls != 0 {
+			t.Fatalf("got token=%q refreshCalls=%d, want empty and 0", tok, refreshCalls)
+		}
+	})
 }

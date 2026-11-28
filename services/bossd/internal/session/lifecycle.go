@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/repoorigin"
 
 	"errors"
 	"fmt"
@@ -4527,29 +4528,12 @@ func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) err
 	if repo.OriginURL != "" {
 		return nil
 	}
-
-	url, err := l.worktrees.DetectOriginURL(ctx, repo.LocalPath)
-	if err != nil {
-		return fmt.Errorf("detect origin URL: %w", err)
+	if _, err := repoorigin.Refresh(ctx, l.worktrees, l.repos, repo, l.logger); err != nil {
+		if errors.Is(err, repoorigin.ErrNoRemote) {
+			return fmt.Errorf("repo %q has no origin remote configured", repo.DisplayName)
+		}
+		return err
 	}
-	if url == "" {
-		return fmt.Errorf("repo %q has no origin remote configured", repo.DisplayName)
-	}
-
-	url = gitpkg.CloneURLWithoutCredentials(url)
-
-	if _, err := l.repos.Update(ctx, repo.ID, db.UpdateRepoParams{
-		OriginURL: &url,
-	}); err != nil {
-		return fmt.Errorf("persist origin URL: %w", err)
-	}
-
-	l.logger.Info().
-		Str("repo", repo.ID).
-		Str("originURL", gitpkg.RedactURLCredentials(url)).
-		Msg("re-detected and persisted origin URL")
-
-	repo.OriginURL = url
 	return nil
 }
 

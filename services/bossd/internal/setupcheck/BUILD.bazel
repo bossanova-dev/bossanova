@@ -9,6 +9,10 @@ go_library(
 
 go_test(
     name = "setupcheck_test",
-    srcs = ["setupcheck_test.go"],
+    srcs = [
+        "ids_gen_test.go",
+        "setupcheck_test.go",
+    ],
+    embedsrcs = ["ids.json"],
     deps = [":setupcheck"],
 )

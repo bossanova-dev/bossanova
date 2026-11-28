@@ -225,9 +225,10 @@ type RepoAddModel struct {
 	fd *repoAddFormData
 
 	// Async state
-	validating bool
-	cloning    bool
-	spinner    spinner.Model
+	validating        bool
+	pendingValidation bool
+	cloning           bool
+	spinner           spinner.Model
 
 	// Validation results
 	isGithub           bool
@@ -440,10 +441,7 @@ func (m *RepoAddModel) buildDetailsForm() {
 }
 
 func (m RepoAddModel) Init() tea.Cmd {
-	if m.form != nil {
-		return m.form.Init()
-	}
-	return nil
+	return m.initCmd()
 }
 
 func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -814,9 +812,7 @@ func (m *RepoAddModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 			return *m, m.form.Init()
 		}
 		// Open mode — validate path first.
-		m.validating = true
-		m.err = nil
-		return *m, validateAndDetectCmd(m.ctx, m.client, m.fd.localPath)
+		return *m, m.startPathValidation()
 
 	case repoAddPhaseDetails:
 		if !m.fd.confirm {

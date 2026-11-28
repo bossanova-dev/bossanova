@@ -4,6 +4,7 @@ go_library(
     name = "agentruntime",
     srcs = [
         "log_argv.go",
+        "login_probe.go",
         "runner.go",
         "text.go",
     ],
@@ -11,6 +12,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//lib/bossalib/contract/plugin/childenv",
+        "//lib/bossalib/contract/plugin/loginshell",
         "//lib/bossalib/kit/safego",
         "@com_github_google_uuid//:uuid",
         "@com_github_rs_zerolog//:zerolog",
@@ -22,6 +24,7 @@ go_test(
     srcs = [
         "argv_env_test.go",
         "log_argv_test.go",
+        "login_probe_test.go",
         "runner_test.go",
         "text_test.go",
     ],

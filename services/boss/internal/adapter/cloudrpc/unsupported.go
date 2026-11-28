@@ -6,13 +6,21 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect"
+
 	"github.com/recurser/boss/internal/adapter/rpcerror"
+	"github.com/recurser/boss/internal/domain/rpc"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // errLocalOnly is returned for operations that only work on a local daemon.
 func errLocalOnly(op string) error {
 	return rpcerror.WrapError(connect.NewError(connect.CodeUnimplemented, fmt.Errorf("%s is only available on a local daemon", op)))
+}
+
+// RefreshRepoOrigin reads the daemon's local checkout, and the orchestrator
+// carries no command that repoints a repo.
+func (c *RemoteClient) RefreshRepoOrigin(context.Context, string) (*pb.RefreshRepoOriginResponse, error) {
+	return nil, errLocalOnly("refreshing a repo origin")
 }
 
 // GetGitHubUsage reads one daemon's own usage ledger, so it has no remote form.
@@ -54,4 +62,8 @@ func (c *RemoteClient) GetGitHubReadCredential(context.Context, *pb.GetGitHubRea
 // machine environment and local checkout, so the remote orchestrator refuses it.
 func (c *RemoteClient) ListSetupChecks(_ context.Context, _ *pb.ListSetupChecksRequest) (*pb.ListSetupChecksResponse, error) {
 	return nil, rpcerror.WrapError(connect.NewError(connect.CodeUnimplemented, errors.New("setup checks are host-local; run boss init check on the host")))
+}
+
+func (c *RemoteClient) CheckAgentLogins(context.Context) ([]rpc.AgentLogin, error) {
+	return nil, errLocalOnly("CheckAgentLogins")
 }

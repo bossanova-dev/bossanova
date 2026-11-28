@@ -1,0 +1,11 @@
+[
+  "accounts — waits for the account rotation check (sibling c)",
+  "chat — waits for the Bossanova Cloud sign-in check (sibling b)",
+  "notes — organization notes wait for the Bossanova Cloud sign-in check (sibling b)",
+  "onboarding-auth — waits for the Bossanova Cloud sign-in check (sibling b)",
+  "organizations — waits for the Bossanova Cloud sign-in check (sibling b)",
+  "settings — waits for the notifications check (sibling b)",
+  "terminal-encryption — viewer device approval waits for the clouds-and-devices checks (BOS-2666)",
+  "triggers-and-webhooks — waits for the GitHub App check (BOS-2750)",
+  "web-dashboard — waits for the Bossanova Cloud sign-in check (sibling b)"
+]

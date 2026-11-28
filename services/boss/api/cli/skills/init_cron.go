@@ -68,16 +68,6 @@ func (s cronStage) lib() projectconfig.FactoryStage {
 // as `$name`.
 func (s cronStage) prompt(agent string) string { return s.lib().Prompt(agent) }
 
-// gatePath is the gate script relative to an agent's skill root.
-func (s cronStage) gatePath() string {
-	return s.skill + "/toolbox/cron-gates/" + s.skill + ".mjs"
-}
-
-// modulePath is the installed skill-config module the stage's gate loads.
-func (s cronStage) modulePath() string {
-	return s.skill + "/toolbox/skill-config.mjs"
-}
-
 // matchesPrompt reports whether prompt's leading token invokes this stage's
 // skill, in either agent's spelling.
 func (s cronStage) matchesPrompt(prompt string) bool { return s.lib().MatchesPrompt(prompt) }
@@ -370,30 +360,9 @@ func resolveCronNode(servicePath string, callerLookPath func(string) (string, er
 		if abs, absErr := filepath.Abs(path); absErr == nil {
 			path = abs
 		}
-		return cronNode{path: path, command: shellWord(path), note: "node is not on the daemon's service PATH; the gates call " + path + " directly (add its directory to daemon_path_extra and run `boss daemon restart` to use a bare `node`)"}
+		return cronNode{path: path, command: projectconfig.ShellWord(path), note: "node is not on the daemon's service PATH; the gates call " + path + " directly (add its directory to daemon_path_extra and run `boss daemon restart` to use a bare `node`)"}
 	}
 	return cronNode{command: "node"}
-}
-
-var shellSafeWord = regexp.MustCompile(`^[A-Za-z0-9_./+=:@%-]+$`)
-
-// shellWord renders s as one POSIX shell word.
-func shellWord(s string) string {
-	if shellSafeWord.MatchString(s) {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// renderSkillRoot writes root as factory.md does, `$HOME/.claude/skills`, when
-// it is under the home directory, and as an absolute path otherwise.
-func renderSkillRoot(root, home string) string {
-	if home != "" {
-		if rel, err := filepath.Rel(home, root); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
-			return "$HOME/" + filepath.ToSlash(rel)
-		}
-	}
-	return filepath.ToSlash(root)
 }
 
 // effectiveAgent treats a job's empty agent as claude, as the daemon does.
@@ -459,7 +428,7 @@ func (r *FactoryCronResolver) root(agent string) (string, error) {
 func (r *FactoryCronResolver) stage(st cronStage, agent string) (prompt, gate string, failures []string) {
 	root, rootErr := r.root(agent)
 	failures = r.preflight(st, root, rootErr)
-	gate = r.node.command + ` "` + renderSkillRoot(root, r.home) + "/" + st.gatePath() + `"`
+	gate = st.lib().GateCommand(r.node.command, root, r.home)
 	return st.prompt(agent), gate, failures
 }
 
@@ -561,20 +530,23 @@ func setupInitCron(ctx context.Context, c Client, repo *pb.Repo, repoDir, config
 // forever after; that is why it is checked before a job is enabled.
 func (r *FactoryCronResolver) preflight(st cronStage, root string, rootErr error) []string {
 	failures := r.githubPreflight(st)
-	if r.node.path == "" {
-		failures = append(failures, "node is not on the daemon's service PATH or on your PATH")
+	rootUsable := false
+	failures = append(failures, projectconfig.FactoryGatePreflight(st.lib(), projectconfig.FactoryGateHost{
+		NodePath:     r.node.path,
+		SkillRoot:    root,
+		SkillRootErr: rootErr,
+		Home:         r.home,
+		FileExists: func(path string) bool {
+			rootUsable = true
+			info, err := os.Stat(path)
+			return err == nil && !info.IsDir()
+		},
+		SkipModuleCheck: true,
+	})...)
+	if !rootUsable {
+		return failures
 	}
-	if rootErr != nil {
-		return append(failures, "the agent's skill directory could not be resolved")
-	}
-	if strings.ContainsAny(renderSkillRoot(root, r.home), "\"`\\") || strings.Contains(strings.TrimPrefix(renderSkillRoot(root, r.home), "$HOME/"), "$") {
-		return append(failures, "the skill directory "+root+" cannot be quoted in a gate command")
-	}
-	gate := filepath.Join(root, filepath.FromSlash(st.gatePath()))
-	if info, err := os.Stat(gate); err != nil || info.IsDir() {
-		failures = append(failures, "gate script "+gate+" is not installed")
-	}
-	module := filepath.Join(root, filepath.FromSlash(st.modulePath()))
+	module := filepath.Join(root, filepath.FromSlash(st.lib().ModulePath()))
 	switch {
 	case r.configErr != nil:
 		failures = append(failures, "the config "+r.configPath+" could not be read")
@@ -645,7 +617,7 @@ func findStageJob(jobs []*pb.CronJob, st cronStage) (job *pb.CronJob, others []*
 
 func hasEnabledStageJob(jobs []*pb.CronJob, st cronStage) bool {
 	return slices.ContainsFunc(jobs, func(j *pb.CronJob) bool {
-		return j.GetIsEnabled() && (j.GetName() == st.name || st.matchesPrompt(j.GetPrompt()))
+		return j.GetIsEnabled() && st.lib().MatchesJob(j.GetName(), j.GetPrompt())
 	})
 }
 
@@ -734,7 +706,7 @@ func (run *cronSetupRun) appendBaseBranchWarnings(ctx context.Context) {
 	var mcpServer string
 	for i, stageName := range run.req.stages {
 		st, _ := cronStageByName(stageName)
-		module := filepath.Join(run.root, filepath.FromSlash(st.modulePath()))
+		module := filepath.Join(run.root, filepath.FromSlash(st.lib().ModulePath()))
 		if !fileExists(module) {
 			continue
 		}

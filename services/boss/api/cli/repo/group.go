@@ -9,6 +9,7 @@ import (
 	"github.com/recurser/boss/api/cli/cliutil"
 	"github.com/recurser/boss/api/cli/skills"
 	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/projectconfig"
 	"github.com/spf13/cobra"
 )
@@ -19,6 +20,7 @@ type Client interface {
 	projectconfig.LocalReader
 	projectconfig.LocalWriter
 	RemoveRepo(context.Context, string) error
+	RefreshRepoOrigin(context.Context, string) (*pb.RefreshRepoOriginResponse, error)
 }
 
 // DaemonProfile identifies the local daemon's persisted state and socket.
@@ -28,7 +30,7 @@ type DaemonProfile struct{ SettingsPath, AppDataDir, SocketPath string }
 type Options struct {
 	Profile       func() (DaemonProfile, error)
 	CloudRemote   func(*cobra.Command, error) (*cloudrpc.RemoteClient, error)
-	LaunchRepoAdd func(*cobra.Command) error
+	LaunchRepoAdd func(*cobra.Command, string) error
 }
 
 // Group owns independent repository and project command trees.

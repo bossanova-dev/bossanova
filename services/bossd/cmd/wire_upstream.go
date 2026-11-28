@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/recurser/bossalib/apiversion"
+	"github.com/recurser/bossalib/contract/cloud/cloudorigin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/kit/vcs"
@@ -72,7 +73,7 @@ func (w *daemonWiring) wireUpstream() {
 	w.webhookEventCh = make(chan session.Event, 64)
 	emitter := session.NewSessionEventEmitter(&displayPollerSessionLookup{sessions: w.sessions, repos: w.repos}, w.webhookEventCh, log.Logger)
 	_, upstreamURLExplicit := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
-	if cfg := upstream.ConfigFromEnv(); cfg != nil {
+	if cfg := resolveUpstreamConfig(); cfg != nil {
 		// Pin daemon_id to a UUID persisted under the data dir (not the
 		// rotating hostname) so a hostname change doesn't orphan the old
 		// id's rows in the orchestrator read model. BOSSD_DAEMON_ID still
@@ -119,56 +120,13 @@ func (w *daemonWiring) wireUpstream() {
 			repoIDs = append(repoIDs, r.ID)
 		}
 
-		// Prefer BOSSD_USER_JWT; fall back to whatever the keychain
-		// holds. Empty is allowed — bosso will reject the handshake and
-		// the outer Run loop will back off, but the daemon stays up in
-		// local-only mode.
-		tokenProvider := upstream.NewKeychainTokenProvider()
-		// Give the provider the daemon logger so its credential-state
-		// transition warning lands in bossd's log. Without this the provider
-		// is silent by construction, which is how a daemon reloaded from an
-		// already-marked record started up looking healthy (BOS-942).
-		tokenProvider.SetLogger(log.Logger)
-		authToken := cfg.UserJWT
-		if authToken == "" {
-			// If the cached keychain token is expired (or about to be),
-			// proactively refresh via the WorkOS refresh_token before
-			// RegisterDaemon. The periodic refresh loop only runs after
-			// the stream is alive, which is too late — bosso rejects the
-			// initial register with an expired JWT and the whole startup
-			// falls back to local-only mode.
-			exp := tokenProvider.ExpiresAt()
-			if !exp.IsZero() && time.Until(exp) < 60*time.Second {
-				// The logger rides on the context so the provider's in-window
-				// replay warning is logged rather than dropped to zerolog's
-				// disabled logger (BOS-941, see upstream.logRefreshReplay).
-				//
-				// The 10s deadline deliberately stays as it is, even though it
-				// is smaller than the provider's 24s replay budget, because
-				// startup blocks on this call: widening it would trade up to
-				// 25s of extra daemon-startup latency for a recovery the outer
-				// Run loop's reRegister and the periodic refresher — which do
-				// get the whole budget — already provide within seconds.
-				//
-				// Truncating the budget is safe, but NOT because a failure here
-				// cannot be ambiguous — a connected dispatch cut short by this
-				// deadline is classified exactly as unknown. It is safe because
-				// refresh() checks the caller's context before it spends a
-				// replay or writes the durable sign-out marker (BOS-941), so a
-				// deadline that expires mid-budget returns a plain, retryable
-				// error and leaves the credentials unflagged. The only way this
-				// path signs the daemon out is a genuinely exhausted budget —
-				// three unconfirmed dispatches completed inside 10s — which is
-				// the same verdict the full budget would have reached.
-				refreshCtx, refreshCancel := context.WithTimeout(
-					log.Logger.WithContext(context.Background()), 10*time.Second)
-				if _, err := tokenProvider.Refresh(refreshCtx); err != nil {
-					log.Warn().Err(err).Msg("proactive token refresh before register failed")
-				}
-				refreshCancel()
-			}
-			authToken = tokenProvider.Token()
-		}
+		// Scope the keychain provider to cfg.OrchestratorURL so the stored
+		// Bossanova Cloud login is sent only to the matching Bossanova Cloud
+		// origin. When BOSSD_USER_JWT is set, bypass the keychain so startup
+		// registration, re-registration, and streams stay on the explicit JWT.
+		// Empty is allowed — bosso will reject the handshake and the outer Run
+		// loop will back off, but the daemon stays up in local-only mode.
+		tokens, authToken := wireUpstreamTokens(cfg)
 
 		// The machine identity key proves to bosso that this machine holds
 		// the key pinned to cfg.DaemonID, so another account that learns the
@@ -415,10 +373,7 @@ func (w *daemonWiring) wireUpstream() {
 			for _, r := range currentRepos {
 				ids = append(ids, r.ID)
 			}
-			jwt := tokenProvider.Token()
-			if jwt == "" {
-				jwt = cfg.UserJWT
-			}
+			jwt := upstream.RegisterJWT(tokens.provider, cfg)
 			regCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			tok, err := upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, jwt, ids, identityKey)
@@ -441,7 +396,7 @@ func (w *daemonWiring) wireUpstream() {
 		sessionTokenHolder = upstream.NewSessionTokenHolder(sessionToken)
 		w.wireCredentialDistribution(cfg, client, sessionTokenHolder, identityKey, authToken)
 		// The orchestrator mints proof view links only for a user scope.
-		w.hostedProofViews = hostedProofViewClient{rpc: client, userToken: userTokenOr(tokenProvider.Token, cfg.UserJWT)}
+		w.hostedProofViews = hostedProofViewClient{rpc: client, userToken: tokens.userToken}
 		w.wireViewerApprovals(httpClient, cfg.OrchestratorURL, sessionTokenHolder.Get, identityKey)
 		// BOS-376: positive terminal-liveness signal shared by the
 		// TerminalStream reader (sets it healthy on TerminalReady) and its
@@ -510,7 +465,7 @@ func (w *daemonWiring) wireUpstream() {
 				AgentAccounts: snapshotAgentAccounts,
 			},
 			Events:         w.streamBus,
-			TokenProvider:  tokenProvider,
+			TokenProvider:  tokens.provider,
 			CommandHandler: cmdHandler,
 			DaemonSettings: cmdHandler,
 			UsageShare:     w.usageShare,
@@ -606,7 +561,7 @@ func (w *daemonWiring) wireUpstream() {
 		authAdapter := &streamAuthAdapter{
 			orchestratorURL: cfg.OrchestratorURL,
 			streamClient:    w.streamClient,
-			tokenProvider:   tokenProvider,
+			tokenProvider:   tokens.reloader,
 			authState:       authState,
 			logger:          log.Logger,
 			// Read-only sources for the GetAuthState diagnostic. The stream
@@ -650,7 +605,7 @@ func (w *daemonWiring) wireUpstream() {
 			Client:        client,
 			AuthToken:     authToken,
 			SessionToken:  sessionTokenHolder,
-			TokenProvider: tokenProvider,
+			TokenProvider: tokens.provider,
 			AuthState:     authState,
 			TmuxClient:    w.tmuxClient,
 			AttachFactory: func(ctx context.Context, cfg upstream.AttachConfig) (upstream.TerminalAttach, error) {
@@ -680,6 +635,83 @@ func (w *daemonWiring) wireUpstream() {
 		})
 	}
 
+}
+
+func resolveUpstreamConfig() *upstream.Config {
+	cfg := upstream.ConfigFromEnv()
+	if cfg == nil {
+		return nil
+	}
+	if err := cfg.CredentialRefusal(); err != nil {
+		log.Error().
+			Err(err).
+			Str("orchestrator_origin", cloudorigin.OriginString(cfg.OrchestratorURL)).
+			Msg("upstream disabled; running local-only")
+		return nil
+	}
+	return cfg
+}
+
+type upstreamTokenWiring struct {
+	provider  upstream.TokenProvider
+	reloader  authTokenReloader
+	userToken func() string
+}
+
+func wireUpstreamTokens(cfg *upstream.Config) (upstreamTokenWiring, string) {
+	if cfg.UserJWT != "" {
+		return upstreamTokenWiring{
+			userToken: func() string { return cfg.UserJWT },
+		}, cfg.UserJWT
+	}
+	tokenProvider := upstream.NewKeychainTokenProvider()
+	tokenProvider.SetOrchestratorScope(cfg.OrchestratorURL)
+	// Give the provider the daemon logger so its credential-state
+	// transition warning lands in bossd's log. Without this the provider
+	// is silent by construction, which is how a daemon reloaded from an
+	// already-marked record started up looking healthy (BOS-942).
+	tokenProvider.SetLogger(log.Logger)
+	// If the cached keychain token is expired (or about to be),
+	// proactively refresh via the WorkOS refresh_token before
+	// RegisterDaemon. The periodic refresh loop only runs after
+	// the stream is alive, which is too late — bosso rejects the
+	// initial register with an expired JWT and the whole startup
+	// falls back to local-only mode.
+	exp := tokenProvider.ExpiresAt()
+	if !exp.IsZero() && time.Until(exp) < 60*time.Second {
+		// The logger rides on the context so the provider's in-window
+		// replay warning is logged rather than dropped to zerolog's
+		// disabled logger (BOS-941, see upstream.logRefreshReplay).
+		//
+		// The 10s deadline deliberately stays as it is, even though it
+		// is smaller than the provider's 24s replay budget, because
+		// startup blocks on this call: widening it would trade up to
+		// 25s of extra daemon-startup latency for a recovery the outer
+		// Run loop's reRegister and the periodic refresher — which do
+		// get the whole budget — already provide within seconds.
+		//
+		// Truncating the budget is safe, but NOT because a failure here
+		// cannot be ambiguous — a connected dispatch cut short by this
+		// deadline is classified exactly as unknown. It is safe because
+		// refresh() checks the caller's context before it spends a
+		// replay or writes the durable sign-out marker (BOS-941), so a
+		// deadline that expires mid-budget returns a plain, retryable
+		// error and leaves the credentials unflagged. The only way this
+		// path signs the daemon out is a genuinely exhausted budget —
+		// three unconfirmed dispatches completed inside 10s — which is
+		// the same verdict the full budget would have reached.
+		refreshCtx, refreshCancel := context.WithTimeout(
+			log.Logger.WithContext(context.Background()), 10*time.Second)
+		if _, err := tokenProvider.Refresh(refreshCtx); err != nil {
+			log.Warn().Err(err).Msg("proactive token refresh before register failed")
+		}
+		refreshCancel()
+	}
+	return upstreamTokenWiring{
+		provider:  tokenProvider,
+		reloader:  tokenProvider,
+		userToken: userTokenOr(tokenProvider.Token, cfg.UserJWT),
+	}, upstream.RegisterJWT(tokenProvider, cfg)
 }
 
 func (w *daemonWiring) snapshotAgentAccounts(ctx context.Context) ([]*bossanovav1.AgentAccount, error) {

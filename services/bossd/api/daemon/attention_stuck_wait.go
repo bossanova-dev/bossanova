@@ -15,7 +15,7 @@ import (
 
 func (s *Server) stuckWaitFix(ctx context.Context, p *pb.Session, d attentionDeps, agentWorking bool) *attention.FixFact {
 	pr := displaystatus.WaitPRFromSession(p)
-	if p.GetPrNumber() == 0 || !pr.Open || p.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN || (!pr.Draft && p.GetPrMergeable() && pr.Checks == displaystatus.WaitChecksGreen) || agentWorking || s.repairLease.Active(p.GetId()) || s.githubCallbacks == nil {
+	if p.GetPrNumber() == 0 || !pr.Open || p.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN || (!pr.Draft && p.GetPrMergeable() && pr.Checks == displaystatus.WaitChecksGreen) || agentWorking || s.repairLease.Active(p.GetId()) || s.repairQueued(p.GetId()) || s.githubCallbacks == nil {
 		return nil
 	}
 	if d.display != nil && (d.display.SettingUp || d.display.Merging) {

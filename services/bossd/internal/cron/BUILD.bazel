@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "cron",
     srcs = [
+        "login_gate.go",
         "quota_floor.go",
         "scheduler.go",
     ],
@@ -32,6 +33,7 @@ go_test(
     name = "cron_test",
     srcs = [
         "gate_options_test.go",
+        "login_gate_test.go",
         "quota_floor_test.go",
         "scheduler_test.go",
         "tick_test.go",

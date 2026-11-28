@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossalib/contract/cloud/cloudorigin"
 	"github.com/recurser/bossalib/kit/safego"
 	zlog "github.com/rs/zerolog/log"
 )
@@ -56,7 +57,8 @@ type Manager struct {
 	// render as a successful login — precisely the class this verification
 	// exists to catch. It is always nil in production builds, where
 	// SetE2ELogin is a no-op.
-	lastE2ETokens *Tokens
+	lastE2ETokens      *Tokens
+	explicitCredential bool
 }
 
 // NewManager creates a Manager with the given store and WorkOS config.
@@ -64,15 +66,51 @@ func NewManager(store TokenStore, cfg Config) *Manager {
 	return &Manager{store: store, config: cfg}
 }
 
+func (m *Manager) MarkExplicitCredential() {
+	m.explicitCredential = true
+}
+
+// AccessTokenFor returns a valid access token scoped to orchestratorURL.
+//
+// Unless MarkExplicitCredential was called, orchestratorURL must be a known
+// Bossanova Cloud orchestrator origin (checked before touching the store or
+// refreshing) and the stored token's issuer must match that environment.
+// Returns an empty string and nil error when orchestratorURL is known and no
+// tokens are stored.
+func (m *Manager) AccessTokenFor(ctx context.Context, orchestratorURL string) (string, error) {
+	if m.explicitCredential {
+		return m.AccessToken(ctx)
+	}
+	if _, err := cloudorigin.CheckOrchestrator(orchestratorURL); err != nil {
+		return "", err
+	}
+	token, err := m.accessToken(ctx, orchestratorURL)
+	if err != nil || token == "" {
+		return token, err
+	}
+	if err := cloudorigin.CheckStoredToken(orchestratorURL, token); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
 // AccessToken returns a valid access token, refreshing if needed.
 // Returns empty string (no error) if no tokens are stored — callers
 // should treat this as unauthenticated (local mode).
 func (m *Manager) AccessToken(ctx context.Context) (string, error) {
+	return m.accessToken(ctx, "")
+}
+
+func (m *Manager) accessToken(ctx context.Context, scopeURL string) (string, error) {
 	tokens, err := m.store.Load()
 	if err != nil {
 		maybeWarnCredentialsUnreadable(err)
 		// No stored tokens — not logged in.
 		return "", nil
+	}
+
+	if err := checkStoredTokenScope(scopeURL, tokens); err != nil {
+		return "", err
 	}
 
 	// A retained-but-flagged record must never drive another WorkOS exchange:
@@ -89,8 +127,11 @@ func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("access token expired and no refresh token available; run 'boss login'")
 	}
 
-	refreshed, err := m.refreshStoredTokens(ctx, false)
+	refreshed, err := m.refreshStoredTokensFor(ctx, false, scopeURL)
 	if err != nil {
+		if errors.Is(err, cloudorigin.ErrUnknownOrchestrator) || errors.Is(err, cloudorigin.ErrEnvironmentMismatch) {
+			return "", err
+		}
 		return "", fmt.Errorf("refresh token: %w (run 'boss login' to re-authenticate)", err)
 	}
 

@@ -81,12 +81,16 @@ export function draftHold(timeline = []) {
   return { holder: byVerify ? 'verify' : 'operator', repaired }
 }
 
-// Park codes only the operator settles: those a verify policy raises on purpose. `partial-build`
+// Park codes only the operator settles: those a verify policy raises on purpose, and a GitHub
+// approval the repository requires. `partial-build`
 // is neither theirs nor mechanical: the session is sent back to finish the build (`finish-build`).
 // Every other code in verify-gate.mjs HUMAN_REASONS records something mechanical (repair-exhausted,
 // worktree-unsynced, no-receipt, ...) that an agent can clear by giving verify a fresh head.
 function isOperatorPark(code) {
-  return code === 'always-human-path' || code === 'human-merge' || code.startsWith('human-review:')
+  return (
+    ['always-human-path', 'human-merge', 'approval-required'].includes(code) ||
+    code.startsWith('human-review:')
+  )
 }
 
 function parkCodes(reason = '') {
@@ -315,6 +319,8 @@ function classifyProgress({ session, chats, pr, residual, cronJob, now }) {
   const inherited = () =>
     verdict('upstream-red', `repair residual ${residual.id}: ${residualSummary(residual)}`)
   if (repairing) return verdict('working', `bossd repair running since ${repairing}`)
+  const queued = typeof session.repair_queued_at === 'string' ? session.repair_queued_at.trim() : ''
+  if (queued) return verdict('working', `bossd repair queued since ${queued}`)
   const phase = pr?.verify_phase ?? { kind: '', reason: '', label: '' }
   // A run can block after its PR was already handed off (a later finalize pass tripping on
   // incidental churn, say). refresh-pr releases such a block, but an older daemon or an

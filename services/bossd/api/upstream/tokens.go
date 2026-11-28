@@ -1,9 +1,3 @@
-// Package upstream — tokens.go owns the keychain-backed WorkOS token
-// loader used by both the legacy heartbeat Manager (behind the
-// legacy_upstream build tag) and the new StreamClient. T3.7 lifted this
-// out from upstream.go so the default build can compile without the
-// legacy RPCs present. Phase 8 deletes the legacy copy; this file
-// survives as the single source of truth.
 package upstream
 
 import (
@@ -773,6 +767,8 @@ type KeychainTokenProvider struct {
 	// nil writer. Nil means "no logger set"; see logOrNop.
 	logger *zerolog.Logger
 
+	scope tokenScope
+
 	// refreshGroup coalesces concurrent Refresh calls into a single WorkOS
 	// exchange. The StreamClient opens two streams (DaemonStream and
 	// TerminalStream) that each carry their own refresher; when an access
@@ -823,6 +819,7 @@ func (p *KeychainTokenProvider) SetLogger(logger zerolog.Logger) {
 	if p.reloginReason != "" {
 		logAuthWedge(p.logOrNop(), p.reloginReason)
 	}
+	p.maybeLogScopeRefusalLocked()
 }
 
 // logOrNop returns the provider's logger, or a no-op one when unset. Caller
@@ -911,14 +908,14 @@ func KeyringBackend() string {
 func (p *KeychainTokenProvider) Token() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.accessToken
+	return p.scopedTokenLocked()
 }
 
 // ExpiresAt implements TokenProvider.ExpiresAt.
 func (p *KeychainTokenProvider) ExpiresAt() time.Time {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.expiresAt
+	return p.scopedExpiresAtLocked()
 }
 
 // Refresh implements TokenProvider.Refresh. Concurrent calls are coalesced via
@@ -941,11 +938,10 @@ func (p *KeychainTokenProvider) Refresh(ctx context.Context) (string, error) {
 // lock and persists the new tokens back to keychain. Always invoked through
 // Refresh's single-flight wrapper.
 func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr error) {
-	p.mu.RLock()
-	originalAccess := p.accessToken
-	refreshTok := p.refreshToken
-	pendingReason := p.reloginReason
-	p.mu.RUnlock()
+	originalAccess, refreshTok, pendingReason, scopeRefused := p.snapshotForRefresh()
+	if scopeRefused {
+		return "", nil
+	}
 	originalRefreshTok := refreshTok
 
 	// A durable re-login marker is final until the user logs in again: return
@@ -991,9 +987,9 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 		// cached refresh token; preserve it only for a later retry.
 		return "", fmt.Errorf("load tokens before refresh: %w", err)
 	}
-	p.mu.Lock()
-	p.applyTokensLocked(latest)
-	p.mu.Unlock()
+	if p.applyTokensAndCheckScope(latest) {
+		return "", nil
+	}
 	// Another process may have flagged the shared record while we waited
 	// for the cross-process lock. Same rule: no exchange from a marked
 	// record.
@@ -1092,14 +1088,8 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 			if errors.Is(err, ErrAuthExpired) {
 				reloaded, loadErr := loadKeychainTokensFn()
 				if loadErr == nil && reloaded.RefreshToken != "" && reloaded.RefreshToken != refreshTok {
-					p.mu.Lock()
-					p.applyTokensLocked(reloaded)
-					p.mu.Unlock()
-					if reloaded.valid() {
-						return reloaded.AccessToken, nil
-					}
-					if reason := reloaded.reloginReason(); reason != "" {
-						return "", reloginError(reason)
+					if tok, adoptErr, done := p.adoptReloadedTokens(reloaded); done {
+						return tok, adoptErr
 					}
 					// Advance `latest` alongside `refreshTok` (as the
 					// success-path race below does): it is the record a
@@ -1163,18 +1153,11 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 			return "", errCredentialsRemoved
 		}
 		if loadErr == nil && current.RefreshToken != "" && current.RefreshToken != refreshTok {
-			p.mu.Lock()
-			p.applyTokensLocked(current)
-			p.mu.Unlock()
-			if current.valid() {
-				return current.AccessToken, nil
-			}
 			// Same rule as the pre-loop load and the invalid_grant recovery:
-			// a flagged record never drives another exchange. Without this
-			// the loop would dispatch attempt 2 with a refresh token the
-			// shared record explicitly marks as unusable.
-			if reason := current.reloginReason(); reason != "" {
-				return "", reloginError(reason)
+			// a scoped-out, already-valid, or flagged record never drives
+			// another exchange.
+			if tok, adoptErr, done := p.adoptReloadedTokens(current); done {
+				return tok, adoptErr
 			}
 			latest = current
 			refreshTok = current.RefreshToken
@@ -1185,9 +1168,9 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 		p.applyTokensLocked(refreshed)
 		p.mu.Unlock()
 		if err := saveKeychainTokensFn(refreshed); err != nil {
-			return refreshed.AccessToken, fmt.Errorf("save refreshed tokens: %w", err)
+			return p.scopedAccessToken(refreshed.AccessToken), fmt.Errorf("save refreshed tokens: %w", err)
 		}
-		return refreshed.AccessToken, nil
+		return p.scopedAccessToken(refreshed.AccessToken), nil
 	}
 
 	// Only the supersede budget can bring us here: the replay branch flags from
@@ -1236,12 +1219,14 @@ func (p *KeychainTokenProvider) applyTokensLocked(tokens *keychainTokens) {
 		if previous != reason {
 			logAuthWedge(p.logOrNop(), reason)
 		}
+		p.scope.resetLog()
 		return
 	}
 	p.accessToken = tokens.AccessToken
 	p.refreshToken = tokens.RefreshToken
 	p.expiresAt = tokens.ExpiresAt
 	p.reloginReason = ""
+	p.maybeLogScopeRefusalLocked()
 }
 
 // ReloginReason reports the persisted re-login reason observed by the last
@@ -1272,7 +1257,7 @@ func (p *KeychainTokenProvider) ReloginReason() string {
 func (p *KeychainTokenProvider) CredentialVerdict() (usable bool, reloginReason string) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.reloginReason == "" && p.accessToken != "", p.reloginReason
+	return p.reloginReason == "" && p.scopedTokenLocked() != "", p.reloginReason
 }
 
 // markNeedsRelogin persists the non-secret re-login marker and retained
@@ -1353,7 +1338,7 @@ func (p *KeychainTokenProvider) flagRetainedRecord(refreshTok, reason string, er
 		return "", err
 	}
 	if adopted.valid() {
-		return adopted.AccessToken, nil
+		return p.scopedAccessToken(adopted.AccessToken), nil
 	}
 	// Adopted but not yet usable (an expired access token with a newer refresh
 	// token). The next Refresh exchanges the adopted token; reporting the
@@ -1386,6 +1371,7 @@ func (p *KeychainTokenProvider) clearCacheLocked() {
 	p.refreshToken = ""
 	p.expiresAt = time.Time{}
 	p.reloginReason = ""
+	p.scope.resetLog()
 }
 
 // preservedReloginReason picks the reason to persist for an authoritative

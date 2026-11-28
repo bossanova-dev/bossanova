@@ -63,6 +63,12 @@ func (f *fakeDaemonRPC) UpdateRepo(_ context.Context, _ *connect.Request[pb.Upda
 	})
 }
 
+func (f *fakeDaemonRPC) RefreshRepoOrigin(_ context.Context, req *connect.Request[pb.RefreshRepoOriginRequest]) (*connect.Response[pb.RefreshRepoOriginResponse], error) {
+	return sessionResp(f, func() *pb.RefreshRepoOriginResponse {
+		return &pb.RefreshRepoOriginResponse{Repo: &pb.Repo{Id: req.Msg.GetId(), OriginUrl: "https://github.com/new/r.git"}, PreviousOriginUrl: "https://github.com/old/r.git"}
+	})
+}
+
 func (f *fakeDaemonRPC) ListRepoPRs(_ context.Context, _ *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
 	return sessionResp(f, func() *pb.ListRepoPRsResponse {
 		return &pb.ListRepoPRsResponse{PullRequests: []*pb.PRSummary{{Number: 7}}}
@@ -256,6 +262,10 @@ func TestLocalClientValueWrappers(t *testing.T) {
 		{"UpdateRepo", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.UpdateRepo(ctx, &pb.UpdateRepoRequest{})
 			return err == nil && got.GetId() == "repo-1", got == nil, err
+		}},
+		{"RefreshRepoOrigin", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.RefreshRepoOrigin(ctx, "repo-1")
+			return err == nil && got.GetRepo().GetId() == "repo-1" && got.GetPreviousOriginUrl() == "https://github.com/old/r.git", got == nil, err
 		}},
 		{"ListRepoPRs", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.ListRepoPRs(ctx, "repo")

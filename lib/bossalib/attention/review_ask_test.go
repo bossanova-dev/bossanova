@@ -18,6 +18,8 @@ func TestReviewAsk(t *testing.T) {
 		{"label", []string{"always-human-path"}, "the verify judge (cannot grade itself)", false, "abc123456", "Approve these on head abc1234:", []string{"the verify judge (cannot grade itself)"}, true},
 		{"categories", []string{"human-review:ui", "human-review:database", "human-review:ui"}, "", true, "abc123456", "Watch the evidence video, then approve these on head abc1234:", []string{"database migration", "UI change"}, true},
 		{"merge", []string{"human-merge"}, "", true, "abc123456", "Verify passed head abc1234. Merge it when you are ready.", nil, true},
+		{"github approval", []string{"approval-required"}, "high: Review evidence", false, "abc123456", "Verify passed head abc1234. Get it approved on GitHub, with no changes still requested, so it can merge.", nil, true},
+		{"github approval beneath an area", []string{"always-human-path", "approval-required"}, "the verify judge (cannot grade itself)", false, "abc123456", "Review these on head abc1234, then get it approved on GitHub with no changes still requested:", []string{"the verify judge (cannot grade itself)"}, true},
 		{"empty head", []string{"human-review:ui"}, "", false, "", "Approve these on this head:", []string{"UI change"}, true},
 		{"failure wins", []string{"human-review:ui", "repair-exhausted"}, "", false, "abc1234", "", nil, false},
 		{"unknown", []string{"unknown"}, "", false, "", "", nil, false},

@@ -788,6 +788,7 @@ func TestWebhookRequiresLogin(t *testing.T) {
 	fake := newSampleWebhookFake()
 	url := newFakeWebhookURL(t, fake)
 	mgr := auth.NewManager(emptyTokenStore{}, auth.Config{})
+	mgr.MarkExplicitCredential()
 
 	if _, err := sessionWebhookRemote(context.Background(), mgr, url); err == nil || !strings.Contains(err.Error(), "run 'boss login' first") {
 		t.Fatalf("sessionWebhookRemote err = %v, want the boss login hint", err)

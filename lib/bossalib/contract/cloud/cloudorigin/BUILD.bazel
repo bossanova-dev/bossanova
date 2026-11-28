@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cloudorigin",
+    srcs = ["cloudorigin.go"],
+    importpath = "github.com/recurser/bossalib/contract/cloud/cloudorigin",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "cloudorigin_test",
+    srcs = ["cloudorigin_test.go"],
+    deps = [":cloudorigin"],
+)

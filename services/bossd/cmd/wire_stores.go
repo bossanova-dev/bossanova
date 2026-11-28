@@ -297,8 +297,8 @@ func (w *daemonWiring) wireStores() error {
 	w.displayTracker = status.NewDisplayTracker()
 	// Single-repairer lease, shared between the plugin host (which takes/releases
 	// it via SetRepairStatus) and the API server (which reads it for
-	// Session.repair_active). See BOS-234.
-	w.repairLease = status.NewRepairLeaseManager()
+	// Session.repair_active and Session.repair_queued_at). See BOS-234, BOS-2689.
+	w.repairLease = status.NewRepairLeaseManager().SetQueueTTLFn(w.repairQueueTTL)
 	w.displayComputer = status.NewDisplayStatusComputer(
 		w.rawSessions, w.displayTracker, w.chatStatusTracker, w.agentChats, rawWorkflows, log.Logger,
 	)
@@ -595,4 +595,12 @@ func (w *daemonWiring) wireStores() error {
 	// backfill follows both so it recomputes labels from the final states.
 
 	return nil
+}
+
+func (w *daemonWiring) repairQueueTTL() time.Duration {
+	sweepMinutes := w.settings.Repair.SweepIntervalMinutes
+	if loaded, err := config.Load(); err == nil {
+		sweepMinutes = loaded.Repair.SweepIntervalMinutes
+	}
+	return status.RepairQueueTTLForSweepInterval(time.Duration(sweepMinutes) * time.Minute)
 }

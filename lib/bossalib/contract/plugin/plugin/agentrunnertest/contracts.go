@@ -179,4 +179,7 @@ var contracts = []contract{
 		}
 		return c.PlanQuestionAnswer(ctx, q)
 	}},
+	{"CheckLogin", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
+		return c.CheckLogin(ctx, &v1.CheckLoginRequest{})
+	}},
 }

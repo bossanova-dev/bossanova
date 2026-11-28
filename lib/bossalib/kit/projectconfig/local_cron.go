@@ -300,7 +300,7 @@ func (p *planner) mapDesired(s *cronSpec, change Change, jobs []*pb.CronJob, sta
 			change.Reason = ReasonPreflightFailed
 			change.Detail = "created disabled: " + strings.Join(s.preflight, "; ")
 		}
-		p.op(localOp{change: p.add(change), class: ClassCrons, name: s.cron.Name, needsRepo: status == repoPending, createCron: req, marker: p.marker})
+		p.op(localOp{change: p.add(change), class: ClassCrons, name: s.cron.Name, needsRepo: status == repoPending, createCron: req, stage: s.stage, marker: p.marker})
 	case ActionUpdate, ActionAdopt:
 		if len(s.preflight) > 0 {
 			change.Action, change.Reason, change.Detail, change.Fields = ActionSkip, ReasonPreflightFailed, strings.Join(s.preflight, "; "), nil

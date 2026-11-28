@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
 	"github.com/recurser/bossalib/contract/plugin/loginshell"
 	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -40,6 +41,10 @@ type Server struct {
 	// the codex process running under its tmux pane. Defaults to the real
 	// process inspector; unit tests inject a fake.
 	inspector processInspector
+	// loginProbe runs `codex login status` to check ambient login state for
+	// CheckLogin. Nil defaults to agentruntime.RunLoginStatus with the runner's
+	// login shell and cmdFactory; tests replace it so they never exec codex.
+	loginProbe func(context.Context) agentruntime.LoginStatusOutput
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Option) *Server {

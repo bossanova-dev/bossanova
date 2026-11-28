@@ -556,3 +556,80 @@ func TestCheckAgentsResolvableNoAgents(t *testing.T) {
 		t.Fatalf("want no issue for zero agents, got %+v", issue)
 	}
 }
+
+func TestAgentLoginWarning(t *testing.T) {
+	t.Run("empty list returns nil", func(t *testing.T) {
+		if got := AgentLoginWarning(nil); got != nil {
+			t.Fatalf("AgentLoginWarning(nil) = %+v, want nil", got)
+		}
+		if got := AgentLoginWarning([]LoggedOutAgent{}); got != nil {
+			t.Fatalf("AgentLoginWarning(empty) = %+v, want nil", got)
+		}
+	})
+
+	t.Run("single agent", func(t *testing.T) {
+		got := AgentLoginWarning([]LoggedOutAgent{
+			{Agent: "codex", Remedy: "codex login"},
+		})
+		if got == nil {
+			t.Fatal("want warning issue, got nil")
+		}
+		if !got.Warning {
+			t.Error("Warning = false, want true")
+		}
+		if got.Title != "codex is not logged in" {
+			t.Errorf("Title = %q, want %q", got.Title, "codex is not logged in")
+		}
+		if !strings.Contains(got.Detail, "  codex: codex login") {
+			t.Errorf("Detail missing indented remedy line:\n%s", got.Detail)
+		}
+		lower := strings.ToLower(got.Detail)
+		if !strings.Contains(lower, "fail") || !strings.Contains(lower, "starts anyway") {
+			t.Errorf("Detail should explain sessions fail and boss starts anyway:\n%s", got.Detail)
+		}
+	})
+
+	t.Run("two agents", func(t *testing.T) {
+		got := AgentLoginWarning([]LoggedOutAgent{
+			{Agent: "claude", Remedy: "claude auth login"},
+			{Agent: "codex", Remedy: "codex login"},
+		})
+		if got == nil {
+			t.Fatal("want warning issue, got nil")
+		}
+		if !got.Warning {
+			t.Error("Warning = false, want true")
+		}
+		if got.Title != "claude and codex are not logged in" {
+			t.Errorf("Title = %q, want %q", got.Title, "claude and codex are not logged in")
+		}
+		claudeIdx := strings.Index(got.Detail, "  claude: claude auth login")
+		codexIdx := strings.Index(got.Detail, "  codex: codex login")
+		if claudeIdx < 0 || codexIdx < 0 || claudeIdx >= codexIdx {
+			t.Errorf("Detail missing ordered remedy lines:\n%s", got.Detail)
+		}
+	})
+
+	t.Run("three agents preserve input order", func(t *testing.T) {
+		got := AgentLoginWarning([]LoggedOutAgent{
+			{Agent: "antigravity", Remedy: "agy login"},
+			{Agent: "claude", Remedy: "claude auth login"},
+			{Agent: "codex", Remedy: "codex login"},
+		})
+		if got == nil {
+			t.Fatal("want warning issue, got nil")
+		}
+		if !got.Warning {
+			t.Error("Warning = false, want true")
+		}
+		if got.Title != "antigravity, claude, and codex are not logged in" {
+			t.Errorf("Title = %q, want %q", got.Title, "antigravity, claude, and codex are not logged in")
+		}
+		first := strings.Index(got.Detail, "  antigravity: agy login")
+		second := strings.Index(got.Detail, "  claude: claude auth login")
+		third := strings.Index(got.Detail, "  codex: codex login")
+		if first < 0 || second < 0 || third < 0 || first >= second || second >= third {
+			t.Errorf("Detail missing ordered remedy lines:\n%s", got.Detail)
+		}
+	})
+}

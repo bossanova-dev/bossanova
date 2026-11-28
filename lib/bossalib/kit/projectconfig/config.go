@@ -23,6 +23,10 @@ const (
 	SchemaVersion = 1
 	// MarkerPrefix prefixes the marker recorded on rows a project config owns.
 	MarkerPrefix = "boss-project:"
+	// DefaultsMarker is the reserved managed_by marker for default factory
+	// crons seeded when a repository is registered. It sits outside
+	// MarkerPrefix so ParseMarker and IsMarker never treat it as a project slug.
+	DefaultsMarker = "boss-defaults"
 )
 
 var projectSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -54,6 +58,13 @@ func ParseMarker(marker string) (project string, ok bool) {
 func IsMarker(s string) bool {
 	_, ok := ParseMarker(s)
 	return ok
+}
+
+// ValidCronManagedBy reports whether s is a valid managed_by value on a local
+// cron job: empty (unmarked), DefaultsMarker (seeded at registration), or a
+// project marker (IsMarker).
+func ValidCronManagedBy(s string) bool {
+	return s == "" || s == DefaultsMarker || IsMarker(s)
 }
 
 // DaemonIdentity is what a daemon is known by: its orchestrator routing id

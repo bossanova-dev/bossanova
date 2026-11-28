@@ -890,6 +890,18 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option (bossanova.v1.permission) = "sessions:read";
   }
+  // MintPublicProofViewLink returns a short-lived signed link to the newest
+  // completed hosted proof page of one pull request when the uploading
+  // organization has link sharing enabled. Rate-limited per client address.
+  // Every miss (sharing off, no upload, incomplete or deleted upload, unknown
+  // repo) returns the same NotFound.
+  // This additive RPC needs no dated API bump; see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  rpc MintPublicProofViewLink(MintPublicProofViewLinkRequest) returns (MintPublicProofViewLinkResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_PUBLIC;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -2969,6 +2981,24 @@ message MintProofViewLinkResponse {
   google.protobuf.Timestamp expires_at = 2;
 }
 
+// MintPublicProofViewLinkRequest names one pull request's hosted proof page
+// for an unauthenticated viewer when the owning organization enables link
+// sharing.
+message MintPublicProofViewLinkRequest {
+  // The repository's origin URL, canonicalized as StartProofUpload does.
+  string repo_origin_url = 1;
+  int32 pr_number = 2;
+  // The head the page was made for; empty means the newest completed upload
+  // for the pull request.
+  string head_sha = 3;
+}
+
+message MintPublicProofViewLinkResponse {
+  // https://<org label>.<uploads domain>/v1.<exp>.<sig>/<token>/
+  string view_url = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
 enum ProofUploadLimit {
   PROOF_UPLOAD_LIMIT_UNSPECIFIED = 0;
   PROOF_UPLOAD_LIMIT_FILE_COUNT = 1;
@@ -3461,6 +3491,14 @@ message OrganizationProofHosting {
   // bosso-local users.id of the owner who turned it off; empty while on or
   // when that user has been deleted.
   string disabled_by_user_id = 6;
+  // Whether anyone with the link can view the organization's hosted proof
+  // pages. Off by default (additive field; needs no dated API bump).
+  bool is_link_sharing_enabled = 7;
+  // When an owner turned link sharing on; unset while off.
+  google.protobuf.Timestamp link_sharing_enabled_at = 8;
+  // bosso-local users.id of the owner who turned link sharing on; empty while
+  // off or when that user has been deleted.
+  string link_sharing_enabled_by_user_id = 9;
 }
 
 message GetOrganizationProofHostingRequest {
@@ -3474,6 +3512,10 @@ message GetOrganizationProofHostingResponse {
 message SetOrganizationProofHostingRequest {
   string organization_id = 1;
   bool is_enabled = 2;
+  // Optional: when set, turns "anyone with the link can view" on or off; when
+  // omitted, leaves link sharing unchanged. Adding an optional field is
+  // additive and needs no dated API bump.
+  optional bool is_link_sharing_enabled = 3;
 }
 
 message SetOrganizationProofHostingResponse {

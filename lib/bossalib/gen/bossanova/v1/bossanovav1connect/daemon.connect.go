@@ -78,6 +78,9 @@ const (
 	// DaemonServiceUpdateRepoProcedure is the fully-qualified name of the DaemonService's UpdateRepo
 	// RPC.
 	DaemonServiceUpdateRepoProcedure = "/bossanova.v1.DaemonService/UpdateRepo"
+	// DaemonServiceRefreshRepoOriginProcedure is the fully-qualified name of the DaemonService's
+	// RefreshRepoOrigin RPC.
+	DaemonServiceRefreshRepoOriginProcedure = "/bossanova.v1.DaemonService/RefreshRepoOrigin"
 	// DaemonServiceGetRepoSettingsProcedure is the fully-qualified name of the DaemonService's
 	// GetRepoSettings RPC.
 	DaemonServiceGetRepoSettingsProcedure = "/bossanova.v1.DaemonService/GetRepoSettings"
@@ -395,6 +398,9 @@ const (
 	// DaemonServiceListAgentsProcedure is the fully-qualified name of the DaemonService's ListAgents
 	// RPC.
 	DaemonServiceListAgentsProcedure = "/bossanova.v1.DaemonService/ListAgents"
+	// DaemonServiceCheckAgentLoginsProcedure is the fully-qualified name of the DaemonService's
+	// CheckAgentLogins RPC.
+	DaemonServiceCheckAgentLoginsProcedure = "/bossanova.v1.DaemonService/CheckAgentLogins"
 	// DaemonServiceListPluginsProcedure is the fully-qualified name of the DaemonService's ListPlugins
 	// RPC.
 	DaemonServiceListPluginsProcedure = "/bossanova.v1.DaemonService/ListPlugins"
@@ -452,6 +458,10 @@ type DaemonServiceClient interface {
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
 	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
+	// RefreshRepoOrigin re-reads a repo's origin remote and persists it as the
+	// stored origin. Additive bossd-local RPC with no stream command: the
+	// orchestrator cannot repoint a repo.
+	RefreshRepoOrigin(context.Context, *connect.Request[v1.RefreshRepoOriginRequest]) (*connect.Response[v1.RefreshRepoOriginResponse], error)
 	// GetRepoSettings returns the web-safe (secret-masked) settings for a repo.
 	GetRepoSettings(context.Context, *connect.Request[v1.GetRepoSettingsRequest]) (*connect.Response[v1.GetRepoSettingsResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
@@ -824,6 +834,13 @@ type DaemonServiceClient interface {
 	// show the onboarding wizard, (b) populate the new-session agent-select
 	// step, (c) render the settings page's per-plugin sections.
 	ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error)
+	// CheckAgentLogins reports whether each loaded agent runner's CLI is logged in
+	// with its ambient login, the one a session started from this daemon would use.
+	// It shares the per-agent probe with `boss repair doctor`. It fails open: only
+	// positive evidence of a logged-out CLI is reported as LOGGED_OUT. It never
+	// returns CLI output. It is a local observe RPC, ungated on the socket like
+	// ListAgents and RepairDoctor, and it has no OrchestratorCommand.
+	CheckAgentLogins(context.Context, *connect.Request[v1.CheckAgentLoginsRequest]) (*connect.Response[v1.CheckAgentLoginsResponse], error)
 	// ListPlugins returns every plugin the daemon attempted to load this
 	// run, including disabled and failed entries. Surfaced via
 	// `boss plugin list` so operators can debug "did my plugin actually
@@ -944,6 +961,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceUpdateRepoProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("UpdateRepo")),
+			connect.WithClientOptions(opts...),
+		),
+		refreshRepoOrigin: connect.NewClient[v1.RefreshRepoOriginRequest, v1.RefreshRepoOriginResponse](
+			httpClient,
+			baseURL+DaemonServiceRefreshRepoOriginProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RefreshRepoOrigin")),
 			connect.WithClientOptions(opts...),
 		),
 		getRepoSettings: connect.NewClient[v1.GetRepoSettingsRequest, v1.GetRepoSettingsResponse](
@@ -1588,6 +1611,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ListAgents")),
 			connect.WithClientOptions(opts...),
 		),
+		checkAgentLogins: connect.NewClient[v1.CheckAgentLoginsRequest, v1.CheckAgentLoginsResponse](
+			httpClient,
+			baseURL+DaemonServiceCheckAgentLoginsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("CheckAgentLogins")),
+			connect.WithClientOptions(opts...),
+		),
 		listPlugins: connect.NewClient[v1.ListPluginsRequest, v1.ListPluginsResponse](
 			httpClient,
 			baseURL+DaemonServiceListPluginsProcedure,
@@ -1638,6 +1667,7 @@ type daemonServiceClient struct {
 	listRepos                            *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
 	removeRepo                           *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
 	updateRepo                           *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
+	refreshRepoOrigin                    *connect.Client[v1.RefreshRepoOriginRequest, v1.RefreshRepoOriginResponse]
 	getRepoSettings                      *connect.Client[v1.GetRepoSettingsRequest, v1.GetRepoSettingsResponse]
 	listRepoPRs                          *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
 	listTrackerIssues                    *connect.Client[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse]
@@ -1745,6 +1775,7 @@ type daemonServiceClient struct {
 	getPRState                           *connect.Client[v1.GetPRStateRequest, v1.GetPRStateResponse]
 	waitPRState                          *connect.Client[v1.WaitPRStateRequest, v1.WaitPRStateResponse]
 	listAgents                           *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
+	checkAgentLogins                     *connect.Client[v1.CheckAgentLoginsRequest, v1.CheckAgentLoginsResponse]
 	listPlugins                          *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
 	getDaemonCapabilities                *connect.Client[v1.GetDaemonCapabilitiesRequest, v1.GetDaemonCapabilitiesResponse]
 	getSettings                          *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
@@ -1825,6 +1856,11 @@ func (c *daemonServiceClient) RemoveRepo(ctx context.Context, req *connect.Reque
 // UpdateRepo calls bossanova.v1.DaemonService.UpdateRepo.
 func (c *daemonServiceClient) UpdateRepo(ctx context.Context, req *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error) {
 	return c.updateRepo.CallUnary(ctx, req)
+}
+
+// RefreshRepoOrigin calls bossanova.v1.DaemonService.RefreshRepoOrigin.
+func (c *daemonServiceClient) RefreshRepoOrigin(ctx context.Context, req *connect.Request[v1.RefreshRepoOriginRequest]) (*connect.Response[v1.RefreshRepoOriginResponse], error) {
+	return c.refreshRepoOrigin.CallUnary(ctx, req)
 }
 
 // GetRepoSettings calls bossanova.v1.DaemonService.GetRepoSettings.
@@ -2363,6 +2399,11 @@ func (c *daemonServiceClient) ListAgents(ctx context.Context, req *connect.Reque
 	return c.listAgents.CallUnary(ctx, req)
 }
 
+// CheckAgentLogins calls bossanova.v1.DaemonService.CheckAgentLogins.
+func (c *daemonServiceClient) CheckAgentLogins(ctx context.Context, req *connect.Request[v1.CheckAgentLoginsRequest]) (*connect.Response[v1.CheckAgentLoginsResponse], error) {
+	return c.checkAgentLogins.CallUnary(ctx, req)
+}
+
 // ListPlugins calls bossanova.v1.DaemonService.ListPlugins.
 func (c *daemonServiceClient) ListPlugins(ctx context.Context, req *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error) {
 	return c.listPlugins.CallUnary(ctx, req)
@@ -2428,6 +2469,10 @@ type DaemonServiceHandler interface {
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
 	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
+	// RefreshRepoOrigin re-reads a repo's origin remote and persists it as the
+	// stored origin. Additive bossd-local RPC with no stream command: the
+	// orchestrator cannot repoint a repo.
+	RefreshRepoOrigin(context.Context, *connect.Request[v1.RefreshRepoOriginRequest]) (*connect.Response[v1.RefreshRepoOriginResponse], error)
 	// GetRepoSettings returns the web-safe (secret-masked) settings for a repo.
 	GetRepoSettings(context.Context, *connect.Request[v1.GetRepoSettingsRequest]) (*connect.Response[v1.GetRepoSettingsResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
@@ -2800,6 +2845,13 @@ type DaemonServiceHandler interface {
 	// show the onboarding wizard, (b) populate the new-session agent-select
 	// step, (c) render the settings page's per-plugin sections.
 	ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error)
+	// CheckAgentLogins reports whether each loaded agent runner's CLI is logged in
+	// with its ambient login, the one a session started from this daemon would use.
+	// It shares the per-agent probe with `boss repair doctor`. It fails open: only
+	// positive evidence of a logged-out CLI is reported as LOGGED_OUT. It never
+	// returns CLI output. It is a local observe RPC, ungated on the socket like
+	// ListAgents and RepairDoctor, and it has no OrchestratorCommand.
+	CheckAgentLogins(context.Context, *connect.Request[v1.CheckAgentLoginsRequest]) (*connect.Response[v1.CheckAgentLoginsResponse], error)
 	// ListPlugins returns every plugin the daemon attempted to load this
 	// run, including disabled and failed entries. Surfaced via
 	// `boss plugin list` so operators can debug "did my plugin actually
@@ -2916,6 +2968,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceUpdateRepoProcedure,
 		svc.UpdateRepo,
 		connect.WithSchema(daemonServiceMethods.ByName("UpdateRepo")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceRefreshRepoOriginHandler := connect.NewUnaryHandler(
+		DaemonServiceRefreshRepoOriginProcedure,
+		svc.RefreshRepoOrigin,
+		connect.WithSchema(daemonServiceMethods.ByName("RefreshRepoOrigin")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceGetRepoSettingsHandler := connect.NewUnaryHandler(
@@ -3560,6 +3618,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ListAgents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceCheckAgentLoginsHandler := connect.NewUnaryHandler(
+		DaemonServiceCheckAgentLoginsProcedure,
+		svc.CheckAgentLogins,
+		connect.WithSchema(daemonServiceMethods.ByName("CheckAgentLogins")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceListPluginsHandler := connect.NewUnaryHandler(
 		DaemonServiceListPluginsProcedure,
 		svc.ListPlugins,
@@ -3622,6 +3686,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceRemoveRepoHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateRepoProcedure:
 			daemonServiceUpdateRepoHandler.ServeHTTP(w, r)
+		case DaemonServiceRefreshRepoOriginProcedure:
+			daemonServiceRefreshRepoOriginHandler.ServeHTTP(w, r)
 		case DaemonServiceGetRepoSettingsProcedure:
 			daemonServiceGetRepoSettingsHandler.ServeHTTP(w, r)
 		case DaemonServiceListRepoPRsProcedure:
@@ -3836,6 +3902,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceWaitPRStateHandler.ServeHTTP(w, r)
 		case DaemonServiceListAgentsProcedure:
 			daemonServiceListAgentsHandler.ServeHTTP(w, r)
+		case DaemonServiceCheckAgentLoginsProcedure:
+			daemonServiceCheckAgentLoginsHandler.ServeHTTP(w, r)
 		case DaemonServiceListPluginsProcedure:
 			daemonServiceListPluginsHandler.ServeHTTP(w, r)
 		case DaemonServiceGetDaemonCapabilitiesProcedure:
@@ -3913,6 +3981,10 @@ func (UnimplementedDaemonServiceHandler) RemoveRepo(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateRepo is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) RefreshRepoOrigin(context.Context, *connect.Request[v1.RefreshRepoOriginRequest]) (*connect.Response[v1.RefreshRepoOriginResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RefreshRepoOrigin is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetRepoSettings(context.Context, *connect.Request[v1.GetRepoSettingsRequest]) (*connect.Response[v1.GetRepoSettingsResponse], error) {
@@ -4341,6 +4413,10 @@ func (UnimplementedDaemonServiceHandler) WaitPRState(context.Context, *connect.R
 
 func (UnimplementedDaemonServiceHandler) ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListAgents is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) CheckAgentLogins(context.Context, *connect.Request[v1.CheckAgentLoginsRequest]) (*connect.Response[v1.CheckAgentLoginsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CheckAgentLogins is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error) {

@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -51,6 +52,10 @@ type ModelLister interface {
 type QuestionMenus interface {
 	ReadQuestionMenu(ctx context.Context, req *bossanovav1.ReadQuestionMenuRequest) (*bossanovav1.ReadQuestionMenuResponse, error)
 	PlanQuestionAnswer(ctx context.Context, req *bossanovav1.PlanQuestionAnswerRequest) (*bossanovav1.PlanQuestionAnswerResponse, error)
+}
+
+type LoginChecker interface {
+	CheckLogin(ctx context.Context, req *bossanovav1.CheckLoginRequest) (*bossanovav1.CheckLoginResponse, error)
 }
 
 func NewAgentRunnerGRPCPlugin(hostService sharedplugin.HostServiceRegistrar) *sharedplugin.AgentRunnerPlugin {
@@ -297,6 +302,10 @@ func (c *agentRunnerGRPCClient) ReadQuestionMenu(ctx context.Context, req *bossa
 // verbatim; the daemon then refuses the answer.
 func (c *agentRunnerGRPCClient) PlanQuestionAnswer(ctx context.Context, req *bossanovav1.PlanQuestionAnswerRequest) (*bossanovav1.PlanQuestionAnswerResponse, error) {
 	return invokePluginUnary(ctx, c.client.PlanQuestionAnswer, req)
+}
+
+func (c *agentRunnerGRPCClient) CheckLogin(ctx context.Context, req *bossanovav1.CheckLoginRequest) (*bossanovav1.CheckLoginResponse, error) {
+	return invokePluginUnaryWithTimeout(ctx, sharedplugin.AgentLoginProbeTimeout+5*time.Second, c.client.CheckLogin, req)
 }
 
 // NewAgentRunnerClient adapts a generated client to the daemon consumer interface.

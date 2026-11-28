@@ -833,7 +833,7 @@ func (x DeleteChatRequest_DeletionReason) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use DeleteChatRequest_DeletionReason.Descriptor instead.
 func (DeleteChatRequest_DeletionReason) EnumDescriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{97, 0}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{99, 0}
 }
 
 type WakeChatResponse_Outcome int32
@@ -885,7 +885,7 @@ func (x WakeChatResponse_Outcome) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WakeChatResponse_Outcome.Descriptor instead.
 func (WakeChatResponse_Outcome) EnumDescriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{100, 0}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{102, 0}
 }
 
 // DeliveryState reports what the submit verifier actually observed, so a caller
@@ -956,7 +956,7 @@ func (x SendChatMessageResponse_DeliveryState) Number() protoreflect.EnumNumber 
 
 // Deprecated: Use SendChatMessageResponse_DeliveryState.Descriptor instead.
 func (SendChatMessageResponse_DeliveryState) EnumDescriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{108, 0}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{110, 0}
 }
 
 // TurnStartState reports the optional, bounded post-submit observation of
@@ -1020,7 +1020,7 @@ func (x SendChatMessageResponse_TurnStartState) Number() protoreflect.EnumNumber
 
 // Deprecated: Use SendChatMessageResponse_TurnStartState.Descriptor instead.
 func (SendChatMessageResponse_TurnStartState) EnumDescriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{108, 1}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{110, 1}
 }
 
 // Outcome is the daemon's verdict on the credentials it reloaded after a
@@ -1097,7 +1097,7 @@ func (x NotifyAuthChangeResponse_Outcome) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use NotifyAuthChangeResponse_Outcome.Descriptor instead.
 func (NotifyAuthChangeResponse_Outcome) EnumDescriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{123, 0}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{125, 0}
 }
 
 type InstalledPlugin_Status int32
@@ -1149,7 +1149,7 @@ func (x InstalledPlugin_Status) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use InstalledPlugin_Status.Descriptor instead.
 func (InstalledPlugin_Status) EnumDescriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{224, 0}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{229, 0}
 }
 
 type DescribeCallerRequest struct {
@@ -2308,6 +2308,105 @@ func (x *UpdateRepoResponse) GetRepo() *Repo {
 	return nil
 }
 
+type RefreshRepoOriginRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefreshRepoOriginRequest) Reset() {
+	*x = RefreshRepoOriginRequest{}
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshRepoOriginRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshRepoOriginRequest) ProtoMessage() {}
+
+func (x *RefreshRepoOriginRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshRepoOriginRequest.ProtoReflect.Descriptor instead.
+func (*RefreshRepoOriginRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *RefreshRepoOriginRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type RefreshRepoOriginResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The repo after the refresh; its origin_url is the remote's URL.
+	Repo *Repo `protobuf:"bytes,1,opt,name=repo,proto3" json:"repo,omitempty"`
+	// The stored origin before the refresh. Equal to repo.origin_url when the
+	// remote already matched.
+	PreviousOriginUrl string `protobuf:"bytes,2,opt,name=previous_origin_url,json=previousOriginUrl,proto3" json:"previous_origin_url,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *RefreshRepoOriginResponse) Reset() {
+	*x = RefreshRepoOriginResponse{}
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshRepoOriginResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshRepoOriginResponse) ProtoMessage() {}
+
+func (x *RefreshRepoOriginResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshRepoOriginResponse.ProtoReflect.Descriptor instead.
+func (*RefreshRepoOriginResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *RefreshRepoOriginResponse) GetRepo() *Repo {
+	if x != nil {
+		return x.Repo
+	}
+	return nil
+}
+
+func (x *RefreshRepoOriginResponse) GetPreviousOriginUrl() string {
+	if x != nil {
+		return x.PreviousOriginUrl
+	}
+	return ""
+}
+
 type GetRepoSettingsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -2317,7 +2416,7 @@ type GetRepoSettingsRequest struct {
 
 func (x *GetRepoSettingsRequest) Reset() {
 	*x = GetRepoSettingsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[18]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2329,7 +2428,7 @@ func (x *GetRepoSettingsRequest) String() string {
 func (*GetRepoSettingsRequest) ProtoMessage() {}
 
 func (x *GetRepoSettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[18]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2342,7 +2441,7 @@ func (x *GetRepoSettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRepoSettingsRequest.ProtoReflect.Descriptor instead.
 func (*GetRepoSettingsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{18}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetRepoSettingsRequest) GetId() string {
@@ -2361,7 +2460,7 @@ type GetRepoSettingsResponse struct {
 
 func (x *GetRepoSettingsResponse) Reset() {
 	*x = GetRepoSettingsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[19]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2373,7 +2472,7 @@ func (x *GetRepoSettingsResponse) String() string {
 func (*GetRepoSettingsResponse) ProtoMessage() {}
 
 func (x *GetRepoSettingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[19]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2386,7 +2485,7 @@ func (x *GetRepoSettingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRepoSettingsResponse.ProtoReflect.Descriptor instead.
 func (*GetRepoSettingsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{19}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetRepoSettingsResponse) GetSettings() *RepoSettings {
@@ -2407,7 +2506,7 @@ type ListRepoPRsRequest struct {
 
 func (x *ListRepoPRsRequest) Reset() {
 	*x = ListRepoPRsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[20]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2419,7 +2518,7 @@ func (x *ListRepoPRsRequest) String() string {
 func (*ListRepoPRsRequest) ProtoMessage() {}
 
 func (x *ListRepoPRsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[20]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2432,7 +2531,7 @@ func (x *ListRepoPRsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRepoPRsRequest.ProtoReflect.Descriptor instead.
 func (*ListRepoPRsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{20}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ListRepoPRsRequest) GetRepoId() string {
@@ -2458,7 +2557,7 @@ type ListRepoPRsResponse struct {
 
 func (x *ListRepoPRsResponse) Reset() {
 	*x = ListRepoPRsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[21]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2470,7 +2569,7 @@ func (x *ListRepoPRsResponse) String() string {
 func (*ListRepoPRsResponse) ProtoMessage() {}
 
 func (x *ListRepoPRsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[21]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2483,7 +2582,7 @@ func (x *ListRepoPRsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRepoPRsResponse.ProtoReflect.Descriptor instead.
 func (*ListRepoPRsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{21}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListRepoPRsResponse) GetPullRequests() []*PRSummary {
@@ -2505,7 +2604,7 @@ type ListTrackerIssuesRequest struct {
 
 func (x *ListTrackerIssuesRequest) Reset() {
 	*x = ListTrackerIssuesRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[22]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2517,7 +2616,7 @@ func (x *ListTrackerIssuesRequest) String() string {
 func (*ListTrackerIssuesRequest) ProtoMessage() {}
 
 func (x *ListTrackerIssuesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[22]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2530,7 +2629,7 @@ func (x *ListTrackerIssuesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTrackerIssuesRequest.ProtoReflect.Descriptor instead.
 func (*ListTrackerIssuesRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{22}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListTrackerIssuesRequest) GetRepoId() string {
@@ -2563,7 +2662,7 @@ type ListTrackerIssuesResponse struct {
 
 func (x *ListTrackerIssuesResponse) Reset() {
 	*x = ListTrackerIssuesResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[23]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2575,7 +2674,7 @@ func (x *ListTrackerIssuesResponse) String() string {
 func (*ListTrackerIssuesResponse) ProtoMessage() {}
 
 func (x *ListTrackerIssuesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[23]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2588,7 +2687,7 @@ func (x *ListTrackerIssuesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTrackerIssuesResponse.ProtoReflect.Descriptor instead.
 func (*ListTrackerIssuesResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{23}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListTrackerIssuesResponse) GetIssues() []*TrackerIssue {
@@ -2676,7 +2775,7 @@ type CreateSessionRequest struct {
 
 func (x *CreateSessionRequest) Reset() {
 	*x = CreateSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[24]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2688,7 +2787,7 @@ func (x *CreateSessionRequest) String() string {
 func (*CreateSessionRequest) ProtoMessage() {}
 
 func (x *CreateSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[24]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2701,7 +2800,7 @@ func (x *CreateSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionRequest.ProtoReflect.Descriptor instead.
 func (*CreateSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{24}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreateSessionRequest) GetRepoId() string {
@@ -2892,7 +2991,7 @@ type CreateSessionResponse struct {
 
 func (x *CreateSessionResponse) Reset() {
 	*x = CreateSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[25]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2904,7 +3003,7 @@ func (x *CreateSessionResponse) String() string {
 func (*CreateSessionResponse) ProtoMessage() {}
 
 func (x *CreateSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[25]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2917,7 +3016,7 @@ func (x *CreateSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionResponse.ProtoReflect.Descriptor instead.
 func (*CreateSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{25}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CreateSessionResponse) GetEvent() isCreateSessionResponse_Event {
@@ -2983,7 +3082,7 @@ type CreateSessionConflict struct {
 
 func (x *CreateSessionConflict) Reset() {
 	*x = CreateSessionConflict{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[26]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2995,7 +3094,7 @@ func (x *CreateSessionConflict) String() string {
 func (*CreateSessionConflict) ProtoMessage() {}
 
 func (x *CreateSessionConflict) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[26]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3008,7 +3107,7 @@ func (x *CreateSessionConflict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionConflict.ProtoReflect.Descriptor instead.
 func (*CreateSessionConflict) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{26}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *CreateSessionConflict) GetReason() CreateSessionConflictReason {
@@ -3069,7 +3168,7 @@ type SetupScriptOutput struct {
 
 func (x *SetupScriptOutput) Reset() {
 	*x = SetupScriptOutput{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[27]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3081,7 +3180,7 @@ func (x *SetupScriptOutput) String() string {
 func (*SetupScriptOutput) ProtoMessage() {}
 
 func (x *SetupScriptOutput) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[27]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3094,7 +3193,7 @@ func (x *SetupScriptOutput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetupScriptOutput.ProtoReflect.Descriptor instead.
 func (*SetupScriptOutput) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{27}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SetupScriptOutput) GetText() string {
@@ -3113,7 +3212,7 @@ type WatchSessionSetupRequest struct {
 
 func (x *WatchSessionSetupRequest) Reset() {
 	*x = WatchSessionSetupRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[28]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3125,7 +3224,7 @@ func (x *WatchSessionSetupRequest) String() string {
 func (*WatchSessionSetupRequest) ProtoMessage() {}
 
 func (x *WatchSessionSetupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[28]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3138,7 +3237,7 @@ func (x *WatchSessionSetupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchSessionSetupRequest.ProtoReflect.Descriptor instead.
 func (*WatchSessionSetupRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{28}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *WatchSessionSetupRequest) GetSessionId() string {
@@ -3161,7 +3260,7 @@ type WatchSessionSetupResponse struct {
 
 func (x *WatchSessionSetupResponse) Reset() {
 	*x = WatchSessionSetupResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[29]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3173,7 +3272,7 @@ func (x *WatchSessionSetupResponse) String() string {
 func (*WatchSessionSetupResponse) ProtoMessage() {}
 
 func (x *WatchSessionSetupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[29]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3186,7 +3285,7 @@ func (x *WatchSessionSetupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchSessionSetupResponse.ProtoReflect.Descriptor instead.
 func (*WatchSessionSetupResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{29}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *WatchSessionSetupResponse) GetEvent() isWatchSessionSetupResponse_Event {
@@ -3240,7 +3339,7 @@ type SessionSetupSettled struct {
 
 func (x *SessionSetupSettled) Reset() {
 	*x = SessionSetupSettled{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[30]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3252,7 +3351,7 @@ func (x *SessionSetupSettled) String() string {
 func (*SessionSetupSettled) ProtoMessage() {}
 
 func (x *SessionSetupSettled) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[30]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3265,7 +3364,7 @@ func (x *SessionSetupSettled) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionSetupSettled.ProtoReflect.Descriptor instead.
 func (*SessionSetupSettled) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{30}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SessionSetupSettled) GetSetupError() string {
@@ -3289,7 +3388,7 @@ type SessionCreated struct {
 
 func (x *SessionCreated) Reset() {
 	*x = SessionCreated{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[31]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3301,7 +3400,7 @@ func (x *SessionCreated) String() string {
 func (*SessionCreated) ProtoMessage() {}
 
 func (x *SessionCreated) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[31]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3314,7 +3413,7 @@ func (x *SessionCreated) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionCreated.ProtoReflect.Descriptor instead.
 func (*SessionCreated) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{31}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *SessionCreated) GetSession() *Session {
@@ -3352,7 +3451,7 @@ type GetSessionRequest struct {
 
 func (x *GetSessionRequest) Reset() {
 	*x = GetSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[32]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3364,7 +3463,7 @@ func (x *GetSessionRequest) String() string {
 func (*GetSessionRequest) ProtoMessage() {}
 
 func (x *GetSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[32]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3377,7 +3476,7 @@ func (x *GetSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionRequest.ProtoReflect.Descriptor instead.
 func (*GetSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{32}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *GetSessionRequest) GetId() string {
@@ -3410,7 +3509,7 @@ type GetSessionResponse struct {
 
 func (x *GetSessionResponse) Reset() {
 	*x = GetSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[33]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3422,7 +3521,7 @@ func (x *GetSessionResponse) String() string {
 func (*GetSessionResponse) ProtoMessage() {}
 
 func (x *GetSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[33]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3435,7 +3534,7 @@ func (x *GetSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionResponse.ProtoReflect.Descriptor instead.
 func (*GetSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{33}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *GetSessionResponse) GetSession() *Session {
@@ -3483,7 +3582,7 @@ type ListSessionsRequest struct {
 
 func (x *ListSessionsRequest) Reset() {
 	*x = ListSessionsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[34]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3495,7 +3594,7 @@ func (x *ListSessionsRequest) String() string {
 func (*ListSessionsRequest) ProtoMessage() {}
 
 func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[34]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3508,7 +3607,7 @@ func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsRequest.ProtoReflect.Descriptor instead.
 func (*ListSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{34}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ListSessionsRequest) GetRepoId() string {
@@ -3576,7 +3675,7 @@ type ListSessionsResponse struct {
 
 func (x *ListSessionsResponse) Reset() {
 	*x = ListSessionsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[35]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3588,7 +3687,7 @@ func (x *ListSessionsResponse) String() string {
 func (*ListSessionsResponse) ProtoMessage() {}
 
 func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[35]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3601,7 +3700,7 @@ func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsResponse.ProtoReflect.Descriptor instead.
 func (*ListSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{35}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ListSessionsResponse) GetSessions() []*Session {
@@ -3622,7 +3721,7 @@ type ListReviewQueueRequest struct {
 
 func (x *ListReviewQueueRequest) Reset() {
 	*x = ListReviewQueueRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[36]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3634,7 +3733,7 @@ func (x *ListReviewQueueRequest) String() string {
 func (*ListReviewQueueRequest) ProtoMessage() {}
 
 func (x *ListReviewQueueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[36]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3647,7 +3746,7 @@ func (x *ListReviewQueueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReviewQueueRequest.ProtoReflect.Descriptor instead.
 func (*ListReviewQueueRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{36}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ListReviewQueueRequest) GetRepoId() string {
@@ -3675,7 +3774,7 @@ type ListReviewQueueResponse struct {
 
 func (x *ListReviewQueueResponse) Reset() {
 	*x = ListReviewQueueResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[37]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3687,7 +3786,7 @@ func (x *ListReviewQueueResponse) String() string {
 func (*ListReviewQueueResponse) ProtoMessage() {}
 
 func (x *ListReviewQueueResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[37]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3700,7 +3799,7 @@ func (x *ListReviewQueueResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReviewQueueResponse.ProtoReflect.Descriptor instead.
 func (*ListReviewQueueResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{37}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ListReviewQueueResponse) GetRows() []*ReviewQueueRow {
@@ -3734,7 +3833,7 @@ type MoveSessionRequest struct {
 
 func (x *MoveSessionRequest) Reset() {
 	*x = MoveSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[38]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3746,7 +3845,7 @@ func (x *MoveSessionRequest) String() string {
 func (*MoveSessionRequest) ProtoMessage() {}
 
 func (x *MoveSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[38]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3759,7 +3858,7 @@ func (x *MoveSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveSessionRequest.ProtoReflect.Descriptor instead.
 func (*MoveSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{38}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *MoveSessionRequest) GetId() string {
@@ -3800,7 +3899,7 @@ type MoveSessionResponse struct {
 
 func (x *MoveSessionResponse) Reset() {
 	*x = MoveSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[39]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3812,7 +3911,7 @@ func (x *MoveSessionResponse) String() string {
 func (*MoveSessionResponse) ProtoMessage() {}
 
 func (x *MoveSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[39]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3825,7 +3924,7 @@ func (x *MoveSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveSessionResponse.ProtoReflect.Descriptor instead.
 func (*MoveSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{39}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *MoveSessionResponse) GetSession() *Session {
@@ -3854,7 +3953,7 @@ type DismissSessionAlertRequest struct {
 
 func (x *DismissSessionAlertRequest) Reset() {
 	*x = DismissSessionAlertRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[40]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3866,7 +3965,7 @@ func (x *DismissSessionAlertRequest) String() string {
 func (*DismissSessionAlertRequest) ProtoMessage() {}
 
 func (x *DismissSessionAlertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[40]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3879,7 +3978,7 @@ func (x *DismissSessionAlertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DismissSessionAlertRequest.ProtoReflect.Descriptor instead.
 func (*DismissSessionAlertRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{40}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *DismissSessionAlertRequest) GetSessionId() string {
@@ -3906,7 +4005,7 @@ type DismissSessionAlertResponse struct {
 
 func (x *DismissSessionAlertResponse) Reset() {
 	*x = DismissSessionAlertResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[41]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3918,7 +4017,7 @@ func (x *DismissSessionAlertResponse) String() string {
 func (*DismissSessionAlertResponse) ProtoMessage() {}
 
 func (x *DismissSessionAlertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[41]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3931,7 +4030,7 @@ func (x *DismissSessionAlertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DismissSessionAlertResponse.ProtoReflect.Descriptor instead.
 func (*DismissSessionAlertResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{41}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *DismissSessionAlertResponse) GetSession() *Session {
@@ -3950,7 +4049,7 @@ type AttachSessionRequest struct {
 
 func (x *AttachSessionRequest) Reset() {
 	*x = AttachSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[42]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3962,7 +4061,7 @@ func (x *AttachSessionRequest) String() string {
 func (*AttachSessionRequest) ProtoMessage() {}
 
 func (x *AttachSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[42]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3975,7 +4074,7 @@ func (x *AttachSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachSessionRequest.ProtoReflect.Descriptor instead.
 func (*AttachSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{42}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *AttachSessionRequest) GetId() string {
@@ -4000,7 +4099,7 @@ type AttachSessionResponse struct {
 
 func (x *AttachSessionResponse) Reset() {
 	*x = AttachSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[43]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4012,7 +4111,7 @@ func (x *AttachSessionResponse) String() string {
 func (*AttachSessionResponse) ProtoMessage() {}
 
 func (x *AttachSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[43]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4025,7 +4124,7 @@ func (x *AttachSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachSessionResponse.ProtoReflect.Descriptor instead.
 func (*AttachSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{43}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *AttachSessionResponse) GetEvent() isAttachSessionResponse_Event {
@@ -4097,7 +4196,7 @@ type OutputLine struct {
 
 func (x *OutputLine) Reset() {
 	*x = OutputLine{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[44]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4109,7 +4208,7 @@ func (x *OutputLine) String() string {
 func (*OutputLine) ProtoMessage() {}
 
 func (x *OutputLine) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[44]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4122,7 +4221,7 @@ func (x *OutputLine) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputLine.ProtoReflect.Descriptor instead.
 func (*OutputLine) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{44}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *OutputLine) GetText() string {
@@ -4150,7 +4249,7 @@ type StateChange struct {
 
 func (x *StateChange) Reset() {
 	*x = StateChange{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[45]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4162,7 +4261,7 @@ func (x *StateChange) String() string {
 func (*StateChange) ProtoMessage() {}
 
 func (x *StateChange) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[45]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4175,7 +4274,7 @@ func (x *StateChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StateChange.ProtoReflect.Descriptor instead.
 func (*StateChange) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{45}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *StateChange) GetPreviousState() SessionState {
@@ -4209,7 +4308,7 @@ type SessionEnded struct {
 
 func (x *SessionEnded) Reset() {
 	*x = SessionEnded{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[46]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4221,7 +4320,7 @@ func (x *SessionEnded) String() string {
 func (*SessionEnded) ProtoMessage() {}
 
 func (x *SessionEnded) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[46]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4234,7 +4333,7 @@ func (x *SessionEnded) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionEnded.ProtoReflect.Descriptor instead.
 func (*SessionEnded) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{46}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *SessionEnded) GetFinalState() SessionState {
@@ -4260,7 +4359,7 @@ type StopSessionRequest struct {
 
 func (x *StopSessionRequest) Reset() {
 	*x = StopSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[47]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4272,7 +4371,7 @@ func (x *StopSessionRequest) String() string {
 func (*StopSessionRequest) ProtoMessage() {}
 
 func (x *StopSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[47]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4285,7 +4384,7 @@ func (x *StopSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSessionRequest.ProtoReflect.Descriptor instead.
 func (*StopSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{47}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *StopSessionRequest) GetId() string {
@@ -4304,7 +4403,7 @@ type StopSessionResponse struct {
 
 func (x *StopSessionResponse) Reset() {
 	*x = StopSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[48]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4316,7 +4415,7 @@ func (x *StopSessionResponse) String() string {
 func (*StopSessionResponse) ProtoMessage() {}
 
 func (x *StopSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[48]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4329,7 +4428,7 @@ func (x *StopSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSessionResponse.ProtoReflect.Descriptor instead.
 func (*StopSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{48}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *StopSessionResponse) GetSession() *Session {
@@ -4348,7 +4447,7 @@ type PauseSessionRequest struct {
 
 func (x *PauseSessionRequest) Reset() {
 	*x = PauseSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[49]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4360,7 +4459,7 @@ func (x *PauseSessionRequest) String() string {
 func (*PauseSessionRequest) ProtoMessage() {}
 
 func (x *PauseSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[49]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4373,7 +4472,7 @@ func (x *PauseSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseSessionRequest.ProtoReflect.Descriptor instead.
 func (*PauseSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{49}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *PauseSessionRequest) GetId() string {
@@ -4392,7 +4491,7 @@ type PauseSessionResponse struct {
 
 func (x *PauseSessionResponse) Reset() {
 	*x = PauseSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[50]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4404,7 +4503,7 @@ func (x *PauseSessionResponse) String() string {
 func (*PauseSessionResponse) ProtoMessage() {}
 
 func (x *PauseSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[50]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4417,7 +4516,7 @@ func (x *PauseSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseSessionResponse.ProtoReflect.Descriptor instead.
 func (*PauseSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{50}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *PauseSessionResponse) GetSession() *Session {
@@ -4436,7 +4535,7 @@ type ResumeSessionRequest struct {
 
 func (x *ResumeSessionRequest) Reset() {
 	*x = ResumeSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[51]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4448,7 +4547,7 @@ func (x *ResumeSessionRequest) String() string {
 func (*ResumeSessionRequest) ProtoMessage() {}
 
 func (x *ResumeSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[51]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4461,7 +4560,7 @@ func (x *ResumeSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeSessionRequest.ProtoReflect.Descriptor instead.
 func (*ResumeSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{51}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ResumeSessionRequest) GetId() string {
@@ -4480,7 +4579,7 @@ type ResumeSessionResponse struct {
 
 func (x *ResumeSessionResponse) Reset() {
 	*x = ResumeSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[52]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4492,7 +4591,7 @@ func (x *ResumeSessionResponse) String() string {
 func (*ResumeSessionResponse) ProtoMessage() {}
 
 func (x *ResumeSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[52]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4505,7 +4604,7 @@ func (x *ResumeSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeSessionResponse.ProtoReflect.Descriptor instead.
 func (*ResumeSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{52}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *ResumeSessionResponse) GetSession() *Session {
@@ -4524,7 +4623,7 @@ type ResumeSessionRunRequest struct {
 
 func (x *ResumeSessionRunRequest) Reset() {
 	*x = ResumeSessionRunRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[53]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4536,7 +4635,7 @@ func (x *ResumeSessionRunRequest) String() string {
 func (*ResumeSessionRunRequest) ProtoMessage() {}
 
 func (x *ResumeSessionRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[53]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4549,7 +4648,7 @@ func (x *ResumeSessionRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeSessionRunRequest.ProtoReflect.Descriptor instead.
 func (*ResumeSessionRunRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{53}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ResumeSessionRunRequest) GetSessionId() string {
@@ -4568,7 +4667,7 @@ type ResumeSessionRunResponse struct {
 
 func (x *ResumeSessionRunResponse) Reset() {
 	*x = ResumeSessionRunResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[54]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4580,7 +4679,7 @@ func (x *ResumeSessionRunResponse) String() string {
 func (*ResumeSessionRunResponse) ProtoMessage() {}
 
 func (x *ResumeSessionRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[54]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4593,7 +4692,7 @@ func (x *ResumeSessionRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeSessionRunResponse.ProtoReflect.Descriptor instead.
 func (*ResumeSessionRunResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{54}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ResumeSessionRunResponse) GetSession() *Session {
@@ -4612,7 +4711,7 @@ type RetrySessionRequest struct {
 
 func (x *RetrySessionRequest) Reset() {
 	*x = RetrySessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[55]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4624,7 +4723,7 @@ func (x *RetrySessionRequest) String() string {
 func (*RetrySessionRequest) ProtoMessage() {}
 
 func (x *RetrySessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[55]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4637,7 +4736,7 @@ func (x *RetrySessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetrySessionRequest.ProtoReflect.Descriptor instead.
 func (*RetrySessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{55}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *RetrySessionRequest) GetId() string {
@@ -4656,7 +4755,7 @@ type RetrySessionResponse struct {
 
 func (x *RetrySessionResponse) Reset() {
 	*x = RetrySessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[56]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4668,7 +4767,7 @@ func (x *RetrySessionResponse) String() string {
 func (*RetrySessionResponse) ProtoMessage() {}
 
 func (x *RetrySessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[56]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4681,7 +4780,7 @@ func (x *RetrySessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetrySessionResponse.ProtoReflect.Descriptor instead.
 func (*RetrySessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{56}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *RetrySessionResponse) GetSession() *Session {
@@ -4700,7 +4799,7 @@ type CloseSessionRequest struct {
 
 func (x *CloseSessionRequest) Reset() {
 	*x = CloseSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[57]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4712,7 +4811,7 @@ func (x *CloseSessionRequest) String() string {
 func (*CloseSessionRequest) ProtoMessage() {}
 
 func (x *CloseSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[57]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4725,7 +4824,7 @@ func (x *CloseSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseSessionRequest.ProtoReflect.Descriptor instead.
 func (*CloseSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{57}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *CloseSessionRequest) GetId() string {
@@ -4744,7 +4843,7 @@ type CloseSessionResponse struct {
 
 func (x *CloseSessionResponse) Reset() {
 	*x = CloseSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[58]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4756,7 +4855,7 @@ func (x *CloseSessionResponse) String() string {
 func (*CloseSessionResponse) ProtoMessage() {}
 
 func (x *CloseSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[58]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4769,7 +4868,7 @@ func (x *CloseSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseSessionResponse.ProtoReflect.Descriptor instead.
 func (*CloseSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{58}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *CloseSessionResponse) GetSession() *Session {
@@ -4792,7 +4891,7 @@ type MergeSessionRequest struct {
 
 func (x *MergeSessionRequest) Reset() {
 	*x = MergeSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[59]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4804,7 +4903,7 @@ func (x *MergeSessionRequest) String() string {
 func (*MergeSessionRequest) ProtoMessage() {}
 
 func (x *MergeSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[59]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4817,7 +4916,7 @@ func (x *MergeSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MergeSessionRequest.ProtoReflect.Descriptor instead.
 func (*MergeSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{59}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *MergeSessionRequest) GetId() string {
@@ -4846,7 +4945,7 @@ type MergeSessionResponse struct {
 
 func (x *MergeSessionResponse) Reset() {
 	*x = MergeSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[60]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4858,7 +4957,7 @@ func (x *MergeSessionResponse) String() string {
 func (*MergeSessionResponse) ProtoMessage() {}
 
 func (x *MergeSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[60]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4871,7 +4970,7 @@ func (x *MergeSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MergeSessionResponse.ProtoReflect.Descriptor instead.
 func (*MergeSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{60}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *MergeSessionResponse) GetSession() *Session {
@@ -4898,7 +4997,7 @@ type ApproveSessionPRRequest struct {
 
 func (x *ApproveSessionPRRequest) Reset() {
 	*x = ApproveSessionPRRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[61]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4910,7 +5009,7 @@ func (x *ApproveSessionPRRequest) String() string {
 func (*ApproveSessionPRRequest) ProtoMessage() {}
 
 func (x *ApproveSessionPRRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[61]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4923,7 +5022,7 @@ func (x *ApproveSessionPRRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveSessionPRRequest.ProtoReflect.Descriptor instead.
 func (*ApproveSessionPRRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{61}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *ApproveSessionPRRequest) GetId() string {
@@ -4949,7 +5048,7 @@ type ApproveSessionPRResponse struct {
 
 func (x *ApproveSessionPRResponse) Reset() {
 	*x = ApproveSessionPRResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[62]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4961,7 +5060,7 @@ func (x *ApproveSessionPRResponse) String() string {
 func (*ApproveSessionPRResponse) ProtoMessage() {}
 
 func (x *ApproveSessionPRResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[62]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4974,7 +5073,7 @@ func (x *ApproveSessionPRResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveSessionPRResponse.ProtoReflect.Descriptor instead.
 func (*ApproveSessionPRResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{62}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *ApproveSessionPRResponse) GetResult() *VerifyApproveResult {
@@ -4996,7 +5095,7 @@ type FollowUpSessionPRNotesRequest struct {
 
 func (x *FollowUpSessionPRNotesRequest) Reset() {
 	*x = FollowUpSessionPRNotesRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[63]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5008,7 +5107,7 @@ func (x *FollowUpSessionPRNotesRequest) String() string {
 func (*FollowUpSessionPRNotesRequest) ProtoMessage() {}
 
 func (x *FollowUpSessionPRNotesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[63]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5021,7 +5120,7 @@ func (x *FollowUpSessionPRNotesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FollowUpSessionPRNotesRequest.ProtoReflect.Descriptor instead.
 func (*FollowUpSessionPRNotesRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{63}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *FollowUpSessionPRNotesRequest) GetId() string {
@@ -5061,7 +5160,7 @@ type FollowUpSessionPRNotesResponse struct {
 
 func (x *FollowUpSessionPRNotesResponse) Reset() {
 	*x = FollowUpSessionPRNotesResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[64]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5073,7 +5172,7 @@ func (x *FollowUpSessionPRNotesResponse) String() string {
 func (*FollowUpSessionPRNotesResponse) ProtoMessage() {}
 
 func (x *FollowUpSessionPRNotesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[64]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5086,7 +5185,7 @@ func (x *FollowUpSessionPRNotesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FollowUpSessionPRNotesResponse.ProtoReflect.Descriptor instead.
 func (*FollowUpSessionPRNotesResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{64}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *FollowUpSessionPRNotesResponse) GetResult() *VerifyFollowUpResult {
@@ -5112,7 +5211,7 @@ type VerifyFollowUpResult struct {
 
 func (x *VerifyFollowUpResult) Reset() {
 	*x = VerifyFollowUpResult{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[65]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5124,7 +5223,7 @@ func (x *VerifyFollowUpResult) String() string {
 func (*VerifyFollowUpResult) ProtoMessage() {}
 
 func (x *VerifyFollowUpResult) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[65]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5137,7 +5236,7 @@ func (x *VerifyFollowUpResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyFollowUpResult.ProtoReflect.Descriptor instead.
 func (*VerifyFollowUpResult) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{65}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *VerifyFollowUpResult) GetIsOk() bool {
@@ -5204,7 +5303,7 @@ type VerifyNoteFollowUp struct {
 
 func (x *VerifyNoteFollowUp) Reset() {
 	*x = VerifyNoteFollowUp{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[66]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5216,7 +5315,7 @@ func (x *VerifyNoteFollowUp) String() string {
 func (*VerifyNoteFollowUp) ProtoMessage() {}
 
 func (x *VerifyNoteFollowUp) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[66]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5229,7 +5328,7 @@ func (x *VerifyNoteFollowUp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyNoteFollowUp.ProtoReflect.Descriptor instead.
 func (*VerifyNoteFollowUp) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{66}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *VerifyNoteFollowUp) GetVerifyNoteId() string {
@@ -5306,7 +5405,7 @@ type VerifyApproveResult struct {
 
 func (x *VerifyApproveResult) Reset() {
 	*x = VerifyApproveResult{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[67]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5318,7 +5417,7 @@ func (x *VerifyApproveResult) String() string {
 func (*VerifyApproveResult) ProtoMessage() {}
 
 func (x *VerifyApproveResult) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[67]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5331,7 +5430,7 @@ func (x *VerifyApproveResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyApproveResult.ProtoReflect.Descriptor instead.
 func (*VerifyApproveResult) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{67}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *VerifyApproveResult) GetIsApproved() bool {
@@ -5449,7 +5548,7 @@ type OperatorMergeSessionRequest struct {
 
 func (x *OperatorMergeSessionRequest) Reset() {
 	*x = OperatorMergeSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[68]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5461,7 +5560,7 @@ func (x *OperatorMergeSessionRequest) String() string {
 func (*OperatorMergeSessionRequest) ProtoMessage() {}
 
 func (x *OperatorMergeSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[68]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5474,7 +5573,7 @@ func (x *OperatorMergeSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperatorMergeSessionRequest.ProtoReflect.Descriptor instead.
 func (*OperatorMergeSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{68}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *OperatorMergeSessionRequest) GetId() string {
@@ -5530,7 +5629,7 @@ type OperatorMergeSessionResponse struct {
 
 func (x *OperatorMergeSessionResponse) Reset() {
 	*x = OperatorMergeSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[69]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5542,7 +5641,7 @@ func (x *OperatorMergeSessionResponse) String() string {
 func (*OperatorMergeSessionResponse) ProtoMessage() {}
 
 func (x *OperatorMergeSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[69]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5555,7 +5654,7 @@ func (x *OperatorMergeSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperatorMergeSessionResponse.ProtoReflect.Descriptor instead.
 func (*OperatorMergeSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{69}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *OperatorMergeSessionResponse) GetIsMerged() bool {
@@ -5616,7 +5715,7 @@ type RemoveSessionRequest struct {
 
 func (x *RemoveSessionRequest) Reset() {
 	*x = RemoveSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[70]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5628,7 +5727,7 @@ func (x *RemoveSessionRequest) String() string {
 func (*RemoveSessionRequest) ProtoMessage() {}
 
 func (x *RemoveSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[70]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5641,7 +5740,7 @@ func (x *RemoveSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveSessionRequest.ProtoReflect.Descriptor instead.
 func (*RemoveSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{70}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *RemoveSessionRequest) GetId() string {
@@ -5659,7 +5758,7 @@ type RemoveSessionResponse struct {
 
 func (x *RemoveSessionResponse) Reset() {
 	*x = RemoveSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[71]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5671,7 +5770,7 @@ func (x *RemoveSessionResponse) String() string {
 func (*RemoveSessionResponse) ProtoMessage() {}
 
 func (x *RemoveSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[71]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5684,7 +5783,7 @@ func (x *RemoveSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveSessionResponse.ProtoReflect.Descriptor instead.
 func (*RemoveSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{71}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{73}
 }
 
 type UpdateSessionRequest struct {
@@ -5699,7 +5798,7 @@ type UpdateSessionRequest struct {
 
 func (x *UpdateSessionRequest) Reset() {
 	*x = UpdateSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[72]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5711,7 +5810,7 @@ func (x *UpdateSessionRequest) String() string {
 func (*UpdateSessionRequest) ProtoMessage() {}
 
 func (x *UpdateSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[72]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5724,7 +5823,7 @@ func (x *UpdateSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSessionRequest.ProtoReflect.Descriptor instead.
 func (*UpdateSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{72}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *UpdateSessionRequest) GetId() string {
@@ -5764,7 +5863,7 @@ type UpdateSessionResponse struct {
 
 func (x *UpdateSessionResponse) Reset() {
 	*x = UpdateSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[73]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5776,7 +5875,7 @@ func (x *UpdateSessionResponse) String() string {
 func (*UpdateSessionResponse) ProtoMessage() {}
 
 func (x *UpdateSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[73]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5789,7 +5888,7 @@ func (x *UpdateSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSessionResponse.ProtoReflect.Descriptor instead.
 func (*UpdateSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{73}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *UpdateSessionResponse) GetSession() *Session {
@@ -5809,7 +5908,7 @@ type LinkSessionPRRequest struct {
 
 func (x *LinkSessionPRRequest) Reset() {
 	*x = LinkSessionPRRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[74]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5821,7 +5920,7 @@ func (x *LinkSessionPRRequest) String() string {
 func (*LinkSessionPRRequest) ProtoMessage() {}
 
 func (x *LinkSessionPRRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[74]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5834,7 +5933,7 @@ func (x *LinkSessionPRRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LinkSessionPRRequest.ProtoReflect.Descriptor instead.
 func (*LinkSessionPRRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{74}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *LinkSessionPRRequest) GetId() string {
@@ -5864,7 +5963,7 @@ type LinkSessionPRResponse struct {
 
 func (x *LinkSessionPRResponse) Reset() {
 	*x = LinkSessionPRResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[75]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5876,7 +5975,7 @@ func (x *LinkSessionPRResponse) String() string {
 func (*LinkSessionPRResponse) ProtoMessage() {}
 
 func (x *LinkSessionPRResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[75]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5889,7 +5988,7 @@ func (x *LinkSessionPRResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LinkSessionPRResponse.ProtoReflect.Descriptor instead.
 func (*LinkSessionPRResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{75}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *LinkSessionPRResponse) GetSession() *Session {
@@ -5916,7 +6015,7 @@ type SetSessionTrackerRequest struct {
 
 func (x *SetSessionTrackerRequest) Reset() {
 	*x = SetSessionTrackerRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[76]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5928,7 +6027,7 @@ func (x *SetSessionTrackerRequest) String() string {
 func (*SetSessionTrackerRequest) ProtoMessage() {}
 
 func (x *SetSessionTrackerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[76]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5941,7 +6040,7 @@ func (x *SetSessionTrackerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSessionTrackerRequest.ProtoReflect.Descriptor instead.
 func (*SetSessionTrackerRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{76}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *SetSessionTrackerRequest) GetId() string {
@@ -5967,7 +6066,7 @@ type SetSessionTrackerResponse struct {
 
 func (x *SetSessionTrackerResponse) Reset() {
 	*x = SetSessionTrackerResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[77]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5979,7 +6078,7 @@ func (x *SetSessionTrackerResponse) String() string {
 func (*SetSessionTrackerResponse) ProtoMessage() {}
 
 func (x *SetSessionTrackerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[77]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5992,7 +6091,7 @@ func (x *SetSessionTrackerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSessionTrackerResponse.ProtoReflect.Descriptor instead.
 func (*SetSessionTrackerResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{77}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *SetSessionTrackerResponse) GetSession() *Session {
@@ -6012,7 +6111,7 @@ type RefreshSessionPRRequest struct {
 
 func (x *RefreshSessionPRRequest) Reset() {
 	*x = RefreshSessionPRRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[78]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6024,7 +6123,7 @@ func (x *RefreshSessionPRRequest) String() string {
 func (*RefreshSessionPRRequest) ProtoMessage() {}
 
 func (x *RefreshSessionPRRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[78]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6037,7 +6136,7 @@ func (x *RefreshSessionPRRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshSessionPRRequest.ProtoReflect.Descriptor instead.
 func (*RefreshSessionPRRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{78}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *RefreshSessionPRRequest) GetId() string {
@@ -6063,7 +6162,7 @@ type RefreshSessionPRResponse struct {
 
 func (x *RefreshSessionPRResponse) Reset() {
 	*x = RefreshSessionPRResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[79]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6075,7 +6174,7 @@ func (x *RefreshSessionPRResponse) String() string {
 func (*RefreshSessionPRResponse) ProtoMessage() {}
 
 func (x *RefreshSessionPRResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[79]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6088,7 +6187,7 @@ func (x *RefreshSessionPRResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshSessionPRResponse.ProtoReflect.Descriptor instead.
 func (*RefreshSessionPRResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{79}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *RefreshSessionPRResponse) GetSession() *Session {
@@ -6110,7 +6209,7 @@ type SwitchSessionAgentAccountRequest struct {
 
 func (x *SwitchSessionAgentAccountRequest) Reset() {
 	*x = SwitchSessionAgentAccountRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[80]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6122,7 +6221,7 @@ func (x *SwitchSessionAgentAccountRequest) String() string {
 func (*SwitchSessionAgentAccountRequest) ProtoMessage() {}
 
 func (x *SwitchSessionAgentAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[80]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6135,7 +6234,7 @@ func (x *SwitchSessionAgentAccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwitchSessionAgentAccountRequest.ProtoReflect.Descriptor instead.
 func (*SwitchSessionAgentAccountRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{80}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *SwitchSessionAgentAccountRequest) GetSessionId() string {
@@ -6177,7 +6276,7 @@ type SwitchSessionAgentAccountResponse struct {
 
 func (x *SwitchSessionAgentAccountResponse) Reset() {
 	*x = SwitchSessionAgentAccountResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[81]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6189,7 +6288,7 @@ func (x *SwitchSessionAgentAccountResponse) String() string {
 func (*SwitchSessionAgentAccountResponse) ProtoMessage() {}
 
 func (x *SwitchSessionAgentAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[81]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6202,7 +6301,7 @@ func (x *SwitchSessionAgentAccountResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use SwitchSessionAgentAccountResponse.ProtoReflect.Descriptor instead.
 func (*SwitchSessionAgentAccountResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{81}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *SwitchSessionAgentAccountResponse) GetResumed() bool {
@@ -6243,7 +6342,7 @@ type ArchiveSessionRequest struct {
 
 func (x *ArchiveSessionRequest) Reset() {
 	*x = ArchiveSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[82]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6255,7 +6354,7 @@ func (x *ArchiveSessionRequest) String() string {
 func (*ArchiveSessionRequest) ProtoMessage() {}
 
 func (x *ArchiveSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[82]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6268,7 +6367,7 @@ func (x *ArchiveSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArchiveSessionRequest.ProtoReflect.Descriptor instead.
 func (*ArchiveSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{82}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *ArchiveSessionRequest) GetId() string {
@@ -6311,7 +6410,7 @@ type ArchiveSessionResponse struct {
 
 func (x *ArchiveSessionResponse) Reset() {
 	*x = ArchiveSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[83]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6323,7 +6422,7 @@ func (x *ArchiveSessionResponse) String() string {
 func (*ArchiveSessionResponse) ProtoMessage() {}
 
 func (x *ArchiveSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[83]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6336,7 +6435,7 @@ func (x *ArchiveSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArchiveSessionResponse.ProtoReflect.Descriptor instead.
 func (*ArchiveSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{83}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *ArchiveSessionResponse) GetSession() *Session {
@@ -6386,7 +6485,7 @@ type FinishUnattendedRunRequest struct {
 
 func (x *FinishUnattendedRunRequest) Reset() {
 	*x = FinishUnattendedRunRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[84]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6398,7 +6497,7 @@ func (x *FinishUnattendedRunRequest) String() string {
 func (*FinishUnattendedRunRequest) ProtoMessage() {}
 
 func (x *FinishUnattendedRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[84]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6411,7 +6510,7 @@ func (x *FinishUnattendedRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinishUnattendedRunRequest.ProtoReflect.Descriptor instead.
 func (*FinishUnattendedRunRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{84}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *FinishUnattendedRunRequest) GetSessionId() string {
@@ -6456,7 +6555,7 @@ type FinishUnattendedRunResponse struct {
 
 func (x *FinishUnattendedRunResponse) Reset() {
 	*x = FinishUnattendedRunResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[85]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6468,7 +6567,7 @@ func (x *FinishUnattendedRunResponse) String() string {
 func (*FinishUnattendedRunResponse) ProtoMessage() {}
 
 func (x *FinishUnattendedRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[85]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6481,7 +6580,7 @@ func (x *FinishUnattendedRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinishUnattendedRunResponse.ProtoReflect.Descriptor instead.
 func (*FinishUnattendedRunResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{85}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *FinishUnattendedRunResponse) GetIsDeferred() bool {
@@ -6507,7 +6606,7 @@ type ResurrectSessionRequest struct {
 
 func (x *ResurrectSessionRequest) Reset() {
 	*x = ResurrectSessionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[86]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6519,7 +6618,7 @@ func (x *ResurrectSessionRequest) String() string {
 func (*ResurrectSessionRequest) ProtoMessage() {}
 
 func (x *ResurrectSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[86]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6532,7 +6631,7 @@ func (x *ResurrectSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResurrectSessionRequest.ProtoReflect.Descriptor instead.
 func (*ResurrectSessionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{86}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *ResurrectSessionRequest) GetId() string {
@@ -6564,7 +6663,7 @@ type ResurrectSessionResponse struct {
 
 func (x *ResurrectSessionResponse) Reset() {
 	*x = ResurrectSessionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[87]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6576,7 +6675,7 @@ func (x *ResurrectSessionResponse) String() string {
 func (*ResurrectSessionResponse) ProtoMessage() {}
 
 func (x *ResurrectSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[87]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6589,7 +6688,7 @@ func (x *ResurrectSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResurrectSessionResponse.ProtoReflect.Descriptor instead.
 func (*ResurrectSessionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{87}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *ResurrectSessionResponse) GetEvent() isResurrectSessionResponse_Event {
@@ -6657,7 +6756,7 @@ type SessionResurrected struct {
 
 func (x *SessionResurrected) Reset() {
 	*x = SessionResurrected{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[88]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6669,7 +6768,7 @@ func (x *SessionResurrected) String() string {
 func (*SessionResurrected) ProtoMessage() {}
 
 func (x *SessionResurrected) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[88]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6682,7 +6781,7 @@ func (x *SessionResurrected) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionResurrected.ProtoReflect.Descriptor instead.
 func (*SessionResurrected) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{88}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *SessionResurrected) GetSession() *Session {
@@ -6709,7 +6808,7 @@ type EmptyTrashRequest struct {
 
 func (x *EmptyTrashRequest) Reset() {
 	*x = EmptyTrashRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[89]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6721,7 +6820,7 @@ func (x *EmptyTrashRequest) String() string {
 func (*EmptyTrashRequest) ProtoMessage() {}
 
 func (x *EmptyTrashRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[89]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6734,7 +6833,7 @@ func (x *EmptyTrashRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmptyTrashRequest.ProtoReflect.Descriptor instead.
 func (*EmptyTrashRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{89}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *EmptyTrashRequest) GetOlderThan() *timestamppb.Timestamp {
@@ -6754,7 +6853,7 @@ type EmptyTrashResponse struct {
 
 func (x *EmptyTrashResponse) Reset() {
 	*x = EmptyTrashResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[90]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6766,7 +6865,7 @@ func (x *EmptyTrashResponse) String() string {
 func (*EmptyTrashResponse) ProtoMessage() {}
 
 func (x *EmptyTrashResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[90]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6779,7 +6878,7 @@ func (x *EmptyTrashResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmptyTrashResponse.ProtoReflect.Descriptor instead.
 func (*EmptyTrashResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{90}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *EmptyTrashResponse) GetDeletedCount() int32 {
@@ -6819,7 +6918,7 @@ type RecordChatRequest struct {
 
 func (x *RecordChatRequest) Reset() {
 	*x = RecordChatRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[91]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6831,7 +6930,7 @@ func (x *RecordChatRequest) String() string {
 func (*RecordChatRequest) ProtoMessage() {}
 
 func (x *RecordChatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[91]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6844,7 +6943,7 @@ func (x *RecordChatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordChatRequest.ProtoReflect.Descriptor instead.
 func (*RecordChatRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{91}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *RecordChatRequest) GetSessionId() string {
@@ -6912,7 +7011,7 @@ type RecordChatResponse struct {
 
 func (x *RecordChatResponse) Reset() {
 	*x = RecordChatResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[92]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6924,7 +7023,7 @@ func (x *RecordChatResponse) String() string {
 func (*RecordChatResponse) ProtoMessage() {}
 
 func (x *RecordChatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[92]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6937,7 +7036,7 @@ func (x *RecordChatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordChatResponse.ProtoReflect.Descriptor instead.
 func (*RecordChatResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{92}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *RecordChatResponse) GetChat() *AgentChat {
@@ -6956,7 +7055,7 @@ type ListChatsRequest struct {
 
 func (x *ListChatsRequest) Reset() {
 	*x = ListChatsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[93]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6968,7 +7067,7 @@ func (x *ListChatsRequest) String() string {
 func (*ListChatsRequest) ProtoMessage() {}
 
 func (x *ListChatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[93]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6981,7 +7080,7 @@ func (x *ListChatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChatsRequest.ProtoReflect.Descriptor instead.
 func (*ListChatsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{93}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *ListChatsRequest) GetSessionId() string {
@@ -7000,7 +7099,7 @@ type ListChatsResponse struct {
 
 func (x *ListChatsResponse) Reset() {
 	*x = ListChatsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[94]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7012,7 +7111,7 @@ func (x *ListChatsResponse) String() string {
 func (*ListChatsResponse) ProtoMessage() {}
 
 func (x *ListChatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[94]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7025,7 +7124,7 @@ func (x *ListChatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChatsResponse.ProtoReflect.Descriptor instead.
 func (*ListChatsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{94}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *ListChatsResponse) GetChats() []*AgentChat {
@@ -7045,7 +7144,7 @@ type UpdateChatTitleRequest struct {
 
 func (x *UpdateChatTitleRequest) Reset() {
 	*x = UpdateChatTitleRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[95]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7057,7 +7156,7 @@ func (x *UpdateChatTitleRequest) String() string {
 func (*UpdateChatTitleRequest) ProtoMessage() {}
 
 func (x *UpdateChatTitleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[95]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7070,7 +7169,7 @@ func (x *UpdateChatTitleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateChatTitleRequest.ProtoReflect.Descriptor instead.
 func (*UpdateChatTitleRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{95}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *UpdateChatTitleRequest) GetAgentSessionId() string {
@@ -7095,7 +7194,7 @@ type UpdateChatTitleResponse struct {
 
 func (x *UpdateChatTitleResponse) Reset() {
 	*x = UpdateChatTitleResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[96]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7107,7 +7206,7 @@ func (x *UpdateChatTitleResponse) String() string {
 func (*UpdateChatTitleResponse) ProtoMessage() {}
 
 func (x *UpdateChatTitleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[96]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7120,7 +7219,7 @@ func (x *UpdateChatTitleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateChatTitleResponse.ProtoReflect.Descriptor instead.
 func (*UpdateChatTitleResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{96}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{98}
 }
 
 type DeleteChatRequest struct {
@@ -7140,7 +7239,7 @@ type DeleteChatRequest struct {
 
 func (x *DeleteChatRequest) Reset() {
 	*x = DeleteChatRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[97]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7152,7 +7251,7 @@ func (x *DeleteChatRequest) String() string {
 func (*DeleteChatRequest) ProtoMessage() {}
 
 func (x *DeleteChatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[97]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7165,7 +7264,7 @@ func (x *DeleteChatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteChatRequest.ProtoReflect.Descriptor instead.
 func (*DeleteChatRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{97}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *DeleteChatRequest) GetAgentSessionId() string {
@@ -7197,7 +7296,7 @@ type DeleteChatResponse struct {
 
 func (x *DeleteChatResponse) Reset() {
 	*x = DeleteChatResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[98]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7209,7 +7308,7 @@ func (x *DeleteChatResponse) String() string {
 func (*DeleteChatResponse) ProtoMessage() {}
 
 func (x *DeleteChatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[98]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7222,7 +7321,7 @@ func (x *DeleteChatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteChatResponse.ProtoReflect.Descriptor instead.
 func (*DeleteChatResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{98}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{100}
 }
 
 type WakeChatRequest struct {
@@ -7238,7 +7337,7 @@ type WakeChatRequest struct {
 
 func (x *WakeChatRequest) Reset() {
 	*x = WakeChatRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[99]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7250,7 +7349,7 @@ func (x *WakeChatRequest) String() string {
 func (*WakeChatRequest) ProtoMessage() {}
 
 func (x *WakeChatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[99]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7263,7 +7362,7 @@ func (x *WakeChatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WakeChatRequest.ProtoReflect.Descriptor instead.
 func (*WakeChatRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{99}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *WakeChatRequest) GetAgentSessionId() string {
@@ -7292,7 +7391,7 @@ type WakeChatResponse struct {
 
 func (x *WakeChatResponse) Reset() {
 	*x = WakeChatResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[100]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7304,7 +7403,7 @@ func (x *WakeChatResponse) String() string {
 func (*WakeChatResponse) ProtoMessage() {}
 
 func (x *WakeChatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[100]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7317,7 +7416,7 @@ func (x *WakeChatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WakeChatResponse.ProtoReflect.Descriptor instead.
 func (*WakeChatResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{100}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *WakeChatResponse) GetOutcome() WakeChatResponse_Outcome {
@@ -7350,7 +7449,7 @@ type DescribeChatLaunchRequest struct {
 
 func (x *DescribeChatLaunchRequest) Reset() {
 	*x = DescribeChatLaunchRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[101]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7362,7 +7461,7 @@ func (x *DescribeChatLaunchRequest) String() string {
 func (*DescribeChatLaunchRequest) ProtoMessage() {}
 
 func (x *DescribeChatLaunchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[101]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7375,7 +7474,7 @@ func (x *DescribeChatLaunchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeChatLaunchRequest.ProtoReflect.Descriptor instead.
 func (*DescribeChatLaunchRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{101}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *DescribeChatLaunchRequest) GetAgentSessionId() string {
@@ -7409,7 +7508,7 @@ type DescribeChatLaunchResponse struct {
 
 func (x *DescribeChatLaunchResponse) Reset() {
 	*x = DescribeChatLaunchResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[102]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7421,7 +7520,7 @@ func (x *DescribeChatLaunchResponse) String() string {
 func (*DescribeChatLaunchResponse) ProtoMessage() {}
 
 func (x *DescribeChatLaunchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[102]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7434,7 +7533,7 @@ func (x *DescribeChatLaunchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeChatLaunchResponse.ProtoReflect.Descriptor instead.
 func (*DescribeChatLaunchResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{102}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *DescribeChatLaunchResponse) GetArgv() []string {
@@ -7481,7 +7580,7 @@ type DescribeChatMCPRequest struct {
 
 func (x *DescribeChatMCPRequest) Reset() {
 	*x = DescribeChatMCPRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[103]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7493,7 +7592,7 @@ func (x *DescribeChatMCPRequest) String() string {
 func (*DescribeChatMCPRequest) ProtoMessage() {}
 
 func (x *DescribeChatMCPRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[103]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7506,7 +7605,7 @@ func (x *DescribeChatMCPRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeChatMCPRequest.ProtoReflect.Descriptor instead.
 func (*DescribeChatMCPRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{103}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *DescribeChatMCPRequest) GetAgentSessionId() string {
@@ -7542,7 +7641,7 @@ type DescribeChatMCPResponse struct {
 
 func (x *DescribeChatMCPResponse) Reset() {
 	*x = DescribeChatMCPResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[104]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7554,7 +7653,7 @@ func (x *DescribeChatMCPResponse) String() string {
 func (*DescribeChatMCPResponse) ProtoMessage() {}
 
 func (x *DescribeChatMCPResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[104]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7567,7 +7666,7 @@ func (x *DescribeChatMCPResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeChatMCPResponse.ProtoReflect.Descriptor instead.
 func (*DescribeChatMCPResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{104}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *DescribeChatMCPResponse) GetAgentName() string {
@@ -7642,7 +7741,7 @@ type GetChatTranscriptRequest struct {
 
 func (x *GetChatTranscriptRequest) Reset() {
 	*x = GetChatTranscriptRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[105]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7654,7 +7753,7 @@ func (x *GetChatTranscriptRequest) String() string {
 func (*GetChatTranscriptRequest) ProtoMessage() {}
 
 func (x *GetChatTranscriptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[105]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7667,7 +7766,7 @@ func (x *GetChatTranscriptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetChatTranscriptRequest.ProtoReflect.Descriptor instead.
 func (*GetChatTranscriptRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{105}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *GetChatTranscriptRequest) GetAgentSessionId() string {
@@ -7713,7 +7812,7 @@ type GetChatTranscriptResponse struct {
 
 func (x *GetChatTranscriptResponse) Reset() {
 	*x = GetChatTranscriptResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[106]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7725,7 +7824,7 @@ func (x *GetChatTranscriptResponse) String() string {
 func (*GetChatTranscriptResponse) ProtoMessage() {}
 
 func (x *GetChatTranscriptResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[106]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7738,7 +7837,7 @@ func (x *GetChatTranscriptResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetChatTranscriptResponse.ProtoReflect.Descriptor instead.
 func (*GetChatTranscriptResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{106}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *GetChatTranscriptResponse) GetMessages() []*ChatMessage {
@@ -7795,7 +7894,7 @@ type SendChatMessageRequest struct {
 
 func (x *SendChatMessageRequest) Reset() {
 	*x = SendChatMessageRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[107]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7807,7 +7906,7 @@ func (x *SendChatMessageRequest) String() string {
 func (*SendChatMessageRequest) ProtoMessage() {}
 
 func (x *SendChatMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[107]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7820,7 +7919,7 @@ func (x *SendChatMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendChatMessageRequest.ProtoReflect.Descriptor instead.
 func (*SendChatMessageRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{107}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *SendChatMessageRequest) GetAgentSessionId() string {
@@ -7900,7 +7999,7 @@ type SendChatMessageResponse struct {
 
 func (x *SendChatMessageResponse) Reset() {
 	*x = SendChatMessageResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[108]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7912,7 +8011,7 @@ func (x *SendChatMessageResponse) String() string {
 func (*SendChatMessageResponse) ProtoMessage() {}
 
 func (x *SendChatMessageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[108]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7925,7 +8024,7 @@ func (x *SendChatMessageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendChatMessageResponse.ProtoReflect.Descriptor instead.
 func (*SendChatMessageResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{108}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *SendChatMessageResponse) GetTmuxSessionName() string {
@@ -7975,7 +8074,7 @@ type ChatStatusReport struct {
 
 func (x *ChatStatusReport) Reset() {
 	*x = ChatStatusReport{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[109]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7987,7 +8086,7 @@ func (x *ChatStatusReport) String() string {
 func (*ChatStatusReport) ProtoMessage() {}
 
 func (x *ChatStatusReport) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[109]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8000,7 +8099,7 @@ func (x *ChatStatusReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatStatusReport.ProtoReflect.Descriptor instead.
 func (*ChatStatusReport) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{109}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *ChatStatusReport) GetAgentSessionId() string {
@@ -8033,7 +8132,7 @@ type ReportChatStatusRequest struct {
 
 func (x *ReportChatStatusRequest) Reset() {
 	*x = ReportChatStatusRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[110]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8045,7 +8144,7 @@ func (x *ReportChatStatusRequest) String() string {
 func (*ReportChatStatusRequest) ProtoMessage() {}
 
 func (x *ReportChatStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[110]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8058,7 +8157,7 @@ func (x *ReportChatStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportChatStatusRequest.ProtoReflect.Descriptor instead.
 func (*ReportChatStatusRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{110}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *ReportChatStatusRequest) GetReports() []*ChatStatusReport {
@@ -8076,7 +8175,7 @@ type ReportChatStatusResponse struct {
 
 func (x *ReportChatStatusResponse) Reset() {
 	*x = ReportChatStatusResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[111]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8088,7 +8187,7 @@ func (x *ReportChatStatusResponse) String() string {
 func (*ReportChatStatusResponse) ProtoMessage() {}
 
 func (x *ReportChatStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[111]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8101,7 +8200,7 @@ func (x *ReportChatStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportChatStatusResponse.ProtoReflect.Descriptor instead.
 func (*ReportChatStatusResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{111}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{113}
 }
 
 // Sets an ephemeral skill-reported stage, distinct from AgentProgressPhase.
@@ -8116,7 +8215,7 @@ type SetChatPhaseRequest struct {
 
 func (x *SetChatPhaseRequest) Reset() {
 	*x = SetChatPhaseRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[112]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8128,7 +8227,7 @@ func (x *SetChatPhaseRequest) String() string {
 func (*SetChatPhaseRequest) ProtoMessage() {}
 
 func (x *SetChatPhaseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[112]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8141,7 +8240,7 @@ func (x *SetChatPhaseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetChatPhaseRequest.ProtoReflect.Descriptor instead.
 func (*SetChatPhaseRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{112}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *SetChatPhaseRequest) GetAgentSessionId() string {
@@ -8173,7 +8272,7 @@ type SetChatPhaseResponse struct {
 
 func (x *SetChatPhaseResponse) Reset() {
 	*x = SetChatPhaseResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[113]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8185,7 +8284,7 @@ func (x *SetChatPhaseResponse) String() string {
 func (*SetChatPhaseResponse) ProtoMessage() {}
 
 func (x *SetChatPhaseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[113]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8198,7 +8297,7 @@ func (x *SetChatPhaseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetChatPhaseResponse.ProtoReflect.Descriptor instead.
 func (*SetChatPhaseResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{113}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{115}
 }
 
 type GetChatStatusesRequest struct {
@@ -8210,7 +8309,7 @@ type GetChatStatusesRequest struct {
 
 func (x *GetChatStatusesRequest) Reset() {
 	*x = GetChatStatusesRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[114]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8222,7 +8321,7 @@ func (x *GetChatStatusesRequest) String() string {
 func (*GetChatStatusesRequest) ProtoMessage() {}
 
 func (x *GetChatStatusesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[114]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8235,7 +8334,7 @@ func (x *GetChatStatusesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetChatStatusesRequest.ProtoReflect.Descriptor instead.
 func (*GetChatStatusesRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{114}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *GetChatStatusesRequest) GetSessionId() string {
@@ -8290,7 +8389,7 @@ type ChatStatusEntry struct {
 
 func (x *ChatStatusEntry) Reset() {
 	*x = ChatStatusEntry{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[115]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8302,7 +8401,7 @@ func (x *ChatStatusEntry) String() string {
 func (*ChatStatusEntry) ProtoMessage() {}
 
 func (x *ChatStatusEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[115]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8315,7 +8414,7 @@ func (x *ChatStatusEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatStatusEntry.ProtoReflect.Descriptor instead.
 func (*ChatStatusEntry) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{115}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *ChatStatusEntry) GetAgentSessionId() string {
@@ -8383,7 +8482,7 @@ type GetChatStatusesResponse struct {
 
 func (x *GetChatStatusesResponse) Reset() {
 	*x = GetChatStatusesResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[116]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8395,7 +8494,7 @@ func (x *GetChatStatusesResponse) String() string {
 func (*GetChatStatusesResponse) ProtoMessage() {}
 
 func (x *GetChatStatusesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[116]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8408,7 +8507,7 @@ func (x *GetChatStatusesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetChatStatusesResponse.ProtoReflect.Descriptor instead.
 func (*GetChatStatusesResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{116}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *GetChatStatusesResponse) GetStatuses() []*ChatStatusEntry {
@@ -8427,7 +8526,7 @@ type GetSessionStatusesRequest struct {
 
 func (x *GetSessionStatusesRequest) Reset() {
 	*x = GetSessionStatusesRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[117]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8439,7 +8538,7 @@ func (x *GetSessionStatusesRequest) String() string {
 func (*GetSessionStatusesRequest) ProtoMessage() {}
 
 func (x *GetSessionStatusesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[117]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8452,7 +8551,7 @@ func (x *GetSessionStatusesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionStatusesRequest.ProtoReflect.Descriptor instead.
 func (*GetSessionStatusesRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{117}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *GetSessionStatusesRequest) GetSessionIds() []string {
@@ -8482,7 +8581,7 @@ type SessionStatusEntry struct {
 
 func (x *SessionStatusEntry) Reset() {
 	*x = SessionStatusEntry{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[118]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8494,7 +8593,7 @@ func (x *SessionStatusEntry) String() string {
 func (*SessionStatusEntry) ProtoMessage() {}
 
 func (x *SessionStatusEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[118]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8507,7 +8606,7 @@ func (x *SessionStatusEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionStatusEntry.ProtoReflect.Descriptor instead.
 func (*SessionStatusEntry) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{118}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *SessionStatusEntry) GetSessionId() string {
@@ -8547,7 +8646,7 @@ type GetSessionStatusesResponse struct {
 
 func (x *GetSessionStatusesResponse) Reset() {
 	*x = GetSessionStatusesResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[119]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8559,7 +8658,7 @@ func (x *GetSessionStatusesResponse) String() string {
 func (*GetSessionStatusesResponse) ProtoMessage() {}
 
 func (x *GetSessionStatusesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[119]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8572,7 +8671,7 @@ func (x *GetSessionStatusesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionStatusesResponse.ProtoReflect.Descriptor instead.
 func (*GetSessionStatusesResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{119}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *GetSessionStatusesResponse) GetStatuses() []*SessionStatusEntry {
@@ -8594,7 +8693,7 @@ type DeliverVCSEventRequest struct {
 
 func (x *DeliverVCSEventRequest) Reset() {
 	*x = DeliverVCSEventRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[120]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8606,7 +8705,7 @@ func (x *DeliverVCSEventRequest) String() string {
 func (*DeliverVCSEventRequest) ProtoMessage() {}
 
 func (x *DeliverVCSEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[120]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8619,7 +8718,7 @@ func (x *DeliverVCSEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverVCSEventRequest.ProtoReflect.Descriptor instead.
 func (*DeliverVCSEventRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{120}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *DeliverVCSEventRequest) GetRepoOriginUrl() string {
@@ -8644,7 +8743,7 @@ type DeliverVCSEventResponse struct {
 
 func (x *DeliverVCSEventResponse) Reset() {
 	*x = DeliverVCSEventResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[121]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8656,7 +8755,7 @@ func (x *DeliverVCSEventResponse) String() string {
 func (*DeliverVCSEventResponse) ProtoMessage() {}
 
 func (x *DeliverVCSEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[121]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8669,7 +8768,7 @@ func (x *DeliverVCSEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverVCSEventResponse.ProtoReflect.Descriptor instead.
 func (*DeliverVCSEventResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{121}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{123}
 }
 
 type NotifyAuthChangeRequest struct {
@@ -8681,7 +8780,7 @@ type NotifyAuthChangeRequest struct {
 
 func (x *NotifyAuthChangeRequest) Reset() {
 	*x = NotifyAuthChangeRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[122]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8693,7 +8792,7 @@ func (x *NotifyAuthChangeRequest) String() string {
 func (*NotifyAuthChangeRequest) ProtoMessage() {}
 
 func (x *NotifyAuthChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[122]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8706,7 +8805,7 @@ func (x *NotifyAuthChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotifyAuthChangeRequest.ProtoReflect.Descriptor instead.
 func (*NotifyAuthChangeRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{122}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *NotifyAuthChangeRequest) GetAction() string {
@@ -8730,7 +8829,7 @@ type NotifyAuthChangeResponse struct {
 
 func (x *NotifyAuthChangeResponse) Reset() {
 	*x = NotifyAuthChangeResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[123]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8742,7 +8841,7 @@ func (x *NotifyAuthChangeResponse) String() string {
 func (*NotifyAuthChangeResponse) ProtoMessage() {}
 
 func (x *NotifyAuthChangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[123]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8755,7 +8854,7 @@ func (x *NotifyAuthChangeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotifyAuthChangeResponse.ProtoReflect.Descriptor instead.
 func (*NotifyAuthChangeResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{123}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *NotifyAuthChangeResponse) GetOutcome() NotifyAuthChangeResponse_Outcome {
@@ -8780,7 +8879,7 @@ type GetAuthStateRequest struct {
 
 func (x *GetAuthStateRequest) Reset() {
 	*x = GetAuthStateRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[124]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8792,7 +8891,7 @@ func (x *GetAuthStateRequest) String() string {
 func (*GetAuthStateRequest) ProtoMessage() {}
 
 func (x *GetAuthStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[124]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8805,7 +8904,7 @@ func (x *GetAuthStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAuthStateRequest.ProtoReflect.Descriptor instead.
 func (*GetAuthStateRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{124}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{126}
 }
 
 // GetAuthStateResponse carries only enumerated, non-secret facts: the
@@ -8859,7 +8958,7 @@ type GetAuthStateResponse struct {
 
 func (x *GetAuthStateResponse) Reset() {
 	*x = GetAuthStateResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[125]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8871,7 +8970,7 @@ func (x *GetAuthStateResponse) String() string {
 func (*GetAuthStateResponse) ProtoMessage() {}
 
 func (x *GetAuthStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[125]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8884,7 +8983,7 @@ func (x *GetAuthStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAuthStateResponse.ProtoReflect.Descriptor instead.
 func (*GetAuthStateResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{125}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *GetAuthStateResponse) GetUpstreamConfigured() bool {
@@ -8954,7 +9053,7 @@ type GitHubCredentialReport struct {
 
 func (x *GitHubCredentialReport) Reset() {
 	*x = GitHubCredentialReport{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[126]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8966,7 +9065,7 @@ func (x *GitHubCredentialReport) String() string {
 func (*GitHubCredentialReport) ProtoMessage() {}
 
 func (x *GitHubCredentialReport) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[126]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8979,7 +9078,7 @@ func (x *GitHubCredentialReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitHubCredentialReport.ProtoReflect.Descriptor instead.
 func (*GitHubCredentialReport) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{126}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *GitHubCredentialReport) GetRepos() []*GitHubCredentialState {
@@ -9014,7 +9113,7 @@ type GitHubCredentialState struct {
 
 func (x *GitHubCredentialState) Reset() {
 	*x = GitHubCredentialState{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[127]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9026,7 +9125,7 @@ func (x *GitHubCredentialState) String() string {
 func (*GitHubCredentialState) ProtoMessage() {}
 
 func (x *GitHubCredentialState) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[127]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9039,7 +9138,7 @@ func (x *GitHubCredentialState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitHubCredentialState.ProtoReflect.Descriptor instead.
 func (*GitHubCredentialState) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{127}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *GitHubCredentialState) GetRepoId() string {
@@ -9131,7 +9230,7 @@ type CreateCronJobRequest struct {
 
 func (x *CreateCronJobRequest) Reset() {
 	*x = CreateCronJobRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[128]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9143,7 +9242,7 @@ func (x *CreateCronJobRequest) String() string {
 func (*CreateCronJobRequest) ProtoMessage() {}
 
 func (x *CreateCronJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[128]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9156,7 +9255,7 @@ func (x *CreateCronJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCronJobRequest.ProtoReflect.Descriptor instead.
 func (*CreateCronJobRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{128}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *CreateCronJobRequest) GetRepoId() string {
@@ -9259,7 +9358,7 @@ type CreateCronJobResponse struct {
 
 func (x *CreateCronJobResponse) Reset() {
 	*x = CreateCronJobResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[129]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9271,7 +9370,7 @@ func (x *CreateCronJobResponse) String() string {
 func (*CreateCronJobResponse) ProtoMessage() {}
 
 func (x *CreateCronJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[129]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9284,7 +9383,7 @@ func (x *CreateCronJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCronJobResponse.ProtoReflect.Descriptor instead.
 func (*CreateCronJobResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{129}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *CreateCronJobResponse) GetCronJob() *CronJob {
@@ -9304,7 +9403,7 @@ type ListCronJobsRequest struct {
 
 func (x *ListCronJobsRequest) Reset() {
 	*x = ListCronJobsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[130]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9316,7 +9415,7 @@ func (x *ListCronJobsRequest) String() string {
 func (*ListCronJobsRequest) ProtoMessage() {}
 
 func (x *ListCronJobsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[130]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9329,7 +9428,7 @@ func (x *ListCronJobsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCronJobsRequest.ProtoReflect.Descriptor instead.
 func (*ListCronJobsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{130}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *ListCronJobsRequest) GetRepoId() string {
@@ -9348,7 +9447,7 @@ type ListCronJobsResponse struct {
 
 func (x *ListCronJobsResponse) Reset() {
 	*x = ListCronJobsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[131]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9360,7 +9459,7 @@ func (x *ListCronJobsResponse) String() string {
 func (*ListCronJobsResponse) ProtoMessage() {}
 
 func (x *ListCronJobsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[131]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9373,7 +9472,7 @@ func (x *ListCronJobsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCronJobsResponse.ProtoReflect.Descriptor instead.
 func (*ListCronJobsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{131}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *ListCronJobsResponse) GetCronJobs() []*CronJob {
@@ -9392,7 +9491,7 @@ type GetCronJobRequest struct {
 
 func (x *GetCronJobRequest) Reset() {
 	*x = GetCronJobRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[132]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9404,7 +9503,7 @@ func (x *GetCronJobRequest) String() string {
 func (*GetCronJobRequest) ProtoMessage() {}
 
 func (x *GetCronJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[132]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9417,7 +9516,7 @@ func (x *GetCronJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCronJobRequest.ProtoReflect.Descriptor instead.
 func (*GetCronJobRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{132}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *GetCronJobRequest) GetId() string {
@@ -9436,7 +9535,7 @@ type GetCronJobResponse struct {
 
 func (x *GetCronJobResponse) Reset() {
 	*x = GetCronJobResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[133]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9448,7 +9547,7 @@ func (x *GetCronJobResponse) String() string {
 func (*GetCronJobResponse) ProtoMessage() {}
 
 func (x *GetCronJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[133]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9461,7 +9560,7 @@ func (x *GetCronJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCronJobResponse.ProtoReflect.Descriptor instead.
 func (*GetCronJobResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{133}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *GetCronJobResponse) GetCronJob() *CronJob {
@@ -9499,7 +9598,7 @@ type UpdateCronJobRequest struct {
 
 func (x *UpdateCronJobRequest) Reset() {
 	*x = UpdateCronJobRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[134]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9511,7 +9610,7 @@ func (x *UpdateCronJobRequest) String() string {
 func (*UpdateCronJobRequest) ProtoMessage() {}
 
 func (x *UpdateCronJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[134]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9524,7 +9623,7 @@ func (x *UpdateCronJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateCronJobRequest.ProtoReflect.Descriptor instead.
 func (*UpdateCronJobRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{134}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *UpdateCronJobRequest) GetId() string {
@@ -9627,7 +9726,7 @@ type UpdateCronJobResponse struct {
 
 func (x *UpdateCronJobResponse) Reset() {
 	*x = UpdateCronJobResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[135]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9639,7 +9738,7 @@ func (x *UpdateCronJobResponse) String() string {
 func (*UpdateCronJobResponse) ProtoMessage() {}
 
 func (x *UpdateCronJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[135]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9652,7 +9751,7 @@ func (x *UpdateCronJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateCronJobResponse.ProtoReflect.Descriptor instead.
 func (*UpdateCronJobResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{135}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *UpdateCronJobResponse) GetCronJob() *CronJob {
@@ -9671,7 +9770,7 @@ type DeleteCronJobRequest struct {
 
 func (x *DeleteCronJobRequest) Reset() {
 	*x = DeleteCronJobRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[136]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9683,7 +9782,7 @@ func (x *DeleteCronJobRequest) String() string {
 func (*DeleteCronJobRequest) ProtoMessage() {}
 
 func (x *DeleteCronJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[136]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9696,7 +9795,7 @@ func (x *DeleteCronJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCronJobRequest.ProtoReflect.Descriptor instead.
 func (*DeleteCronJobRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{136}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *DeleteCronJobRequest) GetId() string {
@@ -9714,7 +9813,7 @@ type DeleteCronJobResponse struct {
 
 func (x *DeleteCronJobResponse) Reset() {
 	*x = DeleteCronJobResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[137]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9726,7 +9825,7 @@ func (x *DeleteCronJobResponse) String() string {
 func (*DeleteCronJobResponse) ProtoMessage() {}
 
 func (x *DeleteCronJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[137]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9739,7 +9838,7 @@ func (x *DeleteCronJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCronJobResponse.ProtoReflect.Descriptor instead.
 func (*DeleteCronJobResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{137}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{139}
 }
 
 type RunCronJobNowRequest struct {
@@ -9751,7 +9850,7 @@ type RunCronJobNowRequest struct {
 
 func (x *RunCronJobNowRequest) Reset() {
 	*x = RunCronJobNowRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[138]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9763,7 +9862,7 @@ func (x *RunCronJobNowRequest) String() string {
 func (*RunCronJobNowRequest) ProtoMessage() {}
 
 func (x *RunCronJobNowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[138]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9776,7 +9875,7 @@ func (x *RunCronJobNowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunCronJobNowRequest.ProtoReflect.Descriptor instead.
 func (*RunCronJobNowRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{138}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *RunCronJobNowRequest) GetId() string {
@@ -9799,7 +9898,7 @@ type RunCronJobNowResponse struct {
 
 func (x *RunCronJobNowResponse) Reset() {
 	*x = RunCronJobNowResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[139]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9811,7 +9910,7 @@ func (x *RunCronJobNowResponse) String() string {
 func (*RunCronJobNowResponse) ProtoMessage() {}
 
 func (x *RunCronJobNowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[139]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9824,7 +9923,7 @@ func (x *RunCronJobNowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunCronJobNowResponse.ProtoReflect.Descriptor instead.
 func (*RunCronJobNowResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{139}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *RunCronJobNowResponse) GetSession() *Session {
@@ -9869,7 +9968,7 @@ type CreateGitHubCallbackRequest struct {
 
 func (x *CreateGitHubCallbackRequest) Reset() {
 	*x = CreateGitHubCallbackRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[140]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9881,7 +9980,7 @@ func (x *CreateGitHubCallbackRequest) String() string {
 func (*CreateGitHubCallbackRequest) ProtoMessage() {}
 
 func (x *CreateGitHubCallbackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[140]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9894,7 +9993,7 @@ func (x *CreateGitHubCallbackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateGitHubCallbackRequest.ProtoReflect.Descriptor instead.
 func (*CreateGitHubCallbackRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{140}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *CreateGitHubCallbackRequest) GetGroupId() string {
@@ -9983,7 +10082,7 @@ type CreateGitHubCallbackResponse struct {
 
 func (x *CreateGitHubCallbackResponse) Reset() {
 	*x = CreateGitHubCallbackResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[141]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9995,7 +10094,7 @@ func (x *CreateGitHubCallbackResponse) String() string {
 func (*CreateGitHubCallbackResponse) ProtoMessage() {}
 
 func (x *CreateGitHubCallbackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[141]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10008,7 +10107,7 @@ func (x *CreateGitHubCallbackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateGitHubCallbackResponse.ProtoReflect.Descriptor instead.
 func (*CreateGitHubCallbackResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{141}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *CreateGitHubCallbackResponse) GetGithubCallback() *GitHubCallback {
@@ -10040,7 +10139,7 @@ type ListGitHubCallbacksRequest struct {
 
 func (x *ListGitHubCallbacksRequest) Reset() {
 	*x = ListGitHubCallbacksRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[142]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10052,7 +10151,7 @@ func (x *ListGitHubCallbacksRequest) String() string {
 func (*ListGitHubCallbacksRequest) ProtoMessage() {}
 
 func (x *ListGitHubCallbacksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[142]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10065,7 +10164,7 @@ func (x *ListGitHubCallbacksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGitHubCallbacksRequest.ProtoReflect.Descriptor instead.
 func (*ListGitHubCallbacksRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{142}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *ListGitHubCallbacksRequest) GetTargetChatId() string {
@@ -10119,7 +10218,7 @@ type ListGitHubCallbacksResponse struct {
 
 func (x *ListGitHubCallbacksResponse) Reset() {
 	*x = ListGitHubCallbacksResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[143]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10131,7 +10230,7 @@ func (x *ListGitHubCallbacksResponse) String() string {
 func (*ListGitHubCallbacksResponse) ProtoMessage() {}
 
 func (x *ListGitHubCallbacksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[143]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10144,7 +10243,7 @@ func (x *ListGitHubCallbacksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGitHubCallbacksResponse.ProtoReflect.Descriptor instead.
 func (*ListGitHubCallbacksResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{143}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *ListGitHubCallbacksResponse) GetGithubCallbacks() []*GitHubCallback {
@@ -10166,7 +10265,7 @@ type DeleteGitHubCallbackRequest struct {
 
 func (x *DeleteGitHubCallbackRequest) Reset() {
 	*x = DeleteGitHubCallbackRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[144]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10178,7 +10277,7 @@ func (x *DeleteGitHubCallbackRequest) String() string {
 func (*DeleteGitHubCallbackRequest) ProtoMessage() {}
 
 func (x *DeleteGitHubCallbackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[144]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10191,7 +10290,7 @@ func (x *DeleteGitHubCallbackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteGitHubCallbackRequest.ProtoReflect.Descriptor instead.
 func (*DeleteGitHubCallbackRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{144}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *DeleteGitHubCallbackRequest) GetId() string {
@@ -10217,7 +10316,7 @@ type DeleteGitHubCallbackResponse struct {
 
 func (x *DeleteGitHubCallbackResponse) Reset() {
 	*x = DeleteGitHubCallbackResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[145]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10229,7 +10328,7 @@ func (x *DeleteGitHubCallbackResponse) String() string {
 func (*DeleteGitHubCallbackResponse) ProtoMessage() {}
 
 func (x *DeleteGitHubCallbackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[145]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10242,7 +10341,7 @@ func (x *DeleteGitHubCallbackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteGitHubCallbackResponse.ProtoReflect.Descriptor instead.
 func (*DeleteGitHubCallbackResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{145}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *DeleteGitHubCallbackResponse) GetOutcome() string {
@@ -10282,7 +10381,7 @@ type BroadcastSelectorClause struct {
 
 func (x *BroadcastSelectorClause) Reset() {
 	*x = BroadcastSelectorClause{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[146]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10294,7 +10393,7 @@ func (x *BroadcastSelectorClause) String() string {
 func (*BroadcastSelectorClause) ProtoMessage() {}
 
 func (x *BroadcastSelectorClause) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[146]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10307,7 +10406,7 @@ func (x *BroadcastSelectorClause) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastSelectorClause.ProtoReflect.Descriptor instead.
 func (*BroadcastSelectorClause) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{146}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *BroadcastSelectorClause) GetChatIds() []string {
@@ -10365,7 +10464,7 @@ type BroadcastSelector struct {
 
 func (x *BroadcastSelector) Reset() {
 	*x = BroadcastSelector{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[147]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10377,7 +10476,7 @@ func (x *BroadcastSelector) String() string {
 func (*BroadcastSelector) ProtoMessage() {}
 
 func (x *BroadcastSelector) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[147]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10390,7 +10489,7 @@ func (x *BroadcastSelector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastSelector.ProtoReflect.Descriptor instead.
 func (*BroadcastSelector) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{147}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *BroadcastSelector) GetClauses() []*BroadcastSelectorClause {
@@ -10427,7 +10526,7 @@ type Broadcast struct {
 
 func (x *Broadcast) Reset() {
 	*x = Broadcast{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[148]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10439,7 +10538,7 @@ func (x *Broadcast) String() string {
 func (*Broadcast) ProtoMessage() {}
 
 func (x *Broadcast) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[148]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10452,7 +10551,7 @@ func (x *Broadcast) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Broadcast.ProtoReflect.Descriptor instead.
 func (*Broadcast) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{148}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *Broadcast) GetId() string {
@@ -10520,7 +10619,7 @@ type BroadcastDelivery struct {
 
 func (x *BroadcastDelivery) Reset() {
 	*x = BroadcastDelivery{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[149]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10532,7 +10631,7 @@ func (x *BroadcastDelivery) String() string {
 func (*BroadcastDelivery) ProtoMessage() {}
 
 func (x *BroadcastDelivery) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[149]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10545,7 +10644,7 @@ func (x *BroadcastDelivery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastDelivery.ProtoReflect.Descriptor instead.
 func (*BroadcastDelivery) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{149}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{151}
 }
 
 func (x *BroadcastDelivery) GetBroadcastId() string {
@@ -10632,7 +10731,7 @@ type SendBroadcastRequest struct {
 
 func (x *SendBroadcastRequest) Reset() {
 	*x = SendBroadcastRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[150]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10644,7 +10743,7 @@ func (x *SendBroadcastRequest) String() string {
 func (*SendBroadcastRequest) ProtoMessage() {}
 
 func (x *SendBroadcastRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[150]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10657,7 +10756,7 @@ func (x *SendBroadcastRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendBroadcastRequest.ProtoReflect.Descriptor instead.
 func (*SendBroadcastRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{150}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *SendBroadcastRequest) GetSelector() *BroadcastSelector {
@@ -10718,7 +10817,7 @@ type SendBroadcastResponse struct {
 
 func (x *SendBroadcastResponse) Reset() {
 	*x = SendBroadcastResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[151]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10730,7 +10829,7 @@ func (x *SendBroadcastResponse) String() string {
 func (*SendBroadcastResponse) ProtoMessage() {}
 
 func (x *SendBroadcastResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[151]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10743,7 +10842,7 @@ func (x *SendBroadcastResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendBroadcastResponse.ProtoReflect.Descriptor instead.
 func (*SendBroadcastResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{151}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *SendBroadcastResponse) GetBroadcast() *Broadcast {
@@ -10779,7 +10878,7 @@ type ListBroadcastsRequest struct {
 
 func (x *ListBroadcastsRequest) Reset() {
 	*x = ListBroadcastsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[152]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10791,7 +10890,7 @@ func (x *ListBroadcastsRequest) String() string {
 func (*ListBroadcastsRequest) ProtoMessage() {}
 
 func (x *ListBroadcastsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[152]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10804,7 +10903,7 @@ func (x *ListBroadcastsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBroadcastsRequest.ProtoReflect.Descriptor instead.
 func (*ListBroadcastsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{152}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *ListBroadcastsRequest) GetState() string {
@@ -10846,7 +10945,7 @@ type ListBroadcastsResponse struct {
 
 func (x *ListBroadcastsResponse) Reset() {
 	*x = ListBroadcastsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[153]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10858,7 +10957,7 @@ func (x *ListBroadcastsResponse) String() string {
 func (*ListBroadcastsResponse) ProtoMessage() {}
 
 func (x *ListBroadcastsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[153]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10871,7 +10970,7 @@ func (x *ListBroadcastsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBroadcastsResponse.ProtoReflect.Descriptor instead.
 func (*ListBroadcastsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{153}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *ListBroadcastsResponse) GetBroadcasts() []*Broadcast {
@@ -10890,7 +10989,7 @@ type DeleteBroadcastRequest struct {
 
 func (x *DeleteBroadcastRequest) Reset() {
 	*x = DeleteBroadcastRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[154]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[156]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10902,7 +11001,7 @@ func (x *DeleteBroadcastRequest) String() string {
 func (*DeleteBroadcastRequest) ProtoMessage() {}
 
 func (x *DeleteBroadcastRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[154]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[156]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10915,7 +11014,7 @@ func (x *DeleteBroadcastRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBroadcastRequest.ProtoReflect.Descriptor instead.
 func (*DeleteBroadcastRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{154}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{156}
 }
 
 func (x *DeleteBroadcastRequest) GetId() string {
@@ -10933,7 +11032,7 @@ type DeleteBroadcastResponse struct {
 
 func (x *DeleteBroadcastResponse) Reset() {
 	*x = DeleteBroadcastResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[155]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[157]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10945,7 +11044,7 @@ func (x *DeleteBroadcastResponse) String() string {
 func (*DeleteBroadcastResponse) ProtoMessage() {}
 
 func (x *DeleteBroadcastResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[155]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[157]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10958,7 +11057,7 @@ func (x *DeleteBroadcastResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBroadcastResponse.ProtoReflect.Descriptor instead.
 func (*DeleteBroadcastResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{155}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{157}
 }
 
 // Note is durable free-text recorded against a repository, so a later sweep can
@@ -11001,7 +11100,7 @@ type Note struct {
 
 func (x *Note) Reset() {
 	*x = Note{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[156]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11013,7 +11112,7 @@ func (x *Note) String() string {
 func (*Note) ProtoMessage() {}
 
 func (x *Note) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[156]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11026,7 +11125,7 @@ func (x *Note) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Note.ProtoReflect.Descriptor instead.
 func (*Note) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{156}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *Note) GetId() string {
@@ -11121,7 +11220,7 @@ type NoteTagSet struct {
 
 func (x *NoteTagSet) Reset() {
 	*x = NoteTagSet{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[157]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11133,7 +11232,7 @@ func (x *NoteTagSet) String() string {
 func (*NoteTagSet) ProtoMessage() {}
 
 func (x *NoteTagSet) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[157]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11146,7 +11245,7 @@ func (x *NoteTagSet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NoteTagSet.ProtoReflect.Descriptor instead.
 func (*NoteTagSet) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{157}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *NoteTagSet) GetTags() []string {
@@ -11178,7 +11277,7 @@ type CreateNoteRequest struct {
 
 func (x *CreateNoteRequest) Reset() {
 	*x = CreateNoteRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[158]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11190,7 +11289,7 @@ func (x *CreateNoteRequest) String() string {
 func (*CreateNoteRequest) ProtoMessage() {}
 
 func (x *CreateNoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[158]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11203,7 +11302,7 @@ func (x *CreateNoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateNoteRequest.ProtoReflect.Descriptor instead.
 func (*CreateNoteRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{158}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *CreateNoteRequest) GetRepoId() string {
@@ -11257,7 +11356,7 @@ type CreateNoteResponse struct {
 
 func (x *CreateNoteResponse) Reset() {
 	*x = CreateNoteResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[159]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11269,7 +11368,7 @@ func (x *CreateNoteResponse) String() string {
 func (*CreateNoteResponse) ProtoMessage() {}
 
 func (x *CreateNoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[159]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11282,7 +11381,7 @@ func (x *CreateNoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateNoteResponse.ProtoReflect.Descriptor instead.
 func (*CreateNoteResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{159}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *CreateNoteResponse) GetNote() *Note {
@@ -11301,7 +11400,7 @@ type GetNoteRequest struct {
 
 func (x *GetNoteRequest) Reset() {
 	*x = GetNoteRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[160]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11313,7 +11412,7 @@ func (x *GetNoteRequest) String() string {
 func (*GetNoteRequest) ProtoMessage() {}
 
 func (x *GetNoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[160]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11326,7 +11425,7 @@ func (x *GetNoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNoteRequest.ProtoReflect.Descriptor instead.
 func (*GetNoteRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{160}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *GetNoteRequest) GetId() string {
@@ -11345,7 +11444,7 @@ type GetNoteResponse struct {
 
 func (x *GetNoteResponse) Reset() {
 	*x = GetNoteResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[161]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11357,7 +11456,7 @@ func (x *GetNoteResponse) String() string {
 func (*GetNoteResponse) ProtoMessage() {}
 
 func (x *GetNoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[161]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11370,7 +11469,7 @@ func (x *GetNoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNoteResponse.ProtoReflect.Descriptor instead.
 func (*GetNoteResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{161}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *GetNoteResponse) GetNote() *Note {
@@ -11413,7 +11512,7 @@ type ListNotesRequest struct {
 
 func (x *ListNotesRequest) Reset() {
 	*x = ListNotesRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[162]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11425,7 +11524,7 @@ func (x *ListNotesRequest) String() string {
 func (*ListNotesRequest) ProtoMessage() {}
 
 func (x *ListNotesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[162]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11438,7 +11537,7 @@ func (x *ListNotesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotesRequest.ProtoReflect.Descriptor instead.
 func (*ListNotesRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{162}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *ListNotesRequest) GetRepoId() string {
@@ -11492,7 +11591,7 @@ type ListNotesResponse struct {
 
 func (x *ListNotesResponse) Reset() {
 	*x = ListNotesResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[163]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11504,7 +11603,7 @@ func (x *ListNotesResponse) String() string {
 func (*ListNotesResponse) ProtoMessage() {}
 
 func (x *ListNotesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[163]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11517,7 +11616,7 @@ func (x *ListNotesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotesResponse.ProtoReflect.Descriptor instead.
 func (*ListNotesResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{163}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *ListNotesResponse) GetNotes() []*Note {
@@ -11541,7 +11640,7 @@ type UpdateNoteRequest struct {
 
 func (x *UpdateNoteRequest) Reset() {
 	*x = UpdateNoteRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[164]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11553,7 +11652,7 @@ func (x *UpdateNoteRequest) String() string {
 func (*UpdateNoteRequest) ProtoMessage() {}
 
 func (x *UpdateNoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[164]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11566,7 +11665,7 @@ func (x *UpdateNoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateNoteRequest.ProtoReflect.Descriptor instead.
 func (*UpdateNoteRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{164}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *UpdateNoteRequest) GetId() string {
@@ -11599,7 +11698,7 @@ type UpdateNoteResponse struct {
 
 func (x *UpdateNoteResponse) Reset() {
 	*x = UpdateNoteResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[165]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11611,7 +11710,7 @@ func (x *UpdateNoteResponse) String() string {
 func (*UpdateNoteResponse) ProtoMessage() {}
 
 func (x *UpdateNoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[165]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11624,7 +11723,7 @@ func (x *UpdateNoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateNoteResponse.ProtoReflect.Descriptor instead.
 func (*UpdateNoteResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{165}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *UpdateNoteResponse) GetNote() *Note {
@@ -11643,7 +11742,7 @@ type DeleteNoteRequest struct {
 
 func (x *DeleteNoteRequest) Reset() {
 	*x = DeleteNoteRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[166]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11655,7 +11754,7 @@ func (x *DeleteNoteRequest) String() string {
 func (*DeleteNoteRequest) ProtoMessage() {}
 
 func (x *DeleteNoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[166]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11668,7 +11767,7 @@ func (x *DeleteNoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNoteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteNoteRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{166}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{168}
 }
 
 func (x *DeleteNoteRequest) GetId() string {
@@ -11686,7 +11785,7 @@ type DeleteNoteResponse struct {
 
 func (x *DeleteNoteResponse) Reset() {
 	*x = DeleteNoteResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[167]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11698,7 +11797,7 @@ func (x *DeleteNoteResponse) String() string {
 func (*DeleteNoteResponse) ProtoMessage() {}
 
 func (x *DeleteNoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[167]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11711,7 +11810,7 @@ func (x *DeleteNoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNoteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteNoteResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{167}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{169}
 }
 
 type SyncNotesNowRequest struct {
@@ -11722,7 +11821,7 @@ type SyncNotesNowRequest struct {
 
 func (x *SyncNotesNowRequest) Reset() {
 	*x = SyncNotesNowRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[168]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11734,7 +11833,7 @@ func (x *SyncNotesNowRequest) String() string {
 func (*SyncNotesNowRequest) ProtoMessage() {}
 
 func (x *SyncNotesNowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[168]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11747,7 +11846,7 @@ func (x *SyncNotesNowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncNotesNowRequest.ProtoReflect.Descriptor instead.
 func (*SyncNotesNowRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{168}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{170}
 }
 
 type SyncNotesNowResponse struct {
@@ -11766,7 +11865,7 @@ type SyncNotesNowResponse struct {
 
 func (x *SyncNotesNowResponse) Reset() {
 	*x = SyncNotesNowResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[169]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11778,7 +11877,7 @@ func (x *SyncNotesNowResponse) String() string {
 func (*SyncNotesNowResponse) ProtoMessage() {}
 
 func (x *SyncNotesNowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[169]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11791,7 +11890,7 @@ func (x *SyncNotesNowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncNotesNowResponse.ProtoReflect.Descriptor instead.
 func (*SyncNotesNowResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{169}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{171}
 }
 
 func (x *SyncNotesNowResponse) GetStateCounts() []*NoteSyncStateCount {
@@ -11820,7 +11919,7 @@ type NoteSyncStateCount struct {
 
 func (x *NoteSyncStateCount) Reset() {
 	*x = NoteSyncStateCount{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[170]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11832,7 +11931,7 @@ func (x *NoteSyncStateCount) String() string {
 func (*NoteSyncStateCount) ProtoMessage() {}
 
 func (x *NoteSyncStateCount) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[170]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11845,7 +11944,7 @@ func (x *NoteSyncStateCount) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NoteSyncStateCount.ProtoReflect.Descriptor instead.
 func (*NoteSyncStateCount) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{170}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{172}
 }
 
 func (x *NoteSyncStateCount) GetState() string {
@@ -11910,7 +12009,7 @@ type BroadcastSubscription struct {
 
 func (x *BroadcastSubscription) Reset() {
 	*x = BroadcastSubscription{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[171]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11922,7 +12021,7 @@ func (x *BroadcastSubscription) String() string {
 func (*BroadcastSubscription) ProtoMessage() {}
 
 func (x *BroadcastSubscription) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[171]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11935,7 +12034,7 @@ func (x *BroadcastSubscription) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastSubscription.ProtoReflect.Descriptor instead.
 func (*BroadcastSubscription) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{171}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{173}
 }
 
 func (x *BroadcastSubscription) GetId() string {
@@ -12048,7 +12147,7 @@ type CreateBroadcastSubscriptionRequest struct {
 
 func (x *CreateBroadcastSubscriptionRequest) Reset() {
 	*x = CreateBroadcastSubscriptionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[172]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12060,7 +12159,7 @@ func (x *CreateBroadcastSubscriptionRequest) String() string {
 func (*CreateBroadcastSubscriptionRequest) ProtoMessage() {}
 
 func (x *CreateBroadcastSubscriptionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[172]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12073,7 +12172,7 @@ func (x *CreateBroadcastSubscriptionRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use CreateBroadcastSubscriptionRequest.ProtoReflect.Descriptor instead.
 func (*CreateBroadcastSubscriptionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{172}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{174}
 }
 
 func (x *CreateBroadcastSubscriptionRequest) GetOwnerSessionId() string {
@@ -12129,7 +12228,7 @@ type CreateBroadcastSubscriptionResponse struct {
 
 func (x *CreateBroadcastSubscriptionResponse) Reset() {
 	*x = CreateBroadcastSubscriptionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[173]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12141,7 +12240,7 @@ func (x *CreateBroadcastSubscriptionResponse) String() string {
 func (*CreateBroadcastSubscriptionResponse) ProtoMessage() {}
 
 func (x *CreateBroadcastSubscriptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[173]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12154,7 +12253,7 @@ func (x *CreateBroadcastSubscriptionResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use CreateBroadcastSubscriptionResponse.ProtoReflect.Descriptor instead.
 func (*CreateBroadcastSubscriptionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{173}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{175}
 }
 
 func (x *CreateBroadcastSubscriptionResponse) GetSubscription() *BroadcastSubscription {
@@ -12186,7 +12285,7 @@ type ListBroadcastSubscriptionsRequest struct {
 
 func (x *ListBroadcastSubscriptionsRequest) Reset() {
 	*x = ListBroadcastSubscriptionsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[174]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[176]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12198,7 +12297,7 @@ func (x *ListBroadcastSubscriptionsRequest) String() string {
 func (*ListBroadcastSubscriptionsRequest) ProtoMessage() {}
 
 func (x *ListBroadcastSubscriptionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[174]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[176]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12211,7 +12310,7 @@ func (x *ListBroadcastSubscriptionsRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ListBroadcastSubscriptionsRequest.ProtoReflect.Descriptor instead.
 func (*ListBroadcastSubscriptionsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{174}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{176}
 }
 
 func (x *ListBroadcastSubscriptionsRequest) GetOwnerSessionId() string {
@@ -12260,7 +12359,7 @@ type ListBroadcastSubscriptionsResponse struct {
 
 func (x *ListBroadcastSubscriptionsResponse) Reset() {
 	*x = ListBroadcastSubscriptionsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[175]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[177]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12272,7 +12371,7 @@ func (x *ListBroadcastSubscriptionsResponse) String() string {
 func (*ListBroadcastSubscriptionsResponse) ProtoMessage() {}
 
 func (x *ListBroadcastSubscriptionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[175]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[177]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12285,7 +12384,7 @@ func (x *ListBroadcastSubscriptionsResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use ListBroadcastSubscriptionsResponse.ProtoReflect.Descriptor instead.
 func (*ListBroadcastSubscriptionsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{175}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{177}
 }
 
 func (x *ListBroadcastSubscriptionsResponse) GetSubscriptions() []*BroadcastSubscription {
@@ -12304,7 +12403,7 @@ type DeleteBroadcastSubscriptionRequest struct {
 
 func (x *DeleteBroadcastSubscriptionRequest) Reset() {
 	*x = DeleteBroadcastSubscriptionRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[176]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[178]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12316,7 +12415,7 @@ func (x *DeleteBroadcastSubscriptionRequest) String() string {
 func (*DeleteBroadcastSubscriptionRequest) ProtoMessage() {}
 
 func (x *DeleteBroadcastSubscriptionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[176]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[178]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12329,7 +12428,7 @@ func (x *DeleteBroadcastSubscriptionRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use DeleteBroadcastSubscriptionRequest.ProtoReflect.Descriptor instead.
 func (*DeleteBroadcastSubscriptionRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{176}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{178}
 }
 
 func (x *DeleteBroadcastSubscriptionRequest) GetId() string {
@@ -12347,7 +12446,7 @@ type DeleteBroadcastSubscriptionResponse struct {
 
 func (x *DeleteBroadcastSubscriptionResponse) Reset() {
 	*x = DeleteBroadcastSubscriptionResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[177]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[179]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12359,7 +12458,7 @@ func (x *DeleteBroadcastSubscriptionResponse) String() string {
 func (*DeleteBroadcastSubscriptionResponse) ProtoMessage() {}
 
 func (x *DeleteBroadcastSubscriptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[177]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[179]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12372,7 +12471,7 @@ func (x *DeleteBroadcastSubscriptionResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use DeleteBroadcastSubscriptionResponse.ProtoReflect.Descriptor instead.
 func (*DeleteBroadcastSubscriptionResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{177}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{179}
 }
 
 type ListAgentAccountsRequest struct {
@@ -12387,7 +12486,7 @@ type ListAgentAccountsRequest struct {
 
 func (x *ListAgentAccountsRequest) Reset() {
 	*x = ListAgentAccountsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[178]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12399,7 +12498,7 @@ func (x *ListAgentAccountsRequest) String() string {
 func (*ListAgentAccountsRequest) ProtoMessage() {}
 
 func (x *ListAgentAccountsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[178]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12412,7 +12511,7 @@ func (x *ListAgentAccountsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentAccountsRequest.ProtoReflect.Descriptor instead.
 func (*ListAgentAccountsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{178}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{180}
 }
 
 func (x *ListAgentAccountsRequest) GetProvider() string {
@@ -12443,7 +12542,7 @@ type ListAgentAccountsResponse struct {
 
 func (x *ListAgentAccountsResponse) Reset() {
 	*x = ListAgentAccountsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[179]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[181]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12455,7 +12554,7 @@ func (x *ListAgentAccountsResponse) String() string {
 func (*ListAgentAccountsResponse) ProtoMessage() {}
 
 func (x *ListAgentAccountsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[179]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[181]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12468,7 +12567,7 @@ func (x *ListAgentAccountsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentAccountsResponse.ProtoReflect.Descriptor instead.
 func (*ListAgentAccountsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{179}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{181}
 }
 
 func (x *ListAgentAccountsResponse) GetAccounts() []*AgentAccount {
@@ -12499,7 +12598,7 @@ type AddAgentAccountRequest struct {
 
 func (x *AddAgentAccountRequest) Reset() {
 	*x = AddAgentAccountRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[180]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12511,7 +12610,7 @@ func (x *AddAgentAccountRequest) String() string {
 func (*AddAgentAccountRequest) ProtoMessage() {}
 
 func (x *AddAgentAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[180]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12524,7 +12623,7 @@ func (x *AddAgentAccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddAgentAccountRequest.ProtoReflect.Descriptor instead.
 func (*AddAgentAccountRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{180}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{182}
 }
 
 func (x *AddAgentAccountRequest) GetProvider() string {
@@ -12564,7 +12663,7 @@ type AddAgentAccountResponse struct {
 
 func (x *AddAgentAccountResponse) Reset() {
 	*x = AddAgentAccountResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[181]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12576,7 +12675,7 @@ func (x *AddAgentAccountResponse) String() string {
 func (*AddAgentAccountResponse) ProtoMessage() {}
 
 func (x *AddAgentAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[181]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12589,7 +12688,7 @@ func (x *AddAgentAccountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddAgentAccountResponse.ProtoReflect.Descriptor instead.
 func (*AddAgentAccountResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{181}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{183}
 }
 
 func (x *AddAgentAccountResponse) GetAccount() *AgentAccount {
@@ -12613,7 +12712,7 @@ type RefreshAgentAccountRequest struct {
 
 func (x *RefreshAgentAccountRequest) Reset() {
 	*x = RefreshAgentAccountRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[182]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12625,7 +12724,7 @@ func (x *RefreshAgentAccountRequest) String() string {
 func (*RefreshAgentAccountRequest) ProtoMessage() {}
 
 func (x *RefreshAgentAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[182]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12638,7 +12737,7 @@ func (x *RefreshAgentAccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshAgentAccountRequest.ProtoReflect.Descriptor instead.
 func (*RefreshAgentAccountRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{182}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{184}
 }
 
 func (x *RefreshAgentAccountRequest) GetId() string {
@@ -12673,7 +12772,7 @@ type RefreshAgentAccountResponse struct {
 
 func (x *RefreshAgentAccountResponse) Reset() {
 	*x = RefreshAgentAccountResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[183]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12685,7 +12784,7 @@ func (x *RefreshAgentAccountResponse) String() string {
 func (*RefreshAgentAccountResponse) ProtoMessage() {}
 
 func (x *RefreshAgentAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[183]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12698,7 +12797,7 @@ func (x *RefreshAgentAccountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshAgentAccountResponse.ProtoReflect.Descriptor instead.
 func (*RefreshAgentAccountResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{183}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{185}
 }
 
 func (x *RefreshAgentAccountResponse) GetAccount() *AgentAccount {
@@ -12735,7 +12834,7 @@ type UpdateAgentAccountRequest struct {
 
 func (x *UpdateAgentAccountRequest) Reset() {
 	*x = UpdateAgentAccountRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[184]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12747,7 +12846,7 @@ func (x *UpdateAgentAccountRequest) String() string {
 func (*UpdateAgentAccountRequest) ProtoMessage() {}
 
 func (x *UpdateAgentAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[184]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12760,7 +12859,7 @@ func (x *UpdateAgentAccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateAgentAccountRequest.ProtoReflect.Descriptor instead.
 func (*UpdateAgentAccountRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{184}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{186}
 }
 
 func (x *UpdateAgentAccountRequest) GetId() string {
@@ -12807,7 +12906,7 @@ type UpdateAgentAccountResponse struct {
 
 func (x *UpdateAgentAccountResponse) Reset() {
 	*x = UpdateAgentAccountResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[185]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12819,7 +12918,7 @@ func (x *UpdateAgentAccountResponse) String() string {
 func (*UpdateAgentAccountResponse) ProtoMessage() {}
 
 func (x *UpdateAgentAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[185]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12832,7 +12931,7 @@ func (x *UpdateAgentAccountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateAgentAccountResponse.ProtoReflect.Descriptor instead.
 func (*UpdateAgentAccountResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{185}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{187}
 }
 
 func (x *UpdateAgentAccountResponse) GetAccount() *AgentAccount {
@@ -12851,7 +12950,7 @@ type RemoveAgentAccountRequest struct {
 
 func (x *RemoveAgentAccountRequest) Reset() {
 	*x = RemoveAgentAccountRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[186]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12863,7 +12962,7 @@ func (x *RemoveAgentAccountRequest) String() string {
 func (*RemoveAgentAccountRequest) ProtoMessage() {}
 
 func (x *RemoveAgentAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[186]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12876,7 +12975,7 @@ func (x *RemoveAgentAccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveAgentAccountRequest.ProtoReflect.Descriptor instead.
 func (*RemoveAgentAccountRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{186}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{188}
 }
 
 func (x *RemoveAgentAccountRequest) GetId() string {
@@ -12894,7 +12993,7 @@ type RemoveAgentAccountResponse struct {
 
 func (x *RemoveAgentAccountResponse) Reset() {
 	*x = RemoveAgentAccountResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[187]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[189]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12906,7 +13005,7 @@ func (x *RemoveAgentAccountResponse) String() string {
 func (*RemoveAgentAccountResponse) ProtoMessage() {}
 
 func (x *RemoveAgentAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[187]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[189]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12919,7 +13018,7 @@ func (x *RemoveAgentAccountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveAgentAccountResponse.ProtoReflect.Descriptor instead.
 func (*RemoveAgentAccountResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{187}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{189}
 }
 
 type TestAgentAccountRequest struct {
@@ -12931,7 +13030,7 @@ type TestAgentAccountRequest struct {
 
 func (x *TestAgentAccountRequest) Reset() {
 	*x = TestAgentAccountRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[188]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[190]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12943,7 +13042,7 @@ func (x *TestAgentAccountRequest) String() string {
 func (*TestAgentAccountRequest) ProtoMessage() {}
 
 func (x *TestAgentAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[188]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[190]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12956,7 +13055,7 @@ func (x *TestAgentAccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestAgentAccountRequest.ProtoReflect.Descriptor instead.
 func (*TestAgentAccountRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{188}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{190}
 }
 
 func (x *TestAgentAccountRequest) GetId() string {
@@ -12977,7 +13076,7 @@ type TestAgentAccountResponse struct {
 
 func (x *TestAgentAccountResponse) Reset() {
 	*x = TestAgentAccountResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[189]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[191]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12989,7 +13088,7 @@ func (x *TestAgentAccountResponse) String() string {
 func (*TestAgentAccountResponse) ProtoMessage() {}
 
 func (x *TestAgentAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[189]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[191]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13002,7 +13101,7 @@ func (x *TestAgentAccountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestAgentAccountResponse.ProtoReflect.Descriptor instead.
 func (*TestAgentAccountResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{189}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{191}
 }
 
 func (x *TestAgentAccountResponse) GetAccount() *AgentAccount {
@@ -13034,7 +13133,7 @@ type RepairDoctorRequest struct {
 
 func (x *RepairDoctorRequest) Reset() {
 	*x = RepairDoctorRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[190]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[192]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13046,7 +13145,7 @@ func (x *RepairDoctorRequest) String() string {
 func (*RepairDoctorRequest) ProtoMessage() {}
 
 func (x *RepairDoctorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[190]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[192]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13059,7 +13158,7 @@ func (x *RepairDoctorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepairDoctorRequest.ProtoReflect.Descriptor instead.
 func (*RepairDoctorRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{190}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{192}
 }
 
 // RepairDoctorCheck is one entry in the structured health report. Each check
@@ -13077,7 +13176,7 @@ type RepairDoctorCheck struct {
 
 func (x *RepairDoctorCheck) Reset() {
 	*x = RepairDoctorCheck{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[191]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[193]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13089,7 +13188,7 @@ func (x *RepairDoctorCheck) String() string {
 func (*RepairDoctorCheck) ProtoMessage() {}
 
 func (x *RepairDoctorCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[191]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[193]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13102,7 +13201,7 @@ func (x *RepairDoctorCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepairDoctorCheck.ProtoReflect.Descriptor instead.
 func (*RepairDoctorCheck) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{191}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{193}
 }
 
 func (x *RepairDoctorCheck) GetName() string {
@@ -13134,7 +13233,7 @@ type StartRepairWorkflowRequest struct {
 
 func (x *StartRepairWorkflowRequest) Reset() {
 	*x = StartRepairWorkflowRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[192]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[194]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13146,7 +13245,7 @@ func (x *StartRepairWorkflowRequest) String() string {
 func (*StartRepairWorkflowRequest) ProtoMessage() {}
 
 func (x *StartRepairWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[192]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[194]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13159,7 +13258,7 @@ func (x *StartRepairWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartRepairWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*StartRepairWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{192}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{194}
 }
 
 type StartRepairWorkflowResponse struct {
@@ -13175,7 +13274,7 @@ type StartRepairWorkflowResponse struct {
 
 func (x *StartRepairWorkflowResponse) Reset() {
 	*x = StartRepairWorkflowResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[193]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[195]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13187,7 +13286,7 @@ func (x *StartRepairWorkflowResponse) String() string {
 func (*StartRepairWorkflowResponse) ProtoMessage() {}
 
 func (x *StartRepairWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[193]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[195]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13200,7 +13299,7 @@ func (x *StartRepairWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartRepairWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*StartRepairWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{193}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{195}
 }
 
 func (x *StartRepairWorkflowResponse) GetAlreadyRunning() bool {
@@ -13231,7 +13330,7 @@ type RepairDoctorResponse struct {
 
 func (x *RepairDoctorResponse) Reset() {
 	*x = RepairDoctorResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[194]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[196]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13243,7 +13342,7 @@ func (x *RepairDoctorResponse) String() string {
 func (*RepairDoctorResponse) ProtoMessage() {}
 
 func (x *RepairDoctorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[194]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[196]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13256,7 +13355,7 @@ func (x *RepairDoctorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepairDoctorResponse.ProtoReflect.Descriptor instead.
 func (*RepairDoctorResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{194}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{196}
 }
 
 func (x *RepairDoctorResponse) GetChecks() []*RepairDoctorCheck {
@@ -13287,7 +13386,7 @@ type RepairLogSnapshot struct {
 
 func (x *RepairLogSnapshot) Reset() {
 	*x = RepairLogSnapshot{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[195]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[197]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13299,7 +13398,7 @@ func (x *RepairLogSnapshot) String() string {
 func (*RepairLogSnapshot) ProtoMessage() {}
 
 func (x *RepairLogSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[195]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[197]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13312,7 +13411,7 @@ func (x *RepairLogSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepairLogSnapshot.ProtoReflect.Descriptor instead.
 func (*RepairLogSnapshot) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{195}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{197}
 }
 
 func (x *RepairLogSnapshot) GetPath() string {
@@ -13355,7 +13454,7 @@ type ListCheckSnapshotsRequest struct {
 
 func (x *ListCheckSnapshotsRequest) Reset() {
 	*x = ListCheckSnapshotsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[196]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[198]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13367,7 +13466,7 @@ func (x *ListCheckSnapshotsRequest) String() string {
 func (*ListCheckSnapshotsRequest) ProtoMessage() {}
 
 func (x *ListCheckSnapshotsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[196]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[198]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13380,7 +13479,7 @@ func (x *ListCheckSnapshotsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCheckSnapshotsRequest.ProtoReflect.Descriptor instead.
 func (*ListCheckSnapshotsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{196}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{198}
 }
 
 func (x *ListCheckSnapshotsRequest) GetSessionId() string {
@@ -13412,7 +13511,7 @@ type CheckSnapshot struct {
 
 func (x *CheckSnapshot) Reset() {
 	*x = CheckSnapshot{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[197]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[199]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13424,7 +13523,7 @@ func (x *CheckSnapshot) String() string {
 func (*CheckSnapshot) ProtoMessage() {}
 
 func (x *CheckSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[197]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[199]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13437,7 +13536,7 @@ func (x *CheckSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckSnapshot.ProtoReflect.Descriptor instead.
 func (*CheckSnapshot) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{197}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{199}
 }
 
 func (x *CheckSnapshot) GetPolledAt() *timestamppb.Timestamp {
@@ -13477,7 +13576,7 @@ type ListCheckSnapshotsResponse struct {
 
 func (x *ListCheckSnapshotsResponse) Reset() {
 	*x = ListCheckSnapshotsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[198]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[200]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13489,7 +13588,7 @@ func (x *ListCheckSnapshotsResponse) String() string {
 func (*ListCheckSnapshotsResponse) ProtoMessage() {}
 
 func (x *ListCheckSnapshotsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[198]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[200]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13502,7 +13601,7 @@ func (x *ListCheckSnapshotsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCheckSnapshotsResponse.ProtoReflect.Descriptor instead.
 func (*ListCheckSnapshotsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{198}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{200}
 }
 
 func (x *ListCheckSnapshotsResponse) GetSnapshots() []*CheckSnapshot {
@@ -13521,7 +13620,7 @@ type GetSessionTimelineRequest struct {
 
 func (x *GetSessionTimelineRequest) Reset() {
 	*x = GetSessionTimelineRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[199]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[201]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13533,7 +13632,7 @@ func (x *GetSessionTimelineRequest) String() string {
 func (*GetSessionTimelineRequest) ProtoMessage() {}
 
 func (x *GetSessionTimelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[199]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[201]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13546,7 +13645,7 @@ func (x *GetSessionTimelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionTimelineRequest.ProtoReflect.Descriptor instead.
 func (*GetSessionTimelineRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{199}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{201}
 }
 
 func (x *GetSessionTimelineRequest) GetSessionId() string {
@@ -13570,7 +13669,7 @@ type GetSessionTimelineResponse struct {
 
 func (x *GetSessionTimelineResponse) Reset() {
 	*x = GetSessionTimelineResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[200]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[202]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13582,7 +13681,7 @@ func (x *GetSessionTimelineResponse) String() string {
 func (*GetSessionTimelineResponse) ProtoMessage() {}
 
 func (x *GetSessionTimelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[200]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[202]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13595,7 +13694,7 @@ func (x *GetSessionTimelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionTimelineResponse.ProtoReflect.Descriptor instead.
 func (*GetSessionTimelineResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{200}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{202}
 }
 
 func (x *GetSessionTimelineResponse) GetSteps() []*TimelineStep {
@@ -13620,7 +13719,7 @@ type TimelineStep struct {
 
 func (x *TimelineStep) Reset() {
 	*x = TimelineStep{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[201]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[203]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13632,7 +13731,7 @@ func (x *TimelineStep) String() string {
 func (*TimelineStep) ProtoMessage() {}
 
 func (x *TimelineStep) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[201]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[203]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13645,7 +13744,7 @@ func (x *TimelineStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimelineStep.ProtoReflect.Descriptor instead.
 func (*TimelineStep) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{201}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{203}
 }
 
 func (x *TimelineStep) GetAt() *timestamppb.Timestamp {
@@ -13693,7 +13792,7 @@ type GetRunCostRequest struct {
 
 func (x *GetRunCostRequest) Reset() {
 	*x = GetRunCostRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[202]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[204]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13705,7 +13804,7 @@ func (x *GetRunCostRequest) String() string {
 func (*GetRunCostRequest) ProtoMessage() {}
 
 func (x *GetRunCostRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[202]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[204]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13718,7 +13817,7 @@ func (x *GetRunCostRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunCostRequest.ProtoReflect.Descriptor instead.
 func (*GetRunCostRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{202}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{204}
 }
 
 func (x *GetRunCostRequest) GetSessionId() string {
@@ -13823,7 +13922,7 @@ type AgentRunCost struct {
 
 func (x *AgentRunCost) Reset() {
 	*x = AgentRunCost{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[203]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[205]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13835,7 +13934,7 @@ func (x *AgentRunCost) String() string {
 func (*AgentRunCost) ProtoMessage() {}
 
 func (x *AgentRunCost) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[203]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[205]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13848,7 +13947,7 @@ func (x *AgentRunCost) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentRunCost.ProtoReflect.Descriptor instead.
 func (*AgentRunCost) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{203}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{205}
 }
 
 func (x *AgentRunCost) GetId() string {
@@ -14064,7 +14163,7 @@ type RunCostAggregate struct {
 
 func (x *RunCostAggregate) Reset() {
 	*x = RunCostAggregate{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[204]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[206]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14076,7 +14175,7 @@ func (x *RunCostAggregate) String() string {
 func (*RunCostAggregate) ProtoMessage() {}
 
 func (x *RunCostAggregate) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[204]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[206]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14089,7 +14188,7 @@ func (x *RunCostAggregate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunCostAggregate.ProtoReflect.Descriptor instead.
 func (*RunCostAggregate) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{204}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{206}
 }
 
 func (x *RunCostAggregate) GetRunCount() int64 {
@@ -14200,7 +14299,7 @@ type RunCostBackfillSummary struct {
 
 func (x *RunCostBackfillSummary) Reset() {
 	*x = RunCostBackfillSummary{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[205]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[207]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14212,7 +14311,7 @@ func (x *RunCostBackfillSummary) String() string {
 func (*RunCostBackfillSummary) ProtoMessage() {}
 
 func (x *RunCostBackfillSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[205]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[207]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14225,7 +14324,7 @@ func (x *RunCostBackfillSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunCostBackfillSummary.ProtoReflect.Descriptor instead.
 func (*RunCostBackfillSummary) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{205}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{207}
 }
 
 func (x *RunCostBackfillSummary) GetInsertedCount() int64 {
@@ -14253,7 +14352,7 @@ type GetRunCostResponse struct {
 
 func (x *GetRunCostResponse) Reset() {
 	*x = GetRunCostResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[206]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[208]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14265,7 +14364,7 @@ func (x *GetRunCostResponse) String() string {
 func (*GetRunCostResponse) ProtoMessage() {}
 
 func (x *GetRunCostResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[206]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[208]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14278,7 +14377,7 @@ func (x *GetRunCostResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunCostResponse.ProtoReflect.Descriptor instead.
 func (*GetRunCostResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{206}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{208}
 }
 
 func (x *GetRunCostResponse) GetRuns() []*AgentRunCost {
@@ -14313,7 +14412,7 @@ type GetGitHubUsageRequest struct {
 
 func (x *GetGitHubUsageRequest) Reset() {
 	*x = GetGitHubUsageRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[207]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[209]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14325,7 +14424,7 @@ func (x *GetGitHubUsageRequest) String() string {
 func (*GetGitHubUsageRequest) ProtoMessage() {}
 
 func (x *GetGitHubUsageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[207]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[209]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14338,7 +14437,7 @@ func (x *GetGitHubUsageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGitHubUsageRequest.ProtoReflect.Descriptor instead.
 func (*GetGitHubUsageRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{207}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{209}
 }
 
 func (x *GetGitHubUsageRequest) GetWindowSeconds() int64 {
@@ -14376,7 +14475,7 @@ type GitHubUsageRow struct {
 
 func (x *GitHubUsageRow) Reset() {
 	*x = GitHubUsageRow{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[208]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[210]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14388,7 +14487,7 @@ func (x *GitHubUsageRow) String() string {
 func (*GitHubUsageRow) ProtoMessage() {}
 
 func (x *GitHubUsageRow) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[208]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[210]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14401,7 +14500,7 @@ func (x *GitHubUsageRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitHubUsageRow.ProtoReflect.Descriptor instead.
 func (*GitHubUsageRow) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{208}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{210}
 }
 
 func (x *GitHubUsageRow) GetLabel() string {
@@ -14466,7 +14565,7 @@ type GetGitHubUsageResponse struct {
 
 func (x *GetGitHubUsageResponse) Reset() {
 	*x = GetGitHubUsageResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[209]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[211]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14478,7 +14577,7 @@ func (x *GetGitHubUsageResponse) String() string {
 func (*GetGitHubUsageResponse) ProtoMessage() {}
 
 func (x *GetGitHubUsageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[209]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[211]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14491,7 +14590,7 @@ func (x *GetGitHubUsageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGitHubUsageResponse.ProtoReflect.Descriptor instead.
 func (*GetGitHubUsageResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{209}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{211}
 }
 
 func (x *GetGitHubUsageResponse) GetRows() []*GitHubUsageRow {
@@ -14534,7 +14633,7 @@ type GetPRStateRequest struct {
 
 func (x *GetPRStateRequest) Reset() {
 	*x = GetPRStateRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[210]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[212]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14546,7 +14645,7 @@ func (x *GetPRStateRequest) String() string {
 func (*GetPRStateRequest) ProtoMessage() {}
 
 func (x *GetPRStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[210]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[212]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14559,7 +14658,7 @@ func (x *GetPRStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPRStateRequest.ProtoReflect.Descriptor instead.
 func (*GetPRStateRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{210}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{212}
 }
 
 func (x *GetPRStateRequest) GetRepo() string {
@@ -14617,7 +14716,7 @@ type PRCheck struct {
 
 func (x *PRCheck) Reset() {
 	*x = PRCheck{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[211]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[213]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14629,7 +14728,7 @@ func (x *PRCheck) String() string {
 func (*PRCheck) ProtoMessage() {}
 
 func (x *PRCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[211]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[213]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14642,7 +14741,7 @@ func (x *PRCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRCheck.ProtoReflect.Descriptor instead.
 func (*PRCheck) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{211}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{213}
 }
 
 func (x *PRCheck) GetName() string {
@@ -14707,7 +14806,7 @@ type PRCheckVerdict struct {
 
 func (x *PRCheckVerdict) Reset() {
 	*x = PRCheckVerdict{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[212]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[214]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14719,7 +14818,7 @@ func (x *PRCheckVerdict) String() string {
 func (*PRCheckVerdict) ProtoMessage() {}
 
 func (x *PRCheckVerdict) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[212]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[214]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14732,7 +14831,7 @@ func (x *PRCheckVerdict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRCheckVerdict.ProtoReflect.Descriptor instead.
 func (*PRCheckVerdict) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{212}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{214}
 }
 
 func (x *PRCheckVerdict) GetState() PRCheckVerdictState {
@@ -14804,7 +14903,7 @@ type PRVerifyPhase struct {
 
 func (x *PRVerifyPhase) Reset() {
 	*x = PRVerifyPhase{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[213]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[215]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14816,7 +14915,7 @@ func (x *PRVerifyPhase) String() string {
 func (*PRVerifyPhase) ProtoMessage() {}
 
 func (x *PRVerifyPhase) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[213]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[215]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14829,7 +14928,7 @@ func (x *PRVerifyPhase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRVerifyPhase.ProtoReflect.Descriptor instead.
 func (*PRVerifyPhase) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{213}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{215}
 }
 
 func (x *PRVerifyPhase) GetKind() PRVerifyPhaseKind {
@@ -14868,7 +14967,7 @@ type PRHeldWorkflowRun struct {
 
 func (x *PRHeldWorkflowRun) Reset() {
 	*x = PRHeldWorkflowRun{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[214]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[216]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14880,7 +14979,7 @@ func (x *PRHeldWorkflowRun) String() string {
 func (*PRHeldWorkflowRun) ProtoMessage() {}
 
 func (x *PRHeldWorkflowRun) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[214]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[216]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14893,7 +14992,7 @@ func (x *PRHeldWorkflowRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRHeldWorkflowRun.ProtoReflect.Descriptor instead.
 func (*PRHeldWorkflowRun) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{214}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{216}
 }
 
 func (x *PRHeldWorkflowRun) GetName() string {
@@ -14941,7 +15040,7 @@ type PRWorkflowRun struct {
 
 func (x *PRWorkflowRun) Reset() {
 	*x = PRWorkflowRun{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[215]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[217]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14953,7 +15052,7 @@ func (x *PRWorkflowRun) String() string {
 func (*PRWorkflowRun) ProtoMessage() {}
 
 func (x *PRWorkflowRun) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[215]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[217]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14966,7 +15065,7 @@ func (x *PRWorkflowRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRWorkflowRun.ProtoReflect.Descriptor instead.
 func (*PRWorkflowRun) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{215}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{217}
 }
 
 func (x *PRWorkflowRun) GetName() string {
@@ -15050,7 +15149,7 @@ type GetPRStateResponse struct {
 
 func (x *GetPRStateResponse) Reset() {
 	*x = GetPRStateResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[216]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[218]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15062,7 +15161,7 @@ func (x *GetPRStateResponse) String() string {
 func (*GetPRStateResponse) ProtoMessage() {}
 
 func (x *GetPRStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[216]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[218]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15075,7 +15174,7 @@ func (x *GetPRStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPRStateResponse.ProtoReflect.Descriptor instead.
 func (*GetPRStateResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{216}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{218}
 }
 
 func (x *GetPRStateResponse) GetRepo() string {
@@ -15262,7 +15361,7 @@ type WaitPRStateRequest struct {
 
 func (x *WaitPRStateRequest) Reset() {
 	*x = WaitPRStateRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[217]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[219]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15274,7 +15373,7 @@ func (x *WaitPRStateRequest) String() string {
 func (*WaitPRStateRequest) ProtoMessage() {}
 
 func (x *WaitPRStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[217]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[219]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15287,7 +15386,7 @@ func (x *WaitPRStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WaitPRStateRequest.ProtoReflect.Descriptor instead.
 func (*WaitPRStateRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{217}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{219}
 }
 
 func (x *WaitPRStateRequest) GetRepo() string {
@@ -15353,7 +15452,7 @@ type WaitPRStateResponse struct {
 
 func (x *WaitPRStateResponse) Reset() {
 	*x = WaitPRStateResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[218]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[220]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15365,7 +15464,7 @@ func (x *WaitPRStateResponse) String() string {
 func (*WaitPRStateResponse) ProtoMessage() {}
 
 func (x *WaitPRStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[218]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[220]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15378,7 +15477,7 @@ func (x *WaitPRStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WaitPRStateResponse.ProtoReflect.Descriptor instead.
 func (*WaitPRStateResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{218}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{220}
 }
 
 func (x *WaitPRStateResponse) GetOutcome() PRWaitOutcome {
@@ -15410,7 +15509,7 @@ type ListAgentsRequest struct {
 
 func (x *ListAgentsRequest) Reset() {
 	*x = ListAgentsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[219]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[221]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15422,7 +15521,7 @@ func (x *ListAgentsRequest) String() string {
 func (*ListAgentsRequest) ProtoMessage() {}
 
 func (x *ListAgentsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[219]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[221]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15435,7 +15534,7 @@ func (x *ListAgentsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentsRequest.ProtoReflect.Descriptor instead.
 func (*ListAgentsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{219}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{221}
 }
 
 type ListAgentsResponse struct {
@@ -15447,7 +15546,7 @@ type ListAgentsResponse struct {
 
 func (x *ListAgentsResponse) Reset() {
 	*x = ListAgentsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[220]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[222]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15459,7 +15558,7 @@ func (x *ListAgentsResponse) String() string {
 func (*ListAgentsResponse) ProtoMessage() {}
 
 func (x *ListAgentsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[220]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[222]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15472,7 +15571,7 @@ func (x *ListAgentsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentsResponse.ProtoReflect.Descriptor instead.
 func (*ListAgentsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{220}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{222}
 }
 
 func (x *ListAgentsResponse) GetAgents() []*AgentInfo {
@@ -15494,7 +15593,7 @@ type AgentInfo struct {
 
 func (x *AgentInfo) Reset() {
 	*x = AgentInfo{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[221]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[223]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15506,7 +15605,7 @@ func (x *AgentInfo) String() string {
 func (*AgentInfo) ProtoMessage() {}
 
 func (x *AgentInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[221]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[223]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15519,7 +15618,7 @@ func (x *AgentInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentInfo.ProtoReflect.Descriptor instead.
 func (*AgentInfo) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{221}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{223}
 }
 
 func (x *AgentInfo) GetName() string {
@@ -15543,6 +15642,157 @@ func (x *AgentInfo) GetUserSettings() []*UserSetting {
 	return nil
 }
 
+type CheckAgentLoginsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckAgentLoginsRequest) Reset() {
+	*x = CheckAgentLoginsRequest{}
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[224]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckAgentLoginsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckAgentLoginsRequest) ProtoMessage() {}
+
+func (x *CheckAgentLoginsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[224]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckAgentLoginsRequest.ProtoReflect.Descriptor instead.
+func (*CheckAgentLoginsRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{224}
+}
+
+type CheckAgentLoginsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Agents        []*AgentLogin          `protobuf:"bytes,1,rep,name=agents,proto3" json:"agents,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckAgentLoginsResponse) Reset() {
+	*x = CheckAgentLoginsResponse{}
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[225]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckAgentLoginsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckAgentLoginsResponse) ProtoMessage() {}
+
+func (x *CheckAgentLoginsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[225]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckAgentLoginsResponse.ProtoReflect.Descriptor instead.
+func (*CheckAgentLoginsResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{225}
+}
+
+func (x *CheckAgentLoginsResponse) GetAgents() []*AgentLogin {
+	if x != nil {
+		return x.Agents
+	}
+	return nil
+}
+
+type AgentLogin struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	AgentName string                 `protobuf:"bytes,1,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
+	Status    AgentLoginStatus       `protobuf:"varint,2,opt,name=status,proto3,enum=bossanova.v1.AgentLoginStatus" json:"status,omitempty"`
+	// remedy is set only when status is LOGGED_OUT.
+	Remedy string `protobuf:"bytes,3,opt,name=remedy,proto3" json:"remedy,omitempty"`
+	// has_managed_account is true when sessions for this agent bind a managed
+	// account, so the CLI's ambient login was not checked (status UNKNOWN).
+	HasManagedAccount bool `protobuf:"varint,4,opt,name=has_managed_account,json=hasManagedAccount,proto3" json:"has_managed_account,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *AgentLogin) Reset() {
+	*x = AgentLogin{}
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[226]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentLogin) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentLogin) ProtoMessage() {}
+
+func (x *AgentLogin) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[226]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentLogin.ProtoReflect.Descriptor instead.
+func (*AgentLogin) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{226}
+}
+
+func (x *AgentLogin) GetAgentName() string {
+	if x != nil {
+		return x.AgentName
+	}
+	return ""
+}
+
+func (x *AgentLogin) GetStatus() AgentLoginStatus {
+	if x != nil {
+		return x.Status
+	}
+	return AgentLoginStatus_AGENT_LOGIN_STATUS_UNSPECIFIED
+}
+
+func (x *AgentLogin) GetRemedy() string {
+	if x != nil {
+		return x.Remedy
+	}
+	return ""
+}
+
+func (x *AgentLogin) GetHasManagedAccount() bool {
+	if x != nil {
+		return x.HasManagedAccount
+	}
+	return false
+}
+
 type ListPluginsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -15551,7 +15801,7 @@ type ListPluginsRequest struct {
 
 func (x *ListPluginsRequest) Reset() {
 	*x = ListPluginsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[222]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[227]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15563,7 +15813,7 @@ func (x *ListPluginsRequest) String() string {
 func (*ListPluginsRequest) ProtoMessage() {}
 
 func (x *ListPluginsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[222]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[227]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15576,7 +15826,7 @@ func (x *ListPluginsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPluginsRequest.ProtoReflect.Descriptor instead.
 func (*ListPluginsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{222}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{227}
 }
 
 type ListPluginsResponse struct {
@@ -15588,7 +15838,7 @@ type ListPluginsResponse struct {
 
 func (x *ListPluginsResponse) Reset() {
 	*x = ListPluginsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[223]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[228]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15600,7 +15850,7 @@ func (x *ListPluginsResponse) String() string {
 func (*ListPluginsResponse) ProtoMessage() {}
 
 func (x *ListPluginsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[223]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[228]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15613,7 +15863,7 @@ func (x *ListPluginsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPluginsResponse.ProtoReflect.Descriptor instead.
 func (*ListPluginsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{223}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{228}
 }
 
 func (x *ListPluginsResponse) GetPlugins() []*InstalledPlugin {
@@ -15646,7 +15896,7 @@ type InstalledPlugin struct {
 
 func (x *InstalledPlugin) Reset() {
 	*x = InstalledPlugin{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[224]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[229]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15658,7 +15908,7 @@ func (x *InstalledPlugin) String() string {
 func (*InstalledPlugin) ProtoMessage() {}
 
 func (x *InstalledPlugin) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[224]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[229]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15671,7 +15921,7 @@ func (x *InstalledPlugin) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstalledPlugin.ProtoReflect.Descriptor instead.
 func (*InstalledPlugin) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{224}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{229}
 }
 
 func (x *InstalledPlugin) GetName() string {
@@ -15724,7 +15974,7 @@ type GetSettingsRequest struct {
 
 func (x *GetSettingsRequest) Reset() {
 	*x = GetSettingsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[225]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[230]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15736,7 +15986,7 @@ func (x *GetSettingsRequest) String() string {
 func (*GetSettingsRequest) ProtoMessage() {}
 
 func (x *GetSettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[225]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[230]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15749,7 +15999,7 @@ func (x *GetSettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSettingsRequest.ProtoReflect.Descriptor instead.
 func (*GetSettingsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{225}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{230}
 }
 
 type GetSettingsResponse struct {
@@ -15761,7 +16011,7 @@ type GetSettingsResponse struct {
 
 func (x *GetSettingsResponse) Reset() {
 	*x = GetSettingsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[226]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[231]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15773,7 +16023,7 @@ func (x *GetSettingsResponse) String() string {
 func (*GetSettingsResponse) ProtoMessage() {}
 
 func (x *GetSettingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[226]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[231]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15786,7 +16036,7 @@ func (x *GetSettingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSettingsResponse.ProtoReflect.Descriptor instead.
 func (*GetSettingsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{226}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{231}
 }
 
 func (x *GetSettingsResponse) GetSettings() *GlobalSettings {
@@ -15816,7 +16066,7 @@ type GlobalSettings struct {
 
 func (x *GlobalSettings) Reset() {
 	*x = GlobalSettings{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[227]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[232]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15828,7 +16078,7 @@ func (x *GlobalSettings) String() string {
 func (*GlobalSettings) ProtoMessage() {}
 
 func (x *GlobalSettings) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[227]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[232]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15841,7 +16091,7 @@ func (x *GlobalSettings) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GlobalSettings.ProtoReflect.Descriptor instead.
 func (*GlobalSettings) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{227}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{232}
 }
 
 func (x *GlobalSettings) GetWorktreeBaseDir() string {
@@ -15914,7 +16164,7 @@ type AgentSettings struct {
 
 func (x *AgentSettings) Reset() {
 	*x = AgentSettings{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[228]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[233]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15926,7 +16176,7 @@ func (x *AgentSettings) String() string {
 func (*AgentSettings) ProtoMessage() {}
 
 func (x *AgentSettings) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[228]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[233]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15939,7 +16189,7 @@ func (x *AgentSettings) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentSettings.ProtoReflect.Descriptor instead.
 func (*AgentSettings) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{228}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{233}
 }
 
 func (x *AgentSettings) GetName() string {
@@ -15979,7 +16229,7 @@ type UpdateSettingsRequest struct {
 
 func (x *UpdateSettingsRequest) Reset() {
 	*x = UpdateSettingsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[229]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[234]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15991,7 +16241,7 @@ func (x *UpdateSettingsRequest) String() string {
 func (*UpdateSettingsRequest) ProtoMessage() {}
 
 func (x *UpdateSettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[229]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[234]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16004,7 +16254,7 @@ func (x *UpdateSettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSettingsRequest.ProtoReflect.Descriptor instead.
 func (*UpdateSettingsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{229}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{234}
 }
 
 func (x *UpdateSettingsRequest) GetWorktreeBaseDir() string {
@@ -16077,7 +16327,7 @@ type AgentSettingsUpdate struct {
 
 func (x *AgentSettingsUpdate) Reset() {
 	*x = AgentSettingsUpdate{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[230]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[235]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16089,7 +16339,7 @@ func (x *AgentSettingsUpdate) String() string {
 func (*AgentSettingsUpdate) ProtoMessage() {}
 
 func (x *AgentSettingsUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[230]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[235]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16102,7 +16352,7 @@ func (x *AgentSettingsUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentSettingsUpdate.ProtoReflect.Descriptor instead.
 func (*AgentSettingsUpdate) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{230}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{235}
 }
 
 func (x *AgentSettingsUpdate) GetName() string {
@@ -16135,7 +16385,7 @@ type UpdateSettingsResponse struct {
 
 func (x *UpdateSettingsResponse) Reset() {
 	*x = UpdateSettingsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[231]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[236]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16147,7 +16397,7 @@ func (x *UpdateSettingsResponse) String() string {
 func (*UpdateSettingsResponse) ProtoMessage() {}
 
 func (x *UpdateSettingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[231]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[236]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16160,7 +16410,7 @@ func (x *UpdateSettingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSettingsResponse.ProtoReflect.Descriptor instead.
 func (*UpdateSettingsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{231}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{236}
 }
 
 func (x *UpdateSettingsResponse) GetSettings() *GlobalSettings {
@@ -16179,7 +16429,7 @@ type GetDaemonCapabilitiesRequest struct {
 
 func (x *GetDaemonCapabilitiesRequest) Reset() {
 	*x = GetDaemonCapabilitiesRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[232]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[237]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16191,7 +16441,7 @@ func (x *GetDaemonCapabilitiesRequest) String() string {
 func (*GetDaemonCapabilitiesRequest) ProtoMessage() {}
 
 func (x *GetDaemonCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[232]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[237]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16204,7 +16454,7 @@ func (x *GetDaemonCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDaemonCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*GetDaemonCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{232}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{237}
 }
 
 type GetDaemonCapabilitiesResponse struct {
@@ -16216,7 +16466,7 @@ type GetDaemonCapabilitiesResponse struct {
 
 func (x *GetDaemonCapabilitiesResponse) Reset() {
 	*x = GetDaemonCapabilitiesResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[233]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[238]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16228,7 +16478,7 @@ func (x *GetDaemonCapabilitiesResponse) String() string {
 func (*GetDaemonCapabilitiesResponse) ProtoMessage() {}
 
 func (x *GetDaemonCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[233]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[238]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16241,7 +16491,7 @@ func (x *GetDaemonCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDaemonCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*GetDaemonCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{233}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{238}
 }
 
 func (x *GetDaemonCapabilitiesResponse) GetCapabilities() []string {
@@ -16272,7 +16522,7 @@ type UploadEvidenceRequest struct {
 
 func (x *UploadEvidenceRequest) Reset() {
 	*x = UploadEvidenceRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[234]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[239]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16284,7 +16534,7 @@ func (x *UploadEvidenceRequest) String() string {
 func (*UploadEvidenceRequest) ProtoMessage() {}
 
 func (x *UploadEvidenceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[234]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[239]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16297,7 +16547,7 @@ func (x *UploadEvidenceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadEvidenceRequest.ProtoReflect.Descriptor instead.
 func (*UploadEvidenceRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{234}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{239}
 }
 
 func (x *UploadEvidenceRequest) GetEvidenceDir() string {
@@ -16346,7 +16596,7 @@ type EvidenceObject struct {
 
 func (x *EvidenceObject) Reset() {
 	*x = EvidenceObject{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[235]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[240]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16358,7 +16608,7 @@ func (x *EvidenceObject) String() string {
 func (*EvidenceObject) ProtoMessage() {}
 
 func (x *EvidenceObject) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[235]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[240]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16371,7 +16621,7 @@ func (x *EvidenceObject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvidenceObject.ProtoReflect.Descriptor instead.
 func (*EvidenceObject) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{235}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{240}
 }
 
 func (x *EvidenceObject) GetName() string {
@@ -16408,7 +16658,7 @@ type UploadEvidenceResponse struct {
 
 func (x *UploadEvidenceResponse) Reset() {
 	*x = UploadEvidenceResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[236]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[241]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16420,7 +16670,7 @@ func (x *UploadEvidenceResponse) String() string {
 func (*UploadEvidenceResponse) ProtoMessage() {}
 
 func (x *UploadEvidenceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[236]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[241]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16433,7 +16683,7 @@ func (x *UploadEvidenceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadEvidenceResponse.ProtoReflect.Descriptor instead.
 func (*UploadEvidenceResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{236}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{241}
 }
 
 func (x *UploadEvidenceResponse) GetKeyPrefix() string {
@@ -16491,7 +16741,7 @@ type HostedProofPageLimits struct {
 
 func (x *HostedProofPageLimits) Reset() {
 	*x = HostedProofPageLimits{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[237]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[242]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16503,7 +16753,7 @@ func (x *HostedProofPageLimits) String() string {
 func (*HostedProofPageLimits) ProtoMessage() {}
 
 func (x *HostedProofPageLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[237]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[242]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16516,7 +16766,7 @@ func (x *HostedProofPageLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostedProofPageLimits.ProtoReflect.Descriptor instead.
 func (*HostedProofPageLimits) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{237}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{242}
 }
 
 func (x *HostedProofPageLimits) GetMaxFileCount() int32 {
@@ -16548,7 +16798,7 @@ type RenewAgentCredentialDeviceEnrollmentRequest struct {
 
 func (x *RenewAgentCredentialDeviceEnrollmentRequest) Reset() {
 	*x = RenewAgentCredentialDeviceEnrollmentRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[238]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[243]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16560,7 +16810,7 @@ func (x *RenewAgentCredentialDeviceEnrollmentRequest) String() string {
 func (*RenewAgentCredentialDeviceEnrollmentRequest) ProtoMessage() {}
 
 func (x *RenewAgentCredentialDeviceEnrollmentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[238]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[243]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16573,7 +16823,7 @@ func (x *RenewAgentCredentialDeviceEnrollmentRequest) ProtoReflect() protoreflec
 
 // Deprecated: Use RenewAgentCredentialDeviceEnrollmentRequest.ProtoReflect.Descriptor instead.
 func (*RenewAgentCredentialDeviceEnrollmentRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{238}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{243}
 }
 
 type RenewAgentCredentialDeviceEnrollmentResponse struct {
@@ -16585,7 +16835,7 @@ type RenewAgentCredentialDeviceEnrollmentResponse struct {
 
 func (x *RenewAgentCredentialDeviceEnrollmentResponse) Reset() {
 	*x = RenewAgentCredentialDeviceEnrollmentResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[239]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[244]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16597,7 +16847,7 @@ func (x *RenewAgentCredentialDeviceEnrollmentResponse) String() string {
 func (*RenewAgentCredentialDeviceEnrollmentResponse) ProtoMessage() {}
 
 func (x *RenewAgentCredentialDeviceEnrollmentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[239]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[244]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16610,7 +16860,7 @@ func (x *RenewAgentCredentialDeviceEnrollmentResponse) ProtoReflect() protorefle
 
 // Deprecated: Use RenewAgentCredentialDeviceEnrollmentResponse.ProtoReflect.Descriptor instead.
 func (*RenewAgentCredentialDeviceEnrollmentResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{239}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{244}
 }
 
 func (x *RenewAgentCredentialDeviceEnrollmentResponse) GetDevice() *AgentCredentialDevice {
@@ -16628,7 +16878,7 @@ type GetAgentCredentialDeviceStatusRequest struct {
 
 func (x *GetAgentCredentialDeviceStatusRequest) Reset() {
 	*x = GetAgentCredentialDeviceStatusRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[240]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[245]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16640,7 +16890,7 @@ func (x *GetAgentCredentialDeviceStatusRequest) String() string {
 func (*GetAgentCredentialDeviceStatusRequest) ProtoMessage() {}
 
 func (x *GetAgentCredentialDeviceStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[240]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[245]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16653,7 +16903,7 @@ func (x *GetAgentCredentialDeviceStatusRequest) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use GetAgentCredentialDeviceStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetAgentCredentialDeviceStatusRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{240}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{245}
 }
 
 type GetAgentCredentialDeviceStatusResponse struct {
@@ -16667,7 +16917,7 @@ type GetAgentCredentialDeviceStatusResponse struct {
 
 func (x *GetAgentCredentialDeviceStatusResponse) Reset() {
 	*x = GetAgentCredentialDeviceStatusResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[241]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[246]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16679,7 +16929,7 @@ func (x *GetAgentCredentialDeviceStatusResponse) String() string {
 func (*GetAgentCredentialDeviceStatusResponse) ProtoMessage() {}
 
 func (x *GetAgentCredentialDeviceStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[241]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[246]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16692,7 +16942,7 @@ func (x *GetAgentCredentialDeviceStatusResponse) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use GetAgentCredentialDeviceStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetAgentCredentialDeviceStatusResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{241}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{246}
 }
 
 func (x *GetAgentCredentialDeviceStatusResponse) GetDevice() *AgentCredentialDevice {
@@ -16729,7 +16979,7 @@ type CredentialDeviceReadiness struct {
 
 func (x *CredentialDeviceReadiness) Reset() {
 	*x = CredentialDeviceReadiness{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[242]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[247]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16741,7 +16991,7 @@ func (x *CredentialDeviceReadiness) String() string {
 func (*CredentialDeviceReadiness) ProtoMessage() {}
 
 func (x *CredentialDeviceReadiness) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[242]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[247]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16754,7 +17004,7 @@ func (x *CredentialDeviceReadiness) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialDeviceReadiness.ProtoReflect.Descriptor instead.
 func (*CredentialDeviceReadiness) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{242}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{247}
 }
 
 func (x *CredentialDeviceReadiness) GetState() string {
@@ -16812,7 +17062,7 @@ type CredentialDeviceRemediationStep struct {
 
 func (x *CredentialDeviceRemediationStep) Reset() {
 	*x = CredentialDeviceRemediationStep{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[243]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[248]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16824,7 +17074,7 @@ func (x *CredentialDeviceRemediationStep) String() string {
 func (*CredentialDeviceRemediationStep) ProtoMessage() {}
 
 func (x *CredentialDeviceRemediationStep) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[243]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[248]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16837,7 +17087,7 @@ func (x *CredentialDeviceRemediationStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialDeviceRemediationStep.ProtoReflect.Descriptor instead.
 func (*CredentialDeviceRemediationStep) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{243}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{248}
 }
 
 func (x *CredentialDeviceRemediationStep) GetMachineDaemonId() string {
@@ -16875,7 +17125,7 @@ type SendBackToRepairRequest struct {
 
 func (x *SendBackToRepairRequest) Reset() {
 	*x = SendBackToRepairRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[244]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[249]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16887,7 +17137,7 @@ func (x *SendBackToRepairRequest) String() string {
 func (*SendBackToRepairRequest) ProtoMessage() {}
 
 func (x *SendBackToRepairRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[244]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[249]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16900,7 +17150,7 @@ func (x *SendBackToRepairRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendBackToRepairRequest.ProtoReflect.Descriptor instead.
 func (*SendBackToRepairRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{244}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{249}
 }
 
 func (x *SendBackToRepairRequest) GetId() string {
@@ -16944,7 +17194,7 @@ type SendBackToRepairResponse struct {
 
 func (x *SendBackToRepairResponse) Reset() {
 	*x = SendBackToRepairResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[245]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[250]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16956,7 +17206,7 @@ func (x *SendBackToRepairResponse) String() string {
 func (*SendBackToRepairResponse) ProtoMessage() {}
 
 func (x *SendBackToRepairResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[245]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[250]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16969,7 +17219,7 @@ func (x *SendBackToRepairResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendBackToRepairResponse.ProtoReflect.Descriptor instead.
 func (*SendBackToRepairResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{245}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{250}
 }
 
 func (x *SendBackToRepairResponse) GetIsSentBack() bool {
@@ -17011,7 +17261,7 @@ type GetFactoryHealthRequest struct {
 
 func (x *GetFactoryHealthRequest) Reset() {
 	*x = GetFactoryHealthRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[246]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[251]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17023,7 +17273,7 @@ func (x *GetFactoryHealthRequest) String() string {
 func (*GetFactoryHealthRequest) ProtoMessage() {}
 
 func (x *GetFactoryHealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[246]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[251]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17036,7 +17286,7 @@ func (x *GetFactoryHealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFactoryHealthRequest.ProtoReflect.Descriptor instead.
 func (*GetFactoryHealthRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{246}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{251}
 }
 
 func (x *GetFactoryHealthRequest) GetRepoId() string {
@@ -17063,7 +17313,7 @@ type GetFactoryHealthResponse struct {
 
 func (x *GetFactoryHealthResponse) Reset() {
 	*x = GetFactoryHealthResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[247]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[252]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17075,7 +17325,7 @@ func (x *GetFactoryHealthResponse) String() string {
 func (*GetFactoryHealthResponse) ProtoMessage() {}
 
 func (x *GetFactoryHealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[247]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[252]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17088,7 +17338,7 @@ func (x *GetFactoryHealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFactoryHealthResponse.ProtoReflect.Descriptor instead.
 func (*GetFactoryHealthResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{247}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{252}
 }
 
 func (x *GetFactoryHealthResponse) GetProblems() []*FactoryHealthProblem {
@@ -17116,7 +17366,7 @@ type FactoryHealthProblem struct {
 
 func (x *FactoryHealthProblem) Reset() {
 	*x = FactoryHealthProblem{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[248]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[253]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17128,7 +17378,7 @@ func (x *FactoryHealthProblem) String() string {
 func (*FactoryHealthProblem) ProtoMessage() {}
 
 func (x *FactoryHealthProblem) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[248]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[253]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17141,7 +17391,7 @@ func (x *FactoryHealthProblem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FactoryHealthProblem.ProtoReflect.Descriptor instead.
 func (*FactoryHealthProblem) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{248}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{253}
 }
 
 func (x *FactoryHealthProblem) GetCode() string {
@@ -17175,7 +17425,7 @@ type ListSetupChecksRequest struct {
 
 func (x *ListSetupChecksRequest) Reset() {
 	*x = ListSetupChecksRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[249]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[254]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17187,7 +17437,7 @@ func (x *ListSetupChecksRequest) String() string {
 func (*ListSetupChecksRequest) ProtoMessage() {}
 
 func (x *ListSetupChecksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[249]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[254]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17200,7 +17450,7 @@ func (x *ListSetupChecksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSetupChecksRequest.ProtoReflect.Descriptor instead.
 func (*ListSetupChecksRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{249}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{254}
 }
 
 func (x *ListSetupChecksRequest) GetRepoId() string {
@@ -17228,7 +17478,7 @@ type ListSetupChecksResponse struct {
 
 func (x *ListSetupChecksResponse) Reset() {
 	*x = ListSetupChecksResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[250]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[255]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17240,7 +17490,7 @@ func (x *ListSetupChecksResponse) String() string {
 func (*ListSetupChecksResponse) ProtoMessage() {}
 
 func (x *ListSetupChecksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[250]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[255]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17253,7 +17503,7 @@ func (x *ListSetupChecksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSetupChecksResponse.ProtoReflect.Descriptor instead.
 func (*ListSetupChecksResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{250}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{255}
 }
 
 func (x *ListSetupChecksResponse) GetChecks() []*SetupCheck {
@@ -17293,7 +17543,7 @@ type SetupCheck struct {
 
 func (x *SetupCheck) Reset() {
 	*x = SetupCheck{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[251]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[256]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17305,7 +17555,7 @@ func (x *SetupCheck) String() string {
 func (*SetupCheck) ProtoMessage() {}
 
 func (x *SetupCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[251]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[256]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17318,7 +17568,7 @@ func (x *SetupCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetupCheck.ProtoReflect.Descriptor instead.
 func (*SetupCheck) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{251}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{256}
 }
 
 func (x *SetupCheck) GetId() string {
@@ -17388,7 +17638,7 @@ type SetupCheckFix struct {
 
 func (x *SetupCheckFix) Reset() {
 	*x = SetupCheckFix{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[252]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[257]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17400,7 +17650,7 @@ func (x *SetupCheckFix) String() string {
 func (*SetupCheckFix) ProtoMessage() {}
 
 func (x *SetupCheckFix) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[252]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[257]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17413,7 +17663,7 @@ func (x *SetupCheckFix) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetupCheckFix.ProtoReflect.Descriptor instead.
 func (*SetupCheckFix) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{252}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{257}
 }
 
 func (x *SetupCheckFix) GetKind() SetupCheckFixKind {
@@ -17451,7 +17701,7 @@ type VerifyBlocker struct {
 
 func (x *VerifyBlocker) Reset() {
 	*x = VerifyBlocker{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[253]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[258]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17463,7 +17713,7 @@ func (x *VerifyBlocker) String() string {
 func (*VerifyBlocker) ProtoMessage() {}
 
 func (x *VerifyBlocker) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[253]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[258]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17476,7 +17726,7 @@ func (x *VerifyBlocker) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyBlocker.ProtoReflect.Descriptor instead.
 func (*VerifyBlocker) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{253}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{258}
 }
 
 func (x *VerifyBlocker) GetId() string {
@@ -17530,7 +17780,7 @@ type ListSessionPRBlockersRequest struct {
 
 func (x *ListSessionPRBlockersRequest) Reset() {
 	*x = ListSessionPRBlockersRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[254]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[259]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17542,7 +17792,7 @@ func (x *ListSessionPRBlockersRequest) String() string {
 func (*ListSessionPRBlockersRequest) ProtoMessage() {}
 
 func (x *ListSessionPRBlockersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[254]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[259]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17555,7 +17805,7 @@ func (x *ListSessionPRBlockersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionPRBlockersRequest.ProtoReflect.Descriptor instead.
 func (*ListSessionPRBlockersRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{254}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{259}
 }
 
 func (x *ListSessionPRBlockersRequest) GetId() string {
@@ -17576,7 +17826,7 @@ type ListSessionPRBlockersResponse struct {
 
 func (x *ListSessionPRBlockersResponse) Reset() {
 	*x = ListSessionPRBlockersResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[255]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[260]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17588,7 +17838,7 @@ func (x *ListSessionPRBlockersResponse) String() string {
 func (*ListSessionPRBlockersResponse) ProtoMessage() {}
 
 func (x *ListSessionPRBlockersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[255]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[260]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17601,7 +17851,7 @@ func (x *ListSessionPRBlockersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionPRBlockersResponse.ProtoReflect.Descriptor instead.
 func (*ListSessionPRBlockersResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{255}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{260}
 }
 
 func (x *ListSessionPRBlockersResponse) GetHeadSha() string {
@@ -17638,7 +17888,7 @@ type AcceptSessionPRBlockerRequest struct {
 
 func (x *AcceptSessionPRBlockerRequest) Reset() {
 	*x = AcceptSessionPRBlockerRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[256]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[261]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17650,7 +17900,7 @@ func (x *AcceptSessionPRBlockerRequest) String() string {
 func (*AcceptSessionPRBlockerRequest) ProtoMessage() {}
 
 func (x *AcceptSessionPRBlockerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[256]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[261]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17663,7 +17913,7 @@ func (x *AcceptSessionPRBlockerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcceptSessionPRBlockerRequest.ProtoReflect.Descriptor instead.
 func (*AcceptSessionPRBlockerRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{256}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{261}
 }
 
 func (x *AcceptSessionPRBlockerRequest) GetId() string {
@@ -17721,7 +17971,7 @@ type AcceptSessionPRBlockerResponse struct {
 
 func (x *AcceptSessionPRBlockerResponse) Reset() {
 	*x = AcceptSessionPRBlockerResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[257]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[262]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17733,7 +17983,7 @@ func (x *AcceptSessionPRBlockerResponse) String() string {
 func (*AcceptSessionPRBlockerResponse) ProtoMessage() {}
 
 func (x *AcceptSessionPRBlockerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[257]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[262]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17746,7 +17996,7 @@ func (x *AcceptSessionPRBlockerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcceptSessionPRBlockerResponse.ProtoReflect.Descriptor instead.
 func (*AcceptSessionPRBlockerResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{257}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{262}
 }
 
 func (x *AcceptSessionPRBlockerResponse) GetIsAccepted() bool {
@@ -17849,7 +18099,7 @@ type GetGitHubReadCredentialRequest struct {
 
 func (x *GetGitHubReadCredentialRequest) Reset() {
 	*x = GetGitHubReadCredentialRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[258]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[263]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17861,7 +18111,7 @@ func (x *GetGitHubReadCredentialRequest) String() string {
 func (*GetGitHubReadCredentialRequest) ProtoMessage() {}
 
 func (x *GetGitHubReadCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[258]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[263]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17874,7 +18124,7 @@ func (x *GetGitHubReadCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGitHubReadCredentialRequest.ProtoReflect.Descriptor instead.
 func (*GetGitHubReadCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{258}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{263}
 }
 
 func (x *GetGitHubReadCredentialRequest) GetGhArgs() []string {
@@ -17919,7 +18169,7 @@ type GetGitHubReadCredentialResponse struct {
 
 func (x *GetGitHubReadCredentialResponse) Reset() {
 	*x = GetGitHubReadCredentialResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[259]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[264]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17931,7 +18181,7 @@ func (x *GetGitHubReadCredentialResponse) String() string {
 func (*GetGitHubReadCredentialResponse) ProtoMessage() {}
 
 func (x *GetGitHubReadCredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[259]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[264]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17944,7 +18194,7 @@ func (x *GetGitHubReadCredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGitHubReadCredentialResponse.ProtoReflect.Descriptor instead.
 func (*GetGitHubReadCredentialResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{259}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{264}
 }
 
 func (x *GetGitHubReadCredentialResponse) GetToken() string {
@@ -17976,7 +18226,7 @@ type GetViewerDeviceStatusRequest struct {
 
 func (x *GetViewerDeviceStatusRequest) Reset() {
 	*x = GetViewerDeviceStatusRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[260]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[265]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17988,7 +18238,7 @@ func (x *GetViewerDeviceStatusRequest) String() string {
 func (*GetViewerDeviceStatusRequest) ProtoMessage() {}
 
 func (x *GetViewerDeviceStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[260]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[265]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18001,7 +18251,7 @@ func (x *GetViewerDeviceStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetViewerDeviceStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetViewerDeviceStatusRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{260}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{265}
 }
 
 type GetViewerDeviceStatusResponse struct {
@@ -18014,7 +18264,7 @@ type GetViewerDeviceStatusResponse struct {
 
 func (x *GetViewerDeviceStatusResponse) Reset() {
 	*x = GetViewerDeviceStatusResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[261]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[266]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18026,7 +18276,7 @@ func (x *GetViewerDeviceStatusResponse) String() string {
 func (*GetViewerDeviceStatusResponse) ProtoMessage() {}
 
 func (x *GetViewerDeviceStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[261]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[266]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18039,7 +18289,7 @@ func (x *GetViewerDeviceStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetViewerDeviceStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetViewerDeviceStatusResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{261}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{266}
 }
 
 func (x *GetViewerDeviceStatusResponse) GetDaemonFingerprint() string {
@@ -18069,7 +18319,7 @@ type LocalViewerDevice struct {
 
 func (x *LocalViewerDevice) Reset() {
 	*x = LocalViewerDevice{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[262]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[267]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18081,7 +18331,7 @@ func (x *LocalViewerDevice) String() string {
 func (*LocalViewerDevice) ProtoMessage() {}
 
 func (x *LocalViewerDevice) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[262]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[267]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18094,7 +18344,7 @@ func (x *LocalViewerDevice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocalViewerDevice.ProtoReflect.Descriptor instead.
 func (*LocalViewerDevice) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{262}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{267}
 }
 
 func (x *LocalViewerDevice) GetViewerDeviceId() string {
@@ -18140,7 +18390,7 @@ type ListLocalViewerDevicesRequest struct {
 
 func (x *ListLocalViewerDevicesRequest) Reset() {
 	*x = ListLocalViewerDevicesRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[263]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[268]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18152,7 +18402,7 @@ func (x *ListLocalViewerDevicesRequest) String() string {
 func (*ListLocalViewerDevicesRequest) ProtoMessage() {}
 
 func (x *ListLocalViewerDevicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[263]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[268]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18165,7 +18415,7 @@ func (x *ListLocalViewerDevicesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLocalViewerDevicesRequest.ProtoReflect.Descriptor instead.
 func (*ListLocalViewerDevicesRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{263}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{268}
 }
 
 type ListLocalViewerDevicesResponse struct {
@@ -18177,7 +18427,7 @@ type ListLocalViewerDevicesResponse struct {
 
 func (x *ListLocalViewerDevicesResponse) Reset() {
 	*x = ListLocalViewerDevicesResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[264]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[269]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18189,7 +18439,7 @@ func (x *ListLocalViewerDevicesResponse) String() string {
 func (*ListLocalViewerDevicesResponse) ProtoMessage() {}
 
 func (x *ListLocalViewerDevicesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[264]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[269]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18202,7 +18452,7 @@ func (x *ListLocalViewerDevicesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLocalViewerDevicesResponse.ProtoReflect.Descriptor instead.
 func (*ListLocalViewerDevicesResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{264}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{269}
 }
 
 func (x *ListLocalViewerDevicesResponse) GetDevices() []*LocalViewerDevice {
@@ -18222,7 +18472,7 @@ type ApproveViewerDeviceRequest struct {
 
 func (x *ApproveViewerDeviceRequest) Reset() {
 	*x = ApproveViewerDeviceRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[265]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[270]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18234,7 +18484,7 @@ func (x *ApproveViewerDeviceRequest) String() string {
 func (*ApproveViewerDeviceRequest) ProtoMessage() {}
 
 func (x *ApproveViewerDeviceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[265]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[270]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18247,7 +18497,7 @@ func (x *ApproveViewerDeviceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveViewerDeviceRequest.ProtoReflect.Descriptor instead.
 func (*ApproveViewerDeviceRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{265}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{270}
 }
 
 func (x *ApproveViewerDeviceRequest) GetViewerDeviceId() string {
@@ -18272,7 +18522,7 @@ type ApproveViewerDeviceResponse struct {
 
 func (x *ApproveViewerDeviceResponse) Reset() {
 	*x = ApproveViewerDeviceResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[266]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[271]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18284,7 +18534,7 @@ func (x *ApproveViewerDeviceResponse) String() string {
 func (*ApproveViewerDeviceResponse) ProtoMessage() {}
 
 func (x *ApproveViewerDeviceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[266]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[271]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18297,7 +18547,7 @@ func (x *ApproveViewerDeviceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveViewerDeviceResponse.ProtoReflect.Descriptor instead.
 func (*ApproveViewerDeviceResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{266}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{271}
 }
 
 type RevokeViewerDeviceRequest struct {
@@ -18309,7 +18559,7 @@ type RevokeViewerDeviceRequest struct {
 
 func (x *RevokeViewerDeviceRequest) Reset() {
 	*x = RevokeViewerDeviceRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[267]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[272]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18321,7 +18571,7 @@ func (x *RevokeViewerDeviceRequest) String() string {
 func (*RevokeViewerDeviceRequest) ProtoMessage() {}
 
 func (x *RevokeViewerDeviceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[267]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[272]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18334,7 +18584,7 @@ func (x *RevokeViewerDeviceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeViewerDeviceRequest.ProtoReflect.Descriptor instead.
 func (*RevokeViewerDeviceRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{267}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{272}
 }
 
 func (x *RevokeViewerDeviceRequest) GetViewerDeviceId() string {
@@ -18352,7 +18602,7 @@ type RevokeViewerDeviceResponse struct {
 
 func (x *RevokeViewerDeviceResponse) Reset() {
 	*x = RevokeViewerDeviceResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[268]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[273]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18364,7 +18614,7 @@ func (x *RevokeViewerDeviceResponse) String() string {
 func (*RevokeViewerDeviceResponse) ProtoMessage() {}
 
 func (x *RevokeViewerDeviceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[268]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[273]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18377,7 +18627,7 @@ func (x *RevokeViewerDeviceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeViewerDeviceResponse.ProtoReflect.Descriptor instead.
 func (*RevokeViewerDeviceResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{268}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{273}
 }
 
 type SetSessionTrackerRankRequest struct {
@@ -18391,7 +18641,7 @@ type SetSessionTrackerRankRequest struct {
 
 func (x *SetSessionTrackerRankRequest) Reset() {
 	*x = SetSessionTrackerRankRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[269]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[274]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18403,7 +18653,7 @@ func (x *SetSessionTrackerRankRequest) String() string {
 func (*SetSessionTrackerRankRequest) ProtoMessage() {}
 
 func (x *SetSessionTrackerRankRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[269]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[274]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18416,7 +18666,7 @@ func (x *SetSessionTrackerRankRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSessionTrackerRankRequest.ProtoReflect.Descriptor instead.
 func (*SetSessionTrackerRankRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{269}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{274}
 }
 
 func (x *SetSessionTrackerRankRequest) GetId() string {
@@ -18449,7 +18699,7 @@ type SetSessionTrackerRankResponse struct {
 
 func (x *SetSessionTrackerRankResponse) Reset() {
 	*x = SetSessionTrackerRankResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[270]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[275]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18461,7 +18711,7 @@ func (x *SetSessionTrackerRankResponse) String() string {
 func (*SetSessionTrackerRankResponse) ProtoMessage() {}
 
 func (x *SetSessionTrackerRankResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[270]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[275]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18474,7 +18724,7 @@ func (x *SetSessionTrackerRankResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSessionTrackerRankResponse.ProtoReflect.Descriptor instead.
 func (*SetSessionTrackerRankResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{270}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{275}
 }
 
 func (x *SetSessionTrackerRankResponse) GetSession() *Session {
@@ -18493,7 +18743,7 @@ type ListRepoCloudControlsRequest struct {
 
 func (x *ListRepoCloudControlsRequest) Reset() {
 	*x = ListRepoCloudControlsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[271]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[276]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18505,7 +18755,7 @@ func (x *ListRepoCloudControlsRequest) String() string {
 func (*ListRepoCloudControlsRequest) ProtoMessage() {}
 
 func (x *ListRepoCloudControlsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[271]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[276]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18518,7 +18768,7 @@ func (x *ListRepoCloudControlsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRepoCloudControlsRequest.ProtoReflect.Descriptor instead.
 func (*ListRepoCloudControlsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{271}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{276}
 }
 
 type ListRepoCloudControlsResponse struct {
@@ -18530,7 +18780,7 @@ type ListRepoCloudControlsResponse struct {
 
 func (x *ListRepoCloudControlsResponse) Reset() {
 	*x = ListRepoCloudControlsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[272]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[277]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18542,7 +18792,7 @@ func (x *ListRepoCloudControlsResponse) String() string {
 func (*ListRepoCloudControlsResponse) ProtoMessage() {}
 
 func (x *ListRepoCloudControlsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[272]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[277]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18555,7 +18805,7 @@ func (x *ListRepoCloudControlsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRepoCloudControlsResponse.ProtoReflect.Descriptor instead.
 func (*ListRepoCloudControlsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{272}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{277}
 }
 
 func (x *ListRepoCloudControlsResponse) GetRepos() []*RepoCloudControl {
@@ -18586,7 +18836,7 @@ type RepoCloudControl struct {
 
 func (x *RepoCloudControl) Reset() {
 	*x = RepoCloudControl{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[273]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[278]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18598,7 +18848,7 @@ func (x *RepoCloudControl) String() string {
 func (*RepoCloudControl) ProtoMessage() {}
 
 func (x *RepoCloudControl) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[273]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[278]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18611,7 +18861,7 @@ func (x *RepoCloudControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepoCloudControl.ProtoReflect.Descriptor instead.
 func (*RepoCloudControl) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{273}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{278}
 }
 
 func (x *RepoCloudControl) GetDisplayName() string {
@@ -18712,7 +18962,7 @@ type PostProofCheckRunRequest struct {
 
 func (x *PostProofCheckRunRequest) Reset() {
 	*x = PostProofCheckRunRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[274]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[279]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18724,7 +18974,7 @@ func (x *PostProofCheckRunRequest) String() string {
 func (*PostProofCheckRunRequest) ProtoMessage() {}
 
 func (x *PostProofCheckRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[274]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[279]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18737,7 +18987,7 @@ func (x *PostProofCheckRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostProofCheckRunRequest.ProtoReflect.Descriptor instead.
 func (*PostProofCheckRunRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{274}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{279}
 }
 
 func (x *PostProofCheckRunRequest) GetRepo() string {
@@ -18785,7 +19035,7 @@ type PostProofCheckRunResponse struct {
 
 func (x *PostProofCheckRunResponse) Reset() {
 	*x = PostProofCheckRunResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[275]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[280]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18797,7 +19047,7 @@ func (x *PostProofCheckRunResponse) String() string {
 func (*PostProofCheckRunResponse) ProtoMessage() {}
 
 func (x *PostProofCheckRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[275]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[280]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18810,7 +19060,7 @@ func (x *PostProofCheckRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostProofCheckRunResponse.ProtoReflect.Descriptor instead.
 func (*PostProofCheckRunResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{275}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{280}
 }
 
 func (x *PostProofCheckRunResponse) GetHtmlUrl() string {
@@ -18841,7 +19091,7 @@ type MintHostedProofViewLinkRequest struct {
 
 func (x *MintHostedProofViewLinkRequest) Reset() {
 	*x = MintHostedProofViewLinkRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[276]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[281]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18853,7 +19103,7 @@ func (x *MintHostedProofViewLinkRequest) String() string {
 func (*MintHostedProofViewLinkRequest) ProtoMessage() {}
 
 func (x *MintHostedProofViewLinkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[276]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[281]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18866,7 +19116,7 @@ func (x *MintHostedProofViewLinkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MintHostedProofViewLinkRequest.ProtoReflect.Descriptor instead.
 func (*MintHostedProofViewLinkRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{276}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{281}
 }
 
 func (x *MintHostedProofViewLinkRequest) GetRepoOriginUrl() string {
@@ -18900,7 +19150,7 @@ type MintHostedProofViewLinkResponse struct {
 
 func (x *MintHostedProofViewLinkResponse) Reset() {
 	*x = MintHostedProofViewLinkResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[277]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[282]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18912,7 +19162,7 @@ func (x *MintHostedProofViewLinkResponse) String() string {
 func (*MintHostedProofViewLinkResponse) ProtoMessage() {}
 
 func (x *MintHostedProofViewLinkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[277]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[282]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18925,7 +19175,7 @@ func (x *MintHostedProofViewLinkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MintHostedProofViewLinkResponse.ProtoReflect.Descriptor instead.
 func (*MintHostedProofViewLinkResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{277}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{282}
 }
 
 func (x *MintHostedProofViewLinkResponse) GetViewUrl() string {
@@ -18953,7 +19203,7 @@ type GetHostedProofLimitsRequest struct {
 
 func (x *GetHostedProofLimitsRequest) Reset() {
 	*x = GetHostedProofLimitsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[278]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[283]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18965,7 +19215,7 @@ func (x *GetHostedProofLimitsRequest) String() string {
 func (*GetHostedProofLimitsRequest) ProtoMessage() {}
 
 func (x *GetHostedProofLimitsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[278]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[283]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18978,7 +19228,7 @@ func (x *GetHostedProofLimitsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetHostedProofLimitsRequest.ProtoReflect.Descriptor instead.
 func (*GetHostedProofLimitsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{278}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{283}
 }
 
 func (x *GetHostedProofLimitsRequest) GetWorkspacePath() string {
@@ -18999,7 +19249,7 @@ type GetHostedProofLimitsResponse struct {
 
 func (x *GetHostedProofLimitsResponse) Reset() {
 	*x = GetHostedProofLimitsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[279]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[284]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19011,7 +19261,7 @@ func (x *GetHostedProofLimitsResponse) String() string {
 func (*GetHostedProofLimitsResponse) ProtoMessage() {}
 
 func (x *GetHostedProofLimitsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[279]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[284]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19024,7 +19274,7 @@ func (x *GetHostedProofLimitsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetHostedProofLimitsResponse.ProtoReflect.Descriptor instead.
 func (*GetHostedProofLimitsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{279}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{284}
 }
 
 func (x *GetHostedProofLimitsResponse) GetLimits() *HostedProofPageLimits {
@@ -19048,7 +19298,7 @@ type SessionServe struct {
 
 func (x *SessionServe) Reset() {
 	*x = SessionServe{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[280]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[285]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19060,7 +19310,7 @@ func (x *SessionServe) String() string {
 func (*SessionServe) ProtoMessage() {}
 
 func (x *SessionServe) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[280]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[285]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19073,7 +19323,7 @@ func (x *SessionServe) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionServe.ProtoReflect.Descriptor instead.
 func (*SessionServe) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{280}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{285}
 }
 
 func (x *SessionServe) GetIsRunning() bool {
@@ -19120,7 +19370,7 @@ type StartSessionServeRequest struct {
 
 func (x *StartSessionServeRequest) Reset() {
 	*x = StartSessionServeRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[281]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[286]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19132,7 +19382,7 @@ func (x *StartSessionServeRequest) String() string {
 func (*StartSessionServeRequest) ProtoMessage() {}
 
 func (x *StartSessionServeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[281]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[286]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19145,7 +19395,7 @@ func (x *StartSessionServeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartSessionServeRequest.ProtoReflect.Descriptor instead.
 func (*StartSessionServeRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{281}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{286}
 }
 
 func (x *StartSessionServeRequest) GetSessionId() string {
@@ -19164,7 +19414,7 @@ type StartSessionServeResponse struct {
 
 func (x *StartSessionServeResponse) Reset() {
 	*x = StartSessionServeResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[282]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[287]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19176,7 +19426,7 @@ func (x *StartSessionServeResponse) String() string {
 func (*StartSessionServeResponse) ProtoMessage() {}
 
 func (x *StartSessionServeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[282]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[287]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19189,7 +19439,7 @@ func (x *StartSessionServeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartSessionServeResponse.ProtoReflect.Descriptor instead.
 func (*StartSessionServeResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{282}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{287}
 }
 
 func (x *StartSessionServeResponse) GetServe() *SessionServe {
@@ -19208,7 +19458,7 @@ type StopSessionServeRequest struct {
 
 func (x *StopSessionServeRequest) Reset() {
 	*x = StopSessionServeRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[283]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[288]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19220,7 +19470,7 @@ func (x *StopSessionServeRequest) String() string {
 func (*StopSessionServeRequest) ProtoMessage() {}
 
 func (x *StopSessionServeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[283]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[288]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19233,7 +19483,7 @@ func (x *StopSessionServeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSessionServeRequest.ProtoReflect.Descriptor instead.
 func (*StopSessionServeRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{283}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{288}
 }
 
 func (x *StopSessionServeRequest) GetSessionId() string {
@@ -19252,7 +19502,7 @@ type StopSessionServeResponse struct {
 
 func (x *StopSessionServeResponse) Reset() {
 	*x = StopSessionServeResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[284]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[289]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19264,7 +19514,7 @@ func (x *StopSessionServeResponse) String() string {
 func (*StopSessionServeResponse) ProtoMessage() {}
 
 func (x *StopSessionServeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[284]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[289]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19277,7 +19527,7 @@ func (x *StopSessionServeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSessionServeResponse.ProtoReflect.Descriptor instead.
 func (*StopSessionServeResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{284}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{289}
 }
 
 func (x *StopSessionServeResponse) GetServe() *SessionServe {
@@ -19296,7 +19546,7 @@ type GetSessionServeRequest struct {
 
 func (x *GetSessionServeRequest) Reset() {
 	*x = GetSessionServeRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[285]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[290]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19308,7 +19558,7 @@ func (x *GetSessionServeRequest) String() string {
 func (*GetSessionServeRequest) ProtoMessage() {}
 
 func (x *GetSessionServeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[285]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[290]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19321,7 +19571,7 @@ func (x *GetSessionServeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionServeRequest.ProtoReflect.Descriptor instead.
 func (*GetSessionServeRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{285}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{290}
 }
 
 func (x *GetSessionServeRequest) GetSessionId() string {
@@ -19340,7 +19590,7 @@ type GetSessionServeResponse struct {
 
 func (x *GetSessionServeResponse) Reset() {
 	*x = GetSessionServeResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[286]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[291]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19352,7 +19602,7 @@ func (x *GetSessionServeResponse) String() string {
 func (*GetSessionServeResponse) ProtoMessage() {}
 
 func (x *GetSessionServeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[286]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[291]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19365,7 +19615,7 @@ func (x *GetSessionServeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionServeResponse.ProtoReflect.Descriptor instead.
 func (*GetSessionServeResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{286}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{291}
 }
 
 func (x *GetSessionServeResponse) GetServe() *SessionServe {
@@ -19383,7 +19633,7 @@ type ListSessionLabelsRequest struct {
 
 func (x *ListSessionLabelsRequest) Reset() {
 	*x = ListSessionLabelsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[287]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[292]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19395,7 +19645,7 @@ func (x *ListSessionLabelsRequest) String() string {
 func (*ListSessionLabelsRequest) ProtoMessage() {}
 
 func (x *ListSessionLabelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[287]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[292]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19408,7 +19658,7 @@ func (x *ListSessionLabelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionLabelsRequest.ProtoReflect.Descriptor instead.
 func (*ListSessionLabelsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{287}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{292}
 }
 
 type ListSessionLabelsResponse struct {
@@ -19420,7 +19670,7 @@ type ListSessionLabelsResponse struct {
 
 func (x *ListSessionLabelsResponse) Reset() {
 	*x = ListSessionLabelsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[288]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[293]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19432,7 +19682,7 @@ func (x *ListSessionLabelsResponse) String() string {
 func (*ListSessionLabelsResponse) ProtoMessage() {}
 
 func (x *ListSessionLabelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[288]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[293]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19445,7 +19695,7 @@ func (x *ListSessionLabelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionLabelsResponse.ProtoReflect.Descriptor instead.
 func (*ListSessionLabelsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{288}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{293}
 }
 
 func (x *ListSessionLabelsResponse) GetLabels() []*SessionLabel {
@@ -19466,7 +19716,7 @@ type CreateSessionLabelRequest struct {
 
 func (x *CreateSessionLabelRequest) Reset() {
 	*x = CreateSessionLabelRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[289]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[294]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19478,7 +19728,7 @@ func (x *CreateSessionLabelRequest) String() string {
 func (*CreateSessionLabelRequest) ProtoMessage() {}
 
 func (x *CreateSessionLabelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[289]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[294]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19491,7 +19741,7 @@ func (x *CreateSessionLabelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionLabelRequest.ProtoReflect.Descriptor instead.
 func (*CreateSessionLabelRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{289}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{294}
 }
 
 func (x *CreateSessionLabelRequest) GetName() string {
@@ -19524,7 +19774,7 @@ type CreateSessionLabelResponse struct {
 
 func (x *CreateSessionLabelResponse) Reset() {
 	*x = CreateSessionLabelResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[290]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[295]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19536,7 +19786,7 @@ func (x *CreateSessionLabelResponse) String() string {
 func (*CreateSessionLabelResponse) ProtoMessage() {}
 
 func (x *CreateSessionLabelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[290]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[295]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19549,7 +19799,7 @@ func (x *CreateSessionLabelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionLabelResponse.ProtoReflect.Descriptor instead.
 func (*CreateSessionLabelResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{290}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{295}
 }
 
 func (x *CreateSessionLabelResponse) GetLabel() *SessionLabel {
@@ -19571,7 +19821,7 @@ type UpdateSessionLabelRequest struct {
 
 func (x *UpdateSessionLabelRequest) Reset() {
 	*x = UpdateSessionLabelRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[291]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[296]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19583,7 +19833,7 @@ func (x *UpdateSessionLabelRequest) String() string {
 func (*UpdateSessionLabelRequest) ProtoMessage() {}
 
 func (x *UpdateSessionLabelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[291]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[296]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19596,7 +19846,7 @@ func (x *UpdateSessionLabelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSessionLabelRequest.ProtoReflect.Descriptor instead.
 func (*UpdateSessionLabelRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{291}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{296}
 }
 
 func (x *UpdateSessionLabelRequest) GetId() string {
@@ -19636,7 +19886,7 @@ type UpdateSessionLabelResponse struct {
 
 func (x *UpdateSessionLabelResponse) Reset() {
 	*x = UpdateSessionLabelResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[292]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[297]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19648,7 +19898,7 @@ func (x *UpdateSessionLabelResponse) String() string {
 func (*UpdateSessionLabelResponse) ProtoMessage() {}
 
 func (x *UpdateSessionLabelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[292]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[297]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19661,7 +19911,7 @@ func (x *UpdateSessionLabelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSessionLabelResponse.ProtoReflect.Descriptor instead.
 func (*UpdateSessionLabelResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{292}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{297}
 }
 
 func (x *UpdateSessionLabelResponse) GetLabel() *SessionLabel {
@@ -19680,7 +19930,7 @@ type DeleteSessionLabelRequest struct {
 
 func (x *DeleteSessionLabelRequest) Reset() {
 	*x = DeleteSessionLabelRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[293]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[298]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19692,7 +19942,7 @@ func (x *DeleteSessionLabelRequest) String() string {
 func (*DeleteSessionLabelRequest) ProtoMessage() {}
 
 func (x *DeleteSessionLabelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[293]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[298]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19705,7 +19955,7 @@ func (x *DeleteSessionLabelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSessionLabelRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSessionLabelRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{293}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{298}
 }
 
 func (x *DeleteSessionLabelRequest) GetId() string {
@@ -19723,7 +19973,7 @@ type DeleteSessionLabelResponse struct {
 
 func (x *DeleteSessionLabelResponse) Reset() {
 	*x = DeleteSessionLabelResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[294]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[299]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19735,7 +19985,7 @@ func (x *DeleteSessionLabelResponse) String() string {
 func (*DeleteSessionLabelResponse) ProtoMessage() {}
 
 func (x *DeleteSessionLabelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[294]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[299]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19748,7 +19998,7 @@ func (x *DeleteSessionLabelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSessionLabelResponse.ProtoReflect.Descriptor instead.
 func (*DeleteSessionLabelResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{294}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{299}
 }
 
 type SetSessionLabelsRequest struct {
@@ -19761,7 +20011,7 @@ type SetSessionLabelsRequest struct {
 
 func (x *SetSessionLabelsRequest) Reset() {
 	*x = SetSessionLabelsRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[295]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[300]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19773,7 +20023,7 @@ func (x *SetSessionLabelsRequest) String() string {
 func (*SetSessionLabelsRequest) ProtoMessage() {}
 
 func (x *SetSessionLabelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[295]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[300]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19786,7 +20036,7 @@ func (x *SetSessionLabelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSessionLabelsRequest.ProtoReflect.Descriptor instead.
 func (*SetSessionLabelsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{295}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{300}
 }
 
 func (x *SetSessionLabelsRequest) GetSessionId() string {
@@ -19812,7 +20062,7 @@ type SetSessionLabelsResponse struct {
 
 func (x *SetSessionLabelsResponse) Reset() {
 	*x = SetSessionLabelsResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[296]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[301]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19824,7 +20074,7 @@ func (x *SetSessionLabelsResponse) String() string {
 func (*SetSessionLabelsResponse) ProtoMessage() {}
 
 func (x *SetSessionLabelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[296]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[301]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19837,7 +20087,7 @@ func (x *SetSessionLabelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSessionLabelsResponse.ProtoReflect.Descriptor instead.
 func (*SetSessionLabelsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{296}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{301}
 }
 
 func (x *SetSessionLabelsResponse) GetSession() *Session {
@@ -19971,7 +20221,12 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x10_can_auto_rotateJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\x0e\x10\x0fJ\x04\b\n" +
 	"\x10\vJ\x04\b\r\x10\x0e\"<\n" +
 	"\x12UpdateRepoResponse\x12&\n" +
-	"\x04repo\x18\x01 \x01(\v2\x12.bossanova.v1.RepoR\x04repo\"(\n" +
+	"\x04repo\x18\x01 \x01(\v2\x12.bossanova.v1.RepoR\x04repo\"*\n" +
+	"\x18RefreshRepoOriginRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"s\n" +
+	"\x19RefreshRepoOriginResponse\x12&\n" +
+	"\x04repo\x18\x01 \x01(\v2\x12.bossanova.v1.RepoR\x04repo\x12.\n" +
+	"\x13previous_origin_url\x18\x02 \x01(\tR\x11previousOriginUrl\"(\n" +
 	"\x16GetRepoSettingsRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"Q\n" +
 	"\x17GetRepoSettingsResponse\x126\n" +
@@ -21065,7 +21320,17 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\tAgentInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12>\n" +
-	"\ruser_settings\x18\x03 \x03(\v2\x19.bossanova.v1.UserSettingR\fuserSettings\"\x14\n" +
+	"\ruser_settings\x18\x03 \x03(\v2\x19.bossanova.v1.UserSettingR\fuserSettings\"\x19\n" +
+	"\x17CheckAgentLoginsRequest\"L\n" +
+	"\x18CheckAgentLoginsResponse\x120\n" +
+	"\x06agents\x18\x01 \x03(\v2\x18.bossanova.v1.AgentLoginR\x06agents\"\xab\x01\n" +
+	"\n" +
+	"AgentLogin\x12\x1d\n" +
+	"\n" +
+	"agent_name\x18\x01 \x01(\tR\tagentName\x126\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1e.bossanova.v1.AgentLoginStatusR\x06status\x12\x16\n" +
+	"\x06remedy\x18\x03 \x01(\tR\x06remedy\x12.\n" +
+	"\x13has_managed_account\x18\x04 \x01(\bR\x11hasManagedAccount\"\x14\n" +
 	"\x12ListPluginsRequest\"N\n" +
 	"\x13ListPluginsResponse\x127\n" +
 	"\aplugins\x18\x01 \x03(\v2\x1d.bossanova.v1.InstalledPluginR\aplugins\"\xad\x02\n" +
@@ -21465,7 +21730,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x11SetupCheckFixKind\x12$\n" +
 	" SETUP_CHECK_FIX_KIND_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cSETUP_CHECK_FIX_KIND_COMMAND\x10\x01\x12#\n" +
-	"\x1fSETUP_CHECK_FIX_KIND_AGENT_TASK\x10\x022\xb5b\n" +
+	"\x1fSETUP_CHECK_FIX_KIND_AGENT_TASK\x10\x022\xfec\n" +
 	"\rDaemonService\x12[\n" +
 	"\x0eResolveContext\x12#.bossanova.v1.ResolveContextRequest\x1a$.bossanova.v1.ResolveContextResponse\x12[\n" +
 	"\x0eDescribeCaller\x12#.bossanova.v1.DescribeCallerRequest\x1a$.bossanova.v1.DescribeCallerResponse\x12[\n" +
@@ -21483,7 +21748,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\n" +
 	"RemoveRepo\x12\x1f.bossanova.v1.RemoveRepoRequest\x1a .bossanova.v1.RemoveRepoResponse\x12O\n" +
 	"\n" +
-	"UpdateRepo\x12\x1f.bossanova.v1.UpdateRepoRequest\x1a .bossanova.v1.UpdateRepoResponse\x12^\n" +
+	"UpdateRepo\x12\x1f.bossanova.v1.UpdateRepoRequest\x1a .bossanova.v1.UpdateRepoResponse\x12d\n" +
+	"\x11RefreshRepoOrigin\x12&.bossanova.v1.RefreshRepoOriginRequest\x1a'.bossanova.v1.RefreshRepoOriginResponse\x12^\n" +
 	"\x0fGetRepoSettings\x12$.bossanova.v1.GetRepoSettingsRequest\x1a%.bossanova.v1.GetRepoSettingsResponse\x12R\n" +
 	"\vListRepoPRs\x12 .bossanova.v1.ListRepoPRsRequest\x1a!.bossanova.v1.ListRepoPRsResponse\x12d\n" +
 	"\x11ListTrackerIssues\x12&.bossanova.v1.ListTrackerIssuesRequest\x1a'.bossanova.v1.ListTrackerIssuesResponse\x12Z\n" +
@@ -21601,7 +21867,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"GetPRState\x12\x1f.bossanova.v1.GetPRStateRequest\x1a .bossanova.v1.GetPRStateResponse\x12R\n" +
 	"\vWaitPRState\x12 .bossanova.v1.WaitPRStateRequest\x1a!.bossanova.v1.WaitPRStateResponse\x12O\n" +
 	"\n" +
-	"ListAgents\x12\x1f.bossanova.v1.ListAgentsRequest\x1a .bossanova.v1.ListAgentsResponse\x12R\n" +
+	"ListAgents\x12\x1f.bossanova.v1.ListAgentsRequest\x1a .bossanova.v1.ListAgentsResponse\x12a\n" +
+	"\x10CheckAgentLogins\x12%.bossanova.v1.CheckAgentLoginsRequest\x1a&.bossanova.v1.CheckAgentLoginsResponse\x12R\n" +
 	"\vListPlugins\x12 .bossanova.v1.ListPluginsRequest\x1a!.bossanova.v1.ListPluginsResponse\x12p\n" +
 	"\x15GetDaemonCapabilities\x12*.bossanova.v1.GetDaemonCapabilitiesRequest\x1a+.bossanova.v1.GetDaemonCapabilitiesResponse\x12R\n" +
 	"\vGetSettings\x12 .bossanova.v1.GetSettingsRequest\x1a!.bossanova.v1.GetSettingsResponse\x12p\n" +
@@ -21621,7 +21888,7 @@ func file_bossanova_v1_daemon_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 19)
-var file_bossanova_v1_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 300)
+var file_bossanova_v1_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 305)
 var file_bossanova_v1_daemon_proto_goTypes = []any{
 	(CallerKind)(0),                                      // 0: bossanova.v1.CallerKind
 	(CreateSessionConflictReason)(0),                     // 1: bossanova.v1.CreateSessionConflictReason
@@ -21660,805 +21927,818 @@ var file_bossanova_v1_daemon_proto_goTypes = []any{
 	(*RemoveRepoResponse)(nil),                           // 34: bossanova.v1.RemoveRepoResponse
 	(*UpdateRepoRequest)(nil),                            // 35: bossanova.v1.UpdateRepoRequest
 	(*UpdateRepoResponse)(nil),                           // 36: bossanova.v1.UpdateRepoResponse
-	(*GetRepoSettingsRequest)(nil),                       // 37: bossanova.v1.GetRepoSettingsRequest
-	(*GetRepoSettingsResponse)(nil),                      // 38: bossanova.v1.GetRepoSettingsResponse
-	(*ListRepoPRsRequest)(nil),                           // 39: bossanova.v1.ListRepoPRsRequest
-	(*ListRepoPRsResponse)(nil),                          // 40: bossanova.v1.ListRepoPRsResponse
-	(*ListTrackerIssuesRequest)(nil),                     // 41: bossanova.v1.ListTrackerIssuesRequest
-	(*ListTrackerIssuesResponse)(nil),                    // 42: bossanova.v1.ListTrackerIssuesResponse
-	(*CreateSessionRequest)(nil),                         // 43: bossanova.v1.CreateSessionRequest
-	(*CreateSessionResponse)(nil),                        // 44: bossanova.v1.CreateSessionResponse
-	(*CreateSessionConflict)(nil),                        // 45: bossanova.v1.CreateSessionConflict
-	(*SetupScriptOutput)(nil),                            // 46: bossanova.v1.SetupScriptOutput
-	(*WatchSessionSetupRequest)(nil),                     // 47: bossanova.v1.WatchSessionSetupRequest
-	(*WatchSessionSetupResponse)(nil),                    // 48: bossanova.v1.WatchSessionSetupResponse
-	(*SessionSetupSettled)(nil),                          // 49: bossanova.v1.SessionSetupSettled
-	(*SessionCreated)(nil),                               // 50: bossanova.v1.SessionCreated
-	(*GetSessionRequest)(nil),                            // 51: bossanova.v1.GetSessionRequest
-	(*GetSessionResponse)(nil),                           // 52: bossanova.v1.GetSessionResponse
-	(*ListSessionsRequest)(nil),                          // 53: bossanova.v1.ListSessionsRequest
-	(*ListSessionsResponse)(nil),                         // 54: bossanova.v1.ListSessionsResponse
-	(*ListReviewQueueRequest)(nil),                       // 55: bossanova.v1.ListReviewQueueRequest
-	(*ListReviewQueueResponse)(nil),                      // 56: bossanova.v1.ListReviewQueueResponse
-	(*MoveSessionRequest)(nil),                           // 57: bossanova.v1.MoveSessionRequest
-	(*MoveSessionResponse)(nil),                          // 58: bossanova.v1.MoveSessionResponse
-	(*DismissSessionAlertRequest)(nil),                   // 59: bossanova.v1.DismissSessionAlertRequest
-	(*DismissSessionAlertResponse)(nil),                  // 60: bossanova.v1.DismissSessionAlertResponse
-	(*AttachSessionRequest)(nil),                         // 61: bossanova.v1.AttachSessionRequest
-	(*AttachSessionResponse)(nil),                        // 62: bossanova.v1.AttachSessionResponse
-	(*OutputLine)(nil),                                   // 63: bossanova.v1.OutputLine
-	(*StateChange)(nil),                                  // 64: bossanova.v1.StateChange
-	(*SessionEnded)(nil),                                 // 65: bossanova.v1.SessionEnded
-	(*StopSessionRequest)(nil),                           // 66: bossanova.v1.StopSessionRequest
-	(*StopSessionResponse)(nil),                          // 67: bossanova.v1.StopSessionResponse
-	(*PauseSessionRequest)(nil),                          // 68: bossanova.v1.PauseSessionRequest
-	(*PauseSessionResponse)(nil),                         // 69: bossanova.v1.PauseSessionResponse
-	(*ResumeSessionRequest)(nil),                         // 70: bossanova.v1.ResumeSessionRequest
-	(*ResumeSessionResponse)(nil),                        // 71: bossanova.v1.ResumeSessionResponse
-	(*ResumeSessionRunRequest)(nil),                      // 72: bossanova.v1.ResumeSessionRunRequest
-	(*ResumeSessionRunResponse)(nil),                     // 73: bossanova.v1.ResumeSessionRunResponse
-	(*RetrySessionRequest)(nil),                          // 74: bossanova.v1.RetrySessionRequest
-	(*RetrySessionResponse)(nil),                         // 75: bossanova.v1.RetrySessionResponse
-	(*CloseSessionRequest)(nil),                          // 76: bossanova.v1.CloseSessionRequest
-	(*CloseSessionResponse)(nil),                         // 77: bossanova.v1.CloseSessionResponse
-	(*MergeSessionRequest)(nil),                          // 78: bossanova.v1.MergeSessionRequest
-	(*MergeSessionResponse)(nil),                         // 79: bossanova.v1.MergeSessionResponse
-	(*ApproveSessionPRRequest)(nil),                      // 80: bossanova.v1.ApproveSessionPRRequest
-	(*ApproveSessionPRResponse)(nil),                     // 81: bossanova.v1.ApproveSessionPRResponse
-	(*FollowUpSessionPRNotesRequest)(nil),                // 82: bossanova.v1.FollowUpSessionPRNotesRequest
-	(*FollowUpSessionPRNotesResponse)(nil),               // 83: bossanova.v1.FollowUpSessionPRNotesResponse
-	(*VerifyFollowUpResult)(nil),                         // 84: bossanova.v1.VerifyFollowUpResult
-	(*VerifyNoteFollowUp)(nil),                           // 85: bossanova.v1.VerifyNoteFollowUp
-	(*VerifyApproveResult)(nil),                          // 86: bossanova.v1.VerifyApproveResult
-	(*OperatorMergeSessionRequest)(nil),                  // 87: bossanova.v1.OperatorMergeSessionRequest
-	(*OperatorMergeSessionResponse)(nil),                 // 88: bossanova.v1.OperatorMergeSessionResponse
-	(*RemoveSessionRequest)(nil),                         // 89: bossanova.v1.RemoveSessionRequest
-	(*RemoveSessionResponse)(nil),                        // 90: bossanova.v1.RemoveSessionResponse
-	(*UpdateSessionRequest)(nil),                         // 91: bossanova.v1.UpdateSessionRequest
-	(*UpdateSessionResponse)(nil),                        // 92: bossanova.v1.UpdateSessionResponse
-	(*LinkSessionPRRequest)(nil),                         // 93: bossanova.v1.LinkSessionPRRequest
-	(*LinkSessionPRResponse)(nil),                        // 94: bossanova.v1.LinkSessionPRResponse
-	(*SetSessionTrackerRequest)(nil),                     // 95: bossanova.v1.SetSessionTrackerRequest
-	(*SetSessionTrackerResponse)(nil),                    // 96: bossanova.v1.SetSessionTrackerResponse
-	(*RefreshSessionPRRequest)(nil),                      // 97: bossanova.v1.RefreshSessionPRRequest
-	(*RefreshSessionPRResponse)(nil),                     // 98: bossanova.v1.RefreshSessionPRResponse
-	(*SwitchSessionAgentAccountRequest)(nil),             // 99: bossanova.v1.SwitchSessionAgentAccountRequest
-	(*SwitchSessionAgentAccountResponse)(nil),            // 100: bossanova.v1.SwitchSessionAgentAccountResponse
-	(*ArchiveSessionRequest)(nil),                        // 101: bossanova.v1.ArchiveSessionRequest
-	(*ArchiveSessionResponse)(nil),                       // 102: bossanova.v1.ArchiveSessionResponse
-	(*FinishUnattendedRunRequest)(nil),                   // 103: bossanova.v1.FinishUnattendedRunRequest
-	(*FinishUnattendedRunResponse)(nil),                  // 104: bossanova.v1.FinishUnattendedRunResponse
-	(*ResurrectSessionRequest)(nil),                      // 105: bossanova.v1.ResurrectSessionRequest
-	(*ResurrectSessionResponse)(nil),                     // 106: bossanova.v1.ResurrectSessionResponse
-	(*SessionResurrected)(nil),                           // 107: bossanova.v1.SessionResurrected
-	(*EmptyTrashRequest)(nil),                            // 108: bossanova.v1.EmptyTrashRequest
-	(*EmptyTrashResponse)(nil),                           // 109: bossanova.v1.EmptyTrashResponse
-	(*RecordChatRequest)(nil),                            // 110: bossanova.v1.RecordChatRequest
-	(*RecordChatResponse)(nil),                           // 111: bossanova.v1.RecordChatResponse
-	(*ListChatsRequest)(nil),                             // 112: bossanova.v1.ListChatsRequest
-	(*ListChatsResponse)(nil),                            // 113: bossanova.v1.ListChatsResponse
-	(*UpdateChatTitleRequest)(nil),                       // 114: bossanova.v1.UpdateChatTitleRequest
-	(*UpdateChatTitleResponse)(nil),                      // 115: bossanova.v1.UpdateChatTitleResponse
-	(*DeleteChatRequest)(nil),                            // 116: bossanova.v1.DeleteChatRequest
-	(*DeleteChatResponse)(nil),                           // 117: bossanova.v1.DeleteChatResponse
-	(*WakeChatRequest)(nil),                              // 118: bossanova.v1.WakeChatRequest
-	(*WakeChatResponse)(nil),                             // 119: bossanova.v1.WakeChatResponse
-	(*DescribeChatLaunchRequest)(nil),                    // 120: bossanova.v1.DescribeChatLaunchRequest
-	(*DescribeChatLaunchResponse)(nil),                   // 121: bossanova.v1.DescribeChatLaunchResponse
-	(*DescribeChatMCPRequest)(nil),                       // 122: bossanova.v1.DescribeChatMCPRequest
-	(*DescribeChatMCPResponse)(nil),                      // 123: bossanova.v1.DescribeChatMCPResponse
-	(*GetChatTranscriptRequest)(nil),                     // 124: bossanova.v1.GetChatTranscriptRequest
-	(*GetChatTranscriptResponse)(nil),                    // 125: bossanova.v1.GetChatTranscriptResponse
-	(*SendChatMessageRequest)(nil),                       // 126: bossanova.v1.SendChatMessageRequest
-	(*SendChatMessageResponse)(nil),                      // 127: bossanova.v1.SendChatMessageResponse
-	(*ChatStatusReport)(nil),                             // 128: bossanova.v1.ChatStatusReport
-	(*ReportChatStatusRequest)(nil),                      // 129: bossanova.v1.ReportChatStatusRequest
-	(*ReportChatStatusResponse)(nil),                     // 130: bossanova.v1.ReportChatStatusResponse
-	(*SetChatPhaseRequest)(nil),                          // 131: bossanova.v1.SetChatPhaseRequest
-	(*SetChatPhaseResponse)(nil),                         // 132: bossanova.v1.SetChatPhaseResponse
-	(*GetChatStatusesRequest)(nil),                       // 133: bossanova.v1.GetChatStatusesRequest
-	(*ChatStatusEntry)(nil),                              // 134: bossanova.v1.ChatStatusEntry
-	(*GetChatStatusesResponse)(nil),                      // 135: bossanova.v1.GetChatStatusesResponse
-	(*GetSessionStatusesRequest)(nil),                    // 136: bossanova.v1.GetSessionStatusesRequest
-	(*SessionStatusEntry)(nil),                           // 137: bossanova.v1.SessionStatusEntry
-	(*GetSessionStatusesResponse)(nil),                   // 138: bossanova.v1.GetSessionStatusesResponse
-	(*DeliverVCSEventRequest)(nil),                       // 139: bossanova.v1.DeliverVCSEventRequest
-	(*DeliverVCSEventResponse)(nil),                      // 140: bossanova.v1.DeliverVCSEventResponse
-	(*NotifyAuthChangeRequest)(nil),                      // 141: bossanova.v1.NotifyAuthChangeRequest
-	(*NotifyAuthChangeResponse)(nil),                     // 142: bossanova.v1.NotifyAuthChangeResponse
-	(*GetAuthStateRequest)(nil),                          // 143: bossanova.v1.GetAuthStateRequest
-	(*GetAuthStateResponse)(nil),                         // 144: bossanova.v1.GetAuthStateResponse
-	(*GitHubCredentialReport)(nil),                       // 145: bossanova.v1.GitHubCredentialReport
-	(*GitHubCredentialState)(nil),                        // 146: bossanova.v1.GitHubCredentialState
-	(*CreateCronJobRequest)(nil),                         // 147: bossanova.v1.CreateCronJobRequest
-	(*CreateCronJobResponse)(nil),                        // 148: bossanova.v1.CreateCronJobResponse
-	(*ListCronJobsRequest)(nil),                          // 149: bossanova.v1.ListCronJobsRequest
-	(*ListCronJobsResponse)(nil),                         // 150: bossanova.v1.ListCronJobsResponse
-	(*GetCronJobRequest)(nil),                            // 151: bossanova.v1.GetCronJobRequest
-	(*GetCronJobResponse)(nil),                           // 152: bossanova.v1.GetCronJobResponse
-	(*UpdateCronJobRequest)(nil),                         // 153: bossanova.v1.UpdateCronJobRequest
-	(*UpdateCronJobResponse)(nil),                        // 154: bossanova.v1.UpdateCronJobResponse
-	(*DeleteCronJobRequest)(nil),                         // 155: bossanova.v1.DeleteCronJobRequest
-	(*DeleteCronJobResponse)(nil),                        // 156: bossanova.v1.DeleteCronJobResponse
-	(*RunCronJobNowRequest)(nil),                         // 157: bossanova.v1.RunCronJobNowRequest
-	(*RunCronJobNowResponse)(nil),                        // 158: bossanova.v1.RunCronJobNowResponse
-	(*CreateGitHubCallbackRequest)(nil),                  // 159: bossanova.v1.CreateGitHubCallbackRequest
-	(*CreateGitHubCallbackResponse)(nil),                 // 160: bossanova.v1.CreateGitHubCallbackResponse
-	(*ListGitHubCallbacksRequest)(nil),                   // 161: bossanova.v1.ListGitHubCallbacksRequest
-	(*ListGitHubCallbacksResponse)(nil),                  // 162: bossanova.v1.ListGitHubCallbacksResponse
-	(*DeleteGitHubCallbackRequest)(nil),                  // 163: bossanova.v1.DeleteGitHubCallbackRequest
-	(*DeleteGitHubCallbackResponse)(nil),                 // 164: bossanova.v1.DeleteGitHubCallbackResponse
-	(*BroadcastSelectorClause)(nil),                      // 165: bossanova.v1.BroadcastSelectorClause
-	(*BroadcastSelector)(nil),                            // 166: bossanova.v1.BroadcastSelector
-	(*Broadcast)(nil),                                    // 167: bossanova.v1.Broadcast
-	(*BroadcastDelivery)(nil),                            // 168: bossanova.v1.BroadcastDelivery
-	(*SendBroadcastRequest)(nil),                         // 169: bossanova.v1.SendBroadcastRequest
-	(*SendBroadcastResponse)(nil),                        // 170: bossanova.v1.SendBroadcastResponse
-	(*ListBroadcastsRequest)(nil),                        // 171: bossanova.v1.ListBroadcastsRequest
-	(*ListBroadcastsResponse)(nil),                       // 172: bossanova.v1.ListBroadcastsResponse
-	(*DeleteBroadcastRequest)(nil),                       // 173: bossanova.v1.DeleteBroadcastRequest
-	(*DeleteBroadcastResponse)(nil),                      // 174: bossanova.v1.DeleteBroadcastResponse
-	(*Note)(nil),                                         // 175: bossanova.v1.Note
-	(*NoteTagSet)(nil),                                   // 176: bossanova.v1.NoteTagSet
-	(*CreateNoteRequest)(nil),                            // 177: bossanova.v1.CreateNoteRequest
-	(*CreateNoteResponse)(nil),                           // 178: bossanova.v1.CreateNoteResponse
-	(*GetNoteRequest)(nil),                               // 179: bossanova.v1.GetNoteRequest
-	(*GetNoteResponse)(nil),                              // 180: bossanova.v1.GetNoteResponse
-	(*ListNotesRequest)(nil),                             // 181: bossanova.v1.ListNotesRequest
-	(*ListNotesResponse)(nil),                            // 182: bossanova.v1.ListNotesResponse
-	(*UpdateNoteRequest)(nil),                            // 183: bossanova.v1.UpdateNoteRequest
-	(*UpdateNoteResponse)(nil),                           // 184: bossanova.v1.UpdateNoteResponse
-	(*DeleteNoteRequest)(nil),                            // 185: bossanova.v1.DeleteNoteRequest
-	(*DeleteNoteResponse)(nil),                           // 186: bossanova.v1.DeleteNoteResponse
-	(*SyncNotesNowRequest)(nil),                          // 187: bossanova.v1.SyncNotesNowRequest
-	(*SyncNotesNowResponse)(nil),                         // 188: bossanova.v1.SyncNotesNowResponse
-	(*NoteSyncStateCount)(nil),                           // 189: bossanova.v1.NoteSyncStateCount
-	(*BroadcastSubscription)(nil),                        // 190: bossanova.v1.BroadcastSubscription
-	(*CreateBroadcastSubscriptionRequest)(nil),           // 191: bossanova.v1.CreateBroadcastSubscriptionRequest
-	(*CreateBroadcastSubscriptionResponse)(nil),          // 192: bossanova.v1.CreateBroadcastSubscriptionResponse
-	(*ListBroadcastSubscriptionsRequest)(nil),            // 193: bossanova.v1.ListBroadcastSubscriptionsRequest
-	(*ListBroadcastSubscriptionsResponse)(nil),           // 194: bossanova.v1.ListBroadcastSubscriptionsResponse
-	(*DeleteBroadcastSubscriptionRequest)(nil),           // 195: bossanova.v1.DeleteBroadcastSubscriptionRequest
-	(*DeleteBroadcastSubscriptionResponse)(nil),          // 196: bossanova.v1.DeleteBroadcastSubscriptionResponse
-	(*ListAgentAccountsRequest)(nil),                     // 197: bossanova.v1.ListAgentAccountsRequest
-	(*ListAgentAccountsResponse)(nil),                    // 198: bossanova.v1.ListAgentAccountsResponse
-	(*AddAgentAccountRequest)(nil),                       // 199: bossanova.v1.AddAgentAccountRequest
-	(*AddAgentAccountResponse)(nil),                      // 200: bossanova.v1.AddAgentAccountResponse
-	(*RefreshAgentAccountRequest)(nil),                   // 201: bossanova.v1.RefreshAgentAccountRequest
-	(*RefreshAgentAccountResponse)(nil),                  // 202: bossanova.v1.RefreshAgentAccountResponse
-	(*UpdateAgentAccountRequest)(nil),                    // 203: bossanova.v1.UpdateAgentAccountRequest
-	(*UpdateAgentAccountResponse)(nil),                   // 204: bossanova.v1.UpdateAgentAccountResponse
-	(*RemoveAgentAccountRequest)(nil),                    // 205: bossanova.v1.RemoveAgentAccountRequest
-	(*RemoveAgentAccountResponse)(nil),                   // 206: bossanova.v1.RemoveAgentAccountResponse
-	(*TestAgentAccountRequest)(nil),                      // 207: bossanova.v1.TestAgentAccountRequest
-	(*TestAgentAccountResponse)(nil),                     // 208: bossanova.v1.TestAgentAccountResponse
-	(*RepairDoctorRequest)(nil),                          // 209: bossanova.v1.RepairDoctorRequest
-	(*RepairDoctorCheck)(nil),                            // 210: bossanova.v1.RepairDoctorCheck
-	(*StartRepairWorkflowRequest)(nil),                   // 211: bossanova.v1.StartRepairWorkflowRequest
-	(*StartRepairWorkflowResponse)(nil),                  // 212: bossanova.v1.StartRepairWorkflowResponse
-	(*RepairDoctorResponse)(nil),                         // 213: bossanova.v1.RepairDoctorResponse
-	(*RepairLogSnapshot)(nil),                            // 214: bossanova.v1.RepairLogSnapshot
-	(*ListCheckSnapshotsRequest)(nil),                    // 215: bossanova.v1.ListCheckSnapshotsRequest
-	(*CheckSnapshot)(nil),                                // 216: bossanova.v1.CheckSnapshot
-	(*ListCheckSnapshotsResponse)(nil),                   // 217: bossanova.v1.ListCheckSnapshotsResponse
-	(*GetSessionTimelineRequest)(nil),                    // 218: bossanova.v1.GetSessionTimelineRequest
-	(*GetSessionTimelineResponse)(nil),                   // 219: bossanova.v1.GetSessionTimelineResponse
-	(*TimelineStep)(nil),                                 // 220: bossanova.v1.TimelineStep
-	(*GetRunCostRequest)(nil),                            // 221: bossanova.v1.GetRunCostRequest
-	(*AgentRunCost)(nil),                                 // 222: bossanova.v1.AgentRunCost
-	(*RunCostAggregate)(nil),                             // 223: bossanova.v1.RunCostAggregate
-	(*RunCostBackfillSummary)(nil),                       // 224: bossanova.v1.RunCostBackfillSummary
-	(*GetRunCostResponse)(nil),                           // 225: bossanova.v1.GetRunCostResponse
-	(*GetGitHubUsageRequest)(nil),                        // 226: bossanova.v1.GetGitHubUsageRequest
-	(*GitHubUsageRow)(nil),                               // 227: bossanova.v1.GitHubUsageRow
-	(*GetGitHubUsageResponse)(nil),                       // 228: bossanova.v1.GetGitHubUsageResponse
-	(*GetPRStateRequest)(nil),                            // 229: bossanova.v1.GetPRStateRequest
-	(*PRCheck)(nil),                                      // 230: bossanova.v1.PRCheck
-	(*PRCheckVerdict)(nil),                               // 231: bossanova.v1.PRCheckVerdict
-	(*PRVerifyPhase)(nil),                                // 232: bossanova.v1.PRVerifyPhase
-	(*PRHeldWorkflowRun)(nil),                            // 233: bossanova.v1.PRHeldWorkflowRun
-	(*PRWorkflowRun)(nil),                                // 234: bossanova.v1.PRWorkflowRun
-	(*GetPRStateResponse)(nil),                           // 235: bossanova.v1.GetPRStateResponse
-	(*WaitPRStateRequest)(nil),                           // 236: bossanova.v1.WaitPRStateRequest
-	(*WaitPRStateResponse)(nil),                          // 237: bossanova.v1.WaitPRStateResponse
-	(*ListAgentsRequest)(nil),                            // 238: bossanova.v1.ListAgentsRequest
-	(*ListAgentsResponse)(nil),                           // 239: bossanova.v1.ListAgentsResponse
-	(*AgentInfo)(nil),                                    // 240: bossanova.v1.AgentInfo
-	(*ListPluginsRequest)(nil),                           // 241: bossanova.v1.ListPluginsRequest
-	(*ListPluginsResponse)(nil),                          // 242: bossanova.v1.ListPluginsResponse
-	(*InstalledPlugin)(nil),                              // 243: bossanova.v1.InstalledPlugin
-	(*GetSettingsRequest)(nil),                           // 244: bossanova.v1.GetSettingsRequest
-	(*GetSettingsResponse)(nil),                          // 245: bossanova.v1.GetSettingsResponse
-	(*GlobalSettings)(nil),                               // 246: bossanova.v1.GlobalSettings
-	(*AgentSettings)(nil),                                // 247: bossanova.v1.AgentSettings
-	(*UpdateSettingsRequest)(nil),                        // 248: bossanova.v1.UpdateSettingsRequest
-	(*AgentSettingsUpdate)(nil),                          // 249: bossanova.v1.AgentSettingsUpdate
-	(*UpdateSettingsResponse)(nil),                       // 250: bossanova.v1.UpdateSettingsResponse
-	(*GetDaemonCapabilitiesRequest)(nil),                 // 251: bossanova.v1.GetDaemonCapabilitiesRequest
-	(*GetDaemonCapabilitiesResponse)(nil),                // 252: bossanova.v1.GetDaemonCapabilitiesResponse
-	(*UploadEvidenceRequest)(nil),                        // 253: bossanova.v1.UploadEvidenceRequest
-	(*EvidenceObject)(nil),                               // 254: bossanova.v1.EvidenceObject
-	(*UploadEvidenceResponse)(nil),                       // 255: bossanova.v1.UploadEvidenceResponse
-	(*HostedProofPageLimits)(nil),                        // 256: bossanova.v1.HostedProofPageLimits
-	(*RenewAgentCredentialDeviceEnrollmentRequest)(nil),  // 257: bossanova.v1.RenewAgentCredentialDeviceEnrollmentRequest
-	(*RenewAgentCredentialDeviceEnrollmentResponse)(nil), // 258: bossanova.v1.RenewAgentCredentialDeviceEnrollmentResponse
-	(*GetAgentCredentialDeviceStatusRequest)(nil),        // 259: bossanova.v1.GetAgentCredentialDeviceStatusRequest
-	(*GetAgentCredentialDeviceStatusResponse)(nil),       // 260: bossanova.v1.GetAgentCredentialDeviceStatusResponse
-	(*CredentialDeviceReadiness)(nil),                    // 261: bossanova.v1.CredentialDeviceReadiness
-	(*CredentialDeviceRemediationStep)(nil),              // 262: bossanova.v1.CredentialDeviceRemediationStep
-	(*SendBackToRepairRequest)(nil),                      // 263: bossanova.v1.SendBackToRepairRequest
-	(*SendBackToRepairResponse)(nil),                     // 264: bossanova.v1.SendBackToRepairResponse
-	(*GetFactoryHealthRequest)(nil),                      // 265: bossanova.v1.GetFactoryHealthRequest
-	(*GetFactoryHealthResponse)(nil),                     // 266: bossanova.v1.GetFactoryHealthResponse
-	(*FactoryHealthProblem)(nil),                         // 267: bossanova.v1.FactoryHealthProblem
-	(*ListSetupChecksRequest)(nil),                       // 268: bossanova.v1.ListSetupChecksRequest
-	(*ListSetupChecksResponse)(nil),                      // 269: bossanova.v1.ListSetupChecksResponse
-	(*SetupCheck)(nil),                                   // 270: bossanova.v1.SetupCheck
-	(*SetupCheckFix)(nil),                                // 271: bossanova.v1.SetupCheckFix
-	(*VerifyBlocker)(nil),                                // 272: bossanova.v1.VerifyBlocker
-	(*ListSessionPRBlockersRequest)(nil),                 // 273: bossanova.v1.ListSessionPRBlockersRequest
-	(*ListSessionPRBlockersResponse)(nil),                // 274: bossanova.v1.ListSessionPRBlockersResponse
-	(*AcceptSessionPRBlockerRequest)(nil),                // 275: bossanova.v1.AcceptSessionPRBlockerRequest
-	(*AcceptSessionPRBlockerResponse)(nil),               // 276: bossanova.v1.AcceptSessionPRBlockerResponse
-	(*GetGitHubReadCredentialRequest)(nil),               // 277: bossanova.v1.GetGitHubReadCredentialRequest
-	(*GetGitHubReadCredentialResponse)(nil),              // 278: bossanova.v1.GetGitHubReadCredentialResponse
-	(*GetViewerDeviceStatusRequest)(nil),                 // 279: bossanova.v1.GetViewerDeviceStatusRequest
-	(*GetViewerDeviceStatusResponse)(nil),                // 280: bossanova.v1.GetViewerDeviceStatusResponse
-	(*LocalViewerDevice)(nil),                            // 281: bossanova.v1.LocalViewerDevice
-	(*ListLocalViewerDevicesRequest)(nil),                // 282: bossanova.v1.ListLocalViewerDevicesRequest
-	(*ListLocalViewerDevicesResponse)(nil),               // 283: bossanova.v1.ListLocalViewerDevicesResponse
-	(*ApproveViewerDeviceRequest)(nil),                   // 284: bossanova.v1.ApproveViewerDeviceRequest
-	(*ApproveViewerDeviceResponse)(nil),                  // 285: bossanova.v1.ApproveViewerDeviceResponse
-	(*RevokeViewerDeviceRequest)(nil),                    // 286: bossanova.v1.RevokeViewerDeviceRequest
-	(*RevokeViewerDeviceResponse)(nil),                   // 287: bossanova.v1.RevokeViewerDeviceResponse
-	(*SetSessionTrackerRankRequest)(nil),                 // 288: bossanova.v1.SetSessionTrackerRankRequest
-	(*SetSessionTrackerRankResponse)(nil),                // 289: bossanova.v1.SetSessionTrackerRankResponse
-	(*ListRepoCloudControlsRequest)(nil),                 // 290: bossanova.v1.ListRepoCloudControlsRequest
-	(*ListRepoCloudControlsResponse)(nil),                // 291: bossanova.v1.ListRepoCloudControlsResponse
-	(*RepoCloudControl)(nil),                             // 292: bossanova.v1.RepoCloudControl
-	(*PostProofCheckRunRequest)(nil),                     // 293: bossanova.v1.PostProofCheckRunRequest
-	(*PostProofCheckRunResponse)(nil),                    // 294: bossanova.v1.PostProofCheckRunResponse
-	(*MintHostedProofViewLinkRequest)(nil),               // 295: bossanova.v1.MintHostedProofViewLinkRequest
-	(*MintHostedProofViewLinkResponse)(nil),              // 296: bossanova.v1.MintHostedProofViewLinkResponse
-	(*GetHostedProofLimitsRequest)(nil),                  // 297: bossanova.v1.GetHostedProofLimitsRequest
-	(*GetHostedProofLimitsResponse)(nil),                 // 298: bossanova.v1.GetHostedProofLimitsResponse
-	(*SessionServe)(nil),                                 // 299: bossanova.v1.SessionServe
-	(*StartSessionServeRequest)(nil),                     // 300: bossanova.v1.StartSessionServeRequest
-	(*StartSessionServeResponse)(nil),                    // 301: bossanova.v1.StartSessionServeResponse
-	(*StopSessionServeRequest)(nil),                      // 302: bossanova.v1.StopSessionServeRequest
-	(*StopSessionServeResponse)(nil),                     // 303: bossanova.v1.StopSessionServeResponse
-	(*GetSessionServeRequest)(nil),                       // 304: bossanova.v1.GetSessionServeRequest
-	(*GetSessionServeResponse)(nil),                      // 305: bossanova.v1.GetSessionServeResponse
-	(*ListSessionLabelsRequest)(nil),                     // 306: bossanova.v1.ListSessionLabelsRequest
-	(*ListSessionLabelsResponse)(nil),                    // 307: bossanova.v1.ListSessionLabelsResponse
-	(*CreateSessionLabelRequest)(nil),                    // 308: bossanova.v1.CreateSessionLabelRequest
-	(*CreateSessionLabelResponse)(nil),                   // 309: bossanova.v1.CreateSessionLabelResponse
-	(*UpdateSessionLabelRequest)(nil),                    // 310: bossanova.v1.UpdateSessionLabelRequest
-	(*UpdateSessionLabelResponse)(nil),                   // 311: bossanova.v1.UpdateSessionLabelResponse
-	(*DeleteSessionLabelRequest)(nil),                    // 312: bossanova.v1.DeleteSessionLabelRequest
-	(*DeleteSessionLabelResponse)(nil),                   // 313: bossanova.v1.DeleteSessionLabelResponse
-	(*SetSessionLabelsRequest)(nil),                      // 314: bossanova.v1.SetSessionLabelsRequest
-	(*SetSessionLabelsResponse)(nil),                     // 315: bossanova.v1.SetSessionLabelsResponse
-	nil,                                                  // 316: bossanova.v1.RunCostAggregate.TerminalStateMixEntry
-	nil,                                                  // 317: bossanova.v1.AgentSettings.ConfigEntry
-	nil,                                                  // 318: bossanova.v1.AgentSettingsUpdate.ConfigEntry
-	(ChatRole)(0),                                        // 319: bossanova.v1.ChatRole
-	(*Repo)(nil),                                         // 320: bossanova.v1.Repo
-	(*Session)(nil),                                      // 321: bossanova.v1.Session
-	(*SecretUpdate)(nil),                                 // 322: bossanova.v1.SecretUpdate
-	(*timestamppb.Timestamp)(nil),                        // 323: google.protobuf.Timestamp
-	(*RepoSettings)(nil),                                 // 324: bossanova.v1.RepoSettings
-	(*PRListQuery)(nil),                                  // 325: bossanova.v1.PRListQuery
-	(*PRSummary)(nil),                                    // 326: bossanova.v1.PRSummary
-	(*TrackerIssue)(nil),                                 // 327: bossanova.v1.TrackerIssue
-	(SessionState)(0),                                    // 328: bossanova.v1.SessionState
-	(ReviewQueueSort)(0),                                 // 329: bossanova.v1.ReviewQueueSort
-	(*ReviewQueueRow)(nil),                               // 330: bossanova.v1.ReviewQueueRow
-	(*ReviewQueueLevelCount)(nil),                        // 331: bossanova.v1.ReviewQueueLevelCount
-	(SessionEvent)(0),                                    // 332: bossanova.v1.SessionEvent
-	(*AgentChat)(nil),                                    // 333: bossanova.v1.AgentChat
-	(*MCPServerReport)(nil),                              // 334: bossanova.v1.MCPServerReport
-	(*ChatMessage)(nil),                                  // 335: bossanova.v1.ChatMessage
-	(ChatStatus)(0),                                      // 336: bossanova.v1.ChatStatus
-	(*VCSEvent)(nil),                                     // 337: bossanova.v1.VCSEvent
-	(CronJobConcurrencyPolicy)(0),                        // 338: bossanova.v1.CronJobConcurrencyPolicy
-	(*CronJob)(nil),                                      // 339: bossanova.v1.CronJob
-	(*GitHubCallback)(nil),                               // 340: bossanova.v1.GitHubCallback
-	(*AgentAccount)(nil),                                 // 341: bossanova.v1.AgentAccount
-	(DisplayStatus)(0),                                   // 342: bossanova.v1.DisplayStatus
-	(CheckStatus)(0),                                     // 343: bossanova.v1.CheckStatus
-	(CheckConclusion)(0),                                 // 344: bossanova.v1.CheckConclusion
-	(PRState)(0),                                         // 345: bossanova.v1.PRState
-	(ReviewState)(0),                                     // 346: bossanova.v1.ReviewState
-	(*ReviewComment)(nil),                                // 347: bossanova.v1.ReviewComment
-	(*UserSetting)(nil),                                  // 348: bossanova.v1.UserSetting
-	(*AgentCredentialDevice)(nil),                        // 349: bossanova.v1.AgentCredentialDevice
-	(*TrackerRank)(nil),                                  // 350: bossanova.v1.TrackerRank
-	(*ServiceLink)(nil),                                  // 351: bossanova.v1.ServiceLink
-	(*SessionLabel)(nil),                                 // 352: bossanova.v1.SessionLabel
-	(*AcquireTrackerIssueLeaseRequest)(nil),              // 353: bossanova.v1.AcquireTrackerIssueLeaseRequest
-	(*ReleaseTrackerIssueLeaseRequest)(nil),              // 354: bossanova.v1.ReleaseTrackerIssueLeaseRequest
-	(*ListAgentCredentialDevicesRequest)(nil),            // 355: bossanova.v1.ListAgentCredentialDevicesRequest
-	(*ApproveAgentCredentialDeviceRequest)(nil),          // 356: bossanova.v1.ApproveAgentCredentialDeviceRequest
-	(*RevokeAgentCredentialDeviceRequest)(nil),           // 357: bossanova.v1.RevokeAgentCredentialDeviceRequest
-	(*AcquireTrackerIssueLeaseResponse)(nil),             // 358: bossanova.v1.AcquireTrackerIssueLeaseResponse
-	(*ReleaseTrackerIssueLeaseResponse)(nil),             // 359: bossanova.v1.ReleaseTrackerIssueLeaseResponse
-	(*ListAgentCredentialDevicesResponse)(nil),           // 360: bossanova.v1.ListAgentCredentialDevicesResponse
-	(*ApproveAgentCredentialDeviceResponse)(nil),         // 361: bossanova.v1.ApproveAgentCredentialDeviceResponse
-	(*RevokeAgentCredentialDeviceResponse)(nil),          // 362: bossanova.v1.RevokeAgentCredentialDeviceResponse
+	(*RefreshRepoOriginRequest)(nil),                     // 37: bossanova.v1.RefreshRepoOriginRequest
+	(*RefreshRepoOriginResponse)(nil),                    // 38: bossanova.v1.RefreshRepoOriginResponse
+	(*GetRepoSettingsRequest)(nil),                       // 39: bossanova.v1.GetRepoSettingsRequest
+	(*GetRepoSettingsResponse)(nil),                      // 40: bossanova.v1.GetRepoSettingsResponse
+	(*ListRepoPRsRequest)(nil),                           // 41: bossanova.v1.ListRepoPRsRequest
+	(*ListRepoPRsResponse)(nil),                          // 42: bossanova.v1.ListRepoPRsResponse
+	(*ListTrackerIssuesRequest)(nil),                     // 43: bossanova.v1.ListTrackerIssuesRequest
+	(*ListTrackerIssuesResponse)(nil),                    // 44: bossanova.v1.ListTrackerIssuesResponse
+	(*CreateSessionRequest)(nil),                         // 45: bossanova.v1.CreateSessionRequest
+	(*CreateSessionResponse)(nil),                        // 46: bossanova.v1.CreateSessionResponse
+	(*CreateSessionConflict)(nil),                        // 47: bossanova.v1.CreateSessionConflict
+	(*SetupScriptOutput)(nil),                            // 48: bossanova.v1.SetupScriptOutput
+	(*WatchSessionSetupRequest)(nil),                     // 49: bossanova.v1.WatchSessionSetupRequest
+	(*WatchSessionSetupResponse)(nil),                    // 50: bossanova.v1.WatchSessionSetupResponse
+	(*SessionSetupSettled)(nil),                          // 51: bossanova.v1.SessionSetupSettled
+	(*SessionCreated)(nil),                               // 52: bossanova.v1.SessionCreated
+	(*GetSessionRequest)(nil),                            // 53: bossanova.v1.GetSessionRequest
+	(*GetSessionResponse)(nil),                           // 54: bossanova.v1.GetSessionResponse
+	(*ListSessionsRequest)(nil),                          // 55: bossanova.v1.ListSessionsRequest
+	(*ListSessionsResponse)(nil),                         // 56: bossanova.v1.ListSessionsResponse
+	(*ListReviewQueueRequest)(nil),                       // 57: bossanova.v1.ListReviewQueueRequest
+	(*ListReviewQueueResponse)(nil),                      // 58: bossanova.v1.ListReviewQueueResponse
+	(*MoveSessionRequest)(nil),                           // 59: bossanova.v1.MoveSessionRequest
+	(*MoveSessionResponse)(nil),                          // 60: bossanova.v1.MoveSessionResponse
+	(*DismissSessionAlertRequest)(nil),                   // 61: bossanova.v1.DismissSessionAlertRequest
+	(*DismissSessionAlertResponse)(nil),                  // 62: bossanova.v1.DismissSessionAlertResponse
+	(*AttachSessionRequest)(nil),                         // 63: bossanova.v1.AttachSessionRequest
+	(*AttachSessionResponse)(nil),                        // 64: bossanova.v1.AttachSessionResponse
+	(*OutputLine)(nil),                                   // 65: bossanova.v1.OutputLine
+	(*StateChange)(nil),                                  // 66: bossanova.v1.StateChange
+	(*SessionEnded)(nil),                                 // 67: bossanova.v1.SessionEnded
+	(*StopSessionRequest)(nil),                           // 68: bossanova.v1.StopSessionRequest
+	(*StopSessionResponse)(nil),                          // 69: bossanova.v1.StopSessionResponse
+	(*PauseSessionRequest)(nil),                          // 70: bossanova.v1.PauseSessionRequest
+	(*PauseSessionResponse)(nil),                         // 71: bossanova.v1.PauseSessionResponse
+	(*ResumeSessionRequest)(nil),                         // 72: bossanova.v1.ResumeSessionRequest
+	(*ResumeSessionResponse)(nil),                        // 73: bossanova.v1.ResumeSessionResponse
+	(*ResumeSessionRunRequest)(nil),                      // 74: bossanova.v1.ResumeSessionRunRequest
+	(*ResumeSessionRunResponse)(nil),                     // 75: bossanova.v1.ResumeSessionRunResponse
+	(*RetrySessionRequest)(nil),                          // 76: bossanova.v1.RetrySessionRequest
+	(*RetrySessionResponse)(nil),                         // 77: bossanova.v1.RetrySessionResponse
+	(*CloseSessionRequest)(nil),                          // 78: bossanova.v1.CloseSessionRequest
+	(*CloseSessionResponse)(nil),                         // 79: bossanova.v1.CloseSessionResponse
+	(*MergeSessionRequest)(nil),                          // 80: bossanova.v1.MergeSessionRequest
+	(*MergeSessionResponse)(nil),                         // 81: bossanova.v1.MergeSessionResponse
+	(*ApproveSessionPRRequest)(nil),                      // 82: bossanova.v1.ApproveSessionPRRequest
+	(*ApproveSessionPRResponse)(nil),                     // 83: bossanova.v1.ApproveSessionPRResponse
+	(*FollowUpSessionPRNotesRequest)(nil),                // 84: bossanova.v1.FollowUpSessionPRNotesRequest
+	(*FollowUpSessionPRNotesResponse)(nil),               // 85: bossanova.v1.FollowUpSessionPRNotesResponse
+	(*VerifyFollowUpResult)(nil),                         // 86: bossanova.v1.VerifyFollowUpResult
+	(*VerifyNoteFollowUp)(nil),                           // 87: bossanova.v1.VerifyNoteFollowUp
+	(*VerifyApproveResult)(nil),                          // 88: bossanova.v1.VerifyApproveResult
+	(*OperatorMergeSessionRequest)(nil),                  // 89: bossanova.v1.OperatorMergeSessionRequest
+	(*OperatorMergeSessionResponse)(nil),                 // 90: bossanova.v1.OperatorMergeSessionResponse
+	(*RemoveSessionRequest)(nil),                         // 91: bossanova.v1.RemoveSessionRequest
+	(*RemoveSessionResponse)(nil),                        // 92: bossanova.v1.RemoveSessionResponse
+	(*UpdateSessionRequest)(nil),                         // 93: bossanova.v1.UpdateSessionRequest
+	(*UpdateSessionResponse)(nil),                        // 94: bossanova.v1.UpdateSessionResponse
+	(*LinkSessionPRRequest)(nil),                         // 95: bossanova.v1.LinkSessionPRRequest
+	(*LinkSessionPRResponse)(nil),                        // 96: bossanova.v1.LinkSessionPRResponse
+	(*SetSessionTrackerRequest)(nil),                     // 97: bossanova.v1.SetSessionTrackerRequest
+	(*SetSessionTrackerResponse)(nil),                    // 98: bossanova.v1.SetSessionTrackerResponse
+	(*RefreshSessionPRRequest)(nil),                      // 99: bossanova.v1.RefreshSessionPRRequest
+	(*RefreshSessionPRResponse)(nil),                     // 100: bossanova.v1.RefreshSessionPRResponse
+	(*SwitchSessionAgentAccountRequest)(nil),             // 101: bossanova.v1.SwitchSessionAgentAccountRequest
+	(*SwitchSessionAgentAccountResponse)(nil),            // 102: bossanova.v1.SwitchSessionAgentAccountResponse
+	(*ArchiveSessionRequest)(nil),                        // 103: bossanova.v1.ArchiveSessionRequest
+	(*ArchiveSessionResponse)(nil),                       // 104: bossanova.v1.ArchiveSessionResponse
+	(*FinishUnattendedRunRequest)(nil),                   // 105: bossanova.v1.FinishUnattendedRunRequest
+	(*FinishUnattendedRunResponse)(nil),                  // 106: bossanova.v1.FinishUnattendedRunResponse
+	(*ResurrectSessionRequest)(nil),                      // 107: bossanova.v1.ResurrectSessionRequest
+	(*ResurrectSessionResponse)(nil),                     // 108: bossanova.v1.ResurrectSessionResponse
+	(*SessionResurrected)(nil),                           // 109: bossanova.v1.SessionResurrected
+	(*EmptyTrashRequest)(nil),                            // 110: bossanova.v1.EmptyTrashRequest
+	(*EmptyTrashResponse)(nil),                           // 111: bossanova.v1.EmptyTrashResponse
+	(*RecordChatRequest)(nil),                            // 112: bossanova.v1.RecordChatRequest
+	(*RecordChatResponse)(nil),                           // 113: bossanova.v1.RecordChatResponse
+	(*ListChatsRequest)(nil),                             // 114: bossanova.v1.ListChatsRequest
+	(*ListChatsResponse)(nil),                            // 115: bossanova.v1.ListChatsResponse
+	(*UpdateChatTitleRequest)(nil),                       // 116: bossanova.v1.UpdateChatTitleRequest
+	(*UpdateChatTitleResponse)(nil),                      // 117: bossanova.v1.UpdateChatTitleResponse
+	(*DeleteChatRequest)(nil),                            // 118: bossanova.v1.DeleteChatRequest
+	(*DeleteChatResponse)(nil),                           // 119: bossanova.v1.DeleteChatResponse
+	(*WakeChatRequest)(nil),                              // 120: bossanova.v1.WakeChatRequest
+	(*WakeChatResponse)(nil),                             // 121: bossanova.v1.WakeChatResponse
+	(*DescribeChatLaunchRequest)(nil),                    // 122: bossanova.v1.DescribeChatLaunchRequest
+	(*DescribeChatLaunchResponse)(nil),                   // 123: bossanova.v1.DescribeChatLaunchResponse
+	(*DescribeChatMCPRequest)(nil),                       // 124: bossanova.v1.DescribeChatMCPRequest
+	(*DescribeChatMCPResponse)(nil),                      // 125: bossanova.v1.DescribeChatMCPResponse
+	(*GetChatTranscriptRequest)(nil),                     // 126: bossanova.v1.GetChatTranscriptRequest
+	(*GetChatTranscriptResponse)(nil),                    // 127: bossanova.v1.GetChatTranscriptResponse
+	(*SendChatMessageRequest)(nil),                       // 128: bossanova.v1.SendChatMessageRequest
+	(*SendChatMessageResponse)(nil),                      // 129: bossanova.v1.SendChatMessageResponse
+	(*ChatStatusReport)(nil),                             // 130: bossanova.v1.ChatStatusReport
+	(*ReportChatStatusRequest)(nil),                      // 131: bossanova.v1.ReportChatStatusRequest
+	(*ReportChatStatusResponse)(nil),                     // 132: bossanova.v1.ReportChatStatusResponse
+	(*SetChatPhaseRequest)(nil),                          // 133: bossanova.v1.SetChatPhaseRequest
+	(*SetChatPhaseResponse)(nil),                         // 134: bossanova.v1.SetChatPhaseResponse
+	(*GetChatStatusesRequest)(nil),                       // 135: bossanova.v1.GetChatStatusesRequest
+	(*ChatStatusEntry)(nil),                              // 136: bossanova.v1.ChatStatusEntry
+	(*GetChatStatusesResponse)(nil),                      // 137: bossanova.v1.GetChatStatusesResponse
+	(*GetSessionStatusesRequest)(nil),                    // 138: bossanova.v1.GetSessionStatusesRequest
+	(*SessionStatusEntry)(nil),                           // 139: bossanova.v1.SessionStatusEntry
+	(*GetSessionStatusesResponse)(nil),                   // 140: bossanova.v1.GetSessionStatusesResponse
+	(*DeliverVCSEventRequest)(nil),                       // 141: bossanova.v1.DeliverVCSEventRequest
+	(*DeliverVCSEventResponse)(nil),                      // 142: bossanova.v1.DeliverVCSEventResponse
+	(*NotifyAuthChangeRequest)(nil),                      // 143: bossanova.v1.NotifyAuthChangeRequest
+	(*NotifyAuthChangeResponse)(nil),                     // 144: bossanova.v1.NotifyAuthChangeResponse
+	(*GetAuthStateRequest)(nil),                          // 145: bossanova.v1.GetAuthStateRequest
+	(*GetAuthStateResponse)(nil),                         // 146: bossanova.v1.GetAuthStateResponse
+	(*GitHubCredentialReport)(nil),                       // 147: bossanova.v1.GitHubCredentialReport
+	(*GitHubCredentialState)(nil),                        // 148: bossanova.v1.GitHubCredentialState
+	(*CreateCronJobRequest)(nil),                         // 149: bossanova.v1.CreateCronJobRequest
+	(*CreateCronJobResponse)(nil),                        // 150: bossanova.v1.CreateCronJobResponse
+	(*ListCronJobsRequest)(nil),                          // 151: bossanova.v1.ListCronJobsRequest
+	(*ListCronJobsResponse)(nil),                         // 152: bossanova.v1.ListCronJobsResponse
+	(*GetCronJobRequest)(nil),                            // 153: bossanova.v1.GetCronJobRequest
+	(*GetCronJobResponse)(nil),                           // 154: bossanova.v1.GetCronJobResponse
+	(*UpdateCronJobRequest)(nil),                         // 155: bossanova.v1.UpdateCronJobRequest
+	(*UpdateCronJobResponse)(nil),                        // 156: bossanova.v1.UpdateCronJobResponse
+	(*DeleteCronJobRequest)(nil),                         // 157: bossanova.v1.DeleteCronJobRequest
+	(*DeleteCronJobResponse)(nil),                        // 158: bossanova.v1.DeleteCronJobResponse
+	(*RunCronJobNowRequest)(nil),                         // 159: bossanova.v1.RunCronJobNowRequest
+	(*RunCronJobNowResponse)(nil),                        // 160: bossanova.v1.RunCronJobNowResponse
+	(*CreateGitHubCallbackRequest)(nil),                  // 161: bossanova.v1.CreateGitHubCallbackRequest
+	(*CreateGitHubCallbackResponse)(nil),                 // 162: bossanova.v1.CreateGitHubCallbackResponse
+	(*ListGitHubCallbacksRequest)(nil),                   // 163: bossanova.v1.ListGitHubCallbacksRequest
+	(*ListGitHubCallbacksResponse)(nil),                  // 164: bossanova.v1.ListGitHubCallbacksResponse
+	(*DeleteGitHubCallbackRequest)(nil),                  // 165: bossanova.v1.DeleteGitHubCallbackRequest
+	(*DeleteGitHubCallbackResponse)(nil),                 // 166: bossanova.v1.DeleteGitHubCallbackResponse
+	(*BroadcastSelectorClause)(nil),                      // 167: bossanova.v1.BroadcastSelectorClause
+	(*BroadcastSelector)(nil),                            // 168: bossanova.v1.BroadcastSelector
+	(*Broadcast)(nil),                                    // 169: bossanova.v1.Broadcast
+	(*BroadcastDelivery)(nil),                            // 170: bossanova.v1.BroadcastDelivery
+	(*SendBroadcastRequest)(nil),                         // 171: bossanova.v1.SendBroadcastRequest
+	(*SendBroadcastResponse)(nil),                        // 172: bossanova.v1.SendBroadcastResponse
+	(*ListBroadcastsRequest)(nil),                        // 173: bossanova.v1.ListBroadcastsRequest
+	(*ListBroadcastsResponse)(nil),                       // 174: bossanova.v1.ListBroadcastsResponse
+	(*DeleteBroadcastRequest)(nil),                       // 175: bossanova.v1.DeleteBroadcastRequest
+	(*DeleteBroadcastResponse)(nil),                      // 176: bossanova.v1.DeleteBroadcastResponse
+	(*Note)(nil),                                         // 177: bossanova.v1.Note
+	(*NoteTagSet)(nil),                                   // 178: bossanova.v1.NoteTagSet
+	(*CreateNoteRequest)(nil),                            // 179: bossanova.v1.CreateNoteRequest
+	(*CreateNoteResponse)(nil),                           // 180: bossanova.v1.CreateNoteResponse
+	(*GetNoteRequest)(nil),                               // 181: bossanova.v1.GetNoteRequest
+	(*GetNoteResponse)(nil),                              // 182: bossanova.v1.GetNoteResponse
+	(*ListNotesRequest)(nil),                             // 183: bossanova.v1.ListNotesRequest
+	(*ListNotesResponse)(nil),                            // 184: bossanova.v1.ListNotesResponse
+	(*UpdateNoteRequest)(nil),                            // 185: bossanova.v1.UpdateNoteRequest
+	(*UpdateNoteResponse)(nil),                           // 186: bossanova.v1.UpdateNoteResponse
+	(*DeleteNoteRequest)(nil),                            // 187: bossanova.v1.DeleteNoteRequest
+	(*DeleteNoteResponse)(nil),                           // 188: bossanova.v1.DeleteNoteResponse
+	(*SyncNotesNowRequest)(nil),                          // 189: bossanova.v1.SyncNotesNowRequest
+	(*SyncNotesNowResponse)(nil),                         // 190: bossanova.v1.SyncNotesNowResponse
+	(*NoteSyncStateCount)(nil),                           // 191: bossanova.v1.NoteSyncStateCount
+	(*BroadcastSubscription)(nil),                        // 192: bossanova.v1.BroadcastSubscription
+	(*CreateBroadcastSubscriptionRequest)(nil),           // 193: bossanova.v1.CreateBroadcastSubscriptionRequest
+	(*CreateBroadcastSubscriptionResponse)(nil),          // 194: bossanova.v1.CreateBroadcastSubscriptionResponse
+	(*ListBroadcastSubscriptionsRequest)(nil),            // 195: bossanova.v1.ListBroadcastSubscriptionsRequest
+	(*ListBroadcastSubscriptionsResponse)(nil),           // 196: bossanova.v1.ListBroadcastSubscriptionsResponse
+	(*DeleteBroadcastSubscriptionRequest)(nil),           // 197: bossanova.v1.DeleteBroadcastSubscriptionRequest
+	(*DeleteBroadcastSubscriptionResponse)(nil),          // 198: bossanova.v1.DeleteBroadcastSubscriptionResponse
+	(*ListAgentAccountsRequest)(nil),                     // 199: bossanova.v1.ListAgentAccountsRequest
+	(*ListAgentAccountsResponse)(nil),                    // 200: bossanova.v1.ListAgentAccountsResponse
+	(*AddAgentAccountRequest)(nil),                       // 201: bossanova.v1.AddAgentAccountRequest
+	(*AddAgentAccountResponse)(nil),                      // 202: bossanova.v1.AddAgentAccountResponse
+	(*RefreshAgentAccountRequest)(nil),                   // 203: bossanova.v1.RefreshAgentAccountRequest
+	(*RefreshAgentAccountResponse)(nil),                  // 204: bossanova.v1.RefreshAgentAccountResponse
+	(*UpdateAgentAccountRequest)(nil),                    // 205: bossanova.v1.UpdateAgentAccountRequest
+	(*UpdateAgentAccountResponse)(nil),                   // 206: bossanova.v1.UpdateAgentAccountResponse
+	(*RemoveAgentAccountRequest)(nil),                    // 207: bossanova.v1.RemoveAgentAccountRequest
+	(*RemoveAgentAccountResponse)(nil),                   // 208: bossanova.v1.RemoveAgentAccountResponse
+	(*TestAgentAccountRequest)(nil),                      // 209: bossanova.v1.TestAgentAccountRequest
+	(*TestAgentAccountResponse)(nil),                     // 210: bossanova.v1.TestAgentAccountResponse
+	(*RepairDoctorRequest)(nil),                          // 211: bossanova.v1.RepairDoctorRequest
+	(*RepairDoctorCheck)(nil),                            // 212: bossanova.v1.RepairDoctorCheck
+	(*StartRepairWorkflowRequest)(nil),                   // 213: bossanova.v1.StartRepairWorkflowRequest
+	(*StartRepairWorkflowResponse)(nil),                  // 214: bossanova.v1.StartRepairWorkflowResponse
+	(*RepairDoctorResponse)(nil),                         // 215: bossanova.v1.RepairDoctorResponse
+	(*RepairLogSnapshot)(nil),                            // 216: bossanova.v1.RepairLogSnapshot
+	(*ListCheckSnapshotsRequest)(nil),                    // 217: bossanova.v1.ListCheckSnapshotsRequest
+	(*CheckSnapshot)(nil),                                // 218: bossanova.v1.CheckSnapshot
+	(*ListCheckSnapshotsResponse)(nil),                   // 219: bossanova.v1.ListCheckSnapshotsResponse
+	(*GetSessionTimelineRequest)(nil),                    // 220: bossanova.v1.GetSessionTimelineRequest
+	(*GetSessionTimelineResponse)(nil),                   // 221: bossanova.v1.GetSessionTimelineResponse
+	(*TimelineStep)(nil),                                 // 222: bossanova.v1.TimelineStep
+	(*GetRunCostRequest)(nil),                            // 223: bossanova.v1.GetRunCostRequest
+	(*AgentRunCost)(nil),                                 // 224: bossanova.v1.AgentRunCost
+	(*RunCostAggregate)(nil),                             // 225: bossanova.v1.RunCostAggregate
+	(*RunCostBackfillSummary)(nil),                       // 226: bossanova.v1.RunCostBackfillSummary
+	(*GetRunCostResponse)(nil),                           // 227: bossanova.v1.GetRunCostResponse
+	(*GetGitHubUsageRequest)(nil),                        // 228: bossanova.v1.GetGitHubUsageRequest
+	(*GitHubUsageRow)(nil),                               // 229: bossanova.v1.GitHubUsageRow
+	(*GetGitHubUsageResponse)(nil),                       // 230: bossanova.v1.GetGitHubUsageResponse
+	(*GetPRStateRequest)(nil),                            // 231: bossanova.v1.GetPRStateRequest
+	(*PRCheck)(nil),                                      // 232: bossanova.v1.PRCheck
+	(*PRCheckVerdict)(nil),                               // 233: bossanova.v1.PRCheckVerdict
+	(*PRVerifyPhase)(nil),                                // 234: bossanova.v1.PRVerifyPhase
+	(*PRHeldWorkflowRun)(nil),                            // 235: bossanova.v1.PRHeldWorkflowRun
+	(*PRWorkflowRun)(nil),                                // 236: bossanova.v1.PRWorkflowRun
+	(*GetPRStateResponse)(nil),                           // 237: bossanova.v1.GetPRStateResponse
+	(*WaitPRStateRequest)(nil),                           // 238: bossanova.v1.WaitPRStateRequest
+	(*WaitPRStateResponse)(nil),                          // 239: bossanova.v1.WaitPRStateResponse
+	(*ListAgentsRequest)(nil),                            // 240: bossanova.v1.ListAgentsRequest
+	(*ListAgentsResponse)(nil),                           // 241: bossanova.v1.ListAgentsResponse
+	(*AgentInfo)(nil),                                    // 242: bossanova.v1.AgentInfo
+	(*CheckAgentLoginsRequest)(nil),                      // 243: bossanova.v1.CheckAgentLoginsRequest
+	(*CheckAgentLoginsResponse)(nil),                     // 244: bossanova.v1.CheckAgentLoginsResponse
+	(*AgentLogin)(nil),                                   // 245: bossanova.v1.AgentLogin
+	(*ListPluginsRequest)(nil),                           // 246: bossanova.v1.ListPluginsRequest
+	(*ListPluginsResponse)(nil),                          // 247: bossanova.v1.ListPluginsResponse
+	(*InstalledPlugin)(nil),                              // 248: bossanova.v1.InstalledPlugin
+	(*GetSettingsRequest)(nil),                           // 249: bossanova.v1.GetSettingsRequest
+	(*GetSettingsResponse)(nil),                          // 250: bossanova.v1.GetSettingsResponse
+	(*GlobalSettings)(nil),                               // 251: bossanova.v1.GlobalSettings
+	(*AgentSettings)(nil),                                // 252: bossanova.v1.AgentSettings
+	(*UpdateSettingsRequest)(nil),                        // 253: bossanova.v1.UpdateSettingsRequest
+	(*AgentSettingsUpdate)(nil),                          // 254: bossanova.v1.AgentSettingsUpdate
+	(*UpdateSettingsResponse)(nil),                       // 255: bossanova.v1.UpdateSettingsResponse
+	(*GetDaemonCapabilitiesRequest)(nil),                 // 256: bossanova.v1.GetDaemonCapabilitiesRequest
+	(*GetDaemonCapabilitiesResponse)(nil),                // 257: bossanova.v1.GetDaemonCapabilitiesResponse
+	(*UploadEvidenceRequest)(nil),                        // 258: bossanova.v1.UploadEvidenceRequest
+	(*EvidenceObject)(nil),                               // 259: bossanova.v1.EvidenceObject
+	(*UploadEvidenceResponse)(nil),                       // 260: bossanova.v1.UploadEvidenceResponse
+	(*HostedProofPageLimits)(nil),                        // 261: bossanova.v1.HostedProofPageLimits
+	(*RenewAgentCredentialDeviceEnrollmentRequest)(nil),  // 262: bossanova.v1.RenewAgentCredentialDeviceEnrollmentRequest
+	(*RenewAgentCredentialDeviceEnrollmentResponse)(nil), // 263: bossanova.v1.RenewAgentCredentialDeviceEnrollmentResponse
+	(*GetAgentCredentialDeviceStatusRequest)(nil),        // 264: bossanova.v1.GetAgentCredentialDeviceStatusRequest
+	(*GetAgentCredentialDeviceStatusResponse)(nil),       // 265: bossanova.v1.GetAgentCredentialDeviceStatusResponse
+	(*CredentialDeviceReadiness)(nil),                    // 266: bossanova.v1.CredentialDeviceReadiness
+	(*CredentialDeviceRemediationStep)(nil),              // 267: bossanova.v1.CredentialDeviceRemediationStep
+	(*SendBackToRepairRequest)(nil),                      // 268: bossanova.v1.SendBackToRepairRequest
+	(*SendBackToRepairResponse)(nil),                     // 269: bossanova.v1.SendBackToRepairResponse
+	(*GetFactoryHealthRequest)(nil),                      // 270: bossanova.v1.GetFactoryHealthRequest
+	(*GetFactoryHealthResponse)(nil),                     // 271: bossanova.v1.GetFactoryHealthResponse
+	(*FactoryHealthProblem)(nil),                         // 272: bossanova.v1.FactoryHealthProblem
+	(*ListSetupChecksRequest)(nil),                       // 273: bossanova.v1.ListSetupChecksRequest
+	(*ListSetupChecksResponse)(nil),                      // 274: bossanova.v1.ListSetupChecksResponse
+	(*SetupCheck)(nil),                                   // 275: bossanova.v1.SetupCheck
+	(*SetupCheckFix)(nil),                                // 276: bossanova.v1.SetupCheckFix
+	(*VerifyBlocker)(nil),                                // 277: bossanova.v1.VerifyBlocker
+	(*ListSessionPRBlockersRequest)(nil),                 // 278: bossanova.v1.ListSessionPRBlockersRequest
+	(*ListSessionPRBlockersResponse)(nil),                // 279: bossanova.v1.ListSessionPRBlockersResponse
+	(*AcceptSessionPRBlockerRequest)(nil),                // 280: bossanova.v1.AcceptSessionPRBlockerRequest
+	(*AcceptSessionPRBlockerResponse)(nil),               // 281: bossanova.v1.AcceptSessionPRBlockerResponse
+	(*GetGitHubReadCredentialRequest)(nil),               // 282: bossanova.v1.GetGitHubReadCredentialRequest
+	(*GetGitHubReadCredentialResponse)(nil),              // 283: bossanova.v1.GetGitHubReadCredentialResponse
+	(*GetViewerDeviceStatusRequest)(nil),                 // 284: bossanova.v1.GetViewerDeviceStatusRequest
+	(*GetViewerDeviceStatusResponse)(nil),                // 285: bossanova.v1.GetViewerDeviceStatusResponse
+	(*LocalViewerDevice)(nil),                            // 286: bossanova.v1.LocalViewerDevice
+	(*ListLocalViewerDevicesRequest)(nil),                // 287: bossanova.v1.ListLocalViewerDevicesRequest
+	(*ListLocalViewerDevicesResponse)(nil),               // 288: bossanova.v1.ListLocalViewerDevicesResponse
+	(*ApproveViewerDeviceRequest)(nil),                   // 289: bossanova.v1.ApproveViewerDeviceRequest
+	(*ApproveViewerDeviceResponse)(nil),                  // 290: bossanova.v1.ApproveViewerDeviceResponse
+	(*RevokeViewerDeviceRequest)(nil),                    // 291: bossanova.v1.RevokeViewerDeviceRequest
+	(*RevokeViewerDeviceResponse)(nil),                   // 292: bossanova.v1.RevokeViewerDeviceResponse
+	(*SetSessionTrackerRankRequest)(nil),                 // 293: bossanova.v1.SetSessionTrackerRankRequest
+	(*SetSessionTrackerRankResponse)(nil),                // 294: bossanova.v1.SetSessionTrackerRankResponse
+	(*ListRepoCloudControlsRequest)(nil),                 // 295: bossanova.v1.ListRepoCloudControlsRequest
+	(*ListRepoCloudControlsResponse)(nil),                // 296: bossanova.v1.ListRepoCloudControlsResponse
+	(*RepoCloudControl)(nil),                             // 297: bossanova.v1.RepoCloudControl
+	(*PostProofCheckRunRequest)(nil),                     // 298: bossanova.v1.PostProofCheckRunRequest
+	(*PostProofCheckRunResponse)(nil),                    // 299: bossanova.v1.PostProofCheckRunResponse
+	(*MintHostedProofViewLinkRequest)(nil),               // 300: bossanova.v1.MintHostedProofViewLinkRequest
+	(*MintHostedProofViewLinkResponse)(nil),              // 301: bossanova.v1.MintHostedProofViewLinkResponse
+	(*GetHostedProofLimitsRequest)(nil),                  // 302: bossanova.v1.GetHostedProofLimitsRequest
+	(*GetHostedProofLimitsResponse)(nil),                 // 303: bossanova.v1.GetHostedProofLimitsResponse
+	(*SessionServe)(nil),                                 // 304: bossanova.v1.SessionServe
+	(*StartSessionServeRequest)(nil),                     // 305: bossanova.v1.StartSessionServeRequest
+	(*StartSessionServeResponse)(nil),                    // 306: bossanova.v1.StartSessionServeResponse
+	(*StopSessionServeRequest)(nil),                      // 307: bossanova.v1.StopSessionServeRequest
+	(*StopSessionServeResponse)(nil),                     // 308: bossanova.v1.StopSessionServeResponse
+	(*GetSessionServeRequest)(nil),                       // 309: bossanova.v1.GetSessionServeRequest
+	(*GetSessionServeResponse)(nil),                      // 310: bossanova.v1.GetSessionServeResponse
+	(*ListSessionLabelsRequest)(nil),                     // 311: bossanova.v1.ListSessionLabelsRequest
+	(*ListSessionLabelsResponse)(nil),                    // 312: bossanova.v1.ListSessionLabelsResponse
+	(*CreateSessionLabelRequest)(nil),                    // 313: bossanova.v1.CreateSessionLabelRequest
+	(*CreateSessionLabelResponse)(nil),                   // 314: bossanova.v1.CreateSessionLabelResponse
+	(*UpdateSessionLabelRequest)(nil),                    // 315: bossanova.v1.UpdateSessionLabelRequest
+	(*UpdateSessionLabelResponse)(nil),                   // 316: bossanova.v1.UpdateSessionLabelResponse
+	(*DeleteSessionLabelRequest)(nil),                    // 317: bossanova.v1.DeleteSessionLabelRequest
+	(*DeleteSessionLabelResponse)(nil),                   // 318: bossanova.v1.DeleteSessionLabelResponse
+	(*SetSessionLabelsRequest)(nil),                      // 319: bossanova.v1.SetSessionLabelsRequest
+	(*SetSessionLabelsResponse)(nil),                     // 320: bossanova.v1.SetSessionLabelsResponse
+	nil,                                                  // 321: bossanova.v1.RunCostAggregate.TerminalStateMixEntry
+	nil,                                                  // 322: bossanova.v1.AgentSettings.ConfigEntry
+	nil,                                                  // 323: bossanova.v1.AgentSettingsUpdate.ConfigEntry
+	(ChatRole)(0),                                        // 324: bossanova.v1.ChatRole
+	(*Repo)(nil),                                         // 325: bossanova.v1.Repo
+	(*Session)(nil),                                      // 326: bossanova.v1.Session
+	(*SecretUpdate)(nil),                                 // 327: bossanova.v1.SecretUpdate
+	(*timestamppb.Timestamp)(nil),                        // 328: google.protobuf.Timestamp
+	(*RepoSettings)(nil),                                 // 329: bossanova.v1.RepoSettings
+	(*PRListQuery)(nil),                                  // 330: bossanova.v1.PRListQuery
+	(*PRSummary)(nil),                                    // 331: bossanova.v1.PRSummary
+	(*TrackerIssue)(nil),                                 // 332: bossanova.v1.TrackerIssue
+	(SessionState)(0),                                    // 333: bossanova.v1.SessionState
+	(ReviewQueueSort)(0),                                 // 334: bossanova.v1.ReviewQueueSort
+	(*ReviewQueueRow)(nil),                               // 335: bossanova.v1.ReviewQueueRow
+	(*ReviewQueueLevelCount)(nil),                        // 336: bossanova.v1.ReviewQueueLevelCount
+	(SessionEvent)(0),                                    // 337: bossanova.v1.SessionEvent
+	(*AgentChat)(nil),                                    // 338: bossanova.v1.AgentChat
+	(*MCPServerReport)(nil),                              // 339: bossanova.v1.MCPServerReport
+	(*ChatMessage)(nil),                                  // 340: bossanova.v1.ChatMessage
+	(ChatStatus)(0),                                      // 341: bossanova.v1.ChatStatus
+	(*VCSEvent)(nil),                                     // 342: bossanova.v1.VCSEvent
+	(CronJobConcurrencyPolicy)(0),                        // 343: bossanova.v1.CronJobConcurrencyPolicy
+	(*CronJob)(nil),                                      // 344: bossanova.v1.CronJob
+	(*GitHubCallback)(nil),                               // 345: bossanova.v1.GitHubCallback
+	(*AgentAccount)(nil),                                 // 346: bossanova.v1.AgentAccount
+	(DisplayStatus)(0),                                   // 347: bossanova.v1.DisplayStatus
+	(CheckStatus)(0),                                     // 348: bossanova.v1.CheckStatus
+	(CheckConclusion)(0),                                 // 349: bossanova.v1.CheckConclusion
+	(PRState)(0),                                         // 350: bossanova.v1.PRState
+	(ReviewState)(0),                                     // 351: bossanova.v1.ReviewState
+	(*ReviewComment)(nil),                                // 352: bossanova.v1.ReviewComment
+	(*UserSetting)(nil),                                  // 353: bossanova.v1.UserSetting
+	(AgentLoginStatus)(0),                                // 354: bossanova.v1.AgentLoginStatus
+	(*AgentCredentialDevice)(nil),                        // 355: bossanova.v1.AgentCredentialDevice
+	(*TrackerRank)(nil),                                  // 356: bossanova.v1.TrackerRank
+	(*ServiceLink)(nil),                                  // 357: bossanova.v1.ServiceLink
+	(*SessionLabel)(nil),                                 // 358: bossanova.v1.SessionLabel
+	(*AcquireTrackerIssueLeaseRequest)(nil),              // 359: bossanova.v1.AcquireTrackerIssueLeaseRequest
+	(*ReleaseTrackerIssueLeaseRequest)(nil),              // 360: bossanova.v1.ReleaseTrackerIssueLeaseRequest
+	(*ListAgentCredentialDevicesRequest)(nil),            // 361: bossanova.v1.ListAgentCredentialDevicesRequest
+	(*ApproveAgentCredentialDeviceRequest)(nil),          // 362: bossanova.v1.ApproveAgentCredentialDeviceRequest
+	(*RevokeAgentCredentialDeviceRequest)(nil),           // 363: bossanova.v1.RevokeAgentCredentialDeviceRequest
+	(*AcquireTrackerIssueLeaseResponse)(nil),             // 364: bossanova.v1.AcquireTrackerIssueLeaseResponse
+	(*ReleaseTrackerIssueLeaseResponse)(nil),             // 365: bossanova.v1.ReleaseTrackerIssueLeaseResponse
+	(*ListAgentCredentialDevicesResponse)(nil),           // 366: bossanova.v1.ListAgentCredentialDevicesResponse
+	(*ApproveAgentCredentialDeviceResponse)(nil),         // 367: bossanova.v1.ApproveAgentCredentialDeviceResponse
+	(*RevokeAgentCredentialDeviceResponse)(nil),          // 368: bossanova.v1.RevokeAgentCredentialDeviceResponse
 }
 var file_bossanova_v1_daemon_proto_depIdxs = []int32{
 	0,   // 0: bossanova.v1.DescribeCallerResponse.kind:type_name -> bossanova.v1.CallerKind
-	319, // 1: bossanova.v1.DescribeCallerResponse.role:type_name -> bossanova.v1.ChatRole
-	320, // 2: bossanova.v1.ResolveContextResponse.repo:type_name -> bossanova.v1.Repo
-	321, // 3: bossanova.v1.ResolveContextResponse.session:type_name -> bossanova.v1.Session
-	320, // 4: bossanova.v1.RegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
-	320, // 5: bossanova.v1.CloneAndRegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
-	320, // 6: bossanova.v1.ListReposResponse.repos:type_name -> bossanova.v1.Repo
-	322, // 7: bossanova.v1.UpdateRepoRequest.linear_key:type_name -> bossanova.v1.SecretUpdate
-	322, // 8: bossanova.v1.UpdateRepoRequest.sentry_key:type_name -> bossanova.v1.SecretUpdate
-	323, // 9: bossanova.v1.UpdateRepoRequest.expected_updated_at:type_name -> google.protobuf.Timestamp
-	320, // 10: bossanova.v1.UpdateRepoResponse.repo:type_name -> bossanova.v1.Repo
-	324, // 11: bossanova.v1.GetRepoSettingsResponse.settings:type_name -> bossanova.v1.RepoSettings
-	325, // 12: bossanova.v1.ListRepoPRsRequest.query:type_name -> bossanova.v1.PRListQuery
-	326, // 13: bossanova.v1.ListRepoPRsResponse.pull_requests:type_name -> bossanova.v1.PRSummary
-	327, // 14: bossanova.v1.ListTrackerIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
-	327, // 15: bossanova.v1.CreateSessionRequest.tracker_issue:type_name -> bossanova.v1.TrackerIssue
-	46,  // 16: bossanova.v1.CreateSessionResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
-	50,  // 17: bossanova.v1.CreateSessionResponse.session_created:type_name -> bossanova.v1.SessionCreated
-	1,   // 18: bossanova.v1.CreateSessionConflict.reason:type_name -> bossanova.v1.CreateSessionConflictReason
-	46,  // 19: bossanova.v1.WatchSessionSetupResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
-	49,  // 20: bossanova.v1.WatchSessionSetupResponse.setup_settled:type_name -> bossanova.v1.SessionSetupSettled
-	321, // 21: bossanova.v1.SessionCreated.session:type_name -> bossanova.v1.Session
-	321, // 22: bossanova.v1.GetSessionResponse.session:type_name -> bossanova.v1.Session
-	328, // 23: bossanova.v1.ListSessionsRequest.states:type_name -> bossanova.v1.SessionState
-	321, // 24: bossanova.v1.ListSessionsResponse.sessions:type_name -> bossanova.v1.Session
-	329, // 25: bossanova.v1.ListReviewQueueRequest.sort:type_name -> bossanova.v1.ReviewQueueSort
-	330, // 26: bossanova.v1.ListReviewQueueResponse.rows:type_name -> bossanova.v1.ReviewQueueRow
-	331, // 27: bossanova.v1.ListReviewQueueResponse.level_counts:type_name -> bossanova.v1.ReviewQueueLevelCount
-	2,   // 28: bossanova.v1.MoveSessionRequest.direction:type_name -> bossanova.v1.MoveDirection
-	321, // 29: bossanova.v1.MoveSessionResponse.session:type_name -> bossanova.v1.Session
-	321, // 30: bossanova.v1.DismissSessionAlertResponse.session:type_name -> bossanova.v1.Session
-	63,  // 31: bossanova.v1.AttachSessionResponse.output_line:type_name -> bossanova.v1.OutputLine
-	64,  // 32: bossanova.v1.AttachSessionResponse.state_change:type_name -> bossanova.v1.StateChange
-	65,  // 33: bossanova.v1.AttachSessionResponse.session_ended:type_name -> bossanova.v1.SessionEnded
-	323, // 34: bossanova.v1.OutputLine.timestamp:type_name -> google.protobuf.Timestamp
-	328, // 35: bossanova.v1.StateChange.previous_state:type_name -> bossanova.v1.SessionState
-	328, // 36: bossanova.v1.StateChange.new_state:type_name -> bossanova.v1.SessionState
-	332, // 37: bossanova.v1.StateChange.trigger:type_name -> bossanova.v1.SessionEvent
-	328, // 38: bossanova.v1.SessionEnded.final_state:type_name -> bossanova.v1.SessionState
-	321, // 39: bossanova.v1.StopSessionResponse.session:type_name -> bossanova.v1.Session
-	321, // 40: bossanova.v1.PauseSessionResponse.session:type_name -> bossanova.v1.Session
-	321, // 41: bossanova.v1.ResumeSessionResponse.session:type_name -> bossanova.v1.Session
-	321, // 42: bossanova.v1.ResumeSessionRunResponse.session:type_name -> bossanova.v1.Session
-	321, // 43: bossanova.v1.RetrySessionResponse.session:type_name -> bossanova.v1.Session
-	321, // 44: bossanova.v1.CloseSessionResponse.session:type_name -> bossanova.v1.Session
-	321, // 45: bossanova.v1.MergeSessionResponse.session:type_name -> bossanova.v1.Session
-	86,  // 46: bossanova.v1.ApproveSessionPRResponse.result:type_name -> bossanova.v1.VerifyApproveResult
-	84,  // 47: bossanova.v1.FollowUpSessionPRNotesResponse.result:type_name -> bossanova.v1.VerifyFollowUpResult
-	85,  // 48: bossanova.v1.VerifyFollowUpResult.notes:type_name -> bossanova.v1.VerifyNoteFollowUp
-	321, // 49: bossanova.v1.OperatorMergeSessionResponse.session:type_name -> bossanova.v1.Session
-	86,  // 50: bossanova.v1.OperatorMergeSessionResponse.approval:type_name -> bossanova.v1.VerifyApproveResult
-	321, // 51: bossanova.v1.UpdateSessionResponse.session:type_name -> bossanova.v1.Session
-	321, // 52: bossanova.v1.LinkSessionPRResponse.session:type_name -> bossanova.v1.Session
-	321, // 53: bossanova.v1.SetSessionTrackerResponse.session:type_name -> bossanova.v1.Session
-	321, // 54: bossanova.v1.RefreshSessionPRResponse.session:type_name -> bossanova.v1.Session
-	321, // 55: bossanova.v1.ArchiveSessionResponse.session:type_name -> bossanova.v1.Session
-	46,  // 56: bossanova.v1.ResurrectSessionResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
-	107, // 57: bossanova.v1.ResurrectSessionResponse.session_resurrected:type_name -> bossanova.v1.SessionResurrected
-	321, // 58: bossanova.v1.SessionResurrected.session:type_name -> bossanova.v1.Session
-	323, // 59: bossanova.v1.EmptyTrashRequest.older_than:type_name -> google.protobuf.Timestamp
-	319, // 60: bossanova.v1.RecordChatRequest.role:type_name -> bossanova.v1.ChatRole
-	333, // 61: bossanova.v1.RecordChatResponse.chat:type_name -> bossanova.v1.AgentChat
-	333, // 62: bossanova.v1.ListChatsResponse.chats:type_name -> bossanova.v1.AgentChat
-	13,  // 63: bossanova.v1.DeleteChatRequest.reason:type_name -> bossanova.v1.DeleteChatRequest.DeletionReason
-	14,  // 64: bossanova.v1.WakeChatResponse.outcome:type_name -> bossanova.v1.WakeChatResponse.Outcome
-	334, // 65: bossanova.v1.DescribeChatMCPResponse.servers:type_name -> bossanova.v1.MCPServerReport
-	323, // 66: bossanova.v1.DescribeChatMCPResponse.probed_at:type_name -> google.protobuf.Timestamp
-	335, // 67: bossanova.v1.GetChatTranscriptResponse.messages:type_name -> bossanova.v1.ChatMessage
-	15,  // 68: bossanova.v1.SendChatMessageResponse.delivery_state:type_name -> bossanova.v1.SendChatMessageResponse.DeliveryState
-	16,  // 69: bossanova.v1.SendChatMessageResponse.turn_start_state:type_name -> bossanova.v1.SendChatMessageResponse.TurnStartState
-	336, // 70: bossanova.v1.ChatStatusReport.status:type_name -> bossanova.v1.ChatStatus
-	323, // 71: bossanova.v1.ChatStatusReport.last_output_at:type_name -> google.protobuf.Timestamp
-	128, // 72: bossanova.v1.ReportChatStatusRequest.reports:type_name -> bossanova.v1.ChatStatusReport
-	336, // 73: bossanova.v1.ChatStatusEntry.status:type_name -> bossanova.v1.ChatStatus
-	323, // 74: bossanova.v1.ChatStatusEntry.last_output_at:type_name -> google.protobuf.Timestamp
-	323, // 75: bossanova.v1.ChatStatusEntry.last_substantive_output_at:type_name -> google.protobuf.Timestamp
-	134, // 76: bossanova.v1.GetChatStatusesResponse.statuses:type_name -> bossanova.v1.ChatStatusEntry
-	336, // 77: bossanova.v1.SessionStatusEntry.status:type_name -> bossanova.v1.ChatStatus
-	137, // 78: bossanova.v1.GetSessionStatusesResponse.statuses:type_name -> bossanova.v1.SessionStatusEntry
-	337, // 79: bossanova.v1.DeliverVCSEventRequest.event:type_name -> bossanova.v1.VCSEvent
-	17,  // 80: bossanova.v1.NotifyAuthChangeResponse.outcome:type_name -> bossanova.v1.NotifyAuthChangeResponse.Outcome
-	323, // 81: bossanova.v1.GetAuthStateResponse.last_registered_at:type_name -> google.protobuf.Timestamp
-	323, // 82: bossanova.v1.GetAuthStateResponse.auth_failing_since:type_name -> google.protobuf.Timestamp
-	145, // 83: bossanova.v1.GetAuthStateResponse.github_credential_report:type_name -> bossanova.v1.GitHubCredentialReport
-	146, // 84: bossanova.v1.GitHubCredentialReport.repos:type_name -> bossanova.v1.GitHubCredentialState
-	3,   // 85: bossanova.v1.GitHubCredentialState.identity:type_name -> bossanova.v1.GitHubCredentialIdentity
-	323, // 86: bossanova.v1.GitHubCredentialState.expires_at:type_name -> google.protobuf.Timestamp
-	323, // 87: bossanova.v1.GitHubCredentialState.next_attempt_at:type_name -> google.protobuf.Timestamp
-	338, // 88: bossanova.v1.CreateCronJobRequest.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
-	339, // 89: bossanova.v1.CreateCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
-	339, // 90: bossanova.v1.ListCronJobsResponse.cron_jobs:type_name -> bossanova.v1.CronJob
-	339, // 91: bossanova.v1.GetCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
-	338, // 92: bossanova.v1.UpdateCronJobRequest.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
-	339, // 93: bossanova.v1.UpdateCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
-	321, // 94: bossanova.v1.RunCronJobNowResponse.session:type_name -> bossanova.v1.Session
-	323, // 95: bossanova.v1.CreateGitHubCallbackRequest.expires_at:type_name -> google.protobuf.Timestamp
-	340, // 96: bossanova.v1.CreateGitHubCallbackResponse.github_callback:type_name -> bossanova.v1.GitHubCallback
-	340, // 97: bossanova.v1.ListGitHubCallbacksResponse.github_callbacks:type_name -> bossanova.v1.GitHubCallback
-	165, // 98: bossanova.v1.BroadcastSelector.clauses:type_name -> bossanova.v1.BroadcastSelectorClause
-	166, // 99: bossanova.v1.Broadcast.selector:type_name -> bossanova.v1.BroadcastSelector
-	323, // 100: bossanova.v1.Broadcast.created_at:type_name -> google.protobuf.Timestamp
-	323, // 101: bossanova.v1.Broadcast.expires_at:type_name -> google.protobuf.Timestamp
-	323, // 102: bossanova.v1.BroadcastDelivery.delivered_at:type_name -> google.protobuf.Timestamp
-	166, // 103: bossanova.v1.SendBroadcastRequest.selector:type_name -> bossanova.v1.BroadcastSelector
-	167, // 104: bossanova.v1.SendBroadcastResponse.broadcast:type_name -> bossanova.v1.Broadcast
-	168, // 105: bossanova.v1.SendBroadcastResponse.deliveries:type_name -> bossanova.v1.BroadcastDelivery
-	167, // 106: bossanova.v1.ListBroadcastsResponse.broadcasts:type_name -> bossanova.v1.Broadcast
-	323, // 107: bossanova.v1.Note.created_at:type_name -> google.protobuf.Timestamp
-	323, // 108: bossanova.v1.Note.updated_at:type_name -> google.protobuf.Timestamp
-	323, // 109: bossanova.v1.Note.synced_at:type_name -> google.protobuf.Timestamp
-	175, // 110: bossanova.v1.CreateNoteResponse.note:type_name -> bossanova.v1.Note
-	175, // 111: bossanova.v1.GetNoteResponse.note:type_name -> bossanova.v1.Note
-	175, // 112: bossanova.v1.ListNotesResponse.notes:type_name -> bossanova.v1.Note
-	176, // 113: bossanova.v1.UpdateNoteRequest.tags:type_name -> bossanova.v1.NoteTagSet
-	175, // 114: bossanova.v1.UpdateNoteResponse.note:type_name -> bossanova.v1.Note
-	189, // 115: bossanova.v1.SyncNotesNowResponse.state_counts:type_name -> bossanova.v1.NoteSyncStateCount
-	166, // 116: bossanova.v1.BroadcastSubscription.selector:type_name -> bossanova.v1.BroadcastSelector
-	323, // 117: bossanova.v1.BroadcastSubscription.fired_at:type_name -> google.protobuf.Timestamp
-	323, // 118: bossanova.v1.BroadcastSubscription.expires_at:type_name -> google.protobuf.Timestamp
-	323, // 119: bossanova.v1.BroadcastSubscription.created_at:type_name -> google.protobuf.Timestamp
-	323, // 120: bossanova.v1.BroadcastSubscription.updated_at:type_name -> google.protobuf.Timestamp
-	166, // 121: bossanova.v1.CreateBroadcastSubscriptionRequest.selector:type_name -> bossanova.v1.BroadcastSelector
-	190, // 122: bossanova.v1.CreateBroadcastSubscriptionResponse.subscription:type_name -> bossanova.v1.BroadcastSubscription
-	190, // 123: bossanova.v1.ListBroadcastSubscriptionsResponse.subscriptions:type_name -> bossanova.v1.BroadcastSubscription
-	341, // 124: bossanova.v1.ListAgentAccountsResponse.accounts:type_name -> bossanova.v1.AgentAccount
-	341, // 125: bossanova.v1.AddAgentAccountResponse.account:type_name -> bossanova.v1.AgentAccount
-	341, // 126: bossanova.v1.RefreshAgentAccountResponse.account:type_name -> bossanova.v1.AgentAccount
-	341, // 127: bossanova.v1.UpdateAgentAccountResponse.account:type_name -> bossanova.v1.AgentAccount
-	341, // 128: bossanova.v1.TestAgentAccountResponse.account:type_name -> bossanova.v1.AgentAccount
-	210, // 129: bossanova.v1.RepairDoctorResponse.checks:type_name -> bossanova.v1.RepairDoctorCheck
-	214, // 130: bossanova.v1.RepairDoctorResponse.recent_logs:type_name -> bossanova.v1.RepairLogSnapshot
-	323, // 131: bossanova.v1.RepairLogSnapshot.modified_at:type_name -> google.protobuf.Timestamp
-	323, // 132: bossanova.v1.CheckSnapshot.polled_at:type_name -> google.protobuf.Timestamp
-	342, // 133: bossanova.v1.CheckSnapshot.computed_status:type_name -> bossanova.v1.DisplayStatus
-	216, // 134: bossanova.v1.ListCheckSnapshotsResponse.snapshots:type_name -> bossanova.v1.CheckSnapshot
-	220, // 135: bossanova.v1.GetSessionTimelineResponse.steps:type_name -> bossanova.v1.TimelineStep
-	323, // 136: bossanova.v1.TimelineStep.at:type_name -> google.protobuf.Timestamp
-	4,   // 137: bossanova.v1.TimelineStep.state:type_name -> bossanova.v1.TimelineStepState
-	323, // 138: bossanova.v1.GetRunCostRequest.since:type_name -> google.protobuf.Timestamp
-	323, // 139: bossanova.v1.GetRunCostRequest.until:type_name -> google.protobuf.Timestamp
-	323, // 140: bossanova.v1.AgentRunCost.started_at:type_name -> google.protobuf.Timestamp
-	323, // 141: bossanova.v1.AgentRunCost.stopped_at:type_name -> google.protobuf.Timestamp
-	316, // 142: bossanova.v1.RunCostAggregate.terminal_state_mix:type_name -> bossanova.v1.RunCostAggregate.TerminalStateMixEntry
-	222, // 143: bossanova.v1.GetRunCostResponse.runs:type_name -> bossanova.v1.AgentRunCost
-	223, // 144: bossanova.v1.GetRunCostResponse.aggregate:type_name -> bossanova.v1.RunCostAggregate
-	224, // 145: bossanova.v1.GetRunCostResponse.backfill_summary:type_name -> bossanova.v1.RunCostBackfillSummary
-	227, // 146: bossanova.v1.GetGitHubUsageResponse.rows:type_name -> bossanova.v1.GitHubUsageRow
-	323, // 147: bossanova.v1.GetGitHubUsageResponse.window_started_at:type_name -> google.protobuf.Timestamp
-	323, // 148: bossanova.v1.GetGitHubUsageResponse.window_ended_at:type_name -> google.protobuf.Timestamp
-	343, // 149: bossanova.v1.PRCheck.status:type_name -> bossanova.v1.CheckStatus
-	344, // 150: bossanova.v1.PRCheck.conclusion:type_name -> bossanova.v1.CheckConclusion
-	5,   // 151: bossanova.v1.PRCheckVerdict.state:type_name -> bossanova.v1.PRCheckVerdictState
-	6,   // 152: bossanova.v1.PRVerifyPhase.kind:type_name -> bossanova.v1.PRVerifyPhaseKind
-	345, // 153: bossanova.v1.GetPRStateResponse.state:type_name -> bossanova.v1.PRState
-	346, // 154: bossanova.v1.GetPRStateResponse.review_decision:type_name -> bossanova.v1.ReviewState
-	346, // 155: bossanova.v1.GetPRStateResponse.latest_review_state:type_name -> bossanova.v1.ReviewState
-	230, // 156: bossanova.v1.GetPRStateResponse.checks:type_name -> bossanova.v1.PRCheck
-	231, // 157: bossanova.v1.GetPRStateResponse.check_verdict:type_name -> bossanova.v1.PRCheckVerdict
-	232, // 158: bossanova.v1.GetPRStateResponse.verify_phase:type_name -> bossanova.v1.PRVerifyPhase
-	233, // 159: bossanova.v1.GetPRStateResponse.held_workflow_runs:type_name -> bossanova.v1.PRHeldWorkflowRun
-	347, // 160: bossanova.v1.GetPRStateResponse.review_comments:type_name -> bossanova.v1.ReviewComment
-	323, // 161: bossanova.v1.GetPRStateResponse.observed_at:type_name -> google.protobuf.Timestamp
-	234, // 162: bossanova.v1.GetPRStateResponse.workflow_runs:type_name -> bossanova.v1.PRWorkflowRun
-	7,   // 163: bossanova.v1.WaitPRStateRequest.condition:type_name -> bossanova.v1.PRWaitCondition
-	8,   // 164: bossanova.v1.WaitPRStateResponse.outcome:type_name -> bossanova.v1.PRWaitOutcome
-	235, // 165: bossanova.v1.WaitPRStateResponse.snapshot:type_name -> bossanova.v1.GetPRStateResponse
-	240, // 166: bossanova.v1.ListAgentsResponse.agents:type_name -> bossanova.v1.AgentInfo
-	348, // 167: bossanova.v1.AgentInfo.user_settings:type_name -> bossanova.v1.UserSetting
-	243, // 168: bossanova.v1.ListPluginsResponse.plugins:type_name -> bossanova.v1.InstalledPlugin
-	18,  // 169: bossanova.v1.InstalledPlugin.status:type_name -> bossanova.v1.InstalledPlugin.Status
-	246, // 170: bossanova.v1.GetSettingsResponse.settings:type_name -> bossanova.v1.GlobalSettings
-	247, // 171: bossanova.v1.GlobalSettings.agents:type_name -> bossanova.v1.AgentSettings
-	317, // 172: bossanova.v1.AgentSettings.config:type_name -> bossanova.v1.AgentSettings.ConfigEntry
-	249, // 173: bossanova.v1.UpdateSettingsRequest.agents:type_name -> bossanova.v1.AgentSettingsUpdate
-	318, // 174: bossanova.v1.AgentSettingsUpdate.config:type_name -> bossanova.v1.AgentSettingsUpdate.ConfigEntry
-	246, // 175: bossanova.v1.UpdateSettingsResponse.settings:type_name -> bossanova.v1.GlobalSettings
-	254, // 176: bossanova.v1.UploadEvidenceRequest.objects:type_name -> bossanova.v1.EvidenceObject
-	9,   // 177: bossanova.v1.UploadEvidenceRequest.destination:type_name -> bossanova.v1.EvidenceDestination
-	9,   // 178: bossanova.v1.UploadEvidenceResponse.destination:type_name -> bossanova.v1.EvidenceDestination
-	256, // 179: bossanova.v1.UploadEvidenceResponse.hosted_limits:type_name -> bossanova.v1.HostedProofPageLimits
-	349, // 180: bossanova.v1.RenewAgentCredentialDeviceEnrollmentResponse.device:type_name -> bossanova.v1.AgentCredentialDevice
-	349, // 181: bossanova.v1.GetAgentCredentialDeviceStatusResponse.device:type_name -> bossanova.v1.AgentCredentialDevice
-	261, // 182: bossanova.v1.GetAgentCredentialDeviceStatusResponse.readiness:type_name -> bossanova.v1.CredentialDeviceReadiness
-	262, // 183: bossanova.v1.CredentialDeviceReadiness.remediation_steps:type_name -> bossanova.v1.CredentialDeviceRemediationStep
-	323, // 184: bossanova.v1.CredentialDeviceReadiness.checked_at:type_name -> google.protobuf.Timestamp
-	323, // 185: bossanova.v1.CredentialDeviceReadiness.expires_at:type_name -> google.protobuf.Timestamp
-	267, // 186: bossanova.v1.GetFactoryHealthResponse.problems:type_name -> bossanova.v1.FactoryHealthProblem
-	323, // 187: bossanova.v1.GetFactoryHealthResponse.checked_at:type_name -> google.protobuf.Timestamp
-	323, // 188: bossanova.v1.FactoryHealthProblem.started_at:type_name -> google.protobuf.Timestamp
-	270, // 189: bossanova.v1.ListSetupChecksResponse.checks:type_name -> bossanova.v1.SetupCheck
-	323, // 190: bossanova.v1.ListSetupChecksResponse.checked_at:type_name -> google.protobuf.Timestamp
-	10,  // 191: bossanova.v1.SetupCheck.area:type_name -> bossanova.v1.SetupCheckArea
-	11,  // 192: bossanova.v1.SetupCheck.status:type_name -> bossanova.v1.SetupCheckStatus
-	271, // 193: bossanova.v1.SetupCheck.fix:type_name -> bossanova.v1.SetupCheckFix
-	12,  // 194: bossanova.v1.SetupCheckFix.kind:type_name -> bossanova.v1.SetupCheckFixKind
-	272, // 195: bossanova.v1.ListSessionPRBlockersResponse.blockers:type_name -> bossanova.v1.VerifyBlocker
-	323, // 196: bossanova.v1.LocalViewerDevice.approved_at:type_name -> google.protobuf.Timestamp
-	281, // 197: bossanova.v1.ListLocalViewerDevicesResponse.devices:type_name -> bossanova.v1.LocalViewerDevice
-	350, // 198: bossanova.v1.SetSessionTrackerRankRequest.tracker_rank:type_name -> bossanova.v1.TrackerRank
-	321, // 199: bossanova.v1.SetSessionTrackerRankResponse.session:type_name -> bossanova.v1.Session
-	292, // 200: bossanova.v1.ListRepoCloudControlsResponse.repos:type_name -> bossanova.v1.RepoCloudControl
-	323, // 201: bossanova.v1.MintHostedProofViewLinkResponse.expires_at:type_name -> google.protobuf.Timestamp
-	256, // 202: bossanova.v1.GetHostedProofLimitsResponse.limits:type_name -> bossanova.v1.HostedProofPageLimits
-	351, // 203: bossanova.v1.SessionServe.service_links:type_name -> bossanova.v1.ServiceLink
-	323, // 204: bossanova.v1.SessionServe.started_at:type_name -> google.protobuf.Timestamp
-	299, // 205: bossanova.v1.StartSessionServeResponse.serve:type_name -> bossanova.v1.SessionServe
-	299, // 206: bossanova.v1.StopSessionServeResponse.serve:type_name -> bossanova.v1.SessionServe
-	299, // 207: bossanova.v1.GetSessionServeResponse.serve:type_name -> bossanova.v1.SessionServe
-	352, // 208: bossanova.v1.ListSessionLabelsResponse.labels:type_name -> bossanova.v1.SessionLabel
-	352, // 209: bossanova.v1.CreateSessionLabelResponse.label:type_name -> bossanova.v1.SessionLabel
-	352, // 210: bossanova.v1.UpdateSessionLabelResponse.label:type_name -> bossanova.v1.SessionLabel
-	321, // 211: bossanova.v1.SetSessionLabelsResponse.session:type_name -> bossanova.v1.Session
-	21,  // 212: bossanova.v1.DaemonService.ResolveContext:input_type -> bossanova.v1.ResolveContextRequest
-	19,  // 213: bossanova.v1.DaemonService.DescribeCaller:input_type -> bossanova.v1.DescribeCallerRequest
-	253, // 214: bossanova.v1.DaemonService.UploadEvidence:input_type -> bossanova.v1.UploadEvidenceRequest
-	293, // 215: bossanova.v1.DaemonService.PostProofCheckRun:input_type -> bossanova.v1.PostProofCheckRunRequest
-	295, // 216: bossanova.v1.DaemonService.MintHostedProofViewLink:input_type -> bossanova.v1.MintHostedProofViewLinkRequest
-	297, // 217: bossanova.v1.DaemonService.GetHostedProofLimits:input_type -> bossanova.v1.GetHostedProofLimitsRequest
-	265, // 218: bossanova.v1.DaemonService.GetFactoryHealth:input_type -> bossanova.v1.GetFactoryHealthRequest
-	268, // 219: bossanova.v1.DaemonService.ListSetupChecks:input_type -> bossanova.v1.ListSetupChecksRequest
-	23,  // 220: bossanova.v1.DaemonService.ValidateRepoPath:input_type -> bossanova.v1.ValidateRepoPathRequest
-	25,  // 221: bossanova.v1.DaemonService.DetectSetupScript:input_type -> bossanova.v1.DetectSetupScriptRequest
-	27,  // 222: bossanova.v1.DaemonService.RegisterRepo:input_type -> bossanova.v1.RegisterRepoRequest
-	29,  // 223: bossanova.v1.DaemonService.CloneAndRegisterRepo:input_type -> bossanova.v1.CloneAndRegisterRepoRequest
-	31,  // 224: bossanova.v1.DaemonService.ListRepos:input_type -> bossanova.v1.ListReposRequest
-	33,  // 225: bossanova.v1.DaemonService.RemoveRepo:input_type -> bossanova.v1.RemoveRepoRequest
-	35,  // 226: bossanova.v1.DaemonService.UpdateRepo:input_type -> bossanova.v1.UpdateRepoRequest
-	37,  // 227: bossanova.v1.DaemonService.GetRepoSettings:input_type -> bossanova.v1.GetRepoSettingsRequest
-	39,  // 228: bossanova.v1.DaemonService.ListRepoPRs:input_type -> bossanova.v1.ListRepoPRsRequest
-	41,  // 229: bossanova.v1.DaemonService.ListTrackerIssues:input_type -> bossanova.v1.ListTrackerIssuesRequest
-	43,  // 230: bossanova.v1.DaemonService.CreateSession:input_type -> bossanova.v1.CreateSessionRequest
-	51,  // 231: bossanova.v1.DaemonService.GetSession:input_type -> bossanova.v1.GetSessionRequest
-	53,  // 232: bossanova.v1.DaemonService.ListSessions:input_type -> bossanova.v1.ListSessionsRequest
-	55,  // 233: bossanova.v1.DaemonService.ListReviewQueue:input_type -> bossanova.v1.ListReviewQueueRequest
-	57,  // 234: bossanova.v1.DaemonService.MoveSession:input_type -> bossanova.v1.MoveSessionRequest
-	59,  // 235: bossanova.v1.DaemonService.DismissSessionAlert:input_type -> bossanova.v1.DismissSessionAlertRequest
-	61,  // 236: bossanova.v1.DaemonService.AttachSession:input_type -> bossanova.v1.AttachSessionRequest
-	66,  // 237: bossanova.v1.DaemonService.StopSession:input_type -> bossanova.v1.StopSessionRequest
-	68,  // 238: bossanova.v1.DaemonService.PauseSession:input_type -> bossanova.v1.PauseSessionRequest
-	70,  // 239: bossanova.v1.DaemonService.ResumeSession:input_type -> bossanova.v1.ResumeSessionRequest
-	72,  // 240: bossanova.v1.DaemonService.ResumeSessionRun:input_type -> bossanova.v1.ResumeSessionRunRequest
-	74,  // 241: bossanova.v1.DaemonService.RetrySession:input_type -> bossanova.v1.RetrySessionRequest
-	76,  // 242: bossanova.v1.DaemonService.CloseSession:input_type -> bossanova.v1.CloseSessionRequest
-	78,  // 243: bossanova.v1.DaemonService.MergeSession:input_type -> bossanova.v1.MergeSessionRequest
-	80,  // 244: bossanova.v1.DaemonService.ApproveSessionPR:input_type -> bossanova.v1.ApproveSessionPRRequest
-	82,  // 245: bossanova.v1.DaemonService.FollowUpSessionPRNotes:input_type -> bossanova.v1.FollowUpSessionPRNotesRequest
-	87,  // 246: bossanova.v1.DaemonService.OperatorMergeSession:input_type -> bossanova.v1.OperatorMergeSessionRequest
-	263, // 247: bossanova.v1.DaemonService.SendBackToRepair:input_type -> bossanova.v1.SendBackToRepairRequest
-	273, // 248: bossanova.v1.DaemonService.ListSessionPRBlockers:input_type -> bossanova.v1.ListSessionPRBlockersRequest
-	275, // 249: bossanova.v1.DaemonService.AcceptSessionPRBlocker:input_type -> bossanova.v1.AcceptSessionPRBlockerRequest
-	89,  // 250: bossanova.v1.DaemonService.RemoveSession:input_type -> bossanova.v1.RemoveSessionRequest
-	91,  // 251: bossanova.v1.DaemonService.UpdateSession:input_type -> bossanova.v1.UpdateSessionRequest
-	306, // 252: bossanova.v1.DaemonService.ListSessionLabels:input_type -> bossanova.v1.ListSessionLabelsRequest
-	308, // 253: bossanova.v1.DaemonService.CreateSessionLabel:input_type -> bossanova.v1.CreateSessionLabelRequest
-	310, // 254: bossanova.v1.DaemonService.UpdateSessionLabel:input_type -> bossanova.v1.UpdateSessionLabelRequest
-	312, // 255: bossanova.v1.DaemonService.DeleteSessionLabel:input_type -> bossanova.v1.DeleteSessionLabelRequest
-	314, // 256: bossanova.v1.DaemonService.SetSessionLabels:input_type -> bossanova.v1.SetSessionLabelsRequest
-	93,  // 257: bossanova.v1.DaemonService.LinkSessionPR:input_type -> bossanova.v1.LinkSessionPRRequest
-	95,  // 258: bossanova.v1.DaemonService.SetSessionTracker:input_type -> bossanova.v1.SetSessionTrackerRequest
-	288, // 259: bossanova.v1.DaemonService.SetSessionTrackerRank:input_type -> bossanova.v1.SetSessionTrackerRankRequest
-	97,  // 260: bossanova.v1.DaemonService.RefreshSessionPR:input_type -> bossanova.v1.RefreshSessionPRRequest
-	99,  // 261: bossanova.v1.DaemonService.SwitchSessionAgentAccount:input_type -> bossanova.v1.SwitchSessionAgentAccountRequest
-	300, // 262: bossanova.v1.DaemonService.StartSessionServe:input_type -> bossanova.v1.StartSessionServeRequest
-	302, // 263: bossanova.v1.DaemonService.StopSessionServe:input_type -> bossanova.v1.StopSessionServeRequest
-	304, // 264: bossanova.v1.DaemonService.GetSessionServe:input_type -> bossanova.v1.GetSessionServeRequest
-	101, // 265: bossanova.v1.DaemonService.ArchiveSession:input_type -> bossanova.v1.ArchiveSessionRequest
-	103, // 266: bossanova.v1.DaemonService.FinishUnattendedRun:input_type -> bossanova.v1.FinishUnattendedRunRequest
-	105, // 267: bossanova.v1.DaemonService.ResurrectSession:input_type -> bossanova.v1.ResurrectSessionRequest
-	47,  // 268: bossanova.v1.DaemonService.WatchSessionSetup:input_type -> bossanova.v1.WatchSessionSetupRequest
-	108, // 269: bossanova.v1.DaemonService.EmptyTrash:input_type -> bossanova.v1.EmptyTrashRequest
-	110, // 270: bossanova.v1.DaemonService.RecordChat:input_type -> bossanova.v1.RecordChatRequest
-	112, // 271: bossanova.v1.DaemonService.ListChats:input_type -> bossanova.v1.ListChatsRequest
-	114, // 272: bossanova.v1.DaemonService.UpdateChatTitle:input_type -> bossanova.v1.UpdateChatTitleRequest
-	116, // 273: bossanova.v1.DaemonService.DeleteChat:input_type -> bossanova.v1.DeleteChatRequest
-	118, // 274: bossanova.v1.DaemonService.WakeChat:input_type -> bossanova.v1.WakeChatRequest
-	120, // 275: bossanova.v1.DaemonService.DescribeChatLaunch:input_type -> bossanova.v1.DescribeChatLaunchRequest
-	122, // 276: bossanova.v1.DaemonService.DescribeChatMCP:input_type -> bossanova.v1.DescribeChatMCPRequest
-	124, // 277: bossanova.v1.DaemonService.GetChatTranscript:input_type -> bossanova.v1.GetChatTranscriptRequest
-	126, // 278: bossanova.v1.DaemonService.SendChatMessage:input_type -> bossanova.v1.SendChatMessageRequest
-	129, // 279: bossanova.v1.DaemonService.ReportChatStatus:input_type -> bossanova.v1.ReportChatStatusRequest
-	131, // 280: bossanova.v1.DaemonService.SetChatPhase:input_type -> bossanova.v1.SetChatPhaseRequest
-	133, // 281: bossanova.v1.DaemonService.GetChatStatuses:input_type -> bossanova.v1.GetChatStatusesRequest
-	136, // 282: bossanova.v1.DaemonService.GetSessionStatuses:input_type -> bossanova.v1.GetSessionStatusesRequest
-	139, // 283: bossanova.v1.DaemonService.DeliverVCSEvent:input_type -> bossanova.v1.DeliverVCSEventRequest
-	141, // 284: bossanova.v1.DaemonService.NotifyAuthChange:input_type -> bossanova.v1.NotifyAuthChangeRequest
-	143, // 285: bossanova.v1.DaemonService.GetAuthState:input_type -> bossanova.v1.GetAuthStateRequest
-	147, // 286: bossanova.v1.DaemonService.CreateCronJob:input_type -> bossanova.v1.CreateCronJobRequest
-	149, // 287: bossanova.v1.DaemonService.ListCronJobs:input_type -> bossanova.v1.ListCronJobsRequest
-	151, // 288: bossanova.v1.DaemonService.GetCronJob:input_type -> bossanova.v1.GetCronJobRequest
-	153, // 289: bossanova.v1.DaemonService.UpdateCronJob:input_type -> bossanova.v1.UpdateCronJobRequest
-	155, // 290: bossanova.v1.DaemonService.DeleteCronJob:input_type -> bossanova.v1.DeleteCronJobRequest
-	157, // 291: bossanova.v1.DaemonService.RunCronJobNow:input_type -> bossanova.v1.RunCronJobNowRequest
-	159, // 292: bossanova.v1.DaemonService.CreateGitHubCallback:input_type -> bossanova.v1.CreateGitHubCallbackRequest
-	161, // 293: bossanova.v1.DaemonService.ListGitHubCallbacks:input_type -> bossanova.v1.ListGitHubCallbacksRequest
-	163, // 294: bossanova.v1.DaemonService.DeleteGitHubCallback:input_type -> bossanova.v1.DeleteGitHubCallbackRequest
-	169, // 295: bossanova.v1.DaemonService.SendBroadcast:input_type -> bossanova.v1.SendBroadcastRequest
-	171, // 296: bossanova.v1.DaemonService.ListBroadcasts:input_type -> bossanova.v1.ListBroadcastsRequest
-	173, // 297: bossanova.v1.DaemonService.DeleteBroadcast:input_type -> bossanova.v1.DeleteBroadcastRequest
-	177, // 298: bossanova.v1.DaemonService.CreateNote:input_type -> bossanova.v1.CreateNoteRequest
-	179, // 299: bossanova.v1.DaemonService.GetNote:input_type -> bossanova.v1.GetNoteRequest
-	181, // 300: bossanova.v1.DaemonService.ListNotes:input_type -> bossanova.v1.ListNotesRequest
-	183, // 301: bossanova.v1.DaemonService.UpdateNote:input_type -> bossanova.v1.UpdateNoteRequest
-	185, // 302: bossanova.v1.DaemonService.DeleteNote:input_type -> bossanova.v1.DeleteNoteRequest
-	187, // 303: bossanova.v1.DaemonService.SyncNotesNow:input_type -> bossanova.v1.SyncNotesNowRequest
-	191, // 304: bossanova.v1.DaemonService.CreateBroadcastSubscription:input_type -> bossanova.v1.CreateBroadcastSubscriptionRequest
-	193, // 305: bossanova.v1.DaemonService.ListBroadcastSubscriptions:input_type -> bossanova.v1.ListBroadcastSubscriptionsRequest
-	195, // 306: bossanova.v1.DaemonService.DeleteBroadcastSubscription:input_type -> bossanova.v1.DeleteBroadcastSubscriptionRequest
-	353, // 307: bossanova.v1.DaemonService.AcquireTrackerIssueLease:input_type -> bossanova.v1.AcquireTrackerIssueLeaseRequest
-	354, // 308: bossanova.v1.DaemonService.ReleaseTrackerIssueLease:input_type -> bossanova.v1.ReleaseTrackerIssueLeaseRequest
-	279, // 309: bossanova.v1.DaemonService.GetViewerDeviceStatus:input_type -> bossanova.v1.GetViewerDeviceStatusRequest
-	282, // 310: bossanova.v1.DaemonService.ListViewerDevices:input_type -> bossanova.v1.ListLocalViewerDevicesRequest
-	284, // 311: bossanova.v1.DaemonService.ApproveViewerDevice:input_type -> bossanova.v1.ApproveViewerDeviceRequest
-	286, // 312: bossanova.v1.DaemonService.RevokeViewerDevice:input_type -> bossanova.v1.RevokeViewerDeviceRequest
-	259, // 313: bossanova.v1.DaemonService.GetAgentCredentialDeviceStatus:input_type -> bossanova.v1.GetAgentCredentialDeviceStatusRequest
-	257, // 314: bossanova.v1.DaemonService.RenewAgentCredentialDeviceEnrollment:input_type -> bossanova.v1.RenewAgentCredentialDeviceEnrollmentRequest
-	355, // 315: bossanova.v1.DaemonService.ListAgentCredentialDevices:input_type -> bossanova.v1.ListAgentCredentialDevicesRequest
-	356, // 316: bossanova.v1.DaemonService.ApproveAgentCredentialDevice:input_type -> bossanova.v1.ApproveAgentCredentialDeviceRequest
-	357, // 317: bossanova.v1.DaemonService.RevokeAgentCredentialDevice:input_type -> bossanova.v1.RevokeAgentCredentialDeviceRequest
-	197, // 318: bossanova.v1.DaemonService.ListAgentAccounts:input_type -> bossanova.v1.ListAgentAccountsRequest
-	199, // 319: bossanova.v1.DaemonService.AddAgentAccount:input_type -> bossanova.v1.AddAgentAccountRequest
-	201, // 320: bossanova.v1.DaemonService.RefreshAgentAccount:input_type -> bossanova.v1.RefreshAgentAccountRequest
-	203, // 321: bossanova.v1.DaemonService.UpdateAgentAccount:input_type -> bossanova.v1.UpdateAgentAccountRequest
-	205, // 322: bossanova.v1.DaemonService.RemoveAgentAccount:input_type -> bossanova.v1.RemoveAgentAccountRequest
-	207, // 323: bossanova.v1.DaemonService.TestAgentAccount:input_type -> bossanova.v1.TestAgentAccountRequest
-	209, // 324: bossanova.v1.DaemonService.RepairDoctor:input_type -> bossanova.v1.RepairDoctorRequest
-	211, // 325: bossanova.v1.DaemonService.StartRepairWorkflow:input_type -> bossanova.v1.StartRepairWorkflowRequest
-	215, // 326: bossanova.v1.DaemonService.ListCheckSnapshots:input_type -> bossanova.v1.ListCheckSnapshotsRequest
-	218, // 327: bossanova.v1.DaemonService.GetSessionTimeline:input_type -> bossanova.v1.GetSessionTimelineRequest
-	221, // 328: bossanova.v1.DaemonService.GetRunCost:input_type -> bossanova.v1.GetRunCostRequest
-	226, // 329: bossanova.v1.DaemonService.GetGitHubUsage:input_type -> bossanova.v1.GetGitHubUsageRequest
-	277, // 330: bossanova.v1.DaemonService.GetGitHubReadCredential:input_type -> bossanova.v1.GetGitHubReadCredentialRequest
-	229, // 331: bossanova.v1.DaemonService.GetPRState:input_type -> bossanova.v1.GetPRStateRequest
-	236, // 332: bossanova.v1.DaemonService.WaitPRState:input_type -> bossanova.v1.WaitPRStateRequest
-	238, // 333: bossanova.v1.DaemonService.ListAgents:input_type -> bossanova.v1.ListAgentsRequest
-	241, // 334: bossanova.v1.DaemonService.ListPlugins:input_type -> bossanova.v1.ListPluginsRequest
-	251, // 335: bossanova.v1.DaemonService.GetDaemonCapabilities:input_type -> bossanova.v1.GetDaemonCapabilitiesRequest
-	244, // 336: bossanova.v1.DaemonService.GetSettings:input_type -> bossanova.v1.GetSettingsRequest
-	290, // 337: bossanova.v1.DaemonService.ListRepoCloudControls:input_type -> bossanova.v1.ListRepoCloudControlsRequest
-	248, // 338: bossanova.v1.DaemonService.UpdateSettings:input_type -> bossanova.v1.UpdateSettingsRequest
-	22,  // 339: bossanova.v1.DaemonService.ResolveContext:output_type -> bossanova.v1.ResolveContextResponse
-	20,  // 340: bossanova.v1.DaemonService.DescribeCaller:output_type -> bossanova.v1.DescribeCallerResponse
-	255, // 341: bossanova.v1.DaemonService.UploadEvidence:output_type -> bossanova.v1.UploadEvidenceResponse
-	294, // 342: bossanova.v1.DaemonService.PostProofCheckRun:output_type -> bossanova.v1.PostProofCheckRunResponse
-	296, // 343: bossanova.v1.DaemonService.MintHostedProofViewLink:output_type -> bossanova.v1.MintHostedProofViewLinkResponse
-	298, // 344: bossanova.v1.DaemonService.GetHostedProofLimits:output_type -> bossanova.v1.GetHostedProofLimitsResponse
-	266, // 345: bossanova.v1.DaemonService.GetFactoryHealth:output_type -> bossanova.v1.GetFactoryHealthResponse
-	269, // 346: bossanova.v1.DaemonService.ListSetupChecks:output_type -> bossanova.v1.ListSetupChecksResponse
-	24,  // 347: bossanova.v1.DaemonService.ValidateRepoPath:output_type -> bossanova.v1.ValidateRepoPathResponse
-	26,  // 348: bossanova.v1.DaemonService.DetectSetupScript:output_type -> bossanova.v1.DetectSetupScriptResponse
-	28,  // 349: bossanova.v1.DaemonService.RegisterRepo:output_type -> bossanova.v1.RegisterRepoResponse
-	30,  // 350: bossanova.v1.DaemonService.CloneAndRegisterRepo:output_type -> bossanova.v1.CloneAndRegisterRepoResponse
-	32,  // 351: bossanova.v1.DaemonService.ListRepos:output_type -> bossanova.v1.ListReposResponse
-	34,  // 352: bossanova.v1.DaemonService.RemoveRepo:output_type -> bossanova.v1.RemoveRepoResponse
-	36,  // 353: bossanova.v1.DaemonService.UpdateRepo:output_type -> bossanova.v1.UpdateRepoResponse
-	38,  // 354: bossanova.v1.DaemonService.GetRepoSettings:output_type -> bossanova.v1.GetRepoSettingsResponse
-	40,  // 355: bossanova.v1.DaemonService.ListRepoPRs:output_type -> bossanova.v1.ListRepoPRsResponse
-	42,  // 356: bossanova.v1.DaemonService.ListTrackerIssues:output_type -> bossanova.v1.ListTrackerIssuesResponse
-	44,  // 357: bossanova.v1.DaemonService.CreateSession:output_type -> bossanova.v1.CreateSessionResponse
-	52,  // 358: bossanova.v1.DaemonService.GetSession:output_type -> bossanova.v1.GetSessionResponse
-	54,  // 359: bossanova.v1.DaemonService.ListSessions:output_type -> bossanova.v1.ListSessionsResponse
-	56,  // 360: bossanova.v1.DaemonService.ListReviewQueue:output_type -> bossanova.v1.ListReviewQueueResponse
-	58,  // 361: bossanova.v1.DaemonService.MoveSession:output_type -> bossanova.v1.MoveSessionResponse
-	60,  // 362: bossanova.v1.DaemonService.DismissSessionAlert:output_type -> bossanova.v1.DismissSessionAlertResponse
-	62,  // 363: bossanova.v1.DaemonService.AttachSession:output_type -> bossanova.v1.AttachSessionResponse
-	67,  // 364: bossanova.v1.DaemonService.StopSession:output_type -> bossanova.v1.StopSessionResponse
-	69,  // 365: bossanova.v1.DaemonService.PauseSession:output_type -> bossanova.v1.PauseSessionResponse
-	71,  // 366: bossanova.v1.DaemonService.ResumeSession:output_type -> bossanova.v1.ResumeSessionResponse
-	73,  // 367: bossanova.v1.DaemonService.ResumeSessionRun:output_type -> bossanova.v1.ResumeSessionRunResponse
-	75,  // 368: bossanova.v1.DaemonService.RetrySession:output_type -> bossanova.v1.RetrySessionResponse
-	77,  // 369: bossanova.v1.DaemonService.CloseSession:output_type -> bossanova.v1.CloseSessionResponse
-	79,  // 370: bossanova.v1.DaemonService.MergeSession:output_type -> bossanova.v1.MergeSessionResponse
-	81,  // 371: bossanova.v1.DaemonService.ApproveSessionPR:output_type -> bossanova.v1.ApproveSessionPRResponse
-	83,  // 372: bossanova.v1.DaemonService.FollowUpSessionPRNotes:output_type -> bossanova.v1.FollowUpSessionPRNotesResponse
-	88,  // 373: bossanova.v1.DaemonService.OperatorMergeSession:output_type -> bossanova.v1.OperatorMergeSessionResponse
-	264, // 374: bossanova.v1.DaemonService.SendBackToRepair:output_type -> bossanova.v1.SendBackToRepairResponse
-	274, // 375: bossanova.v1.DaemonService.ListSessionPRBlockers:output_type -> bossanova.v1.ListSessionPRBlockersResponse
-	276, // 376: bossanova.v1.DaemonService.AcceptSessionPRBlocker:output_type -> bossanova.v1.AcceptSessionPRBlockerResponse
-	90,  // 377: bossanova.v1.DaemonService.RemoveSession:output_type -> bossanova.v1.RemoveSessionResponse
-	92,  // 378: bossanova.v1.DaemonService.UpdateSession:output_type -> bossanova.v1.UpdateSessionResponse
-	307, // 379: bossanova.v1.DaemonService.ListSessionLabels:output_type -> bossanova.v1.ListSessionLabelsResponse
-	309, // 380: bossanova.v1.DaemonService.CreateSessionLabel:output_type -> bossanova.v1.CreateSessionLabelResponse
-	311, // 381: bossanova.v1.DaemonService.UpdateSessionLabel:output_type -> bossanova.v1.UpdateSessionLabelResponse
-	313, // 382: bossanova.v1.DaemonService.DeleteSessionLabel:output_type -> bossanova.v1.DeleteSessionLabelResponse
-	315, // 383: bossanova.v1.DaemonService.SetSessionLabels:output_type -> bossanova.v1.SetSessionLabelsResponse
-	94,  // 384: bossanova.v1.DaemonService.LinkSessionPR:output_type -> bossanova.v1.LinkSessionPRResponse
-	96,  // 385: bossanova.v1.DaemonService.SetSessionTracker:output_type -> bossanova.v1.SetSessionTrackerResponse
-	289, // 386: bossanova.v1.DaemonService.SetSessionTrackerRank:output_type -> bossanova.v1.SetSessionTrackerRankResponse
-	98,  // 387: bossanova.v1.DaemonService.RefreshSessionPR:output_type -> bossanova.v1.RefreshSessionPRResponse
-	100, // 388: bossanova.v1.DaemonService.SwitchSessionAgentAccount:output_type -> bossanova.v1.SwitchSessionAgentAccountResponse
-	301, // 389: bossanova.v1.DaemonService.StartSessionServe:output_type -> bossanova.v1.StartSessionServeResponse
-	303, // 390: bossanova.v1.DaemonService.StopSessionServe:output_type -> bossanova.v1.StopSessionServeResponse
-	305, // 391: bossanova.v1.DaemonService.GetSessionServe:output_type -> bossanova.v1.GetSessionServeResponse
-	102, // 392: bossanova.v1.DaemonService.ArchiveSession:output_type -> bossanova.v1.ArchiveSessionResponse
-	104, // 393: bossanova.v1.DaemonService.FinishUnattendedRun:output_type -> bossanova.v1.FinishUnattendedRunResponse
-	106, // 394: bossanova.v1.DaemonService.ResurrectSession:output_type -> bossanova.v1.ResurrectSessionResponse
-	48,  // 395: bossanova.v1.DaemonService.WatchSessionSetup:output_type -> bossanova.v1.WatchSessionSetupResponse
-	109, // 396: bossanova.v1.DaemonService.EmptyTrash:output_type -> bossanova.v1.EmptyTrashResponse
-	111, // 397: bossanova.v1.DaemonService.RecordChat:output_type -> bossanova.v1.RecordChatResponse
-	113, // 398: bossanova.v1.DaemonService.ListChats:output_type -> bossanova.v1.ListChatsResponse
-	115, // 399: bossanova.v1.DaemonService.UpdateChatTitle:output_type -> bossanova.v1.UpdateChatTitleResponse
-	117, // 400: bossanova.v1.DaemonService.DeleteChat:output_type -> bossanova.v1.DeleteChatResponse
-	119, // 401: bossanova.v1.DaemonService.WakeChat:output_type -> bossanova.v1.WakeChatResponse
-	121, // 402: bossanova.v1.DaemonService.DescribeChatLaunch:output_type -> bossanova.v1.DescribeChatLaunchResponse
-	123, // 403: bossanova.v1.DaemonService.DescribeChatMCP:output_type -> bossanova.v1.DescribeChatMCPResponse
-	125, // 404: bossanova.v1.DaemonService.GetChatTranscript:output_type -> bossanova.v1.GetChatTranscriptResponse
-	127, // 405: bossanova.v1.DaemonService.SendChatMessage:output_type -> bossanova.v1.SendChatMessageResponse
-	130, // 406: bossanova.v1.DaemonService.ReportChatStatus:output_type -> bossanova.v1.ReportChatStatusResponse
-	132, // 407: bossanova.v1.DaemonService.SetChatPhase:output_type -> bossanova.v1.SetChatPhaseResponse
-	135, // 408: bossanova.v1.DaemonService.GetChatStatuses:output_type -> bossanova.v1.GetChatStatusesResponse
-	138, // 409: bossanova.v1.DaemonService.GetSessionStatuses:output_type -> bossanova.v1.GetSessionStatusesResponse
-	140, // 410: bossanova.v1.DaemonService.DeliverVCSEvent:output_type -> bossanova.v1.DeliverVCSEventResponse
-	142, // 411: bossanova.v1.DaemonService.NotifyAuthChange:output_type -> bossanova.v1.NotifyAuthChangeResponse
-	144, // 412: bossanova.v1.DaemonService.GetAuthState:output_type -> bossanova.v1.GetAuthStateResponse
-	148, // 413: bossanova.v1.DaemonService.CreateCronJob:output_type -> bossanova.v1.CreateCronJobResponse
-	150, // 414: bossanova.v1.DaemonService.ListCronJobs:output_type -> bossanova.v1.ListCronJobsResponse
-	152, // 415: bossanova.v1.DaemonService.GetCronJob:output_type -> bossanova.v1.GetCronJobResponse
-	154, // 416: bossanova.v1.DaemonService.UpdateCronJob:output_type -> bossanova.v1.UpdateCronJobResponse
-	156, // 417: bossanova.v1.DaemonService.DeleteCronJob:output_type -> bossanova.v1.DeleteCronJobResponse
-	158, // 418: bossanova.v1.DaemonService.RunCronJobNow:output_type -> bossanova.v1.RunCronJobNowResponse
-	160, // 419: bossanova.v1.DaemonService.CreateGitHubCallback:output_type -> bossanova.v1.CreateGitHubCallbackResponse
-	162, // 420: bossanova.v1.DaemonService.ListGitHubCallbacks:output_type -> bossanova.v1.ListGitHubCallbacksResponse
-	164, // 421: bossanova.v1.DaemonService.DeleteGitHubCallback:output_type -> bossanova.v1.DeleteGitHubCallbackResponse
-	170, // 422: bossanova.v1.DaemonService.SendBroadcast:output_type -> bossanova.v1.SendBroadcastResponse
-	172, // 423: bossanova.v1.DaemonService.ListBroadcasts:output_type -> bossanova.v1.ListBroadcastsResponse
-	174, // 424: bossanova.v1.DaemonService.DeleteBroadcast:output_type -> bossanova.v1.DeleteBroadcastResponse
-	178, // 425: bossanova.v1.DaemonService.CreateNote:output_type -> bossanova.v1.CreateNoteResponse
-	180, // 426: bossanova.v1.DaemonService.GetNote:output_type -> bossanova.v1.GetNoteResponse
-	182, // 427: bossanova.v1.DaemonService.ListNotes:output_type -> bossanova.v1.ListNotesResponse
-	184, // 428: bossanova.v1.DaemonService.UpdateNote:output_type -> bossanova.v1.UpdateNoteResponse
-	186, // 429: bossanova.v1.DaemonService.DeleteNote:output_type -> bossanova.v1.DeleteNoteResponse
-	188, // 430: bossanova.v1.DaemonService.SyncNotesNow:output_type -> bossanova.v1.SyncNotesNowResponse
-	192, // 431: bossanova.v1.DaemonService.CreateBroadcastSubscription:output_type -> bossanova.v1.CreateBroadcastSubscriptionResponse
-	194, // 432: bossanova.v1.DaemonService.ListBroadcastSubscriptions:output_type -> bossanova.v1.ListBroadcastSubscriptionsResponse
-	196, // 433: bossanova.v1.DaemonService.DeleteBroadcastSubscription:output_type -> bossanova.v1.DeleteBroadcastSubscriptionResponse
-	358, // 434: bossanova.v1.DaemonService.AcquireTrackerIssueLease:output_type -> bossanova.v1.AcquireTrackerIssueLeaseResponse
-	359, // 435: bossanova.v1.DaemonService.ReleaseTrackerIssueLease:output_type -> bossanova.v1.ReleaseTrackerIssueLeaseResponse
-	280, // 436: bossanova.v1.DaemonService.GetViewerDeviceStatus:output_type -> bossanova.v1.GetViewerDeviceStatusResponse
-	283, // 437: bossanova.v1.DaemonService.ListViewerDevices:output_type -> bossanova.v1.ListLocalViewerDevicesResponse
-	285, // 438: bossanova.v1.DaemonService.ApproveViewerDevice:output_type -> bossanova.v1.ApproveViewerDeviceResponse
-	287, // 439: bossanova.v1.DaemonService.RevokeViewerDevice:output_type -> bossanova.v1.RevokeViewerDeviceResponse
-	260, // 440: bossanova.v1.DaemonService.GetAgentCredentialDeviceStatus:output_type -> bossanova.v1.GetAgentCredentialDeviceStatusResponse
-	258, // 441: bossanova.v1.DaemonService.RenewAgentCredentialDeviceEnrollment:output_type -> bossanova.v1.RenewAgentCredentialDeviceEnrollmentResponse
-	360, // 442: bossanova.v1.DaemonService.ListAgentCredentialDevices:output_type -> bossanova.v1.ListAgentCredentialDevicesResponse
-	361, // 443: bossanova.v1.DaemonService.ApproveAgentCredentialDevice:output_type -> bossanova.v1.ApproveAgentCredentialDeviceResponse
-	362, // 444: bossanova.v1.DaemonService.RevokeAgentCredentialDevice:output_type -> bossanova.v1.RevokeAgentCredentialDeviceResponse
-	198, // 445: bossanova.v1.DaemonService.ListAgentAccounts:output_type -> bossanova.v1.ListAgentAccountsResponse
-	200, // 446: bossanova.v1.DaemonService.AddAgentAccount:output_type -> bossanova.v1.AddAgentAccountResponse
-	202, // 447: bossanova.v1.DaemonService.RefreshAgentAccount:output_type -> bossanova.v1.RefreshAgentAccountResponse
-	204, // 448: bossanova.v1.DaemonService.UpdateAgentAccount:output_type -> bossanova.v1.UpdateAgentAccountResponse
-	206, // 449: bossanova.v1.DaemonService.RemoveAgentAccount:output_type -> bossanova.v1.RemoveAgentAccountResponse
-	208, // 450: bossanova.v1.DaemonService.TestAgentAccount:output_type -> bossanova.v1.TestAgentAccountResponse
-	213, // 451: bossanova.v1.DaemonService.RepairDoctor:output_type -> bossanova.v1.RepairDoctorResponse
-	212, // 452: bossanova.v1.DaemonService.StartRepairWorkflow:output_type -> bossanova.v1.StartRepairWorkflowResponse
-	217, // 453: bossanova.v1.DaemonService.ListCheckSnapshots:output_type -> bossanova.v1.ListCheckSnapshotsResponse
-	219, // 454: bossanova.v1.DaemonService.GetSessionTimeline:output_type -> bossanova.v1.GetSessionTimelineResponse
-	225, // 455: bossanova.v1.DaemonService.GetRunCost:output_type -> bossanova.v1.GetRunCostResponse
-	228, // 456: bossanova.v1.DaemonService.GetGitHubUsage:output_type -> bossanova.v1.GetGitHubUsageResponse
-	278, // 457: bossanova.v1.DaemonService.GetGitHubReadCredential:output_type -> bossanova.v1.GetGitHubReadCredentialResponse
-	235, // 458: bossanova.v1.DaemonService.GetPRState:output_type -> bossanova.v1.GetPRStateResponse
-	237, // 459: bossanova.v1.DaemonService.WaitPRState:output_type -> bossanova.v1.WaitPRStateResponse
-	239, // 460: bossanova.v1.DaemonService.ListAgents:output_type -> bossanova.v1.ListAgentsResponse
-	242, // 461: bossanova.v1.DaemonService.ListPlugins:output_type -> bossanova.v1.ListPluginsResponse
-	252, // 462: bossanova.v1.DaemonService.GetDaemonCapabilities:output_type -> bossanova.v1.GetDaemonCapabilitiesResponse
-	245, // 463: bossanova.v1.DaemonService.GetSettings:output_type -> bossanova.v1.GetSettingsResponse
-	291, // 464: bossanova.v1.DaemonService.ListRepoCloudControls:output_type -> bossanova.v1.ListRepoCloudControlsResponse
-	250, // 465: bossanova.v1.DaemonService.UpdateSettings:output_type -> bossanova.v1.UpdateSettingsResponse
-	339, // [339:466] is the sub-list for method output_type
-	212, // [212:339] is the sub-list for method input_type
-	212, // [212:212] is the sub-list for extension type_name
-	212, // [212:212] is the sub-list for extension extendee
-	0,   // [0:212] is the sub-list for field type_name
+	324, // 1: bossanova.v1.DescribeCallerResponse.role:type_name -> bossanova.v1.ChatRole
+	325, // 2: bossanova.v1.ResolveContextResponse.repo:type_name -> bossanova.v1.Repo
+	326, // 3: bossanova.v1.ResolveContextResponse.session:type_name -> bossanova.v1.Session
+	325, // 4: bossanova.v1.RegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
+	325, // 5: bossanova.v1.CloneAndRegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
+	325, // 6: bossanova.v1.ListReposResponse.repos:type_name -> bossanova.v1.Repo
+	327, // 7: bossanova.v1.UpdateRepoRequest.linear_key:type_name -> bossanova.v1.SecretUpdate
+	327, // 8: bossanova.v1.UpdateRepoRequest.sentry_key:type_name -> bossanova.v1.SecretUpdate
+	328, // 9: bossanova.v1.UpdateRepoRequest.expected_updated_at:type_name -> google.protobuf.Timestamp
+	325, // 10: bossanova.v1.UpdateRepoResponse.repo:type_name -> bossanova.v1.Repo
+	325, // 11: bossanova.v1.RefreshRepoOriginResponse.repo:type_name -> bossanova.v1.Repo
+	329, // 12: bossanova.v1.GetRepoSettingsResponse.settings:type_name -> bossanova.v1.RepoSettings
+	330, // 13: bossanova.v1.ListRepoPRsRequest.query:type_name -> bossanova.v1.PRListQuery
+	331, // 14: bossanova.v1.ListRepoPRsResponse.pull_requests:type_name -> bossanova.v1.PRSummary
+	332, // 15: bossanova.v1.ListTrackerIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
+	332, // 16: bossanova.v1.CreateSessionRequest.tracker_issue:type_name -> bossanova.v1.TrackerIssue
+	48,  // 17: bossanova.v1.CreateSessionResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
+	52,  // 18: bossanova.v1.CreateSessionResponse.session_created:type_name -> bossanova.v1.SessionCreated
+	1,   // 19: bossanova.v1.CreateSessionConflict.reason:type_name -> bossanova.v1.CreateSessionConflictReason
+	48,  // 20: bossanova.v1.WatchSessionSetupResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
+	51,  // 21: bossanova.v1.WatchSessionSetupResponse.setup_settled:type_name -> bossanova.v1.SessionSetupSettled
+	326, // 22: bossanova.v1.SessionCreated.session:type_name -> bossanova.v1.Session
+	326, // 23: bossanova.v1.GetSessionResponse.session:type_name -> bossanova.v1.Session
+	333, // 24: bossanova.v1.ListSessionsRequest.states:type_name -> bossanova.v1.SessionState
+	326, // 25: bossanova.v1.ListSessionsResponse.sessions:type_name -> bossanova.v1.Session
+	334, // 26: bossanova.v1.ListReviewQueueRequest.sort:type_name -> bossanova.v1.ReviewQueueSort
+	335, // 27: bossanova.v1.ListReviewQueueResponse.rows:type_name -> bossanova.v1.ReviewQueueRow
+	336, // 28: bossanova.v1.ListReviewQueueResponse.level_counts:type_name -> bossanova.v1.ReviewQueueLevelCount
+	2,   // 29: bossanova.v1.MoveSessionRequest.direction:type_name -> bossanova.v1.MoveDirection
+	326, // 30: bossanova.v1.MoveSessionResponse.session:type_name -> bossanova.v1.Session
+	326, // 31: bossanova.v1.DismissSessionAlertResponse.session:type_name -> bossanova.v1.Session
+	65,  // 32: bossanova.v1.AttachSessionResponse.output_line:type_name -> bossanova.v1.OutputLine
+	66,  // 33: bossanova.v1.AttachSessionResponse.state_change:type_name -> bossanova.v1.StateChange
+	67,  // 34: bossanova.v1.AttachSessionResponse.session_ended:type_name -> bossanova.v1.SessionEnded
+	328, // 35: bossanova.v1.OutputLine.timestamp:type_name -> google.protobuf.Timestamp
+	333, // 36: bossanova.v1.StateChange.previous_state:type_name -> bossanova.v1.SessionState
+	333, // 37: bossanova.v1.StateChange.new_state:type_name -> bossanova.v1.SessionState
+	337, // 38: bossanova.v1.StateChange.trigger:type_name -> bossanova.v1.SessionEvent
+	333, // 39: bossanova.v1.SessionEnded.final_state:type_name -> bossanova.v1.SessionState
+	326, // 40: bossanova.v1.StopSessionResponse.session:type_name -> bossanova.v1.Session
+	326, // 41: bossanova.v1.PauseSessionResponse.session:type_name -> bossanova.v1.Session
+	326, // 42: bossanova.v1.ResumeSessionResponse.session:type_name -> bossanova.v1.Session
+	326, // 43: bossanova.v1.ResumeSessionRunResponse.session:type_name -> bossanova.v1.Session
+	326, // 44: bossanova.v1.RetrySessionResponse.session:type_name -> bossanova.v1.Session
+	326, // 45: bossanova.v1.CloseSessionResponse.session:type_name -> bossanova.v1.Session
+	326, // 46: bossanova.v1.MergeSessionResponse.session:type_name -> bossanova.v1.Session
+	88,  // 47: bossanova.v1.ApproveSessionPRResponse.result:type_name -> bossanova.v1.VerifyApproveResult
+	86,  // 48: bossanova.v1.FollowUpSessionPRNotesResponse.result:type_name -> bossanova.v1.VerifyFollowUpResult
+	87,  // 49: bossanova.v1.VerifyFollowUpResult.notes:type_name -> bossanova.v1.VerifyNoteFollowUp
+	326, // 50: bossanova.v1.OperatorMergeSessionResponse.session:type_name -> bossanova.v1.Session
+	88,  // 51: bossanova.v1.OperatorMergeSessionResponse.approval:type_name -> bossanova.v1.VerifyApproveResult
+	326, // 52: bossanova.v1.UpdateSessionResponse.session:type_name -> bossanova.v1.Session
+	326, // 53: bossanova.v1.LinkSessionPRResponse.session:type_name -> bossanova.v1.Session
+	326, // 54: bossanova.v1.SetSessionTrackerResponse.session:type_name -> bossanova.v1.Session
+	326, // 55: bossanova.v1.RefreshSessionPRResponse.session:type_name -> bossanova.v1.Session
+	326, // 56: bossanova.v1.ArchiveSessionResponse.session:type_name -> bossanova.v1.Session
+	48,  // 57: bossanova.v1.ResurrectSessionResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
+	109, // 58: bossanova.v1.ResurrectSessionResponse.session_resurrected:type_name -> bossanova.v1.SessionResurrected
+	326, // 59: bossanova.v1.SessionResurrected.session:type_name -> bossanova.v1.Session
+	328, // 60: bossanova.v1.EmptyTrashRequest.older_than:type_name -> google.protobuf.Timestamp
+	324, // 61: bossanova.v1.RecordChatRequest.role:type_name -> bossanova.v1.ChatRole
+	338, // 62: bossanova.v1.RecordChatResponse.chat:type_name -> bossanova.v1.AgentChat
+	338, // 63: bossanova.v1.ListChatsResponse.chats:type_name -> bossanova.v1.AgentChat
+	13,  // 64: bossanova.v1.DeleteChatRequest.reason:type_name -> bossanova.v1.DeleteChatRequest.DeletionReason
+	14,  // 65: bossanova.v1.WakeChatResponse.outcome:type_name -> bossanova.v1.WakeChatResponse.Outcome
+	339, // 66: bossanova.v1.DescribeChatMCPResponse.servers:type_name -> bossanova.v1.MCPServerReport
+	328, // 67: bossanova.v1.DescribeChatMCPResponse.probed_at:type_name -> google.protobuf.Timestamp
+	340, // 68: bossanova.v1.GetChatTranscriptResponse.messages:type_name -> bossanova.v1.ChatMessage
+	15,  // 69: bossanova.v1.SendChatMessageResponse.delivery_state:type_name -> bossanova.v1.SendChatMessageResponse.DeliveryState
+	16,  // 70: bossanova.v1.SendChatMessageResponse.turn_start_state:type_name -> bossanova.v1.SendChatMessageResponse.TurnStartState
+	341, // 71: bossanova.v1.ChatStatusReport.status:type_name -> bossanova.v1.ChatStatus
+	328, // 72: bossanova.v1.ChatStatusReport.last_output_at:type_name -> google.protobuf.Timestamp
+	130, // 73: bossanova.v1.ReportChatStatusRequest.reports:type_name -> bossanova.v1.ChatStatusReport
+	341, // 74: bossanova.v1.ChatStatusEntry.status:type_name -> bossanova.v1.ChatStatus
+	328, // 75: bossanova.v1.ChatStatusEntry.last_output_at:type_name -> google.protobuf.Timestamp
+	328, // 76: bossanova.v1.ChatStatusEntry.last_substantive_output_at:type_name -> google.protobuf.Timestamp
+	136, // 77: bossanova.v1.GetChatStatusesResponse.statuses:type_name -> bossanova.v1.ChatStatusEntry
+	341, // 78: bossanova.v1.SessionStatusEntry.status:type_name -> bossanova.v1.ChatStatus
+	139, // 79: bossanova.v1.GetSessionStatusesResponse.statuses:type_name -> bossanova.v1.SessionStatusEntry
+	342, // 80: bossanova.v1.DeliverVCSEventRequest.event:type_name -> bossanova.v1.VCSEvent
+	17,  // 81: bossanova.v1.NotifyAuthChangeResponse.outcome:type_name -> bossanova.v1.NotifyAuthChangeResponse.Outcome
+	328, // 82: bossanova.v1.GetAuthStateResponse.last_registered_at:type_name -> google.protobuf.Timestamp
+	328, // 83: bossanova.v1.GetAuthStateResponse.auth_failing_since:type_name -> google.protobuf.Timestamp
+	147, // 84: bossanova.v1.GetAuthStateResponse.github_credential_report:type_name -> bossanova.v1.GitHubCredentialReport
+	148, // 85: bossanova.v1.GitHubCredentialReport.repos:type_name -> bossanova.v1.GitHubCredentialState
+	3,   // 86: bossanova.v1.GitHubCredentialState.identity:type_name -> bossanova.v1.GitHubCredentialIdentity
+	328, // 87: bossanova.v1.GitHubCredentialState.expires_at:type_name -> google.protobuf.Timestamp
+	328, // 88: bossanova.v1.GitHubCredentialState.next_attempt_at:type_name -> google.protobuf.Timestamp
+	343, // 89: bossanova.v1.CreateCronJobRequest.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
+	344, // 90: bossanova.v1.CreateCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
+	344, // 91: bossanova.v1.ListCronJobsResponse.cron_jobs:type_name -> bossanova.v1.CronJob
+	344, // 92: bossanova.v1.GetCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
+	343, // 93: bossanova.v1.UpdateCronJobRequest.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
+	344, // 94: bossanova.v1.UpdateCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
+	326, // 95: bossanova.v1.RunCronJobNowResponse.session:type_name -> bossanova.v1.Session
+	328, // 96: bossanova.v1.CreateGitHubCallbackRequest.expires_at:type_name -> google.protobuf.Timestamp
+	345, // 97: bossanova.v1.CreateGitHubCallbackResponse.github_callback:type_name -> bossanova.v1.GitHubCallback
+	345, // 98: bossanova.v1.ListGitHubCallbacksResponse.github_callbacks:type_name -> bossanova.v1.GitHubCallback
+	167, // 99: bossanova.v1.BroadcastSelector.clauses:type_name -> bossanova.v1.BroadcastSelectorClause
+	168, // 100: bossanova.v1.Broadcast.selector:type_name -> bossanova.v1.BroadcastSelector
+	328, // 101: bossanova.v1.Broadcast.created_at:type_name -> google.protobuf.Timestamp
+	328, // 102: bossanova.v1.Broadcast.expires_at:type_name -> google.protobuf.Timestamp
+	328, // 103: bossanova.v1.BroadcastDelivery.delivered_at:type_name -> google.protobuf.Timestamp
+	168, // 104: bossanova.v1.SendBroadcastRequest.selector:type_name -> bossanova.v1.BroadcastSelector
+	169, // 105: bossanova.v1.SendBroadcastResponse.broadcast:type_name -> bossanova.v1.Broadcast
+	170, // 106: bossanova.v1.SendBroadcastResponse.deliveries:type_name -> bossanova.v1.BroadcastDelivery
+	169, // 107: bossanova.v1.ListBroadcastsResponse.broadcasts:type_name -> bossanova.v1.Broadcast
+	328, // 108: bossanova.v1.Note.created_at:type_name -> google.protobuf.Timestamp
+	328, // 109: bossanova.v1.Note.updated_at:type_name -> google.protobuf.Timestamp
+	328, // 110: bossanova.v1.Note.synced_at:type_name -> google.protobuf.Timestamp
+	177, // 111: bossanova.v1.CreateNoteResponse.note:type_name -> bossanova.v1.Note
+	177, // 112: bossanova.v1.GetNoteResponse.note:type_name -> bossanova.v1.Note
+	177, // 113: bossanova.v1.ListNotesResponse.notes:type_name -> bossanova.v1.Note
+	178, // 114: bossanova.v1.UpdateNoteRequest.tags:type_name -> bossanova.v1.NoteTagSet
+	177, // 115: bossanova.v1.UpdateNoteResponse.note:type_name -> bossanova.v1.Note
+	191, // 116: bossanova.v1.SyncNotesNowResponse.state_counts:type_name -> bossanova.v1.NoteSyncStateCount
+	168, // 117: bossanova.v1.BroadcastSubscription.selector:type_name -> bossanova.v1.BroadcastSelector
+	328, // 118: bossanova.v1.BroadcastSubscription.fired_at:type_name -> google.protobuf.Timestamp
+	328, // 119: bossanova.v1.BroadcastSubscription.expires_at:type_name -> google.protobuf.Timestamp
+	328, // 120: bossanova.v1.BroadcastSubscription.created_at:type_name -> google.protobuf.Timestamp
+	328, // 121: bossanova.v1.BroadcastSubscription.updated_at:type_name -> google.protobuf.Timestamp
+	168, // 122: bossanova.v1.CreateBroadcastSubscriptionRequest.selector:type_name -> bossanova.v1.BroadcastSelector
+	192, // 123: bossanova.v1.CreateBroadcastSubscriptionResponse.subscription:type_name -> bossanova.v1.BroadcastSubscription
+	192, // 124: bossanova.v1.ListBroadcastSubscriptionsResponse.subscriptions:type_name -> bossanova.v1.BroadcastSubscription
+	346, // 125: bossanova.v1.ListAgentAccountsResponse.accounts:type_name -> bossanova.v1.AgentAccount
+	346, // 126: bossanova.v1.AddAgentAccountResponse.account:type_name -> bossanova.v1.AgentAccount
+	346, // 127: bossanova.v1.RefreshAgentAccountResponse.account:type_name -> bossanova.v1.AgentAccount
+	346, // 128: bossanova.v1.UpdateAgentAccountResponse.account:type_name -> bossanova.v1.AgentAccount
+	346, // 129: bossanova.v1.TestAgentAccountResponse.account:type_name -> bossanova.v1.AgentAccount
+	212, // 130: bossanova.v1.RepairDoctorResponse.checks:type_name -> bossanova.v1.RepairDoctorCheck
+	216, // 131: bossanova.v1.RepairDoctorResponse.recent_logs:type_name -> bossanova.v1.RepairLogSnapshot
+	328, // 132: bossanova.v1.RepairLogSnapshot.modified_at:type_name -> google.protobuf.Timestamp
+	328, // 133: bossanova.v1.CheckSnapshot.polled_at:type_name -> google.protobuf.Timestamp
+	347, // 134: bossanova.v1.CheckSnapshot.computed_status:type_name -> bossanova.v1.DisplayStatus
+	218, // 135: bossanova.v1.ListCheckSnapshotsResponse.snapshots:type_name -> bossanova.v1.CheckSnapshot
+	222, // 136: bossanova.v1.GetSessionTimelineResponse.steps:type_name -> bossanova.v1.TimelineStep
+	328, // 137: bossanova.v1.TimelineStep.at:type_name -> google.protobuf.Timestamp
+	4,   // 138: bossanova.v1.TimelineStep.state:type_name -> bossanova.v1.TimelineStepState
+	328, // 139: bossanova.v1.GetRunCostRequest.since:type_name -> google.protobuf.Timestamp
+	328, // 140: bossanova.v1.GetRunCostRequest.until:type_name -> google.protobuf.Timestamp
+	328, // 141: bossanova.v1.AgentRunCost.started_at:type_name -> google.protobuf.Timestamp
+	328, // 142: bossanova.v1.AgentRunCost.stopped_at:type_name -> google.protobuf.Timestamp
+	321, // 143: bossanova.v1.RunCostAggregate.terminal_state_mix:type_name -> bossanova.v1.RunCostAggregate.TerminalStateMixEntry
+	224, // 144: bossanova.v1.GetRunCostResponse.runs:type_name -> bossanova.v1.AgentRunCost
+	225, // 145: bossanova.v1.GetRunCostResponse.aggregate:type_name -> bossanova.v1.RunCostAggregate
+	226, // 146: bossanova.v1.GetRunCostResponse.backfill_summary:type_name -> bossanova.v1.RunCostBackfillSummary
+	229, // 147: bossanova.v1.GetGitHubUsageResponse.rows:type_name -> bossanova.v1.GitHubUsageRow
+	328, // 148: bossanova.v1.GetGitHubUsageResponse.window_started_at:type_name -> google.protobuf.Timestamp
+	328, // 149: bossanova.v1.GetGitHubUsageResponse.window_ended_at:type_name -> google.protobuf.Timestamp
+	348, // 150: bossanova.v1.PRCheck.status:type_name -> bossanova.v1.CheckStatus
+	349, // 151: bossanova.v1.PRCheck.conclusion:type_name -> bossanova.v1.CheckConclusion
+	5,   // 152: bossanova.v1.PRCheckVerdict.state:type_name -> bossanova.v1.PRCheckVerdictState
+	6,   // 153: bossanova.v1.PRVerifyPhase.kind:type_name -> bossanova.v1.PRVerifyPhaseKind
+	350, // 154: bossanova.v1.GetPRStateResponse.state:type_name -> bossanova.v1.PRState
+	351, // 155: bossanova.v1.GetPRStateResponse.review_decision:type_name -> bossanova.v1.ReviewState
+	351, // 156: bossanova.v1.GetPRStateResponse.latest_review_state:type_name -> bossanova.v1.ReviewState
+	232, // 157: bossanova.v1.GetPRStateResponse.checks:type_name -> bossanova.v1.PRCheck
+	233, // 158: bossanova.v1.GetPRStateResponse.check_verdict:type_name -> bossanova.v1.PRCheckVerdict
+	234, // 159: bossanova.v1.GetPRStateResponse.verify_phase:type_name -> bossanova.v1.PRVerifyPhase
+	235, // 160: bossanova.v1.GetPRStateResponse.held_workflow_runs:type_name -> bossanova.v1.PRHeldWorkflowRun
+	352, // 161: bossanova.v1.GetPRStateResponse.review_comments:type_name -> bossanova.v1.ReviewComment
+	328, // 162: bossanova.v1.GetPRStateResponse.observed_at:type_name -> google.protobuf.Timestamp
+	236, // 163: bossanova.v1.GetPRStateResponse.workflow_runs:type_name -> bossanova.v1.PRWorkflowRun
+	7,   // 164: bossanova.v1.WaitPRStateRequest.condition:type_name -> bossanova.v1.PRWaitCondition
+	8,   // 165: bossanova.v1.WaitPRStateResponse.outcome:type_name -> bossanova.v1.PRWaitOutcome
+	237, // 166: bossanova.v1.WaitPRStateResponse.snapshot:type_name -> bossanova.v1.GetPRStateResponse
+	242, // 167: bossanova.v1.ListAgentsResponse.agents:type_name -> bossanova.v1.AgentInfo
+	353, // 168: bossanova.v1.AgentInfo.user_settings:type_name -> bossanova.v1.UserSetting
+	245, // 169: bossanova.v1.CheckAgentLoginsResponse.agents:type_name -> bossanova.v1.AgentLogin
+	354, // 170: bossanova.v1.AgentLogin.status:type_name -> bossanova.v1.AgentLoginStatus
+	248, // 171: bossanova.v1.ListPluginsResponse.plugins:type_name -> bossanova.v1.InstalledPlugin
+	18,  // 172: bossanova.v1.InstalledPlugin.status:type_name -> bossanova.v1.InstalledPlugin.Status
+	251, // 173: bossanova.v1.GetSettingsResponse.settings:type_name -> bossanova.v1.GlobalSettings
+	252, // 174: bossanova.v1.GlobalSettings.agents:type_name -> bossanova.v1.AgentSettings
+	322, // 175: bossanova.v1.AgentSettings.config:type_name -> bossanova.v1.AgentSettings.ConfigEntry
+	254, // 176: bossanova.v1.UpdateSettingsRequest.agents:type_name -> bossanova.v1.AgentSettingsUpdate
+	323, // 177: bossanova.v1.AgentSettingsUpdate.config:type_name -> bossanova.v1.AgentSettingsUpdate.ConfigEntry
+	251, // 178: bossanova.v1.UpdateSettingsResponse.settings:type_name -> bossanova.v1.GlobalSettings
+	259, // 179: bossanova.v1.UploadEvidenceRequest.objects:type_name -> bossanova.v1.EvidenceObject
+	9,   // 180: bossanova.v1.UploadEvidenceRequest.destination:type_name -> bossanova.v1.EvidenceDestination
+	9,   // 181: bossanova.v1.UploadEvidenceResponse.destination:type_name -> bossanova.v1.EvidenceDestination
+	261, // 182: bossanova.v1.UploadEvidenceResponse.hosted_limits:type_name -> bossanova.v1.HostedProofPageLimits
+	355, // 183: bossanova.v1.RenewAgentCredentialDeviceEnrollmentResponse.device:type_name -> bossanova.v1.AgentCredentialDevice
+	355, // 184: bossanova.v1.GetAgentCredentialDeviceStatusResponse.device:type_name -> bossanova.v1.AgentCredentialDevice
+	266, // 185: bossanova.v1.GetAgentCredentialDeviceStatusResponse.readiness:type_name -> bossanova.v1.CredentialDeviceReadiness
+	267, // 186: bossanova.v1.CredentialDeviceReadiness.remediation_steps:type_name -> bossanova.v1.CredentialDeviceRemediationStep
+	328, // 187: bossanova.v1.CredentialDeviceReadiness.checked_at:type_name -> google.protobuf.Timestamp
+	328, // 188: bossanova.v1.CredentialDeviceReadiness.expires_at:type_name -> google.protobuf.Timestamp
+	272, // 189: bossanova.v1.GetFactoryHealthResponse.problems:type_name -> bossanova.v1.FactoryHealthProblem
+	328, // 190: bossanova.v1.GetFactoryHealthResponse.checked_at:type_name -> google.protobuf.Timestamp
+	328, // 191: bossanova.v1.FactoryHealthProblem.started_at:type_name -> google.protobuf.Timestamp
+	275, // 192: bossanova.v1.ListSetupChecksResponse.checks:type_name -> bossanova.v1.SetupCheck
+	328, // 193: bossanova.v1.ListSetupChecksResponse.checked_at:type_name -> google.protobuf.Timestamp
+	10,  // 194: bossanova.v1.SetupCheck.area:type_name -> bossanova.v1.SetupCheckArea
+	11,  // 195: bossanova.v1.SetupCheck.status:type_name -> bossanova.v1.SetupCheckStatus
+	276, // 196: bossanova.v1.SetupCheck.fix:type_name -> bossanova.v1.SetupCheckFix
+	12,  // 197: bossanova.v1.SetupCheckFix.kind:type_name -> bossanova.v1.SetupCheckFixKind
+	277, // 198: bossanova.v1.ListSessionPRBlockersResponse.blockers:type_name -> bossanova.v1.VerifyBlocker
+	328, // 199: bossanova.v1.LocalViewerDevice.approved_at:type_name -> google.protobuf.Timestamp
+	286, // 200: bossanova.v1.ListLocalViewerDevicesResponse.devices:type_name -> bossanova.v1.LocalViewerDevice
+	356, // 201: bossanova.v1.SetSessionTrackerRankRequest.tracker_rank:type_name -> bossanova.v1.TrackerRank
+	326, // 202: bossanova.v1.SetSessionTrackerRankResponse.session:type_name -> bossanova.v1.Session
+	297, // 203: bossanova.v1.ListRepoCloudControlsResponse.repos:type_name -> bossanova.v1.RepoCloudControl
+	328, // 204: bossanova.v1.MintHostedProofViewLinkResponse.expires_at:type_name -> google.protobuf.Timestamp
+	261, // 205: bossanova.v1.GetHostedProofLimitsResponse.limits:type_name -> bossanova.v1.HostedProofPageLimits
+	357, // 206: bossanova.v1.SessionServe.service_links:type_name -> bossanova.v1.ServiceLink
+	328, // 207: bossanova.v1.SessionServe.started_at:type_name -> google.protobuf.Timestamp
+	304, // 208: bossanova.v1.StartSessionServeResponse.serve:type_name -> bossanova.v1.SessionServe
+	304, // 209: bossanova.v1.StopSessionServeResponse.serve:type_name -> bossanova.v1.SessionServe
+	304, // 210: bossanova.v1.GetSessionServeResponse.serve:type_name -> bossanova.v1.SessionServe
+	358, // 211: bossanova.v1.ListSessionLabelsResponse.labels:type_name -> bossanova.v1.SessionLabel
+	358, // 212: bossanova.v1.CreateSessionLabelResponse.label:type_name -> bossanova.v1.SessionLabel
+	358, // 213: bossanova.v1.UpdateSessionLabelResponse.label:type_name -> bossanova.v1.SessionLabel
+	326, // 214: bossanova.v1.SetSessionLabelsResponse.session:type_name -> bossanova.v1.Session
+	21,  // 215: bossanova.v1.DaemonService.ResolveContext:input_type -> bossanova.v1.ResolveContextRequest
+	19,  // 216: bossanova.v1.DaemonService.DescribeCaller:input_type -> bossanova.v1.DescribeCallerRequest
+	258, // 217: bossanova.v1.DaemonService.UploadEvidence:input_type -> bossanova.v1.UploadEvidenceRequest
+	298, // 218: bossanova.v1.DaemonService.PostProofCheckRun:input_type -> bossanova.v1.PostProofCheckRunRequest
+	300, // 219: bossanova.v1.DaemonService.MintHostedProofViewLink:input_type -> bossanova.v1.MintHostedProofViewLinkRequest
+	302, // 220: bossanova.v1.DaemonService.GetHostedProofLimits:input_type -> bossanova.v1.GetHostedProofLimitsRequest
+	270, // 221: bossanova.v1.DaemonService.GetFactoryHealth:input_type -> bossanova.v1.GetFactoryHealthRequest
+	273, // 222: bossanova.v1.DaemonService.ListSetupChecks:input_type -> bossanova.v1.ListSetupChecksRequest
+	23,  // 223: bossanova.v1.DaemonService.ValidateRepoPath:input_type -> bossanova.v1.ValidateRepoPathRequest
+	25,  // 224: bossanova.v1.DaemonService.DetectSetupScript:input_type -> bossanova.v1.DetectSetupScriptRequest
+	27,  // 225: bossanova.v1.DaemonService.RegisterRepo:input_type -> bossanova.v1.RegisterRepoRequest
+	29,  // 226: bossanova.v1.DaemonService.CloneAndRegisterRepo:input_type -> bossanova.v1.CloneAndRegisterRepoRequest
+	31,  // 227: bossanova.v1.DaemonService.ListRepos:input_type -> bossanova.v1.ListReposRequest
+	33,  // 228: bossanova.v1.DaemonService.RemoveRepo:input_type -> bossanova.v1.RemoveRepoRequest
+	35,  // 229: bossanova.v1.DaemonService.UpdateRepo:input_type -> bossanova.v1.UpdateRepoRequest
+	37,  // 230: bossanova.v1.DaemonService.RefreshRepoOrigin:input_type -> bossanova.v1.RefreshRepoOriginRequest
+	39,  // 231: bossanova.v1.DaemonService.GetRepoSettings:input_type -> bossanova.v1.GetRepoSettingsRequest
+	41,  // 232: bossanova.v1.DaemonService.ListRepoPRs:input_type -> bossanova.v1.ListRepoPRsRequest
+	43,  // 233: bossanova.v1.DaemonService.ListTrackerIssues:input_type -> bossanova.v1.ListTrackerIssuesRequest
+	45,  // 234: bossanova.v1.DaemonService.CreateSession:input_type -> bossanova.v1.CreateSessionRequest
+	53,  // 235: bossanova.v1.DaemonService.GetSession:input_type -> bossanova.v1.GetSessionRequest
+	55,  // 236: bossanova.v1.DaemonService.ListSessions:input_type -> bossanova.v1.ListSessionsRequest
+	57,  // 237: bossanova.v1.DaemonService.ListReviewQueue:input_type -> bossanova.v1.ListReviewQueueRequest
+	59,  // 238: bossanova.v1.DaemonService.MoveSession:input_type -> bossanova.v1.MoveSessionRequest
+	61,  // 239: bossanova.v1.DaemonService.DismissSessionAlert:input_type -> bossanova.v1.DismissSessionAlertRequest
+	63,  // 240: bossanova.v1.DaemonService.AttachSession:input_type -> bossanova.v1.AttachSessionRequest
+	68,  // 241: bossanova.v1.DaemonService.StopSession:input_type -> bossanova.v1.StopSessionRequest
+	70,  // 242: bossanova.v1.DaemonService.PauseSession:input_type -> bossanova.v1.PauseSessionRequest
+	72,  // 243: bossanova.v1.DaemonService.ResumeSession:input_type -> bossanova.v1.ResumeSessionRequest
+	74,  // 244: bossanova.v1.DaemonService.ResumeSessionRun:input_type -> bossanova.v1.ResumeSessionRunRequest
+	76,  // 245: bossanova.v1.DaemonService.RetrySession:input_type -> bossanova.v1.RetrySessionRequest
+	78,  // 246: bossanova.v1.DaemonService.CloseSession:input_type -> bossanova.v1.CloseSessionRequest
+	80,  // 247: bossanova.v1.DaemonService.MergeSession:input_type -> bossanova.v1.MergeSessionRequest
+	82,  // 248: bossanova.v1.DaemonService.ApproveSessionPR:input_type -> bossanova.v1.ApproveSessionPRRequest
+	84,  // 249: bossanova.v1.DaemonService.FollowUpSessionPRNotes:input_type -> bossanova.v1.FollowUpSessionPRNotesRequest
+	89,  // 250: bossanova.v1.DaemonService.OperatorMergeSession:input_type -> bossanova.v1.OperatorMergeSessionRequest
+	268, // 251: bossanova.v1.DaemonService.SendBackToRepair:input_type -> bossanova.v1.SendBackToRepairRequest
+	278, // 252: bossanova.v1.DaemonService.ListSessionPRBlockers:input_type -> bossanova.v1.ListSessionPRBlockersRequest
+	280, // 253: bossanova.v1.DaemonService.AcceptSessionPRBlocker:input_type -> bossanova.v1.AcceptSessionPRBlockerRequest
+	91,  // 254: bossanova.v1.DaemonService.RemoveSession:input_type -> bossanova.v1.RemoveSessionRequest
+	93,  // 255: bossanova.v1.DaemonService.UpdateSession:input_type -> bossanova.v1.UpdateSessionRequest
+	311, // 256: bossanova.v1.DaemonService.ListSessionLabels:input_type -> bossanova.v1.ListSessionLabelsRequest
+	313, // 257: bossanova.v1.DaemonService.CreateSessionLabel:input_type -> bossanova.v1.CreateSessionLabelRequest
+	315, // 258: bossanova.v1.DaemonService.UpdateSessionLabel:input_type -> bossanova.v1.UpdateSessionLabelRequest
+	317, // 259: bossanova.v1.DaemonService.DeleteSessionLabel:input_type -> bossanova.v1.DeleteSessionLabelRequest
+	319, // 260: bossanova.v1.DaemonService.SetSessionLabels:input_type -> bossanova.v1.SetSessionLabelsRequest
+	95,  // 261: bossanova.v1.DaemonService.LinkSessionPR:input_type -> bossanova.v1.LinkSessionPRRequest
+	97,  // 262: bossanova.v1.DaemonService.SetSessionTracker:input_type -> bossanova.v1.SetSessionTrackerRequest
+	293, // 263: bossanova.v1.DaemonService.SetSessionTrackerRank:input_type -> bossanova.v1.SetSessionTrackerRankRequest
+	99,  // 264: bossanova.v1.DaemonService.RefreshSessionPR:input_type -> bossanova.v1.RefreshSessionPRRequest
+	101, // 265: bossanova.v1.DaemonService.SwitchSessionAgentAccount:input_type -> bossanova.v1.SwitchSessionAgentAccountRequest
+	305, // 266: bossanova.v1.DaemonService.StartSessionServe:input_type -> bossanova.v1.StartSessionServeRequest
+	307, // 267: bossanova.v1.DaemonService.StopSessionServe:input_type -> bossanova.v1.StopSessionServeRequest
+	309, // 268: bossanova.v1.DaemonService.GetSessionServe:input_type -> bossanova.v1.GetSessionServeRequest
+	103, // 269: bossanova.v1.DaemonService.ArchiveSession:input_type -> bossanova.v1.ArchiveSessionRequest
+	105, // 270: bossanova.v1.DaemonService.FinishUnattendedRun:input_type -> bossanova.v1.FinishUnattendedRunRequest
+	107, // 271: bossanova.v1.DaemonService.ResurrectSession:input_type -> bossanova.v1.ResurrectSessionRequest
+	49,  // 272: bossanova.v1.DaemonService.WatchSessionSetup:input_type -> bossanova.v1.WatchSessionSetupRequest
+	110, // 273: bossanova.v1.DaemonService.EmptyTrash:input_type -> bossanova.v1.EmptyTrashRequest
+	112, // 274: bossanova.v1.DaemonService.RecordChat:input_type -> bossanova.v1.RecordChatRequest
+	114, // 275: bossanova.v1.DaemonService.ListChats:input_type -> bossanova.v1.ListChatsRequest
+	116, // 276: bossanova.v1.DaemonService.UpdateChatTitle:input_type -> bossanova.v1.UpdateChatTitleRequest
+	118, // 277: bossanova.v1.DaemonService.DeleteChat:input_type -> bossanova.v1.DeleteChatRequest
+	120, // 278: bossanova.v1.DaemonService.WakeChat:input_type -> bossanova.v1.WakeChatRequest
+	122, // 279: bossanova.v1.DaemonService.DescribeChatLaunch:input_type -> bossanova.v1.DescribeChatLaunchRequest
+	124, // 280: bossanova.v1.DaemonService.DescribeChatMCP:input_type -> bossanova.v1.DescribeChatMCPRequest
+	126, // 281: bossanova.v1.DaemonService.GetChatTranscript:input_type -> bossanova.v1.GetChatTranscriptRequest
+	128, // 282: bossanova.v1.DaemonService.SendChatMessage:input_type -> bossanova.v1.SendChatMessageRequest
+	131, // 283: bossanova.v1.DaemonService.ReportChatStatus:input_type -> bossanova.v1.ReportChatStatusRequest
+	133, // 284: bossanova.v1.DaemonService.SetChatPhase:input_type -> bossanova.v1.SetChatPhaseRequest
+	135, // 285: bossanova.v1.DaemonService.GetChatStatuses:input_type -> bossanova.v1.GetChatStatusesRequest
+	138, // 286: bossanova.v1.DaemonService.GetSessionStatuses:input_type -> bossanova.v1.GetSessionStatusesRequest
+	141, // 287: bossanova.v1.DaemonService.DeliverVCSEvent:input_type -> bossanova.v1.DeliverVCSEventRequest
+	143, // 288: bossanova.v1.DaemonService.NotifyAuthChange:input_type -> bossanova.v1.NotifyAuthChangeRequest
+	145, // 289: bossanova.v1.DaemonService.GetAuthState:input_type -> bossanova.v1.GetAuthStateRequest
+	149, // 290: bossanova.v1.DaemonService.CreateCronJob:input_type -> bossanova.v1.CreateCronJobRequest
+	151, // 291: bossanova.v1.DaemonService.ListCronJobs:input_type -> bossanova.v1.ListCronJobsRequest
+	153, // 292: bossanova.v1.DaemonService.GetCronJob:input_type -> bossanova.v1.GetCronJobRequest
+	155, // 293: bossanova.v1.DaemonService.UpdateCronJob:input_type -> bossanova.v1.UpdateCronJobRequest
+	157, // 294: bossanova.v1.DaemonService.DeleteCronJob:input_type -> bossanova.v1.DeleteCronJobRequest
+	159, // 295: bossanova.v1.DaemonService.RunCronJobNow:input_type -> bossanova.v1.RunCronJobNowRequest
+	161, // 296: bossanova.v1.DaemonService.CreateGitHubCallback:input_type -> bossanova.v1.CreateGitHubCallbackRequest
+	163, // 297: bossanova.v1.DaemonService.ListGitHubCallbacks:input_type -> bossanova.v1.ListGitHubCallbacksRequest
+	165, // 298: bossanova.v1.DaemonService.DeleteGitHubCallback:input_type -> bossanova.v1.DeleteGitHubCallbackRequest
+	171, // 299: bossanova.v1.DaemonService.SendBroadcast:input_type -> bossanova.v1.SendBroadcastRequest
+	173, // 300: bossanova.v1.DaemonService.ListBroadcasts:input_type -> bossanova.v1.ListBroadcastsRequest
+	175, // 301: bossanova.v1.DaemonService.DeleteBroadcast:input_type -> bossanova.v1.DeleteBroadcastRequest
+	179, // 302: bossanova.v1.DaemonService.CreateNote:input_type -> bossanova.v1.CreateNoteRequest
+	181, // 303: bossanova.v1.DaemonService.GetNote:input_type -> bossanova.v1.GetNoteRequest
+	183, // 304: bossanova.v1.DaemonService.ListNotes:input_type -> bossanova.v1.ListNotesRequest
+	185, // 305: bossanova.v1.DaemonService.UpdateNote:input_type -> bossanova.v1.UpdateNoteRequest
+	187, // 306: bossanova.v1.DaemonService.DeleteNote:input_type -> bossanova.v1.DeleteNoteRequest
+	189, // 307: bossanova.v1.DaemonService.SyncNotesNow:input_type -> bossanova.v1.SyncNotesNowRequest
+	193, // 308: bossanova.v1.DaemonService.CreateBroadcastSubscription:input_type -> bossanova.v1.CreateBroadcastSubscriptionRequest
+	195, // 309: bossanova.v1.DaemonService.ListBroadcastSubscriptions:input_type -> bossanova.v1.ListBroadcastSubscriptionsRequest
+	197, // 310: bossanova.v1.DaemonService.DeleteBroadcastSubscription:input_type -> bossanova.v1.DeleteBroadcastSubscriptionRequest
+	359, // 311: bossanova.v1.DaemonService.AcquireTrackerIssueLease:input_type -> bossanova.v1.AcquireTrackerIssueLeaseRequest
+	360, // 312: bossanova.v1.DaemonService.ReleaseTrackerIssueLease:input_type -> bossanova.v1.ReleaseTrackerIssueLeaseRequest
+	284, // 313: bossanova.v1.DaemonService.GetViewerDeviceStatus:input_type -> bossanova.v1.GetViewerDeviceStatusRequest
+	287, // 314: bossanova.v1.DaemonService.ListViewerDevices:input_type -> bossanova.v1.ListLocalViewerDevicesRequest
+	289, // 315: bossanova.v1.DaemonService.ApproveViewerDevice:input_type -> bossanova.v1.ApproveViewerDeviceRequest
+	291, // 316: bossanova.v1.DaemonService.RevokeViewerDevice:input_type -> bossanova.v1.RevokeViewerDeviceRequest
+	264, // 317: bossanova.v1.DaemonService.GetAgentCredentialDeviceStatus:input_type -> bossanova.v1.GetAgentCredentialDeviceStatusRequest
+	262, // 318: bossanova.v1.DaemonService.RenewAgentCredentialDeviceEnrollment:input_type -> bossanova.v1.RenewAgentCredentialDeviceEnrollmentRequest
+	361, // 319: bossanova.v1.DaemonService.ListAgentCredentialDevices:input_type -> bossanova.v1.ListAgentCredentialDevicesRequest
+	362, // 320: bossanova.v1.DaemonService.ApproveAgentCredentialDevice:input_type -> bossanova.v1.ApproveAgentCredentialDeviceRequest
+	363, // 321: bossanova.v1.DaemonService.RevokeAgentCredentialDevice:input_type -> bossanova.v1.RevokeAgentCredentialDeviceRequest
+	199, // 322: bossanova.v1.DaemonService.ListAgentAccounts:input_type -> bossanova.v1.ListAgentAccountsRequest
+	201, // 323: bossanova.v1.DaemonService.AddAgentAccount:input_type -> bossanova.v1.AddAgentAccountRequest
+	203, // 324: bossanova.v1.DaemonService.RefreshAgentAccount:input_type -> bossanova.v1.RefreshAgentAccountRequest
+	205, // 325: bossanova.v1.DaemonService.UpdateAgentAccount:input_type -> bossanova.v1.UpdateAgentAccountRequest
+	207, // 326: bossanova.v1.DaemonService.RemoveAgentAccount:input_type -> bossanova.v1.RemoveAgentAccountRequest
+	209, // 327: bossanova.v1.DaemonService.TestAgentAccount:input_type -> bossanova.v1.TestAgentAccountRequest
+	211, // 328: bossanova.v1.DaemonService.RepairDoctor:input_type -> bossanova.v1.RepairDoctorRequest
+	213, // 329: bossanova.v1.DaemonService.StartRepairWorkflow:input_type -> bossanova.v1.StartRepairWorkflowRequest
+	217, // 330: bossanova.v1.DaemonService.ListCheckSnapshots:input_type -> bossanova.v1.ListCheckSnapshotsRequest
+	220, // 331: bossanova.v1.DaemonService.GetSessionTimeline:input_type -> bossanova.v1.GetSessionTimelineRequest
+	223, // 332: bossanova.v1.DaemonService.GetRunCost:input_type -> bossanova.v1.GetRunCostRequest
+	228, // 333: bossanova.v1.DaemonService.GetGitHubUsage:input_type -> bossanova.v1.GetGitHubUsageRequest
+	282, // 334: bossanova.v1.DaemonService.GetGitHubReadCredential:input_type -> bossanova.v1.GetGitHubReadCredentialRequest
+	231, // 335: bossanova.v1.DaemonService.GetPRState:input_type -> bossanova.v1.GetPRStateRequest
+	238, // 336: bossanova.v1.DaemonService.WaitPRState:input_type -> bossanova.v1.WaitPRStateRequest
+	240, // 337: bossanova.v1.DaemonService.ListAgents:input_type -> bossanova.v1.ListAgentsRequest
+	243, // 338: bossanova.v1.DaemonService.CheckAgentLogins:input_type -> bossanova.v1.CheckAgentLoginsRequest
+	246, // 339: bossanova.v1.DaemonService.ListPlugins:input_type -> bossanova.v1.ListPluginsRequest
+	256, // 340: bossanova.v1.DaemonService.GetDaemonCapabilities:input_type -> bossanova.v1.GetDaemonCapabilitiesRequest
+	249, // 341: bossanova.v1.DaemonService.GetSettings:input_type -> bossanova.v1.GetSettingsRequest
+	295, // 342: bossanova.v1.DaemonService.ListRepoCloudControls:input_type -> bossanova.v1.ListRepoCloudControlsRequest
+	253, // 343: bossanova.v1.DaemonService.UpdateSettings:input_type -> bossanova.v1.UpdateSettingsRequest
+	22,  // 344: bossanova.v1.DaemonService.ResolveContext:output_type -> bossanova.v1.ResolveContextResponse
+	20,  // 345: bossanova.v1.DaemonService.DescribeCaller:output_type -> bossanova.v1.DescribeCallerResponse
+	260, // 346: bossanova.v1.DaemonService.UploadEvidence:output_type -> bossanova.v1.UploadEvidenceResponse
+	299, // 347: bossanova.v1.DaemonService.PostProofCheckRun:output_type -> bossanova.v1.PostProofCheckRunResponse
+	301, // 348: bossanova.v1.DaemonService.MintHostedProofViewLink:output_type -> bossanova.v1.MintHostedProofViewLinkResponse
+	303, // 349: bossanova.v1.DaemonService.GetHostedProofLimits:output_type -> bossanova.v1.GetHostedProofLimitsResponse
+	271, // 350: bossanova.v1.DaemonService.GetFactoryHealth:output_type -> bossanova.v1.GetFactoryHealthResponse
+	274, // 351: bossanova.v1.DaemonService.ListSetupChecks:output_type -> bossanova.v1.ListSetupChecksResponse
+	24,  // 352: bossanova.v1.DaemonService.ValidateRepoPath:output_type -> bossanova.v1.ValidateRepoPathResponse
+	26,  // 353: bossanova.v1.DaemonService.DetectSetupScript:output_type -> bossanova.v1.DetectSetupScriptResponse
+	28,  // 354: bossanova.v1.DaemonService.RegisterRepo:output_type -> bossanova.v1.RegisterRepoResponse
+	30,  // 355: bossanova.v1.DaemonService.CloneAndRegisterRepo:output_type -> bossanova.v1.CloneAndRegisterRepoResponse
+	32,  // 356: bossanova.v1.DaemonService.ListRepos:output_type -> bossanova.v1.ListReposResponse
+	34,  // 357: bossanova.v1.DaemonService.RemoveRepo:output_type -> bossanova.v1.RemoveRepoResponse
+	36,  // 358: bossanova.v1.DaemonService.UpdateRepo:output_type -> bossanova.v1.UpdateRepoResponse
+	38,  // 359: bossanova.v1.DaemonService.RefreshRepoOrigin:output_type -> bossanova.v1.RefreshRepoOriginResponse
+	40,  // 360: bossanova.v1.DaemonService.GetRepoSettings:output_type -> bossanova.v1.GetRepoSettingsResponse
+	42,  // 361: bossanova.v1.DaemonService.ListRepoPRs:output_type -> bossanova.v1.ListRepoPRsResponse
+	44,  // 362: bossanova.v1.DaemonService.ListTrackerIssues:output_type -> bossanova.v1.ListTrackerIssuesResponse
+	46,  // 363: bossanova.v1.DaemonService.CreateSession:output_type -> bossanova.v1.CreateSessionResponse
+	54,  // 364: bossanova.v1.DaemonService.GetSession:output_type -> bossanova.v1.GetSessionResponse
+	56,  // 365: bossanova.v1.DaemonService.ListSessions:output_type -> bossanova.v1.ListSessionsResponse
+	58,  // 366: bossanova.v1.DaemonService.ListReviewQueue:output_type -> bossanova.v1.ListReviewQueueResponse
+	60,  // 367: bossanova.v1.DaemonService.MoveSession:output_type -> bossanova.v1.MoveSessionResponse
+	62,  // 368: bossanova.v1.DaemonService.DismissSessionAlert:output_type -> bossanova.v1.DismissSessionAlertResponse
+	64,  // 369: bossanova.v1.DaemonService.AttachSession:output_type -> bossanova.v1.AttachSessionResponse
+	69,  // 370: bossanova.v1.DaemonService.StopSession:output_type -> bossanova.v1.StopSessionResponse
+	71,  // 371: bossanova.v1.DaemonService.PauseSession:output_type -> bossanova.v1.PauseSessionResponse
+	73,  // 372: bossanova.v1.DaemonService.ResumeSession:output_type -> bossanova.v1.ResumeSessionResponse
+	75,  // 373: bossanova.v1.DaemonService.ResumeSessionRun:output_type -> bossanova.v1.ResumeSessionRunResponse
+	77,  // 374: bossanova.v1.DaemonService.RetrySession:output_type -> bossanova.v1.RetrySessionResponse
+	79,  // 375: bossanova.v1.DaemonService.CloseSession:output_type -> bossanova.v1.CloseSessionResponse
+	81,  // 376: bossanova.v1.DaemonService.MergeSession:output_type -> bossanova.v1.MergeSessionResponse
+	83,  // 377: bossanova.v1.DaemonService.ApproveSessionPR:output_type -> bossanova.v1.ApproveSessionPRResponse
+	85,  // 378: bossanova.v1.DaemonService.FollowUpSessionPRNotes:output_type -> bossanova.v1.FollowUpSessionPRNotesResponse
+	90,  // 379: bossanova.v1.DaemonService.OperatorMergeSession:output_type -> bossanova.v1.OperatorMergeSessionResponse
+	269, // 380: bossanova.v1.DaemonService.SendBackToRepair:output_type -> bossanova.v1.SendBackToRepairResponse
+	279, // 381: bossanova.v1.DaemonService.ListSessionPRBlockers:output_type -> bossanova.v1.ListSessionPRBlockersResponse
+	281, // 382: bossanova.v1.DaemonService.AcceptSessionPRBlocker:output_type -> bossanova.v1.AcceptSessionPRBlockerResponse
+	92,  // 383: bossanova.v1.DaemonService.RemoveSession:output_type -> bossanova.v1.RemoveSessionResponse
+	94,  // 384: bossanova.v1.DaemonService.UpdateSession:output_type -> bossanova.v1.UpdateSessionResponse
+	312, // 385: bossanova.v1.DaemonService.ListSessionLabels:output_type -> bossanova.v1.ListSessionLabelsResponse
+	314, // 386: bossanova.v1.DaemonService.CreateSessionLabel:output_type -> bossanova.v1.CreateSessionLabelResponse
+	316, // 387: bossanova.v1.DaemonService.UpdateSessionLabel:output_type -> bossanova.v1.UpdateSessionLabelResponse
+	318, // 388: bossanova.v1.DaemonService.DeleteSessionLabel:output_type -> bossanova.v1.DeleteSessionLabelResponse
+	320, // 389: bossanova.v1.DaemonService.SetSessionLabels:output_type -> bossanova.v1.SetSessionLabelsResponse
+	96,  // 390: bossanova.v1.DaemonService.LinkSessionPR:output_type -> bossanova.v1.LinkSessionPRResponse
+	98,  // 391: bossanova.v1.DaemonService.SetSessionTracker:output_type -> bossanova.v1.SetSessionTrackerResponse
+	294, // 392: bossanova.v1.DaemonService.SetSessionTrackerRank:output_type -> bossanova.v1.SetSessionTrackerRankResponse
+	100, // 393: bossanova.v1.DaemonService.RefreshSessionPR:output_type -> bossanova.v1.RefreshSessionPRResponse
+	102, // 394: bossanova.v1.DaemonService.SwitchSessionAgentAccount:output_type -> bossanova.v1.SwitchSessionAgentAccountResponse
+	306, // 395: bossanova.v1.DaemonService.StartSessionServe:output_type -> bossanova.v1.StartSessionServeResponse
+	308, // 396: bossanova.v1.DaemonService.StopSessionServe:output_type -> bossanova.v1.StopSessionServeResponse
+	310, // 397: bossanova.v1.DaemonService.GetSessionServe:output_type -> bossanova.v1.GetSessionServeResponse
+	104, // 398: bossanova.v1.DaemonService.ArchiveSession:output_type -> bossanova.v1.ArchiveSessionResponse
+	106, // 399: bossanova.v1.DaemonService.FinishUnattendedRun:output_type -> bossanova.v1.FinishUnattendedRunResponse
+	108, // 400: bossanova.v1.DaemonService.ResurrectSession:output_type -> bossanova.v1.ResurrectSessionResponse
+	50,  // 401: bossanova.v1.DaemonService.WatchSessionSetup:output_type -> bossanova.v1.WatchSessionSetupResponse
+	111, // 402: bossanova.v1.DaemonService.EmptyTrash:output_type -> bossanova.v1.EmptyTrashResponse
+	113, // 403: bossanova.v1.DaemonService.RecordChat:output_type -> bossanova.v1.RecordChatResponse
+	115, // 404: bossanova.v1.DaemonService.ListChats:output_type -> bossanova.v1.ListChatsResponse
+	117, // 405: bossanova.v1.DaemonService.UpdateChatTitle:output_type -> bossanova.v1.UpdateChatTitleResponse
+	119, // 406: bossanova.v1.DaemonService.DeleteChat:output_type -> bossanova.v1.DeleteChatResponse
+	121, // 407: bossanova.v1.DaemonService.WakeChat:output_type -> bossanova.v1.WakeChatResponse
+	123, // 408: bossanova.v1.DaemonService.DescribeChatLaunch:output_type -> bossanova.v1.DescribeChatLaunchResponse
+	125, // 409: bossanova.v1.DaemonService.DescribeChatMCP:output_type -> bossanova.v1.DescribeChatMCPResponse
+	127, // 410: bossanova.v1.DaemonService.GetChatTranscript:output_type -> bossanova.v1.GetChatTranscriptResponse
+	129, // 411: bossanova.v1.DaemonService.SendChatMessage:output_type -> bossanova.v1.SendChatMessageResponse
+	132, // 412: bossanova.v1.DaemonService.ReportChatStatus:output_type -> bossanova.v1.ReportChatStatusResponse
+	134, // 413: bossanova.v1.DaemonService.SetChatPhase:output_type -> bossanova.v1.SetChatPhaseResponse
+	137, // 414: bossanova.v1.DaemonService.GetChatStatuses:output_type -> bossanova.v1.GetChatStatusesResponse
+	140, // 415: bossanova.v1.DaemonService.GetSessionStatuses:output_type -> bossanova.v1.GetSessionStatusesResponse
+	142, // 416: bossanova.v1.DaemonService.DeliverVCSEvent:output_type -> bossanova.v1.DeliverVCSEventResponse
+	144, // 417: bossanova.v1.DaemonService.NotifyAuthChange:output_type -> bossanova.v1.NotifyAuthChangeResponse
+	146, // 418: bossanova.v1.DaemonService.GetAuthState:output_type -> bossanova.v1.GetAuthStateResponse
+	150, // 419: bossanova.v1.DaemonService.CreateCronJob:output_type -> bossanova.v1.CreateCronJobResponse
+	152, // 420: bossanova.v1.DaemonService.ListCronJobs:output_type -> bossanova.v1.ListCronJobsResponse
+	154, // 421: bossanova.v1.DaemonService.GetCronJob:output_type -> bossanova.v1.GetCronJobResponse
+	156, // 422: bossanova.v1.DaemonService.UpdateCronJob:output_type -> bossanova.v1.UpdateCronJobResponse
+	158, // 423: bossanova.v1.DaemonService.DeleteCronJob:output_type -> bossanova.v1.DeleteCronJobResponse
+	160, // 424: bossanova.v1.DaemonService.RunCronJobNow:output_type -> bossanova.v1.RunCronJobNowResponse
+	162, // 425: bossanova.v1.DaemonService.CreateGitHubCallback:output_type -> bossanova.v1.CreateGitHubCallbackResponse
+	164, // 426: bossanova.v1.DaemonService.ListGitHubCallbacks:output_type -> bossanova.v1.ListGitHubCallbacksResponse
+	166, // 427: bossanova.v1.DaemonService.DeleteGitHubCallback:output_type -> bossanova.v1.DeleteGitHubCallbackResponse
+	172, // 428: bossanova.v1.DaemonService.SendBroadcast:output_type -> bossanova.v1.SendBroadcastResponse
+	174, // 429: bossanova.v1.DaemonService.ListBroadcasts:output_type -> bossanova.v1.ListBroadcastsResponse
+	176, // 430: bossanova.v1.DaemonService.DeleteBroadcast:output_type -> bossanova.v1.DeleteBroadcastResponse
+	180, // 431: bossanova.v1.DaemonService.CreateNote:output_type -> bossanova.v1.CreateNoteResponse
+	182, // 432: bossanova.v1.DaemonService.GetNote:output_type -> bossanova.v1.GetNoteResponse
+	184, // 433: bossanova.v1.DaemonService.ListNotes:output_type -> bossanova.v1.ListNotesResponse
+	186, // 434: bossanova.v1.DaemonService.UpdateNote:output_type -> bossanova.v1.UpdateNoteResponse
+	188, // 435: bossanova.v1.DaemonService.DeleteNote:output_type -> bossanova.v1.DeleteNoteResponse
+	190, // 436: bossanova.v1.DaemonService.SyncNotesNow:output_type -> bossanova.v1.SyncNotesNowResponse
+	194, // 437: bossanova.v1.DaemonService.CreateBroadcastSubscription:output_type -> bossanova.v1.CreateBroadcastSubscriptionResponse
+	196, // 438: bossanova.v1.DaemonService.ListBroadcastSubscriptions:output_type -> bossanova.v1.ListBroadcastSubscriptionsResponse
+	198, // 439: bossanova.v1.DaemonService.DeleteBroadcastSubscription:output_type -> bossanova.v1.DeleteBroadcastSubscriptionResponse
+	364, // 440: bossanova.v1.DaemonService.AcquireTrackerIssueLease:output_type -> bossanova.v1.AcquireTrackerIssueLeaseResponse
+	365, // 441: bossanova.v1.DaemonService.ReleaseTrackerIssueLease:output_type -> bossanova.v1.ReleaseTrackerIssueLeaseResponse
+	285, // 442: bossanova.v1.DaemonService.GetViewerDeviceStatus:output_type -> bossanova.v1.GetViewerDeviceStatusResponse
+	288, // 443: bossanova.v1.DaemonService.ListViewerDevices:output_type -> bossanova.v1.ListLocalViewerDevicesResponse
+	290, // 444: bossanova.v1.DaemonService.ApproveViewerDevice:output_type -> bossanova.v1.ApproveViewerDeviceResponse
+	292, // 445: bossanova.v1.DaemonService.RevokeViewerDevice:output_type -> bossanova.v1.RevokeViewerDeviceResponse
+	265, // 446: bossanova.v1.DaemonService.GetAgentCredentialDeviceStatus:output_type -> bossanova.v1.GetAgentCredentialDeviceStatusResponse
+	263, // 447: bossanova.v1.DaemonService.RenewAgentCredentialDeviceEnrollment:output_type -> bossanova.v1.RenewAgentCredentialDeviceEnrollmentResponse
+	366, // 448: bossanova.v1.DaemonService.ListAgentCredentialDevices:output_type -> bossanova.v1.ListAgentCredentialDevicesResponse
+	367, // 449: bossanova.v1.DaemonService.ApproveAgentCredentialDevice:output_type -> bossanova.v1.ApproveAgentCredentialDeviceResponse
+	368, // 450: bossanova.v1.DaemonService.RevokeAgentCredentialDevice:output_type -> bossanova.v1.RevokeAgentCredentialDeviceResponse
+	200, // 451: bossanova.v1.DaemonService.ListAgentAccounts:output_type -> bossanova.v1.ListAgentAccountsResponse
+	202, // 452: bossanova.v1.DaemonService.AddAgentAccount:output_type -> bossanova.v1.AddAgentAccountResponse
+	204, // 453: bossanova.v1.DaemonService.RefreshAgentAccount:output_type -> bossanova.v1.RefreshAgentAccountResponse
+	206, // 454: bossanova.v1.DaemonService.UpdateAgentAccount:output_type -> bossanova.v1.UpdateAgentAccountResponse
+	208, // 455: bossanova.v1.DaemonService.RemoveAgentAccount:output_type -> bossanova.v1.RemoveAgentAccountResponse
+	210, // 456: bossanova.v1.DaemonService.TestAgentAccount:output_type -> bossanova.v1.TestAgentAccountResponse
+	215, // 457: bossanova.v1.DaemonService.RepairDoctor:output_type -> bossanova.v1.RepairDoctorResponse
+	214, // 458: bossanova.v1.DaemonService.StartRepairWorkflow:output_type -> bossanova.v1.StartRepairWorkflowResponse
+	219, // 459: bossanova.v1.DaemonService.ListCheckSnapshots:output_type -> bossanova.v1.ListCheckSnapshotsResponse
+	221, // 460: bossanova.v1.DaemonService.GetSessionTimeline:output_type -> bossanova.v1.GetSessionTimelineResponse
+	227, // 461: bossanova.v1.DaemonService.GetRunCost:output_type -> bossanova.v1.GetRunCostResponse
+	230, // 462: bossanova.v1.DaemonService.GetGitHubUsage:output_type -> bossanova.v1.GetGitHubUsageResponse
+	283, // 463: bossanova.v1.DaemonService.GetGitHubReadCredential:output_type -> bossanova.v1.GetGitHubReadCredentialResponse
+	237, // 464: bossanova.v1.DaemonService.GetPRState:output_type -> bossanova.v1.GetPRStateResponse
+	239, // 465: bossanova.v1.DaemonService.WaitPRState:output_type -> bossanova.v1.WaitPRStateResponse
+	241, // 466: bossanova.v1.DaemonService.ListAgents:output_type -> bossanova.v1.ListAgentsResponse
+	244, // 467: bossanova.v1.DaemonService.CheckAgentLogins:output_type -> bossanova.v1.CheckAgentLoginsResponse
+	247, // 468: bossanova.v1.DaemonService.ListPlugins:output_type -> bossanova.v1.ListPluginsResponse
+	257, // 469: bossanova.v1.DaemonService.GetDaemonCapabilities:output_type -> bossanova.v1.GetDaemonCapabilitiesResponse
+	250, // 470: bossanova.v1.DaemonService.GetSettings:output_type -> bossanova.v1.GetSettingsResponse
+	296, // 471: bossanova.v1.DaemonService.ListRepoCloudControls:output_type -> bossanova.v1.ListRepoCloudControlsResponse
+	255, // 472: bossanova.v1.DaemonService.UpdateSettings:output_type -> bossanova.v1.UpdateSettingsResponse
+	344, // [344:473] is the sub-list for method output_type
+	215, // [215:344] is the sub-list for method input_type
+	215, // [215:215] is the sub-list for extension type_name
+	215, // [215:215] is the sub-list for extension extendee
+	0,   // [0:215] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_daemon_proto_init() }
@@ -22472,63 +22752,63 @@ func file_bossanova_v1_daemon_proto_init() {
 	file_bossanova_v1_daemon_proto_msgTypes[8].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[10].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[16].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[22].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[24].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[25].OneofWrappers = []any{
+	file_bossanova_v1_daemon_proto_msgTypes[26].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[27].OneofWrappers = []any{
 		(*CreateSessionResponse_SetupOutput)(nil),
 		(*CreateSessionResponse_SessionCreated)(nil),
 	}
-	file_bossanova_v1_daemon_proto_msgTypes[29].OneofWrappers = []any{
+	file_bossanova_v1_daemon_proto_msgTypes[31].OneofWrappers = []any{
 		(*WatchSessionSetupResponse_SetupOutput)(nil),
 		(*WatchSessionSetupResponse_SetupSettled)(nil),
 	}
-	file_bossanova_v1_daemon_proto_msgTypes[34].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[38].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[43].OneofWrappers = []any{
+	file_bossanova_v1_daemon_proto_msgTypes[36].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[40].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[45].OneofWrappers = []any{
 		(*AttachSessionResponse_OutputLine)(nil),
 		(*AttachSessionResponse_StateChange)(nil),
 		(*AttachSessionResponse_SessionEnded)(nil),
 	}
-	file_bossanova_v1_daemon_proto_msgTypes[46].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[72].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[78].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[48].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[74].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[80].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[87].OneofWrappers = []any{
+	file_bossanova_v1_daemon_proto_msgTypes[82].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[89].OneofWrappers = []any{
 		(*ResurrectSessionResponse_SetupOutput)(nil),
 		(*ResurrectSessionResponse_SessionResurrected)(nil),
 	}
-	file_bossanova_v1_daemon_proto_msgTypes[89].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[91].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[128].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[93].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[130].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[134].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[139].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[140].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[132].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[136].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[141].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[142].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[144].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[150].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[146].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[152].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[158].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[162].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[154].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[160].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[164].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[172].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[166].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[174].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[178].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[184].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[203].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[204].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[211].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[216].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[229].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[230].OneofWrappers = []any{}
-	file_bossanova_v1_daemon_proto_msgTypes[291].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[176].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[180].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[186].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[205].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[206].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[213].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[218].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[234].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[235].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[296].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_daemon_proto_rawDesc), len(file_bossanova_v1_daemon_proto_rawDesc)),
 			NumEnums:      19,
-			NumMessages:   300,
+			NumMessages:   305,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

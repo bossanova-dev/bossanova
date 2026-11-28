@@ -36,8 +36,8 @@ summary (cost extraction matches a line-leading token).
 - `NO_CHANGE` — no eligible candidate, a named ticket with nothing to build from, claim lost with
   no runner-up, a foreign branch carrying other work, a peer already holding the worktree lock, a
   named ticket verify would not admit, started without approval, or nothing
-  committable after claiming (ticket restored to its entry state, or closed to `.done` when Step 6
-  certifies the scope already on the base).
+  committable after claiming (ticket restored to its entry state, parked with the needs-human label,
+  or closed to `.done` when Step 6 certifies the scope already on the base).
 
 An existing PR/branch (bossd's bootstrap draft, an empty PR, or a prior run's work) is **adopted and
 resumed**, not a stop condition.
@@ -117,7 +117,7 @@ Once Preflight has pinned, read `references/…` and `agents/…` from `$BOSS_BU
 | Which repo-local extensions exist?                                     | `node skill-extensions.mjs discover --core boss-build --role <role> --json`                                                                             |
 | Do the plan’s citations and premises still hold?                       | `node plan-recheck.mjs <plan> [--root <dir>] [--issue-json <file>]`                                                                                     |
 | Is a failed criterion only "checkout behind origin"? Re-run it rebased | `node build/acceptance-retry.mjs classify\|retry\|certify …`                                                                                            |
-| What happens to a nothing-built ticket?                                | `node build/no-change-disposition.mjs decide …`                                                                                                         |
+| What happens to a nothing-built ticket?                                | `node build/no-change-disposition.mjs decide\|park …`                                                                                                   |
 | Did the base move under me?                                            | `node base-drift.mjs check …`                                                                                                                           |
 | Push the branch, with retry and a rescue ref                           | `node finalize/push-branch.mjs --branch <name> [--base <ref>] [--expect-remote <sha>]` <!-- ci-request: skip helper reference; routes below request --> |
 | Request configured heavy CI once per verified draft head               | `node ci/ci-request.mjs request --pr <n> --head <sha>`                                                                                                  |
@@ -1123,7 +1123,7 @@ Tokens:
 `do-not-merge-marked`; every route — `claim-deleted`, `notes-before-lock-release`,
 `stop-hooks-removed`, `completion-phase-done`, `lock-released`; optional — `blocked-pr-left-draft`,
 `entry-state-restored`, `already-satisfied-closed`,
-`no-change-breadcrumb-written`, `pr-merged-by-completion`.
+`no-change-breadcrumb-written`, `no-change-parked`, `pr-merged-by-completion`.
 
 ## Step 10: Settle
 
@@ -1161,20 +1161,34 @@ may change it.
   ```bash
   node "$BOSS_BUILD_TOOLBOX/build/no-change-disposition.mjs" decide \
     --base "$BASE_REF" --claim-verdict <WON|LOST|NO_WINNER|unknown> --current-state <name> \
-    [--acceptance <run-scoped Step 6 certification file>]
+    --comments "$COMMENTS_FILE" \
+    [--acceptance <run-scoped Step 6 certification file>] [--superseded-by <id>]
   ```
 
-  Supply `--acceptance` only when Step 6 certified this run and both base fetches succeeded.
-  Missing or unknown evidence never authorizes a close. Apply its disposition:
+  Pass `--comments "$COMMENTS_FILE"` from the claim re-read above. Supply `--acceptance` only when
+  Step 6 certified this run and both base fetches succeeded. Pass `--superseded-by <id>` only when
+  the run established that a different ticket, already in a completed state per `getIssue`, shipped
+  this plan's scope, and name that ticket in the breadcrumb. Missing or unknown evidence never
+  authorizes a close. Apply its disposition:
   - `close`: move to `targetState` (configured `.done`), confirm with `await-state`, and stamp
     `already-satisfied-closed`. Leave one breadcrumb naming the base, short SHA, criterion count
     and each criterion id with its command (`check` or `derivedCheck`), without output or secrets.
     The terminal summary says `already satisfied on <base>@<sha7>; closed to <done-state>`.
+  - `park`: restore the entry state with `moveState`, confirm with `await-state`, and stamp
+    `entry-state-restored`. Then run
+    `node "$BOSS_BUILD_TOOLBOX/build/no-change-disposition.mjs" park --issue-id <issue-uuid>`. On
+    exit 0, stamp `no-change-parked`. If the verb exits non-zero, keep the restore, name the
+    failure in the breadcrumb and run report, and run
+    `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger evidence-unknown --where "boss-build no-change park"`
+    (never fatal). A human re-queuing a parked ticket should edit or remove the breadcrumb
+    (otherwise a subsequent nothing-built run parks it again).
   - `restore`: restore the entry state with `moveState`, confirm with `await-state`, and stamp
     `entry-state-restored`.
   - `leave`: make no state move (peer owns the ticket or its state is not ours).
 
-  Every disposition leaves exactly one short breadcrumb naming the route and `reason`; update it
+  Every disposition leaves exactly one short breadcrumb whose first line is the helper's
+  `breadcrumb` line (written via a file or quoted heredoc rather than unquoted shell interpolation)
+  naming the route and `reason` (and the superseding ticket when `superseded`); update it in place
   on a repeat and stamp `no-change-breadcrumb-written`.
 
 - Delete this run's claim comment by the read-derived `ownClaimId` if it still exists.

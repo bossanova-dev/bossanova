@@ -153,6 +153,7 @@ type HostServiceServer struct {
 	// before — so nothing here is load-bearing for correctness, only for
 	// whether a bindable chat actually gets bound.
 	panePIDResolver func(ctx context.Context, tmuxSessionName string) (int, error)
+	livePaneChecker func(ctx context.Context, tmuxSessionName string) bool
 
 	// agentLogsDir is the bossd-owned directory where the agent plugin
 	// writes per-session NDJSON log files. Forwarded into StartAgentRun.LogPath.
@@ -416,6 +417,7 @@ type Config struct {
 	AgentClients    map[string]agent.RunnerClient
 	AgentLogsDir    string
 	PanePIDResolver func(context.Context, string) (int, error)
+	LivePaneChecker func(context.Context, string) bool
 	ProofEnv        proofEnvResolver
 	AccountEnv      accountEnvResolver
 	Lifecycle       ChatLifecycle
@@ -435,7 +437,7 @@ func NewHostServiceServer(cfg Config) *HostServiceServer {
 		repoStore: cfg.Repos, sessionStore: cfg.Sessions, agentChats: cfg.Chats,
 		agentRuns: cfg.AgentRuns, displayTracker: cfg.DisplayTracker, chatTracker: cfg.ChatTracker,
 		repairLease: cfg.RepairLease, agentClients: cfg.AgentClients, agentLogsDir: cfg.AgentLogsDir,
-		panePIDResolver: cfg.PanePIDResolver, proofEnv: cfg.ProofEnv, accountEnv: cfg.AccountEnv,
+		panePIDResolver: cfg.PanePIDResolver, livePaneChecker: cfg.LivePaneChecker, proofEnv: cfg.ProofEnv, accountEnv: cfg.AccountEnv,
 		lifecycle: cfg.Lifecycle, envOverlay: cfg.EnvOverlay,
 
 		activeRuns:           make(map[string]activeRun),
@@ -894,63 +896,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				headSHA = entry.HeadSHA
 			}
 
-			// Check heartbeat tracker for active Claude Code chat processes.
-			// On DB error, assume active (fail closed) to prevent advancing
-			// sessions that may have a live Claude Code process.
-			hasActiveChat := false
-			var latestChatActivity time.Time
-			if s.agentChats != nil && s.chatTracker != nil {
-				chats, err := s.agentChats.ListBySession(ctx, sess.ID)
-				if err != nil {
-					log.Warn().Err(err).Str("session_id", sess.ID).Msg("failed to list chats for active chat check, assuming active")
-					hasActiveChat = true
-				} else {
-					for _, chat := range chats {
-						if chat.Role == domain.AgentChatRoleRepair {
-							// BOS-153: a repair chat the tracker deems
-							// displaceable (idle past the repair window, at a
-							// long-stuck question, or stopped) is a dead/dying
-							// run — do not count it as an active chat, which
-							// would defer auto-repair forever. Evaluated from
-							// the sampled chat tracker, never the pipe-pane log
-							// mtime (which an idle TUI refreshes forever). A
-							// cold/absent tracker entry is NOT displaceable
-							// here; the later Get(...) nil check below already
-							// drops such chats from the active tally.
-							//
-							// Deliberately repair-titled-only (BOS-347 kept it
-							// that way): the tally decides whether a session
-							// counts as having an active chat; widening the
-							// shortcut to all titles would change active-chat
-							// accounting everywhere. Uniform
-							// question-displacement lives in
-							// replaceBlockingChatForRepair, which is the gate
-							// that actually matters for repair.
-							if s.chatDisplaceable(chat.AgentSessionID, time.Time{}, lifecycleplugin.DisplacePolicy{MinIdle: lifecycleplugin.RepairDisplaceMinIdle, QuestionIdle: lifecycleplugin.RepairDisplaceQuestionIdle}, time.Now()) == nil {
-								continue
-							}
-						}
-						// Skip retired chats (start failed, or replaced by
-						// repair): the agent_chats row is preserved as history
-						// but its pane is gone, so any tracker entry on its
-						// AgentSessionID is an orphan tmux pane keeping the
-						// heartbeat warm. Counting it as an active chat makes the
-						// repair plugin's idle gate defer forever — the
-						// failed-start row would permanently block automatic repair.
-						if chat.IsRetired() {
-							continue
-						}
-						chatEntry := s.chatTracker.Get(chat.AgentSessionID)
-						if chatEntry == nil {
-							continue
-						}
-						hasActiveChat = true
-						if chatEntry.LastOutputAt.After(latestChatActivity) {
-							latestChatActivity = chatEntry.LastOutputAt
-						}
-					}
-				}
-			}
+			hasActiveChat, latestChatActivity, isRepairing := s.sessionActiveChats(ctx, sess.ID, isRepairing)
 
 			pbSess := &bossanovav1.Session{
 				TrackerRank:                 models.TrackerRankToProto(sess.TrackerRank),
@@ -1213,6 +1159,9 @@ func protoToSessionEvent(e bossanovav1.SessionEvent) machine.Event {
 // --- gRPC handler adapters ---
 
 func (s *HostServiceServer) SetRepairStatus(_ context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
+	if req.GetIsQueued() {
+		return s.setRepairQueued(req.GetSessionId())
+	}
 	if s.displayTracker == nil {
 		return nil, grpcstatus.Error(codes.Internal, "PR tracker not set")
 	}

@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/projectconfig"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/cron"
@@ -957,8 +958,9 @@ func TestCronJobManagedBy(t *testing.T) {
 	}
 }
 
-// TestValidCronManagedBy pins the managed_by marker boundaries: empty or
-// "boss-project:" plus a lowercase slug of 1-63 chars that starts alphanumeric.
+// TestValidCronManagedBy pins the managed_by marker boundaries: empty, the
+// reserved "boss-defaults" marker, or "boss-project:" plus a lowercase slug of
+// 1-63 chars that starts alphanumeric.
 func TestValidCronManagedBy(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -967,6 +969,9 @@ func TestValidCronManagedBy(t *testing.T) {
 		ok   bool
 	}{
 		{"empty", "", true},
+		{"defaults marker", projectconfig.DefaultsMarker, true},
+		{"defaults marker with suffix", projectconfig.DefaultsMarker + ":x", false},
+		{"defaults marker uppercase", "Boss-Defaults", false},
 		{"short slug", "boss-project:a", true},
 		{"63-char slug", "boss-project:" + strings.Repeat("a", 63), true},
 		{"64-char slug", "boss-project:" + strings.Repeat("a", 64), false},
@@ -982,5 +987,55 @@ func TestValidCronManagedBy(t *testing.T) {
 				t.Errorf("validCronManagedBy(%q) err = %v, want ok=%v", tc.in, err, tc.ok)
 			}
 		})
+	}
+}
+
+func TestCreateCronJobDefaultsMarkerAndDisable_ScheduledJobs_AC270501(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:    repoID,
+		Name:      "factory-verify",
+		Prompt:    "$boss-verify",
+		Schedule:  "*/10 * * * *",
+		AgentName: "codex",
+		IsEnabled: true,
+		ManagedBy: projectconfig.DefaultsMarker,
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob(boss-defaults): %v", err)
+	}
+	id := created.Msg.CronJob.Id
+	if got := created.Msg.CronJob.ManagedBy; got != projectconfig.DefaultsMarker {
+		t.Fatalf("create ManagedBy = %q, want %q", got, projectconfig.DefaultsMarker)
+	}
+	if !created.Msg.CronJob.IsEnabled {
+		t.Fatal("create IsEnabled = false, want true")
+	}
+
+	disabled := false
+	updated, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
+		Id:        id,
+		IsEnabled: &disabled,
+	}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob(disable): %v", err)
+	}
+	if updated.Msg.CronJob.IsEnabled {
+		t.Fatal("update IsEnabled = true, want false")
+	}
+	if got := updated.Msg.CronJob.ManagedBy; got != projectconfig.DefaultsMarker {
+		t.Fatalf("update ManagedBy = %q, want %q", got, projectconfig.DefaultsMarker)
+	}
+
+	got, err := srv.GetCronJob(ctx, connect.NewRequest(&pb.GetCronJobRequest{Id: id}))
+	if err != nil {
+		t.Fatalf("GetCronJob: %v", err)
+	}
+	if got.Msg.CronJob.IsEnabled {
+		t.Fatal("persisted IsEnabled = true, want false")
+	}
+	if got.Msg.CronJob.ManagedBy != projectconfig.DefaultsMarker {
+		t.Fatalf("persisted ManagedBy = %q, want %q", got.Msg.CronJob.ManagedBy, projectconfig.DefaultsMarker)
 	}
 }

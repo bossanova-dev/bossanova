@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/recurser/bossalib/contract/cloud/cloudorigin"
 	"github.com/recurser/bossalib/contract/daemon/authlock"
 )
 
@@ -25,9 +26,23 @@ var (
 	refreshAccessToken = RefreshAccessToken
 )
 
-func (m *Manager) refreshStoredTokens(ctx context.Context, force bool) (out *Tokens, retErr error) {
+func checkStoredTokenScope(scopeURL string, tokens *Tokens) error {
+	if scopeURL == "" || tokens == nil || tokens.AccessToken == "" {
+		return nil
+	}
+	return cloudorigin.CheckStoredToken(scopeURL, tokens.AccessToken)
+}
+
+func (m *Manager) refreshStoredTokens(ctx context.Context, force bool) (*Tokens, error) {
+	return m.refreshStoredTokensFor(ctx, force, "")
+}
+
+func (m *Manager) refreshStoredTokensFor(ctx context.Context, force bool, scopeURL string) (out *Tokens, retErr error) {
 	tokens, err := m.store.Load()
 	if err != nil {
+		return nil, err
+	}
+	if err := checkStoredTokenScope(scopeURL, tokens); err != nil {
 		return nil, err
 	}
 	// Retained-but-flagged credentials are terminal until the user signs in
@@ -58,6 +73,10 @@ func (m *Manager) refreshStoredTokens(ctx context.Context, force bool) (out *Tok
 
 	tokens, err = m.store.Load()
 	if err != nil {
+		retErr = err
+		return nil, retErr
+	}
+	if err := checkStoredTokenScope(scopeURL, tokens); err != nil {
 		retErr = err
 		return nil, retErr
 	}

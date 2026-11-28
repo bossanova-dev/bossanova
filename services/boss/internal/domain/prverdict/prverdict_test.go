@@ -206,7 +206,7 @@ func TestRefusalDetailCoversEveryApproveReason(t *testing.T) {
 	// The refusal reasons skills-toolbox/verify/verify-gate.mjs approve returns.
 	for _, reason := range []string{
 		"pr-unreadable", "pr-not-open", "head-unreadable", "status-unreadable",
-		"park-codes-unknown", "trial-park", "comments-unreadable", "no-standing-park",
+		"park-codes-unknown", "trial-park", "approval-required", "comments-unreadable", "no-standing-park",
 		"sent-back-approved-head", "approver-not-writer", "approver-unreadable",
 		"head-moved", "park-changed", "approval-superseded", "approval-record-failed", "approval-unconfirmed",
 	} {

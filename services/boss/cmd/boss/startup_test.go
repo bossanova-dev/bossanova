@@ -5,9 +5,13 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/domain/rpc"
 
 	settingscli "github.com/recurser/boss/api/cli/settings"
@@ -429,8 +433,302 @@ func TestRunAgentPreflightsSkipsRemoteTransports(t *testing.T) {
 			if stub.getSessionID != "" || stub.resolveCalled {
 				t.Fatal("no session lookup should happen for a non-local transport")
 			}
+			if stub.checkLoginsCalls != 0 {
+				t.Fatalf("CheckAgentLogins calls = %d, want 0 for a non-local transport", stub.checkLoginsCalls)
+			}
 		})
 	}
+}
+
+func TestRunAgentPreflightsWarnsLoggedOutAgent_DaemonLifecycle_AC274701(t *testing.T) {
+	t.Run("warns for enabled loaded logged-out agent and skips logged-in", func(t *testing.T) {
+		var shown []preflight.Issue
+		hookAgentPreflightSeams(t, func(string, []string, string) *preflight.Issue { return nil }, func(issue preflight.Issue) error {
+			shown = append(shown, issue)
+			return nil
+		})
+		stub := &agentPreflightStub{
+			agents: []rpc.AgentInfo{{Name: "claude"}, {Name: "codex"}},
+			logins: []rpc.AgentLogin{
+				{AgentName: "claude", LoggedOut: false},
+				{AgentName: "codex", LoggedOut: true, Remedy: "codex login"},
+			},
+		}
+		settings := config.Settings{
+			LoginShell: "/bin/sh",
+			Plugins: []config.PluginConfig{
+				{Name: "claude", Enabled: true},
+				{Name: "codex", Enabled: true},
+			},
+		}
+
+		if err := runAgentPreflights(context.Background(), nil, stub, settings, ""); err != nil {
+			t.Fatalf("runAgentPreflights: %v", err)
+		}
+		if len(shown) != 1 {
+			t.Fatalf("shown screens = %d, want 1", len(shown))
+		}
+		if !shown[0].Warning {
+			t.Error("shown issue Warning = false, want true")
+		}
+		if shown[0].Title != "codex is not logged in" {
+			t.Errorf("Title = %q, want %q", shown[0].Title, "codex is not logged in")
+		}
+		if !strings.Contains(shown[0].Detail, "codex: codex login") {
+			t.Errorf("Detail missing remedy:\n%s", shown[0].Detail)
+		}
+		if strings.Contains(shown[0].Title+shown[0].Detail, "claude") {
+			t.Errorf("logged-in agent should not be named:\n%s\n%s", shown[0].Title, shown[0].Detail)
+		}
+	})
+
+	t.Run("all logged in shows nothing", func(t *testing.T) {
+		hookAgentPreflightSeams(t, func(string, []string, string) *preflight.Issue { return nil }, func(issue preflight.Issue) error {
+			t.Fatalf("unexpected preflight screen: %+v", issue)
+			return nil
+		})
+		stub := &agentPreflightStub{
+			agents: []rpc.AgentInfo{{Name: "codex"}},
+			logins: []rpc.AgentLogin{{AgentName: "codex", LoggedOut: false}},
+		}
+		settings := config.Settings{
+			LoginShell: "/bin/sh",
+			Plugins:    []config.PluginConfig{{Name: "codex", Enabled: true}},
+		}
+		if err := runAgentPreflights(context.Background(), nil, stub, settings, ""); err != nil {
+			t.Fatalf("runAgentPreflights: %v", err)
+		}
+		if stub.checkLoginsCalls != 1 {
+			t.Fatalf("CheckAgentLogins calls = %d, want 1", stub.checkLoginsCalls)
+		}
+	})
+
+	t.Run("filters to attached session agent", func(t *testing.T) {
+		var shown []preflight.Issue
+		hookAgentPreflightSeams(t, func(string, []string, string) *preflight.Issue { return nil }, func(issue preflight.Issue) error {
+			shown = append(shown, issue)
+			return nil
+		})
+		stub := &agentPreflightStub{
+			agents: []rpc.AgentInfo{{Name: "claude"}, {Name: "codex"}},
+			session: &pb.Session{
+				Id:           "target-session",
+				WorktreePath: "/tmp/target-worktree",
+				AgentName:    "codex",
+			},
+			logins: []rpc.AgentLogin{
+				{AgentName: "claude", LoggedOut: true, Remedy: "claude auth login"},
+				{AgentName: "codex", LoggedOut: true, Remedy: "codex login"},
+			},
+		}
+		settings := config.Settings{
+			LoginShell: "/bin/sh",
+			Plugins: []config.PluginConfig{
+				{Name: "claude", Enabled: true},
+				{Name: "codex", Enabled: true},
+			},
+		}
+		if err := runAgentPreflights(context.Background(), nil, stub, settings, "target-session"); err != nil {
+			t.Fatalf("runAgentPreflights: %v", err)
+		}
+		if len(shown) != 1 || shown[0].Title != "codex is not logged in" {
+			t.Fatalf("shown = %+v, want warning for codex only", shown)
+		}
+	})
+
+	t.Run("ignores disabled and unloaded plugins and warns for non-CLI-backed opencode", func(t *testing.T) {
+		var shown []preflight.Issue
+		hookAgentPreflightSeams(t, func(string, []string, string) *preflight.Issue { return nil }, func(issue preflight.Issue) error {
+			shown = append(shown, issue)
+			return nil
+		})
+		stub := &agentPreflightStub{
+			agents: []rpc.AgentInfo{{Name: "claude"}, {Name: "opencode"}},
+			logins: []rpc.AgentLogin{
+				{AgentName: "claude", LoggedOut: true, Remedy: "claude auth login"},
+				{AgentName: "codex", LoggedOut: true, Remedy: "codex login"},
+				{AgentName: "opencode", LoggedOut: true, Remedy: "opencode auth login"},
+			},
+		}
+		settings := config.Settings{
+			LoginShell: "/bin/sh",
+			Plugins: []config.PluginConfig{
+				{Name: "claude", Enabled: false},
+				{Name: "codex", Enabled: true},
+				{Name: "opencode", Enabled: true},
+			},
+		}
+		if err := runAgentPreflights(context.Background(), nil, stub, settings, ""); err != nil {
+			t.Fatalf("runAgentPreflights: %v", err)
+		}
+		if len(shown) != 1 {
+			t.Fatalf("shown screens = %d, want 1", len(shown))
+		}
+		if shown[0].Title != "opencode is not logged in" {
+			t.Errorf("Title = %q, want %q", shown[0].Title, "opencode is not logged in")
+		}
+		if !strings.Contains(shown[0].Detail, "opencode: opencode auth login") {
+			t.Errorf("Detail missing opencode remedy:\n%s", shown[0].Detail)
+		}
+	})
+
+	t.Run("no enabled loaded agents makes no login RPC", func(t *testing.T) {
+		hookAgentPreflightSeams(t, func(string, []string, string) *preflight.Issue { return nil }, func(issue preflight.Issue) error {
+			t.Fatalf("unexpected preflight screen: %+v", issue)
+			return nil
+		})
+		stub := &agentPreflightStub{
+			agents: []rpc.AgentInfo{{Name: "codex"}},
+		}
+		settings := config.Settings{
+			LoginShell: "/bin/sh",
+			Plugins:    []config.PluginConfig{{Name: "codex", Enabled: false}},
+		}
+		if err := runAgentPreflights(context.Background(), nil, stub, settings, ""); err != nil {
+			t.Fatalf("runAgentPreflights: %v", err)
+		}
+		if stub.checkLoginsCalls != 0 {
+			t.Fatalf("CheckAgentLogins calls = %d, want 0", stub.checkLoginsCalls)
+		}
+	})
+}
+
+func TestRunAgentPreflightsLoginUnknownOrErrorShowsNothing_DaemonLifecycle_AC274701(t *testing.T) {
+	cases := []struct {
+		name      string
+		logins    []rpc.AgentLogin
+		loginsErr error
+	}{
+		{
+			name:   "unknown or managed reads as not logged out",
+			logins: []rpc.AgentLogin{{AgentName: "codex", LoggedOut: false}},
+		},
+		{
+			name:      "unimplemented from older daemon",
+			loginsErr: connect.NewError(connect.CodeUnimplemented, errors.New("unimplemented")),
+		},
+		{
+			name:      "timeout",
+			loginsErr: context.DeadlineExceeded,
+		},
+		{
+			name:      "rpc error",
+			loginsErr: errors.New("socket closed"),
+		},
+	}
+
+	settings := config.Settings{
+		LoginShell: "/bin/sh",
+		Plugins:    []config.PluginConfig{{Name: "codex", Enabled: true}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hookAgentPreflightSeams(t, func(string, []string, string) *preflight.Issue { return nil }, func(issue preflight.Issue) error {
+				t.Fatalf("unexpected preflight screen: %+v", issue)
+				return nil
+			})
+			stub := &agentPreflightStub{
+				agents:    []rpc.AgentInfo{{Name: "codex"}},
+				logins:    tc.logins,
+				loginsErr: tc.loginsErr,
+			}
+			if err := runAgentPreflights(context.Background(), nil, stub, settings, ""); err != nil {
+				t.Fatalf("runAgentPreflights: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunAgentPreflightsResolveIssueWinsOverLoginWarning(t *testing.T) {
+	resolveIssue := &preflight.Issue{
+		Title:  "codex was not found for this project",
+		Detail: "install codex",
+	}
+	var shown []preflight.Issue
+	hookAgentPreflightSeams(t, func(string, []string, string) *preflight.Issue {
+		return resolveIssue
+	}, func(issue preflight.Issue) error {
+		shown = append(shown, issue)
+		return nil
+	})
+
+	stub := &agentPreflightStub{
+		agents: []rpc.AgentInfo{{Name: "codex"}},
+		logins: []rpc.AgentLogin{{AgentName: "codex", LoggedOut: true, Remedy: "codex login"}},
+	}
+	settings := config.Settings{
+		LoginShell: "/bin/sh",
+		Plugins:    []config.PluginConfig{{Name: "codex", Enabled: true}},
+	}
+
+	if err := runAgentPreflights(context.Background(), nil, stub, settings, ""); err != nil {
+		t.Fatalf("runAgentPreflights: %v", err)
+	}
+	if len(shown) != 1 {
+		t.Fatalf("shown screens = %d, want 1", len(shown))
+	}
+	if shown[0].Warning {
+		t.Errorf("expected resolve issue to win over warning, got warning: %+v", shown[0])
+	}
+	if shown[0].Title != resolveIssue.Title {
+		t.Errorf("Title = %q, want %q", shown[0].Title, resolveIssue.Title)
+	}
+}
+
+func TestRunAgentPreflightsLoginCheckOverlapsResolveProbe(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		loginEntered := make(chan struct{})
+		probeStarted := make(chan struct{})
+
+		hookAgentPreflightSeams(t, func(string, []string, string) *preflight.Issue {
+			close(probeStarted)
+			<-loginEntered
+			return nil
+		}, func(issue preflight.Issue) error {
+			t.Fatalf("unexpected preflight screen: %+v", issue)
+			return nil
+		})
+
+		stub := &agentPreflightStub{
+			agents: []rpc.AgentInfo{{Name: "codex"}},
+			onCheckAgentLogins: func(context.Context) ([]rpc.AgentLogin, error) {
+				close(loginEntered)
+				<-probeStarted
+				return nil, nil
+			},
+		}
+		settings := config.Settings{
+			LoginShell: "/bin/sh",
+			Plugins:    []config.PluginConfig{{Name: "codex", Enabled: true}},
+		}
+
+		start := time.Now()
+		if err := runAgentPreflights(context.Background(), nil, stub, settings, ""); err != nil {
+			t.Fatalf("runAgentPreflights: %v", err)
+		}
+		if stub.checkLoginsCalls != 1 {
+			t.Fatalf("CheckAgentLogins calls = %d, want 1", stub.checkLoginsCalls)
+		}
+		if !stub.hasLoginDeadline {
+			t.Fatal("CheckAgentLogins context had no deadline")
+		}
+		if maxDeadline := start.Add(preflight.AgentResolveTimeout); stub.loginDeadline.After(maxDeadline) {
+			t.Fatalf("CheckAgentLogins deadline = %v, exceeds %v", stub.loginDeadline, maxDeadline)
+		}
+	})
+}
+
+func hookAgentPreflightSeams(t *testing.T, check func(string, []string, string) *preflight.Issue, screen func(preflight.Issue) error) {
+	t.Helper()
+	oldCheck := checkAgentsResolvableForPreflight
+	oldScreen := runPreflightScreen
+	checkAgentsResolvableForPreflight = check
+	runPreflightScreen = screen
+	t.Cleanup(func() {
+		checkAgentsResolvableForPreflight = oldCheck
+		runPreflightScreen = oldScreen
+	})
 }
 
 func TestRunAgentPreflightsSkipsNonCLIBackedPlugins(t *testing.T) {
@@ -470,17 +768,40 @@ func TestRunAgentPreflightsSkipsNonCLIBackedPlugins(t *testing.T) {
 }
 
 type agentPreflightStub struct {
-	agents        []rpc.AgentInfo
-	session       *pb.Session
-	resolveResp   *pb.ResolveContextResponse
-	getSessionID  string
-	resolveCalled bool
-	listCalled    bool
+	mu                 sync.Mutex
+	agents             []rpc.AgentInfo
+	session            *pb.Session
+	resolveResp        *pb.ResolveContextResponse
+	logins             []rpc.AgentLogin
+	loginsErr          error
+	onCheckAgentLogins func(context.Context) ([]rpc.AgentLogin, error)
+	getSessionID       string
+	resolveCalled      bool
+	listCalled         bool
+	checkLoginsCalls   int
+	loginDeadline      time.Time
+	hasLoginDeadline   bool
 }
 
 func (s *agentPreflightStub) ListAgents(context.Context) ([]rpc.AgentInfo, error) {
 	s.listCalled = true
 	return s.agents, nil
+}
+
+func (s *agentPreflightStub) CheckAgentLogins(ctx context.Context) ([]rpc.AgentLogin, error) {
+	deadline, hasDeadline := ctx.Deadline()
+	s.mu.Lock()
+	s.checkLoginsCalls++
+	s.loginDeadline = deadline
+	s.hasLoginDeadline = hasDeadline
+	hook := s.onCheckAgentLogins
+	logins := s.logins
+	err := s.loginsErr
+	s.mu.Unlock()
+	if hook != nil {
+		return hook(ctx)
+	}
+	return logins, err
 }
 
 func (s *agentPreflightStub) GetSession(_ context.Context, id string, _ rpc.SessionReadOptions) (*pb.Session, error) {

@@ -747,6 +747,7 @@ func TestTriggerRequiresLogin(t *testing.T) {
 	fake := newSampleFake()
 	url := newFakeTriggerServer(t, fake)
 	mgr := auth.NewManager(emptyTokenStore{}, auth.Config{})
+	mgr.MarkExplicitCredential()
 
 	_, err := triggerRemote(context.Background(), mgr, url)
 	if err == nil {

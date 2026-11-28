@@ -394,6 +394,9 @@ const (
 	// OrchestratorServiceMintProofViewLinkProcedure is the fully-qualified name of the
 	// OrchestratorService's MintProofViewLink RPC.
 	OrchestratorServiceMintProofViewLinkProcedure = "/bossanova.v1.OrchestratorService/MintProofViewLink"
+	// OrchestratorServiceMintPublicProofViewLinkProcedure is the fully-qualified name of the
+	// OrchestratorService's MintPublicProofViewLink RPC.
+	OrchestratorServiceMintPublicProofViewLinkProcedure = "/bossanova.v1.OrchestratorService/MintPublicProofViewLink"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -1018,6 +1021,14 @@ type OrchestratorServiceClient interface {
 	// This additive RPC needs no dated API bump; see
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	MintProofViewLink(context.Context, *connect.Request[v1.MintProofViewLinkRequest]) (*connect.Response[v1.MintProofViewLinkResponse], error)
+	// MintPublicProofViewLink returns a short-lived signed link to the newest
+	// completed hosted proof page of one pull request when the uploading
+	// organization has link sharing enabled. Rate-limited per client address.
+	// Every miss (sharing off, no upload, incomplete or deleted upload, unknown
+	// repo) returns the same NotFound.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	MintPublicProofViewLink(context.Context, *connect.Request[v1.MintPublicProofViewLinkRequest]) (*connect.Response[v1.MintPublicProofViewLinkResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -2042,6 +2053,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("MintProofViewLink")),
 			connect.WithClientOptions(opts...),
 		),
+		mintPublicProofViewLink: connect.NewClient[v1.MintPublicProofViewLinkRequest, v1.MintPublicProofViewLinkResponse](
+			httpClient,
+			baseURL+OrchestratorServiceMintPublicProofViewLinkProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("MintPublicProofViewLink")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -2617,6 +2634,7 @@ type orchestratorServiceClient struct {
 	putProofObject                         *connect.Client[v1.PutProofObjectRequest, v1.PutProofObjectResponse]
 	abortProofUpload                       *connect.Client[v1.AbortProofUploadRequest, v1.AbortProofUploadResponse]
 	mintProofViewLink                      *connect.Client[v1.MintProofViewLinkRequest, v1.MintProofViewLinkResponse]
+	mintPublicProofViewLink                *connect.Client[v1.MintPublicProofViewLinkRequest, v1.MintPublicProofViewLinkResponse]
 	proxyStreamChats                       *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken                       *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream                         *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -3299,6 +3317,11 @@ func (c *orchestratorServiceClient) AbortProofUpload(ctx context.Context, req *c
 // MintProofViewLink calls bossanova.v1.OrchestratorService.MintProofViewLink.
 func (c *orchestratorServiceClient) MintProofViewLink(ctx context.Context, req *connect.Request[v1.MintProofViewLinkRequest]) (*connect.Response[v1.MintProofViewLinkResponse], error) {
 	return c.mintProofViewLink.CallUnary(ctx, req)
+}
+
+// MintPublicProofViewLink calls bossanova.v1.OrchestratorService.MintPublicProofViewLink.
+func (c *orchestratorServiceClient) MintPublicProofViewLink(ctx context.Context, req *connect.Request[v1.MintPublicProofViewLinkRequest]) (*connect.Response[v1.MintPublicProofViewLinkResponse], error) {
+	return c.mintPublicProofViewLink.CallUnary(ctx, req)
 }
 
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
@@ -4075,6 +4098,14 @@ type OrchestratorServiceHandler interface {
 	// This additive RPC needs no dated API bump; see
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	MintProofViewLink(context.Context, *connect.Request[v1.MintProofViewLinkRequest]) (*connect.Response[v1.MintProofViewLinkResponse], error)
+	// MintPublicProofViewLink returns a short-lived signed link to the newest
+	// completed hosted proof page of one pull request when the uploading
+	// organization has link sharing enabled. Rate-limited per client address.
+	// Every miss (sharing off, no upload, incomplete or deleted upload, unknown
+	// repo) returns the same NotFound.
+	// This additive RPC needs no dated API bump; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	MintPublicProofViewLink(context.Context, *connect.Request[v1.MintPublicProofViewLinkRequest]) (*connect.Response[v1.MintPublicProofViewLinkResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -5095,6 +5126,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("MintProofViewLink")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceMintPublicProofViewLinkHandler := connect.NewUnaryHandler(
+		OrchestratorServiceMintPublicProofViewLinkProcedure,
+		svc.MintPublicProofViewLink,
+		connect.WithSchema(orchestratorServiceMethods.ByName("MintPublicProofViewLink")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -5787,6 +5824,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceAbortProofUploadHandler.ServeHTTP(w, r)
 		case OrchestratorServiceMintProofViewLinkProcedure:
 			orchestratorServiceMintProofViewLinkHandler.ServeHTTP(w, r)
+		case OrchestratorServiceMintPublicProofViewLinkProcedure:
+			orchestratorServiceMintPublicProofViewLinkHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -6424,6 +6463,10 @@ func (UnimplementedOrchestratorServiceHandler) AbortProofUpload(context.Context,
 
 func (UnimplementedOrchestratorServiceHandler) MintProofViewLink(context.Context, *connect.Request[v1.MintProofViewLinkRequest]) (*connect.Response[v1.MintProofViewLinkResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.MintProofViewLink is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) MintPublicProofViewLink(context.Context, *connect.Request[v1.MintPublicProofViewLinkRequest]) (*connect.Response[v1.MintPublicProofViewLinkResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.MintPublicProofViewLink is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

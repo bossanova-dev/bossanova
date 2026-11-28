@@ -629,6 +629,7 @@ const (
 	AgentRunnerService_ListModels_FullMethodName                  = "/bossanova.v1.AgentRunnerService/ListModels"
 	AgentRunnerService_ReadQuestionMenu_FullMethodName            = "/bossanova.v1.AgentRunnerService/ReadQuestionMenu"
 	AgentRunnerService_PlanQuestionAnswer_FullMethodName          = "/bossanova.v1.AgentRunnerService/PlanQuestionAnswer"
+	AgentRunnerService_CheckLogin_FullMethodName                  = "/bossanova.v1.AgentRunnerService/CheckLogin"
 )
 
 // AgentRunnerServiceClient is the client API for AgentRunnerService service.
@@ -809,6 +810,14 @@ type AgentRunnerServiceClient interface {
 	// daemon sends the inputs and never interprets them. A plugin whose agent
 	// has no question menu returns codes.Unimplemented.
 	PlanQuestionAnswer(ctx context.Context, in *PlanQuestionAnswerRequest, opts ...grpc.CallOption) (*PlanQuestionAnswerResponse, error)
+	// CheckLogin reports whether the agent CLI's ambient login (the one a run
+	// started from the daemon's own environment would use) is usable. The plugin
+	// runs its CLI's own status command through the login shell, bounded by
+	// AgentLoginProbeTimeout. LOGGED_OUT is returned only on positive evidence;
+	// anything the plugin cannot classify is UNKNOWN. A plugin whose CLI has no
+	// status command returns codes.Unimplemented. The response never carries the
+	// CLI's raw output, which can include an account email or a masked key.
+	CheckLogin(ctx context.Context, in *CheckLoginRequest, opts ...grpc.CallOption) (*CheckLoginResponse, error)
 }
 
 type agentRunnerServiceClient struct {
@@ -1089,6 +1098,16 @@ func (c *agentRunnerServiceClient) PlanQuestionAnswer(ctx context.Context, in *P
 	return out, nil
 }
 
+func (c *agentRunnerServiceClient) CheckLogin(ctx context.Context, in *CheckLoginRequest, opts ...grpc.CallOption) (*CheckLoginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CheckLoginResponse)
+	err := c.cc.Invoke(ctx, AgentRunnerService_CheckLogin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentRunnerServiceServer is the server API for AgentRunnerService service.
 // All implementations must embed UnimplementedAgentRunnerServiceServer
 // for forward compatibility.
@@ -1267,6 +1286,14 @@ type AgentRunnerServiceServer interface {
 	// daemon sends the inputs and never interprets them. A plugin whose agent
 	// has no question menu returns codes.Unimplemented.
 	PlanQuestionAnswer(context.Context, *PlanQuestionAnswerRequest) (*PlanQuestionAnswerResponse, error)
+	// CheckLogin reports whether the agent CLI's ambient login (the one a run
+	// started from the daemon's own environment would use) is usable. The plugin
+	// runs its CLI's own status command through the login shell, bounded by
+	// AgentLoginProbeTimeout. LOGGED_OUT is returned only on positive evidence;
+	// anything the plugin cannot classify is UNKNOWN. A plugin whose CLI has no
+	// status command returns codes.Unimplemented. The response never carries the
+	// CLI's raw output, which can include an account email or a masked key.
+	CheckLogin(context.Context, *CheckLoginRequest) (*CheckLoginResponse, error)
 	mustEmbedUnimplementedAgentRunnerServiceServer()
 }
 
@@ -1357,6 +1384,9 @@ func (UnimplementedAgentRunnerServiceServer) ReadQuestionMenu(context.Context, *
 }
 func (UnimplementedAgentRunnerServiceServer) PlanQuestionAnswer(context.Context, *PlanQuestionAnswerRequest) (*PlanQuestionAnswerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PlanQuestionAnswer not implemented")
+}
+func (UnimplementedAgentRunnerServiceServer) CheckLogin(context.Context, *CheckLoginRequest) (*CheckLoginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CheckLogin not implemented")
 }
 func (UnimplementedAgentRunnerServiceServer) mustEmbedUnimplementedAgentRunnerServiceServer() {}
 func (UnimplementedAgentRunnerServiceServer) testEmbeddedByValue()                            {}
@@ -1865,6 +1895,24 @@ func _AgentRunnerService_PlanQuestionAnswer_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentRunnerService_CheckLogin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckLoginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentRunnerServiceServer).CheckLogin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentRunnerService_CheckLogin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentRunnerServiceServer).CheckLogin(ctx, req.(*CheckLoginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentRunnerService_ServiceDesc is the grpc.ServiceDesc for AgentRunnerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1979,6 +2027,10 @@ var AgentRunnerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PlanQuestionAnswer",
 			Handler:    _AgentRunnerService_PlanQuestionAnswer_Handler,
+		},
+		{
+			MethodName: "CheckLogin",
+			Handler:    _AgentRunnerService_CheckLogin_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

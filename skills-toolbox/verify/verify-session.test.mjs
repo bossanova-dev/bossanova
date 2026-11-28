@@ -34,6 +34,7 @@ for (const repairInFlight of [false, undefined]) {
 
 export function fixture({
   active = true,
+  queuedAt = '',
   flagAbsent = false,
   age = 1000,
   sessions = [{ id: 's', pr_url: URL }],
@@ -49,7 +50,11 @@ export function fixture({
     calls.push({ command, args })
     if (command === 'boss' && args[0] === 'ls') return lsFails ? fail() : ok({ sessions })
     if (command === 'boss' && args[0] === 'show')
-      return showFails ? fail() : ok({ session: flagAbsent ? {} : { repair_active: active } })
+      return showFails
+        ? fail()
+        : ok({
+            session: flagAbsent ? {} : { repair_active: active, repair_queued_at: queuedAt },
+          })
     if (command !== 'gh') return fail()
     if (args[0] === 'pr')
       return ok({
@@ -113,7 +118,19 @@ for (const [label, options, why] of [
   ['live', {}, 'repair-active'],
   ['exact cap', { age: 60 * 60 * 1000 }, 'repair-active'],
   ['expired', { age: 60 * 60 * 1000 + 1 }, 'wait-expired'],
+  ['queued', { active: false, queuedAt: '2026-10-29T11:30:00Z' }, 'repair-queued'],
+  [
+    'queued past 60m head age',
+    { active: false, queuedAt: '2026-10-29T09:00:00Z', age: 2 * 60 * 60 * 1000 },
+    'repair-queued',
+  ],
+  [
+    'queued with unknown head age',
+    { active: false, queuedAt: '2026-10-29T09:00:00Z', startedAt: 'invalid' },
+    'repair-queued',
+  ],
   ['idle', { active: false }, 'repair-idle'],
+  ['idle with blank queued timestamp', { active: false, queuedAt: '   ' }, 'repair-idle'],
   ['absent flag', { flagAbsent: true }, 'repair-active-absent'],
   ['nonboolean flag', { active: 'true' }, 'repair-active-absent'],
   ['no session', { sessions: [] }, 'no-session'],
@@ -121,10 +138,10 @@ for (const [label, options, why] of [
   ['detail failure', { showFails: true }, 'session-unreadable'],
   ['unknown age', { startedAt: 'invalid' }, 'head-age-unknown'],
 ]) {
-  test(`judge absent receipt: ${label}`, async () => {
+  test(`judge absent receipt: ${label}${why === 'repair-queued' ? ' @sessions.AC268904' : ''}`, async () => {
     const w = fixture(options)
     const result = await judge({ pr: 7, repo: 'o/r', dryRun: true }, w.deps)
-    const inFlight = why === 'repair-active'
+    const inFlight = why === 'repair-active' || why === 'repair-queued'
     assert.equal(result.reason, inFlight ? 'receipt-repair-pending' : 'receipt-absent')
     assert.equal(result.verdict, inFlight ? 'wait' : 'review-required')
     assert.deepEqual(result.facts.repairReceipt, { inFlight, why })

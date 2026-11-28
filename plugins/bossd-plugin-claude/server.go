@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
 	"github.com/recurser/bossalib/contract/plugin/loginshell"
 	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
 	"github.com/recurser/bossalib/contract/plugin/statusdetect"
@@ -66,6 +67,8 @@ type Server struct {
 	// DescribeMCPSurface. Nil means the live prober, which spawns a real claude
 	// process; tests replace it so they never exec claude.
 	initProber claudeInitProber
+
+	loginProbe func(context.Context) agentruntime.LoginStatusOutput
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...RunnerOption) *Server {

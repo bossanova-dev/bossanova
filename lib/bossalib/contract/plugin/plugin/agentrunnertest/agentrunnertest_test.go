@@ -104,6 +104,10 @@ func (*referenceCore) PlanQuestionAnswer(context.Context, *v1.PlanQuestionAnswer
 	return &v1.PlanQuestionAnswerResponse{Reason: "the agent is not waiting on that question"}, nil
 }
 
+func (*referenceCore) CheckLogin(context.Context, *v1.CheckLoginRequest) (*v1.CheckLoginResponse, error) {
+	return &v1.CheckLoginResponse{Status: v1.AgentLoginStatus_AGENT_LOGIN_STATUS_UNKNOWN}, nil
+}
+
 type referenceRunner struct{ referenceCore }
 
 type staleAnswerRunner struct{ referenceRunner }
@@ -164,6 +168,24 @@ func (*emptyPolicyArgvRunner) BuildInteractiveCommand(_ context.Context, req *v1
 	return &v1.BuildInteractiveCommandResponse{Argv: []string{"reference-agent"}}, nil
 }
 
+type loggedOutNoRemedyRunner struct{ referenceRunner }
+
+func (*loggedOutNoRemedyRunner) CheckLogin(context.Context, *v1.CheckLoginRequest) (*v1.CheckLoginResponse, error) {
+	return &v1.CheckLoginResponse{Status: v1.AgentLoginStatus_AGENT_LOGIN_STATUS_LOGGED_OUT}, nil
+}
+
+type unspecifiedLoginRunner struct{ referenceRunner }
+
+func (*unspecifiedLoginRunner) CheckLogin(context.Context, *v1.CheckLoginRequest) (*v1.CheckLoginResponse, error) {
+	return &v1.CheckLoginResponse{Status: v1.AgentLoginStatus_AGENT_LOGIN_STATUS_UNSPECIFIED}, nil
+}
+
+type loggedInWithRemedyRunner struct{ referenceRunner }
+
+func (*loggedInWithRemedyRunner) CheckLogin(context.Context, *v1.CheckLoginRequest) (*v1.CheckLoginResponse, error) {
+	return &v1.CheckLoginResponse{Status: v1.AgentLoginStatus_AGENT_LOGIN_STATUS_LOGGED_IN, Remedy: "should be empty"}, nil
+}
+
 func testEnv(t *testing.T) Env {
 	t.Helper()
 	return Env{WorkDir: t.TempDir(), LogPath: filepath.Join(t.TempDir(), "agent.log"), UnknownSessionID: "never-started"}
@@ -189,6 +211,9 @@ func TestCheckFailsOnSeededViolations(t *testing.T) {
 		{name: "falsely declared models unsupported", server: &referenceRunner{}, unsupported: []string{v1.AgentRunnerService_ListModels_FullMethodName}, method: "ListModels"},
 		{name: "rejects unattended permission policy", server: &rejectPolicyRunner{}, method: "BuildInteractiveCommand"},
 		{name: "empty argv with unattended permission policy", server: &emptyPolicyArgvRunner{}, method: "BuildInteractiveCommand"},
+		{name: "logged out without remedy", server: &loggedOutNoRemedyRunner{}, method: "CheckLogin"},
+		{name: "unspecified login status", server: &unspecifiedLoginRunner{}, method: "CheckLogin"},
+		{name: "logged in with non-empty remedy", server: &loggedInWithRemedyRunner{}, method: "CheckLogin"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

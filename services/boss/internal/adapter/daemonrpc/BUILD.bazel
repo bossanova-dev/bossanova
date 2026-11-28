@@ -3,12 +3,14 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "daemonrpc",
     srcs = [
+        "agent_login.go",
         "create_policy_ref.go",
         "credential_devices.go",
         "forwarded.go",
         "github_read_credential.go",
         "github_usage.go",
         "local.go",
+        "local_repo_origin.go",
         "local_serve.go",
         "local_setup_detect.go",
         "netns_linux.go",
@@ -48,6 +50,7 @@ go_library(
 go_test(
     name = "daemonrpc_test",
     srcs = [
+        "agent_login_test.go",
         "create_policy_ref_test.go",
         "credential_devices_test.go",
         "local_auth_test.go",

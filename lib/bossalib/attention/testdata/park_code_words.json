@@ -7,6 +7,13 @@
       "signOff": true,
       "restates": false
     },
+    "approval-required": {
+      "decidingPriority": true,
+      "plain": "verify passed; the repository requires an approving review before this PR can merge",
+      "category": "required approval",
+      "signOff": true,
+      "restates": false
+    },
     "cannot-assess": {
       "decidingPriority": false,
       "plain": "verify could not gather the evidence to judge the PR",
@@ -201,6 +208,7 @@
     "no-session",
     "worktree-diverged",
     "worktree-unsynced",
+    "approval-required",
     "human-merge",
     "verify-post-failed",
     "ci-absent",

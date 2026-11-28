@@ -51,6 +51,10 @@ service DaemonService {
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
   rpc RemoveRepo(RemoveRepoRequest) returns (RemoveRepoResponse);
   rpc UpdateRepo(UpdateRepoRequest) returns (UpdateRepoResponse);
+  // RefreshRepoOrigin re-reads a repo's origin remote and persists it as the
+  // stored origin. Additive bossd-local RPC with no stream command: the
+  // orchestrator cannot repoint a repo.
+  rpc RefreshRepoOrigin(RefreshRepoOriginRequest) returns (RefreshRepoOriginResponse);
   // GetRepoSettings returns the web-safe (secret-masked) settings for a repo.
   rpc GetRepoSettings(GetRepoSettingsRequest) returns (GetRepoSettingsResponse);
   rpc ListRepoPRs(ListRepoPRsRequest) returns (ListRepoPRsResponse);
@@ -497,6 +501,14 @@ service DaemonService {
   // step, (c) render the settings page's per-plugin sections.
   rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
 
+  // CheckAgentLogins reports whether each loaded agent runner's CLI is logged in
+  // with its ambient login, the one a session started from this daemon would use.
+  // It shares the per-agent probe with `boss repair doctor`. It fails open: only
+  // positive evidence of a logged-out CLI is reported as LOGGED_OUT. It never
+  // returns CLI output. It is a local observe RPC, ungated on the socket like
+  // ListAgents and RepairDoctor, and it has no OrchestratorCommand.
+  rpc CheckAgentLogins(CheckAgentLoginsRequest) returns (CheckAgentLoginsResponse);
+
   // ListPlugins returns every plugin the daemon attempted to load this
   // run, including disabled and failed entries. Surfaced via
   // `boss plugin list` so operators can debug "did my plugin actually
@@ -680,6 +692,16 @@ message UpdateRepoRequest {
 
 message UpdateRepoResponse {
   Repo repo = 1;
+}
+
+message RefreshRepoOriginRequest { string id = 1; }
+
+message RefreshRepoOriginResponse {
+  // The repo after the refresh; its origin_url is the remote's URL.
+  Repo repo = 1;
+  // The stored origin before the refresh. Equal to repo.origin_url when the
+  // remote already matched.
+  string previous_origin_url = 2;
 }
 
 message GetRepoSettingsRequest { string id = 1; }
@@ -2887,6 +2909,22 @@ message AgentInfo {
   string version = 2;
   // user_settings imported from plugin.proto.
   repeated UserSetting user_settings = 3;
+}
+
+message CheckAgentLoginsRequest {}
+
+message CheckAgentLoginsResponse {
+  repeated AgentLogin agents = 1;
+}
+
+message AgentLogin {
+  string agent_name = 1;
+  AgentLoginStatus status = 2;
+  // remedy is set only when status is LOGGED_OUT.
+  string remedy = 3;
+  // has_managed_account is true when sessions for this agent bind a managed
+  // account, so the CLI's ambient login was not checked (status UNKNOWN).
+  bool has_managed_account = 4;
 }
 
 // --- Installed Plugins ---

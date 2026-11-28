@@ -1,0 +1,13 @@
+{
+  "generatedBy": "make setup-check-ids",
+  "ids": [
+    "daemon-running",
+    "repo-registered",
+    "agent-runner",
+    "agent-cli-on-path",
+    "gh-auth",
+    "node-on-daemon-path",
+    "tmux-on-daemon-path",
+    "skills-current"
+  ]
+}

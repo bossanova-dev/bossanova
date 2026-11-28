@@ -32,6 +32,7 @@ var humanReasonsOrder = []string{
 	"no-session",
 	"worktree-diverged",
 	"worktree-unsynced",
+	ParkCodeApprovalRequired,
 	ParkCodeHumanMerge,
 	"verify-post-failed",
 	"ci-absent",
@@ -266,6 +267,10 @@ const ParkCodeLedgerOpen = "ledger-open"
 // without merge-on-pass. Approving the park merges it.
 const ParkCodeHumanMerge = "human-merge"
 
+// ParkCodeApprovalRequired is the verify park code for a PR verify judged
+// whose repository blocks its merge until a person approves it on GitHub.
+const ParkCodeApprovalRequired = "approval-required"
+
 // ParkCodeTicketNeedsPerson identifies a ticket waiting for a person's answer.
 const ParkCodeTicketNeedsPerson = "ticket-needs-person"
 
@@ -420,6 +425,16 @@ var knownParkCodes = map[string]parkCodeInfo{
 		category:            "latest commit not reviewed",
 		signOff:             true,
 		plain:               "the latest commit has not had an automated build and review, or changed after its review",
+	},
+	// No dated apiversion bump for approval-required: an older TUI or web
+	// renders the unknown code as a blocked park, which truthfully says the PR
+	// waits on a person. There is no older answer to restore. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	ParkCodeApprovalRequired: {
+		hasDecidingPriority: true,
+		category:            "required approval",
+		signOff:             true,
+		plain:               "verify passed; the repository requires an approving review before this PR can merge",
 	},
 	// No dated apiversion bump for human-merge, and why: Session.attention
 	// reaches the boss TUI, which can point at a remote daemon of another
